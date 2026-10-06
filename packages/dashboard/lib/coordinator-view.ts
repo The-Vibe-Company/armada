@@ -43,11 +43,13 @@ export type SessionGroup = (typeof SESSION_GROUPS)[number];
 
 /** Why a session is in its state: the row's colored line, in the viewer's language (lib/i18n.ts). */
 export type Reason =
+  | { kind: "runtime"; state: "failed" | "gone" }
   /** A worker's question the coordinator has not answered. */
   | { kind: "question"; text: string }
   | { kind: "ci"; pr: number }
   | { kind: "conflict"; pr: number }
   | { kind: "silent"; since: string | null }
+  | { kind: "stopped" }
   /** Blocked with no open question: the worker's last line. */
   | { kind: "blocked"; text: string | null }
   | { kind: "plan" }
@@ -123,8 +125,11 @@ export function sessionState(
           : { kind: "validation", text: firstLine(v.what) };
     return { group: "you", reason };
   }
+  if (row.flags.includes("stopped")) return { group: "blocked", reason: { kind: "stopped" } };
   if (row.phase === "awaiting-approval") return { group: "you", reason: { kind: "plan" } };
   if (row.phase === "awaiting-validation") return { group: "you", reason: { kind: "awaiting-validation" } };
+  if (row.runtimeState === "failed" || row.runtimeState === "gone")
+    return { group: "blocked", reason: { kind: "runtime", state: row.runtimeState } };
   if (row.question) return { group: "blocked", reason: { kind: "question", text: questionText(row.question.body) } };
   if (row.pr && (row.pr.ci === "failure" || row.flags.includes("ci-failing")))
     return { group: "blocked", reason: { kind: "ci", pr: row.pr.number } };

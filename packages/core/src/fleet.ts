@@ -4,10 +4,27 @@
 
 import type { RuntimeObservation } from "./live.ts";
 import { criticalIds, isClosed, isDone, isNotStarted, isStarted, type Model } from "./model.ts";
-import type { ShippingStage } from "./types.ts";
+import { checkIssues } from "./phases.ts";
+import type { MainCommit, MainHealth, ShippingStage } from "./types.ts";
 import { type AgentClaim, type AgentPhase, type Comment, type Issue, LABEL_PHASES, type PullRequest } from "./types.ts";
 
 const MIN = 60_000;
+
+/** A runtime reading expires with the project's liveness threshold. */
+export function freshRuntimeState(
+  observation: RuntimeObservation | null | undefined,
+  now: Date,
+  minutes: number,
+  claimedAt?: string,
+): RuntimeObservation["state"] | null {
+  // A session can start its turn before the worker claims. The observation is
+  // generation-checked by the store; its transition time may legitimately precede the claim.
+  if (!observation || (claimedAt && observation.at < claimedAt)) return null;
+  const age = now.getTime() - Date.parse(observation.at);
+  return observation.state !== "unknown" && Number.isFinite(age) && age >= 0 && age <= minutes * MIN
+    ? observation.state
+    : null;
+}
 
 /** Phases where the coordinator or a human must act. */
 export const NEEDS_HUMAN: AgentPhase[] = ["awaiting-approval", "awaiting-validation", "blocked", "ready-to-merge"];
@@ -29,6 +46,7 @@ const PLAN_HINT = /\b(plan|objective|assumptions|awaiting (?:plan )?approval)\b/
 
 export type LaneFlag =
   | "silent"
+  | "stopped"
   | "ci-failing"
   | "conflict"
   | "double-claim"
@@ -99,6 +117,35 @@ export function workerLivenessAt(worker: Pick<Lane, "lastHeartbeat" | "lastRepor
   return latest(worker.lastHeartbeat, worker.lastReport) || worker.lastUpdate;
 }
 
+/** One liveness decision for the inbox and status, from worker activity and a fresh runtime reading. */
+export function liveness(input: {
+  now: Date;
+  silentAfterMinutes: number;
+  phase: string | null | undefined;
+  lastReport: string;
+  lastHeartbeat?: string | null;
+  runtimeState?: RuntimeObservation | null;
+  claimedAt?: string;
+  owesReport?: boolean;
+}): { kind: "silent" | "stopped" | null; alive: string; silence: number; state: ReturnType<typeof freshRuntimeState> } {
+  const alive = workerLivenessAt({
+    lastReport: input.lastReport,
+    lastHeartbeat: input.lastHeartbeat,
+    lastUpdate: input.lastReport,
+  });
+  const silence = input.now.getTime() - Date.parse(alive);
+  const state = freshRuntimeState(input.runtimeState, input.now, input.silentAfterMinutes, input.claimedAt);
+  let kind: "silent" | "stopped" | null = null;
+  if (!(NEEDS_HUMAN.includes(input.phase as AgentPhase) && !input.owesReport) && input.phase !== "merged") {
+    if (state === "idle") {
+      if (input.now.getTime() - Date.parse(input.lastReport) > 5 * MIN) kind = "stopped";
+    } else if (state !== "blocked" && silence > input.silentAfterMinutes * MIN * (state === "working" ? 2 : 1)) {
+      kind = "silent";
+    }
+  }
+  return { kind, alive, silence, state };
+}
+
 /** Legacy workers: checks on the PR head mean CI, including completed checks. */
 export function deriveShippingStage(pr: PullRequest | null): ShippingStage | null {
   if (pr?.state !== "open") return null;
@@ -146,6 +193,7 @@ export interface LaneOptions {
         handle: string;
         profile?: string | null;
         lastHeartbeatAt?: string | null;
+        lastAnsweredAt?: string | null;
         runtimeState?: RuntimeObservation | null;
         claimedAt?: string;
         releasedAt?: string | null;
@@ -243,12 +291,23 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
   const agent = issue.delegate ?? issue.assignee;
 
   const flags: LaneFlag[] = [];
-  const waitingOnHuman = NEEDS_HUMAN.includes(phase) || phase === "merged";
   // A resumed report is fresh liveness even if the previous turn's heartbeat stopped.
   // Ticket edits and ordinary comments count only when the worker has never reported or pinged.
   const lastHeartbeat = opts.heartbeats?.[issue.id] ?? opts.live?.handles?.[issue.id]?.lastHeartbeatAt ?? null;
-  const alive = workerLivenessAt({ lastHeartbeat, lastReport, lastUpdate });
-  if (!waitingOnHuman && opts.now - Date.parse(alive) > opts.silentAfterMinutes * MIN) flags.push("silent");
+  const answer = opts.live?.handles?.[issue.id]?.lastAnsweredAt;
+  const reported = lastReport ?? lastUpdate;
+  const owesReport = !!answer && answer > reported;
+  const life = liveness({
+    now: new Date(opts.now),
+    silentAfterMinutes: opts.silentAfterMinutes,
+    phase,
+    lastReport: owesReport ? answer : reported,
+    owesReport,
+    lastHeartbeat,
+    runtimeState: opts.live?.handles?.[issue.id]?.runtimeState,
+    claimedAt: opts.live?.handles?.[issue.id]?.claimedAt,
+  });
+  if (life.kind) flags.push(life.kind);
   if (pr?.state === "open" && pr.ci === "failure") flags.push("ci-failing");
   if (pr?.state === "open" && pr.mergeable === "CONFLICTING") flags.push("conflict");
   const runtimes = new Set(claims.map((c) => c.runtime).filter(Boolean));
@@ -314,6 +373,13 @@ export function inFlight(m: Model, comments: Comment[], opts: LaneOptions): Lane
       // A replacement claim survives an older release or merge in the reading.
       return open && !!handle.claimedAt && handle.claimedAt > fresh.at;
     }
+    // A runtime archive does not edit Linear. Preserve its end evidence after
+    // the next snapshot refresh, unless the tracker has newer worker activity.
+    const ended = opts.live?.events[i.id];
+    if (ended && ENDS_WORK.includes(ended.kind) && !open) {
+      const workerAt = latest(commentsFor(comments, i.id).find((c) => c.status || c.claim)?.createdAt, i.startedAt);
+      if (workerAt ? ended.at >= workerAt : !!ended.handle) return false;
+    }
     return open || !!i.agentPhase || isStarted(i);
   };
   return m.program
@@ -346,6 +412,35 @@ export interface FrontierLabels {
   parked: string;
 }
 
+function available(m: Model, i: Issue): boolean {
+  return (
+    m.isLeaf(i) &&
+    isNotStarted(i) &&
+    !i.agentPhase &&
+    m.openBlockersOf(i).length === 0 &&
+    !i.prs.some((p) => p.state === "open")
+  );
+}
+
+export interface UnblockedTickets {
+  ready: Candidate[];
+  parked: Issue[];
+  nowWaitsOn: { id: string; on: string[] }[];
+}
+
+/** Direct dependents after a blocker closes, using the same rules as the frontier. */
+export function unblockedBy(m: Model, ticket: string, labels: FrontierLabels): UnblockedTickets {
+  const dependents = m.program.filter((i) => !isClosed(i) && i.blockedBy.some((b) => b.id === ticket));
+  return {
+    ready: frontier(m, labels).filter((c) => c.issue.blockedBy.some((b) => b.id === ticket)),
+    parked: dependents.filter((i) => i.labels.includes(labels.parked) && available(m, i)),
+    nowWaitsOn: dependents.flatMap((i) => {
+      const on = m.openBlockersOf(i);
+      return on.length ? [{ id: i.id, on }] : [];
+    }),
+  };
+}
+
 /**
  * The frontier: leaves not started, not held by an agent, not parked, with
  * every blocked-by ticket closed and no open pull request. Ranked: ready label
@@ -364,15 +459,7 @@ export function frontier(m: Model, labels: FrontierLabels): Candidate[] {
   };
   const critical = criticalIds(m);
   return m.program
-    .filter(
-      (i) =>
-        m.isLeaf(i) &&
-        isNotStarted(i) &&
-        !i.agentPhase &&
-        !i.labels.includes(labels.parked) &&
-        m.openBlockersOf(i).length === 0 &&
-        !i.prs.some((p) => p.state === "open"),
-    )
+    .filter((i) => available(m, i) && !i.labels.includes(labels.parked))
     .map((issue) => {
       const spec = m.specOf(issue.id);
       const unlocksAll = [...transitive(issue.id)];
@@ -413,4 +500,78 @@ export function waitingPullRequests(m: Model, prs: PullRequest[]): WaitingPr[] {
     .filter((p) => p.state === "open")
     .map((pr) => ({ pr, ticket: ticketOf.get(pr.url) ?? null }))
     .sort((a, b) => a.pr.number - b.pr.number);
+}
+
+export const MAIN_HISTORY_WINDOW = 20;
+
+/** Default-branch CI, ignoring unchecked commits and looking back to the last green. */
+export function mainHealth(
+  commits: readonly MainCommit[],
+  requiredChecks: readonly string[],
+  historyComplete = false,
+): MainHealth | null {
+  const head = commits[0];
+  if (!head) return null;
+  const stateOf = (c: MainCommit): MainHealth["state"] => {
+    if (!c.checks.length && c.ci === "none") return "none";
+    if (!requiredChecks.length)
+      return c.ci === "success" ? "green" : c.ci === "failure" ? "red" : c.ci === "none" ? "none" : "running";
+    const issues = checkIssues(c.checks, requiredChecks);
+    return issues.some((i) => !i.pending) ? "red" : issues.length || c.checksComplete === false ? "running" : "green";
+  };
+  const checked = commits.map((commit) => ({ commit, state: stateOf(commit) })).filter((c) => c.state !== "none");
+  const newest = checked[0];
+  const result: MainHealth = {
+    branch: head.branch,
+    head: head.sha,
+    state: newest?.state ?? "none",
+    redSince: null,
+    fixRunning: null,
+    redBeyondWindow: false,
+  };
+  if (!newest || newest.state === "green") return result;
+  const pr = (c: MainCommit) => {
+    const match = c.headline.match(/\(#(\d+)\)\s*$/);
+    return match ? Number(match[1]) : null;
+  };
+  let foundGreen = false;
+  for (const { commit, state } of checked) {
+    if (state === "green") {
+      foundGreen = true;
+      break;
+    }
+    if (state === "red")
+      result.redSince = {
+        sha: commit.sha,
+        pr: pr(commit),
+        at: commit.at,
+        failing: [
+          ...new Set(
+            commit.checks
+              .filter((c) => c.state === "failure" && (!requiredChecks.length || requiredChecks.includes(c.name)))
+              .map((c) => c.name),
+          ),
+        ],
+      };
+  }
+  if (result.redSince) {
+    result.redBeyondWindow = !foundGreen && !historyComplete;
+    if (newest.state === "running") result.fixRunning = { sha: newest.commit.sha, pr: pr(newest.commit) };
+  }
+  return result;
+}
+
+/** The shared English reading used by the CLI and merge notes. */
+export function mainHealthLine(health: MainHealth): string {
+  const ref = (c: { sha: string; pr: number | null }) => (c.pr === null ? c.sha.slice(0, 7) : `#${c.pr}`);
+  if (!health.redSince)
+    return `${health.branch} ${health.state === "running" ? "checks running" : health.state === "none" ? "has no checks" : "green"}`;
+  const since = health.redBeyondWindow
+    ? `red for more than ${MAIN_HISTORY_WINDOW} commits`
+    : `red since ${ref(health.redSince)}`;
+  const fix = health.fixRunning ? `, a fix is running (${ref(health.fixRunning)})` : "";
+  const failing = health.redSince.failing.length
+    ? ` (${health.redSince.failing.join(", ")} failing on ${health.redSince.sha.slice(0, 7)})`
+    : "";
+  return `${health.branch} ${since}${fix}${health.redBeyondWindow ? "" : failing}`;
 }

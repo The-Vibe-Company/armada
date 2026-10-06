@@ -19,6 +19,7 @@ import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import { ARMADA_URL, DEMO_TOML, fakeArmada, fakeClock, NOW } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
+import { watchDeadline } from "../src/watch.ts";
 
 const KEY = "armada_key_CANARY_watch";
 const P = "widgets";
@@ -36,7 +37,12 @@ async function coordinator(o: { key?: string; cli?: ServerCli } = {}) {
   dirs.push(home);
   const store = memoryFleet();
   const clock = fakeClock();
-  const armada = fakeArmada({ keys: { [KEY]: "fleet" }, store, clock, ...(o.cli ? { cli: o.cli } : {}) });
+  const armada = fakeArmada({
+    keys: { [KEY]: "fleet" },
+    store,
+    clock,
+    ...(o.cli ? { cli: o.cli } : {}),
+  });
   const out: string[] = [];
   const err: string[] = [];
   const alive = new Set<number>();
@@ -47,6 +53,7 @@ async function coordinator(o: { key?: string; cli?: ServerCli } = {}) {
       XDG_CONFIG_HOME: home,
       ARMADA_API_URL: ARMADA_URL,
       ARMADA_API_KEY: o.key ?? KEY,
+      LINEAR_API_KEY: "synthetic-watch-key",
       ARMADA_COORDINATOR_HANDLE: "ws-coordinator/session",
     },
     readFile: async (path) =>
@@ -146,6 +153,7 @@ describe("armada watch", () => {
   test("stop recognizes source and bundled watches with global options before the command", async () => {
     for (const command of [
       "/usr/bin/bun packages/cli/src/main.ts --json watch",
+      "/usr/bin/node /usr/local/bin/armada --project widgets watch --follow",
       "/usr/bin/node /usr/local/bin/armada --config /work/widgets/armada.toml watch",
     ]) {
       const c = await coordinator();
@@ -503,4 +511,112 @@ describe("armada watch", () => {
     expect(await run(["hook", "stop"], { ...c.io, cwd: "/", readStdin: async () => "not json" })).toBe(0);
     expect(c.out()).toBe("");
   });
+});
+
+test("follow NDJSON streams both items, persists, times out cleanly and shares the watch lock", async () => {
+  const c = await coordinator();
+  await c.hold("DEMO-2");
+  c.onSleep.push(
+    async () => {
+      await c.store.addInboxItem({
+        project: P,
+        ticket: "DEMO-2",
+        kind: "question",
+        recipient: "coordinator",
+        author: "ws/DEMO-2",
+        body: "Which table?",
+        at: c.clock.now(),
+      });
+    },
+    async () => {
+      await c.store.putHandBack({ project: P, ticket: "DEMO-2", author: null, body: "PR #4", at: c.clock.now() });
+    },
+    async () => {},
+    async () => {},
+  );
+  expect(await run(["watch", "--follow", "--all", "--json", "--for", "1"], c.io)).toBe(0);
+  const lines = c
+    .out()
+    .trim()
+    .split("\n")
+    .map((s) => JSON.parse(s));
+  expect(lines.map((l) => l.kind)).toEqual(["question", "hand-back"]);
+  expect(lines.every((l) => /^v1\./.test(l.cursor))).toBe(true);
+  expect(c.err()).toContain("resume: armada watch --follow");
+  expect(c.err()).toContain("--project widgets");
+  expect(await readWatchLock(c.paths, P)).toBeNull();
+  expect((await readWatchState(c.paths, P))?.seen).toHaveLength(2);
+  c.reset();
+  c.onSleep.push(async () => {});
+  const cursor = (await readWatchState(c.paths, P))?.cursor;
+  if (!cursor) throw new Error("follow did not save its cursor");
+  expect(await run(["watch", "--follow", "--json", "--since", cursor, "--for", "0.25"], c.io)).toBe(0);
+  expect(c.out()).toBe("");
+  await takeWatchLock(c.paths, P, 777, () => false, undefined, "follow");
+  c.alive.add(777);
+  c.reset();
+  expect(await run(["watch"], c.io)).toBe(0);
+  expect(c.out()).toContain("following for widgets (pid 777)");
+  c.reset();
+  expect(await run(["watch", "--follow", "--json"], c.io)).toBe(0);
+  expect(c.out()).toBe("");
+  expect(c.err()).toContain("following for widgets (pid 777)");
+});
+
+test("plain watch accepts a bounded lifetime and follow refuses unsupported or malformed filters", async () => {
+  const c = await coordinator();
+  await c.hold("DEMO-2");
+  c.onSleep.push(
+    async () => {},
+    async () => {},
+    async () => {},
+    async () => {},
+  );
+  expect(await run(["watch", "--for", "1"], c.io)).toBe(0);
+  expect(c.err()).toContain("no new item in 1 min; resume: armada watch");
+  for (const flags of [
+    ["--follow", "--kinds", "typo"],
+    ["--follow", "--since", "bad"],
+    ["--follow", "--tickets", "bad"],
+    ["--for", "0"],
+    ["--mine"],
+  ]) {
+    c.reset();
+    expect(await run(["watch", ...flags], c.io)).toBe(2);
+  }
+  expect(c.err()).toContain("Show each coordinator only its own work");
+});
+
+test("long watch deadlines are chunked below Node's timer limit and cancellable", () => {
+  let at = 0,
+    expired = 0;
+  const calls: { run: () => void; ms: number; cancelled: boolean }[] = [];
+  const stop = watchDeadline(
+    new Date(31536000000),
+    () => new Date(at),
+    () => {
+      expired++;
+    },
+    (run, ms) => {
+      const call = { run, ms, cancelled: false };
+      calls.push(call);
+      return () => {
+        call.cancelled = true;
+      };
+    },
+  );
+  const first = calls[0];
+  if (!first) throw new Error("no timer");
+  expect(first.ms).toBe(2 ** 31 - 1);
+  at = first.ms;
+  first.run();
+  expect(expired).toBe(0);
+  expect(calls).toHaveLength(2);
+  const next = calls[1];
+  if (!next) throw new Error("no re-armed timer");
+  at = 31536000000;
+  next.run();
+  expect(expired).toBe(1);
+  stop();
+  expect(next.cancelled).toBe(true);
 });

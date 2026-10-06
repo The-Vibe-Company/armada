@@ -77,3 +77,31 @@ describe("tracker labels", () => {
     expect(checkLabels(await readLabels(demoConfig(), opts)).every((c) => c.level === "ok")).toBe(true);
   });
 });
+
+test("label-group reads retry temporary failures while label creation is sent only once", async () => {
+  const linear = fakeLinearLabels([]);
+  let reads = 0;
+  let writes = 0;
+  const waits: number[] = [];
+  const opts = {
+    apiKey: "synthetic-key",
+    random: () => 0.5,
+    sleep: async (ms: number) => {
+      waits.push(ms);
+    },
+    fetch: async (url: string, init: RequestInit) => {
+      if (String(init.body).includes("query Labels")) {
+        if (++reads <= 2) return new Response("busy", { status: 503 });
+        return linear.fetch(url, init);
+      }
+      writes++;
+      return new Response("busy", { status: 503 });
+    },
+  };
+  const state = await readLabels(demoConfig(), opts);
+  expect(state.team.id).toBe(DEMO_TEAM.id);
+  expect(reads).toBe(3);
+  expect(waits).toEqual([1000, 3000]);
+  await expect(createMissingLabels(state, opts)).rejects.toThrow("HTTP 503");
+  expect(writes).toBe(1);
+});

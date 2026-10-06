@@ -61,6 +61,7 @@ async function terminal(
     ghToken: () => null,
     fetch: armada.fetch,
     now: () => NOW,
+    sleep: async () => {},
     ...(more.exec ? { exec: more.exec } : {}),
   };
   /** The sign-in, key-file, version and conductor checks of `armada doctor --json`. */
@@ -186,7 +187,7 @@ describe("a newer Armada release", () => {
   const notice = `armada: Armada 99.1.0 is out (you run ${version}): npm install -g @the-vibe-company/armada@99.1.0 — then armada init to refresh this project's skills. Changes: https://github.com/The-Vibe-Company/armada/releases/tag/v99.1.0\n`;
 
   test("a coordinator command says it once per version on this machine", async () => {
-    const t = await terminal({ ARMADA_API_KEY: KEY }, {}, null, { cli: { minimum: "0.0.1", latest: "99.1.0" } });
+    const t = await terminal({ ARMADA_API_KEY: KEY }, {}, vault(), { cli: { minimum: "0.0.1", latest: "99.1.0" } });
     await t.doctor();
     expect(t.stderr()).toBe(notice);
     await t.doctor();
@@ -218,7 +219,7 @@ describe("a newer Armada release", () => {
       if (answer.state === "published") server.latest = newer;
       if (answer.state === "missing" && answer.newest) server.latest = answer.newest;
     };
-    const terminalIo = await terminal({ ARMADA_API_KEY: KEY }, {}, null, { cli: server });
+    const terminalIo = await terminal({ ARMADA_API_KEY: KEY }, {}, vault(), { cli: server });
     await refresh();
     await terminalIo.doctor();
     expect(terminalIo.stderr()).toBe("");
@@ -231,7 +232,7 @@ describe("a newer Armada release", () => {
   });
 
   test("a worker is never told: it installs the version its brief names", async () => {
-    const t = await terminal({ ARMADA_API_KEY: KEY, ARMADA_TICKET: "DEMO-2" }, {}, null, {
+    const t = await terminal({ ARMADA_API_KEY: KEY, ARMADA_TICKET: "DEMO-2" }, {}, vault(), {
       cli: { minimum: "0.0.1", latest: "99.1.0" },
     });
     await t.doctor();
@@ -239,7 +240,7 @@ describe("a newer Armada release", () => {
   });
 
   test("a CLI older than the server's minimum gets the upgrade line only", async () => {
-    const t = await terminal({ ARMADA_API_KEY: KEY }, {}, null, { cli: { minimum: "99.0.0", latest: "99.1.0" } });
+    const t = await terminal({ ARMADA_API_KEY: KEY }, {}, vault(), { cli: { minimum: "99.0.0", latest: "99.1.0" } });
     await t.doctor();
     expect(t.stderr()).not.toContain("is out");
   });

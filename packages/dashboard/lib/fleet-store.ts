@@ -6,13 +6,16 @@
 // the fleet here, and the CLI writes it through the Armada API (THE-850,
 // `cli-api.ts`). Losing this data loses live detail, never progress: Linear
 // stays the record.
+
 import type {
   Attachment,
   CatchupRecords,
   CoordinatorPresence,
   CoordinatorSeen,
   EventInput,
+  EventsSinceQuery,
   FeedEntry,
+  FleetEvent,
   FleetStore,
   HeartbeatRecord,
   HeartbeatResult,
@@ -32,6 +35,9 @@ import type {
   ProjectRecord,
   ReleaseGuard,
   RequestStore,
+  Reservation,
+  ReserveRecord,
+  ReserveResult,
   RuntimeHandle,
   RuntimeState,
   SessionRecord,
@@ -42,7 +48,13 @@ import type {
   ValidationOutcome,
   WorkerProfile,
 } from "@armada/core/read";
-import { isShippingStage, REQUEST_KINDS, TIMELINE_HOURS, UNUSED_LAUNCH_GRACE_MS } from "@armada/core/read";
+import {
+  isShippingStage,
+  OBSERVABLE_RUNTIMES,
+  REQUEST_KINDS,
+  TIMELINE_HOURS,
+  UNUSED_LAUNCH_GRACE_MS,
+} from "@armada/core/read";
 import { catchupRecords, type FeedQuery, feedPage } from "./activity-store";
 import { captionedAttachments, ticketsAttachments } from "./attachments";
 import { type Database, iso, isoAt, type Queryable, type Row, text, transaction } from "./db";
@@ -196,6 +208,50 @@ export async function lastEventTimes(db: Queryable, project: string): Promise<Re
     [project],
   );
   return Object.fromEntries(rs.rows.map((r) => [String(r.ticket), isoAt(r.at)]));
+}
+
+/** Ascending indexed reads with a bounded look-back for transactions committed out of order. */
+export async function eventsSince(db: Queryable, project: string, q: EventsSinceQuery): Promise<FleetEvent[]> {
+  const rs = await db.query(
+    `SELECT id, ticket, kind, phase, shipping_stage, message, runtime, handle, pr_url, head_sha, created_at
+    FROM events WHERE project = $1 AND created_at >= $2 AND kind = ANY($3::text[])
+    AND kind NOT IN ('heartbeat', 'inbox') AND (NOT $11::boolean OR kind <> 'report' OR phase = 'ready-to-merge') AND ($4::text[] IS NULL OR ticket = ANY($4::text[]))
+    AND ((created_at, id) > ($5::timestamptz, $6::bigint)
+      OR ($7::bigint[] IS NOT NULL AND NOT (id = ANY($7::bigint[])) AND id IN (
+        SELECT id FROM events WHERE project = $1 AND created_at >= $2
+          AND (created_at, id) <= ($5::timestamptz, $6::bigint) AND kind = ANY($3::text[])
+          AND (NOT $11::boolean OR kind <> 'report' OR phase = 'ready-to-merge')
+          AND ($4::text[] IS NULL OR ticket = ANY($4::text[]))
+        ORDER BY id DESC LIMIT 500)))
+    AND ($8::timestamptz IS NULL OR (created_at, id) > ($8::timestamptz, $9::bigint))
+    ORDER BY created_at, id LIMIT $10`,
+    [
+      project,
+      new Date(Date.parse(q.afterAt) - 120_000),
+      q.kinds,
+      q.tickets ?? null,
+      q.afterAt,
+      q.afterId,
+      q.seenIds ?? null,
+      q.pageAfter?.at ?? null,
+      q.pageAfter?.id ?? null,
+      q.limit ?? 200,
+      q.handoverOnly ?? false,
+    ],
+  );
+  return rs.rows.map((r) => ({
+    id: Number(r.id),
+    ticket: String(r.ticket),
+    kind: String(r.kind) as FleetEvent["kind"],
+    phase: text(r.phase),
+    shippingStage: isShippingStage(r.shipping_stage) ? r.shipping_stage : null,
+    message: text(r.message),
+    runtime: text(r.runtime),
+    handle: text(r.handle),
+    prUrl: text(r.pr_url),
+    headSha: text(r.head_sha),
+    at: isoAt(r.created_at),
+  }));
 }
 
 /** The newest event of every ticket of a project; with `since`, only tickets with an event since then. */
@@ -478,8 +534,11 @@ export async function releaseRuntimeHandle(
   ticket: string,
   at: Date,
   guard?: ReleaseGuard,
+  merged = false,
 ): Promise<boolean> {
   return transaction(db, async (tx) => {
+    // Reservations and ticket endings share this lock, including an empty reservation key.
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [project]);
     // Lock and compare the current claim before touching history or its profile.
     const held = (
       await tx.query(
@@ -487,21 +546,27 @@ export async function releaseRuntimeHandle(
         [project, ticket],
       )
     ).rows[0];
+    if (guard?.absent) {
+      if (held) return false;
+      // The project lock excludes new reservations until this cleanup ends.
+      // A claim inserted after the read is never touched by runtime/profile writes.
+      await endReservations(tx, project, ticket, at, merged);
+      return true;
+    }
     // A missing optional live row is not evidence of a replacement. An
     // explicit claim timestamp must still match; a matching released row
     // permits retrying after a Linear failure without touching a new claim.
     const guarded = !!(guard?.handle || guard?.claimedAt || guard?.workerSessionId);
     // With no row locked, never issue a ticket-wide mutation: a replacement
     // could insert its claim after this read.
-    if (guarded && !held) return !guard?.claimedAt;
-    if (
-      guarded &&
-      held &&
-      ((guard?.handle && held.handle !== guard.handle) ||
-        (guard?.claimedAt && isoAt(held.claimed_at) !== new Date(guard.claimedAt).toISOString()) ||
-        (guard?.workerSessionId && held.worker_session_id && held.worker_session_id !== guard.workerSessionId))
-    )
-      return false;
+    if (guarded && !held) {
+      if (guard?.claimedAt) return false;
+      // An optional claim write may have failed. End only reservations: their
+      // project lock prevents a replacement from reserving during this cleanup.
+      await endReservations(tx, project, ticket, at, merged);
+      return true;
+    }
+    if (guarded && held && !releaseGuardMatches(held, guard)) return false;
     await tx.query(
       "UPDATE fleet_sessions SET released_at = $3 WHERE project = $1 AND ticket = $2 AND released_at IS NULL AND ($4::text IS NULL OR handle = $4) AND ($5::timestamptz IS NULL OR claimed_at = $5)",
       [
@@ -517,8 +582,20 @@ export async function releaseRuntimeHandle(
       [at, project, ticket],
     );
     await tx.query("DELETE FROM worker_profiles WHERE project = $1 AND ticket = $2", [project, ticket]);
+    await endReservations(tx, project, ticket, at, merged);
     return true;
   });
+}
+
+function releaseGuardMatches(held: Record<string, unknown> | undefined, guard?: ReleaseGuard): boolean {
+  if (!guard) return true;
+  if (guard.absent) return !held;
+  if (!held) return false;
+  return !(
+    (guard.handle && held.handle !== guard.handle) ||
+    (guard.claimedAt && isoAt(held.claimed_at) !== new Date(guard.claimedAt).toISOString()) ||
+    (guard.workerSessionId && held.worker_session_id && held.worker_session_id !== guard.workerSessionId)
+  );
 }
 
 const HANDLE_SELECT = `SELECT h.project, h.ticket, h.runtime, h.handle, h.branch, h.claimed_at, h.released_at, h.heartbeat_at, h.worker_session_id, h.runtime_state, h.runtime_observed_at, h.runtime_changed_at, h.runtime_state_sequence, p.profile
@@ -556,18 +633,30 @@ export async function observeRuntime(
     handle: string;
     claimedAt: string;
     state: RuntimeState;
+    since?: string;
     sequence?: number;
     at: Date;
   },
 ): Promise<boolean> {
   const result = await db.query(
     `UPDATE runtime_handles SET runtime_state = $5, runtime_observed_at = $6,
-       runtime_changed_at = CASE WHEN runtime_state IS DISTINCT FROM $5
-         OR ($7::bigint IS NOT NULL AND runtime_state_sequence IS DISTINCT FROM $7) THEN $6 ELSE runtime_changed_at END,
+       runtime_changed_at = COALESCE($8::timestamptz, CASE WHEN runtime_state IS DISTINCT FROM $5
+         OR ($7::bigint IS NOT NULL AND runtime_state_sequence IS DISTINCT FROM $7) THEN $6 ELSE runtime_changed_at END),
        runtime_state_sequence = COALESCE($7::bigint, runtime_state_sequence)
-     WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4 AND released_at IS NULL
-       AND lower(runtime) = 'herdr' AND (runtime_observed_at IS NULL OR runtime_observed_at <= $6)`,
-    [input.project, input.ticket, input.handle, input.claimedAt, input.state, input.at, input.sequence ?? null],
+     WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4
+       AND (released_at IS NULL OR $5 = 'gone')
+       AND lower(runtime) = ANY($9::text[]) AND (runtime_observed_at IS NULL OR runtime_observed_at <= $6)`,
+    [
+      input.project,
+      input.ticket,
+      input.handle,
+      input.claimedAt,
+      input.state,
+      input.at,
+      input.sequence ?? null,
+      input.since ?? null,
+      OBSERVABLE_RUNTIMES,
+    ],
   );
   return result.rowCount > 0;
 }
@@ -578,10 +667,17 @@ export async function stopRuntime(
   input: { project: string; ticket: string; handle: string; claimedAt: string; at: Date },
 ): Promise<boolean> {
   return transaction(db, async (tx) => {
+    const previous = await tx.query(
+      `SELECT runtime, released_at FROM runtime_handles
+       WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4
+         AND lower(runtime) = ANY($5::text[]) FOR UPDATE`,
+      [input.project, input.ticket, input.handle, input.claimedAt, OBSERVABLE_RUNTIMES],
+    );
+    if (!previous.rows.length) return false;
     const held = await tx.query(
       `UPDATE runtime_handles SET released_at = COALESCE(released_at, $5)
-       WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4 AND lower(runtime) = 'herdr' RETURNING ticket`,
-      [input.project, input.ticket, input.handle, input.claimedAt, input.at],
+       WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4 AND lower(runtime) = ANY($6::text[]) RETURNING ticket`,
+      [input.project, input.ticket, input.handle, input.claimedAt, input.at, OBSERVABLE_RUNTIMES],
     );
     if (!held.rowCount) return false;
     await tx.query(
@@ -590,6 +686,17 @@ export async function stopRuntime(
       [input.project, input.ticket, input.handle, input.claimedAt, input.at],
     );
     await tx.query("DELETE FROM worker_profiles WHERE project = $1 AND ticket = $2", [input.project, input.ticket]);
+    if (previous.rows[0]?.released_at === null)
+      await recordEvent(tx, {
+        project: input.project,
+        ticket: input.ticket,
+        kind: "release",
+        phase: "released",
+        runtime: String(previous.rows[0].runtime),
+        handle: input.handle,
+        message: "Runtime workspace archived",
+        at: input.at,
+      });
     return true;
   });
 }
@@ -631,13 +738,24 @@ export async function openRuntimeHandles(db: Queryable, project: string): Promis
   const rs = await db.query(`${HANDLE_SELECT} WHERE h.project = $1 AND h.released_at IS NULL ORDER BY h.ticket`, [
     project,
   ]);
-  return rs.rows.map(handleOf);
+  return withHandleAnswers(db, project, rs.rows.map(handleOf));
 }
 
 export async function getRuntimeHandle(db: Queryable, project: string, ticket: string): Promise<RuntimeHandle | null> {
   const rs = await db.query(`${HANDLE_SELECT} WHERE h.project = $1 AND h.ticket = $2`, [project, ticket]);
   const r = rs.rows[0];
-  return r ? handleOf(r) : null;
+  return r ? ((await withHandleAnswers(db, project, [handleOf(r)]))[0] ?? null) : null;
+}
+
+/** One indexed answer read for all current handles, filtered again to each claim generation. */
+async function withHandleAnswers(db: Queryable, project: string, handles: RuntimeHandle[]): Promise<RuntimeHandle[]> {
+  if (!handles.length) return handles;
+  const since = new Date(handles.map((h) => h.claimedAt).sort()[0] ?? 0);
+  const answers = await lastAnsweredAt(db, project, { since, tickets: handles.map((h) => h.ticket) });
+  return handles.map((h) => {
+    const answer = answers[h.ticket];
+    return { ...h, ...(answer && answer >= h.claimedAt ? { lastAnsweredAt: answer } : {}) };
+  });
 }
 
 // ------------------------------------------------------------------ inbox
@@ -715,14 +833,16 @@ export async function addRequest(db: Queryable, r: NewRequest): Promise<number |
   return id === undefined ? null : Number(id);
 }
 
-/** Adds the ticket's plan for the coordinator, unless one is already open. */
+/** Adds or refreshes the ticket's open plan for the coordinator. */
 export async function putPlan(
   db: Queryable,
   item: { project: string; ticket: string; author: string | null; body: string; at: Date },
 ): Promise<void> {
   await db.query(
     `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at)
-     VALUES ($1, $2, 'plan', 'coordinator', $3, $4, $5) ON CONFLICT DO NOTHING`,
+     VALUES ($1, $2, 'plan', 'coordinator', $3, $4, $5)
+     ON CONFLICT (project, ticket, kind) WHERE resolved_at IS NULL AND kind IN ('plan', 'hand-back', 'launch-request')
+     DO UPDATE SET body = excluded.body, author = excluded.author, created_at = excluded.created_at`,
     [item.project, item.ticket, item.author, item.body, item.at],
   );
 }
@@ -953,8 +1073,8 @@ export async function releaseLease(db: Queryable, l: { project: string; name: st
  */
 export async function pendingLaunches(db: Queryable, project: string, since: Date): Promise<PendingLaunch[]> {
   const rs = await db.query(
-    `SELECT w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtimeHandle" FROM (
-       SELECT DISTINCT ON ("ticket") "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtimeHandle", "endedAt"
+    `SELECT w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtime", w."runtimeHandle" FROM (
+       SELECT DISTINCT ON ("ticket") "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtime", "runtimeHandle", "endedAt"
        FROM "armada_worker" WHERE "project" = $1 AND "createdAt" >= $2
        ORDER BY "ticket", "createdAt" DESC, "id" DESC
      ) w
@@ -974,6 +1094,7 @@ export async function pendingLaunches(db: Queryable, project: string, since: Dat
     launchedAt: isoAt(r.createdAt),
     tokenUsedAt: iso(r.tokenUsedAt),
     tokenExpiresAt: isoAt(r.tokenExpiresAt),
+    runtime: text(r.runtime),
     handle: text(r.runtimeHandle),
   }));
 }
@@ -1014,6 +1135,7 @@ export async function expireUnusedLaunches(db: Database, project: string, now: D
           launchedAt: ended.createdAt,
           tokenExpiresAt: ended.tokenExpiresAt,
           tokenUsedAt: null,
+          runtime: ended.runtime,
           handle: ended.handle,
         });
     }
@@ -1025,13 +1147,49 @@ export async function expireUnusedLaunches(db: Database, project: string, now: D
 
 /** Core's `FleetStore` on the app's database: what the Armada API runs the CLI's operations on. */
 export const fleetStore = (db: Database): FleetStore => ({
+  reserve: (input) => reserve(db, input),
+  reservations: (project) => reservations(db, project),
+  unreserve: (input) => unreserve(db, input),
   ensureProject: (p, at) => ensureProject(db, p, at),
   upsertProject: (p, at) => upsertProject(db, p, at),
   listProjects: () => listProjects(db),
+  saveTicketPaths: async (project, ticket, paths, at) => {
+    await transaction(db, async (tx) => {
+      await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [project]);
+      await tx.query(
+        `INSERT INTO ticket_paths (project, ticket, paths, declared_at) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (project, ticket) DO UPDATE SET paths = EXCLUDED.paths, declared_at = EXCLUDED.declared_at`,
+        [project, ticket, paths, at],
+      );
+    });
+  },
+  ticketPaths: async (project) => {
+    const result = await db.query<{ ticket: string; paths: string[] }>(
+      "SELECT ticket, paths FROM ticket_paths WHERE project = $1",
+      [project],
+    );
+    return Object.fromEntries(result.rows.map((r) => [r.ticket, r.paths]));
+  },
+  deleteTicketPaths: async (project, ticket, guard) => {
+    await transaction(db, async (tx) => {
+      await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [project]);
+      if (guard) {
+        const held = (
+          await tx.query(
+            "SELECT handle, claimed_at, worker_session_id FROM runtime_handles WHERE project = $1 AND ticket = $2 FOR UPDATE",
+            [project, ticket],
+          )
+        ).rows[0];
+        if (!releaseGuardMatches(held, guard)) return;
+      }
+      await tx.query("DELETE FROM ticket_paths WHERE project = $1 AND ticket = $2", [project, ticket]);
+    });
+  },
   recordEvent: (e) => recordEvent(db, e),
   recordHeartbeat: (input) => recordHeartbeat(db, input),
   heartbeatTimes: (project) => heartbeatTimes(db, project),
   lastEventTimes: (project) => lastEventTimes(db, project),
+  eventsSince: (project, q) => eventsSince(db, project, q),
   latestEvents: (project, opts) => latestEvents(db, project, opts),
   recordCoordinatorSeen: (seen) => recordCoordinatorSeen(db, seen),
   lastCoordinatorSeen: (project) => lastCoordinatorSeen(db, project),
@@ -1043,7 +1201,8 @@ export const fleetStore = (db: Database): FleetStore => ({
   saveRuntimeHandle: (h) => saveRuntimeHandle(db, h),
   observeRuntime: (input) => observeRuntime(db, input),
   stopRuntime: (input) => stopRuntime(db, input),
-  releaseRuntimeHandle: (project, ticket, at, guard) => releaseRuntimeHandle(db, project, ticket, at, guard),
+  releaseRuntimeHandle: (project, ticket, at, guard, merged) =>
+    releaseRuntimeHandle(db, project, ticket, at, guard, merged),
   openRuntimeHandles: (project) => openRuntimeHandles(db, project),
   getRuntimeHandle: (project, ticket) => getRuntimeHandle(db, project, ticket),
   addInboxItem: (item) => addInboxItem(db, item),
@@ -1284,7 +1443,10 @@ export interface LiveStore extends RequestStore {
   listSessions(project: string, opts: { since: Date }): Promise<SessionRecord[]>;
   listProjects(): Promise<ProjectRecord[]>;
   assignUnownedProjects(organization: string, now: Date): Promise<number>;
-  latestEvents(project: string, opts: { since: Date }): Promise<Record<string, LatestEvent>>;
+  latestEvents(
+    project: string,
+    opts: { since: Date; tickets?: readonly string[] },
+  ): Promise<Record<string, LatestEvent>>;
   recentEvents(project: string, since: Date): Promise<HistoryEvent[]>;
   openRuntimeHandles(project: string): Promise<RuntimeHandle[]>;
   pendingLaunches(project: string, since: Date): Promise<PendingLaunch[]>;
@@ -1354,3 +1516,88 @@ export const liveStore = (db: Database): LiveStore => ({
   catchupRecords: (project, window, silentAfterMinutes, now) =>
     catchupRecords(db, project, window, silentAfterMinutes, now),
 });
+
+// ------------------------------------------------------------------ shared resources
+
+const RESERVATION_COLUMNS = "id, project, key, value, ticket, note, reserved_at, ended_at, merged";
+const reservationRow = (r: Row): Reservation => ({
+  id: Number(r.id),
+  project: String(r.project),
+  key: String(r.key),
+  value: String(r.value),
+  ticket: String(r.ticket),
+  note: text(r.note),
+  reservedAt: isoAt(r.reserved_at),
+  endedAt: iso(r.ended_at),
+  merged: r.merged === true,
+});
+
+/** A project lock serializes allocation even when this key has no rows yet. */
+export async function reserve(
+  db: Database,
+  input: ReserveRecord & { project: string; at: Date },
+): Promise<ReserveResult> {
+  return transaction(db, async (tx) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [input.project]);
+    let value = input.value ?? "";
+    if (input.next) {
+      // Names and exclusive keys can coexist with numbers: cast only integer text.
+      const max = await tx.query(
+        `SELECT max(value::numeric) AS value FROM reservations
+         WHERE project = $1 AND key = $2 AND (ended_at IS NULL OR merged) AND value ~ '^[+-]?[0-9]+$'`,
+        [input.project, input.key],
+      );
+      const greatest = BigInt(String(max.rows[0]?.value ?? "0"));
+      const floor = BigInt(input.floor ?? 0);
+      value = ((greatest > floor ? greatest : floor) + 1n).toString();
+    }
+    const inserted = await tx.query(
+      `INSERT INTO reservations (project, key, value, ticket, note, reserved_at)
+       VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (project, key, value) WHERE ended_at IS NULL OR merged
+       DO NOTHING RETURNING ${RESERVATION_COLUMNS}`,
+      [input.project, input.key, value, input.ticket, input.note ?? null, input.at],
+    );
+    if (inserted.rows[0]) return { reserved: true, reservation: reservationRow(inserted.rows[0]) };
+    const holder = await tx.query(
+      `SELECT ${RESERVATION_COLUMNS} FROM reservations WHERE project = $1 AND key = $2 AND value = $3 AND (ended_at IS NULL OR merged)`,
+      [input.project, input.key, value],
+    );
+    if (!holder.rows[0]) throw new Error("reservation holder disappeared");
+    return { reserved: false, holder: reservationRow(holder.rows[0]) };
+  });
+}
+
+export async function reservations(db: Queryable, project: string): Promise<Reservation[]> {
+  const rs = await db.query(
+    `SELECT ${RESERVATION_COLUMNS} FROM reservations WHERE project = $1 AND (ended_at IS NULL OR merged) ORDER BY key, reserved_at, id`,
+    [project],
+  );
+  return rs.rows.map(reservationRow);
+}
+
+export async function unreserve(
+  db: Database,
+  input: { project: string; ticket: string; key: string; at: Date },
+): Promise<number> {
+  return transaction(db, async (tx) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [input.project]);
+    const rs = await tx.query(
+      "UPDATE reservations SET ended_at = $4 WHERE project = $1 AND ticket = $2 AND key = $3 AND ended_at IS NULL AND NOT merged",
+      [input.project, input.ticket, input.key, input.at],
+    );
+    return rs.rowCount ?? 0;
+  });
+}
+
+async function endReservations(
+  db: Queryable,
+  project: string,
+  ticket: string,
+  at: Date,
+  merged: boolean,
+): Promise<void> {
+  await db.query(
+    "UPDATE reservations SET ended_at = $3, merged = $4 WHERE project = $1 AND ticket = $2 AND ended_at IS NULL",
+    [project, ticket, at, merged],
+  );
+}

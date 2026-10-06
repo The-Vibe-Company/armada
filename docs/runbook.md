@@ -23,7 +23,7 @@ One project has one coordinator at a time.
 | Conductor access, to launch and message workers | the owner's Conductor account | laptop: the Conductor app and `conductor auth login` (macOS); cloud: Conductor sets `CONDUCTOR_API_KEY` in every workspace |
 
 - **The repository is set up**: `armada doctor` passes, or `armada init` opened its setup pull request and it is merged (`armada.toml`, the skills in `.agents/skills`, `.conductor/settings.toml`, the Linear label groups, the project registered on Armada for the organization).
-- **No runtime holds a fleet key.** A signed-in coordinator gets the organization's Linear key from Armada on each command, and each worker gets a one-time launch token in its launch message: its first command, `armada login --launch-token`, exchanges it for a session limited to its ticket, through which Armada gives it the Linear key. No machine holds a database key: claims, reports, questions, the inbox, the merge lock and the project registry go through the Armada API with the sign-in. Conductor's organization environment holds no Armada key: not `LINEAR_API_KEY`, and not `ARMADA_API_KEY` either, since every workspace starts with that environment and a worker would then act with the coordinator's rights.
+- **No runtime holds a fleet key.** A signed-in coordinator gets the organization's Linear key from Armada on each command, and each worker gets a one-time launch token in its launch message: its first authenticated command, `armada login --launch-token`, exchanges it for a session limited to its ticket, through which Armada gives it the Linear key. No machine holds a database key: claims, reports, questions, the inbox, the merge lock and the project registry go through the Armada API with the sign-in. Conductor's organization environment holds no Armada key: not `LINEAR_API_KEY`, and not `ARMADA_API_KEY` either, since every workspace starts with that environment and a worker would then act with the coordinator's rights.
 - **Secrets workers need to build and test** (an LLM provider key, a test database URL) are kept per project in Armada, not in Conductor's environment: the coordinator moves each one with `armada secrets set <NAME> --from-env <NAME>` (owner or admin), and workers run their tests with `armada run -- <command>`. List the names in `[secrets] names` of `armada.toml` so `armada doctor` says which are missing.
 - **Environment variables stay an override**, for CI and for an Armada without accounts (self-hosting): a key set in the environment wins over Armada's. Until the organization's keys are on the Keys page, keys in Conductor's organization environment keep a fleet running as before (the runtime guide's launch with keys).
 - **The dashboard** (optional) is deployed with `ARMADA_DATABASE_URL`, the accounts variables and `ARMADA_SECRETS_KEY`, as the README's "Watch the fleet" section describes. It never needs a runtime key.
@@ -36,7 +36,7 @@ Never paste a key into a prompt, a ticket, a file in the repository or a chat. A
 For a fleet that ran with the keys in Conductor's organization environment:
 
 1. Enter the keys on Armada's Keys page (Organization > Keys), and create an organization API key for cloud coordinators (Organization page).
-2. Check from a terminal with none of the keys in its environment: `armada login`, then `armada doctor` says `signed in to <Armada> as <you>, <organization>`, and `armada auth status` shows each key from `Armada: …`. `armada brief <ticket>` and `--json` are read-only: they show `Launch: a one-time token is made when you print the prompt (--prompt)`, without a token or a launch row. At launch, one `armada brief <ticket> --prompt --profile-line` call supplies the worker prompt on stdout and the chosen profile and reason on stderr.
+2. Check from a terminal with none of the keys in its environment: `armada login`, then `armada doctor` says `signed in to <Armada> as <you>, <organization>`, and `armada auth status` shows each key from `Armada: …`. `armada brief <ticket>` and `--json` are read-only: they show `Launch: a one-time token is made when you print the prompt (--prompt)`, without a token or a launch row. Launch Conductor or herdr with `armada launch <ticket> --runtime conductor|herdr`; use `armada brief <ticket> --prompt` for guided Claude Code launches.
 3. Remove `LINEAR_API_KEY`, and any database variable of earlier versions, from the settings of Conductor's organization cloud computer. Workspaces started afterwards no longer have them; running ones keep what they started with until they are archived.
 4. Start the next coordinator with its API key (below). On a laptop that kept keys in its credentials file, `armada doctor` warns once Armada gives the same ones: `armada auth logout` removes them and keeps the sign-in.
 
@@ -76,12 +76,22 @@ The app signs people in and reads GitHub for the dashboard (pull requests, CI ch
 
 Without webhooks the dashboard refreshes a project's reading of Linear and GitHub when someone looks at it and it is older than a minute. With them, a change shows within seconds and nothing runs while nobody looks.
 
-1. Create a secret for GitHub (`openssl rand -hex 32`). On the GitHub App's settings, turn the webhook on: URL `<dashboard>/api/webhooks/github`, that secret; Permissions & events > Subscribe to events: Pull request, Check suite, Check run, Status.
+1. Create a secret for GitHub (`openssl rand -hex 32`). On the GitHub App's settings, turn the webhook on: URL `<dashboard>/api/webhooks/github`, that secret; Permissions & events > Subscribe to events: Pull request, Check suite, Check run, Status, Push (refreshes the default branch before CI starts).
 2. In Linear, Settings > API > Webhooks: a new webhook to `<dashboard>/api/webhooks/linear` for Issues, Comments, Issue attachments and Issue labels. Copy its signing secret.
 3. On the deployment, set `ARMADA_GITHUB_WEBHOOK_SECRET` and `ARMADA_LINEAR_WEBHOOK_SECRET`, and redeploy.
 4. Check: GitHub's Recent Deliveries and Linear's webhook page show answers 202. Change a ticket's label or push to a pull request: the Fleet view shows it within about ten seconds, and the top bar's "Linear and GitHub read … ago" resets.
 
 No cron is needed: nothing reads Linear or GitHub on a timer, so the database can scale to zero when nobody looks.
+
+## Get owner alerts in chat
+
+1. Deploy with accounts and `ARMADA_SECRETS_KEY`. An owner or admin opens Organization > Notifications.
+2. Paste a public HTTPS webhook, choose Slack-compatible text or signed JSON, and optionally filter to a project. For JSON, enter a signing secret of at least 16 characters that the receiver shares; verify the exact body with HMAC-SHA256 and the `x-armada-signature: sha256=…` header.
+3. Choose language (initially `[tracker] language`), time zone and quiet hours, save, then **Send a test**. The page shows who set it, when, and the last delivery state; neither the address nor the signing secret returns to the page. Leave those fields blank on later saves to preserve them.
+4. Check that a merge approval, work validation or escalated question sends its `/approve/<id>` link once. A coordinator that stops while its inbox waits sends an alert; it sends another only after returning and stopping again. Quiet-hour alerts are stored for the next summary (the summary ticket adds scheduling).
+5. On a paused channel, correct the endpoint and save to resume. HTTP 404/410 pause immediately; ten consecutive delivery failures pause too. Each failed alert is tried at most five times, at least a minute apart. Delivery errors are fixed codes, never provider response text.
+
+Cron is **off in production by default**, as the owner decided. Ticks ride on fleet traffic and dashboard polls, with a 60-second lease scoped to each project. With no traffic, a stopped coordinator is only noticed at the next call or poll. To opt into a scheduler, set `CRON_SECRET`, configure an authenticated GET to `/api/cron/owner`, and follow README > Watch the fleet for the Vercel `crons` entry (every 15 minutes requires a paid plan; free allows daily). Do not enable it as part of the default deployment. A tick reads stored snapshots and live rows only; it never calls Linear or GitHub.
 
 ## Start a coordinator on a laptop
 
@@ -95,7 +105,7 @@ No cron is needed: nothing reads Linear or GitHub on a timer, so the database ca
    conductor auth whoami
    ```
 
-2. Open a checkout of the repository on its default branch, up to date, and start your agent there (for example `claude` or `codex`). The skills are in `.agents/skills`, linked from `.claude/skills`.
+2. Open a checkout of the repository on its default branch, up to date, and start your agent there (for example `claude` or `codex`). The skills are in `.agents/skills`, linked from `.claude/skills`. The five `armada-*` entries are discovery pointers: run `armada skill armada-coordinator` and follow its output; read linked files with `armada skill armada-coordinator MERGE.md`. Instructions follow the installed CLI version, so instruction-only releases require no setup PR. Install the version named in a worker brief before running `armada skill armada-worker`. The shipping, review and learning packages remain vendored because they include scripts. Run `armada init` once to convert older full copies, then only when doctor flags changed pointer descriptions or vendored packages.
 3. Give it the launch prompt below. Its handle is one you choose and that names the session, for example `coordinator-<your name>-laptop`, and its runtime is the one it runs in (`claude-code`, `codex`).
 
 The laptop must stay awake and online while the coordinator runs: when it sleeps, nobody answers the workers. For a long run, start the coordinator in Conductor Cloud instead.
@@ -103,6 +113,20 @@ The laptop must stay awake and online while the coordinator runs: when it sleeps
 Workers launched from a laptop need no key either: the brief's prompt carries their launch token.
 
 A coordinator in Claude Code can also run short tickets as its own background subagents, each in its own git worktree: give those tickets a profile with `runtime = "claude-code"` and follow the `armada-runtime-claude-code` skill. They die with the coordinator's session. Use herdr for persistent local workers, or Conductor for cloud workers.
+
+### Follow fleet events
+
+Plain `armada watch` remains the default for agents woken when a background command ends. In a terminal, herdr pane or harness that delivers every output line, `armada watch --follow --for 50` prints events continuously, ends cleanly below a harness's time limit and prints its resume command. A restarted follow uses this machine's last cursor and printed inbox keys; `--since <cursor>` carries the event position to another machine, where open inbox entries are shown once as `open`.
+
+Use `--tickets ABC-1,ABC-2 --kinds hand-back` for selected hand-backs; `--kinds all` includes informational claims, reports, releases and merges. `--json` produces NDJSON; lifecycle, retry and resume lines go to stderr. Without informational kinds, active follow makes one short inbox request every 15 seconds (60 seconds idle), answered 304 when unchanged. Informational kinds add a short `events/since` read, paged at 200 events with a two-minute look-back and a 500-ID deduplication window. `--mine` needs "Show each coordinator only its own work" and is refused until then. Plain watch accepts `--for <minutes>` too. Use `armada watch --stop` to stop either mode; they share the existing project lock.
+
+### Launch a Conductor worker
+
+Sign in to Armada, then run `armada launch <ticket> --runtime conductor`. The routed profile supplies the agent, model, effort and fast mode; use `--profile <name> --reason "<why>"` for a coordinator’s choice. `--notes notes.md` adds context from a file relative to the current folder (`--notes -` reads stdin); missing, empty or larger-than-16-KB notes are refused before making a token. Notes do not change plan approval. The command prints the ticket, profile, workspace/session ids and session link; its brief and one-time sign-in travel only through stdin.
+
+`--dry-run` shows settings, the command and preflight without launching. An optional `[conductor] project_id` selects the explicit Conductor project rather than the configured GitHub repository; `base_branch` overrides origin’s default. Runtime can be omitted when the chosen profile decides it. Claude Code profiles instead point to `armada brief <ticket> --prompt` and the Agent tool.
+
+Active claims, pending launches and another launch holding the ticket’s lease are refused. Known Conductor failures revoke the exact pending launch; uncertain create results are searched without retrying. Recovery checks stable repository, creation time and session ids, so renamed workspaces or sessions remain discoverable. An ambiguous or incomplete search retains the pending launch and prints visible candidate ids and inspection commands; inspect them, then bind or revoke the pending launch and archive unwanted workspaces before launching again. An unavailable bind route warns and leaves the worker running; its sign-in records the handle. Check the claim with `armada status`.
 
 ### Launch a persistent local worker
 
@@ -220,3 +244,5 @@ Without a coordination ticket, skip step 1: the next coordinator resumes from `a
 - A fact the coordinator could not find in the repository, the tracker or Armada: add it to the skill or to this runbook in a pull request, so the next coordinator finds it.
 
 Local worker controls follow the [`armada-runtime-herdr`](../skills/armada-runtime-herdr/SKILL.md) guide. `armada status`, `inbox` and each `watch` poll read herdr state and store it on Armada; the dashboard shows it beside the last report without contacting the local machine. `armada answer` delivers herdr answers before recording them, including a harness approval answered by ticket. After merge or release, `armada stop <ticket>` verifies the saved worktree, refreshes its remote upstream, refuses dirty or unpushed work, and removes only the clean checkout while retaining the branch. Worker reports, questions and heartbeats also self-report their phase to herdr, with nonfatal warnings on failure.
+
+Workers declare planned paths with `armada report awaiting-approval --plan-file plan.md --paths "src/merge.ts,skills/**"` (or `implementing` for a pre-approved plan). The CLI and coordinator plan show overlaps with other in-flight PR files and declared paths. Briefs list the first 15 PR files and the remaining count. An incomplete or unavailable stored GitHub reading is explicitly marked; refresh the project reading before relying on it. Glob/glob matches use conservative static prefixes and may overlap. GitHub records only the new path of a rename; overlap checks can miss its old path. Declarations are replaced when supplied again and cleared on release or merge.

@@ -10,13 +10,15 @@ export interface ExecResult {
   code: number;
   stdout: string;
   stderr: string;
+  /** The child exceeded its bound; mutating runtimes may have applied the request. */
+  timedOut?: boolean;
 }
 
 /** Runs a program (git, gh) without a shell and returns its exit code and output. */
 export type Exec = (
   command: string,
   args: string[],
-  options: { cwd: string; timeoutMs?: number; maxOutputBytes?: number },
+  options: { cwd: string; timeoutMs?: number; maxOutputBytes?: number; input?: string },
 ) => Promise<ExecResult>;
 
 /**
@@ -113,3 +115,11 @@ export class UsageError extends Error {
 
 /** A key the command needs is not set: `armada auth login` stores it. */
 export const missingKey = (key: StoredKey) => new UsageError(missingKeyMessage(key), "armada auth login");
+
+/** Retry notices use the command's stderr and the same injected clock/waits as polling. */
+export const httpOptions = (io: Io) => ({
+  ...(io.fetch ? { fetch: io.fetch } : {}),
+  ...(io.sleep ? { sleep: io.sleep } : {}),
+  ...(io.now ? { now: io.now } : {}),
+  onRetry: (message: string) => io.stderr(`armada: ${message}\n`),
+});

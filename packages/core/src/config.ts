@@ -1,8 +1,15 @@
 // armada.toml v0: one project = one repository + one tracker program root.
 // Secrets never live in this file; tokens come from the environment.
 import { parse, TomlError } from "smol-toml";
+import { failurePattern } from "./ci.ts";
+
+export interface CiConfig {
+  failurePatterns: string[];
+}
 
 export const CONFIG_FILE = "armada.toml";
+
+export type SpecTitleStyle = "N" | "N/M";
 
 export interface ArmadaConfig {
   project: {
@@ -13,6 +20,8 @@ export interface ArmadaConfig {
   tracker: {
     /** Identifier of the Linear issue at the root of the program, e.g. ABC-1. */
     programRoot: string;
+    /** Style used when creating and renumbering specs; both forms are always readable. */
+    specTitles: SpecTitleStyle;
     /** Language of owner-facing output (BCP 47 tag). Tracker comments stay in English. */
     language: string;
     /** Label that marks a ticket as specified enough for an agent to take. */
@@ -32,6 +41,7 @@ export interface ArmadaConfig {
     /** owner/name */
     repository: string;
   };
+  ci: CiConfig;
   gates: {
     /**
      * CI checks that must be green on the head of a pull request before a
@@ -71,6 +81,7 @@ export interface ArmadaConfig {
     /** `[[policy.validation]]` in file order: kinds of tickets whose work the owner validates before it goes on. */
     validations: ValidationRule[];
   };
+  reservations: { key: string; what: string; numbered: boolean }[];
   brief: {
     /** Repository path, relative to armada.toml, of a file every brief carries under "Project conventions"; null when unset. */
     extra: string | null;
@@ -84,6 +95,9 @@ export interface ArmadaConfig {
     names: string[];
   };
   conductor: {
+    /** Optional explicit Conductor project and base branch for native launches. */
+    projectId?: string | null;
+    baseBranch?: string | null;
     /** Profile `armada brief` uses without `--profile`; null when none is declared. */
     defaultProfile: string | null;
     /** Launch settings by profile name, from `[conductor.profiles.<name>]`. */
@@ -277,6 +291,9 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   if (!isTable(policy)) problems.push(`"policy" must be a table`);
   const labelsT = isTable(labels) ? labels : {};
   const policyT = isTable(policy) ? policy : {};
+  const ci = raw.ci ?? {};
+  if (!isTable(ci)) problems.push(`"ci" must be a table`);
+  const ciT = isTable(ci) ? ci : {};
   const gates = raw.gates === undefined ? {} : raw.gates;
   if (!isTable(gates)) problems.push(`"gates" must be a table`);
   const gatesT = isTable(gates) ? gates : {};
@@ -303,9 +320,10 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   // left alone so newer sections do not break older readers.
   const known: [string, Table, string[]][] = [
     ["project", project, ["name", "slug"]],
-    ["tracker", tracker, ["program_root", "language", "ready_label", "parked_label", "labels"]],
+    ["tracker", tracker, ["program_root", "spec_titles", "language", "ready_label", "parked_label", "labels"]],
     ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
+    ["ci", ciT, ["failure_patterns"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
     [
       "policy",
@@ -328,7 +346,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ],
     ["brief", briefT, ["extra"]],
     ["secrets", secretsT, ["names"]],
-    ["conductor", conductorT, ["default_profile", "profiles", "routing"]],
+    ["conductor", conductorT, ["default_profile", "profiles", "routing", "project_id", "base_branch"]],
     ["herdr", herdrT, ["default_profile", "profiles", "routing"]],
   ];
   const profiles: Record<string, ConductorProfile> = {};
@@ -369,6 +387,23 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         `"conductor.default_profile" is "${defaultProfile}", but there is no [conductor.profiles.${defaultProfile}]`,
       );
   }
+  const projectId =
+    conductorT.project_id === undefined
+      ? null
+      : str(conductorT, "conductor", "project_id", {
+          pattern: /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/,
+          hint: "a Conductor project id",
+        });
+  const baseBranch =
+    conductorT.base_branch === undefined
+      ? null
+      : str(conductorT, "conductor", "base_branch", {
+          pattern:
+            /^(?![-/.])(?!.*\/\.)(?!.*\.lock(?:\/|$))(?!.*[\s~^:?*[\\])(?!.*\.\.)(?!.*@\{)(?!.*\/\/)(?!.*\/$)(?!.*\.$)(?!.*\.lock$)[^\s]+$/,
+          hint: "a git branch name",
+        });
+  if (baseBranch && [...baseBranch].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127))
+    problems.push('"conductor.base_branch" must be a git branch name');
   const routing: RoutingRule[] = [];
   const routingRaw = conductorT.routing ?? [];
   if (!Array.isArray(routingRaw)) problems.push(`"conductor.routing" must be a list of [[conductor.routing]] rules`);
@@ -597,12 +632,55 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     else problems.push(`"gates.local_commands" must be a list of shell commands`);
   }
 
+  let failurePatterns: string[] = [];
+  if (ciT.failure_patterns !== undefined) {
+    const v = ciT.failure_patterns;
+    if (Array.isArray(v) && v.every((p) => typeof p === "string" && p.trim())) {
+      failurePatterns = [...new Set(v)];
+      for (const [i, pattern] of failurePatterns.entries()) {
+        try {
+          failurePattern(pattern);
+        } catch {
+          problems.push(
+            `"ci.failure_patterns[${i + 1}]" must be a valid regex with exactly one capture group for the test name`,
+          );
+        }
+      }
+    } else problems.push(`"ci.failure_patterns" must be a list of non-empty regex strings`);
+  }
+
+  let specTitles: SpecTitleStyle = "N";
+  if (tracker.spec_titles !== undefined) {
+    if (tracker.spec_titles === "N" || tracker.spec_titles === "N/M") specTitles = tracker.spec_titles;
+    else problems.push('"tracker.spec_titles" must be "N" or "N/M"');
+  }
+
+  const reservations: ArmadaConfig["reservations"] = [];
+  if (raw.reservations !== undefined && !Array.isArray(raw.reservations))
+    problems.push('"reservations" must be an array of tables');
+  for (const [i, row] of (Array.isArray(raw.reservations) ? raw.reservations : []).entries()) {
+    const path = `reservations.${i}`;
+    if (!isTable(row)) {
+      problems.push(`"${path}" must be a table`);
+      continue;
+    }
+    for (const key of Object.keys(row))
+      if (!["key", "what", "numbered"].includes(key)) problems.push(`"${path}.${key}" is unknown`);
+    const key = str(row, path, "key");
+    const what = str(row, path, "what");
+    if (key.length > 500) problems.push(`"${path}.key" has at most 500 characters`);
+    if (reservations.some((r) => r.key === key)) problems.push(`"${path}.key" repeats ${key}`);
+    if (row.numbered !== undefined && typeof row.numbered !== "boolean")
+      problems.push(`"${path}.numbered" must be true or false`);
+    reservations.push({ key, what, numbered: row.numbered === true });
+  }
   const config: ArmadaConfig = {
     project: {
       name: str(project, "project", "name"),
       slug: str(project, "project", "slug", { pattern: SLUG, hint: "lowercase letters, digits and dashes" }),
     },
     tracker: {
+      specTitles,
       programRoot: str(tracker, "tracker", "program_root", {
         pattern: ISSUE_ID,
         hint: "an issue identifier such as ABC-1",
@@ -619,6 +697,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     github: {
       repository: str(github, "github", "repository", { pattern: REPOSITORY, hint: "owner/name" }),
     },
+    ci: { failurePatterns },
     gates: { requiredChecks, localCommands },
     policy: {
       silentAfterMinutes,
@@ -634,9 +713,16 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       mergeApproval,
       validations,
     },
+    reservations,
     brief: { extra },
     secrets: { names: secretNames },
-    conductor: { defaultProfile, profiles, routing },
+    conductor: {
+      defaultProfile,
+      profiles,
+      routing,
+      ...(projectId ? { projectId } : {}),
+      ...(baseBranch ? { baseBranch } : {}),
+    },
     herdr: { defaultProfile: herdrDefaultProfile, profiles: herdrProfiles, routing: herdrRouting },
   };
   if (problems.length) throw new ConfigError(source, problems);
@@ -656,6 +742,7 @@ slug = ${q(p.slug)}          # stable id: lowercase letters, digits and dashes
 
 [tracker]
 program_root = ${q(p.programRoot)}  # Linear issue at the root of the program
+spec_titles = "N"       # "N/M" keeps totals and updates them when adding a spec
 language = "en"          # language of owner-facing output
 ready_label = "ready-for-agent"
 # parked_label = "parked"  # a ticket with this label is parked on purpose: never listed as work to start
@@ -691,6 +778,12 @@ coordinator_minutes = 10 # an inbox item open longer than this shows "waiting fo
 # [[policy.validation]]
 # when = "a design ticket: a mockup, a visual direction or the look of a new screen"
 # then = "produce the design, attach it, ask the owner to validate it on Armada, and stop until they decide; never merge or build it on your own"
+
+# Declare the shared resources workers reserve through Armada (optional).
+# [[reservations]]
+# key = "db-migration"
+# what = "the next DB_MIGRATIONS version"
+# numbered = true
 
 [brief]
 # extra = "docs/worker-conventions.md"  # a file every worker brief carries under "Project conventions"

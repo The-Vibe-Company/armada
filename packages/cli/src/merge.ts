@@ -9,27 +9,34 @@ import {
   AGENTS_SKILLS_DIR,
   type ArmadaConfig,
   askOwnerToMerge,
+  buildModel,
+  buildStatus,
   CLAUDE_SKILLS_DIR,
   type Credentials,
   createLinearWriter,
   fetchCommit,
   fetchComparison,
+  fetchMainHealth,
   fetchMergePull,
   fetchPreview,
   fetchPullDiff,
   LINEAR_KEY,
   type LocalRepo,
-  loadStatus,
   MERGE_WAIT_DEFAULT_MS,
   type MergeAttempt,
   type MergeContext,
   type MergeForge,
   type MergeOutcome,
+  type MergePull,
   mergePullRequest,
   parsePullRequestUrl,
+  readStatusSources,
+  shellWord,
   type TestMergeResult,
+  unblockedBy,
 } from "@armada/core";
-import { type Exec, type Io, missingKey, UsageError } from "./io.ts";
+import { afterMerge } from "./after-merge.ts";
+import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
 import { endWorkerSessions, liveFleet, type WorkerArgs } from "./worker.ts";
 
@@ -179,6 +186,14 @@ function render(o: MergeOutcome): string {
   const out = [...o.lines, o.pr.url, ...(o.ticket ? [o.ticket.url] : [])];
   if (o.hints.length) out.push("Hints for you to judge (not blocking):", ...o.hints.map((h) => `  - ${h}`));
   if (!o.merged) return `${out.join("\n")}\n`;
+  if (o.ticket && o.unblocked) {
+    const { ready, parked, nowWaitsOn } = o.unblocked;
+    const tickets = [...ready.map((t) => `${t.id} (${t.reason})`), ...parked.map((id) => `${id} (parked)`)];
+    if (tickets.length) out.push(`Unblocked by ${o.ticket.id}: ${tickets.join(", ")}`);
+    for (const t of ready)
+      if (t.launch) out.push(`  ${t.launch}${t.route ? ` # ${t.route.why.replace(/\s+/g, " ")}` : ""}`);
+    for (const t of nowWaitsOn) out.push(`${t.id} now waits only on ${t.on.join(", ")}`);
+  }
   if (!o.workers.length) out.push("No other worker is in flight.");
   else {
     out.push(`Tell these workers in flight what landed on ${o.pr.base} (bring it in, shared files, new checks):`);
@@ -187,19 +202,20 @@ function render(o: MergeOutcome): string {
         `  ${w.ticket}  ${w.phase}  ${[w.runtime, w.handle].filter(Boolean).join(" · ") || "runtime unknown"}  ${w.title}`,
       );
   }
-  const a = o.archive;
-  if (a && o.ticket) {
-    const who = `${o.ticket.id} (${[a.runtime, a.handle].filter(Boolean).join(" · ") || "session unknown"})`;
-    out.push(
-      a.guide
-        ? `Archive the worker's workspace of ${who} with the "Stop and archive" section of the ${a.guide} skill.`
-        : `No runtime guide is installed for ${a.runtime ?? "the worker's runtime"}, so Armada has nothing to archive for ${who}: a local session or subagent ends with its task; stop it yourself if it still runs.`,
-    );
-  }
   return `${out.join("\n")}\n`;
 }
 
-export async function merge(io: Io, config: ArmadaConfig, credentials: Credentials, a: WorkerArgs, configPath: string) {
+export async function merge(
+  io: Io,
+  config: ArmadaConfig,
+  credentials: Credentials,
+  a: WorkerArgs,
+  configPath: string,
+  guards?: {
+    readPull?: (pull: MergePull) => void;
+    beforeMerge?: (number: number, sha: string) => Promise<void>;
+  },
+) {
   const [arg, ...extra] = a.rest;
   if (extra.length) throw new UsageError(`unexpected argument ${extra[0]}`);
   const number = prNumber(arg, config.github.repository);
@@ -223,7 +239,7 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
   if (!exec) throw new UsageError("armada merge needs to run git and gh");
   const linearApiKey = credentials.linearApiKey;
   const repoDir = dirname(configPath);
-  const fetchOpt = io.fetch ? { fetch: io.fetch } : {};
+  const fetchOpt = httpOptions(io);
   const gh = { token, repository: config.github.repository, ...fetchOpt };
   const linearOpts = { apiKey: linearApiKey, labels: config.tracker.labels, ...fetchOpt };
   const now = io.now ?? (() => new Date());
@@ -232,10 +248,18 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
     config,
     linear: io.linearWriter ? io.linearWriter(linearOpts) : createLinearWriter(linearOpts),
     forge: {
-      readPull: (n) => fetchMergePull({ ...gh, number: n }),
+      mainHealth: () => fetchMainHealth({ ...gh, requiredChecks: config.gates.requiredChecks }),
+      readPull: async (n) => {
+        const pull = await fetchMergePull({ ...gh, number: n });
+        if (pull) guards?.readPull?.(pull);
+        return pull;
+      },
       compare: (base, head) => fetchComparison({ ...gh, base, head }),
       diff: (n) => fetchPullDiff({ ...gh, number: n }),
-      merge: ghMerge(exec, repoDir, config.github.repository),
+      merge: async (number, sha) => {
+        await guards?.beforeMerge?.(number, sha);
+        return ghMerge(exec, repoDir, config.github.repository)(number, sha);
+      },
       comment: async (number, body) => {
         const result = await ghAttempt(exec, repoDir, [
           "pr",
@@ -257,13 +281,42 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
     // Signed in, the merge lock is required: two coordinators merge one after the other.
     lockRequired: !!credentials.armadaSignIn,
     fleet: async () => live,
-    inFlight: async () =>
-      (await loadStatus(config, { linearApiKey, githubToken: null, ...fetchOpt, now })).inFlight.map((t) => ({
-        id: t.id,
-        title: t.title,
-        phase: t.phase,
-        runtime: t.runtime,
-      })),
+    afterRead: async (ticket) => {
+      const sources = await readStatusSources(config, { linearApiKey, githubToken: null, ...fetchOpt, now });
+      const status = buildStatus({ config, ...sources, now: now() });
+      const unblocked = ticket
+        ? unblockedBy(buildModel(sources.program.issues, sources.program.rootId), ticket, {
+            ready: config.tracker.readyLabel,
+            parked: config.tracker.parkedLabel,
+          })
+        : null;
+      return {
+        inFlight: status.inFlight,
+        unblocked: unblocked
+          ? {
+              ready: unblocked.ready.map((c) => {
+                const route = status.frontier.find((t) => t.id === c.issue.id)?.route ?? null;
+                const reason = c.readyForAgent
+                  ? ("ready for an agent" as const)
+                  : c.issue.labels.includes(config.tracker.readyLabel)
+                    ? ("in triage" as const)
+                    : ("no ready label" as const);
+                return {
+                  id: c.issue.id,
+                  readyForAgent: c.readyForAgent,
+                  reason,
+                  route,
+                  launch: c.readyForAgent
+                    ? `armada brief ${shellWord(c.issue.id)} --prompt${route ? ` --profile ${shellWord(route.profile)}` : ""}`
+                    : null,
+                };
+              }),
+              parked: unblocked.parked.map((i) => i.id),
+              nowWaitsOn: unblocked.nowWaitsOn,
+            }
+          : null,
+      };
+    },
     holder: `${io.env.USER || "coordinator"}@${hostname()} ${randomUUID().slice(0, 8)}`,
     now,
     sleep: io.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))),
@@ -312,8 +365,16 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
       : known;
   if (o.merged) await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
   const next = await rearmFor(io, project, { inFlight, open: null });
-  io.stdout(a.json ? `${JSON.stringify({ ...o, watch: next }, null, 2)}\n` : `${render(o)}${next.line}\n`);
+  if (!a.json) io.stdout(`${render(o)}${next.line}\n`);
   for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
   if (o.merged && o.ticket) await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
+  const archive = await afterMerge(io, config, credentials, o, {
+    configPath,
+    noArchive: !!a.options["no-archive"],
+    keepOpen: !!a.options["keep-open"],
+  });
+  if (a.json) io.stdout(`${JSON.stringify({ ...o, archive, watch: next }, null, 2)}\n`);
+  else if (archive)
+    io.stdout(`${archive.detail.endsWith(".") ? archive.detail : `${o.ticket?.id}: ${archive.detail}.`}\n`);
   return 0;
 }

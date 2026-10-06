@@ -245,3 +245,22 @@ describe("the overview's address", () => {
     expect(overviewHref({ ...old, project: null, ticket: "WID-1" })).toBe("/");
   });
 });
+
+test("runtime failures and archived workspaces have distinct overview reasons", () => {
+  for (const runtimeState of ["failed", "gone"] as const)
+    expect(state(row("WID-7", { runtimeState }))).toEqual({
+      group: "blocked",
+      reason: { kind: "runtime", state: runtimeState },
+    });
+});
+
+test("stopped idle sessions are actionable even when their answered phase still says awaiting approval", () => {
+  expect(state(row("WID-1", { phase: "implementing", flags: ["stopped"] }))).toEqual({
+    group: "blocked",
+    reason: { kind: "stopped" },
+  });
+  expect(state(row("WID-1", { phase: "awaiting-approval", flags: ["stopped"] }))).toEqual({
+    group: "blocked",
+    reason: { kind: "stopped" },
+  });
+});

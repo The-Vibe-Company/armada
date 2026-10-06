@@ -1,6 +1,6 @@
 # Merging a pull request
 
-Run `armada merge <pr>` (add `--dry-run` to see the checklist only, `--wait` when main keeps moving, `--no-ticket` for a pull request no ticket owns). It checks everything below, takes the project's merge lock, merges pinned to the handed-back SHA, confirms the merge on GitHub and closes the ticket. Its output lists the workers in flight to tell and the worker session to archive. When a refusal names a rule, fix the cause (usually: ask the worker to bring the default branch in and report again) rather than merging by hand. When you must merge by hand, follow the same steps.
+Run `armada merge <pr>` (add `--dry-run` to see the checklist only, `--wait` when main keeps moving, `--no-ticket` for a pull request no ticket owns). It checks everything below, takes the project's merge lock, merges pinned to the handed-back SHA, confirms the merge on GitHub and closes the ticket. Its output lists the workers in flight to tell and the worker workspace it archived. Add `--no-archive` to leave the workspace open. When a refusal names a rule, fix the cause (usually: ask the worker to bring the default branch in and report again) rather than merging by hand. When you must merge by hand, follow the same steps.
 
 ## The owner's merge rule: `--reason` and `--ask-owner`
 
@@ -26,11 +26,17 @@ With several workers in flight, main often moves between a green hand-back and i
 
 When none of the required checks ran on the head (a release pull request opened with the workflow's own token gets no CI run), it passes with a note, on GitHub's own state (`UNSTABLE` included, when nothing failed) and the checks that did run, once the head is a minute old; a younger head, or a head this run updated (its update starts CI), is waited for (`--wait`) or refused.
 
+## Default-branch CI
+
+`armada status` and the dashboard read the default branch's last 20 commits. "main red since #N" names the oldest failing merge since the last green commit, with its failing checks and short SHA; a running commit on top adds "a fix is running (#M)". Unchecked commits, including releases, neither start nor end the streak. With no green boundary in the history window, the reading says "red for more than 20 commits" instead of blaming an unproven first merge. A direct commit uses its short SHA when no squash PR number is available.
+
+Configured `[gates] required_checks` decide health; without them, GitHub's rollup does. A green reading clears the warning. Older snapshots have no reading until the next GitHub refresh. `armada merge` includes the red reading as a note only. The shared merge pause and coordinator wake-up are added separately by THE-1104; this reading alone does not block a merge. THE-1102's queue can use the same fresh `mainHealth` adapter.
+
 ## Before
 
 1. The worker has handed back: `Agent phase` is `ready-to-merge` and you have the full 40-character head SHA it reported.
 2. `gh pr view <n> --json headRefOid,mergeStateStatus,isDraft,title` shows that SHA (or that SHA with only main merged in), `CLEAN` (or `HAS_HOOKS`), not a draft, and a Commitizen title.
-3. `gh pr checks <n>` shows every required check passing.
+3. `gh pr checks <n>` shows every required check passing. When a check is red, run `armada ci why <n>` first: it names failing tests, first errors and runner problems; external apps show their summary and link. `--branch main` diagnoses the default branch when it is named main.
 4. The head contains the current default branch: `git merge-base --is-ancestor origin/<default> <sha>`. If not, update it (`--wait`) or ask the worker to bring the default branch in (rebase, or merge it into their branch; never force-push a branch someone else pushed to).
 5. Semantic check: search the default branch for callers of anything the pull request deletes or renames.
 6. A dashboard pull request (one that changes Armada's own dashboard, `packages/dashboard`): compare with the owner's design, `design/dashboard-v7/Armada Dashboard.dc.html`. Open each page it changes on its preview or the demo next to the design's screen and the overview (`/`). The header bar, the page's title line, its lists and rows must match them. A page with a title of its own outside that anatomy, another font or its own list style goes back to the worker.
@@ -49,12 +55,12 @@ gh pr merge <n> --squash --match-head-commit <full-sha>
 
 1. The ticket is Done, its `Agent phase` and `Agent runtime` labels removed, the pull request linked.
 2. Tell every in-flight worker what the merge changes for them: a shared file, a migration, a new check, code they must now reuse or delete.
-3. Archive the merged worker's workspace with the "Stop and archive" section of its runtime guide.
-4. Launch the tickets this merge unblocked.
+3. `armada merge` archives the merged worker's workspace after GitHub confirms the merge. Never archive before it prints "Merged". If cleanup fails, the merge still succeeds and prints the exact `armada stop <ticket>` command to finish it. `--no-archive` leaves the workspace open; shared workspaces and the coordinator's own workspace are retained.
+4. Read `Unblocked by <ticket>` in the merge output (also `unblocked` in `--json`): it names tickets ready for an agent, those without a ready label and those parked. Use each ready ticket's printed `armada brief <id> --prompt` command, with its routed profile when configured, to launch it. `now waits only on` names dependents that still have open blockers. A no-ticket merge lists no unblocked tickets.
 
 ## The release pull request
 
-Some repositories publish through release-please: every merge to the default branch opens or updates one release pull request, and merging it tags the version and publishes it. When the repository's rules (`AGENTS.md`) say to merge it after each merge, do it right after the ticket's merge, without a hand-back: no worker owns it.
+Some repositories publish through release-please: every merge to the default branch opens or updates one release pull request, and merging it tags the version and publishes it. Follow the repository's release rules (`AGENTS.md`). When they specify a release train, leave the release pull request open after each ticket's merge: the train merges it at the scheduled time and tags and publishes in the same run. One release pull request carries everything merged since the last release.
 
 - **What it looks like.** Title `chore(main): release <version>`, opened by `github-actions`, label `autorelease: pending`, and a diff that only touches the changelog, the manifest and version fields. It is opened with the workflow's own token, so **no CI check runs on it** (only checks from apps such as Vercel, if any) and `mergeStateStatus` is often `UNSTABLE` (`armada merge --no-ticket` accepts it when none of the required checks ran and nothing failed). Both are expected: the publish job runs the repository's checks again before publishing. Anything else in the diff, or a `DIRTY` state, is not expected: stop and tell the owner.
 - **Find it and its head:**
@@ -63,11 +69,13 @@ Some repositories publish through release-please: every merge to the default bra
 gh pr list --state open --label "autorelease: pending" --json number,title,headRefOid,mergeStateStatus
 ```
 
-- **Merge it** with `armada merge <n> --no-ticket`: no ticket owns it, and no required check runs on it (see "No ticket" above). By hand, pin it to that head, like any merge, and without `--delete-branch`:
+- **Urgent fix on a release train.** Run the release workflow named by the repository's rules, for example:
 
 ```sh
-gh pr merge <n> --squash --match-head-commit <full-sha>
+gh workflow run release.yml
 ```
 
-- **Check the publish.** After a minute or two the new version is on the registry, for example `npm view <package> version` for an npm package (the package is named in `AGENTS.md` or the release workflow). If it is not, open the Release run (`gh run list --workflow release.yml --limit 3`), fix the cause and re-run its failed jobs: a later push does not publish a version already tagged.
-- Release-please updates the same pull request on each merge to the default branch; one release pull request can carry several merges.
+The workflow merges the pending release pull request and publishes it at once. Use this only when the repository's rules allow a manual release; ordinary ticket merges wait for the train.
+
+- **Repositories without a train.** Only when the repository's rules ask the coordinator to merge release pull requests, use `armada merge <n> --no-ticket`: no ticket owns it, and no required check runs on it (see "No ticket" above). A manual merge must still pin the checked head and leave out `--delete-branch`.
+- **Check the publish.** After the scheduled or manual Release run finishes, check the registry, for example `npm view <package> version` for an npm package (the package is named in `AGENTS.md` or the release workflow). If it is not published, open the Release run (`gh run list --workflow release.yml --limit 3`, using the repository's workflow name), fix the cause and re-run its failed jobs: a later push does not publish a version already tagged.

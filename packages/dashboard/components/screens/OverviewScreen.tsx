@@ -48,18 +48,25 @@ export const GROUP_COLOR: Record<SessionGroup, string> = {
   merged: "var(--text-3)",
 };
 
+export const itemColor = (item: Pick<OverviewItem, "group" | "reason">) =>
+  item.reason.kind === "runtime" && item.reason.state === "gone" ? "var(--text-3)" : GROUP_COLOR[item.group];
+
 const COORDINATOR_COLOR = { active: "var(--green)", idle: "var(--amber)", unknown: "var(--text-3)" } as const;
 
 /** A row's reason line, in the viewer's language. */
 export function reasonText(t: Strings, r: Reason, now: number): string {
   const o = t.overview.reasons;
   switch (r.kind) {
+    case "runtime":
+      return t.shell.runtimeState[r.state];
     case "question":
       return o.question(r.text);
     case "ci":
       return o.ci(r.pr);
     case "conflict":
       return o.conflict(r.pr);
+    case "stopped":
+      return o.stopped;
     case "silent":
       return o.silent(t.duration(r.since ? Math.max(0, now - Date.parse(r.since)) : 0));
     case "blocked":
@@ -181,6 +188,14 @@ export function Overview({
       )}
       <div className="ov-head">
         <p className="ov-headline">{t.overview.headline(head.blocked, head.you)}</p>
+        {projects.map(
+          (p) =>
+            p.main?.redSince && (
+              <p key={p.slug} className="ov-subline" style={{ color: "var(--red)" }}>
+                {p.name}: {t.overview.mainHealth(p.main)}
+              </p>
+            ),
+        )}
         <p className="ov-subline">
           {t.overview.subline({
             live: head.live,
@@ -309,6 +324,11 @@ function ProjectCard({ summary: s }: { summary: ReturnType<typeof projectSummari
       <span className="ov-project-bar" aria-hidden>
         <span style={{ width: `${pct}%` }} />
       </span>
+      {p.main?.redSince && (
+        <span className="ov-project-facts" style={{ color: "var(--red)" }}>
+          {t.overview.mainHealth(p.main)}
+        </span>
+      )}
       <span className="ov-project-facts">
         <span style={{ color: s.blocked ? "var(--red)" : "var(--text-3)" }}>{c.blocked(s.blocked)}</span>
         <span style={{ color: s.you ? "var(--amber)" : "var(--text-3)" }}>{c.you(s.you)}</span>
@@ -418,7 +438,7 @@ function Row({
 }) {
   const { t } = useShell();
   const now = useNow();
-  const color = GROUP_COLOR[i.group];
+  const color = itemColor(i);
   const href = itemHref(i);
   const external = !href.startsWith("/");
   const onClick =

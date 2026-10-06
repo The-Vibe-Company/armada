@@ -11,6 +11,7 @@ import {
   CLAUDE_SETTINGS,
   CONFIG_FILE,
   ConfigError,
+  compareVersions,
   configTemplate,
   createMissingLabels,
   LINEAR_KEY,
@@ -18,12 +19,14 @@ import {
   planIsEmpty,
   planSetup,
   readLabels,
+  SETUP_PATHS,
   type SetupPlan,
   slugify,
 } from "@armada/core";
 import { authLogin, loadCredentials } from "./auth.ts";
-import { type Exec, type Io, missingKey, UsageError } from "./io.ts";
+import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { requireSignIn } from "./login.ts";
+import { merge } from "./merge.ts";
 import { applyPlan, CommandError, fsRepoView, gitRoot, requireExec, sh } from "./repo.ts";
 import { liveFleet } from "./worker.ts";
 
@@ -35,6 +38,8 @@ export interface InitOptions {
   slug: string | null;
   /** Add the Claude Code stop hook: null asks on a terminal, and says yes without one. */
   stopHook: boolean | null;
+  /** Wait for the usual merge checks and merge only Armada setup paths. */
+  merge?: boolean;
 }
 
 const STOP_HOOK_QUESTION =
@@ -48,7 +53,44 @@ async function wantsStopHook(io: Io, opts: InitOptions): Promise<boolean> {
   return answer === undefined ? false : answer === "" || answer.startsWith("y");
 }
 
-export const initBranch = (version: string) => `armada/init-${version}`;
+export const initBranch = () => "armada/setup";
+
+/** No wildcard support in gh pr list --head: paginate open PRs and filter their heads. */
+async function closeLegacyPulls(exec: Exec, root: string, repo: string, replacement: string): Promise<void> {
+  const pages = JSON.parse(
+    await sh(exec, root, "gh", ["api", `repos/${repo}/pulls?state=open&per_page=100`, "--paginate", "--slurp"]),
+  ) as { number: number; head: { ref: string; repo: { full_name: string } | null } }[][];
+  for (const pr of pages.flat()) {
+    if (!pr.head.ref.startsWith("armada/init-") || pr.head.repo?.full_name.toLowerCase() !== repo.toLowerCase())
+      continue;
+    await sh(exec, root, "gh", [
+      "pr",
+      "close",
+      String(pr.number),
+      "--repo",
+      repo,
+      "--comment",
+      `Superseded by ${replacement} on armada/setup. Armada updates that pull request across versions.`,
+    ]);
+  }
+}
+
+function assertSetupPaths(paths: string[], firstSetup: boolean): void {
+  const outside = paths.filter((path) => {
+    if (!path || path.split("/").some((part) => part === "." || part === "..") || path.includes("\\")) return true;
+    if (path === CONFIG_FILE) return !firstSetup;
+    return !SETUP_PATHS.some((pattern) =>
+      pattern.endsWith("/**")
+        ? path === pattern.slice(0, -3) || path.startsWith(pattern.slice(0, -2))
+        : path === pattern,
+    );
+  });
+  if (outside.length)
+    throw new UsageError(
+      `init --merge refuses paths outside Armada setup: ${outside.join(", ")}`,
+      "review this pull request and merge it yourself",
+    );
+}
 
 /** The default branch of `origin`, read from the remote itself. */
 async function defaultBranch(exec: Exec, root: string): Promise<string> {
@@ -80,12 +122,22 @@ async function resolveConfig(
   if (local !== null && !opts.programRoot)
     return { config: parse(local, join(root, CONFIG_FILE)), text: local, source: "working tree" };
   // A previous run's pull request, not merged yet: keep the file it proposes.
-  const branch = initBranch(opts.armadaVersion);
-  if (!opts.programRoot && (await sh(exec, root, "git", ["ls-remote", "origin", `refs/heads/${branch}`]))) {
-    await sh(exec, root, "git", ["fetch", "--quiet", "origin", branch]);
-    const shown = await exec("git", ["show", `FETCH_HEAD:${CONFIG_FILE}`], { cwd: root });
-    if (shown.code === 0)
-      return { config: parse(shown.stdout, `${CONFIG_FILE} on ${branch}`), text: shown.stdout, source: branch };
+  if (!opts.programRoot) {
+    const refs = await sh(exec, root, "git", ["ls-remote", "origin", "refs/heads/armada/init-*"]);
+    const legacy = refs
+      .split("\n")
+      .flatMap((line) => {
+        const branch = line.split("\t")[1]?.replace(/^refs\/heads\//, "");
+        return branch ? [branch] : [];
+      })
+      .sort((a, b) => compareVersions(b.slice("armada/init-".length), a.slice("armada/init-".length)));
+    for (const branch of [initBranch(), ...legacy]) {
+      if (!(await sh(exec, root, "git", ["ls-remote", "origin", `refs/heads/${branch}`]))) continue;
+      await sh(exec, root, "git", ["fetch", "--quiet", "origin", branch]);
+      const shown = await exec("git", ["show", `FETCH_HEAD:${CONFIG_FILE}`], { cwd: root });
+      if (shown.code === 0)
+        return { config: parse(shown.stdout, `${CONFIG_FILE} on ${branch}`), text: shown.stdout, source: branch };
+    }
   }
   if (!opts.programRoot)
     throw new UsageError(
@@ -174,6 +226,7 @@ export async function init(io: Io, opts: InitOptions): Promise<number> {
     await sh(exec, root, "git", ["worktree", "add", "--quiet", "--detach", checkout, baseSha]);
     const { config, text, source } = await resolveConfig(exec, root, checkout, opts);
     const view = fsRepoView(checkout);
+    const firstSetup = (await view.readFile(CONFIG_FILE)) === null;
     let plan = await planSetup(view, {
       armadaVersion: opts.armadaVersion,
       configText: text,
@@ -190,26 +243,17 @@ export async function init(io: Io, opts: InitOptions): Promise<number> {
       );
 
     // 1. Tracker labels.
-    const linear = { apiKey: linearApiKey, ...(io.fetch ? { fetch: io.fetch } : {}) };
+    const linear = { apiKey: linearApiKey, ...httpOptions(io) };
     const created = await createMissingLabels(await readLabels(config, linear), linear);
     log(created.length ? `Created Linear labels: ${created.join(", ")}` : "Linear labels: all present");
 
     // 2. The pull request.
-    if (planIsEmpty(plan)) log(`${base} already has everything Armada needs; no pull request to open.`);
-    else {
-      const branch = initBranch(opts.armadaVersion);
-      await applyPlan(checkout, plan);
-      // Exactly the planned paths, even where the repository's .gitignore covers them (.claude/ often is).
-      const paths = [...plan.writes.map((w) => w.path), ...plan.links.map((l) => l.path), ...plan.removes];
-      await sh(exec, checkout, "git", ["add", "--all", "--force", "--", ...paths]);
-      const { title, body } = prText(plan, opts.armadaVersion);
-      // No hooks: they belong to the project's own commits; the pull request's CI checks these files.
-      await sh(exec, checkout, "git", ["commit", "--quiet", "--no-verify", "--message", title]);
-      // The branch belongs to armada init: it is rebuilt from the default branch on every run,
-      // and pushed only when its content changed, so a rerun does not restart CI for nothing.
-      if (await branchIsCurrent(exec, checkout, branch, baseSha)) log(`${branch} is already up to date.`);
-      else await sh(exec, checkout, "git", ["push", "--quiet", "--force", "origin", `HEAD:refs/heads/${branch}`]);
-      const repo = config.github.repository;
+    const branch = initBranch();
+    const repo = config.github.repository;
+    let pull: { number: number; url: string } | undefined;
+    if (planIsEmpty(plan)) {
+      log(`${base} already has everything Armada needs; no pull request to open.`);
+    } else {
       const open = JSON.parse(
         (await sh(exec, root, "gh", [
           "pr",
@@ -221,10 +265,20 @@ export async function init(io: Io, opts: InitOptions): Promise<number> {
           "--state",
           "open",
           "--json",
-          "number,url",
+          "number,url,isCrossRepository",
         ])) || "[]",
-      ) as { number: number; url: string }[];
-      const existing = open[0];
+      ) as { number: number; url: string; isCrossRepository: boolean }[];
+      const existing = open.find((pull) => !pull.isCrossRepository);
+      await applyPlan(checkout, plan);
+      // Exactly the planned paths, even where the repository's .gitignore covers them (.claude/ often is).
+      const paths = [...plan.writes.map((w) => w.path), ...plan.links.map((l) => l.path), ...plan.removes];
+      await sh(exec, checkout, "git", ["add", "--all", "--force", "--", ...paths]);
+      const { title, body } = prText(plan, opts.armadaVersion);
+      // No hooks: they belong to the project's own commits; the pull request's CI checks these files.
+      await sh(exec, checkout, "git", ["commit", "--quiet", "--no-verify", "--message", title]);
+      // Only push when content changed, so a rerun does not restart CI for nothing.
+      if (await branchIsCurrent(exec, checkout, branch, baseSha)) log(`${branch} is already up to date.`);
+      else await sh(exec, checkout, "git", ["push", "--quiet", "--force", "origin", `HEAD:refs/heads/${branch}`]);
       if (existing) {
         await sh(exec, root, "gh", [
           "pr",
@@ -238,7 +292,7 @@ export async function init(io: Io, opts: InitOptions): Promise<number> {
           body,
         ]);
         log(`Updated pull request ${existing.url}`);
-        log(mergeHint(existing.number));
+        pull = existing;
       } else {
         const url = await sh(exec, root, "gh", [
           "pr",
@@ -257,8 +311,56 @@ export async function init(io: Io, opts: InitOptions): Promise<number> {
         const opened = url.split("\n").pop() ?? "";
         log(`Opened pull request ${opened}`);
         const number = opened.match(/\/pull\/(\d+)/)?.[1];
-        if (number) log(mergeHint(Number(number)));
+        if (!number) throw new CommandError("could not read the opened setup pull request number");
+        pull = { number: Number(number), url: opened };
       }
+    }
+    if (pull) {
+      await closeLegacyPulls(exec, root, repo, pull.url);
+      if (opts.merge) {
+        const changed = await sh(exec, root, "gh", ["pr", "diff", String(pull.number), "--repo", repo, "--name-only"]);
+        assertSetupPaths(changed ? changed.split("\n") : [], firstSetup);
+        await merge(
+          io,
+          config,
+          credentials,
+          {
+            rest: [String(pull.number)],
+            options: { "no-ticket": "true", wait: "true" },
+            json: false,
+          },
+          join(root, CONFIG_FILE),
+          {
+            readPull: (pull) => {
+              if (pull.headRef !== branch || pull.baseRef !== base)
+                throw new UsageError(
+                  `init --merge requires ${branch} targeting ${base}; #${pull.number} is ${pull.headRef} targeting ${pull.baseRef}`,
+                  "restore the setup pull request's branches and run armada init --merge again",
+                );
+            },
+            beforeMerge: async (number, sha) => {
+              // Check the immutable merge head, including both sides of renames. Main may have moved while CI ran.
+              await sh(exec, checkout, "git", ["fetch", "--quiet", "origin", base, `refs/pull/${number}/head`]);
+              const currentBase = await sh(exec, checkout, "git", ["rev-parse", "FETCH_HEAD"]);
+              const configOnBase = await sh(exec, checkout, "git", [
+                "ls-tree",
+                "--name-only",
+                currentBase,
+                "--",
+                CONFIG_FILE,
+              ]);
+              const diff = await sh(exec, checkout, "git", [
+                "diff",
+                "--name-only",
+                "--no-renames",
+                "-z",
+                `${currentBase}...${sha}`,
+              ]);
+              assertSetupPaths(diff.split("\0").filter(Boolean), firstSetup && !configOnBase);
+            },
+          },
+        );
+      } else log(mergeHint(pull.number));
       if (plan.installed.length) log(`Installs: ${plan.installed.join(", ")}`);
       if (plan.updated.length) log(`Updates: ${plan.updated.join(", ")}`);
       if (plan.stopHook)

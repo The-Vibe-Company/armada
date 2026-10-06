@@ -3,7 +3,7 @@
 // the only code that touches those files. It never logs or returns a value in
 // an error; values leave it only through resolveCredentials.
 import { randomBytes } from "node:crypto";
-import { chmod, link, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { parse, TomlError } from "smol-toml";
 import { ConfigError } from "./config.ts";
@@ -237,7 +237,56 @@ export async function readWatchState(paths: MachinePaths, project: string): Prom
     inFlight: strings(r.inFlight),
     readAt: stringOr(r.readAt),
     stopped: stringOr(r.stopped),
+    ...(typeof r.cursor === "string" ? { cursor: r.cursor } : {}),
+    ...(typeof r.baselinePending === "boolean" ? { baselinePending: r.baselinePending } : {}),
+    ...(typeof r.freshStart === "boolean" ? { freshStart: r.freshStart } : {}),
+    ...(Array.isArray(r.eventIds)
+      ? { eventIds: r.eventIds.filter((id: unknown) => Number.isSafeInteger(id) && Number(id) > 0).slice(-500) }
+      : {}),
+    ...(typeof r.runtimeObserved === "object" && r.runtimeObserved !== null && !Array.isArray(r.runtimeObserved)
+      ? {
+          runtimeObserved: Object.fromEntries(
+            Object.entries(r.runtimeObserved).filter(
+              ([_, v]) => typeof v === "string" && Number.isFinite(Date.parse(v)),
+            ),
+          ) as Record<string, string>,
+        }
+      : {}),
   };
+}
+
+/** Known checkouts, newest watch reading first, including named coordinator watches. */
+export async function readWatchProjects(paths: MachinePaths): Promise<{ project: string; root: string }[]> {
+  const dir = join(paths.dir, "watch");
+  let files: string[];
+  try {
+    files = await readdir(dir);
+  } catch (err) {
+    if (missing(err)) return [];
+    throw new Error(`cannot read ${dir}: ${(err as NodeJS.ErrnoException).code ?? "unknown error"}`);
+  }
+  const projects = await Promise.all(
+    files
+      .filter((file) => file.endsWith(".json"))
+      .sort()
+      .map(async (file) => {
+        const name = file.slice(0, -5);
+        const project = name.split("@")[0];
+        const state = await readWatchState(paths, name);
+        if (!project || !state?.root || !isAbsolute(state.root)) return null;
+        const readAt = Date.parse(state.readAt ?? "");
+        const at = Number.isFinite(readAt)
+          ? readAt
+          : await stat(join(dir, file))
+              .then((s) => s.mtimeMs)
+              .catch(() => 0);
+        return { project, root: state.root, at };
+      }),
+  );
+  return projects
+    .filter((p) => p !== null)
+    .sort((a, b) => b.at - a.at)
+    .map(({ project, root }) => ({ project, root }));
 }
 
 /** Sets some fields of the project's watch state, keeping the others; returns the state written. */
@@ -263,6 +312,7 @@ export interface WatchIdentity {
 export interface WatchLock {
   pid: number;
   identity: WatchIdentity | null;
+  mode?: "follow";
 }
 
 /** Reads both legacy PID locks and locks with a process identity; malformed locks are unverified. */
@@ -276,6 +326,7 @@ export async function readWatchLockInfo(paths: MachinePaths, project: string): P
       i && [i.project, i.configPath, i.started, i.command, i.cwd].every((v) => typeof v === "string" && v);
     return {
       pid,
+      ...(raw?.mode === "follow" ? { mode: "follow" as const } : {}),
       identity: verified
         ? {
             project: i.project,
@@ -330,12 +381,17 @@ export async function takeWatchLock(
   pid: number,
   alive: (pid: number) => boolean = processAlive,
   identity?: WatchIdentity,
+  mode?: "follow",
 ): Promise<{ taken: true } | { taken: false; pid: number }> {
   const { lock } = watchFiles(paths, project);
   await mkdir(dirname(lock), { recursive: true, mode: 0o700 });
   // The pid is written first, then linked into place: the lock never exists empty.
   const tmp = `${lock}.${randomBytes(6).toString("hex")}.tmp`;
-  await writeFile(tmp, `${identity ? JSON.stringify({ pid, identity }) : pid}\n`, { mode: 0o600 });
+  await writeFile(
+    tmp,
+    `${identity || mode ? JSON.stringify({ pid, identity: identity ?? null, ...(mode ? { mode } : {}) }) : pid}\n`,
+    { mode: 0o600 },
+  );
   try {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -401,4 +457,40 @@ export async function addNoticedRelease(paths: MachinePaths, version: string): P
   noticed.push(version);
   const text = `${JSON.stringify({ noticed: noticed.slice(-NOTICED_KEPT) }, null, 2)}\n`;
   await writePrivate(paths, releasesFile(paths), text, 0o644);
+}
+
+/** Non-secret memory of a keys fallback, shared by this machine's commands. */
+export interface KeysFallback {
+  reason: string;
+  failedAt: string;
+  warnedAt: string;
+}
+
+const keysFallbackFile = (paths: MachinePaths) => join(paths.dir, "keys-fallback.json");
+
+/** Missing, unreadable or malformed memory never prevents asking Armada. */
+export async function readKeysFallback(paths: MachinePaths): Promise<KeysFallback | null> {
+  try {
+    const raw = JSON.parse(await readFile(keysFallbackFile(paths), "utf8")) as Partial<KeysFallback> | null;
+    if (
+      typeof raw?.reason !== "string" ||
+      typeof raw.failedAt !== "string" ||
+      !Number.isFinite(Date.parse(raw.failedAt)) ||
+      typeof raw.warnedAt !== "string" ||
+      !Number.isFinite(Date.parse(raw.warnedAt))
+    )
+      return null;
+    return { reason: raw.reason, failedAt: raw.failedAt, warnedAt: raw.warnedAt };
+  } catch {
+    return null;
+  }
+}
+
+/** A successful keys answer clears the memory; writes replace it atomically. */
+export async function writeKeysFallback(paths: MachinePaths, fallback: KeysFallback | null): Promise<void> {
+  if (!fallback) {
+    await rm(keysFallbackFile(paths), { force: true });
+    return;
+  }
+  await writePrivate(paths, keysFallbackFile(paths), `${JSON.stringify(fallback, null, 2)}\n`, 0o644);
 }

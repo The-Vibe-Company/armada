@@ -5,6 +5,7 @@ import {
   checkRepository,
   planSetup,
   planSkills,
+  pointerText,
   type RepoView,
   repositoryOfRemote,
   SetupError,
@@ -50,6 +51,48 @@ async function setUpRepo(extra: Record<string, string> = {}) {
 }
 
 describe("repository checks", () => {
+  test("Armada pointers retain discovery metadata, migrate old files and ignore instruction-only releases", async () => {
+    const repo = await setUpRepo();
+    const skill = BUNDLED_SKILLS.find((s) => s.name === "armada-coordinator");
+    if (!skill) throw new Error("missing coordinator skill");
+    const path = ".agents/skills/armada-coordinator/SKILL.md";
+    expect(repo.files.get(path)).toBe(pointerText(skill, "v1.2.3"));
+    expect(repo.files.get(path)).toContain("description: Coordinating an Armada fleet");
+    expect(repo.files.get(path)).toContain("armada skill armada-coordinator <file>");
+    expect(repo.files.get(path)).toContain("/blob/v1.2.3/skills/armada-coordinator/SKILL.md");
+    expect(repo.files.has(".agents/skills/armada-coordinator/MERGE.md")).toBe(false);
+    for (const bundled of BUNDLED_SKILLS) {
+      expect(bundled.delivery).toBe(bundled.name.startsWith("armada-") ? "pointer" : "vendored");
+      if (bundled.delivery === "pointer")
+        expect(repo.files.get(`.agents/skills/${bundled.name}/SKILL.md`)).toBe(pointerText(bundled, "v1.2.3"));
+      else
+        for (const file of bundled.files)
+          expect(repo.files.get(`.agents/skills/${bundled.name}/${file.path}`)).toBe(file.content);
+    }
+    const main = skill.files.find((f) => f.path === "SKILL.md");
+    if (!main) throw new Error("missing instructions");
+    const original = main.content;
+    try {
+      main.content += "\nNew release instructions.\n";
+      expect(problems(await checkRepository(repo.view, "1.2.4"))).toEqual([]);
+      expect(await skillsBehind(repo.view)).toBeNull();
+      expect((await planSkills(repo.view, "1.2.4")).writes).toEqual([]);
+      main.content = original.replace("description: Coordinating", "description: Managing");
+      expect(levels(await checkRepository(repo.view, "1.2.4"))["skill:armada-coordinator"]).toBe("warning");
+      expect((await skillsBehind(repo.view))?.differing).toEqual(["armada-coordinator"]);
+      repo.apply(await planSkills(repo.view, "1.2.4"));
+      expect(repo.files.get(path)).toContain("/blob/v1.2.4/");
+    } finally {
+      main.content = original;
+    }
+    // The one-time conversion removes all old supporting files.
+    for (const file of skill.files) repo.files.set(`.agents/skills/${skill.name}/${file.path}`, file.content);
+    const migration = await planSkills(repo.view, "1.2.4");
+    expect(migration.removes).toContain(".agents/skills/armada-coordinator/MERGE.md");
+    repo.apply(migration);
+    expect(problems(await checkRepository(repo.view, "1.2.4"))).toEqual([]);
+  });
+
   test("skills update vendors nested dependencies, detects their drift and leaves project settings alone", async () => {
     const repo = memoryRepo({
       ".claude/settings.json": "{ deliberately untouched",
@@ -99,10 +142,12 @@ describe("repository checks", () => {
     const lock = JSON.parse(repo.files.get("skills-lock.json") ?? "");
     expect(lock.skills["armada-worker"]).toEqual({
       source: "The-Vibe-Company/armada",
-      sourceType: "github",
+      sourceType: "armada-cli",
       skillPath: "skills/armada-worker/SKILL.md",
       ref: "v1.2.3",
-      computedHash: skillFolderHash(BUNDLED_SKILLS.find((s) => s.name === "armada-worker")?.files ?? []),
+      computedHash: skillFolderHash([
+        { path: "SKILL.md", content: repo.files.get(".agents/skills/armada-worker/SKILL.md") ?? "" },
+      ]),
     });
     // Nothing left to do: running the plan again changes nothing.
     const again = await planSetup(repo.view, { armadaVersion: VERSION, configText: DEMO_TOML });
@@ -116,7 +161,7 @@ describe("repository checks", () => {
     const lockBefore = repo.files.get("skills-lock.json") ?? "{}";
     const lock = JSON.parse(lockBefore);
     lock.skills["armada-worker"].ref = "v1.1.0";
-    lock.skills["armada-coordinator"].ref = "v1.0.0";
+    lock.skills["ship-pr-dev"].ref = "v1.0.0";
     repo.files.set("skills-lock.json", JSON.stringify(lock));
     const checks = await checkRepository(repo.view, VERSION);
     // The version line names only the skills that differ, and the release the lock records for them.

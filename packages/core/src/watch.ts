@@ -8,7 +8,15 @@
 // fleet and clock, the line and the hook's decision; the watch state file is
 // `machine.ts`.
 import { ArmadaApiError, installCommand, releaseNotesUrl } from "./armada-api.ts";
-import { entryKey, type Fleet, type InboxEntry } from "./live.ts";
+import {
+  entryKey,
+  eventCursor,
+  type Fleet,
+  FOLLOW_EVENT_KINDS,
+  type InboxEntry,
+  type InboxEntryKind,
+  parseEventCursor,
+} from "./live.ts";
 
 /** How often the watch asks Armada while a worker is in flight; Armada answers 304 while nothing changed. */
 export const WATCH_POLL_MS = 15_000;
@@ -27,6 +35,12 @@ export const STOP_HOOK_VARIABLE = "ARMADA_STOP_HOOK";
 export interface WatchState {
   /** The checkout (directory of armada.toml) where `armada watch` last ran: the coordinator's. */
   root: string | null;
+  cursor?: string;
+  eventIds?: number[];
+  baselinePending?: boolean;
+  freshStart?: boolean;
+  /** Last attempted Conductor observation, per handle and generation (60 s throttle). */
+  runtimeObserved?: Record<string, string>;
   /** Entries the coordinator was shown (`entryKey`), by `inbox` or `watch`: they do not wake a watch again. */
   seen: string[];
   /** Tickets a worker held at the last read, the coordinator's own excluded; null when unknown. */
@@ -53,6 +67,7 @@ export function transientFailure(err: unknown): boolean {
 
 export interface WatchOptions {
   signal?: AbortSignal;
+  until?: Date;
   facts?: import("./live.ts").CoordinatorFacts;
   project: string;
   coordinator: string | null;
@@ -82,7 +97,7 @@ export interface WatchReport {
   project: string;
   generatedAt: string;
   /** `items`: something the coordinator has not seen (marked `new`); `nothing`: no worker in flight, nothing open. */
-  outcome: "items" | "nothing";
+  outcome: "items" | "nothing" | "timeout";
   /** Every open entry, oldest first. */
   items: InboxEntry[];
   /** Tickets a worker holds; null when Armada did not say. */
@@ -140,6 +155,7 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     warnings: [...warnings],
   });
   for (;;) {
+    if (o.until && o.now() >= o.until) return report("timeout");
     let read: Awaited<ReturnType<Fleet["inbox"]>>;
     try {
       read = await untilAborted(o.signal, () => fleet.inbox({ ...query, etag }));
@@ -148,7 +164,7 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
       const wait = WATCH_BACKOFF_MS[Math.min(failures, WATCH_BACKOFF_MS.length - 1)] ?? pollMs;
       failures++;
       o.onRetry?.(`${(err as Error).message}; still watching, next try in ${wait / 1000} s`);
-      await untilAborted(o.signal, () => o.sleep(wait));
+      await untilAborted(o.signal, () => o.sleep(boundedWait(o, wait)));
       continue;
     }
     failures = 0;
@@ -165,7 +181,227 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     if (release) items = [...items, { ...release, new: true }];
     if (items.some((e) => e.new)) return report("items");
     if (read && inFlight !== null && !inFlight.length && !items.length) return report("nothing");
-    await untilAborted(o.signal, () => o.sleep(inFlight !== null && !inFlight.length ? idlePollMs : pollMs));
+    await untilAborted(o.signal, () =>
+      o.sleep(boundedWait(o, inFlight !== null && !inFlight.length ? idlePollMs : pollMs)),
+    );
+  }
+}
+
+function boundedWait(o: WatchOptions, ms: number): number {
+  return o.until ? Math.max(0, Math.min(ms, o.until.getTime() - o.now().getTime())) : ms;
+}
+
+export const FOLLOW_INBOX_KINDS: readonly InboxEntryKind[] = [
+  "question",
+  "plan",
+  "hand-back",
+  "request",
+  "note",
+  "decision",
+  "answer-request",
+  "launch-request",
+  "merge-request",
+  "release-request",
+  "plan-changes",
+  "runtime-blocked",
+  "silent",
+  "stopped",
+  "quiet",
+  "not-started",
+  "version",
+];
+export const FOLLOW_KINDS = [...FOLLOW_INBOX_KINDS, ...FOLLOW_EVENT_KINDS, "handover"] as const;
+export interface FollowLine {
+  cursor: string;
+  kind: string;
+  ticket: string | null;
+  id: number | string | null;
+  owner: string | null;
+  at: string;
+  body: string;
+  new: boolean;
+}
+export interface FollowOptions extends WatchOptions {
+  cursor?: string;
+  /** A new watch seeds older events; an explicit resume also recovers higher IDs committed late. */
+  freshStart?: boolean;
+  baselinePending?: boolean;
+  eventIds?: readonly number[];
+  kinds?: readonly string[];
+  tickets?: readonly string[];
+  onPrinted?: (state: {
+    seen: string[];
+    cursor: string;
+    eventIds: number[];
+    baselinePending: boolean;
+    freshStart: boolean;
+  }) => Promise<void>;
+  onIdle?: () => void;
+}
+
+/** Every yield is acknowledged on the next pull: persist only after the caller printed it. */
+export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerator<FollowLine> {
+  let cursor = o.cursor ?? eventCursor(0, o.now().toISOString());
+  parseEventCursor(cursor);
+  const resumedAt = parseEventCursor(cursor);
+  const seen = new Set(o.seen);
+  let ids = [...(o.eventIds ?? [])];
+  let baseline = o.baselinePending ?? !ids.length;
+  const freshStart = o.freshStart ?? !o.cursor;
+  const kinds = o.kinds ?? FOLLOW_INBOX_KINDS;
+  const eventKinds = FOLLOW_EVENT_KINDS.filter(
+    (k) => kinds.includes(k) || (k === "report" && kinds.includes("handover")),
+  );
+  let etag: string | null = null;
+  let inFlight: string[] | null = null;
+  let first = true;
+  let idle = false;
+  let failures = 0;
+  const query = {
+    coordinator: o.coordinator,
+    silentAfterMinutes: o.silentAfterMinutes,
+    quietAfterMinutes: o.quietAfterMinutes,
+    notStartedMinutes: o.notStartedMinutes,
+    facts: o.facts,
+  };
+  const save = () =>
+    o.onPrinted?.({
+      seen: [...seen],
+      cursor,
+      eventIds: ids,
+      baselinePending: baseline,
+      freshStart: baseline && freshStart,
+    });
+  const accepts = (kind: string, ticket: string | null) =>
+    kinds.includes(kind) && (!o.tickets || (ticket !== null && o.tickets.includes(ticket)));
+  while (!o.until || o.now() < o.until) {
+    try {
+      const read = await untilAborted(o.signal, () => fleet.inbox({ ...query, etag }));
+      if (read) {
+        etag = read.etag;
+        inFlight = read.inFlight ?? null;
+        // Derived alarms are state: once absent, a later recurrence is new again.
+        const openKeys = new Set(read.items.map(entryKey));
+        let removed = false;
+        for (const key of seen)
+          if (!openKeys.has(key) && !key.startsWith("version:")) {
+            seen.delete(key);
+            removed = true;
+          }
+        if (removed) await save();
+        await untilAborted(o.signal, () => o.onRead?.({ items: read.items, inFlight }));
+        for (const warning of read.warnings) o.onRetry?.(warning);
+        for (const item of read.items) {
+          const key = entryKey(item);
+          if (seen.has(key) || !accepts(item.kind, item.ticket)) continue;
+          yield {
+            cursor,
+            kind: item.kind,
+            ticket: item.ticket,
+            id: item.id ?? key,
+            owner: item.author,
+            at: item.createdAt,
+            body: item.body,
+            new: !first,
+          };
+          seen.add(key);
+          await save();
+        }
+      }
+      const release = await untilAborted(o.signal, () => o.release?.());
+      if (release && !seen.has(entryKey(release)) && accepts(release.kind, release.ticket)) {
+        yield {
+          cursor,
+          kind: release.kind,
+          ticket: release.ticket,
+          id: entryKey(release),
+          owner: release.author,
+          at: release.createdAt,
+          body: release.body,
+          new: true,
+        };
+        seen.add(entryKey(release));
+        await save();
+      }
+      if (eventKinds.length) {
+        const boundary = parseEventCursor(cursor);
+        let pageAfter: { id: number; at: string } | undefined;
+        for (;;) {
+          const page = await untilAborted(o.signal, () =>
+            fleet.eventsSince({
+              ...boundary,
+              kinds: eventKinds,
+              handoverOnly: kinds.includes("handover") && !kinds.includes("report"),
+              tickets: o.tickets,
+              seenIds: ids,
+              pageAfter,
+              limit: 200,
+            }),
+          );
+          if (!page) break;
+          for (const event of page.events) {
+            pageAfter = { id: event.id, at: event.at };
+            if (ids.includes(event.id)) continue;
+            if (
+              baseline &&
+              (event.at < resumedAt.afterAt || (event.at === resumedAt.afterAt && event.id <= resumedAt.afterId)) &&
+              (freshStart || event.id <= resumedAt.afterId)
+            ) {
+              ids = [...ids, event.id].sort((a, b) => a - b).slice(-500);
+              await save();
+              continue;
+            }
+            const previous = parseEventCursor(cursor);
+            const next =
+              event.at > previous.afterAt || (event.at === previous.afterAt && event.id > previous.afterId)
+                ? eventCursor(event.id, event.at)
+                : cursor;
+            const kind =
+              event.kind === "report" &&
+              event.phase === "ready-to-merge" &&
+              kinds.includes("handover") &&
+              !kinds.includes("report")
+                ? "handover"
+                : event.kind;
+            if (!accepts(kind, event.ticket)) continue;
+            yield {
+              cursor: next,
+              kind,
+              ticket: event.ticket,
+              id: event.id,
+              owner: event.handle,
+              at: event.at,
+              body: event.message ?? event.phase ?? event.kind,
+              new: true,
+            };
+            cursor = next;
+            ids = [...ids, event.id].sort((a, b) => a - b).slice(-500);
+            await save();
+          }
+          if (page.events.length < 200) break;
+        }
+        if (baseline) {
+          baseline = false;
+          await save();
+        }
+      }
+      first = false;
+      failures = 0;
+      if (inFlight?.length === 0 && !idle) {
+        o.onIdle?.();
+        idle = true;
+      } else if (inFlight?.length) idle = false;
+      await untilAborted(o.signal, () =>
+        o.sleep(
+          boundedWait(o, inFlight?.length === 0 ? (o.idlePollMs ?? WATCH_IDLE_POLL_MS) : (o.pollMs ?? WATCH_POLL_MS)),
+        ),
+      );
+    } catch (err) {
+      if (!transientFailure(err)) throw err;
+      const wait = WATCH_BACKOFF_MS[Math.min(failures++, WATCH_BACKOFF_MS.length - 1)] ?? WATCH_POLL_MS;
+      o.onRetry?.(`${(err as Error).message}; still following, next try in ${wait / 1000} s`);
+      await untilAborted(o.signal, () => o.sleep(boundedWait(o, wait)));
+    }
   }
 }
 
@@ -216,9 +452,15 @@ export function rearm(o: {
   open: number | null;
   running: number | null;
   act?: boolean;
+  mode?: "follow" | "watch";
 }): Rearm {
   const then = o.act ? "act on the items above, then " : "";
-  const watch = o.running !== null ? `armada watch is already running (pid ${o.running})` : null;
+  const watch =
+    o.running !== null
+      ? o.mode === "follow"
+        ? `armada watch is following (pid ${o.running})`
+        : `armada watch is already running (pid ${o.running})`
+      : null;
   let line: string;
   if (o.inFlight === null)
     line = watch

@@ -3,31 +3,21 @@
 // before changing Linear; other commands record live detail afterwards.
 // Unavailable live data warns; a known replacement refuses the release.
 import { ArmadaApiError } from "./armada-api.ts";
-import type { ArmadaConfig } from "./config.ts";
+import { type ArmadaConfig, routingLabelKey } from "./config.ts";
 import type { MergePull } from "./github.ts";
 import { herdrChoice } from "./herdr-profile.ts";
 import { parsePullRequestUrl, sameName } from "./linear.ts";
 import type { LinearWriter, Ticket, TicketLabel, WorkflowState } from "./linear-write.ts";
 import type { Fleet, InboxItem, RuntimeHandle } from "./live.ts";
-import { handBackProblems, transitionProblem } from "./phases.ts";
+import { overlapLines, pathsProblem } from "./overlap.ts";
+import { handBackProblems, planRule, transitionProblem } from "./phases.ts";
+import { Refusal } from "./refusal.ts";
 import { chooseProfile, type ProfileChoice, ProfileError } from "./routing.ts";
 import type { Comment, LabelPhase, PullRequest } from "./types.ts";
 import { isShippingStage } from "./types.ts";
 import { type ValidationChoice, validationClaimLine } from "./validations.ts";
 
-/**
- * The command was understood but the tracker state forbids it (exit code 1).
- * `next` is the one command to run next, printed after the reason.
- */
-export class Refusal extends Error {
-  override name = "Refusal";
-  constructor(
-    message: string,
-    readonly next: string,
-  ) {
-    super(message);
-  }
-}
+export { Refusal } from "./refusal.ts";
 
 export interface WorkerContext {
   config: ArmadaConfig;
@@ -378,6 +368,7 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
 // ------------------------------------------------------------------ report
 
 export interface ReportInput {
+  paths?: string[];
   ticket: string;
   phase: LabelPhase;
   /** First line becomes the status summary; the rest is the comment body. Optional for ready-to-merge and with a plan. */
@@ -439,6 +430,10 @@ export function resolvePr(ticket: Ticket, repository: string, pr: string | null 
  * and records the event. Returns the inbox items waiting for the worker.
  */
 export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promise<Outcome> {
+  if (input.paths !== undefined) {
+    const problem = pathsProblem(input.paths);
+    if (problem) throw new Refusal(problem, "report --paths <comma-separated relative paths>");
+  }
   const { config, linear } = ctx;
   const groups = config.tracker.labels;
   if (input.stage != null && (input.phase !== "shipping" || !isShippingStage(input.stage)))
@@ -528,7 +523,7 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
     if (problems.length)
       throw new Refusal(
         `${ticket.id}: hand-back refused:\n${problems.map((p) => `  - ${p}`).join("\n")}`,
-        `fix the points above, then armada report ready-to-merge --ticket ${ticket.id} --pr ${pr?.number ?? "<number>"} --sha <head sha>; report shipping meanwhile if the work is not done`,
+        `${pr?.checks?.some((c) => c.state === "failure") ? `armada ci why ${pr.number}; ` : ""}fix the points above, then armada report ready-to-merge --ticket ${ticket.id} --pr ${pr?.number ?? "<number>"} --sha <head sha>; report shipping meanwhile if the work is not done`,
       );
     summary = `PR #${pr?.number}, head ${sha}, CI green; ${shippingPath}`;
     body = message;
@@ -543,6 +538,9 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
     body = rest.join("\n").trim();
   }
   if (plan) body = [body, `${PLAN_HEADING}\n\n${plan}`].filter(Boolean).join("\n\n");
+
+  if (input.paths !== undefined)
+    body = [body, `Paths: ${input.paths.join(", ") || "(none)"}`].filter(Boolean).join("\n\n");
 
   // Every lookup that can refuse happens before the first write.
   const target =
@@ -566,21 +564,33 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
       : `${ticket.id}: ${ticket.agentPhase} → ${input.phase}.`,
   ];
 
-  const inbox = await live(ctx, warnings, "record the report", (fleet) =>
+  const reportMessage = plan || input.paths !== undefined ? [summary, body].filter(Boolean).join("\n\n") : message;
+  const preApproved =
+    input.phase === "awaiting-approval" &&
+    ticket.labels.some((l) => routingLabelKey(l.name) === routingLabelKey(ctx.config.policy.preApprovedLabel)) &&
+    planRule(
+      ctx.config,
+      ticket.labels.map((l) => l.name),
+    ).rule === "pre-approved";
+  const recorded = await live(ctx, warnings, "record the report", (fleet) =>
     fleet.report({
       ticket: ticket.id,
+      ...(input.paths !== undefined ? { paths: input.paths } : {}),
       phase: input.phase,
       shippingStage: isShippingStage(input.stage) ? input.stage : null,
       previous: ticket.agentPhase,
       summary,
       // The whole report: an awaiting-approval plan reaches the coordinator's inbox in full.
-      message: plan ? [summary, body].join("\n\n") : message,
+      message: preApproved
+        ? `Pre-approved at launch (${ctx.config.policy.preApprovedLabel}); answer approved to let this worker continue.\n\n${reportMessage}`
+        : reportMessage,
       prUrl: pr?.url ?? null,
       headSha: sha,
     }),
   );
   const state = await readBack(ctx, ticket.id, warnings);
-  return { ticket: ticket.id, url: ticket.url, lines, warnings, inbox, state };
+  if (recorded) lines.push(...overlapLines(recorded));
+  return { ticket: ticket.id, url: ticket.url, lines, warnings, inbox: recorded?.inbox ?? null, state };
 }
 
 // ------------------------------------------------------------------ release

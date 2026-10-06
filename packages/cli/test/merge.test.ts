@@ -6,7 +6,14 @@ import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Fetch, GITHUB_GRAPHQL } from "@armada/core";
+import {
+  type Fetch,
+  GITHUB_GRAPHQL,
+  type MergeOutcome,
+  parseConfig,
+  type RawIssue,
+  resolveCredentials,
+} from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import {
   ARMADA_URL,
@@ -18,6 +25,7 @@ import {
   NOW,
   recordedFetch,
 } from "../../core/test/support.ts";
+import { afterMerge } from "../src/after-merge.ts";
 import { run } from "../src/cli.ts";
 import type { Exec, Io } from "../src/io.ts";
 
@@ -31,7 +39,7 @@ const BRANCH = "feature/demo-18-expire-idle-sessions";
 const KEY = "armada_key_CANARY_coordinator";
 
 /** A coordinator's terminal, signed in to the fake Armada with an organization API key unless `signedIn` is false. */
-async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
+async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boolean; unblocks?: boolean } = {}) {
   const home = await realpath(await mkdtemp(join(tmpdir(), "armada-merge-test-")));
   dirs.push(home);
   const origin = join(home, "origin.git");
@@ -62,7 +70,7 @@ async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
   git("remote", "add", "origin", origin);
   await write(
     "armada.toml",
-    `${DEMO_TOML}\n[gates]\nrequired_checks = ["test"]\nlocal_commands = ["test -f src/share.ts", "grep -q shareListByLink src/lists.ts"]\n`,
+    `${DEMO_TOML}\n[gates]\nrequired_checks = ["test"]\nlocal_commands = ["test -f src/share.ts", "grep -q shareListByLink src/lists.ts"]\n${unblocks ? '[conductor.profiles.backend]\nagent = "codex"\nmodel = "example-model"\neffort = "high"\n' : ""}`,
   );
   await write("src/lists.ts", "export function shareList(id: string) {\n  return id;\n}\n");
   await write("src/menu.ts", 'import { shareList } from "./lists";\nshareList("a");\n');
@@ -119,17 +127,60 @@ async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
     return { code: r.status ?? 1, stdout: r.stdout, stderr: r.stderr };
   };
 
-  const linearProgram = recordedFetch().fetch;
+  const linearProgram = recordedFetch({
+    linear: unblocks
+      ? (recorded) => {
+          const nodes = recorded.Children.find((r) => r.data.issues.nodes.some((i) => i.identifier === "DEMO-12"))?.data
+            .issues.nodes as RawIssue[] | undefined;
+          const template = nodes?.find((i) => i.identifier === "DEMO-12");
+          if (!nodes || !template) throw new Error("missing fixture template");
+          for (const [id, labels, blockers] of [
+            ["DEMO-19", ["ready-for-agent"], []],
+            ["DEMO-20", [], []],
+            ["DEMO-21", ["ready-for-agent", "parked"], []],
+            ["DEMO-22", ["ready-for-agent"], ["EXT-1"]],
+            ["DEMO-23", ["ready-for-agent"], []],
+          ] as const) {
+            nodes.push({
+              ...structuredClone(template),
+              id: `uuid-${id}`,
+              identifier: id,
+              title: `Follow-up ${id}`,
+              state: { name: id === "DEMO-23" ? "Triage" : "Backlog", type: id === "DEMO-23" ? "triage" : "backlog" },
+              labels: { pageInfo: { hasNextPage: false }, nodes: labels.map((name) => ({ name, parent: null })) },
+              inverseRelations: {
+                pageInfo: { hasNextPage: false },
+                nodes: ["DEMO-18", ...blockers].map((identifier) => ({
+                  type: "blocks",
+                  issue: { identifier, state: { type: "started" } },
+                })),
+              },
+            });
+          }
+        }
+      : undefined,
+  });
   const store = memoryFleet();
   const armada = fakeArmada({ keys: { [KEY]: "coordinator" }, store });
-  const net = { armadaDown: false };
+  const net = { armadaDown: false, confirmMerge: true };
   const fetch: Fetch = async (url, init) => {
     if (url.startsWith(`${ARMADA_URL}/`)) {
       if (net.armadaDown) throw new TypeError("fetch failed");
       return armada.fetch(url, init);
     }
     if (url === "https://api.github.com/repos/acme/widgets/pulls/9") return new Response(`${diff}\n`);
-    if (url !== GITHUB_GRAPHQL) return linearProgram(url, init);
+    if (url !== GITHUB_GRAPHQL) {
+      const response = await linearProgram.fetch(url, init);
+      if (!unblocks) return response;
+      // The post-close read sees the writer's state, while relation states can still be old.
+      expect(linear.get("DEMO-18").statusType).toBe(merged ? "completed" : "started");
+      const body = (await response.json()) as { data: { issues?: { nodes: RawIssue[] } } };
+      for (const i of body.data.issues?.nodes ?? [])
+        if (i.identifier === "DEMO-18" && i.state) {
+          i.state.type = linear.get("DEMO-18").statusType;
+        }
+      return Response.json(body);
+    }
     const { query, variables } = JSON.parse(String(init.body)) as { query: string; variables: Record<string, string> };
     if (/query Compare/.test(query)) {
       const compare =
@@ -154,7 +205,7 @@ async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
             number: 9,
             title: "feat(lists): share a list by link",
             url: "https://github.com/acme/widgets/pull/9",
-            state: merged ? "MERGED" : "OPEN",
+            state: merged && net.confirmMerge ? "MERGED" : "OPEN",
             isDraft: false,
             mergeable: "MERGEABLE",
             mergeStateStatus: merged ? "UNKNOWN" : pr.state,
@@ -164,7 +215,7 @@ async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
             createdAt: "2026-03-04T08:00:00Z",
             updatedAt: "2026-03-04T09:00:00Z",
             mergedAt: merged ? "2026-03-04T10:00:00Z" : null,
-            mergeCommit: merged ? { oid: SQUASH } : null,
+            mergeCommit: merged && net.confirmMerge ? { oid: SQUASH } : null,
             reviewThreads: { totalCount: 1, nodes: [{ isResolved: true }] },
             commits: {
               nodes: [
@@ -216,6 +267,7 @@ async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
     env: {
       LINEAR_API_KEY: "lin_test",
       GITHUB_TOKEN: "gh_test",
+      XDG_CONFIG_HOME: join(home, "config"),
       ...(signedIn ? { ARMADA_API_URL: ARMADA_URL, ARMADA_API_KEY: KEY } : {}),
     },
     readFile: (path) => readFile(path, "utf8").catch(() => null),
@@ -241,11 +293,71 @@ async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
     armada,
     store,
     net,
+    linearReads: () => linearProgram.calls.filter((c) => c.operation === "Root").length,
     merged: () => merged,
     out: () => out.join(""),
     err: () => err.join(""),
   };
 }
+
+test.each([false, true])("merge lists unblocked tickets and routed launch hints (json=%s)", async (json) => {
+  const f = await fixture({ unblocks: true });
+  expect(await run(["merge", "9", ...(json ? ["--json"] : [])], f.io)).toBe(0);
+  expect(f.err()).not.toContain("warning");
+  expect(f.linearReads()).toBe(1);
+  if (json)
+    expect(JSON.parse(f.out()).unblocked).toEqual({
+      ready: [
+        {
+          id: "DEMO-19",
+          readyForAgent: true,
+          reason: "ready for an agent",
+          route: { profile: "backend", why: "the only profile in armada.toml" },
+          launch: "armada brief DEMO-19 --prompt --profile backend",
+        },
+        {
+          id: "DEMO-20",
+          readyForAgent: false,
+          reason: "no ready label",
+          route: { profile: "backend", why: "the only profile in armada.toml" },
+          launch: null,
+        },
+        {
+          id: "DEMO-23",
+          readyForAgent: false,
+          reason: "in triage",
+          route: { profile: "backend", why: "the only profile in armada.toml" },
+          launch: null,
+        },
+      ],
+      parked: ["DEMO-21"],
+      nowWaitsOn: [{ id: "DEMO-22", on: ["EXT-1"] }],
+    });
+  else {
+    expect(f.out()).toContain(
+      "Unblocked by DEMO-18: DEMO-19 (ready for an agent), DEMO-20 (no ready label), DEMO-23 (in triage), DEMO-21 (parked)",
+    );
+    expect(f.out()).toContain("armada brief DEMO-19 --prompt --profile backend # the only profile in armada.toml");
+    const launchLine = f
+      .out()
+      .split("\n")
+      .find((line) => line.trimStart().startsWith("armada brief"));
+    expect(spawnSync("sh", ["-n"], { input: launchLine, encoding: "utf8" }).status).toBe(0);
+    expect(f.out()).toContain("DEMO-22 now waits only on EXT-1");
+    expect(f.out()).not.toContain("armada brief DEMO-20");
+    expect(f.out()).not.toContain("armada brief DEMO-21");
+    expect(f.out()).not.toContain("armada brief DEMO-23");
+  }
+});
+
+test.each([{ options: ["--dry-run"] }, { options: ["--no-ticket", "--reason", "configuration only"] }])(
+  "a merge that closes no ticket lists nothing (%s)",
+  async ({ options }) => {
+    const f = await fixture();
+    expect(await run(["merge", "9", "--json", ...options], f.io)).toBe(0);
+    expect(JSON.parse(f.out()).unblocked).toBeNull();
+  },
+);
 
 test("armada merge test-merges a head behind main, merges it pinned to its SHA and says who to tell", async () => {
   const f = await fixture();
@@ -269,8 +381,8 @@ Hints for you to judge (not blocking):
 Tell these workers in flight what landed on main (bring it in, shared files, new checks):
   DEMO-16  shipping  runtime unknown  Reset a forgotten password
   DEMO-11  implementing  Claude Code · ws-11  Send a sign-in link by email
-No runtime guide is installed for Claude Code, so Armada has nothing to archive for DEMO-18 (Claude Code · ws-18): a local session or subagent ends with its task; stop it yourself if it still runs.
 2 workers in flight (DEMO-11, DEMO-16) — keep watching: armada watch
+No runtime guide is installed for Claude Code, so Armada has nothing to archive for DEMO-18 (Claude Code · ws-18): a local session or subagent ends with its task; stop it yourself if it still runs.
 `);
   expect(f.err()).not.toContain("warning");
   expect(f.linear.get("DEMO-18").statusType).toBe("completed");
@@ -405,3 +517,210 @@ test("CLI accepts --no-ticket --reason and posts its audit comment without endin
   expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt).toBeNull();
   expect(f.store.leases.size).toBe(0);
 });
+
+// The real adapter talks to a fake native runtime: no Conductor commands or wall-clock waits.
+test.each([
+  "confirmed",
+  "confirmed-json",
+  "confirmed-external",
+  "failed-external",
+  "failed-json",
+  "unrecorded",
+  "unconfirmed",
+  "own",
+  "own-workspace",
+  "shared",
+  "shared-workspace",
+  "shared-later",
+  "no-archive",
+  "dry-run",
+  "no-ticket",
+  "failed",
+  "replaced",
+])("merge archives only its confirmed, ended Armada worker (%s)", async (scenario) => {
+  const f = await fixture();
+  const handle = "ws-18/ses-18";
+  const json = scenario.endsWith("-json");
+  const succeeds = ["confirmed", "confirmed-json", "confirmed-external", "unrecorded"].includes(scenario);
+  const projectRoot = f.io.cwd;
+  const configPath = join(projectRoot, "fleet config.toml");
+  if (scenario.endsWith("-external")) {
+    await writeFile(configPath, await readFile(join(projectRoot, "armada.toml"), "utf8"));
+    f.io.cwd = tmpdir();
+  }
+  if (scenario === "unrecorded") {
+    const fetch = f.io.fetch as Fetch;
+    f.io.fetch = (url, init) =>
+      url.endsWith("/fleet/runtime/observe") ? Promise.reject(new TypeError("fetch failed")) : fetch(url, init);
+  }
+  await f.store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-18",
+    runtime: "Conductor",
+    handle,
+    branch: BRANCH,
+    at: NOW,
+  });
+  if (scenario === "shared" || scenario === "shared-workspace")
+    await f.store.saveRuntimeHandle({
+      project: "widgets",
+      ticket: "DEMO-11",
+      runtime: "Conductor",
+      handle: scenario === "shared" ? handle : "ws-18/ses-11",
+      branch: null,
+      at: NOW,
+    });
+  if (scenario === "own" || scenario === "own-workspace")
+    Object.assign(f.io.env, {
+      CONDUCTOR_WORKSPACE_ID: "ws-18",
+      CONDUCTOR_SESSION_ID: scenario === "own" ? "ses-18" : "ses-coordinator",
+    });
+  if (scenario === "unconfirmed") f.net.confirmMerge = false;
+  const calls: string[][] = [];
+  const exec = f.io.exec as Exec;
+  f.io.exec = async (command, args, options) => {
+    if (command !== "conductor") return exec(command, args, options);
+    expect(options?.cwd).toBe(projectRoot);
+    calls.push(args);
+    if (scenario === "shared-later") {
+      await f.store.saveRuntimeHandle({
+        project: "widgets",
+        ticket: "DEMO-11",
+        runtime: "Conductor",
+        handle: "ws-18/ses-11",
+        branch: null,
+        at: NOW,
+      });
+    }
+    // Native runtime output must not leak even when archive fails.
+    if (scenario.startsWith("failed"))
+      return { code: 4, stdout: "armada_launch_CANARY", stderr: "private runtime output" };
+    if (scenario === "replaced") {
+      await f.store.saveRuntimeHandle({
+        project: "widgets",
+        ticket: "DEMO-18",
+        runtime: "Conductor",
+        handle: "ws-new/ses-new",
+        branch: BRANCH,
+        at: new Date(NOW.getTime() + 1000),
+      });
+    }
+    const body =
+      args[1] === "session"
+        ? { sessionId: "ses-18", workspaceId: "ws-18", status: "idle" }
+        : args[2] === "archive"
+          ? { status: "archived" }
+          : { workspaceId: "ws-18", status: "ready" };
+    if (args[2] === "archive") {
+      expect(f.merged()).toBe(true);
+      if (!json) expect(f.out()).toContain("Merged #9");
+      expect(f.armada.calls.at(-1)?.path).toBe("fleet/runtime/handles");
+    }
+    return { code: 0, stdout: JSON.stringify(body), stderr: "" };
+  };
+  const flags = scenario.endsWith("-external")
+    ? ["--config", configPath]
+    : scenario === "no-archive"
+      ? ["--no-archive"]
+      : scenario === "dry-run"
+        ? ["--dry-run"]
+        : scenario === "no-ticket"
+          ? ["--no-ticket", "--reason", "config only"]
+          : [];
+  expect(await run(["merge", "9", ...(json ? ["--json"] : []), ...flags], f.io)).toBe(
+    scenario === "unconfirmed" ? 1 : 0,
+  );
+  expect(calls.filter((args) => args[1] === "workspace" && args[2] === "archive")).toEqual(
+    succeeds ? [["--json", "workspace", "archive", "ws-18"]] : [],
+  );
+  if (json)
+    expect(JSON.parse(f.out()).archive).toEqual({
+      runtime: "Conductor",
+      handle,
+      archived: succeeds,
+      detail: succeeds ? "archived" : "Conductor is unavailable",
+    });
+  if (scenario === "unrecorded") {
+    expect(f.err()).toContain(
+      "is merged and the workspace is archived, but Armada could not record it; run armada stop DEMO-18",
+    );
+    expect(f.out()).toContain("archived; Armada could not record cleanup");
+  }
+  if (scenario === "confirmed" || scenario === "confirmed-json") {
+    expect(f.err()).not.toContain("warning");
+    if (!json) expect(f.out()).toContain("DEMO-18: archived.");
+    expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.runtimeState?.state).toBe("gone");
+  }
+  if (
+    [
+      "unconfirmed",
+      "own",
+      "own-workspace",
+      "shared",
+      "shared-workspace",
+      "no-archive",
+      "dry-run",
+      "no-ticket",
+    ].includes(scenario)
+  )
+    expect(calls).toEqual([]);
+  if (scenario.startsWith("failed") || scenario === "replaced" || scenario === "shared-later") {
+    expect(f.err()).toContain("#9 is merged, but the workspace of DEMO-18 was not archived");
+    expect(f.err()).toContain("run armada stop DEMO-18");
+    expect(f.err() + f.out()).not.toContain("CANARY");
+    expect(f.err() + f.out()).not.toContain("private runtime output");
+    if (scenario === "failed-external") expect(f.err()).toContain(`--config '${configPath}'`);
+  }
+});
+
+test.each(["not-merged", "no-commit", "no-ticket", "keep-open", "claim-comment", "wrong-ticket"])(
+  "afterMerge refuses incomplete archive evidence (%s)",
+  async (scenario) => {
+    const f = await fixture();
+    const stored = await f.store.getRuntimeHandle("widgets", "DEMO-18");
+    if (!stored) throw new Error("missing fixture claim");
+    const h = {
+      ...stored,
+      runtime: "Conductor",
+      handle: "ws-18/ses-18",
+      releasedAt: NOW.toISOString(),
+    };
+    const outcome: MergeOutcome = {
+      merged: scenario !== "not-merged",
+      pr: {
+        number: 9,
+        url: "https://github.com/acme/widgets/pull/9",
+        title: "feat: synthetic change",
+        base: "main",
+        headSha: f.head,
+        mergeCommit: scenario === "no-commit" ? null : SQUASH,
+      },
+      ticket: scenario === "no-ticket" ? null : { id: "DEMO-18", url: "https://linear.app/acme/issue/DEMO-18" },
+      lines: [],
+      hints: [],
+      workers: [],
+      workersListed: true,
+      unblocked: null,
+      warnings: [],
+      archive: {
+        runtime: "Conductor",
+        handle: h.handle,
+        guide: null,
+        source: scenario === "claim-comment" ? "claim" : "armada",
+        claim: scenario === "wrong-ticket" ? { ...h, ticket: "DEMO-11" } : h,
+        open: [],
+      },
+    };
+    f.io.exec = async () => {
+      throw new Error("must not reach the runtime");
+    };
+    const result = await afterMerge(f.io, parseConfig(DEMO_TOML), resolveCredentials({ env: f.io.env }), outcome, {
+      keepOpen: scenario === "keep-open",
+    });
+    expect(result?.archived ?? false).toBe(false);
+    expect(f.armada.calls).toEqual([]);
+    expect(f.err()).not.toContain("must not reach");
+    if (scenario === "claim-comment" || scenario === "wrong-ticket")
+      expect(f.err()).toContain("run armada stop DEMO-18");
+  },
+);

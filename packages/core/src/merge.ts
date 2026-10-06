@@ -5,10 +5,13 @@
 // the handed-back SHA, read MERGED back, then close the ticket. With --wait the
 // pull request is first brought up to date and waited for, without the lease.
 import type { ArmadaConfig } from "./config.ts";
+import { mainHealthLine, type UnblockedTickets } from "./fleet.ts";
 import type { CommitShape, Comparison, MergePull } from "./github.ts";
 import type { LinearWriter, Ticket } from "./linear-write.ts";
 import type { Fleet, Lease, MergeRecorded, RuntimeHandle } from "./live.ts";
 import { checkIssues, FULL_SHA } from "./phases.ts";
+import type { FrontierTicket } from "./status.ts";
+import type { MainHealth } from "./types.ts";
 import { approvalUrl, decidedLine, type MergeApproval, mergeApproval, type Validation } from "./validations.ts";
 import { activeClaimComments, firstState, live, others, Refusal, ticketFromBranch } from "./worker.ts";
 
@@ -24,6 +27,8 @@ export interface MergeAttempt {
 
 /** GitHub as `armada merge` sees it. The CLI implements it with the GraphQL API and `gh`. */
 export interface MergeForge {
+  /** Fresh default-branch CI, shared with queue draining. */
+  mainHealth?(): Promise<MainHealth | null>;
   readPull(number: number): Promise<MergePull | null>;
   /** Where `head` stands against the branch `base`; null when GitHub cannot compare them. */
   compare(base: string, head: string): Promise<Comparison | null>;
@@ -73,7 +78,21 @@ export interface TicketInFlight {
   runtime: string | null;
 }
 
+export interface MergeUnblocked {
+  ready: {
+    id: string;
+    readyForAgent: boolean;
+    reason: "ready for an agent" | "no ready label" | "in triage";
+    route: FrontierTicket["route"];
+    launch: string | null;
+  }[];
+  parked: string[];
+  nowWaitsOn: UnblockedTickets["nowWaitsOn"];
+}
+
 export interface MergeContext {
+  /** An already-read health result, when a caller has one. */
+  mainHealth?: MainHealth | null;
   config: ArmadaConfig;
   linear: LinearWriter;
   forge: MergeForge;
@@ -83,8 +102,8 @@ export interface MergeContext {
   fleet: () => Promise<{ fleet: Fleet | null; warning: string | null }>;
   /** True when this terminal is signed in to Armada: the merge lock is then required, and Armada being down refuses the merge. */
   lockRequired: boolean;
-  /** Tickets in flight in the project (the merged one may be among them). */
-  inFlight: () => Promise<TicketInFlight[]>;
+  /** One post-close reading for workers in flight and the closed ticket's dependents. Null names no closed ticket. */
+  afterRead: (ticket: string | null) => Promise<{ inFlight: TicketInFlight[]; unblocked: MergeUnblocked | null }>;
   /** Identifies this coordinator in the merge lease. */
   holder: string;
   now: () => Date;
@@ -140,12 +159,17 @@ export interface MergeOutcome {
   workers: WorkerToTell[];
   /** False when the workers in flight could not be listed (or for a dry run): `workers` is then not the whole fleet. */
   workersListed: boolean;
-  /**
-   * The merged worker's session to archive with its runtime guide. `guide` is
-   * the installed guide skill, or null when the repository has none for that
-   * runtime (a local session or subagent then has nothing to archive).
-   */
-  archive: { runtime: string | null; handle: string | null; guide: string | null } | null;
+  /** Dependents of the ticket just closed; null for a dry run, no-ticket merge or failed reading. */
+  unblocked: MergeUnblocked | null;
+  /** Cleanup evidence captured by Armada after the confirmed merge. Claim comments are hints only. */
+  archive: {
+    runtime: string | null;
+    handle: string | null;
+    guide: string | null;
+    source: "armada" | "claim";
+    claim: RuntimeHandle | null;
+    open: RuntimeHandle[];
+  } | null;
   warnings: string[];
 }
 
@@ -662,6 +686,12 @@ async function look(ctx: MergeContext, input: MergeInput, run: Run): Promise<Loo
     lineage,
     now: ctx.now(),
   });
+  try {
+    const health = ctx.mainHealth ?? (await ctx.forge.mainHealth?.());
+    if (health?.redSince) a.notes.push(mainHealthLine(health));
+  } catch {
+    a.notes.push("default-branch CI could not be read; check it on GitHub");
+  }
   const behind = a.behind || (cmp?.behindBy ?? 0) > 0;
   const testable =
     MERGEABLE_STATES.has(pull.mergeStateStatus) && ctx.config.gates.localCommands.length > 0 && ctx.repo !== null;
@@ -683,15 +713,17 @@ function refuse(ctx: MergeContext, run: Run, l: Look, problems: string[], hints:
     `${label(pull, ticket)} cannot be merged:\n${problems.map((p) => `  - ${p}`).join("\n")}${
       hints.length ? `\nHints (not blocking):\n${hints.map((h) => `  - ${h}`).join("\n")}` : ""
     }${updatedNote(run, pull)}`,
-    pull.state !== "open"
-      ? `gh pr view ${n} --repo ${ctx.config.github.repository}`
-      : !ticket
-        ? `gh pr checks ${n} --repo ${ctx.config.github.repository}; armada merge ${n} --no-ticket once it is fixed`
-        : ticket.agentPhase !== "ready-to-merge"
-          ? ctx.lockRequired
-            ? `armada inbox --wait, until ${ticket.id} is handed back`
-            : `armada status, until ${ticket.id} shows ready-to-merge`
-          : `armada answer --note ${ticket.id} "<what to fix>", once you told its worker; merge again after its next hand-back`,
+    pull.checks.some((c) => c.state === "failure")
+      ? `armada ci why ${n}, then fix the failed checks before merging`
+      : pull.state !== "open"
+        ? `gh pr view ${n} --repo ${ctx.config.github.repository}`
+        : !ticket
+          ? `gh pr checks ${n} --repo ${ctx.config.github.repository}; armada merge ${n} --no-ticket once it is fixed`
+          : ticket.agentPhase !== "ready-to-merge"
+            ? ctx.lockRequired
+              ? `armada inbox --wait, until ${ticket.id} is handed back`
+              : `armada status, until ${ticket.id} shows ready-to-merge`
+            : `armada answer --note ${ticket.id} "<what to fix>", once you told its worker; merge again after its next hand-back`,
   );
 }
 
@@ -968,6 +1000,7 @@ export async function askOwnerToMerge(
     hints: [],
     workers: [],
     workersListed: false,
+    unblocked: null,
     archive: null,
     warnings,
   };
@@ -1288,9 +1321,12 @@ async function after(
 
   let workers: WorkerToTell[] = [];
   let listed = false;
+  let unblocked: MergeUnblocked | null = null;
   try {
     const handles = new Map<string, RuntimeHandle>((live$?.open ?? []).map((h) => [h.ticket, h]));
-    workers = (await ctx.inFlight())
+    const reading = await ctx.afterRead(ticket?.id ?? null);
+    unblocked = ticket ? reading.unblocked : null;
+    workers = reading.inFlight
       .filter((t) => t.id !== ticket?.id)
       .map((t) => ({
         ticket: t.id,
@@ -1302,7 +1338,7 @@ async function after(
     listed = true;
   } catch (err) {
     c.warnings.push(
-      `could not list the workers in flight (${err instanceof Error ? err.message : String(err)}); run armada status`,
+      `could not list the workers in flight${ticket ? " and unblocked tickets" : ""} (${err instanceof Error ? err.message : String(err)}); run armada status`,
     );
   }
   if (!ticket) return { ...outcome(c, true, merged, lines, workers, null), workersListed: listed };
@@ -1316,8 +1352,15 @@ async function after(
   } catch (err) {
     c.warnings.push(`could not look for the ${expected} skill (${err instanceof Error ? err.message : String(err)})`);
   }
-  const archive = { runtime, handle: live$?.handle?.handle ?? claim?.session ?? null, guide };
-  return { ...outcome(c, true, merged, lines, workers, archive), workersListed: listed };
+  const archive: MergeOutcome["archive"] = {
+    runtime,
+    handle: live$?.handle?.handle ?? claim?.session ?? null,
+    guide,
+    source: live$?.handle ? "armada" : "claim",
+    claim: live$?.handle ?? null,
+    open: live$?.open ?? [],
+  };
+  return { ...outcome(c, true, merged, lines, workers, archive), workersListed: listed, unblocked };
 }
 
 function outcome(
@@ -1344,6 +1387,7 @@ function outcome(
     hints: c.hints,
     workers,
     workersListed: false,
+    unblocked: null,
     archive,
     warnings: c.warnings,
   };

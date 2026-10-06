@@ -31,8 +31,9 @@ import {
   STORED_KEYS,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
-import { loadCredentials, type Machine } from "./auth.ts";
+import { describeSource, loadCredentials, type Machine } from "./auth.ts";
 import type { Io } from "./io.ts";
+import { httpOptions } from "./io.ts";
 import {
   detectLocalTools,
   dshInformation,
@@ -159,7 +160,7 @@ async function labelChecks(io: Io, config: ArmadaConfig | null, credentials: Cre
       },
     ];
   try {
-    const state = await readLabels(config, { apiKey: linearApiKey, ...(io.fetch ? { fetch: io.fetch } : {}) });
+    const state = await readLabels(config, { apiKey: linearApiKey, ...httpOptions(io) });
     return checkLabels(state);
   } catch (err) {
     return [
@@ -202,6 +203,8 @@ function versionChecks(host: string, api: ArmadaApi, armadaVersion: string, outd
 }
 
 /** Where the Conductor app for macOS ships its command line tool; it is not on PATH by itself. */
+export const CONDUCTOR_INSTALL_FIX =
+  "on a Mac, install the Conductor app, then run doctor again; elsewhere, put a conductor command on PATH (a Conductor workspace has one)";
 export const BUNDLED_CONDUCTOR = "/Applications/Conductor.app/Contents/Resources/bin/conductor";
 
 /**
@@ -253,7 +256,7 @@ async function conductorChecks(io: Io, config: ArmadaConfig | null): Promise<Che
       id: "conductor-cli",
       level: "warning",
       message: `conductor is not on PATH, nor at ${BUNDLED_CONDUCTOR}: the armada-runtime-conductor guide launches workers with it`,
-      fix: "on a Mac, install the Conductor app, then run doctor again; elsewhere, put a conductor command on PATH (a Conductor workspace has one)",
+      fix: CONDUCTOR_INSTALL_FIX,
     },
   ];
 }
@@ -401,9 +404,35 @@ export async function buildDoctor(
     ...signIn,
     ...versionChecks(hostOf(credentials.armadaApi.url), api, armadaVersion, outdated),
     ...keyFileChecks(machine, credentials),
+    {
+      id: "linear-key",
+      level: credentials.sources.linearApiKey ? "ok" : "warning",
+      message: `LINEAR_API_KEY: ${credentials.sources.linearApiKey ? describeSource(credentials.sources.linearApiKey) : "missing"}`,
+      fix: credentials.sources.linearApiKey ? null : "armada auth login",
+    } satisfies Check,
+    ...(machine.keysFallback
+      ? [
+          {
+            id: "armada-keys",
+            level: "warning" as const,
+            message: `Last keys failure at ${machine.keysFallback.failedAt}: ${machine.keysFallback.reason}`,
+            fix: "armada auth status",
+          },
+        ]
+      : []),
     ...(await labelChecks(io, config, credentials)),
     ...(await remoteChecks({ ...io, cwd: root }, config, credentials)),
     ...(await conductorChecks(io, config)),
+    ...(config?.conductor.projectId || config?.conductor.baseBranch
+      ? [
+          {
+            id: "conductor-launch",
+            level: "ok" as const,
+            message: `Conductor launches use ${config.conductor.projectId ? `project ${config.conductor.projectId}` : `repository ${config.github.repository}`} on ${config.conductor.baseBranch ?? "origin’s default branch"}`,
+            fix: null,
+          },
+        ]
+      : []),
     ...(await localRuntimeChecks(io, config, { ...options, configPath: join(root, CONFIG_FILE) })),
     ...(config ? await reviewRuntimeChecks(io, root) : []),
     ...(await secretChecks(api, config, credentials)),

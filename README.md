@@ -46,13 +46,15 @@ GitHub is read with `GITHUB_TOKEN`, `GH_TOKEN` or the GitHub CLI login (`gh auth
 ```sh
 armada doctor                          # what this repository lacks, with the fix for each
 armada init --program-root ABC-1       # one pull request that adds it all
-armada skills update                  # update bundled skills locally on your current branch
+armada skill armada-worker            # read instructions from the installed CLI
+armada skill armada-coordinator MERGE.md # read a linked file
+armada skills update                  # update pointers and vendored skills on your branch
 ```
 
 `armada doctor` checks, in the repository you are in:
 
 - `armada.toml` exists and is valid;
-- the Armada skills (`armada-coordinator`, `armada-worker`, `armada-runtime-conductor`, `armada-runtime-claude-code`, `armada-runtime-herdr`, `ship-pr-dev`, `review-code-dev`, `capture-learning-tools`) are in `.agents/skills`, linked from `.claude/skills`, recorded in `skills-lock.json` (the [`npx skills`](https://github.com/vercel-labs/skills) format), and match this version of Armada;
+- the five `armada-*` skills are discovery pointers in `.agents/skills`, linked from `.claude/skills`; their descriptions trigger Claude Code and Codex to run `armada skill <name> [<file>]` and follow the installed CLI version. `skills-lock.json` records their pointer hashes with `sourceType: "armada-cli"` and a tagged GitHub source link. The scripted `ship-pr-dev`, `review-code-dev` and `capture-learning-tools` packages stay fully vendored and checked by their folder hashes;
 - `.conductor/settings.toml` has a `[scripts] setup` command;
 - `.gitignore` ignores `plans/ship-pr-dev/`;
 - this terminal is signed in to Armada, and to which organization: without a sign-in, `armada brief` gives workers no launch token, so each would need the keys in its environment;
@@ -62,6 +64,8 @@ armada skills update                  # update bundled skills locally on your cu
 - with Conductor profiles in `armada.toml`, the `conductor` command is found: on PATH, or inside the macOS app at `/Applications/Conductor.app/Contents/Resources/bin/conductor`, with the fix that puts it on PATH.
 
 Each problem is an error or a warning, with its fix. A missing skill, or a CLI older than Armada expects, is an error: workers cannot run without it. A skill that differs from this Armada version, a missing ignore line, a missing sign-in or a leftover key is a warning. Doctor exits 1 when there is an error. `--json` prints the same report as JSON.
+
+After the one-time pointer conversion, instruction-only Armada releases need no setup PR or project CI run. Doctor and status compare pointers, so only a discovery description change (or a missing or edited pointer) needs a setup update. The source link keeps its recorded tag until the pointer changes. Workers install the brief's pinned version before reading their skill; if `armada skill` is missing, install that version first. The command works offline, without sign-in or a checkout.
 
 The shipping skills include every helper, reference, eval, companion manifest and license.
 `armada doctor` also checks Python 3.9+, Git 2.41+ and the checksum-pinned OCR 1.12.1
@@ -74,11 +78,13 @@ vendored `review-code-dev` setup notes for supported platforms and exact fixes.
 `armada init` fixes the repository setup in one go:
 
 1. It creates the missing Linear labels (a missing group goes in the team of the program root).
-2. It builds the missing or outdated files on a fresh checkout of the default branch, commits them on the branch `armada/init-<version>` and opens a pull request with `gh`. Your own checkout is not touched. Running it again rebuilds that branch and updates the same pull request. When the default branch already has everything, no pull request is opened.
+2. It builds the missing or outdated files on a fresh checkout of the default branch, commits them on the stable branch `armada/setup` and opens a pull request with `gh`. Your own checkout is not touched. Running it again, including with a newer CLI version, rebuilds that branch and updates the same open pull request. The first run replaces legacy `armada/init-*` pull requests, closing each with a link to the replacement. When the default branch already has everything, no pull request is opened.
 3. It registers the project (slug, name, repository, program root) on Armada, for the organization the terminal is signed in to, so `armada status --all` and the dashboard list it. A slug another organization already holds is refused.
 
+`armada init --merge` waits for the same checks as `armada merge <n> --no-ticket --wait` and merges the setup pull request itself. It refuses changes outside `.agents/skills/**`, `.claude/skills/**`, `skills-lock.json`, `.conductor/settings.toml`, `.claude/settings.json` and `.gitignore`; `armada.toml` is allowed only when the default branch has none.
+
 To update the bundled skills on an existing ticket branch, run `armada skills update`.
-It uses init's vendoring rules for skills, links, `skills-lock.json` and the shipping
+It uses init's pointer and vendoring rules for skills, links, `skills-lock.json` and the shipping
 artifact ignore, in the current checkout. It requires Git, but no sign-in, Linear
 key or network. Review and commit its changes yourself; it does not open a setup PR
 or edit `armada.toml`, Conductor scripts or Claude hooks. It replaces locally edited
@@ -240,6 +246,12 @@ armada merge 35 --no-ticket # a pull request no ticket owns: armada init's, a re
 - When that database is unreachable, a banner says so and the view falls back to the last readings the server holds, refreshed from Linear and GitHub.
 - The interface is in English or French (`ARMADA_DASHBOARD_LANGUAGE`, or the EN/FR switch).
 
+**Owner alerts in chat.** With accounts and `ARMADA_SECRETS_KEY`, an owner or admin opens Organization > Notifications, saves a public HTTPS webhook and clicks **Send a test**. V1 has one channel per organization, optionally filtered to a project. Slack format posts `{"text":"…"}` to Slack-compatible receivers (including Discord's `/slack` URL); JSON posts `{schema:1,kind:"alert",organization,items:[{key,kind,project,ticket,title,url}],text}` and signs the exact body with `x-armada-signature: sha256=<HMAC-SHA256>`. For JSON, enter a signing secret of at least 16 characters that your receiver also knows. The address and signing secret are sealed in the vault, write-only and never released to terminals. Only titles and links are sent.
+
+Alerts use the same owner items as browser notifications: work or merges to validate, escalated questions, and stopped coordinators with items waiting. Ticks run after fleet traffic and dashboard polls, throttled to once per minute per project, and read stored snapshots only. The outbox deduplicates across instances and claims retries too; a failed item gets at most five attempts. Ten consecutive failures pause the channel, as do HTTP 404/410 immediately; saving resumes it. Quiet-hour arrivals are retained for the next summary rather than posted as delayed alerts (summary scheduling is separate work).
+
+**Optional scheduler, off by default.** `GET /api/cron/owner` requires `Authorization: Bearer <CRON_SECRET>`. Production ships with no enabled `crons` entry. Without a scheduler, a coordinator that stops with no worker in flight is noticed on the next fleet call or dashboard poll. To enable Vercel Cron deliberately, set `CRON_SECRET` in the deployment and add `"crons": [{"path":"/api/cron/owner","schedule":"*/15 * * * *"}]` to `packages/dashboard/vercel.json`, then redeploy. Every 15 minutes requires a paid plan; the free plan allows a daily schedule such as `"0 9 * * *"`. The endpoint never refreshes Linear or GitHub and does nothing under the shared-password gate.
+
 Try it locally with synthetic data and no key:
 
 ```sh
@@ -382,7 +394,7 @@ armada logout    # revokes this terminal's session and removes it from the machi
 
 - A coordinator without a browser (a cloud workspace, CI) uses an organization API key instead: an owner creates it on the Organization page (it is shown once), and the coordinator sets `ARMADA_API_KEY`, or stores it with `armada login --api-key` (hidden prompt, or standard input: `printf %s "$KEY" | armada login --api-key`; never on the command line). `ARMADA_API_KEY` in the environment wins over what `armada login` stored. Revoking the key signs the coordinator out.
 - The session token or key is kept in the credentials file below (mode 0600) and never printed; `armada auth status` says how the terminal is signed in, without it. A session lasts 30 days and is renewed while in use.
-- A worker signs in with the launch token of its launch message, as its first command: `armada login --launch-token <token>` (plus `--api-url <url>` for a self-hosted Armada, which the brief adds). The worker session it gets is kept per ticket in the credentials file and signs in that ticket's `claim`, `report`, `ask` and `release` only; each of them asks Armada for its keys, and stops with Armada's reason once the session is revoked (Organization > Workers) or ended (`armada release`, or the coordinator's `armada merge`). It lasts while the worker keeps reporting, up to three days idle.
+- A worker signs in with the launch token of its launch message, as its first authenticated command: `armada login --launch-token <token>` (plus `--api-url <url>` for a self-hosted Armada, which the brief adds). The worker session it gets is kept per ticket in the credentials file and signs in that ticket's `claim`, `report`, `ask` and `release` only; each of them asks Armada for its keys, and stops with Armada's reason once the session is revoked (Organization > Workers) or ended (`armada release`, or the coordinator's `armada merge`). It lasts while the worker keeps reporting, up to three days idle.
 - Commands that need a sign-in say so and name `armada login` as the next step; so does an expired session or a revoked key.
 - The CLI talks to `https://armada.thevibecompany.co`. A self-hosted Armada is named by `ARMADA_API_URL`, or `[api] url` in `config.toml` (https; plain http only for `localhost`). A stored sign-in is sent only to the Armada that issued it: pointing the CLI at another one asks for `armada login` there.
 - Until an Armada has accounts (it runs on the shared dashboard password), it refuses terminal sign-ins and says so; the keys below keep working as they do today.
@@ -514,7 +526,13 @@ profile = "debug"
 
 A missing or invalid key stops the command with a message naming it, for example `missing required key "tracker.program_root"`. This repository's own configuration is in [`armada.toml`](https://github.com/The-Vibe-Company/armada/blob/main/armada.toml).
 
-The program follows one convention: specs are direct children of the root titled `Spec N/M — Name`, tickets are their sub-issues, and dependencies are Linear blocked-by relations. Agents declare their phase with a label from the phase group (`planning`, `awaiting-approval`, `implementing`, `shipping`, `blocked`, `ready-to-merge`) and start every comment with `Agent status: <phase> — <summary>`.
+The program follows one convention: specs are direct children of the root titled `Spec N — Name` or `Spec N/M — Name`, tickets are their sub-issues, and dependencies are Linear blocked-by relations. Both title forms are always read, including in mixed programs. Agents declare their phase with a label from the phase group (`planning`, `awaiting-approval`, `implementing`, `shipping`, `blocked`, `ready-to-merge`) and start every comment with `Agent status: <phase> — <summary>`.
+
+The coordinator creates a spec with `armada spec add "Search images"`. It appends after the largest spec number, uses the program root as parent, includes the **In short** template and prints the new issue's URL. The default `[tracker] spec_titles = "N"` keeps existing titles unchanged when appending. New project configurations write that setting; configurations without it also default to `"N"`.
+
+To insert in the middle, run `armada spec add "Search images" --at 5`: it displays the suffix renames and creates nothing. Repeat with `--apply` to rename 5→6 and so on, then create the new Spec 5. `armada spec renumber` previews a repair of gaps and duplicates in ordinal order (creation time, then issue identifier break ties); `--apply` applies it and normalizes all titles to the configured style.
+
+**Projects whose own rules require N/M:** set `[tracker] spec_titles = "N/M"` before using these commands. Adding then updates every total, and requires `--apply` even when appending. In default N mode, inserting preserves any legacy denominators rather than bumping them; `renumber --apply` removes them. Writes run one at a time and stop on the first failure, listing the unconfirmed renames and creation. Inspect Linear before retrying, since a timed-out write may have arrived; `renumber` can preview a repair. Worker sessions cannot run `armada spec`.
 
 ## Develop
 
@@ -529,7 +547,7 @@ bun run verify          # lint, typecheck, tests
 
 When changing a package under `skills/`, run `bun run skills:bundle` to regenerate
 the text payload included in the published Node bundle, then `bun run armada skills
-update` to refresh this repository's vendored copies. The bundle test compares all
+update` to refresh this repository's pointers and vendored packages. The bundle test compares all
 source skill files byte for byte, including nested helpers and license notices.
 
 See [AGENTS.md](https://github.com/The-Vibe-Company/armada/blob/main/AGENTS.md) for the layout and the rules.
@@ -537,7 +555,7 @@ See [AGENTS.md](https://github.com/The-Vibe-Company/armada/blob/main/AGENTS.md) 
 ## What it is made of
 
 - **`armada` CLI** (TypeScript). The coordinator and the workers call it to claim tickets, report progress, ask and answer questions, launch workers and merge.
-- **Skills** vendored into the managed repository by `armada init`: the coordinator loop, the worker protocol, one runtime guide per runtime, and the shipping/review/learning workflow. They live in [`skills/`](skills).
+- **Skills** delivered by `armada init`: pointers to the CLI's coordinator, worker and runtime instructions, plus vendored shipping/review/learning packages. Their complete sources live in [`skills/`](skills).
 - **Linear** holds the plan: specs, tickets, dependencies and agent phases.
 - **The app's database** (Postgres, e.g. Neon) holds the accounts, the organizations' sealed keys and the fleet's live data: events, heartbeats, pending questions and locks. The CLI reaches it only through the Armada API, with its sign-in. Losing it loses live detail, never progress.
 - **Conductor Cloud** runs the workers in the first version. Other runtimes come later without changing the worker contract.
@@ -556,3 +574,26 @@ MIT. The bundled Alibaba review workflow retains Apache-2.0; each shipping skill
 includes its license and attribution notices.
 
 Persistent local workers: `armada status`, `inbox` and `watch` publish herdr state for the dashboard. `armada stop <ticket>` archives only a clean worktree whose commits are on its verified remote upstream, retaining its branch. See [`armada-runtime-herdr`](skills/armada-runtime-herdr/SKILL.md) for all four runtime operations.
+
+Workers can reserve a shared number, name or exclusive resource for their ticket through Armada:
+
+```sh
+armada reserve db-migration --next --floor 22  # prints the next number, e.g. 23
+armada reserve fixture --value sample --note "integration fixture"
+armada reserve release                      # exclusively holds this key
+armada reserve --list
+armada unreserve fixture
+```
+
+The ticket defaults to `ARMADA_TICKET`, the current branch, or the one stored worker session; `--ticket <id>` overrides it. A release or `unreserve` frees a value. A merge ends the reservation and keeps its value used permanently. Number allocation starts above the highest held or merged number and `--floor` (the last number already used in the repository). Released values can be explicitly reserved again; `--next` reuses them when they are above the remaining highest number. Allocation is atomic even when workers ask together.
+
+Declare keys in `armada.toml` to include them and their current holders in each launch brief:
+
+```toml
+[[reservations]]
+key = "db-migration"
+what = "the next DB_MIGRATIONS version"
+numbered = true
+```
+
+Declarations are optional documentation; undeclared keys can also be reserved. Reservations require Armada: if it is unavailable, ask the coordinator before choosing a value. After a lost response, check `armada reserve --list` before retrying, since the reservation may already have succeeded.

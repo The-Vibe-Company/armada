@@ -33,9 +33,9 @@ import {
 } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { reportHerdr } from "./herdr.ts";
-import { type Io, missingKey, UsageError } from "./io.ts";
+import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { sessionHandle } from "./login.ts";
-import { observeHerdr } from "./runtime.ts";
+import { observeRuntimes } from "./runtime.ts";
 
 /**
  * The project's live data through Armada, signed in as this terminal: a
@@ -85,7 +85,7 @@ export function statusLive(
         latestEvents: () => fleet.latestEvents(),
         heartbeats: () => fleet.heartbeatTimes(),
         launches: () => fleet.pendingLaunches(),
-        runtimeHandles: () => observeHerdr(io, fleet),
+        runtimeHandles: () => observeRuntimes(io, fleet, config),
       }
     : undefined;
 }
@@ -118,7 +118,7 @@ function context(io: Io, config: ArmadaConfig, credentials: Credentials): Worker
   const linearOpts = {
     apiKey: credentials.linearApiKey,
     labels: config.tracker.labels,
-    ...(io.fetch ? { fetch: io.fetch } : {}),
+    ...httpOptions(io),
   };
   const linear = io.linearWriter ? io.linearWriter(linearOpts) : createLinearWriter(linearOpts);
   const live = liveFleet(io, config, credentials);
@@ -140,7 +140,7 @@ function context(io: Io, config: ArmadaConfig, credentials: Credentials): Worker
             token,
             repository: config.github.repository,
             number,
-            ...(io.fetch ? { fetch: io.fetch } : {}),
+            ...httpOptions(io),
           })
       : null,
     readReviewThreads: token
@@ -150,7 +150,7 @@ function context(io: Io, config: ArmadaConfig, credentials: Credentials): Worker
               token,
               repository: config.github.repository,
               number,
-              ...(io.fetch ? { fetch: io.fetch } : {}),
+              ...httpOptions(io),
             })
           )?.reviewThreads ?? null
       : null,
@@ -295,6 +295,7 @@ export async function report(io: Io, config: ArmadaConfig, credentials: Credenti
       stage: a.options.stage ?? null,
       message,
       plan,
+      ...(a.options.paths !== undefined ? { paths: a.options.paths.split(/[,\n]/).map((p) => p.trim()) } : {}),
       pr: a.options.pr ?? null,
       sha: a.options.sha ?? null,
       shippedWith: a.options["shipped-with"] ?? null,

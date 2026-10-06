@@ -2,13 +2,14 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildStatus, type Fleet, herdrHarnessLabel, parseConfig, recordClaim } from "@armada/core";
+import { buildStatus, type Fleet, herdrHarnessLabel, parseConfig, recordClaim, recordMerge } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import { ARMADA_URL, DEMO_TOML, FakeLinear, fakeArmada, fakeClock, issue, NOW } from "../../core/test/support.ts";
 import { run } from "../src/cli.ts";
 import { herdrPhase, parseHerdrHandle, reportHerdr } from "../src/herdr.ts";
 import type { Io } from "../src/io.ts";
-import { observeHerdr } from "../src/runtime.ts";
+import { observeRuntimes } from "../src/runtime.ts";
+import { archiveClaimKey, claimRef } from "../src/runtimes/adapter.ts";
 
 const handle = { workspace: "w8", pane: "w8:p9", agent: "demo-7" };
 const rawHandle = JSON.stringify(handle);
@@ -219,11 +220,11 @@ test("unknown/runtime failures preserve reports instead of inventing a fresh wor
       return true;
     },
   } as unknown as Fleet;
-  await observeHerdr(f.io, fleet);
+  await observeRuntimes(f.io, fleet);
   expect(writes).toHaveLength(1);
   expect(writes[0]).toMatchObject({ state: "unknown" });
   f.change({ failure: true });
-  await observeHerdr(f.io, fleet);
+  await observeRuntimes(f.io, fleet);
   expect(writes).toHaveLength(1);
 });
 
@@ -527,4 +528,63 @@ test("DeepSeek profiles keep their model label while report, heartbeat, answer a
   });
   expect(await run(["stop", "DEMO-7"], f.io)).toBe(0);
   expect(f.calls).toContainEqual(["herdr", "worktree", "remove", "--workspace", handle.workspace]);
+});
+
+test.each([
+  "matching",
+  "matching-config",
+  "active-replacement",
+  "ended-replacement",
+  "no-key-replacement",
+  "wrong-pr",
+  "stale-key",
+])("merge recovery stops only the ended merged generation (%s)", async (scenario) => {
+  const f = await fixture();
+  if (scenario === "matching-config") {
+    f.io.cwd = "/outside";
+    const exec = f.io.exec;
+    f.io.exec = async (cmd, argv, opts) => {
+      if (cmd === "git" && argv.includes("--git-common-dir") && opts?.cwd === "/outside")
+        return { code: 128, stdout: "", stderr: "not a git repository" };
+      if (!exec) throw new Error("missing fixture exec");
+      return exec(cmd, argv, opts);
+    };
+  }
+  const url = "https://github.com/acme/widgets/pull/9";
+  const merged = await recordMerge(
+    f.store,
+    "widgets",
+    {
+      ticket: "DEMO-7",
+      number: 9,
+      url,
+      mergeCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    },
+    NOW,
+  );
+  if (!merged.handle) throw new Error("missing merged fixture claim");
+  const key = archiveClaimKey(claimRef(merged.handle));
+  if (scenario.includes("replacement")) {
+    await f.store.saveRuntimeHandle({
+      project: "widgets",
+      ticket: "DEMO-7",
+      runtime: "Herdr",
+      handle: rawHandle,
+      branch,
+      at: new Date(NOW.getTime() + 1000),
+    });
+    if (scenario === "ended-replacement" || scenario === "no-key-replacement")
+      await f.store.releaseRuntimeHandle("widgets", "DEMO-7", new Date(NOW.getTime() + 2000));
+  }
+  const args = ["stop", "DEMO-7", "--merged-pr", scenario === "wrong-pr" ? `${url}0` : url];
+  if (scenario === "matching-config") args.push("--config", "/work/widgets/armada.toml");
+  if (scenario !== "no-key-replacement") args.push("--claim-key", scenario === "stale-key" ? "0".repeat(64) : key);
+  expect(await run(args, f.io)).toBe(scenario.startsWith("matching") ? 0 : 1);
+  if (scenario.startsWith("matching"))
+    expect(f.calls).toContainEqual(["herdr", "worktree", "remove", "--workspace", "w8"]);
+  else {
+    expect(f.calls).toEqual([]);
+    expect(f.err.join(" ")).toContain("left its workspace untouched");
+  }
 });

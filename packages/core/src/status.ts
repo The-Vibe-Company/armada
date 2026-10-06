@@ -1,9 +1,18 @@
 // `armada status`: one JSON-serializable reading of the fleet, shared by the
 // CLI and, later, the dashboard.
 import { type ArmadaConfig, CONFIG_DEFAULTS } from "./config.ts";
-import { freshEvent, frontier, inFlight, type LaneFlag, type LaneOptions, waitingPullRequests } from "./fleet.ts";
+import {
+  freshEvent,
+  frontier,
+  inFlight,
+  type LaneFlag,
+  type LaneOptions,
+  mainHealth,
+  waitingPullRequests,
+} from "./fleet.ts";
 import { attachPullRequests, fetchForge } from "./github.ts";
 import { herdrHarnessLabel } from "./herdr-profile.ts";
+import type { HttpRetryOptions } from "./http.ts";
 import { type Fetch, fetchProgram, fetchProgramChanges } from "./linear.ts";
 import {
   followedLaunches,
@@ -17,7 +26,7 @@ import {
 } from "./live.ts";
 import { buildModel, isDone, type Model } from "./model.ts";
 import { describeRoute, routeProfile } from "./routing.ts";
-import type { AgentPhase, CiState, ForgeData, ProgramData, PullRequest, ShippingStage } from "./types.ts";
+import type { AgentPhase, CiState, ForgeData, MainHealth, ProgramData, PullRequest, ShippingStage } from "./types.ts";
 
 export const STATUS_SCHEMA_VERSION = 1;
 
@@ -112,6 +121,8 @@ export interface NotStartedLaunch extends PendingLaunch {
 }
 
 export interface StatusReport {
+  /** Default-branch CI; absent in older reports, null when unavailable. */
+  main?: MainHealth | null;
   progress?: { done: number; total: number };
   schemaVersion: typeof STATUS_SCHEMA_VERSION;
   generatedAt: string;
@@ -214,6 +225,7 @@ export function buildStatus({
 
   return {
     schemaVersion: STATUS_SCHEMA_VERSION,
+    main: forge?.main ? mainHealth(forge.main, config.gates.requiredChecks, forge.mainComplete) : null,
     progress: {
       done: m.program.filter((ticket) => m.isLeaf(ticket) && isDone(ticket)).length,
       total: m.program.filter(m.isLeaf).length,
@@ -351,7 +363,7 @@ export function mergedTickets(
 const byMergeTime = (a: PullRequest, b: PullRequest) =>
   (a.mergedAt ?? "").localeCompare(b.mergedAt ?? "") || a.number - b.number;
 
-export interface LoadStatusOptions {
+export interface LoadStatusOptions extends HttpRetryOptions {
   linearApiKey: string;
   /** Without a token the report still lists tickets; pull requests are null. */
   githubToken: string | null;
@@ -376,14 +388,14 @@ export interface StatusSources {
 /** Reads the project's program from Linear and its pull requests from GitHub. A GitHub failure is kept, not thrown. */
 export async function readStatusSources(
   config: ArmadaConfig,
-  opts: Pick<LoadStatusOptions, "linearApiKey" | "githubToken" | "fetch" | "now">,
+  opts: Pick<LoadStatusOptions, "linearApiKey" | "githubToken" | "fetch" | "now" | "sleep" | "random" | "onRetry">,
 ): Promise<StatusSources> {
   const now = opts.now ?? (() => new Date());
   const programP = fetchProgram({
     apiKey: opts.linearApiKey,
     rootId: config.tracker.programRoot,
     labels: config.tracker.labels,
-    ...(opts.fetch ? { fetch: opts.fetch } : {}),
+    ...opts,
     now,
   });
   const [program, forge] = await Promise.all([programP, readForge(config, opts, now)]);
@@ -401,7 +413,7 @@ function readForge(
   return fetchForge({
     token: opts.githubToken,
     repository: config.github.repository,
-    ...(opts.fetch ? { fetch: opts.fetch } : {}),
+    ...opts,
     now,
   }).then(
     (forge) => ({ forge, forgeError: null }),
@@ -424,7 +436,7 @@ export async function refreshStatusSources(
   config: ArmadaConfig,
   previous: StatusSources,
   ask: SourcesRefresh,
-  opts: Pick<LoadStatusOptions, "linearApiKey" | "githubToken" | "fetch" | "now">,
+  opts: Pick<LoadStatusOptions, "linearApiKey" | "githubToken" | "fetch" | "now" | "sleep" | "random" | "onRetry">,
 ): Promise<StatusSources> {
   const now = opts.now ?? (() => new Date());
   const programP =
@@ -437,7 +449,7 @@ export async function refreshStatusSources(
           previous: previous.program,
           since: ask.linearSince,
           ...(ask.touched ? { touched: ask.touched } : {}),
-          ...(opts.fetch ? { fetch: opts.fetch } : {}),
+          ...opts,
           now,
         });
   const forgeP = ask.forge

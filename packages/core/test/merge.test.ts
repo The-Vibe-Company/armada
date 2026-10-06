@@ -169,10 +169,13 @@ function setup(o: { live?: ReturnType<typeof tempFleet> | null; toml?: string; h
         ? { fleet: o.live.fleet, warning: null }
         : { fleet: null, warning: o.down ? "Armada unreachable (connection refused)" : "not signed in to Armada" },
     lockRequired: !!o.live || !!o.down,
-    inFlight: async () => [
-      { id: "DEMO-7", title: "Share a list", phase: "ready-to-merge", runtime: "Conductor" },
-      { id: "DEMO-8", title: "Rename a list", phase: "implementing", runtime: "Claude Code" },
-    ],
+    afterRead: async () => ({
+      inFlight: [
+        { id: "DEMO-7", title: "Share a list", phase: "ready-to-merge", runtime: "Conductor" },
+        { id: "DEMO-8", title: "Rename a list", phase: "implementing", runtime: "Claude Code" },
+      ],
+      unblocked: null,
+    }),
     holder: o.holder ?? "coordinator-a",
     installedSkill: async (name) => name === "armada-runtime-conductor",
     now: () => NOW,
@@ -293,6 +296,9 @@ describe("the checklist refuses, naming the rule", () => {
 describe("armada merge", () => {
   test("a dry run checks everything, reports hints and writes nothing", async () => {
     const s = setup();
+    s.ctx.afterRead = async () => {
+      throw new Error("a dry run must not read after closing");
+    };
     s.forge.diffText = [
       "diff --git a/src/lists.ts b/src/lists.ts",
       "--- a/src/lists.ts",
@@ -311,6 +317,23 @@ describe("armada merge", () => {
     expect(out.hints).toEqual(["`shareList`, removed from src/lists.ts, still appears on main in src/menu.ts"]);
     expect(out.lines.at(-1)).toBe("Dry run: nothing was merged.");
     expect([s.forge.merges, s.linear.writes]).toEqual([[], []]);
+    expect(out.unblocked).toBeNull();
+  });
+
+  test("a failed post-close read warns without turning a confirmed merge into a failure", async () => {
+    const s = setup();
+    s.ctx.afterRead = async (ticket) => {
+      expect(ticket).toBe("DEMO-7");
+      expect(s.linear.get(ticket as string).statusType).toBe("completed");
+      throw new Error("Linear unavailable");
+    };
+    const out = await mergePullRequest(s.ctx, { pr: 9 });
+    expect(out.merged).toBe(true);
+    expect(out.unblocked).toBeNull();
+    expect(out.workersListed).toBe(false);
+    expect(out.warnings).toContain(
+      "could not list the workers in flight and unblocked tickets (Linear unavailable); run armada status",
+    );
   });
 
   test("merges pinned to the handed-back SHA, closes the ticket and lists who to tell", async () => {
@@ -356,7 +379,14 @@ describe("armada merge", () => {
     expect(out.workers).toEqual([
       { ticket: "DEMO-8", title: "Rename a list", phase: "implementing", runtime: "Claude Code", handle: "ws-2" },
     ]);
-    expect(out.archive).toEqual({ runtime: "Conductor", handle: "ws-1/s-1", guide: "armada-runtime-conductor" });
+    expect(out.archive).toMatchObject({
+      runtime: "Conductor",
+      handle: "ws-1/s-1",
+      guide: "armada-runtime-conductor",
+      source: "armada",
+      claim: { ticket: "DEMO-7", handle: "ws-1/s-1", releasedAt: NOW.toISOString() },
+      open: [{ ticket: "DEMO-8", handle: "ws-2", releasedAt: null }],
+    });
     expect(out.warnings).toEqual([]);
     expect(await db.openInboxItems({ project: "widgets", recipient: "coordinator" })).toEqual([]);
     expect((await db.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
@@ -931,9 +961,9 @@ describe("armada merge --no-ticket", () => {
     expect([s.forge.merges, s.linear.writes]).toEqual([[{ number: 9, sha: HEAD }], []]);
 
     init(s, { state: "open", checks: [{ name: "test", state: "failure" }] });
-    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true }))).toContain(
-      `#9 cannot be merged:\n  - on head 0123456: required check "test" is failure`,
-    );
+    const red = await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true }));
+    expect(red).toContain(`#9 cannot be merged:\n  - on head 0123456: required check "test" is failure`);
+    expect(red).toContain("Next: armada ci why 9");
   });
 
   test("merges a release pull request on which no CI ran, with a note, once GitHub had time to start one", async () => {
@@ -1128,4 +1158,24 @@ describe("merge lease", () => {
       false,
     ]);
   });
+});
+
+test("main red is an informative merge note and health read failures do not block", async () => {
+  const s = setup();
+  s.ctx.forge.mainHealth = async () => ({
+    branch: "main",
+    head: BASE,
+    state: "red",
+    redSince: { sha: BASE, pr: 17, at: NOW.toISOString(), failing: ["test"] },
+    fixRunning: null,
+    redBeyondWindow: false,
+  });
+  const out = await mergePullRequest(s.ctx, { pr: 9, dryRun: true });
+  expect(out.lines).toContain("main red since #17 (test failing on fedcba9)");
+  expect(s.forge.merges).toEqual([]);
+  s.ctx.forge.mainHealth = async () => {
+    throw new Error("synthetic outage");
+  };
+  const unavailable = await mergePullRequest(s.ctx, { pr: 9, dryRun: true });
+  expect(unavailable.lines).toContain("default-branch CI could not be read; check it on GitHub");
 });

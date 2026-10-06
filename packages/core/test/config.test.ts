@@ -13,6 +13,19 @@ const problemsOf = (text: string) => {
 };
 
 describe("armada.toml", () => {
+  test("spec title styles default to N, accept totals explicitly, and reject other values", () => {
+    expect(parseConfig(DEMO_TOML).tracker.specTitles).toBe("N");
+    expect(parseConfig(DEMO_TOML.replace("[tracker]", '[tracker]\nspec_titles = "N/M"')).tracker.specTitles).toBe(
+      "N/M",
+    );
+    for (const value of ['"M"', "1", '"n"'])
+      expect(problemsOf(DEMO_TOML.replace("[tracker]", `[tracker]\nspec_titles = ${value}`))).toContain(
+        '"tracker.spec_titles" must be "N" or "N/M"',
+      );
+    expect(
+      configTemplate({ name: "Widgets", slug: "widgets", programRoot: "DEMO-1", repository: "acme/widgets" }),
+    ).toContain('spec_titles = "N"');
+  });
   test("silence and quiet thresholds are independently configurable positive minutes", () => {
     const configured = parseConfig(`${DEMO_TOML}\n[policy]\nsilence_minutes = 12\nquiet_minutes = 50\n`);
     expect([configured.policy.silentAfterMinutes, configured.policy.quietAfterMinutes]).toEqual([12, 50]);
@@ -25,6 +38,7 @@ describe("armada.toml", () => {
       project: { name: "Widgets", slug: "widgets" },
       tracker: {
         programRoot: "DEMO-1",
+        specTitles: "N",
         language: "en",
         readyLabel: "ready-for-agent",
         parkedLabel: "parked",
@@ -35,6 +49,7 @@ describe("armada.toml", () => {
         },
       },
       github: { repository: "acme/widgets" },
+      ci: { failurePatterns: [] },
       gates: { requiredChecks: [], localCommands: [] },
       policy: {
         attachmentsPerTicket: 20,
@@ -50,6 +65,7 @@ describe("armada.toml", () => {
         mergeApproval: null,
         validations: [],
       },
+      reservations: [],
       brief: { extra: null },
       secrets: { names: [] },
       conductor: { defaultProfile: null, profiles: {}, routing: [] },
@@ -204,6 +220,24 @@ describe("armada.toml", () => {
         { labels: ["Bug"], profile: "debug" },
       ],
     });
+  });
+
+  test("native Conductor project and base overrides are optional and reject invalid ids or branches", () => {
+    expect(
+      parseConfig(`${DEMO_TOML}\n[conductor]\nproject_id = "project-1"\nbase_branch = "release/widget"`).conductor,
+    ).toMatchObject({ projectId: "project-1", baseBranch: "release/widget" });
+    for (const branch of ["release/.hidden", "topic.lock/child", "/topic", ".hidden"]) {
+      expect(
+        problemsOf(`${DEMO_TOML}\n[conductor]\nbase_branch = "${branch}"`).some((p) =>
+          p.includes("conductor.base_branch"),
+        ),
+      ).toBe(true);
+    }
+    for (const key of ["project_id", "base_branch"]) {
+      expect(
+        problemsOf(`${DEMO_TOML}\n[conductor]\n${key} = "-invalid name"`).some((p) => p.includes(`conductor.${key}`)),
+      ).toBe(true);
+    }
   });
 
   test("Conductor profiles need an agent, a model and an effort, and the default must exist", () => {
@@ -403,4 +437,15 @@ profile = "missing"
   test("broken TOML reports where it broke", () => {
     expect(problemsOf("[project\nname = 1")[0]).toMatch(/^not valid TOML \(line 1, column \d+\)$/);
   });
+});
+
+test("declared reservation keys are optional, descriptive and unique", () => {
+  const declaration = '\n[[reservations]]\nkey = "db-migration"\nwhat = "the next schema version"\nnumbered = true\n';
+  expect(parseConfig(DEMO_TOML + declaration).reservations).toEqual([
+    { key: "db-migration", what: "the next schema version", numbered: true },
+  ]);
+  expect(problemsOf(DEMO_TOML + declaration + declaration).join(" ")).toContain("repeats db-migration");
+  expect(problemsOf(DEMO_TOML + declaration.replace("numbered = true", 'numbered = "yes"')).join(" ")).toContain(
+    'numbered" must be true or false',
+  );
 });

@@ -128,11 +128,39 @@ export interface ProgramData {
   warnings: string[];
 }
 
+/** A default-branch commit, newest first in the forge reading. */
+export interface MainCommit {
+  branch: string;
+  sha: string;
+  at: string;
+  headline: string;
+  ci: CiState;
+  checks: { name: string; state: CiState }[];
+  /** False when GitHub truncated the check contexts. */
+  checksComplete?: boolean;
+}
+
+export interface MainHealth {
+  branch: string;
+  /** Actual branch tip, including an unchecked release commit. */
+  head: string;
+  /** State of the newest commit that ran checks; none when no commit did. */
+  state: "green" | "red" | "running" | "none";
+  redSince: { sha: string; pr: number | null; at: string; failing: string[] } | null;
+  fixRunning: { sha: string; pr: number | null } | null;
+  /** The oldest observed red is a lower bound; the start lies beyond the history window. */
+  redBeyondWindow: boolean;
+}
+
 /** Everything read from the forge for one repository. */
 export interface ForgeData {
   repo: string;
   fetchedAt: string;
   /** Open pull requests and recently closed ones. */
   prs: PullRequest[];
+  /** Absent in snapshots written before default-branch health was read. */
+  main?: MainCommit[];
+  /** True when the history reached the repository's first commit. */
+  mainComplete?: boolean;
   warnings: string[];
 }

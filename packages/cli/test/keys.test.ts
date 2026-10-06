@@ -6,7 +6,9 @@ import type { ServerCli } from "../../core/src/armada-api.ts";
 import type { Fetch } from "../../core/src/linear.ts";
 import { ARMADA_URL, DEMO_TOML, type FakeVault, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
+import { loadCredentials } from "../src/auth.ts";
 import { run } from "../src/cli.ts";
+import { buildDoctor, renderDoctor } from "../src/doctor.ts";
 import type { Io } from "../src/io.ts";
 
 // Canary secrets: no output may ever contain them.
@@ -33,7 +35,7 @@ async function machine(over: Partial<FakeVault> = {}, env: Record<string, string
   let cli: ServerCli | undefined;
   const armada = fakeArmada({
     token: SESSION,
-    polls: ["approve"],
+    polls: ["approve", "approve"],
     vault,
     get cli() {
       return cli;
@@ -41,8 +43,11 @@ async function machine(over: Partial<FakeVault> = {}, env: Record<string, string
   });
   const linear = recordedFetch();
   let down = false;
+  let now = NOW;
+  const requests: string[] = [];
   const fetch: Fetch = async (u, init) => {
     if (!u.startsWith(ARMADA_URL)) return linear.fetch(u, init);
+    requests.push(u);
     if (down) throw new TypeError("fetch failed");
     return armada.fetch(u, init);
   };
@@ -55,7 +60,7 @@ async function machine(over: Partial<FakeVault> = {}, env: Record<string, string
     stderr: (t) => out.push(t),
     ghToken: () => null,
     fetch,
-    now: () => NOW,
+    now: () => now,
     sleep: async () => {},
     interactive: true,
   };
@@ -66,6 +71,10 @@ async function machine(over: Partial<FakeVault> = {}, env: Record<string, string
     armada,
     linear,
     credentials,
+    requests,
+    advance: (minutes: number) => {
+      now = new Date(now.getTime() + minutes * 60_000);
+    },
     armadaDown: (value: boolean) => {
       down = value;
     },
@@ -151,24 +160,109 @@ describe("the organization's keys from Armada", () => {
     expect(m.asked()).toHaveLength(2);
   });
 
-  test("Armada unreachable, or the sign-in revoked: a warning, then the machine's keys", async () => {
+  test("Armada unreachable: one warning an hour, no keys requests for five minutes, recovery clears the failure", async () => {
     const m = await machine();
     expect(await run(["login"], m.io)).toBe(0);
     m.printed();
     await writeFile(m.credentials, `${await readFile(m.credentials, "utf8")}LINEAR_API_KEY=lin_api_local\n`);
+    m.requests.splice(0);
 
     m.armadaDown(true);
+    for (let command = 0; command < 10; command++) {
+      expect(await run(["auth", "status"], m.io)).toBe(0);
+      const offline = m.printed();
+      expect(offline.includes("! Armada gave no keys")).toBe(command === 0);
+      expect(offline).toMatch(/LINEAR_API_KEY\s+set\s+credentials file/);
+      expect(offline).toContain("Last keys failure");
+    }
+    // One logical keys read, with the existing safe transport retry.
+    expect(m.requests.filter((u) => u.endsWith("/credentials"))).toHaveLength(2);
+    expect(await run(["auth", "status", "--json"], m.io)).toBe(0);
+    const status = JSON.parse(m.printed());
+    expect(status.armadaKeys.lastFailure).toContain("unreachable");
+    expect(status.armadaKeys.lastFailureAt).toBe(NOW.toISOString());
+    const doctor = renderDoctor(await buildDoctor(m.io, version));
+    expect(doctor).toContain("LINEAR_API_KEY: credentials file");
+    expect(doctor).toContain(`Last keys failure at ${NOW.toISOString()}`);
+    expect(doctor).toContain(status.armadaKeys.lastFailure);
+    m.printed();
+
+    m.advance(5);
     expect(await run(["auth", "status"], m.io)).toBe(0);
-    const offline = m.printed();
-    expect(offline).toContain("! Armada gave no keys (Armada (armada.example.test) unreachable");
-    expect(offline).toMatch(/LINEAR_API_KEY\s+set\s+credentials file/);
+    expect(m.printed()).not.toContain("! Armada gave no keys");
+    expect(m.requests.filter((u) => u.endsWith("/credentials"))).toHaveLength(4);
+    m.advance(56);
+    expect(await run(["auth", "status"], m.io)).toBe(0);
+    expect(m.printed()).toContain("! Armada gave no keys");
+    expect(m.requests.filter((u) => u.endsWith("/credentials"))).toHaveLength(6);
 
     m.armadaDown(false);
-    m.armada.sessions.clear();
+    m.advance(5);
+    expect(await run(["auth", "status", "--json"], m.io)).toBe(0);
+    expect(JSON.parse(m.printed()).armadaKeys).toEqual({ lastFailure: null, lastFailureAt: null });
+    expect(m.asked()).toHaveLength(1);
+    m.armadaDown(true);
     expect(await run(["auth", "status"], m.io)).toBe(0);
-    const revoked = m.printed();
-    expect(revoked).toContain("Next: armada login");
-    expect(revoked).toMatch(/LINEAR_API_KEY\s+set\s+credentials file/);
+    expect(m.printed()).toContain("! Armada gave no keys");
+  });
+
+  test.each(["session", "api-key"])(
+    "a revoked sign-in warns once and a new %s login retries immediately",
+    async (method) => {
+      const m = await machine();
+      expect(await run(["login"], m.io)).toBe(0);
+      m.printed();
+      await writeFile(m.credentials, `${await readFile(m.credentials, "utf8")}LINEAR_API_KEY=lin_api_local\n`);
+      m.armada.sessions.clear();
+      for (let command = 0; command < 3; command++) {
+        expect(await run(["auth", "status"], m.io)).toBe(0);
+        const revoked = m.printed();
+        expect(revoked.includes("! Armada gave no keys")).toBe(command === 0);
+        expect(revoked).toContain("Next: armada login");
+        expect(revoked).toMatch(/LINEAR_API_KEY\s+set\s+credentials file/);
+      }
+      expect(m.asked()).toHaveLength(1);
+      const key = "armada_CANARY_repaired_api_key";
+      m.armada.keys.set(key, "coordinator");
+      m.io.prompt = async () => key;
+      expect(await run(method === "api-key" ? ["login", "--api-key"] : ["login"], m.io)).toBe(0);
+      m.printed();
+      expect(await run(["auth", "status", "--json"], m.io)).toBe(0);
+      const repaired = JSON.parse(m.printed());
+      expect(repaired.keys.find((k: { variable: string }) => k.variable === "LINEAR_API_KEY").source.kind).toBe(
+        "armada",
+      );
+      expect(repaired.armadaKeys).toEqual({ lastFailure: null, lastFailureAt: null });
+      expect(m.asked()).toHaveLength(2);
+    },
+  );
+
+  test.each([429, 500, 503])("HTTP %s with a local key backs off for an API-key sign-in", async (code) => {
+    const m = await machine({}, { ARMADA_API_KEY: "armada_CANARY_api_key" });
+    m.armada.keys.set("armada_CANARY_api_key", "coordinator");
+    await mkdir(dirname(m.credentials), { recursive: true });
+    await writeFile(m.credentials, "LINEAR_API_KEY=lin_api_local\n");
+    const transport = m.io.fetch as Fetch;
+    let attempts = 0;
+    m.io.fetch = async (url, init) => {
+      if (url.endsWith("/credentials")) {
+        attempts++;
+        return Response.json({ error: "keys temporarily unavailable" }, { status: code });
+      }
+      return transport(url, init);
+    };
+    for (let command = 0; command < 3; command++) {
+      expect(await run(["auth", "status"], m.io)).toBe(0);
+      expect(m.printed().includes("! Armada gave no keys")).toBe(command === 0);
+    }
+    // One logical broker probe: 429 is never retried; temporary server errors get three attempts.
+    const attemptsPerProbe = code === 429 ? 1 : 3;
+    expect(attempts).toBe(attemptsPerProbe);
+    // Losing the local key must not let remembered failures hide the real error.
+    await writeFile(m.credentials, "");
+    expect(await run(["status"], m.io)).toBe(1);
+    expect(m.printed()).toContain("keys temporarily unavailable");
+    expect(attempts).toBe(attemptsPerProbe * 2);
   });
 
   test("a CLI older than Armada expects stops on one line that upgrades it, whatever keys the machine has", async () => {
@@ -198,6 +292,29 @@ describe("the organization's keys from Armada", () => {
     expect(await run(["auth", "status"], configured.io)).toBe(0);
     expect(configured.asked()).toEqual([]);
     expect(configured.printed()).toMatch(/LINEAR_API_KEY\s+set\s+environment \(LINEAR_API_KEY\)/);
+  });
+
+  test("workers always ask Armada despite a remembered fallback and stop on a refusal", async () => {
+    const m = await machine();
+    expect(await run(["login"], m.io)).toBe(0);
+    await writeFile(m.credentials, `${await readFile(m.credentials, "utf8")}LINEAR_API_KEY=lin_api_local\n`);
+    m.armadaDown(true);
+    expect(await run(["auth", "status"], m.io)).toBe(0);
+    m.printed();
+    m.armadaDown(false);
+    m.armada.launches.set("armada_launch_CANARY_9", { project: "widgets", ticket: "DEMO-7", used: false });
+    expect(await run(["login", "--launch-token", "armada_launch_CANARY_9", "--api-url", ARMADA_URL], m.io)).toBe(0);
+    m.printed();
+    const scope = { worker: { command: "report", project: "widgets", ticket: () => "DEMO-7" } };
+    for (let command = 0; command < 2; command++) {
+      const loaded = await loadCredentials(m.io, scope);
+      expect(loaded.credentials.sources.linearApiKey?.kind).toBe("armada");
+    }
+    expect(m.asked()).toHaveLength(2);
+    m.armada.end("DEMO-7", "revoked");
+    await expect(loadCredentials(m.io, scope)).rejects.toThrow("revoked");
+    expect(m.asked()).toHaveLength(3);
+    m.printed();
   });
 
   test("a worker session of another project is refused before any key is asked or anything is written", async () => {

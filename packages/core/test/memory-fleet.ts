@@ -10,12 +10,14 @@ import type {
   Lease,
   PendingLaunch,
   ProjectRecord,
+  Reservation,
   RuntimeHandle,
   SessionRecord,
   StoredInboxItem,
   WorkerProfile,
 } from "../src/live.ts";
-import { unusedLaunchExpired } from "../src/live.ts";
+import { FOLLOW_EVENT_KINDS, unusedLaunchExpired } from "../src/live.ts";
+import { OBSERVABLE_RUNTIMES, runtimeNameOf } from "../src/runtime.ts";
 import type { Validation } from "../src/validations.ts";
 
 interface EventRow extends Omit<EventInput, "at"> {
@@ -53,6 +55,7 @@ export function memoryFleet(): FleetStore & {
   const projects = new Map<string, ProjectRecord>();
   const events: EventRow[] = [];
   const handles = new Map<string, HandleRow>();
+  const paths = new Map<string, string[]>();
   const profiles = new Map<string, WorkerProfile>();
   const items: ItemRow[] = [];
   const leases = new Map<string, Lease>();
@@ -61,7 +64,15 @@ export function memoryFleet(): FleetStore & {
   const sessions: SessionRecord[] = [];
   const launches: LaunchRow[] = [];
   const validations: Validation[] = [];
+  const heldResources: Reservation[] = [];
   const copy = (v: Validation): Validation => structuredClone(v);
+  const endReservations = (project: string, ticket: string, at: Date, merged: boolean) => {
+    for (const r of heldResources)
+      if (r.project === project && r.ticket === ticket && !r.endedAt) {
+        r.endedAt = at.toISOString();
+        r.merged = merged;
+      }
+  };
 
   const stored = (r: ItemRow): StoredInboxItem => {
     const { requestQuestion, requestProfile, requestPr, requestValidation, ...rest } = r;
@@ -85,10 +96,25 @@ export function memoryFleet(): FleetStore & {
     const { resolvedAt: _a, resolution: _b, ...rest } = stored(r);
     return rest;
   };
-  const handleOf = (h: HandleRow): RuntimeHandle => ({
-    ...h,
-    profile: profiles.get(key(h.project, h.ticket))?.name ?? null,
-  });
+  const handleOf = (h: HandleRow): RuntimeHandle => {
+    const lastAnsweredAt = items
+      .filter(
+        (i) =>
+          i.project === h.project &&
+          i.ticket === h.ticket &&
+          ["question", "plan", "decision"].includes(i.kind) &&
+          i.resolvedAt &&
+          i.resolvedAt >= h.claimedAt,
+      )
+      .map((i) => i.resolvedAt)
+      .sort()
+      .at(-1);
+    return {
+      ...h,
+      profile: profiles.get(key(h.project, h.ticket))?.name ?? null,
+      ...(lastAnsweredAt ? { lastAnsweredAt } : {}),
+    };
+  };
   const insert = (r: Omit<ItemRow, "id" | "resolvedAt" | "resolution">) => {
     const id = items.length + 1;
     items.push({ ...r, id, resolvedAt: null, resolution: null });
@@ -109,6 +135,45 @@ export function memoryFleet(): FleetStore & {
     launches,
     validations,
 
+    async reserve(input) {
+      const held = heldResources.filter(
+        (r) => r.project === input.project && r.key === input.key && (!r.endedAt || r.merged),
+      );
+      const value = input.next
+        ? (
+            held.reduce(
+              (max, r) => (/^[+-]?[0-9]+$/.test(r.value) && BigInt(r.value) > max ? BigInt(r.value) : max),
+              BigInt(input.floor ?? 0),
+            ) + 1n
+          ).toString()
+        : (input.value ?? "");
+      const holder = held.find((r) => r.value === value);
+      if (holder) return { reserved: false, holder: structuredClone(holder) };
+      const reservation: Reservation = {
+        id: heldResources.length + 1,
+        project: input.project,
+        key: input.key,
+        value,
+        ticket: input.ticket,
+        note: input.note ?? null,
+        reservedAt: input.at.toISOString(),
+        endedAt: null,
+        merged: false,
+      };
+      heldResources.push(reservation);
+      return { reserved: true, reservation: structuredClone(reservation) };
+    },
+    async reservations(project) {
+      return structuredClone(heldResources.filter((r) => r.project === project && (!r.endedAt || r.merged)));
+    },
+    async unreserve(input) {
+      const rows = heldResources.filter(
+        (r) =>
+          r.project === input.project && r.ticket === input.ticket && r.key === input.key && !r.endedAt && !r.merged,
+      );
+      for (const r of rows) r.endedAt = input.at.toISOString();
+      return rows.length;
+    },
     async ensureProject(p, at) {
       if (projects.has(p.slug)) return;
       const t = at.toISOString();
@@ -129,6 +194,28 @@ export function memoryFleet(): FleetStore & {
       return [...projects.values()].sort((a, b) => a.slug.localeCompare(b.slug));
     },
 
+    async saveTicketPaths(project, ticket, declared) {
+      paths.set(key(project, ticket), [...declared]);
+    },
+    async ticketPaths(project) {
+      return Object.fromEntries(
+        [...paths].filter(([k]) => k.startsWith(`${project}\n`)).map(([k, v]) => [k.slice(project.length + 1), [...v]]),
+      );
+    },
+    async deleteTicketPaths(project, ticket, guard) {
+      const h = handles.get(key(project, ticket));
+      if (guard?.absent && h) return;
+      if (
+        guard &&
+        !guard.absent &&
+        (!h ||
+          (guard.handle && h.handle !== guard.handle) ||
+          (guard.claimedAt && h.claimedAt !== new Date(guard.claimedAt).toISOString()) ||
+          (guard.workerSessionId && h.workerSessionId && h.workerSessionId !== guard.workerSessionId))
+      )
+        return;
+      paths.delete(key(project, ticket));
+    },
     async recordEvent(e) {
       events.push({ ...e, id: events.length + 1, at: e.at.toISOString() });
       if (e.kind === "report") {
@@ -155,6 +242,50 @@ export function memoryFleet(): FleetStore & {
         )
           out[e.ticket] = e.at;
       return out;
+    },
+    async eventsSince(project, q) {
+      const boundary = (e: EventRow, at: string, id: number) => e.at > at || (e.at === at && e.id > id);
+      const floor = new Date(Date.parse(q.afterAt) - 120_000).toISOString();
+      const recent = events
+        .filter(
+          (e) =>
+            e.project === project &&
+            q.kinds.includes(e.kind as never) &&
+            (!q.handoverOnly || e.kind !== "report" || e.phase === "ready-to-merge") &&
+            (!q.tickets || q.tickets.includes(e.ticket)) &&
+            e.at >= floor &&
+            !boundary(e, q.afterAt, q.afterId),
+        )
+        .sort((a, b) => b.id - a.id)
+        .slice(0, 500)
+        .map((e) => e.id);
+      return events
+        .filter(
+          (e) =>
+            e.project === project &&
+            FOLLOW_EVENT_KINDS.includes(e.kind as never) &&
+            q.kinds.includes(e.kind as never) &&
+            (!q.handoverOnly || e.kind !== "report" || e.phase === "ready-to-merge") &&
+            (!q.tickets || q.tickets.includes(e.ticket)) &&
+            e.at >= floor &&
+            (boundary(e, q.afterAt, q.afterId) || (q.seenIds && recent.includes(e.id) && !q.seenIds.includes(e.id))) &&
+            (!q.pageAfter || boundary(e, q.pageAfter.at, q.pageAfter.id)),
+        )
+        .sort((a, b) => a.at.localeCompare(b.at) || a.id - b.id)
+        .slice(0, q.limit ?? 200)
+        .map((e) => ({
+          id: e.id,
+          ticket: e.ticket,
+          kind: e.kind as "claim",
+          phase: e.phase ?? null,
+          shippingStage: e.shippingStage ?? null,
+          message: e.message ?? null,
+          runtime: e.runtime ?? null,
+          handle: e.handle ?? null,
+          prUrl: e.prUrl ?? null,
+          headSha: e.headSha ?? null,
+          at: e.at,
+        }));
     },
     async latestEvents(project, opts = {}) {
       const since = opts.since?.toISOString() ?? "";
@@ -302,8 +433,9 @@ export function memoryFleet(): FleetStore & {
     async observeRuntime(input) {
       const h = handles.get(key(input.project, input.ticket));
       if (
-        h?.runtime.toLowerCase() !== "herdr" ||
-        h.releasedAt ||
+        !h ||
+        !OBSERVABLE_RUNTIMES.includes(runtimeNameOf(h.runtime) as "herdr" | "conductor") ||
+        (h.releasedAt && input.state !== "gone") ||
         h.handle !== input.handle ||
         h.claimedAt !== input.claimedAt ||
         (h.runtimeState && h.runtimeState.at > input.at.toISOString())
@@ -317,17 +449,36 @@ export function memoryFleet(): FleetStore & {
         ...(sequence === undefined ? {} : { sequence }),
         state: input.state,
         at: input.at.toISOString(),
-        since: sameTransition
-          ? (h.runtimeState?.since ?? h.runtimeState?.at ?? input.at.toISOString())
-          : input.at.toISOString(),
+        since:
+          input.since ??
+          (sameTransition
+            ? (h.runtimeState?.since ?? h.runtimeState?.at ?? input.at.toISOString())
+            : input.at.toISOString()),
       };
       return true;
     },
     async stopRuntime(input) {
       const h = handles.get(key(input.project, input.ticket));
-      if (h?.runtime.toLowerCase() !== "herdr" || h.handle !== input.handle || h.claimedAt !== input.claimedAt)
+      if (
+        !h ||
+        !OBSERVABLE_RUNTIMES.includes(runtimeNameOf(h.runtime) as "herdr" | "conductor") ||
+        h.handle !== input.handle ||
+        h.claimedAt !== input.claimedAt
+      )
         return false;
-      if (!h.releasedAt) await this.releaseRuntimeHandle(input.project, input.ticket, input.at);
+      if (!h.releasedAt) {
+        await this.releaseRuntimeHandle(input.project, input.ticket, input.at);
+        await this.recordEvent({
+          project: input.project,
+          ticket: input.ticket,
+          kind: "release",
+          phase: "released",
+          runtime: h.runtime,
+          handle: h.handle,
+          message: "Runtime workspace archived",
+          at: input.at,
+        });
+      }
       return true;
     },
     async heartbeatTimes(project) {
@@ -366,10 +517,19 @@ export function memoryFleet(): FleetStore & {
       });
       return { active: true, claimedAt: handle.claimedAt };
     },
-    async releaseRuntimeHandle(project, ticket, at, guard) {
+    async releaseRuntimeHandle(project, ticket, at, guard, merged = false) {
       const h = handles.get(key(project, ticket));
+      if (guard?.absent) {
+        if (h) return false;
+        endReservations(project, ticket, at, merged);
+        return true;
+      }
       const guarded = !!(guard?.handle || guard?.claimedAt || guard?.workerSessionId);
-      if (guarded && !h) return !guard?.claimedAt;
+      if (guarded && !h) {
+        if (guard?.claimedAt) return false;
+        endReservations(project, ticket, at, merged);
+        return true;
+      }
       if (
         guarded &&
         h &&
@@ -391,6 +551,7 @@ export function memoryFleet(): FleetStore & {
           session.releasedAt = at.toISOString();
       if (h && !h.releasedAt) h.releasedAt = at.toISOString();
       profiles.delete(key(project, ticket));
+      endReservations(project, ticket, at, merged);
       return true;
     },
     async openRuntimeHandles(project) {
@@ -450,8 +611,9 @@ export function memoryFleet(): FleetStore & {
       });
     },
     async putPlan(i) {
-      if (open(i.project, i.ticket, "plan")) return;
-      await this.addInboxItem({ ...i, kind: "plan", recipient: "coordinator" });
+      const was = open(i.project, i.ticket, "plan");
+      if (was) Object.assign(was, { body: i.body, author: i.author, createdAt: i.at.toISOString() });
+      else await this.addInboxItem({ ...i, kind: "plan", recipient: "coordinator" });
     },
     async putHandBack(i) {
       const was = open(i.project, i.ticket, "hand-back");
@@ -585,11 +747,12 @@ export function memoryFleet(): FleetStore & {
             ),
         )
         .sort((a, b) => a.launchedAt.localeCompare(b.launchedAt))
-        .map(({ ticket, launchedAt, tokenUsedAt, tokenExpiresAt, handle }) => ({
+        .map(({ ticket, launchedAt, tokenUsedAt, tokenExpiresAt, runtime, handle }) => ({
           ticket,
           launchedAt,
           tokenUsedAt,
           tokenExpiresAt,
+          runtime,
           handle,
         }));
     },
