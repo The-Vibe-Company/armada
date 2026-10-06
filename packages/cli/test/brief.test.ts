@@ -660,6 +660,37 @@ describe("armada brief with a launch token", () => {
   });
 });
 
+test("briefs describe declared shared keys and show the project's current holders", async () => {
+  const toml = `${TOML}\n[[reservations]]\nkey = "db-migration"\nwhat = "the next schema version"\nnumbered = true\n`;
+  const b = briefIo(
+    { ...SECRETS, ARMADA_API_URL: ARMADA_URL, ARMADA_API_KEY: "armada_key_CANARY_reservations" },
+    BRIEF_RESPONSE,
+    {},
+    { "/work/widgets/armada.toml": toml },
+  );
+  const api = fakeArmada({ keys: { armada_key_CANARY_reservations: "reservations" } });
+  await api.store.reserve({
+    project: "widgets",
+    ticket: "DEMO-11",
+    key: "db-migration",
+    next: true,
+    floor: 22,
+    at: NOW,
+  });
+  const rest = b.io.fetch;
+  if (!rest) throw new Error("missing fetch fixture");
+  b.io.fetch = (url, init) => (url.startsWith(ARMADA_URL) ? api.fetch(url, init) : rest(url, init));
+  expect(await run(["brief", "DEMO-13", "--json"], b.io)).toBe(0);
+  const brief = JSON.parse(b.out());
+  expect(brief.prompt).toContain("## Shared resources");
+  expect(brief.prompt).toContain("db-migration: the next schema version");
+  expect(brief.prompt).toContain("db-migration = 23: DEMO-11");
+  expect(brief.sharedResources.holders[0].ticket).toBe("DEMO-11");
+  const offline = briefIo(SECRETS, BRIEF_RESPONSE, {}, { "/work/widgets/armada.toml": toml });
+  expect(await run(["brief", "DEMO-13", "--prompt"], offline.io)).toBe(0);
+  expect(offline.out()).toContain("Current holders unavailable: sign in with armada login");
+});
+
 test("a brief uses Armada's stored file inventory and declared paths, truncating PR files at 15", async () => {
   const { loadBrief, parseConfig } = await import("@armada/core");
   const b = briefIo();

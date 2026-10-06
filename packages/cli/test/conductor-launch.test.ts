@@ -218,6 +218,26 @@ async function fixture(toml = TOML) {
   };
 }
 
+test("Conductor launch briefs include shared keys and holders from the same brief input as herdr", async () => {
+  const f = await fixture(
+    `${TOML}\n[[reservations]]\nkey = "db-migration"\nwhat = "the next schema version"\nnumbered = true\n`,
+  );
+  await f.store.reserve({
+    project: "widgets",
+    key: "db-migration",
+    value: "27",
+    next: false,
+    floor: 0,
+    ticket: "DEMO-12",
+    note: null,
+    at: NOW,
+  });
+  expect(await f.launch()).toBe(0);
+  const prompt = f.calls.find((c) => c.args[2] === "create")?.input;
+  expect(prompt).toContain("db-migration: the next schema version");
+  expect(prompt).toContain("db-migration = 27: DEMO-12");
+});
+
 test("native launch routes the profile, sends the token and coordinator notes only on stdin, binds and prints ids", async () => {
   const f = await fixture();
   expect(await run(["launch", "DEMO-13", "--runtime", "conductor", "--notes", "notes.md", "--json"], f.io)).toBe(0);

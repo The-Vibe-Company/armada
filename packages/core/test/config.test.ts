@@ -65,6 +65,7 @@ describe("armada.toml", () => {
         mergeApproval: null,
         validations: [],
       },
+      reservations: [],
       brief: { extra: null },
       secrets: { names: [] },
       conductor: { defaultProfile: null, profiles: {}, routing: [] },
@@ -436,4 +437,15 @@ profile = "missing"
   test("broken TOML reports where it broke", () => {
     expect(problemsOf("[project\nname = 1")[0]).toMatch(/^not valid TOML \(line 1, column \d+\)$/);
   });
+});
+
+test("declared reservation keys are optional, descriptive and unique", () => {
+  const declaration = '\n[[reservations]]\nkey = "db-migration"\nwhat = "the next schema version"\nnumbered = true\n';
+  expect(parseConfig(DEMO_TOML + declaration).reservations).toEqual([
+    { key: "db-migration", what: "the next schema version", numbered: true },
+  ]);
+  expect(problemsOf(DEMO_TOML + declaration + declaration).join(" ")).toContain("repeats db-migration");
+  expect(problemsOf(DEMO_TOML + declaration.replace("numbered = true", 'numbered = "yes"')).join(" ")).toContain(
+    'numbered" must be true or false',
+  );
 });

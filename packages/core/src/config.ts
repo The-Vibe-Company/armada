@@ -82,6 +82,7 @@ export interface ArmadaConfig {
     /** `[[policy.validation]]` in file order: kinds of tickets whose work the owner validates before it goes on. */
     validations: ValidationRule[];
   };
+  reservations: { key: string; what: string; numbered: boolean }[];
   brief: {
     /** Repository path, relative to armada.toml, of a file every brief carries under "Project conventions"; null when unset. */
     extra: string | null;
@@ -679,6 +680,25 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     else problems.push('"tracker.spec_titles" must be "N" or "N/M"');
   }
 
+  const reservations: ArmadaConfig["reservations"] = [];
+  if (raw.reservations !== undefined && !Array.isArray(raw.reservations))
+    problems.push('"reservations" must be an array of tables');
+  for (const [i, row] of (Array.isArray(raw.reservations) ? raw.reservations : []).entries()) {
+    const path = `reservations.${i}`;
+    if (!isTable(row)) {
+      problems.push(`"${path}" must be a table`);
+      continue;
+    }
+    for (const key of Object.keys(row))
+      if (!["key", "what", "numbered"].includes(key)) problems.push(`"${path}.${key}" is unknown`);
+    const key = str(row, path, "key");
+    const what = str(row, path, "what");
+    if (key.length > 500) problems.push(`"${path}.key" has at most 500 characters`);
+    if (reservations.some((r) => r.key === key)) problems.push(`"${path}.key" repeats ${key}`);
+    if (row.numbered !== undefined && typeof row.numbered !== "boolean")
+      problems.push(`"${path}.numbered" must be true or false`);
+    reservations.push({ key, what, numbered: row.numbered === true });
+  }
   const config: ArmadaConfig = {
     project: {
       name: str(project, "project", "name"),
@@ -718,6 +738,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       mergeApproval,
       validations,
     },
+    reservations,
     brief: { extra },
     secrets: { names: secretNames },
     conductor: {
@@ -789,6 +810,12 @@ coordinator_minutes = 10 # an inbox item open longer than this shows "waiting fo
 # [[policy.validation]]
 # when = "a design ticket: a mockup, a visual direction or the look of a new screen"
 # then = "produce the design, attach it, ask the owner to validate it on Armada, and stop until they decide; never merge or build it on your own"
+
+# Declare the shared resources workers reserve through Armada (optional).
+# [[reservations]]
+# key = "db-migration"
+# what = "the next DB_MIGRATIONS version"
+# numbered = true
 
 [brief]
 # extra = "docs/worker-conventions.md"  # a file every worker brief carries under "Project conventions"
