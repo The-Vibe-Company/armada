@@ -241,6 +241,14 @@ const head = (t: string) => `${t}.version, ${t}.read_at, ${t}.full_at, ${t}.atte
 const HEAD = head("fleet_snapshots");
 
 /** The readings in the app's database, with `memory` as the cache of bodies this process already read. */
+/** One persisted reading on an existing connection, including inside a transaction. Never refreshes. */
+export async function storedSnapshot(db: Queryable, key: string): Promise<Snapshot | null> {
+  const rs = await db.query(`SELECT body, started_at FROM fleet_snapshots WHERE key = $1`, [key]);
+  const row = rs.rows[0];
+  const startedAt = date(row?.started_at);
+  return row?.body && startedAt ? { startedAt, ...bodyOf(row.body) } : null;
+}
+
 export function dbSnapshots(db: Database, memory: MemorySnapshots): SnapshotStore {
   /**
    * Keeps what the database gave. A copy this process already holds at a newer
