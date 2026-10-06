@@ -3,6 +3,8 @@ import { sinceSummary } from "../src/catchup.ts";
 // Postgres store (`packages/dashboard/lib/fleet-store.ts`, tested on PGlite),
 // with its unique rules (one open plan, hand-back and launch request per
 // ticket, one open answer per question) and its atomic lease.
+
+import { type Job, jobIsOpen } from "../src/jobs.ts";
 import type {
   CoordinatorPresence,
   EventInput,
@@ -56,6 +58,7 @@ export function memoryFleet(): FleetStore & {
   launches: LaunchRow[];
   validations: Validation[];
 } {
+  const jobs: Job[] = [];
   const queue: QueueEntry[] = [];
   const projects = new Map<string, ProjectRecord>();
   const events: EventRow[] = [];
@@ -173,6 +176,57 @@ export function memoryFleet(): FleetStore & {
     launches,
     validations,
 
+    async startJob(input) {
+      const job: Job = {
+        id: jobs.length + 1,
+        project: input.project,
+        ticket: input.ticket,
+        name: input.name,
+        ref: null,
+        state: "starting",
+        progress: null,
+        eta: null,
+        startedBy: input.startedBy,
+        startedAt: input.at.toISOString(),
+        observedAt: input.at.toISOString(),
+        finishedAt: null,
+      };
+      jobs.push(job);
+      return structuredClone(job);
+    },
+    async getJob(project, id) {
+      return structuredClone(jobs.find((j) => j.project === project && j.id === id) ?? null);
+    },
+    async listJobs(project, q) {
+      return structuredClone(
+        jobs
+          .filter(
+            (j) =>
+              j.project === project &&
+              (!q.ticket || j.ticket === q.ticket) &&
+              (!q.open || jobIsOpen(j)) &&
+              (q.id === undefined || q.id === j.id),
+          )
+          .sort((a, b) => b.id - a.id),
+      );
+    },
+    async observeJob(input) {
+      const job = jobs.find((j) => j.project === input.project && j.id === input.id && j.ticket === input.ticket);
+      if (!job) return null;
+      if (
+        jobIsOpen(job) &&
+        input.at.getTime() >= Date.parse(job.observedAt) &&
+        (input.ref === undefined || job.ref === null || input.ref === job.ref)
+      ) {
+        if (job.ref === null && input.ref !== undefined) job.ref = input.ref;
+        job.state = input.state;
+        job.progress = input.progress ?? null;
+        job.eta = input.state === "running" ? (input.eta ?? null) : null;
+        job.observedAt = input.at.toISOString();
+        if (!jobIsOpen(job)) job.finishedAt = input.at.toISOString();
+      }
+      return structuredClone(job);
+    },
     async openHold(input) {
       const ref = input.kind === "manual" ? null : (input.ref ?? null);
       const existing =
