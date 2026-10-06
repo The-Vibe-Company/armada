@@ -24,7 +24,7 @@ export async function ownerCron(
   if (!a || vault.kind !== "on") return Response.json({ enabled: false });
   try {
     const rs = await a.client.query(
-      `SELECT DISTINCT organization FROM owner_channels WHERE alerts AND paused_reason IS NULL`,
+      `SELECT DISTINCT organization FROM owner_channels WHERE (alerts OR jsonb_array_length(digest->'times') > 0) AND paused_reason IS NULL`,
     );
     for (const row of rs.rows)
       await ownerTick(a.client, {

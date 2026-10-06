@@ -7,6 +7,7 @@
 // root): the app registers it on first contact, for the caller's organization.
 // No error quotes a token.
 import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
+import { buildDigest, type Digest, renderDigest } from "./digest.ts";
 import type { CoordinatorFacts } from "./live.ts";
 import {
   type AnswerRecord,
@@ -80,6 +81,8 @@ export const WORKER_FLEET_OPS = [
 /** Every operation, as the path after `/api/cli/fleet/`. */
 export const FLEET_OPS = [
   ...WORKER_FLEET_OPS,
+  "digest",
+  "digest/send",
   "register",
   "coordinator",
   "coordinators",
@@ -256,6 +259,7 @@ const NOT_MODIFIED = Symbol("not modified");
 const TRANSFER_REFUSED = Symbol("transfer refused");
 
 export interface ServeFleetDeps {
+  sendDigest?: (project: string, digest: Digest, language: "en" | "fr", now: Date) => Promise<boolean>;
   /** Stored project facts, supplied by the host, never by the caller. */
   snapshot?: HandBackSnapshot;
   now: () => Date;
@@ -312,6 +316,24 @@ export async function serveFleet(
           );
     const result = await (async (): Promise<unknown> => {
       switch (op) {
+        case "digest":
+        case "digest/send": {
+          const since = optText(b, "since", 40);
+          if (since !== null && (!Number.isFinite(Date.parse(since)) || Date.parse(since) > at.getTime()))
+            throw new Invalid("since must be a timestamp no later than now");
+          if (b.language !== undefined && b.language !== "en" && b.language !== "fr")
+            throw new Invalid("language must be en or fr");
+          if (op === "digest/send" && !deps.sendDigest)
+            throw new Invalid("No notification channel available; configure Organization > Notifications");
+          const records = await store.digestRecords(slug, since, at);
+          const digest = buildDigest(records.input);
+          const language = (b.language ?? records.language) as "en" | "fr";
+          const text = renderDigest(digest, { language, format: "plain", appUrl: deps.appUrl ?? "http://localhost" });
+          const sent = op === "digest/send" ? ((await deps.sendDigest?.(slug, digest, language, at)) ?? false) : false;
+          if (op === "digest/send" && !sent)
+            throw new Invalid("Digest not delivered; check Organization > Notifications");
+          return { digest, text, sent };
+        }
         case "reservations":
           return store.reservations(slug);
         case "reserve": {
@@ -814,6 +836,8 @@ export function fleetClient(o: {
   return {
     coordinators: () => call<CoordinatorRecord[]>("coordinators", {}),
     takeTickets: (input) => call<boolean>("coordinators/take", input),
+    digest: (input) => call("digest", input),
+    sendDigest: (input) => call("digest/send", input),
     reserve: (input) => call("reserve", input),
     reservations: (ticket) => call<Reservation[]>("reservations", ticket ? { ticket } : {}),
     unreserve: (input) => call("unreserve", input),

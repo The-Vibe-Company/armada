@@ -3128,6 +3128,24 @@ a.pj-title:hover {
 .owner-channel-form select {
   min-width: 0;
 }
+:where(.owner-channel-form) .org-note,
+.owner-digest-toggle,
+.owner-digest-days {
+  grid-column: 1 / -1;
+}
+.owner-digest-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+.owner-digest-days legend {
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
 /* An API key, shown once after it is created. */
 .ui-secret {
   display: flex;
