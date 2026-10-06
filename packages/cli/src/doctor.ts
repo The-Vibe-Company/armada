@@ -541,7 +541,7 @@ async function remoteChecks(io: Io, config: ArmadaConfig | null, credentials: Cr
     const current = await fetchRepository({
       repository,
       token: credentials.githubToken,
-      ...(io.fetch ? { fetch: io.fetch } : {}),
+      ...httpOptions(io),
       timeoutMs: 10_000,
     });
     checks.push(

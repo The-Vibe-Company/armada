@@ -362,6 +362,8 @@ describe("armada doctor: repository identity", () => {
     const t = await terminal({}, {}, null, { toml: DEMO_TOML });
     let token: string | undefined = "CANARY-github-token";
     let fetch: Fetch = github.fetch;
+    const waits: number[] = [];
+    const notices: string[] = [];
     const check = async () => {
       const report = await buildDoctor(
         {
@@ -369,7 +371,11 @@ describe("armada doctor: repository identity", () => {
           env: { XDG_CONFIG_HOME: t.home, GITHUB_TOKEN: token },
           readFile: async () => null,
           stdout: () => {},
-          stderr: () => {},
+          stderr: (message) => notices.push(message),
+          now: () => NOW,
+          sleep: async (ms) => {
+            waits.push(ms);
+          },
           ghToken: () => null,
           exec,
           fetch,
@@ -438,5 +444,20 @@ describe("armada doctor: repository identity", () => {
       level: "warning",
       message: "GitHub repository not checked: GitHub API HTTP 404",
     });
+    const recovered = recordedFetch({ repository: { full_name: "acme/widgets" } });
+    let attempts = 0;
+    remote = "git@github.com:acme/widgets.git";
+    fetch = async (url, init) =>
+      attempts++ === 0
+        ? new Response(null, {
+            status: 503,
+            headers: { "Retry-After": new Date(NOW.getTime() + 2000).toUTCString() },
+          })
+        : recovered.fetch(url, init);
+    expect((await check()).map((c) => c.level)).toEqual(["ok", "ok"]);
+    expect(attempts).toBe(2);
+    expect(waits).toEqual([2000]);
+    expect(notices).toContain("armada: GitHub answered 503; trying again in 2 s (2/3)\n");
+    expect(notices.join("")).not.toContain("CANARY");
   });
 });
