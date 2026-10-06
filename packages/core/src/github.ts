@@ -949,6 +949,56 @@ export async function fetchJobLog(opts: FetchForgeOptions & { jobId: number }): 
   }
 }
 
+/** The job owning a check run; verify identity before using its steps as failure evidence. */
+export async function fetchJobSteps(
+  opts: FetchForgeOptions & { jobId: number; runId: number; sha: string; name: string },
+): Promise<NonNullable<import("./ci.ts").FailedCheck["steps"]>> {
+  return httpRequest(
+    `${GITHUB_REST}/repos/${opts.repository}/actions/jobs/${opts.jobId}`,
+    { headers: { Authorization: `Bearer ${opts.token}`, Accept: "application/vnd.github+json" } },
+    { ...opts, retry: true, retryStatus, service: "GitHub" },
+    async (res) => {
+      if (!res.ok) throw new GithubError(`GitHub Actions HTTP ${res.status} reading job steps`);
+      const job = (await res.json()) as {
+        id?: number;
+        run_id?: number;
+        head_sha?: string;
+        name?: string;
+        status?: string;
+        conclusion?: string;
+        steps?: { name: string; conclusion: string | null; number: number }[];
+      };
+      if (
+        !job ||
+        job.id !== opts.jobId ||
+        job.run_id !== opts.runId ||
+        job.head_sha !== opts.sha ||
+        job.name !== opts.name ||
+        job.status !== "completed" ||
+        job.conclusion !== "failure" ||
+        !Array.isArray(job.steps) ||
+        !job.steps.length ||
+        job.steps.some(
+          (s: { name?: unknown; conclusion?: unknown; number?: number }) =>
+            !s ||
+            typeof s.name !== "string" ||
+            (s.conclusion !== null && typeof s.conclusion !== "string") ||
+            !Number.isSafeInteger(s.number) ||
+            (s.number ?? 0) < 1,
+        )
+      )
+        throw new GithubError("GitHub Actions returned incomplete or mismatched job steps");
+      if (new Set(job.steps.map((s) => s.number)).size !== job.steps.length)
+        throw new GithubError("GitHub Actions returned duplicate step numbers");
+      return job.steps.map((s) => ({
+        name: s.name,
+        conclusion: s.conclusion,
+        number: s.number,
+      }));
+    },
+  );
+}
+
 /** Attempt number for an Actions workflow run. Log access remains optional. */
 export async function fetchRunAttempt(opts: FetchForgeOptions & { runId: number }): Promise<number> {
   return (await fetchWorkflowRun(opts)).attempt;

@@ -7,6 +7,7 @@ import {
   fetchBranchHead,
   fetchFailedChecks,
   fetchJobLog,
+  fetchJobSteps,
   fetchPullRequest,
   fetchRunAttempt,
   fetchWorkflowRun,
@@ -19,6 +20,7 @@ import { httpOptions, type Io, UsageError } from "./io.ts";
 const LABELS: Record<Explanation["class"], string> = {
   known: "known flaky test",
   runner: "runner problem",
+  dependent: "ignored as a dependent summary",
   failure: "failure",
   external: "external check",
 };
@@ -33,6 +35,7 @@ export function renderCiWhy(sha: string, explanations: readonly Explanation[]): 
       `${e.check}: ${e.superseded ? "superseded by a newer head" : LABELS[e.class]} (${e.conclusion.toLowerCase()}${e.attempt ? `, workflow attempt ${e.attempt}` : ""})`,
     );
     if (e.tests.length) lines.push(`  Tests: ${e.tests.join("; ")}`);
+    if (e.dependencies?.length) lines.push(`  Dependencies: ${e.dependencies.join("; ")}`);
     lines.push(...e.error.map((l) => `  ${l}`));
     if (!e.error.length && !e.superseded) lines.push("  No error details available; open the check link.");
     for (const k of e.knownMatches ?? (e.known ? [e.known] : [])) lines.push(`  Known: ${k.ticket} (${k.pattern})`);
@@ -103,6 +106,28 @@ export async function ciWhy(
       check.attempt = attempts.get(check.runId);
     }
   }
+  // Fetch step evidence only when logs contain the explicit dependency-reporting gate.
+  for (const check of reading.checks) {
+    if (
+      check.app !== "github-actions" ||
+      check.superseded ||
+      check.id === null ||
+      check.runId === null ||
+      !logs.get(check.id)?.lines.some((l) => l.includes('##[group]Run echo "Dependency failed: '))
+    )
+      continue;
+    try {
+      check.steps = await fetchJobSteps({
+        ...opts,
+        jobId: check.id,
+        runId: check.runId,
+        sha: check.headSha,
+        name: check.name,
+      });
+    } catch {
+      warnings.push(`job ${check.id}: dependency step evidence unavailable; treating summary as an unknown failure`);
+    }
+  }
   const original = explainChecks(reading.checks, logs, config.ci);
   const explanations = [...original];
   const reruns: {
@@ -115,7 +140,8 @@ export async function ciWhy(
     // Put actionable unknown failures before flakes when the request is refused.
     explanations.sort(
       (a, b) =>
-        Number(a.class === "known" || a.class === "runner") - Number(b.class === "known" || b.class === "runner"),
+        Number(["known", "runner", "dependent"].includes(a.class)) -
+        Number(["known", "runner", "dependent"].includes(b.class)),
     );
     const groups = new Map<number, Explanation[]>();
     for (const id of reading.runIds) groups.set(id, []);
