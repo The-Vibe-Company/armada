@@ -20,6 +20,7 @@ import { version } from "../package.json" with { type: "json" };
 import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
+import { ciWhy } from "./ci.ts";
 import { coordinatorCommand } from "./coordinator.ts";
 import { doctor } from "./doctor.ts";
 import { heartbeat } from "./heartbeat.ts";
@@ -53,6 +54,11 @@ const COMMAND_HELP: Record<string, string> = {
   coordinator take <ticket...> [--from <name>]
                     Select a named role for this checkout, list roles and their sessions,
                     or take tickets from a coordinator. ARMADA_COORDINATOR overrides use.
+`,
+  ci: `  ci why <pr|url> [--json]
+  ci why --sha <sha> | --branch <branch> [--json]
+                    Explain failing checks on this head: test names, first errors, links
+                    and runner problems. Needs a GitHub token only (Actions read for logs).
 `,
   attach: `  attach <ticket> <file|url>... [--caption <text>] [--for <item>]
                     Privately attach PNG, JPEG, WebP or GIF images (up to 2 MB each),
@@ -268,6 +274,7 @@ const COMMAND_HELP: Record<string, string> = {
 /** Commands that take --ticket, --config and --json. */
 const TICKET_OPTION = new Set(["report", "release", "ask", "validate", "merge", "secrets", "run"]);
 const CONFIG_OPTION = new Set([
+  "ci",
   "attach",
   "coordinator",
   "status",
@@ -433,6 +440,7 @@ const FLAG_OPTIONS = [
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  ci: ["sha", "branch"],
   spec: ["at", "apply"],
   attach: ["caption", "for"],
   heartbeat: ["every", "parent", "background", "ticket", "handle"],
@@ -674,6 +682,12 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         },
       });
       return await heartbeat(io, config, credentials, { ...args, config: path });
+    }
+    if (args.command === "ci") {
+      const { path, text } = await findConfig(io, args.config, "ci", args.project);
+      const config = parseConfig(text, path);
+      const { credentials } = await loadCredentials(io, { armada: false });
+      return await ciWhy(io, config, credentials, args);
     }
     const worker = { claim, report, release, ask, inbox, answer, stop, validate, "ask-owner": askOwner, done }[
       args.command
