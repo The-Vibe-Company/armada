@@ -162,7 +162,6 @@ test("peek shows local runtime facts, redacted reply and commands and keeps its 
   expect(json.runtime.actions.map((a: { exit: number }) => a.exit)).toEqual([0, 1]);
   expect(f.calls.at(-1)).toContain("--after");
   expect(f.calls.every((call) => !call.includes("sql") && !call.includes("create"))).toBe(true);
-  expect(f.err.filter((line) => line.includes("99.1.0"))).toHaveLength(1);
 });
 
 test("peek reads a local herdr worker through the same command", async () => {

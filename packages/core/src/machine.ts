@@ -488,25 +488,109 @@ export async function runningWatch(
 /** How many noticed releases the file keeps: enough to never repeat a recent one. */
 const NOTICED_KEPT = 50;
 
-/** `releases.json`: the Armada releases this machine's coordinator was told of, once each. No secret. */
+/** `releases.json`: the Armada releases this machine's coordinator was told of. No secret. */
 export const releasesFile = (paths: MachinePaths) => join(paths.dir, "releases.json");
 
-/** The releases already noticed on this machine; none when the file is missing or unreadable. */
-export async function readNoticedReleases(paths: MachinePaths): Promise<string[]> {
+export interface NoticedRelease {
+  version: string;
+  /** Null for legacy entries, which did not record a time. */
+  at: string | null;
+}
+
+export async function readReleaseNotices(paths: MachinePaths): Promise<NoticedRelease[]> {
   try {
     const raw = JSON.parse(await readFile(releasesFile(paths), "utf8")) as { noticed?: unknown };
-    return strings(raw?.noticed) ?? [];
+    if (!Array.isArray(raw?.noticed)) return [];
+    return raw.noticed.flatMap((entry) => {
+      if (typeof entry === "string") return [{ version: entry, at: null }];
+      if (
+        !entry ||
+        typeof entry.version !== "string" ||
+        typeof entry.at !== "string" ||
+        !Number.isFinite(Date.parse(entry.at))
+      )
+        return [];
+      return [{ version: entry.version, at: entry.at }];
+    });
   } catch {
     return [];
   }
 }
 
-/** Remembers that the coordinator was told of `version`. */
-export async function addNoticedRelease(paths: MachinePaths, version: string): Promise<void> {
-  const noticed = (await readNoticedReleases(paths)).filter((v) => v !== version);
-  noticed.push(version);
-  const text = `${JSON.stringify({ noticed: noticed.slice(-NOTICED_KEPT) }, null, 2)}\n`;
-  await writePrivate(paths, releasesFile(paths), text, 0o644);
+/** The releases already noticed on this machine; none when the file is missing or unreadable. */
+export async function readNoticedReleases(paths: MachinePaths): Promise<string[]> {
+  return (await readReleaseNotices(paths)).map((entry) => entry.version);
+}
+
+/** Reserves a notice before printing it, serializing eligibility across commands. */
+export async function addNoticedRelease(
+  paths: MachinePaths,
+  version: string,
+  at: Date = new Date(),
+  options: { intervalMs?: number; pid?: number; alive?: (pid: number) => boolean } = {},
+): Promise<boolean> {
+  const pid = options.pid ?? process.pid;
+  const alive = options.alive ?? processAlive;
+  await mkdir(paths.dir, { recursive: true, mode: 0o700 });
+  const lock = join(paths.dir, "releases.lock");
+  const tmp = `${lock}.${randomBytes(6).toString("hex")}.tmp`;
+  const holder = `${pid}\n`;
+  await writeFile(tmp, holder, { mode: 0o600 });
+  let taken = false;
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await link(tmp, lock);
+        taken = true;
+        break;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      }
+      const held = await readFile(lock, "utf8").catch((err: NodeJS.ErrnoException) => {
+        if (err.code === "ENOENT") return null;
+        throw err;
+      });
+      if (held === null) continue;
+      const heldPid = /^\d+\n$/.test(held) ? Number(held.trim()) : null;
+      // Even our own PID may belong to another call in this process.
+      if (heldPid !== null && alive(heldPid)) return false;
+      // Serialize stale recovery too: a reread followed by unlink alone can
+      // remove another command's newly acquired lock. Never reclaim this short
+      // cleanup guard; a crash here safely suppresses best-effort notices.
+      const cleanup = `${lock}.cleanup`;
+      try {
+        await link(tmp, cleanup);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
+        throw err;
+      }
+      try {
+        const current = await readFile(lock, "utf8").catch(() => null);
+        const currentPid = current !== null && /^\d+\n$/.test(current) ? Number(current.trim()) : null;
+        if (current !== null && (currentPid === null || !alive(currentPid))) await rm(lock, { force: true });
+      } finally {
+        await rm(cleanup, { force: true });
+      }
+    }
+    if (!taken) return false;
+    const previous = await readReleaseNotices(paths);
+    if (
+      previous.some((entry) => {
+        if (entry.at === null) return false;
+        const age = at.getTime() - Date.parse(entry.at);
+        return age >= 0 && age < (options.intervalMs ?? 0);
+      })
+    )
+      return false;
+    const noticed = previous.filter((entry) => entry.version !== version);
+    noticed.push({ version, at: at.toISOString() });
+    const text = `${JSON.stringify({ noticed: noticed.slice(-NOTICED_KEPT) }, null, 2)}\n`;
+    await writePrivate(paths, releasesFile(paths), text, 0o644);
+    return true;
+  } finally {
+    if (taken && (await readFile(lock, "utf8").catch(() => null)) === holder) await rm(lock, { force: true });
+    await rm(tmp, { force: true });
+  }
 }
 
 /** Non-secret memory of a keys fallback, shared by this machine's commands. */

@@ -21,6 +21,7 @@ export * from "./linear-write.ts";
 export * from "./live.ts";
 export * from "./machine.ts";
 export * from "./merge.ts";
+export * from "./merge-queue.ts";
 export * from "./model.ts";
 export * from "./overlap.ts";
 export * from "./overview.ts";
