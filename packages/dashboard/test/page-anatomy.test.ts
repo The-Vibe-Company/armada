@@ -1,8 +1,7 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
-import { type Browser, chromium, type Page } from "playwright-core";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as pageClient from "../components/page-client";
@@ -200,52 +199,5 @@ describe("globals.css", () => {
       (c) => !c.startsWith("is-") && !words.has(c) && !prefixes.some((p) => c.startsWith(p)),
     );
     expect(unused).toEqual([]);
-  });
-
-  // THE-982: the browser may paint a page before its HTML has all arrived. A
-  // bar sized by its content then grows as its buttons arrive, and the phone's
-  // tab bar, pinned to the bottom, jumped up by up to 47 px (CLS 0.001 to 0.004
-  // on the overview). On a phone each bar's height is its own.
-  describe("phone geometry", () => {
-    let browser: Browser | undefined;
-    let page: Page;
-    // The first Chrome launch on a fresh runner includes cold process startup.
-    // Keep Playwright's diagnostic deadline inside Bun's hook deadline.
-    beforeAll(async () => {
-      browser = await chromium.launch({ channel: "chrome", timeout: 15_000 });
-    }, 20_000);
-    beforeAll(async () => {
-      if (!browser) throw new Error("browser setup did not complete");
-      page = await browser.newPage({ viewport: { width: 375, height: 812 } });
-    }, 10_000);
-    afterAll(async () => {
-      await browser?.close();
-    }, 10_000);
-
-    test("gives the phone's bars a height of their own", async () => {
-      const css = readFileSync(join(ROOT, "app/globals.css"), "utf8");
-      await page.setContent(
-        `<style>${css}</style><div class="sh-side"><div class="sh-brand">Brand</div></div><nav class="sh-tabbar">Tabs</nav>`,
-      );
-      const heights = () =>
-        page.evaluate(() =>
-          [".sh-side", ".sh-brand", ".sh-tabbar"].map((selector) => {
-            const element = document.querySelector(selector);
-            if (!element) throw new Error("missing bar fixture");
-            return element.getBoundingClientRect().height;
-          }),
-        );
-      const before = await heights();
-      expect(before).toEqual([52, 32, 60]);
-      await page.evaluate(() => {
-        for (const selector of [".sh-brand", ".sh-tabbar"]) {
-          const child = document.createElement("span");
-          child.style.height = "150px";
-          child.style.display = "block";
-          document.querySelector(selector)?.appendChild(child);
-        }
-      });
-      expect(await heights()).toEqual(before);
-    });
   });
 });

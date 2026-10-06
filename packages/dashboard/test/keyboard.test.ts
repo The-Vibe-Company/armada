@@ -1,10 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { chromium } from "playwright-core";
-import * as ts from "typescript";
 import { ownsKeys, tabStep } from "../lib/keyboard.ts";
 
-// Field cases need only the tag and editability; dialog cases use a real DOM below.
+// Field cases need only the tag and editability; dialog cases live in keyboard.browser.ts.
 const el = (tagName: string, { editable = false } = {}) => ({
   tagName,
   isContentEditable: editable,
@@ -15,31 +12,6 @@ describe("the shell's keys (j, k, Enter, Esc)", () => {
   test("never leave a text field, a choice or an editable block", () => {
     for (const tag of ["INPUT", "TEXTAREA", "SELECT"]) expect(ownsKeys(el(tag))).toBe(true);
     expect(ownsKeys(el("DIV", { editable: true }))).toBe(true);
-  });
-
-  test("never reach the page behind an open dialog (⌘K, a screenshot)", async () => {
-    const browser = await chromium.launch({ channel: "chrome" });
-    try {
-      const page = await browser.newPage();
-      const module = Buffer.from(
-        ts.transpileModule(readFileSync(new URL("../lib/keyboard.ts", import.meta.url), "utf8"), {
-          compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-        }).outputText,
-      ).toString("base64");
-      const result = await page.evaluate(async (module) => {
-        // Run the real owner against the browser's selector engine, rather than a selector-insensitive mock.
-        const { ownsKeys: owns } = await import(`data:text/javascript;base64,${module}`);
-        document.body.innerHTML = `<dialog><button id="closed"></button></dialog>
-          <dialog open><button id="open"></button></dialog>
-          <div role="dialog"><button id="aria"></button></div>
-          <div contenteditable="true"><button id="editable"></button></div>
-          <button id="outside"></button>`;
-        return ["closed", "open", "aria", "editable", "outside"].map((id) => owns(document.getElementById(id)));
-      }, module);
-      expect(result).toEqual([false, true, true, true, false]);
-    } finally {
-      await browser.close();
-    }
   });
 
   test("belong to the page anywhere else", () => {

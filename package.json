@@ -13,8 +13,9 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "typecheck": "tsc --noEmit && tsc --noEmit -p packages/dashboard",
-    "test": "bun test",
-    "verify": "bun run lint && bun run typecheck && bun test"
+    "test": "bun test && bun run test:browser",
+    "verify": "bun run lint && bun run typecheck && bun run test",
+    "test:browser": "node --experimental-strip-types --test --test-concurrency=1 packages/dashboard/test/*.browser.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
