@@ -933,6 +933,18 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     version: 38,
     statements: ["ALTER TABLE jobs ADD COLUMN revision bigint NOT NULL DEFAULT 0"],
   },
+  {
+    // THE-1084: reserve notification delivery and record each ticket once.
+    version: 39,
+    statements: [
+      `CREATE TABLE merge_notices (
+        project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+        delivery_key text NOT NULL, attempted_at timestamptz NOT NULL,
+        delivered_at timestamptz, recorded_tickets text[] NOT NULL DEFAULT '{}',
+        PRIMARY KEY (project, delivery_key)
+      )`,
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

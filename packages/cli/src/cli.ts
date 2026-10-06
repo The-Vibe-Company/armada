@@ -266,20 +266,23 @@ const COMMAND_HELP: Record<string, string> = {
                     --reason is required with [policy] merge_approval. --keep-open records
                     intent for the drain to keep the ticket open; --through-hold records
                     why a fix may pass the shared merge hold. Queuing does not drain.
-                    Next: armada merge --drain (in the background).
+                    Next: armada merge queue.
   merge queue [--json]
                     List open entries in order and entries finished in the last day.
   merge queue remove <pr>
                     Remove a queued entry; an entry currently merging cannot be removed.
                     To pause merges, use armada hold add "<why>".
   merge <pr> [--ticket <id> | --no-ticket] [--dry-run] [--no-lock] [--wait [--timeout <min>]]
-        [--reason <why>] [--through-hold <why>] [--ask-owner --reason <why>] [--no-archive]
+        [--reason <why>] [--through-hold <why>] [--ask-owner --reason <why>] [--no-archive] [--no-notify]
   merge --finish <pr> [--ticket <id>]
                     Complete Linear bookkeeping for a confirmed merge; no merge lock.
                     Coordinator: check a handed-back pull request (hand-back SHA = head,
                     CLEAN, required checks green, no open review thread, base contained
                     or test-merged), squash-merge it pinned to that SHA under the merge
-                    lock, close the ticket and list the workers to tell. Never deletes
+                    lock, close the ticket and notify affected workers with open PRs.
+                    Shared files and [merge] notify_paths decide who receives a note;
+                    handed-back workers stay quiet. --no-notify prints the manual list.
+                    Never deletes
                     the branch. After GitHub confirms the merge, archives the worker's
                     Armada workspace; --no-archive leaves it open. Cleanup failures print
                     an armada stop command and do not fail the merge.
@@ -593,6 +596,7 @@ const FLAG_OPTIONS = [
   "when-green",
   "keep-open",
   "no-archive",
+  "no-notify",
   "prompt",
   "profile-line",
   "wait",
@@ -638,6 +642,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
     "ticket",
     "no-ticket",
     "no-archive",
+    "no-notify",
     "dry-run",
     "no-lock",
     "wait",

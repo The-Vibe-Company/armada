@@ -10,6 +10,7 @@
     "./read": "./src/read.ts"
   },
   "dependencies": {
+    "picomatch": "4.0.3",
     "smol-toml": "1.9.0"
   }
 }
