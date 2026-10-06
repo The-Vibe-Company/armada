@@ -1549,6 +1549,7 @@ async function readInboxAndFlight(
           .map((i) => i.id)
       : [],
   );
+  const waiting = queue.filter(queueOpen).length;
   const entries: InboxEntry[] = items.map((i) => ({
     id: i.id,
     owner: ownerOfItem(i),
@@ -1558,7 +1559,9 @@ async function readInboxAndFlight(
     body:
       i.kind === "plan" && i.ticket && preApproved.has(i.ticket) && !/pre-approved at launch/i.test(i.body)
         ? `Pre-approved at launch; answer approved to let this worker continue.\n\n${i.body}`
-        : i.body,
+        : i.kind === "hold" && waiting
+          ? `${i.body}\nmerge queue paused (${waiting} waiting)`
+          : i.body,
     createdAt: i.createdAt,
     new: false,
     ...(i.request ? { request: i.request } : {}),
@@ -1579,7 +1582,7 @@ async function readInboxAndFlight(
       new: false,
     });
   }
-  const stalled = queueStalled(queue, queueLease, o.now);
+  const stalled = stored.some((i) => i.kind === "hold") ? null : queueStalled(queue, queueLease, o.now);
   if (stalled) entries.push(stalled);
   const asking = new Set(items.filter((i) => i.kind === "question").map((i) => i.ticket));
   const planning = new Set(items.filter((i) => i.kind === "plan").map((i) => i.ticket));
