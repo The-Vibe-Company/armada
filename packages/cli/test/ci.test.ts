@@ -369,3 +369,155 @@ test("two requests on the same GitHub run rerun only its first attempt", async (
   expect(f.out()).toContain("already rerun once, attempt 2");
   expect(f.writes).toHaveLength(1);
 });
+
+test("dependent summary failures rerun with known flakes, but a summary's own failure blocks", async () => {
+  for (const scenario of [
+    "dependent",
+    "skipped user step",
+    "own output",
+    "own command",
+    "another failed step",
+    "missing steps",
+    "wrong run",
+    "unknown dependency",
+    "different workflow",
+    "second attempt",
+    "annotation failure",
+    "summary error",
+    "runner summary error",
+    "known summary error",
+    "annotation error",
+    "continued gate",
+    "missing step number",
+  ]) {
+    const allowed = scenario === "dependent" || scenario === "skipped user step";
+    const f = rerunFixture();
+    const fetch = f.io.fetch;
+    if (!fetch) throw new Error("fixture needs fetch");
+    if (scenario === "known summary error") {
+      const readFile = f.io.readFile;
+      f.io.readFile = async (path) => {
+        const text = await readFile(path);
+        return text === null
+          ? null
+          : text +
+              '\n[[ci.known_failure]]\ncheck = "verify"\npattern = "Process completed with exit code 1"\nticket = "DEMO-43"\n';
+      };
+    }
+    f.io.fetch = async (url, init) => {
+      if (url.endsWith("/runs/7") && scenario === "second attempt")
+        return Response.json({ run_attempt: 2, status: "completed" });
+      if (url.endsWith("/jobs/12"))
+        return Response.json({
+          id: 12,
+          run_id: scenario === "wrong run" || scenario === "different workflow" ? 8 : 7,
+          head_sha: sha,
+          name: "verify",
+          status: "completed",
+          conclusion: "failure",
+          steps:
+            scenario === "missing steps"
+              ? undefined
+              : [
+                  { name: "Set up job", conclusion: "success", number: 1 },
+                  ...(scenario === "skipped user step"
+                    ? [{ name: "Other dependency gate", conclusion: "skipped", number: 3 }]
+                    : []),
+                  ...(scenario === "another failed step"
+                    ? [{ name: "Validate config", conclusion: "failure", number: 4 }]
+                    : []),
+                  {
+                    name: "Check dependencies",
+                    conclusion: scenario === "continued gate" ? "success" : "failure",
+                    number: scenario === "missing step number" ? undefined : 2,
+                  },
+                  ...(scenario === "continued gate"
+                    ? [{ name: "Validate config", conclusion: "failure", number: 3 }]
+                    : []),
+                  { name: "Complete job", conclusion: "success", number: 5 },
+                ],
+        });
+      if (url.endsWith("/jobs/12/logs"))
+        return new Response(
+          [
+            '##[group]Run echo "Dependency failed: Tests (linux)"',
+            'echo "Dependency failed: Tests (linux)"',
+            ...(scenario === "own command" ? ["bun test summary.test.ts"] : []),
+            "exit 1",
+            "shell: /usr/bin/bash -e {0}",
+            "##[endgroup]",
+            "Dependency failed: Tests (linux)",
+            ...(scenario === "own output" ? ["(fail) summary > rejects invalid configuration", "Expected: valid"] : []),
+            "##[error]Process completed with exit code 1.",
+          ]
+            .join("\n")
+            .replaceAll("Tests (linux)", scenario === "unknown dependency" ? "Tests (windows)" : "Tests (linux)"),
+        );
+      const response = await fetch(url, init);
+      if (url !== GITHUB_GRAPHQL || !String(init.body).includes("FailedChecks")) return response;
+      const body = (await response.json()) as {
+        data: {
+          repository: {
+            object: {
+              checkSuites: {
+                nodes: { workflowRun: { databaseId: number }; checkRuns: { nodes: Record<string, unknown>[] } }[];
+              };
+            };
+          };
+        };
+      };
+      const suite = body.data.repository.object.checkSuites.nodes[0];
+      if (!suite) throw new Error("fixture needs a failed suite");
+      const checks = suite.checkRuns.nodes;
+      const summary = {
+        ...checks[0],
+        databaseId: 12,
+        name: "verify",
+        summary:
+          scenario === "runner summary error"
+            ? "No space left on device"
+            : scenario === "summary error" || scenario === "known summary error"
+              ? "summary command failed"
+              : "##[error]Process completed with exit code 1.",
+        annotations: {
+          nodes:
+            scenario === "annotation failure" || scenario === "annotation error"
+              ? [
+                  {
+                    title:
+                      scenario === "annotation error"
+                        ? "Summary error"
+                        : "(fail) summary > rejects invalid configuration",
+                    message: scenario === "annotation error" ? "summary command failed" : "Expected: valid",
+                    path: "test/summary.ts",
+                    location: { start: { line: 1 } },
+                  },
+                ]
+              : [],
+        },
+      };
+      if (scenario === "different workflow")
+        body.data.repository.object.checkSuites.nodes.push({
+          ...suite,
+          checkRuns: { nodes: [summary] },
+          workflowRun: { databaseId: 8 },
+        });
+      else checks.push(summary);
+      return Response.json(body);
+    };
+    expect(await run(["ci", "why", "9", "--rerun"], f.io)).toBe(allowed ? 0 : 1);
+    expect(f.out()).toContain("Tests (linux): known flaky test");
+    expect(f.out()).toContain("DEMO-42");
+    if (!allowed) {
+      expect(f.out()).toContain(
+        scenario === "second attempt" ? "already rerun once" : "unknown or external failures: verify",
+      );
+      // Separate known workflows retain their existing independent rerun behavior.
+      expect(f.writes).toHaveLength(scenario === "different workflow" ? 1 : 0);
+    } else {
+      expect(f.out()).toContain("verify: ignored as a dependent summary");
+      expect(f.out()).toContain("Rerun requested");
+      expect(f.writes).toHaveLength(1);
+    }
+  }
+});

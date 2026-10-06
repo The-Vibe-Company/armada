@@ -13,6 +13,24 @@ For a project on 0.2.55, install the current CLI with `npm install -g @the-vibe-
 
 For queued merges, set `[merge] queue_retest = "ci"` to update queued branches and wait for fresh CI, or `"local"` to use `[gates] local_commands`. Queue intent with `armada merge --when-green <pr...>`. Check `armada merge --help` before enabling the drain setting on an older CLI.
 
+## Rerun CI with a dependent summary check
+
+`armada ci why <pr> --rerun` ignores an aggregate failure only when job steps and complete logs prove a dedicated dependency-reporting gate. The gate must be the job's only executed user step, with only skipped user steps besides GitHub's successful setup and completion steps. Its sole logged command block must contain only literal `echo "Dependency failed: <check name>"` commands followed by `exit 1`, with matching output and the usual exit-code annotation. Check summaries and annotations may only contain that exit-code notice. Each named failed check must be known (or a runner problem) in the same workflow run and commit. For example:
+
+```yaml
+verify:
+  needs: [tests]
+  if: failure()
+  runs-on: ubuntu-latest
+  steps:
+    - name: Check dependencies
+      run: |
+        echo "Dependency failed: Tests (linux)"
+        exit 1
+```
+
+Use the dependency's displayed check name, including matrix suffixes. The output labels `verify` as "ignored as a dependent summary" and names the real flake's root-cause ticket. A summary with its own failed command, test, extra error or another failed step remains unknown. Unrecognized summary scripts and missing step/log evidence also remain unknown; merely naming a job `verify` never permits a rerun. The run must still be completed on attempt 1, with an unchanged failure set, and can be rerun only once.
+
 ## Worker liveness
 
 Launch briefs start a heartbeat immediately after claim. On Conductor Cloud it must detach from the short-lived command shell: `armada heartbeat --every 5m --parent "$PPID" --background` uses a new process group (like `nohup` + `setsid`) and a PID file under `~/.config/armada/watch/`. Plain background `&` and `nohup` alone can be killed by command-tool cleanup. The persistent agent parent must survive between turns; do not pass the shell's `$$`. The PID file prevents duplicates for the same current claim.
