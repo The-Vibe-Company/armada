@@ -3,168 +3,141 @@ name: armada-runtime-conductor
 description: Runtime guide for running Armada workers on Conductor Cloud. Use when an Armada coordinator must launch a worker on a ticket, send it a message, check whether a silent worker is still alive, or stop and archive it. Four fixed sections, each with the exact conductor command and how to read its output.
 ---
 
-Herdr and Conductor workers use Armada’s integrated runtime interface; Claude Code subagents use their guide. `armada status` and `armada inbox` publish Conductor’s live state, and `armada stop` archives it after release or merge. Native launch uses `armada launch`; answers and notes use `armada answer`. This guide tells the coordinator how to launch, message, check and stop a worker and how to use the `conductor` command line tool when a manual operation is needed. It was checked against `conductor` 0.89.x (the desktop app's CLI, macOS) and 0.1.x (the CLI inside a Conductor Cloud workspace, Linux); every command below works in both. `conductor --version` prints yours; if a flag is refused, compare with `conductor <command> --help`.
+Armada drives Conductor workers by itself, through the `conductor` command line tool:
 
-- On a Mac, the app ships the CLI at `/Applications/Conductor.app/Contents/Resources/bin/conductor`, which is not on PATH. `armada doctor` looks for it and prints the fix: a link from a directory already on PATH (`ln -s "/Applications/Conductor.app/Contents/Resources/bin/conductor" ~/.local/bin/conductor`), or a PATH line for your shell profile.
-- Always pass `--json` and read fields with `jq`. Exit codes: 0 ok, 1 runtime error, 2 usage error, 3 authentication, 4 server error.
-- On exit code 3, `conductor auth whoami` checks the token the CLI uses (it exits 0 when the token works). Do not rely on `conductor auth status`: it only looks for a macOS Keychain entry and fails on Linux ("Keychain storage is only supported on macOS"). In a Conductor Cloud workspace the CLI reads `CONDUCTOR_API_KEY` from the environment and needs no login; on a Mac, `conductor auth login` stores a token in the Keychain.
-- A worker is one workspace with one session. Its Armada handle is `<workspaceId>/<sessionId>`; the worker's claim comment carries it, so `armada status` and the ticket always lead back to the session.
-- A worker needs no key in its workspace: the prompt of `armada brief` carries a one-time launch token, and the worker's first authenticated command exchanges it for a session limited to its ticket, through which Armada gives each command its keys. The token works once, within the hour, so a copy left in a transcript is useless once used.
-- Native launch requires an Armada sign-in (`armada login`). Armada passes the brief through stdin and never prints its token; do not pass keys through Conductor’s `--env`.
+| Step | Armada command | What it does |
+| --- | --- | --- |
+| Launch | `armada launch` | creates one workspace and session with the brief |
+| Deliver | `armada answer`, `armada answer --note` | sends the text into the session, then records it |
+| Observe | `armada status`, `armada inbox`, `armada watch` | read the session's state before calling a worker silent |
+| Peek | `armada peek` | the last reply, recent commands, checks and questions |
+| Replace | `armada relaunch` | a new session on the same branch and pull request |
+| Archive | `armada merge`, `armada stop` | archive the workspace after a merge or release |
+
+This guide says how to read what they print, and keeps the raw `conductor` commands for when Armada cannot act: the appendices at the end. The coordinator must be signed in to Armada (`armada login`) and to Conductor.
+
+- On a Mac, the app ships the CLI at `/Applications/Conductor.app/Contents/Resources/bin/conductor`, not on PATH; `armada doctor` prints the fix. In a Conductor Cloud workspace it reads `CONDUCTOR_API_KEY` and needs no login. `conductor auth whoami` checks the sign-in (exit 0 when it works); `conductor auth status` only looks at the macOS Keychain.
+- A worker is one workspace with one session. Its Armada handle is `<workspaceId>/<sessionId>`: the claim comment carries it, so `armada status` and the ticket lead back to the session.
+- A worker needs no key in its workspace: its brief carries a one-time launch token, exchanged at its first command for a session limited to its ticket. Never pass keys through Conductor's `--env`.
 
 ## Launch
-
-The brief starts `armada heartbeat --every 5m --parent "$PPID" --background` immediately after claim. It creates a detached process group (like `nohup` + `setsid`) with closed terminal streams and a PID file under `~/.config/armada/watch/`. Plain `&` and `nohup` alone can be killed by command-tool cleanup on Cloud. Detachment does not extend the monitored agent's lifetime: `$PPID` in the agent's command shell is the agent process, never `$$` (the shell), and a runtime may replace that process between turns. The heartbeat stops with that parent or when Armada ends the current session (release, merge, revoke).
-
-Workers in `awaiting-approval`, `blocked` or `awaiting-validation` end their turn and need no heartbeat or manual report while the decision is pending. After delivering and recording an answer, let the worker resume: it reports its working phase and runs the brief's heartbeat line again with the current `$PPID`. An existing heartbeat for the same claim is kept. Armada counts silence from the newest heartbeat, report or answer, so a heartbeat left over from a previous turn cannot make a newly resumed worker immediately silent. An answered worker that never resumes still becomes silent after `policy.silence_minutes`. If startup fails or the runtime cannot retain any background process, fall back to manual reports at least every 15 minutes during active work and record that fallback on the ticket. Reports remain meaningful progress updates; `policy.quiet_minutes` counts time without a report while heartbeats arrive.
-
-1. Pick a ready ticket from `armada status` that does not collide with work in flight.
-2. Read the ticket and parent, then choose its profile. A matching label rule wins; otherwise match the profiles' `when` rules by most files/work. Mixed front-end/back-end work: choose the larger part and say why with `--profile <name> --reason "<why>"`. An optional `armada brief ABC-12` or `--json` preview helps resolve the choice and warnings, but is read-only: neither creates a launch token nor marks a worker in flight. If the choice is still needed, `--prompt` refuses before minting anything.
-3. Launch with one command, keeping the selected profile and its reason:
 
 ```sh
 armada launch ABC-12 --runtime conductor --profile <name> --reason "<why>" --notes notes.md
 ```
 
-`--profile`, `--reason` and `--notes` are optional when routing settles the profile and there is no extra context. `--notes -` reads stdin. A notes path is relative to the command’s current folder; the file must exist, be nonempty and fit within 16 KB. Notes add context only: the brief’s Plan line still decides whether the worker waits. Put conventions every worker needs in `[brief] extra` instead.
+- `--profile` and `--reason` are needed only when routing does not settle the profile. Add `--pre-approve` (its reason is the same `--reason`) when the plan needs no review.
+- `--notes <file|->`: context only you have, up to 16 KB. Notes never approve a plan; the brief's Plan line decides.
+- `--dry-run` checks the ticket, the profile and the Conductor sign-in, and creates nothing.
+- The command refuses a ticket already launched or claimed, takes a launch lease, mints the token, and creates one workspace with the profile's agent, model, effort and fast mode, the brief passed on stdin. `[conductor] project_id` picks a Conductor project instead of the repository URL; `base_branch` overrides the default branch. It prints the profile, the `<workspaceId>/<sessionId>` handle and the session link, never the token.
+- A known failure revokes that token. A lost answer is recovered by searching for the workspace, never by creating it again; when the search is not conclusive, the launch stays pending and the output names the candidates and the commands to settle it. Never launch the same ticket a second time before reading that output.
 
-Use `--dry-run` to inspect settings and preflight without creating a token or workspace. Native launch checks the ticket, pending launches, the profile and Conductor sign-in, then takes a launch lease before minting the token. It creates one workspace with the profile’s explicit agent, model, effort and fast mode. `[conductor] project_id` selects a Conductor project instead of the configured repository URL; `base_branch` overrides origin’s default branch. Conductor creates its own branch; the brief tells the worker to rename it to Linear’s suggested branch.
+The brief makes the worker start `armada heartbeat --every 5m --parent "$PPID" --background` right after its claim: a detached process that pings Armada until the worker's agent process exits or its session ends. A worker waiting on you (`awaiting-approval`, `blocked`, `awaiting-validation`) needs no heartbeat; after your answer it reports its working phase and restarts the heartbeat.
 
-4. Keep the printed workspace/session handle and session link. Known launch failures revoke that exact token. A lost answer or create runtime error is recovered through a bounded repository/time search without repeating create; workspace and session names may have changed. Only a unique candidate still bearing the requested workspace and session names is adopted automatically. Renamed, ambiguous or incomplete results retain the pending launch and name visible candidate ids and recovery commands. An unavailable or malformed recovery search also retains the pending launch; only a completed search with no candidate cancels it automatically. Never run a second launch before checking the first. A warning about session binding leaves the launched worker running: its first sign-in records the same handle.
-
-5. **Check the claim.** Within a few minutes, `armada status` lists the ticket in flight, phase `planning`, runtime `Conductor`, and the ticket's claim comment reads `session: <workspaceId>/<sessionId>` and `profile: <name>`. No claim after `[policy] not_started_minutes` (ten by default): `armada watch` and `armada inbox` show a `not-started` entry; status lists it under "Pending launches" with `armada launch revoke ABC-12`. It says whether the worker never used its launch token (it never reached its login line) or signed in and stopped before its claim. An unused token expired more than an hour ago produces one `not started (token expired)` inbox notice, then clears. Exchanged launches without a claim stop being followed after 24 hours and remain revocable. Read the transcript (Status section). A worker whose launch token was refused (already used, or more than an hour old) needs a new one: `armada brief ABC-12 --prompt --profile-line` again, and message it only the `armada login --launch-token …` line of the new `--prompt` output (Message section). A worker cut off from Armada was revoked (Organization > Workers says by whom) or left idle for three days: ask the owner before you give a revoked worker a new token. If the worker cannot claim for another reason, fix the cause and message it; as a last resort record the handle yourself with `armada claim ABC-12 --runtime conductor --handle <workspaceId>/<sessionId> --profile <name>`, adding the brief's `--reason` for an override.
+**Check the claim** a few minutes later: `armada status` lists the ticket in flight with runtime `Conductor` and the printed handle. No claim after `[policy] not_started_minutes` (ten by default) gives a `not-started` inbox entry, which says whether the worker never used its token or signed in and stopped before claiming. Read it with `armada peek ABC-12`. A worker stuck on a setup choice gets a note to take the safe option. A refused or expired token needs a new one: run `armada brief ABC-12 --prompt` and send the worker only its `armada login --launch-token …` line (manual message, below). A worker cut off from Armada was revoked or idle for three days: ask the owner before giving it a new token. A worker that is gone: `armada relaunch ABC-12 --reason "never claimed"`, or `armada launch revoke ABC-12`.
 
 ## Message
 
 ```sh
 armada answer <item> "Plan approved. Go on."
-armada answer --note ABC-12 "Main moved; bring origin/main in before hand-back."
+armada answer --note ABC-12 "<a message the worker did not ask for>"
 armada answer <item> --message-file /tmp/abc-12-answer.md
 ```
 
-One command delivers to the stored Conductor session, posts the answer or note on the ticket, then records it in Armada. An answer closes its question or plan; a note also resolves the ticket's open plan, as in the existing coordinator note workflow. The receipt names Conductor and says `queued` when a turn is still working. Accepted does not mean read: check the session's status and reply.
+One command delivers the text into the worker's session, posts it on the ticket and records it on Armada; an answer resolves its question or plan. The receipt says `queued` when a turn is still running: accepted is not read, so check the reply with `armada peek`.
 
-If recording fails after delivery, rerun the same command with the same text. Armada uses a stable message id tied to the worker generation, inbox item and text; Conductor deduplicates retries. Changed text is a new message. An old question, ended claim or replaced launch is refused before delivery; an archived workspace needs `armada relaunch ABC-12`. A failed session can receive a message to resume. Missing Conductor or its sign-in leaves the question open.
-
-Bound launches can receive notes before claiming when Armada has their launch identity and session. Older unbound launches use the manual appendix below. Claude Code subagents still require delivery with their runtime guide before recording.
+- After a failure, run the same command with the same text: Armada reuses the message id and Conductor delivers it once. Changed text is a new message.
+- A question older than the current worker, an ended claim or a replaced launch is refused before anything is sent. An archived workspace cannot receive messages: relaunch the worker.
+- A launch bound to its session can receive notes before its claim.
+- Never follow an `armada answer` with a manual send of the same text, or the other way round: the worker would get it twice.
 
 ## Status
 
-Armada reads Conductor's session and workspace state itself before inbox and status reads when the heartbeat is older than half `policy.silence_minutes`, refreshing stored observations at most every five minutes. Fresh `working` readings defer silence until twice that threshold, then the alert says the session is still working. Fresh `idle` readings in active phases produce `stopped` after five minutes without a report or answer; waiting phases stay quiet. An archived workspace ends its exact claim and dashboard session. Without a usable Conductor CLI, Armada keeps its usual silence rule; stored readings expire after `policy.silence_minutes`.
-
-The coordinator reads the transcript to decide how to resume a stopped worker. For a manual check:
+Armada reads each worker's session itself, before `armada status`, `armada inbox` and each watch poll, when the heartbeat is older than half of `policy.silence_minutes` (at most every five minutes per session). A session still `working` is called silent only past twice the allowance, and the alert says it is working. A session `idle` in a working phase for five minutes without a report or answer is `stopped`. An archived workspace ends its claim. Without a usable Conductor CLI, the plain silence rule applies.
 
 ```sh
 armada peek ABC-12
 armada peek ABC-12 --actions 10 --json
 ```
 
-Peek reads the claimed session or a bound launch before claim. It shows the runtime state and when it began, the worker's last reply, recent commands and exit codes, report and heartbeat ages, pull request checks and open questions. Times follow the coordinator's `TZ`. Runtime transcript secrets are masked; no runtime command writes to the worker. A fresh observation is published to Armada for status and the dashboard. The separate machine cursor and bounded reply/action tail make repeat reads incremental; “older events skipped” means the 20-page cap was reached, and the next peek continues from the saved cursor.
+Peek shows the session's state and since when, the worker's last reply, its recent commands and exit codes, its report and heartbeat ages, the pull request's checks and open questions, in your `TZ`, with secrets masked. It reads a bound launch before its claim too, and never writes to the worker. Repeated peeks read only what is new.
 
-`working` means a turn is running; `idle` means it ended, so compare the last report with its reply before nudging it to continue. `failed` means the last turn failed; `archived` means the workspace ended but its retained transcript can still be read. An unreachable runtime shows Armada's stored state and observation age. Check a new launch's setup reply before launching again.
+- `working`: a turn is running; leave it unless it stays silent past twice the allowance.
+- `idle`: the turn ended. If the worker is not `ready-to-merge` or waiting on someone, it stopped: compare its last report with its reply, then nudge it with `armada answer --note`.
+- `failed`: the last turn failed. Nudge it once; if it fails again, relaunch.
+- `archived`: the workspace ended; its transcript can still be read.
 
-**Read the transcript** with `armada peek ABC-12` first. Use `--json` when a script needs the same facts; the raw Conductor recipes are in the “Without Armada” appendix.
+**Relaunch** a dead, failed or stuck worker:
+
+```sh
+armada relaunch ABC-12 --reason "session failed twice"
+```
+
+It stops the old session, releases only that worker's claim, launches a replacement on the same branch and pull request, then archives the old session. A ready workspace is reused in place by default (a new session, uncommitted files kept); a failed or gone one gets a fresh workspace from the pushed branch. `--in-place` or `--fresh` choose; `--keep-old` skips the archive; `--dry-run` shows the plan. The replacement's brief names the pushed head and the pull request: it pushes there, never to a new pull request. On a partial failure, follow the printed state and command.
 
 ## Stop and archive
 
+`armada merge` archives the merged worker's workspace once GitHub confirms the merge; never archive before it. For a worker you stop without a merge:
+
 ```sh
+armada release --ticket ABC-12 --reason "<why it stops>"
 armada stop ABC-12
 ```
 
-`armada merge` archives the workspace automatically after GitHub confirms the merge; never archive before it prints "Merged". `--no-archive` retains it. Run `armada stop` only to finish a failed cleanup (the merge prints that command), or after `armada release --ticket ABC-12 --reason "<why>"`. Armada refuses while the worker still holds the ticket. It checks the exact stored claim and session’s workspace, waits for the final turn to finish (polling every 15 seconds for up to ten minutes), then cancels if needed and archives. A replaced claim is refused before any runtime write; an already archived workspace is safe to record again.
+`armada stop` refuses while the worker holds the ticket. It checks the exact stored claim, waits up to ten minutes for the final turn to end, cancels it if needed, then archives. Run it also when a merge printed it after a failed cleanup (copy that command whole). The branch and the pull request stay on GitHub.
 
 ## Without Armada: manual message
 
-Use this when Armada has no bound launch or claim, such as replacing a refused launch token. For ordinary answers and notes to registered workers, use `armada answer` so generation checks and retry deduplication apply.
-
-A printed generated merge-note fallback is another use of this appendix. Check the current claim’s handle, coordinator and phase first; send only to the same active worker. Inspect any unknown delivery outcome and its session before sending, so an already accepted note is not delivered again. Deliver the printed text directly with the commands below. Generated merge notes stay out of the ordinary `armada answer --note` path, which posts to Linear and resolves an open plan; do not record a manual fallback through that command.
+For a worker Armada has no bound launch or claim for (a new login line after a refused token), or a merge note `armada merge` printed because it could not deliver it. Check the current claim, its coordinator and phase first, and send only to the same active worker. If an earlier delivery's outcome was unknown, read the session before sending again.
 
 ```sh
-printf '%s\n' "Plan approved. Go on." | conductor --json message create --session <sessionId> --message-file -
-conductor --json message create --session <sessionId> --message-file - < /tmp/abc-12-answer.md
+printf '%s\n' "<message>" | conductor --json message create --session <sessionId> --message-file -
 ```
 
-The output contains `messageId` and `state` (`sent` or `queued`). Exit 0 means accepted; check the session and reply. Manual delivery without `--message-id` has no retry deduplication. Do not follow a manual send with an integrated `armada answer` for that worker: it would deliver again.
+The answer has `messageId` and `state` (`sent` or `queued`). There is no retry deduplication. Never record a printed merge note with `armada answer --note`: that posts it on the ticket.
+
+## Without Armada: status and transcript
+
+```sh
+conductor --json session status <sessionId>       # {"status": "working" | "idle" | "error", "updatedAt"}
+conductor --json workspace status <workspaceId>   # initializing, ready or archived
+conductor --json session message <sessionId> --limit 100 > /tmp/abc-12-events.json
+```
+
+Events come oldest first, 100 per page; `.hasMore` says when to fetch the next page with `--after <last event id>`. `.content.rawPayload` is the agent's own format:
+
+```sh
+# claude: final replies, then commands
+jq -r '.data[] | select(.content.rawPayload.type == "result") | .content.rawPayload.result' /tmp/abc-12-events.json
+jq -r '.data[] | select(.content.rawPayload.type == "assistant") | .content.rawPayload.message.content[] | select(.type == "tool_use") | .input.command // .name' /tmp/abc-12-events.json
+# codex: messages, then commands with exit codes
+jq -r '.data[] | .content.rawPayload.event | select(.type == "item.completed") | .item | select(.type == "agentMessage") | "[\(.phase)] \(.text)"' /tmp/abc-12-events.json
+jq -r '.data[] | .content.rawPayload.event | select(.type == "item.completed") | .item | select(.type == "commandExecution") | "exit=\(.exitCode) \(.command)"' /tmp/abc-12-events.json
+```
+
+Another agent, or a filter that prints nothing: count the event types (`jq -r '.data[].content.rawPayload | .type // .event.type' … | sort | uniq -c`) and adapt.
 
 ## Without Armada: manual stop and archive
 
-Only use this appendix when Armada does not hold the worker’s claim. For registered workers, use `armada stop` so its generation guard protects replacement sessions.
+Only for a worker Armada holds no claim for:
 
 ```sh
 conductor --json session cancel <sessionId>
 conductor --json workspace archive <workspaceId>
 ```
 
-- `session cancel` stops the running turn: `{"status", "canceledQueuedMessages"}`, and the session is `idle` within seconds. The workspace stays; a message starts a new turn. Use it on a worker that runs the wrong thing.
-- `workspace archive` answers `{"status": "archived"}`. Archive a worker's workspace after its pull request is merged, or after `armada release --ticket ABC-12 --reason "<why>"` for a worker that stops without handing back. The branch and the pull request stay on GitHub.
-- **Wait for `idle` before archiving.** A hand-back often arrives while the worker's session is still `working`: `armada report ready-to-merge` runs inside its last turn, which then writes its final reply. Archive only once `session status` answers `idle`. Poll it every 15 seconds; if it is still `working` after 10 minutes, cancel the turn and archive (the transcript keeps what it was doing). Run the whole block as one command; it can take up to 10 minutes, so run it in the background or give it a longer command timeout:
+Wait until `session status` is `idle` before archiving: a hand-back runs inside the worker's last turn, which still writes its final reply. Poll every 15 seconds; after ten minutes, cancel, then archive.
 
-```sh
-for i in $(seq 40); do
-  [ "$(conductor --json session status <sessionId> | jq -r .status)" = working ] || break
-  sleep 15
-done
-[ "$(conductor --json session status <sessionId> | jq -r .status)" = working ] && conductor --json session cancel <sessionId>
-conductor --json workspace archive <workspaceId>
-```
-- After an archive, `session status` still answers `idle`; `workspace status` says `archived`.
+## Without Armada: manual launch
 
-## Without Armada: status and transcript
-
-```sh
-conductor --json session status <sessionId>
-```
-
-The output is `{"workspaceId", "sessionId", "status", "updatedAt"}`. For a worker:
-
-- `working`: a turn is running. A silent worker that is `working` is busy (a long build or test run): leave it, and read the transcript if it stays silent past twice `policy.silence_minutes`.
-- `idle`: no turn is running. The worker finished its turn: it handed back, it waits for an answer, or it stopped without finishing. If `armada status` does not show it `ready-to-merge`, `awaiting-approval`, `awaiting-validation` or `blocked`, it has stopped: read its last reply, then message it to go on, or release and relaunch the ticket.
-- `error`: the last turn failed (agent or provider failure). Read the transcript and message it to resume; if it fails again, cancel, archive, release and relaunch.
-- Right after launch the session is `idle` for a few seconds while the workspace is initializing and the first message is queued; it turns `working` when the agent starts.
-
-The workspace itself: `conductor --json workspace status <workspaceId>` gives `status` `initializing`, `ready` or `archived`.
-
-**Read the transcript** to see what a worker did or said. Events come oldest first, 100 per page; `hasMore` tells when to fetch the next page with `--after` the last event id. Keep the last id you read and poll from it.
-
-```sh
-conductor --json session message <sessionId> --limit 100 > /tmp/abc-12-events.json
-jq -r '.hasMore, .data[-1].id' /tmp/abc-12-events.json
-conductor --json session message <sessionId> --after <lastEventId> --limit 100
-```
-
-The second line prints whether more pages exist and the id to continue from. `.content.rawPayload` is the agent's own event format, so the filters depend on the worker's agent (the `agent` of its profile in `armada.toml`).
-
-A `claude` worker: each turn's final reply, then the commands and tools it ran.
-
-```sh
-jq -r '.data[] | select(.content.rawPayload.type == "result") | .content.rawPayload | "error=\(.is_error)\n\(.result)"' /tmp/abc-12-events.json
-jq -r '.data[] | select(.content.rawPayload.type == "assistant") | .content.rawPayload.message.content[] | select(.type == "tool_use") | .input.command // .name' /tmp/abc-12-events.json
-```
-
-A `codex` worker: its events are `.content.rawPayload.event`, each item once as `item.started` and once as `item.completed`; read the completed ones. Its messages (`phase` is `commentary` along the way, `final_answer` at the end of a turn), then each command with its exit code, and its tool calls (Linear and other MCP servers).
-
-```sh
-jq -r '.data[] | .content.rawPayload.event | select(.type == "item.completed") | .item | select(.type == "agentMessage") | "[\(.phase)] \(.text)"' /tmp/abc-12-events.json
-jq -r '.data[] | .content.rawPayload.event | select(.type == "item.completed") | .item | select(.type == "commandExecution") | "exit=\(.exitCode) \(.command)"' /tmp/abc-12-events.json
-jq -r '.data[] | .content.rawPayload.event | select(.type == "item.completed") | .item | select(.type == "mcpToolCall") | "\(.server) \(.tool)"' /tmp/abc-12-events.json
-```
-
-Another agent, or a filter that prints nothing: count the event types, look at one event of the type you need, and adapt the filter.
-
-```sh
-jq -r '.data[].content.rawPayload | .type // .event.type // "(no payload)"' /tmp/abc-12-events.json | sort | uniq -c
-```
-
-## Without native Armada launch: manual Conductor creation
-
-Use this only for a deliberately manual launch. Prepare a worker brief and explicit settings yourself; do not pass secret environment variables. For Armada-managed workers, use `armada launch` so preflight, pending-launch protection, token cancellation and recovery are automatic.
+Only for a deliberate manual launch, with a brief and settings you prepared, and no secrets in `--env`:
 
 ```sh
 conductor --json workspace create \
   --repo-url https://github.com/<owner>/<name> --branch main \
   --name "ABC-12 <short title>" --session-name ABC-12 \
   --agent claude --model <model-id> --effort high \
-  --message-file - --env ARMADA_TICKET=ABC-12 < worker-brief.md
+  --message-file - < worker-brief.md
 ```
 
-The answer names `workspaceId`, `sessionId`, `deepLink` and the initial-message acknowledgement. Check these and the worker’s claim; a manually minted Armada token must be revoked with `armada launch revoke ABC-12` when the launch fails.
+The answer names `workspaceId`, `sessionId` and `deepLink`. If the launch fails, revoke its token with `armada launch revoke ABC-12`.

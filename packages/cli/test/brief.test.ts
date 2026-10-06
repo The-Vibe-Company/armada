@@ -746,7 +746,7 @@ test("a brief uses Armada's stored file inventory and declared paths, truncating
   expect(brief.prompt).toContain("Comparison incomplete");
   expect(brief.prompt).toContain("no files yet");
   expect(brief.prompt).toContain(
-    "Declare overlaps in your plan, proceed additively, and bring in main before hand-back. Ask the coordinator only when you must change a contract that another in-flight ticket relies on.",
+    "Declare overlaps in your plan and proceed additively; bring main in only if your pull request conflicts (GitHub says DIRTY). Ask the coordinator only when you must change a contract that another in-flight ticket relies on.",
   );
 });
 

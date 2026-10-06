@@ -712,7 +712,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
   out.push("## Workers in flight", "");
   if (b.parallel.length) {
     out.push(
-      "Declare overlaps in your plan, proceed additively, and bring in main before hand-back. Ask the coordinator only when you must change a contract that another in-flight ticket relies on.",
+      "Declare overlaps in your plan and proceed additively; bring main in only if your pull request conflicts (GitHub says DIRTY). Ask the coordinator only when you must change a contract that another in-flight ticket relies on.",
       "",
     );
     for (const w of b.parallel) {
