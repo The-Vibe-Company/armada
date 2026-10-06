@@ -154,6 +154,7 @@ const code = await run(process.argv.slice(2), {
     };
   },
   interactive: isatty(0) && isatty(2),
+  stdoutIsTTY: isatty(1),
   prompt,
   gitBranch,
   readStdin,

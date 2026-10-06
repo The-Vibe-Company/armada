@@ -693,3 +693,33 @@ test("external job liveness keeps worker ownership accurate in rearm and the sto
   expect(decision.block).toBe(true);
   if (decision.block) expect(decision.reason).toContain("open job");
 });
+
+test("follow sees coalesced deploy notice updates through inbox ETags, by default and filtered", async () => {
+  for (const kinds of [undefined, ["deploy"]] as const) {
+    const live = tempFleet();
+    const sha = "a".repeat(40),
+      next = "b".repeat(40);
+    const failure = { target: "api", sha, state: "timeout" as const, detail: "build output", pauseOnFailure: true };
+    await live.fleet.recordDeploy(failure);
+    let step = 0;
+    const lines = [];
+    for await (const line of followFleet(live.fleet, {
+      ...options(live).o,
+      ...(kinds ? { kinds } : {}),
+      until: new Date(NOW.getTime() + 150_000),
+      sleep: async (ms) => {
+        await live.clock.sleep(ms);
+        if (++step === 1) await live.fleet.recordDeploy({ ...failure, sha: next, detail: "new build output" });
+      },
+    }))
+      lines.push(line);
+    expect(lines.map((line) => [line.kind, line.new])).toEqual([
+      ["deploy", false],
+      ["deploy", true],
+    ]);
+    expect(lines[0]?.body).toContain(sha);
+    expect(lines[1]?.body).toContain(next);
+    expect(lines[1]?.body).toContain("new build output");
+    expect(await live.store.openInboxItems({ project: P, recipient: "coordinator" })).toHaveLength(1);
+  }
+});

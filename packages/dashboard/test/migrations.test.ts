@@ -3,6 +3,29 @@ import { DB_MIGRATIONS, DB_SCHEMA_VERSION, migrateDatabase, pgliteDatabase } fro
 
 const now = new Date("2026-01-01T12:00:00Z");
 
+test("migrations apply a missing lower version after a higher version has landed", async () => {
+  const db = await pgliteDatabase();
+  try {
+    await db.query("CREATE TABLE armada_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL)");
+    // Reservations (27) and validation samples (29) can land from different workers.
+    for (const migration of DB_MIGRATIONS.filter((m) => m.version !== 27)) {
+      for (const statement of migration.statements) await db.query(statement);
+      await db.query("INSERT INTO armada_migrations (version, applied_at) VALUES ($1, $2)", [migration.version, now]);
+    }
+    expect((await db.query("SELECT to_regclass('reservations') AS name")).rows).toEqual([{ name: null }]);
+    expect(await migrateDatabase(db, now)).toBe(DB_SCHEMA_VERSION);
+    expect((await db.query("SELECT to_regclass('reservations') AS name")).rows).toEqual([{ name: "reservations" }]);
+    const applied = await db.query("SELECT version, applied_at FROM armada_migrations ORDER BY version");
+    expect(applied.rows).toEqual(DB_MIGRATIONS.map((m) => ({ version: m.version, applied_at: now })));
+    await migrateDatabase(db, new Date("2026-01-02T12:00:00Z"));
+    expect((await db.query("SELECT version, applied_at FROM armada_migrations ORDER BY version")).rows).toEqual(
+      applied.rows,
+    );
+  } finally {
+    await db.end();
+  }
+});
+
 test.each(["empty", "version 21", "version 21 without the retired table"])(
   "migrations remove retired views from %s and preserve accounts",
   async (startingAt) => {

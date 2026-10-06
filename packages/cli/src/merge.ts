@@ -1,6 +1,7 @@
 // `armada merge <pr>`: the coordinator merges a handed-back pull request.
 // GitHub is read through the GraphQL API; the merge itself and the local
 // checks go through `gh` and `git`, run without a shell by `io.exec`.
+
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
@@ -14,6 +15,7 @@ import {
   CLAUDE_SKILLS_DIR,
   type Credentials,
   createLinearWriter,
+  deployLine,
   fetchCommit,
   fetchComparison,
   fetchMainHealth,
@@ -40,7 +42,9 @@ import {
 import { afterMerge } from "./after-merge.ts";
 import { coordinatorName } from "./coordinator.ts";
 import type { DeferredLaunchResult } from "./deferred-launch.ts";
+import { deployStatus, startDeploys } from "./deploy.ts";
 import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts";
+import { outgoingRedactor, redactLinearWriter } from "./redact.ts";
 import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
 import { endWorkerSessions, liveFleet, type WorkerArgs } from "./worker.ts";
 
@@ -312,10 +316,22 @@ export async function merge(
   const gh = { token, repository: config.github.repository, ...fetchOpt };
   const linearOpts = { apiKey: linearApiKey, labels: config.tracker.labels, ...fetchOpt };
   const now = io.now ?? (() => new Date());
+  const mask = await outgoingRedactor(io, config, credentials);
+  a = {
+    ...a,
+    options: {
+      ...a.options,
+      ...(a.options.reason === undefined ? {} : { reason: mask.text(a.options.reason) }),
+      ...(a.options["through-hold"] === undefined ? {} : { "through-hold": mask.text(a.options["through-hold"]) }),
+    },
+  };
   const live = liveFleet(io, config, credentials);
   const ctx: MergeContext = {
     config,
-    linear: io.linearWriter ? io.linearWriter(linearOpts) : createLinearWriter(linearOpts),
+    linear: redactLinearWriter(
+      io.linearWriter ? io.linearWriter(linearOpts) : createLinearWriter(linearOpts),
+      mask.text,
+    ),
     forge: {
       mainHealth: () => fetchMainHealth({ ...gh, requiredChecks: config.gates.requiredChecks }),
       readPull: async (n) => {
@@ -335,7 +351,7 @@ export async function merge(
           "--repo",
           config.github.repository,
           "--body",
-          body,
+          mask.text(body),
         ]);
         if (!result.ok) throw new Error(result.message);
       },
@@ -447,6 +463,16 @@ export async function merge(
     for (const w of asked.warnings) io.stderr(`armada: warning: ${w}\n`);
     return 0;
   }
+  if (config.deploy?.targets.length) {
+    try {
+      for (const row of (await deployStatus(io, config, credentials)).rows) {
+        if (["waiting", "live"].includes(row.state) && now().getTime() - Date.parse(row.updatedAt) >= 120_000)
+          io.stderr(`armada: ${deployLine(row, now())}\n`);
+      }
+    } catch {
+      io.stderr("armada: warning: could not read deploy state; armada deploy status\n");
+    }
+  }
   const o = await mergePullRequest(ctx, {
     pr: number,
     ticket: a.options.ticket ?? null,
@@ -459,6 +485,7 @@ export async function merge(
   });
   let deferredLaunches: DeferredLaunchResult[] = [];
   let next: Awaited<ReturnType<typeof rearmFor>> | null = null;
+  let deploys: Awaited<ReturnType<typeof startDeploys>> = [];
   const archive = await afterMerge(io, config, credentials, o, {
     configPath,
     noArchive: !!a.options["no-archive"],
@@ -518,9 +545,14 @@ export async function merge(
         );
       for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
       if (o.merged && o.ticket) await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
+      if (o.merged && o.deploy)
+        deploys = await startDeploys(io, config, credentials, configPath, o.pr.mergeCommit, o.deploy.targets, a.json);
     },
   });
-  if (a.json) io.stdout(`${JSON.stringify({ ...o, archive, deferredLaunches, watch: next }, null, 2)}\n`);
+  if (a.json)
+    io.stdout(
+      `${JSON.stringify({ ...o, archive, deferredLaunches, ...(deploys.length ? { deploys } : {}), watch: next }, null, 2)}\n`,
+    );
   else if (archive)
     io.stdout(`${archive.detail.endsWith(".") ? archive.detail : `${o.ticket?.id}: ${archive.detail}.`}\n`);
   return 0;

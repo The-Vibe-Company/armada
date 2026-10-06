@@ -34,7 +34,13 @@ async function terminal(
   env: Record<string, string>,
   stored: Record<string, string> = {},
   v: FakeVault | null = null,
-  more: { cli?: ServerCli; exec?: Exec; toml?: string; secrets?: Record<string, Record<string, string>> } = {},
+  more: {
+    cli?: ServerCli;
+    exec?: Exec;
+    toml?: string;
+    secrets?: Record<string, Record<string, string>>;
+    fetch?: Io["fetch"];
+  } = {},
 ) {
   const home = await mkdtemp(join(tmpdir(), "armada-doctor-"));
   dirs.push(home);
@@ -59,20 +65,18 @@ async function terminal(
     stdout: (t) => out.push(t),
     stderr: (t) => errs.push(t),
     ghToken: () => null,
-    fetch: armada.fetch,
+    fetch: more.fetch ?? armada.fetch,
     now: () => NOW,
     sleep: async () => {},
     ...(more.exec ? { exec: more.exec } : {}),
   };
   /** The sign-in, key-file, version and conductor checks of `armada doctor --json`. */
-  const doctor = async () => {
+  const doctor = async (ids = ["sign-in", "cli-version", "local-keys", "retired-keys", "conductor-cli", "secrets"]) => {
     await run(["doctor", "--json"], io);
     const text = out.splice(0).join("");
     for (const secret of [KEY, SESSION, LINEAR]) expect([text, ...errs].join("")).not.toContain(secret);
     const report = JSON.parse(text.slice(text.indexOf("{"))) as { checks: Check[] };
-    return report.checks.filter((c) =>
-      ["sign-in", "cli-version", "local-keys", "retired-keys", "conductor-cli", "secrets"].includes(c.id),
-    );
+    return report.checks.filter((c) => ids.includes(c.id));
   };
   /** What the last runs printed on stderr, emptied. */
   const stderr = () => errs.splice(0).join("");
@@ -82,6 +86,54 @@ async function terminal(
   };
   return { doctor, inbox, stderr, home, credentials: join(home, "armada", "credentials") };
 }
+
+describe("armada doctor: GitHub merge rules", () => {
+  const ids = [
+    "merge-rules",
+    "merge-checks",
+    "merge-squash",
+    "merge-approvals",
+    "merge-queue",
+    "merge-delete-branches",
+  ];
+  test("no token produces exactly one not-checked warning", async () => {
+    const t = await terminal({}, {}, null, { toml: DEMO_TOML });
+    expect(await t.doctor(ids)).toMatchObject([
+      { id: "merge-rules", level: "warning", message: "GitHub branch rules not checked: no GitHub token" },
+    ]);
+  });
+
+  test("a token denied access yields one warning without exposing the response", async () => {
+    const t = await terminal({ GITHUB_TOKEN: "github_CANARY" }, {}, null, {
+      toml: DEMO_TOML,
+      fetch: async () => new Response("github_CANARY", { status: 403 }),
+    });
+    const checks = await t.doctor(ids);
+    expect(checks).toHaveLength(1);
+    expect(checks[0]?.level).toBe("warning");
+    expect(JSON.stringify(checks)).not.toContain("github_CANARY");
+  });
+
+  test("appends all five compatibility lines despite unavailable classic protection", async () => {
+    const t = await terminal({ GITHUB_TOKEN: "github_CANARY" }, {}, null, {
+      toml: DEMO_TOML,
+      fetch: async (url) => {
+        if (url.includes("/rules/branches/"))
+          return Response.json([
+            { type: "pull_request", parameters: { required_approving_review_count: 1 } },
+            { type: "merge_queue" },
+          ]);
+        if (url.endsWith("/protection")) return new Response("denied", { status: 403 });
+        if (url.startsWith("https://api.github.com/repos/"))
+          return Response.json({ default_branch: "trunk", allow_squash_merge: false, delete_branch_on_merge: true });
+        throw new Error("unexpected read");
+      },
+    });
+    const checks = await t.doctor(ids);
+    expect(checks).toHaveLength(5);
+    expect(checks.map((c) => c.level)).toEqual(["ok", "error", "error", "error", "warning"]);
+  });
+});
 
 describe("armada doctor: the sign-in to Armada", () => {
   test("not signed in, it warns that workers would need keys in their environment", async () => {
@@ -461,7 +513,8 @@ describe("armada doctor: repository identity", () => {
           })
         : recovered.fetch(url, init);
     expect((await check()).map((c) => c.level)).toEqual(["ok", "ok"]);
-    expect(attempts).toBe(2);
+    // Repository identity retries once; branch compatibility also reads repository merge settings.
+    expect(attempts).toBe(3);
     expect(waits).toEqual([2000]);
     expect(notices).toContain("armada: GitHub answered 503; trying again in 2 s (2/3)\n");
     expect(notices.join("")).not.toContain("CANARY");

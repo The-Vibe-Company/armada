@@ -22,6 +22,7 @@ import {
   CLI_VERSION_HEADER,
   COORDINATOR,
   compareVersions,
+  FLEET_TEXT_OPERATIONS,
   type FleetCaller,
   type HandBackSnapshot,
   type Issue,
@@ -31,6 +32,7 @@ import {
   MINIMUM_CLI_VERSION,
   parseProject,
   RUNTIME_NAMES,
+  redactor,
   serveFleet,
   upgradeLine,
 } from "@armada/core/read";
@@ -50,6 +52,7 @@ import {
   isWorkerSecretName,
   listWorkerSecrets,
   projectsWithLinearKey,
+  readWorkerSecrets,
   recordEvent,
   SECRETS_KEY_VARIABLE,
   setSecret,
@@ -665,11 +668,13 @@ async function attach(a: CliAccounts, request: Request, now: Date, deps: CliApiD
     for (const key of ["caption", "reference"])
       if (body[key] != null && typeof body[key] !== "string")
         throw new AttachmentRefusal(`attachment ${key} must be text`);
+    const mask = await projectMask(a, deps, identity.organization.id, project.slug);
+    if (mask instanceof Response) return mask;
     const attachment = await saveAttachment(a.client, {
       project: project.slug,
       ticket,
       input: attachmentInput(body.input),
-      caption: (body.caption as string | null) ?? null,
+      caption: body.caption == null ? null : mask(body.caption as string),
       reference: (body.reference as string | null) ?? null,
       author: identity.launch ? workerActor(identity.launch).label : (holderOf(identity)?.actor.label ?? "Coordinator"),
       now,
@@ -688,6 +693,33 @@ async function attach(a: CliAccounts, request: Request, now: Date, deps: CliApiD
       return refuse(err.status, err.message, "armada attach <ticket> <file|url>... --help");
     throw err;
   }
+}
+
+/** Only after project/organization scope checks; no decrypted value leaves this request. */
+async function projectMask(
+  a: CliAccounts,
+  deps: CliApiDeps,
+  organization: string,
+  project: string,
+): Promise<((text: string) => string) | Response> {
+  const vault = deps.vault?.();
+  if (vault?.kind !== "on") {
+    if ((await listWorkerSecrets(a.client, { organization, project })).length)
+      return refuse(
+        503,
+        "Armada cannot open the project's secrets to mask this text",
+        "ask the owner to restore the vault",
+      );
+    return redactor([]).text;
+  }
+  const opened = await readWorkerSecrets(a.client, vault.key, { organization, project, names: null });
+  if (opened.problems.length)
+    return refuse(
+      503,
+      "Armada cannot open the project's secrets to mask this text",
+      "ask the owner to restore the vault",
+    );
+  return redactor(Object.entries(opened.values).map(([name, value]) => ({ name, value }))).text;
 }
 
 /**
@@ -743,6 +775,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
   let openPrs: number[] | undefined;
   let storedConfig: ArmadaConfig | undefined;
   if (
+    op === "validate" ||
     ((op === "request" || op === "inbox" || op === "launch-requests") && caller.kind === "organization") ||
     op === "overlap" ||
     op === "report"
@@ -770,14 +803,18 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       };
     }
   }
+  const mask = FLEET_TEXT_OPERATIONS.has(op) ? await projectMask(a, deps, organization.id, project.slug) : undefined;
+  if (mask instanceof Response) return mask;
   const answer = await serveFleet(
     fleetStore(a.client),
     { op, project, caller, input: body.input },
     {
       now,
+      redact: mask,
       openPrs,
       snapshot: handBackSnapshot,
       config: storedConfig,
+      validationSamples: storedConfig?.policy.validationSamples,
       cliVersion: request.headers.get(CLI_VERSION_HEADER),
       appUrl: a.settings.baseUrl,
       sendDigest: async (slug, digest, language, at) => {
