@@ -197,6 +197,7 @@ export function agentActivity(input: ActivityInput): ActivityEntry[] {
       out.push(entry(i.kind, i.createdAt, base));
       if (i.resolvedAt) out.push(entry("answer", i.resolvedAt, { text: clean(i.resolution) || null, request: null }));
     } else if (i.kind === "hand-back") out.push(entry("hand-back", i.createdAt, base));
+    else if (i.kind === "linear-pending") out.push(entry("request", i.createdAt, base));
     else if (i.kind === "note") out.push(entry("note", i.createdAt, base));
     else if ((REQUEST_KINDS as readonly string[]).includes(i.kind))
       out.push(entry("request", i.createdAt, { ...base, request: i.kind as RequestKind, pr: i.request?.pr ?? null }));
