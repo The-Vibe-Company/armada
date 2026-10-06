@@ -21,6 +21,7 @@ export * from "./jobs.ts";
 export * from "./labels.ts";
 export * from "./linear.ts";
 export * from "./linear-write.ts";
+export * from "./lint.ts";
 export * from "./live.ts";
 export * from "./machine.ts";
 export * from "./merge.ts";
