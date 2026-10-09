@@ -39,6 +39,7 @@ export interface DeployTarget {
 
 export interface CiConfig {
   failurePatterns: string[];
+  setupSteps: string[];
   knownFailures: { check: string; pattern: string; ticket: string }[];
 }
 
@@ -423,7 +424,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
     ["git", gitT, ["sign"]],
-    ["ci", ciT, ["failure_patterns", "known_failure"]],
+    ["ci", ciT, ["failure_patterns", "known_failure", "setup_steps"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
     ["merge", mergeT, ["notify_paths", "queue_retest"]],
     [
@@ -887,6 +888,12 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     else problems.push(`"gates.local_commands" must be a list of shell commands`);
   }
 
+  let setupSteps: string[] = [];
+  if (ciT.setup_steps !== undefined) {
+    const v = ciT.setup_steps;
+    if (Array.isArray(v) && v.every((p) => typeof p === "string" && p.trim())) setupSteps = [...new Set(v)];
+    else problems.push('"ci.setup_steps" must be a list of non-empty step names or globs');
+  }
   let failurePatterns: string[] = [];
   if (ciT.failure_patterns !== undefined) {
     const v = ciT.failure_patterns;
@@ -992,7 +999,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     },
     ...(raw.deploy === undefined ? {} : { deploy: { targets: deployTargets } }),
     git: { sign: sign === "off" ? "off" : "inherit" },
-    ci: { failurePatterns, knownFailures },
+    ci: { failurePatterns, knownFailures, setupSteps },
     gates: { requiredChecks, localCommands },
     merge: { notifyPaths, queueRetest: queueRetest === "local" ? "local" : "ci" },
     policy: {
@@ -1085,6 +1092,9 @@ sign = "inherit"        # "off" disables commit signing only in new Herdr worktr
 # A root-cause ticket is required for every known flaky failure. Rerun failed jobs once
 # with \`armada ci why <pr> --rerun\`; unknown failures are refused.
 # [ci]
+# setup_steps = ["Install dependencies", "Run bun install --frozen-lockfile"]  # exact names or * globs
+# Network outages qualify only before user tests/builds run; 4xx stays a failure.
+# Built-ins always apply: Set up job, Initialize containers, Run actions/* (never Run *).
 # failure_patterns = ["FAIL (.+)"]  # optional test-name regex; exactly one capture group
 # [[ci.known_failure]]
 # check = "test"  # exact check run name

@@ -75,7 +75,7 @@ describe("armada.toml", () => {
       },
       git: { sign: "inherit" },
       github: { repository: "acme/widgets" },
-      ci: { failurePatterns: [], knownFailures: [] },
+      ci: { failurePatterns: [], knownFailures: [], setupSteps: [] },
       gates: { requiredChecks: [], localCommands: [] },
       merge: { queueRetest: "ci", notifyPaths: [".github/workflows/**"] },
       policy: {
@@ -671,6 +671,16 @@ test("max_workers is an opt-in positive integer policy", () => {
   expect(parseConfig(DEMO_TOML).policy.maxWorkers).toBeNull();
   for (const value of ["0", "-1", "1.5", '"2"'])
     expect(() => parseConfig(`${DEMO_TOML}\n[policy]\nmax_workers = ${value}`)).toThrow("positive integer");
+});
+
+test("CI setup_steps accepts exact names and globs and rejects malformed declarations", () => {
+  expect(
+    parseConfig(
+      `${DEMO_TOML}\n[ci]\nsetup_steps = ["Install dependencies", "Run bun install*", "Install dependencies"]`,
+    ).ci.setupSteps,
+  ).toEqual(["Install dependencies", "Run bun install*"]);
+  for (const value of ['"Install dependencies"', "[1]", '[" "]'])
+    expect(() => parseConfig(`${DEMO_TOML}\n[ci]\nsetup_steps = ${value}`)).toThrow("ci.setup_steps");
 });
 
 test("deploy sources are three-way exclusive", () => {
