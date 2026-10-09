@@ -1,5 +1,6 @@
-import { afterEach, expect, test } from "bun:test";
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigError } from "../src/config.ts";
@@ -7,12 +8,14 @@ import {
   addNoticedRelease,
   ensurePersonalConfig,
   machinePaths,
+  noticesFile,
   parsePersonalConfig,
   readCoordinatorName,
   readCredentialStore,
   readReleaseNotices,
   readWatchState,
   releaseWatchLock,
+  reserveNotice,
   runningWatch,
   storeIsExposed,
   takeWatchLock,
@@ -22,7 +25,7 @@ import {
   writeCoordinatorName,
 } from "../src/machine.ts";
 
-test("release reservations serialize commands, remember time, and recover a dead holder", async () => {
+test("notice reservations serialize commands, preserve releases, and recover a dead holder", async () => {
   const paths = machinePaths({ XDG_CONFIG_HOME: await tempHome() });
   if (!paths) throw new Error("no machine store");
   const at = new Date("2026-01-01T00:00:00Z");
@@ -50,6 +53,79 @@ test("release reservations serialize commands, remember time, and recover a dead
     }),
   ).toBe(false);
   expect(await readFile(join(paths.dir, "releases.lock"), "utf8")).toBe("9999\n");
+});
+
+test("notice keys migrate releases, throttle independently, persist forever, and fail closed on corrupt memory", async () => {
+  const paths = machinePaths({ XDG_CONFIG_HOME: await tempHome() });
+  if (!paths) throw new Error("no machine store");
+  await addNoticedRelease(paths, "1.0.1", new Date("2026-01-01T00:00:00Z"));
+  // Simulate an upgrade from the previous release-only format.
+  await rm(noticesFile(paths), { force: true });
+  await writeFile(
+    join(paths.dir, "releases.json"),
+    JSON.stringify({ noticed: ["0.9.0", { version: "1.0.1", at: "2026-01-01T00:00:00.000Z" }] }),
+  );
+  const at = new Date("2026-01-01T01:00:00Z");
+  expect(await reserveNotice(paths, "hint:digest:widgets", at, 86_400_000)).toBe(true);
+  expect(await readReleaseNotices(paths)).toEqual([
+    { version: "0.9.0", at: null },
+    { version: "1.0.1", at: "2026-01-01T00:00:00.000Z" },
+  ]);
+  expect(await addNoticedRelease(paths, "1.0.2", at, { intervalMs: 86_400_000 })).toBe(false);
+  expect(await reserveNotice(paths, "hint:digest:widgets", at, 86_400_000)).toBe(false);
+  expect(await reserveNotice(paths, "hint:digest:other", at, 86_400_000)).toBe(true);
+  expect(await reserveNotice(paths, "session:once", at, Infinity)).toBe(true);
+  const tomorrow = new Date(at.getTime() + 86_400_000);
+  expect(await reserveNotice(paths, "hint:digest:widgets", tomorrow, 86_400_000)).toBe(true);
+  expect(await reserveNotice(paths, "session:once", tomorrow, Infinity)).toBe(false);
+  // An old CLI can still write the previous format after migration, under the same lock.
+  await writeFile(
+    join(paths.dir, "releases.json"),
+    JSON.stringify({ noticed: [{ version: "1.0.1", at: "2026-01-02T00:00:00.000Z" }] }),
+  );
+  expect(await addNoticedRelease(paths, "1.0.2", tomorrow, { intervalMs: 86_400_000 })).toBe(false);
+  expect((await readReleaseNotices(paths)).find((entry) => entry.version === "1.0.1")?.at).toBe(
+    "2026-01-02T00:00:00.000Z",
+  );
+  const later = new Date("2026-01-03T00:00:00Z");
+  expect(await addNoticedRelease(paths, "1.0.3", later, { intervalMs: 86_400_000 })).toBe(true);
+  // New release reservations remain visible to old CLIs too.
+  expect(JSON.parse(await readFile(join(paths.dir, "releases.json"), "utf8")).noticed.at(-1)).toEqual({
+    version: "1.0.3",
+    at: later.toISOString(),
+  });
+
+  expect(await reserveNotice(paths, "hint:digest:widgets", at, 86_400_000)).toBe(false);
+  await writeFile(noticesFile(paths), "bad json");
+  expect(await reserveNotice(paths, "hint:digest:widgets", tomorrow, 86_400_000)).toBe(false);
+  expect(await readFile(noticesFile(paths), "utf8")).toBe("bad json");
+  await rm(noticesFile(paths));
+  await mkdir(noticesFile(paths));
+  expect(await reserveNotice(paths, "hint:digest:widgets", tomorrow, 86_400_000)).toBe(false);
+  await rm(noticesFile(paths), { recursive: true });
+  await writeFile(join(paths.dir, "releases.json"), "bad json");
+  expect(await reserveNotice(paths, "hint:digest:widgets", tomorrow, 86_400_000)).toBe(false);
+});
+
+test("a failed new receipt write leaves the release reservation visible to both CLI generations", async () => {
+  const paths = machinePaths({ XDG_CONFIG_HOME: await tempHome() });
+  if (!paths) throw new Error("no machine store");
+  const at = new Date("2026-01-01T00:00:00Z");
+  const rename = fs.rename;
+  const failure = spyOn(fs, "rename").mockImplementation(async (from, to) => {
+    if (to === noticesFile(paths)) throw new Error("synthetic receipt rename failure");
+    return rename(from, to);
+  });
+  try {
+    expect(await addNoticedRelease(paths, "1.0.1", at, { intervalMs: 86_400_000 })).toBe(false);
+    expect(JSON.parse(await readFile(join(paths.dir, "releases.json"), "utf8")).noticed).toEqual([
+      { version: "1.0.1", at: at.toISOString() },
+    ]);
+  } finally {
+    failure.mockRestore();
+  }
+  expect(await readReleaseNotices(paths)).toEqual([{ version: "1.0.1", at: at.toISOString() }]);
+  expect(await addNoticedRelease(paths, "1.0.1", at, { intervalMs: 86_400_000 })).toBe(false);
 });
 
 const dirs: string[] = [];
