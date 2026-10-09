@@ -1,4 +1,5 @@
 // Pure CI diagnosis, shared by workers, the coordinator and future rerun rules.
+import picomatch from "picomatch";
 import type { CiConfig } from "./config.ts";
 
 export interface FailedCheck {
@@ -13,7 +14,7 @@ export interface FailedCheck {
   annotations: { title: string | null; message: string; path: string; line: number | null }[];
   attempt?: number | null;
   superseded?: boolean;
-  /** Actions' job steps, read only for a possible dependency-only failure. */
+  /** Actions' job steps, validated for dependency summaries and possible network setup failures. */
   steps?: { name: string; conclusion: string | null; number: number }[];
 }
 
@@ -31,6 +32,11 @@ export interface Explanation {
   tests: string[];
   error: string[];
   class: "known" | "runner" | "dependent" | "failure" | "external";
+  runnerReason?: string;
+  /** A network outage in an undeclared user step. */
+  networkStep?: string;
+  /** Why a network candidate could not establish a setup outage. */
+  networkNote?: string;
   /** Failed checks in the same workflow that this summary reports. */
   dependencies?: string[];
   known?: { ticket: string; pattern: string };
@@ -69,6 +75,61 @@ const TEST_PATTERNS = [
 ];
 const RUNNER =
   /No space left on device|The runner has received a shutdown signal|lost communication with the server|The hosted runner encountered an error|The job was not acquired by Runner of type hosted/i;
+
+// Outage signatures only; authorization and missing packages are not runner problems.
+const NETWORK = [
+  { name: "connection", pattern: /\b(?:ECONNRESET|ETIMEDOUT|EAI_AGAIN|ECONNREFUSED)\b/ },
+  { name: "request", pattern: /request to https?:\/\/\S+ failed, reason:/i },
+  { name: "artifact", pattern: /Unable to make request: E[A-Z]+|Failed to GetSignedArtifactURL/ },
+  { name: "proxy", pattern: /net\/http: TLS handshake timeout|proxyconnect tcp/ },
+  {
+    name: "git",
+    pattern:
+      /fatal: unable to access '[^']+': (?:Could not resolve host|Failed to connect|The requested URL returned error: 5\d\d|Operation timed out)/,
+  },
+  { name: "rpc", pattern: /RPC failed; HTTP 5\d\d/ },
+  { name: "docker", pattern: /Error response from daemon: .*(?:net\/http|i\/o timeout|toomanyrequests)/ },
+  { name: "python", pattern: /ReadTimeoutError: HTTPSConnectionPool|Max retries exceeded with url/ },
+  { name: "http", pattern: /(?:Unexpected HTTP response|status code does not indicate success): 5\d\d/i },
+];
+const CLIENT_ERROR = /\b4\d\d\b|\b(?:not found|forbidden|unauthorized)\b/i;
+
+/** Used by the CLI to request validated step evidence, never to authorize a rerun alone. */
+export function hasNetworkFailure(lines: readonly string[]): boolean {
+  return lines.some((line) => NETWORK.some(({ pattern }) => pattern.test(ciLine(line))));
+}
+
+function networkSetupFailure(check: FailedCheck, log: readonly string[], setupSteps: readonly string[]) {
+  if (!hasNetworkFailure(log) || check.app !== "github-actions" || check.superseded) return {};
+  const steps = [...(check.steps ?? [])].sort((a, b) => a.number - b.number);
+  const failed = steps.findIndex((step) => step.conclusion === "failure");
+  const step = steps[failed];
+  if (!step) return { networkNote: "network error found, step evidence unavailable" };
+  const setup = picomatch(["Set up job", "Initialize containers", "Run actions/*", ...setupSteps], { dot: true });
+  const firstError = log.findIndex((line) => line.includes("##[error]"));
+  const prefix = log.slice(0, firstError < 0 ? log.length : firstError + 1);
+  if (!hasNetworkFailure(prefix) || prefix.some((line) => CLIENT_ERROR.test(line)))
+    return { networkNote: "network error does not establish the first failure as a setup outage" };
+  if (!setup(step.name)) return { networkStep: step.name };
+  // Cleanup must correspond to an executed setup step, not merely have a Post display name.
+  const cleanup = (name: string) =>
+    steps
+      .slice(0, failed + 1)
+      .some(
+        (parent) =>
+          parent.conclusion !== "skipped" &&
+          setup(parent.name) &&
+          (name === `Post ${parent.name}` ||
+            (parent.name.startsWith("Run ") && name === `Post ${parent.name.slice(4)}`)),
+      );
+  // A setup action after a test/build step is not a pre-test outage. Cleanup may still run.
+  if (
+    steps.slice(0, failed).some((s) => s.conclusion !== "skipped" && (!setup(s.name) || s.conclusion !== "success")) ||
+    steps.slice(failed + 1).some((s) => s.conclusion !== "skipped" && !cleanup(s.name) && s.name !== "Complete job")
+  )
+    return { networkNote: "network error found, user steps ran or step evidence is incomplete" };
+  return { runnerReason: `network, in setup step "${step.name}"` };
+}
 
 /** Strip transport timestamps and terminal escapes, retaining useful indentation. */
 export function ciLine(line: string): string {
@@ -156,7 +217,13 @@ export function explainChecks(
       if (name) tests.add(name);
     }
     const evidence = [...annotations, ...summary, ...log].join("\n");
-    const runner = RUNNER.test(evidence) || (/exit code 137/i.test(evidence) && /\bKilled\b/.test(evidence));
+    // Display bounds must not hide a trailing registry/auth error from classification.
+    const rawLog = check.id === null ? [] : (logs.get(check.id)?.lines ?? []);
+    const network = networkSetupFailure(check, rawLog, config?.setupSteps ?? []);
+    const runner =
+      !!network.runnerReason ||
+      RUNNER.test(evidence) ||
+      (/exit code 137/i.test(evidence) && /\bKilled\b/.test(evidence));
     const lines = log.some((l) => l.trim())
       ? log
       : (check.app === "github-actions" ? [...annotations, ...summary] : [...summary, ...annotations]).filter(Boolean);
@@ -203,6 +270,7 @@ export function explainChecks(
             ...(knownMatches.length > 1 ? { knownMatches } : {}),
           }
         : {}),
+      ...network,
       ...(check.superseded ? { superseded: true } : {}),
     };
   });

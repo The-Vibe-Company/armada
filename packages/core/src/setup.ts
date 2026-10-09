@@ -80,7 +80,7 @@ export function optionalFeatures(config: ArmadaConfig): InfoCheck[] {
   if (!config.ci.knownFailures.length)
     info(
       "flakes",
-      "[ci] optional: add [[ci.known_failure]] with check, pattern and root-cause ticket to rerun known flakes once",
+      "[ci] optional: add [[ci.known_failure]] with check, pattern and root-cause ticket to rerun known flakes once, and setup_steps for tool/dependency download steps",
     );
   if (!config.acceptance.length)
     info("acceptance", "[[acceptance]] optional: declare live build or preview checks required before hand-back");
