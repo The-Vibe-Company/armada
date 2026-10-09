@@ -10,7 +10,7 @@ import {
   queueRefusedPrefix,
 } from "@armada/core/read";
 import { type Database, iso, isoAt, type Queryable, type Row, transaction } from "./db";
-import { addInboxItem, getLease } from "./fleet-store";
+import { addInboxItem, getLease, resolvePrItems } from "./fleet-store";
 
 const OPEN = "state IN ('queued','merging')";
 const entryOf = (r: Row): QueueEntry => ({
@@ -110,9 +110,9 @@ export async function queueNext(db: Database, q: { project: string; holder: stri
   });
 }
 export async function queueFinish(db: Database, q: QueueFinish & { project: string; at: Date }): Promise<boolean> {
-  return transaction(db, async (tx) => {
+  const finished = await transaction(db, async (tx) => {
     await tx.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext('merge-queue'))", [q.project]);
-    if (!(await heldLease(tx, q)).ours) return false;
+    if (!(await heldLease(tx, q)).ours) return null;
     const rs = await tx.query(
       `UPDATE merge_queue SET state = $3, detail = $4, updated_at = $5,
       attempts = attempts + $6, not_before = $7, merge_commit = $8, finished_at = $9
@@ -130,7 +130,7 @@ export async function queueFinish(db: Database, q: QueueFinish & { project: stri
       ],
     );
     const row = rs.rows[0];
-    if (!row) return false;
+    if (!row) return null;
     if (q.outcome === "refused")
       await addInboxItem(tx, {
         project: q.project,
@@ -141,8 +141,26 @@ export async function queueFinish(db: Database, q: QueueFinish & { project: stri
         body: `${queueRefusedPrefix(Number(row.pr))} ${q.detail ?? "merge refused"}`,
         at: q.at,
       });
-    return true;
+    return { pr: Number(row.pr) };
   });
+  if (!finished) return false;
+  // Commit the queue's confirmed outcome before best-effort notice cleanup.
+  // A failed notice write must never roll back a merge already made on GitHub.
+  if (q.outcome === "merged") {
+    try {
+      await resolvePrItems(db, {
+        project: q.project,
+        pr: finished.pr,
+        resolution: `resolved: PR #${finished.pr} merged`,
+        at: q.at,
+      });
+    } catch {
+      console.warn(
+        `armada dashboard: warning: could not clear PR #${finished.pr} inbox notices; the next stored merged reading will retry`,
+      );
+    }
+  }
+  return true;
 }
 /** The drain's current step on its merging entry; only the lease's holder writes it. */
 export async function queueProgress(db: Database, q: QueueProgress & { project: string; at: Date }): Promise<boolean> {

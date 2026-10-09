@@ -658,6 +658,8 @@ const en = {
         ["Merge to approve", pr ? `#${pr}${ci ? ` ${ci}` : ""}` : ""].filter(Boolean).join(" · "),
       ownerQuestion: (text: string) => `Question: ${text}`,
       awaitingValidation: "Waiting for your validation",
+      queued: (position: number) => `Queued in the merge queue (position ${position})`,
+      merging: (detail: string | null) => `Merging: ${detail ?? "starting the drain"}`,
       ready: (by: string | null, pr: number | null, ci: string) =>
         [by ? `Approved by ${by}` : "Handed back", pr ? `#${pr}${ci ? ` ${ci}` : ""}` : ""].filter(Boolean).join(" · "),
       merged: (pr: number) => `#${pr} merged`,
@@ -1706,6 +1708,8 @@ const fr: Strings = {
       merge: (pr, ci) => ["Merge à approuver", pr ? `#${pr}${ci ? ` ${ci}` : ""}` : ""].filter(Boolean).join(" · "),
       ownerQuestion: (text) => `Question : ${text}`,
       awaitingValidation: "Attend ta validation",
+      queued: (position) => `En file de fusion (position ${position})`,
+      merging: (detail) => `Fusion en cours : ${detail ?? "démarrage de la fusion"}`,
       ready: (by, pr, ci) =>
         [by ? `Approuvé par ${by}` : "Rendu", pr ? `#${pr}${ci ? ` ${ci}` : ""}` : ""].filter(Boolean).join(" · "),
       merged: (pr) => `#${pr} mergée`,

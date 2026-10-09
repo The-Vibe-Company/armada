@@ -231,7 +231,9 @@ const COMMAND_HELP: Record<string, string> = {
 `,
   inbox: `  inbox [--mine|--all] [--wait [--timeout <seconds>]]
                     Coordinator: open questions, plans, requests, hand-backs and silent workers,
-                    oldest first; records that the coordinator is at work. --wait returns
+                    oldest first; queued hand-backs show as in progress, needing no action.
+                    Merged PR notices and resumed workers' hand-backs clear automatically.
+                    Records that the coordinator is at work. --wait returns
                     when a new item arrives or after --timeout (default 300 s); \`armada watch\`
                     is the way to keep listening. Needs a sign-in to Armada
 `,

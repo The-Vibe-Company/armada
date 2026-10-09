@@ -207,7 +207,7 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
         const release = await untilAborted(o.signal, () => o.release?.());
         if (release) {
           items = [...items.filter((e) => e.kind !== "version"), { ...release, new: !known.has(entryKey(release)) }];
-          if (items.some((e) => e.new && (e.owner == null || e.owner === (o.coordinatorName ?? "default"))))
+          if (items.some((e) => e.new && !e.queue && (e.owner == null || e.owner === (o.coordinatorName ?? "default"))))
             return report("items");
           await untilAborted(o.signal, () => o.sleep(boundedWait(o, pollMs)));
           continue;
@@ -244,7 +244,7 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     const release = (await untilAborted(o.signal, () => o.release?.())) ?? null;
     items = items.filter((e) => e.kind !== "version");
     if (release) items.push({ ...release, new: !known.has(entryKey(release)) });
-    if (items.some((e) => e.new && (e.owner == null || e.owner === (o.coordinatorName ?? "default"))))
+    if (items.some((e) => e.new && !e.queue && (e.owner == null || e.owner === (o.coordinatorName ?? "default"))))
       return report("items");
     if (read && inFlight !== null && !inFlight.length && !openJobs.length && !items.length) return report("nothing");
     await untilAborted(o.signal, () =>
@@ -285,6 +285,7 @@ export const FOLLOW_INBOX_KINDS: readonly InboxEntryKind[] = [
 ];
 export const FOLLOW_KINDS = [...FOLLOW_INBOX_KINDS, ...FOLLOW_EVENT_KINDS, "handover"] as const;
 export interface FollowLine {
+  queue?: InboxEntry["queue"];
   cursor: string;
   kind: string;
   ticket: string | null;
@@ -389,6 +390,7 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
             owner: item.author,
             at: item.createdAt,
             body: item.body,
+            ...(item.queue ? { queue: item.queue } : {}),
             new: !first,
           };
           seen.add(key);

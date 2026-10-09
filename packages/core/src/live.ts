@@ -586,9 +586,13 @@ export interface FleetStore {
     project: string;
     ticket: string;
     kind: InboxKind;
+    /** When present, resolve only this author's items created no later than the report. */
+    author?: string | null;
     resolution: string;
     at: Date;
   }): Promise<number>;
+  /** Settles one PR's open queue refusals and merge requests; returns their ids. */
+  resolvePrItems(q: { project: string; pr: number; resolution: string; at: Date }): Promise<number[]>;
   /** Resolves the open answer-requests for one question; returns how many. */
   resolveAnswerRequests(q: { project: string; question: number; resolution: string; at: Date }): Promise<number>;
   /** Resolves a ticket's open plan and the answer-requests waiting on it; returns how many plans. */
@@ -744,9 +748,9 @@ export async function recordReport(
   at: Date,
   snapshot?: HandBackSnapshot,
 ): Promise<InboxItem[] | ReportResult> {
+  const reportingHandle = await store.getRuntimeHandle(project, r.ticket);
   if (r.workerSessionId) {
-    const held = await store.getRuntimeHandle(project, r.ticket);
-    if (held && (held.releasedAt || held.workerSessionId !== r.workerSessionId))
+    if (reportingHandle && (reportingHandle.releasedAt || reportingHandle.workerSessionId !== r.workerSessionId))
       throw new Error("the worker session no longer holds this ticket");
   }
   if (r.paths !== undefined) await store.saveTicketPaths(project, r.ticket, r.paths, at);
@@ -795,6 +799,21 @@ export async function recordReport(
       at,
     });
   }
+  if (r.phase !== "ready-to-merge")
+    await store.resolveInboxItems({
+      project,
+      ticket: r.ticket,
+      kind: "hand-back",
+      resolution: `worker resumed: ${r.phase}`,
+      // Compare at the write too: a replacement can refresh this same item id
+      // while the earlier report is awaiting its other store calls.
+      author:
+        r.workerSessionId ??
+        (reportingHandle && !reportingHandle.releasedAt
+          ? (reportingHandle.workerSessionId ?? reportingHandle.handle)
+          : null),
+      at,
+    });
   const inbox = await store.openInboxItems({ project, recipient: "worker", ticket: r.ticket });
   return reading ? { inbox, overlaps: reading.overlaps, incomplete: reading.incomplete } : inbox;
 }
@@ -960,6 +979,11 @@ export interface MergeRecord {
 }
 
 export interface MergeRecorded {
+  /** PR notices cleared by this merge; optional for older servers. */
+  cleared?: number[];
+  /** Kinds for the CLI's labelled result line. */
+  clearedKinds?: Record<number, "queue-refused" | "merge-request">;
+  warnings?: string[];
   /** The generation that held the merged ticket; still active for a partial merge. */
   handle: RuntimeHandle | null;
   /** How many hand-backs the merge resolved. */
@@ -1004,8 +1028,26 @@ export async function recordMerge(
     resolution: `merged as ${m.mergeCommit ?? "unknown"}`,
     at,
   });
+  const notices: Pick<MergeRecorded, "cleared" | "clearedKinds" | "warnings"> = {};
+  try {
+    const items = await store.openInboxItems({ project, recipient: "coordinator" });
+    notices.cleared = await store.resolvePrItems({
+      project,
+      pr: m.number,
+      resolution: `resolved: PR #${m.number} merged`,
+      at,
+    });
+    notices.clearedKinds = Object.fromEntries(
+      items.filter((i) => notices.cleared?.includes(i.id)).map((i) => [i.id, i.kind]),
+    ) as MergeRecorded["clearedKinds"];
+  } catch (err) {
+    notices.warnings = [
+      `could not clear PR #${m.number} inbox notices (${err instanceof Error ? err.message : String(err)}); the next stored merged reading will retry`,
+    ];
+  }
   if (m.keepOpen)
     return {
+      ...notices,
       handle: handle && !handle.releasedAt ? handle : null,
       resolved,
       open: await store.openRuntimeHandles(project),
@@ -1020,6 +1062,7 @@ export async function recordMerge(
   const released = await store.releaseRuntimeHandle(project, m.ticket, at, guard, true);
   if (released) await store.deleteTicketPaths(project, m.ticket, guard);
   return {
+    ...notices,
     handle: released && handle ? { ...handle, releasedAt: handle.releasedAt ?? at.toISOString() } : null,
     resolved,
     open: await store.openRuntimeHandles(project),
@@ -1118,6 +1161,8 @@ export interface InboxEntry {
   createdAt: string;
   /** Appeared while `armada inbox --wait` was waiting. */
   new: boolean;
+  /** A hand-back already being handled by the merge queue. Not part of its wake key. */
+  queue?: { state: "queued" | "merging"; position: number; detail: string | null };
   /** Dashboard requests: the question an answer-request answers, the profile a launch-request asks for. */
   request?: InboxItem["request"];
   /** A `version` entry: the Armada release that is out. */
@@ -1241,6 +1286,14 @@ export function handBackPr(body: string): number | null {
   return Number.isSafeInteger(number) && number > 0 ? number : null;
 }
 
+/** Shared by inbox and dashboard; positions include every open PR in the project. */
+export function handBackQueue(body: string, queue: readonly QueueEntry[]): InboxEntry["queue"] {
+  const open = queue.filter(queueOpen).sort((a, b) => a.queuedAt.localeCompare(b.queuedAt) || a.id - b.id);
+  const index = open.findIndex((e) => e.pr === handBackPr(body));
+  const entry = open[index];
+  return entry ? { state: entry.state as "queued" | "merging", position: index + 1, detail: entry.detail } : undefined;
+}
+
 /** Close exact claims only from a stored reading that started after their claim. */
 export async function reconcileHandles(
   store: ReleaseStore,
@@ -1309,8 +1362,8 @@ export async function reconcileHandles(
   return changed;
 }
 
-/** Resolve only hand-backs confirmed merged or completed in the stored reading. */
-async function reconcileHandBacks(
+/** Resolve hand-backs and exact PR notices from the stored reading only. */
+async function reconcileMerged(
   store: FleetStore,
   items: InboxItem[],
   snapshot: HandBackSnapshot | undefined,
@@ -1326,7 +1379,20 @@ async function reconcileHandBacks(
   );
   const open: InboxItem[] = [];
   for (const item of items) {
-    if (
+    const pr =
+      item.kind === "queue-refused"
+        ? Number(item.body.match(/^PR #(\d+) refused:/)?.[1])
+        : item.kind === "merge-request"
+          ? item.request?.pr
+          : null;
+    if (pr && merged.has(pr)) {
+      await store.resolveInboxItem({
+        project: item.project,
+        id: item.id,
+        resolution: `resolved: PR #${pr} merged`,
+        at: now,
+      });
+    } else if (
       item.kind === "hand-back" &&
       // Keep exact session evidence until a fresh reading has ended that claim.
       !handles.some((h) => h.ticket === item.ticket && h.workerSessionId && item.author === h.workerSessionId) &&
@@ -1507,7 +1573,7 @@ async function readInboxAndFlight(
     if (eventTickets.length)
       events = { ...events, ...(await store.latestEvents(o.project, { since: new Date(0), tickets: eventTickets })) };
   }
-  items = await reconcileHandBacks(store, items, o.snapshot, o.now, handles);
+  items = await reconcileMerged(store, items, o.snapshot, o.now, handles);
   const held =
     flight && model
       ? new Set(
@@ -1566,6 +1632,7 @@ async function readInboxAndFlight(
     createdAt: i.createdAt,
     new: false,
     ...(i.request ? { request: i.request } : {}),
+    ...(i.kind === "hand-back" ? { queue: handBackQueue(i.body, queue) } : {}),
   }));
   for (const job of jobs) {
     const silence = now - Date.parse(job.observedAt);
@@ -1826,14 +1893,19 @@ export interface InboxRead {
  * and which tickets are in flight.
  */
 export function inboxTag(
-  items: Pick<InboxEntry, "id" | "kind" | "ticket" | "body" | "owner" | "unblockedBy" | "jobId" | "silenceLevel">[],
+  items: Pick<
+    InboxEntry,
+    "id" | "kind" | "ticket" | "body" | "owner" | "unblockedBy" | "jobId" | "silenceLevel" | "queue"
+  >[],
   inFlight: readonly string[] = [],
   ownedInFlight: readonly string[] = [],
   openJobs: readonly number[] = [],
   ownedOpenJobs: readonly number[] = [],
 ): string {
   const keys = [
-    ...items.map((item) => `${entryKey(item)}:owner:${item.owner ?? "unowned"}`),
+    ...items.map(
+      (item) => `${entryKey(item)}:owner:${item.owner ?? "unowned"}:queue:${JSON.stringify(item.queue ?? null)}`,
+    ),
     ...inFlight.map((t) => `flight:${t}`),
     ...ownedInFlight.map((t) => `owned-flight:${t}`),
     ...openJobs.map((id) => `job:${id}`),
