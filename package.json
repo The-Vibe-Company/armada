@@ -1,6 +1,6 @@
 {
   "name": "armada-monorepo",
-  "version": "0.2.61",
+  "version": "0.2.62",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.2",
@@ -9,13 +9,15 @@
   ],
   "scripts": {
     "skills:bundle": "bun scripts/bundle-skills.ts",
-    "armada": "bun packages/cli/src/main.ts",
+    "armada": "bun run skills:bundle && bun packages/cli/src/main.ts",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p packages/dashboard",
+    "typecheck": "bun run skills:bundle && tsc --noEmit && tsc --noEmit -p packages/dashboard",
     "test": "bun test",
     "verify": "bun run lint && bun run typecheck && bun test",
-    "test:browser:install": "bun run --cwd packages/dashboard test:browser:install"
+    "test:browser:install": "bun run --cwd packages/dashboard test:browser:install",
+    "postinstall": "bun run skills:bundle",
+    "build": "bun run --cwd packages/cli build && bun run --cwd packages/dashboard build"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
