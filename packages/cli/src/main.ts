@@ -11,6 +11,7 @@ import { UsageError } from "./io.ts";
 import { echo, emptyLine, feedLine } from "./line.ts";
 import { inspectProcess } from "./process.ts";
 import { createExec, spawnInherited, startBackground } from "./spawn.ts";
+import { readTranscriptRange } from "./transcript.ts";
 
 function gitBranch(): string | null {
   try {
@@ -113,6 +114,7 @@ const code = await run(process.argv.slice(2), {
       if (err.code === "ENOENT" || err.code === "ENOTDIR") return null;
       throw err;
     }),
+  readFileRange: readTranscriptRange,
   writeFile: (path, text) => writeFile(path, text, "utf8"),
   stdout: (t) => process.stdout.write(t),
   readBinaryFile: async (path, maxBytes) => {

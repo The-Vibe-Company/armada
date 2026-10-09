@@ -7,7 +7,9 @@
 // and no watch runs. This file is the pure side: the loop over an injected
 // fleet and clock, the line and the hook's decision; the watch state file is
 // `machine.ts`.
+
 import { ArmadaApiError, installCommand, releaseNotesUrl } from "./armada-api.ts";
+import { shellWord } from "./brief.ts";
 import {
   entryKey,
   eventCursor,
@@ -17,6 +19,7 @@ import {
   type InboxEntryKind,
   parseEventCursor,
 } from "./live.ts";
+import { redactor } from "./redact.ts";
 
 /** How often the watch asks Armada while a worker is in flight; Armada answers 304 while nothing changed. */
 export const WATCH_POLL_MS = 15_000;
@@ -48,6 +51,8 @@ export interface PeekTail {
 export interface WatchState {
   /** Coordinator session ids and their last registration on this machine (at most ten). */
   claudeSessions?: Record<string, string>;
+  /** Bounded incremental Stop transcript cursors, keyed by Claude session id. */
+  habitCursors?: Record<string, { path: string; offset: number }>;
   /** Shorter external watch lifetime observed on this machine. */
   harnessLimitMinutes?: number;
   /** The checkout (directory of armada.toml) where `armada watch` last ran: the coordinator's. */
@@ -754,13 +759,198 @@ export function rearm(o: {
 
 // ------------------------------------------------------------------ the stop hook
 
+export interface CoordinatorHabit {
+  rule: "foreground" | "raw-merge" | "wrapped" | "own-code";
+  command: string;
+  seconds?: number;
+  pr?: number;
+}
+
+/** Mask shell data before matching command positions; unsupported quoting fails silent. */
+function shellCode(command: string): string {
+  const lines: string[] = [];
+  const heredocs: { delimiter: string; stripTabs: boolean }[] = [];
+  const physical = command.split("\n");
+  for (let n = 0; n < physical.length; n++) {
+    let line = physical[n] ?? "";
+    const heredoc = heredocs[0];
+    if (heredoc) {
+      if ((heredoc.stripTabs ? line.replace(/^\t+/, "") : line) === heredoc.delimiter) heredocs.shift();
+      continue;
+    }
+    let code = "";
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === "#" && (i === 0 || /[\s;&|]/.test(line[i - 1] ?? ""))) break;
+      if (c === "\\") {
+        if (i === line.length - 1 && n + 1 < physical.length) {
+          line = line.slice(0, i) + physical[++n];
+          i--;
+          continue;
+        }
+        code += "__escaped__";
+        i++;
+        continue;
+      }
+      if (c === "<" && line[i + 1] === "<") {
+        // Here strings and unsupported delimiter forms must not expose data as commands.
+        if (line[i + 2] === "<") return "";
+        let j = i + 2;
+        const stripTabs = line[j] === "-";
+        if (stripTabs) j++;
+        while (/\s/.test(line[j] ?? "") && j < line.length) j++;
+        let delimiter = "";
+        let quoted = false;
+        while (j < line.length && !/[\s;&|<>]/.test(line[j] ?? "")) {
+          const char = line[j++];
+          if (char === "'" || char === '"') {
+            quoted = true;
+            let closed = false;
+            while (j < line.length) {
+              const next = line[j++];
+              if (next === char) {
+                closed = true;
+                break;
+              }
+              // Complex double-quoted delimiter escapes are conservatively ignored.
+              if (char === '"' && next === "\\") return "";
+              delimiter += next;
+            }
+            if (!closed) return "";
+          } else if (char === "\\") {
+            if (j === line.length) return "";
+            delimiter += line[j++];
+          } else delimiter += char;
+        }
+        if (!delimiter && !quoted) return "";
+        heredocs.push({ delimiter, stripTabs });
+        code += "<<__heredoc__";
+        i = j - 1;
+        continue;
+      }
+      if (c === "'" || c === '"') {
+        let word = "";
+        let closed = false;
+        while (++i < line.length) {
+          if (line[i] === c) {
+            closed = true;
+            break;
+          }
+          if (c === '"' && line[i] === "\\") {
+            i++;
+            word += line[i] ?? "";
+          } else word += line[i];
+        }
+        if (!closed) return "";
+        code += word === "/dev/null" ? word : "__quoted__";
+      } else code += c;
+    }
+    lines.push(code);
+  }
+  return lines.join("\n");
+}
+
+const COMMAND_START = String.raw`(?:^|[;&|\n(])\s*(?:[A-Za-z_]\w*=[^\s;&|]+\s+)*(?:(?:env|command|exec|sudo|npx|bunx)\s+)?`;
+
+/** Name the program/subcommand without copying arbitrary arguments or environment assignments. */
+function habitCommand(command: string): string {
+  const code = shellCode(command);
+  const known = new RegExp(
+    `${COMMAND_START}(gh\\s+pr\\s+(?:merge|create)|git\\s+commit|armada(?:\\s+(?:watch|status|inbox|launch|merge|job|digest))?|bun\\s+run(?:\\s+(?:verify|test|build|lint|typecheck))?)\\b`,
+  ).exec(code);
+  const program = new RegExp(`${COMMAND_START}([\\w./+-]+)`).exec(code);
+  return `${redactor([])
+    .text(known?.[1] ?? program?.[1] ?? "Bash")
+    .slice(0, 100)} (arguments omitted)`;
+}
+
+/** Claude's transcript is not a public contract: unknown and malformed lines are ignored. */
+export function coordinatorHabits(lines: string[], o: { since?: string } = {}): CoordinatorHabit[] {
+  const uses = new Map<string, { command: string; background: boolean; at: number }>();
+  const findings: CoordinatorHabit[] = [];
+  const since = Date.parse(o.since ?? "");
+  for (const line of lines) {
+    try {
+      const row = JSON.parse(line);
+      if (!row || !Array.isArray(row.message?.content)) continue;
+      const at = Date.parse(row.timestamp);
+      for (const block of row.message.content) {
+        if (!block || typeof block !== "object") continue;
+        if (
+          row.type === "assistant" &&
+          block.type === "tool_use" &&
+          block.name === "Bash" &&
+          typeof block.id === "string" &&
+          typeof block.input?.command === "string" &&
+          (block.input.run_in_background === undefined || typeof block.input.run_in_background === "boolean")
+        ) {
+          uses.set(block.id, { command: block.input.command, background: block.input.run_in_background === true, at });
+        } else if (row.type === "user" && block.type === "tool_result" && typeof block.tool_use_id === "string") {
+          const use = uses.get(block.tool_use_id);
+          if (!use) continue;
+          uses.delete(block.tool_use_id);
+          if (Number.isFinite(since) && (!Number.isFinite(at) || at < since)) continue;
+          const command = use.command;
+          const seconds = (at - use.at) / 1000;
+          if (!use.background && seconds > 60 && Number.isFinite(seconds))
+            findings.push({ rule: "foreground", command, seconds });
+          const code = shellCode(command);
+          const merge = new RegExp(`${COMMAND_START}gh\\s+pr\\s+merge\\b(?:\\s+(\\d+)\\b)?`).exec(code);
+          if (merge) findings.push({ rule: "raw-merge", command, ...(merge[1] ? { pr: Number(merge[1]) } : {}) });
+          const armada = new RegExp(`${COMMAND_START}(?:bun\\s+run\\s+)?armada\\b([^;\\n]*)`, "g");
+          if (
+            [...code.matchAll(armada)].some((match) =>
+              /\|\s*(?:grep|tail|head)\b|(?:\d*|&)>>?\s*\/dev\/null\b|2>&1\s*\||\|\|\s*true\b/.test(match[1] ?? ""),
+            )
+          )
+            findings.push({ rule: "wrapped", command });
+          if (new RegExp(`${COMMAND_START}(?:git\\s+commit|gh\\s+pr\\s+create)\\b`).test(code))
+            findings.push({ rule: "own-code", command });
+        }
+      }
+    } catch {
+      /* Fail silent on a partial line or a changed transcript shape. */
+    }
+  }
+  return findings;
+}
+
+interface HabitDeployTarget {
+  name: string;
+  configPath?: string;
+}
+
+function habitReason(finding: CoordinatorHabit, deployTargets: HabitDeployTarget[]): string {
+  const command = habitCommand(finding.command);
+  switch (finding.rule) {
+    case "foreground":
+      return `Foreground command ${JSON.stringify(command)} took ${Math.ceil(finding.seconds ?? 0)} seconds. Never block the session for more than a minute: use armada job start <name> --ticket <id> for a declared long job, or run the command in the background (Bash run_in_background) and keep armada watch in the background.`;
+    case "raw-merge": {
+      const pr = finding.pr ?? "<n>";
+      return (
+        `Raw merge ${JSON.stringify(command)}: merge through armada merge. Finish this merge with armada merge --finish ${pr}.` +
+        deployTargets
+          .map(
+            (target) =>
+              ` Then run armada deploy watch --sha <merge commit of #${pr}> --target ${shellWord(target.name)}${target.configPath ? ` --config ${shellWord(target.configPath)}` : ""} in the background.`,
+          )
+          .join("")
+      );
+    }
+    case "wrapped":
+      return `Wrapped command ${JSON.stringify(command)}: run Armada commands bare; their last lines say whether it worked.`;
+    case "own-code":
+      return `Coordinator code command ${JSON.stringify(command)}: cut a ticket and launch a worker. Every fix, including armada.toml, goes through a worker pull request and armada merge.`;
+  }
+}
+
 export type StopHookDecision = { block: false; why: string } | { block: true; reason: string };
 
 /**
  * Whether a Claude Code coordinator may end its turn. It blocks only in the
  * registered coordinator session, with a checkout fallback for older sessions,
- * while the last read had workers in flight and no
- * watch runs for the project. Reads nothing but what it is given: the hook
+ * when a new habit reminder is due, or the last read had workers/jobs in flight
+ * and no watch runs for the project. Reads nothing but what it is given: the hook
  * answers at once, without the network.
  */
 export function stopHookDecision(o: {
@@ -772,6 +962,9 @@ export function stopHookDecision(o: {
   watching: number | null;
   env: Record<string, string | undefined>;
   match?: "session" | "checkout";
+  /** Already reserved once-per-session findings; the adapter owns notice persistence. */
+  habits?: CoordinatorHabit[];
+  deployTargets?: HabitDeployTarget[];
 }): StopHookDecision {
   const off = o.env[STOP_HOOK_VARIABLE]?.trim().toLowerCase();
   if (off === "off" || off === "0" || off === "false") return { block: false, why: `${STOP_HOOK_VARIABLE}=${off}` };
@@ -780,28 +973,35 @@ export function stopHookDecision(o: {
   if (!s?.root) return { block: false, why: `armada watch never ran for ${o.project} on this machine` };
   if (o.match !== "session" && s.root !== o.root)
     return { block: false, why: `the coordinator's checkout is ${s.root}, not this one` };
-  if (o.watching !== null) return { block: false, why: `armada watch is running (pid ${o.watching})` };
-  if (s.stopped) return { block: false, why: `the last watch was refused: ${s.stopped}` };
-  if (s.pendingDeliveries?.length)
+  const watchDecision = (): StopHookDecision => {
+    if (o.watching !== null) return { block: false, why: `armada watch is running (pid ${o.watching})` };
+    if (s.stopped) return { block: false, why: `the last watch was refused: ${s.stopped}` };
+    if (s.pendingDeliveries?.length)
+      return {
+        block: true,
+        reason: `${s.pendingDeliveries.length} answer(s) waiting for delivery on ${o.project}; start armada watch in the background from ${s.root} to deliver them.`,
+      };
+    if (s.openJobs?.length)
+      return {
+        block: true,
+        reason: `${s.openJobs.length} open job${s.openJobs.length === 1 ? "" : "s"} on ${o.project} and no armada watch is running; start armada watch in the background from ${s.root} so job alarms are heard. (${STOP_HOOK_VARIABLE}=off turns this hook off.)`,
+      };
+    if (s.waiting?.length)
+      return {
+        block: true,
+        reason: `${s.waiting.length} waiting to launch on ${o.project}; start armada watch in the background to hear when they can launch.`,
+      };
+    if (!s.inFlight?.length) return { block: false, why: "no worker in flight at the last read" };
     return {
       block: true,
-      reason: `${s.pendingDeliveries.length} answer(s) waiting for delivery on ${o.project}; start armada watch in the background from ${s.root} to deliver them.`,
+      reason: `${workers(s.inFlight.length)} on ${o.project} (${s.inFlight.join(", ")}) and no armada watch is running, so a hand-back or a question would go unnoticed. Start \`armada watch\` in the background now from ${s.root} (in Claude Code, Bash with run_in_background), then end your turn: you are woken when it returns. (${STOP_HOOK_VARIABLE}=off turns this hook off.)`,
     };
-  if (s.openJobs?.length)
-    return {
-      block: true,
-      reason: `${s.openJobs.length} open job${s.openJobs.length === 1 ? "" : "s"} on ${o.project} and no armada watch is running; start armada watch in the background from ${s.root} so job alarms are heard. (${STOP_HOOK_VARIABLE}=off turns this hook off.)`,
-    };
-  if (s.waiting?.length)
-    return {
-      block: true,
-      reason: `${s.waiting.length} waiting to launch on ${o.project}; start armada watch in the background to hear when they can launch.`,
-    };
-  if (!s.inFlight?.length) return { block: false, why: "no worker in flight at the last read" };
-  return {
-    block: true,
-    reason: `${workers(s.inFlight.length)} on ${o.project} (${s.inFlight.join(", ")}) and no armada watch is running, so a hand-back or a question would go unnoticed. Start \`armada watch\` in the background now from ${s.root} (in Claude Code, Bash with run_in_background), then end your turn: you are woken when it returns. (${STOP_HOOK_VARIABLE}=off turns this hook off.)`,
   };
+  const watch = watchDecision();
+  const reasons = (o.habits ?? []).map((finding) => habitReason(finding, o.deployTargets ?? []));
+  if (!reasons.length) return watch;
+  if (watch.block) reasons.unshift(watch.reason);
+  return { block: true, reason: reasons.join("\n") };
 }
 
 export interface HookRun {

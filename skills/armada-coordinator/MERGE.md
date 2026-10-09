@@ -121,3 +121,4 @@ gh pr merge <n> --squash --match-head-commit <full-sha>
 - Leave out `--delete-branch`: it deletes local worktrees that have the branch checked out, including other agents'.
 - On a GitHub 5xx, check `gh pr view <n> --json state` before retrying.
 - Then run `armada merge --finish <n>` to close the ticket, and `armada stop <ticket>` to archive the worker.
+- Finally, for every target declared in `[[deploy.target]]`, run `armada deploy watch --sha <merge commit sha> --target <name>` in the background. Wait for its healthy deploy and smoke result before resuming normal merges; a failure keeps the deploy hold open. With no declared targets, there is no deploy check.
