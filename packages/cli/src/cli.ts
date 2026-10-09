@@ -53,7 +53,7 @@ import { printSkill, updateSkills } from "./skills.ts";
 import { requireSpecCoordinator, specCommand } from "./spec.ts";
 import { upgrade } from "./upgrade.ts";
 import { askOwner, done, namedTicket, validate } from "./validate.ts";
-import { hookStop, stopHookBanner, stopWatch, watch } from "./watch.ts";
+import { hookSessionStart, hookStop, stopHookBanner, stopWatch, watch } from "./watch.ts";
 import { claim, currentTicket, release, report, statusLive } from "./worker.ts";
 
 export { authLogin } from "./auth.ts";
@@ -160,8 +160,8 @@ const COMMAND_HELP: Record<string, string> = {
                     Open one pull request that installs or updates it all, create the
                     missing Linear labels and register the project. The options are for
                     a repository without armada.toml (Linear issue at the program root).
-                    It asks before adding the Claude Code stop hook to the repository's
-                    .claude/settings.json (yes without a terminal); --no-stop-hook skips it
+                    It asks before adding Claude Code Stop and SessionStart hooks to the repository's
+                    .claude/settings.json (yes without a terminal); --no-stop-hook skips both
                     Reuses armada/setup across versions and closes legacy armada/init-* PRs.
                     --merge waits for the normal merge checks and merges only setup paths
 `,
@@ -405,6 +405,11 @@ const COMMAND_HELP: Record<string, string> = {
                     Falls back to the coordinator checkout for unknown sessions; workers
                     are never held. Commands and doctor show if it is on. Reads local files;
                     ARMADA_STOP_HOOK=off turns it off
+  hook session-start
+                    Claude Code SessionStart hook for compact|resume: briefs registered
+                    coordinators about their checkout, tickets, inbox, watch and stop hook.
+                    Live reads have a 15 s deadline, then use cached local state. Workers
+                    and unrelated folders get nothing. Never starts a watch; always exits 0
 `,
   login: `  login             Sign this terminal in to Armada: confirm the code it shows in the browser
   login --api-key   Sign a headless coordinator in with an organization API key, read from a
@@ -1153,10 +1158,11 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const { credentials } = await loadCredentials(io, { armada: false, project: config.project.slug });
       return await watch(io, config, credentials, args, path, startedAt);
     }
-    if (args.command === "hook")
-      return await hookStop(io, args.rest, (at) =>
-        findConfig({ ...at, env: { ...at.env, ARMADA_CONFIG: undefined } }, null, "hook"),
-      );
+    if (args.command === "hook") {
+      const locate = (at: Io) => findConfig({ ...at, env: { ...at.env, ARMADA_CONFIG: undefined } }, null, "hook");
+      if (args.rest.length === 1 && args.rest[0] === "session-start") return await hookSessionStart(io, locate);
+      return await hookStop(io, args.rest, locate);
+    }
     if (args.command === "merge") {
       const { path, text } = await findConfig(io, args.config, "merge", args.project);
       const config = parseConfig(text, path);
