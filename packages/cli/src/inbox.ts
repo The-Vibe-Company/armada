@@ -197,9 +197,12 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
     name === "default" ? report.inFlight : (report.ownedInFlight ?? (scope === "mine" ? report.inFlight : null));
   const openJobs =
     name === "default" ? report.openJobs : (report.ownedOpenJobs ?? (scope === "mine" ? report.openJobs : undefined));
-  await remember(io, report.project, shown(io, report.items, inFlight, openJobs));
+  const waiting = (name === "default" ? report.waiting : report.ownedWaiting) ?? [];
+  await remember(io, report.project, { ...shown(io, report.items, inFlight, openJobs), waiting, slots: report.slots });
   const next = await rearmFor(io, report.project, {
     inFlight,
+    waiting: waiting.length,
+    slots: report.slots,
     open: report.items.length,
     openJobs,
     act: report.items.length > 0,

@@ -378,6 +378,8 @@ export interface PendingLaunch {
   /** When the worker signed in with the launch token; null while it never did. */
   tokenUsedAt: string | null;
   tokenExpiresAt?: string;
+  /** Recorded bypass, including the count at launch. */
+  overCap?: string | null;
   /** Runtime bound by the coordinator; null for older or unbound launches. */
   runtime: string | null;
   /** Session bound at launch, or reported at sign-in when unbound. */
@@ -398,6 +400,28 @@ export const followedLaunches = (launches: readonly PendingLaunch[], now: Date) 
   launches.filter(
     (launch) => now.getTime() - Date.parse(launch.launchedAt) <= LAUNCH_WINDOW_MS && !unusedLaunchExpired(launch, now),
   );
+
+/** Project-wide sessions, including handed-back workers and unclaimed launches. */
+export function workerSlots(o: {
+  handles: readonly RuntimeHandle[];
+  launches: readonly PendingLaunch[];
+  coordinators: readonly CoordinatorRecord[];
+  now: Date;
+}): { taken: number; tickets: string[] } {
+  const coordinatorHandles = new Set(o.coordinators.flatMap((c) => c.sessions.map((s) => s.handle)));
+  const tickets = new Set(
+    o.handles.filter((h) => !h.releasedAt && !coordinatorHandles.has(h.handle)).map((h) => h.ticket),
+  );
+  for (const launch of followedLaunches(o.launches, o.now)) {
+    const expires = launch.tokenExpiresAt
+      ? Date.parse(launch.tokenExpiresAt)
+      : Date.parse(launch.launchedAt) + 60 * 60_000;
+    if ((!launch.tokenUsedAt && expires <= o.now.getTime()) || (launch.handle && coordinatorHandles.has(launch.handle)))
+      continue;
+    tickets.add(launch.ticket);
+  }
+  return { taken: tickets.size, tickets: [...tickets].sort() };
+}
 
 // ------------------------------------------------------------------ the store
 
@@ -1441,17 +1465,23 @@ async function readInboxAndFlight(
   items: InboxEntry[];
   inFlight: string[];
   ownedInFlight: string[];
+  waiting: string[];
+  ownedWaiting: string[];
+  slots: { taken: number; max: number | null };
   openJobs: number[];
   ownedOpenJobs: number[];
 }> {
   const now = o.now.getTime();
-  let [handles, launches, jobs, queue, queueLease] = await Promise.all([
+  // A claim removes the pending row after recording its handle: this read
+  // order retains its slot while the worker moves between the two sources.
+  const launches = await store.pendingLaunches(o.project, new Date(0));
+  let [handles, jobs, queue, queueLease, coordinators] = await Promise.all([
     store.openRuntimeHandles(o.project),
-    store.pendingLaunches(o.project, new Date(0)),
     store.listJobs(o.project, { open: true }),
     // Entries finished within the stall window count as the drain's last sign of life.
     store.queueList(o.project, { since: new Date(now - QUEUE_STALL_MS) }),
     store.getLease(o.project, MERGE_QUEUE_LEASE),
+    store.listCoordinators(o.project),
   ]);
   // Read notices after jobs: a terminal transition atomically removes liveness and adds its notice.
   // The reverse order could read an old inbox and a closed job, making watch exit without the notice.
@@ -1524,6 +1554,10 @@ async function readInboxAndFlight(
           }).map((lane) => lane.issue.id),
         )
       : null;
+  const slots = {
+    ...workerSlots({ handles, launches, coordinators, now: o.now }),
+    max: o.snapshot?.config?.policy.maxWorkers ?? null,
+  };
   items = items.flatMap((item) => {
     if (item.kind !== "launch-request" || !item.request?.deferred) return [item];
     const state = deferredLaunchState(
@@ -1533,6 +1567,7 @@ async function readInboxAndFlight(
       !!item.ticket && !!held?.has(item.ticket),
       null,
       !!item.request?.profile && !!o.snapshot?.guidedProfiles?.includes(item.request.profile),
+      slots,
     );
     return state.reason || !model ? [] : [{ ...item, body: deferredWakeBody(item, model, state.command) }];
   });
@@ -1589,6 +1624,7 @@ async function readInboxAndFlight(
   // A claim may arrive before its newly created ticket reaches the stored reading.
   const known = new Set(flight?.program.issues.map((i) => i.id));
   const own = new Set(handles.filter((h) => o.coordinator && h.handle === o.coordinator).map((h) => h.ticket));
+  const waitingLaunches: string[] = [];
   const inFlight: string[] = held ? [...held].filter((ticket) => !own.has(ticket) && visible(ownerOf(ticket))) : [];
   const flightOwners = new Map(owners);
   for (const item of stored) {
@@ -1600,7 +1636,7 @@ async function readInboxAndFlight(
       !own.has(item.ticket) &&
       visible(ownerOf(item.ticket, item.coordinator))
     ) {
-      if (!inFlight.includes(item.ticket)) inFlight.push(item.ticket);
+      if (!waitingLaunches.includes(item.ticket)) waitingLaunches.push(item.ticket);
       if (!owners.has(item.ticket) && item.coordinator === name) flightOwners.set(item.ticket, name);
     }
   }
@@ -1771,6 +1807,9 @@ async function readInboxAndFlight(
     items: entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.id ?? 0) - (b.id ?? 0)),
     inFlight: [...new Set(inFlight)].filter((ticket) => o.scope !== "mine" || flightOwners.get(ticket) === name).sort(),
     ownedInFlight: [...new Set(inFlight)].filter((ticket) => flightOwners.get(ticket) === name).sort(),
+    waiting: waitingLaunches.filter((ticket) => o.scope !== "mine" || flightOwners.get(ticket) === name).sort(),
+    ownedWaiting: waitingLaunches.filter((ticket) => flightOwners.get(ticket) === name).sort(),
+    slots: { taken: slots.taken, max: slots.max },
     openJobs: jobs
       .filter((job) => visible(ownerOf(job.ticket)) && (o.scope !== "mine" || ownerOf(job.ticket) === name))
       .map((job) => job.id),
@@ -1798,6 +1837,9 @@ export interface InboxQuery {
 }
 
 export interface InboxRead {
+  waiting?: string[];
+  ownedWaiting?: string[];
+  slots?: { taken: number; max: number | null };
   /** Owned workers only, for a named coordinator's re-arm line even with all scope. */
   ownedInFlight?: string[];
   /** Owned jobs only, for named re-arm guidance even with all scope. */
@@ -1830,6 +1872,9 @@ export function inboxTag(
   ownedInFlight: readonly string[] = [],
   openJobs: readonly number[] = [],
   ownedOpenJobs: readonly number[] = [],
+  waiting: readonly string[] = [],
+  slots?: { taken: number; max: number | null },
+  ownedWaiting: readonly string[] = [],
 ): string {
   const keys = [
     ...items.map((item) => `${entryKey(item)}:owner:${item.owner ?? "unowned"}`),
@@ -1837,6 +1882,9 @@ export function inboxTag(
     ...ownedInFlight.map((t) => `owned-flight:${t}`),
     ...openJobs.map((id) => `job:${id}`),
     ...ownedOpenJobs.map((id) => `owned-job:${id}`),
+    ...waiting.map((ticket) => `waiting:${ticket}`),
+    ...ownedWaiting.map((ticket) => `owned-waiting:${ticket}`),
+    ...(slots?.max ? [`slots:${slots.taken}:${slots.max}`] : []),
   ]
     .sort()
     .join("\n");
@@ -1874,19 +1922,20 @@ export async function serveInbox(
   } catch (err) {
     warnings.push(`could not record the coordinator's presence (${err instanceof Error ? err.message : String(err)})`);
   }
-  const { items, inFlight, ownedInFlight, openJobs, ownedOpenJobs } = await readInboxAndFlight(store, {
-    scope: q.scope,
-    snapshot,
-    project,
-    coordinator: q.coordinator,
-    coordinatorName: q.coordinatorName,
-    silentAfterMinutes: q.silentAfterMinutes,
-    launchGraceMinutes: q.launchGraceMinutes,
-    ciWaitMinutes: q.ciWaitMinutes,
-    quietAfterMinutes: q.quietAfterMinutes,
-    ...(q.notStartedMinutes !== undefined ? { notStartedMinutes: q.notStartedMinutes } : {}),
-    now,
-  });
+  const { items, inFlight, ownedInFlight, openJobs, ownedOpenJobs, waiting, ownedWaiting, slots } =
+    await readInboxAndFlight(store, {
+      scope: q.scope,
+      snapshot,
+      project,
+      coordinator: q.coordinator,
+      coordinatorName: q.coordinatorName,
+      silentAfterMinutes: q.silentAfterMinutes,
+      launchGraceMinutes: q.launchGraceMinutes,
+      ciWaitMinutes: q.ciWaitMinutes,
+      quietAfterMinutes: q.quietAfterMinutes,
+      ...(q.notStartedMinutes !== undefined ? { notStartedMinutes: q.notStartedMinutes } : {}),
+      now,
+    });
   for (const launch of expired) {
     if (scoped && launch.coordinator != null && launch.coordinator !== (q.coordinatorName ?? "default")) continue;
     items.push({
@@ -1908,12 +1957,18 @@ export async function serveInbox(
     includesOwned ? ownedInFlight : [],
     openJobs,
     includesOwned ? ownedOpenJobs : [],
+    waiting,
+    slots,
+    includesOwned ? ownedWaiting : [],
   );
   return q.etag === etag
     ? null
     : {
         items,
         inFlight,
+        waiting,
+        slots,
+        ...(includesOwned ? { ownedWaiting } : {}),
         etag,
         warnings,
         ...(includesOwned ? { ownedInFlight } : {}),

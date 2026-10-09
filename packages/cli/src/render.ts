@@ -66,6 +66,7 @@ export function renderStatus(r: StatusReport): string {
   const gh = r.sources.github.error ? `GitHub not read: ${r.sources.github.error}` : `GitHub ${r.project.repository}`;
   out.push(`Read ${r.generatedAt.slice(0, 16).replace("T", " ")} UTC · Linear ${r.programRoot.id} · ${gh}`);
 
+  if (r.slots) out.push(`Workers ${r.slots.taken}${r.slots.max ? ` of ${r.slots.max}` : ""}`);
   for (const h of r.holds ?? [])
     out.push(`Merges paused since ${h.openedAt.slice(11, 16)} UTC: ${h.reason} (hold #${h.id})`);
   if (r.main) out.push(mainHealthLine(r.main));
@@ -105,6 +106,7 @@ export function renderStatus(r: StatusReport): string {
       out.push(
         `  ${pad(l.ticket, idWidth)}  launched ${relative(l.launchedAt, now)} · ${l.tokenUsedAt ? `signed in ${relative(l.tokenUsedAt, now)}, no claim` : "launch token never used"}${l.coordinator ? ` · coordinator: ${l.coordinator}` : ""}${l.runtime ? ` · ${l.runtime}` : ""}${l.handle ? ` · ${l.handle}` : ""}`,
       );
+      if (l.overCap) out.push(`${indent}${l.overCap}`);
       const title = r.notStarted.find((launch) => launch.ticket === l.ticket)?.title;
       if (title) out.push(`${indent}${truncate(title, 90)}`);
       out.push(`${indent}! check its session with the runtime guide's status section`);

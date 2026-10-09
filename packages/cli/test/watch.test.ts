@@ -455,6 +455,8 @@ describe("armada watch", () => {
       // A hand-back's key follows its text: handed back on a new head, it wakes the watch again.
       seen: [expect.stringMatching(/^#1@/)],
       inFlight: ["DEMO-2", "DEMO-3"],
+      waiting: [],
+      slots: { taken: 2, max: null },
       readAt: new Date(NOW.getTime() + 30_000).toISOString(),
       stopped: null,
     });

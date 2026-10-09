@@ -723,3 +723,40 @@ test("follow sees coalesced deploy notice updates through inbox ETags, by defaul
     expect(await live.store.openInboxItems({ project: P, recipient: "coordinator" })).toHaveLength(1);
   }
 });
+
+test("waiting launches keep watch alive without inflating its workers or releasing the stop hook", async () => {
+  const live = tempFleet();
+  await live.store.addRequest({
+    project: P,
+    ticket: "DEMO-9",
+    kind: "launch-request",
+    author: "Ada",
+    body: "waiting",
+    question: null,
+    profile: null,
+    deferred: true,
+    at: live.clock.now(),
+  });
+  const { o } = options(live, { until: new Date(live.clock.now().getTime() + 30_000) });
+  const report = await watchInbox(live.fleet, o);
+  expect(report.outcome).toBe("timeout");
+  expect(report.inFlight).toEqual([]);
+  expect(report.waiting).toEqual(["DEMO-9"]);
+  const state = { ...EMPTY_WATCH_STATE, root: "/work", inFlight: [], waiting: report.waiting };
+  expect(stopHookDecision({ project: P, root: "/work", state, watching: null, env: {} }).block).toBe(true);
+  expect(
+    rearm({
+      inFlight: ["DEMO-2", "DEMO-3", "DEMO-4"],
+      slots: { taken: 3, max: 10 },
+      waiting: 2,
+      open: 0,
+      running: null,
+    }).line,
+  ).toContain("3 of 10 workers in flight (DEMO-2, DEMO-3, DEMO-4) · 2 waiting to launch");
+});
+
+test("waiting-only re-arm omits an empty worker ticket list", () => {
+  expect(rearm({ inFlight: [], slots: { taken: 0, max: 1 }, waiting: 1, open: 0, running: null }).line).toBe(
+    "0 of 1 workers in flight · 1 waiting to launch — keep watching: armada watch",
+  );
+});

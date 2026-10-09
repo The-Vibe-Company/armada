@@ -554,3 +554,166 @@ test("Conductor needs-approval labels refuse pre-approval before any token or na
   expect(f.armada.launches.size).toBe(0);
   expect(f.calls).toHaveLength(0);
 });
+
+test("a full worker cap refuses creation, offers queue/override, and records explicit or urgent bypasses", async () => {
+  for (const bypass of [null, "owner approved another worker", "urgent"] as const) {
+    const f = await fixture(`${TOML}\n[policy]\nmax_workers = 2\n`);
+    for (const ticket of ["DEMO-7", "DEMO-8"])
+      await f.store.saveRuntimeHandle({
+        project: "widgets",
+        ticket,
+        runtime: "Conductor",
+        handle: `ws/${ticket}`,
+        branch: null,
+        at: NOW,
+        coordinator: ticket === "DEMO-7" ? "front" : "back",
+      });
+    if (bypass === "urgent") Object.assign(f.ticket, { priority: 1 });
+    const args = ["launch", "DEMO-13", ...(bypass && bypass !== "urgent" ? ["--over-cap", bypass] : [])];
+    expect(await run(args, f.io)).toBe(bypass ? 0 : 1);
+    const token = f.armada.calls.find((c) => c.path === "launch-tokens");
+    if (!bypass) {
+      expect(token).toBeUndefined();
+      expect(f.calls.some((c) => c.command === "conductor" && c.args.includes("create"))).toBe(false);
+      expect(f.stderr()).toContain(
+        'Next: armada launch DEMO-13 --when-unblocked or armada launch DEMO-13 --over-cap "<why>"',
+      );
+    } else {
+      expect(token?.body).toMatchObject({
+        overCap: `launched over the cap (3 of 2): ${bypass === "urgent" ? "urgent priority" : bypass}`,
+      });
+    }
+    expect(await f.store.getLease("widgets", "launch-slots")).toBeNull();
+  }
+});
+
+test("brief --prompt at the cap fails without printing a token or a key-based launch prompt", async () => {
+  const f = await fixture(`${TOML}\n[policy]\nmax_workers = 1\n`);
+  await f.store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-7",
+    runtime: "Conductor",
+    handle: "ws/7",
+    branch: null,
+    at: NOW,
+  });
+  expect(await run(["brief", "DEMO-13", "--prompt"], f.io)).toBe(1);
+  expect(f.stdout()).toBe("");
+  expect(f.armada.calls.some((c) => c.path === "launch-tokens")).toBe(false);
+});
+
+test("dry run reads a full cap without acquiring a lease or creating anything", async () => {
+  const f = await fixture(`${TOML}\n[policy]\nmax_workers = 1\n`);
+  await f.store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-7",
+    runtime: "Conductor",
+    handle: "ws/7",
+    branch: null,
+    at: NOW,
+  });
+  expect(await run(["launch", "DEMO-13", "--dry-run"], f.io)).toBe(1);
+  expect(f.stderr()).toContain("would be refused: 1 of 1");
+  expect(f.armada.calls.some((c) => c.path === "launch-tokens" || c.path.endsWith("lease/acquire"))).toBe(false);
+});
+
+test("concurrent token mints reserve the last slot before releasing its lease; replacements are exempt", async () => {
+  const { mintLaunchToken } = await import("../src/worker-slots.ts");
+  const f = await fixture(`${TOML}\n[policy]\nmax_workers = 1\n`);
+  const credentials = resolveCredentials({ env: f.io.env });
+  const config = parseConfig(`${TOML}\n[policy]\nmax_workers = 1\n`);
+  const sleeps: number[] = [];
+  const io = {
+    ...f.io,
+    sleep: async (ms: number) => {
+      sleeps.push(ms);
+      await Promise.resolve();
+    },
+  };
+  const results = await Promise.allSettled([
+    mintLaunchToken(io, config, credentials, { ticket: "DEMO-13" }),
+    mintLaunchToken(io, config, credentials, { ticket: "DEMO-14" }),
+  ]);
+  expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+  expect(f.armada.calls.filter((c) => c.path === "launch-tokens")).toHaveLength(1);
+  expect(await f.store.pendingLaunches("widgets", new Date(0))).toHaveLength(1);
+  expect(sleeps.every((ms) => ms === 1000)).toBe(true);
+  await expect(
+    mintLaunchToken(io, config, credentials, { ticket: "DEMO-13", replacement: true }),
+  ).resolves.toBeDefined();
+});
+
+test("a worker claiming during the slot read cannot disappear from the cap", async () => {
+  const { mintLaunchToken } = await import("../src/worker-slots.ts");
+  const f = await fixture(`${TOML}\n[policy]\nmax_workers = 1\n`);
+  f.store.launches.push({
+    project: "widgets",
+    ticket: "DEMO-7",
+    launchedAt: NOW.toISOString(),
+    tokenUsedAt: NOW.toISOString(),
+    runtime: null,
+    handle: null,
+    endedAt: null,
+  });
+  const originalFetch = f.io.fetch;
+  if (!originalFetch) throw new Error("fixture needs fetch");
+  const io = {
+    ...f.io,
+    fetch: async (url: string, init: Parameters<NonNullable<Io["fetch"]>>[1]) => {
+      if (url.endsWith("/fleet/launches")) {
+        await f.store.saveRuntimeHandle({
+          project: "widgets",
+          ticket: "DEMO-7",
+          runtime: "Conductor",
+          handle: "ws/7",
+          branch: null,
+          at: NOW,
+        });
+        await f.store.recordEvent({
+          project: "widgets",
+          ticket: "DEMO-7",
+          kind: "claim",
+          phase: "implementing",
+          at: NOW,
+        });
+      }
+      return originalFetch(url, init);
+    },
+  };
+  await expect(
+    mintLaunchToken(io, parseConfig(`${TOML}\n[policy]\nmax_workers = 1\n`), resolveCredentials({ env: io.env }), {
+      ticket: "DEMO-13",
+    }),
+  ).rejects.toThrow("worker cap reached: 1 of 1");
+  expect(f.armada.calls.some((c) => c.path === "launch-tokens")).toBe(false);
+});
+
+test("an unknown slot lease acquisition only mints after confirming its own grant", async () => {
+  const { mintLaunchToken } = await import("../src/worker-slots.ts");
+  for (const outcome of ["granted", "busy", "unavailable"] as const) {
+    const f = await fixture(`${TOML}\n[policy]\nmax_workers = 1\n`);
+    if (outcome === "busy")
+      await f.store.acquireLease({ project: "widgets", name: "launch-slots", holder: "peer", ttlMs: 60_000, at: NOW });
+    const originalFetch = f.io.fetch;
+    if (!originalFetch) throw new Error("missing fake API");
+    const io = {
+      ...f.io,
+      fetch: async (url: string, init: Parameters<NonNullable<Io["fetch"]>>[1]) => {
+        if (url.endsWith("/fleet/lease/acquire")) {
+          if (outcome !== "unavailable") await originalFetch(url, init);
+          throw new Error("lease response lost");
+        }
+        return originalFetch(url, init);
+      },
+    };
+    const result = mintLaunchToken(
+      io,
+      parseConfig(`${TOML}\n[policy]\nmax_workers = 1\n`),
+      resolveCredentials({ env: io.env }),
+      { ticket: "DEMO-13", overCap: "owner approved" },
+    );
+    if (outcome === "granted") await expect(result).resolves.toBeDefined();
+    else await expect(result).rejects.toThrow("cannot confirm worker-slot lease");
+    expect(f.armada.calls.filter((c) => c.path === "launch-tokens")).toHaveLength(outcome === "granted" ? 1 : 0);
+  }
+});

@@ -56,7 +56,8 @@ test("deferred launches wait for every blocker in the stored reading, wake with 
   expect(await readInbox(store, options)).toEqual([]);
   const query = { coordinator: null, silentAfterMinutes: 15, etag: null };
   const hidden = await serveInbox(store, "widgets", query, NOW);
-  expect(hidden?.inFlight).toContain("DEMO-9");
+  expect(hidden?.waiting).toContain("DEMO-9");
+  expect(hidden?.inFlight).not.toContain("DEMO-9");
   expect(hidden?.items).toEqual([]);
   expect(await readInbox(store, { ...options, snapshot: { ...reading, flight: undefined } })).toEqual([]);
   expect(await readInbox(store, { ...options, snapshot: reading })).toEqual([]);
@@ -218,4 +219,41 @@ test("guided deferred profiles advertise usable commands in summaries and extern
   blocker.statusType = "completed";
   const items = await readInbox(store, { project: "widgets", snapshot: reading, now: NOW, silentAfterMinutes: 15 });
   expect(items).toMatchObject([{ id: saved.id, body: expect.stringContaining(saved.command) }]);
+});
+
+test("an unblocked request waits quietly for a worker slot, then wakes when the claim releases", async () => {
+  const store = memoryFleet();
+  const capped = { ...config, policy: { ...config.policy, maxWorkers: 1 } };
+  const reading = { ...snapshot(), config: capped };
+  const blocker = reading.issues.find((i) => i.id === "DEMO-7");
+  if (!blocker) throw new Error("missing blocker");
+  blocker.statusType = "completed";
+  await store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-8",
+    runtime: "Conductor",
+    handle: "ws/8",
+    branch: null,
+    at: NOW,
+    coordinator: "other",
+  });
+  const state = await requestDeferredLaunch(store, {
+    config: capped,
+    snapshot: reading,
+    ticket: "DEMO-9",
+    profile: null,
+    author: "Ada",
+    now: NOW,
+  });
+  expect(state.reason).toBe("waits for a worker slot (1 of 1)");
+  expect(store.items[0]?.body).toContain("will launch once a worker slot frees");
+  const query = { coordinator: null, silentAfterMinutes: 15, etag: null };
+  const full = await serveInbox(store, "widgets", query, NOW, null, reading);
+  expect(full?.waiting).toEqual(["DEMO-9"]);
+  expect(full?.inFlight).not.toContain("DEMO-9");
+  expect(full?.items.some((i) => i.kind === "launch-request")).toBe(false);
+  await store.releaseRuntimeHandle("widgets", "DEMO-8", NOW);
+  expect(
+    (await serveInbox(store, "widgets", { ...query, etag: full?.etag ?? null }, NOW, null, reading))?.items,
+  ).toMatchObject([{ ticket: "DEMO-9", kind: "launch-request" }]);
 });

@@ -563,7 +563,7 @@ export function armadaApi(opts: ArmadaApiOptions) {
     /** A one-time launch token for a worker on `ticket`, valid one hour; the launch message carries it. */
     async launchToken(
       signIn: ArmadaSignIn,
-      target: { project: string; ticket: string; coordinator?: string | null },
+      target: { project: string; ticket: string; coordinator?: string | null; overCap?: string | null },
     ): Promise<LaunchToken> {
       const { status, body } = await call("POST", "launch-tokens", { signIn, body: target });
       if (status !== 200) throw refusal(status, body, status === 401 ? null : "Armada made no launch token");

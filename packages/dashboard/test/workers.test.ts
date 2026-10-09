@@ -152,7 +152,11 @@ describe("launch tokens: one ticket, once, within the hour", () => {
     now = at(0);
     const made = await cli("POST", "launch-tokens", {
       token: memberToken,
-      body: { project: "widgets", ticket: "abc-12" },
+      body: {
+        project: "widgets",
+        ticket: "abc-12",
+        overCap: "launched over the cap (3 of 2): owner approved another worker",
+      },
     });
     expect(made.status).toBe(200);
     expect(made.body).toMatchObject({
@@ -161,6 +165,9 @@ describe("launch tokens: one ticket, once, within the hour", () => {
       worker: { project: "widgets", ticket: "ABC-12" },
       organization: { id: orgId, slug: "acme" },
     });
+    expect((await listWorkers(client, orgId)).find((w) => w.ticket === "ABC-12")?.overCap).toBe(
+      "launched over the cap (3 of 2): owner approved another worker",
+    );
     const token = String(made.body.token);
     expect(token).toStartWith("armada_launch_");
 

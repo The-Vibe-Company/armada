@@ -109,6 +109,8 @@ export interface ArmadaConfig {
     localCommands: string[];
   };
   policy: {
+    /** Project-wide worker sessions; null means uncapped. */
+    maxWorkers: number | null;
     /** A working agent with no heartbeat for longer than this shows as silent; old clients use reports. */
     silentAfterMinutes: number;
     launchGraceMinutes: number;
@@ -426,6 +428,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       "policy",
       policyT,
       [
+        "max_workers",
         "silence_minutes",
         "launch_grace_minutes",
         "ci_wait_minutes",
@@ -816,6 +819,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     problems.push(`"policy.${key}" must be a positive integer`);
     return fallback;
   };
+  const maxWorkers = policyT.max_workers === undefined ? null : quota("max_workers", 1);
   const validationSamples = quota("validation_samples", CONFIG_DEFAULTS.validationSamples);
   if (validationSamples > 8) problems.push('"policy.validation_samples" must be at most 8');
   const attachmentsPerTicket = quota("attachments_per_ticket", CONFIG_DEFAULTS.attachmentsPerTicket);
@@ -986,6 +990,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     gates: { requiredChecks, localCommands },
     merge: { notifyPaths, queueRetest: queueRetest === "local" ? "local" : "ci" },
     policy: {
+      maxWorkers,
       silentAfterMinutes,
       launchGraceMinutes,
       ciWaitMinutes,
@@ -1086,6 +1091,7 @@ sign = "inherit"        # "off" disables commit signing only in new Herdr worktr
 # notify_paths = [".github/workflows/**", "package.json", "migrations/**"]
 
 [policy]
+# max_workers = 10  # workers running at once; urgent tickets and --over-cap pass, recorded
 silence_minutes = 15     # silence since the newest report, heartbeat or answer
 launch_grace_minutes = 15 # extra allowance before the first report or heartbeat; defaults to silence_minutes
 ci_wait_minutes = 45     # shipping --stage ci has this silence allowance

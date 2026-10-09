@@ -585,7 +585,7 @@ export function fakeArmada(
     accounts?: boolean;
     vault?: FakeVault;
     /** The fleet's live data behind `fleet/*`; a fresh one by default. */
-    store?: FleetStore;
+    store?: ReturnType<typeof memoryFleet>;
     clock?: Clock;
     facts?: Pick<ServeFleetDeps, "snapshot" | "config">;
     /** The CLIs this Armada serves, sent on every answer the way the app does; none by default (an older server). */
@@ -767,6 +767,20 @@ export function fakeArmada(
           body.coordinator === null ? null : typeof body.coordinator === "string" ? body.coordinator : "default",
         used: false,
       });
+      store.launches.push({
+        id: `wk-${launches.size}`,
+        project: String(body.project),
+        ticket: String(body.ticket),
+        coordinator:
+          body.coordinator === null ? null : typeof body.coordinator === "string" ? body.coordinator : "default",
+        launchedAt: o.vault.now().toISOString(),
+        tokenExpiresAt: new Date(o.vault.now().getTime() + 3_600_000).toISOString(),
+        tokenUsedAt: null,
+        runtime: null,
+        handle: null,
+        endedAt: null,
+        overCap: typeof body.overCap === "string" ? body.overCap : null,
+      });
       return Response.json({
         schemaVersion: 1,
         token: t,
@@ -795,6 +809,10 @@ export function fakeArmada(
         createdAt: clock.now().toISOString(),
         id: `wk-${workers.size + 1}`,
       });
+      const pending = store.launches.find(
+        (row) => row.project === launch.project && row.ticket === launch.ticket && !row.endedAt,
+      );
+      if (pending) pending.tokenUsedAt = clock.now().toISOString();
       return Response.json({
         schemaVersion: 1,
         token: t,

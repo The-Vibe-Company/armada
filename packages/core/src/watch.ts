@@ -63,6 +63,8 @@ export interface WatchState {
   seen: string[];
   /** Tickets a worker held at the last read, the coordinator's own excluded; null when unknown. */
   inFlight: string[] | null;
+  waiting?: string[];
+  slots?: { taken: number; max: number | null };
   openJobs?: number[];
   /** When `inFlight` was read. */
   readAt: string | null;
@@ -107,6 +109,9 @@ export interface WatchOptions {
   onRead?: (read: {
     items: InboxEntry[];
     inFlight: string[] | null;
+    waiting?: string[];
+    ownedWaiting?: string[];
+    slots?: { taken: number; max: number | null };
     ownedInFlight?: string[];
     openJobs?: number[];
     ownedOpenJobs?: number[];
@@ -122,6 +127,9 @@ export interface WatchOptions {
 }
 
 export interface WatchReport {
+  waiting?: string[];
+  ownedWaiting?: string[];
+  slots?: { taken: number; max: number | null };
   ownedInFlight?: string[];
   ownedOpenJobs?: number[];
   project: string;
@@ -179,6 +187,9 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
   let etag: string | null = null;
   let items: InboxEntry[] = [];
   let inFlight: string[] | null = null;
+  let waiting: string[] = [];
+  let ownedWaiting: string[] | undefined;
+  let slots: { taken: number; max: number | null } | undefined;
   let ownedInFlight: string[] | undefined;
   let openJobs: number[] = [];
   let ownedOpenJobs: number[] | undefined;
@@ -190,6 +201,9 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     outcome,
     items,
     inFlight,
+    waiting,
+    ownedWaiting,
+    slots,
     ...(ownedInFlight ? { ownedInFlight } : {}),
     ...(openJobs.length ? { openJobs } : {}),
     ...(ownedOpenJobs ? { ownedOpenJobs } : {}),
@@ -219,6 +233,9 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     if (read) {
       items = read.items.map((e) => ({ ...e, new: !known.has(entryKey(e)) }));
       inFlight = read.inFlight ?? null;
+      waiting = read.waiting ?? [];
+      ownedWaiting = read.ownedWaiting;
+      slots = read.slots;
       ownedInFlight = read.ownedInFlight;
       openJobs = read.openJobs ?? [];
       ownedOpenJobs = read.ownedOpenJobs;
@@ -229,6 +246,9 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
         o.onRead?.({
           items,
           inFlight,
+          waiting,
+          ownedWaiting,
+          slots,
           openJobs,
           ...(ownedInFlight ? { ownedInFlight } : {}),
           ...(ownedOpenJobs ? { ownedOpenJobs } : {}),
@@ -239,9 +259,15 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     const release = (await untilAborted(o.signal, () => o.release?.())) ?? null;
     if (release) items = [...items, { ...release, new: true }];
     if (items.some((e) => e.new)) return report("items");
-    if (read && inFlight !== null && !inFlight.length && !openJobs.length && !items.length) return report("nothing");
+    if (read && inFlight !== null && !inFlight.length && !openJobs.length && !waiting.length && !items.length)
+      return report("nothing");
     await untilAborted(o.signal, () =>
-      o.sleep(boundedWait(o, inFlight !== null && !inFlight.length && !openJobs.length ? idlePollMs : pollMs)),
+      o.sleep(
+        boundedWait(
+          o,
+          inFlight !== null && !inFlight.length && !openJobs.length && !waiting.length ? idlePollMs : pollMs,
+        ),
+      ),
     );
   }
 }
@@ -320,6 +346,9 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
   );
   let etag: string | null = null;
   let inFlight: string[] | null = null;
+  let waiting: string[] = [];
+  let ownedWaiting: string[] | undefined;
+  let slots: { taken: number; max: number | null } | undefined;
   let openJobs: number[] = [];
   let first = true;
   let idle = false;
@@ -351,6 +380,9 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
       if (read) {
         etag = read.etag;
         inFlight = read.inFlight ?? null;
+        waiting = read.waiting ?? [];
+        ownedWaiting = read.ownedWaiting;
+        slots = read.slots;
         openJobs = read.openJobs ?? [];
         // Derived alarms are state: once absent, a later recurrence is new again.
         const openKeys = new Set(read.items.map(entryKey));
@@ -365,6 +397,9 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
           o.onRead?.({
             items: read.items,
             inFlight,
+            waiting,
+            ownedWaiting,
+            slots,
             openJobs,
             ...(read.ownedOpenJobs ? { ownedOpenJobs: read.ownedOpenJobs } : {}),
             ...(read.ownedInFlight ? { ownedInFlight: read.ownedInFlight } : {}),
@@ -470,15 +505,15 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
       }
       first = false;
       failures = 0;
-      if (inFlight?.length === 0 && !openJobs.length && !idle) {
+      if (inFlight?.length === 0 && !openJobs.length && !waiting.length && !idle) {
         o.onIdle?.();
         idle = true;
-      } else if (inFlight?.length || openJobs.length) idle = false;
+      } else if (inFlight?.length || openJobs.length || waiting.length) idle = false;
       await untilAborted(o.signal, () =>
         o.sleep(
           boundedWait(
             o,
-            inFlight?.length === 0 && !openJobs.length
+            inFlight?.length === 0 && !openJobs.length && !waiting.length
               ? (o.idlePollMs ?? WATCH_IDLE_POLL_MS)
               : (o.pollMs ?? WATCH_POLL_MS),
           ),
@@ -570,6 +605,8 @@ export function rearm(o: {
   running: number | null;
   act?: boolean;
   mode?: "follow" | "watch";
+  slots?: { taken: number; max: number | null };
+  waiting?: number;
 }): Rearm {
   const then = o.act ? "act on the items above, then " : "";
   const watch =
@@ -578,19 +615,22 @@ export function rearm(o: {
         ? `armada watch is following (pid ${o.running})`
         : `armada watch is already running (pid ${o.running})`
       : null;
+  const count = (o.slots?.max ? o.slots.taken : o.inFlight?.length) ?? 0;
+  const workerLine = o.slots?.max ? `${count} of ${o.slots.max} workers in flight` : workers(count);
+  const waitingLine = o.waiting ? ` · ${o.waiting} waiting to launch` : "";
   let line: string;
   if (o.inFlight === null)
     line = watch
       ? `Workers may be in flight — ${then}${watch}.`
       : `While a worker is in flight, ${then}keep watching: armada watch`;
-  else if (o.inFlight.length)
-    line = `${workers(o.inFlight.length)} (${o.inFlight.join(", ")}) — ${watch ? `${then}${watch}.` : `${then}keep watching: armada watch`}`;
+  else if (count || o.waiting)
+    line = `${workerLine}${o.inFlight.length ? ` (${o.inFlight.join(", ")})` : ""}${waitingLine} — ${watch ? `${then}${watch}.` : `${then}keep watching: armada watch`}`;
   else if (o.open)
     line = `No worker in flight, ${o.open} item${o.open === 1 ? "" : "s"} open — ${watch ? `${then}${watch}.` : `${then}keep watching: armada watch`}`;
   else if (o.open === null) line = "No worker in flight — nothing to watch.";
   else line = "No worker in flight and nothing open — nothing to watch.";
   if (o.openJobs?.length)
-    line = `${o.openJobs.length} open job${o.openJobs.length === 1 ? "" : "s"} (${o.openJobs.join(", ")}) — ${watch ? `${then}${watch}.` : `${then}keep watching: armada watch`}${o.inFlight?.length ? ` · ${workers(o.inFlight.length)}` : ""}`;
+    line = `${o.openJobs.length} open job${o.openJobs.length === 1 ? "" : "s"} (${o.openJobs.join(", ")}) — ${watch ? `${then}${watch}.` : `${then}keep watching: armada watch`}${count ? ` · ${workerLine}` : ""}${waitingLine}`;
   return {
     inFlight: o.inFlight,
     ...(o.openJobs?.length ? { openJobs: o.openJobs } : {}),
@@ -631,6 +671,11 @@ export function stopHookDecision(o: {
     return {
       block: true,
       reason: `${s.openJobs.length} open job${s.openJobs.length === 1 ? "" : "s"} on ${o.project} and no armada watch is running; start armada watch in the background so job alarms are heard. (${STOP_HOOK_VARIABLE}=off turns this hook off.)`,
+    };
+  if (s.waiting?.length)
+    return {
+      block: true,
+      reason: `${s.waiting.length} waiting to launch on ${o.project}; start armada watch in the background to hear when they can launch.`,
     };
   if (!s.inFlight?.length) return { block: false, why: "no worker in flight at the last read" };
   return {

@@ -1358,8 +1358,8 @@ export async function pendingLaunches(
   opts: { history?: boolean } = {},
 ): Promise<PendingLaunch[]> {
   const rs = await db.query(
-    `SELECT w."id", w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtime", w."runtimeHandle", w."coordinator" FROM (
-       SELECT DISTINCT ON ("ticket") "id", "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtime", "runtimeHandle", "coordinator", "endedAt"
+    `SELECT w."id", w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtime", w."runtimeHandle", w."coordinator", w."overCap" FROM (
+       SELECT DISTINCT ON ("ticket") "id", "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtime", "runtimeHandle", "coordinator", "overCap", "endedAt"
        FROM "armada_worker" WHERE "project" = $1 AND "createdAt" >= $2
        ORDER BY "ticket", "createdAt" DESC, "id" DESC
      ) w
@@ -1381,6 +1381,7 @@ export async function pendingLaunches(
     coordinator: text(r.coordinator),
     tokenUsedAt: iso(r.tokenUsedAt),
     tokenExpiresAt: isoAt(r.tokenExpiresAt),
+    overCap: r.overCap == null ? null : String(r.overCap),
     runtime: text(r.runtime),
     handle: text(r.runtimeHandle),
   }));
@@ -2444,6 +2445,7 @@ export interface TicketHistory {
 }
 
 export const liveStore = (db: Database): LiveStore => ({
+  listCoordinators: (project) => listCoordinators(db, project),
   releaseClaim: (project, release, at) => releaseClaim(db, project, release, at),
   releaseRuntimeHandle: (project, ticket, at, guard, merged) =>
     releaseRuntimeHandle(db, project, ticket, at, guard, merged),

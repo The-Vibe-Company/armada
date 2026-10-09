@@ -17,6 +17,7 @@ import type { HttpRetryOptions } from "./http.ts";
 import { type Job, type JobSummary, jobOverdue } from "./jobs.ts";
 import { type Fetch, fetchProgram, fetchProgramChanges } from "./linear.ts";
 import {
+  type CoordinatorRecord,
   followedLaunches,
   freshRuntimeState,
   type LatestEvent,
@@ -27,6 +28,7 @@ import {
   type RuntimeHandle,
   type RuntimeState,
   ticketOwners,
+  workerSlots,
 } from "./live.ts";
 import { type QueueEntry, shownQueue } from "./merge-queue.ts";
 import { buildModel, isDone, type Model } from "./model.ts";
@@ -153,6 +155,7 @@ export interface StatusReport {
   notStarted: NotStartedLaunch[];
   pendingLaunches?: PendingLaunch[];
   launchWhenUnblocked?: DeferredLaunch[];
+  slots?: { taken: number; max: number | null };
   /**
    * Ready to start: the frontier, ranked, without the tickets parked on purpose.
    * `readyForAgent` marks tickets that carry the ready label.
@@ -186,6 +189,7 @@ export interface BuildStatusInput {
   /** Launches no claim followed, from Armada's live data. */
   launches?: PendingLaunch[];
   launchWhenUnblocked?: DeferredLaunch[];
+  slots?: { taken: number; max: number | null };
   /** Problems met on optional sources (the live data), added to the report warnings. */
   extraWarnings?: string[];
   now: Date;
@@ -210,6 +214,7 @@ export function buildStatus({
   jobs,
   launches = [],
   launchWhenUnblocked,
+  slots,
   extraWarnings = [],
   now,
 }: BuildStatusInput): StatusReport {
@@ -277,6 +282,7 @@ export function buildStatus({
       : {}),
     schemaVersion: STATUS_SCHEMA_VERSION,
     ...(launchWhenUnblocked ? { launchWhenUnblocked } : {}),
+    ...(slots ? { slots } : {}),
     ...(holds ? { holds } : {}),
     ...(queue ? { queue: shownQueue(queue, now) } : {}),
     main: forge?.main ? mainHealth(forge.main, config.gates.requiredChecks, forge.mainComplete) : null,
@@ -438,6 +444,7 @@ export interface LoadStatusOptions extends HttpRetryOptions {
   latestEvents?: () => Promise<Record<string, LatestEvent>>;
   heartbeats?: () => Promise<Record<string, string>>;
   runtimeHandles?: () => Promise<RuntimeHandle[]>;
+  coordinators?: () => Promise<CoordinatorRecord[]>;
   /** Launches no claim followed, read by the caller through Armada when signed in. */
   launches?: () => Promise<PendingLaunch[]>;
   deferredLaunches?: () => Promise<DeferredLaunch[]>;
@@ -578,12 +585,13 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
     holds,
     queue,
     deferred,
+    coordinators,
   ] = await Promise.all([
     readStatusSources(config, opts),
     eventsP,
     launchesP,
     opts.heartbeats?.().catch(() => undefined),
-    opts.runtimeHandles?.().catch(() => undefined),
+    launchesP.then(() => opts.runtimeHandles?.().catch(() => undefined)),
     opts.latestEvents?.().catch(() => undefined),
     jobsP,
     holdsP,
@@ -594,8 +602,17 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         warning: `Armada’s deferred launches could not be read (${err instanceof Error ? err.message : String(err)})`,
       }),
     ),
+    opts.coordinators?.().catch(() => undefined),
   ]);
   return buildStatus({
+    ...(runtimeHandles && launches.launches && coordinators
+      ? {
+          slots: {
+            ...workerSlots({ handles: runtimeHandles, launches: launches.launches, coordinators, now: now() }),
+            max: config.policy.maxWorkers ?? null,
+          },
+        }
+      : {}),
     coordinatorName: opts.coordinatorName,
     config,
     program,

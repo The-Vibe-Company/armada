@@ -54,6 +54,7 @@ import { deliverToRuntime } from "./runtime.ts";
 import { claimRef, guarded, redactRuntimeText } from "./runtimes/adapter.ts";
 import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
 import { endWorkerSessions, liveFleet, type WorkerArgs } from "./worker.ts";
+import { countWorkerSlots } from "./worker-slots.ts";
 
 /** Queue ownership is rechecked at actual I/O boundaries, including native runtime cleanup. */
 function fencedIo(io: Io, tick: (() => Promise<void>) | undefined, exec: Exec): Io {
@@ -679,7 +680,10 @@ export async function merge(
         // The workers still in flight, for the re-arm line: listed after a merge, else the last known ones.
         const project = config.project.slug;
         const coordinator = coordinatorHandle(io);
-        const known = (await watchOf(io, project)).state?.inFlight ?? null;
+        const state = (await watchOf(io, project)).state;
+        const known = state?.inFlight ?? null;
+        let waiting = state?.waiting ?? [];
+        let slots = state?.slots;
         let inFlight = o.workersListed
           ? o.workers
               .filter((w) => !coordinator || w.handle !== coordinator)
@@ -691,16 +695,23 @@ export async function merge(
         if (inFlight)
           for (const launch of deferredLaunches)
             if (launch.status === "launched" && !inFlight.includes(launch.ticket)) inFlight.push(launch.ticket);
-        if (o.merged && inFlight && live.fleet) {
+        if (o.merged && live.fleet) {
           try {
-            // Follow every open request; the next inbox reading prunes tickets proved closed.
-            for (const request of await live.fleet.deferredLaunches())
-              if (!inFlight.includes(request.ticket)) inFlight.push(request.ticket);
+            waiting = (await live.fleet.deferredLaunches())
+              .filter(
+                (request) => !deferredLaunches.some((l) => l.ticket === request.ticket && l.status === "launched"),
+              )
+              .map((request) => request.ticket);
           } catch {
-            // Retain the previous watch set if pending requests cannot be refreshed.
-            for (const ticket of known ?? [])
-              if ((o.keepOpen || ticket !== o.ticket?.id) && !inFlight.includes(ticket)) inFlight.push(ticket);
-            o.warnings.push("could not refresh deferred requests for the watch; retained the previous tickets");
+            o.warnings.push("could not refresh deferred requests for the watch; retained the previous waiting tickets");
+          }
+          slots = undefined;
+          if (config.policy.maxWorkers) {
+            try {
+              slots = { ...(await countWorkerSlots(io, live.fleet)), max: config.policy.maxWorkers };
+            } catch {
+              o.warnings.push("could not refresh worker slots after merge; cached slot count cleared");
+            }
           }
         }
         const name = await coordinatorName(io, project);
@@ -716,14 +727,22 @@ export async function merge(
               notStartedMinutes: config.policy.notStartedMinutes,
             });
             inFlight = owned?.inFlight ?? null;
+            waiting = owned?.waiting ?? waiting;
+            slots = owned?.slots ?? slots;
           } catch {
             inFlight = known ? known.filter((ticket) => !o.merged || o.keepOpen || ticket !== o.ticket?.id) : null;
             o.warnings.push("could not refresh owned workers for the re-arm line; retained the previous tickets");
           }
         }
         await tick?.();
-        if (o.merged) await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
-        next = await rearmFor(io, project, { inFlight, open: null });
+        if (o.merged)
+          await remember(io, project, {
+            inFlight,
+            waiting,
+            slots,
+            readAt: (io.now ?? (() => new Date()))().toISOString(),
+          });
+        next = await rearmFor(io, project, { inFlight, waiting: waiting.length, slots, open: null });
         if (!a.json)
           io.stdout(
             `${render(o, !!a.options["no-notify"])}${deferredLaunches.map((l) => l.output ?? `${l.ticket}: ${l.status}; ${l.command}\n`).join("")}${next.line}\n`,

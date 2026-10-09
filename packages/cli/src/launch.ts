@@ -56,6 +56,7 @@ import { conductorLaunchArguments } from "./runtimes/conductor.ts";
 import { HerdrAdapter } from "./runtimes/herdr.ts";
 import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
 import { liveFleet } from "./worker.ts";
+import { countWorkerSlots, mintLaunchToken, overCapReason } from "./worker-slots.ts";
 
 export async function launch(
   io: Io,
@@ -78,9 +79,17 @@ export async function launch(
   });
   const known = (await watchOf(io, config.project.slug)).state?.inFlight;
   const inFlight = known?.filter((held) => held !== revoked.ticket) ?? null;
-  if (inFlight)
-    await remember(io, config.project.slug, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
-  const watch = await rearmFor(io, config.project.slug, { inFlight, open: null });
+  let slots: { taken: number; max: number | null } | undefined;
+  if (config.policy.maxWorkers) {
+    const { fleet } = liveFleet(io, config, credentials);
+    try {
+      if (fleet) slots = { ...(await countWorkerSlots(io, fleet)), max: config.policy.maxWorkers };
+    } catch {
+      io.stderr("armada: warning: could not refresh workers after revoke; cached slot count cleared.\n");
+    }
+  }
+  await remember(io, config.project.slug, { inFlight, slots, readAt: (io.now ?? (() => new Date()))().toISOString() });
+  const watch = await rearmFor(io, config.project.slug, { inFlight, slots, open: null });
   io.stdout(
     args.json
       ? `${JSON.stringify({ ...revoked, watch }, null, 2)}\n`
@@ -110,6 +119,7 @@ export async function prepareLaunch(
 ) {
   const [input, ...extra] = args.rest;
   const o = args.options;
+  const overCap = overCapReason(o);
   if (!input || extra.length || !/^[A-Za-z][A-Za-z0-9]{0,15}-\d{1,9}$/.test(input))
     throw new UsageError("launch needs a ticket: armada launch <ticket> [--runtime conductor|herdr]");
   if (o.runtime && !["conductor", "herdr", "claude-code"].includes(o.runtime))
@@ -217,6 +227,18 @@ export async function prepareLaunch(
     }
   };
   if (!replacement) await available();
+  if (o["dry-run"] === "true" && config.policy.maxWorkers && !replacement) {
+    try {
+      const slots = await countWorkerSlots(io, fleet);
+      if (slots.taken >= config.policy.maxWorkers && !overCap && ticket.priority !== 1) {
+        io.stderr(`armada: would be refused: ${slots.taken} of ${config.policy.maxWorkers} workers\n`);
+        return 1;
+      }
+    } catch {
+      io.stderr("armada: cannot count workers; retry or --over-cap\n");
+      return 1;
+    }
+  }
   if (local && !replacement && o["dry-run"] === "true")
     return await launchPlan(io, args.json, {
       ticketId,
@@ -365,6 +387,8 @@ export async function prepareLaunch(
     approval,
     repo,
     coordinator: replacement?.coordinator,
+    replacement: !!replacement,
+    overCap,
   };
 }
 
@@ -464,9 +488,11 @@ export async function executeLaunch(p: PreparedLaunch, bindLaunch?: BindLaunch) 
   briefInput.preApprovedReason = await p.approval?.apply();
   await recheckMutation();
   const started = now().toISOString();
-  const launch = await api.launchToken(signIn, {
-    project: config.project.slug,
+  const launch = await mintLaunchToken(io, config, credentials, {
     ticket: ticketId,
+    priority: p.ticket.priority,
+    overCap: p.overCap,
+    replacement: p.replacement,
     // Explicit null preserves an unowned generation; only a normal launch
     // chooses the coordinator selected in this terminal.
     coordinator: p.coordinator === undefined ? await coordinatorName(io, config.project.slug) : p.coordinator,
@@ -587,8 +613,15 @@ export async function executeLaunch(p: PreparedLaunch, bindLaunch?: BindLaunch) 
   }
   const known = (await watchOf(io, config.project.slug)).state?.inFlight ?? [];
   const inFlightTickets = [...new Set([...known, ticketId])].sort();
-  await remember(io, config.project.slug, { inFlight: inFlightTickets, readAt: now().toISOString() });
-  const watch = await rearmFor(io, config.project.slug, { inFlight: inFlightTickets, open: null });
+  const fleet = liveFleet(io, config, credentials).fleet;
+  const counted = config.policy.maxWorkers && fleet ? await countWorkerSlots(io, fleet).catch(() => null) : null;
+  const slots = counted ? { taken: counted.taken, max: config.policy.maxWorkers } : undefined;
+  await remember(io, config.project.slug, {
+    inFlight: inFlightTickets,
+    ...(slots ? { slots } : {}),
+    readAt: now().toISOString(),
+  });
+  const watch = await rearmFor(io, config.project.slug, { inFlight: inFlightTickets, slots, open: null });
   const result = {
     ticket: ticketId,
     runtime: runtimeName,
@@ -770,14 +803,17 @@ async function deferLaunch(
     profile: args.options.profile ?? null,
     after: args.options.after ?? null,
   });
-  const known = (await watchOf(io, config.project.slug)).state?.inFlight ?? [];
-  const inFlight = [...new Set([...known, request.ticket])];
-  await remember(io, config.project.slug, { inFlight });
-  const watch = await rearmFor(io, config.project.slug, { inFlight, open: null });
+  const previous = (await watchOf(io, config.project.slug)).state;
+  const inFlight = previous?.inFlight ?? [];
+  const waiting = [...new Set([...(previous?.waiting ?? []), request.ticket])];
+  const counted = config.policy.maxWorkers ? await countWorkerSlots(io, fleet).catch(() => null) : null;
+  const slots = counted ? { taken: counted.taken, max: config.policy.maxWorkers } : undefined;
+  await remember(io, config.project.slug, { waiting, ...(slots ? { slots } : {}) });
+  const watch = await rearmFor(io, config.project.slug, { inFlight, waiting: waiting.length, slots, open: null });
   io.stdout(
     args.json
       ? `${JSON.stringify({ ...request, watch }, null, 2)}\n`
-      : `${request.ticket} will launch once ${request.blockers?.join(", ")} ${request.blockers?.length === 1 ? "is" : "are"} done (request #${request.id}).\n${watch.line}\n`,
+      : `${request.ticket} will launch once ${request.reason?.startsWith("waits for a worker slot") ? "a worker slot frees" : `${request.blockers?.join(", ")} ${request.blockers?.length === 1 ? "is" : "are"} done`} (request #${request.id}).\n${watch.line}\n`,
   );
   return 0;
 }

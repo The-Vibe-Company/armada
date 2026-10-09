@@ -87,13 +87,27 @@ export async function watchOf(io: Io, project: string): Promise<{ state: WatchSt
 export async function rearmFor(
   io: Io,
   project: string,
-  o: { inFlight: string[] | null; open: number | null; openJobs?: number[]; act?: boolean },
+  o: {
+    inFlight: string[] | null;
+    open: number | null;
+    openJobs?: number[];
+    act?: boolean;
+    waiting?: number;
+    slots?: { taken: number; max: number | null };
+  },
 ): Promise<Rearm> {
   const { state, running } = await watchOf(io, project);
   const paths = machinePaths(io.env);
   const mode =
     paths && running ? (await readWatchLockInfo(paths, project, await coordinatorName(io, project)))?.mode : undefined;
-  return rearm({ ...o, openJobs: o.openJobs ?? state?.openJobs, running, mode });
+  return rearm({
+    ...o,
+    waiting: o.waiting ?? state?.waiting?.length,
+    slots: o.slots ?? state?.slots,
+    openJobs: o.openJobs ?? state?.openJobs,
+    running,
+    mode,
+  });
 }
 
 const now = (io: Io) => (io.now ?? (() => new Date()))();
@@ -390,7 +404,14 @@ async function watchUntil(
           name === "default" ? read.inFlight : (read.ownedInFlight ?? (scope === "mine" ? read.inFlight : null));
         const openJobs =
           name === "default" ? read.openJobs : (read.ownedOpenJobs ?? (scope === "mine" ? read.openJobs : []));
-        if (inFlight) await remember(io, project, { inFlight, openJobs, readAt: now(io).toISOString() });
+        if (inFlight)
+          await remember(io, project, {
+            inFlight,
+            openJobs,
+            waiting: name === "default" ? read.waiting : read.ownedWaiting,
+            slots: read.slots,
+            readAt: now(io).toISOString(),
+          });
       },
       onRetry: (message) => io.stderr(`armada: warning: ${message}\n`),
       release: pendingRelease(watchingIo, version, before?.seen ?? [], fsRepoView(dirname(configPath))),
@@ -439,11 +460,20 @@ async function watchUntil(
       name === "default" ? report.inFlight : (report.ownedInFlight ?? (scope === "mine" ? report.inFlight : null));
     const openJobs =
       name === "default" ? report.openJobs : (report.ownedOpenJobs ?? (scope === "mine" ? report.openJobs : undefined));
-    await remember(io, project, shown(io, report.items, inFlight, openJobs));
+    const waiting = (name === "default" ? report.waiting : report.ownedWaiting) ?? [];
+    await remember(io, project, { ...shown(io, report.items, inFlight, openJobs), waiting, slots: report.slots });
     controller.signal.throwIfAborted();
     // A release is acted on between rounds: it is not an item that keeps a watch going.
     const open = report.items.filter((e) => e.kind !== "version").length;
-    const next = rearm({ inFlight, openJobs, open, running: null, act: true });
+    const next = rearm({
+      inFlight,
+      openJobs,
+      open,
+      running: null,
+      act: true,
+      waiting: waiting.length,
+      slots: report.slots,
+    });
     if (json) io.stdout(`${JSON.stringify({ ...report, watch: next }, null, 2)}\n`);
     else {
       const out =

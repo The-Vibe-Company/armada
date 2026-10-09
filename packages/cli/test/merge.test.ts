@@ -11,9 +11,11 @@ import {
   GITHUB_GRAPHQL,
   LinearError,
   type MergeOutcome,
+  machinePaths,
   parseConfig,
   type RawIssue,
   type RawPull,
+  readWatchState,
   resolveCredentials,
 } from "@armada/core";
 import githubPulls from "../../core/test/fixtures/github-pulls.json";
@@ -961,6 +963,11 @@ test.each([{ options: [] }, { options: ["--no-archive"] }])(
   "a confirmed merge launches its owned deferred follow-up through the shared Conductor launcher in the same run (%s)",
   async ({ options }) => {
     const f = await fixture({ unblocks: true });
+    const readConfig = f.io.readFile;
+    f.io.readFile = async (path) => {
+      const contents = await readConfig(path);
+      return path.endsWith("armada.toml") && contents ? `${contents}\n[policy]\nmax_workers = 2\n` : contents;
+    };
     const originalFetch = f.io.fetch;
     const originalExec = f.io.exec;
     if (!originalFetch || !originalExec) throw new Error("missing adapters");
@@ -1039,7 +1046,14 @@ test.each([{ options: [] }, { options: ["--no-archive"] }])(
     expect(JSON.parse(f.out()).deferredLaunches).toMatchObject([
       { ticket: "DEMO-19", status: "launched", output: expect.stringContaining("Launched DEMO-19") },
     ]);
-    expect(JSON.parse(f.out()).watch.inFlight).toContain("DEMO-20");
+    expect(JSON.parse(f.out()).watch.inFlight).toContain("DEMO-19");
+    expect(JSON.parse(f.out()).watch.inFlight).not.toContain("DEMO-20");
+    const paths = machinePaths(f.io.env);
+    if (!paths) throw new Error("missing watch state");
+    expect(await readWatchState(paths, "widgets")).toMatchObject({
+      waiting: ["DEMO-20"],
+      slots: { taken: 2, max: 2 },
+    });
     expect(f.out()).not.toContain("armada_launch_");
   },
 );
