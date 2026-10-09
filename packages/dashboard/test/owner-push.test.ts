@@ -19,6 +19,7 @@ import { addInboxItem, addValidation, fleetStore, upsertProject } from "../lib/f
 import { ownerCron } from "../lib/owner-cron.ts";
 import {
   listOwnerChannels,
+  type OwnerPayload,
   ownerPulse,
   ownerTick,
   publicAddress,
@@ -467,18 +468,190 @@ describe("owner chat delivery", () => {
     expect(posts).toHaveLength(2);
   });
 
+  test("milestone outbox uses persisted specs and holds, deduplicates, baselines new channels and obeys alerts off", async () => {
+    const initial = (await db.query(`SELECT body FROM fleet_snapshots WHERE key = $1`, [project.slug])).rows[0]?.body;
+    const at = (minutes: number) => new Date(now.getTime() + minutes * 60_000);
+    const readSpec = async (completed: Date, statusType = "completed") => {
+      const issues = [
+        issue("WID-1"),
+        issue("WID-100", {
+          title: "Spec 2/10 — Search",
+          parentId: "WID-1",
+          statusType: statusType as "completed" | "started",
+          completedAt: completed.toISOString(),
+          url: "https://linear.example.test/WID-100",
+        }),
+      ];
+      await db.query(
+        `UPDATE fleet_snapshots SET body = jsonb_set(body, '{sources,program,issues}', $2::jsonb) WHERE key = $1`,
+        [project.slug, JSON.stringify(issues)],
+      );
+    };
+    const store = fleetStore(db);
+    try {
+      await readSpec(at(-1));
+      const old = await store.openHold({
+        project: project.slug,
+        kind: "manual",
+        reason: "Old pause",
+        author: actor.label,
+        at: at(-10),
+      });
+      await save({ format: "json" });
+      await ownerTick(db, opts());
+      expect(posts).toHaveLength(0);
+      expect((await db.query(`SELECT key FROM owner_pushes`)).rows).toEqual([]);
+      await store.clearHold({ project: project.slug, id: old.id, author: actor.label, reason: "Healthy", at: at(1) });
+      await readSpec(at(1));
+      const hold = await store.openHold({
+        project: project.slug,
+        kind: "deploy",
+        ref: "production",
+        reason: "Check production\nInternal detail",
+        author: actor.label,
+        at: at(1),
+      });
+      const transient = await store.openHold({
+        project: project.slug,
+        kind: "main-red",
+        reason: "Main red",
+        author: null,
+        at: at(1),
+      });
+      await store.clearHold({ project: project.slug, id: transient.id, author: null, reason: "Recovered", at: at(3) });
+      await ownerTick(db, opts(at(5)));
+      expect(posts).toHaveLength(1);
+      expect(JSON.parse(posts[0]?.body ?? "")).toMatchObject({
+        schema: 1,
+        items: [{ kind: "spec-closed", url: "https://linear.example.test/WID-100" }],
+        text: "Spec 2 · Search finished\nhttps://linear.example.test/WID-100",
+      });
+      await ownerTick(db, opts(at(6)));
+      expect(posts).toHaveLength(2);
+      expect(JSON.parse(posts[1]?.body ?? "")).toMatchObject({
+        schema: 1,
+        items: [{ key: `hold:widgets:${hold.id}`, kind: "hold-opened", url: `${BASE}/projects/widgets` }],
+        text: `widgets: merges paused — Check production\n${BASE}/projects/widgets`,
+      });
+      await ownerTick(db, opts(at(7)));
+      expect(posts).toHaveLength(2);
+      // A pause announced yesterday still gets its all-clear today.
+      await store.clearHold({
+        project: project.slug,
+        id: hold.id,
+        author: actor.label,
+        reason: "Healthy",
+        at: at(1500),
+      });
+
+      await ownerTick(db, opts(at(1501)));
+      expect(posts).toHaveLength(3);
+      expect(JSON.parse(posts[2]?.body ?? "")).toMatchObject({
+        items: [{ key: `hold-cleared:widgets:${hold.id}`, kind: "hold-cleared" }],
+        text: `widgets: merges resume\n${BASE}/projects/widgets`,
+      });
+      await readSpec(at(1502), "started");
+      await ownerTick(db, opts(at(1502)));
+      await readSpec(at(1503));
+      await ownerTick(db, opts(at(1504)));
+      expect(posts).toHaveLength(3);
+      await save({ format: "json", alerts: false, now: at(1505) });
+      const disabled = await store.openHold({
+        project: project.slug,
+        kind: "manual",
+        reason: "Disabled",
+        author: actor.label,
+        at: at(1506),
+      });
+      await ownerTick(db, opts(at(1511)));
+      await store.clearHold({
+        project: project.slug,
+        id: disabled.id,
+        author: actor.label,
+        reason: "Healthy",
+        at: at(1512),
+      });
+      await ownerTick(db, opts(at(1513)));
+      expect(posts).toHaveLength(3);
+      expect((await db.query(`SELECT key FROM owner_pushes ORDER BY key`)).rows.map((r) => r.key)).toEqual([
+        `hold-cleared:widgets:${hold.id}`,
+        `hold:widgets:${hold.id}`,
+        "spec:widgets:WID-100",
+      ]);
+    } finally {
+      await db.query(`UPDATE fleet_snapshots SET body = $2 WHERE key = $1`, [project.slug, JSON.stringify(initial)]);
+    }
+  });
+
   test("quiet-hour arrivals are stored for the next digest in the channel timezone, never posted later as alerts", async () => {
     await validation();
-    await save({ timeZone: "Pacific/Auckland", quiet: { from: "22:00", to: "07:30" } });
-    await ownerTick(db, opts()); // midnight in Auckland
+    await save({
+      timeZone: "Pacific/Auckland",
+      quiet: { from: "22:00", to: "07:30" },
+      digest: { times: ["09:00"], days: [1, 2, 3, 4, 5], skipQuiet: true },
+    });
+    const hold = await fleetStore(db).openHold({
+      project: project.slug,
+      kind: "manual",
+      reason: "Check production",
+      author: actor.label,
+      at: now,
+    });
+    const due = new Date(now.getTime() + 5 * 60_000);
+    await ownerTick(db, opts(due)); // midnight in Auckland
     expect(posts).toHaveLength(0);
     expect((await db.query(`SELECT sent_at,error,attempts,payload FROM owner_pushes`)).rows[0]).toMatchObject({
-      sent_at: now,
+      sent_at: due,
       error: "quiet",
       attempts: 0,
     });
+    expect(
+      (await db.query(`SELECT error,attempts,payload FROM owner_pushes WHERE key = $1`, [`hold:widgets:${hold.id}`]))
+        .rows[0],
+    ).toMatchObject({
+      error: "quiet",
+      attempts: 0,
+      payload: { items: [{ kind: "hold-opened" }] },
+    });
+    await fleetStore(db).clearHold({
+      project: project.slug,
+      id: hold.id,
+      author: actor.label,
+      reason: "Healthy",
+      at: new Date(due.getTime() + 60_000),
+    });
+    await ownerTick(db, opts(new Date(due.getTime() + 60_000)));
+    expect(
+      (
+        await db.query(`SELECT error,attempts,payload FROM owner_pushes WHERE key = $1`, [
+          `hold-cleared:widgets:${hold.id}`,
+        ])
+      ).rows[0],
+    ).toMatchObject({
+      error: "quiet",
+      attempts: 0,
+      payload: { items: [{ kind: "hold-cleared" }] },
+    });
+    // With the validation gone and the pause cleared, milestones are the only news.
+    await db.query(`DELETE FROM validations`);
     await ownerTick(db, opts(new Date("2026-04-06T21:00:00Z")));
-    expect(posts).toHaveLength(0);
+    expect(posts).toHaveLength(1);
+    const digest = (await db.query(`SELECT payload FROM owner_pushes WHERE key LIKE 'digest:%' ORDER BY created_at`))
+      .rows[0]?.payload as OwnerPayload;
+    expect(digest).toMatchObject({
+      kind: "digest",
+      items: [
+        { kind: "hold-opened", key: `hold:widgets:${hold.id}` },
+        { kind: "hold-cleared", key: `hold-cleared:widgets:${hold.id}` },
+      ],
+    });
+    expect(digest.text).toContain("widgets: merges paused — Check production");
+    expect(digest.text).toContain("widgets: merges resume");
+    await ownerTick(db, opts(new Date("2026-04-07T21:00:00Z")));
+    const next = (
+      await db.query(`SELECT payload FROM owner_pushes WHERE key LIKE 'digest:%' ORDER BY created_at DESC LIMIT 1`)
+    ).rows[0]?.payload as OwnerPayload;
+    expect(next.items).toEqual([]);
   });
 
   test("retries are claimed once per minute, stop at five attempts, and ten consecutive failures pause the channel", async () => {
@@ -660,6 +833,7 @@ test("webhooks refuse private addresses, local hosts, userinfo, redirects and HT
       "./fleet-store": {},
       "./i18n": {},
       "./notify": {},
+      "./snapshots": {},
       "./vault": {},
     },
     { URL, Response },
