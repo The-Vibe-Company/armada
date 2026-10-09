@@ -43,7 +43,7 @@ Both modes share one lock per project and name on a machine. `armada inbox --wai
 
 Specs are direct children of the program root, titled `Spec N — Name` (`Spec N/M — Name` is read too).
 
-- `armada spec add "<name>"` appends one with the **In short** template and prints its URL; earlier titles are untouched.
+- `armada spec add "<name>"` appends one with the **In short** template in the root's Linear project and the team's first backlog state (first to-do state if there is no backlog); it prints the project (or `no project`), state and URL. With neither state available, it keeps Linear's default. Earlier titles are untouched. Creation is never retried automatically: check Linear before running the command again after a failure.
 - `armada spec add "<name>" --at 5` previews the renames a middle insertion needs; repeat with `--apply` to write them.
 - `armada spec renumber` previews a repair of gaps, duplicates and stale totals; `--apply` writes it.
 - `[tracker] spec_titles = "N/M"` keeps totals in every title; appending then needs `--apply` too.
