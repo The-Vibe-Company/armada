@@ -12,7 +12,7 @@ import { jobStalled, jobStalledMinutes } from "./jobs.ts";
 import { createHash } from "node:crypto";
 import { type ArmadaConfig, CONFIG_DEFAULTS, routingLabelKey } from "./config.ts";
 import { type DeferredLaunch, deferredLaunchState, deferredWakeBody } from "./deferred.ts";
-import type { DeployInput, DeployQuery, DeployRecord } from "./deploy.ts";
+import type { DeployInput, DeployQuery, DeployRecord, DeployRetryInput } from "./deploy.ts";
 import type { DigestInput, DigestRequest, DigestResult } from "./digest.ts";
 import {
   buildLane,
@@ -476,6 +476,7 @@ export interface FleetStore {
     coordinator?: string | null;
     at: Date;
   }): Promise<string>;
+  retryDeploy(input: DeployRetryInput & { project: string; author: string; at: Date }): Promise<DeployRecord>;
   recordDeploy(input: DeployInput & { project: string; at: Date }): Promise<DeployRecord>;
   deployState(project: string, query: DeployQuery): Promise<DeployRecord[]>;
 
@@ -2448,6 +2449,7 @@ export async function serveInbox(
  */
 export interface Fleet {
   prepareMergeNotice(key: string): Promise<"reserved" | "attempted" | "delivered">;
+  retryDeploy(input: DeployRetryInput): Promise<DeployRecord>;
   recordDeploy(input: DeployInput): Promise<DeployRecord>;
   deployState(query?: DeployQuery): Promise<DeployRecord[]>;
 

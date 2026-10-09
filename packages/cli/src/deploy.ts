@@ -9,6 +9,8 @@ import {
   type DeployTarget,
   deployDetail,
   deployLine,
+  deployResumeCommand,
+  deployRetryLine,
   fetchLiveDeploy,
   fetchShaComparison,
   type MergeHold,
@@ -22,7 +24,7 @@ import {
   takeWatchLock,
   watchDeploy,
 } from "@armada/core";
-import { httpOptions, type Io, UsageError } from "./io.ts";
+import { type ExecResult, httpOptions, type Io, UsageError } from "./io.ts";
 import { liveFleet } from "./worker.ts";
 
 const hash = (s: string) => createHash("sha256").update(s).digest("base64url");
@@ -118,6 +120,106 @@ export async function startDeploys(
   return results;
 }
 
+/** A redeploy creates host work: run it once, then observe using reads only. */
+async function retryDeploy(
+  io: Io,
+  config: ArmadaConfig,
+  credentials: Credentials,
+  target: DeployTarget,
+  noRedeploy: boolean,
+  configPath: string,
+): Promise<number> {
+  const { fleet, warning } = liveFleet(io, config, credentials);
+  if (!fleet || credentials.armadaSignIn?.kind === "worker")
+    throw new UsageError(warning ?? "deploy retry needs an organization sign-in", "armada login");
+  const paths = machinePaths(io.env);
+  const local = await readDeployEnv(paths, config.project.slug);
+  if (local.warning) io.stderr(`armada: ${local.warning}\n`);
+  const settings = resolveDeployEnv(target, local.env, io.env);
+  if (settings.missing.length)
+    throw new UsageError(
+      `deploy retry needs ${settings.missing.join(", ")}`,
+      settings.missing.map((name) => `armada config set deploy.env.${name} <value>`).join("; "),
+    );
+  if (target.redeploy && !noRedeploy && !io.exec) throw new UsageError("deploy retry needs to run shell commands");
+  if (target.githubEnvironment && !credentials.githubToken)
+    throw new UsageError("a GitHub deploy target needs a GitHub token", "gh auth login");
+  const row = await fleet.retryDeploy({ target: target.name, redeploy: !!target.redeploy && !noRedeploy });
+  const secrets = [
+    credentials.armadaSignIn?.kind === "api-key" ? credentials.armadaSignIn.key : credentials.armadaSignIn?.token,
+    credentials.linearApiKey,
+    credentials.githubToken,
+    ...config.secrets.names.map((name) => io.env[name]),
+    ...Object.values(settings.env),
+  ].filter((value): value is string => !!value);
+  const clean = (text: string) => redactSecrets(text, secrets);
+  const since = row.redeploySince ?? undefined;
+  if (target.redeploy && !noRedeploy) {
+    let result: ExecResult | undefined;
+    try {
+      result = await io.exec?.("sh", ["-c", target.redeploy], {
+        cwd: dirname(configPath),
+        timeoutMs: 120_000,
+        maxOutputBytes: 64 * 1024,
+        processGroup: true,
+        env: { ...io.env, ...settings.env, ARMADA_DEPLOY_SHA: row.sha, ARMADA_DEPLOY_TARGET: target.name },
+      });
+    } catch {
+      io.stdout("redeploy outcome unknown; check the host; it is not run again\n");
+    }
+    if (result?.timedOut || result?.outputExceeded)
+      io.stdout("redeploy outcome unknown; check the host; it is not run again\n");
+    else if (result && result.code !== 0) {
+      const detail = deployDetail(clean(`${result.stdout}\n${result.stderr}\nredeploy command exited ${result.code}`));
+      await recordDeploy(io, fleet.recordDeploy, {
+        target: target.name,
+        sha: row.sha,
+        attempt: row.attempt,
+        state: "deploy-failed",
+        detail,
+        pauseOnFailure: target.pauseOnFailure,
+      });
+      io.stdout(`Result: not retried (redeploy command exited ${result.code})\n${detail}\n`);
+      return 1;
+    }
+  } else if (!target.redeploy) io.stdout(`No redeploy command for ${target.name}: rechecking what is live now.\n`);
+  const args = [
+    "deploy",
+    "watch",
+    "--sha",
+    row.sha,
+    "--target",
+    target.name,
+    "--attempt",
+    String(row.attempt),
+    ...(since ? ["--since", since] : []),
+    "--config",
+    configPath,
+  ];
+  let started = false;
+  try {
+    started =
+      (await io.startBackground?.(args, {
+        env: { ...io.env, ...settings.env },
+        ...(paths
+          ? {
+              logPath: join(
+                paths.dir,
+                "watch",
+                `deploy-${hash(`${config.project.slug}/${target.name}/${row.sha}/${row.attempt}`)}.log`,
+              ),
+            }
+          : {}),
+      })) ?? false;
+  } catch {}
+  io.stdout(
+    started
+      ? `Watching the retry of ${row.sha} on ${target.name} (attempt ${row.attempt})\n`
+      : `Next: armada ${args.map(shellWord).join(" ")}\n`,
+  );
+  return 0;
+}
+
 export async function deploy(
   io: Io,
   config: ArmadaConfig,
@@ -126,7 +228,14 @@ export async function deploy(
   configPath: string,
 ): Promise<number> {
   const [action, ...extra] = args.rest;
-  if (extra.length) throw new UsageError("deploy takes watch or status");
+  if (action === "retry") {
+    if (extra.length !== 1 || args.json || Object.keys(args.options).some((key) => key !== "no-redeploy"))
+      throw new UsageError("armada deploy retry <target> [--no-redeploy]");
+    const target = config.deploy?.targets.find((t) => t.name === extra[0]);
+    if (!target) throw new UsageError("retry must name a declared deploy target");
+    return retryDeploy(io, config, credentials, target, args.options["no-redeploy"] !== undefined, configPath);
+  }
+  if (extra.length) throw new UsageError("deploy takes retry, watch or status");
   if (action === "status") {
     if (Object.keys(args.options).length) throw new UsageError("deploy status only takes --json");
     const result = await deployStatus(io, config, credentials);
@@ -137,14 +246,38 @@ export async function deploy(
             result.rows
               .map((row) => deployLine(row, (io.now ?? (() => new Date()))()))
               .concat(result.holds.map((h) => `Hold #${h.id}: ${h.reason}`))
+              .concat(
+                result.rows
+                  .filter(
+                    (row) =>
+                      ["deploy-failed", "smoke-failed", "timeout"].includes(row.state) ||
+                      result.holds.some((h) => h.ref === row.target),
+                  )
+                  .map((row) => {
+                    if (["not-runnable", "not-deployed", "skipped"].includes(row.state))
+                      return `Next: ${deployResumeCommand(row)}`;
+                    return deployRetryLine(
+                      row.target,
+                      !!config.deploy?.targets.find((t) => t.name === row.target)?.redeploy,
+                    );
+                  }),
+              )
               .join("\n") || "No deploys recorded."
           }\n`,
     );
     return 0;
   }
   if (action !== "watch")
-    throw new UsageError("use armada deploy status or armada deploy watch --sha <sha> --target <name>");
-  if (args.json) throw new UsageError("deploy watch does not take --json");
+    throw new UsageError(
+      "use armada deploy retry <target>, armada deploy status or armada deploy watch --sha <sha> --target <name>",
+    );
+  if (args.json || args.options["no-redeploy"] !== undefined)
+    throw new UsageError("deploy watch does not take --json or --no-redeploy");
+  const attempt = Number(args.options.attempt ?? 1);
+  if (!Number.isSafeInteger(attempt) || attempt < 1) throw new UsageError("--attempt must be a positive integer");
+  let since = args.options.since;
+  if (since && (!/^\d{4}-\d{2}-\d{2}T/.test(since) || !Number.isFinite(Date.parse(since))))
+    throw new UsageError("--since must be an ISO timestamp");
   const sha = args.options.sha ?? "";
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new UsageError("--sha must be a full 40-character commit SHA");
   const target = config.deploy?.targets.find((t) => t.name === args.options.target);
@@ -166,7 +299,7 @@ export async function deploy(
   if (!credentials.githubToken && target.githubEnvironment)
     throw new UsageError("a GitHub deploy target needs a GitHub token", "gh auth login");
   const pid = io.pid ?? process.pid;
-  const lockName = `deploy-${hash(`${config.project.slug}/${target.name}/${sha}`)}`;
+  const lockName = `deploy-${hash(`${config.project.slug}/${target.name}/${sha}/${attempt}`)}`;
   const lock = await takeWatchLock(paths, lockName, pid, io.processAlive ?? processAlive);
   if (!lock.taken) {
     io.backgroundReady?.(true);
@@ -230,7 +363,13 @@ export async function deploy(
         timeoutMs: Math.max(1, Math.min(remainingMs, 60_000)),
         maxOutputBytes: 64 * 1024,
         processGroup: true,
-        env: { ...io.env, ...settings.env, ARMADA_DEPLOY_SHA: liveSha, ARMADA_DEPLOY_TARGET: target.name },
+        env: {
+          ...io.env,
+          ...settings.env,
+          ARMADA_DEPLOY_SHA: liveSha,
+          ARMADA_DEPLOY_TARGET: target.name,
+          ARMADA_DEPLOY_SINCE: since,
+        },
       })
       .catch((err: NodeJS.ErrnoException) => {
         if (err.code !== "ENOENT" && err.code !== "ENOTDIR") throw err;
@@ -264,10 +403,12 @@ export async function deploy(
     };
   };
   const gh = { token: credentials.githubToken ?? "", repository: config.github.repository, ...httpOptions(io) };
+  const cachedSmoke = (row: DeployRecord) =>
+    row.state === "smoke-failed" ||
+    (row.state === "healthy" && (!since || Date.parse(row.updatedAt) >= Date.parse(since)));
   const smoke = async (liveSha: string, remainingMs: number) => {
     const existing = (await fleet.deployState({ target: target.name, sha: liveSha }))[0];
-    if (existing?.state === "healthy" || existing?.state === "smoke-failed")
-      return { ok: existing.state === "healthy", detail: existing.detail };
+    if (existing && cachedSmoke(existing)) return { ok: existing.state === "healthy", detail: existing.detail };
     const lease = {
       name: `deploy-smoke:${hash(`${target.name}/${liveSha}`)}`,
       holder,
@@ -276,8 +417,7 @@ export async function deploy(
     if (!(await fleet.acquireLease(lease)).acquired) return { ok: null, detail: "another watcher is running smoke" };
     try {
       const ready = (await fleet.deployState({ target: target.name, sha: liveSha }))[0];
-      if (ready?.state === "healthy" || ready?.state === "smoke-failed")
-        return { ok: ready.state === "healthy", detail: ready.detail };
+      if (ready && cachedSmoke(ready)) return { ok: ready.state === "healthy", detail: ready.detail };
       let result: { ok: boolean; detail: string; notRunnable?: boolean };
       try {
         result = target.smoke
@@ -290,6 +430,7 @@ export async function deploy(
       await recordDeploy(io, fleet.recordDeploy, {
         target: target.name,
         sha: liveSha,
+        attempt: liveSha === sha ? attempt : (ready?.attempt ?? 1),
         liveSha,
         state: result.notRunnable ? "not-runnable" : result.ok ? "healthy" : "smoke-failed",
         detail: result.detail,
@@ -307,15 +448,33 @@ export async function deploy(
   };
   try {
     const prior = (await fleet.deployState({ target: target.name, sha }))[0];
-    if (prior && !["waiting", "live", "skipped", "not-runnable", "not-deployed"].includes(prior.state)) {
+    // The server cutoff survives a crash between the one-shot creation and watcher startup.
+    // A caller cannot weaken it by omitting --since or supplying an earlier timestamp.
+    if (prior?.redeploySince && (!since || Date.parse(since) < Date.parse(prior.redeploySince)))
+      since = prior.redeploySince;
+    if (attempt > 1 && (!prior || prior.attempt < attempt))
+      throw new UsageError("--attempt must name the current recorded deploy attempt", "armada deploy status");
+    if (prior && prior.attempt > attempt) {
       io.backgroundReady?.(true);
-      io.stdout(`${target.name}: ${prior.state}\n`);
+      io.stdout(`${target.name}: attempt ${attempt} superseded by attempt ${prior.attempt}\n`);
+      return 0;
+    }
+    if (
+      prior &&
+      prior.attempt === attempt &&
+      !["waiting", "live", "skipped", "not-runnable", "not-deployed"].includes(prior.state)
+    ) {
+      io.backgroundReady?.(true);
+      io.stdout(
+        `${target.name}: ${prior.state}${prior.state === "healthy" ? "" : `; to recheck: armada deploy retry ${shellWord(target.name)} --no-redeploy`}\n`,
+      );
       return prior.state === "healthy" ? 0 : 1;
     }
     await write({
       target: target.name,
       sha,
       state: "waiting",
+      attempt,
       detail: "watching deploy",
       pauseOnFailure: target.pauseOnFailure,
     });
@@ -323,6 +482,7 @@ export async function deploy(
     const result = await watchDeploy({
       target,
       sha,
+      attempt,
       ...(prior && !["skipped", "not-runnable", "not-deployed"].includes(prior.state)
         ? { startedAt: new Date(prior.startedAt) }
         : {}),
@@ -335,6 +495,7 @@ export async function deploy(
         for (const row of await fleet.deployState({ target: target.name })) {
           if (
             row.state === "healthy" &&
+            (!since || Date.parse(row.updatedAt) >= Date.parse(since)) &&
             (row.coveredShas?.includes(sha) || (await includes(sha, row.liveSha ?? row.sha)))
           )
             return { sha: row.liveSha ?? row.sha, detail: row.detail };
@@ -342,7 +503,7 @@ export async function deploy(
         return null;
       },
       live: async (remainingMs) => {
-        if (target.githubEnvironment) return fetchLiveDeploy({ ...gh, environment: target.githubEnvironment });
+        if (target.githubEnvironment) return fetchLiveDeploy({ ...gh, environment: target.githubEnvironment, since });
         if (target.check) return checkReading(await command(target.check, sha, remainingMs), sha);
         const result = await command(target.liveShaCommand as string, sha, remainingMs);
         const liveSha = result.stdout.trim();

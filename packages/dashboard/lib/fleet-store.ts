@@ -21,6 +21,7 @@ import type {
   DeployInput,
   DeployQuery,
   DeployRecord,
+  DeployRetryInput,
   EventInput,
   EventsSinceQuery,
   FeedEntry,
@@ -66,8 +67,11 @@ import type {
 } from "@armada/core/read";
 import {
   AckInvalid,
+  assertDeployRetry,
+  DeployRetryRefusal,
   deployDetail,
   deployFailed,
+  deployRetryLine,
   holdBody,
   isShippingStage,
   jobEndedBody,
@@ -1622,6 +1626,8 @@ const deployRow = (r: Row): DeployRecord => {
     startedAt: isoAt(r.started_at),
     updatedAt: isoAt(r.updated_at),
     sequence: Number(r.sequence),
+    attempt: Number(r.attempt),
+    redeploySince: r.redeploy_since ? isoAt(r.redeploy_since) : null,
   };
   // `coveredShas` is optional while older CLI/core packages are in flight;
   // returning it when present keeps the store forward compatible.
@@ -1629,7 +1635,7 @@ const deployRow = (r: Row): DeployRecord => {
 };
 
 const deployBody = (input: DeployInputWithCoverage): string =>
-  `${input.state === "not-runnable" ? "Deploy check not runnable on this machine (configuration)" : `Deployment ${input.state}`} for ${input.target} (${input.sha})\nLast output:\n${deployDetail(input.detail)}`;
+  `${input.state === "not-runnable" ? "Deploy check not runnable on this machine (configuration)" : `Deployment ${input.state}`} for ${input.target} (${input.sha})\nLast output:\n${deployDetail(input.detail)}${deployFailed(input.state) ? `\n${deployRetryLine(input.target)}` : ""}`;
 
 /**
  * Finds or creates the one open deploy notice for a target. The target is a
@@ -1773,13 +1779,18 @@ async function clearDeployHealthy(
     const updated = await q.query<Row>(
       `UPDATE merge_holds SET cleared_at = $3, cleared_by = NULL, clear_reason = $4
        WHERE id = $1 AND project = $2 AND cleared_at IS NULL RETURNING *`,
-      [hold.id, input.project, at, `deployment healthy for ${input.target} (${input.sha})`],
+      [
+        hold.id,
+        input.project,
+        at,
+        `deployment healthy for ${input.target} (${input.sha}${record.attempt > 1 ? `, attempt ${record.attempt}` : ""})`,
+      ],
     );
     if (updated.rows[0]?.inbox_id !== null && updated.rows[0]?.inbox_id !== undefined)
       await resolveInboxItem(q, {
         project: input.project,
         id: Number(updated.rows[0].inbox_id),
-        resolution: `deployment healthy for ${input.target} (${input.sha})`,
+        resolution: `deployment healthy for ${input.target} (${input.sha}${record.attempt > 1 ? `, attempt ${record.attempt}` : ""})`,
         at,
       });
   }
@@ -1795,10 +1806,55 @@ async function clearDeployHealthy(
     await resolveInboxItem(q, {
       project: input.project,
       id: Number(item.id),
-      resolution: `deployment healthy for ${input.target} (${input.sha})`,
+      resolution: `deployment healthy for ${input.target} (${input.sha}${record.attempt > 1 ? `, attempt ${record.attempt}` : ""})`,
       at,
     });
   }
+}
+
+/** Reopens a failed observation under the same target lock as every watcher write. */
+export async function retryDeploy(
+  db: Database,
+  input: DeployRetryInput & { project: string; author: string; at: Date },
+): Promise<DeployRecord> {
+  return transaction(db, async (q) => {
+    await q.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [input.project, input.target]);
+    const held = await q.query<Row>(
+      "SELECT deploy_sha FROM merge_holds WHERE project = $1 AND kind = 'deploy' AND ref = $2 AND cleared_at IS NULL",
+      [input.project, input.target],
+    );
+    const sha = input.sha ?? text(held.rows[0]?.deploy_sha);
+    const rows = await q.query<Row>(
+      sha
+        ? "SELECT * FROM deploys WHERE project = $1 AND target = $2 AND sha = $3 FOR UPDATE"
+        : "SELECT * FROM deploys WHERE project = $1 AND target = $2 AND state IN ('deploy-failed', 'smoke-failed', 'timeout', 'waiting', 'live') ORDER BY sequence DESC LIMIT 1 FOR UPDATE",
+      sha ? [input.project, input.target, sha] : [input.project, input.target],
+    );
+    let chosen: DeployRecord | undefined;
+    for (const row of rows.rows) {
+      const record = deployRow(row);
+      if (sha || !(await deployFailureIsStale(q, record))) {
+        chosen = record;
+        break;
+      }
+    }
+    if (!chosen) throw new DeployRetryRefusal(`no failed deploy for ${input.target}`);
+    assertDeployRetry(chosen);
+    const result = await q.query<Row>(
+      `UPDATE deploys SET state = 'waiting', attempt = attempt + 1, sequence = DEFAULT,
+      started_at = $4, updated_at = $4, detail = $5, live_sha = NULL, covered_shas = '{}'::text[], redeploy_since = $6
+      WHERE project = $1 AND target = $2 AND sha = $3 RETURNING *`,
+      [
+        input.project,
+        input.target,
+        chosen.sha,
+        input.at,
+        deployDetail(`retry requested by ${input.author}`),
+        input.redeploy ? input.at : null,
+      ],
+    );
+    return deployRow(result.rows[0] as Row);
+  });
 }
 
 /** Records one observation and atomically reconciles its target's pause notice. */
@@ -1817,9 +1873,10 @@ export async function recordDeploy(db: Database, input: DeployInputWithCoverage 
     if (found.rows[0]) {
       const previous = found.rows[0];
       const previousRecord = deployRow(previous);
+      if ((input.attempt ?? 1) < previousRecord.attempt) return previousRecord;
       // A machine-local skip cannot replace a real observation from another watcher.
       if (input.state === "skipped" && previousRecord.state !== "skipped") return previousRecord;
-      if (deployTerminal(previousRecord.state)) {
+      if (deployTerminal(previousRecord.state) && (input.attempt ?? 1) === previousRecord.attempt) {
         // A healthy merged/live observation can arrive again after a watcher
         // has discovered more ancestry. Enrich that same terminal row so the
         // later healthy record can clear the newly covered failure. Failed
@@ -1843,7 +1900,7 @@ export async function recordDeploy(db: Database, input: DeployInputWithCoverage 
       const updated = await q.query<Row>(
         `UPDATE deploys SET started_at = CASE WHEN state IN ('skipped', 'not-runnable', 'not-deployed') AND $4 NOT IN ('skipped', 'not-runnable', 'not-deployed') THEN $9 ELSE started_at END,
            state = $4, detail = $5, pause_on_failure = $6, live_sha = $7,
-            covered_shas = $8, updated_at = $9
+            covered_shas = $8, updated_at = $9, attempt = $10
          WHERE project = $1 AND target = $2 AND sha = $3 RETURNING *`,
         [
           input.project,
@@ -1855,14 +1912,15 @@ export async function recordDeploy(db: Database, input: DeployInputWithCoverage 
           input.liveSha ?? null,
           coveredShas,
           input.at,
+          input.attempt ?? 1,
         ],
       );
       row = updated.rows[0] as Row;
     } else {
       const inserted = await q.query<Row>(
         `INSERT INTO deploys
-          (project, target, sha, state, detail, pause_on_failure, live_sha, covered_shas, started_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9) RETURNING *`,
+          (project, target, sha, state, detail, pause_on_failure, live_sha, covered_shas, started_at, updated_at, attempt)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10) RETURNING *`,
         [
           input.project,
           input.target,
@@ -1873,6 +1931,7 @@ export async function recordDeploy(db: Database, input: DeployInputWithCoverage 
           input.liveSha ?? null,
           coveredShas,
           input.at,
+          input.attempt ?? 1,
         ],
       );
       row = inserted.rows[0] as Row;
@@ -2070,6 +2129,7 @@ export const fleetStore = (db: Database): FleetStore => ({
       );
       return `Note #${id} recorded.`;
     }),
+  retryDeploy: (input) => retryDeploy(db, input),
   recordDeploy: (input) => recordDeploy(db, input),
   deployState: (project, query) => deployState(db, project, query),
 

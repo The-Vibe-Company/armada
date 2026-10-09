@@ -67,7 +67,8 @@ const COMMAND_HELP: Record<string, string> = {
                     Set or remove a non-secret deploy setting for this project on this machine.
 `,
   deploy: `  deploy status [--json]
-  deploy watch --sha <sha> --target <name>
+  deploy retry <target> [--no-redeploy]
+  deploy watch --sha <sha> --target <name> [--attempt <n>] [--since <ISO>]
                     Watch a declared deploy and smoke check; failures pause merges.
 `,
   coordinator: `  coordinator use <name>
@@ -565,6 +566,7 @@ interface Args {
 }
 
 const VALUE_OPTIONS = [
+  "attempt",
   "over-cap",
   "runs",
   "finish",
@@ -655,6 +657,7 @@ const FLAG_OPTIONS = [
   "close",
   "no-archive",
   "no-notify",
+  "no-redeploy",
   "prompt",
   "profile-line",
   "wait",
@@ -675,7 +678,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   lint: ["ready"],
   job: ["ticket", "ref", "state", "progress"],
   peek: ["actions"],
-  deploy: ["sha", "target"],
+  deploy: ["sha", "target", "attempt", "since", "no-redeploy"],
   reserve: ["ticket", "value", "next", "floor", "note", "list"],
   unreserve: ["ticket"],
   ci: ["sha", "branch", "rerun"],

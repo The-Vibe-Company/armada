@@ -1037,13 +1037,14 @@ export async function fetchShaComparison(opts: FetchForgeOptions & { base: strin
 
 /** One read per poll, independent of the hosting provider or preview status contexts. */
 export async function fetchLiveDeploy(
-  opts: FetchForgeOptions & { environment: string },
+  opts: FetchForgeOptions & { environment: string; since?: string },
 ): Promise<import("./deploy.ts").LiveDeploy> {
   const [owner, name] = opts.repository.split("/");
   const json = await githubQuery<{
     repository: {
       deployments: {
         nodes: {
+          createdAt: string;
           commit: { oid: string } | null;
           latestStatus: { state: string; description: string | null } | null;
         }[];
@@ -1054,16 +1055,18 @@ export async function fetchLiveDeploy(
     `query LiveDeploy($owner: String!, $name: String!, $environment: String!) {
     repository(owner: $owner, name: $name) {
       deployments(last: 1, environments: [$environment], orderBy: {field: CREATED_AT, direction: ASC}) {
-        nodes { commit { oid } latestStatus { state description } }
+        nodes { createdAt commit { oid } latestStatus { state description } }
       }
     }
   }`,
     { owner, name, environment: opts.environment },
   );
   const deploy = json.data?.repository?.deployments.nodes[0];
-  const state = deploy?.latestStatus?.state?.toLowerCase();
+  const old = opts.since && (!deploy?.createdAt || Date.parse(deploy.createdAt) < Date.parse(opts.since));
+  const state = old ? "pending" : deploy?.latestStatus?.state?.toLowerCase();
   return {
     sha: deploy?.commit?.oid ?? null,
+    ...(deploy?.createdAt ? { createdAt: deploy.createdAt } : {}),
     state: state === "success" || state === "failure" || state === "error" ? state : "pending",
     detail: deploy
       ? `${opts.environment}: ${state ?? "pending"}\n${deploy.latestStatus?.description ?? ""}`

@@ -11,7 +11,7 @@ import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
 import type { ArmadaConfig } from "./config.ts";
 import { secretNameRefusal } from "./config.ts";
 import { type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
-import { DEPLOY_STATES, type DeployState, deployDetail } from "./deploy.ts";
+import { DEPLOY_STATES, DeployRetryRefusal, type DeployState, deployDetail } from "./deploy.ts";
 import { buildDigest, type Digest, renderDigest } from "./digest.ts";
 import { attachPullRequests } from "./github.ts";
 import { JOB_NAME, JOB_PROGRESS_MAX, JOB_REF_MAX, JOB_STATES, type Job, type JobState } from "./jobs.ts";
@@ -116,6 +116,7 @@ export const WORKER_FLEET_OPS = [
 export const FLEET_OPS = [
   ...WORKER_FLEET_OPS,
   "deploy/record",
+  "deploy/retry",
   "deploy/state",
   "holds",
   "hold/open",
@@ -425,6 +426,18 @@ export async function serveFleet(
           );
     const result = await (async (): Promise<unknown> => {
       switch (op) {
+        case "deploy/retry": {
+          const sha = shaOf(b, "sha");
+          if (sha && !/^[0-9a-f]{40}$/.test(sha)) throw new Invalid("sha must be a full SHA");
+          return store.retryDeploy({
+            project: slug,
+            target: text(b, "target", 200).trim(),
+            redeploy: b.redeploy === undefined ? false : bool(b, "redeploy"),
+            ...(sha ? { sha } : {}),
+            author: caller.kind === "organization" ? (caller.author ?? "coordinator") : "",
+            at,
+          });
+        }
         case "deploy/record": {
           const sha = shaOf(b, "sha");
           if (!sha || !/^[0-9a-f]{40}$/.test(sha)) throw new Invalid("sha must be a full 40-character SHA");
@@ -439,6 +452,7 @@ export async function serveFleet(
           )
             throw new Invalid("coveredShas must contain at most 100 full SHAs");
           return store.recordDeploy({
+            attempt: b.attempt === undefined ? 1 : idOf(b, "attempt"),
             coveredShas: b.coveredShas as string[] | undefined,
             project: slug,
             at,
@@ -1147,6 +1161,7 @@ export async function serveFleet(
     if (result === NOT_MODIFIED) return { status: 304, body: {} };
     return { status: 200, body: { result: result ?? null } };
   } catch (err) {
+    if (err instanceof DeployRetryRefusal) return refuse(409, err.message, err.next);
     if (err instanceof JobScopeError) return refuse(403, "job is not on this ticket and project", "armada job list");
     if (err instanceof Held) return refuse(409, err.message, err.next);
     if (err instanceof RequestRefusal) return refuse(400, err.message, "armada inbox");
@@ -1285,6 +1300,7 @@ export function fleetClient(o: {
     )) as T;
   };
   return {
+    retryDeploy: (input) => call("deploy/retry", input),
     recordDeploy: (input) => call("deploy/record", input),
     deployState: (input = {}) => call("deploy/state", input),
 
