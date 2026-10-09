@@ -1112,11 +1112,15 @@ test.each([
     if (!originalFetch || !originalExec) throw new Error("missing adapters");
     f.io.env.XDG_CONFIG_HOME = join(f.io.cwd, ".config");
     f.io.fetch = async (url, init) => {
-      if (url.endsWith("/fleet/launch-requests"))
+      if (url.endsWith("/fleet/launch-requests")) {
+        const current = await f.store.getInboxItem("widgets", deferredId);
         return Response.json({
           result: [
             {
               id: deferredId,
+              createdAt: current?.createdAt,
+              attempts: current?.request?.attempts,
+              attemptedAt: current?.request?.attemptedAt,
               ticket: "DEMO-19",
               profile: "backend",
               pinned: true,
@@ -1140,6 +1144,7 @@ test.each([
             },
           ],
         });
+      }
       if (url === "https://api.linear.app/graphql" && /query Brief\(/.test(String(init.body)))
         return Response.json({
           data: {

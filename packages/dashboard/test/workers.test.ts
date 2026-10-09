@@ -536,6 +536,28 @@ describe("safety", () => {
       body: { project: "widgets", ticket: "not a ticket" },
     });
     expect(bad.status).toBe(400);
+    for (const deferred of [
+      null,
+      {},
+      { id: 1, attempt: 4, attemptedAt: start.toISOString() },
+      { id: 1, attempt: 1, attemptedAt: "invalid" },
+    ]) {
+      const invalid = await cli("POST", "launch-tokens", {
+        token: ownerToken,
+        body: { project: "widgets", ticket: "ABC-60", deferred },
+      });
+      expect(invalid.status).toBe(400);
+    }
+    const missing = await cli("POST", "launch-tokens", {
+      token: ownerToken,
+      body: {
+        project: "widgets",
+        ticket: "ABC-60",
+        deferred: { id: 999999, attempt: 1, attemptedAt: start.toISOString() },
+      },
+    });
+    expect(missing.status).toBe(409);
+    expect(missing.body.error).toContain("deferred request changed");
     for (const path of ["launch-tokens", "launch-tokens/exchange", "workers/end"]) {
       const res = await handleCli(new Request(`${BASE}/api/cli/${path}`, { method: "POST" }), path.split("/"), {
         accounts: async () => null,

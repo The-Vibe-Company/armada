@@ -94,7 +94,7 @@ armada launch ABC-12 --runtime conductor --profile backend --pre-approve --reaso
 
 One `--reason` explains both the profile choice and the pre-approval. `--runtime conductor|herdr` may be left out when the profile settles it. `--notes <file|->` adds what only you know (the boundary with a parallel worker, a decision not yet on the ticket), up to 16 KB; notes never approve a plan. `--dry-run` checks everything and creates nothing. The command refuses a ticket already launched or claimed, mints the token, starts the worker and prints its handle and link, never the token. For failed or uncertain launches, follow REFERENCE.md. Put worker conventions in `[brief] extra`. For a Claude Code profile, run `armada brief <ticket> --prompt` with the same flags and launch through the Agent tool as its runtime guide says.
 
-7. **A ticket blocked by work in flight**: queue it with `armada launch <ticket> --when-unblocked`; see [waiting launches](REFERENCE.md#waiting-launches) for routing, saved context, renewal and firing.
+7. **A ticket blocked by work in flight**: queue it with `armada launch <ticket> --when-unblocked`; watch starts it and failures reach the inbox ([details](REFERENCE.md#waiting-launches)).
 8. **Check the claim** a few minutes later: `armada status` shows the ticket in flight, phase `planning` (then `implementing` once a pre-approved worker posts its plan), with the handle the launch printed. A claim can report the worker `blocked` at once when Git refuses its pushes or commit signing would prompt: fix the access and answer it.
 
 Done when every launched ticket is In Progress with a claim, and a watch runs.

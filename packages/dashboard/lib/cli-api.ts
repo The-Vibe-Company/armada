@@ -64,6 +64,7 @@ import {
 import {
   bindLaunch,
   createLaunch,
+  DeferredLaunchChanged,
   endTicketWorkers,
   endWorker,
   exchangeLaunch,
@@ -404,15 +405,41 @@ async function launch(a: CliAccounts, request: Request, deps: CliApiDeps, now: D
     (typeof body.overCap !== "string" || !body.overCap.trim() || body.overCap.length > 2000)
   )
     return refuse(400, "overCap needs a reason of at most 2000 characters", "pass --over-cap with a reason");
-  const { worker, token } = await createLaunch(a.client, {
-    organization: holder.organization.id,
-    project: body.project,
-    ticket: body.ticket,
-    launcher: { kind: identity.via, id: holder.actor.id, label: holder.actor.label },
-    overCap: typeof body.overCap === "string" ? body.overCap.trim() : null,
-    coordinator,
-    now,
-  });
+  let deferred: { id: number; attempt: number; attemptedAt: string } | undefined;
+  if (body.deferred !== undefined) {
+    const value = body.deferred as Record<string, unknown> | null;
+    if (
+      !value ||
+      typeof value !== "object" ||
+      !Number.isSafeInteger(value.id) ||
+      Number(value.id) <= 0 ||
+      !Number.isInteger(value.attempt) ||
+      Number(value.attempt) < 1 ||
+      Number(value.attempt) > 3 ||
+      typeof value.attemptedAt !== "string" ||
+      !Number.isFinite(Date.parse(value.attemptedAt))
+    )
+      return refuse(400, "invalid deferred launch admission", "run armada status and retry the waiting request");
+    deferred = { id: Number(value.id), attempt: Number(value.attempt), attemptedAt: value.attemptedAt };
+  }
+  let made: Awaited<ReturnType<typeof createLaunch>>;
+  try {
+    made = await createLaunch(a.client, {
+      organization: holder.organization.id,
+      project: body.project,
+      ticket: body.ticket,
+      launcher: { kind: identity.via, id: holder.actor.id, label: holder.actor.label },
+      overCap: typeof body.overCap === "string" ? body.overCap.trim() : null,
+      coordinator,
+      deferred,
+      now,
+    });
+  } catch (error) {
+    if (error instanceof DeferredLaunchChanged)
+      return refuse(409, error.message, "run armada status and inspect the waiting request");
+    throw error;
+  }
+  const { worker, token } = made;
   console.info(
     `armada dashboard: launch token for ${worker.project} ${worker.ticket} made by ${holder.actor.label} (${holder.organization.slug})`,
   );

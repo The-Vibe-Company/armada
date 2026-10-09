@@ -387,6 +387,8 @@ export async function prepareLaunch(
     io,
     config,
     credentials,
+    deferred,
+    automatic: false,
     args,
     ticketId,
     ticket,
@@ -446,6 +448,7 @@ export async function launchWorker(
   }
   const prepared = await prepareLaunch(io, config, credentials, args, version, configPath, undefined, deferred);
   if (typeof prepared === "number") return prepared;
+  prepared.automatic = automatic;
   if (args.options["dry-run"] === "true") return printLaunchPlan(prepared);
   if (!fleet) throw new UsageError("launch needs Armada's live fleet");
   if (deferred && !automatic) {
@@ -456,6 +459,20 @@ export async function launchWorker(
     if (!attempt.ok) throw new UsageError(`${deferred.ticket}: ${attempt.why}`);
   }
   return withLaunchLease(io, fleet, prepared.ticketId, async () => {
+    if (automatic && deferred) {
+      const current = (await fleet.deferredLaunches()).find((request) => request.id === deferred.id);
+      if (
+        !current?.owned ||
+        current.expired ||
+        current.guided ||
+        current.attempts !== deferred.attempts ||
+        current.attemptedAt !== deferred.attemptedAt ||
+        (current.reason !== null &&
+          !current.reason.startsWith("waits on ") &&
+          current.reason !== "gave up after 3 failed launches")
+      )
+        throw new UsageError(`${deferred.ticket}: deferred request changed during preflight; nothing was launched`);
+    }
     const result = await executeLaunch(prepared, bindLaunch);
     printLaunch(prepared, result);
     return result.unconfirmed ? 1 : 0;
@@ -540,12 +557,15 @@ export async function executeLaunch(p: PreparedLaunch, bindLaunch?: BindLaunch) 
     p.coordinator === undefined ? await coordinatorName(io, config.project.slug) : p.coordinator;
   const launch = await mintLaunchToken(io, config, credentials, {
     ticket: ticketId,
-    priority: p.ticket.priority,
+    priority: p.automatic ? undefined : p.ticket.priority,
     overCap: p.overCap,
     replacement: p.replacement,
     // Explicit null preserves an unowned generation; only a normal launch
     // chooses the coordinator selected in this terminal.
     coordinator: launchCoordinator,
+    ...(p.automatic && p.deferred
+      ? { deferred: { id: p.deferred.id, attempt: p.deferred.attempts!, attemptedAt: p.deferred.attemptedAt! } }
+      : {}),
   });
   let worker: Launched | null = null;
   let unconfirmed: string | null = null;
@@ -579,7 +599,11 @@ export async function executeLaunch(p: PreparedLaunch, bindLaunch?: BindLaunch) 
     const safe = (text: string) =>
       redactRuntimeText(text.split(launch.token).join("[redacted]")).replace(/\s+/g, " ").trim().slice(0, 500);
     const message = safe(reason);
-    const command = safe(next);
+    const command = safe(
+      p.deferred?.attempts === 3 && outcome === "failed"
+        ? `gave up after 3 failed launches; renew with armada launch ${ticketId} --when-unblocked`
+        : next,
+    );
     try {
       const fleet = liveFleet(io, config, credentials).fleet;
       if (!fleet) throw new Error("fleet unavailable");

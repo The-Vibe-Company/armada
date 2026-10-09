@@ -382,7 +382,21 @@ test("booting deferred launches stay quiet and closed tickets resolve their wait
     },
     { config, snapshot: reading, now: () => NOW },
   );
-  expect(stale.body.result).toMatchObject([{ reason: null }]);
+  // Expiry cannot prove that a creation did not happen; only explicit settlement
+  // makes this request eligible again.
+  expect(stale.body.result).toMatchObject([{ reason: expect.stringContaining("waits for its claim") }]);
+  store.launches[0]!.endedAt = NOW.toISOString();
+  const settled = await serveFleet(
+    store,
+    {
+      project: DEMO_PROJECT,
+      op: "launch-requests",
+      caller: { kind: "organization", author: "Ada" },
+      input: { supportsDeferredAttempts: true },
+    },
+    { config, snapshot: reading, now: () => NOW },
+  );
+  expect(settled.body.result).toMatchObject([{ reason: null }]);
   const legacy = await serveFleet(
     store,
     { project: DEMO_PROJECT, op: "launch-requests", caller: { kind: "organization", author: "Ada" }, input: {} },

@@ -769,6 +769,21 @@ export function fakeArmada(
       if (!person) return Response.json({ error: "not signed in to Armada", next: "armada login" }, { status: 401 });
       if (o.vault?.off || !o.vault)
         return Response.json({ error: "this Armada keeps no keys", next: "armada auth login" }, { status: 503 });
+      if (body.deferred) {
+        const fence = body.deferred as { id: number; attempt: number; attemptedAt: string };
+        const item = await store.getInboxItem(String(body.project), fence.id);
+        if (
+          !item ||
+          item.resolvedAt ||
+          item.ticket !== body.ticket ||
+          !item.request?.deferred ||
+          (item.coordinator ?? "default") !== (body.coordinator ?? "default") ||
+          item.request.attempts !== fence.attempt ||
+          item.request.attemptedAt !== fence.attemptedAt ||
+          (item.request.expiresAt && item.request.expiresAt <= o.vault.now().toISOString())
+        )
+          return Response.json({ error: "deferred request changed before token creation" }, { status: 409 });
+      }
       const t = `armada_launch_CANARY_${launches.size + 1}`;
       launches.set(t, {
         project: String(body.project),

@@ -101,6 +101,40 @@ async function recordLaunchFailure(
 ): Promise<void> {
   await transaction(db, async (tx) => {
     await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR UPDATE", [input.project]);
+    if (!input.launchId) {
+      const request = (
+        await tx.query(
+          `SELECT coordinator FROM inbox_items WHERE project = $1 AND ticket = $2 AND id = $3
+         AND kind = 'launch-request' AND request_deferred AND resolved_at IS NULL
+         AND COALESCE(coordinator, 'default') = $4 AND request_attempts = $5 AND request_attempted_at = $6
+         FOR UPDATE`,
+          [
+            input.project,
+            input.ticket,
+            input.requestId,
+            input.coordinator ?? "default",
+            input.attempt,
+            input.attemptedAt,
+          ],
+        )
+      ).rows[0];
+      if (!request) return;
+      const started = await tx.query(
+        `SELECT 1 FROM "armada_worker" WHERE project = $1 AND ticket = $2 AND "createdAt" >= $3
+         UNION ALL SELECT 1 FROM runtime_handles WHERE project = $1 AND ticket = $2 AND claimed_at >= $3 LIMIT 1`,
+        [input.project, input.ticket, input.attemptedAt],
+      );
+      if (started.rows.length) return;
+      await tx.query(
+        `INSERT INTO inbox_items (project,ticket,kind,recipient,author,body,created_at,coordinator)
+         VALUES ($1,$2,'launch-failed','coordinator',NULL,$3,$4,$5)
+         ON CONFLICT (project,ticket) WHERE resolved_at IS NULL AND kind IN ('launch-failed','launch-uncertain')
+         DO UPDATE SET kind = excluded.kind, body = excluded.body, created_at = excluded.created_at,
+           coordinator = excluded.coordinator, launch_id = NULL`,
+        [input.project, input.ticket, `${input.reason}\nNext: ${input.next}`, input.at, request.coordinator],
+      );
+      return;
+    }
     const launch = (
       await tx.query(
         `SELECT "createdAt", "coordinator" FROM "armada_worker" WHERE "id" = $1 AND "project" = $2 AND "ticket" = $3`,
@@ -114,6 +148,12 @@ async function recordLaunchFailure(
       [input.project, input.ticket, launch.createdAt, input.launchId],
     );
     if (newer.rows.length) return;
+    const laterAttempt = await tx.query(
+      `SELECT 1 FROM inbox_items WHERE project = $1 AND ticket = $2 AND request_deferred
+       AND request_attempted_at > $3 LIMIT 1`,
+      [input.project, input.ticket, launch.createdAt],
+    );
+    if (laterAttempt.rows.length) return;
     const claimed = await tx.query(
       `SELECT 1 FROM runtime_handles WHERE project = $1 AND ticket = $2 AND claimed_at >= $3
        UNION ALL SELECT 1 FROM events WHERE project = $1 AND ticket = $2 AND kind = 'claim' AND created_at >= $3 LIMIT 1`,
@@ -1076,7 +1116,7 @@ export async function getRuntimeReference(
 // ------------------------------------------------------------------ inbox
 
 const INBOX_COLUMNS = `id, project, coordinator, ticket, kind, recipient, author, body, created_at, resolved_at, resolution,
-  request_question, request_profile, request_pr, request_validation, request_deferred, request_pinned, request_expires_at, request_attempts, request_attempted_at, request_runtime, request_notes, request_reason`;
+  request_question, request_profile, request_pr, request_validation, request_deferred, request_pinned, request_expires_at, request_attempts, request_attempted_at, request_runtime, request_notes, request_reason, launch_id`;
 
 const inboxRow = (r: Row): StoredInboxItem => ({
   id: Number(r.id),
@@ -1087,6 +1127,7 @@ const inboxRow = (r: Row): StoredInboxItem => ({
   author: text(r.author),
   coordinator: text(r.coordinator),
   body: String(r.body),
+  ...(r.launch_id == null ? {} : { launchId: String(r.launch_id) }),
   createdAt: isoAt(r.created_at),
   ...(REQUEST_KINDS.includes(String(r.kind) as InboxKind & (typeof REQUEST_KINDS)[number])
     ? {
@@ -1637,6 +1678,10 @@ export async function expireUnusedLaunches(
        WHERE w."project" = $1 AND w."organizationId" = (SELECT organization_id FROM projects WHERE slug = $1)
          AND w."endedAt" IS NULL AND w."tokenUsedAt" IS NULL AND w."tokenExpiresAt" < $2
          AND ($3::text IS NULL OR w."coordinator" IS NULL OR w."coordinator" = $3)
+         AND NOT EXISTS (
+           SELECT 1 FROM inbox_items i WHERE i.project = $1 AND i.ticket = w."ticket" AND i.resolved_at IS NULL
+             AND ((i.kind = 'launch-uncertain' AND i.launch_id = w."id") OR (i.kind = 'launch-request' AND i.request_deferred))
+         )
          AND NOT EXISTS (
            SELECT 1 FROM "armada_worker" newer
            WHERE newer."organizationId" = w."organizationId" AND newer."project" = w."project" AND newer."ticket" = w."ticket"

@@ -218,6 +218,19 @@ describe("live data", () => {
     expect(await store.openInboxItems({ project: P, ticket, recipient: "coordinator" })).toMatchObject([
       { id: first?.id, kind: "launch-uncertain" },
     ]);
+    expect(await store.expireUnusedLaunches(P, at(180))).toEqual([]);
+    expect(await store.pendingLaunches(P, at(0))).toMatchObject([{ id: worker.id }]);
+    const safety = await serveFleet(
+      store,
+      {
+        project: { slug: P, name: "Launch outcomes", repository: "acme/launch-outcomes", programRoot: "ABC-1" },
+        op: "launches",
+        caller: { kind: "organization", author: "Synthetic Owner" },
+        input: {},
+      },
+      { now: () => at(26 * 60) },
+    );
+    expect(safety.body.result).toMatchObject([{ id: worker.id }]);
     const inbox = await readInbox(store, { project: P, silentAfterMinutes: 15, now: at(25) });
     expect(inbox.filter((i) => i.ticket === ticket).map((i) => i.kind)).toEqual(["launch-uncertain"]);
     await recordClaim(
@@ -1808,4 +1821,204 @@ test("deferred fire admission fences cancellation, expiry, owner, backoff and bu
   expect(concurrent.filter((r) => r.ok)).toEqual([{ ok: true, attempt: 1 }]);
   expect(concurrent.filter((r) => !r.ok)).toEqual([{ ok: false, why: "request attempted too recently" }]);
   expect((await store.getInboxItem(project, idOf("WID-6")))?.request?.attempts).toBe(1);
+});
+
+test("deferred preflight failures coalesce and fence cancelled, renewed, transferred and started attempts", async () => {
+  const project = "deferred-failures";
+  const store = fleetStore(db);
+  await store.upsertProject(
+    { slug: project, name: "Waiting failures", repository: "acme/waiting", programRoot: "WID-1" },
+    at(0),
+  );
+  const request: NewRequest = {
+    project,
+    ticket: "WID-9",
+    kind: "launch-request",
+    question: null,
+    profile: null,
+    pinned: false,
+    deferred: true,
+    author: "Ada",
+    coordinator: "front",
+    body: "Wait",
+    at: at(0),
+  };
+  const id = await store.addRequest(request);
+  if (id === null) throw new Error("missing request");
+  const admit = async (minutes: number) => {
+    expect(
+      await store.attemptDeferredLaunch({ project, id, coordinator: "front", backoffMinutes: 5, at: at(minutes) }),
+    ).toEqual({ ok: true, attempt: 1 });
+  };
+  await admit(1);
+  const failure = {
+    project,
+    ticket: "WID-9",
+    outcome: "failed" as const,
+    reason: "Conductor CLI missing",
+    next: "Install Conductor",
+    requestId: id,
+    attempt: 1,
+    attemptedAt: at(1).toISOString(),
+    coordinator: "front",
+    at: at(2),
+  };
+  await Promise.all([store.recordLaunchFailure(failure), store.recordLaunchFailure(failure)]);
+  const notices = async () =>
+    (await store.openInboxItems({ project, ticket: "WID-9", recipient: "coordinator" })).filter(
+      (i) => i.kind === "launch-failed" || i.kind === "launch-uncertain",
+    );
+  const first = await notices();
+  expect(first).toMatchObject([
+    { kind: "launch-failed", coordinator: "front", body: "Conductor CLI missing\nNext: Install Conductor" },
+  ]);
+  expect(await store.renewDeferredLaunch({ ...request, at: at(3) })).toBe(id);
+  await admit(4);
+  const current = { ...failure, attemptedAt: at(4).toISOString(), reason: "Current preflight", at: at(5) };
+  await store.recordLaunchFailure(current);
+  await store.recordLaunchFailure({ ...failure, at: at(6) });
+  expect(await notices()).toMatchObject([{ id: first[0]?.id, body: "Current preflight\nNext: Install Conductor" }]);
+  expect(await store.transferTickets({ project, tickets: ["WID-9"], from: "front", to: "back", at: at(7) })).toBe(true);
+  await store.recordLaunchFailure({ ...current, reason: "Old owner", at: at(8) });
+  expect((await notices())[0]?.body).toContain("Current preflight");
+  const launch = (
+    await createLaunch(db, {
+      organization: "org-a",
+      project,
+      ticket: "WID-9",
+      coordinator: "back",
+      launcher: { kind: "session", id: "owner", label: "Synthetic Owner" },
+      now: at(9),
+    })
+  ).worker;
+  await store.recordLaunchFailure({
+    project,
+    ticket: "WID-9",
+    outcome: "uncertain",
+    reason: "Unknown create",
+    next: "Inspect",
+    launchId: launch.id,
+    at: at(10),
+  });
+  await store.recordLaunchFailure({ ...current, coordinator: "back", at: at(11) });
+  expect(await notices()).toMatchObject([{ kind: "launch-uncertain", body: "Unknown create\nNext: Inspect" }]);
+  expect(await store.resolveInboxItem({ project, id, resolution: "declined", at: at(12) })).toBe(true);
+  await store.recordLaunchFailure({ ...current, coordinator: "back", reason: "Late decline", at: at(13) });
+  expect(await notices()).toMatchObject([{ kind: "launch-uncertain", body: "Unknown create\nNext: Inspect" }]);
+  await bindLaunch(db, {
+    organization: "org-a",
+    project,
+    ticket: "WID-9",
+    id: launch.id,
+    runtime: "conductor",
+    handle: "ws/s",
+    now: at(14),
+  });
+  expect(await notices()).toEqual([]);
+
+  // A later preflight without a token is still a newer attempt: a late old
+  // token failure or binding cannot overwrite or clear its notice.
+  await endWorker(db, {
+    organization: "org-a",
+    id: launch.id,
+    now: at(15),
+    reason: "revoked",
+    by: { kind: "session", id: "owner", label: "Synthetic Owner" },
+  });
+  const nextRequest = await store.addRequest({ ...request, coordinator: "back", at: at(16) });
+  if (nextRequest === null) throw new Error("replacement request missing");
+  expect(
+    await store.attemptDeferredLaunch({ project, id: nextRequest, coordinator: "back", backoffMinutes: 5, at: at(17) }),
+  ).toEqual({ ok: true, attempt: 1 });
+  const later = {
+    ...current,
+    requestId: nextRequest,
+    coordinator: "back",
+    attemptedAt: at(17).toISOString(),
+    at: at(18),
+    reason: "Newer preflight",
+  };
+  await store.recordLaunchFailure(later);
+  expect(await notices()).toMatchObject([{ kind: "launch-failed", body: "Newer preflight\nNext: Install Conductor" }]);
+  await store.recordLaunchFailure({
+    project,
+    ticket: "WID-9",
+    outcome: "failed",
+    reason: "Old token",
+    next: "Retry",
+    launchId: launch.id,
+    at: at(19),
+  });
+  expect(await notices()).toMatchObject([{ kind: "launch-failed", body: "Newer preflight\nNext: Install Conductor" }]);
+  const replacement = (
+    await createLaunch(db, {
+      organization: "org-a",
+      project,
+      ticket: "WID-9",
+      coordinator: "back",
+      launcher: { kind: "session", id: "owner", label: "Synthetic Owner" },
+      now: at(20),
+    })
+  ).worker;
+  await bindLaunch(db, {
+    organization: "org-a",
+    project,
+    ticket: "WID-9",
+    id: replacement.id,
+    runtime: "conductor",
+    handle: "ws/new",
+    now: at(21),
+  });
+  expect(await notices()).toEqual([]);
+});
+
+test("deferred token creation fences the admitted request atomically", async () => {
+  const project = { slug: "deferred-mint", name: "Deferred", repository: "acme/deferred", programRoot: "DEMO-1" };
+  const store = fleetStore(db);
+  await store.ensureProject(project, at(0));
+  await db.query("UPDATE projects SET organization_id = 'org-a' WHERE slug = $1", [project.slug]);
+  for (const [index, change] of ["declined", "renewed", "transferred", "expired", "current"].entries()) {
+    const ticket = `DEMO-${70 + index}`;
+    const id = await store.addRequest({
+      project: project.slug,
+      ticket,
+      kind: "launch-request",
+      author: "Ada",
+      body: "Wait",
+      question: null,
+      profile: null,
+      coordinator: "front",
+      deferred: true,
+      at: at(0),
+      expiresAt: at(60).toISOString(),
+    });
+    if (!id) throw new Error("request missing");
+    expect(
+      await store.attemptDeferredLaunch({
+        project: project.slug,
+        id,
+        coordinator: "front",
+        backoffMinutes: 5,
+        at: at(1),
+      }),
+    ).toMatchObject({ ok: true, attempt: 1 });
+    if (change === "declined")
+      await store.resolveInboxItem({ project: project.slug, id, resolution: "declined", at: at(2) });
+    if (change === "renewed")
+      await db.query("UPDATE inbox_items SET request_attempts = 0, request_attempted_at = NULL WHERE id = $1", [id]);
+    if (change === "transferred") await db.query("UPDATE inbox_items SET coordinator = 'back' WHERE id = $1", [id]);
+    const mint = createLaunch(db, {
+      organization: "org-a",
+      project: project.slug,
+      ticket,
+      coordinator: "front",
+      launcher: { kind: "session", id: "person-a", label: "Ada" },
+      deferred: { id, attempt: 1, attemptedAt: at(1).toISOString() },
+      now: at(change === "expired" ? 60 : 2),
+    });
+    if (change === "current") expect((await mint).worker.ticket).toBe(ticket);
+    else await expect(mint).rejects.toThrow("deferred request changed");
+  }
+  expect(await store.pendingLaunches(project.slug, at(0))).toMatchObject([{ ticket: "DEMO-74" }]);
+  expect(await store.pendingLaunches(project.slug, at(0))).toHaveLength(1);
 });

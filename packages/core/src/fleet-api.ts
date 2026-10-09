@@ -71,7 +71,6 @@ import {
   type StoredInboxItem,
   serveInbox,
   ticketOwners,
-  unusedLaunchExpired,
   type ValidationRecord,
   type WorkerProfile,
   workerSlots,
@@ -477,8 +476,16 @@ export async function serveFleet(
         case "launch/failed": {
           if (b.outcome !== "failed" && b.outcome !== "uncertain")
             throw new Invalid("outcome must be failed or uncertain");
-          const launchId = text(b, "launchId", 128);
-          if (!/^[a-zA-Z0-9_-]+$/.test(launchId)) throw new Invalid("launchId must be a launch id");
+          const launchId = b.launchId === undefined ? undefined : text(b, "launchId", 128);
+          if (launchId && !/^[a-zA-Z0-9_-]+$/.test(launchId)) throw new Invalid("launchId must be a launch id");
+          const requestId = launchId ? undefined : idOf(b, "requestId");
+          const attempt = launchId ? undefined : idOf(b, "attempt");
+          const attemptedAt = launchId ? undefined : text(b, "attemptedAt", 40);
+          if (
+            !launchId &&
+            ((attempt ?? 0) > 3 || !Number.isFinite(Date.parse(attemptedAt ?? "")) || b.outcome !== "failed")
+          )
+            throw new Invalid("a deferred preflight failure names its admitted attempt and timestamp");
           await store.recordLaunchFailure({
             project: slug,
             at,
@@ -489,6 +496,9 @@ export async function serveFleet(
               .replace(/\s+/g, " ")
               .trim(),
             launchId,
+            requestId,
+            attempt,
+            attemptedAt,
             coordinator: coordinatorName,
           });
           return null;
@@ -935,18 +945,21 @@ export async function serveFleet(
             b.backoffMinutes > 1440
           )
             throw new Invalid("backoffMinutes must be between 0 and 1440");
-          return store.attemptDeferredLaunch({
+          const attempt = await store.attemptDeferredLaunch({
             project: slug,
             id: idOf(b, "id"),
             coordinator: coordinatorName ?? "default",
             backoffMinutes: b.backoffMinutes,
             at,
           });
+          return attempt.ok ? { ...attempt, attemptedAt: at.toISOString(), tokenFence: true } : attempt;
         }
         case "launch-requests": {
           if (b.supportsDeferredAttempts !== undefined && typeof b.supportsDeferredAttempts !== "boolean")
             throw new Invalid("supportsDeferredAttempts must be a boolean");
-          const launches = (await store.pendingLaunches(slug, new Date(0))).filter((l) => !unusedLaunchExpired(l, at));
+          // Expired unused tokens stop occupying slots, but cannot authorize a
+          // second creation. A retained unknown/interrupted launch needs revoke.
+          const launches = await store.pendingLaunches(slug, new Date(0));
           const [items, handles, events, coordinators] = await Promise.all([
             store.openInboxItems({ project: slug, recipient: "coordinator" }),
             store.openRuntimeHandles(slug),
@@ -973,7 +986,12 @@ export async function serveFleet(
                   ...workerSlots({ handles, launches, coordinators, now: at }),
                   max: deps.config?.policy.maxWorkers ?? null,
                 },
-                { now: at, pendingLaunch: launches.find((l) => l.ticket === i.ticket), config: deps.config },
+                {
+                  now: at,
+                  pendingLaunch: launches.find((l) => l.ticket === i.ticket),
+                  config: deps.config,
+                  uncertain: items.some((notice) => notice.ticket === i.ticket && notice.kind === "launch-uncertain"),
+                },
               );
               // Old clients cannot atomically admit a fire or preserve the new launch context.
               return b.supportsDeferredAttempts === true
@@ -981,8 +999,31 @@ export async function serveFleet(
                 : { ...state, owned: false, reason: "requires deferred launch admission: run armada upgrade" };
             });
         }
-        case "launches":
-          return followedLaunches(await store.pendingLaunches(slug, new Date(at.getTime() - LAUNCH_WINDOW_MS)), at);
+        case "launches": {
+          const [launches, items] = await Promise.all([
+            store.pendingLaunches(slug, new Date(0)),
+            store.openInboxItems({ project: slug, recipient: "coordinator" }),
+          ]);
+          const recent = new Set(
+            followedLaunches(
+              launches.filter((l) => Date.parse(l.launchedAt) >= at.getTime() - LAUNCH_WINDOW_MS),
+              at,
+            ),
+          );
+          // Keep safety-facing deferred/unknown generations even when their
+          // token or normal following window expired; only explicit settlement
+          // can permit another creation. Ordinary launch following is unchanged.
+          return launches.filter(
+            (launch) =>
+              recent.has(launch) ||
+              items.some(
+                (item) =>
+                  item.ticket === launch.ticket &&
+                  ((item.kind === "launch-request" && item.request?.deferred) ||
+                    (item.kind === "launch-uncertain" && item.launchId === launch.id)),
+              ),
+          );
+        }
         case "inbox": {
           const silent = b.silentAfterMinutes;
           if (typeof silent !== "number" || !Number.isFinite(silent) || silent < 0)
