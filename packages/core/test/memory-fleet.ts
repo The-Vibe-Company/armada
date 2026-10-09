@@ -1,5 +1,14 @@
 import { sinceSummary } from "../src/catchup.ts";
-import { type DeployInput, type DeployQuery, type DeployRecord, deployDetail, deployFailed } from "../src/deploy.ts";
+import {
+  assertDeployRetry,
+  type DeployInput,
+  type DeployQuery,
+  type DeployRecord,
+  DeployRetryRefusal,
+  deployDetail,
+  deployFailed,
+  deployRetryLine,
+} from "../src/deploy.ts";
 // The fleet's live data in memory, for tests: the same results as the app's
 // Postgres store (`packages/dashboard/lib/fleet-store.ts`, tested on PGlite),
 // with its unique rules (one open plan, hand-back and launch request per
@@ -165,7 +174,7 @@ export function memoryFleet(): FleetStore & {
       : [...new Set([input.sha, ...(input.coveredShas ?? [])].filter((sha): sha is string => !!sha))];
   const deployTerminal = (state: string) => state === "healthy" || deployFailed(state as never);
   const deployBody = (input: DeployInputWithCoverage) =>
-    `${input.state === "not-runnable" ? "Deploy check not runnable on this machine (configuration)" : `Deployment ${input.state}`} for ${input.target} (${input.sha})\nLast output:\n${deployDetail(input.detail)}`;
+    `${input.state === "not-runnable" ? "Deploy check not runnable on this machine (configuration)" : `Deployment ${input.state}`} for ${input.target} (${input.sha})\nLast output:\n${deployDetail(input.detail)}${deployFailed(input.state) ? `\n${deployRetryLine(input.target)}` : ""}`;
   const staleFailure = (record: DeployRow) =>
     deploys.some(
       (row) =>
@@ -282,7 +291,7 @@ export function memoryFleet(): FleetStore & {
       if (!hold.deploySha && hold.deploySequence !== undefined && hold.deploySequence > record.sequence) continue;
       hold.clearedAt = at.toISOString();
       hold.clearedBy = null;
-      hold.clearReason = `deployment healthy for ${input.target} (${input.sha})`;
+      hold.clearReason = `deployment healthy for ${input.target} (${input.sha}${record.attempt > 1 ? `, attempt ${record.attempt}` : ""})`;
       const notice = items.find((item) => item.id === hold.itemId);
       if (notice && !notice.resolvedAt) {
         notice.resolvedAt = at.toISOString();
@@ -298,7 +307,7 @@ export function memoryFleet(): FleetStore & {
         (!notice.deploySha || shas.includes(notice.deploySha))
       ) {
         notice.resolvedAt = at.toISOString();
-        notice.resolution = `deployment healthy for ${input.target} (${input.sha})`;
+        notice.resolution = `deployment healthy for ${input.target} (${input.sha}${record.attempt > 1 ? `, attempt ${record.attempt}` : ""})`;
       }
     }
   };
@@ -419,13 +428,44 @@ export function memoryFleet(): FleetStore & {
       return `Note #${id} recorded.`;
     },
 
+    async retryDeploy(input) {
+      const hold = holds.find(
+        (h) => h.project === input.project && h.kind === "deploy" && h.ref === input.target && !h.clearedAt,
+      );
+      const sha = input.sha ?? hold?.deploySha;
+      const row = deploys
+        .filter(
+          (r) =>
+            r.project === input.project &&
+            r.target === input.target &&
+            (sha
+              ? r.sha === sha
+              : (deployFailed(r.state) || r.state === "waiting" || r.state === "live") && !staleFailure(r)),
+        )
+        .sort((a, b) => b.sequence - a.sequence)[0];
+      if (!row) throw new DeployRetryRefusal(`no failed deploy for ${input.target}`);
+      assertDeployRetry(row);
+      Object.assign(row, {
+        state: "waiting",
+        attempt: row.attempt + 1,
+        redeploySince: input.redeploy ? input.at.toISOString() : null,
+        sequence: deploys.reduce((max, r) => Math.max(max, r.sequence), 0) + 1,
+        startedAt: input.at.toISOString(),
+        updatedAt: input.at.toISOString(),
+        detail: `retry requested by ${input.author}`,
+        liveSha: null,
+        coveredShas: [],
+      });
+      return structuredClone(row);
+    },
     async recordDeploy(input: DeployInputWithCoverage & { at: Date }) {
       const detail = deployDetail(input.detail);
       const known = deploys.find(
         (row) => row.project === input.project && row.target === input.target && row.sha === input.sha,
       );
+      if (known && (input.attempt ?? 1) < known.attempt) return structuredClone(known);
       if (known && input.state === "skipped" && known.state !== "skipped") return structuredClone(known);
-      if (known && deployTerminal(known.state)) {
+      if (known && deployTerminal(known.state) && (input.attempt ?? 1) === known.attempt) {
         if (known.state === "healthy" && input.state === "healthy") {
           const previousCovered = known.coveredShas ?? [known.sha];
           const mergedCovered = [...new Set([...previousCovered, ...covered(input)])];
@@ -448,6 +488,8 @@ export function memoryFleet(): FleetStore & {
         coveredShas: covered(input),
         startedAt: input.at.toISOString(),
         updatedAt: input.at.toISOString(),
+        attempt: input.attempt ?? 1,
+        redeploySince: null,
         sequence: deploys.reduce((max, candidate) => Math.max(max, candidate.sequence), 0) + 1,
       };
       if (known) {
@@ -457,6 +499,7 @@ export function memoryFleet(): FleetStore & {
         )
           row.startedAt = input.at.toISOString();
         Object.assign(row, {
+          attempt: input.attempt ?? 1,
           state: input.state,
           detail,
           pauseOnFailure: input.pauseOnFailure,
