@@ -7,11 +7,10 @@
 // over `RequestStore`: the fleet's live data in the app's database.
 import { shellWord } from "./brief.ts";
 import type { ArmadaConfig } from "./config.ts";
-import { type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
+import { DEFERRED_LAUNCH_DAYS, type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
 import { attachPullRequests } from "./github.ts";
-import { type FleetStore, type HandBackSnapshot, handBackPr, workerSlots } from "./live.ts";
+import { type FleetStore, type HandBackSnapshot, handBackPr, unusedLaunchExpired, workerSlots } from "./live.ts";
 import { buildModel } from "./model.ts";
-import { routeProfile } from "./routing.ts";
 import type { StatusReport } from "./status.ts";
 import { decisionBody, VALIDATION_LIMITS, type ValidationDecision } from "./validations.ts";
 
@@ -22,6 +21,7 @@ export type RequestStore = Pick<
   | "getRuntimeHandle"
   | "latestEvents"
   | "addRequest"
+  | "renewDeferredLaunch"
   | "getValidation"
   | "decideValidation"
   | "openInboxItems"
@@ -371,6 +371,9 @@ export async function requestDeferredLaunch(
     ticket: string;
     profile: string | null;
     after?: string | null;
+    runtime?: string | null;
+    notes?: string | null;
+    reason?: string | null;
     author: string;
     coordinator?: string | null;
     now: Date;
@@ -386,8 +389,16 @@ export async function requestDeferredLaunch(
   );
   const ticket = input.ticket.trim().toUpperCase();
   const issue = model.program.find((i) => i.id === ticket);
-  const profile = input.profile?.trim() || (issue ? routeProfile(config, issue.labels)?.name : null) || null;
-  if (profile && !Object.hasOwn(config.conductor.profiles, profile))
+  const profile = input.profile?.trim() || null;
+  const selection =
+    input.runtime === "herdr" ||
+    (!input.runtime &&
+      profile &&
+      !Object.hasOwn(config.conductor.profiles, profile) &&
+      Object.hasOwn(config.herdr.profiles, profile))
+      ? "herdr"
+      : "conductor";
+  if (profile && !Object.hasOwn(config[selection].profiles, profile))
     throw new RequestRefusal("unknown-profile", `no Conductor profile "${profile}" in ${config.project.slug}`);
   const after = input.after?.trim().toUpperCase();
   if (after && !issue?.blockedBy.some((b) => b.id === after))
@@ -395,6 +406,26 @@ export async function requestDeferredLaunch(
       "not-ready",
       `${after} is not a blocker of ${ticket}; add the blocked-by relation in Linear first`,
     );
+  const previous = (await db.openInboxItems({ project: config.project.slug, recipient: "coordinator", ticket })).find(
+    (i) => i.kind === "launch-request" && i.request?.deferred,
+  );
+  if (previous && (previous.coordinator ?? "default") !== (input.coordinator ?? "default"))
+    throw new RequestRefusal("launch-waiting", `${ticket} waits for another coordinator`);
+  const storedProfile = profile ?? previous?.request?.profile ?? null;
+  const expiresAt = new Date(input.now.getTime() + DEFERRED_LAUNCH_DAYS * 86400000).toISOString();
+  const request = {
+    question: null,
+    profile: storedProfile,
+    deferred: true,
+    pinned: profile ? true : (previous?.request?.pinned ?? false),
+    expiresAt,
+    runtime: input.runtime ?? previous?.request?.runtime ?? null,
+    notes: input.notes ?? previous?.request?.notes ?? null,
+    reason: input.reason ?? previous?.request?.reason ?? null,
+  };
+  const launches = (await db.pendingLaunches(config.project.slug, new Date(0))).filter(
+    (launch) => !unusedLaunchExpired(launch, input.now),
+  );
   const held = await db.getRuntimeHandle(config.project.slug, ticket);
   const item = {
     id: 0,
@@ -405,7 +436,8 @@ export async function requestDeferredLaunch(
     author,
     body: "",
     createdAt: input.now.toISOString(),
-    request: { question: null, profile, deferred: true },
+    coordinator: input.coordinator,
+    request,
   };
   const events = await db.latestEvents(config.project.slug, { tickets: [ticket] });
   const heldTickets = deferredHeld(model, snapshot.flight, input.now, held ? [held] : [], events);
@@ -413,7 +445,7 @@ export async function requestDeferredLaunch(
   const slots = max
     ? {
         ...workerSlots({
-          launches: await db.pendingLaunches(config.project.slug, new Date(0)),
+          launches,
           handles: await db.openRuntimeHandles(config.project.slug),
           coordinators: await db.listCoordinators(config.project.slug),
           now: input.now,
@@ -426,33 +458,65 @@ export async function requestDeferredLaunch(
     model,
     config.tracker.parkedLabel,
     heldTickets.has(ticket),
-    author,
+    input.coordinator,
     !!profile && config.conductor.profiles[profile]?.runtime === "claude-code",
     slots,
+    { now: input.now, config, pendingLaunch: launches.find((l) => l.ticket === ticket) },
   );
-  if (!state.blockers?.length && issue && state.reason === null)
+  if (!previous && !state.blockers?.length && issue && state.reason === null)
     throw new RequestRefusal("not-ready", `${ticket} is not blocked; run ${state.command}`);
   const slotWait = !!slots?.max && state.reason === `waits for a worker slot (${slots.taken} of ${slots.max})`;
-  if (!slotWait && (!state.blockers?.length || state.reason !== `waits on ${state.blockers.join(", ")}`))
+  const renewable =
+    previous &&
+    issue &&
+    !["completed", "canceled"].includes(issue.statusType) &&
+    !heldTickets.has(ticket) &&
+    !launches.some((l) => l.ticket === ticket) &&
+    !issue.prs.some((pr) => pr.state === "open");
+  if (
+    !renewable &&
+    state.reason !== null &&
+    !slotWait &&
+    (!state.blockers?.length || state.reason !== `waits on ${state.blockers.join(", ")}`)
+  )
     throw new RequestRefusal(
       "not-ready",
       `${ticket} cannot wait for launch: ${state.reason ?? "it has no open blockers"}`,
     );
-  const id = await db.addRequest({
+  const newRequest = {
+    ...request,
     project: config.project.slug,
     ticket,
-    kind: "launch-request",
+    kind: "launch-request" as const,
     author,
     coordinator: input.coordinator,
     body: slotWait
       ? `${ticket} will launch once a worker slot frees`
       : `${ticket} will launch once ${state.blockers?.join(", ")} ${state.blockers?.length === 1 ? "is" : "are"} done`,
-    question: null,
-    profile,
-    deferred: true,
     at: input.now,
+  };
+  const renewed = await db.renewDeferredLaunch({
+    ...newRequest,
+    profile,
+    runtime: input.runtime,
+    notes: input.notes,
+    reason: input.reason,
   });
+  const id = renewed ?? (await db.addRequest(newRequest));
   if (id === null)
     throw new RequestRefusal("launch-waiting", `a launch of ${ticket} already waits for the coordinator`);
-  return { ...state, id };
+  const saved = renewed !== null ? await db.getInboxItem(config.project.slug, id) : null;
+  const finalState = saved
+    ? deferredLaunchState(
+        saved,
+        model,
+        config.tracker.parkedLabel,
+        heldTickets.has(ticket),
+        input.coordinator,
+        false,
+        slots,
+        { now: input.now, config, pendingLaunch: launches.find((l) => l.ticket === ticket) },
+      )
+    : state;
+  return { ...finalState, id, renewed: renewed !== null };
 }

@@ -422,7 +422,7 @@ describe("the organization's keys, handed to a signed-in terminal", () => {
   });
 });
 
-test("deferred launches use stored facts and distinguish authenticated API keys with the same name", async () => {
+test("deferred launches use stored facts and coordinator ownership across authenticated API keys", async () => {
   const a = await auth.api.createApiKey({ body: { name: "same name", organizationId: orgId }, headers: as(owner) });
   const b = await auth.api.createApiKey({ body: { name: "same name", organizationId: orgId }, headers: as(owner) });
   const config = parseConfig(DEMO_TOML.replace('slug = "widgets"', 'slug = "deferred-api"'));
@@ -461,6 +461,13 @@ test("deferred launches use stored facts and distinguish authenticated API keys 
   expect(await created.json()).toMatchObject({
     result: { blockers: ["DEMO-7"], author: `same name [api-key:${a.id}]`, owned: true },
   });
-  expect(await (await send("launch-requests", a.key, {})).json()).toMatchObject({ result: [{ owned: true }] });
-  expect(await (await send("launch-requests", b.key, {})).json()).toMatchObject({ result: [{ owned: false }] });
+  expect(await (await send("launch-requests", a.key, { supportsDeferredAttempts: true })).json()).toMatchObject({
+    result: [{ owned: true }],
+  });
+  expect(await (await send("launch-requests", b.key, { supportsDeferredAttempts: true })).json()).toMatchObject({
+    result: [{ owned: true }],
+  });
+  expect(await (await send("launch-requests", b.key, { coordinatorName: "other" })).json()).toMatchObject({
+    result: [],
+  });
 });

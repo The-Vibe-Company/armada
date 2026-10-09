@@ -1030,6 +1030,22 @@ test.each([
   "a confirmed merge launches its deferred follow-up or records its failure without undoing the merge (%s)",
   async ({ options, failed, drain }) => {
     const f = await fixture({ unblocks: true });
+    const deferredId = await f.store.addRequest({
+      project: "widgets",
+      ticket: "DEMO-19",
+      kind: "launch-request",
+      author: "Ada",
+      coordinator: "default",
+      question: null,
+      profile: "backend",
+      deferred: true,
+      pinned: true,
+      runtime: "conductor",
+      notes: "Retain the synthetic follow-up context",
+      body: "Wait for DEMO-18",
+      at: NOW,
+    });
+    if (deferredId === null) throw new Error("missing deferred request");
     const readConfig = f.io.readFile;
     f.io.readFile = async (path) => {
       const contents = await readConfig(path);
@@ -1044,9 +1060,12 @@ test.each([
         return Response.json({
           result: [
             {
-              id: 3,
+              id: deferredId,
               ticket: "DEMO-19",
               profile: "backend",
+              pinned: true,
+              runtime: "conductor",
+              notes: "Retain the synthetic follow-up context",
               author: "Ada",
               owned: true,
               blockers: ["DEMO-18"],
@@ -1103,6 +1122,7 @@ test.each([
         expect(f.merged()).toBe(true);
         expect(f.linear.get("DEMO-18").statusType).toBe("completed");
         expect(options.input).toContain("armada claim DEMO-19");
+        expect(options.input).toContain("Retain the synthetic follow-up context");
         created.push("DEMO-19");
         if (failed) return { code: 4, stdout: "", stderr: "private launch output" };
       }
@@ -1115,8 +1135,17 @@ test.each([
       expect(f.merged()).toBe(true);
       expect(JSON.parse(drain ? (f.out().trim().split("\n")[0] ?? "") : f.out()).result).toContain("Result: merged #9");
       expect(f.err()).toContain("was not launched: Conductor server error");
-      expect(await f.store.openInboxItems({ project: "widgets", recipient: "coordinator", ticket: "DEMO-19" })).toEqual(
-        [expect.objectContaining({ kind: "launch-failed" })],
+      const items = await f.store.openInboxItems({ project: "widgets", recipient: "coordinator", ticket: "DEMO-19" });
+      expect(items).toHaveLength(2);
+      expect(items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: deferredId,
+            kind: "launch-request",
+            request: expect.objectContaining({ attempts: 1, notes: "Retain the synthetic follow-up context" }),
+          }),
+          expect.objectContaining({ kind: "launch-failed", launchId: "wk-1" }),
+        ]),
       );
       return;
     }

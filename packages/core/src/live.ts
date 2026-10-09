@@ -11,7 +11,14 @@ import { jobStalled, jobStalledMinutes } from "./jobs.ts";
 
 import { createHash } from "node:crypto";
 import { type ArmadaConfig, CONFIG_DEFAULTS, routingLabelKey } from "./config.ts";
-import { type DeferredLaunch, deferredLaunchState, deferredWakeBody } from "./deferred.ts";
+import {
+  type DeferredAttempt,
+  type DeferredLaunch,
+  deferredExpired,
+  deferredExpiredBody,
+  deferredLaunchState,
+  deferredWakeBody,
+} from "./deferred.ts";
 import type { DeployInput, DeployQuery, DeployRecord, DeployRetryInput } from "./deploy.ts";
 import type { DigestInput, DigestRequest, DigestResult } from "./digest.ts";
 import {
@@ -295,6 +302,14 @@ export interface InboxItem {
     pr?: number | null;
     validation?: number | null;
     deferred?: boolean;
+    expired?: boolean;
+    pinned?: boolean;
+    expiresAt?: string | null;
+    attempts?: number;
+    attemptedAt?: string | null;
+    runtime?: string | null;
+    notes?: string | null;
+    reason?: string | null;
   };
 }
 
@@ -317,6 +332,13 @@ export interface NewRequest {
   profile: string | null;
   pr?: number | null;
   deferred?: boolean;
+  pinned?: boolean;
+  expiresAt?: string | null;
+  attempts?: number;
+  attemptedAt?: string | null;
+  runtime?: string | null;
+  notes?: string | null;
+  reason?: string | null;
   at: Date;
 }
 
@@ -603,6 +625,19 @@ export interface FleetStore {
   addInboxItem(item: Omit<InboxItem, "id" | "createdAt" | "request"> & { at: Date }): Promise<number>;
   /** Adds a dashboard request unless the same one is open, or the question it answers is closed: null then. */
   addRequest(r: NewRequest): Promise<number | null>;
+  renewDeferredLaunch(r: NewRequest): Promise<number | null>;
+  attemptDeferredLaunch(input: {
+    project: string;
+    id: number;
+    coordinator: string;
+    backoffMinutes: number;
+    at: Date;
+  }): Promise<DeferredAttempt>;
+  closeDeferredLaunches(input: {
+    project: string;
+    tickets: { ticket: string; status: string }[];
+    at: Date;
+  }): Promise<void>;
   /** Adds or refreshes the ticket's open plan for the coordinator. */
   putPlan(item: Item): Promise<void>;
   /** Adds the coordinator's hand-back item for a ticket, or refreshes the unresolved one. */
@@ -1344,6 +1379,7 @@ export const entryKey = (
   e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body" | "unblockedBy" | "jobId" | "silenceLevel" | "queueEntry"> & {
     version?: string | undefined;
     createdAt?: string;
+    request?: InboxItem["request"];
   },
 ) =>
   e.kind === "job-stalled"
@@ -1352,21 +1388,23 @@ export const entryKey = (
       ? `job-silent:${e.jobId}`
       : e.kind === "queue-stalled"
         ? `queue-stalled:${e.queueEntry}`
-        : e.id !== null
-          ? REWRITTEN.includes(e.kind)
-            ? `#${e.id}@${digest(e.kind === "launch-failed" || e.kind === "launch-uncertain" ? `${e.kind}:${e.body}` : e.body)}`
-            : `#${e.id}`
-          : e.kind === "unblocked"
-            ? `unblocked:${e.ticket}@${e.unblockedBy}`
-            : e.version
-              ? `version:${e.version}@${digest(e.body)}`
-              : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
-                ? `not-started:${e.ticket}:expired@${digest(e.body)}`
-                : e.kind === "silent"
-                  ? `silent:${e.ticket}:${e.silenceLevel ?? 0}`
-                  : e.kind === "stopped"
-                    ? `stopped:${e.ticket}@${e.createdAt}`
-                    : `${e.kind}:${e.ticket}`;
+        : e.kind === "launch-request" && e.request?.expired
+          ? `#${e.id}:expired`
+          : e.id !== null
+            ? REWRITTEN.includes(e.kind)
+              ? `#${e.id}@${digest(e.kind === "launch-failed" || e.kind === "launch-uncertain" ? `${e.kind}:${e.body}` : e.body)}`
+              : `#${e.id}`
+            : e.kind === "unblocked"
+              ? `unblocked:${e.ticket}@${e.unblockedBy}`
+              : e.version
+                ? `version:${e.version}@${digest(e.body)}`
+                : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
+                  ? `not-started:${e.ticket}:expired@${digest(e.body)}`
+                  : e.kind === "silent"
+                    ? `silent:${e.ticket}:${e.silenceLevel ?? 0}`
+                    : e.kind === "stopped"
+                      ? `stopped:${e.ticket}@${e.createdAt}`
+                      : `${e.kind}:${e.ticket}`;
 
 /** The stored project reading; inbox reconciliation never fetches external state. */
 export interface HandBackSnapshot {
@@ -1743,6 +1781,18 @@ async function readInboxAndFlight(
       events = { ...events, ...(await store.latestEvents(o.project, { since: new Date(0), tickets: eventTickets })) };
   }
   items = await reconcileMerged(store, items, o.snapshot, o.now, handles);
+  const closedRequests = items.filter((i) => i.request?.deferred && i.ticket && closed.has(i.ticket));
+  if (closedRequests.length) {
+    await store.closeDeferredLaunches({
+      project: o.project,
+      tickets: closedRequests.map((i) => ({
+        ticket: i.ticket!,
+        status: model?.byId.get(i.ticket!)?.status ?? "closed",
+      })),
+      at: o.now,
+    });
+    items = items.filter((i) => !closedRequests.includes(i));
+  }
   const held =
     flight && model
       ? new Set(
@@ -1774,7 +1824,14 @@ async function readInboxAndFlight(
       null,
       !!item.request?.profile && !!o.snapshot?.guidedProfiles?.includes(item.request.profile),
       slots,
+      {
+        now: o.now,
+        pendingLaunch: launches.find((l) => l.ticket === item.ticket && !unusedLaunchExpired(l, o.now)),
+        config: o.snapshot?.config,
+      },
     );
+    if (state.expired)
+      return [{ ...item, request: { ...item.request, expired: true }, body: deferredExpiredBody(state) }];
     return state.reason || !model ? [] : [{ ...item, body: deferredWakeBody(item, model, state.command) }];
   });
   const planConfig = o.snapshot?.config;
@@ -1844,6 +1901,7 @@ async function readInboxAndFlight(
     if (
       item.kind === "launch-request" &&
       item.request?.deferred &&
+      !deferredExpired(item, o.now) &&
       item.ticket &&
       !closed.has(item.ticket) &&
       !own.has(item.ticket) &&
@@ -2506,8 +2564,16 @@ export interface Fleet {
     question?: number;
     text?: string;
   }): Promise<number | MergeAsk>;
-  deferLaunch(input: { ticket: string; profile: string | null; after?: string | null }): Promise<DeferredLaunch>;
+  deferLaunch(input: {
+    ticket: string;
+    profile: string | null;
+    after?: string | null;
+    runtime?: string | null;
+    notes?: string | null;
+    reason?: string | null;
+  }): Promise<DeferredLaunch>;
   deferredLaunches(): Promise<DeferredLaunch[]>;
+  attemptDeferredLaunch(input: { id: number; backoffMinutes: number }): Promise<DeferredAttempt>;
   /** Registers the project, or updates its name, repository and root (`armada init`). */
   register(): Promise<void>;
   /** Time of the newest event of every ticket (`armada status`). */

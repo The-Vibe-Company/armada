@@ -82,6 +82,7 @@ import {
   REQUEST_KINDS,
   TIMELINE_HOURS,
   UNUSED_LAUNCH_GRACE_MS,
+  unusedLaunchExpired,
 } from "@armada/core/read";
 import { catchupRecords, type FeedQuery, feedPage } from "./activity-store";
 import { captionedAttachments, ticketsAttachments } from "./attachments";
@@ -542,14 +543,26 @@ export async function transferTickets(
       // Only the newest still-pending launch owns an unclaimed ticket.
       const pending = handle
         ? null
-        : (await pendingLaunches(tx, input.project, new Date(0))).find((item) => item.ticket === ticket);
-      if (!handle && !pending) return false;
-      const owner = handle ? text(handle.coordinator) : (pending?.coordinator ?? null);
+        : (await pendingLaunches(tx, input.project, new Date(0))).find(
+            (item) => item.ticket === ticket && !unusedLaunchExpired(item, input.at),
+          );
+      const request = (
+        await tx.query(
+          "SELECT coordinator FROM inbox_items WHERE project = $1 AND ticket = $2 AND kind = 'launch-request' AND request_deferred AND resolved_at IS NULL FOR UPDATE",
+          [input.project, ticket],
+        )
+      ).rows[0];
+      if (!handle && !pending && !request) return false;
+      const owner = handle
+        ? text(handle.coordinator)
+        : pending
+          ? (pending.coordinator ?? null)
+          : text(request?.coordinator);
       if (input.from !== undefined ? owner !== input.from : owner !== null && owner !== input.to) return false;
       owners.push({
         ticket,
         owner,
-        launch: handle ? text(handle.worker_session_id) : launch ? String(launch.id) : null,
+        launch: handle ? text(handle.worker_session_id) : pending && launch ? String(launch.id) : null,
       });
     }
     await tx.query(
@@ -564,6 +577,10 @@ export async function transferTickets(
       );
       await tx.query(
         "UPDATE fleet_sessions SET coordinator = $3 WHERE project = $1 AND ticket = $2 AND released_at IS NULL",
+        [input.project, ticket, input.to],
+      );
+      await tx.query(
+        "UPDATE inbox_items SET coordinator = $3 WHERE project = $1 AND ticket = $2 AND kind = 'launch-request' AND request_deferred AND resolved_at IS NULL",
         [input.project, ticket, input.to],
       );
       if (launch) await tx.query('UPDATE "armada_worker" SET "coordinator" = $2 WHERE "id" = $1', [launch, input.to]);
@@ -1055,7 +1072,7 @@ export async function getRuntimeReference(
 // ------------------------------------------------------------------ inbox
 
 const INBOX_COLUMNS = `id, project, coordinator, ticket, kind, recipient, author, body, created_at, resolved_at, resolution,
-  request_question, request_profile, request_pr, request_validation, request_deferred`;
+  request_question, request_profile, request_pr, request_validation, request_deferred, request_pinned, request_expires_at, request_attempts, request_attempted_at, request_runtime, request_notes, request_reason`;
 
 const inboxRow = (r: Row): StoredInboxItem => ({
   id: Number(r.id),
@@ -1072,7 +1089,18 @@ const inboxRow = (r: Row): StoredInboxItem => ({
         request: {
           question: r.request_question === null ? null : Number(r.request_question),
           profile: text(r.request_profile),
-          ...(r.request_deferred ? { deferred: true } : {}),
+          ...(r.request_deferred
+            ? {
+                deferred: true,
+                pinned: Boolean(r.request_pinned),
+                expiresAt: iso(r.request_expires_at),
+                attempts: Number(r.request_attempts),
+                attemptedAt: iso(r.request_attempted_at),
+                runtime: text(r.request_runtime),
+                notes: text(r.request_notes),
+                reason: text(r.request_reason),
+              }
+            : {}),
           ...(r.request_pr == null ? {} : { pr: Number(r.request_pr) }),
         },
       }
@@ -1120,8 +1148,8 @@ export async function addRequest(db: Queryable, r: NewRequest): Promise<number |
                      AND q.recipient = 'coordinator' AND q.resolved_at IS NULL AND ($3 <> 'plan-changes' OR q.kind = 'plan'))`
       : "";
   const rs = await db.query<{ id: unknown }>(
-    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, request_question, request_profile, request_pr, coordinator, request_deferred)
-     SELECT $1, $2, $3::text, 'coordinator', $4, $5, $6, $7::bigint, $8, $9::bigint, $10, $11::boolean WHERE true ${questionOpen}
+    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, request_question, request_profile, request_pr, coordinator, request_deferred, request_pinned, request_expires_at, request_runtime, request_notes, request_reason)
+     SELECT $1, $2, $3::text, 'coordinator', $4, $5, $6, $7::bigint, $8, $9::bigint, $10, $11::boolean, $12::boolean, $13::timestamptz, $14, $15, $16 WHERE true ${questionOpen}
      ON CONFLICT DO NOTHING RETURNING id`,
     [
       r.project,
@@ -1135,10 +1163,77 @@ export async function addRequest(db: Queryable, r: NewRequest): Promise<number |
       r.pr ?? null,
       r.coordinator ?? null,
       r.deferred ?? false,
+      r.pinned ?? true,
+      r.expiresAt ?? null,
+      r.runtime ?? null,
+      r.notes ?? null,
+      r.reason ?? null,
     ],
   );
   const id = rs.rows[0]?.id;
   return id === undefined ? null : Number(id);
+}
+
+/** Renewal cannot take another coordinator's request or reopen a declined item. */
+export async function renewDeferredLaunch(db: Queryable, r: NewRequest): Promise<number | null> {
+  const result = await db.query(
+    `UPDATE inbox_items SET request_expires_at = $4, request_attempts = 0, request_attempted_at = NULL,
+    request_profile = COALESCE($5, request_profile), request_pinned = CASE WHEN $5::text IS NULL THEN request_pinned ELSE $6 END, request_runtime = COALESCE($7, request_runtime), request_notes = COALESCE($8, request_notes), request_reason = COALESCE($9, request_reason)
+    WHERE project = $1 AND ticket = $2 AND kind = 'launch-request' AND request_deferred AND resolved_at IS NULL
+    AND COALESCE(coordinator, 'default') = $3 RETURNING id`,
+    [
+      r.project,
+      r.ticket,
+      r.coordinator ?? "default",
+      r.expiresAt,
+      r.profile,
+      r.pinned,
+      r.runtime ?? null,
+      r.notes ?? null,
+      r.reason ?? null,
+    ],
+  );
+  return result.rows[0] ? Number(result.rows[0].id) : null;
+}
+
+/** The locked row and guarded update share one statement, including the refusal reason. */
+export async function attemptDeferredLaunch(
+  db: Queryable,
+  q: Parameters<FleetStore["attemptDeferredLaunch"]>[0],
+): ReturnType<FleetStore["attemptDeferredLaunch"]> {
+  const result = await db.query(
+    `WITH current AS MATERIALIZED (
+    SELECT *, CASE
+      WHEN resolved_at IS NOT NULL OR kind <> 'launch-request' OR NOT request_deferred THEN 'request is closed'
+      WHEN COALESCE(request_expires_at, created_at + interval '7 days') <= $4 THEN 'request expired'
+      WHEN COALESCE(coordinator, 'default') <> $3 THEN 'request belongs to another coordinator'
+      WHEN request_attempted_at > $4::timestamptz - $5::double precision * interval '1 minute' THEN 'request attempted too recently'
+      WHEN request_attempts >= 3 THEN 'request exhausted three attempts; renew it'
+      ELSE NULL END AS why
+    FROM inbox_items WHERE project = $1 AND id = $2 FOR UPDATE
+  ), accepted AS (
+    UPDATE inbox_items i SET request_attempts = c.request_attempts + 1, request_attempted_at = $4
+    FROM current c WHERE i.id = c.id AND c.why IS NULL RETURNING i.request_attempts
+  ) SELECT c.why, a.request_attempts FROM current c LEFT JOIN accepted a ON true`,
+    [q.project, q.id, q.coordinator, q.at, q.backoffMinutes],
+  );
+  const row = result.rows[0];
+  return row?.request_attempts != null
+    ? { ok: true, attempt: Number(row.request_attempts) }
+    : { ok: false, why: row ? String(row.why) : "request is closed or missing" };
+}
+
+export async function closeDeferredLaunches(
+  db: Queryable,
+  q: Parameters<FleetStore["closeDeferredLaunches"]>[0],
+): Promise<void> {
+  if (!q.tickets.length) return;
+  await db.query(
+    `UPDATE inbox_items i SET resolved_at = $3, resolution = 'ticket closed (' || t.status || ')'
+    FROM jsonb_to_recordset($2::jsonb) AS t(ticket text, status text)
+    WHERE i.project = $1 AND i.ticket = t.ticket AND i.kind = 'launch-request' AND i.request_deferred AND i.resolved_at IS NULL`,
+    [q.project, JSON.stringify(q.tickets), q.at],
+  );
 }
 
 /** Adds or refreshes the ticket's open plan for the coordinator. */
@@ -2334,6 +2429,9 @@ export const fleetStore = (db: Database): FleetStore => ({
   getRuntimeReference: (project, ref) => getRuntimeReference(db, project, ref),
   addInboxItem: (item) => addInboxItem(db, item),
   addRequest: (r) => addRequest(db, r),
+  renewDeferredLaunch: (r) => renewDeferredLaunch(db, r),
+  attemptDeferredLaunch: (q) => attemptDeferredLaunch(db, q),
+  closeDeferredLaunches: (q) => closeDeferredLaunches(db, q),
   putPlan: (item) => putPlan(db, item),
   putHandBack: (item) => putHandBack(db, item),
   putChore: (item) => putChore(db, item),
@@ -2694,6 +2792,8 @@ export const liveStore = (db: Database): LiveStore => ({
   getInboxItem: (project, id) => getInboxItem(db, project, id),
   getRuntimeHandle: (project, ticket) => getRuntimeHandle(db, project, ticket),
   addRequest: (r) => addRequest(db, r),
+  renewDeferredLaunch: (r) => renewDeferredLaunch(db, r),
+
   listValidations: (q) => listValidations(db, q),
   getValidation: (project, id) => getValidation(db, project, id),
   decideValidation: (d) => decideValidation(db, d),

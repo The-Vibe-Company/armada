@@ -1593,3 +1593,116 @@ test.each([true, false])(
     ).toBe("ready-to-merge");
   },
 );
+
+test("deferred fire admission fences cancellation, expiry, owner, backoff and budget; renewal and handover keep intent", async () => {
+  const project = "deferred-admission";
+  const store = fleetStore(db);
+  await store.upsertProject(
+    { slug: project, name: "Waiting", repository: "acme/waiting", programRoot: "WID-1" },
+    at(0),
+  );
+  const request = (ticket: string): NewRequest => ({
+    project,
+    ticket,
+    kind: "launch-request",
+    question: null,
+    profile: null,
+    pinned: false,
+    deferred: true,
+    author: "Ada",
+    coordinator: "front",
+    body: "Wait",
+    runtime: "conductor",
+    notes: "Saved context",
+    reason: null,
+    expiresAt: at(7 * 1440).toISOString(),
+    at: at(0),
+  });
+  const ids = new Map<string, number>();
+  for (const ticket of ["WID-2", "WID-3", "WID-4", "WID-5", "WID-6"]) {
+    const id = await store.addRequest(request(ticket));
+    expect(id).not.toBeNull();
+    if (id === null) throw new Error("missing request id");
+    ids.set(ticket, id);
+    expect((await store.getInboxItem(project, id))?.request).toMatchObject({
+      profile: null,
+      pinned: false,
+      runtime: "conductor",
+      notes: "Saved context",
+    });
+  }
+  const idOf = (ticket: string) => {
+    const id = ids.get(ticket);
+    if (id === undefined) throw new Error("missing request id");
+    return id;
+  };
+  const attempt = (ticket: string, minutes: number, coordinator = "front") =>
+    store.attemptDeferredLaunch({ project, id: idOf(ticket), coordinator, backoffMinutes: 5, at: at(minutes) });
+  expect(await attempt("WID-2", 0)).toEqual({ ok: true, attempt: 1 });
+  expect(await store.resolveInboxItem({ project, id: idOf("WID-2"), resolution: "declined", at: at(1) })).toBe(true);
+  expect(await attempt("WID-2", 6)).toMatchObject({ ok: false, why: "request is closed" });
+  expect(await attempt("WID-3", 0)).toEqual({ ok: true, attempt: 1 });
+  expect(await attempt("WID-3", 7 * 1440)).toMatchObject({ ok: false, why: "request expired" });
+  expect(await attempt("WID-4", 0)).toEqual({ ok: true, attempt: 1 });
+  expect(await attempt("WID-4", 6, "back")).toMatchObject({ ok: false, why: "request belongs to another coordinator" });
+  expect(await store.transferTickets({ project, tickets: ["WID-4"], from: "front", to: "back", at: at(5) })).toBe(true);
+  expect(await attempt("WID-4", 6)).toMatchObject({ ok: false, why: "request belongs to another coordinator" });
+  expect(await attempt("WID-4", 6, "back")).toEqual({ ok: true, attempt: 2 });
+  expect(await attempt("WID-5", 0)).toEqual({ ok: true, attempt: 1 });
+  expect(await attempt("WID-5", 1)).toMatchObject({ ok: false, why: "request attempted too recently" });
+  expect(await attempt("WID-5", 5)).toEqual({ ok: true, attempt: 2 });
+  expect(await attempt("WID-5", 10)).toEqual({ ok: true, attempt: 3 });
+  expect(await attempt("WID-5", 15)).toMatchObject({ ok: false, why: "request exhausted three attempts; renew it" });
+  expect(
+    await store.renewDeferredLaunch({ ...request("WID-5"), at: at(15), expiresAt: at(15 + 7 * 1440).toISOString() }),
+  ).toBe(idOf("WID-5"));
+  expect(await attempt("WID-5", 15)).toEqual({ ok: true, attempt: 1 });
+  const pinned = {
+    ...request("WID-5"),
+    profile: "backend",
+    pinned: true,
+    notes: "Updated context",
+    reason: "Updated choice",
+  };
+  expect(await store.renewDeferredLaunch(pinned)).toBe(idOf("WID-5"));
+  // Omission preservation happens on the locked database row, independently of an earlier CLI read.
+  expect(await store.renewDeferredLaunch({ ...request("WID-5"), notes: null, runtime: null, reason: null })).toBe(
+    idOf("WID-5"),
+  );
+  expect((await store.getInboxItem(project, idOf("WID-5")))?.request).toMatchObject({
+    profile: "backend",
+    pinned: true,
+    runtime: "conductor",
+    notes: "Updated context",
+    reason: "Updated choice",
+  });
+  await db.query("UPDATE projects SET organization_id = $2 WHERE slug = $1", [project, "org-a"]);
+  for (const [ticket, ended] of [
+    ["WID-7", false],
+    ["WID-8", true],
+  ] as const) {
+    await store.addRequest(request(ticket));
+    const historical = await createLaunch(db, {
+      organization: "org-a",
+      project,
+      ticket,
+      coordinator: "old",
+      launcher: { kind: "session", id: "person-a", label: "Demo coordinator" },
+      now: at(0),
+    });
+    if (ended)
+      await db.query('UPDATE "armada_worker" SET "endedAt" = $2 WHERE "id" = $1', [historical.worker.id, at(1)]);
+    expect(await store.transferTickets({ project, tickets: [ticket], from: "front", to: "back", at: at(121) })).toBe(
+      true,
+    );
+    expect((await store.openInboxItems({ project, recipient: "coordinator", ticket }))[0]?.coordinator).toBe("back");
+    expect(
+      (await db.query('SELECT "coordinator" FROM "armada_worker" WHERE "id" = $1', [historical.worker.id])).rows[0]
+        ?.coordinator,
+    ).toBe("old");
+  }
+  const concurrent = await Promise.all([attempt("WID-6", 0), attempt("WID-6", 0)]);
+  expect(concurrent.filter((r) => r.ok)).toEqual([{ ok: true, attempt: 1 }]);
+  expect(concurrent.filter((r) => !r.ok)).toEqual([{ ok: false, why: "request attempted too recently" }]);
+  expect((await store.getInboxItem(project, idOf("WID-6")))?.request?.attempts).toBe(1);
+});

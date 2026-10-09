@@ -822,6 +822,8 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
 // ------------------------------------------------------------------ load
 
 export interface LoadBriefOptions extends HttpRetryOptions {
+  notes?: string | null;
+  deferred?: boolean;
   reservations?: () => Promise<Reservation[]>;
   overlap?: (input: { ticket: string; paths: string[] }) => Promise<OverlapReading>;
   prompt?: boolean;
@@ -869,6 +871,22 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
   ]);
   if (!ticket)
     throw new Refusal(`ticket ${opts.ticket} not found in Linear`, "armada status, to see the tickets of the program");
+  if (opts.deferred && opts.prompt) {
+    if (!ticket.labels.includes(config.tracker.readyLabel))
+      throw new BriefError(`${ticket.id} lacks ${config.tracker.readyLabel}`);
+    if (ticket.statusType === "completed" || ticket.statusType === "canceled")
+      throw new BriefError(`${ticket.id} is ${ticket.status}`);
+    if (ticket.blockers.some((b) => b.statusType !== "completed" && b.statusType !== "canceled"))
+      throw new BriefError(`${ticket.id} has open blockers`);
+    if (ticket.labels.includes(config.tracker.parkedLabel)) throw new BriefError(`${ticket.id} is parked`);
+    if (
+      inFlight(buildModel(program.issues, program.rootId), program.comments, {
+        now: now().getTime(),
+        silentAfterMinutes: config.policy.silentAfterMinutes,
+      }).some((l) => l.issue.id === ticket.id)
+    )
+      throw new BriefError(`${ticket.id} is already in flight`);
+  }
   if (opts.profile === null && hasProfileRules(config) && !routeProfile(config, ticket.labels))
     return {
       launchHint,
@@ -951,6 +969,7 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     ...(opts.stored ? { stored: opts.stored } : {}),
     launch: made,
     noLaunch: missed?.reason ?? null,
+    notes: opts.notes,
     preApprovedReason,
     conventions: opts.conventions ?? null,
     validation,
