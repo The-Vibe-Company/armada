@@ -61,7 +61,7 @@ export type Reason =
   /** Awaiting a validation the overview does not hold (yet). */
   | { kind: "awaiting-validation" }
   /** Handed back: the coordinator merges; `by` approved its merge. */
-  | { kind: "ready"; pr: number | null; ci: CiState | null; by: string | null }
+  | { kind: "ready"; pr: number | null; ci: CiState | null; by: string | null; queue?: FleetRow["queue"] }
   | { kind: "merged"; pr: number }
   /** At work: the worker's last line. */
   | { kind: "working"; text: string | null };
@@ -147,8 +147,14 @@ export function sessionState(
   if (row.phase === "ready-to-merge") {
     const approved = decided.find((d) => d.kind === "merge" && d.decision?.outcome === "approved");
     return {
-      group: "ready",
-      reason: { kind: "ready", pr: row.pr?.number ?? null, ci: row.pr?.ci ?? null, by: approved?.decision?.by ?? null },
+      group: row.queue ? "running" : "ready",
+      reason: {
+        kind: "ready",
+        pr: row.pr?.number ?? null,
+        ci: row.pr?.ci ?? null,
+        by: approved?.decision?.by ?? null,
+        ...(row.queue ? { queue: row.queue } : {}),
+      },
     };
   }
   return { group: "running", reason: { kind: "working", text: lastLine(row) } };

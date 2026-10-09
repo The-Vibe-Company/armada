@@ -1216,14 +1216,30 @@ export async function lastAnsweredAt(
 /** Resolves the open items of one kind for a ticket (e.g. its hand-back once merged); returns how many. */
 export async function resolveInboxItems(
   db: Queryable,
-  q: { project: string; ticket: string; kind: InboxKind; resolution: string; at: Date },
+  q: { project: string; ticket: string; kind: InboxKind; author?: string | null; resolution: string; at: Date },
 ): Promise<number> {
   const rs = await db.query(
     `UPDATE inbox_items SET resolved_at = $1, resolution = $2
-     WHERE project = $3 AND ticket = $4 AND kind = $5 AND resolved_at IS NULL`,
-    [q.at, q.resolution, q.project, q.ticket, q.kind],
+     WHERE project = $3 AND ticket = $4 AND kind = $5 AND resolved_at IS NULL
+       AND (NOT $6::boolean OR (author IS NOT DISTINCT FROM $7::text AND created_at <= $1))`,
+    [q.at, q.resolution, q.project, q.ticket, q.kind, q.author !== undefined, q.author ?? null],
   );
   return rs.rowCount;
+}
+
+/** Settles only coordinator notices naming this exact PR in this project. */
+export async function resolvePrItems(
+  db: Queryable,
+  q: { project: string; pr: number; resolution: string; at: Date },
+): Promise<number[]> {
+  const rs = await db.query(
+    `UPDATE inbox_items SET resolved_at = $3, resolution = $4
+     WHERE project = $1 AND recipient = 'coordinator' AND resolved_at IS NULL
+     AND ((kind = 'queue-refused' AND starts_with(body, $5)) OR (kind = 'merge-request' AND request_pr = $2))
+     RETURNING id`,
+    [q.project, q.pr, q.at, q.resolution, `PR #${q.pr} refused:`],
+  );
+  return rs.rows.map((r) => Number(r.id)).sort((a, b) => a - b);
 }
 
 /** Resolves the open answer-requests for one question (it was answered or closed); returns how many. */
@@ -1508,9 +1524,10 @@ type DeployInputWithCoverage = DeployInput & { project: string; coveredShas?: re
 /** A deploy state which ends observation for that (target, sha) row. */
 const deployTerminal = (state: string): boolean => state === "healthy" || deployFailed(state as never);
 
-const coveredShasOf = (input: DeployInputWithCoverage): string[] => [
-  ...new Set([input.sha, ...(input.coveredShas ?? [])].filter((sha): sha is string => !!sha)),
-];
+const coveredShasOf = (input: DeployInputWithCoverage): string[] =>
+  input.state === "not-deployed"
+    ? []
+    : [...new Set([input.sha, ...(input.coveredShas ?? [])].filter((sha): sha is string => !!sha))];
 
 const coveredShasFromRow = (row: Row): string[] => {
   const shas = row.covered_shas;
@@ -1757,7 +1774,7 @@ export async function recordDeploy(db: Database, input: DeployInputWithCoverage 
         return previousRecord;
       }
       const updated = await q.query<Row>(
-        `UPDATE deploys SET started_at = CASE WHEN state IN ('skipped', 'not-runnable') AND $4 NOT IN ('skipped', 'not-runnable') THEN $9 ELSE started_at END,
+        `UPDATE deploys SET started_at = CASE WHEN state IN ('skipped', 'not-runnable', 'not-deployed') AND $4 NOT IN ('skipped', 'not-runnable', 'not-deployed') THEN $9 ELSE started_at END,
            state = $4, detail = $5, pause_on_failure = $6, live_sha = $7,
             covered_shas = $8, updated_at = $9
          WHERE project = $1 AND target = $2 AND sha = $3 RETURNING *`,
@@ -2130,6 +2147,7 @@ export const fleetStore = (db: Database): FleetStore => ({
   resolveInboxItem: (q) => resolveInboxItem(db, q),
   lastAnsweredAt: (project, opts) => lastAnsweredAt(db, project, opts),
   resolveInboxItems: (q) => resolveInboxItems(db, q),
+  resolvePrItems: (q) => resolvePrItems(db, q),
   resolveAnswerRequests: (q) => resolveAnswerRequests(db, q),
   resolvePlans: (q) => resolvePlans(db, q),
   queueAdd: (e) => queueAdd(db, e),

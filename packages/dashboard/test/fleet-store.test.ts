@@ -1,5 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { type Job, type NewRequest, readInbox, recordClaim, recordRelease, serveFleet } from "@armada/core/read";
+import {
+  type Job,
+  type NewRequest,
+  readInbox,
+  recordClaim,
+  recordRelease,
+  recordReport,
+  serveFleet,
+} from "@armada/core/read";
 import { type Database, DB_MIGRATIONS, DB_SCHEMA_VERSION, migrateDatabase } from "../lib/db.ts";
 import {
   acquireLease,
@@ -31,6 +39,7 @@ import {
   renewLease,
   resolveInboxItem,
   resolvePlans,
+  resolvePrItems,
   saveRuntimeHandle,
   saveWorkerProfile,
   shownJobs,
@@ -1203,3 +1212,236 @@ test("terminal jobs notify their live originating worker; silence and orphaned j
     ).toHaveLength(owner === "worker" ? 0 : 2);
   }
 });
+
+test("PR notice resolution preserves the prefix boundary, project, recipient and existing resolutions", async () => {
+  const project = "pr-notices";
+  const ids: number[] = [];
+  for (const pr of [12, 123]) {
+    ids.push(
+      await addInboxItem(db, {
+        project,
+        ticket: null,
+        recipient: "coordinator",
+        kind: "queue-refused",
+        author: null,
+        body: `PR #${pr} refused: checks failed`,
+        at: at(0),
+      }),
+    );
+    ids.push(
+      (await addRequest(db, {
+        project,
+        kind: "merge-request",
+        ticket: null,
+        pr,
+        question: null,
+        profile: null,
+        author: "owner",
+        body: "Please merge",
+        at: at(0),
+      }))!,
+    );
+  }
+  const others = [
+    await addInboxItem(db, {
+      project: "other-pr-notices",
+      ticket: null,
+      recipient: "coordinator",
+      kind: "queue-refused",
+      author: null,
+      body: "PR #12 refused: checks failed",
+      at: at(0),
+    }),
+    await addInboxItem(db, {
+      project,
+      ticket: "WID-2",
+      recipient: "worker",
+      kind: "queue-refused",
+      author: null,
+      body: "PR #12 refused: checks failed",
+      at: at(0),
+    }),
+    await addInboxItem(db, {
+      project,
+      ticket: "WID-2",
+      recipient: "coordinator",
+      kind: "hand-back",
+      author: null,
+      body: "PR #12 ready",
+      at: at(0),
+    }),
+  ];
+  const q = { project, pr: 12, resolution: "resolved: PR #12 merged", at: at(1) };
+  expect(await resolvePrItems(db, q)).toEqual(ids.slice(0, 2));
+  expect(await resolvePrItems(db, { ...q, resolution: "retry", at: at(2) })).toEqual([]);
+  const rows = (
+    await db.query("SELECT id, resolution FROM inbox_items WHERE id = ANY($1::bigint[]) ORDER BY id", [
+      [...ids, ...others],
+    ])
+  ).rows;
+  expect(rows.map((r) => r.resolution)).toEqual([q.resolution, q.resolution, null, null, null, null, null]);
+  // No-ticket queue completion reaches the same cleanup without recordMerge.
+  const store = fleetStore(db);
+  await store.queueAdd({
+    project,
+    pr: 123,
+    ticket: null,
+    noTicket: true,
+    keepOpen: false,
+    throughHold: null,
+    reason: null,
+    headSha: "a".repeat(40),
+    queuedBy: "owner",
+    at: at(2),
+  });
+  // queueAdd resolved its old refusal; a coordinator notice arriving during the drain is settled at finish.
+  const later = await addInboxItem(db, {
+    project,
+    ticket: null,
+    recipient: "coordinator",
+    kind: "queue-refused",
+    author: null,
+    body: "PR #123 refused: earlier attempt",
+    at: at(2),
+  });
+  await store.acquireLease({ project, name: "merge-queue", holder: "drain", ttlMs: 600_000, at: at(2) });
+  const next = await store.queueNext({ project, holder: "drain", at: at(2) });
+  if ("refused" in next || !next.entry) throw new Error("missing entry");
+  expect(
+    await store.queueFinish({
+      project,
+      id: next.entry.id,
+      holder: "drain",
+      outcome: "merged",
+      detail: null,
+      at: at(3),
+    }),
+  ).toBe(true);
+  expect((await store.getInboxItem(project, ids[3]!))?.resolution).toBe("resolved: PR #123 merged");
+  expect((await store.getInboxItem(project, later))?.resolution).toBe("resolved: PR #123 merged");
+});
+
+test("queue completion survives a notice cleanup outage after a confirmed no-ticket merge", async () => {
+  const project = "queue-cleanup-outage";
+  const store = fleetStore(db);
+  const queued = await store.queueAdd({
+    project,
+    pr: 12,
+    ticket: null,
+    noTicket: true,
+    keepOpen: false,
+    throughHold: null,
+    reason: null,
+    headSha: "a".repeat(40),
+    queuedBy: "owner",
+    at: at(0),
+  });
+  if (!("id" in queued)) throw new Error("expected new queue entry");
+  const id = await addInboxItem(db, {
+    project,
+    ticket: null,
+    recipient: "coordinator",
+    kind: "queue-refused",
+    author: null,
+    body: "PR #12 refused: earlier attempt",
+    at: at(0),
+  });
+  await store.acquireLease({ project, name: "merge-queue", holder: "drain", ttlMs: 600_000, at: at(0) });
+  await store.queueNext({ project, holder: "drain", at: at(0) });
+  // Keep the real transaction adapter; only its separate cleanup statement fails.
+  const failing: Database = {
+    connect: () => db.connect(),
+    end: async () => {},
+    query: async (sql, params) => {
+      if (sql.startsWith("UPDATE inbox_items")) throw new Error("cleanup unavailable");
+      return db.query(sql, params);
+    },
+  };
+  expect(
+    await fleetStore(failing).queueFinish({
+      project,
+      id: queued.id,
+      holder: "drain",
+      outcome: "merged",
+      detail: null,
+      at: at(1),
+    }),
+  ).toBe(true);
+  expect((await store.queueList(project, { since: at(0) }))[0]?.state).toBe("merged");
+  expect((await store.getInboxItem(project, id))?.resolvedAt).toBeNull();
+  expect(
+    await readInbox(store, {
+      project,
+      now: at(2),
+      silentAfterMinutes: 15,
+      snapshot: {
+        repository: "acme/widgets",
+        issues: [],
+        prs: [{ repo: "acme/widgets", number: 12, state: "merged" }],
+      },
+    }),
+  ).toEqual([]);
+});
+
+test.each([true, false])(
+  "a delayed resume cannot retire a replacement's hand-back, even when its id was refreshed in place (session auth: %s)",
+  async (authenticated) => {
+    const store = fleetStore(db);
+    const ticket = authenticated ? "WID-900" : "WID-902";
+    await store.saveRuntimeHandle({
+      project: P,
+      ticket,
+      runtime: "Conductor",
+      handle: "ws/old",
+      branch: null,
+      workerSessionId: authenticated ? "old-session" : null,
+      at: at(0),
+    });
+    const report = {
+      ticket,
+      phase: "ready-to-merge" as const,
+      previous: "shipping" as const,
+      summary: "PR #900 ready",
+      message: "",
+      prUrl: null,
+      headSha: null,
+      workerSessionId: authenticated ? "old-session" : null,
+    };
+    await recordReport(store, P, report, at(1));
+    const old = (await store.openInboxItems({ project: P, recipient: "coordinator", ticket })).find(
+      (i) => i.kind === "hand-back",
+    );
+    if (!old) throw new Error("missing hand-back");
+    const racing = {
+      ...store,
+      recordEvent: async (event: Parameters<typeof store.recordEvent>[0]) => {
+        await store.saveRuntimeHandle({
+          project: P,
+          ticket,
+          runtime: "Conductor",
+          handle: "ws/new",
+          branch: null,
+          workerSessionId: authenticated ? "new-session" : null,
+          at: at(3),
+        });
+        await recordReport(
+          store,
+          P,
+          { ...report, workerSessionId: authenticated ? "new-session" : null, summary: "PR #901 ready" },
+          at(4),
+        );
+        await store.recordEvent(event);
+      },
+    };
+    await recordReport(racing, P, { ...report, phase: "shipping", previous: "ready-to-merge" }, at(2));
+    expect(await store.getInboxItem(P, old.id)).toMatchObject({
+      author: authenticated ? "new-session" : "ws/new",
+      body: "Agent status: ready-to-merge — PR #901 ready",
+      resolvedAt: null,
+    });
+    expect(
+      (await store.listSessions(P, { since: at(0) })).find((s) => s.ticket === ticket && !s.releasedAt)?.lastReport
+        ?.phase,
+    ).toBe("ready-to-merge");
+  },
+);

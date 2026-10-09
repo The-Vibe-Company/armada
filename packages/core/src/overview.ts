@@ -8,7 +8,15 @@ import { CONFIG_DEFAULTS, type ConductorProfile } from "./config.ts";
 import type { DeployRecord } from "./deploy.ts";
 import { workerLivenessAt } from "./fleet.ts";
 import type { JobSummary } from "./jobs.ts";
-import type { CoordinatorPresence, InboxItem, InboxReadEvent, MergeHold, SessionRecord } from "./live.ts";
+import {
+  type CoordinatorPresence,
+  handBackQueue,
+  type InboxEntry,
+  type InboxItem,
+  type InboxReadEvent,
+  type MergeHold,
+  type SessionRecord,
+} from "./live.ts";
 import { type QueueEntry, shownQueue } from "./merge-queue.ts";
 import { REQUEST_KINDS } from "./request-kinds.ts";
 import type { FrontierTicket, InFlightTicket, MergedTicket, StatusReport } from "./status.ts";
@@ -95,6 +103,7 @@ export const WAITING_KINDS = ["question", "blocked", "approval", "hand-back", "n
 export type WaitingKind = (typeof WAITING_KINDS)[number];
 
 export interface WaitingItem {
+  queue?: InboxEntry["queue"];
   kind: WaitingKind;
   project: string;
   ticket: string | null;
@@ -139,6 +148,7 @@ export interface ProfileSummary {
 }
 
 export interface FleetRow extends InFlightTicket {
+  queue?: InboxEntry["queue"];
   session: SessionRecord | null;
   project: string;
   /** The oldest open question of this ticket in the coordinator's inbox. */
@@ -433,6 +443,7 @@ export function buildOverview(input: {
         project: p.slug,
         ticket: item.ticket,
         ...about(item.ticket),
+        ...(item.kind === "hand-back" ? { queue: handBackQueue(item.body, p.live?.queue ?? []) } : {}),
         detail: item.body,
         author: item.author,
         since: item.createdAt,
@@ -498,6 +509,7 @@ export function buildOverview(input: {
           tl.phases.map((s) => s.phase),
         ),
         waiting: perTicket.get(t.id)?.kind ?? null,
+        queue: perTicket.get(t.id)?.queue,
       });
       timeline.rows.push({ project: p.slug, id: t.id, timeline: tl });
     }

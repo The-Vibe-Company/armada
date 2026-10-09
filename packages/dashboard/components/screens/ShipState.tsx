@@ -11,6 +11,7 @@ import { useNow, useShell } from "../shell/context";
 
 const DEPLOY_COLOR: Record<DeployState, string> = {
   skipped: "var(--text-3)",
+  "not-deployed": "var(--text-3)",
   "not-runnable": "var(--text-3)",
   waiting: "var(--amber)",
   live: "var(--blue)",

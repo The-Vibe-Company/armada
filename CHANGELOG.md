@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.62](https://github.com/The-Vibe-Company/armada/compare/v0.2.61...v0.2.62) (2026-10-09)
+
+
+### Features
+
+* **cli:** surface coordinator takeover and daily command hints ([#288](https://github.com/The-Vibe-Company/armada/issues/288)) ([41d9f7e](https://github.com/The-Vibe-Company/armada/commit/41d9f7ee5946d7968dbd3e94e5fcb80e5e0f4d3b))
+* **deploy:** report failed and skipped deploys at once ([#284](https://github.com/The-Vibe-Company/armada/issues/284)) ([43b8a71](https://github.com/The-Vibe-Company/armada/commit/43b8a71ae9151ca9572509b09262c725d098e914))
+* **digest:** show deployments, long jobs and spec progress ([#282](https://github.com/The-Vibe-Company/armada/issues/282)) ([a83de62](https://github.com/The-Vibe-Company/armada/commit/a83de629a0379d7e054b29e0b0f227cb89412e03))
+* **inbox:** clear handled notices and track queued hand-backs ([#289](https://github.com/The-Vibe-Company/armada/issues/289)) ([10b9bad](https://github.com/The-Vibe-Company/armada/commit/10b9badfb7ece9ba20dedd6c3f737b8d6c324f64))
+
+
+### Bug Fixes
+
+* **cli:** retry transient Conductor worker reads ([#283](https://github.com/The-Vibe-Company/armada/issues/283)) ([3bdf27b](https://github.com/The-Vibe-Company/armada/commit/3bdf27b2614f60da8a629c13ca387bd6aac92a3f))
+* **github:** retry unreadable responses safely ([#281](https://github.com/The-Vibe-Company/armada/issues/281)) ([054bfd4](https://github.com/The-Vibe-Company/armada/commit/054bfd40957fa6ce1da4b883b0289d72fe6416e3))
+* **test:** bundle test fixtures in a fresh bun build process ([#292](https://github.com/The-Vibe-Company/armada/issues/292)) ([d6c54b4](https://github.com/The-Vibe-Company/armada/commit/d6c54b45ac78f7cbd3fe1f9c2411300b4ef1e66c))
+* **watch:** wake only for actionable coordinator items ([#286](https://github.com/The-Vibe-Company/armada/issues/286)) ([852169f](https://github.com/The-Vibe-Company/armada/commit/852169f9652fe8f9bae15575b85e0f9fd3959552))
+
 ## [0.2.61](https://github.com/The-Vibe-Company/armada/compare/v0.2.60...v0.2.61) (2026-10-06)
 
 

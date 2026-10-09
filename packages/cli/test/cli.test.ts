@@ -4,9 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   BUNDLED_SKILLS,
+  formatWorkerSession,
   GITHUB_GRAPHQL,
   LINEAR_ENDPOINT,
   machinePaths,
+  noticesFile,
+  reserveNotice,
+  updateCredentialStore,
   updateWatchState,
 } from "../../core/src/index.ts";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
@@ -210,6 +214,83 @@ describe("project config resolution", () => {
 });
 
 describe("armada status", () => {
+  test("status names stranded tickets until taken and reserves digest hints only for human coordinators", async () => {
+    const root = await mkdtemp(join(tmpdir(), "armada-status-hints-"));
+    try {
+      const store = memoryFleet();
+      await store.recordCoordinatorSeen({
+        project: "widgets",
+        name: "old",
+        at: new Date(NOW.getTime() - 120 * 60_000),
+      });
+      for (const ticket of ["DEMO-11", "DEMO-18"])
+        await store.saveRuntimeHandle({
+          project: "widgets",
+          ticket,
+          coordinator: "old",
+          runtime: "Claude Code",
+          handle: `ws/${ticket}`,
+          branch: null,
+          at: NOW,
+        });
+      const paths = machinePaths({ XDG_CONFIG_HOME: root });
+      if (!paths) throw new Error("no temporary machine store");
+      const api = fakeArmada({ keys: { "synthetic-coordinator": "fleet" }, store });
+      const env = {
+        XDG_CONFIG_HOME: root,
+        ARMADA_API_KEY: "synthetic-coordinator",
+        ARMADA_API_URL: ARMADA_URL,
+        LINEAR_API_KEY: "k",
+        GITHUB_TOKEN: "t",
+      };
+      const status = async (args: string[] = [], override = {}, oldServer = false) => {
+        const f = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML }, { ...env, ...override });
+        const sources = recordedFetch();
+        f.io.fetch = (url, init) =>
+          oldServer && url.endsWith("/fleet/coordinators")
+            ? Promise.resolve(Response.json({ error: "no fleet operation" }, { status: 404 }))
+            : url.startsWith(ARMADA_URL)
+              ? api.fetch(url, init)
+              : sources.fetch(url, init);
+        expect(await run(["status", ...args], f.io), f.err()).toBe(0);
+        return f;
+      };
+      // Excluded output must not consume the daily reservation.
+      expect((await status(["--json"])).out()).not.toContain("armada digest");
+      expect((await status([], { ARMADA_TICKET: "DEMO-11" })).out()).not.toContain("armada coordinator take");
+      const first = (await status()).out();
+      expect(first).toContain(
+        "DEMO-11, DEMO-18 belong to coordinator old, last seen 2 h ago: armada coordinator take DEMO-11 DEMO-18 --from old",
+      );
+      expect(first).toContain("armada digest (paste it) · armada digest --send");
+      expect((await status()).out()).not.toContain("armada digest");
+      expect((await status([], {}, true)).out()).not.toContain("armada coordinator take");
+      const take = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML }, env);
+      take.io.fetch = api.fetch;
+      expect(await run(["coordinator", "take", "DEMO-11", "DEMO-18", "--from", "old"], take.io)).toBe(0);
+      expect((await status()).out()).not.toContain("armada coordinator take");
+      expect(await reserveNotice(paths, "hint:digest:widgets", NOW, 86_400_000)).toBe(false);
+      // A machine signed in only as a worker has no coordinator sign-in on status.
+      await updateCredentialStore(paths, {
+        ARMADA_WORKER_SESSION_DEMO_11: formatWorkerSession({
+          api: ARMADA_URL,
+          token: "synthetic-worker",
+          ticket: "DEMO-11",
+          project: "widgets",
+          organization: "synthetic",
+          id: "synthetic-worker-id",
+        }),
+      });
+      await rm(noticesFile(paths));
+      const worker = await status([], { ARMADA_API_KEY: "" });
+      expect(worker.out()).not.toContain("armada digest");
+      expect(worker.out()).not.toContain("armada coordinator take");
+      expect(await reserveNotice(paths, "hint:digest:widgets", NOW, 86_400_000)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("status mine uses the selected coordinator and annotates other launches", async () => {
     const root = await mkdtemp(join(tmpdir(), "armada-status-mine-"));
     try {
@@ -334,7 +415,7 @@ Pull requests waiting (4)
     );
   });
 
-  test("project skills that differ from the CLI's are named with the release the lock records", async () => {
+  test("status announces setup drift once a day outside its ordinary warnings", async () => {
     const root = await mkdtemp(join(tmpdir(), "armada-status-"));
     try {
       await mkdir(join(root, ".agents/skills/armada-worker"), { recursive: true });
@@ -344,12 +425,18 @@ Pull requests waiting (4)
         join(root, "skills-lock.json"),
         JSON.stringify({ version: 1, skills: { "armada-worker": entry } }),
       );
-      const { io, out } = fakeIo({ [join(root, "armada.toml")]: DEMO_TOML });
+      const { io, out, err } = fakeIo(
+        { [join(root, "armada.toml")]: DEMO_TOML },
+        { LINEAR_API_KEY: "k", GITHUB_TOKEN: "t", XDG_CONFIG_HOME: root },
+      );
       io.cwd = root;
       expect(await run(["status", "--json"], io)).toBe(0);
-      expect(JSON.parse(out()).warnings).toContain(
-        `this project's Armada skills are 0.1.4 (armada-worker differs), the CLI is ${version}: run \`armada init\` and merge its PR (\`armada merge <n> --no-ticket\`)`,
-      );
+      expect(JSON.parse(out()).warnings).toEqual([]);
+      const line = `armada: This project's Armada setup is behind ${version}: armada upgrade, then merge the setup pull request it opens.\n`;
+      expect(err()).toBe(line);
+      io.fetch = recordedFetch().fetch;
+      expect(await run(["status", "--json"], io)).toBe(0);
+      expect(err()).toBe(line);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

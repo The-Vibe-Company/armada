@@ -82,6 +82,7 @@ export function reasonText(t: Strings, r: Reason, now: number): string {
     case "awaiting-validation":
       return o.awaitingValidation;
     case "ready":
+      if (r.queue) return r.queue.state === "queued" ? o.queued(r.queue.position) : o.merging(r.queue.detail);
       return o.ready(r.by, r.pr, r.ci ? t.overview.ci[r.ci] : "");
     case "merged":
       return o.merged(r.pr);

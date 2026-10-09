@@ -78,7 +78,7 @@ Each problem is an error or a warning, with its fix. A missing skill, or a CLI o
 
 After the one-time pointer conversion, instruction-only Armada releases need no setup PR or project CI run. Doctor and status compare pointers, so only a discovery description change (or a missing or edited pointer) needs a setup update. The source link keeps its recorded tag until the pointer changes. Workers install the brief's pinned version before reading their skill; if `armada skill` is missing, install that version first. The command works offline, without sign-in or a checkout.
 
-New releases leave the coordinator's watch running. `armada status` and `armada inbox` announce them at most once per 24 hours per machine, across release versions; the dashboard's coordinator card shows update availability. Only a required server minimum or changed installed setup produces a `version` item and stops either watch mode. Run `armada upgrade`: it waits up to five checks over about two minutes for npm to serve the exact target, installs it, verifies `armada --version`, then uses the installed doctor to check setup. It runs `armada init --merge` only for outdated setup, through the normal setup-only merge checks. Upgrade requires the selected checkout's `armada.toml` at its Git root. Workers keep their brief's pinned version.
+New releases leave the coordinator's watch running. `armada status` and `armada inbox` announce them at most once per 24 hours per machine, across release versions; the dashboard's coordinator card shows update availability. Setup behind gets a separate daily notice in status, inbox and plain watch's final output: run `armada upgrade`, then merge the setup pull request it opens. Only a CLI below the server minimum produces a `version` item and stops either watch mode. Plain watch lists other coordinators' items with their owner, but wakes only for new own and unowned items, even with `--all`. Reading inbox preserves the watch's shown history; a narrower `--mine` read cannot prune a broader `--all` read. Run `armada upgrade`: it waits up to five checks over about two minutes for npm to serve the exact target, installs it, verifies `armada --version`, then uses the installed doctor to check setup. It runs `armada init --merge` only for outdated setup, through the normal setup-only merge checks. Upgrade requires the selected checkout's `armada.toml` at its Git root. Workers keep their brief's pinned version.
 
 
 The shipping skills include every helper, reference, eval, companion manifest and license.
@@ -211,6 +211,7 @@ armada answer 13 "approved"                                   # a plan, after de
 armada answer --note ABC-12 "main moved: bring it in before you ship"  # an unsolicited message, same path
 ```
 
+- Hand-backs already in the merge queue show their position or drain step as in progress in the inbox, watch and dashboard. They need no new coordinator action. A worker reporting another phase clears its previous hand-back; its next `ready-to-merge` report wakes the watch again. Confirmed merges clear that PR's queue refusals and owner merge requests, with cleared ids in the result line. The next inbox read also clears notices for PRs merged elsewhere, using the stored GitHub reading.
 - `ask` reports the `blocked` phase with `Agent status: blocked — question: <first line>` (the rest and the numbered options below it) and adds a `question` item to the coordinator's inbox on Armada. The worker then stops and waits for the answer in its session, and reports the phase it resumes. It finds the ticket like `report`.
 - `report awaiting-approval` adds a `plan` item with the full message (and the `--plan` block) and worker handle to the coordinator's inbox. Same-phase heartbeats neither duplicate nor reopen it. Answering it, recording a note, leaving the phase or releasing the ticket closes the plan and any pending approval request. For a pre-approved plan (the brief's "Plan" line says which), post the plan with `report implementing --plan-file -` instead: no approval item is needed.
 - `heartbeat --every 5m --parent <agent-pid>` pings Armada without reading keys from the vault or writing Linear. The brief starts it immediately after claim: Conductor uses `--background` (detached process group and PID file), Claude Code uses the subagent's background Bash. It survives between turns on Cloud and stops when its persistent parent exits or the current worker session ends (release, merge, revoke). If background startup is unsupported or fails, keep manual reports at least every 15 minutes. `[policy] silence_minutes` defaults to 15: no heartbeat means probably stopped; old clients use reports. `quiet_minutes` defaults to 45: alive without a progress report creates a coordinator-only `quiet` inbox note, never an owner item or red dashboard state. Heartbeats draw the timeline's session line; actual reports remain dots.
@@ -284,6 +285,8 @@ armada merge 35 --no-ticket # a pull request no ticket owns: armada init's, a re
 Alerts use the same owner items as browser notifications: work or merges to validate, escalated questions, and stopped coordinators with items waiting. Ticks run after fleet traffic and dashboard polls, throttled to once per minute per project, and read stored snapshots only. The outbox deduplicates across instances and claims retries too; a failed item gets at most five attempts. Ten consecutive failures pause the channel, as do HTTP 404/410 immediately; saving resumes it. Quiet-hour arrivals are retained for the next summary rather than posted as delayed alerts.
 
 Digests default to 09:00, 13:00 and 18:00 on weekdays in the channel’s IANA time zone. Edit times/days or leave times empty to disable them; **Skip quiet digests** suppresses empty summaries. Each channel gets one durable local slot, even with several coordinators or app instances. A slot more than 30 minutes late is skipped and mentioned in the next digest. Digests cover merges with titles, blocked/silent durations, owner decisions with links and running phases. Remaining time is qualified as “usually”, from phase medians with at least three merged samples. Summaries also list recent deploy target states and persistent deploy failures, plus running and recently ended long jobs with their reported progress, estimated ends and app links. Merged, waiting and in-progress tickets are grouped by spec with leaf-ticket done/total counts when several groups appear; ungrouped tickets appear under Other. A single group keeps the flat layout. Available main health adds a section.
+
+`armada status` reminds the coordinator once per 24 hours per project on each machine to use `armada digest` or `armada digest --send`. After a successful merge without deploy targets, `armada merge` similarly names `[[deploy.target]]` with a smoke command and `armada doctor`. Hints are reserved before printing in the machine's `notices.json` (legacy release receipts are preserved); unreadable memory suppresses hints. JSON and worker sessions show none. Status also names tickets held by another coordinator silent beyond twice `[policy] silence_minutes`, with the exact takeover command; transferring them removes the line.
 
 `armada digest` prints the current project since the previous digest (channel creation for the first, or four hours without a channel). `--since 4h` or an ISO timestamp overrides the window; `--lang en|fr` overrides `[tracker] language`; `--json` includes structured data; `--send` posts through the server-side channel without exposing its address. Worker sessions cannot read or send digests. Printed and sent summaries share their builder and renderer. Quiet periods send one line by default.
 
@@ -582,12 +585,15 @@ Use the [Bun](https://bun.sh) version pinned in `package.json`'s `packageManager
 bun install
 bun run armada status   # run the CLI from source
 bun run verify          # lint, typecheck, tests
+bun run build           # CLI and dashboard production builds
 ```
 
-When changing a package under `skills/`, run `bun run skills:bundle` to regenerate
-the text payload included in the published Node bundle, then `bun run armada skills
-update` to refresh this repository's pointers and vendored packages. The bundle test compares all
-source skill files byte for byte, including nested helpers and license notices.
+When changing a package under `skills/`, commit only its source files. The gitignored
+`packages/core/src/skills.generated.json` is generated automatically during install,
+tests (including direct `bun test`), typechecks, source CLI runs and builds. Packing
+and release build the CLI with the current skill text inlined for Node. Run
+`bun run armada skills update` to refresh this repository's pointers and vendored
+packages; `bun run skills:bundle` remains available for manual regeneration.
 
 See [AGENTS.md](https://github.com/The-Vibe-Company/armada/blob/main/AGENTS.md) for the layout and the rules.
 
@@ -698,6 +704,7 @@ branch = "main"                    # omit for the merged PR's base branch
 paths = ["cmd/**", "internal/**"]  # optional repository-relative globs
 # Exactly one source of the live commit:
 github_environment = "production"
+# check = "./scripts/check-deploy.sh"  # exit 0 live, 1 host failure, 2 pending or skipped
 # live_sha_command = "curl -fsS https://example.test/version"
 smoke = "curl -fsS https://example.test/health" # optional
 timeout_minutes = 20              # 1–120
@@ -705,6 +712,8 @@ pause_on_failure = true
 ```
 
 `armada merge` starts a background deploy watcher and prints `Watching the deploy of <sha> to <target>`. Deployment failures, smoke failures and timeouts create one inbox item and a shared deploy hold for that target. A later healthy deploy clears the failures it covers. Use `--through-hold "<why>"` to merge the repair. `pause_on_failure = false` keeps the inbox warning without pausing merges.
+
+Choose exactly one of `github_environment`, `live_sha_command` or `check`. A `check` exits 1 only for a confirmed host deploy failure, which pauses merges on the next poll; exit 2 for pending or network errors. Exit 2 with a last stdout line `skipped: <reason>` ends as `not deployed (host skipped: …)` without smoke, a hold or an inbox item, and exits 0. Exit 0 runs smoke as usual. Legacy `live_sha_command` keeps waiting until timeout on failure. `armada doctor` warns for each target without smoke and explains the legacy source's limitations; the merge's watching line warns that a live but broken service reads healthy without smoke. Deploy dashboard/API migration 45 before updating the CLI. See the runbook below for the contract and an example adapter.
 
 With `paths`, a merge that touches none of the globs prints one skip line and starts no watcher or deploy hold. Globs match repository-relative paths, including dot files. Missing or incomplete changed-file coverage (including renames whose original path is unknown) keeps the watcher. Omit `paths` to watch every merge on the target's branch. For an affected target, the live commit must equal the merged commit or be a verified descendant; smoke then runs as usual.
 

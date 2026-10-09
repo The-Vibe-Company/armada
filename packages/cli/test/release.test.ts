@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { entryKey, machinePaths, planSkills, releasesFile } from "@armada/core";
+import { machinePaths, planSkills, releasesFile } from "@armada/core";
 import { NOW } from "../../core/test/support.ts";
 import { heard } from "../src/api.ts";
 import type { Io } from "../src/io.ts";
@@ -46,7 +46,7 @@ async function terminal() {
 
 test("ordinary releases never interrupt watch; notices are daily across versions and repeat after 24 hours", async () => {
   const c = await terminal();
-  expect(await pendingRelease(c.io, "1.2.3", [], c.view)()).toBeNull();
+  expect(await pendingRelease(c.io, "1.2.3")()).toBeNull();
   await noticeRelease(c.io, "1.2.3", c.view);
   expect(c.err).toHaveLength(1);
   expect(c.err[0]).not.toContain("armada init");
@@ -68,24 +68,45 @@ test("a minimum-version refusal remains required after a quiet notice and withou
   await noticeRelease(c.io, "1.2.3", c.view);
   c.server.minimum = "1.2.4";
   c.io.env = {};
-  const entry = await pendingRelease(c.io, "1.2.3", [], c.view)();
+  const entry = await pendingRelease(c.io, "1.2.3")();
   expect(entry).toMatchObject({ kind: "version", version: "1.2.4" });
   expect(entry?.body).toContain("server requires");
   expect(entry?.body).not.toContain("armada init");
 });
 
 for (const name of ["armada-worker", "review-code-dev"]) {
-  test(`${name} setup drift interrupts watch even without a newer release`, async () => {
+  test(`${name} setup drift is a daily notice even without a newer release`, async () => {
     const c = await terminal();
     c.server.latest = "1.2.3";
     await writeFile(join(c.cwd, `.agents/skills/${name}/SKILL.md`), "outdated instructions");
-    const entry = await pendingRelease(c.io, "1.2.3", ["version:1.2.3"], c.view)();
-    expect(entry).toMatchObject({ kind: "version", version: "1.2.3" });
-    expect(entry?.body).toContain("armada init");
-    if (!entry) throw new Error("missing required upgrade");
-    expect(await pendingRelease(c.io, "1.2.3", [entryKey(entry)], c.view)()).toBeNull();
+    expect(await pendingRelease(c.io, "1.2.3")()).toBeNull();
+    await noticeRelease(c.io, "1.2.3", c.view);
+    expect(c.err).toEqual([
+      "armada: This project's Armada setup is behind 1.2.3: armada upgrade, then merge the setup pull request it opens.\n",
+    ]);
+    await noticeRelease(c.io, "1.2.3", c.view);
+    expect(c.err).toHaveLength(1);
+    c.time(86_400_000);
+    await noticeRelease(c.io, "1.2.3", c.view);
+    expect(c.err).toHaveLength(2);
   });
 }
+
+test("setup notices have a separate daily budget and stay quiet without machine storage", async () => {
+  const c = await terminal();
+  await noticeRelease(c.io, "1.2.3", c.view);
+  await writeFile(join(c.cwd, ".agents/skills/armada-worker/SKILL.md"), "outdated instructions");
+  await noticeRelease(c.io, "1.2.3", c.view);
+  expect(c.err).toHaveLength(2);
+  expect(c.err[1]).toContain("setup is behind 1.2.4");
+  c.server.latest = "1.2.5";
+  await noticeRelease(c.io, "1.2.3", c.view);
+  expect(c.err).toHaveLength(2);
+  c.io.env = {};
+  c.time(86_400_000);
+  await noticeRelease(c.io, "1.2.3", c.view);
+  expect(c.err).toHaveLength(2);
+});
 
 test("legacy release memory migrates without suppressing notices forever; workers stay quiet", async () => {
   const c = await terminal();
@@ -99,7 +120,7 @@ test("legacy release memory migrates without suppressing notices forever; worker
   c.time(86_400_000);
   await noticeRelease(c.io, "1.2.3", c.view);
   expect(c.err).toHaveLength(1);
-  expect(await pendingRelease(c.io, "1.2.3", [], c.view)()).toBeNull();
+  expect(await pendingRelease(c.io, "1.2.3")()).toBeNull();
 });
 
 test("concurrent commands reserve only one daily notice across versions", async () => {

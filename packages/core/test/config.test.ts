@@ -131,6 +131,7 @@ describe("armada.toml", () => {
       branch: null,
       githubEnvironment: "production",
       liveShaCommand: null,
+      check: null,
       smoke: null,
       timeoutMinutes: 20,
       pauseOnFailure: true,
@@ -657,4 +658,16 @@ test("CI setup_steps accepts exact names and globs and rejects malformed declara
   ).toEqual(["Install dependencies", "Run bun install*"]);
   for (const value of ['"Install dependencies"', "[1]", '[" "]'])
     expect(() => parseConfig(`${DEMO_TOML}\n[ci]\nsetup_steps = ${value}`)).toThrow("ci.setup_steps");
+});
+
+test("deploy sources are three-way exclusive", () => {
+  const sources = ['github_environment = "production"', 'live_sha_command = "version"', 'check = "host-check"'];
+  const prefix = `${DEMO_TOML}\n[[deploy.target]]\nname = "api"\n`;
+  for (const source of sources) expect(parseConfig(prefix + source).deploy?.targets).toHaveLength(1);
+  expect(parseConfig(prefix + sources[2]).deploy?.targets[0]?.check).toBe("host-check");
+  for (const mask of [0, 3, 5, 6, 7]) {
+    expect(() => parseConfig(prefix + sources.filter((_, i) => mask & (1 << i)).join("\n"))).toThrow(
+      "needs exactly one of github_environment, live_sha_command or check",
+    );
+  }
 });
