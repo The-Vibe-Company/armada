@@ -666,10 +666,13 @@ export interface CoordinatorHabit {
 /** Mask shell data before matching command positions; unsupported quoting fails silent. */
 function shellCode(command: string): string {
   const lines: string[] = [];
-  let heredoc: string | null = null;
-  for (const line of command.split("\n")) {
-    if (heredoc !== null) {
-      if (line.trim() === heredoc) heredoc = null;
+  const heredocs: { delimiter: string; stripTabs: boolean }[] = [];
+  const physical = command.split("\n");
+  for (let n = 0; n < physical.length; n++) {
+    let line = physical[n] ?? "";
+    const heredoc = heredocs[0];
+    if (heredoc) {
+      if ((heredoc.stripTabs ? line.replace(/^\t+/, "") : line) === heredoc.delimiter) heredocs.shift();
       continue;
     }
     let code = "";
@@ -677,8 +680,49 @@ function shellCode(command: string): string {
       const c = line[i];
       if (c === "#" && (i === 0 || /[\s;&|]/.test(line[i - 1] ?? ""))) break;
       if (c === "\\") {
+        if (i === line.length - 1 && n + 1 < physical.length) {
+          line = line.slice(0, i) + physical[++n];
+          i--;
+          continue;
+        }
         code += "__escaped__";
         i++;
+        continue;
+      }
+      if (c === "<" && line[i + 1] === "<") {
+        // Here strings and unsupported delimiter forms must not expose data as commands.
+        if (line[i + 2] === "<") return "";
+        let j = i + 2;
+        const stripTabs = line[j] === "-";
+        if (stripTabs) j++;
+        while (/\s/.test(line[j] ?? "") && j < line.length) j++;
+        let delimiter = "";
+        let quoted = false;
+        while (j < line.length && !/[\s;&|<>]/.test(line[j] ?? "")) {
+          const char = line[j++];
+          if (char === "'" || char === '"') {
+            quoted = true;
+            let closed = false;
+            while (j < line.length) {
+              const next = line[j++];
+              if (next === char) {
+                closed = true;
+                break;
+              }
+              // Complex double-quoted delimiter escapes are conservatively ignored.
+              if (char === '"' && next === "\\") return "";
+              delimiter += next;
+            }
+            if (!closed) return "";
+          } else if (char === "\\") {
+            if (j === line.length) return "";
+            delimiter += line[j++];
+          } else delimiter += char;
+        }
+        if (!delimiter && !quoted) return "";
+        heredocs.push({ delimiter, stripTabs });
+        code += "<<__heredoc__";
+        i = j - 1;
         continue;
       }
       if (c === "'" || c === '"') {
@@ -697,10 +741,6 @@ function shellCode(command: string): string {
         if (!closed) return "";
         code += word === "/dev/null" ? word : "__quoted__";
       } else code += c;
-    }
-    if (code.includes("<<")) {
-      const delimiter = /<<-?\s*(['"]?)([A-Za-z_][\w-]*)\1/.exec(line);
-      if (delimiter) heredoc = delimiter[2] ?? null;
     }
     lines.push(code);
   }
@@ -738,7 +778,8 @@ export function coordinatorHabits(lines: string[], o: { since?: string } = {}): 
           block.type === "tool_use" &&
           block.name === "Bash" &&
           typeof block.id === "string" &&
-          typeof block.input?.command === "string"
+          typeof block.input?.command === "string" &&
+          (block.input.run_in_background === undefined || typeof block.input.run_in_background === "boolean")
         ) {
           uses.set(block.id, { command: block.input.command, background: block.input.run_in_background === true, at });
         } else if (row.type === "user" && block.type === "tool_result" && typeof block.tool_use_id === "string") {

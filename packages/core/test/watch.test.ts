@@ -879,6 +879,10 @@ test("coordinator habits match Bash results, ignore backgrounds and tolerate unk
     "echo 'gh pr merge 12'",
     "rg 'armada status | tail'",
     "cat <<'EOF'\ngit commit\ngh pr merge 12\narmada status | tail\nEOF",
+    "cat <<EOF\n EOF \ngh pr merge 12\nEOF",
+    "cat <<123\ngh pr merge 12\n123",
+    "cat <<-EOF\n\t EOF\ngh pr merge 12\n\tEOF",
+    "echo \\\ngh pr merge 12",
     "echo done # gh pr merge 12",
   ]) {
     expect(coordinatorHabits([use("example", command), result("example")], {})).toEqual([]);
@@ -889,6 +893,17 @@ test("coordinator habits match Bash results, ignore backgrounds and tolerate unk
   expect(coordinatorHabits([use("pr", "gh pr create --title fix"), result("pr")], {})).toEqual([
     { rule: "own-code", command: "gh pr create --title fix" },
   ]);
+  for (const command of ["cat <<-123\n\tdata\n\t123\ngh pr merge 14", "g\\\nh pr merge 14"]) {
+    expect(coordinatorHabits([use("real", command), result("real")], {})).toEqual([
+      { rule: "raw-merge", command, pr: 14 },
+    ]);
+  }
+  for (const run_in_background of ["true", null, 1, {}]) {
+    const unknown = line("assistant", "2026-01-01T10:00:00Z", [
+      { type: "tool_use", id: "unknown", name: "Bash", input: { command: "gh pr merge 12", run_in_background } },
+    ]);
+    expect(coordinatorHabits([unknown, result("unknown", "2026-01-01T10:01:01Z")])).toEqual([]);
+  }
 });
 
 test("waiting launches keep watch alive without inflating its workers or releasing the stop hook", async () => {
