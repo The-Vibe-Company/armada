@@ -1294,10 +1294,29 @@ export function memoryFleet(): FleetStore & {
     },
     async resolveInboxItems(q) {
       return resolve(
-        items.filter((i) => i.project === q.project && i.ticket === q.ticket && i.kind === q.kind && !i.resolvedAt),
+        items.filter(
+          (i) =>
+            i.project === q.project &&
+            i.ticket === q.ticket &&
+            i.kind === q.kind &&
+            !i.resolvedAt &&
+            (q.author === undefined || (i.author === q.author && i.createdAt <= q.at.toISOString())),
+        ),
         q.resolution,
         q.at,
       );
+    },
+    async resolvePrItems(q) {
+      const found = items.filter(
+        (i) =>
+          i.project === q.project &&
+          i.recipient === "coordinator" &&
+          !i.resolvedAt &&
+          ((i.kind === "queue-refused" && i.body.startsWith(queueRefusedPrefix(q.pr))) ||
+            (i.kind === "merge-request" && i.requestPr === q.pr)),
+      );
+      resolve(found, q.resolution, q.at);
+      return found.map((i) => i.id);
     },
     async resolveAnswerRequests(q) {
       return resolve(
@@ -1419,6 +1438,13 @@ export function memoryFleet(): FleetStore & {
           recipient: "coordinator",
           author: q.holder,
           body: `${queueRefusedPrefix(entry.pr)} ${q.detail ?? "merge refused"}`,
+          at: q.at,
+        });
+      if (q.outcome === "merged")
+        await this.resolvePrItems({
+          project: q.project,
+          pr: entry.pr,
+          resolution: `resolved: PR #${entry.pr} merged`,
           at: q.at,
         });
       return true;

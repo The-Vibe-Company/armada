@@ -1294,3 +1294,38 @@ test("named inbox job liveness stays owned and mine probes preserve other coordi
   expect(mine?.openJobs).toEqual([ids[1] as number]);
   expect((await readWatchState(c.paths, `${P}.job-observe`))?.jobObserved?.[ids[0] as number]).toBe(NOW.toISOString());
 });
+
+test("queued hand-backs render as in progress and do not ask the coordinator to act", async () => {
+  const c = await coordinator();
+  await c.store.putHandBack({ project: P, ticket: "DEMO-2", author: null, body: "PR #12 ready", at: NOW });
+  await c.store.queueAdd({
+    project: P,
+    pr: 12,
+    ticket: "DEMO-2",
+    noTicket: false,
+    keepOpen: false,
+    throughHold: null,
+    reason: null,
+    headSha: "a".repeat(40),
+    queuedBy: "owner",
+    at: NOW,
+  });
+  expect(await run(["inbox"], c.io)).toBe(0);
+  expect(c.out()).toContain("In progress:");
+  expect(c.out()).toContain("queued in the merge queue (position 1)");
+  expect(c.out()).not.toContain("act on the items above");
+  c.reset();
+  await c.store.addInboxItem({
+    project: P,
+    ticket: "DEMO-3",
+    kind: "question",
+    recipient: "coordinator",
+    author: null,
+    body: "Which direction?",
+    at: NOW,
+  });
+  expect(await run(["watch"], c.io)).toBe(0);
+  expect(c.out()).toContain("Waiting for you:");
+  expect(c.out()).toContain("queued in the merge queue (position 1)");
+  expect(c.out()).toContain("act on the items above");
+});

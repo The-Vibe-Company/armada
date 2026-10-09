@@ -36,7 +36,7 @@ You only learn of something new when a command you run ends. While a worker is i
 - `armada watch --follow` keeps running and prints a line per event; use it only where every output line reaches you (a terminal, a herdr pane, a harness tool such as Claude Code's Monitor) or in a script. Pass `--for <minutes>` below your harness's command limit; it ends with the command that resumes it.
 - `armada status` and `armada inbox` run fine beside a watch. Stop a watch only with `armada watch --stop`, never `pkill`.
 - A runtime that cannot run a background command calls `armada inbox --wait` again and again instead.
-- In Claude Code, every inbox/status/merge/launch command and the watch show whether the stop hook is on for this session, installed awaiting its first run, or NOT on with a reason and fix. Check that banner (also in `armada doctor`). `inbox`, `watch`, `brief`, `launch` and `merge` register your session: the hook holds it across checkouts while workers are in flight and no watch runs. Workers never register. If the session starts outside the coordinator checkout, add the Stop command `armada hook stop 2>/dev/null || true` to `~/.claude/settings.json`; `armada init --merge` installs it only in the repository and never touches user settings. `ARMADA_STOP_HOOK=off` turns it off; say so in your report.
+- In Claude Code, inbox/status/merge/launch/watch and `doctor` show the Stop hook as on, installed awaiting confirmation, or NOT on with a reason and fix. Check the banner. `inbox`/`watch`/`brief`/`launch`/`merge` register coordinator sessions; workers never register. The hook holds across checkouts while workers run without a watch. For sessions starting elsewhere, add `armada hook stop 2>/dev/null || true` as a Stop command in `~/.claude/settings.json`; `armada init --merge` only writes repository settings. `ARMADA_STOP_HOOK=off` disables it; report that choice.
 
 Done when a watch runs, or the last line says `nothing to watch`.
 
@@ -94,6 +94,8 @@ One `--reason` explains both the profile choice and the pre-approval. `--runtime
 Done when every launched ticket is In Progress with a claim, and a watch runs.
 
 ### 6. Merge handed-back pull requests
+
+A hand-back shown as `queued in the merge queue (position N)` or `merging: <drain step>` needs no new action; keep the drain running. A note that sends a worker back to work leaves the hand-back until that worker reports its resumed phase, which clears it; its next `ready-to-merge` report wakes the watch again.
 
 A `hand-back` entry means the worker reported `ready-to-merge` with green CI, resolved review threads and the full head SHA. Merge it with `armada merge <pr>`, following [MERGE.md](MERGE.md). The command checks everything, merges pinned to the handed-back head under the project's merge lock, and then, by itself:
 
