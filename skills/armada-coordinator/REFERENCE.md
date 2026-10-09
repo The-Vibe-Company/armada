@@ -34,7 +34,7 @@ Armada detects the command in user settings (`~/.claude/settings.json`) and the 
 
 ## The SessionStart brief
 
-`armada init` and `--merge` install both Stop and SessionStart in repository settings, once; one question accepts both, and `--no-stop-hook` skips both. `armada doctor` warns when SessionStart is missing. SessionStart matches `compact|resume` only; fresh startup still follows Start in SKILL.md.
+`armada init` and `--merge` install both Stop and SessionStart in repository settings, once; one question accepts both, and `--no-stop-hook` skips both. `armada doctor` warns when SessionStart is missing. SessionStart matches `compact|resume` only; fresh startup still follows [Start](#start).
 
 After compact or resume, `armada hook session-start` inserts plain text into Claude's context: `Armada: you coordinate <project> as <name> from <checkout>`, tickets with phases and ages, PRs and holds, up to 20 actionable inbox lines, and the watch and Stop-hook banners. The block is at most 60 lines. Run every Armada command from the named checkout; read `armada status --mine` and `armada inbox --mine` before acting. Its final line tells you to start `armada watch` with Bash `run_in_background` when none runs. The hook never starts a watch itself. A live read records presence and only the inbox keys actually shown; omitted items can still wake the watch.
 
@@ -142,3 +142,22 @@ Requests expire after seven days. The inbox shows one expiry notice with the ren
 The running watch starts eligible requests itself, oldest first, at most one per poll, when any blocker closes or a worker slot frees. Successful starts stay quiet in plain watch and appear in status and the next re-arm line; follow prints a `launched` line, respecting `--tickets` and `--kinds` (use `--kinds launched` for starts alone). Merge/drain still fire the tickets that their merge unblocked. Only this coordinator's requests fire, with no cap bypass. Herdr starts on the watch's machine; automatic launches never prompt to install tools.
 
 Fire-time admission checks cancellation, expiry and ownership; launch rechecks the request after preflight and fresh Linear readiness, including the ready label. Known failures, including missing runtime tools, arrive as one rewritten `launch-failed` inbox item. Keep/re-arm watch to retry after five minutes, then fifteen minutes, at most three attempts total. The third failure says `gave up after 3 failed launches`; renew or decline deliberately. An uncertain creation keeps its pending launch even after token expiry: inspect and revoke it before another automatic creation. Guided Claude Code profiles stay manual inbox work with `armada brief ... --prompt` for the Agent tool. `coordinator take` transfers the waiting request too. Missing readings or unavailable admission/attempt metadata prevent automatic firing: deploy the dashboard before the CLI.
+
+## Start
+
+After Claude compact/resume, follow the Armada brief; see [REFERENCE.md](REFERENCE.md#the-sessionstart-brief).
+
+1. **Sign in.** `armada whoami` says whether this terminal is signed in and to which organization. If not: a person runs `armada login` and approves the code in the browser; a headless coordinator (a cloud workspace, CI) sets `ARMADA_API_KEY` to an organization API key an owner created, or runs `armada login --api-key`. Signed in, Armada gives each command the organization's keys and puts a one-time launch token in every brief, so no worker needs a key. Keys set in the environment still win. `armada doctor` checks the repository and the sign-in together.
+2. **Take your name.** One project can have several coordinators, each with a name. Set `ARMADA_COORDINATOR=<name>` (a cloud workspace) or run `armada coordinator use <name>` (this checkout); without either the name is `default`. A named coordinator sees its own workers and unowned items; `default` sees the whole fleet. `armada coordinator list` shows the names, their sessions and tickets. Status names work stranded under a silent role with the `armada coordinator take … --from <name>` command; use it when you resume that work. See REFERENCE.md before sharing a project.
+3. **Find your coordination ticket**, if the owner gave you one. Read its comments, newest first. A last comment `Agent status: released — <text>` is a hand-over: `<text>` is the state the previous coordinator left. Claim the ticket with your own handle, never the previous one: `armada claim <ticket> --runtime <your runtime> --handle <your handle> --branch <default branch>` (in Conductor, `--runtime conductor --handle "$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID"`; elsewhere set `ARMADA_COORDINATOR_HANDLE` to the handle you claimed with). Report on it as a worker would, `armada report implementing --ticket <ticket> --message "<what you found and do next>"`, and hand over with `armada release --ticket <ticket> --reason "<state so far and what remains>"` when you stop before the run ends. Write that reason for a reader with none of your context.
+4. **Run from anywhere.** Commands find the project from the checkout. From another folder, pass `--project <slug>` (this machine's last watched checkout) or set `ARMADA_CONFIG=/path/to/armada.toml`; `--config <path>` wins over both.
+
+## Launch details
+
+6. **Launch** Conductor and herdr workers with one command:
+
+```sh
+armada launch ABC-12 --runtime conductor --profile backend --pre-approve --reason "CLI and core only; a small follow-up" --notes notes.md
+```
+
+One `--reason` explains both the profile choice and the pre-approval. `--runtime conductor|herdr` may be left out when the profile settles it. `--notes <file|->` adds what only you know (the boundary with a parallel worker, a decision not yet on the ticket), up to 16 KB; notes never approve a plan. `--dry-run` checks everything and creates nothing. The command refuses a ticket already launched or claimed, mints the token, starts the worker and prints its handle and link, never the token. For failed or uncertain launches, follow REFERENCE.md. Put worker conventions in `[brief] extra`. For a Claude Code profile, run `armada brief <ticket> --prompt` with the same flags and launch through the Agent tool as its runtime guide says.
