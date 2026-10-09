@@ -1803,3 +1803,22 @@ test.each([
   }
   expect(launches).toBe(1);
 });
+
+test.each([false, true])("an empty merge drain shows the Claude hook banner and preserves JSON (%s)", async (json) => {
+  const f = await fixture();
+  f.io.env.CLAUDECODE = "1";
+  f.io.env.CLAUDE_CODE_SESSION_ID = "coordinator-session";
+  const out: string[] = [],
+    err: string[] = [];
+  expect(
+    await run(["merge", "--drain", ...(json ? ["--json"] : [])], {
+      ...f.io,
+      stdout: (t) => out.push(t),
+      stderr: (t) => err.push(t),
+    }),
+  ).toBe(0);
+  if (json) {
+    expect(JSON.parse(out.join(""))).toEqual({ queue: "empty" });
+    expect(err.join("")).toContain("Stop hook NOT on:");
+  } else expect(out.join("")).toContain("queue empty\nStop hook NOT on:");
+});
