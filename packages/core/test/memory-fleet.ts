@@ -49,6 +49,7 @@ interface ItemRow extends Omit<StoredInboxItem, "request"> {
   requestQuestion: number | null;
   requestProfile: string | null;
   requestValidation?: number | null;
+  launchId?: string;
   deployTarget?: string | null;
   deploySha?: string | null;
 }
@@ -312,6 +313,50 @@ export function memoryFleet(): FleetStore & {
   };
 
   return {
+    async recordLaunchFailure(i) {
+      const launch = launches.find((l) => l.project === i.project && l.ticket === i.ticket && l.id === i.launchId);
+      const handle = handles.get(key(i.project, i.ticket));
+      if (launch && handle && handle.claimedAt >= launch.launchedAt) return;
+      if (
+        launch &&
+        launches.some(
+          (l) =>
+            l.project === i.project &&
+            l.ticket === i.ticket &&
+            (l.launchedAt > launch.launchedAt ||
+              (l.launchedAt === launch.launchedAt && (l.id ?? "") > (launch.id ?? ""))),
+        )
+      )
+        return;
+      const existing = items.find(
+        (r) =>
+          r.project === i.project &&
+          r.ticket === i.ticket &&
+          !r.resolvedAt &&
+          (r.kind === "launch-failed" || r.kind === "launch-uncertain"),
+      );
+      const previous = existing && launches.find((l) => l.id === existing.launchId);
+      if (
+        launch &&
+        previous &&
+        (previous.launchedAt > launch.launchedAt ||
+          (previous.launchedAt === launch.launchedAt && (previous.id ?? "") > (launch.id ?? "")))
+      )
+        return;
+      const row = {
+        ...i,
+        coordinator: launch ? (launch.coordinator ?? null) : (i.coordinator ?? null),
+        kind: i.outcome === "failed" ? ("launch-failed" as const) : ("launch-uncertain" as const),
+        recipient: "coordinator" as const,
+        author: null,
+        body: `${i.reason}\nNext: ${i.next}`,
+        createdAt: i.at.toISOString(),
+        requestQuestion: null,
+        requestProfile: null,
+      };
+      if (existing) Object.assign(existing, row);
+      else insert(row);
+    },
     async digestRecords(project, since, now) {
       const start = since ?? new Date(now.getTime() - 4 * 60 * 60_000).toISOString();
       const rows = events.filter((e) => e.project === project && e.at >= start && e.at <= now.toISOString());

@@ -9,7 +9,7 @@ import type { OwnerItem } from "@armada/core/read";
 
 export type { OwnerItem } from "@armada/core/read";
 
-import type { Strings } from "./i18n";
+import type { MILESTONE_TITLES, Strings } from "./i18n";
 
 /** Browser notifications for what waits for the owner, and the hours they stay quiet (local time, `HH:MM`). */
 export interface NotifySettings {
@@ -66,7 +66,15 @@ export function toNotify(
   return items.filter((i) => !shown.has(i.key));
 }
 
-/** A notification's title. */
+/** Shared browser/chat title; channel milestones never enter browser ownerItems. */
+export function channelNotificationTitle(t: Strings, item: OwnerItem, milestones: typeof MILESTONE_TITLES.en): string {
+  if (item.kind === "spec-closed") return milestones.specClosed(item.title);
+  if (item.kind === "hold-opened") return milestones.holdOpened(item.title, item.reason ?? "");
+  if (item.kind === "hold-cleared") return milestones.holdCleared(item.title);
+  return notificationTitle(t, item);
+}
+
+/** Browser titles stay independent of the channel-only milestone formatter. */
 export function notificationTitle(t: Strings, item: OwnerItem): string {
   if (item.kind === "question") return t.notify.question(item.title);
   if (item.kind === "validation") return t.notify.validation(item.title);
