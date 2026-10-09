@@ -972,6 +972,7 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "ALTER TABLE deploys ADD CONSTRAINT deploys_state_check CHECK (state IN ('waiting', 'live', 'healthy', 'deploy-failed', 'smoke-failed', 'timeout', 'skipped', 'not-runnable'))",
     ],
   },
+  { version: 44, statements: ['ALTER TABLE "armada_worker" ADD COLUMN "overCap" text'] },
   {
     // THE-1440: host skips are replaceable observations, without recovery coverage or holds.
     version: 45,

@@ -9,7 +9,7 @@ import { shellWord } from "./brief.ts";
 import type { ArmadaConfig } from "./config.ts";
 import { type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
 import { attachPullRequests } from "./github.ts";
-import { type FleetStore, type HandBackSnapshot, handBackPr } from "./live.ts";
+import { type FleetStore, type HandBackSnapshot, handBackPr, workerSlots } from "./live.ts";
 import { buildModel } from "./model.ts";
 import { routeProfile } from "./routing.ts";
 import type { StatusReport } from "./status.ts";
@@ -26,6 +26,9 @@ export type RequestStore = Pick<
   | "decideValidation"
   | "openInboxItems"
   | "queueAdd"
+  | "openRuntimeHandles"
+  | "pendingLaunches"
+  | "listCoordinators"
 >;
 
 export const REQUEST_LIMITS = { answer: 4000, author: 80 } as const;
@@ -406,6 +409,18 @@ export async function requestDeferredLaunch(
   };
   const events = await db.latestEvents(config.project.slug, { tickets: [ticket] });
   const heldTickets = deferredHeld(model, snapshot.flight, input.now, held ? [held] : [], events);
+  const max = config.policy.maxWorkers;
+  const slots = max
+    ? {
+        ...workerSlots({
+          launches: await db.pendingLaunches(config.project.slug, new Date(0)),
+          handles: await db.openRuntimeHandles(config.project.slug),
+          coordinators: await db.listCoordinators(config.project.slug),
+          now: input.now,
+        }),
+        max,
+      }
+    : undefined;
   const state = deferredLaunchState(
     item,
     model,
@@ -413,10 +428,12 @@ export async function requestDeferredLaunch(
     heldTickets.has(ticket),
     author,
     !!profile && config.conductor.profiles[profile]?.runtime === "claude-code",
+    slots,
   );
   if (!state.blockers?.length && issue && state.reason === null)
     throw new RequestRefusal("not-ready", `${ticket} is not blocked; run ${state.command}`);
-  if (!state.blockers?.length || state.reason !== `waits on ${state.blockers.join(", ")}`)
+  const slotWait = !!slots?.max && state.reason === `waits for a worker slot (${slots.taken} of ${slots.max})`;
+  if (!slotWait && (!state.blockers?.length || state.reason !== `waits on ${state.blockers.join(", ")}`))
     throw new RequestRefusal(
       "not-ready",
       `${ticket} cannot wait for launch: ${state.reason ?? "it has no open blockers"}`,
@@ -427,7 +444,9 @@ export async function requestDeferredLaunch(
     kind: "launch-request",
     author,
     coordinator: input.coordinator,
-    body: `${ticket} will launch once ${state.blockers.join(", ")} ${state.blockers.length === 1 ? "is" : "are"} done`,
+    body: slotWait
+      ? `${ticket} will launch once a worker slot frees`
+      : `${ticket} will launch once ${state.blockers?.join(", ")} ${state.blockers?.length === 1 ? "is" : "are"} done`,
     question: null,
     profile,
     deferred: true,

@@ -35,6 +35,10 @@ Plain `armada watch` waits until a new own or unowned item you have not been sho
 
 Both modes share one lock per project and name on a machine. `armada inbox --wait [--timeout <seconds>]` (300 by default) is the fallback for a runtime that cannot run a background command.
 
+## Worker caps
+
+`[policy] max_workers` caps project-wide worker sessions, including open claims waiting for merge and unclaimed launches. A full fleet refuses a new launch: use `armada launch <ticket> --when-unblocked` to wait for a slot, or `armada launch <ticket> --over-cap "<why>"` for a recorded bypass. Never use relaunch to bypass the cap; it replaces an existing worker. Urgent tickets pass automatically with a recorded reason. Status and re-arm lines show running workers separately from launches waiting for a slot. Without this setting, launches are uncapped; lowering it stops no worker.
+
 ## Silence and liveness
 
 - **Silent**: no heartbeat, report or answer for `[policy] silence_minutes` (15 by default). A worker's first allowance adds `launch_grace_minutes` (defaults to `silence_minutes`). Shipping at stage `ci` gets `ci_wait_minutes` (45 by default). Waiting phases (`awaiting-approval`, `blocked`, `awaiting-validation`) are never silent while unanswered.

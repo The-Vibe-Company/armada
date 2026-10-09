@@ -398,11 +398,18 @@ async function launch(a: CliAccounts, request: Request, deps: CliApiDeps, now: D
   const coordinator = body.coordinator === undefined ? "default" : body.coordinator;
   if (coordinator !== null && (typeof coordinator !== "string" || !COORDINATOR.test(coordinator)))
     return refuse(400, "invalid coordinator name", "use 1 to 32 lowercase letters, digits or hyphens");
+  if (
+    body.overCap !== undefined &&
+    body.overCap !== null &&
+    (typeof body.overCap !== "string" || !body.overCap.trim() || body.overCap.length > 2000)
+  )
+    return refuse(400, "overCap needs a reason of at most 2000 characters", "pass --over-cap with a reason");
   const { worker, token } = await createLaunch(a.client, {
     organization: holder.organization.id,
     project: body.project,
     ticket: body.ticket,
     launcher: { kind: identity.via, id: holder.actor.id, label: holder.actor.label },
+    overCap: typeof body.overCap === "string" ? body.overCap.trim() : null,
     coordinator,
     now,
   });

@@ -63,6 +63,9 @@ export async function askCoordinator(ctx: WorkerContext, input: AskInput): Promi
 // ------------------------------------------------------------------ inbox
 
 export interface InboxReport {
+  waiting?: string[];
+  ownedWaiting?: string[];
+  slots?: { taken: number; max: number | null };
   ownedInFlight?: string[];
   ownedOpenJobs?: number[];
   project: string;
@@ -127,6 +130,9 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
   const warnings = [...first.warnings];
   let items = first.items;
   let inFlight = first.inFlight ?? null;
+  let waiting = first.waiting ?? [];
+  let ownedWaiting = first.ownedWaiting;
+  let slots = first.slots;
   let ownedInFlight = first.ownedInFlight;
   let openJobs = first.openJobs ?? [];
   let ownedOpenJobs = first.ownedOpenJobs;
@@ -136,6 +142,9 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
     generatedAt: o.now().toISOString(),
     items,
     inFlight,
+    waiting,
+    ownedWaiting,
+    slots,
     ...(ownedInFlight ? { ownedInFlight } : {}),
     ...(openJobs.length ? { openJobs } : {}),
     ...(ownedOpenJobs ? { ownedOpenJobs } : {}),
@@ -153,6 +162,9 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
     const known = new Set(items.map(entryKey));
     items = read.items.map((e) => ({ ...e, new: !known.has(entryKey(e)) }));
     inFlight = read.inFlight ?? null;
+    waiting = read.waiting ?? [];
+    ownedWaiting = read.ownedWaiting;
+    slots = read.slots;
     ownedInFlight = read.ownedInFlight;
     openJobs = read.openJobs ?? [];
     ownedOpenJobs = read.ownedOpenJobs;
