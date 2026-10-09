@@ -21,6 +21,7 @@ export const CLAUDE_SETTINGS = ".claude/settings.json";
  * 0, since Claude Code would read an exit code of 2 as a block.
  */
 export const STOP_HOOK_COMMAND = "armada hook stop 2>/dev/null || true";
+export const SESSION_START_HOOK_COMMAND = "armada hook session-start 2>/dev/null || true";
 export const GITIGNORE = ".gitignore";
 /** Paths init may merge automatically; armada.toml is allowed only on first setup. */
 export const SETUP_PATHS = [
@@ -363,6 +364,7 @@ export async function checkRepository(
   view: RepoView,
   armadaVersion: string,
   stopHookInstalledIn?: string | null,
+  sessionStartHookInstalledIn?: string | null,
 ): Promise<Check[]> {
   const checks: Check[] = [];
 
@@ -503,6 +505,7 @@ export async function checkRepository(
     }
 
   checks.push(await stopHookCheck(view, stopHookInstalledIn));
+  checks.push(await sessionStartHookCheck(view, sessionStartHookInstalledIn));
 
   checks.push(
     ignoresShipArtifacts(await view.readFile(GITIGNORE))
@@ -552,28 +555,101 @@ export async function findStopHook(
   read: (path: string) => Promise<string | null>,
   files: readonly string[],
 ): Promise<string | null> {
+  return findHook(read, files, hasStopHook);
+}
+
+export async function findSessionStartHook(
+  read: (path: string) => Promise<string | null>,
+  files: readonly string[],
+): Promise<string | null> {
+  return findHook(read, files, hasSessionStartHook);
+}
+
+async function findHook(
+  read: (path: string) => Promise<string | null>,
+  files: readonly string[],
+  has: (settings: Json | null) => boolean,
+): Promise<string | null> {
   for (const file of files) {
     try {
       const text = await read(file);
       if (text !== null) {
         const settings: unknown = JSON.parse(text);
-        if (isObject(settings) && hasStopHook(settings)) return file;
+        if (isObject(settings) && has(settings)) return file;
       }
     } catch {}
   }
   return null;
 }
 
-/** The settings text with Armada's stop hook added next to any other hook. Throws SetupError on a layout it cannot extend. */
-export function withStopHook(text: string | null): string {
+/** Detect a command covering both resume and compact; startup-only hooks do not restore context. */
+export function hasSessionStartHook(settings: Json | null): boolean {
+  const groups = isObject(settings?.hooks) ? (settings.hooks as Json).SessionStart : undefined;
+  if (!Array.isArray(groups)) return false;
+  return ["compact", "resume"].every((source) =>
+    groups.some((group) => {
+      if (!isObject(group) || !Array.isArray(group.hooks)) return false;
+      const command = group.hooks.some(
+        (h) =>
+          isObject(h) &&
+          h.type === "command" &&
+          typeof h.command === "string" &&
+          h.command.includes("armada hook session-start"),
+      );
+      if (!command) return false;
+      const matcher = group.matcher;
+      if (matcher === undefined || matcher === "" || matcher === "*") return true;
+      if (typeof matcher !== "string") return false;
+      if (/^[a-zA-Z0-9_ ,|-]+$/.test(matcher)) return matcher.split(/[|,]/).some((value) => value.trim() === source);
+      try {
+        return new RegExp(matcher).test(source);
+      } catch {
+        return false;
+      }
+    }),
+  );
+}
+
+/** Add both Armada hooks without changing the user's other settings or hook groups. */
+export function withArmadaHooks(text: string | null): string {
   const settings = claudeSettings(text) ?? {};
-  if (hasStopHook(settings)) return text ?? "";
+  if (hasStopHook(settings) && hasSessionStartHook(settings)) return text ?? "";
   const hooks = settings.hooks ?? {};
   if (!isObject(hooks)) throw new SetupError(`${CLAUDE_SETTINGS} has a "hooks" value that is not an object`);
-  const stop = hooks.Stop ?? [];
-  if (!Array.isArray(stop)) throw new SetupError(`${CLAUDE_SETTINGS} has a "hooks.Stop" value that is not a list`);
-  const entry = { hooks: [{ type: "command", command: STOP_HOOK_COMMAND, timeout: 10 }] };
-  return `${JSON.stringify({ ...settings, hooks: { ...hooks, Stop: [...stop, entry] } }, null, 2)}\n`;
+  for (const [event, installed, entry] of [
+    ["Stop", hasStopHook(settings), { hooks: [{ type: "command", command: STOP_HOOK_COMMAND, timeout: 10 }] }],
+    [
+      "SessionStart",
+      hasSessionStartHook(settings),
+      { matcher: "compact|resume", hooks: [{ type: "command", command: SESSION_START_HOOK_COMMAND, timeout: 30 }] },
+    ],
+  ] as const) {
+    if (installed) continue;
+    const groups = hooks[event] ?? [];
+    if (!Array.isArray(groups))
+      throw new SetupError(`${CLAUDE_SETTINGS} has a "hooks.${event}" value that is not a list`);
+    hooks[event] = [...groups, entry];
+  }
+  return `${JSON.stringify({ ...settings, hooks }, null, 2)}\n`;
+}
+
+async function sessionStartHookCheck(view: RepoView, installedIn?: string | null): Promise<Check> {
+  const id = "session-start-hook";
+  if (installedIn)
+    return ok(id, `${installedIn} has Armada’s session-start hook: briefs coordinators after compact or resume`);
+  try {
+    return hasSessionStartHook(claudeSettings(await view.readFile(CLAUDE_SETTINGS)))
+      ? ok(id, `${CLAUDE_SETTINGS} has Armada's session-start hook: briefs coordinators after compact or resume`)
+      : bad(
+          id,
+          "warning",
+          `${CLAUDE_SETTINGS} has no Armada session-start hook, so compact or resume can lose the coordinator's watch context`,
+          "run `armada init` and accept the hooks (this repository’s settings only, never your user settings)",
+        );
+  } catch (err) {
+    if (!(err instanceof SetupError)) throw err;
+    return bad(id, "warning", `Claude Code session-start hook not checked: ${err.message}`, `fix ${CLAUDE_SETTINGS}`);
+  }
 }
 
 async function stopHookCheck(view: RepoView, installedIn?: string | null): Promise<Check> {
@@ -611,7 +687,7 @@ export interface SetupPlan {
   /** Skills added by this plan, and skills replaced by a newer version. */
   installed: string[];
   updated: string[];
-  /** The plan adds the Claude Code stop hook to the repository's Claude settings. */
+  /** The plan adds the Claude Code Stop and SessionStart hooks to the repository's Claude settings. */
   stopHook: boolean;
 }
 
@@ -761,7 +837,7 @@ export async function planSetup(view: RepoView, opts: PlanOptions): Promise<Setu
     const before = await view.readFile(CLAUDE_SETTINGS);
     let after: string;
     try {
-      after = withStopHook(before);
+      after = withArmadaHooks(before);
     } catch (err) {
       if (!(err instanceof SetupError)) throw err;
       throw new SetupError(`${err.message}: fix it, or leave the stop hook out with \`armada init --no-stop-hook\``);

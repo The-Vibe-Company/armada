@@ -529,9 +529,9 @@ describe("armada doctor and armada init", () => {
     );
     // Without a terminal to ask, the stop hook is added, to the repository's settings only.
     expect(first.out).toContain(
-      "Adds the Claude Code stop hook to .claude/settings.json: this repository's settings, not your user settings.\n",
+      "Adds the Claude Code stop and session-start hooks to .claude/settings.json: this repository's settings, not your user settings.\n",
     );
-    expect(pr.body).toContain("`ARMADA_STOP_HOOK=off` turns it off");
+    expect(pr.body).toContain("`ARMADA_STOP_HOOK=off` turns Stop off");
     expect(f.linear.labels.filter((l) => l.isGroup).map((l) => l.name)).toEqual(["Agent phase", "Agent runtime"]);
     expect(first.out).toContain("Registered project widgets on Armada; armada status --all lists it.\n");
     expect(await f.registry.listProjects()).toMatchObject([
@@ -590,12 +590,12 @@ describe("armada doctor and armada init", () => {
     f.io.interactive = true;
     f.io.prompt = async (question) => {
       asked.push(question);
-      return question.startsWith("Add the Claude Code stop hook") ? answer : "";
+      return question.startsWith("Add the Claude Code stop and session-start hooks") ? answer : "";
     };
     const declined = await f.armada("init", "--program-root", "DEMO-1");
     expect(declined.code).toBe(0);
-    expect(asked.filter((q) => q.includes("stop hook"))).toEqual([
-      "Add the Claude Code stop hook to this repository's .claude/settings.json? A coordinator then cannot end its turn while workers are in flight and no armada watch runs; your user settings are not touched. [Y/n] ",
+    expect(asked.filter((q) => q.includes("session-start hooks"))).toEqual([
+      "Add the Claude Code stop and session-start hooks to this repository's .claude/settings.json? They keep coordinators watching and brief them after compact or resume; your user settings are not touched. [Y/n] ",
     ]);
     expect(declined.out).not.toContain("stop hook");
     const pr = f.gh.prs[0] as FakePr;
@@ -609,9 +609,9 @@ describe("armada doctor and armada init", () => {
     // --no-stop-hook does not ask; an empty answer is the default, yes.
     asked.length = 0;
     expect((await f.armada("init", "--no-stop-hook")).out).toContain("no pull request to open");
-    expect(asked.filter((q) => q.includes("stop hook"))).toEqual([]);
+    expect(asked.filter((q) => q.includes("session-start hooks"))).toEqual([]);
     answer = "";
     const accepted = await f.armada("init");
-    expect(accepted.out).toContain("Adds the Claude Code stop hook to .claude/settings.json");
+    expect(accepted.out).toContain("Adds the Claude Code stop and session-start hooks to .claude/settings.json");
   });
 });
