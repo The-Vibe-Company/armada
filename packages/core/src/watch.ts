@@ -53,6 +53,8 @@ export interface WatchState {
   claudeSessions?: Record<string, string>;
   /** Bounded incremental Stop transcript cursors, keyed by Claude session id. */
   habitCursors?: Record<string, { path: string; offset: number }>;
+  /** Shorter external watch lifetime observed on this machine. */
+  harnessLimitMinutes?: number;
   /** The checkout (directory of armada.toml) where `armada watch` last ran: the coordinator's. */
   root: string | null;
   cursor?: string;
@@ -625,7 +627,7 @@ export function rearm(o: {
     o.running !== null
       ? o.mode === "follow"
         ? `armada watch is following (pid ${o.running})`
-        : `armada watch is already running (pid ${o.running})`
+        : `armada watch is running (pid ${o.running}); starting another waits for its result`
       : null;
   const count = (o.slots?.max ? o.slots.taken : o.inFlight?.length) ?? 0;
   const workerLine = o.slots?.max ? `${count} of ${o.slots.max} workers in flight` : workers(count);

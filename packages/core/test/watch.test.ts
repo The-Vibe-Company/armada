@@ -356,7 +356,7 @@ describe("the re-arm line", () => {
       "1 worker in flight (DEMO-2) — act on the items above, then keep watching: armada watch",
     );
     expect(rearm({ inFlight: ["DEMO-2"], open: 0, running: 4242 }).line).toBe(
-      "1 worker in flight (DEMO-2) — armada watch is already running (pid 4242).",
+      "1 worker in flight (DEMO-2) — armada watch is running (pid 4242); starting another waits for its result.",
     );
     expect(rearm({ inFlight: [], open: 2, running: null }).line).toBe(
       "No worker in flight, 2 items open — keep watching: armada watch",
