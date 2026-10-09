@@ -1524,9 +1524,10 @@ type DeployInputWithCoverage = DeployInput & { project: string; coveredShas?: re
 /** A deploy state which ends observation for that (target, sha) row. */
 const deployTerminal = (state: string): boolean => state === "healthy" || deployFailed(state as never);
 
-const coveredShasOf = (input: DeployInputWithCoverage): string[] => [
-  ...new Set([input.sha, ...(input.coveredShas ?? [])].filter((sha): sha is string => !!sha)),
-];
+const coveredShasOf = (input: DeployInputWithCoverage): string[] =>
+  input.state === "not-deployed"
+    ? []
+    : [...new Set([input.sha, ...(input.coveredShas ?? [])].filter((sha): sha is string => !!sha))];
 
 const coveredShasFromRow = (row: Row): string[] => {
   const shas = row.covered_shas;
@@ -1773,7 +1774,7 @@ export async function recordDeploy(db: Database, input: DeployInputWithCoverage 
         return previousRecord;
       }
       const updated = await q.query<Row>(
-        `UPDATE deploys SET started_at = CASE WHEN state IN ('skipped', 'not-runnable') AND $4 NOT IN ('skipped', 'not-runnable') THEN $9 ELSE started_at END,
+        `UPDATE deploys SET started_at = CASE WHEN state IN ('skipped', 'not-runnable', 'not-deployed') AND $4 NOT IN ('skipped', 'not-runnable', 'not-deployed') THEN $9 ELSE started_at END,
            state = $4, detail = $5, pause_on_failure = $6, live_sha = $7,
             covered_shas = $8, updated_at = $9
          WHERE project = $1 AND target = $2 AND sha = $3 RETURNING *`,

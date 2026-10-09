@@ -656,10 +656,10 @@ export async function buildDoctor(
     ...signIn,
     ...versionChecks(hostOf(credentials.armadaApi.url), api, armadaVersion, outdated),
     ...keyFileChecks(machine, credentials),
-    ...(await (async (): Promise<Check[]> => {
+    ...(await (async (): Promise<(Check | InfoCheck)[]> => {
       if (!config?.deploy?.targets.length) return [];
       const local = await readDeployEnv(machine.paths, config.project.slug);
-      const checks = config.deploy.targets.map((target): Check => {
+      const checks: (Check | InfoCheck)[] = config.deploy.targets.map((target): Check => {
         const { missing } = resolveDeployEnv(target, local.env, io.env);
         return {
           id: `deploy-env:${target.name}`,
@@ -672,12 +672,30 @@ export async function buildDoctor(
             : null,
         };
       });
+      for (const target of config.deploy.targets) {
+        if (!target.smoke)
+          checks.push({
+            id: `deploy-smoke:${target.name}`,
+            level: "warning",
+            message: `${target.name}: no smoke command; a live but broken service reads healthy`,
+            fix: `add smoke = "<command that fails when the service is broken>" to [[deploy.target]] ${target.name}`,
+          });
+        if (target.liveShaCommand)
+          checks.push({
+            id: `deploy-source:${target.name}`,
+            level: "info",
+            message: `${target.name}: a failed deploy shows only at timeout_minutes and a host skip becomes a pause; switch to check (exit 0 live, 1 failed, 2 pending or skipped)`,
+            fix: null,
+          });
+      }
       if (local.warning)
         checks.unshift({
           id: "deploy-machine-settings",
           level: "warning",
           message: local.warning,
-          fix: checks.find((c) => c.fix)?.fix ?? `armada config set deploy.env.<VAR> <value>${configFlag}`,
+          fix:
+            checks.find((c) => c.id.startsWith("deploy-env:") && c.fix)?.fix ??
+            `armada config set deploy.env.<VAR> <value>${configFlag}`,
         });
       return checks;
     })()),

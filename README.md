@@ -701,6 +701,7 @@ branch = "main"                    # omit for the merged PR's base branch
 paths = ["cmd/**", "internal/**"]  # optional repository-relative globs
 # Exactly one source of the live commit:
 github_environment = "production"
+# check = "./scripts/check-deploy.sh"  # exit 0 live, 1 host failure, 2 pending or skipped
 # live_sha_command = "curl -fsS https://example.test/version"
 smoke = "curl -fsS https://example.test/health" # optional
 timeout_minutes = 20              # 1–120
@@ -708,6 +709,8 @@ pause_on_failure = true
 ```
 
 `armada merge` starts a background deploy watcher and prints `Watching the deploy of <sha> to <target>`. Deployment failures, smoke failures and timeouts create one inbox item and a shared deploy hold for that target. A later healthy deploy clears the failures it covers. Use `--through-hold "<why>"` to merge the repair. `pause_on_failure = false` keeps the inbox warning without pausing merges.
+
+Choose exactly one of `github_environment`, `live_sha_command` or `check`. A `check` exits 1 only for a confirmed host deploy failure, which pauses merges on the next poll; exit 2 for pending or network errors. Exit 2 with a last stdout line `skipped: <reason>` ends as `not deployed (host skipped: …)` without smoke, a hold or an inbox item, and exits 0. Exit 0 runs smoke as usual. Legacy `live_sha_command` keeps waiting until timeout on failure. `armada doctor` warns for each target without smoke and explains the legacy source's limitations; the merge's watching line warns that a live but broken service reads healthy without smoke. Deploy dashboard/API migration 45 before updating the CLI. See the runbook below for the contract and an example adapter.
 
 With `paths`, a merge that touches none of the globs prints one skip line and starts no watcher or deploy hold. Globs match repository-relative paths, including dot files. Missing or incomplete changed-file coverage (including renames whose original path is unknown) keeps the watcher. Omit `paths` to watch every merge on the target's branch. For an affected target, the live commit must equal the merged commit or be a verified descendant; smoke then runs as usual.
 
