@@ -120,6 +120,8 @@ test.each([false, true])(
 
 test.each([
   "overlap",
+  "dirty",
+  "behind",
   "partial",
   "herdr",
   "unknown-outcome",
@@ -181,6 +183,10 @@ test.each([
       p.files = { nodes: [{ path: "src/lists.ts", additions: 1, deletions: 1 }], pageInfo: { hasNextPage: false } };
     }
   }
+  const affectedPull = pulls.find((p) => p.number === 7);
+  if (!affectedPull) throw new Error("missing affected PR");
+  affectedPull.mergeStateStatus = scenario === "dirty" ? "DIRTY" : scenario === "behind" ? "BEHIND" : "CLEAN";
+  affectedPull.mergeable = scenario === "dirty" ? "CONFLICTING" : "MERGEABLE";
   f.net.workerPulls = scenario === "no-pr" ? pulls.filter((p) => p.number !== 7) : pulls;
   if (scenario === "files-unknown") f.net.forgeDown = true;
   if (scenario === "truncated-prs") f.net.truncatedPrs = true;
@@ -352,7 +358,16 @@ test.each([
     expect(o.lines.join("\n")).toContain("Continue with: the dashboard part");
   }
   const messages = () => native.filter((c) => c.args[1] === "message" || c.args[1] === "prompt");
-  const delivers = ["overlap", "partial", "herdr", "shared", "before-archive", "fresh-own-transfer"].includes(scenario);
+  const delivers = [
+    "overlap",
+    "dirty",
+    "behind",
+    "partial",
+    "herdr",
+    "shared",
+    "before-archive",
+    "fresh-own-transfer",
+  ].includes(scenario);
   expect(messages()).toHaveLength(
     delivers || scenario.startsWith("unknown-outcome") || scenario === "recording-outage" ? 1 : 0,
   );
@@ -386,7 +401,12 @@ test.each([
     expect(message).toContain('main moved: PR #9 "feat(lists): share a list by link" (DEMO-18) merged as 5555555.');
     expect(message).toContain("your PR #7 (DEMO-11) also changes: src/lists.ts");
     expect(message).toContain("shareList");
-    expect(message).toContain("git fetch origin && git merge origin/main, then run the checks again");
+    expect(message).toContain("Integrate main only if GitHub reports DIRTY");
+    expect(message).toContain("git fetch origin && git merge origin/main");
+    expect(message).toContain("resolve conflicts, rerun the checks, push, and hand back the new head once CI is green");
+    expect(message).toContain("CLEAN or BEHIND: no action needed; the coordinator's merge updates a behind branch");
+    expect(message).toContain("If already ready-to-merge, keep your phase and hand-back");
+    expect(message).not.toContain("Before your next push:");
     // Merge retries use the durable receipt identity, even when the notice's text changes.
     if (scenario !== "herdr") {
       const note = recordedKeys.find((n) => n.ticket === "DEMO-11");
