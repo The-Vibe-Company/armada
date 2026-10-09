@@ -201,7 +201,9 @@ export const newerRelease = (running: string, latest: string | null | undefined)
 
 /** A quiet release notice; refresh instructions only when this project's setup differs. */
 export const releaseLine = (running: string, latest: string, { setupBehind }: { setupBehind: boolean }) =>
-  `Armada ${latest} is out (you run ${running}): armada upgrade${setupBehind ? " — then armada init to refresh this project's skills if still behind" : ""}. Changes: ${releaseNotesUrl(latest)}`;
+  setupBehind
+    ? `This project's Armada setup is behind ${latest}: armada upgrade, then merge the setup pull request it opens.`
+    : `Armada ${latest} is out (you run ${running}): armada upgrade. Changes: ${releaseNotesUrl(latest)}`;
 
 /** What a server said of the CLIs it serves, from the headers of its last answer. */
 export interface ServerCli {
