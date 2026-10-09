@@ -9,6 +9,7 @@ A Claude Code coordinator can run workers as its own background subagents (the A
 - **Always in its own worktree.** Without `isolation: "worktree"` a subagent edits your checkout and switches your branch under you. Never launch one without it.
 - Its Armada handle is its name: the ticket id in lowercase (`abc-12` for ABC-12), which the brief's claim line already uses.
 - **It shares your machine and environment**: your `gh` sign-in, your `armada`, every variable of your session. Its brief carries a one-time launch token, so it needs no key; because it inherits your environment, the brief tells it to pass `--ticket` to every command.
+- Check the stop-hook banner on coordinator commands and `armada doctor`. Your session registers when you run `armada inbox` or `armada watch`, so the hook holds you across checkouts while workers are in flight and no watch runs. If your session starts outside the coordinator checkout, install `armada hook stop 2>/dev/null || true` as a Stop command in `~/.claude/settings.json`; init only edits repository settings. An installed hook confirms at your next turn end. Workers with `ARMADA_TICKET` never register; worker subagents fire SubagentStop, which does not hold the coordinator.
 - A worker's question, plan or hand-back reaches your inbox, not your conversation: keep `armada watch` running in the background as the coordinator skill says. The notification Claude Code sends when a subagent stops is a hint to look, not the record.
 
 ## Launch
