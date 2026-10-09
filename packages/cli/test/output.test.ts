@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEMO_TOML } from "../../core/test/support.ts";
+import { bundleForNode } from "./support/bundle.ts";
 
 const entry = join(import.meta.dir, "../src/main.ts");
 const preload = join(import.meta.dir, "fixtures/entry-output.ts");
@@ -12,14 +13,7 @@ let directory: string;
 beforeAll(async () => {
   directory = await mkdtemp(join(tmpdir(), "armada-output-"));
   await writeFile(join(directory, "armada.toml"), DEMO_TOML);
-  const result = await Bun.build({
-    entrypoints: [join(import.meta.dir, "../src/bin.ts"), preload],
-    target: "node",
-    external: ["@libsql/client"],
-    outdir: directory,
-    naming: "[name].[ext]",
-  });
-  expect(result.success).toBe(true);
+  await bundleForNode([join(import.meta.dir, "../src/bin.ts"), preload], directory, { external: ["@libsql/client"] });
 });
 
 afterAll(async () => {
