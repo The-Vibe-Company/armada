@@ -5,8 +5,10 @@ import {
   entryKey,
   type FleetStore,
   type HandBackSnapshot,
+  inboxTag,
   readInbox,
   reconcileHandles,
+  recordMerge,
   recordReport,
   serveInbox,
 } from "../src/live.ts";
@@ -1435,4 +1437,243 @@ test("a main-red pause wakes watch once and names the waiting queue without anot
   });
   expect((await inbox(store)).some((i) => i.kind === "hold")).toBe(false);
   expect((await inbox(store)).some((i) => i.kind === "queue-stalled")).toBe(true);
+});
+
+test("confirmed and snapshot merges settle only that PR's coordinator notices", async () => {
+  const db = memoryFleet();
+  const ids: number[] = [];
+  for (const pr of [12, 123]) {
+    ids.push(
+      await db.addInboxItem({
+        project: P,
+        ticket: "DEMO-2",
+        recipient: "coordinator",
+        kind: "queue-refused",
+        author: null,
+        body: `PR #${pr} refused: CI failed`,
+        at: at(5),
+      }),
+    );
+    ids.push(
+      (await db.addRequest({
+        project: P,
+        kind: "merge-request",
+        ticket: "DEMO-2",
+        question: null,
+        profile: null,
+        pr,
+        author: "owner",
+        body: "Please merge",
+        at: at(5),
+      }))!,
+    );
+  }
+  const recorded = await recordMerge(
+    db,
+    P,
+    {
+      ticket: "DEMO-2",
+      number: 12,
+      url: "https://github.com/acme/widgets/pull/12",
+      mergeCommit: "b".repeat(40),
+      headSha: "a".repeat(40),
+    },
+    NOW,
+  );
+  expect(recorded.cleared).toEqual(ids.slice(0, 2));
+  expect((await inbox(db)).map((i) => i.id)).toEqual(ids.slice(2));
+  const snapshot: HandBackSnapshot = {
+    repository: "acme/widgets",
+    issues: [],
+    prs: [{ repo: "other/widgets", number: 123, state: "merged" }],
+  };
+  expect((await readInbox(db, { project: P, silentAfterMinutes: 15, now: NOW, snapshot })).map((i) => i.id)).toEqual(
+    ids.slice(2),
+  );
+  snapshot.prs = [{ repo: "acme/widgets", number: 123, state: "merged" }];
+  expect(await readInbox(db, { project: P, silentAfterMinutes: 15, now: NOW, snapshot })).toEqual([]);
+  expect((await db.getInboxItem(P, ids[2]!))?.resolution).toBe("resolved: PR #123 merged");
+});
+
+test("only the current worker can retire a hand-back; returning ready creates a new wake key", async () => {
+  const db = memoryFleet();
+  await db.saveRuntimeHandle({
+    project: P,
+    ticket: "DEMO-2",
+    runtime: "Conductor",
+    handle: "ws/session",
+    branch: null,
+    workerSessionId: "current",
+    at: at(10),
+  });
+  const r = {
+    ticket: "DEMO-2",
+    phase: "ready-to-merge" as const,
+    previous: "shipping" as const,
+    summary: "PR #12 ready",
+    message: "",
+    prUrl: null,
+    headSha: null,
+    workerSessionId: "current",
+  };
+  await recordReport(db, P, r, at(5));
+  const before = (await inbox(db)).find((i) => i.kind === "hand-back")!;
+  await expect(recordReport(db, P, { ...r, phase: "shipping", workerSessionId: "old" }, at(3))).rejects.toThrow(
+    "no longer holds",
+  );
+  expect((await db.getInboxItem(P, before.id!))?.resolvedAt).toBeNull();
+  await recordReport(db, P, { ...r, phase: "shipping", previous: "ready-to-merge" }, at(2));
+  expect((await db.getInboxItem(P, before.id!))?.resolution).toBe("worker resumed: shipping");
+  expect((await inbox(db)).some((i) => i.kind === "hand-back")).toBe(false);
+  await recordReport(db, P, r, NOW);
+  const after = (await inbox(db)).find((i) => i.kind === "hand-back")!;
+  expect(entryKey(after)).not.toBe(entryKey(before));
+  const live = tempFleet({ store: db });
+  const watch = await watchInbox(live.fleet, {
+    project: P,
+    silentAfterMinutes: 15,
+    coordinator: null,
+    seen: [entryKey(before)],
+    now: live.clock.now,
+    sleep: live.clock.sleep,
+  });
+  expect(watch.outcome).toBe("items");
+  expect(watch.items.find((i) => i.kind === "hand-back")?.new).toBe(true);
+});
+
+test("queued hand-backs refresh the listing without changing their watch key", async () => {
+  const db = memoryFleet();
+  await db.putHandBack({ project: P, ticket: "DEMO-2", author: null, body: "PR #12 ready", at: at(5) });
+  const before = (await inbox(db))[0]!;
+  const entry = {
+    project: P,
+    ticket: "DEMO-2",
+    noTicket: false,
+    keepOpen: false,
+    throughHold: null,
+    reason: null,
+    headSha: "a".repeat(40),
+    queuedBy: "owner",
+    at: NOW,
+  };
+  await db.queueAdd({ ...entry, pr: 11 });
+  await db.queueAdd({ ...entry, pr: 12 });
+  const queued = (await inbox(db)).find((i) => i.id === before.id)!;
+  expect(queued.queue).toEqual({ state: "queued", position: 2, detail: null });
+  expect(entryKey(queued)).toBe(entryKey(before));
+  expect(inboxTag([queued])).not.toBe(inboxTag([before]));
+  const live = tempFleet({ store: db });
+  const watch = await watchInbox(live.fleet, {
+    project: P,
+    silentAfterMinutes: 15,
+    coordinator: null,
+    seen: [],
+    now: live.clock.now,
+    sleep: live.clock.sleep,
+    until: new Date(NOW.getTime() + 60_000),
+  });
+  expect(watch.outcome).toBe("timeout");
+  await db.acquireLease({ project: P, name: "merge-queue", holder: "drain", ttlMs: 600_000, at: NOW });
+  await db.queueRemove({ project: P, pr: 11, at: NOW });
+  const next = await db.queueNext({ project: P, holder: "drain", at: NOW });
+  if ("refused" in next || !next.entry) throw new Error("missing queue entry");
+  await db.queueProgress({ project: P, id: next.entry.id, holder: "drain", detail: "waiting for checks", at: NOW });
+  const merging = (await inbox(db)).find((i) => i.id === before.id)!;
+  expect(merging.queue).toEqual({ state: "merging", position: 1, detail: "waiting for checks" });
+  expect(entryKey(merging)).toBe(entryKey(before));
+  await db.queueFinish({
+    project: P,
+    id: next.entry.id,
+    holder: "drain",
+    outcome: "refused",
+    detail: "CI failed",
+    at: NOW,
+  });
+  const refused = await inbox(db);
+  expect(refused.find((i) => i.id === before.id)?.queue).toBeUndefined();
+  expect(refused.some((i) => i.kind === "queue-refused" && entryKey(i) !== entryKey(before))).toBe(true);
+});
+
+test("a PR notice write failure cannot undo a confirmed merge and heals on the next stored reading", async () => {
+  const db = memoryFleet();
+  const id = await db.addInboxItem({
+    project: P,
+    ticket: "DEMO-2",
+    kind: "queue-refused",
+    recipient: "coordinator",
+    author: null,
+    body: "PR #12 refused: head moved",
+    at: at(5),
+  });
+  const resolve = db.resolvePrItems;
+  db.resolvePrItems = async () => {
+    throw new Error("database unavailable");
+  };
+  const recorded = await recordMerge(
+    db,
+    P,
+    {
+      ticket: "DEMO-2",
+      number: 12,
+      url: "https://github.com/acme/widgets/pull/12",
+      mergeCommit: "b".repeat(40),
+      headSha: "a".repeat(40),
+    },
+    NOW,
+  );
+  expect(recorded.warnings?.[0]).toContain("could not clear PR #12 inbox notices");
+  expect((await db.latestEvents(P))["DEMO-2"]?.kind).toBe("merge");
+  expect((await db.getInboxItem(P, id))?.resolvedAt).toBeNull();
+  db.resolvePrItems = resolve;
+  expect(
+    await readInbox(db, {
+      project: P,
+      silentAfterMinutes: 15,
+      now: NOW,
+      snapshot: {
+        repository: "acme/widgets",
+        issues: [],
+        prs: [{ repo: "acme/widgets", number: 12, state: "merged" }],
+      },
+    }),
+  ).toEqual([]);
+});
+
+test("inbox --wait keeps listening when a hand-back is first observed already queued", async () => {
+  const live = tempFleet();
+  let added = false;
+  const report = await checkInbox(live.fleet, {
+    project: P,
+    silentAfterMinutes: 15,
+    now: live.clock.now,
+    wait: {
+      timeoutMs: 60_000,
+      sleep: async (ms) => {
+        await live.clock.sleep(ms);
+        if (added) return;
+        added = true;
+        await live.store.putHandBack({
+          project: P,
+          ticket: "DEMO-2",
+          author: null,
+          body: "PR #12 ready",
+          at: live.clock.now(),
+        });
+        await live.store.queueAdd({
+          project: P,
+          pr: 12,
+          ticket: "DEMO-2",
+          noTicket: false,
+          keepOpen: false,
+          throughHold: null,
+          reason: null,
+          headSha: "a".repeat(40),
+          queuedBy: "owner",
+          at: live.clock.now(),
+        });
+      },
+    },
+  });
+  expect(report.wait?.timedOut).toBe(true);
+  expect(report.items.find((i) => i.kind === "hand-back")?.queue?.state).toBe("queued");
 });

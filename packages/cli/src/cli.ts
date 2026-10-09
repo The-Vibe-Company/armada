@@ -14,8 +14,6 @@ import {
   parseConfig,
   Refusal,
   readWatchProjects,
-  skillsBehind,
-  skillsBehindLine,
 } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
 import { acceptance } from "./acceptance.ts";
@@ -40,6 +38,7 @@ import { lint } from "./lint.ts";
 import { setupLocal } from "./local-setup.ts";
 import { login, logout, requireSignIn, whoami } from "./login.ts";
 import { MergeCommandError, merge, notMergedResult } from "./merge.ts";
+import { statusHints } from "./notices.ts";
 import { peek, requirePeekCoordinator } from "./peek.ts";
 import { recordPresence } from "./presence.ts";
 import { statusAll } from "./projects.ts";
@@ -231,7 +230,9 @@ const COMMAND_HELP: Record<string, string> = {
 `,
   inbox: `  inbox [--mine|--all] [--wait [--timeout <seconds>]]
                     Coordinator: open questions, plans, requests, hand-backs and silent workers,
-                    oldest first; records that the coordinator is at work. --wait returns
+                    oldest first; queued hand-backs show as in progress, needing no action.
+                    Merged PR notices and resumed workers' hand-backs clear automatically.
+                    Records that the coordinator is at work. --wait returns
                     when a new item arrives or after --timeout (default 300 s); \`armada watch\`
                     is the way to keep listening. Needs a sign-in to Armada
 `,
@@ -239,14 +240,16 @@ const COMMAND_HELP: Record<string, string> = {
                     until something needs you (a question, plan, request, hand-back or silent
                     worker you have not seen), prints it and exits; exits "nothing to watch"
                     when no worker is in flight and nothing is open. An Armada
-                    outage does not end it: it keeps asking. One per named coordinator on
-                    this machine. Needs a sign-in to Armada
+                    outage does not end it: it keeps asking. Only a CLI below the server minimum
+                    stops it for an upgrade; setup behind is a daily notice. One per named
+                    coordinator on this machine. Needs a sign-in to Armada
   watch --follow    Stream lines without exiting on new items; --json prints NDJSON.
                     --since <cursor> resumes events; defaults to this machine's cursor.
                     --tickets A-1,B-2 and --kinds question,hand-back filter the stream.
                     --kinds all also prints claims, reports, releases and merges.
                     --mine filters events and inbox by coordinator ownership, including unowned entries.
                     Named watches default to --mine; --all sees the whole fleet.
+                    Plain watch wakes only for your own and unowned items, even with --all.
                     --for <minutes> ends either watch cleanly with a resume command.
   watch --stop [--name <name>]      Stop only this project's verified watch and release its lock. Local,
                     no sign-in needed. Never stop a watch just to read inbox or status
@@ -505,8 +508,8 @@ Files:
     projects/<slug>.json  non-secret deploy settings for this project and machine
     coordinators.json  coordinator role per project and checkout
     watch/<project>[@<name>].*  the coordinator's watch: its lock, what you were shown, who is in flight
-    releases.json      daily release notices in status/inbox, with version and time.
-                       Only required CLI/setup upgrades interrupt armada watch
+    notices.json       reserved release and command hints, with keys and times.
+                       Only a CLI below the server minimum interrupts armada watch
 `;
 
 /** The help of one command, or null for a command Armada does not know. */
@@ -865,8 +868,6 @@ async function status(io: Io, args: Args): Promise<number> {
     ...httpOptions(io),
     ...(io.now ? { now: io.now } : {}),
   });
-  const behind = await skillsBehind(fsRepoView(dirname(path))).catch(() => null);
-  if (behind) report.warnings.push(skillsBehindLine(behind, version));
   let deploys = null;
   if (config.deploy?.targets.length) {
     try {
@@ -876,7 +877,9 @@ async function status(io: Io, args: Args): Promise<number> {
     }
   }
   io.stdout(
-    args.json ? `${JSON.stringify({ ...report, ...(deploys ? { deploys } : {}) }, null, 2)}\n` : renderStatus(report),
+    args.json
+      ? `${JSON.stringify({ ...report, ...(deploys ? { deploys } : {}) }, null, 2)}\n`
+      : renderStatus(report, await statusHints(io, config, credentials, live?.coordinators)),
   );
   if (!args.json && deploys)
     for (const row of deploys.rows) io.stdout(`Deploy ${deployLine(row, (io.now ?? (() => new Date()))())}\n`);
@@ -922,7 +925,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
   if (command && NOTICE_COMMANDS.has(command))
     await (async () => {
       const args = parseArgs(argv);
-      if (args.all) return await noticeRelease(io, version);
+      if (args.all && command === "status") return await noticeRelease(io, version);
       const { path } = await findConfig(io, args.config, command, args.project);
       await noticeRelease(io, version, fsRepoView(dirname(path)));
     })().catch(() => {});

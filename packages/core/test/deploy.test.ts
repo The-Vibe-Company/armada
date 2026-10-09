@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { DeployTarget } from "../src/config.ts";
-import { type DeployInput, deployDetail, watchDeploy } from "../src/deploy.ts";
+import { checkReading, type DeployInput, deployDetail, watchDeploy } from "../src/deploy.ts";
 import { serveFleet } from "../src/fleet-api.ts";
 import { memoryFleet } from "./memory-fleet.ts";
 import { DEMO_PROJECT, NOW } from "./support.ts";
@@ -263,4 +263,103 @@ test("transient shared-state and smoke lease errors retry until healthy or deadl
     expect(now).toBe(recovers ? 30_000 : 120_000);
     expect(records.at(-1)?.state).toBe(state);
   }
+});
+
+test("check readings obey the exit contract with configuration and timeout precedence", () => {
+  const cases = [
+    [{ code: 0 }, { state: "success", sha }],
+    [
+      { code: 0, stdout: `build output\n${newer}\n` },
+      { state: "success", sha: newer },
+    ],
+    [{ code: 1 }, { state: "failure", sha }],
+    [
+      { code: 1, stdout: newer },
+      { state: "failure", sha: newer },
+    ],
+    [{ code: 2 }, { state: "pending", sha: null }],
+    [
+      { code: 2, stdout: "build log\nskipped: no files of this service changed\n" },
+      { state: "skipped", sha: null, detail: "no files of this service changed" },
+    ],
+    [
+      { code: 2, stdout: "skipped no changes" },
+      { state: "skipped", detail: "no changes" },
+    ],
+    [{ code: 2, stdout: "skipped: earlier log\nbuild pending" }, { state: "pending" }],
+    [
+      { code: 3 },
+      { state: "pending", detail: "check exited 3; the contract is 0 live, 1 failed, 2 pending or skipped" },
+    ],
+    [
+      { code: 1, timedOut: true },
+      { state: "pending", detail: "check timed out" },
+    ],
+    [
+      { code: 1, notRunnable: true },
+      { state: "pending", notRunnable: true, detail: "last output" },
+    ],
+  ] as const;
+  for (const [input, expected] of cases) {
+    expect(checkReading({ stdout: "", detail: "last output", ...input }, sha)).toMatchObject(expected);
+  }
+});
+
+test.each([
+  [1, "host build failed", "deploy-failed"],
+  [2, "skipped: no files of this service changed", "not-deployed"],
+] as const)("check exit %i records %s at the first poll without smoke or sleeps", async (code, stdout, state) => {
+  const records: DeployInput[] = [];
+  let polls = 0;
+  expect(
+    await watchDeploy({
+      target,
+      sha,
+      now: () => NOW,
+      sleep: async () => {
+        throw new Error("must not wait");
+      },
+      live: async () => {
+        polls++;
+        return checkReading({ code, stdout, detail: stdout }, sha);
+      },
+      includes: async () => false,
+      smoke: async () => {
+        throw new Error("must not smoke");
+      },
+      record: async (r) => {
+        records.push(r);
+      },
+    }),
+  ).toBe(state);
+  expect(polls).toBe(1);
+  expect(records.at(-1)).toMatchObject({
+    state,
+    sha,
+    detail: code === 1 ? stdout : "no files of this service changed",
+  });
+});
+
+test("a check's unrelated live SHA waits and keeps the mismatch in its timeout detail", async () => {
+  let now = 0;
+  const records: DeployInput[] = [];
+  expect(
+    await watchDeploy({
+      target: { ...target, liveShaCommand: null, check: "host-check" },
+      sha,
+      now: () => new Date(now),
+      sleep: async (ms) => {
+        now += ms;
+      },
+      live: async () => checkReading({ code: 0, stdout: newer, detail: "host output" }, sha),
+      includes: async () => false,
+      smoke: async () => {
+        throw new Error("must not smoke");
+      },
+      record: async (r) => {
+        records.push(r);
+      },
+    }),
+  ).toBe("timeout");
+  expect(records.at(-1)?.detail).toContain(`check reported live ${newer}, which does not contain ${sha}`);
 });

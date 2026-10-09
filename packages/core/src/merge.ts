@@ -1879,6 +1879,11 @@ async function after(
       await ctx.sleep(wait);
     }
   }
+  if (live$?.warnings) c.warnings.push(...live$.warnings);
+  if (live$?.cleared?.length)
+    lines.push(
+      `cleared: ${live$.cleared.map((id) => `${live$.clearedKinds?.[id] === "queue-refused" ? "queue refusal" : "merge request"} #${id}`).join(", ")}`,
+    );
   if (live$?.resolved) lines.push(`Hand-back resolved in the coordinator's inbox.`);
   let linearPending = false;
   if (ticket) {

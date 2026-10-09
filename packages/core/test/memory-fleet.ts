@@ -158,9 +158,10 @@ export function memoryFleet(): FleetStore & {
     for (const r of rows) Object.assign(r, { resolvedAt: at.toISOString(), resolution });
     return rows.length;
   };
-  const covered = (input: DeployInputWithCoverage): string[] => [
-    ...new Set([input.sha, ...(input.coveredShas ?? [])].filter((sha): sha is string => !!sha)),
-  ];
+  const covered = (input: DeployInputWithCoverage): string[] =>
+    input.state === "not-deployed"
+      ? []
+      : [...new Set([input.sha, ...(input.coveredShas ?? [])].filter((sha): sha is string => !!sha))];
   const deployTerminal = (state: string) => state === "healthy" || deployFailed(state as never);
   const deployBody = (input: DeployInputWithCoverage) =>
     `${input.state === "not-runnable" ? "Deploy check not runnable on this machine (configuration)" : `Deployment ${input.state}`} for ${input.target} (${input.sha})\nLast output:\n${deployDetail(input.detail)}`;
@@ -405,7 +406,10 @@ export function memoryFleet(): FleetStore & {
         sequence: deploys.reduce((max, candidate) => Math.max(max, candidate.sequence), 0) + 1,
       };
       if (known) {
-        if (["skipped", "not-runnable"].includes(row.state) && !["skipped", "not-runnable"].includes(input.state))
+        if (
+          ["skipped", "not-runnable", "not-deployed"].includes(row.state) &&
+          !["skipped", "not-runnable", "not-deployed"].includes(input.state)
+        )
           row.startedAt = input.at.toISOString();
         Object.assign(row, {
           state: input.state,
@@ -1290,10 +1294,29 @@ export function memoryFleet(): FleetStore & {
     },
     async resolveInboxItems(q) {
       return resolve(
-        items.filter((i) => i.project === q.project && i.ticket === q.ticket && i.kind === q.kind && !i.resolvedAt),
+        items.filter(
+          (i) =>
+            i.project === q.project &&
+            i.ticket === q.ticket &&
+            i.kind === q.kind &&
+            !i.resolvedAt &&
+            (q.author === undefined || (i.author === q.author && i.createdAt <= q.at.toISOString())),
+        ),
         q.resolution,
         q.at,
       );
+    },
+    async resolvePrItems(q) {
+      const found = items.filter(
+        (i) =>
+          i.project === q.project &&
+          i.recipient === "coordinator" &&
+          !i.resolvedAt &&
+          ((i.kind === "queue-refused" && i.body.startsWith(queueRefusedPrefix(q.pr))) ||
+            (i.kind === "merge-request" && i.requestPr === q.pr)),
+      );
+      resolve(found, q.resolution, q.at);
+      return found.map((i) => i.id);
     },
     async resolveAnswerRequests(q) {
       return resolve(
@@ -1415,6 +1438,13 @@ export function memoryFleet(): FleetStore & {
           recipient: "coordinator",
           author: q.holder,
           body: `${queueRefusedPrefix(entry.pr)} ${q.detail ?? "merge refused"}`,
+          at: q.at,
+        });
+      if (q.outcome === "merged")
+        await this.resolvePrItems({
+          project: q.project,
+          pr: entry.pr,
+          resolution: `resolved: PR #${entry.pr} merged`,
           at: q.at,
         });
       return true;

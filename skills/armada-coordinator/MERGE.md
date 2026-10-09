@@ -26,6 +26,8 @@ A confirmed merge exits 0 even with Linear pending. `--dry-run` runs the checkli
 
 One check stays yours: search the default branch for callers of anything the pull request deletes or renames.
 
+A confirmed merge clears that PR's open queue refusals and owner merge requests. The result line names the cleared item ids. A PR merged elsewhere clears those notices on the next inbox read from Armada's stored GitHub reading. Queued `--no-ticket` merges clear notices when the queue finishes; a direct `--no-ticket` merge clears them on that next reading when the refusal names the PR or the merge request carries its PR number. A failed cleanup write is a warning: GitHub's confirmed merge stays successful, and the stored reading retries resolution.
+
 ## After a confirmed merge
 
 `armada merge` does these by itself, in order. Do none of them by hand.
@@ -86,7 +88,7 @@ After its retries, a Linear outage does not stop a merge when Armada holds an op
 - `armada hold` lists the project's merge holds, shared by every coordinator; status, inbox and watch show them until cleared. They never expire.
 - `armada hold add "<reason>"` pauses merges. `armada merge <pr> --through-hold "<why this fixes it>"` merges a fix and records the reason with every hold id; the holds stay open. After verifying the recovery, `armada hold clear <id> --reason "<what was verified>"`.
 - `main red since #N` names the oldest failing merge since the last green commit and its failing checks; `a fix is running (#M)` follows when one is. A refreshed red main reading opens one `main-red` hold and wakes watch once per streak. It pauses single merges and the queue; merge the fix with `armada merge <pr> --through-hold "<why this fixes it>"`. The next green main reading clears that hold and its inbox item automatically. Running or absent checks leave it open. Clearing it by hand while main is red lets the next refresh reopen it. GitHub CI webhooks are needed for prompt detection; without refreshes no automatic pause opens.
-- A failed deploy or smoke check opens a `deploy` hold and one inbox item. `armada deploy status` shows each target. Merge the fix through the hold; the next healthy deploy of a commit that contains it clears the deploy hold by itself.
+- A failed deploy or smoke check opens a `deploy` hold and one inbox item. `armada deploy status` shows each target; `not deployed (host skipped: …)` ends quietly, opens no hold and does not clear an ancestor’s failure. Merge the fix through the hold; the next healthy deploy of a commit that contains it clears the deploy hold by itself.
 - `--no-lock` skips both the merge lock and the hold check. Use it only when Armada is down and you checked no other coordinator is merging.
 
 ## Live acceptance
