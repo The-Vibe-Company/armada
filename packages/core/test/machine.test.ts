@@ -14,6 +14,8 @@ import {
   readCredentialStore,
   readHookRuns,
   readReleaseNotices,
+  readWatchLockInfo,
+  readWatchResult,
   readWatchState,
   readWatchStates,
   recordHookRun,
@@ -26,7 +28,62 @@ import {
   updateWatchState,
   watchFiles,
   writeCoordinatorName,
+  writeWatchResult,
 } from "../src/machine.ts";
+
+test("watch receipts are private and a replaced generation cannot overwrite them", async () => {
+  const paths = machinePaths({ XDG_CONFIG_HOME: await tempHome() });
+  if (!paths) throw new Error("no machine store");
+  const identity = {
+    project: "widgets",
+    configPath: "/work/widgets/armada.toml",
+    cwd: "/work/widgets",
+    command: "armada watch",
+    started: "generation-1",
+  };
+  const first = { pid: 101, identity };
+  const result = {
+    pid: 101,
+    started: identity.started,
+    endedAt: "2026-01-01T00:00:00Z",
+    outcome: "nothing" as const,
+    exit: 0,
+    stdout: "Nothing to watch",
+    stderr: "",
+  };
+  expect(await takeWatchLock(paths, "widgets", 101, () => false, identity)).toEqual({ taken: true });
+  await writeWatchResult(paths, "widgets", first, result);
+  expect(await readWatchResult(paths, "widgets", first)).toEqual(result);
+  expect((await stat(watchFiles(paths, "widgets").result)).mode & 0o777).toBe(0o600);
+  const replacement = { pid: 101, identity: { ...identity, started: "generation-2" } };
+  expect(await takeWatchLock(paths, "widgets", 101, () => false, replacement.identity)).toEqual({ taken: true });
+  await writeWatchResult(paths, "widgets", replacement, {
+    ...result,
+    started: replacement.identity.started,
+    stdout: "new result",
+  });
+  await writeWatchResult(paths, "widgets", first, result);
+  expect((await readWatchResult(paths, "widgets", replacement))?.stdout).toBe("new result");
+  expect(await readWatchResult(paths, "widgets", first)).toEqual(result);
+  await releaseWatchLock(paths, "widgets", 101, identity);
+  expect(await readWatchLockInfo(paths, "widgets")).toEqual(replacement);
+});
+
+test("competing dead-watch takeovers keep exactly one live holder", async () => {
+  const paths = machinePaths({ XDG_CONFIG_HOME: await tempHome() });
+  if (!paths) throw new Error("no machine store");
+  await takeWatchLock(paths, "widgets", 101, () => false);
+  const alive = (pid: number) => pid !== 101;
+  const results = await Promise.all([
+    takeWatchLock(paths, "widgets", 202, alive),
+    takeWatchLock(paths, "widgets", 303, alive),
+  ]);
+  expect(results.filter((result) => result.taken)).toHaveLength(1);
+  const holder = await readWatchLockInfo(paths, "widgets");
+  if (!holder) throw new Error("missing holder");
+  expect([202, 303]).toContain(holder.pid);
+  expect(results.filter((result) => !result.taken)).toEqual([{ taken: false, pid: holder.pid }]);
+});
 
 test("notice reservations serialize commands, preserve releases, and recover a dead holder", async () => {
   const paths = machinePaths({ XDG_CONFIG_HOME: await tempHome() });

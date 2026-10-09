@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs/promises";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -284,6 +285,470 @@ describe("armada watch", () => {
     cwd: COORDINATOR_ROOT,
   });
 
+  test("a second plain watch waits locally and replays the holder's output and exit", async () => {
+    const c = await coordinator();
+    const held = identity();
+    await takeWatchLock(c.paths, P, 101, () => false, held);
+    c.alive.add(101);
+    c.io.inspectProcess = async () => held;
+    let holderOut = "",
+      holderErr = "";
+    c.onSleep.push(async () => {
+      expect(c.err()).toContain("armada watch already runs (pid 101); waiting for its result here");
+      expect(
+        await run(["watch"], {
+          ...c.io,
+          pid: 101,
+          stdout: (t) => {
+            holderOut += t;
+          },
+          stderr: (t) => {
+            holderErr += t;
+          },
+        }),
+      ).toBe(0);
+      c.alive.delete(101);
+    });
+    expect(await run(["watch"], c.io)).toBe(0);
+    expect(holderOut).toContain("Nothing to watch");
+    expect(c.out()).toEndWith(holderOut);
+    expect(c.err()).toContain(holderErr);
+    const receipt = JSON.parse(await readFile(watchFiles(c.paths, P).result, "utf8"));
+    expect(receipt).toMatchObject({
+      pid: 101,
+      started: held.started,
+      outcome: "nothing",
+      exit: 0,
+      stdout: holderOut,
+      stderr: holderErr,
+    });
+  });
+
+  test("a waiter takes over a killed holder with no result", async () => {
+    const c = await coordinator();
+    await takeWatchLock(c.paths, P, 101, () => false, identity());
+    c.alive.add(101);
+    c.io.inspectProcess = async () => identity();
+    c.onSleep.push(async () => {
+      c.alive.delete(101);
+    });
+    expect(await run(["watch"], c.io)).toBe(0);
+    expect(c.err()).toContain("waiting for its result here");
+    expect(c.out()).toContain("Nothing to watch");
+    expect(await readWatchLock(c.paths, P)).toBeNull();
+  });
+
+  test("a holder error is recorded and replayed without a waiter fleet read", async () => {
+    const c = await coordinator();
+    await takeWatchLock(c.paths, P, 101, () => false, identity());
+    c.alive.add(101);
+    c.io.inspectProcess = async () => identity();
+    const fetch = c.io.fetch;
+    if (!fetch) throw new Error("missing fake fetch");
+    let waiterReads = 0;
+    c.io.fetch = async () => {
+      waiterReads++;
+      throw new Error("the waiter must not use the network");
+    };
+    let holderErr = "";
+    c.onSleep.push(async () => {
+      expect(
+        await run(["watch"], {
+          ...c.io,
+          pid: 101,
+          fetch: async (url, init) =>
+            url.endsWith("/fleet/inbox") ? new Response("denied", { status: 403 }) : fetch(url, init),
+          stderr: (t) => {
+            holderErr += t;
+          },
+        }),
+      ).toBe(1);
+      c.alive.delete(101);
+    });
+    expect(await run(["watch"], c.io)).toBe(1);
+    expect(holderErr).toContain("HTTP 403");
+    expect(waiterReads).toBe(0);
+    expect(c.err()).toEndWith(holderErr);
+    expect(JSON.parse(await readFile(watchFiles(c.paths, P).result, "utf8"))).toMatchObject({
+      outcome: "error",
+      exit: 1,
+      stderr: holderErr,
+    });
+  });
+
+  test("a later fast holder cannot erase the original waiter's result", async () => {
+    const c = await coordinator();
+    await c.store.addInboxItem({
+      project: P,
+      ticket: "DEMO-2",
+      kind: "question",
+      recipient: "coordinator",
+      author: null,
+      body: "Original question",
+      at: NOW,
+    });
+    await takeWatchLock(c.paths, P, 101, () => false, identity());
+    c.alive.add(101);
+    c.io.inspectProcess = async (pid) => (pid === 202 ? { ...identity(), started: "generation-2" } : identity());
+    let original = "";
+    c.onSleep.push(async () => {
+      expect(
+        await run(["watch"], {
+          ...c.io,
+          pid: 101,
+          stdout: (t) => {
+            original += t;
+          },
+          stderr: () => {},
+        }),
+      ).toBe(0);
+      expect(original).toContain("Original question");
+      c.alive.delete(101);
+      await c.store.resolveInboxItems({
+        project: P,
+        ticket: "DEMO-2",
+        kind: "question",
+        resolution: "answered",
+        at: c.clock.now(),
+      });
+      let later = "";
+      expect(
+        await run(["watch"], {
+          ...c.io,
+          pid: 202,
+          stdout: (t) => {
+            later += t;
+          },
+          stderr: () => {},
+        }),
+      ).toBe(0);
+      expect(later).toContain("Nothing to watch");
+    });
+    expect(await run(["watch"], c.io)).toBe(0);
+    expect(c.out()).toBe(original);
+  });
+
+  test("completion during setup or before lock acquisition still reaches the waiter", async () => {
+    for (const race of ["setup", "replacement"]) {
+      const c = await coordinator();
+      await takeWatchLock(c.paths, P, 101, () => false, identity());
+      c.alive.add(101);
+      const next = { ...identity(), started: "generation-2" };
+      const holderIo = {
+        ...c.io,
+        pid: 101,
+        inspectProcess: async () => identity(),
+        stdout: () => {},
+        stderr: () => {},
+      };
+      let finished = false;
+      const finish = async () => {
+        finished = true;
+        c.clock.advance(1);
+        expect(await run(["watch"], holderIo)).toBe(0);
+        c.alive.delete(101);
+        if (race === "replacement") {
+          await takeWatchLock(c.paths, P, 202, () => false, next);
+          c.alive.add(202);
+        }
+      };
+      c.io.inspectProcess = async (pid) => {
+        if (race === "setup" && pid === 4242 && !finished) await finish();
+        return pid === 202 ? next : identity();
+      };
+      const original = fs.readFile;
+      const read = spyOn(fs, "readFile");
+      read.mockImplementation((async (...args: Parameters<typeof fs.readFile>) => {
+        const body = await original(...args);
+        if (race === "replacement" && String(args[0]) === watchFiles(c.paths, P).lock && !finished) await finish();
+        return body;
+      }) as typeof fs.readFile);
+      try {
+        c.io.fetch = async () => {
+          throw new Error("the waiter must not use the network");
+        };
+        expect(await run(["watch"], c.io)).toBe(0);
+        expect(c.out()).toContain("Nothing to watch");
+        expect(finished).toBe(true);
+        expect(await readWatchLock(c.paths, P)).toBe(race === "replacement" ? 202 : null);
+      } finally {
+        read.mockRestore();
+      }
+    }
+  });
+
+  test("an explicit stop marks the live holder before signalling and both return zero", async () => {
+    const c = await coordinator();
+    await c.hold("DEMO-2");
+    await takeWatchLock(c.paths, P, 101, () => false, identity());
+    c.alive.add(101);
+    c.io.inspectProcess = async () => identity();
+    const fetch = c.io.fetch;
+    if (!fetch) throw new Error("missing fake fetch");
+    let original = "";
+    c.onSleep.push(async () => {
+      let fire: (() => void) | undefined;
+      expect(
+        await run(["watch", "--json"], {
+          ...c.io,
+          pid: 101,
+          stdout: (t) => {
+            original += t;
+          },
+          stderr: () => {},
+          onSignal: (handler) => {
+            fire = () => handler("SIGTERM");
+            return () => {};
+          },
+          fetch: async (url, init) => {
+            if (url.endsWith("/fleet/inbox")) {
+              expect(
+                await run(["watch", "--stop"], {
+                  ...c.io,
+                  stdout: () => {},
+                  stderr: () => {},
+                  signalProcess: () => fire?.(),
+                }),
+              ).toBe(0);
+            }
+            return fetch(url, init);
+          },
+        }),
+      ).toBe(0);
+      c.alive.delete(101);
+    });
+    expect(await run(["watch", "--json"], c.io)).toBe(0);
+    expect(JSON.parse(original)).toMatchObject({
+      outcome: "stopped",
+      exit: 0,
+      line: "armada watch for widgets stopped by armada watch --stop",
+    });
+    expect(JSON.parse(c.out())).toEqual(JSON.parse(original));
+  });
+
+  test("waiters replay spontaneous holder signals with the original exit and valid JSON", async () => {
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+      for (const json of [false, true]) {
+        const c = await coordinator();
+        await c.hold("DEMO-2");
+        await takeWatchLock(c.paths, P, 101, () => false, identity());
+        c.alive.add(101);
+        c.io.inspectProcess = async () => identity();
+        const fetch = c.io.fetch;
+        if (!fetch) throw new Error("missing fake fetch");
+        const exit = signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : 129;
+        let original = "";
+        c.onSleep.push(async () => {
+          let fire: (() => void) | undefined;
+          expect(
+            await run(["watch", ...(json ? ["--json"] : [])], {
+              ...c.io,
+              pid: 101,
+              stdout: (t) => {
+                original += t;
+              },
+              stderr: () => {},
+              onSignal: (handler) => {
+                fire = () => handler(signal);
+                return () => {};
+              },
+              fetch: async (url, init) => {
+                if (url.endsWith("/fleet/inbox")) fire?.();
+                return fetch(url, init);
+              },
+            }),
+          ).toBe(exit);
+          c.alive.delete(101);
+        });
+        expect(await run(["watch", ...(json ? ["--json"] : [])], c.io)).toBe(exit);
+        expect(c.out()).toBe(original);
+        if (json) expect(JSON.parse(c.out())).toMatchObject({ outcome: "stopped", signal, exit });
+        else expect(c.out()).toContain(`stopped by ${signal}`);
+      }
+    }
+  });
+
+  test("JSON waiters remain parseable behind plain, JSON and stopped holders", async () => {
+    for (const mode of ["plain", "json", "stopped"]) {
+      const c = await coordinator();
+      await takeWatchLock(c.paths, P, 101, () => false, identity());
+      c.alive.add(101);
+      c.io.inspectProcess = async () => identity();
+      c.onSleep.push(async () => {
+        const holder = { ...c.io, pid: 101, stdout: () => {}, stderr: () => {}, signalProcess: () => {} };
+        expect(
+          await run(
+            mode === "stopped" ? ["watch", "--stop"] : ["watch", ...(mode === "json" ? ["--json"] : [])],
+            holder,
+          ),
+        ).toBe(0);
+        c.alive.delete(101);
+      });
+      expect(await run(["watch", "--json"], c.io)).toBe(0);
+      const result = JSON.parse(c.out());
+      expect(result.outcome).toBe(mode === "stopped" ? "stopped" : "nothing");
+      if (mode === "plain") expect(result.stdout).toContain("Nothing to watch");
+    }
+  });
+
+  test("--stop ends a waiter without taking over, even before the holder dies", async () => {
+    for (const ending of ["live", "dead", "signal-race"]) {
+      const c = await coordinator();
+      await takeWatchLock(c.paths, P, 101, () => false, identity());
+      c.alive.add(101);
+      c.io.inspectProcess = async () => identity();
+      const signalled: number[] = [];
+      c.io.signalProcess = (pid) => {
+        if (ending === "signal-race") throw Object.assign(new Error("gone"), { code: "ESRCH" });
+        signalled.push(pid);
+      };
+      c.onSleep.push(async () => {
+        if (ending === "dead") c.alive.delete(101);
+        expect(await run(["watch", "--stop"], c.io)).toBe(0);
+        expect(c.alive.has(101)).toBe(ending !== "dead");
+      });
+      expect(await run(["watch"], c.io)).toBe(0);
+      expect(signalled).toEqual(ending === "live" ? [101] : []);
+      expect(c.out()).toContain("armada watch for widgets stopped by armada watch --stop");
+      expect(c.out()).not.toContain("Nothing to watch");
+      expect(await readWatchLock(c.paths, P)).toBeNull();
+    }
+  });
+
+  test("short lock contention is retried locally before a watch becomes the holder", async () => {
+    for (const code of ["ELOCKED", "ECOMPROMISED"]) {
+      const c = await coordinator();
+      let reads = 0,
+        retried = false;
+      const fetch = c.io.fetch;
+      if (!fetch) throw new Error("missing fake fetch");
+      c.io.fetch = async (url, init) => {
+        reads++;
+        return fetch(url, init);
+      };
+      const link = spyOn(fs, "link").mockRejectedValueOnce(Object.assign(new Error("short lock busy"), { code }));
+      c.onSleep.push(async () => {
+        expect(reads).toBe(0);
+        retried = true;
+      });
+      try {
+        expect(await run(["watch"], c.io)).toBe(0);
+        expect(retried).toBe(true);
+        expect(reads).toBeGreaterThan(0);
+        expect(c.err()).not.toContain("watching without it");
+        expect(c.out()).toContain("Nothing to watch");
+        expect(await readWatchLock(c.paths, P)).toBeNull();
+      } finally {
+        link.mockRestore();
+      }
+    }
+  });
+
+  test("a waiter honours its own deadline and signal without releasing the holder", async () => {
+    for (const signal of [false, true]) {
+      const c = await coordinator();
+      await takeWatchLock(c.paths, P, 101, () => false, identity());
+      c.alive.add(101);
+      c.io.inspectProcess = async () => identity();
+      let cancel: (() => void) | undefined;
+      c.io.onSignal = (listener) => {
+        cancel = () => listener("SIGINT");
+        return () => {};
+      };
+      c.io.sleep = async (ms) => {
+        await c.clock.sleep(ms);
+        if (signal) {
+          cancel?.();
+          await new Promise<void>(() => {});
+        }
+      };
+      expect(await run(["watch", "--for", "0.05"], c.io)).toBe(signal ? 130 : 0);
+      expect(c.out()).toContain(signal ? "stopped by SIGINT" : "No new item in 0.05 min");
+      expect(await readWatchLock(c.paths, P)).toBe(101);
+    }
+  });
+
+  test("invalid or older-generation results cannot suppress dead-holder takeover", async () => {
+    for (const kind of ["corrupt", "identity", "old", "same-tick"]) {
+      const c = await coordinator();
+      await takeWatchLock(c.paths, P, 101, () => false, identity());
+      c.alive.add(101);
+      c.io.inspectProcess = async () => identity();
+      await writeFile(
+        watchFiles(c.paths, P).result,
+        kind === "corrupt"
+          ? "{"
+          : JSON.stringify({
+              pid: 101,
+              started: kind === "identity" ? "another-generation" : identity().started,
+              endedAt: new Date(NOW.getTime() - (kind === "same-tick" ? 0 : 1)).toISOString(),
+              outcome: "items",
+              exit: 0,
+              stdout: "OLD RESULT",
+              stderr: "",
+            }),
+      );
+      c.onSleep.push(async () => {
+        c.alive.delete(101);
+      });
+      expect(await run(["watch"], c.io)).toBe(0);
+      expect(c.out()).toContain("Nothing to watch");
+      expect(c.out()).not.toContain("OLD RESULT");
+    }
+  });
+
+  test("Claude watch defaults to 100 minutes and explicit --for wins", async () => {
+    for (const explicit of [false, true]) {
+      const c = await coordinator();
+      c.io.env.CLAUDECODE = "1";
+      await c.hold("DEMO-2");
+      c.io.sleep = async (ms) => {
+        await c.clock.sleep(ms);
+        await c.store.recordEvent({
+          project: P,
+          ticket: "DEMO-2",
+          kind: "report",
+          phase: "implementing",
+          at: c.clock.now(),
+        });
+      };
+      expect(await run(["watch", ...(explicit ? ["--for", "1"] : [])], c.io)).toBe(0);
+      const minutes = explicit ? 1 : 100;
+      expect(c.clock.now().getTime() - NOW.getTime()).toBe(minutes * 60000);
+      expect(c.out()).toContain(`No new item in ${minutes} min; start it again: armada watch`);
+      expect(c.out()).toContain("1 worker in flight");
+      if (!explicit) {
+        const bound =
+          "Bounded to 100 min under Claude Code (background commands end after 2 h); --for <minutes> changes it.";
+        expect(c.err()).toContain(bound);
+        expect(c.out()).toContain(bound);
+      } else expect(c.err()).not.toContain("Bounded to");
+    }
+  });
+
+  test("a dead watch without a result teaches a nine-minute Claude bound", async () => {
+    for (const linux of [false, true]) {
+      const c = await coordinator();
+      c.io.env.CLAUDECODE = "1";
+      await c.hold("DEMO-2");
+      await takeWatchLock(c.paths, P, 101, () => false, {
+        ...identity(),
+        started: linux ? "boot-id/123" : new Date(NOW.getTime() - 10 * 60000).toISOString(),
+        ...(linux ? { watchStartedAt: new Date(NOW.getTime() - 10 * 60000).toISOString() } : {}),
+      });
+      c.io.sleep = async (ms) => {
+        await c.clock.sleep(ms);
+      };
+      expect(await run(["watch"], c.io)).toBe(0);
+      expect((await readWatchState(c.paths, P))?.harnessLimitMinutes).toBe(10);
+      expect(c.err()).toContain(
+        "The previous watch was ended from outside after 10 min; this one ends itself after 9 min.",
+      );
+      expect(c.clock.now().getTime() - NOW.getTime()).toBe(9 * 60000);
+      expect(c.out()).toContain("No new item in 9 min");
+    }
+  });
+
   test("stop verifies the holder and signals only this project's watch, without sign-in or network", async () => {
     const c = await coordinator();
     await takeWatchLock(c.paths, P, 101, () => false, identity());
@@ -462,7 +927,10 @@ describe("armada watch", () => {
           return { started, command, cwd };
         };
         const fire = async () => {
-          expect(await readWatchLockInfo(c.paths, P)).toEqual({ pid: 4242, identity: identity() });
+          expect(await readWatchLockInfo(c.paths, P)).toEqual({
+            pid: 4242,
+            identity: { ...identity(), watchStartedAt: NOW.toISOString() },
+          });
           listener?.(signal);
           listener?.(signal);
           return new Promise<never>(() => {});
@@ -533,11 +1001,11 @@ describe("armada watch", () => {
     await c.hold("DEMO-2");
     c.onSleep.push(async () => {});
     expect(await run(["watch", "--for", "0.25", "--json"], c.io)).toBe(0);
-    expect(c.out()).toBe("");
+    expect(JSON.parse(c.out())).toMatchObject({ outcome: "timeout" });
     expect(c.err()).toContain(
       `This project's Armada setup is behind ${version}: armada upgrade, then merge the setup pull request it opens.`,
     );
-    expect(c.err()).toContain("resume: armada watch");
+    expect(JSON.parse(c.out()).line).toContain("start it again: armada watch");
     c.reset();
     expect(await run(["inbox"], c.io)).toBe(0);
     expect(c.err()).toBe("");
@@ -581,8 +1049,7 @@ describe("armada watch", () => {
     };
     try {
       expect(await run(["watch", "--for", "0.25"], c.io)).toBe(0);
-      expect(c.out()).toBe("");
-      expect(c.err()).toContain("resume: armada watch");
+      expect(c.out()).toContain("No new item in 0.25 min; start it again: armada watch");
       expect(c.err()).toContain(
         `This project's Armada setup is behind ${version}: armada upgrade, then merge the setup pull request it opens.`,
       );
@@ -642,8 +1109,7 @@ describe("armada watch", () => {
     c.reset();
     c.onSleep.push(async () => {});
     expect(await run(["watch", "--for", "0.25", "--json"], c.io)).toBe(0);
-    expect(c.out()).toBe("");
-    expect(c.err()).toContain("resume: armada watch");
+    expect(JSON.parse(c.out())).toMatchObject({ outcome: "timeout" });
   });
 
   test("concurrent mine reads retain every shown key from broader history", async () => {
@@ -766,10 +1232,12 @@ describe("armada watch", () => {
     expect(await hook(c, COORDINATOR_ROOT)).toBeNull();
     c.reset();
     expect(await run(["watch"], c.io)).toBe(0);
-    expect(c.out()).toBe("armada watch is already running for widgets (pid 777): its output arrives when it ends.\n");
+    expect(c.out()).toBe(
+      "armada watch is already running for widgets (pid 777); cannot verify its identity to share the result.\n",
+    );
     expect(await run(["inbox"], c.io)).toBe(0);
     expect(c.out().trimEnd().split("\n").at(-1)).toBe(
-      "2 workers in flight (DEMO-2, DEMO-3) — act on the items above, then armada watch is already running (pid 777).",
+      "2 workers in flight (DEMO-2, DEMO-3) — act on the items above, then armada watch is running (pid 777); starting another waits for its result.",
     );
 
     // That watch was killed: its lock is stale, and the next watch takes it over.
@@ -969,7 +1437,7 @@ test("plain watch accepts a bounded lifetime and follow refuses unsupported or m
     async () => {},
   );
   expect(await run(["watch", "--for", "1"], c.io)).toBe(0);
-  expect(c.err()).toContain("no new item in 1 min; resume: armada watch");
+  expect(c.out()).toContain("No new item in 1 min; start it again: armada watch");
   for (const flags of [
     ["--follow", "--kinds", "typo"],
     ["--follow", "--since", "bad"],
