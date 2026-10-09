@@ -472,50 +472,70 @@ test("retry runs redeploy once, fences its background watch, and never repeats f
 });
 
 test("a retry does not clear its pause using a descendant's pre-redeploy healthy smoke cache", async () => {
-  const t = await terminal();
-  t.io.env.LINEAR_API_KEY = "synthetic-linear-key";
-  t.io.readFile = async (path) =>
-    path === "/work/widgets/armada.toml" ? `${configText}redeploy = "host-redeploy"\n` : null;
-  await t.store.recordDeploy({
-    project: "widgets",
-    target: "api",
-    sha: live,
-    state: "healthy",
-    detail: "old smoke passed",
-    pauseOnFailure: true,
-    at: new Date(NOW.getTime() - 60_000),
-  });
-  await t.store.recordDeploy({
-    project: "widgets",
-    target: "api",
-    sha,
-    state: "deploy-failed",
-    detail: "original failure",
-    pauseOnFailure: true,
-    at: NOW,
-  });
-  expect(await t.store.openHolds("widgets")).toHaveLength(1);
-  const watches: string[][] = [];
-  t.io.startBackground = async (args) => {
-    watches.push(args);
-    return true;
-  };
-  t.io.exec = async () => ({ code: 0, stdout: "accepted", stderr: "" });
-  expect(await run(["deploy", "retry", "api"], t.io)).toBe(0);
-  let smokes = 0;
-  t.io.exec = async (command, args) => {
-    if (command === "git") return { code: 0, stdout: "", stderr: "" };
-    if (args[1] === "version") return { code: 0, stdout: live, stderr: "" };
-    smokes++;
-    return { code: 1, stdout: "fresh smoke failed", stderr: "" };
-  };
-  expect(await run(watches[0] ?? [], t.io)).toBe(1);
-  expect(smokes).toBe(1);
-  expect((await t.store.deployState("widgets", { target: "api", sha }))[0]).toMatchObject({
-    attempt: 2,
-    state: "smoke-failed",
-    detail: "fresh smoke failed\n\nexit 1",
-  });
-  expect(await t.store.openHolds("widgets")).toHaveLength(1);
-  expect((await t.store.openHolds("widgets"))[0]?.reason).toContain("fresh smoke failed");
+  for (const resumeSince of [undefined, "2020-01-01T00:00:00Z"]) {
+    const t = await terminal();
+    t.io.env.LINEAR_API_KEY = "synthetic-linear-key";
+    t.io.readFile = async (path) =>
+      path === "/work/widgets/armada.toml" ? `${configText}redeploy = "host-redeploy"\n` : null;
+    await t.store.recordDeploy({
+      project: "widgets",
+      target: "api",
+      sha: live,
+      state: "healthy",
+      detail: "old smoke passed",
+      pauseOnFailure: true,
+      at: new Date(NOW.getTime() - 60_000),
+    });
+    await t.store.recordDeploy({
+      project: "widgets",
+      target: "api",
+      sha,
+      state: "deploy-failed",
+      detail: "original failure",
+      pauseOnFailure: true,
+      at: NOW,
+    });
+    expect(await t.store.openHolds("widgets")).toHaveLength(1);
+    const watches: string[][] = [];
+    t.io.startBackground = async (args) => {
+      watches.push(args);
+      return false;
+    };
+    t.io.exec = async () => ({ code: 0, stdout: "accepted", stderr: "" });
+    expect(await run(["deploy", "retry", "api"], t.io)).toBe(0);
+    let smokes = 0;
+    t.io.exec = async (command, args) => {
+      if (command === "git") return { code: 0, stdout: "", stderr: "" };
+      if (args[1] === "version") return { code: 0, stdout: live, stderr: "" };
+      smokes++;
+      return { code: 1, stdout: "fresh smoke failed", stderr: "" };
+    };
+    expect(await run(["deploy", "retry", "api"], t.io)).toBe(1);
+    expect(t.err.join("")).toContain("--since");
+    // Resume after the retry process lost its local arguments; a stale explicit cutoff cannot weaken it.
+    expect(
+      await run(
+        [
+          "deploy",
+          "watch",
+          "--sha",
+          sha,
+          "--target",
+          "api",
+          "--attempt",
+          "2",
+          ...(resumeSince ? ["--since", resumeSince] : []),
+        ],
+        t.io,
+      ),
+    ).toBe(1);
+    expect(smokes).toBe(1);
+    expect((await t.store.deployState("widgets", { target: "api", sha }))[0]).toMatchObject({
+      attempt: 2,
+      state: "smoke-failed",
+      detail: "fresh smoke failed\n\nexit 1",
+    });
+    expect(await t.store.openHolds("widgets")).toHaveLength(1);
+    expect((await t.store.openHolds("widgets"))[0]?.reason).toContain("fresh smoke failed");
+  }
 });

@@ -1560,6 +1560,7 @@ const deployRow = (r: Row): DeployRecord => {
     updatedAt: isoAt(r.updated_at),
     sequence: Number(r.sequence),
     attempt: Number(r.attempt),
+    redeploySince: r.redeploy_since ? isoAt(r.redeploy_since) : null,
   };
   // `coveredShas` is optional while older CLI/core packages are in flight;
   // returning it when present keeps the store forward compatible.
@@ -1774,9 +1775,16 @@ export async function retryDeploy(
     assertDeployRetry(chosen);
     const result = await q.query<Row>(
       `UPDATE deploys SET state = 'waiting', attempt = attempt + 1, sequence = DEFAULT,
-      started_at = $4, updated_at = $4, detail = $5, live_sha = NULL, covered_shas = '{}'::text[]
+      started_at = $4, updated_at = $4, detail = $5, live_sha = NULL, covered_shas = '{}'::text[], redeploy_since = $6
       WHERE project = $1 AND target = $2 AND sha = $3 RETURNING *`,
-      [input.project, input.target, chosen.sha, input.at, deployDetail(`retry requested by ${input.author}`)],
+      [
+        input.project,
+        input.target,
+        chosen.sha,
+        input.at,
+        deployDetail(`retry requested by ${input.author}`),
+        input.redeploy ? input.at : null,
+      ],
     );
     return deployRow(result.rows[0] as Row);
   });

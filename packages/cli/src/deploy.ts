@@ -9,6 +9,7 @@ import {
   type DeployTarget,
   deployDetail,
   deployLine,
+  deployResumeCommand,
   deployRetryLine,
   fetchLiveDeploy,
   fetchShaComparison,
@@ -143,7 +144,7 @@ async function retryDeploy(
   if (target.redeploy && !noRedeploy && !io.exec) throw new UsageError("deploy retry needs to run shell commands");
   if (target.githubEnvironment && !credentials.githubToken)
     throw new UsageError("a GitHub deploy target needs a GitHub token", "gh auth login");
-  const row = await fleet.retryDeploy({ target: target.name });
+  const row = await fleet.retryDeploy({ target: target.name, redeploy: !!target.redeploy && !noRedeploy });
   const secrets = [
     credentials.armadaSignIn?.kind === "api-key" ? credentials.armadaSignIn.key : credentials.armadaSignIn?.token,
     credentials.linearApiKey,
@@ -152,9 +153,8 @@ async function retryDeploy(
     ...Object.values(settings.env),
   ].filter((value): value is string => !!value);
   const clean = (text: string) => redactSecrets(text, secrets);
-  let since: string | undefined;
+  const since = row.redeploySince ?? undefined;
   if (target.redeploy && !noRedeploy) {
-    since = (io.now ?? (() => new Date()))().toISOString();
     let result: ExecResult | undefined;
     try {
       result = await io.exec?.("sh", ["-c", target.redeploy], {
@@ -255,7 +255,7 @@ export async function deploy(
                   )
                   .map((row) => {
                     if (["not-runnable", "not-deployed", "skipped"].includes(row.state))
-                      return `Next: armada deploy watch --sha ${row.sha} --target ${shellWord(row.target)} --attempt ${row.attempt}`;
+                      return `Next: ${deployResumeCommand(row)}`;
                     return deployRetryLine(
                       row.target,
                       !!config.deploy?.targets.find((t) => t.name === row.target)?.redeploy,
@@ -275,7 +275,7 @@ export async function deploy(
     throw new UsageError("deploy watch does not take --json or --no-redeploy");
   const attempt = Number(args.options.attempt ?? 1);
   if (!Number.isSafeInteger(attempt) || attempt < 1) throw new UsageError("--attempt must be a positive integer");
-  const since = args.options.since;
+  let since = args.options.since;
   if (since && (!/^\d{4}-\d{2}-\d{2}T/.test(since) || !Number.isFinite(Date.parse(since))))
     throw new UsageError("--since must be an ISO timestamp");
   const sha = args.options.sha ?? "";
@@ -448,6 +448,10 @@ export async function deploy(
   };
   try {
     const prior = (await fleet.deployState({ target: target.name, sha }))[0];
+    // The server cutoff survives a crash between the one-shot creation and watcher startup.
+    // A caller cannot weaken it by omitting --since or supplying an earlier timestamp.
+    if (prior?.redeploySince && (!since || Date.parse(since) < Date.parse(prior.redeploySince)))
+      since = prior.redeploySince;
     if (attempt > 1 && (!prior || prior.attempt < attempt))
       throw new UsageError("--attempt must name the current recorded deploy attempt", "armada deploy status");
     if (prior && prior.attempt > attempt) {

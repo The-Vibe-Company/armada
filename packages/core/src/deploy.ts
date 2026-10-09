@@ -58,6 +58,8 @@ export const deployRetryLine = (target: string, redeploy?: boolean): string => {
   return `Retry: ${command}${redeploy === false ? " --no-redeploy" : ` (or ${command} --no-redeploy to recheck)`}`;
 };
 export interface DeployRetryInput {
+  /** Persist creation intent before running the host command, so reads can resume safely. */
+  redeploy?: boolean;
   target: string;
   sha?: string;
 }
@@ -69,12 +71,15 @@ export class DeployRetryRefusal extends Error {
     super(message);
   }
 }
+export function deployResumeCommand(row: DeployRecord): string {
+  return `armada deploy watch --sha ${row.sha} --target ${shellWord(row.target)} --attempt ${row.attempt}${row.redeploySince ? ` --since ${shellWord(row.redeploySince)}` : ""}`;
+}
 /** A waiting attempt is resumed with reads only, never another host creation. */
 export function assertDeployRetry(row: DeployRecord): void {
   if (row.state === "waiting" || row.state === "live")
     throw new DeployRetryRefusal(
       `a retry is already watching (attempt ${row.attempt} since ${row.startedAt})`,
-      `armada deploy watch --sha ${row.sha} --target ${shellWord(row.target)} --attempt ${row.attempt}`,
+      deployResumeCommand(row),
     );
   if (row.state === "healthy") throw new DeployRetryRefusal("already healthy");
   if (!deployFailed(row.state)) throw new DeployRetryRefusal(`cannot retry ${row.state}; no failed deploy`);
@@ -91,6 +96,8 @@ export interface DeployInput {
 }
 export interface DeployRecord extends DeployInput {
   attempt: number;
+  /** Durable server cutoff for a redeploy attempt; absent on legacy/read-only rows. */
+  redeploySince?: string | null;
   project: string;
   startedAt: string;
   updatedAt: string;

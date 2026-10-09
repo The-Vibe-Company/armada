@@ -302,8 +302,20 @@ test("retry fences old watchers, keeps the hold until healthy, and reopens manua
   const failed = await store.recordDeploy(input);
   const holds = async () => (await store.openHolds(PROJECT)).filter((h) => h.ref === input.target);
   expect(await holds()).toHaveLength(1);
-  const retry = await store.retryDeploy({ project: PROJECT, target: input.target, author: "coordinator", at: at(71) });
-  expect(retry).toMatchObject({ sha: input.sha, state: "waiting", attempt: 2, startedAt: at(71).toISOString() });
+  const retry = await store.retryDeploy({
+    project: PROJECT,
+    target: input.target,
+    author: "coordinator",
+    redeploy: true,
+    at: at(71),
+  });
+  expect(retry).toMatchObject({
+    sha: input.sha,
+    state: "waiting",
+    attempt: 2,
+    startedAt: at(71).toISOString(),
+    redeploySince: at(71).toISOString(),
+  });
   expect(retry.sequence).toBeGreaterThan(failed.sequence);
   expect(await holds()).toHaveLength(1);
   await expect(
@@ -312,6 +324,7 @@ test("retry fences old watchers, keeps the hold until healthy, and reopens manua
   expect(await store.recordDeploy({ ...input, state: "timeout", at: at(72) })).toEqual(retry);
   const healthy = await store.recordDeploy({ ...input, state: "healthy", attempt: 2, at: at(73) });
   expect(healthy.state).toBe("healthy");
+  expect(healthy.redeploySince).toBe(retry.redeploySince);
   expect(await holds()).toHaveLength(0);
   expect(
     (await store.openInboxItems({ project: PROJECT, recipient: "coordinator" })).filter((i) =>
@@ -336,6 +349,7 @@ test("retry fences old watchers, keeps the hold until healthy, and reopens manua
   expect(await holds()).toHaveLength(0);
   const again = await store.retryDeploy({ project: PROJECT, target: input.target, author: "coordinator", at: at(77) });
   expect(again.sha).toBe(next.sha);
+  expect(again.redeploySince).toBeNull();
   await store.recordDeploy({ ...next, attempt: again.attempt, detail: "retry failed again", at: at(78) });
   expect(await holds()).toHaveLength(1);
   expect((await holds())[0]?.reason).toContain("retry failed again");

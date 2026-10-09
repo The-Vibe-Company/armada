@@ -982,7 +982,10 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
   },
   {
     version: 46,
-    statements: ["ALTER TABLE deploys ADD COLUMN attempt integer NOT NULL DEFAULT 1 CHECK (attempt > 0)"],
+    statements: [
+      "ALTER TABLE deploys ADD COLUMN attempt integer NOT NULL DEFAULT 1 CHECK (attempt > 0)",
+      "ALTER TABLE deploys ADD COLUMN redeploy_since timestamptz",
+    ],
   },
 ];
 

@@ -425,6 +425,7 @@ export async function serveFleet(
           return store.retryDeploy({
             project: slug,
             target: text(b, "target", 200).trim(),
+            redeploy: b.redeploy === undefined ? false : bool(b, "redeploy"),
             ...(sha ? { sha } : {}),
             author: caller.kind === "organization" ? (caller.author ?? "coordinator") : "",
             at,

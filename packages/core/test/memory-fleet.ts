@@ -403,6 +403,7 @@ export function memoryFleet(): FleetStore & {
       Object.assign(row, {
         state: "waiting",
         attempt: row.attempt + 1,
+        redeploySince: input.redeploy ? input.at.toISOString() : null,
         sequence: deploys.reduce((max, r) => Math.max(max, r.sequence), 0) + 1,
         startedAt: input.at.toISOString(),
         updatedAt: input.at.toISOString(),
@@ -443,6 +444,7 @@ export function memoryFleet(): FleetStore & {
         startedAt: input.at.toISOString(),
         updatedAt: input.at.toISOString(),
         attempt: input.attempt ?? 1,
+        redeploySince: null,
         sequence: deploys.reduce((max, candidate) => Math.max(max, candidate.sequence), 0) + 1,
       };
       if (known) {
