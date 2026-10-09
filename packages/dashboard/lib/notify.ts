@@ -1,8 +1,8 @@
 // Browser notifications for what needs the owner (THE-894): a validation to
 // decide (a merge to approve, work to validate), a question the coordinator
 // escalated to them, a coordinator that stopped while items wait for it.
-// Never a worker's question, plan or hand-back (the coordinator's), never a
-// phase change. Pure: the shell's Notifier keeps what it already notified,
+// Neglected coordinator work reaches the owner after three coordinator thresholds.
+// Phase changes alone never notify. Pure: the shell's Notifier keeps what it already notified,
 // reads the viewer's settings and shows each new item once, outside their
 // quiet hours. The live region says the same in the page (lib/announce.ts).
 import type { OwnerItem } from "@armada/core/read";
@@ -70,5 +70,7 @@ export function toNotify(
 export function notificationTitle(t: Strings, item: OwnerItem): string {
   if (item.kind === "question") return t.notify.question(item.title);
   if (item.kind === "validation") return t.notify.validation(item.title);
+  if (item.kind === "unattended")
+    return t.notify.unattended(item.workTitle ?? item.title, item.reason ?? "", item.minutes ?? 0);
   return t.notify.coordinator(item.title, item.waiting);
 }

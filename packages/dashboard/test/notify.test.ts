@@ -46,6 +46,25 @@ describe("owner notifications", () => {
     expect(toNotify(items, new Set(), { on: false, quiet: null }, NOON)).toEqual([]);
   });
 
+  test("unattended work has a localized title in browser and chat notifications", () => {
+    const item = {
+      key: "unattended:widgets:42",
+      kind: "unattended" as const,
+      project: "widgets",
+      ticket: "WID-2",
+      title: "WID-2 — plan to approve, waiting 31 min for the coordinator",
+      workTitle: "WID-2",
+      reason: "plan to approve",
+      minutes: 31,
+      waiting: 0,
+      href: "/agents/WID-2",
+    };
+    expect(notificationTitle(STRINGS.en, item)).toBe("WID-2 — plan to approve, waiting 31 min for the coordinator");
+    expect(notificationTitle(STRINGS.fr, item)).toBe(
+      "WID-2 — plan à approuver, en attente du coordinateur depuis 31 min",
+    );
+  });
+
   test("stay quiet in the quiet hours, over midnight too", () => {
     const night = { from: "22:00", to: "07:30" };
     const day = { from: "12:00", to: "14:00" };
