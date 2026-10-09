@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { type Explanation, explainChecks, type FailedCheck, rerunDecision } from "../src/ci.ts";
+import { type Explanation, explainChecks, type FailedCheck, hasNetworkFailure, rerunDecision } from "../src/ci.ts";
 import { parseConfig } from "../src/config.ts";
 import { fetchFailedChecks, fetchJobLog, fetchRunAttempt } from "../src/github.ts";
 import { DEMO_TOML, recordedFetch } from "./support.ts";
@@ -552,4 +552,72 @@ test("network outages qualify only in setup before user steps execute, never reg
     "##[error]assertion failed\nUnable to download artifact(s): ECONNRESET",
   ])
     expect(diagnose(line)?.class).toBe("failure");
+});
+
+test("container pull outages before checkout permit one rerun, but later failures remain unsafe", () => {
+  // Recorded Docker pull excerpt; transport times and image names are synthetic.
+  const pull = (error: string) => [
+    "2026-01-01T00:00:00.000Z ##[group]Starting database service container",
+    "2026-01-01T00:00:00.001Z ##[command]/usr/bin/docker pull postgres:17",
+    `2026-01-01T00:00:01.000Z ${error}`,
+    "2026-01-01T00:00:01.001Z ##[error]Docker pull failed with exit code 1",
+    "2026-01-01T00:00:01.002Z ##[endgroup]",
+  ];
+  const steps: NonNullable<FailedCheck["steps"]> = [
+    { name: "Set up job", conclusion: "success", number: 1 },
+    { name: "Initialize containers", conclusion: "failure", number: 2 },
+    { name: "Run actions/checkout@v4", conclusion: "skipped", number: 3 },
+    { name: "Test", conclusion: "skipped", number: 4 },
+    { name: "Stop containers", conclusion: "success", number: 5 },
+    { name: "Complete job", conclusion: "success", number: 6 },
+  ];
+  const diagnose = (lines: string[], evidence = steps) =>
+    explainChecks([check({ steps: evidence })], new Map([[11, { lines, warnings: [] }]]))[0] as Explanation;
+  const rateLimit =
+    "Error response from daemon: toomanyrequests: You have reached your unauthenticated pull rate limit. https://www.docker.com/increase-rate-limit";
+  const authTimeout =
+    'Error response from daemon: Head "https://registry-1.docker.io/v2/library/postgres/manifests/17": Get "https://auth.docker.io/token?scope=repository%3Alibrary%2Fpostgres%3Apull&service=registry.docker.io": context deadline exceeded (Client.Timeout exceeded while awaiting headers)';
+  for (const error of [
+    rateLimit,
+    authTimeout,
+    "Error response from daemon: context deadline exceeded",
+    "Error response from daemon: Client.Timeout exceeded while awaiting headers",
+    "Error response from daemon: toomanyrequests: HTTP 429 Too Many Requests",
+  ]) {
+    const lines = pull(error);
+    expect(hasNetworkFailure(lines)).toBe(true); // CLI must request validated steps for each candidate.
+    const result = diagnose(lines);
+    expect(result).toMatchObject({ class: "runner", runnerReason: 'network, in setup step "Initialize containers"' });
+    expect(rerunDecision([result], 1).allowed).toBe(true);
+    expect(rerunDecision([result], 2).allowed).toBe(false);
+    expect(diagnose(lines, []).class).toBe("failure");
+    expect(
+      diagnose(
+        lines,
+        steps.map((s) => (s.name === "Initialize containers" ? { ...s, name: "Test" } : s)),
+      ).class,
+    ).toBe("failure");
+    expect(
+      diagnose(
+        lines,
+        steps.map((s) => (s.name === "Test" ? { ...s, conclusion: "failure" } : s)),
+      ).class,
+    ).toBe("failure");
+    expect(
+      diagnose(
+        lines,
+        steps.map((s) => (s.name === "Stop containers" ? { ...s, conclusion: "failure" } : s)),
+      ).class,
+    ).toBe("failure");
+  }
+  for (const error of [
+    `${authTimeout}; 401 Unauthorized`,
+    `${authTimeout}; 403 Forbidden`,
+    `${authTimeout}; 404 Not Found`,
+    "Error response from daemon: HTTP 429 Too Many Requests",
+  ]) {
+    const result = diagnose(pull(error));
+    expect(result.class).toBe("failure");
+    expect(rerunDecision([result], 1).allowed).toBe(false);
+  }
 });
