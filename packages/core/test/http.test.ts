@@ -1,8 +1,38 @@
 import { expect, test } from "bun:test";
-import { HttpRequestError, httpRequest, retryStatus } from "../src/http.ts";
+import { HttpRequestError, httpRequest, readJson, retryStatus } from "../src/http.ts";
 
 const url = "https://api.example.test/read";
 const timeout = () => new DOMException("timed out", "TimeoutError");
+
+test("unreadable successful JSON shares the safe read's one transport retry; unsafe requests fail once", async () => {
+  for (const scenario of ["recovered", "empty", "transport-first", "unsafe"] as const) {
+    let calls = 0;
+    const answer = await httpRequest(
+      url,
+      { method: "POST" },
+      {
+        retry: scenario !== "unsafe",
+        retryStatus,
+        fetch: async () => {
+          calls++;
+          if (scenario === "transport-first" && calls === 1) throw timeout();
+          if (scenario === "recovered")
+            return calls === 1 ? new Response("<html>unavailable</html>") : Response.json({ ok: true });
+          return new Response("");
+        },
+      },
+      readJson<{ ok: boolean }>,
+    ).catch((error) => error);
+    expect(calls).toBe(scenario === "unsafe" ? 1 : 2);
+    if (scenario === "recovered") {
+      expect(answer).toEqual({ ok: true });
+    } else {
+      expect(answer).toBeInstanceOf(HttpRequestError);
+      expect(answer.message).toContain("unreadable answer (HTTP 200)");
+      expect(answer.transient).toBe(scenario !== "unsafe");
+    }
+  }
+});
 
 test("caller cancellation inside a transport wrapper is not retried as a deadline", async () => {
   const cancelled = new DOMException("cancelled", "AbortError");

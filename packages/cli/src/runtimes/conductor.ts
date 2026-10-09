@@ -41,6 +41,13 @@ const safeLink = (v: unknown): string | null => {
 const timestamp = (v: unknown): string | null =>
   typeof v === "string" && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null;
 
+// Eligibility is internal: preserve the existing public error after exhaustion.
+class RetryRead extends Error {
+  constructor(readonly failure: RuntimeError) {
+    super(failure.message);
+  }
+}
+
 /** The same argv is used by native launch and its read-only plan. */
 export function conductorLaunchArguments(spec: LaunchSpec): string[] {
   const p = spec.profile;
@@ -85,6 +92,7 @@ export class ConductorAdapter implements RuntimeAdapter {
   constructor(
     private readonly io: Io,
     private readonly secretValues: readonly string[] = [],
+    private readonly retries: { random?: () => number; onRetry?: (message: string) => void } = {},
   ) {}
   parse(handle: string): { workspace: string; session: string } {
     const parts = handle.split("/");
@@ -123,6 +131,38 @@ export class ConductorAdapter implements RuntimeAdapter {
     );
   }
   private async exec(args: string[], input?: string, mutation = false, timeoutMs = 10_000): Promise<ExecResult> {
+    return this.retry(args, mutation, timeoutMs, (limit) => this.execOnce(args, input, mutation, limit));
+  }
+  private async retry<T>(
+    args: string[],
+    mutation: boolean,
+    timeoutMs: number,
+    run: (limit: number) => Promise<T>,
+  ): Promise<T> {
+    let deadline: number | undefined;
+    let limit = timeoutMs;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await run(limit);
+      } catch (error) {
+        if (!(error instanceof RetryRead)) throw error;
+        if (mutation || attempt === 3) throw error.failure;
+        // Extra time includes both backoff and retried execution, beyond the first attempt.
+        deadline ??= this.now() + 14_000;
+        const base = attempt === 1 ? 1000 : 3000;
+        const random = Math.max(0, Math.min(1, (this.retries.random ?? Math.random)()));
+        const delay = Math.round(base * (0.8 + random * 0.4));
+        if (this.now() + delay >= deadline) throw error.failure;
+        this.retries.onRetry?.(
+          `Conductor ${args.slice(0, 2).join(" ")} did not answer; trying again in ${(delay / 1000).toFixed(1)} s (${attempt + 1}/3)`,
+        );
+        await this.sleep(delay);
+        limit = Math.min(timeoutMs, deadline - this.now());
+        if (limit <= 0) throw error.failure;
+      }
+    }
+  }
+  private async execOnce(args: string[], input?: string, mutation = false, timeoutMs = 10_000): Promise<ExecResult> {
     if (!this.io.exec)
       throw new RuntimeError("Conductor CLI execution is unavailable on this machine", "unavailable", "armada doctor");
     const operation = args.slice(0, 2).join(" ");
@@ -143,26 +183,29 @@ export class ConductorAdapter implements RuntimeAdapter {
         (e as NodeJS.ErrnoException).code === "ENOENT"
       ) {
         this.binary = BUNDLED_CONDUCTOR;
-        return this.exec(args, input, mutation, timeoutMs);
+        return this.execOnce(args, input, mutation, timeoutMs);
       }
       if ((e as NodeJS.ErrnoException).code === "ENOENT")
         throw new RuntimeError("Conductor CLI is missing", "unavailable", CONDUCTOR_INSTALL_FIX);
       if (mutation) throw this.error("unknown-outcome");
-      throw new RuntimeError(
+      const error = new RuntimeError(
         (e as NodeJS.ErrnoException).code === "EACCES"
           ? "Conductor CLI cannot be executed: permission denied"
           : `Conductor CLI could not execute ${operation}`,
         "unavailable",
         "armada doctor",
       );
+      throw (e as NodeJS.ErrnoException).code === "EACCES" ? error : new RetryRead(error);
     }
     if (r.timedOut)
       throw mutation
         ? this.error("unknown-outcome")
-        : new RuntimeError(
-            `Conductor ${operation} timed out after ${timeoutMs} ms`,
-            "unavailable",
-            "retry once Conductor answers",
+        : new RetryRead(
+            new RuntimeError(
+              `Conductor ${operation} timed out after ${timeoutMs} ms`,
+              "unavailable",
+              "retry once Conductor answers",
+            ),
           );
     if (r.outputExceeded)
       throw mutation
@@ -191,12 +234,14 @@ export class ConductorAdapter implements RuntimeAdapter {
           code,
           "conductor model",
         );
-      if (code === "unavailable")
-        throw new RuntimeError(
+      if (code === "unavailable") {
+        const error = new RuntimeError(
           `Conductor ${r.code === 4 ? "server error" : "CLI failed"} during ${operation} (exit ${r.code})`,
           code,
           "use the armada-runtime-conductor guide",
         );
+        throw !mutation && r.code === 4 ? new RetryRead(error) : error;
+      }
       throw this.error(code);
     }
     return r;
@@ -207,16 +252,19 @@ export class ConductorAdapter implements RuntimeAdapter {
     mutation = false,
     timeoutMs = 10_000,
   ): Promise<Record<string, unknown>> {
-    const r = await this.exec(args, input, mutation, timeoutMs);
-    let decoded: unknown;
-    try {
-      decoded = JSON.parse(r.stdout);
-    } catch {
-      throw this.invalidResponse(args.slice(0, 2).join(" "), mutation, true);
-    }
-    const value = object(decoded);
-    if (!value) throw this.invalidResponse(args.slice(0, 2).join(" "), mutation);
-    return value;
+    return this.retry(args, mutation, timeoutMs, async (limit) => {
+      const r = await this.execOnce(args, input, mutation, limit);
+      let decoded: unknown;
+      try {
+        decoded = JSON.parse(r.stdout);
+      } catch {
+        const error = this.invalidResponse(args.slice(0, 2).join(" "), mutation, true);
+        throw mutation ? error : new RetryRead(error);
+      }
+      const value = object(decoded);
+      if (!value) throw this.invalidResponse(args.slice(0, 2).join(" "), mutation);
+      return value;
+    });
   }
   async preflight(input: PreflightInput): Promise<PreflightCheck[]> {
     const checks: PreflightCheck[] = [];

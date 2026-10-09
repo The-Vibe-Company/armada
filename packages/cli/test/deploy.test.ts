@@ -9,6 +9,7 @@ import { loadCredentials } from "../src/auth.ts";
 import { type Io, run } from "../src/cli.ts";
 import { startDeploys } from "../src/deploy.ts";
 import { createExec } from "../src/spawn.ts";
+import { bundleForNode } from "./support/bundle.ts";
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -49,12 +50,7 @@ test("merge startup carries machine settings through the real detached Node watc
     configPath,
     `${DEMO_TOML}\n[[deploy.target]]\nname = "api"\nrequires_env = ["DEPLOY_LINK_DIR"]\nlive_sha_command = 'test "$DEPLOY_LINK_DIR" = synthetic-linked-folder && printf %s "$ARMADA_DEPLOY_SHA"'\nsmoke = 'test "$DEPLOY_LINK_DIR" = synthetic-linked-folder'\ntimeout_minutes = 1\n`,
   );
-  const build = await Bun.build({
-    entrypoints: [join(import.meta.dir, "support/deploy-background.ts")],
-    outdir: dir,
-    target: "node",
-  });
-  expect(build.success).toBe(true);
+  await bundleForNode([join(import.meta.dir, "support/deploy-background.ts")], dir);
   const result = await createExec()("node", [join(dir, "deploy-background.js"), configPath], {
     cwd: dir,
     timeoutMs: 10_000,

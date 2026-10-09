@@ -2,13 +2,29 @@
 // response body; getting headers alone is not an answer.
 export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
+class UnreadableAnswer extends Error {
+  constructor(readonly status: number) {
+    super(`unreadable answer (HTTP ${status})`);
+  }
+}
+
+/** Distinguishes a JSON parse failure from an adapter's semantic validation. */
+export async function readJson<T>(response: Response): Promise<T> {
+  try {
+    return (await response.json()) as T;
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new UnreadableAnswer(response.status);
+    throw error;
+  }
+}
+
 export class HttpRequestError extends Error {
   override name = "HttpRequestError";
   constructor(
     error: unknown,
     timeoutMs: number,
     readonly attempts: number,
-    /** Whether the underlying deadline/network failure was eligible for safe retry. */
+    /** Whether the underlying deadline/network/unreadable answer failure is temporary. */
     readonly transient = false,
   ) {
     super(
@@ -183,13 +199,15 @@ export async function httpRequest<T>(
       if (init.signal?.aborted || (error instanceof Error && error.name === "AbortError" && !deadline.aborted))
         throw error;
       const cause = deadline.aborted ? deadline.reason : error;
-      const transport = fetchFailed || deadline.aborted || transient(cause);
+      const unreadable = cause instanceof UnreadableAnswer;
+      const retryable = transient(cause) || (unreadable && !!opts.retry && !!response?.ok);
+      const transport = fetchFailed || deadline.aborted || transient(cause) || unreadable;
       if (!transport) throw error;
-      if (attempt < attempts && transportRetries < 1 && (!response || response.ok) && transient(cause)) {
+      if (attempt < attempts && transportRetries < 1 && (!response || response.ok) && retryable) {
         transportRetries++;
         continue;
       }
-      throw new HttpRequestError(cause, limit, attempt, transient(cause));
+      throw new HttpRequestError(cause, limit, attempt, retryable);
     } finally {
       deadline.removeEventListener("abort", onDeadline);
       // Abort closes a failed request's socket; its retry gets a new signal.
