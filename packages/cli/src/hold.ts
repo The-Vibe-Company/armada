@@ -1,4 +1,4 @@
-import { type ArmadaConfig, type Credentials, Refusal } from "@armada/core";
+import { type ArmadaConfig, type Credentials, Refusal, shellWord } from "@armada/core";
 
 import { type Io, UsageError } from "./io.ts";
 import { liveFleet, type WorkerArgs } from "./worker.ts";
@@ -27,7 +27,11 @@ export async function hold(io: Io, config: ArmadaConfig, credentials: Credential
       ? `Cleared hold #${id}: ${h.clearReason}.`
       : `Hold #${id} already cleared by ${h.clearedBy ?? "unknown"} at ${h.clearedAt}: ${h.clearReason}.`;
     const note = h.kind === "main-red" ? " If main is still red, the next snapshot refresh reopens this pause." : "";
-    io.stdout(a.json ? `${JSON.stringify(result, null, 2)}\n` : `${line}${note}\n`);
+    io.stdout(
+      a.json
+        ? `${JSON.stringify(result, null, 2)}\n`
+        : `${line}${note}\n${h.kind === "deploy" && h.ref ? `armada deploy retry ${shellWord(h.ref)} rechecks and clears it with evidence\n` : ""}`,
+    );
   } else {
     const holds = await fleet.holds();
     io.stdout(

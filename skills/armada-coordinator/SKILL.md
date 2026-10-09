@@ -30,7 +30,9 @@ Done when you can name every ticket in flight and its phase, every ready ticket,
 
 ### 2. Keep watching
 
-You only learn of something new when a command you run ends. While a worker is in flight, keep exactly one `armada watch` running in the background (Claude Code: a Bash call with `run_in_background`). It waits until something needs you, prints it and exits, which wakes you. Act on it, then start it again. The last line of `armada inbox`, `watch`, `merge`, `launch` and `brief` says what to do: `2 workers in flight (ABC-1, ABC-2) — keep watching: armada watch`, `armada watch is already running (pid …)`, or `nothing to watch`. Follow it.
+See REFERENCE.md for shared results and harness bounds.
+
+You only learn of something new when a command you run ends. While a worker is in flight, keep `armada watch` running in the background (Claude Code: a Bash call with `run_in_background`). It prints what needs you and exits, waking you. Act on it, then start it again. The last line of `armada inbox`, `watch`, `merge`, `launch` and `brief` says what to do: `2 workers in flight (ABC-1, ABC-2) — keep watching: armada watch`, `armada watch is running (pid …)`, or `nothing to watch`. Follow it.
 
 - Never write your own polling loop, `sleep` loop or transcript poller: `armada watch`, `armada peek` and `armada inbox` replace them.
 - `armada watch --follow` keeps running and prints a line per event; use it only where every output line reaches you (a terminal, a herdr pane, a harness tool such as Claude Code's Monitor) or in a script. Pass `--for <minutes>` below your harness's command limit; it ends with the command that resumes it.
@@ -115,7 +117,7 @@ Done when the pull request is merged, the result line says so, and nothing it pr
 
 - **Merge holds** pause merges for every coordinator: `armada hold` lists them, `armada hold add "<reason>"` opens one. Merge the fix with `armada merge <pr> --through-hold "<why>"`, verify the recovery, then `armada hold clear <id> --reason "<what was verified>"`. Never clear a hold just to let a merge through.
 - **Main red.** `armada status` says `main red since #N` with the failing checks, and whether a fix is running. Find the cause with `armada ci why --branch <default branch>`, cut a fix ticket, and hold merges when the breakage would spread.
-- **Deploys.** With `[[deploy.target]]`, each merge starts a watcher; a failed deploy or smoke check puts a `deploy` item in your inbox and opens a hold. `armada deploy status` shows the targets. Merge the fix through the hold; the next healthy deploy clears it.
+- **Deploys.** Follow [MERGE.md](MERGE.md#holds-main-red-and-deploys).
 - **Red checks.** Run `armada ci why <pr>`; follow [MERGE.md](MERGE.md#red-checks-on-a-pull-request).
 
 Done when no hold is open without a ticket that fixes it.
