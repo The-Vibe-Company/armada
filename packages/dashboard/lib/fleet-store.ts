@@ -75,6 +75,7 @@ import {
   jobEndedBody,
   mainRedHoldChange,
   OBSERVABLE_RUNTIMES,
+  progressMoved,
   REQUEST_KINDS,
   TIMELINE_HOURS,
   UNUSED_LAUNCH_GRACE_MS,
@@ -1472,6 +1473,7 @@ const jobOf = (r: Row): Job => ({
   startedBy: r.started_by == null ? null : text(r.started_by),
   startedAt: isoAt(r.started_at),
   observedAt: isoAt(r.observed_at),
+  ...(r.progress_changed_at == null ? {} : { progressChangedAt: isoAt(r.progress_changed_at) }),
   finishedAt: iso(r.finished_at),
 });
 
@@ -2068,8 +2070,8 @@ export const fleetStore = (db: Database): FleetStore => ({
 
   async startJob(input) {
     const rs = await db.query(
-      `INSERT INTO jobs (project, ticket, name, state, started_by, started_at, observed_at)
-       VALUES ($1, $2, $3, 'starting', $4, $5, $5) RETURNING *`,
+      `INSERT INTO jobs (project, ticket, name, state, started_by, started_at, observed_at, progress_changed_at)
+       VALUES ($1, $2, $3, 'starting', $4, $5, $5, $5) RETURNING *`,
       [input.project, input.ticket, input.name, input.startedBy, input.at],
     );
     return jobOf(rs.rows[0] as Row);
@@ -2078,10 +2080,23 @@ export const fleetStore = (db: Database): FleetStore => ({
   listJobs: (project, q) => listJobs(db, project, q),
   observeJob: (input) =>
     transaction(db, async (tx) => {
+      // Lock before comparing so concurrent observations use the latest progress.
+      const previous = (
+        await tx.query("SELECT progress FROM jobs WHERE project = $1 AND id = $2 AND ticket = $3 FOR UPDATE", [
+          input.project,
+          input.id,
+          input.ticket,
+        ])
+      ).rows[0];
+      const moved =
+        input.progress !== undefined &&
+        previous !== undefined &&
+        progressMoved(previous.progress == null ? null : text(previous.progress), input.progress);
       const rs = await tx.query(
         `UPDATE jobs SET state = $4, revision = revision + 1,
        ref = CASE WHEN ref IS NULL AND $5::boolean THEN $6 ELSE ref END,
        progress = CASE WHEN $10::boolean THEN $7 ELSE progress END,
+       progress_changed_at = CASE WHEN $12::boolean THEN $9 ELSE progress_changed_at END,
        eta = CASE WHEN $4 = 'running' THEN $8::timestamptz ELSE NULL END,
        observed_at = $9, finished_at = CASE WHEN $4 = 'running' THEN NULL ELSE $9 END
        WHERE project = $1 AND id = $2 AND ticket = $3 AND state IN ('starting','running') AND observed_at <= $9
@@ -2100,6 +2115,7 @@ export const fleetStore = (db: Database): FleetStore => ({
           input.at,
           input.progress !== undefined,
           input.expectedRevision ?? null,
+          moved,
         ],
       );
       if (rs.rows[0]) {

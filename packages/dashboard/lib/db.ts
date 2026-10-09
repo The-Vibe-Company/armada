@@ -987,6 +987,14 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "ALTER TABLE deploys ADD COLUMN redeploy_since timestamptz",
     ],
   },
+  {
+    // THE-1449: a runner can keep answering without making progress.
+    version: 48,
+    statements: [
+      "ALTER TABLE jobs ADD COLUMN progress_changed_at timestamptz",
+      "UPDATE jobs SET progress_changed_at = observed_at",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

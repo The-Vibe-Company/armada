@@ -1,3 +1,4 @@
+import { jobStalled, jobStalledMinutes } from "./jobs.ts";
 // The fleet's live data: the project registry, events, the runtime session
 // holding each ticket and the profile its claim named, the coordinators'
 // inboxes with the dashboard's requests, leases, and when each coordinator
@@ -1130,6 +1131,7 @@ export type InboxEntryKind =
   | InboxKind
   | "unblocked"
   | "job-silent"
+  | "job-stalled"
   | "runtime-blocked"
   | "silent"
   | "stopped"
@@ -1149,7 +1151,7 @@ export interface InboxEntry {
    */
   id: number | null;
   kind: InboxEntryKind;
-  /** Durable job id for a derived job-silent entry. */
+  /** Durable job id for a derived job-silent or job-stalled entry. */
   jobId?: number;
   /** The oldest open queue entry of a derived queue-stalled entry: one wake per stall. */
   queueEntry?: number;
@@ -1175,7 +1177,7 @@ const REWRITTEN: readonly InboxEntryKind[] = ["hand-back", "plan", "deploy"];
 const digest = (text: string) => createHash("sha256").update(text).digest("base64url").slice(0, 12);
 
 /**
- * Stable keys include `silent:<ticket>:<level>`, `job-silent:<job>`,
+ * Stable keys include `silent:<ticket>:<level>`, `job-silent:<job>`, `job-stalled:<job>@<progressChangedAt>`,
  * `queue-stalled:<oldest open entry>`, `unblocked:<ticket>@<blocker>` and
  * `version:<version>@<digest>`.
  * A hand-back, plan or deploy notice rewritten in place carries a digest
@@ -1187,25 +1189,27 @@ export const entryKey = (
     createdAt?: string;
   },
 ) =>
-  e.kind === "job-silent"
-    ? `job-silent:${e.jobId}`
-    : e.kind === "queue-stalled"
-      ? `queue-stalled:${e.queueEntry}`
-      : e.id !== null
-        ? REWRITTEN.includes(e.kind)
-          ? `#${e.id}@${digest(e.body)}`
-          : `#${e.id}`
-        : e.kind === "unblocked"
-          ? `unblocked:${e.ticket}@${e.unblockedBy}`
-          : e.version
-            ? `version:${e.version}@${digest(e.body)}`
-            : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
-              ? `not-started:${e.ticket}:expired@${digest(e.body)}`
-              : e.kind === "silent"
-                ? `silent:${e.ticket}:${e.silenceLevel ?? 0}`
-                : e.kind === "stopped"
-                  ? `stopped:${e.ticket}@${e.createdAt}`
-                  : `${e.kind}:${e.ticket}`;
+  e.kind === "job-stalled"
+    ? `job-stalled:${e.jobId}@${e.createdAt}`
+    : e.kind === "job-silent"
+      ? `job-silent:${e.jobId}`
+      : e.kind === "queue-stalled"
+        ? `queue-stalled:${e.queueEntry}`
+        : e.id !== null
+          ? REWRITTEN.includes(e.kind)
+            ? `#${e.id}@${digest(e.body)}`
+            : `#${e.id}`
+          : e.kind === "unblocked"
+            ? `unblocked:${e.ticket}@${e.unblockedBy}`
+            : e.version
+              ? `version:${e.version}@${digest(e.body)}`
+              : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
+                ? `not-started:${e.ticket}:expired@${digest(e.body)}`
+                : e.kind === "silent"
+                  ? `silent:${e.ticket}:${e.silenceLevel ?? 0}`
+                  : e.kind === "stopped"
+                    ? `stopped:${e.ticket}@${e.createdAt}`
+                    : `${e.kind}:${e.ticket}`;
 
 /** The stored project reading; inbox reconciliation never fetches external state. */
 export interface HandBackSnapshot {
@@ -1635,18 +1639,24 @@ async function readInboxAndFlight(
     ...(i.kind === "hand-back" ? { queue: handBackQueue(i.body, queue) } : {}),
   }));
   for (const job of jobs) {
+    if (!visible(ownerOf(job.ticket)) || job.state !== "running") continue;
     const silence = now - Date.parse(job.observedAt);
-    const limit = o.snapshot?.config?.jobs?.[job.name]?.silenceMinutes ?? 15;
-    if (!visible(ownerOf(job.ticket)) || job.state !== "running" || silence <= limit * MIN) continue;
+    const def = o.snapshot?.config?.jobs?.[job.name];
+    const limit = def?.silenceMinutes ?? 15;
+    const stallLimit = def?.stallMinutes ?? 60;
+    const silent = silence > limit * MIN;
+    if (!silent && !jobStalled(job, stallLimit, o.now, limit)) continue;
     entries.push({
       id: null,
-      kind: "job-silent",
+      kind: silent ? "job-silent" : "job-stalled",
       owner: ownerOf(job.ticket),
       jobId: job.id,
       ticket: job.ticket,
       author: null,
-      body: `Job ${job.id} · ${job.name} · ${job.ticket}: no observation for ${Math.floor(silence / MIN)} min (limit ${limit} min). Last progress: ${job.progress ?? "no progress reported"}; check the runner with armada job status ${job.id}`,
-      createdAt: job.observedAt,
+      body: silent
+        ? `Job ${job.id} · ${job.name} · ${job.ticket}: no observation for ${Math.floor(silence / MIN)} min (limit ${limit} min). Last progress: ${job.progress ?? "no progress reported"}; check the runner with armada job status ${job.id}`
+        : `Job ${job.id} · ${job.name} · ${job.ticket}: progress unchanged for ${jobStalledMinutes(job, o.now)} min (${JSON.stringify(job.progress)} since ${job.progressChangedAt}; stall_minutes limit ${stallLimit} min). It keeps running: check the runner with armada job status ${job.id}; stop it on purpose with armada job stop ${job.id}.`,
+      createdAt: silent ? job.observedAt : job.progressChangedAt!,
       new: false,
     });
   }
