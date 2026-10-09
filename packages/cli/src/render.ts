@@ -3,6 +3,7 @@
 import {
   type CoordinatorRecord,
   type InFlightTicket,
+  jobStalledMinutes,
   mainHealthLine,
   type QueueEntry,
   queueOpen,
@@ -127,7 +128,9 @@ export function renderStatus(r: StatusReport, hints: StatusHints = {}): string {
   if (r.jobs?.length) {
     out.push("", `Jobs running (${r.jobs.length})`);
     for (const j of r.jobs) {
-      out.push(`  Job ${j.id} · ${j.ticket} · ${j.name} · ${j.state}${j.overdue ? " · overdue" : ""}`);
+      out.push(
+        `  Job ${j.id} · ${j.ticket} · ${j.name} · ${j.state}${j.overdue ? " · overdue" : ""}${j.stalled ? ` · stalled ${jobStalledMinutes(j, new Date(now))} min` : ""}`,
+      );
       out.push(`    Runner: ${j.ref ?? "no runner reference"} · ${j.progress ?? "no progress reported"}`);
       out.push(`    Observed ${relative(j.observedAt, now)}${j.eta ? ` · ETA ${j.eta}` : ""}`);
       if (j.ticketDone) out.push("    ! ticket is Done; job continues until the runner ends or you stop it");

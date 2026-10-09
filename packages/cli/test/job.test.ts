@@ -99,6 +99,19 @@ describe("armada job", () => {
     expect(status.out).toContain("overdue");
     expect(await run(["job", "list", "--json"], fresh)).toBe(0);
     expect(JSON.parse(s.printed().out)[0].progress).toBe("37/120 cases");
+    s.api.clock.advance(61 * 60_000);
+    await s.api.store.observeJob({
+      project: "widgets",
+      ticket: job.ticket,
+      id: job.id,
+      state: "running",
+      progress: "37/120 cases",
+      at: s.api.clock.now(),
+    });
+    const commandsBeforeList = s.execs.length;
+    expect(await run(["job", "list"], { ...fresh, now: s.api.clock.now })).toBe(0);
+    expect(s.printed().out).toContain("running · overdue · stalled 61 min");
+    expect(s.execs).toHaveLength(commandsBeforeList);
     expect(await run(["job", "stop", "1"], s.io)).toBe(0);
     expect(s.execs.at(-1)).toMatchObject({
       args: ["-c", "stop-runner"],
