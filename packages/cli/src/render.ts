@@ -143,7 +143,7 @@ export function renderStatus(r: StatusReport, hints: StatusHints = {}): string {
     out.push("", `Launch when unblocked (${r.launchWhenUnblocked.length})`);
     for (const request of r.launchWhenUnblocked) {
       out.push(
-        `  ${request.ticket}  ${request.reason ?? "unblocked: launch it now"}${request.profile ? ` · profile ${request.profile}` : ""} · asked by ${request.author ?? "unknown"} (#${request.id})`,
+        `  ${request.ticket}  ${request.reason ?? "unblocked: launch it now"}${request.profile ? ` · profile ${request.profile}${request.pinned !== false ? " (pinned)" : ""}` : ""} · asked by ${request.author ?? "unknown"} (#${request.id})`,
       );
       out.push(`    ${request.command}`);
     }

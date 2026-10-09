@@ -25,7 +25,7 @@ fast_mode = true
 `;
 const CANARY = "armada_launch_CANARY_1";
 const json = (value: unknown) => ({ code: 0, stdout: JSON.stringify(value), stderr: "" });
-async function fixture(toml = TOML) {
+async function fixture(toml = TOML, readings = 1) {
   const home = await mkdtemp(join(tmpdir(), "armada-conductor-launch-"));
   homes.push(home);
   const linear = new FakeLinear();
@@ -43,12 +43,18 @@ async function fixture(toml = TOML) {
     branchName: "feature/demo-13",
     description: "## In short\nBuild a widget.",
     state: { name: "Todo", type: "unstarted" },
-    labels: { nodes: [], pageInfo: { hasNextPage: false } },
+    labels: { nodes: [] as { name: string }[], pageInfo: { hasNextPage: false } },
     parent: { identifier: "DEMO-2", title: "Widget spec", url: "https://linear.app/acme/issue/DEMO-2" },
     comments: { nodes: [], pageInfo: { hasNextPage: false } },
     inverseRelations: { nodes: [] as unknown[], pageInfo: { hasNextPage: false } },
   };
-  const recorded = recordedFetch({ linear: (r) => Object.assign(r, { Brief: [{ data: { issue: ticket } }] }) });
+  const recorded = recordedFetch({
+    linear: (r) => {
+      Object.assign(r, { Brief: [{ data: { issue: ticket } }] });
+      for (const [key, responses] of Object.entries(r))
+        Object.assign(r, { [key]: Array.from({ length: readings }, () => responses).flat() });
+    },
+  });
   const calls: { command: string; args: string[]; input?: string; timeoutMs?: number }[] = [];
   const stdout: string[] = [],
     stderr: string[] = [],
@@ -759,4 +765,125 @@ test("an unknown token write retains the slot lease until expiry; a definite ref
       ).resolves.toBeDefined();
     }
   }
+});
+
+test("waiting launches route current labels, preserve explicit pins and consume saved context with fire-time overrides", async () => {
+  const toml = `${TOML}
+[conductor.profiles.frontend]
+agent = "codex"
+model = "synthetic-model"
+effort = "high"
+[[conductor.routing]]
+labels = ["ui"]
+profile = "frontend"
+`;
+  for (const mode of ["routed", "pinned", "override"] as const) {
+    const f = await fixture(toml, 2);
+    const config = parseConfig(toml);
+    const id = await f.store.addRequest({
+      project: "widgets",
+      ticket: "DEMO-13",
+      kind: "launch-request",
+      author: "Ada",
+      coordinator: "default",
+      question: null,
+      body: "Waiting",
+      deferred: true,
+      profile: mode === "routed" ? null : "backend",
+      pinned: mode !== "routed",
+      runtime: "conductor",
+      notes: "Stored coordinator context",
+      reason: "Saved coordinator reason",
+      expiresAt: new Date(NOW.getTime() + 7 * 86400000).toISOString(),
+      at: NOW,
+    });
+    expect(id).not.toBeNull();
+    f.ticket.labels.nodes = [{ name: config.tracker.readyLabel }, { name: "ui" }];
+    const options: Record<string, string> =
+      mode === "override" ? { profile: "frontend", reason: "Fire-time choice", notes: "-", runtime: "conductor" } : {};
+    expect(await f.launch({ ...options, "dry-run": "true" })).toBe(0);
+    expect(f.armada.calls.filter((c) => c.path === "launch-tokens")).toHaveLength(0);
+    expect(await f.launch(options)).toBe(0);
+    const create = f.calls.find((c) => c.args.includes("create"));
+    expect(create?.input).toContain(mode === "override" ? "Notes from stdin." : "Stored coordinator context");
+    expect(create?.input).toContain(`--profile ${mode === "pinned" ? "backend" : "frontend"}`);
+    expect((await f.store.getInboxItem("widgets", id!))?.request?.attempts).toBe(1);
+  }
+});
+
+test("a waiting launch rechecks the ready label before creating any worker", async () => {
+  const f = await fixture(TOML, 2);
+  const config = parseConfig(TOML);
+  const id = await f.store.addRequest({
+    project: "widgets",
+    ticket: "DEMO-13",
+    kind: "launch-request",
+    author: "Ada",
+    question: null,
+    profile: null,
+    pinned: false,
+    deferred: true,
+    body: "Waiting",
+    expiresAt: new Date(NOW.getTime() + 7 * 86400000).toISOString(),
+    at: NOW,
+  });
+  expect(id).not.toBeNull();
+  f.ticket.labels.nodes = [{ name: config.tracker.readyLabel }];
+  expect(await f.launch({ "dry-run": "true" })).toBe(0);
+  f.ticket.labels.nodes = [];
+  await expect(f.launch()).rejects.toThrow(`lacks ${config.tracker.readyLabel}`);
+  expect(f.armada.calls.filter((c) => c.path === "launch-tokens")).toHaveLength(0);
+  expect(f.calls.some((c) => c.args.includes("create"))).toBe(false);
+});
+
+test("a guided waiting brief preserves its pinned profile and notes through fire admission", async () => {
+  const toml = TOML.replace("fast_mode = true", 'runtime = "claude-code"').replace(
+    'agent = "codex"',
+    'agent = "claude"',
+  );
+  const f = await fixture(toml);
+  f.ticket.labels.nodes = [{ name: parseConfig(toml).tracker.readyLabel }];
+  const id = await f.store.addRequest({
+    project: "widgets",
+    ticket: "DEMO-13",
+    kind: "launch-request",
+    author: "Ada",
+    question: null,
+    profile: "backend",
+    pinned: true,
+    deferred: true,
+    body: "Waiting",
+    notes: "Guided coordinator context",
+    reason: "Choose the guided profile",
+    expiresAt: new Date(NOW.getTime() + 7 * 86400000).toISOString(),
+    at: NOW,
+  });
+  if (id === null) throw new Error("missing guided request");
+  expect(await run(["brief", "DEMO-13", "--prompt"], f.io)).toBe(0);
+  expect(f.stdout()).toContain("Guided coordinator context");
+  expect(f.stdout()).toContain("--profile backend");
+  expect((await f.store.getInboxItem("widgets", id))?.request?.attempts).toBe(1);
+  expect(f.armada.calls.filter((c) => c.path === "launch-tokens")).toHaveLength(1);
+});
+
+test("ordinary briefs tolerate unavailable waiting context while launch prompts fail closed", async () => {
+  const ordinary = await fixture();
+  const fetch = ordinary.io.fetch;
+  if (!fetch) throw new Error("missing fixture fetch");
+  ordinary.io.fetch = async (url, init) =>
+    url.endsWith("/fleet/launch-requests")
+      ? Response.json({ error: "unavailable" }, { status: 503 })
+      : fetch(url, init);
+  expect(await run(["brief", "DEMO-13"], ordinary.io)).toBe(0);
+  expect(ordinary.output()).toContain("Synthetic worker");
+  expect(ordinary.stderr()).toContain("waiting launch context is unavailable");
+  const prompt = await fixture();
+  const promptFetch = prompt.io.fetch;
+  if (!promptFetch) throw new Error("missing fixture fetch");
+  prompt.io.fetch = async (url, init) =>
+    url.endsWith("/fleet/launch-requests")
+      ? Response.json({ error: "unavailable" }, { status: 503 })
+      : promptFetch(url, init);
+  expect(await run(["brief", "DEMO-13", "--prompt"], prompt.io)).toBe(1);
+  expect(prompt.armada.launches.size).toBe(0);
 });

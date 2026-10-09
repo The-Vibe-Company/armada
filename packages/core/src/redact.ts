@@ -175,6 +175,7 @@ const FREE_TEXT = new Set([
   "details",
   "detail",
   "note",
+  "notes",
   "shippedWith",
   "morePrs",
   "excerpts",

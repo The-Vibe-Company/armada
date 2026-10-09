@@ -1025,6 +1025,20 @@ test.each([{ options: [] }, { options: ["--no-archive"] }])(
   "a confirmed merge launches its owned deferred follow-up through the shared Conductor launcher in the same run (%s)",
   async ({ options }) => {
     const f = await fixture({ unblocks: true });
+    const deferredId = await f.store.addRequest({
+      project: "widgets",
+      ticket: "DEMO-19",
+      kind: "launch-request",
+      author: "Ada",
+      coordinator: "default",
+      question: null,
+      profile: "backend",
+      deferred: true,
+      pinned: true,
+      body: "Wait for DEMO-18",
+      at: NOW,
+    });
+    if (deferredId === null) throw new Error("missing deferred request");
     const readConfig = f.io.readFile;
     f.io.readFile = async (path) => {
       const contents = await readConfig(path);
@@ -1039,7 +1053,7 @@ test.each([{ options: [] }, { options: ["--no-archive"] }])(
         return Response.json({
           result: [
             {
-              id: 3,
+              id: deferredId,
               ticket: "DEMO-19",
               profile: "backend",
               author: "Ada",

@@ -2,6 +2,7 @@ import {
   ArmadaApiError,
   type ArmadaConfig,
   BriefError,
+  DEFERRED_LAUNCH_BACKOFF_MINUTES,
   type DeferredLaunch,
   type Fleet,
   type MergeOutcome,
@@ -47,7 +48,7 @@ export async function launchDeferredAfterMerge(
     );
     if (!request) continue;
     const profile = request.profile ? config.conductor.profiles[request.profile] : null;
-    if (!ticket.readyForAgent || profile?.runtime === "claude-code") {
+    if (!ticket.readyForAgent || request.guided || (request.pinned !== false && profile?.runtime === "claude-code")) {
       results.push({
         ticket: request.ticket,
         request: request.id,
@@ -57,6 +58,14 @@ export async function launchDeferredAfterMerge(
       continue;
     }
     try {
+      const attempt = await fleet.attemptDeferredLaunch({
+        id: request.id,
+        backoffMinutes: DEFERRED_LAUNCH_BACKOFF_MINUTES,
+      });
+      if (!attempt.ok) {
+        outcome.warnings.push(`${request.ticket} was not launched: ${attempt.why}. ${request.command}`);
+        continue;
+      }
       const output = await launch(request);
       results.push({
         ticket: request.ticket,

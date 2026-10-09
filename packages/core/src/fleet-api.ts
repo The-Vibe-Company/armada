@@ -10,7 +10,7 @@
 import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
 import type { ArmadaConfig } from "./config.ts";
 import { secretNameRefusal } from "./config.ts";
-import { type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
+import { type DeferredAttempt, type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
 import { DEPLOY_STATES, type DeployState, deployDetail } from "./deploy.ts";
 import { buildDigest, type Digest, renderDigest } from "./digest.ts";
 import { attachPullRequests } from "./github.ts";
@@ -59,6 +59,7 @@ import {
   type StoredInboxItem,
   serveInbox,
   ticketOwners,
+  unusedLaunchExpired,
   type ValidationRecord,
   type WorkerProfile,
   workerSlots,
@@ -135,6 +136,7 @@ export const FLEET_OPS = [
   "runtime/stop",
   "launches",
   "launch-requests",
+  "launch-requests/attempt",
   "inbox",
   "inbox/item",
   "inbox/ticket",
@@ -673,6 +675,14 @@ export async function serveFleet(
               snapshot: deps.snapshot,
               ticket: ticketOf(b),
               profile: optText(b, "profile", LINE_MAX),
+              runtime: (() => {
+                const value = optText(b, "runtime", LINE_MAX);
+                if (value && !["conductor", "herdr"].includes(value))
+                  throw new Invalid("runtime must be conductor or herdr");
+                return value;
+              })(),
+              notes: optText(b, "notes", 16 * 1024),
+              reason: optText(b, "reason", LINE_MAX),
               after: b.after == null ? null : ticketOf(b, "after"),
               author: caller.kind === "organization" ? (caller.launchAuthor ?? caller.author ?? "") : "",
               coordinator: coordinatorName,
@@ -832,8 +842,26 @@ export async function serveFleet(
             agent: profile?.agent ?? null,
           };
         }
+        case "launch-requests/attempt": {
+          if (
+            typeof b.backoffMinutes !== "number" ||
+            !Number.isFinite(b.backoffMinutes) ||
+            b.backoffMinutes < 0 ||
+            b.backoffMinutes > 1440
+          )
+            throw new Invalid("backoffMinutes must be between 0 and 1440");
+          return store.attemptDeferredLaunch({
+            project: slug,
+            id: idOf(b, "id"),
+            coordinator: coordinatorName ?? "default",
+            backoffMinutes: b.backoffMinutes,
+            at,
+          });
+        }
         case "launch-requests": {
-          const launches = await store.pendingLaunches(slug, new Date(0));
+          if (b.supportsDeferredAttempts !== undefined && typeof b.supportsDeferredAttempts !== "boolean")
+            throw new Invalid("supportsDeferredAttempts must be a boolean");
+          const launches = (await store.pendingLaunches(slug, new Date(0))).filter((l) => !unusedLaunchExpired(l, at));
           const [items, handles, events, coordinators] = await Promise.all([
             store.openInboxItems({ project: slug, recipient: "coordinator" }),
             store.openRuntimeHandles(slug),
@@ -848,20 +876,25 @@ export async function serveFleet(
           return items
             .filter((i) => i.kind === "launch-request" && i.request?.deferred)
             .filter((i) => b.coordinatorName === undefined || !i.coordinator || i.coordinator === coordinatorName)
-            .map((i) =>
-              deferredLaunchState(
+            .map((i) => {
+              const state = deferredLaunchState(
                 i,
                 model,
                 deps.config?.tracker.parkedLabel,
                 !!i.ticket && !!held?.has(i.ticket),
-                caller.kind === "organization" ? (caller.launchAuthor ?? caller.author) : null,
+                coordinatorName,
                 !!i.request?.profile && deps.config?.conductor.profiles[i.request.profile]?.runtime === "claude-code",
                 {
                   ...workerSlots({ handles, launches, coordinators, now: at }),
                   max: deps.config?.policy.maxWorkers ?? null,
                 },
-              ),
-            );
+                { now: at, pendingLaunch: launches.find((l) => l.ticket === i.ticket), config: deps.config },
+              );
+              // Old clients cannot atomically admit a fire or preserve the new launch context.
+              return b.supportsDeferredAttempts === true
+                ? state
+                : { ...state, owned: false, reason: "requires deferred launch admission: run armada upgrade" };
+            });
         }
         case "launches":
           return followedLaunches(await store.pendingLaunches(slug, new Date(at.getTime() - LAUNCH_WINDOW_MS)), at);
@@ -1270,7 +1303,8 @@ export function fleetClient(o: {
     coordinator: (facts) => call<null>("coordinator", facts).then(() => undefined),
     request: (input) => call<number | MergeAsk>("request", input),
     deferLaunch: (input) => call<DeferredLaunch>("request", { ...input, kind: "launch-when-unblocked" }),
-    deferredLaunches: () => call<DeferredLaunch[]>("launch-requests", {}),
+    deferredLaunches: () => call<DeferredLaunch[]>("launch-requests", { supportsDeferredAttempts: true }),
+    attemptDeferredLaunch: (input) => call<DeferredAttempt>("launch-requests/attempt", input),
     holds: () => call("holds", {}),
     openHold: (input) => call("hold/open", input),
     clearHold: (input) => call("hold/clear", input),

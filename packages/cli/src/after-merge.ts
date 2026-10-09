@@ -215,12 +215,12 @@ export async function afterMerge(
             {
               rest: [request.ticket],
               json: false,
-              options: request.profile
-                ? { profile: request.profile, reason: "deferred launch requested by the coordinator" }
-                : {},
+              options: {},
             },
             version,
             opts.configPath ?? resolve(io.cwd, "armada.toml"),
+            undefined,
+            request,
           );
           if (code !== 0) throw new UsageError("the launcher did not start a worker");
           return printed.join("");

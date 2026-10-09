@@ -989,6 +989,20 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "UPDATE jobs SET progress_changed_at = observed_at",
     ],
   },
+  {
+    // THE-1432: renewable waiting launches, current routing and atomic fire admission.
+    version: 49,
+    statements: [
+      "ALTER TABLE inbox_items ADD COLUMN request_pinned boolean NOT NULL DEFAULT true",
+      "ALTER TABLE inbox_items ADD COLUMN request_expires_at timestamptz",
+      "ALTER TABLE inbox_items ADD COLUMN request_attempts int NOT NULL DEFAULT 0",
+      "ALTER TABLE inbox_items ADD COLUMN request_attempted_at timestamptz",
+      "ALTER TABLE inbox_items ADD COLUMN request_runtime text",
+      "ALTER TABLE inbox_items ADD COLUMN request_notes text",
+      "ALTER TABLE inbox_items ADD COLUMN request_reason text",
+      "UPDATE inbox_items SET request_expires_at = LEAST(created_at + interval '7 days', CURRENT_TIMESTAMP + interval '7 days') WHERE request_deferred",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

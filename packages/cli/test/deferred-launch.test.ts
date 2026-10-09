@@ -91,8 +91,16 @@ test("launch --when-unblocked and --after store server-checked requests, print b
   });
   expect(renderStatus(report)).toContain("Launch when unblocked (1)\n  DEMO-9  parked");
   lines.length = 0;
-  expect(await run(["launch", "demo-9", "--when-unblocked", "--notes", "notes.txt"], io)).toBe(2);
-  expect(lines.join("")).toContain("--notes cannot be stored");
+  program.issues[2]?.labels.pop();
+  io.readStdin = async () => "Keep queued context";
+  expect(await run(["launch", "demo-9", "--when-unblocked", "--runtime", "conductor", "--notes", "-"], io)).toBe(0);
+  expect(lines.join("")).toContain("renewed until");
+  expect((await api.store.openInboxItems({ project: "widgets", recipient: "coordinator" }))[0]?.request).toMatchObject({
+    runtime: "conductor",
+    notes: "Keep queued context",
+    pinned: false,
+    profile: null,
+  });
   for (const empty of [["--after="], ["--after", ""]]) {
     lines.length = 0;
     expect(await run(["launch", "demo-9", ...empty], io)).not.toBe(0);
@@ -131,7 +139,10 @@ test("post-merge launches only ready requests owned by this coordinator with sto
       nowWaitsOn: [],
     },
   } as unknown as MergeOutcome;
-  const fleet = { deferredLaunches: async () => requests } as Fleet;
+  const fleet = {
+    deferredLaunches: async () => requests,
+    attemptDeferredLaunch: async () => ({ ok: true, attempt: 1 }),
+  } as unknown as Fleet;
   const launched: string[] = [];
   const launch = async (r: DeferredLaunch) => {
     launched.push(r.ticket);
@@ -166,4 +177,41 @@ test("post-merge launches only ready requests owned by this coordinator with sto
   expect(launched).toEqual(["DEMO-9", "DEMO-13"]);
   expect(await launchDeferredAfterMerge({ ...outcome, merged: false }, config, fleet, launch)).toEqual([]);
   expect(await launchDeferredAfterMerge({ ...outcome, ticket: null }, config, fleet, launch)).toEqual([]);
+});
+
+test("post-merge admission refuses a stale request and an unavailable attempt API without launching", async () => {
+  const request = {
+    id: 9,
+    ticket: "DEMO-9",
+    owned: true,
+    blockers: ["DEMO-7"],
+    reason: "waits on DEMO-7",
+    profile: null,
+    command: "armada launch DEMO-9",
+    author: "Ada",
+  };
+  const outcome = {
+    merged: true,
+    ticket: { id: "DEMO-7" },
+    warnings: [],
+    unblocked: { ready: [{ id: "DEMO-9", readyForAgent: true }] },
+  } as unknown as MergeOutcome;
+  for (const failure of ["declined", "unavailable"] as const) {
+    let launches = 0;
+    let attempts = 0;
+    const fleet = {
+      deferredLaunches: async () => [request],
+      attemptDeferredLaunch: async () => {
+        attempts++;
+        if (failure === "unavailable") throw new Error("old API");
+        return { ok: false, why: "request is closed" };
+      },
+    } as unknown as Fleet;
+    await launchDeferredAfterMerge(outcome, config, fleet, async () => {
+      launches++;
+      return "started";
+    });
+    expect(attempts).toBe(1);
+    expect(launches).toBe(0);
+  }
 });

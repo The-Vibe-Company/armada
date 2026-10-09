@@ -37,6 +37,7 @@ interface HandleRow extends Omit<RuntimeHandle, "profile"> {}
 interface ItemRow extends Omit<StoredInboxItem, "request"> {
   requestPr?: number | null;
   requestDeferred?: boolean;
+  deferredOptions?: InboxItem["request"];
   requestQuestion: number | null;
   requestProfile: string | null;
   requestValidation?: number | null;
@@ -103,6 +104,7 @@ export function memoryFleet(): FleetStore & {
       requestPr,
       requestValidation,
       requestDeferred,
+      deferredOptions,
       deployTarget: _target,
       deploySha: _sha,
       ...rest
@@ -117,7 +119,7 @@ export function memoryFleet(): FleetStore & {
             request: {
               question: requestQuestion,
               profile: requestProfile,
-              ...(requestDeferred ? { deferred: true } : {}),
+              ...(requestDeferred ? { deferred: true, ...deferredOptions } : {}),
               ...(requestPr == null ? {} : { pr: requestPr }),
             },
           }
@@ -892,10 +894,14 @@ export function memoryFleet(): FleetStore & {
         .sort((a, b) => a.name.localeCompare(b.name));
     },
     async transferTickets(input) {
-      const pending = await this.pendingLaunches(input.project, new Date(0));
+      const pending = (await this.pendingLaunches(input.project, new Date(0))).filter(
+        (launch) => !unusedLaunchExpired(launch, input.at),
+      );
       const rows = input.tickets.map((ticket) => {
         const handle = handles.get(key(input.project, ticket));
-        return handle && !handle.releasedAt ? handle : pending.find((launch) => launch.ticket === ticket);
+        return handle && !handle.releasedAt
+          ? handle
+          : (pending.find((launch) => launch.ticket === ticket) ?? open(input.project, ticket, "launch-request"));
       });
       if (
         rows.some(
@@ -911,12 +917,20 @@ export function memoryFleet(): FleetStore & {
         if (!row) continue;
         const previous = row.coordinator ?? null;
         row.coordinator = input.to;
+        for (const request of items)
+          if (
+            request.project === input.project &&
+            request.ticket === row.ticket &&
+            request.requestDeferred &&
+            !request.resolvedAt
+          )
+            request.coordinator = input.to;
         for (const launch of launches)
           if (
             launch.project === input.project &&
             launch.ticket === row.ticket &&
             !launch.endedAt &&
-            ("claimedAt" in row || launch.launchedAt === row.launchedAt)
+            ("claimedAt" in row || ("launchedAt" in row && launch.launchedAt === row.launchedAt))
           )
             launch.coordinator = input.to;
         for (const session of sessions)
@@ -925,7 +939,7 @@ export function memoryFleet(): FleetStore & {
         events.push({
           id: events.length + 1,
           project: input.project,
-          ticket: row.ticket,
+          ticket: row.ticket!,
           kind: "handover",
           message: `coordinator ${previous ?? "unowned"} -> ${input.to}`,
           at: input.at.toISOString(),
@@ -1226,9 +1240,64 @@ export function memoryFleet(): FleetStore & {
         createdAt: r.at.toISOString(),
         requestQuestion: r.question,
         requestDeferred: r.deferred,
+        deferredOptions: r.deferred
+          ? {
+              question: null,
+              profile: r.profile,
+              pinned: r.pinned ?? true,
+              expiresAt: r.expiresAt ?? null,
+              attempts: 0,
+              attemptedAt: null,
+              runtime: r.runtime ?? null,
+              notes: r.notes ?? null,
+              reason: r.reason ?? null,
+            }
+          : undefined,
         requestProfile: r.profile,
         requestPr: r.pr,
       });
+    },
+    async renewDeferredLaunch(r) {
+      const was = open(r.project, r.ticket, "launch-request");
+      if (!was?.requestDeferred || (was.coordinator ?? "default") !== (r.coordinator ?? "default")) return null;
+      const previous = was.deferredOptions;
+      was.requestProfile = r.profile ?? was.requestProfile;
+      was.deferredOptions = {
+        question: null,
+        profile: was.requestProfile,
+        pinned: r.profile ? (r.pinned ?? true) : (previous?.pinned ?? true),
+        expiresAt: r.expiresAt,
+        attempts: 0,
+        attemptedAt: null,
+        runtime: r.runtime ?? previous?.runtime,
+        notes: r.notes ?? previous?.notes,
+        reason: r.reason ?? previous?.reason,
+      };
+      return was.id;
+    },
+    async attemptDeferredLaunch(q) {
+      const row = items.find((i) => i.project === q.project && i.id === q.id);
+      if (!row || row.resolvedAt || !row.requestDeferred) return { ok: false, why: "request is closed or missing" };
+      const data = row.deferredOptions ?? { question: null, profile: row.requestProfile };
+      if (
+        Date.parse(data.expiresAt ?? new Date(Date.parse(row.createdAt) + 7 * 86400000).toISOString()) <= q.at.getTime()
+      )
+        return { ok: false, why: "request expired" };
+      if ((row.coordinator ?? "default") !== q.coordinator)
+        return { ok: false, why: "request belongs to another coordinator" };
+      if (data.attemptedAt && Date.parse(data.attemptedAt) > q.at.getTime() - q.backoffMinutes * 60000)
+        return { ok: false, why: "request attempted too recently" };
+      if ((data.attempts ?? 0) >= 3) return { ok: false, why: "request exhausted three attempts; renew it" };
+      row.deferredOptions = { ...data, attempts: (data.attempts ?? 0) + 1, attemptedAt: q.at.toISOString() };
+      return { ok: true, attempt: row.deferredOptions.attempts! };
+    },
+    async closeDeferredLaunches(q) {
+      for (const t of q.tickets)
+        for (const row of items)
+          if (row.project === q.project && row.ticket === t.ticket && row.requestDeferred && !row.resolvedAt) {
+            row.resolvedAt = q.at.toISOString();
+            row.resolution = `ticket closed (${t.status})`;
+          }
     },
     async putPlan(i) {
       const was = open(i.project, i.ticket, "plan");
