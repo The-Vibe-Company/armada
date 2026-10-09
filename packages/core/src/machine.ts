@@ -580,51 +580,109 @@ export async function runningWatch(
   return pid !== null && alive(pid) ? pid : null;
 }
 
-// ------------------------------------------------------------------ releases already noticed
+// ------------------------------------------------------------------ notices already reserved
 
-/** How many noticed releases the file keeps: enough to never repeat a recent one. */
 const NOTICED_KEPT = 50;
-
-/** `releases.json`: the Armada releases this machine's coordinator was told of. No secret. */
+export const noticesFile = (paths: MachinePaths) => join(paths.dir, "notices.json");
+/** Compatibility receipts shared with still-running older CLIs under releases.lock. */
 export const releasesFile = (paths: MachinePaths) => join(paths.dir, "releases.json");
 
+interface Notice {
+  key: string;
+  /** Legacy releases had no timestamp. */
+  at: string | null;
+}
 export interface NoticedRelease {
   version: string;
-  /** Null for legacy entries, which did not record a time. */
   at: string | null;
 }
 
-export async function readReleaseNotices(paths: MachinePaths): Promise<NoticedRelease[]> {
-  try {
-    const raw = JSON.parse(await readFile(releasesFile(paths), "utf8")) as { noticed?: unknown };
-    if (!Array.isArray(raw?.noticed)) return [];
-    return raw.noticed.flatMap((entry) => {
-      if (typeof entry === "string") return [{ version: entry, at: null }];
-      if (
-        !entry ||
-        typeof entry.version !== "string" ||
-        typeof entry.at !== "string" ||
-        !Number.isFinite(Date.parse(entry.at))
-      )
-        return [];
-      return [{ version: entry.version, at: entry.at }];
-    });
-  } catch {
-    return [];
+/** Missing memory starts empty; corrupt or unreadable memory must suppress reservations. */
+async function readNotices(paths: MachinePaths): Promise<Notice[]> {
+  const [current, legacy] = await Promise.all([
+    readNoticeFile(noticesFile(paths), false),
+    readNoticeFile(releasesFile(paths), true),
+  ]);
+  const receipts = new Map<string, Notice>();
+  for (const entry of [...current, ...legacy]) {
+    const previous = receipts.get(entry.key);
+    if (!previous || (entry.at !== null && (previous.at === null || Date.parse(entry.at) > Date.parse(previous.at))))
+      receipts.set(entry.key, entry);
   }
+  return [...receipts.values()];
 }
 
-/** The releases already noticed on this machine; none when the file is missing or unreadable. */
+async function readNoticeFile(path: string, legacy: boolean): Promise<Notice[]> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+  const raw = JSON.parse(text) as { noticed?: unknown };
+  if (!Array.isArray(raw?.noticed)) throw new Error("invalid notice memory");
+  return raw.noticed.map((entry): Notice => {
+    if (legacy && typeof entry === "string") return { key: `release:${entry}`, at: null };
+    const key = legacy ? entry?.version : entry?.key;
+    if (
+      typeof key !== "string" ||
+      !key ||
+      !(entry.at === null || (typeof entry.at === "string" && Number.isFinite(Date.parse(entry.at))))
+    )
+      throw new Error("invalid notice memory");
+    return { key: legacy ? `release:${key}` : key, at: entry.at };
+  });
+}
+
+export async function readReleaseNotices(paths: MachinePaths): Promise<NoticedRelease[]> {
+  return (await readNotices(paths).catch(() => [])).flatMap((entry) =>
+    entry.key.startsWith("release:") ? [{ version: entry.key.slice(8), at: entry.at }] : [],
+  );
+}
 export async function readNoticedReleases(paths: MachinePaths): Promise<string[]> {
   return (await readReleaseNotices(paths)).map((entry) => entry.version);
 }
 
-/** Reserves a notice before printing it, serializing eligibility across commands. */
+type NoticeOptions = { pid?: number; alive?: (pid: number) => boolean };
+
+/** Reserve before printing: concurrent commands and crashes cannot repeat a notice.
+ * Infinity reserves a key permanently. Storage failures suppress this best-effort output.
+ */
+export async function reserveNotice(
+  paths: MachinePaths,
+  key: string,
+  now: Date,
+  everyMs: number,
+  options: NoticeOptions = {},
+): Promise<boolean> {
+  return reserveMatchingNotice(paths, key, now, everyMs, (candidate) => candidate === key, options).catch(() => false);
+}
+
+/** Release throttling stays machine-wide, with separate budgets for setup drift and ordinary releases. */
 export async function addNoticedRelease(
   paths: MachinePaths,
   version: string,
   at: Date = new Date(),
-  options: { intervalMs?: number; pid?: number; alive?: (pid: number) => boolean } = {},
+  options: NoticeOptions & { intervalMs?: number } = {},
+): Promise<boolean> {
+  return reserveMatchingNotice(
+    paths,
+    `release:${version}`,
+    at,
+    options.intervalMs ?? 0,
+    (key) => key.startsWith("release:") && key.startsWith("release:setup:") === version.startsWith("setup:"),
+    options,
+  ).catch(() => false);
+}
+
+async function reserveMatchingNotice(
+  paths: MachinePaths,
+  key: string,
+  now: Date,
+  everyMs: number,
+  matches: (candidate: string) => boolean,
+  options: NoticeOptions,
 ): Promise<boolean> {
   const pid = options.pid ?? process.pid;
   const alive = options.alive ?? processAlive;
@@ -670,20 +728,44 @@ export async function addNoticedRelease(
       }
     }
     if (!taken) return false;
-    const previous = await readReleaseNotices(paths);
+    const previous = await readNotices(paths);
     if (
-      previous.some((entry) => {
-        // Setup drift has its own daily notice budget, separate from ordinary releases.
-        if (entry.at === null || entry.version.startsWith("setup:") !== version.startsWith("setup:")) return false;
-        const age = at.getTime() - Date.parse(entry.at);
-        return age >= 0 && age < (options.intervalMs ?? 0);
-      })
+      previous.some(
+        (entry) =>
+          matches(entry.key) &&
+          (everyMs === Infinity || (entry.at !== null && now.getTime() - Date.parse(entry.at) < everyMs)),
+      )
     )
       return false;
-    const noticed = previous.filter((entry) => entry.version !== version);
-    noticed.push({ version, at: at.toISOString() });
-    const text = `${JSON.stringify({ noticed: noticed.slice(-NOTICED_KEPT) }, null, 2)}\n`;
-    await writePrivate(paths, releasesFile(paths), text, 0o644);
+    const noticed = previous.filter((entry) => entry.key !== key);
+    noticed.push({ key, at: now.toISOString() });
+    // Only release history is bounded. Per-session receipts must never be evicted.
+    const releases = noticed.filter((entry) => entry.key.startsWith("release:")).slice(-NOTICED_KEPT);
+    const kept = noticed.filter((entry) => !entry.key.startsWith("release:"));
+    // Old processes use only releases.json. Publish their receipt before permitting output,
+    // under the shared lock. New readers merge this file too, so even a partial write
+    // or crash after the first receipt suppresses the notice for both CLI generations.
+    if (key.startsWith("release:"))
+      await writePrivate(
+        paths,
+        releasesFile(paths),
+        `${JSON.stringify(
+          {
+            noticed: releases.map((entry) =>
+              entry.at === null ? entry.key.slice(8) : { version: entry.key.slice(8), at: entry.at },
+            ),
+          },
+          null,
+          2,
+        )}\n`,
+        0o644,
+      );
+    await writePrivate(
+      paths,
+      noticesFile(paths),
+      `${JSON.stringify({ noticed: [...kept, ...releases] }, null, 2)}\n`,
+      0o644,
+    );
     return true;
   } finally {
     if (taken && (await readFile(lock, "utf8").catch(() => null)) === holder) await rm(lock, { force: true });
