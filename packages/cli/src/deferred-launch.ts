@@ -6,7 +6,7 @@ import {
   type DeferredLaunch,
   type Fleet,
   type MergeOutcome,
-  RuntimeError,
+  Refusal,
 } from "@armada/core";
 import { UsageError } from "./io.ts";
 import { redactRuntimeText } from "./runtimes/adapter.ts";
@@ -77,7 +77,7 @@ export async function launchDeferredAfterMerge(
     } catch (error) {
       const reason =
         error instanceof UsageError ||
-        error instanceof RuntimeError ||
+        error instanceof Refusal ||
         error instanceof BriefError ||
         error instanceof ArmadaApiError
           ? redactRuntimeText(error.message)

@@ -1021,9 +1021,14 @@ test("CLI accepts --no-ticket --reason and posts its audit comment without endin
   expect(f.store.leases.size).toBe(0);
 });
 
-test.each([{ options: [] }, { options: ["--no-archive"] }])(
-  "a confirmed merge launches its owned deferred follow-up through the shared Conductor launcher in the same run (%s)",
-  async ({ options }) => {
+test.each([
+  { options: [], failed: false },
+  { options: ["--no-archive"], failed: false },
+  { options: [], failed: true },
+  { options: [], failed: true, drain: true },
+])(
+  "a confirmed merge launches its deferred follow-up or records its failure without undoing the merge (%s)",
+  async ({ options, failed, drain }) => {
     const f = await fixture({ unblocks: true });
     const deferredId = await f.store.addRequest({
       project: "widgets",
@@ -1035,6 +1040,8 @@ test.each([{ options: [] }, { options: ["--no-archive"] }])(
       profile: "backend",
       deferred: true,
       pinned: true,
+      runtime: "conductor",
+      notes: "Retain the synthetic follow-up context",
       body: "Wait for DEMO-18",
       at: NOW,
     });
@@ -1056,6 +1063,9 @@ test.each([{ options: [] }, { options: ["--no-archive"] }])(
               id: deferredId,
               ticket: "DEMO-19",
               profile: "backend",
+              pinned: true,
+              runtime: "conductor",
+              notes: "Retain the synthetic follow-up context",
               author: "Ada",
               owned: true,
               blockers: ["DEMO-18"],
@@ -1112,13 +1122,34 @@ test.each([{ options: [] }, { options: ["--no-archive"] }])(
         expect(f.merged()).toBe(true);
         expect(f.linear.get("DEMO-18").statusType).toBe("completed");
         expect(options.input).toContain("armada claim DEMO-19");
+        expect(options.input).toContain("Retain the synthetic follow-up context");
         created.push("DEMO-19");
+        if (failed) return { code: 4, stdout: "", stderr: "private launch output" };
       }
       return { code: 0, stdout: JSON.stringify(result), stderr: "" };
     };
-    expect(await run(["merge", "9", "--json", ...options], f.io)).toBe(0);
-    expect(f.err()).not.toContain("was not launched");
+    if (drain) expect(await run(["merge", "--when-green", "9"], { ...f.io, stdout: () => {} })).toBe(0);
+    expect(await run(drain ? ["merge", "--drain", "--json"] : ["merge", "9", "--json", ...options], f.io)).toBe(0);
     expect(created).toEqual(["DEMO-19"]);
+    if (failed) {
+      expect(f.merged()).toBe(true);
+      expect(JSON.parse(drain ? (f.out().trim().split("\n")[0] ?? "") : f.out()).result).toContain("Result: merged #9");
+      expect(f.err()).toContain("was not launched: Conductor server error");
+      const items = await f.store.openInboxItems({ project: "widgets", recipient: "coordinator", ticket: "DEMO-19" });
+      expect(items).toHaveLength(2);
+      expect(items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: deferredId,
+            kind: "launch-request",
+            request: expect.objectContaining({ attempts: 1, notes: "Retain the synthetic follow-up context" }),
+          }),
+          expect.objectContaining({ kind: "launch-failed", launchId: "wk-1" }),
+        ]),
+      );
+      return;
+    }
+    expect(f.err()).not.toContain("was not launched");
     expect(JSON.parse(f.out()).deferredLaunches).toMatchObject([
       { ticket: "DEMO-19", status: "launched", output: expect.stringContaining("Launched DEMO-19") },
     ]);

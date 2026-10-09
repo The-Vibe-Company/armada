@@ -45,7 +45,7 @@ import {
   shownJobs,
   upsertProject,
 } from "../lib/fleet-store.ts";
-import { createLaunch, endWorker, exchangeLaunch } from "../lib/workers.ts";
+import { bindLaunch, createLaunch, endWorker, exchangeLaunch, revokePendingLaunch } from "../lib/workers.ts";
 import { addOrganizations, tempDatabase } from "./support.ts";
 
 // Synthetic projects and tickets, for these tests only.
@@ -82,6 +82,116 @@ describe("the project registry", () => {
 });
 
 describe("live data", () => {
+  test("launch failures rewrite one notice, suppress not-started and close on claim without reopening after a late result", async () => {
+    const P = "launch-outcome-claim";
+    await upsertProject(
+      db,
+      { slug: P, name: "Launch outcomes", repository: "acme/launch-outcomes", programRoot: "ABC-1" },
+      at(0),
+    );
+    const store = fleetStore(db);
+    const ticket = "ABC-1429";
+    const { worker } = await createLaunch(db, {
+      organization: "org-a",
+      project: P,
+      ticket,
+      launcher: { kind: "session", id: "owner", label: "Synthetic Owner" },
+      now: at(10),
+    });
+    const failure = {
+      project: P,
+      ticket,
+      outcome: "failed" as const,
+      reason: "unknown model",
+      next: `armada launch ${ticket}`,
+      launchId: worker.id,
+      coordinator: "default",
+      at: at(11),
+    };
+    await Promise.all([store.recordLaunchFailure(failure), store.recordLaunchFailure(failure)]);
+    const [first] = await store.openInboxItems({ project: P, ticket, recipient: "coordinator" });
+    expect(first).toMatchObject({ kind: "launch-failed", body: `unknown model\nNext: armada launch ${ticket}` });
+    await store.recordLaunchFailure({ ...failure, outcome: "uncertain", reason: "launch timed out", at: at(12) });
+    expect(await store.openInboxItems({ project: P, ticket, recipient: "coordinator" })).toMatchObject([
+      { id: first?.id, kind: "launch-uncertain" },
+    ]);
+    const inbox = await readInbox(store, { project: P, silentAfterMinutes: 15, now: at(25) });
+    expect(inbox.filter((i) => i.ticket === ticket).map((i) => i.kind)).toEqual(["launch-uncertain"]);
+    await recordClaim(
+      store,
+      P,
+      {
+        ticket,
+        runtime: "conductor",
+        handle: "workspace/session",
+        branch: null,
+        phase: "implementing",
+        resuming: false,
+        profile: null,
+        workerSessionId: worker.id,
+      },
+      at(26),
+    );
+    expect(await store.openInboxItems({ project: P, ticket, recipient: "coordinator" })).toEqual([]);
+    await store.recordLaunchFailure({ ...failure, at: at(27) });
+    expect(await store.openInboxItems({ project: P, ticket, recipient: "coordinator" })).toEqual([]);
+  });
+
+  test("successful launch and explicit revoke clear notices without an old generation clearing a newer failure", async () => {
+    const P = "launch-outcome-revoke";
+    await upsertProject(
+      db,
+      { slug: P, name: "Launch outcomes", repository: "acme/launch-outcomes", programRoot: "ABC-1" },
+      at(0),
+    );
+    const store = fleetStore(db);
+    const ticket = "ABC-1439";
+    const make = (now: Date) =>
+      createLaunch(db, {
+        organization: "org-a",
+        project: P,
+        ticket,
+        launcher: { kind: "session", id: "owner", label: "Synthetic Owner" },
+        now,
+      });
+    const old = (await make(at(30))).worker;
+    const failure = {
+      project: P,
+      ticket,
+      outcome: "failed" as const,
+      reason: "runtime refused",
+      next: `armada launch ${ticket}`,
+      launchId: old.id,
+      at: at(31),
+    };
+    await store.recordLaunchFailure(failure);
+    const next = (await make(at(32))).worker;
+    expect(
+      await bindLaunch(db, {
+        organization: "org-a",
+        project: P,
+        ticket,
+        id: next.id,
+        runtime: "conductor",
+        handle: "new/session",
+        now: at(33),
+      }),
+    ).toBe("bound");
+    expect(await store.openInboxItems({ project: P, ticket, recipient: "coordinator" })).toEqual([]);
+    await store.recordLaunchFailure({ ...failure, at: at(34) });
+    expect(await store.openInboxItems({ project: P, ticket, recipient: "coordinator" })).toEqual([]);
+    await store.recordLaunchFailure({ ...failure, outcome: "uncertain", launchId: next.id, at: at(34) });
+    const actor = { kind: "person" as const, id: "owner", label: "Synthetic Owner" };
+    await revokePendingLaunch(db, { organization: "org-a", project: P, ticket, id: old.id, by: actor, now: at(35) });
+    expect(await store.openInboxItems({ project: P, ticket, recipient: "coordinator" })).toHaveLength(1);
+    await revokePendingLaunch(db, { organization: "org-a", project: P, ticket, id: next.id, by: actor, now: at(36) });
+    expect(await store.openInboxItems({ project: P, ticket, recipient: "coordinator" })).toEqual([]);
+    // A known failed launch was already revoked before its notice was recorded.
+    await store.recordLaunchFailure({ ...failure, launchId: next.id, at: at(37) });
+    await revokePendingLaunch(db, { organization: "org-a", project: P, ticket, by: actor, now: at(38) });
+    expect(await store.openInboxItems({ project: P, ticket, recipient: "coordinator" })).toEqual([]);
+  });
+
   test("merge notice reservations and resolved notes survive retries and concurrent coordinators", async () => {
     const project = "merge-notices";
     await upsertProject(

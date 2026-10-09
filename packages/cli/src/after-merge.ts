@@ -12,8 +12,8 @@ import {
 import { version } from "../package.json" with { type: "json" };
 import { coordinatorName } from "./coordinator.ts";
 import { type DeferredLaunchResult, launchDeferredAfterMerge } from "./deferred-launch.ts";
-import { type Io, UsageError } from "./io.ts";
-import { launchWorker } from "./launch.ts";
+import type { Io } from "./io.ts";
+import { LaunchError, launchWorker } from "./launch.ts";
 import { deliverToRuntime } from "./runtime.ts";
 import { archiveClaimKey, claimRef, guarded, redactRuntimeText, runtimeFor } from "./runtimes/adapter.ts";
 import { coordinatorHandle } from "./watch.ts";
@@ -222,7 +222,11 @@ export async function afterMerge(
             undefined,
             request,
           );
-          if (code !== 0) throw new UsageError("the launcher did not start a worker");
+          if (code !== 0)
+            throw new LaunchError(
+              "the launch is unconfirmed; inspect the worker before retrying",
+              `armada peek ${request.ticket}`,
+            );
           return printed.join("");
         })
       : [];

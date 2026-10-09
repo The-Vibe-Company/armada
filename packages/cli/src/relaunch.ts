@@ -19,7 +19,7 @@ import {
 import { apiOf } from "./api.ts";
 import { herdrWorktreePath, herdrWorktreesDirectory } from "./herdr.ts";
 import { httpOptions, type Io, UsageError } from "./io.ts";
-import { executeLaunch, prepareLaunch, withLaunchLease } from "./launch.ts";
+import { executeLaunch, LaunchError, launchTitle, prepareLaunch, withLaunchLease } from "./launch.ts";
 import { requireSignIn } from "./login.ts";
 import { outgoingRedactor, redactLinearWriter } from "./redact.ts";
 import {
@@ -214,6 +214,7 @@ export async function relaunch(
     if (dry) {
       const result = {
         ticket,
+        title: prepared.ticket.title,
         dryRun: true,
         preApproval: prepared.approval?.preview ?? null,
         old: old.handle,
@@ -228,7 +229,7 @@ export async function relaunch(
       io.stdout(
         args.json
           ? `${JSON.stringify(result, null, 2)}\n`
-          : `Relaunch plan for ${ticket}: ${mode}, ${prepared.spec.branch} at ${head ?? "base"}; old worker ${old.handle}.\n`,
+          : `Relaunch plan for ${ticket} "${launchTitle(prepared.ticket.title)}": ${mode}, ${prepared.spec.branch} at ${head ?? "base"}; old worker ${old.handle}.\n`,
       );
       if (!args.json && prepared.approval) io.stdout(`${prepared.approval.preview}\n`);
       if (!args.json) for (const warning of prepared.warnings) io.stderr(`armada: warning: ${warning}\n`);
@@ -358,9 +359,9 @@ export async function relaunch(
     io.stdout(
       args.json
         ? `${JSON.stringify(result, null, 2)}\n`
-        : `Relaunched ${ticket}: ${mode} on ${worker.branch} at ${head ?? "base"}.\nOld: ${old.handle} (${archived ? "archived" : "kept"})\nNew: ${worker.handle}\n${worker.link ?? ""}\n${worker.watch.line}\n`,
+        : `Relaunched ${ticket} "${launchTitle(worker.title)}"${worker.unconfirmed ? ` (unconfirmed: ${worker.unconfirmed})` : ""}: ${mode} on ${worker.branch} at ${head ?? "base"}.\nOld: ${old.handle} (${archived ? "archived" : "kept"})\nNew: ${worker.handle}\n${worker.link ?? ""}\n${worker.watch.line}\n`,
     );
-    return 0;
+    return worker.unconfirmed ? 1 : 0;
   };
   if (dry) return replace();
   return withLaunchLease(io, fleet, ticket, async (launchLease) => {
@@ -396,24 +397,25 @@ function safeError(error: unknown) {
   );
 }
 async function launchFailure(fleet: Fleet, ticket: string, error: unknown) {
+  const Failure = error instanceof LaunchError ? LaunchError : UsageError;
   try {
     const [held, launches] = await Promise.all([fleet.runtimeHandle(ticket), fleet.pendingLaunches()]);
     if (held && !held.releasedAt)
-      return new UsageError(
+      return new Failure(
         `${ticket}: a replacement holds the ticket; inspect it. ${safeError(error)}`,
         `armada peek ${ticket}`,
       );
     if (launches.some((l) => l.ticket === ticket))
-      return new UsageError(
+      return new Failure(
         `${ticket} is released; a pending launch remains and may be running. ${safeError(error)}`,
         `armada peek ${ticket}`,
       );
-    return new UsageError(
+    return new Failure(
       `${ticket} is released, nobody holds it: armada launch ${ticket}. ${safeError(error)}`,
       `armada launch ${ticket}`,
     );
   } catch {
-    return new UsageError(
+    return new Failure(
       `${ticket}: launch failed and ownership could not be confirmed. ${safeError(error)}`,
       `armada peek ${ticket}`,
     );
