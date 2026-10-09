@@ -888,8 +888,7 @@ export async function fetchJobLog(opts: FetchForgeOptions & { jobId: number }): 
     const decoder = new TextDecoder();
     let bytes = 0;
     let partial = "";
-    let lines: string[] = [];
-    let totalLines = 0;
+    const lines: string[] = [];
     try {
       for (;;) {
         const chunk = await reader.read();
@@ -898,8 +897,7 @@ export async function fetchJobLog(opts: FetchForgeOptions & { jobId: number }): 
         bytes += take.byteLength;
         const parts = (partial + decoder.decode(take, { stream: true })).split("\n");
         partial = parts.pop() ?? "";
-        totalLines += parts.length;
-        lines = [...lines, ...parts].slice(-3000);
+        for (const line of parts) lines.push(line);
         if (bytes >= LOG_BYTES) {
           warnings.push(`job ${opts.jobId}: log stopped at 5 MB; diagnosis may be incomplete`);
           break;
@@ -908,11 +906,8 @@ export async function fetchJobLog(opts: FetchForgeOptions & { jobId: number }): 
       partial += decoder.decode();
       if (partial) {
         lines.push(partial);
-        totalLines++;
       }
-      if (totalLines > 3000)
-        warnings.push(`job ${opts.jobId}: only the last 3000 log lines were kept; earlier errors may be missing`);
-      return lines.slice(-3000);
+      return lines;
     } finally {
       await reader.cancel().catch(() => {});
       reader.releaseLock();

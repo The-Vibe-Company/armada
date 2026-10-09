@@ -26,6 +26,15 @@ const LABELS: Record<Explanation["class"], string> = {
   external: "external check",
 };
 
+function tomlPattern(pattern: string): string {
+  // Literal strings preserve regex backslashes. Quotes/control characters need
+  // a TOML basic string; JSON escaping is also valid for these characters.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: TOML literal strings cannot contain controls
+  return /['\u0000-\u001f\u007f]/.test(pattern)
+    ? JSON.stringify(pattern).replaceAll(String.fromCharCode(127), "\\u007f")
+    : `'${pattern}'`;
+}
+
 /** Bounded test names and first error block, plus links and matching root-cause tickets. */
 export function renderCiWhy(sha: string, explanations: readonly Explanation[]): string {
   const lines = [`CI on ${sha}`];
@@ -40,12 +49,30 @@ export function renderCiWhy(sha: string, explanations: readonly Explanation[]): 
         `  Network error in step "${e.networkStep}", not a setup step: treated as a failure. If this step only downloads tools or dependencies, add its name to [ci] setup_steps.`,
       );
     if (e.networkNote) lines.push(`  ${e.networkNote}`);
+    if (e.step) lines.push(`  Step: ${e.step}`);
     if (e.tests.length) lines.push(`  Tests: ${e.tests.join("; ")}`);
     if (e.dependencies?.length) lines.push(`  Dependencies: ${e.dependencies.join("; ")}`);
     lines.push(...e.error.map((l) => `  ${l}`));
     if (!e.error.length && !e.superseded) lines.push("  No error details available; open the check link.");
     for (const k of e.knownMatches ?? (e.known ? [e.known] : [])) lines.push(`  Known: ${k.ticket} (${k.pattern})`);
     if (e.url) lines.push(`  ${e.url}`);
+    if (e.class === "failure" && !e.superseded) {
+      if (e.knownFailureDrafts?.length) {
+        lines.push(
+          "  If this test is flaky (it passed on a rerun of the same head), open a root-cause ticket, then add:",
+        );
+        for (const draft of e.knownFailureDrafts)
+          lines.push(
+            "",
+            "[[ci.known_failure]]",
+            `check = ${JSON.stringify(draft.check)}`,
+            `pattern = ${tomlPattern(draft.pattern)}`,
+            'ticket = "<root-cause ticket>"',
+          );
+      } else if (!e.tests.length) {
+        lines.push("  no test name found; write a specific pattern from the lines above");
+      }
+    }
   }
   return `${lines.join("\n")}\n`;
 }

@@ -2,9 +2,12 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { explainChecks, type FailedCheck } from "../../core/src/ci.ts";
+import { parseConfig } from "../../core/src/config.ts";
 import { GITHUB_GRAPHQL } from "../../core/src/github.ts";
 import { machinePaths, updateWatchState } from "../../core/src/machine.ts";
 import { DEMO_TOML, recordedFetch } from "../../core/test/support.ts";
+import { renderCiWhy } from "../src/ci.ts";
 import { type Io, run } from "../src/cli.ts";
 
 const sha = "a".repeat(40);
@@ -153,7 +156,12 @@ test.each(
   expect(f.calls).toEqual([]);
 });
 
-test("JSON includes warnings, annotations fallback and the pinned SHA", async () => {
+test("JSON includes drafts, warnings, annotations fallback and the pinned SHA", async () => {
+  const named = fixture();
+  expect(await run(["ci", "why", "--sha", sha, "--json"], named.io)).toBe(0);
+  expect(JSON.parse(named.out()).explanations[0].knownFailureDrafts).toEqual([
+    { check: "Tests (linux)", pattern: "^widgets > saves a draft$" },
+  ]);
   const f = fixture({ permission: true });
   expect(await run(["ci", "why", "--sha", sha, "--json"], f.io)).toBe(0);
   const report = JSON.parse(f.out());
@@ -516,6 +524,7 @@ test("dependent summary failures rerun with known flakes, but a summary's own fa
       expect(f.writes).toHaveLength(scenario === "different workflow" ? 1 : 0);
     } else {
       expect(f.out()).toContain("verify: ignored as a dependent summary");
+      expect(f.out()).not.toContain("[[ci.known_failure]]");
       expect(f.out()).toContain("Rerun requested");
       expect(f.writes).toHaveLength(1);
     }
@@ -571,6 +580,7 @@ test("network candidates read validated steps, isolate missing evidence and reru
     expect(await run(["ci", "why", "9"], f.io)).toBe(0);
     expect(f.writes).toHaveLength(0);
     expect(stepReads).toBe(scenario === "404" ? 0 : 1);
+    if (scenario === "setup") expect(f.out()).not.toContain("[[ci.known_failure]]");
     if (scenario === "setup")
       expect(f.out()).toContain('runner problem (network, in setup step "Run actions/download-artifact@v4")');
     if (scenario === "test")
@@ -579,6 +589,7 @@ test("network candidates read validated steps, isolate missing evidence and reru
       );
     if (scenario === "known test") {
       expect(f.out()).toContain("known flaky test");
+      expect(f.out()).not.toContain("[[ci.known_failure]]");
       expect(f.out()).not.toContain("treated as a failure");
     }
     if (scenario === "missing" || scenario === "wrong identity") {
@@ -593,4 +604,60 @@ test("network candidates read validated steps, isolate missing evidence and reru
       expect(f.writes).toHaveLength(1);
     }
   }
+});
+
+test("unknown tests render pasteable exact flake entries that require a real root-cause ticket", () => {
+  const check: FailedCheck = {
+    id: 11,
+    name: 'Tests "linux"',
+    conclusion: "FAILURE",
+    url: null,
+    app: "github-actions",
+    runId: 7,
+    headSha: sha,
+    summary: null,
+    annotations: [],
+  };
+  for (const name of ["suite > case", `suite > user's "case" (a.b)`, "suite > slash\\case"]) {
+    const explanation = explainChecks(
+      [check],
+      new Map([
+        [
+          11,
+          { lines: ["##[group]Run bun test", "##[endgroup]", `(fail) ${name}`, "##[error]exit code 1"], warnings: [] },
+        ],
+      ]),
+    );
+    const output = renderCiWhy(sha, explanation);
+    expect(output).toContain("  Step: Run bun test");
+    expect(output).toContain(
+      "If this test is flaky (it passed on a rerun of the same head), open a root-cause ticket, then add:",
+    );
+    const block = output.slice(output.indexOf("[[ci.known_failure]]")).trim();
+    expect(() => parseConfig(`${DEMO_TOML}\n${block}`)).toThrow("ci.known_failure[1].ticket");
+    const config = parseConfig(`${DEMO_TOML}\n${block.replace("<root-cause ticket>", "DEMO-42")}`);
+    const entry = config.ci?.knownFailures[0];
+    if (!entry) throw new Error("missing parsed declaration");
+    expect(entry.check).toBe(check.name);
+    expect(new RegExp(entry.pattern).test(name)).toBe(true);
+    expect(new RegExp(entry.pattern).test(`${name} sibling`)).toBe(false);
+    if (name === "suite > case") expect(block).toContain("pattern = '^suite > case$'");
+  }
+  const external = explainChecks(
+    [{ ...check, app: "quality-app" }],
+    new Map([
+      [
+        11,
+        {
+          lines: ["(fail) suite > case"],
+          warnings: [],
+        },
+      ],
+    ]),
+  );
+  expect(external[0]?.class).toBe("external");
+  expect(renderCiWhy(sha, external)).not.toContain("[[ci.known_failure]]");
+  const noName = explainChecks([check], new Map([[11, { lines: ["error: compile failed"], warnings: [] }]]));
+  expect(renderCiWhy(sha, noName)).toContain("no test name found; write a specific pattern from the lines above");
+  expect(renderCiWhy(sha, noName)).not.toContain("[[ci.known_failure]]");
 });
