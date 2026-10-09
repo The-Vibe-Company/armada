@@ -40,6 +40,7 @@ beforeAll(async () => {
     project: P,
     ticket: "W-1",
     launcher: { kind: "session", id: "u1", label: "Ada Lovelace" },
+    overCap: "launched over the cap (3 of 2): urgent priority",
     now: at(0),
   });
   await saveRuntimeHandle(db, {
@@ -334,4 +335,9 @@ describe("visits", () => {
     await saveNotify(db, { viewer: "browser-1", organization: "" }, notify, at(210));
     expect(await readVisit(db, { viewer: "browser-1", organization: "" })).toMatchObject({ seenAt: iso(210), notify });
   });
+});
+
+test("the activity feed retains the recorded worker cap bypass", async () => {
+  const feed = await feedPage(db, query({ projects: [P], kinds: ["launch"], limit: 50 }));
+  expect(feed.find((e) => e.ticket === "W-1")?.text).toBe("launched over the cap (3 of 2): urgent priority");
 });

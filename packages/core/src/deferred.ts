@@ -52,6 +52,7 @@ export function deferredLaunchState(
   held: boolean,
   author?: string | null,
   guided = false,
+  slots?: { taken: number; max: number | null },
 ): DeferredLaunch {
   const ticket = item.ticket ?? "";
   const issue = model?.program.find((i) => i.id === ticket);
@@ -69,7 +70,9 @@ export function deferredLaunchState(
               ? "already in flight"
               : blockers?.length
                 ? `waits on ${blockers.join(", ")}`
-                : null;
+                : slots?.max && slots.taken >= slots.max
+                  ? `waits for a worker slot (${slots.taken} of ${slots.max})`
+                  : null;
   return {
     id: item.id,
     ticket,

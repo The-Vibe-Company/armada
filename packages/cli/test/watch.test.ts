@@ -743,6 +743,8 @@ describe("armada watch", () => {
       seen: [expect.stringMatching(/^#1@/)],
       seenScope: "all",
       inFlight: ["DEMO-2", "DEMO-3"],
+      waiting: [],
+      slots: { taken: 2, max: null },
       readAt: new Date(NOW.getTime() + 30_000).toISOString(),
       stopped: null,
     });

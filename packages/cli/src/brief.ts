@@ -25,12 +25,11 @@ import {
   STORED_KEYS,
   shellWord,
 } from "@armada/core";
-import { apiOf } from "./api.ts";
-import { coordinatorName } from "./coordinator.ts";
 import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { preApprovalReason, preparePreApproval } from "./plan-approval.ts";
 import { rearmFor, remember, watchOf } from "./watch.ts";
 import { liveFleet } from "./worker.ts";
+import { countWorkerSlots, mintLaunchToken, overCapReason } from "./worker-slots.ts";
 
 export interface BriefArgs {
   rest: string[];
@@ -125,8 +124,8 @@ export function renderProfileSelection(b: ProfileSelectionBrief): string {
  * Asks Armada for the worker's launch token, as the signed-in coordinator. Not
  * signed in, or refused (no accounts, no vault), the brief goes on without one.
  */
-function launcher(io: Io, config: ArmadaConfig, credentials: Credentials) {
-  return async (ticket: string): Promise<BriefLaunch | { reason: string; warn: boolean }> => {
+function launcher(io: Io, config: ArmadaConfig, credentials: Credentials, overCap: string | null) {
+  return async (ticket: string, priority?: number): Promise<BriefLaunch | { reason: string; warn: boolean }> => {
     const signIn = credentials.armadaSignIn;
     if (!signIn)
       return {
@@ -135,11 +134,7 @@ function launcher(io: Io, config: ArmadaConfig, credentials: Credentials) {
       };
     const url = credentials.armadaApi.url;
     try {
-      const t = await apiOf(io, url).launchToken(signIn, {
-        project: config.project.slug,
-        ticket,
-        coordinator: await coordinatorName(io, config.project.slug),
-      });
+      const t = await mintLaunchToken(io, config, credentials, { ticket, priority, overCap });
       const builtIn = armadaAddress(url) === armadaAddress(DEFAULT_ARMADA_API_URL);
       return { token: t.token, expiresAt: t.expiresAt, apiUrl: builtIn ? null : armadaAddress(url) };
     } catch (err) {
@@ -176,6 +171,8 @@ export async function brief(
     throw new UsageError('brief needs a ticket: armada brief <ticket> [--profile <name> [--reason "<why>"]]');
   if (extra.length) throw new UsageError(`unexpected argument ${extra[0]}`);
   const promptOnly = a.options.prompt === "true";
+  const overCap = overCapReason(a.options);
+  if (overCap && !promptOnly) throw new UsageError("--over-cap goes with brief --prompt");
   if (a.options["profile-line"] && !promptOnly) throw new UsageError("--profile-line goes with --prompt");
   if (a.json && promptOnly) throw new UsageError("pass --json or --prompt, not both");
   const profile = a.options.profile?.trim() || null;
@@ -217,7 +214,7 @@ export async function brief(
             },
           }
         : {}),
-      launch: launcher(io, config, credentials),
+      launch: launcher(io, config, credentials, overCap),
       overlap: liveFleet(io, config, credentials).fleet?.overlap,
       // A worker cannot install a version npm does not serve yet.
       npm: (v) => checkPublished(v, io.fetch ?? fetch),
@@ -245,7 +242,12 @@ export async function brief(
   const known = (await watchOf(io, project)).state?.inFlight ?? [];
   if (promptOnly) {
     const inFlight = [...new Set([...known, b.ticket.id])].sort((x, y) => x.localeCompare(y, "en", { numeric: true }));
-    await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
+    const counted = config.policy.maxWorkers && fleet ? await countWorkerSlots(io, fleet).catch(() => null) : null;
+    await remember(io, project, {
+      inFlight,
+      ...(counted ? { slots: { taken: counted.taken, max: config.policy.maxWorkers } } : {}),
+      readAt: (io.now ?? (() => new Date()))().toISOString(),
+    });
     if (a.options["profile-line"]) {
       const profile = b.profile;
       io.stderr(

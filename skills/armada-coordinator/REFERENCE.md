@@ -35,6 +35,10 @@ Plain `armada watch` waits until a new own or unowned item you have not been sho
 
 Both modes share one lock per project and name on a machine. `armada inbox --wait [--timeout <seconds>]` (300 by default) is the fallback for a runtime that cannot run a background command.
 
+## Worker caps
+
+`[policy] max_workers` caps project-wide worker sessions, including open claims waiting for merge and unclaimed launches. A full fleet refuses a new launch: use `armada launch <ticket> --when-unblocked` to wait for a slot, or `armada launch <ticket> --over-cap "<why>"` for a recorded bypass. Never use relaunch to bypass the cap; it replaces an existing worker. Urgent tickets pass automatically with a recorded reason. Status and re-arm lines show running workers separately from launches waiting for a slot. Without this setting, launches are uncapped; lowering it stops no worker.
+
 ## Silence and liveness
 
 - **Silent**: no heartbeat, report or answer for `[policy] silence_minutes` (15 by default). A worker's first allowance adds `launch_grace_minutes` (defaults to `silence_minutes`). Shipping at stage `ci` gets `ci_wait_minutes` (45 by default). Waiting phases (`awaiting-approval`, `blocked`, `awaiting-validation`) are never silent while unanswered.
@@ -88,4 +92,4 @@ Migration numbers, ports and other shared names are reserved per ticket through 
 
 ## The owner's channel
 
-Organization > Notifications (owner or admin) connects one chat webhook. Owner validations, escalated questions and a stopped coordinator with items waiting reach it by themselves, outside quiet hours. Digests go out at the times set there; `armada digest --send` posts one now, and `armada digest --lang en|fr` overrides `[tracker] language` for the printed text.
+Organization > Notifications (owner or admin) connects one chat webhook. Owner validations, escalated questions and a stopped coordinator with items waiting reach it by themselves, outside quiet hours. Each named coordinator is checked separately, including owner requests and project-wide operational items. A coordinator that keeps running commands also triggers one alert per unanswered plan, question, hand-back, decision or owner request after 3 × `[policy] coordinator_minutes` (30 minutes by default); queued or paused merges are excluded. Act on the inbox rather than relying on command activity to keep these alerts quiet. GitHub and Linear webhook refreshes check alerts even with no live worker or viewer. Digests go out at the times set there; `armada digest --send` posts one now, and `armada digest --lang en|fr` overrides `[tracker] language` for the printed text.
