@@ -27,6 +27,41 @@ const claim = (ticket: string) => ({
 });
 
 describe("the fleet through Armada", () => {
+  test("only the coordinator records launch failure notices with bounded redacted prose", async () => {
+    const store = memoryFleet();
+    const input = {
+      ticket: "DEMO-7",
+      launchId: "launch-7",
+      outcome: "failed",
+      reason: "secret-runtime-key\nunknown model",
+      next: "armada launch DEMO-7 --reason secret-runtime-key",
+    };
+    const send = (caller: Parameters<typeof serveFleet>[1]["caller"], patch = {}) =>
+      serveFleet(
+        store,
+        { op: "launch/failed", project: DEMO_PROJECT, caller, input: { ...input, ...patch } },
+        { now: () => NOW, redact: redactor([{ value: "secret-runtime-key", name: "runtime" }]).text },
+      );
+    expect((await send({ kind: "organization" })).status).toBe(200);
+    expect(
+      (await store.openInboxItems({ project: "widgets", ticket: "DEMO-7", recipient: "coordinator" }))[0]?.body,
+    ).toBe("«secret runtime» unknown model\nNext: armada launch DEMO-7 --reason «secret runtime»");
+    expect((await send({ kind: "organization" }, { coordinator: null, coordinatorName: "front" })).status).toBe(200);
+    expect(
+      (await store.openInboxItems({ project: "widgets", ticket: "DEMO-7", recipient: "coordinator" }))[0]?.coordinator,
+    ).toBeNull();
+    await send({ kind: "organization" }, { reason: "x".repeat(600) });
+    expect(
+      (await store.openInboxItems({ project: "widgets", ticket: "DEMO-7", recipient: "coordinator" }))[0]?.body.split(
+        "\n",
+      )[0],
+    ).toHaveLength(500);
+    expect((await send({ kind: "worker", ticket: "DEMO-7" })).status).toBe(403);
+    for (const invalid of [{ outcome: "ready" }, { launchId: "" }, { reason: " " }, { next: " " }])
+      expect((await send({ kind: "organization" }, invalid)).status).toBe(400);
+    expect(store.items).toHaveLength(1);
+  });
+
   test("generated merge notes are resolved records and leave pending plans and questions open", async () => {
     const { fleet, store } = tempFleet();
     const plan = await store.addInboxItem({

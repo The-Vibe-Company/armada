@@ -304,6 +304,8 @@ export const FOLLOW_INBOX_KINDS: readonly InboxEntryKind[] = [
   "decision",
   "answer-request",
   "launch-request",
+  "launch-failed",
+  "launch-uncertain",
   "merge-request",
   "release-request",
   "plan-changes",

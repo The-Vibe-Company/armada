@@ -56,6 +56,39 @@ function options(live: ReturnType<typeof tempFleet>, over: Partial<Parameters<ty
 }
 
 describe("the inbox read names the workers in flight", () => {
+  test("a failed launch wakes the watch on its next poll, and a rewritten outcome wakes it again", async () => {
+    const live = tempFleet();
+    await holding(live, "DEMO-2");
+    const failure = {
+      ticket: "DEMO-3",
+      launchId: "launch-3",
+      outcome: "failed" as const,
+      reason: "unknown model",
+      next: "armada launch DEMO-3",
+    };
+    const first = await watchInbox(
+      live.fleet,
+      options(live, {
+        sleep: async (ms) => {
+          await live.clock.sleep(ms);
+          await live.fleet.recordLaunchFailure(failure);
+        },
+      }).o,
+    );
+    expect(first.outcome).toBe("items");
+    expect(first.items.map((i) => i.kind)).toEqual(["launch-failed"]);
+    expect(live.clock.now().getTime() - NOW.getTime()).toBe(15_000);
+    const seen = first.items.map(entryKey);
+    await live.fleet.recordLaunchFailure({ ...failure, outcome: "uncertain" });
+    const rewritten = await watchInbox(
+      live.fleet,
+      options(live, { seen, until: new Date(live.clock.now().getTime() + 15_000) }).o,
+    );
+    expect(rewritten.outcome).toBe("items");
+    expect(rewritten.items[0]?.new).toBe(true);
+    expect(rewritten.items.map((i) => i.kind)).toEqual(["launch-uncertain"]);
+  });
+
   test("the coordinator's own session is not a worker, and a new worker changes the etag", async () => {
     const live = tempFleet();
     await holding(live, "DEMO-2");
