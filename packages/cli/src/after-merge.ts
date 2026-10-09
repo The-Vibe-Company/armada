@@ -65,7 +65,9 @@ function noticeText(o: MergeOutcome, workers: WorkerNotice[]): string {
         .join("; ")}.`,
     );
   lines.push(
-    `Before your next push: git fetch origin && git merge ${shellWord(`origin/${o.pr.base}`)}, then run the checks again.`,
+    `Check your PR with gh pr view <number> --json mergeStateStatus. Integrate ${oneLine(o.pr.base)} only if GitHub reports DIRTY: git fetch origin && git merge ${shellWord(`origin/${o.pr.base}`)}, resolve conflicts, rerun the checks, push, and hand back the new head once CI is green.`,
+    "CLEAN or BEHIND: no action needed; the coordinator's merge updates a behind branch and retests it.",
+    "If already ready-to-merge, keep your phase and hand-back unless there is a conflict or a requested change. A merge notice alone needs no new report.",
   );
   return lines.join("\n");
 }
