@@ -103,7 +103,14 @@ describe("Linear write adapter", () => {
       },
       Update: { data: { issueUpdate: { success: true } } },
     });
-    const input = { teamId: "team-1", parentId: "uuid-root", title: "Spec 3 — Images", description: "## In short" };
+    const input = {
+      teamId: "team-1",
+      parentId: "uuid-root",
+      projectId: "project-widgets",
+      stateId: "st-1",
+      title: "Spec 3 — Images",
+      description: "## In short",
+    };
     expect(await writer.createIssue(input)).toEqual({
       uuid: "uuid-8",
       id: "DEMO-8",
@@ -116,9 +123,10 @@ describe("Linear write adapter", () => {
     ]);
   });
   test("a create refused or timed out is never replayed", async () => {
-    const { writer } = graphql({ CreateIssue: { data: { issueCreate: { success: false, issue: null } } } });
+    const { writer, sent } = graphql({ CreateIssue: { data: { issueCreate: { success: false, issue: null } } } });
     const input = { teamId: "team-1", parentId: "uuid-root", title: "Spec 1 — Login", description: "## In short" };
     await expect(writer.createIssue(input)).rejects.toThrow("refused to create");
+    expect(sent).toHaveLength(1);
     let calls = 0;
     const timed = createLinearWriter({
       apiKey: "synthetic",
@@ -161,6 +169,7 @@ describe("Linear write adapter", () => {
             description: null,
             state: { id: "st-2", type: "started" },
             parent: { identifier: "DEMO-2" },
+            project: { id: "project-widgets", name: "Widgets" },
             team: {
               id: "team-1",
               states: {
@@ -199,6 +208,7 @@ describe("Linear write adapter", () => {
       statusType: "started",
       teamId: "team-1",
       parentId: "DEMO-2",
+      project: { id: "project-widgets", name: "Widgets" },
       agentPhase: "implementing",
       agentRuntime: "Codex",
       states: [{ name: "Todo" }, { name: "In Progress" }],
