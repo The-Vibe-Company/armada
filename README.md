@@ -614,6 +614,8 @@ includes its license and attribution notices.
 
 Persistent local workers: `armada status`, `inbox` and `watch` publish herdr state for the dashboard. `armada stop <ticket>` archives only a clean worktree whose commits are on its verified remote upstream, retaining its branch. See [`armada-runtime-herdr`](skills/armada-runtime-herdr/SKILL.md) for all four runtime operations.
 
+Conductor worker reads retry brief timeouts, server errors, temporary execution failures and truncated JSON up to twice, with roughly 1 s and 3 s waits and a notice on stderr. Retries add at most 14 s per read, including execution time. Sign-in, invalid-request and not-found errors fail immediately; create, message, cancel and archive writes are attempted once. See [`armada-runtime-conductor`](skills/armada-runtime-conductor/SKILL.md).
+
 ### Pause and resume merges
 
 A coordinator can pause a project's merges with a reason. The pause is stored in Armada, shared with every coordinator, and stays until explicitly cleared. Status, watch and the inbox show it.

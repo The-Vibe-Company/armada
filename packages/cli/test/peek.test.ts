@@ -86,6 +86,7 @@ async function fixture(runtime = "Conductor", pending = false) {
       CUSTOM_SECRET: "private-value",
     },
     now: clock.now,
+    sleep: clock.sleep,
     stdout: (t) => out.push(t),
     stderr: (t) => err.push(t),
     ghToken: () => null,
