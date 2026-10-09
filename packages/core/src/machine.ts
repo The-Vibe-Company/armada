@@ -345,6 +345,25 @@ export async function readWatchState(
     ...(typeof r.claudeSessions === "object" && r.claudeSessions !== null && !Array.isArray(r.claudeSessions)
       ? { claudeSessions: boundedTimes(r.claudeSessions, 10) }
       : {}),
+    ...(typeof r.habitCursors === "object" && r.habitCursors !== null && !Array.isArray(r.habitCursors)
+      ? {
+          habitCursors: Object.fromEntries(
+            Object.entries(r.habitCursors)
+              .filter(([id, v]) => {
+                if (!id || id.length > 256 || typeof v !== "object" || v === null) return false;
+                const cursor = v as Record<string, unknown>;
+                return (
+                  typeof cursor.path === "string" &&
+                  cursor.path.length <= 4096 &&
+                  typeof cursor.offset === "number" &&
+                  Number.isSafeInteger(cursor.offset) &&
+                  cursor.offset >= 0
+                );
+              })
+              .slice(-10),
+          ) as NonNullable<WatchState["habitCursors"]>,
+        }
+      : {}),
     // Only a bounded, validated transcript tail is read back.
     ...(typeof r.peek === "object" && r.peek !== null && !Array.isArray(r.peek)
       ? {
@@ -539,6 +558,10 @@ export async function updateWatchState(
         10,
       );
     }
+    if (patch.habitCursors)
+      state.habitCursors = Object.fromEntries(
+        Object.entries({ ...before?.habitCursors, ...patch.habitCursors }).slice(-10),
+      );
     if (session) state.root ??= session.root;
     await writePrivate(paths, file, `${JSON.stringify(state, null, 2)}\n`, 0o600);
     return state;

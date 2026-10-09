@@ -23,6 +23,7 @@ import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
 import { refreshingJobsFleet } from "../src/job.ts";
 import { applyPlan, fsRepoView } from "../src/repo.ts";
+import { readTranscriptRange } from "../src/transcript.ts";
 import { rearmFor, remember, watchDeadline } from "../src/watch.ts";
 
 const KEY = "armada_key_CANARY_watch";
@@ -1328,4 +1329,215 @@ test("queued hand-backs render as in progress and do not ask the coordinator to 
   expect(c.out()).toContain("Waiting for you:");
   expect(c.out()).toContain("queued in the merge queue (position 1)");
   expect(c.out()).toContain("act on the items above");
+});
+
+test("habit reminders join watch reasons once per session and preserve transcript cursors", async () => {
+  const c = await coordinator();
+  const transcript = join(c.paths.dir, "synthetic-transcript.jsonl");
+  const bash = (id: string, command: string) =>
+    `${[
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-01-01T10:00:00Z",
+        message: { content: [{ type: "tool_use", id, name: "Bash", input: { command } }] },
+      }),
+      JSON.stringify({
+        type: "user",
+        timestamp: "2026-01-01T10:01:05Z",
+        message: { content: [{ type: "tool_result", tool_use_id: id, content: "completed" }] },
+      }),
+    ].join("\n")}\n`;
+  let text = bash("long", "bun run verify");
+  let reads = 0;
+  const offsets: number[] = [];
+  const io: Io = {
+    ...c.io,
+    readFileRange: async (path, offset, maxBytes) => {
+      expect(path).toBe(transcript);
+      expect(maxBytes).toBe(1024 * 1024);
+      reads++;
+      offsets.push(offset);
+      await writeFile(transcript, text);
+      return readTranscriptRange(path, offset, maxBytes);
+    },
+  };
+  const stop = async (session = "habits", cwd = COORDINATOR_ROOT, extra: Record<string, unknown> = {}, env = {}) => {
+    c.reset();
+    expect(
+      await run(["hook", "stop"], {
+        ...io,
+        env: { ...io.env, ...env },
+        readStdin: async () =>
+          JSON.stringify({
+            session_id: session,
+            cwd,
+            hook_event_name: "Stop",
+            transcript_path: transcript,
+            stop_hook_active: false,
+            ...extra,
+          }),
+      }),
+    ).toBe(0);
+    return c.out() ? (JSON.parse(c.out()) as { reason: string }) : null;
+  };
+  await updateWatchState(c.paths, P, { root: COORDINATOR_ROOT, inFlight: ["DEMO-2"] });
+  // The same checkout/session prerequisites apply before any transcript read.
+  expect(await stop("habits", WORKER_ROOT)).toBeNull();
+  expect(await stop("habits", COORDINATOR_ROOT, {}, { ARMADA_TICKET: "DEMO-2" })).toBeNull();
+  expect(await stop("habits", COORDINATOR_ROOT, {}, { ARMADA_STOP_HOOK: "off" })).toBeNull();
+  await stop("habits", COORDINATOR_ROOT, { stop_hook_active: true });
+  expect(reads).toBe(0);
+  const first = await stop();
+  expect(first?.reason).toContain("no armada watch is running");
+  expect(first?.reason).toContain("bun run verify");
+  expect(first?.reason).toContain("65 seconds");
+  expect(first?.reason).toContain("armada job start <name> --ticket <id>");
+  const before = Buffer.byteLength(text);
+  text += bash("another", "bun run build");
+  await updateWatchState(c.paths, P, { inFlight: [] });
+  expect(await stop()).toBeNull();
+  expect(offsets).toEqual([0, before]);
+  expect((await readWatchState(c.paths, P))?.habitCursors?.habits?.offset).toBe(Buffer.byteLength(text));
+  expect((await stop("fresh"))?.reason).toContain("65 seconds");
+  text +=
+    bash("merge", "gh pr merge 12 --squash") +
+    bash("code", "git commit -m 'generic_password=synthetic-password-2026'") +
+    bash("wrap", "armada status || true");
+  const remaining = await stop();
+  expect(remaining?.reason).toContain("armada merge --finish 12");
+  expect(remaining?.reason).not.toContain("armada deploy watch");
+  expect(remaining?.reason).toContain("cut a ticket and launch a worker");
+  expect(remaining?.reason).not.toContain("synthetic-password-2026");
+  expect(remaining?.reason).not.toContain("generic_password");
+  expect(remaining?.reason).toContain("run Armada commands bare; their last lines say whether it worked");
+  io.readFile = async (path) =>
+    path === `${COORDINATOR_ROOT}/armada.toml`
+      ? `${DEMO_TOML}\n[[deploy.target]]\nname = "web app"\ncheck = "Deploy web"\n`
+      : null;
+  const deploy = await stop("deploy-session");
+  expect(deploy?.reason).toContain("armada deploy watch --sha <merge commit of #12> --target 'web app'");
+  await updateWatchState(c.paths, P, { claudeSessions: { "no-config": NOW.toISOString() } });
+  io.readFile = async () => {
+    throw new Error("unreadable config");
+  };
+  const withoutConfig = await stop("no-config", "/elsewhere");
+  expect(withoutConfig?.reason).toContain("armada merge --finish 12");
+  expect(withoutConfig?.reason).toContain("cut a ticket and launch a worker");
+  expect(withoutConfig?.reason).not.toContain("armada deploy watch");
+  io.readFile = c.io.readFile;
+  io.readFileRange = async () => {
+    throw new Error("unreadable transcript");
+  };
+  await updateWatchState(c.paths, P, { inFlight: ["DEMO-2"] });
+  expect((await stop("unreadable"))?.reason).toContain("no armada watch is running");
+});
+
+test("transcript reads cap bytes, preserve partial UTF-8 lines and recover after truncation", async () => {
+  const c = await coordinator();
+  const path = join(c.io.env.XDG_CONFIG_HOME as string, "transcript.jsonl");
+  const prefix = `${"x".repeat(1000)}\n`;
+  const complete = `${JSON.stringify({ text: "café" })}\n`;
+  const partial = '{"unfinished":';
+  await writeFile(path, prefix + complete + partial);
+  const first = await readTranscriptRange(path, 0, 100);
+  expect(first).toEqual({ text: complete, nextOffset: Buffer.byteLength(prefix + complete) });
+  await writeFile(path, `${prefix + complete + partial}true}\n`);
+  expect(await readTranscriptRange(path, first?.nextOffset ?? 0, 100)).toEqual({
+    text: `${partial}true}\n`,
+    nextOffset: Buffer.byteLength(`${prefix + complete + partial}true}\n`),
+  });
+  await writeFile(path, complete);
+  expect(await readTranscriptRange(path, 1000, 100)).toEqual({
+    text: complete,
+    nextOffset: Buffer.byteLength(complete),
+  });
+  expect(await readTranscriptRange(c.io.env.XDG_CONFIG_HOME as string, 0, 100)).toBeNull();
+});
+
+test("multi-project Stop reads once and uses the current project's deploy targets, independent of watch order", async () => {
+  const c = await coordinator();
+  const otherRoot = "/work/gadgets";
+  for (const [project, root, at] of [
+    [P, COORDINATOR_ROOT, NOW.toISOString()],
+    ["gadgets", otherRoot, new Date(NOW.getTime() + 1000).toISOString()],
+  ] as const)
+    await updateWatchState(c.paths, project, { root, readAt: at, inFlight: [], claudeSessions: { multi: at } });
+  expect((await readWatchStates(c.paths))[0]?.project).toBe("gadgets");
+  const transcript = `${[
+    JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-01-01T10:00:00Z",
+      message: { content: [{ type: "tool_use", id: "merge", name: "Bash", input: { command: "gh pr merge 12" } }] },
+    }),
+    JSON.stringify({
+      type: "user",
+      timestamp: "2026-01-01T10:00:01Z",
+      message: { content: [{ type: "tool_result", tool_use_id: "merge" }] },
+    }),
+  ].join("\n")}\n`;
+  let reads = 0;
+  const io: Io = {
+    ...c.io,
+    readFile: async (path) => {
+      if (path === `${COORDINATOR_ROOT}/armada.toml`)
+        return `${DEMO_TOML}\n[[deploy.target]]\nname = "web"\ncheck = "Deploy web"\n`;
+      if (path === `${otherRoot}/armada.toml`)
+        return `${DEMO_TOML.replace('slug = "widgets"', 'slug = "gadgets"')}\n[[deploy.target]]\nname = "api"\ncheck = "Deploy api"\n`;
+      return null;
+    },
+    readFileRange: async (_path, offset) => {
+      reads++;
+      return { text: transcript.slice(offset), nextOffset: Buffer.byteLength(transcript) };
+    },
+    readStdin: async () =>
+      JSON.stringify({
+        session_id: "multi",
+        cwd: COORDINATOR_ROOT,
+        hook_event_name: "Stop",
+        stop_hook_active: false,
+        transcript_path: "/synthetic.jsonl",
+      }),
+  };
+  expect(await run(["hook", "stop"], io)).toBe(0);
+  const reason = JSON.parse(c.out()).reason as string;
+  expect(reason).toContain("armada merge --finish 12");
+  expect(reason).toContain("--target web");
+  expect(reason).not.toContain("--target api");
+  expect(reads).toBe(1);
+  expect((await readWatchState(c.paths, P))?.habitCursors?.multi?.offset).toBe(Buffer.byteLength(transcript));
+  expect((await readWatchState(c.paths, "gadgets"))?.habitCursors?.multi?.offset).toBe(Buffer.byteLength(transcript));
+  c.reset();
+  expect(await run(["hook", "stop"], io)).toBe(0);
+  expect(c.out()).toBe("");
+  // Outside both checkouts, include explicit configs for the known projects instead of guessing one.
+  io.readStdin = async () =>
+    JSON.stringify({
+      session_id: "outside",
+      cwd: "/elsewhere",
+      hook_event_name: "Stop",
+      stop_hook_active: false,
+      transcript_path: "/synthetic.jsonl",
+    });
+  for (const project of [P, "gadgets"])
+    await updateWatchState(c.paths, project, { claudeSessions: { outside: NOW.toISOString() } });
+  expect(await run(["hook", "stop"], io)).toBe(0);
+  const outside = JSON.parse(c.out()).reason as string;
+  expect(outside).toContain(`--target web --config '${COORDINATOR_ROOT}/armada.toml'`);
+  expect(outside).toContain(`--target api --config '${otherRoot}/armada.toml'`);
+  // A single registered project also needs a config when the session is outside its checkout.
+  await updateWatchState(c.paths, P, { claudeSessions: { solo: NOW.toISOString() } });
+  io.readStdin = async () =>
+    JSON.stringify({
+      session_id: "solo",
+      cwd: "/elsewhere",
+      hook_event_name: "Stop",
+      stop_hook_active: false,
+      transcript_path: "/synthetic.jsonl",
+    });
+  c.reset();
+  expect(await run(["hook", "stop"], io)).toBe(0);
+  const solo = JSON.parse(c.out()).reason as string;
+  expect(solo).toContain("armada merge --finish 12");
+  expect(solo).toContain(`--target web --config '${COORDINATOR_ROOT}/armada.toml'`);
+  expect(solo).not.toContain("--target api");
 });

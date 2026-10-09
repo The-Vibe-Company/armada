@@ -7,7 +7,9 @@
 import { dirname, join } from "node:path";
 import {
   type ArmadaConfig,
+  type CoordinatorHabit,
   type Credentials,
+  coordinatorHabits,
   entryKey,
   eventCursor,
   FOLLOW_KINDS,
@@ -30,6 +32,7 @@ import {
   rearm,
   recordHookRun,
   releaseWatchLock,
+  reserveNotice,
   runningWatch,
   type StopHookState,
   sameWatchLock,
@@ -564,39 +567,145 @@ export async function hookStop(
   try {
     const input: unknown = JSON.parse((await io.readStdin?.()) || "{}");
     if (typeof input !== "object" || input === null) return 0;
-    const raw = input as { cwd?: unknown; session_id?: unknown; hook_event_name?: unknown };
+    const raw = input as {
+      cwd?: unknown;
+      session_id?: unknown;
+      hook_event_name?: unknown;
+      transcript_path?: unknown;
+      stop_hook_active?: unknown;
+    };
     // A worker subagent shares its parent's id, but never fires Stop or writes its receipt.
     if ((raw.hook_event_name && raw.hook_event_name !== "Stop") || io.env.ARMADA_TICKET?.trim()) return 0;
-    sessionId = typeof raw.session_id === "string" && raw.session_id.trim() ? raw.session_id.trim() : null;
+    sessionId =
+      typeof raw.session_id === "string" && raw.session_id.trim() && raw.session_id.length <= 256
+        ? raw.session_id.trim()
+        : null;
     const registered =
       paths && sessionId
         ? (await readWatchStates(paths)).filter(({ state }) =>
             Object.hasOwn(state.claudeSessions ?? {}, sessionId as string),
           )
         : [];
-    const decisions = [];
-    for (const { project, coordinator, state } of registered) {
-      const watching = paths ? await runningWatch(paths, project, alive(io), coordinator) : null;
-      decisions.push({
+    const cwd = typeof raw.cwd === "string" && raw.cwd ? raw.cwd : io.cwd;
+    const contexts: {
+      project: string;
+      coordinator: string;
+      root: string;
+      state: WatchState | null;
+      match: "session" | "checkout";
+      config?: ArmadaConfig;
+    }[] = registered.map(({ project, coordinator, state }) => ({
+      project,
+      coordinator,
+      state,
+      root: state.root as string,
+      match: "session",
+    }));
+    let current: { path: string; config: ArmadaConfig } | null = null;
+    try {
+      const { path, text } = await findConfig({ ...io, cwd });
+      current = { path, config: parseConfig(text, path) };
+    } catch {
+      /* A registered coordinator may Stop outside any checkout. */
+    }
+    if (!contexts.length) {
+      if (!current) throw new Error("no coordinator project");
+      const project = current.config.project.slug;
+      const watchingIo = { ...io, coordinatorRoot: dirname(current.path) };
+      const { state } = await watchOf(watchingIo, project);
+      contexts.push({
         project,
-        decision: stopHookDecision({
-          project,
-          root: state.root as string,
-          state,
-          watching,
-          env: io.env,
-          match: "session",
-        }),
+        state,
+        coordinator: await coordinatorName(watchingIo, project),
+        root: dirname(current.path),
+        match: "checkout",
+        config: current.config,
       });
     }
-    if (!registered.length) {
-      const cwd = typeof raw.cwd === "string" && raw.cwd ? raw.cwd : io.cwd;
-      const { path, text } = await findConfig({ ...io, cwd });
-      const project = parseConfig(text, path).project.slug;
-      const { state, running } = await watchOf({ ...io, coordinatorRoot: dirname(path) }, project);
+    const eligible = contexts.filter(
+      ({ state, root, match }) => state?.root && (match === "session" || state.root === root),
+    );
+    const selected = eligible.find(({ project }) => project === current?.config.project.slug) ?? eligible[0];
+    const habits: CoordinatorHabit[] = [];
+    const deployTargets: { name: string; configPath?: string }[] = [];
+    const off = io.env.ARMADA_STOP_HOOK?.trim().toLowerCase();
+    if (
+      paths &&
+      sessionId &&
+      selected &&
+      raw.stop_hook_active === false &&
+      io.readFileRange &&
+      typeof raw.transcript_path === "string" &&
+      raw.transcript_path.length <= 4096 &&
+      !["off", "0", "false"].includes(off ?? "")
+    ) {
+      try {
+        // Read once per session, even when it coordinates several projects/names.
+        const offset = Math.max(
+          0,
+          ...eligible.map(({ state }) => {
+            const cursor = state?.habitCursors?.[sessionId as string];
+            return cursor && cursor.path === raw.transcript_path ? cursor.offset : 0;
+          }),
+        );
+        const chunk = await io.readFileRange(raw.transcript_path, offset, 1024 * 1024);
+        if (chunk) {
+          const found = coordinatorHabits(chunk.text.split("\n"));
+          if (found.some(({ rule }) => rule === "raw-merge")) {
+            // Prefer the project of this Stop's checkout. Outside it, name each known config explicitly.
+            const currentContext = eligible.find(({ project }) => project === current?.config.project.slug);
+            const projects = currentContext ? [currentContext] : eligible;
+            const loaded = new Set<string>();
+            for (const context of projects) {
+              if (loaded.has(context.project)) continue;
+              loaded.add(context.project);
+              try {
+                let config = currentContext && current ? current.config : context.config;
+                const path = currentContext && current ? current.path : join(context.root, "armada.toml");
+                if (!config) {
+                  const text = await io.readFile(path);
+                  if (text) config = parseConfig(text, path);
+                }
+                deployTargets.push(
+                  ...(config?.deploy?.targets ?? []).map(({ name }) => ({
+                    name,
+                    ...(!currentContext ? { configPath: path } : {}),
+                  })),
+                );
+              } catch {
+                /* Unreadable deploy config cannot discard the merge-finish or other reminders. */
+              }
+            }
+          }
+          for (const finding of found) {
+            if (await reserveNotice(paths, `habit:${sessionId}:${finding.rule}`, now(io), Number.POSITIVE_INFINITY))
+              habits.push(finding);
+          }
+          for (const { project, coordinator } of eligible)
+            await updateWatchState(
+              paths,
+              project,
+              {
+                habitCursors: { [sessionId]: { path: raw.transcript_path, offset: chunk.nextOffset } },
+              },
+              coordinator,
+            );
+        }
+      } catch {
+        /* Transcript failures never suppress the existing watch guard. */
+      }
+    }
+    const decisions = [];
+    for (const context of contexts) {
+      const watching = paths ? await runningWatch(paths, context.project, alive(io), context.coordinator) : null;
       decisions.push({
-        project,
-        decision: stopHookDecision({ project, root: dirname(path), state, watching: running, env: io.env }),
+        project: context.project,
+        decision: stopHookDecision({
+          ...context,
+          watching,
+          env: io.env,
+          ...(context === selected ? { habits, deployTargets } : {}),
+        }),
       });
     }
     const blocked = decisions.filter(({ decision }) => decision.block);

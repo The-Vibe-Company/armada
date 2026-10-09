@@ -2,6 +2,14 @@
 
 Detail the loop in [SKILL.md](SKILL.md) points to. Read the section you need.
 
+## Coordinator guardrails
+
+- Never block the session with a foreground command for more than a minute. Run `armada merge <pr> --wait` in the background, or queue with `armada merge --when-green <pr...>` and run `armada merge --drain` in the background. Keep `armada watch` in the background while these run. A declared long job uses `armada job start <name> --ticket <id>` on its runner.
+- Write no ticket code yourself. A fix of any size needs a ticket and a worker: cut a ticket and launch a worker. Changes to `armada.toml` that Armada asks for also go through a worker pull request merged with `armada merge`.
+- Run Armada commands bare. Never pipe them into `grep`, `tail` or `head`, redirect them to `/dev/null`, wrap `2>&1 | …`, or append `|| true`: their last lines say whether it worked and what to do next. A wrapper once hid a failed urgent launch for 2 hours 35 minutes.
+- Merge through `armada merge`. When it cannot run, follow [By hand](MERGE.md#by-hand), then `armada merge --finish <n>` and the deploy check for every declared target.
+- When the owner asks where things stand, run `armada digest` and paste its text.
+
 ## Named coordinators
 
 A project can share its work between coordinators, each with a name: `ARMADA_COORDINATOR=<name>` in the environment wins, then `armada coordinator use <name>` for this checkout, else `default`.
@@ -19,6 +27,8 @@ A project can share its work between coordinators, each with a name: `ARMADA_COO
 The hook matches the `session_id` of a coordinator that ran `inbox`, `watch`, `brief`, `launch` or `merge`, across working folders. Unknown sessions fall back to the checkout where the coordinator last watched. A session coordinating several projects is held if any of them needs a watch; the reason names each project and checkout. Worker sessions (`ARMADA_TICKET`) never register or get held. A resumed session with a new id registers on its next coordinator command.
 
 The watch's start and end, the last lines of coordinator commands, and `armada doctor` show `Stop hook on for this session (last ran HH:MM)`, `Stop hook installed in <file>; it confirms at your next turn end`, or `Stop hook NOT on: <why> — <fix>`. Installation alone is not proof that Claude loaded it: the next Stop records a local receipt. All hook reads are local and failures let the turn end.
+
+At Stop, the hook also reads up to 1 MiB of new transcript lines for this coordinator session. A completed foreground Bash command over 60 seconds, raw `gh pr merge`, wrapped Armada output, or `git commit`/`gh pr create` produces one reminder per rule per session, with a safe program/subcommand summary (arguments omitted) and the replacement to run. Quoted examples, comments and heredoc data are ignored. A multi-project session reads its transcript once and uses the current checkout’s deploy config; outside known checkouts, each known target command names its config explicitly. The reminder joins the watch reason in one blocked Stop; later turns do not repeat that rule, even after compaction. A reentrant Stop skips habit reminders and keeps the watch guard. Workers, subagents and unknown sessions in other checkouts are excluded; `ARMADA_STOP_HOOK=off` disables these reminders too.
 
 Armada detects the command in user settings (`~/.claude/settings.json`) and the coordinator checkout's `.claude/settings.json` or `.claude/settings.local.json`. If the session starts elsewhere, add a command hook for Stop in user settings: `armada hook stop 2>/dev/null || true`. `armada init --merge` changes repository settings only. `ARMADA_STOP_HOOK=off` opts out; the banner says so.
 

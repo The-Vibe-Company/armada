@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ArmadaApiError } from "../src/armada-api.ts";
 import { entryKey, eventCursor, inboxTag } from "../src/live.ts";
 import {
+  coordinatorHabits,
   EMPTY_WATCH_STATE,
   followFleet,
   rearm,
@@ -825,4 +826,64 @@ test("follow sees coalesced deploy notice updates through inbox ETags, by defaul
     expect(lines[1]?.body).toContain("new build output");
     expect(await live.store.openInboxItems({ project: P, recipient: "coordinator" })).toHaveLength(1);
   }
+});
+
+test("coordinator habits match Bash results, ignore backgrounds and tolerate unknown transcript lines", () => {
+  const line = (type: string, timestamp: string, content: unknown[]) =>
+    JSON.stringify({ type, timestamp, message: { content } });
+  const use = (id: string, command: string, background = false) =>
+    line("assistant", "2026-01-01T10:00:00Z", [
+      { type: "tool_use", id, name: "Bash", input: { command, run_in_background: background } },
+    ]);
+  const result = (id: string, timestamp = "2026-01-01T10:00:01Z") =>
+    line("user", timestamp, [{ type: "tool_result", tool_use_id: id, content: "synthetic output" }]);
+  const lines = [
+    "not JSON",
+    "null",
+    JSON.stringify({ type: "worker", command: "git commit" }),
+    use("long", "bun run verify"),
+    result("long", "2026-01-01T10:01:05Z"),
+    use("merge", "gh pr merge 12 --squash"),
+    result("merge"),
+    use("wrapped", "armada launch DEMO-2 | tail -5"),
+    result("wrapped"),
+    use("code", "git commit -m 'fix(cli): repair'"),
+    result("code"),
+    use("background", "armada watch", true),
+    result("background", "2026-01-01T10:05:00Z"),
+    use("short", "armada status"),
+    result("short", "2026-01-01T10:01:00Z"),
+    use("unfinished", "gh pr merge 13"),
+  ];
+  expect(coordinatorHabits(lines, {})).toEqual([
+    { rule: "foreground", command: "bun run verify", seconds: 65 },
+    { rule: "raw-merge", command: "gh pr merge 12 --squash", pr: 12 },
+    { rule: "wrapped", command: "armada launch DEMO-2 | tail -5" },
+    { rule: "own-code", command: "git commit -m 'fix(cli): repair'" },
+  ]);
+  expect(coordinatorHabits(lines, { since: "2026-01-01T10:06:00Z" })).toEqual([]);
+  for (const command of [
+    "armada status | grep ready",
+    "armada inbox | head -1",
+    "armada status > /dev/null",
+    "armada watch 2>&1 | cat",
+    "armada launch DEMO-3 || true",
+  ]) {
+    expect(coordinatorHabits([use("w", command), result("w")], {})).toEqual([{ rule: "wrapped", command }]);
+  }
+  for (const command of [
+    "printf '%s\\n' 'git commit'",
+    "echo 'gh pr merge 12'",
+    "rg 'armada status | tail'",
+    "cat <<'EOF'\ngit commit\ngh pr merge 12\narmada status | tail\nEOF",
+    "echo done # gh pr merge 12",
+  ]) {
+    expect(coordinatorHabits([use("example", command), result("example")], {})).toEqual([]);
+  }
+  expect(coordinatorHabits([use("real", "echo 'gh pr merge 12'; gh pr merge 14"), result("real")], {})).toEqual([
+    { rule: "raw-merge", command: "echo 'gh pr merge 12'; gh pr merge 14", pr: 14 },
+  ]);
+  expect(coordinatorHabits([use("pr", "gh pr create --title fix"), result("pr")], {})).toEqual([
+    { rule: "own-code", command: "gh pr create --title fix" },
+  ]);
 });
