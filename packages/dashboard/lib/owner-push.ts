@@ -429,11 +429,13 @@ async function channelDigest(db: Queryable, channel: OwnerChannel, since: string
   });
   const all = empty;
   all.titles = {};
+  all.groups = {};
   all.ownerItems = [];
   all.extras = { mainRed: [], deploys: [], jobs: [] };
   for (const d of digests) {
     all.quiet = all.quiet && d.quiet;
     Object.assign(all.titles, d.titles);
+    Object.assign(all.groups, d.groups);
     all.inFlight.push(...d.inFlight);
     all.ownerItems.push(...(d.ownerItems ?? []));
     all.extras.mainRed?.push(...(d.extras?.mainRed ?? []));

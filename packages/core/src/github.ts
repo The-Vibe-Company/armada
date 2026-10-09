@@ -9,6 +9,7 @@ import {
   type HttpRequestOptions,
   HttpStatusError,
   httpRequest,
+  readJson,
   retryStatus,
 } from "./http.ts";
 import type { CiState, ForgeData, Issue, MainCommit, MainHealth, ProgramData, PullRequest } from "./types.ts";
@@ -230,7 +231,7 @@ async function githubQuery<T>(
     { ...opts, retry: true, retryStatus, service: "GitHub" },
     async (res) => {
       if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`, retryStatus(res.status));
-      const json = (await res.json()) as { data?: T; errors?: { message: string }[] };
+      const json = (await readJson(res)) as { data?: T; errors?: { message: string }[] };
       if (json.errors?.length) throw new GithubError(`GitHub API: ${json.errors.map((e) => e.message).join("; ")}`);
       return json;
     },
@@ -381,7 +382,7 @@ export async function fetchDefaultBranchFile(opts: FetchFileOptions): Promise<st
     { ...opts, retry: true, retryStatus, service: "GitHub" },
     async (res) => {
       if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`, retryStatus(res.status));
-      const json = (await res.json()) as {
+      const json = (await readJson(res)) as {
         data?: { repository: { object: { text?: string | null } | null } | null };
         errors?: { message: string }[];
       };
@@ -597,7 +598,7 @@ export async function fetchRepository(opts: FetchForgeOptions): Promise<{ fullNa
     { ...opts, retry: true, retryStatus, service: "GitHub" },
     async (response) => {
       if (!response.ok) throw new GithubError(`GitHub API HTTP ${response.status}`);
-      const body = (await response.json()) as { full_name?: unknown };
+      const body = (await readJson(response)) as { full_name?: unknown };
       if (typeof body.full_name !== "string" || !/^[a-z0-9-]+\/[a-z0-9_.-]+$/i.test(body.full_name))
         throw new GithubError("GitHub API returned no valid repository full_name");
       return { fullName: body.full_name };
@@ -803,7 +804,7 @@ export async function fetchBranchRules(opts: FetchForgeOptions): Promise<BranchR
       async (res) => {
         if (classic && [403, 404].includes(res.status)) return null;
         if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status} reading branch rules`);
-        return (await res.json()) as T;
+        return (await readJson(res)) as T;
       },
     );
   const repo = await get<{ default_branch: string; allow_squash_merge: boolean; delete_branch_on_merge: boolean }>("");
@@ -959,7 +960,7 @@ export async function fetchJobSteps(
     { ...opts, retry: true, retryStatus, service: "GitHub" },
     async (res) => {
       if (!res.ok) throw new GithubError(`GitHub Actions HTTP ${res.status} reading job steps`);
-      const job = (await res.json()) as {
+      const job = (await readJson(res)) as {
         id?: number;
         run_id?: number;
         head_sha?: string;
@@ -1017,7 +1018,7 @@ export async function fetchWorkflowRun(
     async (res) => {
       if (!res.ok)
         throw new GithubError(`GitHub Actions HTTP ${res.status}; token needs Actions repository permission (read)`);
-      const json = (await res.json()) as { run_attempt?: number; status?: string };
+      const json = (await readJson(res)) as { run_attempt?: number; status?: string };
       if (!Number.isSafeInteger(json.run_attempt) || (json.run_attempt ?? 0) < 1)
         throw new GithubError("GitHub Actions returned no run attempt");
       return { attempt: json.run_attempt as number, status: typeof json.status === "string" ? json.status : null };
@@ -1033,7 +1034,7 @@ export async function fetchShaComparison(opts: FetchForgeOptions & { base: strin
     { ...opts, retry: true, retryStatus, service: "GitHub" },
     async (res) => {
       if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status} comparing deploy commits`);
-      const comparison = (await res.json()) as { status: string };
+      const comparison = (await readJson(res)) as { status: string };
       return comparison.status === "ahead" || comparison.status === "identical";
     },
   );
