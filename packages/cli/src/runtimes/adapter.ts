@@ -111,6 +111,8 @@ export interface RuntimeAdapter {
     launch: boolean;
     resumeInPlace: boolean;
     deliver: boolean;
+    /** Repeating the same message key cannot deliver twice. */
+    keyedDelivery: boolean;
     observe: boolean;
     peek: boolean;
     cancel: boolean;
@@ -220,7 +222,13 @@ async function checkClaim(fleet: Fleet, expected: ClaimRef, rule: "active" | "en
   if (expected.claimedAt === null && rule === "active") {
     if (h && !h.releasedAt) throw stale(expected.ticket);
     const launch = (await fleet.pendingLaunches()).find((l) => l.ticket === expected.ticket);
-    if (!launch?.id || !launch.handle || !launch.runtime || !same(launchRef(launch), expected))
+    if (
+      !launch?.id ||
+      !launch.handle ||
+      !launch.runtime ||
+      !same(launchRef(launch), expected) ||
+      (expected.coordinator !== undefined && launch.coordinator != null && launch.coordinator !== expected.coordinator)
+    )
       throw stale(expected.ticket);
     return;
   }

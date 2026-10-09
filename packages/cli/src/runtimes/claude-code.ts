@@ -7,6 +7,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     launch: false,
     resumeInPlace: false,
     deliver: false,
+    keyedDelivery: false,
     observe: false,
     peek: false,
     cancel: false,

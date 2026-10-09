@@ -90,6 +90,7 @@ export function statusLive(
       launches: () => Promise<PendingLaunch[]>;
       jobs: () => Promise<import("@armada/core").Job[]>;
       deferredLaunches: () => Promise<import("@armada/core").DeferredLaunch[]>;
+      pendingDeliveries: () => Promise<import("@armada/core").PendingDelivery[]>;
       runtimeHandles: () => Promise<import("@armada/core").RuntimeHandle[]>;
       holds: () => Promise<import("@armada/core").MergeHold[]>;
       queue: () => Promise<import("@armada/core").QueueEntry[]>;
@@ -105,6 +106,7 @@ export function statusLive(
         launches: () => fleet.pendingLaunches(),
         jobs: () => fleet.listJobs({ open: true }),
         deferredLaunches: () => fleet.deferredLaunches(),
+        pendingDeliveries: () => fleet.pendingDeliveries(),
         holds: () => fleet.holds(),
         queue: () => fleet.queueList(),
         coordinators: () => fleet.coordinators(),

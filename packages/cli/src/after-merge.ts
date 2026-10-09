@@ -12,7 +12,9 @@ import {
 import { version } from "../package.json" with { type: "json" };
 import { coordinatorName } from "./coordinator.ts";
 import { type DeferredLaunchResult, launchDeferredAfterMerge } from "./deferred-launch.ts";
+import { deliverKept } from "./deliveries.ts";
 import type { Io } from "./io.ts";
+import { outgoingRedactor } from "./redact.ts";
 import { deliverToRuntime } from "./runtime.ts";
 import { archiveClaimKey, claimRef, guarded, redactRuntimeText, runtimeFor } from "./runtimes/adapter.ts";
 import { coordinatorHandle } from "./watch.ts";
@@ -82,11 +84,14 @@ async function notifyWorkers(
     const key = w.handle ? `${runtimeNameOf(w.runtime) ?? w.runtime}:${w.handle}` : w.ticket;
     groups.set(key, [...(groups.get(key) ?? []), w]);
   }
+  if (!groups.size) return [];
+  const mask = await outgoingRedactor(io, config, credentials);
   const notified: WorkerNotification[] = [];
   for (const workers of groups.values()) {
     const w = workers[0];
     if (!w) continue;
-    const text = noticeText(outcome, workers);
+    let text = mask.text(noticeText(outcome, workers));
+    let kept = false;
     let delivered = false;
     let detail = "deliver manually with the runtime guide";
     const runtime = runtimeNameOf(w.runtime);
@@ -126,25 +131,74 @@ async function notifyWorkers(
           text: outcome.pr.mergeCommit,
         });
         const receipt = await fleet.prepareMergeNotice(key);
-        if (receipt !== "reserved" && receipt !== "delivered")
-          throw new Error(
-            "an earlier delivery attempt has an unknown outcome; inspect the session before manual delivery",
-          );
-        delivered =
-          receipt === "delivered" ||
-          !!(await deliverToRuntime(io, fleet, w.ticket, text, w.claim, config, {
-            kind: "note",
+        const keyed = runtimeFor(io, config, runtime).can.keyedDelivery;
+        if (receipt === "attempted") {
+          if (!keyed || !w.claim)
+            throw new Error(
+              "an earlier delivery attempt has an unknown outcome; inspect the session before manual delivery",
+            );
+          const row = await fleet.keepDelivery({
             key,
-            coordinator: owner,
-            skipHandedBack: true,
-          }));
+            ticket: w.ticket,
+            item: null,
+            kind: "merge-note",
+            text,
+            runtime,
+            handle: w.claim.handle,
+            claimedAt: w.claim.claimedAt,
+            launchId: w.claim.workerSessionId ?? null,
+            branch: w.claim.branch,
+          });
+          text = row.text;
+          if (row.state !== "delivered") {
+            if (row.state === "abandoned")
+              detail = `delivery #${row.id} ended: ${row.reason}; inspect the session first`;
+            else
+              detail = `not confirmed yet; Armada keeps it (delivery #${row.id}) and retries it while armada watch runs`;
+            notified.push(...workers.map((worker) => ({ ticket: worker.ticket, delivered: false, detail, text })));
+            continue;
+          }
+          // Native confirmation is terminal; retry only the idempotent generated-note record.
+          delivered = true;
+          detail = "already delivered";
+        }
+        if (!delivered) {
+          kept = keyed && receipt !== "delivered";
+          delivered =
+            receipt === "delivered" ||
+            (keyed && w.claim
+              ? !!(await deliverKept(
+                  io,
+                  fleet,
+                  config,
+                  { ...claimRef(w.claim), coordinator: owner, skipHandedBack: true },
+                  { key, text, item: null, kind: "merge-note" },
+                ))
+              : !!(await deliverToRuntime(io, fleet, w.ticket, text, w.claim, config, {
+                  kind: "note",
+                  key,
+                  coordinator: owner,
+                  skipHandedBack: true,
+                })));
+          detail = receipt === "delivered" ? "already delivered" : "delivered";
+        }
         if (!delivered) throw new Error("the runtime does not support delivery");
-        detail = receipt === "delivered" ? "already delivered" : "delivered";
         try {
           for (const worker of workers) {
             if (!worker.claim) continue;
-            await guarded(fleet, claimRef(worker.claim), "active", () =>
-              fleet.answer({ note: true, generated: true, deliveryKey: key, ticket: worker.ticket, text, item: null }),
+            await guarded(
+              fleet,
+              { ...claimRef(worker.claim), coordinator: owner, skipHandedBack: true },
+              "active",
+              () =>
+                fleet.answer({
+                  note: true,
+                  generated: true,
+                  deliveryKey: key,
+                  ticket: worker.ticket,
+                  text,
+                  item: null,
+                }),
             );
           }
         } catch {
@@ -175,7 +229,7 @@ async function notifyWorkers(
           outcome.notAffected.push(...workers.map((worker) => ({ ticket: worker.ticket, why: "already handed back" })));
           continue;
         }
-        detail = `${oneLine(redactRuntimeText(error instanceof Error ? error.message : String(error)))}; deliver manually with the runtime guide`;
+        detail = `${oneLine(mask.text(error instanceof Error ? error.message : String(error)))}${kept ? "; keep armada watch running; never send it by hand too" : "; deliver manually with the runtime guide"}`;
         io.stderr(
           `armada: warning: #${outcome.pr.number} is merged, but its note for ${workers.map((w) => w.ticket).join(", ")} was not delivered (${detail})\n`,
         );

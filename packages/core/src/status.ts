@@ -2,6 +2,7 @@
 // CLI and, later, the dashboard.
 import { type ArmadaConfig, CONFIG_DEFAULTS } from "./config.ts";
 import type { DeferredLaunch } from "./deferred.ts";
+import type { PendingDelivery } from "./deliveries.ts";
 import {
   freshEvent,
   frontier,
@@ -155,6 +156,7 @@ export interface StatusReport {
   notStarted: NotStartedLaunch[];
   pendingLaunches?: PendingLaunch[];
   launchWhenUnblocked?: DeferredLaunch[];
+  pendingDeliveries?: PendingDelivery[];
   slots?: { taken: number; max: number | null };
   /**
    * Ready to start: the frontier, ranked, without the tickets parked on purpose.
@@ -189,6 +191,7 @@ export interface BuildStatusInput {
   /** Launches no claim followed, from Armada's live data. */
   launches?: PendingLaunch[];
   launchWhenUnblocked?: DeferredLaunch[];
+  pendingDeliveries?: PendingDelivery[];
   slots?: { taken: number; max: number | null };
   /** Problems met on optional sources (the live data), added to the report warnings. */
   extraWarnings?: string[];
@@ -214,6 +217,7 @@ export function buildStatus({
   jobs,
   launches = [],
   launchWhenUnblocked,
+  pendingDeliveries,
   slots,
   extraWarnings = [],
   now,
@@ -267,6 +271,7 @@ export function buildStatus({
   });
 
   return {
+    ...(pendingDeliveries ? { pendingDeliveries } : {}),
     ...(jobs
       ? {
           jobs: jobs.map((job) => {
@@ -454,6 +459,7 @@ export interface LoadStatusOptions extends HttpRetryOptions {
   /** Launches no claim followed, read by the caller through Armada when signed in. */
   launches?: () => Promise<PendingLaunch[]>;
   deferredLaunches?: () => Promise<DeferredLaunch[]>;
+  pendingDeliveries?: () => Promise<PendingDelivery[]>;
   fetch?: Fetch;
   now?: () => Date;
 }
@@ -592,6 +598,7 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
     queue,
     deferred,
     coordinators,
+    deliveries,
   ] = await Promise.all([
     readStatusSources(config, opts),
     eventsP,
@@ -609,6 +616,10 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
       }),
     ),
     opts.coordinators?.().catch(() => undefined),
+    opts.pendingDeliveries?.().then(
+      (items) => ({ items }),
+      () => ({ warning: "Armada’s pending deliveries could not be read" }),
+    ),
   ]);
   return buildStatus({
     ...(runtimeHandles && launches.launches && coordinators
@@ -639,9 +650,11 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
     ...(jobs.jobs ? { jobs: jobs.jobs } : {}),
     ...(holds.holds ? { holds: holds.holds } : {}),
     ...(queue.queue ? { queue: queue.queue } : {}),
+    ...(deliveries && "items" in deliveries ? { pendingDeliveries: deliveries.items } : {}),
     ...(deferred && "items" in deferred ? { launchWhenUnblocked: deferred.items } : {}),
     extraWarnings: [
       events.warning,
+      deliveries && "warning" in deliveries ? deliveries.warning : undefined,
       ...(opts.coordinatorName !== undefined && !runtimeHandles
         ? ["Armada’s coordinator ownership could not be read; --mine lists only tickets with known ownership"]
         : []),

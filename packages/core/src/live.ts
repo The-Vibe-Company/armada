@@ -19,6 +19,7 @@ import {
   deferredLaunchState,
   deferredWakeBody,
 } from "./deferred.ts";
+import type { KeepDelivery, PendingDelivery, PendingDeliverySummary } from "./deliveries.ts";
 import type { DeployInput, DeployQuery, DeployRecord, DeployRetryInput } from "./deploy.ts";
 import type { DigestInput, DigestRequest, DigestResult } from "./digest.ts";
 import {
@@ -52,6 +53,15 @@ import type { RequestKind } from "./request-kinds.ts";
 import type { MergeAsk } from "./requests.ts";
 import type { AgentPhase, ForgeData, Issue, LabelPhase, ProgramData, PullRequest, ShippingStage } from "./types.ts";
 import type { NewValidation, Validation, ValidationDecision } from "./validations.ts";
+
+export {
+  type DeliveryKind,
+  deliveryDue,
+  type KeepDelivery,
+  MAX_DELIVERY_ATTEMPTS,
+  type PendingDelivery,
+  type PendingDeliverySummary,
+} from "./deliveries.ts";
 
 // ------------------------------------------------------------------ records
 
@@ -270,6 +280,7 @@ export interface SessionRecord extends RuntimeHandle {
  */
 export type InboxKind =
   | "deploy"
+  | "delivery-failed"
   | "hold"
   | "job"
   | "queue-refused"
@@ -505,6 +516,34 @@ export interface LaunchFailureRecord {
 }
 
 export interface FleetStore {
+  /**
+   * Keeps one immutable runtime delivery admission. A fresh row records its
+   * first attempt immediately; a repeated key returns the original row.
+   */
+  keepDelivery(input: KeepDelivery & { project: string; coordinator: string; at: Date }): Promise<PendingDelivery>;
+  /** Pending deliveries, optionally narrowed to one coordinator. */
+  pendingDeliveries(project: string, coordinator?: string): Promise<PendingDelivery[]>;
+  /** Rows whose bounded retry delay elapsed, including terminal-attempt rows. */
+  dueDeliveries(project: string, coordinator: string, now: Date): Promise<PendingDelivery[]>;
+  /** Atomically admits one retry; false when another attempt owns the in-flight lease. */
+  attemptDelivery(input: {
+    project: string;
+    key: string;
+    coordinator: string;
+    at: Date;
+    immediate?: boolean;
+  }): Promise<PendingDelivery | null>;
+  /** Monotonically settles a delivery and records/clears its coordinator notice. */
+  settleDelivery(input: {
+    project: string;
+    key: string;
+    coordinator: string;
+    state: "delivered" | "abandoned";
+    reason: string;
+    attempts?: number;
+    at: Date;
+  }): Promise<PendingDelivery | null>;
+
   recordLaunchFailure(input: LaunchFailureRecord & { project: string; at: Date }): Promise<void>;
   /** Reserves a merge notice before runtime I/O; an unknown outcome is never retried automatically. */
   prepareMergeNotice(project: string, key: string, at: Date): Promise<"reserved" | "attempted" | "delivered">;
@@ -985,7 +1024,12 @@ export interface AnswerRecord {
   ticket: string | null;
   /** The inbox item answered, when the coordinator named one. */
   item: number | null;
+  /** Number of admitted runtime attempts, when this answer came from delivery. */
+  deliveryAttempts?: number;
 }
+
+const answerResolution = (text: string, attempts?: number) =>
+  attempts === undefined ? text : `${text}\n\ndelivered after ${attempts} tries`;
 
 /**
  * The coordinator's answer or note, already delivered through the runtime
@@ -994,6 +1038,7 @@ export interface AnswerRecord {
  */
 export async function recordAnswer(store: FleetStore, project: string, a: AnswerRecord, at: Date): Promise<string> {
   const { text } = a;
+  const resolution = answerResolution(text, a.deliveryAttempts);
   if (a.generated) {
     if (!a.note || !a.ticket || a.item !== null || !a.deliveryKey)
       throw new Error("a generated note needs a ticket and reserved delivery key");
@@ -1006,6 +1051,7 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
       at,
     });
   }
+  if (a.ticket) await store.resolveInboxItems({ project, ticket: a.ticket, kind: "delivery-failed", resolution, at });
   if (a.note) {
     if (a.ticket) await store.resolvePlans({ project, ticket: a.ticket, resolution: text, at });
     const id = await store.addInboxItem({
@@ -1027,21 +1073,20 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
       // The question an answer-request answers is resolved with it.
       const question = item.request?.question ?? null;
       const answered = question === null ? null : await store.getInboxItem(project, question);
-      await store.resolveInboxItem({ project, id: item.id, resolution: text, at });
-      const closed =
-        question !== null && (await store.resolveInboxItem({ project, id: question, resolution: text, at }));
+      await store.resolveInboxItem({ project, id: item.id, resolution, at });
+      const closed = question !== null && (await store.resolveInboxItem({ project, id: question, resolution, at }));
       return `Dashboard request #${item.id} delivered${closed ? `; ${answered?.kind === "plan" ? "plan" : "question"} #${question} resolved` : ""}.`;
     }
-    const done = await store.resolveInboxItem({ project, id: a.item, resolution: text, at });
+    const done = await store.resolveInboxItem({ project, id: a.item, resolution, at });
     // An answer the owner typed on the dashboard for this question is now moot.
     if (item?.kind === "question" || item?.kind === "plan")
-      await store.resolveAnswerRequests({ project, question: a.item, resolution: text, at });
+      await store.resolveAnswerRequests({ project, question: a.item, resolution, at });
     return done ? `Inbox item #${a.item} resolved.` : `Inbox item #${a.item} was already resolved.`;
   }
   const ticket = a.ticket ?? "";
-  const n = await store.resolveInboxItems({ project, ticket, kind: "question", resolution: text, at });
-  const plans = await store.resolvePlans({ project, ticket, resolution: text, at });
-  await store.resolveInboxItems({ project, ticket, kind: "answer-request", resolution: text, at });
+  const n = await store.resolveInboxItems({ project, ticket, kind: "question", resolution, at });
+  const plans = await store.resolvePlans({ project, ticket, resolution, at });
+  await store.resolveInboxItems({ project, ticket, kind: "answer-request", resolution, at });
   if (n === 0 && plans === 0 && a.ticket) {
     const held = await store.getRuntimeHandle(project, ticket);
     if (held && runtimeNameOf(held.runtime) === "herdr" && !held.releasedAt && held.runtimeState?.state === "blocked") {
@@ -1058,7 +1103,7 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
         body: "Herdr approval or question",
         at,
       });
-      await store.resolveInboxItem({ project, id, resolution: text, at });
+      await store.resolveInboxItem({ project, id, resolution, at });
       return `Herdr approval or question of ${ticket} answered.`;
     }
   }
@@ -1720,33 +1765,52 @@ async function readInboxAndFlight(
   slots: { taken: number; max: number | null };
   openJobs: number[];
   ownedOpenJobs: number[];
+  pendingDeliveries: PendingDeliverySummary[];
+  ownedPendingDeliveries: PendingDeliverySummary[];
 }> {
   const now = o.now.getTime();
+  const name = o.coordinatorName ?? "default";
+  // Absent scope retains the old named-client behavior. New CLIs always
+  // send an explicit scope, so a name alone does not imply filtering.
+  const scoped = o.scope === "mine" || (o.scope === undefined && !!o.coordinatorName);
   // A claim removes the pending row after recording its handle: this read
   // order retains its slot while the worker moves between the two sources.
   const launches = await store.pendingLaunches(o.project, new Date(0));
-  let [handles, jobs, queue, queueLease, coordinators] = await Promise.all([
+  let [handles, jobs, queue, queueLease, coordinators, deliveries] = await Promise.all([
     store.openRuntimeHandles(o.project),
     store.listJobs(o.project, { open: true }),
     // Entries finished within the stall window count as the drain's last sign of life.
     store.queueList(o.project, { since: new Date(now - QUEUE_STALL_MS) }),
     store.getLease(o.project, MERGE_QUEUE_LEASE),
     store.listCoordinators(o.project),
+    store.pendingDeliveries(o.project),
   ]);
+  const deliverySummary = (row: PendingDelivery): PendingDeliverySummary => ({
+    id: row.id,
+    key: row.key,
+    ticket: row.ticket,
+    item: row.item,
+    kind: row.kind,
+    attempts: row.attempts,
+    attemptedAt: row.attemptedAt,
+    state: row.state,
+  });
+  const pendingRows = deliveries.filter((row) => row.state === "pending");
+  const pendingDeliveries = (scoped ? pendingRows.filter((row) => row.coordinator === name) : pendingRows).map(
+    deliverySummary,
+  );
+  const ownedPendingDeliveries = pendingRows.filter((row) => row.coordinator === name).map(deliverySummary);
   // Read notices after jobs: a terminal transition atomically removes liveness and adds its notice.
   // The reverse order could read an old inbox and a closed job, making watch exit without the notice.
   const stored = await store.openInboxItems({ project: o.project, recipient: "coordinator" });
   const owners = ticketOwners(handles, launches);
-  const name = o.coordinatorName ?? "default";
-  // Absent scope retains the old named-client behavior. New CLIs always
-  // send an explicit scope, so a name alone does not imply filtering.
-  const scoped = o.scope === "mine" || (o.scope === undefined && !!o.coordinatorName);
   const ownerOf = (ticket: string | null, fallback?: string | null) =>
     ticket && owners.has(ticket) ? (owners.get(ticket) ?? null) : (fallback ?? null);
-  const ownerOfItem = (item: InboxItem) =>
-    !item.ticket && (item.kind === "merge-request" || item.kind === "release-request")
-      ? null
-      : ownerOf(item.ticket, item.coordinator);
+  const ownerOfItem = (item: InboxItem) => {
+    if (item.kind === "delivery-failed") return item.coordinator ?? "default";
+    if (!item.ticket && (item.kind === "merge-request" || item.kind === "release-request")) return null;
+    return ownerOf(item.ticket, item.coordinator);
+  };
   const visible = (owner: string | null) => !scoped || owner === null || owner === name;
   let items = stored.filter((item) => visible(ownerOfItem(item)));
   const flight = o.snapshot?.flight;
@@ -2111,6 +2175,8 @@ async function readInboxAndFlight(
       .filter((job) => visible(ownerOf(job.ticket)) && (o.scope !== "mine" || ownerOf(job.ticket) === name))
       .map((job) => job.id),
     ownedOpenJobs: jobs.filter((job) => ownerOf(job.ticket) === name).map((job) => job.id),
+    pendingDeliveries,
+    ownedPendingDeliveries,
   };
 }
 
@@ -2405,6 +2471,10 @@ export interface InboxRead {
   inFlight?: string[];
   /** Open external jobs, separate from worker ownership. */
   openJobs?: number[];
+  /** Pending keyed runtime deliveries, across coordinators in the project. */
+  pendingDeliveries?: PendingDeliverySummary[];
+  /** Pending keyed runtime deliveries owned by the named coordinator. */
+  ownedPendingDeliveries?: PendingDeliverySummary[];
   /** Which entries and workers these are (`inboxTag`), for the next read's `etag`. */
   etag: string;
   /** Problems that did not stop the read, such as a presence that could not be recorded. */
@@ -2428,6 +2498,8 @@ export function inboxTag(
   waiting: readonly string[] = [],
   slots?: { taken: number; max: number | null },
   ownedWaiting: readonly string[] = [],
+  pendingDeliveries: readonly PendingDeliverySummary[] = [],
+  ownedPendingDeliveries: readonly PendingDeliverySummary[] = [],
 ): string {
   const keys = [
     ...items.map(
@@ -2439,6 +2511,14 @@ export function inboxTag(
     ...ownedOpenJobs.map((id) => `owned-job:${id}`),
     ...waiting.map((ticket) => `waiting:${ticket}`),
     ...ownedWaiting.map((ticket) => `owned-waiting:${ticket}`),
+    ...pendingDeliveries.map(
+      (delivery) =>
+        `delivery:${delivery.id}:${delivery.key}:${delivery.ticket ?? ""}:${delivery.item ?? ""}:${delivery.kind}:${delivery.attempts}:${delivery.attemptedAt ?? ""}:${delivery.state}`,
+    ),
+    ...ownedPendingDeliveries.map(
+      (delivery) =>
+        `owned-delivery:${delivery.id}:${delivery.key}:${delivery.ticket ?? ""}:${delivery.item ?? ""}:${delivery.kind}:${delivery.attempts}:${delivery.attemptedAt ?? ""}:${delivery.state}`,
+    ),
     ...(slots?.max ? [`slots:${slots.taken}:${slots.max}`] : []),
   ]
     .sort()
@@ -2477,20 +2557,30 @@ export async function serveInbox(
   } catch (err) {
     warnings.push(`could not record the coordinator's presence (${err instanceof Error ? err.message : String(err)})`);
   }
-  const { items, inFlight, ownedInFlight, openJobs, ownedOpenJobs, waiting, ownedWaiting, slots } =
-    await readInboxAndFlight(store, {
-      scope: q.scope,
-      snapshot,
-      project,
-      coordinator: q.coordinator,
-      coordinatorName: q.coordinatorName,
-      silentAfterMinutes: q.silentAfterMinutes,
-      launchGraceMinutes: q.launchGraceMinutes,
-      ciWaitMinutes: q.ciWaitMinutes,
-      quietAfterMinutes: q.quietAfterMinutes,
-      ...(q.notStartedMinutes !== undefined ? { notStartedMinutes: q.notStartedMinutes } : {}),
-      now,
-    });
+  const {
+    items,
+    inFlight,
+    ownedInFlight,
+    openJobs,
+    ownedOpenJobs,
+    waiting,
+    ownedWaiting,
+    slots,
+    pendingDeliveries,
+    ownedPendingDeliveries,
+  } = await readInboxAndFlight(store, {
+    scope: q.scope,
+    snapshot,
+    project,
+    coordinator: q.coordinator,
+    coordinatorName: q.coordinatorName,
+    silentAfterMinutes: q.silentAfterMinutes,
+    launchGraceMinutes: q.launchGraceMinutes,
+    ciWaitMinutes: q.ciWaitMinutes,
+    quietAfterMinutes: q.quietAfterMinutes,
+    ...(q.notStartedMinutes !== undefined ? { notStartedMinutes: q.notStartedMinutes } : {}),
+    now,
+  });
   for (const launch of expired) {
     if (items.some((i) => i.ticket === launch.ticket && (i.kind === "launch-failed" || i.kind === "launch-uncertain")))
       continue;
@@ -2526,6 +2616,8 @@ export async function serveInbox(
     waiting,
     slots,
     includesOwned ? ownedWaiting : [],
+    pendingDeliveries,
+    includesOwned ? ownedPendingDeliveries : [],
   );
   return q.etag === etag
     ? null
@@ -2539,6 +2631,12 @@ export async function serveInbox(
         warnings,
         ...(includesOwned ? { ownedInFlight } : {}),
         ...(openJobs.length ? { openJobs, ...(includesOwned ? { ownedOpenJobs } : {}) } : {}),
+        ...(pendingDeliveries.length
+          ? {
+              pendingDeliveries,
+              ...(includesOwned ? { ownedPendingDeliveries } : {}),
+            }
+          : {}),
       };
 }
 
@@ -2549,6 +2647,16 @@ export async function serveInbox(
  * API with the terminal's sign-in (`fleetClient`). Times are the server's.
  */
 export interface Fleet {
+  keepDelivery(input: KeepDelivery): Promise<PendingDelivery>;
+  pendingDeliveries(): Promise<PendingDelivery[]>;
+  dueDeliveries(): Promise<PendingDelivery[]>;
+  attemptDelivery(key: string, immediate?: boolean): Promise<PendingDelivery | null>;
+  settleDelivery(input: {
+    key: string;
+    state: "delivered" | "abandoned";
+    reason: string;
+    attempts?: number;
+  }): Promise<PendingDelivery | null>;
   recordLaunchFailure(input: LaunchFailureRecord): Promise<void>;
   prepareMergeNotice(key: string): Promise<"reserved" | "attempted" | "delivered">;
   retryDeploy(input: DeployRetryInput): Promise<DeployRecord>;

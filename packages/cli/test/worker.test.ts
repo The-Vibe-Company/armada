@@ -560,6 +560,7 @@ describe("armada claim, report and release", () => {
       [
         "fleet/coordinator",
         "fleet/coordinators",
+        "fleet/deliveries/pending",
         "fleet/events/latest",
         "fleet/launches",
         "fleet/job/list",

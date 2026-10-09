@@ -83,6 +83,7 @@ export class ConductorAdapter implements RuntimeAdapter {
     launch: true,
     resumeInPlace: true,
     deliver: true,
+    keyedDelivery: true,
     observe: true,
     peek: true,
     cancel: true,

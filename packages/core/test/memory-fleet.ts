@@ -22,8 +22,10 @@ import type {
   EventInput,
   FleetStore,
   InboxItem,
+  KeepDelivery,
   Lease,
   MergeHold,
+  PendingDelivery,
   PendingLaunch,
   ProjectRecord,
   Reservation,
@@ -32,7 +34,7 @@ import type {
   StoredInboxItem,
   WorkerProfile,
 } from "../src/live.ts";
-import { AckInvalid, FOLLOW_EVENT_KINDS, holdBody, unusedLaunchExpired } from "../src/live.ts";
+import { AckInvalid, deliveryDue, FOLLOW_EVENT_KINDS, holdBody, unusedLaunchExpired } from "../src/live.ts";
 import { MERGE_QUEUE_LEASE, type QueueEntry, queueOpen, queueRefusedPrefix } from "../src/merge-queue.ts";
 import { OBSERVABLE_RUNTIMES, runtimeNameOf } from "../src/runtime.ts";
 import type { Validation } from "../src/validations.ts";
@@ -79,6 +81,7 @@ export function memoryFleet(): FleetStore & {
   /** Launches, as the app's `createLaunch` and `exchangeLaunch` write them: tests push and edit them. */
   launches: LaunchRow[];
   validations: Validation[];
+  deliveries: PendingDelivery[];
 } {
   const jobs: Job[] = [];
   const queue: QueueEntry[] = [];
@@ -98,6 +101,7 @@ export function memoryFleet(): FleetStore & {
   const sessions: SessionRecord[] = [];
   const launches: LaunchRow[] = [];
   const validations: Validation[] = [];
+  const deliveries: PendingDelivery[] = [];
   const acknowledgements = new Map<string, AckedEntry>();
   const checkAckOwner = (
     project: string,
@@ -343,8 +347,124 @@ export function memoryFleet(): FleetStore & {
       }
     }
   };
+  const deliveryFailureBody = (row: PendingDelivery, reason: string) => {
+    const first = row.text.split(/\r?\n/, 1)[0]?.trim() || "(empty message)";
+    return `Delivery #${row.id} failed for ${row.ticket ?? "the worker"}: ${first}\n${reason}`;
+  };
+  const settleDeliveryFailure = (row: PendingDelivery, reason: string, at: Date) => {
+    if (!row.ticket || open(row.project, row.ticket, "delivery-failed")) return;
+    insert({
+      project: row.project,
+      ticket: row.ticket,
+      kind: "delivery-failed",
+      recipient: "coordinator",
+      author: null,
+      coordinator: row.coordinator,
+      body: deliveryFailureBody(row, reason),
+      createdAt: at.toISOString(),
+      requestQuestion: null,
+      requestProfile: null,
+    });
+  };
+  const settleDeliverySuccess = (row: PendingDelivery, at: Date) => {
+    if (!row.ticket || row.kind === "merge-note") return;
+    for (const older of deliveries)
+      if (
+        older.project === row.project &&
+        older.ticket === row.ticket &&
+        older.kind === row.kind &&
+        older.item === row.item &&
+        older.id < row.id &&
+        older.key !== row.key &&
+        older.state === "pending"
+      ) {
+        older.state = "abandoned";
+        older.endedAt = at.toISOString();
+        older.reason = "replaced by a newer answer";
+      }
+    resolve(
+      items.filter(
+        (item) =>
+          item.project === row.project &&
+          item.ticket === row.ticket &&
+          item.kind === "delivery-failed" &&
+          !item.resolvedAt,
+      ),
+      `delivery #${row.id} delivered after ${row.attempts} tries`,
+      at,
+    );
+  };
 
   return {
+    deliveries,
+    async keepDelivery(input: KeepDelivery & { project: string; coordinator: string; at: Date }) {
+      const existing = deliveries.find((row) => row.project === input.project && row.key === input.key);
+      if (existing) {
+        if (existing.coordinator !== input.coordinator) throw new Error("delivery belongs to another coordinator");
+        return structuredClone(existing);
+      }
+      const at = input.at.toISOString();
+      const row: PendingDelivery = {
+        ...input,
+        id: deliveries.length + 1,
+        createdAt: at,
+        attempts: 1,
+        attemptedAt: at,
+        state: "pending",
+        endedAt: null,
+        reason: null,
+      };
+      deliveries.push(row);
+      return structuredClone(row);
+    },
+    async pendingDeliveries(project, coordinator) {
+      return structuredClone(
+        deliveries.filter(
+          (row) =>
+            row.project === project &&
+            row.state === "pending" &&
+            (coordinator === undefined || row.coordinator === coordinator),
+        ),
+      );
+    },
+    async dueDeliveries(project, coordinator, now) {
+      return structuredClone(
+        deliveries.filter((row) => row.project === project && row.coordinator === coordinator && deliveryDue(row, now)),
+      );
+    },
+    async attemptDelivery(input) {
+      const row = deliveries.find(
+        (candidate) =>
+          candidate.project === input.project &&
+          candidate.key === input.key &&
+          candidate.coordinator === input.coordinator,
+      );
+      if (row?.state !== "pending" || row.attempts >= 6) return null;
+      const due = input.immediate ? true : deliveryDue(row, input.at);
+      if (!due) return null;
+      row.attempts += 1;
+      row.attemptedAt = input.at.toISOString();
+      return structuredClone(row);
+    },
+    async settleDelivery(input) {
+      const row = deliveries.find(
+        (candidate) =>
+          candidate.project === input.project &&
+          candidate.key === input.key &&
+          candidate.coordinator === input.coordinator,
+      );
+      if (!row) return null;
+      if (row.state !== "pending") return structuredClone(row);
+      if (input.state === "abandoned" && input.attempts !== undefined && row.attempts !== input.attempts)
+        return structuredClone(row);
+      row.state = input.state;
+      row.endedAt = input.at.toISOString();
+      row.reason = input.reason;
+      if (input.state === "abandoned" && input.reason !== "replaced by a newer answer")
+        settleDeliveryFailure(row, input.reason, input.at);
+      else if (input.state === "delivered") settleDeliverySuccess(row, input.at);
+      return structuredClone(row);
+    },
     async recordLaunchFailure(i) {
       if (!i.launchId) {
         const request = items.find((r) => r.project === i.project && r.ticket === i.ticket && r.id === i.requestId);
