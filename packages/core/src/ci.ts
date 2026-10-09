@@ -80,7 +80,7 @@ const TEST_PATTERNS = [
 const RUNNER =
   /No space left on device|The runner has received a shutdown signal|lost communication with the server|The hosted runner encountered an error|The job was not acquired by Runner of type hosted/i;
 
-// Outage signatures only; authorization and missing packages are not runner problems.
+// Outage signatures only; authorization failures and missing packages are not runner problems.
 const NETWORK = [
   { name: "connection", pattern: /\b(?:ECONNRESET|ETIMEDOUT|EAI_AGAIN|ECONNREFUSED)\b/ },
   { name: "request", pattern: /request to https?:\/\/\S+ failed, reason:/i },
@@ -92,7 +92,11 @@ const NETWORK = [
       /fatal: unable to access '[^']+': (?:Could not resolve host|Failed to connect|The requested URL returned error: 5\d\d|Operation timed out)/,
   },
   { name: "rpc", pattern: /RPC failed; HTTP 5\d\d/ },
-  { name: "docker", pattern: /Error response from daemon: .*(?:net\/http|i\/o timeout|toomanyrequests)/ },
+  {
+    name: "docker",
+    pattern:
+      /Error response from daemon: .*(?:net\/http|i\/o timeout|toomanyrequests|context deadline exceeded|Client\.Timeout exceeded)/,
+  },
   { name: "python", pattern: /ReadTimeoutError: HTTPSConnectionPool|Max retries exceeded with url/ },
   { name: "http", pattern: /(?:Unexpected HTTP response|status code does not indicate success): 5\d\d/i },
 ];
@@ -112,11 +116,21 @@ function networkSetupFailure(check: FailedCheck, log: readonly string[], setupSt
   const setup = picomatch(["Set up job", "Initialize containers", "Run actions/*", ...setupSteps], { dot: true });
   const firstError = log.findIndex((line) => line.includes("##[error]"));
   const prefix = log.slice(0, firstError < 0 ? log.length : firstError + 1);
-  if (!hasNetworkFailure(prefix) || prefix.some((line) => CLIENT_ERROR.test(line)))
+  // Docker's explicit rate-limit response is transient; other registry/auth 4xx
+  // still refuse reruns, including when they accompany a timeout or rate limit.
+  const clientError = (line: string) => {
+    const evidence =
+      step.name === "Initialize containers" && /Error response from daemon: toomanyrequests\b/.test(line)
+        ? line.replace(/\b429\b/g, "")
+        : line;
+    return CLIENT_ERROR.test(evidence);
+  };
+  if (!hasNetworkFailure(prefix) || prefix.some(clientError))
     return { networkNote: "network error does not establish the first failure as a setup outage" };
   if (!setup(step.name)) return { networkStep: step.name };
   // Cleanup must correspond to an executed setup step, not merely have a Post display name.
-  const cleanup = (name: string) =>
+  const cleanup = (name: string, conclusion: string | null) =>
+    (step.name === "Initialize containers" && name === "Stop containers" && conclusion === "success") ||
     steps
       .slice(0, failed + 1)
       .some(
@@ -129,7 +143,9 @@ function networkSetupFailure(check: FailedCheck, log: readonly string[], setupSt
   // A setup action after a test/build step is not a pre-test outage. Cleanup may still run.
   if (
     steps.slice(0, failed).some((s) => s.conclusion !== "skipped" && (!setup(s.name) || s.conclusion !== "success")) ||
-    steps.slice(failed + 1).some((s) => s.conclusion !== "skipped" && !cleanup(s.name) && s.name !== "Complete job")
+    steps
+      .slice(failed + 1)
+      .some((s) => s.conclusion !== "skipped" && !cleanup(s.name, s.conclusion) && s.name !== "Complete job")
   )
     return { networkNote: "network error found, user steps ran or step evidence is incomplete" };
   return { runnerReason: `network, in setup step "${step.name}"` };
