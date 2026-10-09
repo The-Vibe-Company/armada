@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.2.63](https://github.com/The-Vibe-Company/armada/compare/v0.2.62...v0.2.63) (2026-10-09)
+
+
+### Features
+
+* **cli:** brief coordinators after Claude context compaction ([#305](https://github.com/The-Vibe-Company/armada/issues/305)) ([03e53c1](https://github.com/The-Vibe-Company/armada/commit/03e53c155308e0fb1c1e7f79100bacba7cfdd64c))
+* **cli:** remind coordinators about session habits ([#299](https://github.com/The-Vibe-Company/armada/issues/299)) ([33699c9](https://github.com/The-Vibe-Company/armada/commit/33699c90c83489e675fce77d7a48a2493f5fe882))
+* **cli:** start waiting launches from watch ([#308](https://github.com/The-Vibe-Company/armada/issues/308)) ([cef9220](https://github.com/The-Vibe-Company/armada/commit/cef9220966991185355c3ee49fa2e05e0af7d1a5))
+* **deploy:** retry failed deployments and recover merge holds ([#294](https://github.com/The-Vibe-Company/armada/issues/294)) ([b1024a0](https://github.com/The-Vibe-Company/armada/commit/b1024a01099b7b337e783cecd77caac437292455))
+* **inbox:** remind about waiting items and record skipped notices ([#298](https://github.com/The-Vibe-Company/armada/issues/298)) ([a009126](https://github.com/The-Vibe-Company/armada/commit/a00912666da260b76bbc445980a3b58a046f8094))
+* **jobs:** flag running jobs whose progress stalls ([#295](https://github.com/The-Vibe-Company/armada/issues/295)) ([6a5e389](https://github.com/The-Vibe-Company/armada/commit/6a5e38951d9cf3c29b6e86cfc64844f582314cab))
+* **launch:** cap concurrent workers per project ([#291](https://github.com/The-Vibe-Company/armada/issues/291)) ([b208f1b](https://github.com/The-Vibe-Company/armada/commit/b208f1b878331938ee92e789a63669eac5361c34))
+* **launch:** route waiting workers at start and expire old requests ([#304](https://github.com/The-Vibe-Company/armada/issues/304)) ([240a41a](https://github.com/The-Vibe-Company/armada/commit/240a41a8eed91ff96b573c409a3f1c13c68b707e))
+* **owner-alerts:** announce finished specs and merge pauses ([#303](https://github.com/The-Vibe-Company/armada/issues/303)) ([cba9e10](https://github.com/The-Vibe-Company/armada/commit/cba9e10fda2515294550d528d336cea141fcf372))
+* **owner-alerts:** report work neglected by busy coordinators ([#296](https://github.com/The-Vibe-Company/armada/issues/296)) ([7cd9ed7](https://github.com/The-Vibe-Company/armada/commit/7cd9ed73e72d2f15201e580ef331193cdc167f33))
+
+
+### Bug Fixes
+
+* **ci:** treat setup download outages as runner problems ([#285](https://github.com/The-Vibe-Company/armada/issues/285)) ([b62ab05](https://github.com/The-Vibe-Company/armada/commit/b62ab057971dd45083170c6f62f90563ce0d85e3))
+* **cli:** identify stop-hook coordinators by Claude session ([#290](https://github.com/The-Vibe-Company/armada/issues/290)) ([f60daa3](https://github.com/The-Vibe-Company/armada/commit/f60daa313f05071fed88d850139534fdb1d17f17))
+* **cli:** inherit project and backlog state for new specs ([#280](https://github.com/The-Vibe-Company/armada/issues/280)) ([b44ef25](https://github.com/The-Vibe-Company/armada/commit/b44ef2540d33abda404b4e814598c746da89753f))
+* **cli:** retain uncertain keyed worker messages for watch delivery ([#306](https://github.com/The-Vibe-Company/armada/issues/306)) ([c33e504](https://github.com/The-Vibe-Company/armada/commit/c33e5044a2a6b9e4d9715c6390d4ebcd633ae93d))
+* **cli:** share watch results and bound Claude background runs ([#300](https://github.com/The-Vibe-Company/armada/issues/300)) ([3a0aca5](https://github.com/The-Vibe-Company/armada/commit/3a0aca5029f8a17a4f6c8dfa719cae0a625a7e39))
+* **cli:** show failed CI steps and pasteable flake entries ([#301](https://github.com/The-Vibe-Company/armada/issues/301)) ([50c82ee](https://github.com/The-Vibe-Company/armada/commit/50c82ee4a13a155f4c8dddc55be7863be71ccb07))
+* **launch:** report failed and uncertain launches immediately ([#302](https://github.com/The-Vibe-Company/armada/issues/302)) ([4f068ef](https://github.com/The-Vibe-Company/armada/commit/4f068eff751aebb7b419610ff8909e54a7f2dd2c))
+* **skills:** generate bundled instructions instead of tracking them ([#293](https://github.com/The-Vibe-Company/armada/issues/293)) ([c87ba52](https://github.com/The-Vibe-Company/armada/commit/c87ba52e419ac4d6891a76f8e4221fa91efe81ea))
+
 ## [0.2.62](https://github.com/The-Vibe-Company/armada/compare/v0.2.61...v0.2.62) (2026-10-09)
 
 
