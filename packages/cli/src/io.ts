@@ -75,6 +75,12 @@ export interface Io {
   codexModels?: (cwd: string) => Promise<string[] | null>;
   /** Save a model chosen by the owner in the existing repository configuration. */
   writeFile?: (path: string, text: string) => Promise<void>;
+  /** Bounded regular-file transcript tail; offsets are bytes at complete line boundaries. */
+  readFileRange?: (
+    path: string,
+    offset: number,
+    maxBytes: number,
+  ) => Promise<{ text: string; nextOffset: number } | null>;
   readBinaryFile?: (path: string, maxBytes: number) => Promise<Uint8Array | null>;
   stdout: (text: string) => void;
   stderr: (text: string) => void;

@@ -111,7 +111,7 @@ A `hand-back` entry means the worker reported `ready-to-merge` with green CI, re
 - starts the deploy check when `[[deploy.target]]` is set;
 - ends with one `Result:` line. Read it: `Result: merged #N` is done; `Result: not merged (…)` confirmed no merge (if it says `merge unconfirmed`, look at GitHub before retrying); `Linear pending` means run `armada merge --finish <pr>` once Linear answers.
 
-Workers hand back without chasing main, so a head is often behind: add `--wait`, which updates it on GitHub and waits for its checks (without it, a behind head is refused unless `[gates] local_commands` can test-merge it). Several hand-backs at once: queue them with `armada merge --when-green <pr...>` and run `armada merge --drain` in the background; it merges them one at a time, each retested on fresh main. With `[policy] merge_approval`, judge each pull request and pass `--reason "<why>"`, or `--ask-owner --reason "<why>"` to send it to the owner first. A hand-back with `--more-prs` keeps its ticket and worker open after the merge; `--keep-open` and `--close` override that.
+Workers hand back without chasing main, so a head is often behind: add `--wait` in the background; it updates it on GitHub and waits for its checks (without it, a behind head is refused unless `[gates] local_commands` can test-merge it). Several hand-backs at once: queue them with `armada merge --when-green <pr...>` and run `armada merge --drain` in the background; it merges them one at a time, each retested on fresh main. With `[policy] merge_approval`, judge each pull request and pass `--reason "<why>"`, or `--ask-owner --reason "<why>"` to send it to the owner first. A hand-back with `--more-prs` keeps its ticket and worker open after the merge; `--keep-open` and `--close` override that.
 
 Done when the pull request is merged, the result line says so, and nothing it printed is left to do.
 
@@ -138,7 +138,7 @@ Then repeat from step 1.
 
 ## Rules of thumb
 
-- Never pipe Armada commands through `grep`, `tail` or `head`: their last lines say whether something happened and what to do next.
+- Follow [the coordinator guardrails](REFERENCE.md#coordinator-guardrails): keep commands brief, delegate code, run Armada bare.
 - Long runs (an evaluation, a backfill) go through `armada job`, never in your session or a worker's.
 - Parallel workers in one area collide: stagger them, or give each a disjoint area and say the boundary in `--notes`.
 - Evidence for the owner goes through `armada attach <ticket> <files|urls>... --caption "<what to check>"`; link the printed URLs. Screenshots stay out of git.
