@@ -31,6 +31,10 @@ export interface Explanation {
   attempt: number | null;
   tests: string[];
   error: string[];
+  /** Actions Run header owning the first error annotation. */
+  step?: string;
+  /** Exact unknown test names, ready for a root-cause declaration. */
+  knownFailureDrafts?: { check: string; pattern: string }[];
   class: "known" | "runner" | "dependent" | "failure" | "external";
   runnerReason?: string;
   /** A network outage in an undeclared user step. */
@@ -227,18 +231,41 @@ export function explainChecks(
     const lines = log.some((l) => l.trim())
       ? log
       : (check.app === "github-actions" ? [...annotations, ...summary] : [...summary, ...annotations]).filter(Boolean);
-    // A final Actions exit-code annotation must not hide an earlier test error.
+    // Bind the excerpt to the Run block owning Actions' first error. A test
+    // marker takes precedence over incidental error-looking output in that step.
+    const errorAt = check.app === "github-actions" ? lines.findIndex((l) => l.includes("##[error]")) : -1;
+    let stepAt = 0;
+    let step: string | undefined;
+    for (let i = 0; i <= errorAt; i++) {
+      const header = lines[i]?.match(/^##\[group\](Run .+)/)?.[1];
+      if (header) {
+        stepAt = i;
+        step = header;
+      }
+    }
+    const search = lines.slice(stepAt, errorAt < 0 ? undefined : errorAt + 1);
+    const testAt = search.findIndex((l) => !!nameAt(l));
+    // Bun prints assertion values before the test marker, sometimes separated
+    // by a stack trace. Retain that nearby block without returning to job noise.
+    const beforeTest = Math.max(0, testAt - 40);
+    const assertionAt = search
+      .slice(beforeTest, testAt)
+      .findIndex((l) => /error:\s*expect|AssertionError|^\s*(?:Expected|Received):/i.test(l));
+    const testFirst = assertionAt >= 0 ? beforeTest + assertionAt : testAt;
     const first =
       check.app !== "github-actions" && check.summary?.trim()
         ? 0
-        : lines.findIndex(
-            (l) =>
-              l.includes("##[error]") ||
-              !!nameAt(l) ||
-              RUNNER.test(l) ||
-              /\d+ failing|\bKilled\b|error[: ]|AssertionError|^\s*Expected:/i.test(l),
-          );
-    const start = Math.max(0, first - 8);
+        : stepAt +
+          (errorAt >= 0 && testAt >= 0
+            ? testFirst
+            : search.findIndex(
+                (l) =>
+                  l.includes("##[error]") ||
+                  !!nameAt(l) ||
+                  RUNNER.test(l) ||
+                  /\d+ failing|\bKilled\b|error[: ]|AssertionError|^\s*Expected:/i.test(l),
+              ));
+    const start = Math.max(stepAt, first - 8);
     const error = check.superseded ? ["superseded by a newer head"] : lines.slice(start, start + 40);
     const declarations =
       check.app === "github-actions" && !check.superseded
@@ -256,6 +283,8 @@ export function explainChecks(
     const known = !dependencyCandidate && !unknownNames.length ? matched[0] : undefined;
     const knownMatches = matched.map(({ ticket, pattern }) => ({ ticket, pattern }));
     const runnerOnly = !dependencyCandidate && runner && !unknownNames.length;
+    const classification =
+      check.app !== "github-actions" ? "external" : known ? "known" : runnerOnly ? "runner" : "failure";
     return {
       check: check.name,
       conclusion: check.conclusion,
@@ -263,7 +292,16 @@ export function explainChecks(
       attempt: check.attempt ?? null,
       tests: [...unknownNames, ...names.filter((name) => !unknownNames.includes(name))].slice(0, 20),
       error,
-      class: check.app !== "github-actions" ? "external" : known ? "known" : runnerOnly ? "runner" : "failure",
+      class: classification,
+      ...(step && !check.superseded ? { step } : {}),
+      ...(classification === "failure" && !check.superseded && unknownNames.length
+        ? {
+            knownFailureDrafts: unknownNames.slice(0, 3).map((name) => ({
+              check: check.name,
+              pattern: `^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+            })),
+          }
+        : {}),
       ...(known
         ? {
             known: { ticket: known.ticket, pattern: known.pattern },
