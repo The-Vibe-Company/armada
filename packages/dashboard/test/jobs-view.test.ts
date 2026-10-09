@@ -17,6 +17,7 @@ const job = (over: Partial<ShownJob>): ShownJob => ({
   observedAt: at(60),
   finishedAt: null,
   overdue: false,
+  stalled: false,
   ticketDone: false,
   maxHours: null,
   ...over,
@@ -26,7 +27,16 @@ test("a ticket's jobs show their progress, ETA, last news and overdue against th
   const project = {
     jobs: [
       job({ id: 1, name: "backfill", state: "succeeded", progress: "done", observedAt: at(30), finishedAt: at(30) }),
-      job({ id: 2, progress: "37/120 cases", eta: at(-80), observedAt: at(4), maxHours: 12 }),
+      job({
+        id: 2,
+        progress: "37/120 cases",
+        eta: at(-80),
+        observedAt: at(4),
+        maxHours: 12,
+        progressChangedAt: at(11),
+        stallMinutes: 10,
+        silenceMinutes: 5,
+      }),
       // Past max_hours, its estimate passed, its ticket closed while it runs on.
       job({ id: 3, name: "replay", startedAt: at(3 * 60 + 1), eta: at(5), maxHours: 3, ticketDone: true }),
       job({ id: 4, ticket: "W-2" }),
@@ -43,6 +53,7 @@ test("a ticket's jobs show their progress, ETA, last news and overdue against th
       eta: { at: at(5), inMs: -5 * MIN },
       lastNewsMs: 60 * MIN,
       overdue: true,
+      stalledMinutes: null,
       maxHours: 3,
       ticketDone: true,
     },
@@ -55,6 +66,7 @@ test("a ticket's jobs show their progress, ETA, last news and overdue against th
       eta: { at: at(-80), inMs: 80 * MIN },
       lastNewsMs: 4 * MIN,
       overdue: false,
+      stalledMinutes: 11,
       maxHours: 12,
       ticketDone: false,
     },
@@ -67,9 +79,11 @@ test("a ticket's jobs show their progress, ETA, last news and overdue against th
       eta: null,
       lastNewsMs: 30 * MIN,
       overdue: false,
+      stalledMinutes: null,
       maxHours: null,
       ticketDone: false,
     },
   ]);
+  expect(ticketJobLines(project, "W-1", NOW + 2 * MIN).find((j) => j.id === 2)?.stalledMinutes).toBeNull();
   expect(ticketJobLines(undefined, "W-1", NOW)).toEqual([]);
 });

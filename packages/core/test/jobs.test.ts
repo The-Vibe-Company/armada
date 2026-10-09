@@ -113,14 +113,25 @@ test("an overdue job stays visible when its ticket is Done; status only reads st
     progress: "37/120 cases",
     at: NOW,
   });
-  const report = buildStatus({ config, ...sources, now: NOW, jobs: await store.listJobs("widgets", { open: true }) });
+  const later = new Date(NOW.getTime() + 61 * 60_000);
+  await store.observeJob({
+    project: "widgets",
+    ticket: job.ticket,
+    id: job.id,
+    state: "running",
+    progress: "37/120 cases ETA changed",
+    at: later,
+  });
+  const report = buildStatus({ config, ...sources, now: later, jobs: await store.listJobs("widgets", { open: true }) });
   expect(report.jobs?.[0]).toMatchObject({
     state: "running",
     overdue: true,
+    stalled: true,
+    progressChangedAt: NOW.toISOString(),
     ticketDone: true,
     maxHours: 0.5,
     ref: "run-1",
-    progress: "37/120 cases",
+    progress: "37/120 cases ETA changed",
   });
   expect((await store.getJob("widgets", job.id))?.state).toBe("running");
 });

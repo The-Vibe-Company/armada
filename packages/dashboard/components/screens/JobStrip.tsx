@@ -43,7 +43,7 @@ export function JobStrip({ project, ticket, heading }: { project: string; ticket
 }
 
 function Job({ job, t, zone, now }: { job: JobLine; t: Strings; zone: string; now: number }) {
-  const color = job.overdue ? "var(--amber)" : STATE_COLOR[job.state];
+  const color = job.overdue || job.stalledMinutes !== null ? "var(--amber)" : STATE_COLOR[job.state];
   const eta = job.eta && etaText(t, job.eta, zone, now);
   return (
     <li className="jb-row">
@@ -51,6 +51,7 @@ function Job({ job, t, zone, now }: { job: JobLine; t: Strings; zone: string; no
         <span className="ov-dot" style={{ background: color }} aria-hidden />
         <span className="jb-name mono">{job.name}</span>
         <span style={{ color: STATE_COLOR[job.state] }}>{t.jobs.states[job.state]}</span>
+        {job.stalledMinutes !== null && <span className="jb-overdue">{t.jobs.stalled(job.stalledMinutes)}</span>}
         {job.overdue && job.maxHours !== null && (
           <span className="jb-overdue">{t.jobs.overdue(t.duration(job.maxHours * 3_600_000))}</span>
         )}
