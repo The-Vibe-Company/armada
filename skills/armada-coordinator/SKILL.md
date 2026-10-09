@@ -113,7 +113,7 @@ Done when the pull request is merged, the result line says so, and nothing it pr
 
 - **Merge holds** pause merges for every coordinator: `armada hold` lists them, `armada hold add "<reason>"` opens one. Merge the fix with `armada merge <pr> --through-hold "<why>"`, verify the recovery, then `armada hold clear <id> --reason "<what was verified>"`. Never clear a hold just to let a merge through.
 - **Main red.** `armada status` says `main red since #N` with the failing checks, and whether a fix is running. Find the cause with `armada ci why --branch <default branch>`, cut a fix ticket, and hold merges when the breakage would spread.
-- **Deploys.** With `[[deploy.target]]`, each merge starts a watcher; a failed deploy or smoke check puts a `deploy` item in your inbox and opens a hold. `armada deploy status` shows the targets. Run `armada deploy retry <target>` for a failed deploy (`--no-redeploy` after a host redeploy); never clear its hold before a healthy recheck. Merge a code fix through the hold; the next healthy deploy clears it.
+- **Deploys.** Follow [MERGE.md](MERGE.md#holds-main-red-and-deploys).
 - **Red checks on a pull request.** `armada ci why <pr>` names the failing tests, first errors and runner problems. `armada ci why <pr> --rerun` reruns once only when every failure is a runner problem or a declared `[[ci.known_failure]]`, and names each flake's root-cause ticket. Anything else is a real failure: send it back to the worker.
 
 Done when no hold is open without a ticket that fixes it.
