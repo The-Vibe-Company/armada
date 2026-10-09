@@ -56,6 +56,7 @@ import {
 import { version } from "../package.json" with { type: "json" };
 import { loadCredentials } from "./auth.ts";
 import { coordinatorName, validCoordinator } from "./coordinator.ts";
+import { deliveringFleet } from "./deliveries.ts";
 import { renderEntries } from "./inbox.ts";
 import { httpOptions, type Io, UsageError, type WatchSignal } from "./io.ts";
 import { refreshingJobsFleet } from "./job.ts";
@@ -123,6 +124,7 @@ export async function rearmFor(
     openJobs?: number[];
     act?: boolean;
     waiting?: number;
+    pendingDeliveries?: string[];
     slots?: { taken: number; max: number | null };
   },
 ): Promise<Rearm> {
@@ -135,6 +137,7 @@ export async function rearmFor(
     waiting: o.waiting ?? state?.waiting?.length,
     slots: o.slots ?? state?.slots,
     openJobs: o.openJobs ?? state?.openJobs,
+    pendingDeliveries: o.pendingDeliveries ?? state?.pendingDeliveries,
     running,
     mode,
   });
@@ -493,6 +496,7 @@ async function watchUntil(
   };
   let lastInFlight: string[] | null = null;
   let lastJobs: number[] = [];
+  let lastDeliveries: string[] = [];
   let lastWaiting = 0;
   let lastSlots: WatchState["slots"];
   const resume = () => {
@@ -520,6 +524,7 @@ async function watchUntil(
         inFlight: lastInFlight,
         openJobs: lastJobs,
         waiting: lastWaiting,
+        pendingDeliveries: lastDeliveries,
         slots: lastSlots,
         open: null,
         running: null,
@@ -568,6 +573,7 @@ async function watchUntil(
     lastInFlight = initialState?.inFlight ?? null;
     lastJobs = initialState?.openJobs ?? [];
     lastWaiting = initialState?.waiting?.length ?? 0;
+    lastDeliveries = initialState?.pendingDeliveries ?? [];
     lastSlots = initialState?.slots;
     setBound(initialState?.harnessLimitMinutes);
     if (paths && automatic) {
@@ -694,7 +700,7 @@ async function watchUntil(
     await remember(io, project, { root: dirname(configPath), stopped: null, shownAt });
     const watchingFleet = refreshingJobsFleet(
       watchingIo,
-      observingFleet(watchingIo, fleet, config),
+      deliveringFleet(watchingIo, observingFleet(watchingIo, fleet, config), config, credentials),
       config,
       dirname(configPath),
       controller.signal,
@@ -723,6 +729,9 @@ async function watchUntil(
         const openJobs =
           name === "default" ? read.openJobs : (read.ownedOpenJobs ?? (scope === "mine" ? read.openJobs : []));
         lastInFlight = inFlight;
+        lastDeliveries = ((name === "default" ? read.pendingDeliveries : read.ownedPendingDeliveries) ?? []).map(
+          (d) => d.ticket,
+        );
         lastJobs = openJobs ?? [];
         lastWaiting = (name === "default" ? read.waiting : read.ownedWaiting)?.length ?? 0;
         lastSlots = read.slots;
@@ -730,6 +739,7 @@ async function watchUntil(
           await remember(io, project, {
             inFlight,
             openJobs,
+            pendingDeliveries: lastDeliveries,
             waiting: name === "default" ? read.waiting : read.ownedWaiting,
             slots: read.slots,
             readAt: now(io).toISOString(),
@@ -784,9 +794,13 @@ async function watchUntil(
     const openJobs =
       name === "default" ? report.openJobs : (report.ownedOpenJobs ?? (scope === "mine" ? report.openJobs : undefined));
     const waiting = (name === "default" ? report.waiting : report.ownedWaiting) ?? [];
+    const pendingDeliveries = (
+      (name === "default" ? report.pendingDeliveries : report.ownedPendingDeliveries) ?? []
+    ).map((d) => d.ticket);
     await remember(io, project, {
       ...shown(io, report.items, inFlight, openJobs, scope, report.shownAt),
       waiting,
+      pendingDeliveries,
       slots: report.slots,
     });
     controller.signal.throwIfAborted();
@@ -801,6 +815,7 @@ async function watchUntil(
       running: null,
       act: report.items.some((e) => !e.queue && (e.owner == null || e.owner === name)),
       waiting: waiting.length,
+      pendingDeliveries,
       slots: report.slots,
     });
     const banner = await stopHookBanner(io);

@@ -82,6 +82,109 @@ describe("the project registry", () => {
 });
 
 describe("live data", () => {
+  test("keyed deliveries admit one retry, fence settlement, and retire failures once a newer answer is confirmed", async () => {
+    const project = "delivery-outbox";
+    await upsertProject(
+      db,
+      { slug: project, name: "Deliveries", repository: "acme/deliveries", programRoot: "WID-1" },
+      at(0),
+    );
+    const store = fleetStore(db);
+    const base = {
+      project,
+      key: "delivery-old",
+      ticket: "WID-44",
+      item: 77,
+      kind: "answer" as const,
+      text: "Approve the migration\nwith the staged rollout",
+      runtime: "conductor" as const,
+      handle: "workspace/session",
+      claimedAt: at(0).toISOString(),
+      launchId: null,
+      branch: "ticket/WID-44",
+      coordinator: "default",
+      at: at(0),
+    };
+    const first = await store.keepDelivery(base);
+    expect(first).toMatchObject({ attempts: 1, state: "pending", attemptedAt: at(0).toISOString() });
+    expect(await store.keepDelivery({ ...base, text: "a changed retry payload" })).toMatchObject({
+      id: first.id,
+      text: base.text,
+      attempts: 1,
+    });
+    const attempts = await Promise.all([
+      store.attemptDelivery({ project, key: first.key, coordinator: "default", at: at(1) }),
+      store.attemptDelivery({ project, key: first.key, coordinator: "default", at: at(1) }),
+    ]);
+    expect(attempts.filter(Boolean)).toHaveLength(1);
+    expect(attempts.filter(Boolean)[0]).toMatchObject({ attempts: 2, attemptedAt: at(1).toISOString() });
+    expect(
+      await store.settleDelivery({
+        project,
+        key: first.key,
+        coordinator: "default",
+        state: "abandoned",
+        reason: "runtime unavailable",
+        attempts: 1,
+        at: at(2),
+      }),
+    ).toMatchObject({ state: "pending", attempts: 2 });
+    const failed = await store.settleDelivery({
+      project,
+      key: first.key,
+      coordinator: "default",
+      state: "abandoned",
+      reason: "runtime unavailable",
+      attempts: 2,
+      at: at(2),
+    });
+    expect(failed).toMatchObject({ state: "abandoned", attempts: 2 });
+    const failureItems = await openInboxItems(db, { project, recipient: "coordinator" });
+    expect(failureItems.filter((item) => item.kind === "delivery-failed")).toHaveLength(1);
+    expect(failureItems.find((item) => item.kind === "delivery-failed")?.body).toContain("Approve the migration");
+
+    const newer = await store.keepDelivery({ ...base, key: "delivery-new", text: "Use the safer rollout", at: at(3) });
+    expect((await store.pendingDeliveries(project)).some((row) => row.key === first.key)).toBe(false);
+    const pendingOld = await store.keepDelivery({ ...base, key: "delivery-pending-old", item: 88, at: at(5) });
+    const pendingNew = await store.keepDelivery({ ...base, key: "delivery-pending-new", item: 88, at: at(6) });
+    expect((await store.pendingDeliveries(project)).some((row) => row.key === pendingOld.key)).toBe(true);
+    expect((await store.pendingDeliveries(project)).some((row) => row.key === pendingNew.key)).toBe(true);
+    // A new key does not retire the older pending delivery until it is confirmed.
+    expect(
+      await store.settleDelivery({
+        project,
+        key: pendingNew.key,
+        coordinator: "default",
+        state: "delivered",
+        reason: "confirmed",
+        at: at(7),
+      }),
+    ).toMatchObject({ state: "delivered" });
+    expect(
+      (
+        await db.query("SELECT state, reason FROM pending_deliveries WHERE project = $1 AND delivery_key = $2", [
+          project,
+          pendingOld.key,
+        ])
+      ).rows[0],
+    ).toEqual({ state: "abandoned", reason: "replaced by a newer answer" });
+    expect(
+      await store.settleDelivery({
+        project,
+        key: newer.key,
+        coordinator: "default",
+        state: "delivered",
+        reason: "confirmed",
+        at: at(4),
+      }),
+    ).toMatchObject({ state: "delivered" });
+    expect(
+      (await openInboxItems(db, { project, recipient: "coordinator" })).filter(
+        (item) => item.kind === "delivery-failed",
+      ),
+    ).toHaveLength(0);
+  });
+
   test("launch failures rewrite one notice, suppress not-started and close on claim without reopening after a late result", async () => {
     const P = "launch-outcome-claim";
     await upsertProject(

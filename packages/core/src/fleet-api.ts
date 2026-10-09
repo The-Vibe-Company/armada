@@ -11,6 +11,14 @@ import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
 import type { ArmadaConfig } from "./config.ts";
 import { secretNameRefusal } from "./config.ts";
 import { type DeferredAttempt, type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
+import {
+  DELIVERY_KINDS,
+  DELIVERY_TEXT_MAX,
+  type DeliveryKind,
+  type KeepDelivery,
+  MAX_DELIVERY_ATTEMPTS,
+  type PendingDelivery,
+} from "./deliveries.ts";
 import { DEPLOY_STATES, DeployRetryRefusal, type DeployState, deployDetail } from "./deploy.ts";
 import { buildDigest, type Digest, renderDigest } from "./digest.ts";
 import { attachPullRequests } from "./github.ts";
@@ -148,6 +156,11 @@ export const FLEET_OPS = [
   "inbox/item",
   "inbox/ticket",
   "inbox/resolve",
+  "deliveries/pending",
+  "deliveries/due",
+  "deliveries/keep",
+  "deliveries/attempt",
+  "deliveries/settle",
   "answer",
   "answer/generated",
   "merge-notice/prepare",
@@ -290,6 +303,31 @@ const BODY_MAX = 100_000;
 const LINE_MAX = 500;
 const URL_MAX = 2_000;
 
+function deliveryKindOf(v: unknown): DeliveryKind {
+  if (!DELIVERY_KINDS.includes(v as DeliveryKind)) throw new Invalid("kind must be answer, note or merge-note");
+  return v as DeliveryKind;
+}
+
+function deliveryKeepOf(b: Body): KeepDelivery {
+  const claimedAt = b.claimedAt == null ? null : dateOf(b, "claimedAt");
+  const launchId = optText(b, "launchId", LINE_MAX);
+  if (claimedAt === null && launchId === null) throw new Invalid("claimedAt or launchId is required");
+  const runtime = runtimeNameOf(text(b, "runtime", LINE_MAX));
+  if (!runtime) throw new Invalid("runtime must be a supported runtime");
+  return {
+    key: text(b, "key", LINE_MAX),
+    ticket: ticketOf(b),
+    item: b.item == null ? null : idOf(b, "item"),
+    kind: deliveryKindOf(b.kind),
+    text: text(b, "text", DELIVERY_TEXT_MAX),
+    runtime,
+    handle: text(b, "handle", LINE_MAX),
+    claimedAt,
+    launchId,
+    branch: optText(b, "branch", LINE_MAX),
+  };
+}
+
 /** The project a request names, checked; null when it names none or a malformed one. */
 export function parseProject(v: unknown): ProjectInput | null {
   const p = objectOf(v);
@@ -353,6 +391,8 @@ export const FLEET_TEXT_OPERATIONS: ReadonlySet<string> = new Set([
   "hold/open",
   "hold/clear",
   "inbox/resolve",
+  "deliveries/keep",
+  "deliveries/settle",
   "ack",
   "merge",
   "chore",
@@ -1012,6 +1052,41 @@ export async function serveFleet(
             at,
           });
         }
+        case "deliveries/pending":
+          return store.pendingDeliveries(slug, coordinatorName ?? "default");
+        case "deliveries/due":
+          return store.dueDeliveries(slug, coordinatorName ?? "default", at);
+        case "deliveries/keep":
+          return store.keepDelivery({
+            ...deliveryKeepOf(b),
+            project: slug,
+            coordinator: coordinatorName ?? "default",
+            at,
+          });
+        case "deliveries/attempt":
+          return store.attemptDelivery({
+            project: slug,
+            key: text(b, "key", LINE_MAX),
+            coordinator: coordinatorName ?? "default",
+            at,
+            immediate: b.immediate === undefined ? false : bool(b, "immediate"),
+          });
+        case "deliveries/settle": {
+          const state = b.state;
+          if (state !== "delivered" && state !== "abandoned") throw new Invalid("state must be delivered or abandoned");
+          const attempts = b.attempts === undefined ? undefined : idOf(b, "attempts");
+          if (attempts !== undefined && attempts > MAX_DELIVERY_ATTEMPTS)
+            throw new Invalid("attempts exceeds the delivery limit");
+          return store.settleDelivery({
+            project: slug,
+            key: text(b, "key", LINE_MAX),
+            coordinator: coordinatorName ?? "default",
+            state,
+            reason: text(b, "reason", BODY_MAX),
+            ...(attempts === undefined ? {} : { attempts }),
+            at,
+          });
+        }
         case "merge-notice/prepare":
           return store.prepareMergeNotice(slug, text(b, "key", LINE_MAX), at);
         case "answer/generated":
@@ -1035,6 +1110,9 @@ export async function serveFleet(
           if (item !== null && (await store.getInboxItem(slug, item))?.kind === "hold")
             throw new Invalid('a merge hold is resolved with armada hold clear <id> --reason "<why>"');
           if (b.generated) throw new Invalid("generated notes use answer/generated");
+          const deliveryAttempts = b.deliveryAttempts === undefined ? undefined : idOf(b, "deliveryAttempts");
+          if (deliveryAttempts !== undefined && deliveryAttempts > MAX_DELIVERY_ATTEMPTS)
+            throw new Invalid("deliveryAttempts exceeds the delivery limit");
           return recordAnswer(
             store,
             slug,
@@ -1044,6 +1122,7 @@ export async function serveFleet(
               note: bool(b, "note"),
               ticket: b.ticket === null || b.ticket === undefined ? null : ticketOf(b),
               item,
+              ...(deliveryAttempts === undefined ? {} : { deliveryAttempts }),
             },
             at,
           );
@@ -1358,6 +1437,12 @@ export function fleetClient(o: {
     )) as T;
   };
   return {
+    keepDelivery: (input) => call<PendingDelivery>("deliveries/keep", input),
+    pendingDeliveries: () => call<PendingDelivery[]>("deliveries/pending", {}),
+    dueDeliveries: () => call<PendingDelivery[]>("deliveries/due", {}),
+    attemptDelivery: (key, immediate = false) =>
+      call<PendingDelivery | null>("deliveries/attempt", { key, ...(immediate ? { immediate: true } : {}) }),
+    settleDelivery: (input) => call<PendingDelivery | null>("deliveries/settle", input),
     recordLaunchFailure: (input) => call<null>("launch/failed", input).then(() => undefined),
     retryDeploy: (input) => call("deploy/retry", input),
     recordDeploy: (input) => call("deploy/record", input),

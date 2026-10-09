@@ -25,6 +25,7 @@ export class HerdrAdapter implements RuntimeAdapter {
     launch: true,
     resumeInPlace: true,
     deliver: true,
+    keyedDelivery: false,
     observe: true,
     peek: true,
     cancel: true,

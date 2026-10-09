@@ -9,6 +9,7 @@ export * from "./config.ts";
 export * from "./coordinators.ts";
 export * from "./credentials.ts";
 export * from "./deferred.ts";
+export * from "./deliveries.ts";
 export * from "./deploy.ts";
 export * from "./digest.ts";
 export * from "./dotenv.ts";

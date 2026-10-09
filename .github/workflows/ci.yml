@@ -78,7 +78,8 @@ jobs:
     # here is the throwaway demo's; the secret is drawn per run.
     services:
       postgres:
-        image: postgres:17
+        # Docker Official Image mirror avoids Docker Hub pull limits on shared runners.
+        image: public.ecr.aws/docker/library/postgres:17
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: armada
@@ -139,7 +140,8 @@ jobs:
       pull-requests: write
     services:
       postgres:
-        image: postgres:17
+        # Docker Official Image mirror avoids Docker Hub pull limits on shared runners.
+        image: public.ecr.aws/docker/library/postgres:17
         env:
           POSTGRES_PASSWORD: postgres
         ports: ["5432:5432"]

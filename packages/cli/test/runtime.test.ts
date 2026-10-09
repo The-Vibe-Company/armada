@@ -8,16 +8,21 @@ import {
   type Fleet,
   herdrHarnessLabel,
   parseConfig,
+  readInbox,
   recordClaim,
   recordMerge,
+  resolveCredentials,
 } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import { ARMADA_URL, DEMO_TOML, FakeLinear, fakeArmada, fakeClock, issue, NOW } from "../../core/test/support.ts";
 import { run } from "../src/cli.ts";
+import { deliveringFleet } from "../src/deliveries.ts";
 import { parseHerdrHandle, reportHerdr } from "../src/herdr.ts";
 import type { Io } from "../src/io.ts";
+import { renderStatus } from "../src/render.ts";
 import { observeRuntimes } from "../src/runtime.ts";
 import { archiveClaimKey, claimRef } from "../src/runtimes/adapter.ts";
+import { liveFleet } from "../src/worker.ts";
 
 const handle = { workspace: "w8", pane: "w8:p9", agent: "demo-7" };
 const rawHandle = JSON.stringify(handle);
@@ -222,7 +227,7 @@ test("Conductor plan answers and notes deliver in one command with distinct stab
   expect((await f.store.getInboxItem("widgets", nextPlan))?.resolvedAt).not.toBeNull();
   expect(await run(["answer", "--note", "DEMO-7", text], f.io)).toBe(0);
   expect(sends()[1]?.at(-1)).not.toBe(sends()[0]?.at(-1));
-  expect(sends()[2]?.at(-1)).toBe(sends()[1]?.at(-1));
+  expect(sends()).toHaveLength(2); // Confirmed identical notes are recorded without another native send.
 });
 
 test.each([false, true])(
@@ -257,15 +262,14 @@ test.each([false, true])(
     expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).toBeNull();
     expect(await run(["answer", String(id), text], f.io)).toBe(0);
     const sends = f.calls.filter((c) => c[0] === "conductor" && c[2] === "message");
-    expect(sends).toHaveLength(2);
-    expect(sends[1]?.at(-1)).toBe(sends[0]?.at(-1));
+    expect(sends).toHaveLength(1); // A confirmed delivery is never repeated after recording fails.
     expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).not.toBeNull();
   },
 );
 
 test.each([
   { name: "auth", code: 3, archived: false, missing: false, message: "Conductor is not signed in" },
-  { name: "unavailable", code: 0, archived: false, missing: true, message: "Conductor CLI is missing" },
+  { name: "unavailable", code: 0, archived: false, missing: true, message: "not confirmed yet" },
   { name: "archived", code: 0, archived: true, missing: false, message: "workspace is archived" },
 ])("Conductor $name leaves the question open with no record", async ({ code, archived, missing, message }) => {
   const f = await fixture("codex", "conductor");
@@ -361,7 +365,7 @@ test.each(["none", "tracker", "provenance"])(
   },
 );
 
-test("a pre-claim note retry keeps its id after the same launch claims", async () => {
+test("a confirmed pre-claim note is never sent again after the same launch claims", async () => {
   const f = await fixture("codex", "conductor");
   await f.store.releaseRuntimeHandle("widgets", "DEMO-7", NOW);
   f.store.launches.push({
@@ -402,8 +406,7 @@ test("a pre-claim note retry keeps its id after the same launch claims", async (
   );
   expect(await run(["answer", "--note", "DEMO-7", "resume"], f.io)).toBe(0);
   const sends = f.calls.filter((c) => c[0] === "conductor" && c[2] === "message");
-  expect(sends).toHaveLength(2);
-  expect(sends[1]?.at(-1)).toBe(sends[0]?.at(-1));
+  expect(sends).toHaveLength(1);
 });
 
 test.each(["herdr", "conductor"])(
@@ -544,7 +547,7 @@ test("a replacement during the Linear answer retry prevents another physical com
   expect(f.calls.filter((c) => c[0] === "conductor" && c[2] === "message")).toHaveLength(1);
   expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).toBeNull();
   expect(f.api.calls.some((c) => c.path === "fleet/answer")).toBe(false);
-  expect(f.err.join("")).toContain("worker generation changed after delivery");
+  expect(f.err.join("")).toContain("answer was delivered; Armada could not record it");
 });
 
 test("a stored Conductor blocked state does not advertise a herdr-only approval", async () => {
@@ -1032,4 +1035,239 @@ test.each([
     expect(f.calls).toEqual([]);
     expect(f.err.join(" ")).toContain("left its workspace untouched");
   }
+});
+
+// Owner boundary: timeout leaves Linear/question unchanged; watch uses the stored identity and payload.
+// Existing adapter tests only exercise one send and cannot cover persistence across commands/polls.
+test.each([
+  "watch",
+  "same-command",
+  "new-answer",
+  "replaced",
+  "owner-changed",
+  "released",
+  "recording-fails",
+  "fleet-recording-fails",
+  "settlement-fails",
+  "exhausted",
+  "launch-claimed",
+  "launch-owner-changed",
+])("kept Conductor answer survives timeout and safely resumes (%s)", async (mode) => {
+  const f = await fixture("codex", "conductor");
+  if (mode === "launch-claimed" || mode === "launch-owner-changed") {
+    f.clock.advance(1);
+    await f.store.releaseRuntimeHandle("widgets", "DEMO-7", NOW);
+    f.store.launches.push({
+      id: "launch-2",
+      coordinator: "default",
+      project: "widgets",
+      ticket: "DEMO-7",
+      launchedAt: f.clock.now().toISOString(),
+      tokenUsedAt: null,
+      runtime: "Conductor",
+      handle: "cw8/cs9",
+      endedAt: null,
+    });
+  }
+  const question = await f.store.addInboxItem({
+    project: "widgets",
+    ticket: "DEMO-7",
+    recipient: "coordinator",
+    kind: "question",
+    body: "Proceed?",
+    author: "cw8/cs9",
+    at: f.clock.now(),
+  });
+  const native = f.io.exec;
+  if (!native) throw new Error("missing fake executor");
+  let timedOut = true;
+  f.io.exec = async (cmd, args, options) => {
+    if (cmd === "conductor" && args[1] === "message" && timedOut) {
+      f.calls.push([cmd, ...args]);
+      f.inputs.push(options?.input);
+      return { code: 1, stdout: "", stderr: "private output", timedOut: true };
+    }
+    return native(cmd, args, options);
+  };
+  expect(await run(["answer", String(question), "Approved\nKeep this second line"], f.io)).toBe(1);
+  expect(f.err.join("")).toContain("not confirmed yet; Armada keeps it (delivery #");
+  expect(f.linear.bodies).toEqual([]);
+  expect((await f.store.getInboxItem("widgets", question))?.resolvedAt).toBeNull();
+  let settlementDown = mode === "settlement-fails";
+  const nativeFetch = f.io.fetch;
+  if (mode === "settlement-fails" || mode === "fleet-recording-fails")
+    f.io.fetch = async (input, init) => {
+      if (mode === "fleet-recording-fails" && String(input).endsWith("/fleet/answer"))
+        return new Response(JSON.stringify({ error: "service unavailable" }), { status: 503 });
+      if (settlementDown && String(input).endsWith("/fleet/deliveries/settle"))
+        return new Response(JSON.stringify({ error: "service unavailable" }), { status: 503 });
+      if (!nativeFetch) throw new Error("missing fake API");
+      return nativeFetch(input, init);
+    };
+  const credentials = resolveCredentials({ env: f.io.env });
+  const fleet = liveFleet(f.io, parseConfig(DEMO_TOML), credentials).fleet;
+  if (!fleet) throw new Error("missing fake Armada");
+  const pending = await fleet.pendingDeliveries();
+  expect(pending).toHaveLength(1);
+  if (mode === "watch") {
+    expect(await run(["hook", "stop"], { ...f.io, readStdin: async () => JSON.stringify({ cwd: f.io.cwd }) })).toBe(0);
+    expect(JSON.parse(f.out.at(-1) ?? "{}")).toMatchObject({ decision: "block" });
+    expect(f.out.at(-1)).toContain("waiting for delivery");
+    const status = buildStatus({
+      config: parseConfig(DEMO_TOML),
+      program: {
+        rootId: "DEMO-1",
+        fetchedAt: NOW.toISOString(),
+        issues: [issue("DEMO-1")],
+        comments: [],
+        warnings: [],
+      },
+      forge: null,
+      now: f.clock.now(),
+      pendingDeliveries: pending,
+    });
+    expect(renderStatus(status)).toContain("1 answer waiting for delivery (DEMO-7)");
+  }
+  expect(pending[0]).toMatchObject({
+    kind: "answer",
+    attempts: 1,
+    state: "pending",
+    text: "Approved\nKeep this second line",
+  });
+  const poll = () =>
+    deliveringFleet(f.io, fleet, parseConfig(DEMO_TOML), credentials).inbox({
+      coordinator: null,
+      coordinatorName: "default",
+      silentAfterMinutes: 20,
+      etag: null,
+    });
+  timedOut = mode === "exhausted";
+  if (mode === "launch-claimed") {
+    f.clock.advance(1);
+    await recordClaim(
+      f.store,
+      "widgets",
+      {
+        ticket: "DEMO-7",
+        runtime: "Conductor",
+        handle: "cw8/cs9",
+        branch,
+        phase: "implementing",
+        resuming: false,
+        profile: null,
+        workerSessionId: "launch-2",
+      },
+      f.clock.now(),
+    );
+  }
+  if (mode === "launch-owner-changed")
+    expect(
+      await f.store.transferTickets({
+        project: "widgets",
+        tickets: ["DEMO-7"],
+        from: "default",
+        to: "beta",
+        at: f.clock.now(),
+      }),
+    ).toBe(true);
+  if (["replaced", "released", "owner-changed"].includes(mode)) {
+    await f.store.releaseRuntimeHandle("widgets", "DEMO-7", f.clock.now());
+    if (mode === "replaced" || mode === "owner-changed") {
+      f.clock.advance(1);
+      await recordClaim(
+        f.store,
+        "widgets",
+        {
+          ...(mode === "owner-changed" ? { coordinator: "beta" } : {}),
+          ticket: "DEMO-7",
+          runtime: "Conductor",
+          handle: "cw8/cs10",
+          branch,
+          phase: "implementing",
+          resuming: false,
+          profile: null,
+        },
+        f.clock.now(),
+      );
+    }
+  }
+  if (mode === "recording-fails")
+    f.linear.comment = async () => {
+      throw new Error("tracker down");
+    };
+  if (mode === "same-command" || mode === "new-answer") {
+    expect(
+      await run(
+        [
+          "answer",
+          String(question),
+          mode === "new-answer" ? "Choose the newer answer" : "Approved\nKeep this second line",
+        ],
+        f.io,
+      ),
+    ).toBe(0);
+  } else {
+    f.clock.advance(60_001);
+    await poll();
+    if (mode === "settlement-fails") {
+      expect(await fleet.pendingDeliveries()).toHaveLength(1);
+      expect(f.linear.bodies).toEqual([]);
+      expect((await f.store.getInboxItem("widgets", question))?.resolvedAt).toBeNull();
+      settlementDown = false;
+      f.clock.advance(2 * 60_000 + 1);
+    }
+    if (mode === "exhausted") {
+      for (const delay of [2, 5, 10, 20, 20]) {
+        f.clock.advance(delay * 60_000 + 1);
+        await poll();
+      }
+    }
+    await poll(); // Consecutive polls cannot duplicate a settled send or failure item.
+  }
+  const sends = f.calls.filter((c) => c[0] === "conductor" && c[2] === "message");
+  if (["replaced", "released", "owner-changed", "launch-owner-changed", "exhausted"].includes(mode)) {
+    expect(sends).toHaveLength(mode === "exhausted" ? 6 : 1);
+    const failed = f.store.items.filter((i) => i.kind === "delivery-failed" && !i.resolvedAt);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.body).toContain("Approved");
+    if (mode === "owner-changed") {
+      const read = (coordinatorName: string) =>
+        fleet.inbox({ coordinator: null, coordinatorName, scope: "mine", silentAfterMinutes: 20, etag: null });
+      expect((await read("default"))?.items.filter((i) => i.kind === "delivery-failed")).toHaveLength(1);
+      expect(
+        (
+          await readInbox(f.store, {
+            project: "widgets",
+            coordinator: null,
+            coordinatorName: "beta",
+            scope: "mine",
+            silentAfterMinutes: 20,
+            now: f.clock.now(),
+          })
+        ).filter((i) => i.kind === "delivery-failed"),
+      ).toHaveLength(0);
+    }
+    if (mode === "released") {
+      expect(await run(["answer", String(failed[0]?.id), "Release acknowledged; no session to message"], f.io)).toBe(0);
+      expect((await f.store.getInboxItem("widgets", failed[0]?.id ?? 0))?.resolvedAt).not.toBeNull();
+      expect(f.calls.filter((c) => c[0] === "conductor" && c[2] === "message")).toHaveLength(1);
+    }
+    expect((await f.store.getInboxItem("widgets", question))?.resolvedAt).toBeNull();
+    expect(f.linear.bodies).toEqual([]);
+  } else {
+    expect(sends).toHaveLength(2);
+    if (mode === "new-answer") expect(sends[1]?.at(-1)).not.toBe(sends[0]?.at(-1));
+    else expect(sends[1]?.at(-1)).toBe(sends[0]?.at(-1));
+    if (mode === "recording-fails" || mode === "fleet-recording-fails") {
+      expect(f.err.join("")).toContain("delivered; Armada could not record");
+      expect(f.linear.bodies).toHaveLength(mode === "fleet-recording-fails" ? 1 : 0);
+      expect((await f.store.getInboxItem("widgets", question))?.resolvedAt).toBeNull();
+    } else {
+      expect((await f.store.getInboxItem("widgets", question))?.resolvedAt).not.toBeNull();
+      expect(f.linear.bodies).toHaveLength(1);
+      if (mode === "watch")
+        expect((await f.store.getInboxItem("widgets", question))?.resolution).toContain("delivered after 2 tries");
+    }
+  }
+  expect(await fleet.pendingDeliveries()).toEqual([]);
 });
