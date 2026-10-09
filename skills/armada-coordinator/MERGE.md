@@ -28,6 +28,12 @@ One check stays yours: search the default branch for callers of anything the pul
 
 A confirmed merge clears that PR's open queue refusals and owner merge requests. The result line names the cleared item ids. A PR merged elsewhere clears those notices on the next inbox read from Armada's stored GitHub reading. Queued `--no-ticket` merges clear notices when the queue finishes; a direct `--no-ticket` merge clears them on that next reading when the refusal names the PR or the merge request carries its PR number. A failed cleanup write is a warning: GitHub's confirmed merge stays successful, and the stored reading retries resolution.
 
+## Red checks on a pull request
+
+`armada ci why <pr>` names the failing tests, first errors and runner problems. `armada ci why <pr> --rerun` reruns failed jobs once per completed first-attempt workflow run only when every failure is a runner problem or a declared `[[ci.known_failure]]`, and names each flake's root-cause ticket. Nothing reruns automatically. Send other failures back to the worker.
+
+Network outages qualify as runner problems only in setup before tests/builds run, with validated step evidence. Registry/auth 4xx stays a failure. Built-in setup steps are `Set up job`, `Initialize containers` and `Run actions/*`; declare other tool/dependency downloads as exact names or `*` globs in `[ci] setup_steps`. Without step evidence, the network error stays a failure; the CLI explains unavailable evidence or hints how to declare an undeclared setup step.
+
 ## After a confirmed merge
 
 `armada merge` does these by itself, in order. Do none of them by hand.

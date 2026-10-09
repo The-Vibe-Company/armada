@@ -114,7 +114,7 @@ Done when the pull request is merged, the result line says so, and nothing it pr
 - **Merge holds** pause merges for every coordinator: `armada hold` lists them, `armada hold add "<reason>"` opens one. Merge the fix with `armada merge <pr> --through-hold "<why>"`, verify the recovery, then `armada hold clear <id> --reason "<what was verified>"`. Never clear a hold just to let a merge through.
 - **Main red.** `armada status` says `main red since #N` with the failing checks, and whether a fix is running. Find the cause with `armada ci why --branch <default branch>`, cut a fix ticket, and hold merges when the breakage would spread.
 - **Deploys.** Follow [MERGE.md](MERGE.md#holds-main-red-and-deploys).
-- **Red checks on a pull request.** `armada ci why <pr>` names the failing tests, first errors and runner problems. `armada ci why <pr> --rerun` reruns once only when every failure is a runner problem or a declared `[[ci.known_failure]]`, and names each flake's root-cause ticket. Anything else is a real failure: send it back to the worker.
+- **Red checks.** Run `armada ci why <pr>`; follow [MERGE.md](MERGE.md#red-checks-on-a-pull-request).
 
 Done when no hold is open without a ticket that fixes it.
 
