@@ -328,3 +328,15 @@ test("stopped idle sessions are actionable even when their answered phase still 
     reason: { kind: "stopped" },
   });
 });
+
+test("a hand-back in the merge queue runs without another Merge action", () => {
+  for (const queue of [
+    { state: "queued" as const, position: 2, detail: null },
+    { state: "merging" as const, position: 1, detail: "waiting for checks" },
+  ]) {
+    const r = row("WID-12", { phase: "ready-to-merge", pr: pr(12), queue });
+    expect(state(r)).toMatchObject({ group: "running", reason: { kind: "ready", queue } });
+    // An actual owner validation still takes precedence.
+    expect(state(r, [validation(1, r.id)])).toMatchObject({ group: "you" });
+  }
+});

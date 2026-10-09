@@ -115,7 +115,11 @@ function waitSeconds(raw: string | undefined): number {
 export function renderEntries(project: string, items: InboxEntry[]): string[] {
   if (!items.length) return [`Inbox of ${project}: nothing waits for you.`];
   const out = [`Inbox of ${project} (${items.length}), oldest first:`];
-  for (const e of items) {
+  const waiting = items.filter((e) => !e.queue);
+  const progressing = items.filter((e) => e.queue);
+  if (progressing.length && waiting.length) out.push("Waiting for you:");
+  for (const e of [...waiting, ...progressing]) {
+    if (e === progressing[0]) out.push("In progress:");
     const head = [
       e.id === null ? e.kind : `#${e.id} ${e.kind}`,
       e.ticket,
@@ -128,7 +132,12 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
     ]
       .filter(Boolean)
       .join(" · ");
-    out.push(`${e.new ? "* " : "  "}${head}`, ...e.body.split("\n").map((l) => (l ? `    ${l}` : "")));
+    out.push(`${e.new ? "* " : "  "}${head}`);
+    if (e.queue)
+      out.push(
+        `    ${e.queue.state === "queued" ? `queued in the merge queue (position ${e.queue.position})` : `merging: ${e.queue.detail ?? "starting the drain"}`}`,
+      );
+    out.push(...e.body.split("\n").map((l) => (l ? `    ${l}` : "")));
     if (e.kind === "hand-back" && !/shipped with (?:ship-pr-dev|the fallback:)|shipping path unreported/.test(e.body))
       out.push("    shipping path unreported");
   }
@@ -200,9 +209,9 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
   await remember(io, report.project, shown(io, report.items, inFlight, openJobs));
   const next = await rearmFor(io, report.project, {
     inFlight,
-    open: report.items.length,
+    open: report.items.filter((e) => !e.queue).length,
     openJobs,
-    act: report.items.length > 0,
+    act: report.items.some((e) => !e.queue),
   });
   const runtimes = (await fleet.runtimeHandles().catch(() => []))
     .filter((h) => h.runtimeState && (scope === "all" || h.coordinator === name))

@@ -26,6 +26,8 @@ A confirmed merge exits 0 even with Linear pending. `--dry-run` runs the checkli
 
 One check stays yours: search the default branch for callers of anything the pull request deletes or renames.
 
+A confirmed merge clears that PR's open queue refusals and owner merge requests. The result line names the cleared item ids. A PR merged elsewhere clears those notices on the next inbox read from Armada's stored GitHub reading. Queued `--no-ticket` merges clear notices when the queue finishes; a direct `--no-ticket` merge clears them on that next reading when the refusal names the PR or the merge request carries its PR number. A failed cleanup write is a warning: GitHub's confirmed merge stays successful, and the stored reading retries resolution.
+
 ## After a confirmed merge
 
 `armada merge` does these by itself, in order. Do none of them by hand.

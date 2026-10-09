@@ -95,6 +95,8 @@ Done when every launched ticket is In Progress with a claim, and a watch runs.
 
 ### 6. Merge handed-back pull requests
 
+A hand-back shown as `queued in the merge queue (position N)` or `merging: <drain step>` needs no new action; keep the drain running. A note that sends a worker back to work leaves the hand-back until that worker reports its resumed phase, which clears it; its next `ready-to-merge` report wakes the watch again.
+
 A `hand-back` entry means the worker reported `ready-to-merge` with green CI, resolved review threads and the full head SHA. Merge it with `armada merge <pr>`, following [MERGE.md](MERGE.md). The command checks everything, merges pinned to the handed-back head under the project's merge lock, and then, by itself:
 
 - archives the merged worker's workspace once GitHub confirms the merge (never archive by hand before that; `--no-archive` keeps it);

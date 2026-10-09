@@ -143,7 +143,15 @@ export function DecisionActions({
               {/* Refused because another request got there first: say why, next to it. */}
               <ErrorLine t={t} code={req.error} />
               <PendingNote
-                label={pending.queued ? t.overview.queued(projectName) : t.overview.sent(projectName)}
+                label={
+                  w.queue
+                    ? w.queue.state === "queued"
+                      ? t.overview.reasons.queued(w.queue.position)
+                      : t.overview.reasons.merging(w.queue.detail)
+                    : pending.queued
+                      ? t.overview.queued(projectName)
+                      : t.overview.sent(projectName)
+                }
                 detail={t.overview.sentBy(pending.author, t.ago(Math.max(0, now - Date.parse(pending.at))))}
                 quote={w.kind === "hand-back" ? `PR #${pr}` : `« ${pending.body} »`}
                 away={coordinator === "active" ? null : t.coordinatorAway}

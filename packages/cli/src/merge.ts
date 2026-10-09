@@ -862,5 +862,5 @@ export function mergeResult(o: MergeOutcome): string {
   if (!o.merged)
     return `Result: not merged (${o.lines.some((line) => line.startsWith("Dry run:")) ? "dry run" : "owner approval requested"}; nothing was merged)`;
   const pending = [o.armadaPending ? "Armada" : "", o.linearPending ? "Linear" : ""].filter(Boolean).join(" and ");
-  return `Result: merged #${o.pr.number}${pending ? `, ${pending} pending (armada merge --finish ${o.pr.number})` : ""}`;
+  return `Result: merged #${o.pr.number}${o.lines.find((line) => line.startsWith("cleared:")) ? `, ${o.lines.find((line) => line.startsWith("cleared:"))}` : ""}${pending ? `, ${pending} pending (armada merge --finish ${o.pr.number})` : ""}`;
 }

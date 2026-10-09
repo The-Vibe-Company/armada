@@ -238,7 +238,7 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     // Not urgent: a release comes after the questions, plans and hand-backs already open.
     const release = (await untilAborted(o.signal, () => o.release?.())) ?? null;
     if (release) items = [...items, { ...release, new: true }];
-    if (items.some((e) => e.new)) return report("items");
+    if (items.some((e) => e.new && !e.queue)) return report("items");
     if (read && inFlight !== null && !inFlight.length && !openJobs.length && !items.length) return report("nothing");
     await untilAborted(o.signal, () =>
       o.sleep(boundedWait(o, inFlight !== null && !inFlight.length && !openJobs.length ? idlePollMs : pollMs)),
@@ -278,6 +278,7 @@ export const FOLLOW_INBOX_KINDS: readonly InboxEntryKind[] = [
 ];
 export const FOLLOW_KINDS = [...FOLLOW_INBOX_KINDS, ...FOLLOW_EVENT_KINDS, "handover"] as const;
 export interface FollowLine {
+  queue?: InboxEntry["queue"];
   cursor: string;
   kind: string;
   ticket: string | null;
@@ -382,6 +383,7 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
             owner: item.author,
             at: item.createdAt,
             body: item.body,
+            ...(item.queue ? { queue: item.queue } : {}),
             new: !first,
           };
           seen.add(key);

@@ -421,7 +421,7 @@ async function watchUntil(
         io.stdout(
           json
             ? `${JSON.stringify(line)}\n`
-            : `${line.at.slice(11, 16)} UTC ${line.kind} ${line.ticket ?? "-"} [#${line.id ?? "-"}] ${line.body.split(/\r?\n/)[0]}${line.new ? "" : " (open)"} cursor: ${line.cursor}\n`,
+            : `${line.at.slice(11, 16)} UTC ${line.kind} ${line.ticket ?? "-"} [#${line.id ?? "-"}] ${line.queue ? (line.queue.state === "queued" ? `queued in the merge queue (position ${line.queue.position})` : `merging: ${line.queue.detail ?? "starting the drain"}`) : line.body.split(/\r?\n/)[0]}${line.new ? "" : " (open)"} cursor: ${line.cursor}\n`,
         );
         // Advance the explicit resume argument too, so a timed run never replays its start cursor.
         options.cursor = line.cursor;
@@ -442,8 +442,8 @@ async function watchUntil(
     await remember(io, project, shown(io, report.items, inFlight, openJobs));
     controller.signal.throwIfAborted();
     // A release is acted on between rounds: it is not an item that keeps a watch going.
-    const open = report.items.filter((e) => e.kind !== "version").length;
-    const next = rearm({ inFlight, openJobs, open, running: null, act: true });
+    const open = report.items.filter((e) => e.kind !== "version" && !e.queue).length;
+    const next = rearm({ inFlight, openJobs, open, running: null, act: report.items.some((e) => !e.queue) });
     if (json) io.stdout(`${JSON.stringify({ ...report, watch: next }, null, 2)}\n`);
     else {
       const out =
