@@ -356,6 +356,7 @@ export async function readWatchState(
       : {}),
     root: stringOr(r.root),
     seen: strings(r.seen) ?? [],
+    ...(r.seenScope === "mine" || r.seenScope === "all" ? { seenScope: r.seenScope } : {}),
     inFlight: strings(r.inFlight),
     ...(Array.isArray(r.openJobs)
       ? { openJobs: r.openJobs.filter((id: unknown) => Number.isSafeInteger(id) && Number(id) > 0) }
@@ -672,7 +673,8 @@ export async function addNoticedRelease(
     const previous = await readReleaseNotices(paths);
     if (
       previous.some((entry) => {
-        if (entry.at === null) return false;
+        // Setup drift has its own daily notice budget, separate from ordinary releases.
+        if (entry.at === null || entry.version.startsWith("setup:") !== version.startsWith("setup:")) return false;
         const age = at.getTime() - Date.parse(entry.at);
         return age >= 0 && age < (options.intervalMs ?? 0);
       })

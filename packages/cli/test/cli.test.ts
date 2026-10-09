@@ -334,7 +334,7 @@ Pull requests waiting (4)
     );
   });
 
-  test("project skills that differ from the CLI's are named with the release the lock records", async () => {
+  test("status announces setup drift once a day outside its ordinary warnings", async () => {
     const root = await mkdtemp(join(tmpdir(), "armada-status-"));
     try {
       await mkdir(join(root, ".agents/skills/armada-worker"), { recursive: true });
@@ -344,12 +344,18 @@ Pull requests waiting (4)
         join(root, "skills-lock.json"),
         JSON.stringify({ version: 1, skills: { "armada-worker": entry } }),
       );
-      const { io, out } = fakeIo({ [join(root, "armada.toml")]: DEMO_TOML });
+      const { io, out, err } = fakeIo(
+        { [join(root, "armada.toml")]: DEMO_TOML },
+        { LINEAR_API_KEY: "k", GITHUB_TOKEN: "t", XDG_CONFIG_HOME: root },
+      );
       io.cwd = root;
       expect(await run(["status", "--json"], io)).toBe(0);
-      expect(JSON.parse(out()).warnings).toContain(
-        `this project's Armada skills are 0.1.4 (armada-worker differs), the CLI is ${version}: run \`armada init\` and merge its PR (\`armada merge <n> --no-ticket\`)`,
-      );
+      expect(JSON.parse(out()).warnings).toEqual([]);
+      const line = `armada: This project's Armada setup is behind ${version}: armada upgrade, then merge the setup pull request it opens.\n`;
+      expect(err()).toBe(line);
+      io.fetch = recordedFetch().fetch;
+      expect(await run(["status", "--json"], io)).toBe(0);
+      expect(err()).toBe(line);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
