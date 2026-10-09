@@ -206,12 +206,13 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
     name === "default" ? report.inFlight : (report.ownedInFlight ?? (scope === "mine" ? report.inFlight : null));
   const openJobs =
     name === "default" ? report.openJobs : (report.ownedOpenJobs ?? (scope === "mine" ? report.openJobs : undefined));
-  await remember(io, report.project, shown(io, report.items, inFlight, openJobs));
+  await remember(io, report.project, shown(io, report.items, inFlight, openJobs, scope));
+  const open = report.items.filter((e) => !e.queue && (e.owner == null || e.owner === name)).length;
   const next = await rearmFor(io, report.project, {
     inFlight,
-    open: report.items.filter((e) => !e.queue).length,
+    open,
     openJobs,
-    act: report.items.some((e) => !e.queue),
+    act: open > 0,
   });
   const runtimes = (await fleet.runtimeHandles().catch(() => []))
     .filter((h) => h.runtimeState && (scope === "all" || h.coordinator === name))

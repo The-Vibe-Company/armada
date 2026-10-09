@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   machinePaths,
   parseConfig,
+  planSkills,
   readWatchLock,
   readWatchLockInfo,
   readWatchState,
@@ -19,6 +20,7 @@ import { ARMADA_URL, DEMO_TOML, fakeArmada, fakeClock, NOW, tempFleet } from "..
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
 import { refreshingJobsFleet } from "../src/job.ts";
+import { applyPlan, fsRepoView } from "../src/repo.ts";
 import { rearmFor, watchDeadline } from "../src/watch.ts";
 
 const KEY = "armada_key_CANARY_watch";
@@ -123,8 +125,27 @@ describe("armada watch", () => {
     expect(await run(["watch", "--json"], c.io)).toBe(0);
     expect(JSON.parse(c.out())).toMatchObject({ outcome: "nothing", inFlight: [] });
     c.reset();
+    c.onSleep.push(async () => {
+      await c.store.addInboxItem({
+        project: P,
+        ticket: "DEMO-9",
+        kind: "question",
+        recipient: "coordinator",
+        author: null,
+        body: "Unowned question",
+        at: c.clock.now(),
+      });
+    });
     expect(await run(["watch", "--all", "--json"], c.io)).toBe(0);
-    expect(JSON.parse(c.out())).toMatchObject({ outcome: "items", inFlight: ["DEMO-8"], watch: { inFlight: [] } });
+    expect(JSON.parse(c.out())).toMatchObject({
+      outcome: "items",
+      inFlight: ["DEMO-8"],
+      watch: { inFlight: [], open: 1 },
+      items: [
+        { ticket: "DEMO-8", owner: "default" },
+        { ticket: "DEMO-9", owner: null },
+      ],
+    });
     c.reset();
     delete c.io.env.ARMADA_COORDINATOR;
     expect(await run(["watch", "--json"], c.io)).toBe(0);
@@ -413,6 +434,172 @@ describe("armada watch", () => {
     });
   }
 
+  test("setup behind leaves plain watch waiting and notices are shared with inbox", async () => {
+    const c = await coordinator({ cli: { minimum: "0.0.1", latest: version } });
+    const root = join(c.io.env.XDG_CONFIG_HOME ?? "", "checkout");
+    await applyPlan(root, await planSkills(fsRepoView(root), version));
+    await writeFile(join(root, ".agents/skills/armada-worker/SKILL.md"), "outdated instructions");
+    c.io.cwd = root;
+    c.io.readFile = async (path) => (path === join(root, "armada.toml") ? DEMO_TOML : null);
+    await c.hold("DEMO-2");
+    c.onSleep.push(async () => {});
+    expect(await run(["watch", "--for", "0.25", "--json"], c.io)).toBe(0);
+    expect(c.out()).toBe("");
+    expect(c.err()).toContain(
+      `This project's Armada setup is behind ${version}: armada upgrade, then merge the setup pull request it opens.`,
+    );
+    expect(c.err()).toContain("resume: armada watch");
+    c.reset();
+    expect(await run(["inbox"], c.io)).toBe(0);
+    expect(c.err()).toBe("");
+    c.clock.advance(86_400_000);
+    c.reset();
+    expect(await run(["inbox"], c.io)).toBe(0);
+    expect(c.err()).toContain("setup is behind");
+    expect(c.err()).not.toContain("required");
+  });
+
+  test("a timer-aborted plain watch still prints its setup notice", async () => {
+    const c = await coordinator({ cli: { minimum: "0.0.1", latest: version } });
+    const root = join(c.io.env.XDG_CONFIG_HOME ?? "", "checkout");
+    await applyPlan(root, await planSkills(fsRepoView(root), version));
+    await writeFile(join(root, ".agents/skills/armada-worker/SKILL.md"), "outdated instructions");
+    c.io.cwd = root;
+    c.io.readFile = async (path) => (path === join(root, "armada.toml") ? DEMO_TOML : null);
+    c.io.sleep = undefined;
+    let expire: (() => void) | undefined;
+    const schedule = globalThis.setTimeout;
+    const timer = schedule(() => {}, 2 ** 31 - 1);
+    const timers = spyOn(globalThis, "setTimeout").mockImplementation(
+      Object.assign(
+        (handler: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+          if (ms !== 15000) return schedule(handler, ms, ...args);
+          expire = () => handler(...args);
+          return timer;
+        },
+        { __promisify__: schedule.__promisify__ },
+      ) as typeof setTimeout,
+    );
+    const fetch = c.io.fetch;
+    if (!fetch) throw new Error("missing fake API");
+    c.io.fetch = async (url, init) => {
+      if (url.endsWith("/fleet/inbox")) {
+        expect(expire).toBeDefined();
+        c.clock.advance(15000);
+        expire?.();
+      }
+      return fetch(url, init);
+    };
+    try {
+      expect(await run(["watch", "--for", "0.25"], c.io)).toBe(0);
+      expect(c.out()).toBe("");
+      expect(c.err()).toContain("resume: armada watch");
+      expect(c.err()).toContain(
+        `This project's Armada setup is behind ${version}: armada upgrade, then merge the setup pull request it opens.`,
+      );
+      expect(await readWatchLock(c.paths, P)).toBeNull();
+    } finally {
+      timers.mockRestore();
+      clearTimeout(timer);
+    }
+  });
+
+  test("shown inbox history is bounded to the newest 500 entries in oldest-first order", async () => {
+    const c = await coordinator();
+    for (let i = 0; i < 501; i++)
+      await c.store.addInboxItem({
+        project: P,
+        ticket: "DEMO-9",
+        kind: "note",
+        recipient: "coordinator",
+        author: null,
+        body: `Note ${i}`,
+        at: c.clock.now(),
+      });
+    expect(await run(["inbox", "--json"], c.io)).toBe(0);
+    const items = JSON.parse(c.out()).items;
+    expect(items).toHaveLength(501);
+    expect((await readWatchState(c.paths, P))?.seen).toEqual(
+      items.slice(1).map((item: { id: number }) => `#${item.id}`),
+    );
+  });
+
+  test("inbox between watches keeps an already shown minimum-version notice quiet", async () => {
+    const server = { minimum: "99.0.0", latest: "99.1.0" };
+    const c = await coordinator({ cli: server });
+    await c.hold("DEMO-2");
+    expect(await run(["watch", "--json"], c.io)).toBe(0);
+    expect(JSON.parse(c.out()).items).toMatchObject([
+      { kind: "version", new: true, body: expect.stringContaining(`Armada 99.0.0 required (you run ${version})`) },
+    ]);
+    // A normal inbox read cannot list the watch's synthetic version entry.
+    server.minimum = "0.0.1";
+    for (let i = 0; i < 501; i++)
+      await c.store.addInboxItem({
+        project: P,
+        ticket: "DEMO-9",
+        kind: "note",
+        recipient: "coordinator",
+        author: null,
+        body: `Note ${i}`,
+        at: c.clock.now(),
+      });
+    c.reset();
+    expect(await run(["inbox"], c.io)).toBe(0);
+    const state = await readWatchState(c.paths, P);
+    expect(state?.seen).toHaveLength(500);
+    expect(state?.seen.some((key) => key.startsWith("version:"))).toBe(true);
+    server.minimum = "99.0.0";
+    c.reset();
+    c.onSleep.push(async () => {});
+    expect(await run(["watch", "--for", "0.25", "--json"], c.io)).toBe(0);
+    expect(c.out()).toBe("");
+    expect(c.err()).toContain("resume: armada watch");
+  });
+
+  test("mine inbox preserves broader shown history until an all read prunes it", async () => {
+    const c = await coordinator();
+    await c.store.saveRuntimeHandle({
+      project: P,
+      ticket: "DEMO-8",
+      coordinator: "front",
+      runtime: "conductor",
+      handle: "ws/DEMO-8",
+      branch: null,
+      at: NOW,
+    });
+    const other = await c.store.addInboxItem({
+      project: P,
+      ticket: "DEMO-8",
+      kind: "plan",
+      recipient: "coordinator",
+      author: null,
+      body: "Other coordinator's plan",
+      at: NOW,
+    });
+    await c.store.addInboxItem({
+      project: P,
+      ticket: "DEMO-9",
+      kind: "question",
+      recipient: "coordinator",
+      author: null,
+      body: "Unowned question",
+      at: NOW,
+    });
+    expect(await run(["inbox", "--all", "--json"], c.io)).toBe(0);
+    expect(JSON.parse(c.out()).watch.open).toBe(1);
+    const first = (await readWatchState(c.paths, P))?.seen;
+    expect(first).toHaveLength(2);
+    await c.store.resolveInboxItem({ project: P, id: other, resolution: "answered", at: NOW });
+    c.reset();
+    expect(await run(["inbox", "--mine"], c.io)).toBe(0);
+    expect((await readWatchState(c.paths, P))?.seen).toEqual(first);
+    expect((await readWatchState(c.paths, P))?.seenScope).toBe("all");
+    c.reset();
+    expect(await run(["inbox", "--all"], c.io)).toBe(0);
+    expect((await readWatchState(c.paths, P))?.seen).toHaveLength(1);
+  });
+
   test("a server already requiring a newer CLI returns a version item on the first read", async () => {
     const c = await coordinator({ cli: { minimum: "99.0.0", latest: "99.1.0" } });
     expect(await run(["watch", "--json"], c.io)).toBe(0);
@@ -454,6 +641,7 @@ describe("armada watch", () => {
       root: COORDINATOR_ROOT,
       // A hand-back's key follows its text: handed back on a new head, it wakes the watch again.
       seen: [expect.stringMatching(/^#1@/)],
+      seenScope: "all",
       inFlight: ["DEMO-2", "DEMO-3"],
       readAt: new Date(NOW.getTime() + 30_000).toISOString(),
       stopped: null,
