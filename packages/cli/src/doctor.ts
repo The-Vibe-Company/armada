@@ -5,7 +5,7 @@
 // command the runtime guide launches workers with is found, and which
 // secrets the project expects (`[secrets] names`) are not set in Armada, by
 // name only. Exit 1 when anything is an error.
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import {
   API_KEY_VARIABLE,
   type ArmadaApi,
@@ -55,6 +55,7 @@ import {
 import { describeIdentity, hostOf } from "./login.ts";
 import { fsRepoView, gitRoot } from "./repo.ts";
 import { readSigning } from "./signing.ts";
+import { hookStatus, hookStatusLine } from "./watch.ts";
 
 export interface DoctorReport {
   schemaVersion: 1;
@@ -650,8 +651,25 @@ export async function buildDoctor(
     if (!outdated) throw err;
   }
   const signing = await readSigning(io, root);
+  const hook = await hookStatus(io, root);
+  const installedIn =
+    hook.installedIn &&
+    [join(root, ".claude/settings.json"), join(root, ".claude/settings.local.json")].includes(hook.installedIn)
+      ? relative(root, hook.installedIn)
+      : hook.installedIn;
+  const repositoryChecks = await checkRepository(view, armadaVersion, installedIn);
+  if (io.env.CLAUDECODE) {
+    const check = repositoryChecks.find((c) => c.id === "stop-hook");
+    if (check) {
+      check.message += `\n${hookStatusLine(hook.status)}`;
+      if (hook.status.state === "off") {
+        check.level = "warning";
+        check.fix ??= hook.status.fix;
+      }
+    }
+  }
   const checks = [
-    ...(await checkRepository(view, armadaVersion)),
+    ...repositoryChecks,
     ...(config ? optionalFeatures(config) : []),
     ...signIn,
     ...versionChecks(hostOf(credentials.armadaApi.url), api, armadaVersion, outdated),
