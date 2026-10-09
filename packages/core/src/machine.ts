@@ -356,6 +356,7 @@ export async function readWatchState(
       : {}),
     root: stringOr(r.root),
     seen: strings(r.seen) ?? [],
+    ...(r.seenScope === "mine" || r.seenScope === "all" ? { seenScope: r.seenScope } : {}),
     inFlight: strings(r.inFlight),
     ...(Array.isArray(r.openJobs)
       ? { openJobs: r.openJobs.filter((id: unknown) => Number.isSafeInteger(id) && Number(id) > 0) }
@@ -658,7 +659,7 @@ export async function reserveNotice(
   return reserveMatchingNotice(paths, key, now, everyMs, (candidate) => candidate === key, options).catch(() => false);
 }
 
-/** Release throttling stays machine-wide across versions, independent of project hints. */
+/** Release throttling stays machine-wide, with separate budgets for setup drift and ordinary releases. */
 export async function addNoticedRelease(
   paths: MachinePaths,
   version: string,
@@ -670,7 +671,7 @@ export async function addNoticedRelease(
     `release:${version}`,
     at,
     options.intervalMs ?? 0,
-    (key) => key.startsWith("release:"),
+    (key) => key.startsWith("release:") && key.startsWith("release:setup:") === version.startsWith("setup:"),
     options,
   ).catch(() => false);
 }

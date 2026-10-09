@@ -16,7 +16,7 @@ A project can share its work between coordinators, each with a name: `ARMADA_COO
 
 ## The watch
 
-Plain `armada watch` waits until something you have not been shown needs you (a question, plan, request, hand-back, merge hold, deploy failure, job notice, silent, stopped or unstarted worker), prints it and exits. It exits with `nothing to watch` when nothing in its scope is in flight or open. Armada being down does not end it; a harness time limit can, so start it again when it ends without news. `--for <minutes>` bounds it cleanly.
+Plain `armada watch` waits until a new own or unowned item you have not been shown needs you (a question, plan, request, hand-back, merge hold, deploy failure, job notice, silent, stopped or unstarted worker), prints it and exits. Items owned by another named coordinator stay in the listing, marked `owner: <name>`, but do not wake you, even with `--all`. Reading `armada inbox` preserves shown history; `--mine` cannot prune keys from a broader `--all` read. It exits with `nothing to watch` when nothing in its scope is in flight or open. Armada being down does not end it; a harness time limit can, so start it again when it ends without news. `--for <minutes>` bounds it cleanly.
 
 `armada watch --follow` prints one line per item and keeps running:
 
@@ -38,7 +38,7 @@ Both modes share one lock per project and name on a machine. `armada inbox --wai
 
 ## Upgrades
 
-`armada status` and `armada inbox` mention a new Armada release at most once a day; ordinary releases leave the watch running. A `version` item stops both watch modes: the server needs a newer CLI, or this project's installed skills are behind. Run `armada upgrade`: it waits for npm, installs the release, checks `armada --version`, and runs `armada init --merge` only when the project's setup is outdated. Workers in flight keep the version their brief pinned.
+`armada status` and `armada inbox` mention a new Armada release at most once a day; ordinary releases leave the watch running. Only a CLI below the server minimum stops either watch mode with a `version` item, worded `Armada <x> required (you run <y>)`. Setup behind gets a separate daily notice in status, inbox and plain watch's final output: “This project's Armada setup is behind <version>: `armada upgrade`, then merge the setup pull request it opens.” Setup drift leaves the watch running. Run `armada upgrade`: it waits for npm, installs the release, checks `armada --version`, and runs `armada init --merge` only when the project's setup is outdated. Workers in flight keep the version their brief pinned.
 
 ## Specs
 
