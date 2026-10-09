@@ -121,7 +121,17 @@ beforeAll(async () => {
         program: {
           rootId: "WID-1",
           fetchedAt: now.toISOString(),
-          issues: [issue("WID-1"), issue("WID-2", { title: "Export the report", parentId: "WID-1" })],
+          issues: [
+            issue("WID-1"),
+            issue("WID-100", { title: "Spec 2/10 — Search", parentId: "WID-1" }),
+            issue("WID-101", { title: "Spec 10/10 — Ship", parentId: "WID-1" }),
+            issue("WID-20", { title: "Exports", parentId: "WID-100" }),
+            issue("WID-2", { title: "Export the report", parentId: "WID-20" }),
+            issue("WID-3", { title: "Ship the report", parentId: "WID-101" }),
+            issue("WID-4", { parentId: "WID-100", statusType: "canceled" }),
+            issue("WID-6", { parentId: "WID-100", statusType: "completed" }),
+            issue("WID-5", { parentId: "WID-1" }),
+          ],
           comments: [],
           warnings: [],
         },
@@ -139,7 +149,9 @@ afterAll(async () => {
 beforeEach(async () => {
   posts.length = 0;
   status = 200;
-  await db.query(`TRUNCATE owner_channels, validations, inbox_items, leases RESTART IDENTITY CASCADE`);
+  await db.query(
+    `TRUNCATE owner_channels, validations, inbox_items, leases, jobs, deploys, merge_holds RESTART IDENTITY CASCADE`,
+  );
   await db.query(`DELETE FROM "armada_secret"`);
   await db.query(`DELETE FROM "armada_secret_event"`);
   await db.query(`DELETE FROM coordinator_presence`);
@@ -176,6 +188,72 @@ describe("owner chat delivery", () => {
     };
     await recordReport(store, project.slug, report, new Date("2026-04-06T10:30:00Z"));
     await recordReport(store, project.slug, { ...report, previous: "blocked" }, new Date("2026-04-06T11:45:00Z"));
+    for (const [target, state, at] of [
+      ["production", "deploy-failed", before],
+      ["preview", "deploy-failed", now],
+      ["pending", "waiting", now],
+      ["live", "live", now],
+      ["old", "healthy", before],
+      ["skipped", "skipped", now],
+      ["unconfigured", "not-runnable", now],
+      ["future", "healthy", new Date("2026-04-06T14:00:00Z")],
+    ] as const) {
+      await store.recordDeploy({
+        project: project.slug,
+        target,
+        state,
+        at,
+        sha: target,
+        detail: "synthetic",
+        pauseOnFailure: false,
+      });
+    }
+    // Latest state wins even when a previous deployment failed in the window.
+    await store.recordDeploy({
+      project: project.slug,
+      target: "preview",
+      state: "healthy",
+      at: now,
+      sha: "new-preview",
+      detail: "synthetic",
+      pauseOnFailure: false,
+    });
+    const job = await store.startJob({
+      project: project.slug,
+      ticket: "WID-2",
+      name: "evaluate",
+      startedBy: "worker",
+      at: before,
+    });
+    await store.observeJob({
+      project: project.slug,
+      ticket: "WID-2",
+      id: job.id,
+      state: "running",
+      progress: "40/120",
+      eta: "2026-04-06T14:00:00Z",
+      at: now,
+    });
+    for (const [ticket, at] of [
+      ["WID-3", now],
+      ["WID-4", before],
+    ] as const) {
+      const ended = await store.startJob({
+        project: project.slug,
+        ticket,
+        name: "evaluate",
+        startedBy: "worker",
+        at: before,
+      });
+      await store.observeJob({
+        project: project.slug,
+        ticket,
+        id: ended.id,
+        state: "succeeded",
+        progress: "120/120",
+        at,
+      });
+    }
     const records = await digestRecords(db, project.slug, "2026-04-06T11:30:00Z", now);
     expect(records.input.inFlight).toMatchObject([
       { ticket: "WID-2", title: "Export the report", phase: "blocked", phaseSince: "2026-04-06T10:30:00.000Z" },
@@ -183,6 +261,36 @@ describe("owner chat delivery", () => {
     expect(records.input.summary.stuck).toMatchObject([
       { ticket: "WID-2", reason: "blocked", minutes: 90, ongoing: true },
     ]);
+    expect(records.input.extras?.deploys).toEqual([
+      { project: project.slug, target: "live", state: "pending", url: "/projects/widgets" },
+      { project: project.slug, target: "pending", state: "pending", url: "/projects/widgets" },
+      { project: project.slug, target: "preview", state: "success", url: "/projects/widgets" },
+      { project: project.slug, target: "production", state: "failure", url: "/projects/widgets" },
+    ]);
+    expect(records.input.extras?.jobs).toMatchObject([
+      {
+        ticket: "WID-2",
+        title: "Export the report",
+        progress: "40/120",
+        eta: "2026-04-06T14:00:00.000Z",
+        url: "/agents/WID-2",
+      },
+      { ticket: "WID-3", progress: "120/120", eta: null },
+    ]);
+    expect(records.input.extras?.jobs).toHaveLength(2);
+    expect(records.input.groups?.["widgets/WID-2"]).toEqual({
+      key: "widgets/WID-100",
+      title: "Spec 2 · Search",
+      done: 1,
+      total: 3,
+    });
+    expect(records.input.groups?.["widgets/WID-3"]).toEqual({
+      key: "widgets/WID-101",
+      title: "Spec 10 · Ship",
+      done: 0,
+      total: 1,
+    });
+    expect(records.input.groups?.["widgets/WID-5"]).toBeUndefined();
     await recordReport(store, project.slug, { ...report, phase: "implementing", previous: "blocked" }, now);
     const recovered = await digestRecords(db, project.slug, "2026-04-06T11:30:00Z", now);
     expect(recovered.input.summary.stuck).toMatchObject([
@@ -242,11 +350,14 @@ describe("owner chat delivery", () => {
   test("concurrent scheduled ticks send one channel digest, with missed-slot notes and the previous digest window", async () => {
     await save({ alerts: false, language: "fr", digest: DEFAULT_DIGEST });
     await validation();
+    await validation("WID-3");
     const at = new Date("2026-04-06T13:00:00Z");
     await Promise.all([ownerTick(db, opts(at)), ownerTick(db, opts(at))]);
     expect(posts).toHaveLength(1);
     expect(posts[0]?.body).toContain("En attente de votre décision");
     expect(posts[0]?.body).toContain("Export the report");
+    expect(posts[0]?.body).toContain("Spec 2 · Search (1/3)");
+    expect(posts[0]?.body).toContain("Spec 10 · Ship (0/1)");
     expect(posts[0]?.body).toContain("/approve/1");
     expect((await db.query(`SELECT key FROM owner_pushes`)).rows).toEqual([{ key: "digest:2026-04-06T13:00" }]);
     const later = new Date("2026-04-07T13:05:00Z");
