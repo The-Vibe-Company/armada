@@ -65,6 +65,7 @@ armada skills update                  # update pointers and vendored skills on y
 `armada doctor` checks, in the repository you are in:
 
 - `armada.toml` exists and is valid;
+- the root `package.json` pins a supported `packageManager` (Bun, pnpm, npm or Yarn): a different local major/minor version warns with both versions and an alignment command. Matching and patch-only differences, or no pin, stay quiet. The same advisory line appears before a merge runs `[gates] local_commands`, using the test-merged tree's pin;
 - the five `armada-*` skills are discovery pointers in `.agents/skills`, linked from `.claude/skills`; their descriptions trigger Claude Code and Codex to run `armada skill <name> [<file>]` and follow the installed CLI version. `skills-lock.json` records their pointer hashes with `sourceType: "armada-cli"` and a tagged GitHub source link. The scripted `ship-pr-dev`, `review-code-dev` and `capture-learning-tools` packages stay fully vendored and checked by their folder hashes;
 - `.conductor/settings.toml` has a `[scripts] setup` command;
 - `.gitignore` ignores `plans/ship-pr-dev/`;

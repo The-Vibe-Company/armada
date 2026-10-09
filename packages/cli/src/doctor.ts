@@ -55,6 +55,7 @@ import {
 import { describeIdentity, hostOf } from "./login.ts";
 import { fsRepoView, gitRoot } from "./repo.ts";
 import { readSigning } from "./signing.ts";
+import { packageManagerChecks } from "./toolchain.ts";
 import { hookStatus, hookStatusLine } from "./watch.ts";
 
 export interface DoctorReport {
@@ -679,6 +680,7 @@ export async function buildDoctor(
   }
   const checks = [
     ...repositoryChecks,
+    ...(await packageManagerChecks(view, io.exec, root, io.env)),
     ...(config ? optionalFeatures(config) : []),
     ...signIn,
     ...versionChecks(hostOf(credentials.armadaApi.url), api, armadaVersion, outdated),

@@ -90,6 +90,67 @@ async function terminal(
   return { doctor, inbox, io, calls: armada.calls, stderr, home, credentials: join(home, "armada", "credentials") };
 }
 
+test("doctor warns only when the root package-manager pin differs in major or minor, with an alignment command", async () => {
+  const cases = [
+    { pin: "bun@1.4.2", local: "1.3.5", fix: 'curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.2"' },
+    { pin: "pnpm@10.2.1", local: "9.2.1", fix: "npm install -g pnpm@10.2.1" },
+    { pin: "npm@11.3.0", local: "11.2.0", fix: "npm install -g npm@11.3.0" },
+    {
+      pin: `yarn@4.5.1+sha224.${"a".repeat(56)}`,
+      local: "3.5.1",
+      fix: "corepack enable && corepack install --global yarn@4.5.1",
+    },
+    { pin: "bun@1.4.2-beta.1", local: "1.3.5", fix: 'curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.2-beta.1"' },
+    { pin: "bun@1.4.2", local: "1.4.2", fix: null },
+    { pin: "bun@1.4.2", local: "1.4.9", fix: null },
+    { pin: "bun@1.4.2", local: "1.3.5", fix: null, failed: true },
+    { pin: "bun@1.4.2", local: "1.3.5", fix: null, rejected: true },
+    { pin: "bun@1.4.2", local: "1.3.5", fix: null, timedOut: true },
+    { pin: "bun@1.4.2", local: "unreadable", fix: null },
+    { pin: "bun@^1.4.2", local: "1.3.5", fix: null },
+    { pin: "bun@01.4.2", local: "1.3.5", fix: null },
+    { pin: "bun@1.4.2-", local: "1.3.5", fix: null },
+    { pin: "bun@1.4.2-beta..1", local: "1.3.5", fix: null },
+    { pin: "bun@1.4.2-01", local: "1.3.5", fix: null },
+    { pin: "yarn@4.5.1+sha224.", local: "3.5.1", fix: null },
+    { pin: "yarn@4.5.1+sha224.abcdef", local: "3.5.1", fix: null },
+    { pin: "other@1.4.2", local: "1.3.5", fix: null },
+    { pin: null, local: "1.3.5", fix: null },
+  ];
+  for (const c of cases) {
+    const t = await terminal({}, {}, null);
+    const nested = join(t.home, "nested");
+    await mkdir(nested);
+    await writeFile(join(t.home, "package.json"), JSON.stringify({ packageManager: c.pin }));
+    // Running from a subdirectory must still read the checkout's root pin.
+    await writeFile(join(nested, "package.json"), JSON.stringify({ packageManager: "bun@1.3.5" }));
+    t.io.cwd = nested;
+    t.io.env.PATH = "/synthetic/tool-bin";
+    t.io.exec = async (command, args, options) => {
+      if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: t.home, stderr: "" };
+      if (command === c.pin?.split("@")[0]) {
+        // The manager is installed only on this terminal's PATH.
+        if (options.env && options.env.PATH !== t.io.env.PATH) return { code: 127, stdout: "", stderr: "not found" };
+        if (c.rejected) throw new Error("not installed");
+        return { code: c.failed ? 1 : 0, stdout: `${c.local}\n`, stderr: "", timedOut: c.timedOut };
+      }
+      return { code: 1, stdout: "", stderr: "not available" };
+    };
+    const checks = await t.doctor(["package-manager"]);
+    if (c.fix) {
+      expect(checks).toEqual([
+        {
+          id: "package-manager",
+          level: "warning",
+          message: expect.stringContaining(c.local),
+          fix: c.fix,
+        },
+      ]);
+      expect(checks[0]?.message).toContain(c.pin.split("+")[0]);
+    } else expect(checks).toEqual([]);
+  }
+});
+
 describe("armada doctor: parent auto-close", () => {
   for (const enabled of [true, false, null] as const) {
     test(`reports the root team's setting: ${enabled}`, async () => {

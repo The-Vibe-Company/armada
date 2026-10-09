@@ -51,6 +51,7 @@ Network outages qualify as runner problems only in setup before tests/builds run
 Workers hand back without chasing main, and main moves between a green hand-back and its merge. Do not ask the worker to bring main in. Without `--wait`, a head that lacks commits of main is refused, except when GitHub does not require heads to be up to date (it does not say `BEHIND`) and `[gates] local_commands` is set: Armada then test-merges it locally and runs those commands. Run `armada merge <pr> --wait [--timeout <min>]` (30 minutes by default) in the background:
 
 - In that test-merge case `--wait` test-merges too, so a busy main does not restart CI each time. Otherwise a behind head that merges cleanly is updated with GitHub's "update branch" (a merge commit, no force-push), its required checks are waited for, then it merges pinned to the new head. The updated head still counts as the hand-back.
+- Before local commands, Armada warns if the installed Bun, pnpm, npm or Yarn major/minor differs from the test-merged root `package.json`'s `packageManager` pin. Run the printed alignment command when local checks disagree with CI; `armada doctor` shows the same warning. This is advisory and does not refuse a merge.
 - It holds the merge lock only while merging, so two waits never block each other.
 - It stops at once on a red check, a conflict, an open hold, any refused rule, or when GitHub refuses the update. Send the cause to the worker; after an update, the worker pulls before pushing again.
 
