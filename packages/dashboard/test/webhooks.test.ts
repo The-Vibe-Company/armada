@@ -12,8 +12,8 @@ import type { Database } from "../lib/db.ts";
 import { type LoadOptions, loadOverview, newCache, refreshProject, type Sources } from "../lib/fleet-data.ts";
 import { liveStore, upsertProject } from "../lib/fleet-store.ts";
 import { dbSnapshots } from "../lib/snapshots.ts";
-import { handleGithubWebhook, handleLinearWebhook, type WebhookDeps } from "../lib/webhooks.ts";
-import { tempDatabase } from "./support.ts";
+import { handleGithubWebhook, handleLinearWebhook, refreshMarkedReadings, type WebhookDeps } from "../lib/webhooks.ts";
+import { addOrganizations, tempDatabase } from "./support.ts";
 
 const open: Database[] = [];
 afterEach(async () => {
@@ -137,6 +137,49 @@ describe("Linear's webhook", () => {
         touched: ["lin-wid-1", "lin-wid-2"],
         forge: false,
       },
+    ]);
+  });
+
+  test("marked deliveries pulse the project's organization after its refreshed snapshot is stored", async () => {
+    const w = await project();
+    await addOrganizations(w.db, "org-widgets", "org-other");
+    await w.db.query("UPDATE projects SET organization_id = $1 WHERE slug = $2", ["org-widgets", "widgets"]);
+    const other = { slug: "gadgets", name: "Gadgets", repository: "acme/gadgets", programRoot: "GAD-1" };
+    await upsertProject(w.db, other);
+    await w.db.query("UPDATE projects SET organization_id = $1 WHERE slug = $2", ["org-other", "gadgets"]);
+    await refreshProject(other, w.store, w.opts);
+    const pulses: [string, string][] = [];
+    const scopes: (string | null)[] = [];
+    w.advance(11_000);
+    for (const provider of ["linear", "github"] as const) {
+      const delivery =
+        provider === "linear"
+          ? await handleLinearWebhook(w.linear({ type: "Issue", action: "update", data: { id: "lin-wid-2" } }), w.deps)
+          : await handleGithubWebhook(w.github("push", { repository: { full_name: "acme/widgets" } }), w.deps);
+      expect(delivery.status).toBe(202);
+      const marked = await w.store.entries(["widgets"]);
+      expect(marked.get("widgets")?.dirty).toBe(true);
+      await refreshMarkedReadings(["widgets", "missing"], {
+        db: w.db,
+        signedIn: true,
+        home: "org-other",
+        fleet: (scope) => {
+          scopes.push(scope?.organization ?? null);
+          return w.opts;
+        },
+        pulse: async (project, organization) => {
+          const stored = (await w.store.entries([project])).get(project);
+          expect(stored?.dirty).toBe(false);
+          expect(stored?.version).toBeGreaterThan(marked.get(project)?.version ?? 0);
+          pulses.push([project, organization]);
+        },
+      });
+      w.advance(11_000);
+    }
+    expect(scopes).toEqual(["org-widgets", "org-widgets"]);
+    expect(pulses).toEqual([
+      ["widgets", "org-widgets"],
+      ["widgets", "org-widgets"],
     ]);
   });
 

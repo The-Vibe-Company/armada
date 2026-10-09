@@ -198,6 +198,9 @@ export interface ProjectCoordinator extends Partial<Omit<CoordinatorPresence, "s
   state: CoordinatorState;
   seenAt: string | null;
   tickets: string[];
+  /** Open inbox items older than coordinator_minutes, owned by this name. */
+  late?: number;
+  lateSince?: string | null;
   /** A newer CLI is released than the one it ran last. */
   updateAvailable: boolean;
 }
@@ -226,6 +229,12 @@ export interface ProjectOverview {
   /** Its merge queue as `shownQueue` orders it; absent when the live data was not read (THE-1103). */
   queue?: ShownQueueEntry[];
   requests: InboxItem[];
+  /** Minimal open coordinator inbox data for owner alerts; no bodies or authors. */
+  inbox?: (Pick<InboxItem, "id" | "kind" | "ticket" | "coordinator" | "createdAt"> & {
+    title: string | null;
+    pr?: number | null;
+  })[];
+  coordinatorMinutes?: number;
   slug: string;
   name: string;
   repository: string;
@@ -240,6 +249,9 @@ export interface ProjectOverview {
     seenAt: string | null;
     cliVersion: string | null;
     updateAvailable: boolean;
+    /** Late unowned inbox items. */
+    late?: number;
+    lateSince?: string | null;
   } & Partial<Omit<CoordinatorPresence, "seenAt">>;
   /**
    * Every coordinator of the project by name, and the owner of a ticket in
@@ -409,6 +421,17 @@ export function buildOverview(input: {
 
     // The oldest item of each ticket open in the coordinator's inbox for too long: the coordinator is not answering.
     const lateAfter = (p.report?.coordinatorMinutes ?? CONFIG_DEFAULTS.coordinatorMinutes) * MIN;
+    const lateByOwner = new Map<string | null, { late: number; lateSince: string | null }>();
+    for (const i of inbox) {
+      if (["version", "quiet"].includes(i.kind) || now - Date.parse(i.createdAt) <= lateAfter) continue;
+      if (!Number.isFinite(Date.parse(i.createdAt))) continue;
+      const owner = i.coordinator ?? null;
+      const held = lateByOwner.get(owner) ?? { late: 0, lateSince: null };
+      held.late++;
+      if (!held.lateSince || i.createdAt < held.lateSince) held.lateSince = i.createdAt;
+      lateByOwner.set(owner, held);
+    }
+    const lateFor = (owner: string | null) => lateByOwner.get(owner) ?? { late: 0, lateSince: null };
     const late = new Map<string, string>();
     for (const i of inbox)
       if (i.ticket && now - Date.parse(i.createdAt) > lateAfter) {
@@ -529,8 +552,17 @@ export function buildOverview(input: {
     const outdated = (version: string | null | undefined) =>
       !!version && newerRelease(version, input.latestCli) !== null;
     const state = stateAt(seenAt);
-    const roles = (p.live?.coordinators ?? []).map((r) => ({ ...r, name: r.name ?? "default" }));
-    const owners = [...new Set(tickets.flatMap((t) => (t.coordinator ? [t.coordinator] : [])))];
+    const roles: (Partial<Omit<CoordinatorPresence, "seenAt">> & { name: string; seenAt: string | null })[] = (
+      p.live?.coordinators ?? []
+    ).map((r) => ({ ...r, name: r.name ?? "default" }));
+    const owners = [
+      ...new Set([
+        ...tickets.flatMap((t) => (t.coordinator ? [t.coordinator] : [])),
+        ...inbox.flatMap((i) => (i.coordinator ? [i.coordinator] : [])),
+      ]),
+    ];
+    // Older live readers publish aggregate presence only; preserve its default identity.
+    if (!roles.length && !p.live?.coordinators) roles.push({ name: "default", seenAt, cliVersion });
     const coordinators: ProjectCoordinator[] = [
       ...roles,
       ...owners
@@ -540,6 +572,7 @@ export function buildOverview(input: {
       .map((c) => ({
         ...c,
         state: stateAt(c.seenAt),
+        ...lateFor(c.name),
         tickets: tickets.filter((t) => t.coordinator === c.name).map((t) => t.id),
         updateAvailable: outdated(c.cliVersion),
       }))
@@ -605,6 +638,18 @@ export function buildOverview(input: {
             ),
           }
         : {}),
+      coordinatorMinutes: p.report?.coordinatorMinutes ?? CONFIG_DEFAULTS.coordinatorMinutes,
+      inbox: inbox.map(({ id, kind, ticket, coordinator, createdAt, request }) => ({
+        id,
+        kind,
+        ticket,
+        coordinator: coordinator ?? null,
+        createdAt,
+        pr: request?.pr ?? null,
+        title: ticket
+          ? (byId.get(ticket)?.title ?? p.report?.frontier.find((t) => t.id === ticket)?.title ?? null)
+          : null,
+      })),
       requests: inbox.filter((item) => REQUEST_KINDS.includes(item.kind as (typeof REQUEST_KINDS)[number])),
       slug: p.slug,
       name: p.name,
@@ -616,6 +661,7 @@ export function buildOverview(input: {
         seenAt,
         cliVersion,
         updateAvailable: outdated(cliVersion),
+        ...(p.live ? lateFor(null) : {}),
       },
       coordinators,
       inFlight: tickets.length,

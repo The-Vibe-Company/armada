@@ -11,6 +11,7 @@ import {
   fetchPullRequest,
   fetchRunAttempt,
   fetchWorkflowRun,
+  hasNetworkFailure,
   type JobLog,
   parsePullRequestUrl,
   rerunDecision,
@@ -32,8 +33,13 @@ export function renderCiWhy(sha: string, explanations: readonly Explanation[]): 
   for (const e of explanations) {
     lines.push(
       "",
-      `${e.check}: ${e.superseded ? "superseded by a newer head" : LABELS[e.class]} (${e.conclusion.toLowerCase()}${e.attempt ? `, workflow attempt ${e.attempt}` : ""})`,
+      `${e.check}: ${e.superseded ? "superseded by a newer head" : LABELS[e.class]}${e.class === "runner" && e.runnerReason ? ` (${e.runnerReason})` : ""} (${e.conclusion.toLowerCase()}${e.attempt ? `, workflow attempt ${e.attempt}` : ""})`,
     );
+    if (e.class === "failure" && e.networkStep)
+      lines.push(
+        `  Network error in step "${e.networkStep}", not a setup step: treated as a failure. If this step only downloads tools or dependencies, add its name to [ci] setup_steps.`,
+      );
+    if (e.networkNote) lines.push(`  ${e.networkNote}`);
     if (e.tests.length) lines.push(`  Tests: ${e.tests.join("; ")}`);
     if (e.dependencies?.length) lines.push(`  Dependencies: ${e.dependencies.join("; ")}`);
     lines.push(...e.error.map((l) => `  ${l}`));
@@ -106,14 +112,16 @@ export async function ciWhy(
       check.attempt = attempts.get(check.runId);
     }
   }
-  // Fetch step evidence only when logs contain the explicit dependency-reporting gate.
+  // Fetch step evidence for dependency gates and possible network setup outages.
   for (const check of reading.checks) {
+    const lines = check.id === null ? [] : (logs.get(check.id)?.lines ?? []);
+    const dependency = lines.some((l) => l.includes('##[group]Run echo "Dependency failed: '));
     if (
       check.app !== "github-actions" ||
       check.superseded ||
       check.id === null ||
       check.runId === null ||
-      !logs.get(check.id)?.lines.some((l) => l.includes('##[group]Run echo "Dependency failed: '))
+      (!dependency && !hasNetworkFailure(lines))
     )
       continue;
     try {
@@ -125,7 +133,8 @@ export async function ciWhy(
         name: check.name,
       });
     } catch {
-      warnings.push(`job ${check.id}: dependency step evidence unavailable; treating summary as an unknown failure`);
+      if (dependency)
+        warnings.push(`job ${check.id}: dependency step evidence unavailable; treating summary as an unknown failure`);
     }
   }
   const original = explainChecks(reading.checks, logs, config.ci);

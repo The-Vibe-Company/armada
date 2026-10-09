@@ -56,11 +56,13 @@ Both modes share one lock per project and name on a machine. `armada inbox --wai
 
 Specs are direct children of the program root, titled `Spec N — Name` (`Spec N/M — Name` is read too).
 
-- `armada spec add "<name>"` appends one with the **In short** template and prints its URL; earlier titles are untouched.
+- `armada spec add "<name>"` appends one with the **In short** template in the root's Linear project and the team's first backlog state (first to-do state if there is no backlog); it prints the project (or `no project`), state and URL. With neither state available, it keeps Linear's default. Earlier titles are untouched. Creation is never retried automatically: check Linear before running the command again after a failure.
 - `armada spec add "<name>" --at 5` previews the renames a middle insertion needs; repeat with `--apply` to write them.
 - `armada spec renumber` previews a repair of gaps, duplicates and stale totals; `--apply` writes it.
 - `[tracker] spec_titles = "N/M"` keeps totals in every title; appending then needs `--apply` too.
 - Writes are sequential and stop at the first failure, listing what was not confirmed: inspect Linear before retrying.
+
+Check the printed project and state after creation. Fill in the **In short** template before cutting the spec's tickets, then run `armada lint <ticket>` on each one.
 
 When `armada merge` closes a spec's last open ticket, it closes the spec with a summary, unless the team's own parent auto-close does it.
 
@@ -90,4 +92,4 @@ Migration numbers, ports and other shared names are reserved per ticket through 
 
 ## The owner's channel
 
-Organization > Notifications (owner or admin) connects one chat webhook. Owner validations, escalated questions and a stopped coordinator with items waiting reach it by themselves, outside quiet hours. Digests go out at the times set there; `armada digest --send` posts one now, and `armada digest --lang en|fr` overrides `[tracker] language` for the printed text.
+Organization > Notifications (owner or admin) connects one chat webhook. Owner validations, escalated questions and a stopped coordinator with items waiting reach it by themselves, outside quiet hours. Each named coordinator is checked separately, including owner requests and project-wide operational items. A coordinator that keeps running commands also triggers one alert per unanswered plan, question, hand-back, decision or owner request after 3 × `[policy] coordinator_minutes` (30 minutes by default); queued or paused merges are excluded. Act on the inbox rather than relying on command activity to keep these alerts quiet. GitHub and Linear webhook refreshes check alerts even with no live worker or viewer. Digests go out at the times set there; `armada digest --send` posts one now, and `armada digest --lang en|fr` overrides `[tracker] language` for the printed text.

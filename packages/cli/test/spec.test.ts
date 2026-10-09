@@ -35,19 +35,78 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
-test("spec add appends immediately with a template, root parent and printed URL, without renames", async () => {
+test("spec add inherits the root project and first backlog state and prints its placement", async () => {
   const w = setup();
+  const root = w.linear.get("DEMO-1");
+  root.project = { id: "project-widgets", name: "Widgets" };
+  root.states = [
+    { id: "st-triage", name: "Triage", type: "triage", position: 0 },
+    { id: "st-todo", name: "Todo", type: "unstarted", position: 1 },
+    { id: "st-backlog", name: "Backlog", type: "backlog", position: 2 },
+    { id: "st-later", name: "Later", type: "backlog", position: 3 },
+  ];
   expect(await run(["spec", "add", "Search images"], w.io)).toBe(0);
   expect(w.linear.creates).toEqual([
     {
       teamId: "team-demo",
       parentId: "uuid-demo-1",
+      projectId: "project-widgets",
+      stateId: "st-backlog",
       title: "Spec 3 — Search images",
       description: expect.stringContaining("## In short"),
     },
   ]);
   expect(w.linear.writes).toHaveLength(1);
-  expect(w.out()).toContain("https://linear.app/acme/issue/DEMO-4");
+  expect(w.out()).toContain(
+    "Created DEMO-4: Spec 3 — Search images · project Widgets · Backlog\nhttps://linear.app/acme/issue/DEMO-4",
+  );
+});
+
+test("spec add without a project selects unstarted or preserves Linear's default when neither state exists", async () => {
+  for (const hasTodo of [true, false]) {
+    for (const json of [false, true]) {
+      const w = setup();
+      const root = w.linear.get("DEMO-1");
+      root.states = [
+        { id: "st-triage", name: "Triage", type: "triage", position: 0 },
+        ...(hasTodo
+          ? [
+              { id: "st-todo", name: "Todo", type: "unstarted" as const, position: 1 },
+              { id: "st-next", name: "Next", type: "unstarted" as const, position: 2 },
+            ]
+          : []),
+      ];
+      expect(await run(["spec", "add", "Search images", ...(json ? ["--json"] : [])], w.io)).toBe(0);
+      const input = w.linear.creates[0];
+      expect(input).toBeDefined();
+      expect(input).not.toHaveProperty("projectId");
+      if (hasTodo) expect(input?.stateId).toBe("st-todo");
+      else expect(input).not.toHaveProperty("stateId");
+      if (json)
+        expect(JSON.parse(w.out()).created).toMatchObject({
+          id: "DEMO-4",
+          project: null,
+          state: hasTodo ? { id: "st-todo", name: "Todo" } : null,
+        });
+      else
+        expect(w.out()).toContain(
+          `Created DEMO-4: Spec 3 — Search images · no project · ${hasTodo ? "Todo" : "Linear default"}`,
+        );
+    }
+  }
+});
+
+test("spec add JSON includes the inherited project and selected backlog state", async () => {
+  const w = setup();
+  w.linear.get("DEMO-1").project = { id: "project-widgets", name: "Widgets" };
+  expect(await run(["spec", "add", "Search images", "--json"], w.io)).toBe(0);
+  expect(JSON.parse(w.out()).created).toEqual({
+    uuid: "uuid-DEMO-4",
+    id: "DEMO-4",
+    url: "https://linear.app/acme/issue/DEMO-4",
+    project: { id: "project-widgets", name: "Widgets" },
+    state: { id: "st-backlog", name: "Backlog" },
+  });
 });
 
 test("explicit position previews all renames and creates nothing without --apply", async () => {
@@ -115,12 +174,16 @@ test("a failed write stops immediately and lists only the unfinished operations"
 
 test("creation failure lists the pending creation after successful renames", async () => {
   const w = setup();
+  let calls = 0;
   w.linear.createIssue = async () => {
+    calls++;
     throw new Error("synthetic create failure");
   };
   expect(await run(["spec", "add", "Search images", "--at", "2", "--apply"], w.io)).toBe(1);
   expect(w.linear.writes).toHaveLength(1);
+  expect(calls).toBe(1);
   expect(w.err()).toContain("Create: Spec 2 — Search images");
+  expect(w.err()).toContain("Check Linear before running this command again");
   expect(w.err()).not.toContain("Share a list");
 });
 
