@@ -17,6 +17,9 @@ import { attachPullRequests } from "./github.ts";
 import { JOB_NAME, JOB_PROGRESS_MAX, JOB_REF_MAX, JOB_STATES, type Job, type JobState } from "./jobs.ts";
 import type { CoordinatorFacts } from "./live.ts";
 import {
+  AckInvalid,
+  AckRefusal,
+  type AckResult,
   type AnswerRecord,
   type ChoreRecord,
   type ClaimRecord,
@@ -48,6 +51,7 @@ import {
   RUNTIME_STATES,
   type RuntimeState,
   readOverlap,
+  recordAck,
   recordAnswer,
   recordClaim,
   recordDone,
@@ -135,6 +139,7 @@ export const FLEET_OPS = [
   "launches",
   "launch-requests",
   "inbox",
+  "ack",
   "inbox/item",
   "inbox/ticket",
   "inbox/resolve",
@@ -342,6 +347,7 @@ export const FLEET_TEXT_OPERATIONS: ReadonlySet<string> = new Set([
   "hold/open",
   "hold/clear",
   "inbox/resolve",
+  "ack",
   "merge",
   "chore",
   "queue/add",
@@ -889,6 +895,29 @@ export async function serveFleet(
           );
           return read ?? NOT_MODIFIED;
         }
+        case "ack": {
+          const target = typeof b.target === "number" ? idOf(b, "target") : text(b, "target", LINE_MAX);
+          const reason = text(b, "reason", BODY_MAX).trim();
+          return recordAck(
+            store,
+            slug,
+            {
+              target,
+              reason,
+              coordinator: coordinatorName,
+              silentAfterMinutes: positiveMinutes(b, "silentAfterMinutes", true),
+              launchGraceMinutes: positiveMinutes(b, "launchGraceMinutes", true),
+              ciWaitMinutes: positiveMinutes(b, "ciWaitMinutes"),
+              quietAfterMinutes: positiveMinutes(b, "quietAfterMinutes"),
+              notStartedMinutes: positiveMinutes(b, "notStartedMinutes", true),
+            },
+            at,
+            {
+              snapshot: deps.snapshot,
+              config: deps.config,
+            },
+          );
+        }
         case "inbox/item":
           return store.getInboxItem(slug, idOf(b, "id"));
         case "inbox/ticket":
@@ -1114,6 +1143,8 @@ export async function serveFleet(
     if (err instanceof JobScopeError) return refuse(403, "job is not on this ticket and project", "armada job list");
     if (err instanceof Held) return refuse(409, err.message, err.next);
     if (err instanceof RequestRefusal) return refuse(400, err.message, "armada inbox");
+    if (err instanceof AckRefusal) return refuse(400, err.message, err.next);
+    if (err instanceof AckInvalid) return refuse(400, `fleet ${op}: ${err.message}`, "armada inbox");
     if (err instanceof Invalid)
       return refuse(400, `fleet ${op}: ${err.message}`, "update the CLI: npm install -g @the-vibe-company/armada");
     throw err;
@@ -1290,6 +1321,7 @@ export function fleetClient(o: {
     release: (r) => call<{ released: boolean } | null>("release", r).then((result) => result ?? { released: true }),
     // Null: not modified (304).
     inbox: (q: InboxQuery) => call<InboxRead | null>("inbox", q),
+    ack: (input) => call<AckResult>("ack", input),
     inboxItem: (id) => call<StoredInboxItem | null>("inbox/item", { id }),
     ticketItems: (ticket) => call<InboxItem[]>("inbox/ticket", { ticket }),
     prepareMergeNotice: (key) => call<"reserved" | "attempted" | "delivered">("merge-notice/prepare", { key }),

@@ -206,6 +206,7 @@ armada ask "Which store keeps the sessions? I recommend SQLite." --options "SQLi
 armada inbox                   # coordinator: what waits, oldest first
 armada watch                   # coordinator, in the background: returns when something needs you
 armada inbox --wait            # returns when a new item arrives, or after --timeout (default 300 s)
+armada ack '#12' --reason "No further action needed" # deliberately skip a notice, with the reason on its ticket
 armada answer 12 "SQLite, for the first slice."                 # after delivering it in the worker's session
 armada answer 13 "approved"                                   # a plan, after delivering approval
 armada answer --note ABC-12 "main moved: bring it in before you ship"  # an unsolicited message, same path
@@ -222,6 +223,10 @@ armada answer --note ABC-12 "main moved: bring it in before you ship"  # an unso
 - A coordinator's own claim is never listed as silent in its inbox: only an exact, nonempty handle match is excluded, not its questions, requests or hand-backs. `inbox` takes the reading coordinator's handle from `ARMADA_COORDINATOR_HANDLE` first, otherwise from both `CONDUCTOR_WORKSPACE_ID` and `CONDUCTOR_SESSION_ID` joined as `workspace/session`. Blank values are ignored; with no complete identity, silence detection is unchanged. Local coordinators should set `ARMADA_COORDINATOR_HANDLE` to the handle used for their claim. The same identity is used for every `--wait` poll and the dashboard presence record; the fleet-wide `status` and dashboard silence rules are unchanged.
 - `answer` delivers herdr answers into the verified pane before recording them; for other runtimes, deliver first with the runtime guide's message section. A live herdr approval or question can be answered by ticket even before a worker reports. It posts `Agent status: <current phase> — answer: …` on the ticket and resolves the item. An item id needs Armada; a ticket id answers that ticket's open questions and plans and also works without it. `--note` records a delivered note as `Agent status: <phase> — note: …`; it accepts a ticket or plan item id and resolves open plans, not questions. These two are the coordinator's records: Armada never reads them as the worker's phase, hand-back or sign of life. Questions, plans and requests can be answered; `merge` resolves hand-backs, and `release` and `merge` resolve the ticket's open questions. For older clients without heartbeats, no report within `policy.silence_minutes` of an answer shows as silent. With heartbeats, the report reminder uses `policy.quiet_minutes` instead.
 - The dashboard adds two kinds of request, signed by the person who made them. On a session's page or the overview's preview pane, **Approve** opens an editable approval (`approved` by default); sending it creates an `answer-request`, just like answering a question. Deliver its text, then `armada answer <request id> "<answer>"`, which resolves the request and its question or plan and names the requester on the ticket (answering the item itself also closes a waiting request). A `launch-request` asks to launch a ready ticket on a profile: launch it as usual; the worker's `armada claim` resolves it and posts who asked. To decline one, `armada answer <request id> "<why>"`: it is closed with the reason and nothing is posted on the ticket.
+
+Plain watch reminds about unanswered action items after `[policy] coordinator_minutes` (10 by default), then doubled intervals: 10, 30 and 70 minutes from the first show. Later inbox listings do not postpone `still waiting since HH:MM`. Setting `coordinator_minutes = 0` disables reminders. Other coordinators’ items and hand-backs already in the merge queue never remind.
+
+For a notice you deliberately leave alone, `armada ack <#id or key> --reason "<why>"` records why in Armada and posts it on the ticket as a phase-preserving note. It accepts queue refusals, deploy/job notices, `unblocked`, `silent`, `quiet`, `stopped`, `not-started`, `job-silent` and `queue-stalled`. Derived entries print their keys. The entry disappears until its key changes, such as a higher silence level or another blocker. Questions, plans, hand-backs, owner requests, approval prompts and merge holds require their resolving command. Ticketless notices are recorded in Armada only. If Linear fails, the command prints the note to post yourself; creation is not retried. Deploy the API and migration before this CLI.
 
 ## What the owner validates
 
@@ -516,7 +521,7 @@ attachments_project_mb = 200     # private image bytes per project, MB = 1024² 
 attachments_retention_days = 30  # deleted after completion/cancellation by the next project refresh (default 30)
 silence_minutes = 15             # no heartbeat for longer flags a worker silent (default 15; reports for older clients)
 quiet_minutes = 45               # live without a report for longer adds a coordinator-only note (default 45)
-coordinator_minutes = 10         # an inbox item open longer shows "waiting for the coordinator" (default 10)
+coordinator_minutes = 10         # first waiting-item reminder; intervals double, 0 disables (default 10)
 not_started_minutes = 10         # a launched worker that has not claimed after this long shows as not started (default 10; a CLI older than this setting refuses it)
 plans = "approve"                # or "pre-approved": workers post their plan and go on (default "approve")
 pre_approved_label = "plan-approved"     # a ticket with this label is pre-approved (default)

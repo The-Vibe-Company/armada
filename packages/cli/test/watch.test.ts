@@ -34,7 +34,7 @@ afterEach(async () => {
 });
 
 /** A coordinator's terminal on a fresh machine store, signed in to the fake Armada; `alive` lists the running pids. */
-async function coordinator(o: { key?: string; cli?: ServerCli } = {}) {
+async function coordinator(o: { key?: string; cli?: ServerCli; reminderMinutes?: number } = {}) {
   const home = await mkdtemp(join(tmpdir(), "armada-watch-"));
   dirs.push(home);
   const store = memoryFleet();
@@ -59,7 +59,11 @@ async function coordinator(o: { key?: string; cli?: ServerCli } = {}) {
       ARMADA_COORDINATOR_HANDLE: "ws-coordinator/session",
     },
     readFile: async (path) =>
-      path === `${COORDINATOR_ROOT}/armada.toml` || path === `${WORKER_ROOT}/armada.toml` ? DEMO_TOML : null,
+      path === `${COORDINATOR_ROOT}/armada.toml` || path === `${WORKER_ROOT}/armada.toml`
+        ? o.reminderMinutes === undefined
+          ? DEMO_TOML
+          : `${DEMO_TOML}\n[policy]\ncoordinator_minutes = ${o.reminderMinutes}\n`
+        : null,
     stdout: (t) => out.push(t),
     stderr: (t) => err.push(t),
     ghToken: () => null,
@@ -107,6 +111,48 @@ async function hook(c: Awaited<ReturnType<typeof coordinator>>, cwd: string, env
   const text = c.out();
   return text ? (JSON.parse(text) as { decision: string; reason: string }) : null;
 }
+
+test.each([10, 3])(
+  "an unanswered plan reminds at %i minutes then doubling intervals; listings preserve its first show",
+  async (minutes) => {
+    const c = await coordinator({ reminderMinutes: minutes });
+    await c.hold("DEMO-2");
+    await c.store.putPlan({ project: P, ticket: "DEMO-2", author: null, body: "Review this plan", at: c.clock.now() });
+    const [plan] = await c.store.openInboxItems({ project: P, recipient: "coordinator", ticket: "DEMO-2" });
+    expect(plan?.kind).toBe("plan");
+    if (!plan) throw new Error("no plan in inbox");
+    expect(await run(["inbox"], c.io)).toBe(0);
+    expect(c.out()).toContain(`#${plan.id} plan`);
+    const first = c.clock.now().toISOString();
+    const key = `#${plan.id}@`;
+    for (const [totalMinutes, level] of [
+      [minutes, 1],
+      [minutes * 3, 2],
+      [minutes * 7, 3],
+    ] as const) {
+      const elapsed = (c.clock.now().getTime() - Date.parse(first)) / 60_000;
+      await c.clock.sleep((totalMinutes - elapsed - 1) * 60_000);
+      // A second listing is not handling the plan, and must not postpone it.
+      expect(await run(["inbox"], c.io)).toBe(0);
+      c.reset();
+      let polls = 0;
+      const io = {
+        ...c.io,
+        sleep: async (ms: number) => {
+          polls++;
+          await c.clock.sleep(ms);
+        },
+      };
+      expect(await run(["watch"], io)).toBe(0);
+      expect(polls).toBe(4);
+      expect(c.clock.now().getTime() - Date.parse(first)).toBe(totalMinutes * 60_000);
+      expect(c.out()).toContain(`! still waiting since ${first.slice(11, 16)}`);
+      const state = await readWatchState(c.paths, P);
+      const record = Object.entries(state?.shownAt ?? {}).find(([k]) => k.startsWith(key))?.[1];
+      expect(record).toEqual({ first, level });
+    }
+  },
+);
 
 describe("armada watch", () => {
   test("named watch defaults to mine, all opts out, and unnamed watch retains the full fleet", async () => {
@@ -636,7 +682,7 @@ describe("armada watch", () => {
       ].join("\n"),
     );
     expect(c.err()).toBe("");
-    expect(await readWatchState(c.paths, P)).toEqual({
+    expect(await readWatchState(c.paths, P)).toMatchObject({
       openJobs: [],
       root: COORDINATOR_ROOT,
       // A hand-back's key follows its text: handed back on a new head, it wakes the watch again.

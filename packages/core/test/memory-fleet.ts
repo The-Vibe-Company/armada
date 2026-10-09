@@ -7,6 +7,7 @@ import { type DeployInput, type DeployQuery, type DeployRecord, deployDetail, de
 
 import { type Job, jobEndedBody, jobIsOpen } from "../src/jobs.ts";
 import type {
+  AckedEntry,
   CoordinatorPresence,
   CoordinatorRecord,
   EventInput,
@@ -22,7 +23,7 @@ import type {
   StoredInboxItem,
   WorkerProfile,
 } from "../src/live.ts";
-import { FOLLOW_EVENT_KINDS, holdBody, unusedLaunchExpired } from "../src/live.ts";
+import { AckInvalid, FOLLOW_EVENT_KINDS, holdBody, unusedLaunchExpired } from "../src/live.ts";
 import { MERGE_QUEUE_LEASE, type QueueEntry, queueOpen, queueRefusedPrefix } from "../src/merge-queue.ts";
 import { OBSERVABLE_RUNTIMES, runtimeNameOf } from "../src/runtime.ts";
 import type { Validation } from "../src/validations.ts";
@@ -86,6 +87,35 @@ export function memoryFleet(): FleetStore & {
   const sessions: SessionRecord[] = [];
   const launches: LaunchRow[] = [];
   const validations: Validation[] = [];
+  const acknowledgements = new Map<string, AckedEntry>();
+  const checkAckOwner = (
+    project: string,
+    ticket: string | null,
+    coordinator: string,
+    fallback: string | null = null,
+  ) => {
+    if (!ticket) return;
+    const handle = handles.get(key(project, ticket));
+    const active = handle && !handle.releasedAt ? handle : null;
+    const latest = launches
+      .filter((entry) => entry.project === project && entry.ticket === ticket)
+      .sort((a, b) => a.launchedAt.localeCompare(b.launchedAt))
+      .at(-1);
+    const pending =
+      latest &&
+      !latest.endedAt &&
+      !events.some(
+        (event) =>
+          event.project === project &&
+          event.ticket === ticket &&
+          event.kind === "claim" &&
+          event.at >= latest.launchedAt,
+      )
+        ? latest
+        : null;
+    const owner = active ? active.coordinator : pending ? pending.coordinator : fallback;
+    if (owner != null && owner !== coordinator) throw new AckInvalid(`target belongs to coordinator ${owner}`);
+  };
   const heldResources: Reservation[] = [];
   const copy = (v: Validation): Validation => structuredClone(v);
   const endReservations = (project: string, ticket: string, at: Date, merged: boolean) => {
@@ -1264,14 +1294,43 @@ export function memoryFleet(): FleetStore & {
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id - b.id)
         .map(item);
     },
+    async ackEntry(input) {
+      checkAckOwner(input.project, input.ticket, input.coordinator);
+      const k = `${input.project}\n${input.entryKey}`;
+      if (acknowledgements.has(k)) return false;
+      acknowledgements.set(k, {
+        entryKey: input.entryKey,
+        ticket: input.ticket,
+        coordinator: input.coordinator,
+        reason: input.reason,
+        at: input.at.toISOString(),
+      });
+      return true;
+    },
+    async ackedKeys(project, entryKeys) {
+      return [...new Set(entryKeys)]
+        .map((entryKey) => acknowledgements.get(`${project}\n${entryKey}`))
+        .filter((row): row is AckedEntry => !!row)
+        .map((row) => ({ ...row }));
+    },
     async getInboxItem(project, id) {
       const r = items.find((i) => i.project === project && i.id === id);
       return r ? stored(r) : null;
     },
     async resolveInboxItem(q) {
+      if (q.ackCoordinator !== undefined) {
+        const item = items.find((entry) => entry.project === q.project && entry.id === q.id);
+        checkAckOwner(q.project, item?.ticket ?? null, q.ackCoordinator, item?.coordinator ?? null);
+      }
       return (
         resolve(
-          items.filter((i) => i.project === q.project && i.id === q.id && !i.resolvedAt),
+          items.filter(
+            (i) =>
+              i.project === q.project &&
+              i.id === q.id &&
+              !i.resolvedAt &&
+              (q.expectedBody === undefined || i.body === q.expectedBody),
+          ),
           q.resolution,
           q.at,
         ) > 0

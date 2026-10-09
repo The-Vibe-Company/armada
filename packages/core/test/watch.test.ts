@@ -6,6 +6,7 @@ import {
   followFleet,
   rearm,
   releaseEntry,
+  remindDue,
   stopHookDecision,
   transientFailure,
   type WatchState,
@@ -15,6 +16,35 @@ import { fakeClock, NOW, tempFleet } from "./support.ts";
 
 const P = "widgets";
 const COORDINATOR = "ws-coordinator/session";
+
+test("reminder eligibility respects ownership, action kinds, queued hand-backs and the zero opt-out", () => {
+  const entry = {
+    id: 10,
+    kind: "plan" as const,
+    ticket: "DEMO-2",
+    author: null,
+    body: "plan",
+    createdAt: NOW.toISOString(),
+    new: false,
+  };
+  const shown = { [entryKey(entry)]: { first: NOW.toISOString(), level: 0 } };
+  const late = new Date(NOW.getTime() + 10 * 60_000);
+  expect(remindDue(entry, shown, late, 10)).toBe(true);
+  expect(remindDue(entry, shown, new Date(late.getTime() - 1), 10)).toBe(false);
+  expect(remindDue(entry, shown, late, 0)).toBe(false);
+  expect(remindDue({ ...entry, owner: "other" }, shown, late, 10, "default")).toBe(false);
+  expect(remindDue({ ...entry, owner: "other" }, shown, late, 10, "other")).toBe(true);
+  const handBack = { ...entry, kind: "hand-back" as const };
+  const handBackShown = { [entryKey(handBack)]: { first: NOW.toISOString(), level: 0 } };
+  expect(remindDue(handBack, handBackShown, late, 10)).toBe(true);
+  expect(
+    remindDue({ ...handBack, queue: { state: "queued" as const, position: 1, detail: null } }, handBackShown, late, 10),
+  ).toBe(false);
+  for (const kind of ["silent", "quiet", "unblocked", "hold", "job", "deploy", "version"] as const) {
+    const notice = { ...entry, kind };
+    expect(remindDue(notice, { [entryKey(notice)]: { first: NOW.toISOString(), level: 0 } }, late, 10)).toBe(false);
+  }
+});
 
 async function holding(live: ReturnType<typeof tempFleet>, ticket: string, handle = `ws/${ticket}`) {
   await live.store.saveRuntimeHandle({

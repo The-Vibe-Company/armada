@@ -78,6 +78,7 @@ export async function landingTranscript(now = RECORDED_AT): Promise<TerminalComm
     ]),
   );
   const store = {
+    ackedKeys: async () => [],
     openInboxItems: async () => items,
     openRuntimeHandles: async () => handles,
     pendingLaunches: async () => [],

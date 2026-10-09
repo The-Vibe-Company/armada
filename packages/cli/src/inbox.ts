@@ -6,9 +6,11 @@ import {
   askCoordinator,
   type Credentials,
   checkInbox,
+  entryKey,
   freshRuntimeState,
   type InboxEntry,
   type InboxReport,
+  isAckableInboxEntryKind,
   type Rearm,
   Refusal,
   RuntimeError,
@@ -122,6 +124,7 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
     if (e === progressing[0]) out.push("In progress:");
     const head = [
       e.id === null ? e.kind : `#${e.id} ${e.kind}`,
+      e.id === null && `key ${entryKey(e)}`,
       e.ticket,
       e.owner ? `owner: ${e.owner}` : "unowned",
       e.author && `from ${e.author}`,
@@ -132,7 +135,9 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
     ]
       .filter(Boolean)
       .join(" · ");
-    out.push(`${e.new ? "* " : "  "}${head}`);
+    out.push(
+      `${e.reminder ? `! still waiting since ${e.waitingSince?.slice(11, 16)} UTC · ` : e.new ? "* " : "  "}${head}`,
+    );
     if (e.queue)
       out.push(
         `    ${e.queue.state === "queued" ? `queued in the merge queue (position ${e.queue.position})` : `merging: ${e.queue.detail ?? "starting the drain"}`}`,
@@ -161,7 +166,11 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
     );
   if (items.some((e) => e.kind === "queue-refused"))
     out.push(
-      'A refused queue entry: fix what refused it, then queue it again (armada merge --when-green <pr>, or Merge on the dashboard), or record why not with armada answer <id> "<why>".',
+      'A refused queue entry: fix what refused it, then queue it again (armada merge --when-green <pr>, or Merge on the dashboard), or record why not with armada ack <id> --reason "<why>".',
+    );
+  if (items.some((entry) => isAckableInboxEntryKind(entry.kind)))
+    out.push(
+      'Not acting on an entry? armada ack <#id or key> --reason "<why>" records why; questions, plans and hand-backs clear only by answering or merging.',
     );
   return out;
 }

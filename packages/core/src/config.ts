@@ -795,8 +795,8 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   }
   if (policyT.coordinator_minutes !== undefined) {
     const v = policyT.coordinator_minutes;
-    if (typeof v === "number" && Number.isFinite(v) && v > 0) coordinatorMinutes = v;
-    else problems.push(`"policy.coordinator_minutes" must be a positive number`);
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) coordinatorMinutes = v;
+    else problems.push(`"policy.coordinator_minutes" must be a non-negative number`);
   }
   let notStartedMinutes: number = CONFIG_DEFAULTS.notStartedMinutes;
   if (policyT.not_started_minutes !== undefined) {
@@ -1098,7 +1098,7 @@ silence_minutes = 15     # silence since the newest report, heartbeat or answer
 launch_grace_minutes = 15 # extra allowance before the first report or heartbeat; defaults to silence_minutes
 ci_wait_minutes = 45     # shipping --stage ci has this silence allowance
 quiet_minutes = 45       # alive but without a report: a coordinator-only note
-coordinator_minutes = 10 # an inbox item open longer than this shows "waiting for the coordinator"
+coordinator_minutes = 10 # first waiting-item reminder; intervals double, 0 disables reminders
 # not_started_minutes = 10 # a launched worker that has not claimed after this long shows as not started
 # plans = "approve"       # or "pre-approved": workers post their plan and go on without waiting
 # validation_samples = 4  # images per owner question; 1–8

@@ -8,6 +8,7 @@ You are a worker. You own exactly one ticket, named in your launch brief. You tu
 ## Rules
 
 - **Never merge**, never enable auto-merge, never approve your own plan. The coordinator merges.
+- **A listing is not an answer.** The coordinator's watch reminds about unanswered questions, plans and hand-backs after doubling intervals. Only the coordinator can `armada ack` a dismissible notice with a reason; it cannot skip your question, plan or hand-back. A ticket comment saying `note: acknowledged` does not change your phase or answer you.
 - **The ticket is the source of truth.** Read it, its parent spec and the hand-back comments of its merged blockers in full before planning.
 - **Report at each real step** with `armada report <phase> --message "<what changed, what is next>"`: the plan, real implementation progress, blockers, tests, shipping and the hand-back. The same phase again is a status update. Never post an empty report just to look alive: the heartbeat does that.
 - **Keep going on setup choices.** When setup needs a choice (an install fallback, a retry, a missing tool), take the safe option, say which in your next report, and go on. Never stop to ask about it.

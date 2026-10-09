@@ -17,6 +17,7 @@ import {
 } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
 import { acceptance } from "./acceptance.ts";
+import { ack } from "./ack.ts";
 import { apiOf, heard } from "./api.ts";
 import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
@@ -236,6 +237,12 @@ const COMMAND_HELP: Record<string, string> = {
                     when a new item arrives or after --timeout (default 300 s); \`armada watch\`
                     is the way to keep listening. Needs a sign-in to Armada
 `,
+  ack: `  ack <#id or key> --reason "<why>"
+                    Record why a notice needs no action and post the reason on its ticket.
+                    Derived keys are printed by inbox. Questions, plans and hand-backs
+                    clear only by answering or merging; ack names the resolving command.
+                    Needs a coordinator sign-in; deploy the API before using this CLI.
+`,
   watch: `  watch             Coordinator: run in the background while workers are in flight. Waits
                     until something needs you (a question, plan, request, hand-back or silent
                     worker you have not seen), prints it and exits; exits "nothing to watch"
@@ -250,6 +257,8 @@ const COMMAND_HELP: Record<string, string> = {
                     --mine filters events and inbox by coordinator ownership, including unowned entries.
                     Named watches default to --mine; --all sees the whole fleet.
                     Plain watch wakes only for your own and unowned items, even with --all.
+                    Unhandled action items remind after policy.coordinator_minutes, then
+                    doubled intervals; inbox listings do not postpone reminders (0 disables).
                     --for <minutes> ends either watch cleanly with a resume command.
   watch --stop [--name <name>]      Stop only this project's verified watch and release its lock. Local,
                     no sign-in needed. Never stop a watch just to read inbox or status
@@ -453,6 +462,7 @@ const CONFIG_OPTION = new Set([
   "done",
   "hold",
   "inbox",
+  "ack",
   "watch",
   "answer",
   "stop",
@@ -691,6 +701,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
   hold: ["reason"],
+  ack: ["reason"],
   merge: [
     "finish",
     "ticket",
@@ -1071,6 +1082,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       ask,
       inbox,
       answer,
+      ack,
       stop,
       validate,
       "ask-owner": askOwner,

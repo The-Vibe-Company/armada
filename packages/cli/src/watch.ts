@@ -80,6 +80,17 @@ export async function remember(io: Io, project: string, patch: Partial<WatchStat
         ...patch,
         seen: keys.filter((key) => !discarded.has(key)).slice(-500),
         seenScope: coversPrevious ? patch.seenScope : "all",
+        shownAt: Object.fromEntries(
+          keys
+            .filter((key) => !discarded.has(key))
+            .slice(-500)
+            .flatMap((key) => {
+              const old = previous?.shownAt?.[key];
+              const next = patch.shownAt?.[key];
+              if (old) return [[key, { first: old.first, level: Math.max(old.level, next?.level ?? 0) }]];
+              return next ? [[key, next]] : [];
+            }),
+        ),
       };
     }
     await updateWatchState(paths, project, patch, name);
@@ -117,15 +128,22 @@ export async function rearmFor(
 
 const now = (io: Io) => (io.now ?? (() => new Date()))();
 
-/** What a read showed the coordinator: it does not wake a watch again, and the hook knows who is in flight. */
+/** What a listing showed; remember preserves each entry's original reminder clock. */
 export const shown = (
   io: Io,
   items: InboxEntry[],
   inFlight: string[] | null,
   openJobs: number[] = [],
   scope: "mine" | "all" = "all",
+  shownAt?: WatchState["shownAt"],
 ): Partial<WatchState> => ({
   seen: items.map(entryKey),
+  shownAt: Object.fromEntries(
+    items.map((entry) => {
+      const key = entryKey(entry);
+      return [key, shownAt?.[key] ?? { first: now(io).toISOString(), level: 0 }];
+    }),
+  ),
   seenScope: scope,
   openJobs,
   ...(inFlight ? { inFlight, readAt: now(io).toISOString() } : {}),
@@ -364,7 +382,10 @@ async function watchUntil(
     if (!fleet)
       throw new Refusal(`the inbox is on Armada, which cannot be reached: ${warning ?? "no answer"}`, "armada whoami");
     const before = paths ? await readWatchState(paths, project, name) : null;
-    await remember(io, project, { root: dirname(configPath), stopped: null });
+    const shownAt = Object.fromEntries(
+      (before?.seen ?? []).map((key) => [key, before?.shownAt?.[key] ?? { first: now(io).toISOString(), level: 0 }]),
+    );
+    await remember(io, project, { root: dirname(configPath), stopped: null, shownAt });
     if (until && !io.sleep)
       cancelDeadline = watchDeadline(
         until,
@@ -395,6 +416,8 @@ async function watchUntil(
       quietAfterMinutes: config.policy.quietAfterMinutes,
       notStartedMinutes: config.policy.notStartedMinutes,
       seen: before?.seen ?? [],
+      shownAt,
+      coordinatorMinutes: config.policy.coordinatorMinutes,
       now: io.now ?? (() => new Date()),
       sleep:
         io.sleep ??
@@ -462,7 +485,7 @@ async function watchUntil(
       name === "default" ? report.inFlight : (report.ownedInFlight ?? (scope === "mine" ? report.inFlight : null));
     const openJobs =
       name === "default" ? report.openJobs : (report.ownedOpenJobs ?? (scope === "mine" ? report.openJobs : undefined));
-    await remember(io, project, shown(io, report.items, inFlight, openJobs, scope));
+    await remember(io, project, shown(io, report.items, inFlight, openJobs, scope, report.shownAt));
     controller.signal.throwIfAborted();
     // A release is acted on between rounds: it is not an item that keeps a watch going.
     const open = report.items.filter(

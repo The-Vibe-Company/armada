@@ -356,6 +356,25 @@ export async function readWatchState(
       : {}),
     root: stringOr(r.root),
     seen: strings(r.seen) ?? [],
+    ...(typeof r.shownAt === "object" && r.shownAt !== null && !Array.isArray(r.shownAt)
+      ? {
+          shownAt: Object.fromEntries(
+            Object.entries(r.shownAt)
+              .filter(([_, v]) => {
+                if (typeof v !== "object" || v === null) return false;
+                const s = v as Record<string, unknown>;
+                return (
+                  typeof s.first === "string" &&
+                  Number.isFinite(Date.parse(s.first)) &&
+                  Number.isSafeInteger(s.level) &&
+                  Number(s.level) >= 0 &&
+                  Number(s.level) <= 52
+                );
+              })
+              .slice(-500),
+          ) as NonNullable<WatchState["shownAt"]>,
+        }
+      : {}),
     ...(r.seenScope === "mine" || r.seenScope === "all" ? { seenScope: r.seenScope } : {}),
     inFlight: strings(r.inFlight),
     ...(Array.isArray(r.openJobs)
