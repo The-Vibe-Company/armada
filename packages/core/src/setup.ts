@@ -359,7 +359,11 @@ export async function skillsBehind(view: RepoView): Promise<SkillsBehind | null>
 }
 
 /** Checks everything in the repository itself; the tracker labels are checked by checkLabels. */
-export async function checkRepository(view: RepoView, armadaVersion: string): Promise<Check[]> {
+export async function checkRepository(
+  view: RepoView,
+  armadaVersion: string,
+  stopHookInstalledIn?: string | null,
+): Promise<Check[]> {
   const checks: Check[] = [];
 
   const configText = await view.readFile(CONFIG_FILE);
@@ -498,7 +502,7 @@ export async function checkRepository(view: RepoView, armadaVersion: string): Pr
       checks.push(bad("conductor", "error", err.message, `fix ${CONDUCTOR_SETTINGS}`));
     }
 
-  checks.push(await stopHookCheck(view));
+  checks.push(await stopHookCheck(view, stopHookInstalledIn));
 
   checks.push(
     ignoresShipArtifacts(await view.readFile(GITIGNORE))
@@ -543,6 +547,23 @@ export function hasStopHook(settings: Json | null): boolean {
   );
 }
 
+/** Read-only detection shared by setup and session banners; init never edits user settings. */
+export async function findStopHook(
+  read: (path: string) => Promise<string | null>,
+  files: readonly string[],
+): Promise<string | null> {
+  for (const file of files) {
+    try {
+      const text = await read(file);
+      if (text !== null) {
+        const settings: unknown = JSON.parse(text);
+        if (isObject(settings) && hasStopHook(settings)) return file;
+      }
+    } catch {}
+  }
+  return null;
+}
+
 /** The settings text with Armada's stop hook added next to any other hook. Throws SetupError on a layout it cannot extend. */
 export function withStopHook(text: string | null): string {
   const settings = claudeSettings(text) ?? {};
@@ -555,8 +576,9 @@ export function withStopHook(text: string | null): string {
   return `${JSON.stringify({ ...settings, hooks: { ...hooks, Stop: [...stop, entry] } }, null, 2)}\n`;
 }
 
-async function stopHookCheck(view: RepoView): Promise<Check> {
+async function stopHookCheck(view: RepoView, installedIn?: string | null): Promise<Check> {
   const id = "stop-hook";
+  if (installedIn) return ok(id, `${installedIn} has Armada's stop hook (ARMADA_STOP_HOOK=off turns it off)`);
   let settings: Json | null;
   try {
     settings = claudeSettings(await view.readFile(CLAUDE_SETTINGS));

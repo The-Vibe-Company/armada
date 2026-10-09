@@ -620,10 +620,16 @@ describe("armada status --all", () => {
 
   test("an organization with no project yet says how to register one", async () => {
     const armada = fakeArmada({ keys: { [KEY]: "registry" } });
-    const { io, out } = fakeIo({}, { LINEAR_API_KEY: "k", ARMADA_API_URL: ARMADA_URL, ARMADA_API_KEY: KEY });
+    const { io, out, err } = fakeIo({}, { LINEAR_API_KEY: "k", ARMADA_API_URL: ARMADA_URL, ARMADA_API_KEY: KEY });
     io.fetch = armada.fetch;
     expect(await run(["status", "--all"], io)).toBe(0);
     expect(out()).toBe("No project is registered yet. Run `armada init` in a repository to register it.\n");
+    const before = out().length;
+    io.env.CLAUDECODE = "1";
+    io.env.CLAUDE_CODE_SESSION_ID = "s";
+    expect(await run(["status", "--all", "--json"], io)).toBe(0);
+    expect(JSON.parse(out().slice(before))).toMatchObject({ projects: [] });
+    expect(err()).toContain("Stop hook NOT on: no Armada stop hook installed");
   });
 
   test("not signed in, it refuses and names armada login", async () => {

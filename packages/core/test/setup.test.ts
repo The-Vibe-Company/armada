@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { parseConfig } from "../src/config.ts";
 import type { BranchRules } from "../src/github.ts";
-import { mergeCompatibility, optionalFeatures, signingSetup } from "../src/setup.ts";
+import { findStopHook, mergeCompatibility, optionalFeatures, signingSetup } from "../src/setup.ts";
 
 const branchRules: BranchRules = {
   defaultBranch: "trunk",
@@ -537,4 +537,25 @@ test("optional feature discovery guides old configs without making optional setu
   // Server and machine settings cannot be inferred from TOML; pointers never say they are absent.
   expect(hints.find((c) => c.id === "optional:notifications")?.message).toContain("Organization > Notifications");
   expect(hints.find((c) => c.id === "optional:coordinators")?.message).toContain("armada coordinator use");
+});
+
+test("hook detection reads user, project and local settings without modifying them", async () => {
+  const files = [
+    "/home/coordinator/.claude/settings.json",
+    "/work/widgets/.claude/settings.json",
+    "/work/widgets/.claude/settings.local.json",
+  ] as const;
+  const hook = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "armada hook stop" }] }] } });
+  for (const file of files) {
+    const contents = new Map<string, string>(files.map((path) => [path, path === file ? hook : "{}"]));
+    expect(await findStopHook(async (path) => contents.get(path) ?? null, files)).toBe(file);
+  }
+  expect(
+    await findStopHook(async (path) => (path === files[0] ? "not json" : path === files[2] ? hook : null), files),
+  ).toBe(files[2]);
+  expect(
+    await findStopHook(async () => {
+      throw new Error("unreadable");
+    }, files),
+  ).toBeNull();
 });
