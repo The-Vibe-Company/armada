@@ -123,3 +123,19 @@ gh pr merge <n> --squash --match-head-commit <full-sha>
 - On a GitHub 5xx, check `gh pr view <n> --json state` before retrying.
 - Then run `armada merge --finish <n>` to close the ticket, and `armada stop <ticket>` to archive the worker.
 - Finally, for every target declared in `[[deploy.target]]`, run `armada deploy watch --sha <merge commit sha> --target <name>` in the background. Wait for its healthy deploy and smoke result before resuming normal merges; a failure keeps the deploy hold open. With no declared targets, there is no deploy check.
+
+## The loop’s hand-back
+
+A hand-back shown as `queued in the merge queue (position N)` or `merging: <drain step>` needs no new action; keep the drain running. A note that sends a worker back to work leaves the hand-back until that worker reports its resumed phase, which clears it; its next `ready-to-merge` report wakes the watch again.
+
+A `hand-back` entry means the worker reported `ready-to-merge` with green CI, resolved review threads and the full head SHA. Merge it with `armada merge <pr>`, following [MERGE.md](MERGE.md). The command checks everything, merges pinned to the handed-back head under the project's merge lock, and then, by itself:
+
+- archives the merged worker's workspace once GitHub confirms the merge (never archive by hand before that; `--no-archive` keeps it);
+- tells the working workers it concerns that main moved: those whose open pull requests share files with what landed, or all of them when `[merge] notify_paths` matched or the file reading was incomplete (never send those notes yourself);
+- closes the ticket, closes its spec when it was the last open ticket, and lists the tickets it unblocked, launching those you deferred when it can;
+- starts the deploy check when `[[deploy.target]]` is set;
+- ends with one `Result:` line. Read it: `Result: merged #N` is done; `Result: not merged (…)` confirmed no merge (if it says `merge unconfirmed`, look at GitHub before retrying); `Linear pending` means run `armada merge --finish <pr>` once Linear answers.
+
+Workers hand back without chasing main, so a head is often behind: add `--wait` in the background; it updates it on GitHub and waits for its checks (without it, a behind head is refused unless `[gates] local_commands` can test-merge it). Several hand-backs at once: queue them with `armada merge --when-green <pr...>` and run `armada merge --drain` in the background; it merges them one at a time, each retested on fresh main. With `[policy] merge_approval`, judge each pull request and pass `--reason "<why>"`, or `--ask-owner --reason "<why>"` to send it to the owner first. A hand-back with `--more-prs` keeps its ticket and worker open after the merge; `--keep-open` and `--close` override that.
+
+Done when the pull request is merged, the result line says so, and nothing it printed is left to do.
