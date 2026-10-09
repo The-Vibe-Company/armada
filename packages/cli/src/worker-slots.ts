@@ -33,6 +33,7 @@ export async function mintLaunchToken(
     overCap?: string | null;
     replacement?: boolean;
     coordinator?: string | null;
+    deferred?: { id: number; attempt: number; attemptedAt: string };
   },
 ) {
   const api = apiOf(io, credentials.armadaApi.url);
@@ -41,6 +42,7 @@ export async function mintLaunchToken(
     project: config.project.slug,
     ticket: target.ticket,
     coordinator: target.coordinator === undefined ? await coordinatorName(io, config.project.slug) : target.coordinator,
+    ...(target.deferred ? { deferred: target.deferred } : {}),
   };
   const max = config.policy.maxWorkers;
   if (!max || target.replacement) return api.launchToken(signIn, request);

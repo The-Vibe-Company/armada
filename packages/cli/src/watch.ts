@@ -12,6 +12,7 @@ import {
   checkInbox,
   entryKey,
   eventCursor,
+  type Fleet,
   FOLLOW_KINDS,
   type FollowOptions,
   findSessionStartHook,
@@ -56,9 +57,11 @@ import {
 import { version } from "../package.json" with { type: "json" };
 import { loadCredentials } from "./auth.ts";
 import { coordinatorName, validCoordinator } from "./coordinator.ts";
+import { fireDeferredLaunches } from "./deferred-launch.ts";
 import { renderEntries } from "./inbox.ts";
 import { httpOptions, type Io, UsageError, type WatchSignal } from "./io.ts";
 import { refreshingJobsFleet } from "./job.ts";
+import { launchTitle } from "./launch.ts";
 import { requireSignIn } from "./login.ts";
 import { detectCoordinator, recordPresence } from "./presence.ts";
 import { noticeRelease, pendingRelease } from "./release.ts";
@@ -394,6 +397,109 @@ export function watchDeadline(
   };
 }
 
+/** Fire before reading the inbox so successful launches do not wake plain watch. */
+export function firingDeferredFleet(
+  io: Io,
+  fleet: Fleet,
+  config: ArmadaConfig,
+  configPath: string,
+  signal: AbortSignal,
+  credentials: Credentials,
+  output?: { follow: boolean; json: boolean; tickets?: string[]; kinds?: readonly string[] },
+): Fleet {
+  const paths = machinePaths(io.env);
+  const namespace = `${config.project.slug}.deferred-fire`;
+  return {
+    ...fleet,
+    inbox: async (query) => {
+      let locked = false;
+      let canAutomate = false;
+      try {
+        signal.throwIfAborted();
+        // No writable machine store means no reliable local admission lock.
+        if (paths) {
+          const lock = await takeWatchLock(
+            paths,
+            namespace,
+            io.pid ?? process.pid,
+            alive(io),
+            undefined,
+            undefined,
+            "default",
+            false,
+          );
+          canAutomate = true;
+          if (lock.taken) {
+            locked = true;
+            const results = await fireDeferredLaunches(
+              {
+                ...io,
+                interactive: false,
+                exec: io.exec ? (command, args, options) => io.exec!(command, args, { ...options, signal }) : undefined,
+              },
+              config,
+              credentials,
+              {
+                source: "watch",
+                configPath,
+                unavailable: () => {
+                  canAutomate = false;
+                },
+              },
+            );
+            for (const result of results) {
+              if (result.status !== "launched") continue;
+              const state = await readWatchState(paths, config.project.slug, query.coordinatorName);
+              await remember(io, config.project.slug, {
+                inFlight: [...new Set([...(state?.inFlight ?? []), result.ticket])],
+              });
+              if (
+                output?.follow &&
+                (!output.tickets || output.tickets.includes(result.ticket)) &&
+                (!output.kinds || output.kinds.includes("launched"))
+              ) {
+                const line = `launched ${result.ticket} "${launchTitle(result.title ?? "")}" (deferred request #${result.request}, profile ${result.profile})`;
+                io.stdout(
+                  output.json
+                    ? `${JSON.stringify({ kind: "launched", id: result.request, owner: query.coordinatorName ?? "default", new: true, cursor: state?.cursor ?? eventCursor(0, now(io).toISOString()), ticket: result.ticket, title: result.title, request: result.request, profile: result.profile, at: now(io).toISOString(), body: line })}\n`
+                    : `${line}\n`,
+                );
+              }
+            }
+          }
+        }
+      } catch (error) {
+        canAutomate = false;
+        signal.throwIfAborted();
+        io.stderr("armada: warning: deferred launch polling unavailable; reading the inbox.\n");
+      } finally {
+        if (locked && paths) await releaseWatchLock(paths, namespace, io.pid ?? process.pid);
+      }
+      const read = await fleet.inbox(query);
+      if (!read || !canAutomate) return read;
+      try {
+        const automatic = (await fleet.deferredLaunches()).filter(
+          (request) =>
+            request.owned &&
+            request.reason === null &&
+            !request.guided &&
+            request.attempts !== undefined &&
+            !!request.createdAt,
+        );
+        const ids = new Set(automatic.map((request) => request.id));
+        // Eligible automatic work belongs to the next poll; guided and exhausted
+        // requests, and every failure notice, remain coordinator work.
+        return {
+          ...read,
+          items: read.items.filter((item) => item.kind !== "launch-request" || item.id === null || !ids.has(item.id)),
+        };
+      } catch {
+        return read;
+      }
+    },
+  };
+}
+
 async function watchUntil(
   io: Io,
   config: ArmadaConfig,
@@ -692,12 +798,20 @@ async function watchUntil(
       (before?.seen ?? []).map((key) => [key, before?.shownAt?.[key] ?? { first: now(io).toISOString(), level: 0 }]),
     );
     await remember(io, project, { root: dirname(configPath), stopped: null, shownAt });
-    const watchingFleet = refreshingJobsFleet(
+    const watchingFleet = firingDeferredFleet(
       watchingIo,
-      observingFleet(watchingIo, fleet, config),
+      refreshingJobsFleet(
+        watchingIo,
+        observingFleet(watchingIo, fleet, config),
+        config,
+        dirname(configPath),
+        controller.signal,
+      ),
       config,
-      dirname(configPath),
+      configPath,
       controller.signal,
+      credentials,
+      { follow: options.follow, json, tickets: options.tickets, kinds: options.kinds },
     );
     const common: FollowOptions = {
       until,

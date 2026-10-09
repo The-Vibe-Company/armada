@@ -346,9 +346,36 @@ export function memoryFleet(): FleetStore & {
 
   return {
     async recordLaunchFailure(i) {
+      if (!i.launchId) {
+        const request = items.find((r) => r.project === i.project && r.ticket === i.ticket && r.id === i.requestId);
+        if (
+          !request ||
+          request.resolvedAt ||
+          !request.requestDeferred ||
+          (request.coordinator ?? "default") !== (i.coordinator ?? "default") ||
+          request.deferredOptions?.attempts !== i.attempt ||
+          request.deferredOptions?.attemptedAt !== i.attemptedAt ||
+          launches.some(
+            (l) => l.project === i.project && l.ticket === i.ticket && l.launchedAt >= (i.attemptedAt ?? ""),
+          ) ||
+          (handles.get(key(i.project, i.ticket))?.claimedAt ?? "") >= (i.attemptedAt ?? "")
+        )
+          return;
+      }
       const launch = launches.find((l) => l.project === i.project && l.ticket === i.ticket && l.id === i.launchId);
       const handle = handles.get(key(i.project, i.ticket));
       if (launch && handle && handle.claimedAt >= launch.launchedAt) return;
+      if (
+        launch &&
+        items.some(
+          (r) =>
+            r.project === i.project &&
+            r.ticket === i.ticket &&
+            r.requestDeferred &&
+            (r.deferredOptions?.attemptedAt ?? "") > launch.launchedAt,
+        )
+      )
+        return;
       if (
         launch &&
         launches.some(
@@ -1754,6 +1781,14 @@ export function memoryFleet(): FleetStore & {
       const expired = pending.filter(
         (launch) =>
           unusedLaunchExpired(launch, now) &&
+          !items.some(
+            (notice) =>
+              notice.project === project &&
+              notice.ticket === launch.ticket &&
+              !notice.resolvedAt &&
+              ((notice.kind === "launch-uncertain" && notice.launchId === launch.id) ||
+                (notice.kind === "launch-request" && notice.requestDeferred)),
+          ) &&
           (!coordinatorName || launch.coordinator == null || launch.coordinator === coordinatorName),
       );
       for (const launch of expired) {

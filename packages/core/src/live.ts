@@ -287,6 +287,8 @@ export type InboxRecipient = "coordinator" | "worker";
 
 export interface InboxItem {
   coordinator?: string | null;
+  /** The exact generation a failed or uncertain launch notice describes. */
+  launchId?: string;
   id: number;
   project: string;
   ticket: string | null;
@@ -494,7 +496,11 @@ export interface LaunchFailureRecord {
   outcome: "failed" | "uncertain";
   reason: string;
   next: string;
-  launchId: string;
+  launchId?: string;
+  /** Preflight failures before token creation are fenced to an admitted request. */
+  requestId?: number;
+  attempt?: number;
+  attemptedAt?: string;
   coordinator?: string | null;
 }
 
@@ -1826,10 +1832,18 @@ async function readInboxAndFlight(
       slots,
       {
         now: o.now,
-        pendingLaunch: launches.find((l) => l.ticket === item.ticket && !unusedLaunchExpired(l, o.now)),
+        pendingLaunch: launches.find((l) => l.ticket === item.ticket),
+        uncertain: stored.some((notice) => notice.ticket === item.ticket && notice.kind === "launch-uncertain"),
         config: o.snapshot?.config,
       },
     );
+    if (state.reason === "gave up after 3 failed launches")
+      return [
+        {
+          ...item,
+          body: `${item.ticket}: ${state.reason}; renew with armada launch ${item.ticket} --when-unblocked, or decline with armada answer ${item.id} "<why>"`,
+        },
+      ];
     if (state.expired)
       return [{ ...item, request: { ...item.request, expired: true }, body: deferredExpiredBody(state) }];
     return state.reason || !model ? [] : [{ ...item, body: deferredWakeBody(item, model, state.command) }];

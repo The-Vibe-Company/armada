@@ -382,7 +382,7 @@ export const FOLLOW_INBOX_KINDS: readonly InboxEntryKind[] = [
   "not-started",
   "version",
 ];
-export const FOLLOW_KINDS = [...FOLLOW_INBOX_KINDS, ...FOLLOW_EVENT_KINDS, "handover"] as const;
+export const FOLLOW_KINDS = [...FOLLOW_INBOX_KINDS, ...FOLLOW_EVENT_KINDS, "handover", "launched"] as const;
 export interface FollowLine {
   queue?: InboxEntry["queue"];
   cursor: string;

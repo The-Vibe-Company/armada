@@ -125,7 +125,13 @@ function workerOf(r: Row): Worker {
 
 // ------------------------------------------------------------ launch
 
-/** Makes a launch token for one ticket. The token is returned once and only its hash is kept. */
+export class DeferredLaunchChanged extends Error {
+  constructor() {
+    super("deferred request changed before token creation; nothing was launched");
+  }
+}
+
+/** Makes a token once; automatic launches lock their admitted request through creation. */
 export async function createLaunch(
   client: Database,
   input: {
@@ -135,72 +141,103 @@ export async function createLaunch(
     launcher: Launcher;
     coordinator?: string | null;
     overCap?: string | null;
+    deferred?: { id: number; attempt: number; attemptedAt: string };
     now: Date;
   },
 ): Promise<{ worker: Worker; token: string }> {
-  const token = newToken(LAUNCH_TOKEN_PREFIX);
-  const at = input.now.toISOString();
-  const expires = new Date(input.now.getTime() + LAUNCH_TOKEN_MS).toISOString();
-  const id = `wk_${randomBytes(9).toString("base64url")}`;
-  const ticket = input.ticket.toUpperCase();
-  await client.query(
-    `INSERT INTO coordinators (project, name, created_at, created_by, started_at, seen_at)
+  return transaction(client, async (client) => {
+    if (input.deferred) {
+      // Failure/claim paths lock the project before the request. Keep that
+      // order before inserting a coordinator whose FK also locks the project.
+      await client.query("SELECT slug FROM projects WHERE slug = $1 AND organization_id = $2 FOR UPDATE", [
+        input.project,
+        input.organization,
+      ]);
+      const accepted = await client.query(
+        `SELECT i.id FROM inbox_items i JOIN projects p ON p.slug = i.project
+         WHERE i.project = $1 AND i.id = $2 AND i.ticket = $3 AND p.organization_id = $4
+           AND i.kind = 'launch-request' AND i.request_deferred AND i.resolved_at IS NULL
+           AND COALESCE(i.coordinator, 'default') = $5
+           AND COALESCE(i.request_expires_at, i.created_at + interval '7 days') > $6
+           AND i.request_attempts = $7 AND i.request_attempted_at = $8
+         FOR UPDATE OF i`,
+        [
+          input.project,
+          input.deferred.id,
+          input.ticket.toUpperCase(),
+          input.organization,
+          input.coordinator ?? "default",
+          input.now,
+          input.deferred.attempt,
+          input.deferred.attemptedAt,
+        ],
+      );
+      if (!accepted.rows.length) throw new DeferredLaunchChanged();
+    }
+    const token = newToken(LAUNCH_TOKEN_PREFIX);
+    const at = input.now.toISOString();
+    const expires = new Date(input.now.getTime() + LAUNCH_TOKEN_MS).toISOString();
+    const id = `wk_${randomBytes(9).toString("base64url")}`;
+    const ticket = input.ticket.toUpperCase();
+    await client.query(
+      `INSERT INTO coordinators (project, name, created_at, created_by, started_at, seen_at)
      SELECT slug, $2, $3, $4, $3, $3 FROM projects WHERE slug = $1 AND organization_id = $5 AND $2::text IS NOT NULL
      ON CONFLICT DO NOTHING`,
-    [
-      input.project,
-      input.coordinator === undefined ? "default" : input.coordinator,
-      input.now,
-      input.launcher.id,
-      input.organization,
-    ],
-  );
-  await client.query(
-    `INSERT INTO "armada_worker" ("id", "organizationId", "project", "ticket", "launchedByKind", "launchedById",
+      [
+        input.project,
+        input.coordinator === undefined ? "default" : input.coordinator,
+        input.now,
+        input.launcher.id,
+        input.organization,
+      ],
+    );
+    await client.query(
+      `INSERT INTO "armada_worker" ("id", "organizationId", "project", "ticket", "launchedByKind", "launchedById",
        "launchedByLabel", "createdAt", "tokenHash", "tokenExpiresAt", "coordinator", "overCap")
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-    [
-      id,
-      input.organization,
-      input.project,
-      ticket,
-      input.launcher.kind,
-      input.launcher.id,
-      input.launcher.label,
+      [
+        id,
+        input.organization,
+        input.project,
+        ticket,
+        input.launcher.kind,
+        input.launcher.id,
+        input.launcher.label,
+        at,
+        hashOf(token),
+        expires,
+        input.coordinator === undefined ? "default" : input.coordinator,
+        input.overCap ?? null,
+      ],
+    );
+    await recordEvent(client, input.organization, {
       at,
-      hashOf(token),
-      expires,
-      input.coordinator === undefined ? "default" : input.coordinator,
-      input.overCap ?? null,
-    ],
-  );
-  await recordEvent(client, input.organization, {
-    at,
-    action: "launch",
-    project: input.project,
-    keys: [],
-    actor: { kind: input.launcher.kind, id: input.launcher.id, label: input.launcher.label },
-    detail: `launch token for ${input.project} ${ticket}, to use before ${hhmm(expires)}`,
+      action: "launch",
+      project: input.project,
+      keys: [],
+      actor: { kind: input.launcher.kind, id: input.launcher.id, label: input.launcher.label },
+      detail: `launch token for ${input.project} ${ticket}, to use before ${hhmm(expires)}`,
+    });
+    const worker: Worker = {
+      id,
+      organization: input.organization,
+      project: input.project,
+      ticket,
+      coordinator: input.coordinator === undefined ? "default" : input.coordinator,
+      launchedBy: input.launcher,
+      createdAt: at,
+      tokenExpiresAt: expires,
+      tokenUsedAt: null,
+      sessionExpiresAt: null,
+      sessionSeenAt: null,
+      endedAt: null,
+      endReason: null,
+      endedBy: null,
+      runtime: null,
+      handle: null,
+    };
+    return { worker, token };
   });
-  const worker: Worker = {
-    id,
-    organization: input.organization,
-    project: input.project,
-    ticket,
-    coordinator: input.coordinator === undefined ? "default" : input.coordinator,
-    launchedBy: input.launcher,
-    createdAt: at,
-    tokenExpiresAt: expires,
-    tokenUsedAt: null,
-    sessionExpiresAt: null,
-    sessionSeenAt: null,
-    endedAt: null,
-    endReason: null,
-    endedBy: null,
-    runtime: null,
-    handle: null,
-  };
-  return { worker, token };
 }
 
 /** Only this generation and older launch notices are completed by a successful launch or revoke. */
@@ -215,7 +252,9 @@ async function resolveLaunchFailures(
   const result = await tx.query(
     `UPDATE inbox_items SET resolved_at = $4, resolution = $5 WHERE project = $1 AND ticket = $2
      AND resolved_at IS NULL AND kind IN ('launch-failed', 'launch-uncertain')
-     AND (launch_id = $3 OR EXISTS (
+     AND (launch_id = $3 OR (launch_id IS NULL AND EXISTS (
+       SELECT 1 FROM "armada_worker" current WHERE current."id" = $3 AND inbox_items.created_at <= current."createdAt"
+     )) OR EXISTS (
        SELECT 1 FROM "armada_worker" older, "armada_worker" current
        WHERE older."id" = inbox_items.launch_id AND current."id" = $3 AND (older."createdAt", older."id") < (current."createdAt", current."id")
      ))`,

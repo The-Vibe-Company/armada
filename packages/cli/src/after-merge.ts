@@ -13,7 +13,6 @@ import { version } from "../package.json" with { type: "json" };
 import { coordinatorName } from "./coordinator.ts";
 import { type DeferredLaunchResult, launchDeferredAfterMerge } from "./deferred-launch.ts";
 import type { Io } from "./io.ts";
-import { LaunchError, launchWorker } from "./launch.ts";
 import { deliverToRuntime } from "./runtime.ts";
 import { archiveClaimKey, claimRef, guarded, redactRuntimeText, runtimeFor } from "./runtimes/adapter.ts";
 import { coordinatorHandle } from "./watch.ts";
@@ -206,29 +205,7 @@ export async function afterMerge(
   const notified = opts.noNotify ? [] : await notifyWorkers(io, config, credentials, outcome);
   const deferred =
     outcome.merged && outcome.pr.mergeCommit && outcome.ticket && !keepOpen
-      ? await launchDeferredAfterMerge(outcome, config, liveFleet(io, config, credentials).fleet, async (request) => {
-          const printed: string[] = [];
-          const code = await launchWorker(
-            { ...io, stdout: (line) => printed.push(line) },
-            config,
-            credentials,
-            {
-              rest: [request.ticket],
-              json: false,
-              options: {},
-            },
-            version,
-            opts.configPath ?? resolve(io.cwd, "armada.toml"),
-            undefined,
-            request,
-          );
-          if (code !== 0)
-            throw new LaunchError(
-              "the launch is unconfirmed; inspect the worker before retrying",
-              `armada peek ${request.ticket}`,
-            );
-          return printed.join("");
-        })
+      ? await launchDeferredAfterMerge(outcome, io, config, credentials, opts.configPath)
       : [];
   await opts.onDeferredLaunch?.(deferred);
   opts.onNotified?.(notified);
