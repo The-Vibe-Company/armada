@@ -38,12 +38,14 @@ import type {
   Job,
   JobQuery,
   JobState,
+  KeepDelivery,
   LatestEvent,
   Lease,
   MainHealth,
   MergeHold,
   NewRequest,
   OpenHold,
+  PendingDelivery,
   PendingLaunch,
   ProjectInput,
   ProjectInsightRecords,
@@ -67,12 +69,14 @@ import type {
 import {
   assertDeployRetry,
   DeployRetryRefusal,
+  deliveryDue,
   deployDetail,
   deployFailed,
   deployRetryLine,
   holdBody,
   isShippingStage,
   jobEndedBody,
+  MAX_DELIVERY_ATTEMPTS,
   mainRedHoldChange,
   OBSERVABLE_RUNTIMES,
   progressMoved,
@@ -2020,10 +2024,218 @@ export async function applyMainRedHold(
   for (const clear of change.clear ?? []) await clearHoldOn(q, { ...clear, project, author: "armada", at });
 }
 
+const DELIVERY_COLUMNS = `id, project, delivery_key, ticket, item, kind, text, runtime, handle,
+  claimed_at, launch_id, branch, coordinator, created_at, attempts, attempted_at, state, ended_at, reason`;
+
+const deliveryRow = (r: Row): PendingDelivery => ({
+  id: Number(r.id),
+  project: String(r.project),
+  key: String(r.delivery_key),
+  ticket: String(r.ticket),
+  item: r.item == null ? null : Number(r.item),
+  kind: String(r.kind) as PendingDelivery["kind"],
+  text: String(r.text),
+  runtime: String(r.runtime) as PendingDelivery["runtime"],
+  handle: String(r.handle),
+  claimedAt: iso(r.claimed_at),
+  launchId: text(r.launch_id),
+  branch: text(r.branch),
+  coordinator: String(r.coordinator),
+  createdAt: isoAt(r.created_at),
+  attempts: Number(r.attempts),
+  attemptedAt: iso(r.attempted_at),
+  state: String(r.state) as PendingDelivery["state"],
+  endedAt: iso(r.ended_at),
+  reason: text(r.reason),
+});
+
+const deliveryFailureBody = (row: PendingDelivery, reason: string) => {
+  const first = row.text.split(/\r?\n/, 1)[0]?.trim() || "(empty message)";
+  return `Delivery #${row.id} failed for ${row.ticket}: ${first}\n${reason}`;
+};
+
+export async function keepDelivery(
+  db: Database,
+  input: KeepDelivery & { project: string; coordinator: string; at: Date },
+): Promise<PendingDelivery> {
+  return transaction(db, async (tx) => {
+    const existing = (
+      await tx.query(
+        `SELECT ${DELIVERY_COLUMNS} FROM pending_deliveries WHERE project = $1 AND delivery_key = $2 FOR UPDATE`,
+        [input.project, input.key],
+      )
+    ).rows[0];
+    if (existing) {
+      const row = deliveryRow(existing);
+      if (row.coordinator !== input.coordinator) throw new Error("delivery belongs to another coordinator");
+      return row;
+    }
+    const inserted = await tx.query(
+      `INSERT INTO pending_deliveries
+        (project, delivery_key, ticket, item, kind, text, runtime, handle, claimed_at, launch_id, branch,
+         coordinator, created_at, attempts, attempted_at, state)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 1, $13, 'pending')
+       ON CONFLICT (project, delivery_key) DO NOTHING
+       RETURNING ${DELIVERY_COLUMNS}`,
+      [
+        input.project,
+        input.key,
+        input.ticket,
+        input.item,
+        input.kind,
+        input.text,
+        input.runtime,
+        input.handle,
+        input.claimedAt,
+        input.launchId,
+        input.branch,
+        input.coordinator,
+        input.at,
+      ],
+    );
+    if (inserted.rows[0]) return deliveryRow(inserted.rows[0]);
+    const raced = (
+      await tx.query(
+        `SELECT ${DELIVERY_COLUMNS} FROM pending_deliveries WHERE project = $1 AND delivery_key = $2 FOR UPDATE`,
+        [input.project, input.key],
+      )
+    ).rows[0];
+    if (!raced) throw new Error("delivery row disappeared after a conflicting insert");
+    const row = deliveryRow(raced);
+    if (row.coordinator !== input.coordinator) throw new Error("delivery belongs to another coordinator");
+    return row;
+  });
+}
+
+export async function pendingDeliveries(
+  db: Queryable,
+  project: string,
+  coordinator?: string,
+): Promise<PendingDelivery[]> {
+  const rs = await db.query(
+    `SELECT ${DELIVERY_COLUMNS} FROM pending_deliveries
+     WHERE project = $1 AND state = 'pending' AND ($2::text IS NULL OR coordinator = $2)
+     ORDER BY attempted_at NULLS FIRST, created_at, id`,
+    [project, coordinator ?? null],
+  );
+  return rs.rows.map(deliveryRow);
+}
+
+export async function dueDeliveries(
+  db: Queryable,
+  project: string,
+  coordinator: string,
+  now: Date,
+): Promise<PendingDelivery[]> {
+  const rows = (
+    await db.query(
+      `SELECT ${DELIVERY_COLUMNS} FROM pending_deliveries
+       WHERE project = $1 AND coordinator = $2 AND state = 'pending'
+       ORDER BY attempted_at NULLS FIRST, created_at, id`,
+      [project, coordinator],
+    )
+  ).rows.map(deliveryRow);
+  return rows.filter((row) => deliveryDue(row, now));
+}
+
+export async function attemptDelivery(
+  db: Database,
+  input: { project: string; key: string; coordinator: string; at: Date; immediate?: boolean },
+): Promise<PendingDelivery | null> {
+  return transaction(db, async (tx) => {
+    const selected = (
+      await tx.query(
+        `SELECT ${DELIVERY_COLUMNS} FROM pending_deliveries
+         WHERE project = $1 AND delivery_key = $2 AND coordinator = $3 FOR UPDATE`,
+        [input.project, input.key, input.coordinator],
+      )
+    ).rows[0];
+    if (!selected) return null;
+    const row = deliveryRow(selected);
+    if (row.state !== "pending" || row.attempts >= MAX_DELIVERY_ATTEMPTS) return null;
+    const ready = input.immediate ? true : deliveryDue(row, input.at);
+    if (!ready) return null;
+    const updated = await tx.query(
+      `UPDATE pending_deliveries SET attempts = attempts + 1, attempted_at = $4
+       WHERE project = $1 AND delivery_key = $2 AND coordinator = $3 AND state = 'pending' AND attempts < $5
+       RETURNING ${DELIVERY_COLUMNS}`,
+      [input.project, input.key, input.coordinator, input.at, MAX_DELIVERY_ATTEMPTS],
+    );
+    return updated.rows[0] ? deliveryRow(updated.rows[0]) : null;
+  });
+}
+
+export async function settleDelivery(
+  db: Database,
+  input: {
+    project: string;
+    key: string;
+    coordinator: string;
+    state: "delivered" | "abandoned";
+    reason: string;
+    attempts?: number;
+    at: Date;
+  },
+): Promise<PendingDelivery | null> {
+  return transaction(db, async (tx) => {
+    const selected = (
+      await tx.query(
+        `SELECT ${DELIVERY_COLUMNS} FROM pending_deliveries
+         WHERE project = $1 AND delivery_key = $2 AND coordinator = $3 FOR UPDATE`,
+        [input.project, input.key, input.coordinator],
+      )
+    ).rows[0];
+    if (!selected) return null;
+    const row = deliveryRow(selected);
+    if (row.state !== "pending") return row;
+    if (input.state === "abandoned" && input.attempts !== undefined && input.attempts !== row.attempts) return row;
+    const updated = await tx.query(
+      `UPDATE pending_deliveries SET state = $4, ended_at = $5, reason = $6
+       WHERE project = $1 AND delivery_key = $2 AND coordinator = $3 AND state = 'pending'
+       RETURNING ${DELIVERY_COLUMNS}`,
+      [input.project, input.key, input.coordinator, input.state, input.at, input.reason],
+    );
+    const settled = updated.rows[0] ? deliveryRow(updated.rows[0]) : row;
+    if (input.state === "abandoned" && input.reason !== "replaced by a newer answer") {
+      await tx.query(
+        `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, coordinator)
+         VALUES ($1, $2, 'delivery-failed', 'coordinator', NULL, $3, $4, $5)
+         ON CONFLICT DO NOTHING`,
+        [settled.project, settled.ticket, deliveryFailureBody(settled, input.reason), input.at, settled.coordinator],
+      );
+    } else if (input.state === "delivered" && settled.kind !== "merge-note") {
+      await tx.query(
+        `UPDATE pending_deliveries
+         SET state = 'abandoned', ended_at = $6, reason = 'replaced by a newer answer'
+         WHERE project = $1 AND ticket = $2 AND kind = $3 AND item IS NOT DISTINCT FROM $4
+           AND delivery_key <> $5 AND state = 'pending' AND id < $7`,
+        [settled.project, settled.ticket, settled.kind, settled.item, settled.key, input.at, settled.id],
+      );
+      await tx.query(
+        `UPDATE inbox_items SET resolved_at = $3, resolution = $4
+         WHERE project = $1 AND ticket = $2 AND kind = 'delivery-failed'
+           AND recipient = 'coordinator' AND resolved_at IS NULL`,
+        [
+          settled.project,
+          settled.ticket,
+          input.at,
+          `delivery #${settled.id} delivered after ${settled.attempts} tries`,
+        ],
+      );
+    }
+    return settled;
+  });
+}
+
 // ------------------------------------------------------------------ the store
 
 /** Core's `FleetStore` on the app's database: what the Armada API runs the CLI's operations on. */
 export const fleetStore = (db: Database): FleetStore => ({
+  keepDelivery: (input) => keepDelivery(db, input),
+  pendingDeliveries: (project, coordinator) => pendingDeliveries(db, project, coordinator),
+  dueDeliveries: (project, coordinator, now) => dueDeliveries(db, project, coordinator, now),
+  attemptDelivery: (input) => attemptDelivery(db, input),
+  settleDelivery: (input) => settleDelivery(db, input),
   prepareMergeNotice: async (project, key, at) => {
     const inserted = await db.query(
       `INSERT INTO merge_notices (project, delivery_key, attempted_at) VALUES ($1, $2, $3)

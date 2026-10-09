@@ -1228,6 +1228,7 @@ describe("armada watch", () => {
     expect(c.err()).toBe("");
     expect(await readWatchState(c.paths, P)).toEqual({
       openJobs: [],
+      pendingDeliveries: [],
       root: COORDINATOR_ROOT,
       // A hand-back's key follows its text: handed back on a new head, it wakes the watch again.
       seen: [expect.stringMatching(/^#1@/)],

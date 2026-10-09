@@ -60,6 +60,8 @@ export interface WatchState {
   runtimeObserved?: Record<string, string>;
   /** Last attempted job status probe; kept in a dedicated machine namespace. */
   jobObserved?: Record<string, string>;
+  /** Native confirmations retained until server settlement; no payload or secrets. */
+  deliveryConfirmed?: Record<string, string>;
   /** Transcript cursors use a dedicated <project>.peek namespace, separate from fleet watch. */
   peek?: Record<string, string>;
   peekTail?: Record<string, PeekTail>;
@@ -70,6 +72,7 @@ export interface WatchState {
   /** Tickets a worker held at the last read, the coordinator's own excluded; null when unknown. */
   inFlight: string[] | null;
   waiting?: string[];
+  pendingDeliveries?: string[];
   slots?: { taken: number; max: number | null };
   openJobs?: number[];
   /** When `inFlight` was read. */
@@ -117,6 +120,8 @@ export interface WatchOptions {
     inFlight: string[] | null;
     waiting?: string[];
     ownedWaiting?: string[];
+    pendingDeliveries?: { id: number; ticket: string; kind: string }[];
+    ownedPendingDeliveries?: { id: number; ticket: string; kind: string }[];
     slots?: { taken: number; max: number | null };
     ownedInFlight?: string[];
     openJobs?: number[];
@@ -133,6 +138,8 @@ export interface WatchOptions {
 }
 
 export interface WatchReport {
+  pendingDeliveries?: { id: number; ticket: string; kind: string }[];
+  ownedPendingDeliveries?: { id: number; ticket: string; kind: string }[];
   waiting?: string[];
   ownedWaiting?: string[];
   slots?: { taken: number; max: number | null };
@@ -194,6 +201,8 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
   let items: InboxEntry[] = [];
   let inFlight: string[] | null = null;
   let waiting: string[] = [];
+  let pendingDeliveries: { id: number; ticket: string; kind: string }[] = [];
+  let ownedPendingDeliveries: typeof pendingDeliveries | undefined;
   let ownedWaiting: string[] | undefined;
   let slots: { taken: number; max: number | null } | undefined;
   let ownedInFlight: string[] | undefined;
@@ -209,6 +218,8 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     inFlight,
     waiting,
     ownedWaiting,
+    pendingDeliveries,
+    ownedPendingDeliveries,
     slots,
     ...(ownedInFlight ? { ownedInFlight } : {}),
     ...(openJobs.length ? { openJobs } : {}),
@@ -243,6 +254,8 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
       items = read.items.map((e) => ({ ...e, new: !known.has(entryKey(e)) }));
       inFlight = read.inFlight ?? null;
       waiting = read.waiting ?? [];
+      pendingDeliveries = read.pendingDeliveries ?? [];
+      ownedPendingDeliveries = read.ownedPendingDeliveries;
       ownedWaiting = read.ownedWaiting;
       slots = read.slots;
       ownedInFlight = read.ownedInFlight;
@@ -257,6 +270,8 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
           inFlight,
           waiting,
           ownedWaiting,
+          pendingDeliveries,
+          ownedPendingDeliveries,
           slots,
           openJobs,
           ...(ownedInFlight ? { ownedInFlight } : {}),
@@ -270,13 +285,23 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     if (release) items.push({ ...release, new: !known.has(entryKey(release)) });
     if (items.some((e) => e.new && !e.queue && (e.owner == null || e.owner === (o.coordinatorName ?? "default"))))
       return report("items");
-    if (read && inFlight !== null && !inFlight.length && !openJobs.length && !waiting.length && !items.length)
+    if (
+      read &&
+      inFlight !== null &&
+      !inFlight.length &&
+      !openJobs.length &&
+      !waiting.length &&
+      !pendingDeliveries.length &&
+      !items.length
+    )
       return report("nothing");
     await untilAborted(o.signal, () =>
       o.sleep(
         boundedWait(
           o,
-          inFlight !== null && !inFlight.length && !openJobs.length && !waiting.length ? idlePollMs : pollMs,
+          inFlight !== null && !inFlight.length && !openJobs.length && !waiting.length && !pendingDeliveries.length
+            ? idlePollMs
+            : pollMs,
         ),
       ),
     );
@@ -295,6 +320,7 @@ export const FOLLOW_INBOX_KINDS: readonly InboxEntryKind[] = [
   "job-silent",
   "job-stalled",
   "queue-refused",
+  "delivery-failed",
   "queue-stalled",
   "question",
   "plan",
@@ -360,6 +386,8 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
   let etag: string | null = null;
   let inFlight: string[] | null = null;
   let waiting: string[] = [];
+  let pendingDeliveries: { id: number; ticket: string; kind: string }[] = [];
+  let ownedPendingDeliveries: typeof pendingDeliveries | undefined;
   let ownedWaiting: string[] | undefined;
   let slots: { taken: number; max: number | null } | undefined;
   let openJobs: number[] = [];
@@ -394,6 +422,8 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
         etag = read.etag;
         inFlight = read.inFlight ?? null;
         waiting = read.waiting ?? [];
+        pendingDeliveries = read.pendingDeliveries ?? [];
+        ownedPendingDeliveries = read.ownedPendingDeliveries;
         ownedWaiting = read.ownedWaiting;
         slots = read.slots;
         openJobs = read.openJobs ?? [];
@@ -412,6 +442,8 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
             inFlight,
             waiting,
             ownedWaiting,
+            pendingDeliveries,
+            ownedPendingDeliveries,
             slots,
             openJobs,
             ...(read.ownedOpenJobs ? { ownedOpenJobs: read.ownedOpenJobs } : {}),
@@ -519,15 +551,15 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
       }
       first = false;
       failures = 0;
-      if (inFlight?.length === 0 && !openJobs.length && !waiting.length && !idle) {
+      if (inFlight?.length === 0 && !openJobs.length && !waiting.length && !pendingDeliveries.length && !idle) {
         o.onIdle?.();
         idle = true;
-      } else if (inFlight?.length || openJobs.length || waiting.length) idle = false;
+      } else if (inFlight?.length || openJobs.length || waiting.length || pendingDeliveries.length) idle = false;
       await untilAborted(o.signal, () =>
         o.sleep(
           boundedWait(
             o,
-            inFlight?.length === 0 && !openJobs.length && !waiting.length
+            inFlight?.length === 0 && !openJobs.length && !waiting.length && !pendingDeliveries.length
               ? (o.idlePollMs ?? WATCH_IDLE_POLL_MS)
               : (o.pollMs ?? WATCH_POLL_MS),
           ),
@@ -616,6 +648,7 @@ export function rearm(o: {
   mode?: "follow" | "watch";
   slots?: { taken: number; max: number | null };
   waiting?: number;
+  pendingDeliveries?: string[];
 }): Rearm {
   const then = o.act ? "act on the items above, then " : "";
   const watch =
@@ -640,6 +673,8 @@ export function rearm(o: {
   else line = "No worker in flight and nothing open — nothing to watch.";
   if (o.openJobs?.length)
     line = `${o.openJobs.length} open job${o.openJobs.length === 1 ? "" : "s"} (${o.openJobs.join(", ")}) — ${watch ? `${then}${watch}.` : `${then}keep watching: armada watch`}${count || o.slots?.max ? ` · ${workerLine}` : ""}${waitingLine}`;
+  if (o.pendingDeliveries?.length)
+    line = `${o.pendingDeliveries.length} answer${o.pendingDeliveries.length === 1 ? "" : "s"} waiting for delivery (${o.pendingDeliveries.join(", ")}) — ${watch ? `${then}${watch}.` : `${then}keep watching: armada watch`}`;
   return {
     inFlight: o.inFlight,
     ...(o.openJobs?.length ? { openJobs: o.openJobs } : {}),
@@ -679,6 +714,11 @@ export function stopHookDecision(o: {
     return { block: false, why: `the coordinator's checkout is ${s.root}, not this one` };
   if (o.watching !== null) return { block: false, why: `armada watch is running (pid ${o.watching})` };
   if (s.stopped) return { block: false, why: `the last watch was refused: ${s.stopped}` };
+  if (s.pendingDeliveries?.length)
+    return {
+      block: true,
+      reason: `${s.pendingDeliveries.length} answer(s) waiting for delivery on ${o.project}; start armada watch in the background from ${s.root} to deliver them.`,
+    };
   if (s.openJobs?.length)
     return {
       block: true,

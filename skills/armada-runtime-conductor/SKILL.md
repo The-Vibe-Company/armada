@@ -46,14 +46,14 @@ armada answer <item> --message-file /tmp/abc-12-answer.md
 
 One command delivers the text into the worker's session, posts it on the ticket and records it on Armada; an answer resolves its question or plan. The receipt says `queued` when a turn is still running: accepted is not read, so check the reply with `armada peek`.
 
-- After a failure, run the same command with the same text: Armada reuses the message id and Conductor delivers it once. Changed text is a new message.
+- An unconfirmed answer or note is kept durably; keep `armada watch` running to retry it with the same message id. The command exits 1 and its question stays open until confirmation. Repeating the command reuses that delivery; changed text is a new message. Never send it by hand too.
 - A question older than the current worker, an ended claim or a replaced launch is refused before anything is sent. An archived workspace cannot receive messages: relaunch the worker.
 - A launch bound to its session can receive notes before its claim.
 - Never follow an `armada answer` with a manual send of the same text, or the other way round: the worker would get it twice.
 
 ## Status
 
-Armada retries a read that times out, gets a server error, cannot spawn temporarily or returns truncated JSON up to twice with roughly 1 s and 3 s waits, announcing each retry on stderr and adding at most 14 s per read; missing sign-in, invalid requests and not-found workers are not retried, and create, message, cancel and archive writes are always attempted once.
+Armada retries a read that times out, gets a server error, cannot spawn temporarily or returns truncated JSON up to twice with roughly 1 s and 3 s waits, announcing each retry on stderr and adding at most 14 s per read; missing sign-in, invalid requests and not-found workers are not retried, and create, cancel and archive writes are always attempted once. Only keyed messages retry later through the kept-delivery watch path.
 
 Armada reads each worker's session itself, before `armada status`, `armada inbox` and each watch poll, when the heartbeat is older than half of `policy.silence_minutes` (at most every five minutes per session). A session still `working` is called silent only past twice the allowance, and the alert says it is working. A session `idle` in a working phase for five minutes without a report or answer is `stopped`. An archived workspace ends its claim. Without a usable Conductor CLI, the plain silence rule applies.
 

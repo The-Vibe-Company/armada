@@ -127,6 +127,12 @@ export function renderStatus(r: StatusReport, hints: StatusHints = {}): string {
     }
   }
 
+  if (r.pendingDeliveries?.length)
+    out.push(
+      "",
+      `${r.pendingDeliveries.length} answer${r.pendingDeliveries.length === 1 ? "" : "s"} waiting for delivery (${r.pendingDeliveries.map((d) => d.ticket).join(", ")}); keep armada watch running.`,
+    );
+
   if (r.jobs?.length) {
     out.push("", `Jobs running (${r.jobs.length})`);
     for (const j of r.jobs) {

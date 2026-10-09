@@ -52,7 +52,7 @@ export interface WorkerContext {
     launch?: PendingLaunch | null;
     item: number | null;
     kind: "answer" | "note";
-  }) => Promise<Delivery | null>;
+  }) => Promise<(Delivery & { attempts?: number; text?: string }) | null>;
   now: () => Date;
 }
 
