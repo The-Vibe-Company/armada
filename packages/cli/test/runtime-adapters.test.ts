@@ -25,6 +25,7 @@ import { run } from "../src/cli.ts";
 import type { Io } from "../src/io.ts";
 import { observeRuntimes } from "../src/runtime.ts";
 import { claimRef, guarded, type LaunchSpec, runtimeFor } from "../src/runtimes/adapter.ts";
+import { ConductorAdapter } from "../src/runtimes/conductor.ts";
 import { HerdrAdapter } from "../src/runtimes/herdr.ts";
 import { createExec } from "../src/spawn.ts";
 
@@ -404,6 +405,146 @@ test("Conductor preflight, launch, transcript and failures keep secret text off 
   expect(await codeOf(f.adapter.launch(spec))).toBe("unknown-outcome");
   expect(f.output.join("")).not.toContain(canary);
 });
+
+test.each(["timeout", "server", "spawn", "truncated"] as const)(
+  "Conductor recovers a transient %s session read with one retry notice",
+  async (failure) => {
+    const f = await fixture();
+    const native = f.io.exec as NonNullable<Io["exec"]>;
+    let attempts = 0;
+    const waits: number[] = [];
+    f.io.sleep = async (ms) => {
+      waits.push(ms);
+      await f.clock.sleep(ms);
+    };
+    f.io.exec = async (command, args, options) => {
+      if (args.slice(1, 3).join(" ") === "session status" && ++attempts === 1) {
+        if (failure === "spawn") throw Object.assign(new Error(canary), { code: "EIO" });
+        return { code: failure === "server" ? 4 : 0, stdout: canary, stderr: canary, timedOut: failure === "timeout" };
+      }
+      return native(command, args, options);
+    };
+    const adapter = new ConductorAdapter(f.io, [], { random: () => 0.5, onRetry: (t) => f.io.stderr(`${t}\n`) });
+    expect((await adapter.observe(f.target)).state).toBe("working");
+    expect(attempts).toBe(2);
+    expect(waits).toEqual([1000]);
+    expect(f.output).toEqual(["Conductor session status did not answer; trying again in 1.0 s (2/3)\n"]);
+  },
+);
+
+test.each([0, 1])(
+  "Conductor mixed read failures share at most three attempts and a 14s extra-time budget (jitter %s)",
+  async (random) => {
+    const f = await fixture();
+    const native = f.io.exec as NonNullable<Io["exec"]>;
+    const limits: number[] = [];
+    const start = f.clock.now().getTime();
+    f.io.exec = async (command, args, options) => {
+      if (args.slice(1, 3).join(" ") !== "session message") return native(command, args, options);
+      limits.push(options.timeoutMs ?? 0);
+      if (limits.length === 1) return { code: 0, stdout: "{", stderr: canary };
+      await f.clock.sleep(options.timeoutMs ?? 0);
+      return { code: 1, stdout: canary, stderr: canary, timedOut: true };
+    };
+    const adapter = new ConductorAdapter(f.io, [], { random: () => random });
+    expect(await codeOf(adapter.peek(f.target, { actions: 1, cursor: null }))).toBe("unavailable");
+    // At maximum jitter, a second full wait would exceed the remaining time budget.
+    expect(limits).toHaveLength(random === 0 ? 3 : 2);
+    expect(limits[0]).toBe(10_000);
+    expect(limits[1]).toBe(10_000);
+    if (random === 0) expect(limits[2]).toBeGreaterThan(0);
+    expect(f.clock.now().getTime() - start).toBeLessThanOrEqual(14_000);
+  },
+);
+
+test.each(["exit1", "exit2", "exit3", "ENOENT", "EACCES", "shape", "output"] as const)(
+  "Conductor does not retry a terminal %s read failure",
+  async (failure) => {
+    const f = await fixture();
+    const native = f.io.exec as NonNullable<Io["exec"]>;
+    let attempts = 0;
+    const waits: number[] = [];
+    f.io.sleep = async (ms) => {
+      waits.push(ms);
+    };
+    f.io.exec = async (command, args, options) => {
+      if (args.slice(1, 3).join(" ") !== "session status") return native(command, args, options);
+      attempts++;
+      if (failure === "ENOENT" || failure === "EACCES") throw Object.assign(new Error(canary), { code: failure });
+      return {
+        code: failure.startsWith("exit") ? Number(failure.slice(4)) : 0,
+        stdout: "{}",
+        stderr: canary,
+        outputExceeded: failure === "output",
+      };
+    };
+    expect(await codeOf(f.adapter.observe(f.target))).toBe(
+      failure === "exit1"
+        ? "not-found"
+        : failure === "exit2" || failure === "shape"
+          ? "invalid"
+          : failure === "exit3"
+            ? "auth"
+            : "unavailable",
+    );
+    expect(attempts).toBe(1);
+    expect(waits).toEqual([]);
+    expect(f.output.join("")).not.toContain(canary);
+  },
+);
+
+test.each(["launch", "deliver", "cancel", "archive"] as const)(
+  "Conductor never retries a timed-out %s mutation",
+  async (operation) => {
+    const f = await fixture();
+    const native = f.io.exec as NonNullable<Io["exec"]>;
+    expect((await f.adapter.observe(f.target)).state).toBe("working");
+    let target = f.target;
+    if (operation === "archive") {
+      f.set({ state: "idle" });
+      await f.store.releaseRuntimeHandle(config.project.slug, target.ticket, NOW);
+      const ended = await f.fleet.runtimeHandle(target.ticket);
+      if (!ended) throw new Error("missing ended claim");
+      target = claimRef(ended);
+    }
+    let writes = 0;
+    const waits: number[] = [];
+    f.io.sleep = async (ms) => {
+      waits.push(ms);
+    };
+    f.io.exec = async (command, args, options) => {
+      if (["create", "cancel", "archive"].includes(args[2] ?? "")) {
+        writes++;
+        return { code: 1, stdout: canary, stderr: canary, timedOut: true };
+      }
+      return native(command, args, options);
+    };
+    const action =
+      operation === "launch"
+        ? f.adapter.launch({
+            ticket: "DEMO-7",
+            title: "Synthetic worker",
+            repository: "acme/widgets",
+            base: "main",
+            branch: "feature/demo-7",
+            from: { kind: "base" },
+            profile: { name: "test", agent: "codex", model: "synthetic-model", effort: "high", fastMode: false },
+            prompt: "work",
+            env: {},
+            blankSecrets: [],
+          })
+        : guarded<unknown>(f.fleet, target, operation === "archive" ? "ended" : "active", () =>
+            operation === "deliver"
+              ? f.adapter.deliver(target, { text: "resume", key: "msg-key", kind: "answer" })
+              : operation === "cancel"
+                ? f.adapter.cancel(target, { waitMs: 0 })
+                : f.adapter.archive(target, { reason: "merged", whenWorking: "refuse", waitMs: 0 }),
+          );
+    expect(await codeOf(action)).toBe("unknown-outcome");
+    expect(writes).toBe(1);
+    expect(waits).toEqual([]);
+  },
+);
 
 test("Conductor peek reads complete large transcripts when the CLI truncates piped stdout", async () => {
   const f = await fixture();

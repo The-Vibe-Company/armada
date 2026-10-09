@@ -78,13 +78,13 @@ function fencedIo(io: Io, tick: (() => Promise<void>) | undefined, exec: Exec): 
   };
 }
 
-/** A GitHub 5xx or a network failure, as gh reports them. */
+/** A GitHub 5xx, network failure or unreadable answer, as gh reports them. */
 const TRANSIENT =
-  /\bHTTP 5\d\d\b|\b5\d\d (?:Bad Gateway|Service Unavailable|Gateway Time-?out|Internal Server Error)\b|Bad Gateway|Service Unavailable|Gateway Time-?out|ECONNRESET|ETIMEDOUT|connection reset|i\/o timeout|TLS handshake timeout/i;
+  /\bHTTP 5\d\d\b|\b5\d\d (?:Bad Gateway|Service Unavailable|Gateway Time-?out|Internal Server Error)\b|Bad Gateway|Service Unavailable|Gateway Time-?out|ECONNRESET|ETIMEDOUT|connection reset|i\/o timeout|TLS handshake timeout|unexpected end of JSON input|invalid character '<' looking for beginning of value/i;
 
 const tail = (text: string, lines = 30) => text.trimEnd().split("\n").slice(-lines).join("\n");
 
-/** Runs one `gh` call that changes GitHub; a 5xx or a network failure is transient. */
+/** Runs one `gh` write; callers decide whether its temporary failure is safe to retry. */
 async function ghAttempt(exec: Exec, cwd: string, args: string[]): Promise<MergeAttempt> {
   try {
     const r = await exec("gh", args, { cwd });
