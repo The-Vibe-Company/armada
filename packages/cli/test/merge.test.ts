@@ -1415,7 +1415,7 @@ test.each([
       detail: succeeds
         ? "archived"
         : queued
-          ? "Conductor CLI could not execute workspace status"
+          ? "the queue was taken over"
           : "Conductor server error during workspace status (exit 4)",
     });
   if (scenario === "unrecorded") {
