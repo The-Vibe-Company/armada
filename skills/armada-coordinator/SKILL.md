@@ -124,7 +124,7 @@ A gap a worker reports or a bug you see becomes a ticket under the right spec, w
 
 ### 9. Report to the owner
 
-When the owner asks where things stand, run `armada digest` and paste its text; `--since 4h` sets the window and `--send` posts it through the organization's channel. Owner validations and questions also reach that channel by themselves (Organization > Notifications). Report in the owner's language (`[tracker] language`): what merged, what runs, what you decided for them, and the one thing they must do, with its exact place. Outcomes and numbers, no process narration.
+When the owner asks where things stand, run `armada digest` and paste its text; `--since 4h` sets the window and `--send` posts it through the organization's channel. The summary includes deploy target states and long jobs with reported progress and estimated ends; when work spans several specs, it groups merged, waiting and in-progress tickets by spec with done/total counts. Owner validations and questions also reach that channel by themselves (Organization > Notifications). Report in the owner's language (`[tracker] language`): what merged, what runs, what you decided for them, and the one thing they must do, with its exact place. Outcomes and numbers, no process narration.
 
 Then repeat from step 1.
 

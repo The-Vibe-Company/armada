@@ -53,6 +53,8 @@ One command delivers the text into the worker's session, posts it on the ticket 
 
 ## Status
 
+Armada retries a read that times out, gets a server error, cannot spawn temporarily or returns truncated JSON up to twice with roughly 1 s and 3 s waits, announcing each retry on stderr and adding at most 14 s per read; missing sign-in, invalid requests and not-found workers are not retried, and create, message, cancel and archive writes are always attempted once.
+
 Armada reads each worker's session itself, before `armada status`, `armada inbox` and each watch poll, when the heartbeat is older than half of `policy.silence_minutes` (at most every five minutes per session). A session still `working` is called silent only past twice the allowance, and the alert says it is working. A session `idle` in a working phase for five minutes without a report or answer is `stopped`. An archived workspace ends its claim. Without a usable Conductor CLI, the plain silence rule applies.
 
 ```sh

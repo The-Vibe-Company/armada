@@ -1,8 +1,24 @@
 // Shared Postgres-only records for scheduled summaries and the CLI.
-import { buildInsights, type DigestInput, isLabelPhase, mainHealth, sinceSummary } from "@armada/core/read";
+import {
+  buildDigestGroups,
+  buildInsights,
+  buildModel,
+  type DigestInput,
+  deployFailed,
+  isLabelPhase,
+  mainHealth,
+  sinceSummary,
+} from "@armada/core/read";
 import { catchupRecords } from "./activity-store";
 import { isoAt, type Queryable } from "./db";
-import { coordinatorPresence, insightRecords, openInboxItems, openRuntimeHandles } from "./fleet-store";
+import {
+  coordinatorPresence,
+  deployState,
+  insightRecords,
+  openInboxItems,
+  openRuntimeHandles,
+  shownJobs,
+} from "./fleet-store";
 import { storedSnapshot } from "./snapshots";
 
 export async function digestRecords(
@@ -28,12 +44,13 @@ export async function digestRecords(
     );
     start = rs.rows[0]?.at ? isoAt(rs.rows[0].at) : new Date(now.getTime() - 4 * 60 * 60_000).toISOString();
   }
-  const [catchup, history, sessions, presence, inbox, phaseRows] = await Promise.all([
+  const [catchup, history, sessions, presence, inbox, deploys, phaseRows] = await Promise.all([
     catchupRecords(db, project, { since: new Date(start), until: now }, policy, now),
     insightRecords(db, project, new Date(now.getTime() - 180 * 24 * 60 * 60_000), policy),
     openRuntimeHandles(db, project),
     coordinatorPresence(db, project),
     openInboxItems(db, { project, recipient: "coordinator" }),
+    deployState(db, project),
     db.query(
       `SELECT s.ticket, last.phase, COALESCE(first.created_at, s.claimed_at) AS phase_since
       FROM runtime_handles s
@@ -68,6 +85,19 @@ export async function digestRecords(
   const titles = Object.fromEntries(
     (snapshot?.sources.program.issues ?? []).map((i) => [`${project}/${i.id}`, i.title]),
   );
+  const program = snapshot?.sources.program;
+  const groups = program?.issues.some((i) => i.id === program.rootId)
+    ? buildDigestGroups(buildModel(program.issues, program.rootId), project)
+    : undefined;
+  // A completed job can belong to a ticket whose session already ended.
+  const jobTickets = [
+    ...new Set([
+      ...sessions.map((s) => s.ticket),
+      ...(program?.issues.map((i) => i.id) ?? []),
+      ...history.events.map((e) => e.ticket),
+    ]),
+  ];
+  const jobs = await shownJobs(db, project, jobTickets, new Date(start));
   const phases = new Map(
     phaseRows.rows.map((r) => [String(r.ticket), { phase: r.phase, since: isoAt(r.phase_since) }]),
   );
@@ -127,17 +157,41 @@ export async function digestRecords(
   const health = snapshot?.sources.forge?.main
     ? mainHealth(snapshot.sources.forge.main, snapshot.config.gates.requiredChecks, snapshot.sources.forge.mainComplete)
     : null;
-  const extras = health?.redSince
-    ? {
-        mainRed: [
+  const extras: DigestInput["extras"] = {
+    mainRed: health?.redSince
+      ? [
           {
             project,
             since: health.redSince.at,
             url: `https://github.com/${snapshot?.config.github.repository}/commit/${health.redSince.sha}`,
           },
-        ],
-      }
-    : undefined;
+        ]
+      : [],
+    deploys: deploys
+      .filter(
+        (d) =>
+          d.state !== "skipped" &&
+          d.state !== "not-runnable" &&
+          (deployFailed(d.state) ||
+            (Date.parse(d.updatedAt) >= Date.parse(start) && Date.parse(d.updatedAt) <= now.getTime())),
+      )
+      .map((d) => ({
+        project,
+        target: d.target,
+        state: deployFailed(d.state) ? "failure" : d.state === "healthy" ? "success" : "pending",
+        url: `/projects/${encodeURIComponent(project)}`,
+      })),
+    jobs: jobs
+      .filter((j) => !j.finishedAt || Date.parse(j.finishedAt) <= now.getTime())
+      .map((j) => ({
+        project,
+        ticket: j.ticket,
+        title: titles[`${project}/${j.ticket}`] ?? "",
+        progress: j.progress,
+        eta: j.eta,
+        url: `/agents/${encodeURIComponent(j.ticket)}`,
+      })),
+  };
   return {
     language,
     input: {
@@ -146,6 +200,7 @@ export async function digestRecords(
       now,
       summary,
       titles,
+      groups,
       inFlight,
       phaseMedians,
       mergedSamples: insights.cycle.count,
