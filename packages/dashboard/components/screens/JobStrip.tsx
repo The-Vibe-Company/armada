@@ -8,6 +8,7 @@
 import type { JobState } from "@armada/core/read";
 import { clockIn, dayIn, dayLabel } from "@/lib/activity-view";
 import type { Strings } from "@/lib/i18n";
+import { JOB_STALLED_LABEL } from "@/lib/job-strings";
 import { type JobLine, ticketJobLines } from "@/lib/jobs-view";
 import { useFleet, useNow, useShell } from "../shell/context";
 
@@ -21,7 +22,7 @@ const STATE_COLOR: Record<JobState, string> = {
 };
 
 export function JobStrip({ project, ticket, heading }: { project: string; ticket: string; heading: string }) {
-  const { t, zone } = useShell();
+  const { t, zone, lang } = useShell();
   const { overview } = useFleet();
   const now = useNow();
   const jobs = ticketJobLines(
@@ -35,15 +36,27 @@ export function JobStrip({ project, ticket, heading }: { project: string; ticket
       <p className={heading}>{t.jobs.title}</p>
       <ul className="jb-list">
         {jobs.map((j) => (
-          <Job key={j.id} job={j} t={t} zone={zone} now={now} />
+          <Job key={j.id} job={j} t={t} zone={zone} now={now} stalledLabel={JOB_STALLED_LABEL[lang]} />
         ))}
       </ul>
     </section>
   );
 }
 
-function Job({ job, t, zone, now }: { job: JobLine; t: Strings; zone: string; now: number }) {
-  const color = job.overdue || job.stalledMinutes !== null ? "var(--amber)" : STATE_COLOR[job.state];
+function Job({
+  job,
+  t,
+  zone,
+  now,
+  stalledLabel,
+}: {
+  job: JobLine;
+  t: Strings;
+  zone: string;
+  now: number;
+  stalledLabel: string;
+}) {
+  const color = job.overdue || job.stalled ? "var(--amber)" : STATE_COLOR[job.state];
   const eta = job.eta && etaText(t, job.eta, zone, now);
   return (
     <li className="jb-row">
@@ -51,7 +64,7 @@ function Job({ job, t, zone, now }: { job: JobLine; t: Strings; zone: string; no
         <span className="ov-dot" style={{ background: color }} aria-hidden />
         <span className="jb-name mono">{job.name}</span>
         <span style={{ color: STATE_COLOR[job.state] }}>{t.jobs.states[job.state]}</span>
-        {job.stalledMinutes !== null && <span className="jb-overdue">{t.jobs.stalled(job.stalledMinutes)}</span>}
+        {job.stalled && <span className="jb-overdue">{stalledLabel}</span>}
         {job.overdue && job.maxHours !== null && (
           <span className="jb-overdue">{t.jobs.overdue(t.duration(job.maxHours * 3_600_000))}</span>
         )}

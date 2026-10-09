@@ -53,7 +53,7 @@ test("a ticket's jobs show their progress, ETA, last news and overdue against th
       eta: { at: at(5), inMs: -5 * MIN },
       lastNewsMs: 60 * MIN,
       overdue: true,
-      stalledMinutes: null,
+      stalled: false,
       maxHours: 3,
       ticketDone: true,
     },
@@ -66,7 +66,7 @@ test("a ticket's jobs show their progress, ETA, last news and overdue against th
       eta: { at: at(-80), inMs: 80 * MIN },
       lastNewsMs: 4 * MIN,
       overdue: false,
-      stalledMinutes: 11,
+      stalled: true,
       maxHours: 12,
       ticketDone: false,
     },
@@ -79,11 +79,11 @@ test("a ticket's jobs show their progress, ETA, last news and overdue against th
       eta: null,
       lastNewsMs: 30 * MIN,
       overdue: false,
-      stalledMinutes: null,
+      stalled: false,
       maxHours: null,
       ticketDone: false,
     },
   ]);
-  expect(ticketJobLines(project, "W-1", NOW + 2 * MIN).find((j) => j.id === 2)?.stalledMinutes).toBeNull();
+  expect(ticketJobLines(project, "W-1", NOW + 2 * MIN).find((j) => j.id === 2)?.stalled).toBe(false);
   expect(ticketJobLines(undefined, "W-1", NOW)).toEqual([]);
 });

@@ -7,7 +7,6 @@ import {
   jobIsOpen,
   jobOverdue,
   jobStalled,
-  jobStalledMinutes,
   type ProjectOverview,
   type ShownJob,
 } from "@armada/core/read";
@@ -25,7 +24,7 @@ export interface JobLine {
   lastNewsMs: number;
   /** Still open past its `max_hours`; never stopped for it. */
   overdue: boolean;
-  stalledMinutes: number | null;
+  stalled: boolean;
   maxHours: number | null;
   /** Its ticket is Done while it runs on. */
   ticketDone: boolean;
@@ -43,9 +42,7 @@ export function jobLine(job: ShownJob, now: number): JobLine {
     eta: job.state === "running" && job.eta ? { at: job.eta, inMs: Date.parse(job.eta) - now } : null,
     lastNewsMs: Math.max(0, now - Date.parse(job.observedAt)),
     overdue: jobOverdue(job, maxHours, new Date(now)),
-    stalledMinutes: jobStalled(job, job.stallMinutes ?? 60, new Date(now), job.silenceMinutes ?? 15)
-      ? jobStalledMinutes(job, new Date(now))
-      : null,
+    stalled: jobStalled(job, job.stallMinutes ?? 60, new Date(now), job.silenceMinutes ?? 15),
     maxHours,
     ticketDone: open && job.ticketDone,
   };
