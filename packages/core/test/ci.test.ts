@@ -336,6 +336,7 @@ test.each([
 test("a known test or runner signature cannot hide an unknown failure in the same job, even beyond display limits", () => {
   const config = {
     failurePatterns: [],
+    setupSteps: [],
     knownFailures: [{ check: "Tests (linux)", pattern: "cold start", ticket: "DEMO-42" }],
   };
   for (const lines of [
@@ -354,6 +355,7 @@ test("a known test or runner signature cannot hide an unknown failure in the sam
 test("every matched root-cause ticket is included when multiple known failures share a job", () => {
   const config = {
     failurePatterns: [],
+    setupSteps: [],
     knownFailures: [
       { check: "Tests (linux)", pattern: "cold start", ticket: "DEMO-42" },
       { check: "Tests (linux)", pattern: "transient disconnect", ticket: "DEMO-43" },
@@ -366,4 +368,84 @@ test("every matched root-cause ticket is included when multiple known failures s
   );
   expect(result[0]?.class).toBe("known");
   expect(rerunDecision(result, 1).tickets).toEqual(["DEMO-42", "DEMO-43"]);
+});
+
+test("network outages qualify only in setup before user steps execute, never registry 4xx", () => {
+  const setup = "Run actions/download-artifact@v4";
+  const steps = (name = setup): NonNullable<FailedCheck["steps"]> => [
+    { name: "Set up job", conclusion: "success", number: 1 },
+    { name: "Run actions/checkout@v4", conclusion: "success", number: 2 },
+    { name, conclusion: "failure", number: 3 },
+    { name: "Test", conclusion: "skipped", number: 4 },
+    { name: "Post actions/checkout@v4", conclusion: "success", number: 5 },
+    { name: "Complete job", conclusion: "success", number: 6 },
+  ];
+  const diagnose = (line: string, evidence = steps(), setupSteps: string[] = []) =>
+    explainChecks(
+      [check({ steps: evidence })],
+      new Map([[11, { lines: [...line.split("\n"), "##[error]exit code 1"], warnings: [] }]]),
+      { failurePatterns: [], knownFailures: [], setupSteps },
+    )[0];
+  const reset = "Unable to download artifact(s): ECONNRESET";
+  expect(diagnose(reset)).toMatchObject({ class: "runner", runnerReason: `network, in setup step "${setup}"` });
+  expect(rerunDecision([diagnose(reset) as Explanation], 1).allowed).toBe(true);
+  expect(diagnose(reset, steps("Test"))).toMatchObject({ class: "failure", networkStep: "Test" });
+  expect(diagnose("npm error 404 Not Found")).toMatchObject({ class: "failure" });
+  expect(diagnose(reset, steps("Install dependencies"), ["Install *"])?.class).toBe("runner");
+  expect(diagnose(reset, steps("Run bun test"))?.class).toBe("failure");
+  expect(diagnose(reset, [])).toMatchObject({
+    class: "failure",
+    networkNote: "network error found, step evidence unavailable",
+  });
+  expect(
+    diagnose(
+      reset,
+      steps().map((s) => (s.name === "Test" ? { ...s, conclusion: "success" } : s)),
+    )?.class,
+  ).toBe("failure");
+  expect(diagnose(reset, [{ name: "Test", conclusion: "success", number: 1 }, ...steps().slice(1)])?.class).toBe(
+    "failure",
+  );
+  expect(diagnose(reset, steps().reverse())?.class).toBe("runner");
+  expect(
+    diagnose(
+      reset,
+      steps().map((s) => (s.name.startsWith("Post ") ? { ...s, name: "Post test" } : s)),
+    )?.class,
+  ).toBe("failure");
+  expect(
+    diagnose("##[error]assertion failed\nUnable to download artifact(s): ECONNRESET", steps("Test"))?.networkStep,
+  ).toBeUndefined();
+  for (const line of [
+    "npm error code ETIMEDOUT",
+    "npm ERR! code EAI_AGAIN",
+    "npm error code ECONNREFUSED",
+    "request to https://registry.example.test/tool failed, reason: socket hang up",
+    "Unable to make request: ECONNRESET",
+    "Failed to GetSignedArtifactURL",
+    "net/http: TLS handshake timeout",
+    "proxyconnect tcp: i/o timeout",
+    "fatal: unable to access 'https://github.com/acme/widgets': Could not resolve host: github.com",
+    "fatal: unable to access 'https://github.com/acme/widgets': Failed to connect",
+    "fatal: unable to access 'https://github.com/acme/widgets': The requested URL returned error: 503",
+    "fatal: unable to access 'https://github.com/acme/widgets': Operation timed out",
+    "RPC failed; HTTP 502",
+    "Error response from daemon: net/http: request canceled",
+    "Error response from daemon: i/o timeout",
+    "Error response from daemon: toomanyrequests",
+    "ReadTimeoutError: HTTPSConnectionPool",
+    "Max retries exceeded with url: /tool",
+    "Unexpected HTTP response: 503",
+    "status code does not indicate success: 502",
+  ])
+    expect(diagnose(line)?.class).toBe("runner");
+  for (const line of [
+    "request to https://registry.example.test/tool failed, reason: 404 Not Found",
+    "Failed to GetSignedArtifactURL: 403 Forbidden",
+    "npm error 401 Unauthorized",
+    "npm error 404 Not Found; ECONNRESET",
+    `Unable to download artifact(s): ECONNRESET${" ".repeat(1100)}403 Forbidden`,
+    "##[error]assertion failed\nUnable to download artifact(s): ECONNRESET",
+  ])
+    expect(diagnose(line)?.class).toBe("failure");
 });

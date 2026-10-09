@@ -521,3 +521,76 @@ test("dependent summary failures rerun with known flakes, but a summary's own fa
     }
   }
 });
+
+test("network candidates read validated steps, isolate missing evidence and rerun only on explicit first-attempt request", async () => {
+  for (const scenario of ["setup", "test", "missing", "wrong identity", "404", "known test"]) {
+    const f = rerunFixture({ known: scenario === "known test" });
+    const allowed = scenario === "setup" || scenario === "known test";
+    const fetch = f.io.fetch;
+    if (!fetch) throw new Error("fixture needs fetch");
+    let stepReads = 0;
+    let reran = false;
+    const exec = f.io.exec;
+    if (!exec) throw new Error("fixture needs exec");
+    f.io.exec = async (...args) => {
+      reran = true;
+      return exec(...args);
+    };
+    f.io.fetch = async (url, init) => {
+      if (url.endsWith("/runs/7")) return Response.json({ run_attempt: reran ? 2 : 1, status: "completed" });
+      if (url.endsWith("/logs"))
+        return new Response(
+          scenario === "404"
+            ? "npm error 404 Not Found\n##[error]exit code 1"
+            : `${scenario === "known test" ? "(fail) widgets > saves a draft\n" : ""}Unable to download artifact(s): ECONNRESET\n##[error]exit code 1`,
+        );
+      if (url.endsWith("/jobs/11")) {
+        stepReads++;
+        if (scenario === "missing") return new Response(null, { status: 403 });
+        return Response.json({
+          id: 11,
+          run_id: scenario === "wrong identity" ? 8 : 7,
+          head_sha: sha,
+          name: "Tests (linux)",
+          status: "completed",
+          conclusion: "failure",
+          steps: [
+            { name: "Set up job", conclusion: "success", number: 1 },
+            {
+              name: scenario === "test" || scenario === "known test" ? "Test" : "Run actions/download-artifact@v4",
+              conclusion: "failure",
+              number: 2,
+            },
+            { name: "Scan", conclusion: "skipped", number: 3 },
+            { name: "Complete job", conclusion: "success", number: 4 },
+          ],
+        });
+      }
+      return fetch(url, init);
+    };
+    expect(await run(["ci", "why", "9"], f.io)).toBe(0);
+    expect(f.writes).toHaveLength(0);
+    expect(stepReads).toBe(scenario === "404" ? 0 : 1);
+    if (scenario === "setup")
+      expect(f.out()).toContain('runner problem (network, in setup step "Run actions/download-artifact@v4")');
+    if (scenario === "test")
+      expect(f.out()).toContain(
+        'Network error in step "Test", not a setup step: treated as a failure. If this step only downloads tools or dependencies, add its name to [ci] setup_steps.',
+      );
+    if (scenario === "known test") {
+      expect(f.out()).toContain("known flaky test");
+      expect(f.out()).not.toContain("treated as a failure");
+    }
+    if (scenario === "missing" || scenario === "wrong identity") {
+      expect(f.out()).toContain("network error found, step evidence unavailable");
+      expect(f.err()).toBe("");
+    }
+    expect(await run(["ci", "why", "9", "--rerun"], f.io)).toBe(allowed ? 0 : 1);
+    expect(f.writes).toHaveLength(allowed ? 1 : 0);
+    if (allowed) {
+      expect(await run(["ci", "why", "9", "--rerun"], f.io)).toBe(1);
+      expect(f.out()).toContain("already rerun once, attempt 2");
+      expect(f.writes).toHaveLength(1);
+    }
+  }
+});
