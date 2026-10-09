@@ -989,6 +989,14 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "UPDATE jobs SET progress_changed_at = observed_at",
     ],
   },
+  {
+    // THE-1429: one actionable launch outcome per ticket, fenced by its launch generation.
+    version: 50,
+    statements: [
+      "ALTER TABLE inbox_items ADD COLUMN launch_id text",
+      "CREATE UNIQUE INDEX inbox_one_launch_failure ON inbox_items (project, ticket) WHERE resolved_at IS NULL AND kind IN ('launch-failed', 'launch-uncertain')",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

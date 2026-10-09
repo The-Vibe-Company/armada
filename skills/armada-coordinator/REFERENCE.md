@@ -45,7 +45,8 @@ Both modes share one lock per project and name on a machine. `armada inbox --wai
 - **Conductor sessions are observed**: a session Armada sees working is only called silent past twice the allowance, and the alert says it is still working. A session idle in a working phase for five minutes without a report or answer is `stopped`: nothing will wake it.
 - A silence wakes the watch at its allowance, then at twice, four times and each doubling after.
 - **Quiet**: a live worker without a report for `quiet_minutes` (45 by default) is a note for you only.
-- **Not started**: no claim `not_started_minutes` (10 by default) after the launch. An unused token that expired produces one notice, then clears.
+- **Launch failed or uncertain**: `launch-failed` and `launch-uncertain` are recorded immediately for an attempted runtime launch, including deferred launches during merge/drain. The watch wakes on them. Read the reason and run the item’s `Next:` command. Failed launches and recovered but unconfirmed launches exit 1; preflight refusals still exit 2. An uncertain launch retains its token: inspect the worker before retrying creation. The `Launched` line and dry-run plan include the ticket title; JSON includes `title`. Repeated failures rewrite the same open item. It closes on the next claim, a successful launch binding, `armada launch revoke <ticket>`, or `armada answer <id> "<why>"`. Recording on Armada is best-effort; a recording warning never turns failure into success.
+- **Not started**: no claim `not_started_minutes` (10 by default) after the launch. An unused token that expired produces one notice, then clears. An open `launch-failed` or `launch-uncertain` item suppresses this notice for its ticket.
 - Claims end by themselves when their ticket is Done or Canceled, their hand-back merged, their session was revoked or their workspace archived.
 
 ## Upgrades

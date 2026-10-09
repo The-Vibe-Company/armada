@@ -38,6 +38,7 @@ import type {
   JobQuery,
   JobState,
   LatestEvent,
+  LaunchFailureRecord,
   Lease,
   MainHealth,
   MergeHold,
@@ -81,6 +82,53 @@ import { captionedAttachments, ticketsAttachments } from "./attachments";
 import { type Database, iso, isoAt, type Queryable, type Row, text, transaction } from "./db";
 import { digestRecords } from "./digest";
 import { endWorker } from "./workers";
+
+/** Rewrites one launch notice while serializing with claims and launch lifecycle changes. */
+async function recordLaunchFailure(
+  db: Database,
+  input: LaunchFailureRecord & { project: string; at: Date },
+): Promise<void> {
+  await transaction(db, async (tx) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR UPDATE", [input.project]);
+    const launch = (
+      await tx.query(
+        `SELECT "createdAt", "coordinator" FROM "armada_worker" WHERE "id" = $1 AND "project" = $2 AND "ticket" = $3`,
+        [input.launchId, input.project, input.ticket],
+      )
+    ).rows[0];
+    if (!launch) throw new Error("the launch does not belong to this project and ticket");
+    const newer = await tx.query(
+      `SELECT 1 FROM "armada_worker" WHERE "project" = $1 AND "ticket" = $2
+       AND ("createdAt", "id") > ($3, $4) LIMIT 1`,
+      [input.project, input.ticket, launch.createdAt, input.launchId],
+    );
+    if (newer.rows.length) return;
+    const claimed = await tx.query(
+      `SELECT 1 FROM runtime_handles WHERE project = $1 AND ticket = $2 AND claimed_at >= $3
+       UNION ALL SELECT 1 FROM events WHERE project = $1 AND ticket = $2 AND kind = 'claim' AND created_at >= $3 LIMIT 1`,
+      [input.project, input.ticket, launch.createdAt],
+    );
+    if (claimed.rows.length) return;
+    await tx.query(
+      `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, coordinator, launch_id)
+       VALUES ($1, $2, $3, 'coordinator', NULL, $4, $5, $6, $7)
+       ON CONFLICT (project, ticket) WHERE resolved_at IS NULL AND kind IN ('launch-failed', 'launch-uncertain')
+       DO UPDATE SET kind = excluded.kind, body = excluded.body, created_at = excluded.created_at,
+         coordinator = excluded.coordinator, launch_id = excluded.launch_id
+       WHERE NOT EXISTS (SELECT 1 FROM "armada_worker" old WHERE old."id" = inbox_items.launch_id AND (old."createdAt", old."id") > ($8, $7))`,
+      [
+        input.project,
+        input.ticket,
+        input.outcome === "failed" ? "launch-failed" : "launch-uncertain",
+        `${input.reason}\nNext: ${input.next}`,
+        input.at,
+        launch.coordinator ?? null,
+        input.launchId,
+        launch.createdAt,
+      ],
+    );
+  });
+}
 
 // ------------------------------------------------------------------ projects
 
@@ -689,6 +737,11 @@ export async function saveRuntimeHandle(
      SELECT project, ticket, runtime, handle, branch, claimed_at, coordinator FROM current_handle
      ON CONFLICT (project, ticket, handle, claimed_at) DO UPDATE SET branch = excluded.branch, coordinator = excluded.coordinator`,
       [h.project, h.ticket, h.runtime, h.handle, h.branch, h.at, h.workerSessionId ?? null, h.coordinator ?? null],
+    );
+    await tx.query(
+      `UPDATE inbox_items SET resolved_at = $3, resolution = $4 WHERE project = $1 AND ticket = $2
+       AND resolved_at IS NULL AND kind IN ('launch-failed', 'launch-uncertain') AND created_at <= $3`,
+      [h.project, h.ticket, h.at, `claimed by ${h.runtime} (${h.handle})`],
     );
   });
 }
@@ -1965,6 +2018,7 @@ export async function applyMainRedHold(
 
 /** Core's `FleetStore` on the app's database: what the Armada API runs the CLI's operations on. */
 export const fleetStore = (db: Database): FleetStore => ({
+  recordLaunchFailure: (input) => recordLaunchFailure(db, input),
   prepareMergeNotice: async (project, key, at) => {
     const inserted = await db.query(
       `INSERT INTO merge_notices (project, delivery_key, attempted_at) VALUES ($1, $2, $3)

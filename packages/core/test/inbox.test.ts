@@ -308,18 +308,31 @@ test("mine resolves ticket ownership before filtering entries, flight and ETags"
 });
 
 describe("ask and answer", () => {
-  test("a coordinator can resolve Linear follow-up work without reading or writing Linear", async () => {
-    const live = tempFleet();
-    const { linear, ctx } = setup(live);
-    await live.fleet.chore({ ticket: "DEMO-7", kind: "linear-pending", pr: 11, body: "Finish Linear for #11" });
-    // The ticket does not exist in FakeLinear: a tracker read here would fail.
-    const item = (await live.fleet.ticketItems("DEMO-7"))[0];
-    if (!item) throw new Error("missing chore");
-    expect((await answerItem(ctx, { target: `#${item.id}`, text: "Completed by hand" })).lines).toEqual([
-      `Inbox item #${item.id} resolved.`,
-    ]);
-    expect((await live.fleet.inboxItem(item.id))?.resolvedAt).toBe(NOW.toISOString());
-    expect(linear.writes).toEqual([]);
+  test("a coordinator resolves launch outcomes and Linear follow-up with a required explanation, without tracker I/O", async () => {
+    for (const kind of ["linear-pending", "launch-failed", "launch-uncertain"] as const) {
+      const live = tempFleet();
+      const { linear, ctx } = setup(live);
+      if (kind === "linear-pending")
+        await live.fleet.chore({ ticket: "DEMO-7", kind, pr: 11, body: "Finish Linear for #11" });
+      else
+        await live.fleet.recordLaunchFailure({
+          ticket: "DEMO-7",
+          launchId: "launch-7",
+          outcome: kind === "launch-failed" ? "failed" : "uncertain",
+          reason: "runtime refused",
+          next: "armada launch DEMO-7",
+        });
+      // The ticket does not exist in FakeLinear: a tracker read here would fail.
+      const item = (await live.fleet.ticketItems("DEMO-7"))[0];
+      if (!item) throw new Error("missing notice");
+      await expect(answerItem(ctx, { target: `#${item.id}`, text: " " })).rejects.toBeInstanceOf(Refusal);
+      expect((await live.fleet.inboxItem(item.id))?.resolvedAt).toBeNull();
+      expect((await answerItem(ctx, { target: `#${item.id}`, text: "Completed by hand" })).lines).toEqual([
+        `Inbox item #${item.id} resolved.`,
+      ]);
+      expect((await live.fleet.inboxItem(item.id))?.resolvedAt).toBe(NOW.toISOString());
+      expect(linear.writes).toEqual([]);
+    }
   });
   test("answering steering requests closes only the request, never approves the plan or acts on Linear", async () => {
     const live = tempFleet();

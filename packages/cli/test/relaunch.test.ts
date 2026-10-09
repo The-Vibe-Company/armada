@@ -309,7 +309,7 @@ test("known launch failure names the released state and releases the lease", asy
   const f = await fixture();
   f.set({ failCreate: true });
   const result = await f.relaunch("--fresh", "--reason", "session died lin_api_CANARY");
-  expect(result, f.text()).toBe(2);
+  expect(result, f.text()).toBe(1);
   expect(f.linear.bodies.join("\n")).not.toContain("lin_api_CANARY");
   expect(f.calls.find((call) => call.args[2] === "create")?.input).not.toContain("lin_api_CANARY");
   expect(f.text()).toContain("DEMO-13 is released, nobody holds it: armada launch DEMO-13");
@@ -380,7 +380,7 @@ test("timeout leaves ownership intact; an uncertain in-place create retains its 
   expect(stopped.order).not.toContain("fleet/release");
   const uncertain = await fixture();
   uncertain.set({ timeoutCreate: true });
-  expect(await uncertain.relaunch()).toBe(2);
+  expect(await uncertain.relaunch()).toBe(1);
   expect(uncertain.text()).toContain("a pending launch remains");
   expect(uncertain.text()).not.toContain("nobody holds it");
   expect(uncertain.order).not.toContain("workers/revoke-pending");
@@ -433,15 +433,20 @@ test("archive failure keeps the replacement alive, while keep-old and dry-run ha
   const kept = await fixture();
   expect(await kept.relaunch("--keep-old")).toBe(0);
   expect(kept.order.some((x) => x.startsWith("archive:"))).toBe(false);
-  const dry = await fixture();
-  expect(await dry.relaunch("--dry-run", "--json")).toBe(0);
-  expect(JSON.parse(dry.text())).toMatchObject({ dryRun: true, mode: "in-place", head });
-  expect(JSON.parse(dry.text()).preflight.warnings).toContain(
-    "DEMO-13: Missing ## In short section. Fix: Add ## In short with What changes, Why, Done when, Depends on.",
-  );
-  expect(
-    dry.order.some((x) => ["cancel", "create", "fleet/release", "launch-tokens"].includes(x) || x.includes("lease/")),
-  ).toBe(false);
+  for (const json of [false, true]) {
+    const dry = await fixture();
+    expect(await dry.relaunch("--dry-run", ...(json ? ["--json"] : []))).toBe(0);
+    expect(
+      dry.order.some((x) => ["cancel", "create", "fleet/release", "launch-tokens"].includes(x) || x.includes("lease/")),
+    ).toBe(false);
+    if (json) {
+      const result = JSON.parse(dry.text());
+      expect(result).toMatchObject({ title: "Synthetic worker", dryRun: true, mode: "in-place", head });
+      expect(result.preflight.warnings).toContain(
+        "DEMO-13: Missing ## In short section. Fix: Add ## In short with What changes, Why, Done when, Depends on.",
+      );
+    } else expect(dry.text()).toContain('Relaunch plan for DEMO-13 "Synthetic worker"');
+  }
 });
 
 test("a failed Linear release is retryable without ending the replacement or changing its branch", async () => {
