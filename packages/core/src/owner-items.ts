@@ -1,15 +1,18 @@
 // Owner alerts shared by browser notifications and chat deliveries. Pure.
 import { CONFIG_DEFAULTS } from "./config.ts";
 import { coordinatorAlerts, pendingValidations } from "./coordinator-alerts.ts";
+import type { MergeHold } from "./live.ts";
+import { SPEC_TITLE } from "./model.ts";
 import type { FleetOverview } from "./overview.ts";
 import { REQUEST_KINDS } from "./request-kinds.ts";
+import type { Issue } from "./types.ts";
 
 export { type CoordinatorAlert, coordinatorAlerts, pendingValidations } from "./coordinator-alerts.ts";
 
 export interface OwnerItem {
   /** Stable across polls and tabs: a notification is shown once per key. */
   key: string;
-  kind: "validation" | "question" | "coordinator" | "unattended";
+  kind: "validation" | "question" | "coordinator" | "unattended" | "spec-closed" | "hold-opened" | "hold-cleared";
   project: string;
   ticket: string | null;
   title: string;
@@ -97,6 +100,69 @@ export function ownerItems(o: Notifiable): OwnerItem[] {
         reason,
         minutes,
         workTitle,
+      });
+    }
+  }
+  return items;
+}
+
+/** Channel milestones only; never fed to the browser's ownerItems. */
+export function ownerMilestones(input: {
+  project: string;
+  root: string;
+  issues: readonly Issue[];
+  holds: readonly Pick<MergeHold, "id" | "project" | "reason" | "openedAt" | "clearedAt">[];
+  now: Date;
+  since: string;
+  /** Pause keys already retained in this channel's durable outbox. */
+  announced: ReadonlySet<string>;
+}): OwnerItem[] {
+  const { project, now, announced } = input;
+  const since = Date.parse(input.since);
+  const recent = (at: string | null) => {
+    const time = Date.parse(at ?? "");
+    return time >= since && time <= now.getTime();
+  };
+  const items: OwnerItem[] = [];
+  for (const issue of input.issues) {
+    if (issue.parentId !== input.root || issue.statusType !== "completed" || !recent(issue.completedAt)) continue;
+    const spec = issue.title.trim().match(SPEC_TITLE);
+    if (!spec) continue;
+    items.push({
+      key: `spec:${project}:${issue.id}`,
+      kind: "spec-closed",
+      project,
+      ticket: null,
+      title: `Spec ${spec[1]} · ${spec[3]?.trim()}`,
+      href: issue.url,
+      waiting: 0,
+    });
+  }
+  for (const hold of input.holds) {
+    if (hold.project !== project) continue;
+    const key = `hold:${project}:${hold.id}`;
+    const href = `/projects/${encodeURIComponent(project)}`;
+    if (hold.clearedAt) {
+      if (recent(hold.clearedAt) && announced.has(key))
+        items.push({
+          key: `hold-cleared:${project}:${hold.id}`,
+          kind: "hold-cleared",
+          project,
+          ticket: null,
+          title: project,
+          href,
+          waiting: 0,
+        });
+    } else if (recent(hold.openedAt) && now.getTime() - Date.parse(hold.openedAt) >= 5 * 60_000) {
+      items.push({
+        key,
+        kind: "hold-opened",
+        project,
+        ticket: null,
+        title: project,
+        reason: hold.reason.split(/\r?\n/, 1)[0] ?? "",
+        href,
+        waiting: 0,
       });
     }
   }
