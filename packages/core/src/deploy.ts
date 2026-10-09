@@ -48,6 +48,7 @@ export const DEPLOY_STATES = [
   "timeout",
   "skipped",
   "not-runnable",
+  "not-deployed",
 ] as const;
 export type DeployState = (typeof DEPLOY_STATES)[number];
 export interface DeployInput {
@@ -85,9 +86,36 @@ export function deployDetail(output: string): string {
 }
 export interface LiveDeploy {
   sha: string | null;
-  state: "pending" | "success" | "failure" | "error";
+  state: "pending" | "success" | "failure" | "error" | "skipped";
   detail: string;
   notRunnable?: boolean;
+}
+
+/** The shell adapter classifies configuration errors and redacts detail before interpretation. */
+export function checkReading(
+  result: {
+    code: number;
+    stdout: string;
+    detail: string;
+    timedOut?: boolean;
+    outputExceeded?: boolean;
+    notRunnable?: boolean;
+  },
+  sha: string,
+): LiveDeploy {
+  const pending: LiveDeploy = { sha: null, state: "pending", detail: result.detail };
+  if (result.notRunnable) return { ...pending, notRunnable: true };
+  if (result.timedOut) return { ...pending, detail: "check timed out" };
+  if (result.outputExceeded) return { ...pending, detail: "check output exceeded limit" };
+  const last = result.stdout.trim().split("\n").at(-1)?.trim() ?? "";
+  const reportedSha = /^[0-9a-f]{40}$/i.test(last) ? last.toLowerCase() : sha;
+  if (result.code === 0 || result.code === 1)
+    return { sha: reportedSha, state: result.code === 0 ? "success" : "failure", detail: result.detail };
+  if (result.code === 2)
+    return last.startsWith("skipped")
+      ? { ...pending, state: "skipped", detail: last.slice("skipped".length).replace(/^[:\s]+/, "") }
+      : pending;
+  return { ...pending, detail: `check exited ${result.code}; the contract is 0 live, 1 failed, 2 pending or skipped` };
 }
 
 export interface WatchDeployOptions {
@@ -119,7 +147,7 @@ export async function watchDeploy(o: WatchDeployOptions): Promise<DeployState> {
       sha: o.sha,
       state,
       detail: deployDetail(detail),
-      pauseOnFailure: state !== "not-runnable" && o.target.pauseOnFailure,
+      pauseOnFailure: state !== "not-runnable" && state !== "not-deployed" && o.target.pauseOnFailure,
       liveSha,
     });
   await record("waiting");
@@ -151,6 +179,10 @@ export async function watchDeploy(o: WatchDeployOptions): Promise<DeployState> {
         await record("not-runnable");
         return "not-runnable";
       }
+      if (live.state === "skipped") {
+        await record("not-deployed");
+        return "not-deployed";
+      }
       let includes = live.sha === o.sha;
       if (live.sha && !includes) {
         try {
@@ -159,6 +191,8 @@ export async function watchDeploy(o: WatchDeployOptions): Promise<DeployState> {
           detail = `${detail}\ncould not compare the live commit; retrying`;
         }
       }
+      if (!includes && live.sha && live.state === "success" && o.target.check)
+        detail = `check reported live ${live.sha}, which does not contain ${o.sha}`;
       if (includes && (live.state === "failure" || live.state === "error")) {
         await record("deploy-failed");
         return "deploy-failed";
@@ -193,5 +227,5 @@ export async function watchDeploy(o: WatchDeployOptions): Promise<DeployState> {
 
 export function deployLine(row: DeployRecord, now: Date): string {
   const age = Math.max(0, Math.floor((now.getTime() - Date.parse(row.updatedAt)) / 60_000));
-  return `${row.target}: ${row.state === "skipped" ? "skipped (not configured on this machine)" : row.state === "not-runnable" ? "not runnable (configuration)" : row.state} ${row.sha}${row.state === "waiting" || row.state === "live" ? ` — watching since ${row.startedAt.slice(11, 16)}, no news for ${age} min${age >= 2 ? "; watcher may have stopped" : ""}` : ""}`;
+  return `${row.target}: ${row.state === "not-deployed" ? `not deployed (host skipped: ${row.detail})` : row.state === "skipped" ? "skipped (not configured on this machine)" : row.state === "not-runnable" ? "not runnable (configuration)" : row.state} ${row.sha}${row.state === "waiting" || row.state === "live" ? ` — watching since ${row.startedAt.slice(11, 16)}, no news for ${age} min${age >= 2 ? "; watcher may have stopped" : ""}` : ""}`;
 }
