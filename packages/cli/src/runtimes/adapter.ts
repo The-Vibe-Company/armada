@@ -141,7 +141,7 @@ export function runtimeFor(
   ];
   switch (runtimeNameOf(runtime)) {
     case "conductor":
-      return new ConductorAdapter(io, values);
+      return new ConductorAdapter(io, values, { onRetry: (message) => io.stderr(`${message}\n`) });
     case "herdr":
       return herdrErrors(new HerdrAdapter(io, config, values));
     case "claude-code":

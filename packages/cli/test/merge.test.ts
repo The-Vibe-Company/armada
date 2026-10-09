@@ -33,6 +33,27 @@ import {
 import { afterMerge } from "../src/after-merge.ts";
 import { run } from "../src/cli.ts";
 import type { Exec, Io } from "../src/io.ts";
+import { ghMerge, ghUpdateBranch } from "../src/merge.ts";
+
+test.each([
+  ["unexpected end of JSON input", true],
+  ["invalid character '<' looking for beginning of value", true],
+  ["HTTP 422: Validation Failed", false],
+])("SHA-guarded gh writes classify unreadable responses as temporary (%s)", async (message, transient) => {
+  const calls: string[][] = [];
+  const exec: Exec = async (_command, args) => {
+    calls.push(args);
+    return { code: 1, stdout: "", stderr: message };
+  };
+  const sha = "1".repeat(40);
+  for (const write of [ghMerge, ghUpdateBranch]) {
+    expect(await write(exec, "/repo", "demo/widgets")(9, sha)).toEqual({ ok: false, message, transient });
+  }
+  expect(calls).toHaveLength(2);
+  expect(calls[0]).toContain("--match-head-commit");
+  expect(calls[0]).toContain(sha);
+  expect(calls[1]).toContain(`expected_head_sha=${sha}`);
+});
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -1429,7 +1450,7 @@ test.each([
       detail: succeeds
         ? "archived"
         : queued
-          ? "Conductor CLI could not execute workspace status"
+          ? "the queue was taken over"
           : "Conductor server error during workspace status (exit 4)",
     });
   if (scenario === "unrecorded") {

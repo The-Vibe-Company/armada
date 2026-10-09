@@ -1,5 +1,6 @@
 // Owner-facing summaries (THE-1107). Pure; callers supply records and time.
 import type { SinceSummary } from "./catchup.ts";
+import { isDone, type Model } from "./model.ts";
 import type { LabelPhase } from "./types.ts";
 
 export interface DigestFlight {
@@ -12,15 +13,52 @@ export interface DigestFlight {
 
 export interface DigestExtras {
   mainRed?: { project: string; since: string; url: string }[];
-  deploys?: { project: string; state: "pending" | "success" | "failure"; url: string }[];
+  deploys?: { project: string; target?: string; state: "pending" | "success" | "failure"; url: string }[];
   jobs?: {
     project: string;
     ticket: string;
     title: string;
     eta: string | null;
-    progress: number | null;
+    progress: string | null;
     url?: string;
   }[];
+}
+
+export interface DigestGroup {
+  /** Project-qualified parent/spec identifier. */
+  key: string;
+  title: string;
+  done: number;
+  total: number;
+}
+
+/** Spec ancestry and leaf counts share the program model used by fleet progress. */
+export function buildDigestGroups(model: Model, project: string): Record<string, DigestGroup> {
+  const counts = new Map<string, { done: number; total: number }>();
+  for (const leaf of model.program.filter(model.isLeaf)) {
+    const seen = new Set<string>([leaf.id]);
+    for (let parent = leaf.parentId; parent && !seen.has(parent); parent = model.byId.get(parent)?.parentId ?? null) {
+      seen.add(parent);
+      const count = counts.get(parent) ?? { done: 0, total: 0 };
+      count.total++;
+      if (isDone(leaf)) count.done++;
+      counts.set(parent, count);
+    }
+  }
+  const groups: Record<string, DigestGroup> = {};
+  for (const ticket of model.program) {
+    const spec = model.specOf(ticket.id);
+    const parent = spec?.issue ?? (ticket.parentId ? model.byId.get(ticket.parentId) : undefined);
+    // Direct root children and unknown ancestry belong to Other when grouping.
+    if (!parent || parent.id === model.root.id) continue;
+    const count = counts.get(parent.id) ?? { done: 0, total: 0 };
+    groups[`${project}/${ticket.id}`] = {
+      key: `${project}/${parent.id}`,
+      title: spec ? `Spec ${spec.ordinal} · ${spec.name}` : parent.title,
+      ...count,
+    };
+  }
+  return groups;
 }
 
 export interface DigestInput {
@@ -33,6 +71,7 @@ export interface DigestInput {
   /** Merged cycles with complete phase history; estimates require at least three. */
   mergedSamples?: number;
   titles?: Record<string, string>;
+  groups?: Record<string, DigestGroup>;
   ownerItems?: { project: string; ticket: string | null; title: string; href: string; kind: "plan" | "coordinator" }[];
   skipped?: string[];
   extras?: DigestExtras;
@@ -80,6 +119,7 @@ export const DIGEST_STRINGS = {
     stuck: "Stuck or blocked",
     waiting: "Waiting for you",
     flight: "In progress",
+    other: "Other",
     quiet: "Nothing new: no merges, no blocks, no decisions waiting.",
     blocked: "blocked",
     silent: "no news",
@@ -115,6 +155,7 @@ export const DIGEST_STRINGS = {
     stuck: "Bloqués ou sans nouvelles",
     waiting: "En attente de votre décision",
     flight: "En cours",
+    other: "Autres",
     quiet: "Rien de nouveau : aucune fusion, aucun blocage, aucune décision en attente.",
     blocked: "bloqué",
     silent: "sans nouvelles",
@@ -169,7 +210,41 @@ export function renderDigest(d: Digest, opts: { language: "en" | "fr"; format: "
   const section = (name: string, lines: string[]) => {
     if (lines.length) out.push(`${name}\n${lines.map((l) => `• ${l}`).join("\n")}`);
   };
-  section(t.merged, d.summary.merged.map(title));
+  type Ticket = { project: string; ticket: string | null };
+  const groupOf = (s: Ticket) => d.groups?.[`${s.project}/${s.ticket}`];
+  const grouped =
+    new Set(
+      [...d.summary.merged, ...d.summary.waiting, ...(d.ownerItems ?? []), ...d.inFlight].map(
+        (s) => groupOf(s)?.key ?? null,
+      ),
+    ).size > 1 && Object.keys(d.groups ?? {}).length > 0;
+  const ticketSection = <T extends Ticket>(name: string, items: T[], line: (s: T) => string) => {
+    if (!grouped) return section(name, items.map(line));
+    if (!items.length) return;
+    const buckets = new Map<string | null, { group: DigestGroup | undefined; lines: string[] }>();
+    for (const item of items) {
+      const group = groupOf(item);
+      const key = group?.key ?? null;
+      const bucket = buckets.get(key) ?? { group, lines: [] };
+      bucket.lines.push(line(item));
+      buckets.set(key, bucket);
+    }
+    const ordinal = (g: DigestGroup) => Number(/^Spec\s+(\d+)/.exec(g.title)?.[1] ?? Infinity);
+    const sorted = [...buckets.values()].sort((a, b) => {
+      if (!a.group) return b.group ? 1 : 0;
+      if (!b.group) return -1;
+      return ordinal(a.group) - ordinal(b.group) || a.group.key.localeCompare(b.group.key, "en", { numeric: true });
+    });
+    out.push(
+      `${name}\n${sorted
+        .map(
+          ({ group, lines }) =>
+            `${group ? `${clean(group.title)} (${group.done}/${group.total})` : t.other}\n${lines.map((l) => `• ${l}`).join("\n")}`,
+        )
+        .join("\n")}`,
+    );
+  };
+  ticketSection(t.merged, d.summary.merged, title);
   section(
     t.stuck,
     d.summary.stuck.map(
@@ -177,16 +252,15 @@ export function renderDigest(d: Digest, opts: { language: "en" | "fr"; format: "
         `${title(s)} · ${t[s.reason]}${s.minutes === null ? "" : ` · ${s.minutes} min`}${s.reason === "silent" && !s.ongoing ? ` · ${t.recovered}` : ""}`,
     ),
   );
-  section(t.waiting, [
-    ...d.summary.waiting.map((s) => `${title(s)} · ${t.kinds[s.kind]} · ${link(`/approve/${s.id}`)}`),
-    ...(d.ownerItems ?? []).map((s) => `${title(s)} · ${t.kinds[s.kind]} · ${link(s.href)}`),
-  ]);
-  section(
+  ticketSection(
+    t.waiting,
+    [...d.summary.waiting.map((s) => ({ ...s, href: `/approve/${s.id}` })), ...(d.ownerItems ?? [])],
+    (s) => `${title(s)} · ${t.kinds[s.kind]} · ${link(s.href)}`,
+  );
+  ticketSection(
     t.flight,
-    d.inFlight.map(
-      (s) =>
-        `${title(s)} · ${t.phases[s.phase]}${s.remainingMinutes === null ? "" : ` · ${t.more(s.remainingMinutes)}`}`,
-    ),
+    d.inFlight,
+    (s) => `${title(s)} · ${t.phases[s.phase]}${s.remainingMinutes === null ? "" : ` · ${t.more(s.remainingMinutes)}`}`,
   );
   section(
     t.main,
@@ -194,13 +268,15 @@ export function renderDigest(d: Digest, opts: { language: "en" | "fr"; format: "
   );
   section(
     t.deploys,
-    (d.extras?.deploys ?? []).map((s) => `${clean(s.project)} · ${t.states[s.state]} · ${link(s.url)}`),
+    (d.extras?.deploys ?? []).map(
+      (s) => `${clean(s.project)}${s.target ? ` · ${clean(s.target)}` : ""} · ${t.states[s.state]} · ${link(s.url)}`,
+    ),
   );
   section(
     t.jobs,
     (d.extras?.jobs ?? []).map(
       (s) =>
-        `${title(s)}${s.progress === null ? "" : ` · ${s.progress}%`}${s.eta ? ` · ${t.eta} ${time(s.eta)} UTC` : ""}${s.url ? ` · ${link(s.url)}` : ""}`,
+        `${title(s)}${s.progress === null ? "" : ` · ${clean(s.progress)}`}${s.eta ? ` · ${t.eta} ${time(s.eta)} UTC` : ""}${s.url ? ` · ${link(s.url)}` : ""}`,
     ),
   );
   return out.join("\n\n");
