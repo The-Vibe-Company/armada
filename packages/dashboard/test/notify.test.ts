@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { type FleetOverview, type OwnerValidation, ownerItems, type ProjectOverview } from "@armada/core/read";
-import { STRINGS } from "../lib/i18n.ts";
-import { inQuietHours, notificationTitle, toNotify } from "../lib/notify.ts";
+import {
+  type FleetOverview,
+  type OwnerItem,
+  type OwnerValidation,
+  ownerItems,
+  type ProjectOverview,
+} from "@armada/core/read";
+import { MILESTONE_TITLES, STRINGS } from "../lib/i18n.ts";
+import { channelNotificationTitle, inQuietHours, notificationTitle, toNotify } from "../lib/notify.ts";
 
 // A synthetic fleet, for these tests only.
 const project = (slug: string, state: "active" | "idle", seenAt: string | null = null) =>
@@ -63,6 +69,30 @@ describe("owner notifications", () => {
     expect(notificationTitle(STRINGS.fr, item)).toBe(
       "WID-2 — plan à approuver, en attente du coordinateur depuis 31 min",
     );
+  });
+
+  test("channel milestone titles follow English and French settings", () => {
+    const item: OwnerItem = {
+      key: "spec:widgets:WID-10",
+      kind: "spec-closed",
+      project: "widgets",
+      ticket: null,
+      title: "Spec 2 · Search",
+      href: "https://linear.example.test/WID-10",
+      waiting: 0,
+    };
+    const pause: OwnerItem = { ...item, kind: "hold-opened", title: "widgets", reason: "Check production" };
+    const resume: OwnerItem = { ...pause, kind: "hold-cleared" };
+    expect([item, pause, resume].map((i) => channelNotificationTitle(STRINGS.en, i, MILESTONE_TITLES.en))).toEqual([
+      "Spec 2 · Search finished",
+      "widgets: merges paused — Check production",
+      "widgets: merges resume",
+    ]);
+    expect([item, pause, resume].map((i) => channelNotificationTitle(STRINGS.fr, i, MILESTONE_TITLES.fr))).toEqual([
+      "Spec 2 · Search terminé",
+      "widgets : fusions en pause — Check production",
+      "widgets : les fusions reprennent",
+    ]);
   });
 
   test("stay quiet in the quiet hours, over midnight too", () => {
