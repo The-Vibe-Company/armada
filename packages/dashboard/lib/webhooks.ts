@@ -10,7 +10,9 @@
 // and GitHub with the project's own keys. Everything is injected.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { Database } from "./db";
-import { markEveryProject, markIssues, markRepository } from "./snapshots";
+import { type LoadOptions, MARK_GAP_MS, type ProjectRef, refreshProject, type Scope } from "./fleet-data";
+import { listProjects } from "./fleet-store";
+import { dbSnapshots, markEveryProject, markIssues, markRepository } from "./snapshots";
 
 export const WEBHOOK_VARIABLES = {
   linear: "ARMADA_LINEAR_WEBHOOK_SECRET",
@@ -158,4 +160,33 @@ export async function handleGithubWebhook(request: Request, deps: WebhookDeps): 
   const keys = await markRepository(db, repository, deps.now?.() ?? new Date());
   if (keys.length) deps.refresh(keys);
   return answer(202, { marked: keys.length });
+}
+
+/** Refresh marked projects with their organization's sources, then check owner alerts. */
+export async function refreshMarkedReadings(
+  keys: string[],
+  deps: {
+    db: Database;
+    signedIn: boolean;
+    home: string | null;
+    fleet: (scope: Scope | null) => LoadOptions;
+    pulse: (project: string, organization: string) => Promise<void>;
+  },
+): Promise<void> {
+  const registry = await listProjects(deps.db);
+  await Promise.all(
+    keys.map(async (key) => {
+      const p: ProjectRef | undefined =
+        registry.find((r) => r.slug === key) ?? (key.includes("/") ? { repository: key } : undefined);
+      if (!p) return;
+      const organization = p.organization ?? deps.home;
+      if (deps.signedIn && !organization) return;
+      const opts = deps.fleet(deps.signedIn && organization ? { organization, home: deps.home } : null);
+      await refreshProject(p, dbSnapshots(deps.db, opts.cache.snapshots), opts, {
+        gapMs: MARK_GAP_MS,
+        retryMs: opts.snapshotMs,
+      });
+      if (organization && p.slug) await deps.pulse(p.slug, organization);
+    }),
+  );
 }

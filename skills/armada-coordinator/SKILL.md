@@ -122,7 +122,9 @@ Done when no hold is open without a ticket that fixes it.
 
 ### 8. Turn findings into tickets
 
-A gap a worker reports or a bug you see becomes a ticket under the right spec, with its blocked-by relations, and is launched when ready. No finding lives only in a transcript. `armada spec add "<name>"` creates a spec under the program root with the **In short** template; fill it in before cutting its tickets, then `armada lint <ticket>` each one. Inserting or renumbering specs is in REFERENCE.md.
+A gap a worker reports or a bug you see becomes a ticket under the right spec, with its blocked-by relations, and is launched when ready. No finding lives only in a transcript.
+
+For creating, placing and repairing specs, see [Specs](REFERENCE.md#specs).
 
 ### 9. Report to the owner
 

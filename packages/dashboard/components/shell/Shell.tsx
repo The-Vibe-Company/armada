@@ -24,13 +24,14 @@ import { useLazy } from "../use-lazy";
 import { Announcer } from "./Announcer";
 import { type Account, FleetProvider, useFleet, useNow, useShell } from "./context";
 import { ChevronIcon, SectionIcon } from "./icons";
-import { Notifier } from "./Notifier";
 import { NotifyMenu } from "./NotifyMenu";
 import { prefetched, Sidebar, useNav } from "./Sidebar";
 import { VisitProvider } from "./visit";
 
 // ⌘K and its index load apart from every page, as soon as the browser is idle (THE-892).
 const loadPalette = () => import("./Palette").then((m) => m.Palette);
+// Owner alerts are checked after the first paint, alongside the visit reading.
+const loadNotifier = () => import("./Notifier").then((m) => m.Notifier);
 
 export function Shell({
   initial,
@@ -92,6 +93,7 @@ function Frame({ children }: { children: ReactNode }) {
   const fromPath = useFrom(pathname);
   const [palette, setPalette] = useState(false);
   const Palette = useLazy(loadPalette);
+  const Notifier = useLazy(loadNotifier);
   const [menu, setMenu] = useState(false);
   const main = useRef<HTMLDivElement>(null);
   const selected = useRef(-1);
@@ -195,7 +197,7 @@ function Frame({ children }: { children: ReactNode }) {
       <TabBar section={section} />
       {palette && Palette && <Palette onClose={() => setPalette(false)} />}
       <Announcer />
-      <Notifier />
+      {Notifier && <Notifier />}
     </div>
   );
 }
