@@ -80,6 +80,7 @@ Long runs (an evaluation, a backfill, a load test) run on the project's own runn
 - `armada job start <name> --ticket <id>` dispatches one and stores its runner reference; `armada job status` asks the runner, `armada job list` reads stored progress.
 - `armada job stop <id>` stops one on purpose; nothing is stopped automatically, even when its ticket is Done.
 - A runner can push progress with `armada job beat <id> --progress "40/120"`, signed in with an organization API key.
+- A running job with progress unchanged past `[jobs.<name>] stall_minutes` (60 by default) shows `stalled` and a `job-stalled` inbox alert. Check it with `armada job status <id>`; use `armada job stop <id>` only when you intend to stop it. Fraction progress (`n/m`) ignores ETA/clock changes; movement clears the alert and a later stall wakes the watch again. Silent jobs take precedence, and jobs without progress are never stalled. This only covers runs tracked through `armada job`; the alert never stops the job.
 - A job without news past its silence limit is a `job-silent` entry; a finished job leaves one `job` notice. Read it, then `armada answer <item> "<what you checked>"`.
 - `armada job recover <id> --ref <reference>` attaches a runner reference that a lost answer did not record.
 

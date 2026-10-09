@@ -1261,6 +1261,65 @@ describe("job alarms", () => {
     ).toHaveLength(2);
   });
 
+  test("unchanged progress wakes once per stall, clears on movement and yields to silence", async () => {
+    const store = memoryFleet();
+    const jobConfig = parseConfig(`${DEMO_TOML}\n[jobs.eval]\nstart = "start"\nstop = "stop"`);
+    const snapshot: HandBackSnapshot = { repository: "acme/widgets", issues: [], prs: [], config: jobConfig };
+    const job = await store.startJob({ project: P, ticket: "DEMO-7", name: "eval", startedBy: null, at: at(61) });
+    const observe = (minutesAgo: number, progress?: string | null) =>
+      store.observeJob({
+        project: P,
+        ticket: job.ticket,
+        id: job.id,
+        state: "running",
+        progress,
+        at: at(minutesAgo),
+      });
+    await observe(61, "40/120 ETA 03:10");
+    for (const minutes of [51, 41, 31, 21, 11, 1]) await observe(minutes, `40/120 ETA ${minutes} min`);
+    const query = { coordinator: null, silentAfterMinutes: 15, etag: null };
+    const read = (now = NOW) => serveInbox(store, P, query, now, null, snapshot);
+    const before = (await read(at(1)))?.items ?? [];
+    expect(before).toEqual([]); // exactly 60 min does not exceed the limit
+    const entries = (await read())?.items ?? [];
+    expect(entries).toMatchObject([{ kind: "job-stalled", jobId: job.id }]);
+    expect(entries[0]?.body).toContain("unchanged for 61 min");
+    expect(entries[0]?.body).toContain("keeps running");
+    expect(entries[0]?.body).toContain(`armada job status ${job.id}`);
+    expect(entries[0]?.body).toContain(`armada job stop ${job.id}`);
+    expect(entryKey(entries[0]!)).toBe(`job-stalled:${job.id}@${at(61).toISOString()}`);
+    const clock = fakeClock();
+    const fleet = { ...tempFleet({ store, clock }).fleet, inbox: async () => (await read(clock.now()))! };
+    const watch = (seen: string[]) =>
+      watchInbox(fleet, {
+        project: P,
+        coordinator: null,
+        silentAfterMinutes: 15,
+        seen,
+        now: clock.now,
+        sleep: clock.sleep,
+        until: new Date(clock.now().getTime() + 60_000),
+      });
+    const first = await watch([]);
+    expect(first.outcome).toBe("items");
+    expect((await watch(first.items.map(entryKey))).outcome).toBe("timeout");
+    await observe(0, "41/120");
+    expect((await read())?.items).toEqual([]);
+    for (const minutes of [10, 20, 30, 40, 50, 60]) await observe(-minutes, "41/120");
+    const later = (await read(at(-61)))?.items ?? [];
+    expect(later).toMatchObject([{ kind: "job-stalled" }]);
+    expect(entryKey(later[0]!)).not.toBe(entryKey(entries[0]!));
+    clock.advance(60 * 60_000);
+    expect((await watch(first.items.map(entryKey))).outcome).toBe("items");
+    expect((await read(at(-76)))?.items.map((item) => item.kind)).toEqual(["job-silent"]);
+    await observe(-77, null);
+    expect((await read(at(-140)))?.items.map((item) => item.kind)).toEqual(["job-silent"]);
+    await observe(-140);
+    expect((await read(at(-140)))?.items).toEqual([]);
+    expect((await store.getJob(P, job.id))?.state).toBe("running");
+    expect(await store.openInboxItems({ project: P, recipient: "coordinator" })).toEqual([]);
+  });
+
   test("job alarms and liveness follow the ticket's named coordinator", async () => {
     const live = tempFleet();
     const { ctx, linear } = setup(live);

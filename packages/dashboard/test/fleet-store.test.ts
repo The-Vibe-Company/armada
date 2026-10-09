@@ -1046,6 +1046,44 @@ test("a higher reserved version does not hide a later merge-hold migration", asy
   }
 });
 
+test("job progress clocks ignore ETA chatter and stale probes, but track movement and clearing", async () => {
+  const project = { slug: "progress-clocks", name: "Jobs", repository: "acme/jobs", programRoot: "DEMO-1" };
+  const store = fleetStore(db);
+  await store.ensureProject(project, at(0));
+  const job = await store.startJob({
+    project: project.slug,
+    ticket: "DEMO-7",
+    name: "eval",
+    startedBy: null,
+    at: at(0),
+  });
+  expect(job.progressChangedAt).toBe(at(0).toISOString());
+  const observe = (minutes: number, progress?: string | null, expectedRevision?: number) =>
+    store.observeJob({
+      project: project.slug,
+      ticket: job.ticket,
+      id: job.id,
+      state: "running",
+      at: at(minutes),
+      progress,
+      expectedRevision,
+    });
+  const first = await observe(1, "40/120 ETA 03:10");
+  const repeated = await observe(2, "40/120 ETA 03:20");
+  expect(repeated?.progress).toBe("40/120 ETA 03:20");
+  expect(repeated?.observedAt).toBe(at(2).toISOString());
+  expect(repeated?.progressChangedAt).toBe(at(1).toISOString());
+  const moved = await observe(3, "41/120 ETA 03:30");
+  expect(moved?.progressChangedAt).toBe(at(3).toISOString());
+  const stale = await observe(4, "40/120", first?.revision);
+  expect(stale?.progress).toBe("41/120 ETA 03:30");
+  expect(stale?.progressChangedAt).toBe(at(3).toISOString());
+  expect((await observe(5))?.progressChangedAt).toBe(at(3).toISOString());
+  expect((await observe(6, null))?.progressChangedAt).toBe(at(6).toISOString());
+  expect((await observe(7, "preparing"))?.progressChangedAt).toBe(at(7).toISOString());
+  expect((await observe(8, "processing"))?.progressChangedAt).toBe(at(8).toISOString());
+});
+
 test("concurrent terminal job observations atomically store one coordinator notice with last progress", async () => {
   const project = { slug: "job-notices", name: "Jobs", repository: "acme/jobs", programRoot: "DEMO-1" };
   const store = fleetStore(db);
