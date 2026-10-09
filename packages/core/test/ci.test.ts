@@ -18,6 +18,109 @@ const check = (over: Partial<FailedCheck> = {}): FailedCheck => ({
   ...over,
 });
 
+test("failed-step excerpts ignore checkout noise and prioritize the test failure before trailing output", async () => {
+  const config = parseConfig(`${DEMO_TOML}
+[[ci.known_failure]]
+check = "Tests (linux)"
+pattern = "checkout noise"
+ticket = "DEMO-42"
+`);
+  const step = "##[group]Run bun test";
+  const lines = [
+    "##[group]Run actions/checkout@v4",
+    "error: checkout noise",
+    "##[endgroup]",
+    step,
+    "##[endgroup]",
+    "error: expected size budget",
+    "Expected: <= 20000",
+    "Received: 20113",
+    "(fail) suite > case [1.00ms]",
+    ...Array(3500).fill("(pass) unrelated successful output"),
+    "##[error]Process completed with exit code 1.",
+  ];
+  const log = await fetchJobLog({
+    token: "synthetic",
+    repository: "acme/widgets",
+    jobId: 11,
+    fetch: async () => new Response(lines.join("\n")),
+  });
+  const result = explainChecks([check()], new Map([[11, log]]), config.ci)[0];
+  expect(result).toMatchObject({
+    step: "Run bun test",
+    class: "failure",
+    tests: ["suite > case"],
+    knownFailureDrafts: [{ check: "Tests (linux)", pattern: "^suite > case$" }],
+  });
+  expect(result?.error[0]).toBe(step);
+  expect(result?.error).toContain("Expected: <= 20000");
+  expect(result?.error.join("\n")).not.toContain("checkout noise");
+  if (!result) throw new Error("missing diagnosis");
+  expect(rerunDecision([result], 1).allowed).toBe(false);
+
+  const noisy = [
+    step,
+    ...Array(50).fill("error: incidental authentication noise"),
+    "Expected: true",
+    "Received: false",
+    ...Array(25).fill("    at test runner (test/example.test.ts:12:3)"),
+    "(fail) suite > late case",
+    "##[error]exit code 1",
+  ];
+  const late = explainChecks([check()], new Map([[11, { lines: noisy, warnings: [] }]]))[0];
+  expect(late?.error).toContain("(fail) suite > late case");
+  expect(late?.error).toContain("Expected: true");
+  // Logs without an Actions error annotation retain the original first-error fallback.
+  const fallback = explainChecks(
+    [check()],
+    new Map([
+      [
+        11,
+        {
+          lines: noisy.slice(0, -1),
+          warnings: [],
+        },
+      ],
+    ]),
+  )[0];
+  expect(fallback?.step).toBeUndefined();
+  expect(fallback?.error[0]).toBe(step);
+});
+
+test("flake drafts escape exact unknown names, cap at three and exclude safe or external checks", () => {
+  const config = parseConfig(`${DEMO_TOML}
+[[ci.known_failure]]
+check = "Tests (linux)"
+pattern = "^known case$"
+ticket = "DEMO-42"
+`);
+  const lines = [
+    "(fail) known case",
+    "(fail) suite > case (a.b) [x] +?",
+    "(fail) second",
+    "(fail) third",
+    "(fail) fourth",
+  ];
+  const result = explainChecks([check()], new Map([[11, { lines, warnings: [] }]]), config.ci)[0];
+  expect(result?.knownFailureDrafts).toHaveLength(3);
+  const draft = result?.knownFailureDrafts?.[0];
+  if (!draft) throw new Error("missing draft");
+  const pattern = new RegExp(draft.pattern);
+  expect(pattern.test("suite > case (a.b) [x] +?")).toBe(true);
+  expect(pattern.test("suite > case (axb) [x] +?")).toBe(false);
+  expect(pattern.test("prefix suite > case (a.b) [x] +?")).toBe(false);
+  for (const [c, evidence] of [
+    [check(), ["(fail) known case"]],
+    [check(), ["##[error]No space left on device"]],
+    [check({ app: "quality-app" }), ["(fail) unknown case"]],
+    [check(), ["error: compilation failed"]],
+    [check({ superseded: true }), ["(fail) old case"]],
+  ] as const) {
+    const explanation = explainChecks([c], new Map([[11, { lines: [...evidence], warnings: [] }]]), config.ci)[0];
+    expect(explanation?.knownFailureDrafts).toBeUndefined();
+  }
+});
+
 test("bun failure names tests and first error; disk-full is a runner problem", () => {
   const result = explainChecks(
     [check(), check({ id: 12, name: "Tests (mac)" })],
@@ -172,14 +275,15 @@ test("recorded failed-check read follows log redirect without sharing authorizat
   expect(recording.calls[0]?.variables).toMatchObject({ sha });
 });
 
-test("logs keep their last 3000 lines, stop at 5 MB and warn on Actions read or expired logs", async () => {
+test("logs retain early evidence, stop at 5 MB and warn on Actions read or expired logs", async () => {
   const opts = { token: "synthetic", repository: "acme/widgets", jobId: 11 };
   const tail = await fetchJobLog({
     ...opts,
     fetch: async () => new Response(Array.from({ length: 3100 }, (_, i) => `line ${i}`).join("\n")),
   });
-  expect(tail.lines).toHaveLength(3000);
-  expect(tail.lines[0]).toBe("line 100");
+  expect(tail.lines).toHaveLength(3100);
+  expect(tail.lines[0]).toBe("line 0");
+  expect(tail.warnings).toEqual([]);
   const big = await fetchJobLog({ ...opts, fetch: async () => new Response("x".repeat(6 * 1024 * 1024)) });
   expect(big.warnings.join(" ")).toContain("5 MB");
   expect(big.lines.join("\n").length).toBeLessThanOrEqual(5 * 1024 * 1024);
