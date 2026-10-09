@@ -158,9 +158,10 @@ export function memoryFleet(): FleetStore & {
     for (const r of rows) Object.assign(r, { resolvedAt: at.toISOString(), resolution });
     return rows.length;
   };
-  const covered = (input: DeployInputWithCoverage): string[] => [
-    ...new Set([input.sha, ...(input.coveredShas ?? [])].filter((sha): sha is string => !!sha)),
-  ];
+  const covered = (input: DeployInputWithCoverage): string[] =>
+    input.state === "not-deployed"
+      ? []
+      : [...new Set([input.sha, ...(input.coveredShas ?? [])].filter((sha): sha is string => !!sha))];
   const deployTerminal = (state: string) => state === "healthy" || deployFailed(state as never);
   const deployBody = (input: DeployInputWithCoverage) =>
     `${input.state === "not-runnable" ? "Deploy check not runnable on this machine (configuration)" : `Deployment ${input.state}`} for ${input.target} (${input.sha})\nLast output:\n${deployDetail(input.detail)}`;
@@ -405,7 +406,10 @@ export function memoryFleet(): FleetStore & {
         sequence: deploys.reduce((max, candidate) => Math.max(max, candidate.sequence), 0) + 1,
       };
       if (known) {
-        if (["skipped", "not-runnable"].includes(row.state) && !["skipped", "not-runnable"].includes(input.state))
+        if (
+          ["skipped", "not-runnable", "not-deployed"].includes(row.state) &&
+          !["skipped", "not-runnable", "not-deployed"].includes(input.state)
+        )
           row.startedAt = input.at.toISOString();
         Object.assign(row, {
           state: input.state,

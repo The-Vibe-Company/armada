@@ -876,3 +876,28 @@ test("doctor preserves the repository repair when a session banner is off", asyn
   await rm(join(t.home, ".claude/settings.json"));
   expect(await t.doctor(["stop-hook"])).toMatchObject([{ fix: expect.stringContaining("armada init") }]);
 });
+
+test("doctor warns per target without smoke and explains legacy live-SHA limitations", async () => {
+  const toml = `${DEMO_TOML}\n[[deploy.target]]\nname = "api"\nlive_sha_command = "version"\n[[deploy.target]]\nname = "web"\ngithub_environment = "production"\n[[deploy.target]]\nname = "checked"\nlive_sha_command = "version"\nsmoke = "health"\n`;
+  const t = await terminal({}, {}, null, { toml });
+  const checks = await t.doctor([
+    "deploy-smoke:api",
+    "deploy-smoke:web",
+    "deploy-smoke:checked",
+    "deploy-source:api",
+    "deploy-source:web",
+  ]);
+  expect(checks.filter((c) => c.id.startsWith("deploy-smoke:"))).toEqual([
+    expect.objectContaining({
+      id: "deploy-smoke:api",
+      level: "warning",
+      fix: 'add smoke = "<command that fails when the service is broken>" to [[deploy.target]] api',
+    }),
+    expect.objectContaining({ id: "deploy-smoke:web", level: "warning" }),
+  ]);
+  expect(checks.find((c) => c.id === "deploy-source:api")).toMatchObject({
+    level: "info",
+    message: expect.stringContaining("switch to check (exit 0 live, 1 failed, 2 pending or skipped)"),
+  });
+  expect(checks.find((c) => c.id === "deploy-source:web")).toBeUndefined();
+});

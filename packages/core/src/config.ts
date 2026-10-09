@@ -30,6 +30,7 @@ export interface DeployTarget {
   branch: string | null;
   githubEnvironment: string | null;
   liveShaCommand: string | null;
+  check?: string | null;
   smoke: string | null;
   timeoutMinutes: number;
   pauseOnFailure: boolean;
@@ -675,6 +676,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         "requires_env",
         "github_environment",
         "live_sha_command",
+        "check",
         "smoke",
         "timeout_minutes",
         "pause_on_failure",
@@ -686,8 +688,9 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     const optional = (key: string) => (row[key] === undefined ? null : str(row, path, key));
     const githubEnvironment = optional("github_environment");
     const liveShaCommand = optional("live_sha_command");
-    if ((githubEnvironment === null) === (liveShaCommand === null))
-      problems.push(`"${path}" needs exactly one of github_environment or live_sha_command`);
+    const check = optional("check");
+    if ([githubEnvironment, liveShaCommand, check].filter((source) => source !== null).length !== 1)
+      problems.push(`"${path}" needs exactly one of github_environment, live_sha_command or check`);
     const timeoutMinutes = row.timeout_minutes ?? 20;
     if (
       typeof timeoutMinutes !== "number" ||
@@ -716,6 +719,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       branch: optional("branch"),
       githubEnvironment,
       liveShaCommand,
+      check,
       smoke: optional("smoke"),
       timeoutMinutes: typeof timeoutMinutes === "number" ? timeoutMinutes : 20,
       pauseOnFailure: row.pause_on_failure !== false,
@@ -1055,12 +1059,16 @@ repository = ${q(p.repository)}
 # branch = "main"  # omit to watch any merged base branch
 # paths = ["cmd/**", "internal/**"]  # optional: only watch merges touching these globs
 # github_environment = "production"
-## Alternative to github_environment (choose exactly one live source):
+## Choose exactly one: github_environment, live_sha_command or check.
+## check = "./scripts/check-deploy.sh"  # exit 0 live, 1 host failure, 2 pending or skipped
+## A host skip ends with "skipped: <reason>" on stdout and exit 2.
+## Exit 1 only for a confirmed host failure; use 2 for network errors.
+## Legacy source (failure waits until timeout; host skips become pauses):
 ## live_sha_command = 'cd "$DEPLOY_LINK_DIR" && hosting-cli live-sha'
 ## requires_env = ["DEPLOY_LINK_DIR"]
 ## On each coordinator machine: armada config set deploy.env.DEPLOY_LINK_DIR /path/to/linked-service
 ## Machine settings win over the process environment; missing settings skip without a hold.
-# smoke = "curl -fsS https://example.test/health"
+# smoke = "curl -fsS https://example.test/health"  # without smoke, a live but broken service reads healthy
 # timeout_minutes = 20  # 1–120; smoke shares this deadline
 # pause_on_failure = true
 
