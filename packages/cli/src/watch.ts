@@ -415,6 +415,7 @@ export function firingDeferredFleet(
 ): Fleet {
   const paths = machinePaths(io.env);
   const namespace = `${config.project.slug}.deferred-fire`;
+  let cleanupPending = false;
   return {
     ...fleet,
     inbox: async (query) => {
@@ -424,6 +425,12 @@ export function firingDeferredFleet(
         signal.throwIfAborted();
         // No writable machine store means no reliable local admission lock.
         if (paths) {
+          // A failed release belongs to this wrapper, not a progressing peer.
+          // Retry cleanup before admission; until it succeeds, keep work visible.
+          if (cleanupPending) {
+            await releaseWatchLock(paths, namespace, io.pid ?? process.pid);
+            cleanupPending = false;
+          }
           const lock = await takeWatchLock(
             paths,
             namespace,
@@ -479,7 +486,12 @@ export function firingDeferredFleet(
         signal.throwIfAborted();
         io.stderr("armada: warning: deferred launch polling unavailable; reading the inbox.\n");
       } finally {
-        if (locked && paths) await releaseWatchLock(paths, namespace, io.pid ?? process.pid);
+        if (locked && paths)
+          await releaseWatchLock(paths, namespace, io.pid ?? process.pid).catch(() => {
+            cleanupPending = true;
+            canAutomate = false;
+            io.stderr("armada: warning: deferred launch lock cleanup failed; reading the inbox.\n");
+          });
       }
       const read = await fleet.inbox(query);
       if (!read || !canAutomate) return read;

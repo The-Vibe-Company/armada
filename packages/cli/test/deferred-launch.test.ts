@@ -1,13 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildStatus, parseConfig } from "@armada/core";
+import { buildStatus, machinePaths, parseConfig, resolveCredentials } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import { ARMADA_URL, DEMO_TOML, fakeArmada, fakeClock, issue, NOW, recordedFetch } from "../../core/test/support.ts";
 import { run } from "../src/cli.ts";
 import type { Io } from "../src/io.ts";
 import { renderStatus } from "../src/render.ts";
+import { firingDeferredFleet } from "../src/watch.ts";
+import { liveFleet } from "../src/worker.ts";
 
 const config = parseConfig(
   `${DEMO_TOML}\n[conductor.profiles.backend]\nagent = "codex"\nmodel = "synthetic-model"\neffort = "high"\n`,
@@ -398,6 +400,59 @@ test("watch never retries an unknown creation or fires a declined or guided requ
     expect(f.creates()).toBe(1);
     expect(f.store.launches).toHaveLength(1);
   }
+});
+
+test("a machine-store cleanup failure keeps waiting work visible and resumes after recovery", async () => {
+  const f = await watchingLaunches();
+  const id = await f.queue();
+  const credentials = resolveCredentials({ env: f.io.env });
+  const fleet = liveFleet(f.io, parseConfig(WATCH_TOML), credentials).fleet;
+  const paths = machinePaths(f.io.env);
+  if (!fleet || !paths) throw new Error("fixture has no fleet or machine store");
+  const watchDir = join(paths.dir, "watch");
+  const backup = `${watchDir}-backup`;
+  const fetch = f.io.fetch!;
+  let damaged = false;
+  f.io.fetch = async (url, init) => {
+    if (!damaged && url.endsWith("/fleet/launch-requests")) {
+      await rename(watchDir, backup);
+      await writeFile(watchDir, "synthetic machine-store failure");
+      damaged = true;
+      return Response.json({ error: "synthetic admission outage" }, { status: 403 });
+    }
+    return fetch(url, init);
+  };
+  // Restore only when the wrapper reaches the underlying inbox, after cleanup.
+  let restored = false;
+  const wrapped = firingDeferredFleet(
+    f.io,
+    {
+      ...fleet,
+      inbox: async (query) => {
+        if (!restored) {
+          await rm(watchDir);
+          await rename(backup, watchDir);
+          restored = true;
+        }
+        return fleet.inbox(query);
+      },
+    },
+    parseConfig(WATCH_TOML),
+    "/work/widgets/armada.toml",
+    new AbortController().signal,
+    credentials,
+  );
+  const read = await wrapped.inbox({
+    coordinator: null,
+    coordinatorName: "default",
+    silentAfterMinutes: 15,
+    etag: null,
+  });
+  expect(read?.items).toContainEqual(expect.objectContaining({ kind: "launch-request", id, ticket: "DEMO-13" }));
+  expect(f.creates()).toBe(0);
+  await wrapped.inbox({ coordinator: null, coordinatorName: "default", silentAfterMinutes: 15, etag: null });
+  expect(f.creates()).toBe(1);
+  expect((await f.store.getInboxItem("widgets", id))?.request?.attempts).toBe(1);
 });
 
 test.each(["launch-requests", "launch-requests/attempt", "legacy-admission"])(
