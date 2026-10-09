@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import type { FleetOverview, OwnerValidation, ProjectOverview } from "@armada/core/read";
+import { type FleetOverview, type OwnerValidation, ownerItems, type ProjectOverview } from "@armada/core/read";
 import { STRINGS } from "../lib/i18n.ts";
-import { inQuietHours, notificationTitle, ownerItems, toNotify } from "../lib/notify.ts";
+import { inQuietHours, notificationTitle, toNotify } from "../lib/notify.ts";
 
 // A synthetic fleet, for these tests only.
 const project = (slug: string, state: "active" | "idle", seenAt: string | null = null) =>

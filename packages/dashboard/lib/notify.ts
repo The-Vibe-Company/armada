@@ -7,7 +7,7 @@
 // quiet hours. The live region says the same in the page (lib/announce.ts).
 import type { OwnerItem } from "@armada/core/read";
 
-export { type OwnerItem, ownerItems } from "@armada/core/read";
+export type { OwnerItem } from "@armada/core/read";
 
 import type { Strings } from "./i18n";
 
@@ -74,3 +74,6 @@ export function notificationTitle(t: Strings, item: OwnerItem): string {
     return t.notify.unattended(item.workTitle ?? item.title, item.reason ?? "", item.minutes ?? 0);
   return t.notify.coordinator(item.title, item.waiting);
 }
+
+/** The account menu checks support without loading the notification handler. */
+export const notificationsSupported = () => typeof window !== "undefined" && "Notification" in window;
