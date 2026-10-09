@@ -252,3 +252,46 @@ test("not-runnable configuration observations notify atomically, retry with a fr
   expect(held).toHaveLength(1);
   expect(held[0]?.body).toContain("real smoke failure");
 });
+
+test("host skips replace in-flight observations quietly, cover nothing and allow a later real observation", async () => {
+  const store = fleetStore(db);
+  const input = {
+    project: PROJECT,
+    target: "host-skip",
+    sha: "host-new",
+    detail: "no files changed",
+    pauseOnFailure: true,
+    at: at(60),
+  };
+  const notices = async () =>
+    (await store.openInboxItems({ project: PROJECT, recipient: "coordinator" })).filter((i) =>
+      i.body.includes(input.target),
+    );
+  const holds = async () => (await store.openHolds(PROJECT)).filter((h) => h.ref === input.target);
+  for (const state of ["waiting", "live"] as const) {
+    const sha = `host-${state}`;
+    expect((await store.recordDeploy({ ...input, sha, state })).state).toBe(state);
+    expect((await store.recordDeploy({ ...input, sha, state: "not-deployed", at: at(61) })).state).toBe("not-deployed");
+    expect(await holds()).toHaveLength(0);
+    expect(await notices()).toHaveLength(0);
+    const retry = await store.recordDeploy({ ...input, sha, state: "waiting", at: at(62) });
+    expect(retry.state).toBe("waiting");
+    expect(retry.startedAt).toBe(at(62).toISOString());
+  }
+  const failed = await store.recordDeploy({ ...input, sha: "host-old", state: "deploy-failed", at: at(63) });
+  expect(failed.state).toBe("deploy-failed");
+  const existingHolds = await holds();
+  const existingNotices = await notices();
+  expect(existingHolds).toHaveLength(1);
+  expect(existingNotices).toHaveLength(1);
+  const skipped = await store.recordDeploy({ ...input, state: "not-deployed", coveredShas: ["host-old"], at: at(64) });
+  expect(skipped.state).toBe("not-deployed");
+  expect(skipped.coveredShas).toEqual([]);
+  expect(await holds()).toEqual(existingHolds);
+  expect(await notices()).toEqual(existingNotices);
+  expect(await store.recordDeploy({ ...input, sha: "host-old", state: "not-deployed", at: at(65) })).toEqual(failed);
+  const healthy = await store.recordDeploy({ ...input, state: "healthy", coveredShas: ["host-old"], at: at(66) });
+  expect(healthy.state).toBe("healthy");
+  expect(await holds()).toHaveLength(0);
+  expect(await notices()).toHaveLength(0);
+});

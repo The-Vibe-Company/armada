@@ -180,6 +180,19 @@ test("merge startup emits exact watch line or safe fallback without blocking on 
     "/work/widgets/armada.toml",
   ]);
   expect(t.out.join("")).toContain(`Watching the deploy of ${sha} to api`);
+  t.out.splice(0);
+  await startDeploys(
+    t.io,
+    parseConfig(configText.replace('smoke = "health"', "")),
+    credentials,
+    "/work/widgets/armada.toml",
+    sha,
+    ["api"],
+    false,
+  );
+  expect(t.out.join("")).toBe(
+    `Watching the deploy of ${sha} to api (no smoke command: a live but broken service reads healthy)\n`,
+  );
   t.io.startBackground = async () => false;
   const result = await startDeploys(
     t.io,
@@ -297,4 +310,80 @@ test("machine deploy requirements skip without a hold, then configured commands 
   await startDeploys(t.io, config, credentials, "/work/widgets/armada.toml", nextSha, ["api"], false);
   expect(starts).toBe(1);
   expect(t.err.join("")).toContain("invalid project machine settings");
+});
+
+test.each([0, 1, 2])(
+  "check exit %i is wired through bounded commands, durable state and the watcher exit",
+  async (code) => {
+    const t = await terminal();
+    const checked = configText.replace('live_sha_command = "version"', 'check = "host-check"');
+    t.io.readFile = async (path) => (path === "/work/widgets/armada.toml" ? checked : null);
+    let commands = 0;
+    let smokes = 0;
+    t.io.exec = async (command, args, options) => {
+      expect(command).toBe("sh");
+      expect(options.cwd).toBe("/work/widgets");
+      expect(options.timeoutMs).toBe(60_000);
+      expect(options.env?.ARMADA_DEPLOY_SHA).toBe(sha);
+      expect(options.env?.ARMADA_DEPLOY_TARGET).toBe("api");
+      if (args[1] === "health") {
+        smokes++;
+        return { code: 0, stdout: "health ok", stderr: "" };
+      }
+      expect(args[1]).toBe("host-check");
+      commands++;
+      return {
+        code,
+        stdout: code === 2 ? "skipped: no files of this service changed" : "host build output",
+        stderr: "",
+      };
+    };
+    expect(await run(["deploy", "watch", "--sha", sha, "--target", "api"], t.io)).toBe(code === 1 ? 1 : 0);
+    expect(commands).toBe(1);
+    expect(smokes).toBe(code === 0 ? 1 : 0);
+    const state = code === 0 ? "healthy" : code === 1 ? "deploy-failed" : "not-deployed";
+    expect((await t.store.deployState("widgets", { target: "api", sha }))[0]?.state).toBe(state);
+    expect(await run(["deploy", "status"], t.io)).toBe(0);
+    const holds = await t.store.openHolds("widgets");
+    expect(holds).toHaveLength(code === 1 ? 1 : 0);
+    expect(await t.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).toHaveLength(
+      code === 1 ? 1 : 0,
+    );
+    if (code === 1) expect(holds[0]?.reason).toContain("host build output");
+    if (code === 2) {
+      expect(t.out.join("")).toContain("api: not deployed (host skipped: no files of this service changed)");
+      t.io.exec = async () => ({ code: 0, stdout: "live now", stderr: "" });
+      expect(await run(["deploy", "watch", "--sha", sha, "--target", "api"], t.io)).toBe(0);
+      expect((await t.store.deployState("widgets", { target: "api", sha }))[0]?.state).toBe("healthy");
+    }
+  },
+);
+
+test("a check killed by the output bound stays pending instead of trusting its synthetic exit 1", async () => {
+  const t = await terminal();
+  t.io.readFile = async (path) =>
+    path === "/work/widgets/armada.toml"
+      ? configText.replace('live_sha_command = "version"', 'check = "host-check"')
+      : null;
+  t.io.exec = async () => ({ code: 1, stdout: "", stderr: "", outputExceeded: true });
+  t.io.env.LINEAR_API_KEY = "synthetic-linear-key";
+  let polls = 0;
+  t.io.sleep = async (ms) => {
+    if (ms !== 30_000) {
+      await t.clock.sleep(ms);
+      return;
+    }
+    if (++polls === 1) {
+      expect((await t.store.deployState("widgets", { target: "api", sha }))[0]?.state).toBe("waiting");
+      expect(await t.store.openHolds("widgets")).toHaveLength(0);
+      expect(await t.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).toHaveLength(0);
+    }
+    await t.clock.sleep(ms);
+  };
+  expect(await run(["deploy", "watch", "--sha", sha, "--target", "api"], t.io)).toBe(1);
+  expect(polls).toBe(2);
+  expect((await t.store.deployState("widgets", { target: "api", sha }))[0]).toMatchObject({
+    state: "timeout",
+    detail: "deploy deadline reached\ncheck output exceeded limit",
+  });
 });
