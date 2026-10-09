@@ -361,7 +361,9 @@ const COMMAND_HELP: Record<string, string> = {
                     Herdr creates a persistent local worktree; --harness must match its profile.
                     --dry-run prints settings and preflight and creates nothing.
   launch <ticket> --when-unblocked [--profile <name>] [--after <blocker>]
-                    Remember a launch until all Linear blockers close and a worker slot frees. --after asserts an
+        [--runtime conductor|herdr] [--notes <file|->] [--reason <why>]
+                    Remember or renew a launch for seven days; unpinned profiles route at start.
+                    Runtime and notes text are saved. --after asserts an
                     existing blocker; it never adds a dependency. Status shows the request.
   launch revoke <ticket>
                     Cancel the newest pending launch through Armada, including a worker
