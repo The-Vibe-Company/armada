@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import {
   type ArmadaConfig,
   type Credentials,
+  checkReading,
   type DeployInput,
   type DeployRecord,
   type DeployTarget,
@@ -111,7 +112,8 @@ export async function startDeploys(
           : false) ?? false;
     } catch {}
     results.push({ target: name, started, next: started ? null : next });
-    if (!json) io.stdout(started ? `Watching the deploy of ${sha} to ${name}\n` : `Next: ${next}\n`);
+    const note = target.smoke ? "" : " (no smoke command: a live but broken service reads healthy)";
+    if (!json) io.stdout(started ? `Watching the deploy of ${sha} to ${name}${note}\n` : `Next: ${next}\n`);
   }
   return results;
 }
@@ -202,10 +204,12 @@ export async function deploy(
     if (credentials.githubToken || answer) ancestry.set(key, answer);
     return answer;
   };
+  let observationDetail = "";
   const write = (input: DeployInput) =>
     recordDeploy(
       io,
       async (candidate) => {
+        observationDetail = clean(candidate.detail);
         if (candidate.state === "healthy" && candidate.liveSha) {
           candidate = { ...candidate, coveredShas: [] };
           for (const row of await fleet.deployState({ target: target.name })) {
@@ -230,7 +234,7 @@ export async function deploy(
       })
       .catch((err: NodeJS.ErrnoException) => {
         if (err.code !== "ENOENT" && err.code !== "ENOTDIR") throw err;
-        return { code: 127, stdout: "", stderr: err.message, timedOut: false };
+        return { code: 127, stdout: "", stderr: err.message, timedOut: false, outputExceeded: false };
       });
     const notRunnable =
       !!result &&
@@ -250,6 +254,9 @@ export async function deploy(
     );
     if (notRunnable) configurationDetail = detail;
     return {
+      code: result?.code ?? 1,
+      timedOut: result?.timedOut ?? false,
+      outputExceeded: result?.outputExceeded ?? false,
       ok: result?.code === 0 && !result.timedOut,
       detail,
       notRunnable,
@@ -300,7 +307,7 @@ export async function deploy(
   };
   try {
     const prior = (await fleet.deployState({ target: target.name, sha }))[0];
-    if (prior && !["waiting", "live", "skipped", "not-runnable"].includes(prior.state)) {
+    if (prior && !["waiting", "live", "skipped", "not-runnable", "not-deployed"].includes(prior.state)) {
       io.backgroundReady?.(true);
       io.stdout(`${target.name}: ${prior.state}\n`);
       return prior.state === "healthy" ? 0 : 1;
@@ -316,7 +323,9 @@ export async function deploy(
     const result = await watchDeploy({
       target,
       sha,
-      ...(prior && !["skipped", "not-runnable"].includes(prior.state) ? { startedAt: new Date(prior.startedAt) } : {}),
+      ...(prior && !["skipped", "not-runnable", "not-deployed"].includes(prior.state)
+        ? { startedAt: new Date(prior.startedAt) }
+        : {}),
       now,
       sleep: sleepOf(io),
       record: write,
@@ -334,6 +343,7 @@ export async function deploy(
       },
       live: async (remainingMs) => {
         if (target.githubEnvironment) return fetchLiveDeploy({ ...gh, environment: target.githubEnvironment });
+        if (target.check) return checkReading(await command(target.check, sha, remainingMs), sha);
         const result = await command(target.liveShaCommand as string, sha, remainingMs);
         const liveSha = result.stdout.trim();
         return {
@@ -348,8 +358,10 @@ export async function deploy(
       io.stderr(
         `armada: warning: ${target.name}: deploy check not runnable on this machine (configuration)\n${configurationDetail}\n`,
       );
-    io.stdout(`${target.name}: ${result === "not-runnable" ? "not runnable (configuration)" : result}\n`);
-    return result === "healthy" || result === "not-runnable" ? 0 : 1;
+    io.stdout(
+      `${target.name}: ${result === "not-deployed" ? `not deployed (host skipped: ${observationDetail})` : result === "not-runnable" ? "not runnable (configuration)" : result}\n`,
+    );
+    return result === "healthy" || result === "not-runnable" || result === "not-deployed" ? 0 : 1;
   } catch (err) {
     io.backgroundReady?.(false);
     io.stderr(`armada: deploy watcher failed: ${clean(err instanceof Error ? err.message : "unexpected failure")}\n`);
