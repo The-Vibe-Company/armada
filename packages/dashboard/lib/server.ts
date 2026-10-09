@@ -35,15 +35,13 @@ import {
   type LoadOptions,
   loadAgentActivity,
   loadOverview,
-  MARK_GAP_MS,
   newCache,
   type ProjectRef,
-  refreshProject,
   type Scope,
   type Sources,
   type TaggedActivity,
 } from "./fleet-data";
-import { listProjects, liveStore } from "./fleet-store";
+import { liveStore } from "./fleet-store";
 import {
   createGithubApp,
   GITHUB_APP_VARIABLES,
@@ -55,8 +53,9 @@ import {
 } from "./github-app";
 import { isLanguage, type Language } from "./i18n";
 import { jsonTag, withoutTimeline } from "./live-http";
-import { dbSnapshots } from "./snapshots";
+import { ownerPulse, safeWebhookFetch } from "./owner-push";
 import { vaultModeOf } from "./vault";
+import { refreshMarkedReadings } from "./webhooks";
 import { isTicketId } from "./workers";
 
 /** Comma- or space-separated owner/name list, shown when the registry cannot be read. */
@@ -254,27 +253,26 @@ export async function refreshMarked(keys: string[]): Promise<void> {
   try {
     const db = await appDatabase();
     if (!db) return;
-    const registry = await listProjects(db);
-    const signedIn = (await accounts()) !== null;
-    const home = signedIn ? await homeOrganization() : null;
-    await Promise.all(
-      keys.map(async (key) => {
-        // A registered project by its slug; one known only by its repository (ARMADA_REPOSITORIES) by owner/name.
-        const p: ProjectRef | undefined =
-          registry.find((r) => r.slug === key) ?? (key.includes("/") ? { repository: key } : undefined);
-        if (!p) return;
-        const organization = p.organization ?? home;
-        // A project no organization holds yet is read by nobody's keys.
-        if (signedIn && !organization) return;
-        const opts = fleetFor(signedIn && organization ? { organization, home } : null);
-        // A burst of deliveries makes one read: the marks of the others wait for it, or for the next view.
-        // After a failure, the snapshot period passes first, as for a view.
-        await refreshProject(p, dbSnapshots(db, opts.cache.snapshots), opts, {
-          gapMs: MARK_GAP_MS,
-          retryMs: opts.snapshotMs,
+    const a = await accounts();
+    const vault = vaultModeOf(process.env);
+    const home = a ? await homeOrganization() : null;
+    await refreshMarkedReadings(keys, {
+      db,
+      signedIn: a !== null,
+      home,
+      fleet: fleetFor,
+      pulse: async (project, organization) => {
+        if (!a || vault.kind !== "on") return;
+        await ownerPulse(db, {
+          organization,
+          project,
+          now: () => new Date(),
+          vault: vault.key,
+          fetch: safeWebhookFetch,
+          baseUrl: a.settings.baseUrl,
         });
-      }),
-    );
+      },
+    });
   } catch (err) {
     console.error(`armada dashboard: refresh after a webhook failed: ${err instanceof Error ? err.message : err}`);
   }

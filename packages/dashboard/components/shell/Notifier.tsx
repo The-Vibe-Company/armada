@@ -8,9 +8,10 @@
 // were already there, or came while notifications were off or quiet, are
 // only marked seen. A click opens the item. The live region (Announcer) says
 // the same in the page.
+import { ownerItems } from "@armada/core/read";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
-import { notificationTitle, ownerItems, toNotify } from "@/lib/notify";
+import { notificationsSupported, notificationTitle, toNotify } from "@/lib/notify";
 import { useFleet, useShell } from "./context";
 import { useVisit } from "./visit";
 
@@ -33,8 +34,6 @@ function writeSeen(keys: Iterable<string>) {
     // Private mode: nothing is kept, nothing is repeated within this page either way.
   }
 }
-
-export const notificationsSupported = () => typeof window !== "undefined" && "Notification" in window;
 
 export function Notifier() {
   const { overview } = useFleet();

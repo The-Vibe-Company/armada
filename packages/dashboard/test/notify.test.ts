@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import type { FleetOverview, OwnerValidation, ProjectOverview } from "@armada/core/read";
+import { type FleetOverview, type OwnerValidation, ownerItems, type ProjectOverview } from "@armada/core/read";
 import { STRINGS } from "../lib/i18n.ts";
-import { inQuietHours, notificationTitle, ownerItems, toNotify } from "../lib/notify.ts";
+import { inQuietHours, notificationTitle, toNotify } from "../lib/notify.ts";
 
 // A synthetic fleet, for these tests only.
 const project = (slug: string, state: "active" | "idle", seenAt: string | null = null) =>
@@ -44,6 +44,25 @@ describe("owner notifications", () => {
       "validation:widgets:8",
     ]);
     expect(toNotify(items, new Set(), { on: false, quiet: null }, NOON)).toEqual([]);
+  });
+
+  test("unattended work has a localized title in browser and chat notifications", () => {
+    const item = {
+      key: "unattended:widgets:42",
+      kind: "unattended" as const,
+      project: "widgets",
+      ticket: "WID-2",
+      title: "WID-2 — plan to approve, waiting 31 min for the coordinator",
+      workTitle: "WID-2",
+      reason: "plan to approve",
+      minutes: 31,
+      waiting: 0,
+      href: "/agents/WID-2",
+    };
+    expect(notificationTitle(STRINGS.en, item)).toBe("WID-2 — plan to approve, waiting 31 min for the coordinator");
+    expect(notificationTitle(STRINGS.fr, item)).toBe(
+      "WID-2 — plan à approuver, en attente du coordinateur depuis 31 min",
+    );
   });
 
   test("stay quiet in the quiet hours, over midnight too", () => {

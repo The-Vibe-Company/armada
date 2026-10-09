@@ -1094,7 +1094,7 @@ const en = {
   notify: {
     title: "Notifications",
     on: "Notify me",
-    hint: "When something needs you: a validation, an escalated question, a coordinator that stopped.",
+    hint: "When something needs you: a validation, an escalated question, a coordinator that stopped or left work waiting.",
     quiet: "Quiet hours",
     from: "From",
     to: "To",
@@ -1104,6 +1104,8 @@ const en = {
     question: (title: string) => `Question for you: ${title}`,
     coordinator: (project: string, n: number) =>
       `${project}: the coordinator stopped, ${n === 1 ? "1 item waits" : `${n} items wait`}`,
+    unattended: (title: string, reason: string, minutes: number) =>
+      `${title} — ${reason}, waiting ${minutes} min for the coordinator`,
     open: "Open it in Armada",
   },
   /** A project's page (THE-1021, design/dashboard-v7). */
@@ -2116,7 +2118,7 @@ const fr: Strings = {
   notify: {
     title: "Notifications",
     on: "Me notifier",
-    hint: "Quand quelque chose t'attend : une validation, une question escaladée, un coordinateur arrêté.",
+    hint: "Quand quelque chose t'attend : une validation, une question escaladée, un coordinateur arrêté ou du travail laissé en attente.",
     quiet: "Heures calmes",
     from: "De",
     to: "À",
@@ -2126,6 +2128,20 @@ const fr: Strings = {
     question: (title) => `Question pour toi : ${title}`,
     coordinator: (project, n) =>
       `${project} : le coordinateur s'est arrêté, ${n} élément${n > 1 ? "s attendent" : " attend"}`,
+    unattended: (title, reason, minutes) => {
+      const reasons: Record<string, string> = {
+        "question to answer": "question à répondre",
+        "plan to approve": "plan à approuver",
+        "merge to review": "fusion à vérifier",
+        "owner decision": "décision du propriétaire",
+        "answer to deliver": "réponse à transmettre",
+        "launch request": "demande de lancement",
+        "merge request": "demande de fusion",
+        "release request": "demande de libération",
+        "plan changes": "modifications du plan",
+      };
+      return `${title} — ${reasons[reason] ?? reason}, en attente du coordinateur depuis ${minutes} min`;
+    },
     open: "Ouvrir dans Armada",
   },
   projectPage: {
