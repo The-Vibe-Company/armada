@@ -73,7 +73,6 @@ import {
   type SetupPlan,
   skillFolderHash,
   skillsBehind,
-  skillsBehindLine,
 } from "../src/index.ts";
 import { DEMO_TOML } from "./support.ts";
 
@@ -243,9 +242,10 @@ describe("repository checks", () => {
     const behind = await skillsBehind(repo.view);
     expect(behind).toEqual({ recorded: "1.1.0", newest: "1.1.0", differing: ["armada-worker"] });
     // Vendored by a newer CLI: this one is to update, not the skills.
-    expect(behind && skillsBehindLine(behind, "1.0.0")).toBe(
-      "this project's Armada skills are 1.1.0 (armada-worker differs), newer than the CLI 1.0.0: update the CLI, not the skills: npm install -g @the-vibe-company/armada@1.1.0",
-    );
+    expect((await checkRepository(repo.view, "1.0.0")).find((c) => c.id === "skills-version")).toMatchObject({
+      message: "this project's Armada skills are 1.1.0 (armada-worker differs), newer than the CLI 1.0.0",
+      fix: "update the CLI, not the skills: npm install -g @the-vibe-company/armada@1.1.0",
+    });
     expect(problems(checks).map((c) => [c.id, c.level, c.message])).toEqual([
       ["skill:armada-worker", "warning", "skill armada-worker differs from the version in Armada 1.2.3"],
       [

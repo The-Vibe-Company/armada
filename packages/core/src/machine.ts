@@ -360,6 +360,7 @@ export async function readWatchState(
       : {}),
     root: stringOr(r.root),
     seen: strings(r.seen) ?? [],
+    ...(r.seenScope === "mine" || r.seenScope === "all" ? { seenScope: r.seenScope } : {}),
     inFlight: strings(r.inFlight),
     ...(Array.isArray(r.openJobs)
       ? { openJobs: r.openJobs.filter((id: unknown) => Number.isSafeInteger(id) && Number(id) > 0) }
@@ -514,6 +515,23 @@ export async function updateWatchState(
   const file = watchFiles(paths, project, name).state;
   return withMachineUpdate(file, async () => {
     const before = await readWatchState(paths, project, name);
+    if (patch.seen && patch.seenScope) {
+      const coversPrevious = !before?.seen.length || patch.seenScope === "all" || before?.seenScope === "mine";
+      const open = new Set(patch.seen);
+      const retained = (before?.seen ?? []).filter(
+        (key) => !coversPrevious || key.startsWith("version:") || open.has(key),
+      );
+      const keys = [...new Set([...retained, ...patch.seen])];
+      // Retain shown history inside the lock, reserving required-version keys before capping it.
+      const discarded = new Set(
+        keys.filter((key) => !key.startsWith("version:")).slice(0, Math.max(0, keys.length - 500)),
+      );
+      patch = {
+        ...patch,
+        seen: keys.filter((key) => !discarded.has(key)).slice(-500),
+        seenScope: coversPrevious ? patch.seenScope : "all",
+      };
+    }
     const state = { ...EMPTY_WATCH_STATE, ...before, ...patch };
     if (before?.claudeSessions || patch.claudeSessions || session) {
       state.claudeSessions = boundedTimes(
@@ -764,7 +782,8 @@ export async function addNoticedRelease(
     const previous = await readReleaseNotices(paths);
     if (
       previous.some((entry) => {
-        if (entry.at === null) return false;
+        // Setup drift has its own daily notice budget, separate from ordinary releases.
+        if (entry.at === null || entry.version.startsWith("setup:") !== version.startsWith("setup:")) return false;
         const age = at.getTime() - Date.parse(entry.at);
         return age >= 0 && age < (options.intervalMs ?? 0);
       })

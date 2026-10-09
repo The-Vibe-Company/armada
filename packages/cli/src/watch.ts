@@ -48,7 +48,7 @@ import { type Io, UsageError, type WatchSignal } from "./io.ts";
 import { refreshingJobsFleet } from "./job.ts";
 import { requireSignIn } from "./login.ts";
 import { detectCoordinator } from "./presence.ts";
-import { pendingRelease } from "./release.ts";
+import { noticeRelease, pendingRelease } from "./release.ts";
 import { fsRepoView } from "./repo.ts";
 import { observingFleet } from "./runtime.ts";
 import { liveFleet, type WorkerArgs } from "./worker.ts";
@@ -157,8 +157,10 @@ export const shown = (
   items: InboxEntry[],
   inFlight: string[] | null,
   openJobs: number[] = [],
+  scope: "mine" | "all" = "all",
 ): Partial<WatchState> => ({
   seen: items.map(entryKey),
+  seenScope: scope,
   openJobs,
   ...(inFlight ? { inFlight, readAt: now(io).toISOString() } : {}),
   stopped: null,
@@ -328,6 +330,7 @@ async function watchUntil(
   let taken = false;
   let timedOut = false;
   let cancelDeadline: (() => void) | undefined;
+  let noticeIo: Io | undefined;
   const until = options.minutes === undefined ? undefined : new Date(now(io).getTime() + options.minutes * 60000);
   const resume = () => {
     const flags = [
@@ -394,6 +397,7 @@ async function watchUntil(
             })
         : undefined,
     };
+    noticeIo = watchingIo;
     const { fleet, warning } = liveFleet(watchingIo, config, credentials);
     if (!fleet)
       throw new Refusal(`the inbox is on Armada, which cannot be reached: ${warning ?? "no answer"}`, "armada whoami");
@@ -450,7 +454,7 @@ async function watchUntil(
         if (inFlight) await remember(io, project, { inFlight, openJobs, readAt: now(io).toISOString() });
       },
       onRetry: (message) => io.stderr(`armada: warning: ${message}\n`),
-      release: pendingRelease(watchingIo, version, before?.seen ?? [], fsRepoView(dirname(configPath))),
+      release: pendingRelease(watchingIo, version),
     };
     if (options.follow) {
       const cursor = options.cursor ?? before?.cursor ?? eventCursor(0, now(io).toISOString());
@@ -496,10 +500,10 @@ async function watchUntil(
       name === "default" ? report.inFlight : (report.ownedInFlight ?? (scope === "mine" ? report.inFlight : null));
     const openJobs =
       name === "default" ? report.openJobs : (report.ownedOpenJobs ?? (scope === "mine" ? report.openJobs : undefined));
-    await remember(io, project, shown(io, report.items, inFlight, openJobs));
+    await remember(io, project, shown(io, report.items, inFlight, openJobs, scope));
     controller.signal.throwIfAborted();
     // A release is acted on between rounds: it is not an item that keeps a watch going.
-    const open = report.items.filter((e) => e.kind !== "version").length;
+    const open = report.items.filter((e) => e.kind !== "version" && (e.owner == null || e.owner === name)).length;
     const next = rearm({ inFlight, openJobs, open, running: null, act: true });
     const banner = await stopHookBanner(io);
     if (banner) next.line += `\n${banner}`;
@@ -523,6 +527,8 @@ async function watchUntil(
     if (paths && taken) await releaseWatchLock(paths, project, pid, identity, name).catch(() => {});
     unsubscribe?.();
     cancelDeadline?.();
+    if (!options.follow && noticeIo)
+      await noticeRelease(noticeIo, version, fsRepoView(dirname(configPath)), { setupOnly: true }).catch(() => {});
   }
   if (stoppedBy) {
     (options.follow ? io.stderr : io.stdout)(`armada watch for ${project} stopped by ${stoppedBy} (pid ${pid})\n`);

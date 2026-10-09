@@ -336,10 +336,6 @@ function skillsBehindFix(b: SkillsBehind, cli: string): string {
     : "run `armada init` and merge its PR (`armada merge <n> --no-ticket`)";
 }
 
-/** The one line naming skills that differ from the CLI's, with what to do; for `armada status`. */
-export const skillsBehindLine = (b: SkillsBehind, cli: string) =>
-  `${skillsBehindMessage(b, cli)}: ${skillsBehindFix(b, cli)}`;
-
 /**
  * Whether the project's vendored Armada skills differ from this CLI's copy;
  * null when they match, or are not installed (`armada doctor` says that), or
