@@ -288,6 +288,14 @@ export function Action({ item, ctx, projectName }: { item: OverviewItem; ctx: Ac
     case "awaiting-validation":
       return <Title>{a.awaitingValidation}</Title>;
     case "ready": {
+      if (r.queue)
+        return (
+          <Title>
+            {r.queue.state === "queued"
+              ? t.overview.reasons.queued(r.queue.position)
+              : t.overview.reasons.merging(r.queue.detail)}
+          </Title>
+        );
       // Merge (THE-1103): the queue takes a pull request handed back at its head; else the coordinator decides.
       const m = p.mergeButton;
       const asked = mergeAsked(project, r.pr);

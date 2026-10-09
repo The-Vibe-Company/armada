@@ -158,7 +158,7 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
     ownedOpenJobs = read.ownedOpenJobs;
     etag = read.etag;
     warnings.push(...read.warnings);
-    if (items.some((e) => e.new)) return report(false);
+    if (items.some((e) => e.new && !e.queue)) return report(false);
   }
 }
 
