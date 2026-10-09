@@ -54,7 +54,7 @@ import {
 } from "./runtimes/adapter.ts";
 import { conductorLaunchArguments } from "./runtimes/conductor.ts";
 import { HerdrAdapter } from "./runtimes/herdr.ts";
-import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
+import { coordinatorHandle, rearmFor, remember, stopHookBanner, watchOf } from "./watch.ts";
 import { liveFleet } from "./worker.ts";
 import { countWorkerSlots, mintLaunchToken, overCapReason } from "./worker-slots.ts";
 
@@ -68,7 +68,14 @@ export async function launch(
 ) {
   if (args.options["when-unblocked"] || args.options.after !== undefined)
     return deferLaunch(io, config, credentials, args);
-  if (args.rest[0] !== "revoke") return launchWorker(io, config, credentials, args, version, configPath);
+  if (args.rest[0] !== "revoke") {
+    const code = await launchWorker(io, config, credentials, args, version, configPath);
+    if (args.options["dry-run"] === "true") {
+      const banner = await stopHookBanner(io);
+      if (banner) (args.json ? io.stderr : io.stdout)(`${banner}\n`);
+    }
+    return code;
+  }
   if (Object.keys(args.options).length) throw new UsageError("launch revoke does not take runtime or profile options");
   const [operation, ticket, ...extra] = args.rest;
   if (operation !== "revoke" || !ticket || extra.length || !/^[A-Za-z][A-Za-z0-9]{0,15}-\d{1,9}$/.test(ticket))

@@ -355,6 +355,8 @@ test("lost create with no recoverable worker revokes its token", async () => {
 
 test("dry run defaults to the profile runtime, reports settings and preflight and creates nothing", async () => {
   const f = await fixture();
+  f.io.env.CLAUDECODE = "1";
+  f.io.env.CLAUDE_CODE_SESSION_ID = "coordinator-session";
   expect(await run(["launch", "DEMO-13", "--dry-run", "--notes", "-", "--json"], f.io)).toBe(0);
   expect(JSON.parse(f.stdout())).toMatchObject({
     runtime: "conductor",
@@ -367,6 +369,7 @@ test("dry run defaults to the profile runtime, reports settings and preflight an
   expect(f.calls.some((c) => c.args[2] === "create")).toBe(false);
   expect(f.armada.calls.some((c) => c.path.includes("lease/"))).toBe(false);
   expect(f.output()).not.toContain("Notes from stdin.");
+  expect(f.stderr()).toContain("Stop hook NOT on: no Armada stop hook installed");
 });
 
 test("preflight auth failure and completed tickets are refused before a token exists", async () => {

@@ -14,6 +14,14 @@ A project can share its work between coordinators, each with a name: `ARMADA_COO
 - Each name has its own watch lock on a machine: `armada watch --stop` stops yours, `armada watch --stop --name <name>` another's.
 - Your own coordination ticket is not a worker: the watch leaves out the claim whose handle is yours (`ARMADA_COORDINATOR_HANDLE`, else Conductor's workspace and session).
 
+## The Claude Code stop hook
+
+The hook matches the `session_id` of a coordinator that ran `inbox`, `watch`, `brief`, `launch` or `merge`, across working folders. Unknown sessions fall back to the checkout where the coordinator last watched. A session coordinating several projects is held if any of them needs a watch; the reason names each project and checkout. Worker sessions (`ARMADA_TICKET`) never register or get held. A resumed session with a new id registers on its next coordinator command.
+
+The watch's start and end, the last lines of coordinator commands, and `armada doctor` show `Stop hook on for this session (last ran HH:MM)`, `Stop hook installed in <file>; it confirms at your next turn end`, or `Stop hook NOT on: <why> — <fix>`. Installation alone is not proof that Claude loaded it: the next Stop records a local receipt. All hook reads are local and failures let the turn end.
+
+Armada detects the command in user settings (`~/.claude/settings.json`) and the coordinator checkout's `.claude/settings.json` or `.claude/settings.local.json`. If the session starts elsewhere, add a command hook for Stop in user settings: `armada hook stop 2>/dev/null || true`. `armada init --merge` changes repository settings only. `ARMADA_STOP_HOOK=off` opts out; the banner says so.
+
 ## The watch
 
 Plain `armada watch` waits until a new own or unowned item you have not been shown needs you (a question, plan, request, hand-back, merge hold, deploy failure, job notice, silent, stopped or unstarted worker), prints it and exits. Items owned by another named coordinator stay in the listing, marked `owner: <name>`, but do not wake you, even with `--all`. Reading `armada inbox` preserves shown history; `--mine` cannot prune keys from a broader `--all` read. It exits with `nothing to watch` when nothing in its scope is in flight or open. Armada being down does not end it; a harness time limit can, so start it again when it ends without news. `--for <minutes>` bounds it cleanly.
@@ -26,6 +34,10 @@ Plain `armada watch` waits until a new own or unowned item you have not been sho
 - A printed line counts as seen, even if your harness never read it: use follow only where every line reaches you. Harnesses that wake only when a command ends keep plain watch.
 
 Both modes share one lock per project and name on a machine. `armada inbox --wait [--timeout <seconds>]` (300 by default) is the fallback for a runtime that cannot run a background command.
+
+## Worker caps
+
+`[policy] max_workers` caps project-wide worker sessions, including open claims waiting for merge and unclaimed launches. A full fleet refuses a new launch: use `armada launch <ticket> --when-unblocked` to wait for a slot, or `armada launch <ticket> --over-cap "<why>"` for a recorded bypass. Never use relaunch to bypass the cap; it replaces an existing worker. Urgent tickets pass automatically with a recorded reason. Status and re-arm lines show running workers separately from launches waiting for a slot. Without this setting, launches are uncapped; lowering it stops no worker.
 
 ## Silence and liveness
 

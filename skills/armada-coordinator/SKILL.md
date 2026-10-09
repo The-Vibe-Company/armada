@@ -36,7 +36,7 @@ You only learn of something new when a command you run ends. While a worker is i
 - `armada watch --follow` keeps running and prints a line per event; use it only where every output line reaches you (a terminal, a herdr pane, a harness tool such as Claude Code's Monitor) or in a script. Pass `--for <minutes>` below your harness's command limit; it ends with the command that resumes it.
 - `armada status` and `armada inbox` run fine beside a watch. Stop a watch only with `armada watch --stop`, never `pkill`.
 - A runtime that cannot run a background command calls `armada inbox --wait` again and again instead.
-- In Claude Code, the stop hook `armada init` installs refuses to end your turn while workers are in flight and no watch runs. `ARMADA_STOP_HOOK=off` turns it off; say so in your report.
+- In Claude Code, inbox/status/merge/launch/watch and `doctor` show the Stop hook as on, installed awaiting confirmation, or NOT on with a reason and fix. Check the banner. `inbox`/`watch`/`brief`/`launch`/`merge` register coordinator sessions; workers never register. The hook holds across checkouts while workers run without a watch. For sessions starting elsewhere, add `armada hook stop 2>/dev/null || true` as a Stop command in `~/.claude/settings.json`; `armada init --merge` only writes repository settings. `ARMADA_STOP_HOOK=off` disables it; report that choice.
 
 Done when a watch runs, or the last line says `nothing to watch`.
 
@@ -73,7 +73,9 @@ Done when every worker in flight is working, waiting on someone, or replaced.
 
 ### 5. Launch ready tickets
 
-One at a time, and only tickets that do not collide with work in flight. With `[policy] max_workers`, a full fleet refuses a new launch: use `--when-unblocked` to wait for a slot or `--over-cap "<why>"` for a recorded bypass, never a relaunch; Urgent tickets pass automatically and are recorded.
+One at a time, and only tickets that do not collide with work in flight.
+
+Caps: REFERENCE.md.
 
 1. `armada lint --ready` lists readability problems in ready tickets and open specs, each with its fix. Fix them on the ticket, then `armada lint <ticket>` to recheck.
 2. Pick a ticket from the frontier in `armada status`. Read it and its parent spec.

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Check, Fetch, ServerCli } from "@armada/core";
+import { type Check, type Fetch, machinePaths, recordHookRun, type ServerCli } from "@armada/core";
 import { ARMADA_URL, DEMO_TOML, type FakeVault, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { run } from "../src/cli.ts";
@@ -833,6 +833,48 @@ test("doctor names missing deploy settings per target and gives a working machin
   expect(await t.doctor(["deploy-env:api", "deploy-machine-settings"])).toEqual([
     expect.objectContaining({ id: "deploy-env:api", level: "ok", fix: null }),
   ]);
+});
+
+test("doctor shows the same session hook status and detects a user install without a repository install", async () => {
+  const t = await terminal({ CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "coordinator-session" }, {}, null, {
+    toml: DEMO_TOML,
+  });
+  t.io.env.HOME = t.home;
+  const read = t.io.readFile;
+  t.io.readFile = async (path) =>
+    path === join(t.home, ".claude/settings.json")
+      ? JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "armada hook stop" }] }] } })
+      : read(path);
+  expect(await t.doctor(["stop-hook"])).toMatchObject([
+    { level: "ok", message: expect.stringContaining("Stop hook installed in") },
+  ]);
+  const paths = machinePaths(t.io.env);
+  if (!paths) throw new Error("no machine store");
+  await recordHookRun(paths, "coordinator-session", { at: NOW.toISOString(), project: "widgets", why: "blocked" });
+  expect(await t.doctor(["stop-hook"])).toMatchObject([
+    { level: "ok", message: expect.stringContaining("Stop hook on for this session (last ran") },
+  ]);
+  t.io.env.ARMADA_STOP_HOOK = "off";
+  expect(await t.doctor(["stop-hook"])).toMatchObject([
+    {
+      level: "warning",
+      message: expect.stringContaining("Stop hook NOT on: off by choice"),
+      fix: expect.stringContaining("unset ARMADA_STOP_HOOK"),
+    },
+  ]);
+});
+
+test("doctor preserves the repository repair when a session banner is off", async () => {
+  const t = await terminal({ CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "s", ARMADA_STOP_HOOK: "off" }, {}, null, {
+    toml: DEMO_TOML,
+  });
+  await mkdir(join(t.home, ".claude"));
+  await writeFile(join(t.home, ".claude/settings.json"), "invalid json");
+  expect(await t.doctor(["stop-hook"])).toMatchObject([
+    { fix: "fix .claude/settings.json", message: expect.stringContaining("Stop hook NOT on: off by choice") },
+  ]);
+  await rm(join(t.home, ".claude/settings.json"));
+  expect(await t.doctor(["stop-hook"])).toMatchObject([{ fix: expect.stringContaining("armada init") }]);
 });
 
 test("doctor warns per target without smoke and explains legacy live-SHA limitations", async () => {
