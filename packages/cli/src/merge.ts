@@ -52,7 +52,7 @@ import { outgoingRedactor, redactLinearWriter } from "./redact.ts";
 import { queueLines } from "./render.ts";
 import { deliverToRuntime } from "./runtime.ts";
 import { claimRef, guarded, redactRuntimeText } from "./runtimes/adapter.ts";
-import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
+import { coordinatorHandle, rearmFor, remember, stopHookBanner, watchOf } from "./watch.ts";
 import { endWorkerSessions, liveFleet, type WorkerArgs } from "./worker.ts";
 
 /** Queue ownership is rechecked at actual I/O boundaries, including native runtime cleanup. */
@@ -759,6 +759,7 @@ export async function merge(
     };
     if (draining) {
       if (!live.fleet) throw new UsageError(live.warning ?? "draining needs Armada sign-in", "armada login");
+      const drainBanner = await stopHookBanner(io);
       await drainMergeQueue(ctx, live.fleet, {
         timeoutMs,
         every:
@@ -785,9 +786,12 @@ export async function merge(
               ? `${JSON.stringify({ pr: entry.pr, merged, error: err instanceof Error ? err.message : String(err), result })}\n`
               : `#${entry.pr} refused: ${err instanceof Error ? err.message : String(err)}\n${result}\n`,
           );
+          if (drainBanner) (a.json ? io.stderr : io.stdout)(`${drainBanner}\n`);
         },
       });
       io.stdout(a.json ? `${JSON.stringify({ queue: "empty" })}\n` : "queue empty\n");
+      const banner = await stopHookBanner(io);
+      if (banner) (a.json ? io.stderr : io.stdout)(`${banner}\n`);
       return 0;
     }
     const o = finish

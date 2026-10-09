@@ -5,11 +5,12 @@
 import { randomBytes } from "node:crypto";
 import { chmod, link, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
+import { lock } from "proper-lockfile";
 import { parse, TomlError } from "smol-toml";
 import { ConfigError, deployEnvName } from "./config.ts";
 import { parseDotenv, updateDotenv } from "./dotenv.ts";
 import { COORDINATOR } from "./fleet-api.ts";
-import { EMPTY_WATCH_STATE, type PeekTail, type WatchState } from "./watch.ts";
+import { EMPTY_WATCH_STATE, type HookRun, type PeekTail, type WatchState } from "./watch.ts";
 
 export interface MachinePaths {
   dir: string;
@@ -341,6 +342,9 @@ export async function readWatchState(
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
   return {
+    ...(typeof r.claudeSessions === "object" && r.claudeSessions !== null && !Array.isArray(r.claudeSessions)
+      ? { claudeSessions: boundedTimes(r.claudeSessions, 10) }
+      : {}),
     // Only a bounded, validated transcript tail is read back.
     ...(typeof r.peek === "object" && r.peek !== null && !Array.isArray(r.peek)
       ? {
@@ -388,7 +392,9 @@ export async function readWatchState(
 }
 
 /** Known checkouts, newest watch reading first, including named coordinator watches. */
-export async function readWatchProjects(paths: MachinePaths): Promise<{ project: string; root: string }[]> {
+export async function readWatchStates(
+  paths: MachinePaths,
+): Promise<{ project: string; coordinator: string; state: WatchState }[]> {
   const dir = join(paths.dir, "watch");
   let files: string[];
   try {
@@ -414,13 +420,87 @@ export async function readWatchProjects(paths: MachinePaths): Promise<{ project:
           : await stat(join(dir, file))
               .then((s) => s.mtimeMs)
               .catch(() => 0);
-        return { project, root: state.root, at };
+        return { project, coordinator, state, at };
       }),
   );
   return projects
     .filter((p) => p !== null)
     .sort((a, b) => b.at - a.at)
-    .map(({ project, root }) => ({ project, root }));
+    .map(({ project, coordinator, state }) => ({ project, coordinator, state }));
+}
+
+export async function readWatchProjects(paths: MachinePaths): Promise<{ project: string; root: string }[]> {
+  return (await readWatchStates(paths)).map(({ project, state }) => ({ project, root: state.root as string }));
+}
+
+function boundedTimes(value: object, limit: number): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([k, v]) => k.length > 0 && k.length <= 256 && typeof v === "string" && Number.isFinite(Date.parse(v)))
+      .sort((a, b) => Date.parse(b[1]) - Date.parse(a[1]))
+      .slice(0, limit),
+  );
+}
+
+/** Delivery receipts for all sessions, including sessions outside Armada checkouts. */
+export async function readHookRuns(paths: MachinePaths): Promise<Record<string, HookRun>> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readFile(join(paths.dir, "watch", "hooks", "runs.json"), "utf8"));
+  } catch {
+    return {};
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
+  const runs = Object.entries(raw).filter(
+    ([id, r]) =>
+      id.length > 0 &&
+      id.length <= 256 &&
+      typeof r === "object" &&
+      r !== null &&
+      typeof r.at === "string" &&
+      Number.isFinite(Date.parse(r.at)) &&
+      (r.project === null || typeof r.project === "string") &&
+      typeof r.why === "string",
+  );
+  return Object.fromEntries(runs.sort((a, b) => Date.parse(b[1].at) - Date.parse(a[1].at)).slice(0, 50));
+}
+
+export async function recordHookRun(paths: MachinePaths, sessionId: string, run: HookRun): Promise<void> {
+  if (!sessionId || sessionId.length > 256) return;
+  const file = join(paths.dir, "watch", "hooks", "runs.json");
+  await withMachineUpdate(file, async () => {
+    const runs = { ...(await readHookRuns(paths)), [sessionId]: run };
+    const bounded = Object.fromEntries(
+      Object.entries(runs)
+        .sort((a, b) => Date.parse(b[1].at) - Date.parse(a[1].at))
+        .slice(0, 50),
+    );
+    await writePrivate(paths, file, `${JSON.stringify(bounded, null, 2)}\n`, 0o600);
+  });
+}
+
+/** A short, bounded local lock: serialize read/merge/replace across command processes. */
+async function withMachineUpdate<T>(file: string, work: () => Promise<T>): Promise<T> {
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  let compromised: Error | null = null;
+  const release = await lock(file, {
+    realpath: false,
+    lockfilePath: `${file}.update.lock`,
+    stale: 5000,
+    update: 1000,
+    retries: { retries: 200, factor: 1, minTimeout: 5, maxTimeout: 5, randomize: false },
+    // A cache failure is reported by the caller, never an uncaught timer error in a Stop hook.
+    onCompromised: (error) => {
+      compromised = error;
+    },
+  });
+  try {
+    const result = await work();
+    if (compromised) throw compromised;
+    return result;
+  } finally {
+    await release();
+  }
 }
 
 /** Sets some fields of the project's watch state, keeping the others; returns the state written. */
@@ -429,10 +509,22 @@ export async function updateWatchState(
   project: string,
   patch: Partial<WatchState>,
   name = "default",
+  session?: { id: string; at: string; root: string },
 ): Promise<WatchState> {
-  const state = { ...EMPTY_WATCH_STATE, ...(await readWatchState(paths, project, name)), ...patch };
-  await writePrivate(paths, watchFiles(paths, project, name).state, `${JSON.stringify(state, null, 2)}\n`, 0o600);
-  return state;
+  const file = watchFiles(paths, project, name).state;
+  return withMachineUpdate(file, async () => {
+    const before = await readWatchState(paths, project, name);
+    const state = { ...EMPTY_WATCH_STATE, ...before, ...patch };
+    if (before?.claudeSessions || patch.claudeSessions || session) {
+      state.claudeSessions = boundedTimes(
+        { ...before?.claudeSessions, ...patch.claudeSessions, ...(session ? { [session.id]: session.at } : {}) },
+        10,
+      );
+    }
+    if (session) state.root ??= session.root;
+    await writePrivate(paths, file, `${JSON.stringify(state, null, 2)}\n`, 0o600);
+    return state;
+  });
 }
 
 /** The process identity captured by the watch that owns the lock. Legacy locks have none. */

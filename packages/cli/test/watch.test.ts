@@ -5,9 +5,11 @@ import { join } from "node:path";
 import {
   machinePaths,
   parseConfig,
+  readHookRuns,
   readWatchLock,
   readWatchLockInfo,
   readWatchState,
+  readWatchStates,
   type ServerCli,
   takeWatchLock,
   updateWatchState,
@@ -93,18 +95,105 @@ async function coordinator(o: { key?: string; cli?: ServerCli } = {}) {
 }
 
 /** `armada hook stop` as Claude Code runs it: the hook's input on standard input. */
-async function hook(c: Awaited<ReturnType<typeof coordinator>>, cwd: string, env: Record<string, string> = {}) {
+async function hook(
+  c: Awaited<ReturnType<typeof coordinator>>,
+  cwd: string,
+  env: Record<string, string> = {},
+  sessionId = "s",
+) {
   c.reset();
   const io: Io = {
     ...c.io,
     cwd: "/",
     env: { ...c.io.env, ...env },
-    readStdin: async () => JSON.stringify({ session_id: "s", cwd, hook_event_name: "Stop", stop_hook_active: true }),
+    readStdin: async () =>
+      JSON.stringify({ session_id: sessionId, cwd, hook_event_name: "Stop", stop_hook_active: true }),
   };
   expect(await run(["hook", "stop"], io)).toBe(0);
   const text = c.out();
   return text ? (JSON.parse(text) as { decision: string; reason: string }) : null;
 }
+
+test("the coordinator session is held across checkouts; an unknown or worker session is not", async () => {
+  const c = await coordinator();
+  c.io.env.CLAUDECODE = "1";
+  c.io.env.CLAUDE_CODE_SESSION_ID = "coordinator-session";
+  await c.hold("DEMO-2");
+  expect(await run(["inbox"], c.io)).toBe(0);
+  const blocked = await hook(c, WORKER_ROOT, {}, "coordinator-session");
+  expect(blocked?.decision).toBe("block");
+  expect(blocked?.reason).toContain(COORDINATOR_ROOT);
+  expect(await hook(c, WORKER_ROOT, {}, "unknown-session")).toBeNull();
+  expect(await hook(c, COORDINATOR_ROOT, { ARMADA_TICKET: "DEMO-2" }, "coordinator-session")).toBeNull();
+  expect((await readHookRuns(c.paths))["coordinator-session"]?.why).toBe("blocked");
+});
+
+test("one session coordinates named watches on multiple projects outside any checkout", async () => {
+  const c = await coordinator();
+  c.io.env.CLAUDECODE = "1";
+  c.io.env.CLAUDE_CODE_SESSION_ID = "s";
+  c.io.env.ARMADA_COORDINATOR = "front";
+  for (const [project, root, name, ticket] of [
+    [P, COORDINATOR_ROOT, "front", "DEMO-2"],
+    ["gadgets", "/work/gadgets", "back", "GADGET-3"],
+  ] as const) {
+    await updateWatchState(
+      c.paths,
+      project,
+      { root, claudeSessions: { s: NOW.toISOString() }, inFlight: [ticket] },
+      name,
+    );
+  }
+  // A running default watch does not replace the named coordinator's watch.
+  await takeWatchLock(c.paths, P, 777, () => false);
+  c.alive.add(777);
+  const blocked = await hook(c, "/elsewhere");
+  expect(blocked?.reason).toContain(COORDINATOR_ROOT);
+  expect(blocked?.reason).toContain("/work/gadgets");
+  expect((await readWatchStates(c.paths)).map((row) => row.coordinator).sort()).toEqual(["back", "front"]);
+  expect((await readHookRuns(c.paths)).s).toMatchObject({ why: "blocked", at: NOW.toISOString() });
+  await takeWatchLock(c.paths, P, 778, () => false, undefined, undefined, "front");
+  c.alive.add(778);
+  expect((await hook(c, "/elsewhere"))?.reason).not.toContain(COORDINATOR_ROOT);
+  await takeWatchLock(c.paths, "gadgets", 779, () => false, undefined, undefined, "back");
+  c.alive.add(779);
+  expect(await hook(c, "/elsewhere")).toBeNull();
+  c.reset();
+  expect((await rearmFor(c.io, P, { inFlight: [], open: 0 })).line).toContain(
+    "Stop hook on for this session (last ran",
+  );
+});
+
+test("Claude commands show installation, delivered hook and opt-out banners without breaking JSON", async () => {
+  const c = await coordinator();
+  c.io.env.CLAUDECODE = "1";
+  c.io.env.CLAUDE_CODE_SESSION_ID = "s";
+  c.io.env.HOME = "/home/coordinator";
+  const read = c.io.readFile;
+  c.io.readFile = async (path) =>
+    path === "/home/coordinator/.claude/settings.json"
+      ? JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "armada hook stop" }] }] } })
+      : read(path);
+  expect(await run(["inbox", "--json"], c.io)).toBe(0);
+  expect(JSON.parse(c.out()).watch.line).toContain(
+    "Stop hook installed in /home/coordinator/.claude/settings.json; it confirms at your next turn end",
+  );
+  expect(await hook(c, "/elsewhere")).toBeNull();
+  c.reset();
+  expect(await run(["watch", "--json"], c.io)).toBe(0);
+  expect(JSON.parse(c.out()).watch.line).toContain("Stop hook on for this session (last ran");
+  expect(c.err()).toContain("Stop hook on for this session (last ran");
+  c.io.env.ARMADA_STOP_HOOK = "off";
+  c.reset();
+  expect(await run(["inbox"], c.io)).toBe(0);
+  expect(c.out()).toContain("Stop hook NOT on: off by choice — unset ARMADA_STOP_HOOK");
+  // Worker commands never register their session, even if run from this checkout.
+  c.io.env.ARMADA_TICKET = "DEMO-2";
+  c.io.env.CLAUDE_CODE_SESSION_ID = "worker";
+  c.reset();
+  expect(await run(["inbox"], c.io)).toBe(0);
+  expect((await readWatchState(c.paths, P))?.claudeSessions).not.toHaveProperty("worker");
+});
 
 describe("armada watch", () => {
   test("named watch defaults to mine, all opts out, and unnamed watch retains the full fleet", async () => {

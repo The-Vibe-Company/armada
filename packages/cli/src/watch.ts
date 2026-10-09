@@ -4,7 +4,7 @@
 // turn while workers are in flight and no watch runs. Both share the project's
 // watch state on this machine (`machine.ts`), which `inbox` and `merge` keep
 // current too. Every coordinator command ends on the re-arm line.
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import {
   type ArmadaConfig,
   type Credentials,
@@ -12,7 +12,9 @@ import {
   eventCursor,
   FOLLOW_KINDS,
   type FollowOptions,
+  findStopHook,
   followFleet,
+  type HookRun,
   type InboxEntry,
   type MachinePaths,
   machinePaths,
@@ -21,13 +23,18 @@ import {
   processAlive,
   type Rearm,
   Refusal,
+  readHookRuns,
   readWatchLockInfo,
   readWatchState,
+  readWatchStates,
   rearm,
+  recordHookRun,
   releaseWatchLock,
   runningWatch,
+  type StopHookState,
   sameWatchLock,
   stopHookDecision,
+  stopHookState,
   takeWatchLock,
   updateWatchState,
   type WatchIdentity,
@@ -63,7 +70,16 @@ export async function remember(io: Io, project: string, patch: Partial<WatchStat
   const paths = machinePaths(io.env);
   if (!paths) return;
   try {
-    await updateWatchState(paths, project, patch, await coordinatorName(io, project));
+    const name = await coordinatorName(io, project);
+    const session = io.env.CLAUDECODE && !io.env.ARMADA_TICKET?.trim() ? io.env.CLAUDE_CODE_SESSION_ID?.trim() : null;
+
+    await updateWatchState(
+      paths,
+      project,
+      patch,
+      name,
+      session ? { id: session, at: now(io).toISOString(), root: io.coordinatorRoot ?? io.cwd } : undefined,
+    );
   } catch (err) {
     io.stderr(
       `armada: warning: could not keep the watch state (${err instanceof Error ? err.message : String(err)})\n`,
@@ -93,7 +109,44 @@ export async function rearmFor(
   const paths = machinePaths(io.env);
   const mode =
     paths && running ? (await readWatchLockInfo(paths, project, await coordinatorName(io, project)))?.mode : undefined;
-  return rearm({ ...o, openJobs: o.openJobs ?? state?.openJobs, running, mode });
+  const next = rearm({ ...o, openJobs: o.openJobs ?? state?.openJobs, running, mode });
+  const banner = await stopHookBanner(io);
+  if (banner) next.line += `\n${banner}`;
+  return next;
+}
+
+/** Settings are read through Io, never written; receipts live only in the machine adapter. */
+export async function hookStatus(
+  io: Io,
+  root = io.coordinatorRoot ?? io.cwd,
+): Promise<{ status: StopHookState; installedIn: string | null }> {
+  const files = [
+    ...(io.env.HOME ? [join(io.env.HOME, ".claude/settings.json")] : []),
+    join(root, ".claude/settings.json"),
+    join(root, ".claude/settings.local.json"),
+  ];
+  const installedIn = await findStopHook(io.readFile, files);
+  const paths = machinePaths(io.env);
+  const sessionId = io.env.CLAUDE_CODE_SESSION_ID?.trim() || null;
+  const hookRun =
+    paths && sessionId
+      ? ((await readHookRuns(paths).catch(() => ({}) as Record<string, HookRun>))[sessionId] ?? null)
+      : null;
+  return { installedIn, status: stopHookState({ env: io.env, sessionId, hookRun, installedIn }) };
+}
+
+export function hookStatusLine(status: StopHookState): string {
+  if (status.state === "on") {
+    const at = new Date(status.why.slice("last ran ".length));
+    const time = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+    return `Stop hook on for this session (last ran ${time})`;
+  }
+  if (status.state === "installed") return `Stop hook installed in ${status.why}; ${status.fix}`;
+  return `Stop hook NOT on: ${status.why} — ${status.fix}`;
+}
+
+export async function stopHookBanner(io: Io): Promise<string | null> {
+  return io.env.CLAUDECODE ? hookStatusLine((await hookStatus(io)).status) : null;
 }
 
 const now = (io: Io) => (io.now ?? (() => new Date()))();
@@ -303,6 +356,9 @@ async function watchUntil(
       ? { ...inspected, project, configPath, ...(name === "default" ? {} : { coordinatorName: name }) }
       : undefined;
     controller.signal.throwIfAborted();
+    await remember(io, project, {});
+    const startBanner = await stopHookBanner(io);
+    if (startBanner) io.stderr(`${startBanner}\n`);
     if (paths) {
       const lock = await takeWatchLock(
         paths,
@@ -317,10 +373,11 @@ async function watchUntil(
       controller.signal.throwIfAborted();
       if (!lock.taken) {
         const mode = (await readWatchLockInfo(paths, project, await coordinatorName(io, project)))?.mode;
-        const line =
+        const watchLine =
           mode === "follow"
             ? `armada watch is following for ${project} (pid ${lock.pid}).`
             : `armada watch is already running for ${project} (pid ${lock.pid}): its output arrives when it ends.`;
+        const line = `${watchLine}${startBanner ? `\n${startBanner}` : ""}`;
         if (options.follow) io.stderr(`${line}\n`);
         else io.stdout(json ? `${JSON.stringify({ project, running: lock.pid, line }, null, 2)}\n` : `${line}\n`);
         return 0;
@@ -444,11 +501,13 @@ async function watchUntil(
     // A release is acted on between rounds: it is not an item that keeps a watch going.
     const open = report.items.filter((e) => e.kind !== "version").length;
     const next = rearm({ inFlight, openJobs, open, running: null, act: true });
+    const banner = await stopHookBanner(io);
+    if (banner) next.line += `\n${banner}`;
     if (json) io.stdout(`${JSON.stringify({ ...report, watch: next }, null, 2)}\n`);
     else {
       const out =
         report.outcome === "nothing"
-          ? [`Nothing to watch on ${project}: no worker in flight and nothing open.`]
+          ? [`Nothing to watch on ${project}: no worker in flight and nothing open.`, ...(banner ? [banner] : [])]
           : [...renderEntries(project, report.items), "New items are marked *.", next.line];
       io.stdout(`${out.join("\n")}\n`);
     }
@@ -457,6 +516,10 @@ async function watchUntil(
     if (!stoppedBy && !timedOut) throw err;
     if (timedOut) resume();
   } finally {
+    if (options.follow || timedOut || stoppedBy) {
+      const banner = await stopHookBanner(io);
+      if (banner) io.stderr(`${banner}\n`);
+    }
     if (paths && taken) await releaseWatchLock(paths, project, pid, identity, name).catch(() => {});
     unsubscribe?.();
     cancelDeadline?.();
@@ -481,17 +544,63 @@ export async function hookStop(
 ): Promise<number> {
   if (rest[0] !== "stop" || rest.length > 1)
     throw new UsageError(rest[0] ? `unknown hook "${rest.join(" ")}"` : "hook needs a name: armada hook stop");
+  const paths = machinePaths(io.env);
+  let sessionId: string | null = null;
+  let receipt: HookRun = { at: now(io).toISOString(), project: null, why: "not an Armada coordinator session" };
   try {
-    let input: { cwd?: unknown } = {};
-    try {
-      input = JSON.parse((await io.readStdin?.()) || "{}") as { cwd?: unknown };
-    } catch {}
-    const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : io.cwd;
-    const { path, text } = await findConfig({ ...io, cwd });
-    const project = parseConfig(text, path).project.slug;
-    const { state, running } = await watchOf({ ...io, coordinatorRoot: dirname(path) }, project);
-    const d = stopHookDecision({ project, root: dirname(path), state, watching: running, env: io.env });
-    if (d.block) io.stdout(`${JSON.stringify({ decision: "block", reason: d.reason })}\n`);
-  } catch {}
+    const input: unknown = JSON.parse((await io.readStdin?.()) || "{}");
+    if (typeof input !== "object" || input === null) return 0;
+    const raw = input as { cwd?: unknown; session_id?: unknown; hook_event_name?: unknown };
+    // A worker subagent shares its parent's id, but never fires Stop or writes its receipt.
+    if ((raw.hook_event_name && raw.hook_event_name !== "Stop") || io.env.ARMADA_TICKET?.trim()) return 0;
+    sessionId = typeof raw.session_id === "string" && raw.session_id.trim() ? raw.session_id.trim() : null;
+    const registered =
+      paths && sessionId
+        ? (await readWatchStates(paths)).filter(({ state }) =>
+            Object.hasOwn(state.claudeSessions ?? {}, sessionId as string),
+          )
+        : [];
+    const decisions = [];
+    for (const { project, coordinator, state } of registered) {
+      const watching = paths ? await runningWatch(paths, project, alive(io), coordinator) : null;
+      decisions.push({
+        project,
+        decision: stopHookDecision({
+          project,
+          root: state.root as string,
+          state,
+          watching,
+          env: io.env,
+          match: "session",
+        }),
+      });
+    }
+    if (!registered.length) {
+      const cwd = typeof raw.cwd === "string" && raw.cwd ? raw.cwd : io.cwd;
+      const { path, text } = await findConfig({ ...io, cwd });
+      const project = parseConfig(text, path).project.slug;
+      const { state, running } = await watchOf({ ...io, coordinatorRoot: dirname(path) }, project);
+      decisions.push({
+        project,
+        decision: stopHookDecision({ project, root: dirname(path), state, watching: running, env: io.env }),
+      });
+    }
+    const blocked = decisions.filter(({ decision }) => decision.block);
+    receipt = {
+      ...receipt,
+      project: (blocked[0] ?? decisions[0])?.project ?? null,
+      why: blocked.length
+        ? "blocked"
+        : decisions.map(({ decision }) => (decision.block ? "blocked" : decision.why)).join("; "),
+    };
+    if (blocked.length)
+      io.stdout(
+        `${JSON.stringify({ decision: "block", reason: blocked.map(({ decision }) => (decision.block ? decision.reason : "")).join("\n") })}\n`,
+      );
+  } catch {
+    receipt.why = "could not read the coordinator's local hook state or project";
+  } finally {
+    if (paths && sessionId) await recordHookRun(paths, sessionId, receipt).catch(() => {});
+  }
   return 0;
 }

@@ -13,6 +13,14 @@ A project can share its work between coordinators, each with a name: `ARMADA_COO
 - Each name has its own watch lock on a machine: `armada watch --stop` stops yours, `armada watch --stop --name <name>` another's.
 - Your own coordination ticket is not a worker: the watch leaves out the claim whose handle is yours (`ARMADA_COORDINATOR_HANDLE`, else Conductor's workspace and session).
 
+## The Claude Code stop hook
+
+The hook matches the `session_id` of a coordinator that ran `inbox`, `watch`, `brief`, `launch` or `merge`, across working folders. Unknown sessions fall back to the checkout where the coordinator last watched. A session coordinating several projects is held if any of them needs a watch; the reason names each project and checkout. Worker sessions (`ARMADA_TICKET`) never register or get held. A resumed session with a new id registers on its next coordinator command.
+
+The watch's start and end, the last lines of coordinator commands, and `armada doctor` show `Stop hook on for this session (last ran HH:MM)`, `Stop hook installed in <file>; it confirms at your next turn end`, or `Stop hook NOT on: <why> — <fix>`. Installation alone is not proof that Claude loaded it: the next Stop records a local receipt. All hook reads are local and failures let the turn end.
+
+Armada detects the command in user settings (`~/.claude/settings.json`) and the coordinator checkout's `.claude/settings.json` or `.claude/settings.local.json`. If the session starts elsewhere, add a command hook for Stop in user settings: `armada hook stop 2>/dev/null || true`. `armada init --merge` changes repository settings only. `ARMADA_STOP_HOOK=off` opts out; the banner says so.
+
 ## The watch
 
 Plain `armada watch` waits until something you have not been shown needs you (a question, plan, request, hand-back, merge hold, deploy failure, job notice, silent, stopped or unstarted worker), prints it and exits. It exits with `nothing to watch` when nothing in its scope is in flight or open. Armada being down does not end it; a harness time limit can, so start it again when it ends without news. `--for <minutes>` bounds it cleanly.
