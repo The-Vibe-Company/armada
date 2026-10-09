@@ -559,6 +559,7 @@ describe("armada claim, report and release", () => {
     expect(w.armada.calls.map((c) => c.path).sort()).toEqual(
       [
         "fleet/coordinator",
+        "fleet/coordinators",
         "fleet/events/latest",
         "fleet/launches",
         "fleet/job/list",

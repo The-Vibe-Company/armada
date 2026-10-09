@@ -61,6 +61,8 @@ export interface WatchState {
   peekTail?: Record<string, PeekTail>;
   /** Entries the coordinator was shown (`entryKey`), by `inbox` or `watch`: they do not wake a watch again. */
   seen: string[];
+  /** Scope of the last pruning read; a narrower read preserves broader history. */
+  seenScope?: "mine" | "all";
   /** Tickets a worker held at the last read, the coordinator's own excluded; null when unknown. */
   inFlight: string[] | null;
   waiting?: string[];
@@ -119,7 +121,7 @@ export interface WatchOptions {
   /** A failure the watch waits out. */
   onRetry?: (message: string) => void;
   /**
-   * A required CLI/setup upgrade (`releaseEntry`), asked after every read.
+   * A required CLI upgrade (`releaseEntry`), asked after every read.
    */
   release?: () => Promise<InboxEntry | null> | InboxEntry | null;
   pollMs?: number;
@@ -218,8 +220,11 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
       if (err instanceof ArmadaApiError && err.upgrade) {
         const release = await untilAborted(o.signal, () => o.release?.());
         if (release) {
-          items = [...items, { ...release, new: true }];
-          return report("items");
+          items = [...items.filter((e) => e.kind !== "version"), { ...release, new: !known.has(entryKey(release)) }];
+          if (items.some((e) => e.new && !e.queue && (e.owner == null || e.owner === (o.coordinatorName ?? "default"))))
+            return report("items");
+          await untilAborted(o.signal, () => o.sleep(boundedWait(o, pollMs)));
+          continue;
         }
       }
       if (!transientFailure(err)) throw err;
@@ -240,7 +245,7 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
       openJobs = read.openJobs ?? [];
       ownedOpenJobs = read.ownedOpenJobs;
       etag = read.etag;
-      known = new Set(items.map(entryKey));
+      known = new Set([...known].filter((key) => key.startsWith("version:")).concat(items.map(entryKey)));
       for (const w of read.warnings) warnings.add(w);
       await untilAborted(o.signal, () =>
         o.onRead?.({
@@ -257,8 +262,10 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     }
     // Not urgent: a release comes after the questions, plans and hand-backs already open.
     const release = (await untilAborted(o.signal, () => o.release?.())) ?? null;
-    if (release) items = [...items, { ...release, new: true }];
-    if (items.some((e) => e.new)) return report("items");
+    items = items.filter((e) => e.kind !== "version");
+    if (release) items.push({ ...release, new: !known.has(entryKey(release)) });
+    if (items.some((e) => e.new && !e.queue && (e.owner == null || e.owner === (o.coordinatorName ?? "default"))))
+      return report("items");
     if (read && inFlight !== null && !inFlight.length && !openJobs.length && !waiting.length && !items.length)
       return report("nothing");
     await untilAborted(o.signal, () =>
@@ -304,6 +311,7 @@ export const FOLLOW_INBOX_KINDS: readonly InboxEntryKind[] = [
 ];
 export const FOLLOW_KINDS = [...FOLLOW_INBOX_KINDS, ...FOLLOW_EVENT_KINDS, "handover"] as const;
 export interface FollowLine {
+  queue?: InboxEntry["queue"];
   cursor: string;
   kind: string;
   ticket: string | null;
@@ -417,6 +425,7 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
             owner: item.author,
             at: item.createdAt,
             body: item.body,
+            ...(item.queue ? { queue: item.queue } : {}),
             new: !first,
           };
           seen.add(key);
@@ -554,7 +563,7 @@ export function releaseEntry(
   running: string,
   latest: string,
   at: Date,
-  options: { setupBehind: boolean; minimum: string | null } = { setupBehind: false, minimum: null },
+  options: { minimum: string | null } = { minimum: null },
 ): InboxEntry {
   return {
     id: null,
@@ -563,13 +572,8 @@ export function releaseEntry(
     author: null,
     version: latest,
     body: [
-      `Armada ${latest} required (you run ${running}). Changes: ${releaseNotesUrl(latest)}`,
+      `Armada ${options.minimum ?? latest} required (you run ${running}). Changes: ${releaseNotesUrl(latest)}`,
       ...(options.minimum ? [`The server requires Armada ${options.minimum} or newer.`] : []),
-      ...(options.setupBehind
-        ? [
-            "This project's Armada setup is behind: armada upgrade checks it, then runs armada init --merge only if still needed.",
-          ]
-        : []),
       `Run armada upgrade (${installCommand(latest)} if upgrading by hand).`,
       "Workers in flight keep the version their brief pinned: tell them nothing unless the notes say otherwise.",
     ].join("\n"),
@@ -630,7 +634,7 @@ export function rearm(o: {
   else if (o.open === null) line = "No worker in flight — nothing to watch.";
   else line = "No worker in flight and nothing open — nothing to watch.";
   if (o.openJobs?.length)
-    line = `${o.openJobs.length} open job${o.openJobs.length === 1 ? "" : "s"} (${o.openJobs.join(", ")}) — ${watch ? `${then}${watch}.` : `${then}keep watching: armada watch`}${count ? ` · ${workerLine}` : ""}${waitingLine}`;
+    line = `${o.openJobs.length} open job${o.openJobs.length === 1 ? "" : "s"} (${o.openJobs.join(", ")}) — ${watch ? `${then}${watch}.` : `${then}keep watching: armada watch`}${count || o.slots?.max ? ` · ${workerLine}` : ""}${waitingLine}`;
   return {
     inFlight: o.inFlight,
     ...(o.openJobs?.length ? { openJobs: o.openJobs } : {}),

@@ -717,3 +717,43 @@ test("an unknown slot lease acquisition only mints after confirming its own gran
     expect(f.armada.calls.filter((c) => c.path === "launch-tokens")).toHaveLength(outcome === "granted" ? 1 : 0);
   }
 });
+
+test("an unknown token write retains the slot lease until expiry; a definite refusal releases it", async () => {
+  const { mintLaunchToken } = await import("../src/worker-slots.ts");
+  for (const outcome of ["delayed-write", "refused"] as const) {
+    const f = await fixture(`${TOML}\n[policy]\nmax_workers = 1\n`);
+    const originalFetch = f.io.fetch;
+    if (!originalFetch) throw new Error("missing fake API");
+    let delayedWrite: (() => ReturnType<NonNullable<Io["fetch"]>>) | undefined;
+    const io = {
+      ...f.io,
+      sleep: async () => {},
+      fetch: async (url: string, init: Parameters<NonNullable<Io["fetch"]>>[1]) => {
+        if (url.endsWith("/launch-tokens")) {
+          if (outcome === "refused") return new Response(JSON.stringify({ error: "invalid launch" }), { status: 400 });
+          delayedWrite = () => originalFetch(url, init);
+          throw new Error("token response lost");
+        }
+        return originalFetch(url, init);
+      },
+    };
+    const config = parseConfig(`${TOML}\n[policy]\nmax_workers = 1\n`);
+    const credentials = resolveCredentials({ env: io.env });
+    await expect(mintLaunchToken(io, config, credentials, { ticket: "DEMO-13" })).rejects.toThrow();
+    expect(await f.store.pendingLaunches("widgets", new Date(0))).toHaveLength(0);
+    if (outcome === "delayed-write") {
+      if (!delayedWrite) throw new Error("token write was not attempted");
+      expect(await f.store.getLease("widgets", "launch-slots")).not.toBeNull();
+      await expect(
+        mintLaunchToken({ ...io, fetch: originalFetch }, config, credentials, { ticket: "DEMO-14" }),
+      ).rejects.toThrow("another launch is counting worker slots");
+      await delayedWrite();
+      expect(await f.store.pendingLaunches("widgets", new Date(0))).toHaveLength(1);
+    } else {
+      expect(await f.store.getLease("widgets", "launch-slots")).toBeNull();
+      await expect(
+        mintLaunchToken({ ...io, fetch: originalFetch }, config, credentials, { ticket: "DEMO-14" }),
+      ).resolves.toBeDefined();
+    }
+  }
+});

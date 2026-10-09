@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type ArmadaConfig, type Credentials, type Fleet, Refusal, workerSlots } from "@armada/core";
+import { ArmadaApiError, type ArmadaConfig, type Credentials, type Fleet, Refusal, workerSlots } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { coordinatorName } from "./coordinator.ts";
 import { type Io, UsageError } from "./io.ts";
@@ -70,10 +70,21 @@ export async function mintLaunchToken(
     if (!acquired) throw new Refusal("cannot confirm worker-slot lease; retry", next);
   }
   if (!acquired) throw new Refusal("another launch is counting worker slots; retry", next);
+  let releaseSlots = true;
   const mint = async (overCap: string | null) => {
     if (!(await fleet.renewLease({ name: "launch-slots", holder, ttlMs: 60_000 })))
       throw new Refusal("worker-slot lease expired while counting; retry", next);
-    return await api.launchToken(signIn, { ...request, ...(overCap ? { overCap } : {}) });
+    try {
+      return await api.launchToken(signIn, { ...request, ...(overCap ? { overCap } : {}) });
+    } catch (error) {
+      // A timed-out write may still be committing. Keep the lease until expiry
+      // so another launcher cannot count before its pending row becomes visible.
+      if (!(error instanceof ArmadaApiError && error.status !== null && error.status >= 400 && error.status < 500)) {
+        releaseSlots = false;
+        io.stderr("armada: warning: launch token outcome unknown; worker-slot lease retained until its 60 s expiry.\n");
+      }
+      throw error;
+    }
   };
   try {
     let taken: number;
@@ -89,7 +100,7 @@ export async function mintLaunchToken(
     return await mint(overCap);
   } finally {
     try {
-      await fleet.releaseLease({ name: "launch-slots", holder });
+      if (releaseSlots) await fleet.releaseLease({ name: "launch-slots", holder });
     } catch {
       io.stderr("armada: warning: could not release worker-slot lease; it expires after 60 s.\n");
     }

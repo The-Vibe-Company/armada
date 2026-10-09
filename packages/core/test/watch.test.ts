@@ -119,6 +119,65 @@ describe("armada watch", () => {
     expect(reads).toEqual([["DEMO-2"], ["DEMO-2"]]);
   });
 
+  for (const name of ["default", "front"]) {
+    test(`${name} watch lists another owner's plan but waits for its own question`, async () => {
+      const live = tempFleet();
+      await live.store.saveRuntimeHandle({
+        project: P,
+        ticket: "DEMO-2",
+        coordinator: "back",
+        runtime: "conductor",
+        handle: "ws/DEMO-2",
+        branch: null,
+        at: NOW,
+      });
+      await live.store.addInboxItem({
+        project: P,
+        ticket: "DEMO-2",
+        kind: "plan",
+        recipient: "coordinator",
+        author: "ws/DEMO-2",
+        body: "Review the plan",
+        at: NOW,
+      });
+      let sleeps = 0;
+      const { o } = options(live, {
+        coordinatorName: name,
+        scope: "all",
+        release: () => null,
+        sleep: async (ms) => {
+          await live.clock.sleep(ms);
+          if (++sleeps === 1) {
+            await live.store.saveRuntimeHandle({
+              project: P,
+              ticket: "DEMO-3",
+              coordinator: name,
+              runtime: "conductor",
+              handle: "ws/DEMO-3",
+              branch: null,
+              at: live.clock.now(),
+            });
+            await live.store.addInboxItem({
+              project: P,
+              ticket: "DEMO-3",
+              kind: "question",
+              recipient: "coordinator",
+              author: "ws/DEMO-3",
+              body: "Which table?",
+              at: live.clock.now(),
+            });
+          }
+        },
+      });
+      const got = await watchInbox(live.fleet, o);
+      expect(sleeps).toBe(1);
+      expect(got.items).toMatchObject([
+        { kind: "plan", owner: "back" },
+        { kind: "question", owner: name, new: true },
+      ]);
+    });
+  }
+
   test("an item already shown to the coordinator does not wake it; a new one does", async () => {
     const live = tempFleet();
     await holding(live, "DEMO-2");
@@ -687,6 +746,9 @@ test("follow shows initial and new holds until cleared, by default and when filt
 test("external job liveness keeps worker ownership accurate in rearm and the stop hook", () => {
   expect(rearm({ inFlight: [], openJobs: [12], open: 0, running: null }).line).toBe(
     "1 open job (12) — keep watching: armada watch",
+  );
+  expect(rearm({ inFlight: [], openJobs: [12], open: 0, running: null, slots: { taken: 0, max: 2 } }).line).toBe(
+    "1 open job (12) — keep watching: armada watch · 0 of 2 workers in flight",
   );
   const state = { ...EMPTY_WATCH_STATE, root: "/synthetic", inFlight: [], openJobs: [12] };
   const decision = stopHookDecision({ project: "widgets", root: "/synthetic", state, watching: null, env: {} });

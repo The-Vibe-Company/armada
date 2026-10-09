@@ -5,7 +5,7 @@
 For a project on 0.2.55, install the current CLI with `npm install -g @the-vibe-company/armada` and confirm `armada --version`. Self-hosted installations deploy the current dashboard and its additive migrations first; hosted Armada handles that step.
 
 1. Sign in with `armada login`, run `armada doctor`, then `armada init` from the checkout. Review and merge its one setup PR (skills, links, setup scripts and labels). Init preserves an existing `armada.toml`; add the optional examples below yourself. If it reports setup is current, no PR is needed.
-2. Configure `[[deploy.target]]` with exactly one live source (`github_environment` or `live_sha_command`) and an optional `smoke` command ([deployment example](#check-deployments-after-merges)). Add known flakes as `[[ci.known_failure]]` with an exact `check`, regex `pattern` and root-cause `ticket`; `armada ci why <pr> --rerun` only retries eligible first-attempt failures once.
+2. Configure `[[deploy.target]]` with exactly one live source (`github_environment`, `live_sha_command` or `check`) and an optional `smoke` command ([deployment example](#check-deployments-after-merges)). Add known flakes as `[[ci.known_failure]]` with an exact `check`, regex `pattern` and root-cause `ticket`; `armada ci why <pr> --rerun` only retries eligible first-attempt failures once.
 3. Review `[merge] notify_paths` for shared files, `[[acceptance]]` for live pre-hand-back checks and `[jobs.<name>]` for surviving runners. Tune `[policy] plans`, `pre_approved_label`, `approval_label`, `silence_minutes`, `launch_grace_minutes` and `ci_wait_minutes`; use `merge_approval` or `[[policy.validation]]` for owner decisions. Defaults keep old projects working; doctor’s optional lines are informational.
 4. Open Organization > Notifications as an owner/admin, set the webhook and send a test. Choose language, time zone, quiet hours and digest times/days ([owner alerts](#get-owner-alerts-in-chat)); these are dashboard settings, not TOML sections. Production cron stays off unless you explicitly configure it.
 5. Name each coordinator with `armada coordinator use backend` (or `ARMADA_COORDINATOR=backend` in its cloud environment). Check `armada coordinator list`; [handover](#run-a-second-coordinator) explicitly assigns existing tickets.
@@ -319,7 +319,7 @@ Workers declare planned paths with `armada report awaiting-approval --plan-file 
 
 ## Check deployments after merges
 
-The owner declares each deployment target in `armada.toml`. Use a GitHub deployment environment when the host reports deployment statuses, or a shell command that prints the full 40-character SHA currently live:
+The owner declares each deployment target in `armada.toml`. Use a GitHub deployment environment when the host reports deployment statuses, or a `check` command that reports the host’s outcome. Choose exactly one of `github_environment`, `live_sha_command` or `check`:
 
 ```toml
 [[deploy.target]]
@@ -327,15 +327,35 @@ name = "api"
 branch = "main"                         # optional: default is the merged PR's base
 # Exactly one live source:
 github_environment = "production"
+# check = "./scripts/check-deploy.sh"
 # live_sha_command = "curl -fsS https://example.test/version"
 smoke = "curl -fsS https://example.test/health" # optional: exit 0 is healthy
 timeout_minutes = 20                    # 1 to 120
 pause_on_failure = true                 # false keeps the inbox warning without a hold
 ```
 
+A `check` command exits **0** when the requested commit is live, **1** only when the host confirms that deployment failed, and **2** while pending or on a network/read error. To report a host skip, exit 2 with the last stdout line `skipped: <reason>`, for example `skipped: no files of this service changed`. It ends quietly as **not deployed (host skipped: …)**: no hold, inbox item or smoke run, and the watcher exits 0. A later observation of that SHA can replace it; it never covers ancestors or clears their failures.
+
+Example script shape (replace the host commands with your project's adapter):
+
+```sh
+#!/bin/sh
+outcome=$(hosting-cli deploy-state "$ARMADA_DEPLOY_SHA") || exit 2
+case "$outcome" in
+  live) exit 0 ;;
+  failed) hosting-cli deploy-log "$ARMADA_DEPLOY_SHA"; exit 1 ;;
+  skipped) printf '%s\n' 'skipped: no files of this service changed'; exit 2 ;;
+  *) exit 2 ;;
+esac
+```
+
+Exit 0 or 1 may end stdout with a full 40-hex SHA; otherwise Armada uses `ARMADA_DEPLOY_SHA`. A different SHA must contain the watched commit, or the watcher keeps waiting. Failed checks pause merges on the first poll, retaining the last output lines. A timed-out check, an output-limit termination or an unknown exit code keeps waiting; the deadline reports why. Configuration failures still take precedence. Legacy `live_sha_command` keeps its semantics: failed commands wait until timeout, and host skips become pauses. `armada doctor` explains that limitation and warns for every target without `smoke`. Merge's watching line also warns: without smoke, a live but broken service reads healthy. These checks run only after merges, not as periodic service monitoring.
+
+Self-hosted installations must deploy dashboard/API migration **45** before using the new CLI or `check`; downgrade the CLI before removing support for `not-deployed`.
+
 For a machine-specific linked folder, declare `requires_env = ["DEPLOY_LINK_DIR"]` and reference `$DEPLOY_LINK_DIR` in the live and smoke commands. From the project checkout, run `armada config set deploy.env.DEPLOY_LINK_DIR /path/to/linked-service` once on each coordinator machine. Values live under the user's Armada config directory, per project, and win over the process environment. `armada config unset deploy.env.DEPLOY_LINK_DIR` restores environment fallback. `armada doctor` lists missing names and the exact fixes. An unconfigured target warns once and records a skipped deploy without a hold; after configuring it, retry `armada deploy watch --sha <sha> --target <name>`. A command that cannot run on this machine (exit 127, an unset-variable guard or a missing linked directory) warns once and records a **not runnable (configuration)** deploy notice without opening a hold. Fix the local setting or tool, then retry the same watch command with a fresh deadline. Runnable deploy and smoke failures still hold.
 
-After a confirmed merge, the CLI starts a detached watcher per configured matching target and returns. Each watcher checks every 30 seconds until the merged commit or a descendant is live, then runs smoke. Live SHA and smoke commands run with `sh -c` in the repository root, with the resolved machine-local `requires_env` settings, `ARMADA_DEPLOY_SHA` and `ARMADA_DEPLOY_TARGET` set. Merge startup passes the same resolved environment, including the machine config root, to the detached watcher. Commands are bounded to one minute and the remaining deploy deadline. For project secrets, declare the command as `armada run -- <command>`; the watcher never fetches secrets itself. GitHub ancestry reads need the terminal's GitHub token; command-only targets can also use commits already available in the local checkout.
+After a confirmed merge, the CLI starts a detached watcher per configured matching target and returns. Each watcher checks every 30 seconds until the merged commit or a descendant is live, then runs smoke. Check, live SHA and smoke commands run with `sh -c` in the repository root, with the resolved machine-local `requires_env` settings, `ARMADA_DEPLOY_SHA` and `ARMADA_DEPLOY_TARGET` set. Merge startup passes the same resolved environment, including the machine config root, to the detached watcher. Commands are bounded to one minute and the remaining deploy deadline. For project secrets, declare the command as `armada run -- <command>`; the watcher never fetches secrets itself. GitHub ancestry reads need the terminal's GitHub token; command-only targets can also use commits already available in the local checkout.
 
 A failed deployment, smoke failure or timeout opens one coordinator inbox item and, by default, a target's deploy hold. Inspect `armada deploy status` or `armada status`. Merge the repair with `armada merge <pr> --through-hold "<what this repairs>"`; a later healthy deploy automatically clears covered failures and their target hold. Other targets and manual holds remain independent. Output detail keeps the last 30 lines, capped at 4 KiB. No deployment comments are added to Linear. Self-hosted installations must deploy the dashboard/API with migration 42 before using a CLI that records `not-runnable`; downgrade the CLI before removing support for that state.
 

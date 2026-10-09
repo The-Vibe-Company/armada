@@ -41,7 +41,7 @@ import { type Io, UsageError, type WatchSignal } from "./io.ts";
 import { refreshingJobsFleet } from "./job.ts";
 import { requireSignIn } from "./login.ts";
 import { detectCoordinator } from "./presence.ts";
-import { pendingRelease } from "./release.ts";
+import { noticeRelease, pendingRelease } from "./release.ts";
 import { fsRepoView } from "./repo.ts";
 import { observingFleet } from "./runtime.ts";
 import { liveFleet, type WorkerArgs } from "./worker.ts";
@@ -63,7 +63,26 @@ export async function remember(io: Io, project: string, patch: Partial<WatchStat
   const paths = machinePaths(io.env);
   if (!paths) return;
   try {
-    await updateWatchState(paths, project, patch, await coordinatorName(io, project));
+    const name = await coordinatorName(io, project);
+    if (patch.seen && patch.seenScope) {
+      const previous = await readWatchState(paths, project, name);
+      const coversPrevious = !previous?.seen.length || patch.seenScope === "all" || previous?.seenScope === "mine";
+      const open = new Set(patch.seen);
+      const retained = (previous?.seen ?? []).filter(
+        (key) => !coversPrevious || key.startsWith("version:") || open.has(key),
+      );
+      const keys = [...new Set([...retained, ...patch.seen])];
+      // Reserve space for required-version notices before capping ordinary history.
+      const discarded = new Set(
+        keys.filter((key) => !key.startsWith("version:")).slice(0, Math.max(0, keys.length - 500)),
+      );
+      patch = {
+        ...patch,
+        seen: keys.filter((key) => !discarded.has(key)).slice(-500),
+        seenScope: coversPrevious ? patch.seenScope : "all",
+      };
+    }
+    await updateWatchState(paths, project, patch, name);
   } catch (err) {
     io.stderr(
       `armada: warning: could not keep the watch state (${err instanceof Error ? err.message : String(err)})\n`,
@@ -118,8 +137,10 @@ export const shown = (
   items: InboxEntry[],
   inFlight: string[] | null,
   openJobs: number[] = [],
+  scope: "mine" | "all" = "all",
 ): Partial<WatchState> => ({
   seen: items.map(entryKey),
+  seenScope: scope,
   openJobs,
   ...(inFlight ? { inFlight, readAt: now(io).toISOString() } : {}),
   stopped: null,
@@ -289,6 +310,7 @@ async function watchUntil(
   let taken = false;
   let timedOut = false;
   let cancelDeadline: (() => void) | undefined;
+  let noticeIo: Io | undefined;
   const until = options.minutes === undefined ? undefined : new Date(now(io).getTime() + options.minutes * 60000);
   const resume = () => {
     const flags = [
@@ -351,6 +373,7 @@ async function watchUntil(
             })
         : undefined,
     };
+    noticeIo = watchingIo;
     const { fleet, warning } = liveFleet(watchingIo, config, credentials);
     if (!fleet)
       throw new Refusal(`the inbox is on Armada, which cannot be reached: ${warning ?? "no answer"}`, "armada whoami");
@@ -414,7 +437,7 @@ async function watchUntil(
           });
       },
       onRetry: (message) => io.stderr(`armada: warning: ${message}\n`),
-      release: pendingRelease(watchingIo, version, before?.seen ?? [], fsRepoView(dirname(configPath))),
+      release: pendingRelease(watchingIo, version),
     };
     if (options.follow) {
       const cursor = options.cursor ?? before?.cursor ?? eventCursor(0, now(io).toISOString());
@@ -442,7 +465,7 @@ async function watchUntil(
         io.stdout(
           json
             ? `${JSON.stringify(line)}\n`
-            : `${line.at.slice(11, 16)} UTC ${line.kind} ${line.ticket ?? "-"} [#${line.id ?? "-"}] ${line.body.split(/\r?\n/)[0]}${line.new ? "" : " (open)"} cursor: ${line.cursor}\n`,
+            : `${line.at.slice(11, 16)} UTC ${line.kind} ${line.ticket ?? "-"} [#${line.id ?? "-"}] ${line.queue ? (line.queue.state === "queued" ? `queued in the merge queue (position ${line.queue.position})` : `merging: ${line.queue.detail ?? "starting the drain"}`) : line.body.split(/\r?\n/)[0]}${line.new ? "" : " (open)"} cursor: ${line.cursor}\n`,
         );
         // Advance the explicit resume argument too, so a timed run never replays its start cursor.
         options.cursor = line.cursor;
@@ -461,16 +484,22 @@ async function watchUntil(
     const openJobs =
       name === "default" ? report.openJobs : (report.ownedOpenJobs ?? (scope === "mine" ? report.openJobs : undefined));
     const waiting = (name === "default" ? report.waiting : report.ownedWaiting) ?? [];
-    await remember(io, project, { ...shown(io, report.items, inFlight, openJobs), waiting, slots: report.slots });
+    await remember(io, project, {
+      ...shown(io, report.items, inFlight, openJobs, scope),
+      waiting,
+      slots: report.slots,
+    });
     controller.signal.throwIfAborted();
     // A release is acted on between rounds: it is not an item that keeps a watch going.
-    const open = report.items.filter((e) => e.kind !== "version").length;
+    const open = report.items.filter(
+      (e) => e.kind !== "version" && !e.queue && (e.owner == null || e.owner === name),
+    ).length;
     const next = rearm({
       inFlight,
       openJobs,
       open,
       running: null,
-      act: true,
+      act: report.items.some((e) => !e.queue && (e.owner == null || e.owner === name)),
       waiting: waiting.length,
       slots: report.slots,
     });
@@ -490,6 +519,8 @@ async function watchUntil(
     if (paths && taken) await releaseWatchLock(paths, project, pid, identity, name).catch(() => {});
     unsubscribe?.();
     cancelDeadline?.();
+    if (!options.follow && noticeIo)
+      await noticeRelease(noticeIo, version, fsRepoView(dirname(configPath)), { setupOnly: true }).catch(() => {});
   }
   if (stoppedBy) {
     (options.follow ? io.stderr : io.stdout)(`armada watch for ${project} stopped by ${stoppedBy} (pid ${pid})\n`);

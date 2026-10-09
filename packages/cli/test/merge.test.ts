@@ -16,6 +16,7 @@ import {
   type RawIssue,
   type RawPull,
   readWatchState,
+  reserveNotice,
   resolveCredentials,
 } from "@armada/core";
 import githubPulls from "../../core/test/fixtures/github-pulls.json";
@@ -63,6 +64,44 @@ afterEach(async () => {
 const SQUASH = "5555555555555555555555555555555555555555";
 const BRANCH = "feature/demo-18-expire-idle-sessions";
 const KEY = "armada_key_CANARY_coordinator";
+
+test.each(["first", "reserved", "json", "dry-run", "worker", "deploy", "job"])(
+  "merge's no-deploy hint is daily and only follows a human coordinator's confirmed merge (%s)",
+  async (scenario) => {
+    const f = await fixture();
+    const paths = machinePaths(f.io.env);
+    if (!paths) throw new Error("no temporary machine store");
+    if (scenario === "reserved") await reserveNotice(paths, "hint:deploy:widgets", NOW, 86_400_000);
+    if (scenario === "worker") f.io.env.ARMADA_TICKET = "DEMO-18";
+    if (scenario === "job")
+      await f.store.startJob({
+        project: "widgets",
+        ticket: "DEMO-18",
+        name: "evaluation",
+        startedBy: "default",
+        at: NOW,
+      });
+    if (scenario === "deploy") {
+      const path = join(f.io.cwd, "armada.toml");
+      await writeFile(
+        path,
+        `${await readFile(path, "utf8")}\n[[deploy.target]]\nname = "web"\nlive_sha_command = "echo pending"\nsmoke = "echo ok"\n`,
+      );
+    }
+    const flags = scenario === "json" ? ["--json"] : scenario === "dry-run" ? ["--dry-run"] : [];
+    expect(await run(["merge", "9", ...flags], f.io), f.err()).toBe(0);
+    const hint = "No deploy check after merges: add [[deploy.target]] with a smoke command (armada doctor lists it)";
+    if (scenario === "first" || scenario === "job") {
+      expect(f.out()).toContain(hint);
+      expect(f.out().indexOf(hint)).toBeLessThan(f.out().indexOf("keep watching:"));
+      expect(f.out().includes("long runs: configure [jobs.<name>] and use armada job")).toBe(scenario === "job");
+    } else expect(f.out()).not.toContain(hint);
+    if (scenario !== "reserved")
+      expect(await reserveNotice(paths, "hint:deploy:widgets", NOW, 86_400_000)).toBe(
+        scenario !== "first" && scenario !== "job",
+      );
+  },
+);
 
 test.each([false, true])(
   "--no-notify preserves the manual list even with unavailable live state (%s)",
@@ -830,6 +869,7 @@ Hints for you to judge (not blocking):
   - \`shareList\`, removed from src/lists.ts, still appears on main in src/share.ts
   DEMO-16: not affected.
   DEMO-11: not affected.
+No deploy check after merges: add [[deploy.target]] with a smoke command (armada doctor lists it)
 2 workers in flight (DEMO-11, DEMO-16) — keep watching: armada watch
 No runtime guide is installed for Claude Code, so Armada has nothing to archive for DEMO-18 (Claude Code · ws-18): a local session or subagent ends with its task; stop it yourself if it still runs.
 Result: merged #9
@@ -860,6 +900,7 @@ Result: merged #9
     "fleet/runtime/handles",
     "fleet/lease/release",
     "fleet/launch-requests",
+    "fleet/job/list",
   ]);
   expect(f.store.leases.size).toBe(0);
   expect(f.store.events.map((e) => [e.ticket, e.kind])).toEqual([["DEMO-18", "merge"]]);

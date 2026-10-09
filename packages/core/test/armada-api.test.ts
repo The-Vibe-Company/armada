@@ -192,7 +192,7 @@ test("a newer release names setup only when behind, plus the upgrade command and
   // A development build is never told to install a release.
   expect(newerRelease("0.0.0", "0.2.4")).toBeNull();
   expect(releaseLine("0.2.3", "0.2.4", { setupBehind: true })).toBe(
-    "Armada 0.2.4 is out (you run 0.2.3): armada upgrade — then armada init to refresh this project's skills if still behind. Changes: https://github.com/The-Vibe-Company/armada/releases/tag/v0.2.4",
+    "This project's Armada setup is behind 0.2.4: armada upgrade, then merge the setup pull request it opens.",
   );
 });
 

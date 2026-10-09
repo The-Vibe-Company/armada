@@ -48,6 +48,7 @@ import { coordinatorName } from "./coordinator.ts";
 import type { DeferredLaunchResult } from "./deferred-launch.ts";
 import { deployStatus, startDeploys } from "./deploy.ts";
 import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts";
+import { dailyHint } from "./notices.ts";
 import { outgoingRedactor, redactLinearWriter } from "./redact.ts";
 import { queueLines } from "./render.ts";
 import { deliverToRuntime } from "./runtime.ts";
@@ -743,9 +744,25 @@ export async function merge(
             readAt: (io.now ?? (() => new Date()))().toISOString(),
           });
         next = await rearmFor(io, project, { inFlight, waiting: waiting.length, slots, open: null });
+        let hint = "";
+        if (
+          !a.json &&
+          o.merged &&
+          !config.deploy?.targets.length &&
+          (await dailyHint(io, credentials, `hint:deploy:${project}`))
+        ) {
+          hint = "No deploy check after merges: add [[deploy.target]] with a smoke command (armada doctor lists it)";
+          if (
+            !Object.keys(config.jobs).length &&
+            o.ticket &&
+            ((await live.fleet?.listJobs({ ticket: o.ticket.id }).catch(() => [])) ?? []).length
+          )
+            hint += "; long runs: configure [jobs.<name>] and use armada job";
+          hint += "\n";
+        }
         if (!a.json)
           io.stdout(
-            `${render(o, !!a.options["no-notify"])}${deferredLaunches.map((l) => l.output ?? `${l.ticket}: ${l.status}; ${l.command}\n`).join("")}${next.line}\n`,
+            `${render(o, !!a.options["no-notify"])}${deferredLaunches.map((l) => l.output ?? `${l.ticket}: ${l.status}; ${l.command}\n`).join("")}${hint}${next.line}\n`,
           );
         for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
         if (!finish && o.merged && o.deploy)
@@ -881,5 +898,5 @@ export function mergeResult(o: MergeOutcome): string {
   if (!o.merged)
     return `Result: not merged (${o.lines.some((line) => line.startsWith("Dry run:")) ? "dry run" : "owner approval requested"}; nothing was merged)`;
   const pending = [o.armadaPending ? "Armada" : "", o.linearPending ? "Linear" : ""].filter(Boolean).join(" and ");
-  return `Result: merged #${o.pr.number}${pending ? `, ${pending} pending (armada merge --finish ${o.pr.number})` : ""}`;
+  return `Result: merged #${o.pr.number}${o.lines.find((line) => line.startsWith("cleared:")) ? `, ${o.lines.find((line) => line.startsWith("cleared:"))}` : ""}${pending ? `, ${pending} pending (armada merge --finish ${o.pr.number})` : ""}`;
 }

@@ -1,6 +1,13 @@
 // Human-readable rendering of a status report. Plain text, no colors, so the
 // output reads the same in a terminal, a log or an agent transcript.
-import { type InFlightTicket, mainHealthLine, type QueueEntry, queueOpen, type StatusReport } from "@armada/core";
+import {
+  type CoordinatorRecord,
+  type InFlightTicket,
+  mainHealthLine,
+  type QueueEntry,
+  queueOpen,
+  type StatusReport,
+} from "@armada/core";
 
 const MIN = 60_000;
 
@@ -49,7 +56,12 @@ export function queueLines(entries: readonly QueueEntry[]): string[] {
   );
 }
 
-export function renderStatus(r: StatusReport): string {
+export interface StatusHints {
+  stranded?: CoordinatorRecord[];
+  digest?: boolean;
+}
+
+export function renderStatus(r: StatusReport, hints: StatusHints = {}): string {
   const now = Date.parse(r.generatedAt);
   const out: string[] = [];
   const idWidth = Math.max(
@@ -167,6 +179,13 @@ export function renderStatus(r: StatusReport): string {
     out.push(`${indent}${truncate(p.title, 90)}`);
     if (p.failingChecks.length) out.push(`${indent}! failing: ${p.failingChecks.join(", ")}`);
   }
+  for (const role of hints.stranded ?? [])
+    out.push(
+      "",
+      `${role.tickets.join(", ")} belong to coordinator ${role.name}, last seen ${relative(role.seenAt, now)}: armada coordinator take ${role.tickets.join(" ")} --from ${role.name}`,
+    );
+  if (hints.digest)
+    out.push("", "The owner's status: armada digest (paste it) · armada digest --send posts it to their channel");
   if (r.warnings.length) {
     out.push("", `Warnings (${r.warnings.length})`);
     for (const w of r.warnings) out.push(`  ! ${w}`);
