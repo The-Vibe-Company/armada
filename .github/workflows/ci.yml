@@ -258,6 +258,14 @@ jobs:
           echo "armada --version: $actual"
           test "$actual" = "$expected"
           npx --no-install armada status --help | grep -q '^Usage: armada'
-          # The skills are inlined in the bundle: doctor must run and name them.
+          # The skills are generated before packing and inlined for Node.
+          while IFS= read -r -d '' file; do
+            relative="${file#"$GITHUB_WORKSPACE/skills/"}"
+            skill="${relative%%/*}"
+            path="${relative#*/}"
+            node node_modules/@the-vibe-company/armada/dist/armada.js skill "$skill" "$path" > skill-file
+            cmp skill-file "$file"
+          done < <(find "$GITHUB_WORKSPACE/skills" -type f ! -path '*/__pycache__/*' -print0)
+          # doctor must run and name the delivered skills.
           doctor=$(npx --no-install armada doctor --json || true)
           echo "$doctor" | grep -q '"skill:armada-worker"'
