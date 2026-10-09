@@ -12,6 +12,8 @@ import {
   type JobState,
   jobIsOpen,
   jobOverdue,
+  jobStalled,
+  jobStalledMinutes,
   lastJobLine,
   machinePaths,
   parseJobStatus,
@@ -38,9 +40,11 @@ function definition(config: ArmadaConfig, name: string): JobConfig {
 }
 
 export function renderJob(job: Job, config: ArmadaConfig, now: Date): string {
-  const overdue = jobOverdue(job, config.jobs?.[job.name]?.maxHours, now);
+  const def = config.jobs?.[job.name];
+  const overdue = jobOverdue(job, def?.maxHours, now);
+  const stalled = jobStalled(job, def?.stallMinutes ?? 60, now, def?.silenceMinutes ?? 15);
   return (
-    `Job ${job.id} · ${job.ticket} · ${job.name} · ${job.state}${overdue ? " · overdue" : ""}\n` +
+    `Job ${job.id} · ${job.ticket} · ${job.name} · ${job.state}${overdue ? " · overdue" : ""}${stalled ? ` · stalled ${jobStalledMinutes(job, now)} min` : ""}\n` +
     `  Runner: ${job.ref ?? "no runner reference"}\n` +
     `  ${job.progress ?? "no progress reported"} · observed ${job.observedAt}${job.eta ? ` · ETA ${job.eta}` : ""}\n`
   );
