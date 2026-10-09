@@ -7,10 +7,12 @@ import {
   type Credentials,
   createLinearWriter,
   fetchProgram,
+  firstState,
   LINEAR_KEY,
   planRenumber,
   planSpecInsert,
   type SpecPlan,
+  type Ticket,
 } from "@armada/core";
 import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 
@@ -73,7 +75,8 @@ export async function specCommand(io: Io, config: ArmadaConfig, credentials: Cre
   }
   const writer = (io.linearWriter ?? createLinearWriter)(opts);
   let completed = 0;
-  let created: CreatedIssue | null = null;
+  let created: (CreatedIssue & { project: Ticket["project"]; state: { id: string; name: string } | null }) | null =
+    null;
   try {
     const root = plan.create ? await writer.readTicket(model.root.id) : null;
     if (plan.create && !root) throw new Error(`program root ${model.root.id} is no longer readable`);
@@ -83,20 +86,35 @@ export async function specCommand(io: Io, config: ArmadaConfig, credentials: Cre
       completed++;
     }
     if (plan.create && root) {
-      created = await writer.createIssue({ ...plan.create, teamId: root.teamId, parentId: model.root.uuid });
+      const state = firstState(root.states, "backlog", "unstarted");
+      const issue = await writer.createIssue({
+        ...plan.create,
+        teamId: root.teamId,
+        parentId: model.root.uuid,
+        ...(root.project ? { projectId: root.project.id } : {}),
+        ...(state ? { stateId: state.id } : {}),
+      });
+      created = { ...issue, project: root.project, state: state ? { id: state.id, name: state.name } : null };
     }
   } catch (err) {
     const remaining = plan.renames.slice(completed);
     io.stderr("Spec changes stopped. Unconfirmed work (the failed request may have reached Linear):\n");
     if (remaining.length) io.stderr(`${showRenames(remaining)}\n`);
     if (plan.create && !created) io.stderr(`  Create: ${plan.create.title}\n`);
-    io.stderr("Check the current titles in Linear before retrying; armada spec renumber previews a repair.\n");
+    io.stderr(
+      "Check Linear before running this command again; armada spec renumber previews a repair of current titles.\n",
+    );
     throw err;
   }
   if (args.json) io.stdout(`${JSON.stringify({ ...plan, applied: true, created })}\n`);
   else {
     if (completed) io.stdout(`Renamed ${completed} spec${completed === 1 ? "" : "s"}.\n`);
-    if (created) io.stdout(`Created ${created.id}: ${plan.create?.title}\n${created.url}\n`);
+    if (created) {
+      const project = created.project ? `project ${created.project.name}` : "no project";
+      io.stdout(
+        `Created ${created.id}: ${plan.create?.title} · ${project} · ${created.state?.name ?? "Linear default"}\n${created.url}\n`,
+      );
+    }
   }
   return 0;
 }
