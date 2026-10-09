@@ -92,6 +92,6 @@ jobs:
         uses: ./.github/actions/test-browser
       # Release pull requests are opened with GITHUB_TOKEN, so CI never ran on them.
       - run: bun run verify
-      # prepack builds dist/armada.js with Bun, then npm publishes over OIDC.
+      # prepack generates the skills and builds dist/armada.js, then npm publishes over OIDC.
       - run: npm publish --provenance --access public
         working-directory: packages/cli
