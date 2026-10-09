@@ -446,7 +446,8 @@ describe("owner chat delivery", () => {
       recipient: "coordinator",
       author: "worker",
       body: "free text",
-      at: ago,
+      // Late for a stopped coordinator, below the active coordinator alert threshold.
+      at: new Date(now.getTime() - 21 * 60_000),
     });
     await db.query(
       `INSERT INTO coordinators (project,name,created_at,seen_at,started_at,inbox_seen_at) VALUES ($1,'default',$2,$2,$2,$2)`,

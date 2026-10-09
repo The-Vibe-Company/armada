@@ -130,6 +130,12 @@ test("an old silence key records its reason on the ticket once while the new lev
 
 test("ack uses the inbox's custom policy without a snapshot and ends with watch guidance", async () => {
   const t = terminal(`${DEMO_TOML}\n[policy]\nsilence_minutes = 2\nlaunch_grace_minutes = 0\n`);
+  t.io.fetch = async (url, init) => {
+    const response = await t.api.fetch(url, init);
+    if (!url.endsWith("/fleet/inbox") || response.status !== 200) return response;
+    const body = (await response.json()) as { result: Record<string, unknown> };
+    return Response.json({ ...body, result: { ...body.result, waiting: ["DEMO-3"], slots: { taken: 1, max: 2 } } });
+  };
   t.linear.add("DEMO-2");
   await t.store.saveRuntimeHandle({
     project: "widgets",
@@ -153,12 +159,16 @@ test("ack uses the inbox's custom policy without a snapshot and ends with watch 
   expect(await run(["ack", "silent:DEMO-2:0", "--reason", "Runner checked"], t.io)).toBe(0);
   expect(t.linear.bodies).toHaveLength(1);
   expect(t.out().trim().split("\n").at(-1)).toContain("keep watching: armada watch");
+  expect(t.out()).toContain("1 of 2 workers in flight");
+  expect(t.out()).toContain("1 waiting to launch");
   t.reset();
   expect(await run(["inbox"], t.io)).toBe(0);
   expect(t.out()).not.toContain("key silent:DEMO-2:0");
   t.reset();
   expect(await run(["ack", "silent:DEMO-2:0", "--reason", "Runner checked", "--json"], t.io)).toBe(0);
   expect(JSON.parse(t.out()).watch.line).toContain("keep watching: armada watch");
+  expect(JSON.parse(t.out()).watch.line).toContain("1 of 2 workers in flight");
+  expect(JSON.parse(t.out()).watch.line).toContain("1 waiting to launch");
   expect(t.linear.bodies).toHaveLength(1);
 });
 

@@ -46,6 +46,7 @@ export interface Worker {
   project: string;
   ticket: string;
   coordinator?: string | null;
+  overCap?: string | null;
   launchedBy: Launcher;
   createdAt: string;
   tokenExpiresAt: string;
@@ -91,7 +92,7 @@ const hhmm = (iso: string) => `${iso.slice(0, 16)}Z`;
 const str = (v: unknown) => (v === null || v === undefined ? null : String(v));
 
 const COLUMNS = `"id", "organizationId", "project", "ticket", "launchedByKind", "launchedById", "launchedByLabel",
-  "createdAt", "tokenExpiresAt", "tokenUsedAt", "sessionExpiresAt", "sessionSeenAt", "endedAt", "endReason", "endedByLabel", "runtime", "runtimeHandle", "coordinator"`;
+  "createdAt", "tokenExpiresAt", "tokenUsedAt", "sessionExpiresAt", "sessionSeenAt", "endedAt", "endReason", "endedByLabel", "runtime", "runtimeHandle", "coordinator", "overCap"`;
 
 function workerOf(r: Row): Worker {
   const reason = str(r.endReason);
@@ -101,6 +102,7 @@ function workerOf(r: Row): Worker {
     project: String(r.project),
     ticket: String(r.ticket),
     coordinator: str(r.coordinator),
+    overCap: str(r.overCap),
     launchedBy: {
       kind: String(r.launchedByKind) === "api-key" ? "api-key" : "session",
       id: String(r.launchedById),
@@ -132,6 +134,7 @@ export async function createLaunch(
     ticket: string;
     launcher: Launcher;
     coordinator?: string | null;
+    overCap?: string | null;
     now: Date;
   },
 ): Promise<{ worker: Worker; token: string }> {
@@ -154,8 +157,8 @@ export async function createLaunch(
   );
   await client.query(
     `INSERT INTO "armada_worker" ("id", "organizationId", "project", "ticket", "launchedByKind", "launchedById",
-       "launchedByLabel", "createdAt", "tokenHash", "tokenExpiresAt", "coordinator")
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+       "launchedByLabel", "createdAt", "tokenHash", "tokenExpiresAt", "coordinator", "overCap")
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
     [
       id,
       input.organization,
@@ -168,6 +171,7 @@ export async function createLaunch(
       hashOf(token),
       expires,
       input.coordinator === undefined ? "default" : input.coordinator,
+      input.overCap ?? null,
     ],
   );
   await recordEvent(client, input.organization, {

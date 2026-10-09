@@ -89,6 +89,7 @@ describe("armada.toml", () => {
       gates: { requiredChecks: [], localCommands: [] },
       merge: { queueRetest: "ci", notifyPaths: [".github/workflows/**"] },
       policy: {
+        maxWorkers: null,
         validationSamples: 4,
         attachmentsPerTicket: 20,
         attachmentsProjectMb: 200,
@@ -673,6 +674,13 @@ test("git signing defaults to inherit, accepts off, rejects invalid values and t
   expect(
     configTemplate({ name: "Widgets", slug: "widgets", programRoot: "DEMO-1", repository: "acme/widgets" }),
   ).toContain('sign = "inherit"');
+});
+
+test("max_workers is an opt-in positive integer policy", () => {
+  expect(parseConfig(`${DEMO_TOML}\n[policy]\nmax_workers = 2`).policy.maxWorkers).toBe(2);
+  expect(parseConfig(DEMO_TOML).policy.maxWorkers).toBeNull();
+  for (const value of ["0", "-1", "1.5", '"2"'])
+    expect(() => parseConfig(`${DEMO_TOML}\n[policy]\nmax_workers = ${value}`)).toThrow("positive integer");
 });
 
 test("CI setup_steps accepts exact names and globs and rejects malformed declarations", () => {

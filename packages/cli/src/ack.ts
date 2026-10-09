@@ -79,6 +79,8 @@ export async function ack(io: Io, config: ArmadaConfig, credentials: Credentials
   let inFlight: string[] | null = null;
   let open: number | null = null;
   let openJobs: number[] | undefined;
+  let waiting: string[] | undefined;
+  let slots: { taken: number; max: number | null } | undefined;
   try {
     const read = await fleet.inbox({
       ...policy,
@@ -90,8 +92,16 @@ export async function ack(io: Io, config: ArmadaConfig, credentials: Credentials
     if (read) {
       inFlight = coordinator === "default" ? (read.inFlight ?? null) : (read.ownedInFlight ?? null);
       openJobs = coordinator === "default" ? read.openJobs : read.ownedOpenJobs;
+      waiting = (coordinator === "default" ? read.waiting : read.ownedWaiting) ?? [];
+      slots = read.slots;
       open = read.items.filter((entry) => !entry.queue && (entry.owner == null || entry.owner === coordinator)).length;
-      await remember(io, config.project.slug, { inFlight, openJobs, readAt: (io.now?.() ?? new Date()).toISOString() });
+      await remember(io, config.project.slug, {
+        inFlight,
+        openJobs,
+        waiting,
+        slots,
+        readAt: (io.now?.() ?? new Date()).toISOString(),
+      });
     }
   } catch (error) {
     warnings.push(
@@ -100,7 +110,14 @@ export async function ack(io: Io, config: ArmadaConfig, credentials: Credentials
       ),
     );
   }
-  const watch = await rearmFor(io, config.project.slug, { inFlight, open, openJobs, act: open !== null && open > 0 });
+  const watch = await rearmFor(io, config.project.slug, {
+    inFlight,
+    open,
+    openJobs,
+    waiting: waiting?.length,
+    slots,
+    act: open !== null && open > 0,
+  });
   io.stdout(
     args.json
       ? `${JSON.stringify({ ...result, lines, warnings, watch }, null, 2)}\n`

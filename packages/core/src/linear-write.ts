@@ -44,6 +44,7 @@ export interface Ticket {
   statusType: StatusType;
   stateId: string;
   teamId: string;
+  project: { id: string; name: string } | null;
   /** Fresh ancestry used for post-close spec completion. */
   parentId: string | null;
   assigneeId: string | null;
@@ -66,6 +67,8 @@ export interface Ticket {
 
 export interface IssueCreate {
   teamId: string;
+  projectId?: string;
+  stateId?: string;
   parentId: string;
   title: string;
   description: string;
@@ -142,6 +145,7 @@ const TICKET_QUERY = /* GraphQL */ `
       id identifier title url branchName description
       state { id type }
       parent { identifier }
+      project { id name }
       team { id states(first: 50) { nodes { id name type position } } }
       assignee { id }
       labels(first: 50) { ${PAGE} nodes { ${LABEL} } }
@@ -194,6 +198,7 @@ interface RawTicket {
   description: string | null;
   state: { id: string; type: string };
   parent?: { identifier: string } | null;
+  project: { id: string; name: string } | null;
   team: { id: string; states: { nodes: { id: string; name: string; type: string; position: number }[] } };
   assignee: { id: string } | null;
   labels: Connection<{ id: string; name: string; parent: { name: string } | null }>;
@@ -222,6 +227,7 @@ export function normalizeTicket(raw: RawTicket, groups: LabelGroups, warnings: s
     statusType: raw.state.type as StatusType,
     stateId: raw.state.id,
     teamId: raw.team.id,
+    project: raw.project ?? null,
     parentId: raw.parent?.identifier ?? null,
     assigneeId: raw.assignee?.id ?? null,
     labels,

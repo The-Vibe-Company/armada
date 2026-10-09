@@ -73,7 +73,9 @@ Done when every worker in flight is working, waiting on someone, or replaced.
 
 ### 5. Launch ready tickets
 
-One at a time, and only tickets that do not collide with work in flight.
+Launch one at a time; avoid overlaps with work in flight.
+
+Caps: REFERENCE.md.
 
 1. `armada lint --ready` lists readability problems in ready tickets and open specs, each with its fix. Fix them on the ticket, then `armada lint <ticket>` to recheck.
 2. Pick a ticket from the frontier in `armada status`. Read it and its parent spec.
@@ -120,7 +122,9 @@ Done when no hold is open without a ticket that fixes it.
 
 ### 8. Turn findings into tickets
 
-A gap a worker reports or a bug you see becomes a ticket under the right spec, with its blocked-by relations, and is launched when ready. No finding lives only in a transcript. `armada spec add "<name>"` creates a spec under the program root with the **In short** template; fill it in before cutting its tickets, then `armada lint <ticket>` each one. Inserting or renumbering specs is in REFERENCE.md.
+A gap a worker reports or a bug you see becomes a ticket under the right spec, with its blocked-by relations, and is launched when ready. No finding lives only in a transcript.
+
+For creating, placing and repairing specs, see [Specs](REFERENCE.md#specs).
 
 ### 9. Report to the owner
 

@@ -295,6 +295,7 @@ export class FakeLinear implements LinearWriter {
       statusType: "backlog",
       stateId: "st-backlog",
       teamId: "team-1",
+      project: null,
       parentId: null,
       assigneeId: null,
       labels: [],
@@ -371,7 +372,16 @@ export class FakeLinear implements LinearWriter {
   async createIssue(input: IssueCreate) {
     this.creates.push(structuredClone(input));
     const id = `DEMO-${Math.max(0, ...[...this.tickets.keys()].map((key) => Number(key.split("-").at(-1)) || 0)) + 1}`;
-    const ticket = this.add(id, { teamId: input.teamId, title: input.title });
+    const root = this.get(input.parentId);
+    const state = root.states.find((state) => state.id === input.stateId);
+    const ticket = this.add(id, {
+      teamId: input.teamId,
+      title: input.title,
+      project: input.projectId
+        ? ([...this.tickets.values()].find((ticket) => ticket.project?.id === input.projectId)?.project ?? null)
+        : null,
+      ...(input.stateId ? { stateId: input.stateId, statusType: state?.type ?? "backlog" } : {}),
+    });
     this.writes.push(`create ${id} ${JSON.stringify(input)}`);
     return { uuid: ticket.uuid, id, url: ticket.url };
   }
@@ -585,7 +595,7 @@ export function fakeArmada(
     accounts?: boolean;
     vault?: FakeVault;
     /** The fleet's live data behind `fleet/*`; a fresh one by default. */
-    store?: FleetStore;
+    store?: ReturnType<typeof memoryFleet>;
     clock?: Clock;
     facts?: Pick<ServeFleetDeps, "snapshot" | "config">;
     /** The CLIs this Armada serves, sent on every answer the way the app does; none by default (an older server). */
@@ -767,6 +777,20 @@ export function fakeArmada(
           body.coordinator === null ? null : typeof body.coordinator === "string" ? body.coordinator : "default",
         used: false,
       });
+      store.launches.push({
+        id: `wk-${launches.size}`,
+        project: String(body.project),
+        ticket: String(body.ticket),
+        coordinator:
+          body.coordinator === null ? null : typeof body.coordinator === "string" ? body.coordinator : "default",
+        launchedAt: o.vault.now().toISOString(),
+        tokenExpiresAt: new Date(o.vault.now().getTime() + 3_600_000).toISOString(),
+        tokenUsedAt: null,
+        runtime: null,
+        handle: null,
+        endedAt: null,
+        overCap: typeof body.overCap === "string" ? body.overCap : null,
+      });
       return Response.json({
         schemaVersion: 1,
         token: t,
@@ -795,6 +819,10 @@ export function fakeArmada(
         createdAt: clock.now().toISOString(),
         id: `wk-${workers.size + 1}`,
       });
+      const pending = store.launches.find(
+        (row) => row.project === launch.project && row.ticket === launch.ticket && !row.endedAt,
+      );
+      if (pending) pending.tokenUsedAt = clock.now().toISOString();
       return Response.json({
         schemaVersion: 1,
         token: t,
