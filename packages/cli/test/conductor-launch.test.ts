@@ -292,6 +292,7 @@ test("native launch routes the profile, sends the token and coordinator notes on
     ticket: "DEMO-13",
     runtime: "conductor",
     profile: "backend",
+    title: "Synthetic worker",
     handle: "ws-1/ses-1",
     link: "conductor://workspace?id=ws-1&session=ses-1",
   });
@@ -314,19 +315,37 @@ test("notes and profile refusals mint no token", async () => {
   expect(f.armada.launches.size).toBe(0);
 });
 
-test("known create failure revokes the exact launch and never leaks native output", async () => {
+test("known create failure exits one, records an inbox item and never leaks native output", async () => {
   const f = await fixture();
   f.set({ fail: 4 });
-  await expect(f.launch()).rejects.toThrow("Conductor server error during workspace create (exit 4)");
+  expect(await run(["launch", "DEMO-13"], f.io)).toBe(1);
+  expect(f.armada.calls.filter((c) => c.path === "fleet/launch/failed")).toHaveLength(1);
+  const items = await f.store.openInboxItems({ project: "widgets", recipient: "coordinator" });
+  expect(items).toEqual([
+    expect.objectContaining({
+      kind: "launch-failed",
+      ticket: "DEMO-13",
+      body: expect.stringContaining("Conductor server error during workspace create (exit 4)"),
+    }),
+  ]);
+  expect(items[0]?.body).toContain("Next:");
   expect(f.revoked).toEqual(["wk-1"]);
   expect(f.bindings).toEqual([]);
   expect(f.output()).toContain("revoked the pending launch");
 });
 
-test("lost create answer recovers and binds one worker without creating twice", async () => {
+test("lost create answer recovers one worker, exits one and records uncertainty without creating twice", async () => {
   const f = await fixture();
   f.set({ timedOut: true });
-  expect(await f.launch()).toBe(0);
+  expect(await run(["launch", "DEMO-13"], f.io)).toBe(1);
+  expect(await f.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).toEqual([
+    expect.objectContaining({
+      kind: "launch-uncertain",
+      ticket: "DEMO-13",
+      body: expect.stringContaining("armada peek DEMO-13"),
+    }),
+  ]);
+  expect(f.stdout()).toContain('Launched DEMO-13 "Synthetic worker" (unconfirmed:');
   expect(f.calls.filter((c) => c.args[2] === "create")).toHaveLength(1);
   expect(f.calls.find((c) => c.args[2] === "list")?.args).toEqual([
     "--json",
@@ -360,6 +379,7 @@ test("dry run defaults to the profile runtime, reports settings and preflight an
   expect(await run(["launch", "DEMO-13", "--dry-run", "--notes", "-", "--json"], f.io)).toBe(0);
   expect(JSON.parse(f.stdout())).toMatchObject({
     runtime: "conductor",
+    title: "Synthetic worker",
     why: "conductor.default_profile",
     model: "synthetic-model",
     fastMode: true,
@@ -377,6 +397,7 @@ test("preflight auth failure and completed tickets are refused before a token ex
   f.set({ auth: false });
   await expect(f.launch()).rejects.toThrow("Conductor is not signed in");
   expect(f.armada.launches.size).toBe(0);
+  expect(f.armada.calls.some((c) => c.path === "fleet/launch/failed")).toBe(false);
   const g = await fixture();
   g.ticket.state = { name: "Done", type: "completed" };
   await expect(g.launch()).rejects.toThrow("there is nothing to launch");
@@ -466,6 +487,9 @@ test("ambiguous recovery retains the pending token and gives the candidate ids w
   f.set({ timedOut: true, matches: 2 });
   await expect(f.launch()).rejects.toThrow("ws-1/ses-1, ws-2/ses-2");
   expect(f.revoked).toEqual([]);
+  expect(await f.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).toEqual([
+    expect.objectContaining({ kind: "launch-uncertain" }),
+  ]);
   expect(f.calls.filter((c) => c.args[2] === "create")).toHaveLength(1);
   f.output();
 });
@@ -486,7 +510,7 @@ test("configured Conductor project and base branch are passed explicitly", async
 test("create runtime error recovers a possibly created workspace before cleanup", async () => {
   const f = await fixture();
   f.set({ fail: 1 });
-  expect(await f.launch()).toBe(0);
+  expect(await f.launch()).toBe(1);
   expect(f.bindings).toHaveLength(1);
   expect(f.revoked).toEqual([]);
   expect(f.calls.filter((c) => c.args[2] === "create")).toHaveLength(1);
@@ -759,4 +783,17 @@ test("an unknown token write retains the slot lease until expiry; a definite ref
       ).resolves.toBeDefined();
     }
   }
+});
+
+// The command still fails when the best-effort inbox API is unavailable.
+test("launch recording outage warns without changing the runtime failure exit", async () => {
+  const f = await fixture();
+  f.set({ fail: 4 });
+  const fetch = f.io.fetch;
+  if (!fetch) throw new Error("missing fetch");
+  f.io.fetch = async (url, init) =>
+    url.endsWith("/fleet/launch/failed") ? Response.json({ error: "unavailable" }, { status: 400 }) : fetch(url, init);
+  expect(await run(["launch", "DEMO-13"], f.io)).toBe(1);
+  expect(f.revoked).toEqual(["wk-1"]);
+  expect(f.output()).toContain("could not record the failed launch on Armada");
 });

@@ -16,6 +16,7 @@ import {
 
 import { type Job, jobEndedBody, jobIsOpen, progressMoved } from "../src/jobs.ts";
 import type {
+  AckedEntry,
   CoordinatorPresence,
   CoordinatorRecord,
   EventInput,
@@ -33,7 +34,7 @@ import type {
   StoredInboxItem,
   WorkerProfile,
 } from "../src/live.ts";
-import { deliveryDue, FOLLOW_EVENT_KINDS, holdBody, unusedLaunchExpired } from "../src/live.ts";
+import { AckInvalid, deliveryDue, FOLLOW_EVENT_KINDS, holdBody, unusedLaunchExpired } from "../src/live.ts";
 import { MERGE_QUEUE_LEASE, type QueueEntry, queueOpen, queueRefusedPrefix } from "../src/merge-queue.ts";
 import { OBSERVABLE_RUNTIMES, runtimeNameOf } from "../src/runtime.ts";
 import type { Validation } from "../src/validations.ts";
@@ -51,6 +52,7 @@ interface ItemRow extends Omit<StoredInboxItem, "request"> {
   requestQuestion: number | null;
   requestProfile: string | null;
   requestValidation?: number | null;
+  launchId?: string;
   deployTarget?: string | null;
   deploySha?: string | null;
 }
@@ -99,6 +101,35 @@ export function memoryFleet(): FleetStore & {
   const launches: LaunchRow[] = [];
   const validations: Validation[] = [];
   const deliveries: PendingDelivery[] = [];
+  const acknowledgements = new Map<string, AckedEntry>();
+  const checkAckOwner = (
+    project: string,
+    ticket: string | null,
+    coordinator: string,
+    fallback: string | null = null,
+  ) => {
+    if (!ticket) return;
+    const handle = handles.get(key(project, ticket));
+    const active = handle && !handle.releasedAt ? handle : null;
+    const latest = launches
+      .filter((entry) => entry.project === project && entry.ticket === ticket)
+      .sort((a, b) => a.launchedAt.localeCompare(b.launchedAt))
+      .at(-1);
+    const pending =
+      latest &&
+      !latest.endedAt &&
+      !events.some(
+        (event) =>
+          event.project === project &&
+          event.ticket === ticket &&
+          event.kind === "claim" &&
+          event.at >= latest.launchedAt,
+      )
+        ? latest
+        : null;
+    const owner = active ? active.coordinator : pending ? pending.coordinator : fallback;
+    if (owner != null && owner !== coordinator) throw new AckInvalid(`target belongs to coordinator ${owner}`);
+  };
   const heldResources: Reservation[] = [];
   const copy = (v: Validation): Validation => structuredClone(v);
   const endReservations = (project: string, ticket: string, at: Date, merged: boolean) => {
@@ -431,6 +462,50 @@ export function memoryFleet(): FleetStore & {
         settleDeliveryFailure(row, input.reason, input.at);
       else if (input.state === "delivered") settleDeliverySuccess(row, input.at);
       return structuredClone(row);
+    },
+    async recordLaunchFailure(i) {
+      const launch = launches.find((l) => l.project === i.project && l.ticket === i.ticket && l.id === i.launchId);
+      const handle = handles.get(key(i.project, i.ticket));
+      if (launch && handle && handle.claimedAt >= launch.launchedAt) return;
+      if (
+        launch &&
+        launches.some(
+          (l) =>
+            l.project === i.project &&
+            l.ticket === i.ticket &&
+            (l.launchedAt > launch.launchedAt ||
+              (l.launchedAt === launch.launchedAt && (l.id ?? "") > (launch.id ?? ""))),
+        )
+      )
+        return;
+      const existing = items.find(
+        (r) =>
+          r.project === i.project &&
+          r.ticket === i.ticket &&
+          !r.resolvedAt &&
+          (r.kind === "launch-failed" || r.kind === "launch-uncertain"),
+      );
+      const previous = existing && launches.find((l) => l.id === existing.launchId);
+      if (
+        launch &&
+        previous &&
+        (previous.launchedAt > launch.launchedAt ||
+          (previous.launchedAt === launch.launchedAt && (previous.id ?? "") > (launch.id ?? "")))
+      )
+        return;
+      const row = {
+        ...i,
+        coordinator: launch ? (launch.coordinator ?? null) : (i.coordinator ?? null),
+        kind: i.outcome === "failed" ? ("launch-failed" as const) : ("launch-uncertain" as const),
+        recipient: "coordinator" as const,
+        author: null,
+        body: `${i.reason}\nNext: ${i.next}`,
+        createdAt: i.at.toISOString(),
+        requestQuestion: null,
+        requestProfile: null,
+      };
+      if (existing) Object.assign(existing, row);
+      else insert(row);
     },
     async digestRecords(project, since, now) {
       const start = since ?? new Date(now.getTime() - 4 * 60 * 60_000).toISOString();
@@ -1431,14 +1506,43 @@ export function memoryFleet(): FleetStore & {
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id - b.id)
         .map(item);
     },
+    async ackEntry(input) {
+      checkAckOwner(input.project, input.ticket, input.coordinator);
+      const k = `${input.project}\n${input.entryKey}`;
+      if (acknowledgements.has(k)) return false;
+      acknowledgements.set(k, {
+        entryKey: input.entryKey,
+        ticket: input.ticket,
+        coordinator: input.coordinator,
+        reason: input.reason,
+        at: input.at.toISOString(),
+      });
+      return true;
+    },
+    async ackedKeys(project, entryKeys) {
+      return [...new Set(entryKeys)]
+        .map((entryKey) => acknowledgements.get(`${project}\n${entryKey}`))
+        .filter((row): row is AckedEntry => !!row)
+        .map((row) => ({ ...row }));
+    },
     async getInboxItem(project, id) {
       const r = items.find((i) => i.project === project && i.id === id);
       return r ? stored(r) : null;
     },
     async resolveInboxItem(q) {
+      if (q.ackCoordinator !== undefined) {
+        const item = items.find((entry) => entry.project === q.project && entry.id === q.id);
+        checkAckOwner(q.project, item?.ticket ?? null, q.ackCoordinator, item?.coordinator ?? null);
+      }
       return (
         resolve(
-          items.filter((i) => i.project === q.project && i.id === q.id && !i.resolvedAt),
+          items.filter(
+            (i) =>
+              i.project === q.project &&
+              i.id === q.id &&
+              !i.resolvedAt &&
+              (q.expectedBody === undefined || i.body === q.expectedBody),
+          ),
           q.resolution,
           q.at,
         ) > 0

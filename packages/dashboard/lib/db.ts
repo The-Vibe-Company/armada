@@ -989,11 +989,34 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     ],
   },
   {
+    // THE-1441: durable acknowledgement keys for derived coordinator notices.
+    version: 47,
+    statements: [
+      `CREATE TABLE inbox_acks (
+        project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+        entry_key text NOT NULL,
+        ticket text,
+        coordinator text NOT NULL,
+        reason text NOT NULL,
+        at timestamptz NOT NULL,
+        PRIMARY KEY (project, entry_key)
+      )`,
+    ],
+  },
+  {
     // THE-1449: a runner can keep answering without making progress.
     version: 48,
     statements: [
       "ALTER TABLE jobs ADD COLUMN progress_changed_at timestamptz",
       "UPDATE jobs SET progress_changed_at = observed_at",
+    ],
+  },
+  {
+    // THE-1429: one actionable launch outcome per ticket, fenced by its launch generation.
+    version: 50,
+    statements: [
+      "ALTER TABLE inbox_items ADD COLUMN launch_id text",
+      "CREATE UNIQUE INDEX inbox_one_launch_failure ON inbox_items (project, ticket) WHERE resolved_at IS NULL AND kind IN ('launch-failed', 'launch-uncertain')",
     ],
   },
   {

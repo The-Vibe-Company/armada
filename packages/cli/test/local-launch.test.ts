@@ -373,7 +373,7 @@ test("validation recovery keeps pre-approval and preview flags instead of changi
 
 test("a failed prompt retains the workspace, revokes its token and never leaks it", async () => {
   const f = await fixture({ promptFailure: true });
-  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(1);
   expect(f.errors()).toContain("local workspace retained");
   expect(f.errors()).toContain("revoked the pending launch of DEMO-13");
   expect(f.armada.launches.get("armada_launch_CANARY_1")?.used).toBe(true);
@@ -382,7 +382,7 @@ test("a failed prompt retains the workspace, revokes its token and never leaks i
 
 test("an uncertain herdr prompt retains its pending token and never retries or ends the possible worker", async () => {
   const f = await fixture({ promptTimeout: true });
-  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(1);
   expect(f.errors()).toContain("unknown outcome; the pending launch is retained");
   expect(f.armada.launches.get("armada_launch_CANARY_1")?.used).toBe(false);
   expect(f.calls.filter((call) => call[1] === "agent" && call[2] === "prompt")).toHaveLength(1);
@@ -533,7 +533,7 @@ test("failed worker config delivery prevents the harness from starting and never
   f.io.writeFile = async () => {
     throw new Error("CANARY_private_config");
   };
-  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(1);
   expect(f.calls.some((call) => call[1] === "agent")).toBe(false);
   expect(f.errors()).toContain("local workspace retained");
   expect(f.errors()).not.toContain("CANARY_private_config");
@@ -556,7 +556,7 @@ test("known first-run questions stop launch with recovery, retaining the worktre
       startFailure: true,
       toml: local.replace('harness = "codex"', `harness = "${harness}"`),
     });
-    expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
+    expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(1);
     expect(f.errors()).toContain(message ?? "");
     expect(f.errors()).toContain("armada setup local");
     expect(f.errors()).toContain("herdr agent attach demo-13");
@@ -572,14 +572,14 @@ test("a failed token revocation names its recovery without echoing server diagno
     startFailure: true,
     revokeFailure: true,
   });
-  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(1);
   expect(f.errors()).toContain("armada launch revoke DEMO-13");
   expect(f.errors()).not.toContain("CANARY_revoke_private");
 });
 
 test("launch refuses an OpenCode fallback before delivering the worker token", async () => {
   const f = await fixture({ toml: deepseekLocal, pane: "Build auto · deepseek-v4-flash OpenCode Zen\n╹" });
-  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(1);
   expect(f.errors()).toContain("model differs from profile opencode/deepseek-v4-pro");
   expect(f.errors()).toContain("armada setup local");
   expect(f.errors()).toContain("herdr agent attach demo-13");
@@ -601,7 +601,7 @@ test("dry-run prints the plan and creates nothing", async () => {
   };
   expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--dry-run"], f.io), f.errors()).toBe(0);
   const text = f.output();
-  expect(text).toContain("Launch plan for DEMO-13 (dry run: nothing is created)");
+  expect(text).toContain('Launch plan for DEMO-13 "Show a sign-in page" (dry run: nothing is created)');
   expect(text).toContain("Profile    backend — herdr.default_profile");
   expect(text).toContain("Harness    codex (exact model: model-a, effort high)");
   expect(text).toContain("Branch     feature/demo-13");
@@ -626,6 +626,7 @@ test("dry-run --json gives the same plan as JSON", async () => {
   expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--dry-run", "--json"], f.io), f.errors()).toBe(0);
   expect(JSON.parse(f.output())).toMatchObject({
     ticket: "DEMO-13",
+    title: "Show a sign-in page",
     runtime: "herdr",
     dryRun: true,
     profile: "backend",
@@ -698,7 +699,7 @@ test("dry-run lists a missing repository as a gap and still reports the prefligh
 
 test("OpenCode first-run provider questions retain the worker pane before model verification", async () => {
   const f = await fixture({ toml: deepseekLocal, screen: "Select a provider to connect" });
-  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(1);
   expect(f.errors()).toContain("OpenCode asks the owner to connect a provider");
   expect(f.errors()).toContain("herdr agent attach demo-13");
   expect(f.armada.launches.get("armada_launch_CANARY_1")?.used).toBe(true);

@@ -206,6 +206,8 @@ function statusComment(phase: AgentPhase, word: "answer" | "note", text: string,
 }
 
 const ANSWERABLE: InboxKind[] = [
+  "launch-failed",
+  "launch-uncertain",
   "job",
   "question",
   "plan",
@@ -321,6 +323,8 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
       "linear-pending",
       "queue-refused",
       "delivery-failed",
+      "launch-failed",
+      "launch-uncertain",
     ].includes(item.kind)
   ) {
     const recorded = await live(ctx, warnings, "resolve the dashboard request", (fleet) =>

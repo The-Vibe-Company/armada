@@ -57,13 +57,32 @@ export function queueLines(entries: readonly QueueEntry[]): string[] {
   );
 }
 
+/** One bounded physical line for context briefs, including untrusted ticket text. */
+export const compactLine = (text: string) => truncate(text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " "), 240);
+
 export interface StatusHints {
+  compact?: boolean;
   stranded?: CoordinatorRecord[];
   digest?: boolean;
 }
 
 export function renderStatus(r: StatusReport, hints: StatusHints = {}): string {
   const now = Date.parse(r.generatedAt);
+  if (hints.compact)
+    return `${[
+      `In flight (${r.inFlight.length})`,
+      ...r.inFlight.map(
+        (t) =>
+          `${t.id} · ${phaseLabel(t)} · ${relative(t.lastReport ?? t.lastUpdate, now)}${t.pr ? ` · PR #${t.pr.number} ${prState(t.pr)}` : ""} · ${t.title}`,
+      ),
+      ...(r.holds ?? []).map((h) => `Merges paused: ${h.reason} (hold #${h.id})`),
+      `Pull requests waiting (${r.pullRequests?.length ?? "unknown"})`,
+      ...(r.pullRequests ?? []).map((p) => `PR #${p.number} · ${p.ticket?.id ?? "no ticket"} · ${prState(p)}`),
+      ...(r.warnings.length ? ["Some status sources could not be read: armada status --mine"] : []),
+    ]
+      .map(compactLine)
+      .join("\n")}\n`;
+
   const out: string[] = [];
   const idWidth = Math.max(
     6,

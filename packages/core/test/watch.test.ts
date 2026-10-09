@@ -6,6 +6,7 @@ import {
   followFleet,
   rearm,
   releaseEntry,
+  remindDue,
   stopHookDecision,
   stopHookState,
   transientFailure,
@@ -16,6 +17,35 @@ import { fakeClock, NOW, tempFleet } from "./support.ts";
 
 const P = "widgets";
 const COORDINATOR = "ws-coordinator/session";
+
+test("reminder eligibility respects ownership, action kinds, queued hand-backs and the zero opt-out", () => {
+  const entry = {
+    id: 10,
+    kind: "plan" as const,
+    ticket: "DEMO-2",
+    author: null,
+    body: "plan",
+    createdAt: NOW.toISOString(),
+    new: false,
+  };
+  const shown = { [entryKey(entry)]: { first: NOW.toISOString(), level: 0 } };
+  const late = new Date(NOW.getTime() + 10 * 60_000);
+  expect(remindDue(entry, shown, late, 10)).toBe(true);
+  expect(remindDue(entry, shown, new Date(late.getTime() - 1), 10)).toBe(false);
+  expect(remindDue(entry, shown, late, 0)).toBe(false);
+  expect(remindDue({ ...entry, owner: "other" }, shown, late, 10, "default")).toBe(false);
+  expect(remindDue({ ...entry, owner: "other" }, shown, late, 10, "other")).toBe(true);
+  const handBack = { ...entry, kind: "hand-back" as const };
+  const handBackShown = { [entryKey(handBack)]: { first: NOW.toISOString(), level: 0 } };
+  expect(remindDue(handBack, handBackShown, late, 10)).toBe(true);
+  expect(
+    remindDue({ ...handBack, queue: { state: "queued" as const, position: 1, detail: null } }, handBackShown, late, 10),
+  ).toBe(false);
+  for (const kind of ["silent", "quiet", "unblocked", "hold", "job", "deploy", "version"] as const) {
+    const notice = { ...entry, kind };
+    expect(remindDue(notice, { [entryKey(notice)]: { first: NOW.toISOString(), level: 0 } }, late, 10)).toBe(false);
+  }
+});
 
 async function holding(live: ReturnType<typeof tempFleet>, ticket: string, handle = `ws/${ticket}`) {
   await live.store.saveRuntimeHandle({
@@ -56,6 +86,39 @@ function options(live: ReturnType<typeof tempFleet>, over: Partial<Parameters<ty
 }
 
 describe("the inbox read names the workers in flight", () => {
+  test("a failed launch wakes the watch on its next poll, and a rewritten outcome wakes it again", async () => {
+    const live = tempFleet();
+    await holding(live, "DEMO-2");
+    const failure = {
+      ticket: "DEMO-3",
+      launchId: "launch-3",
+      outcome: "failed" as const,
+      reason: "unknown model",
+      next: "armada launch DEMO-3",
+    };
+    const first = await watchInbox(
+      live.fleet,
+      options(live, {
+        sleep: async (ms) => {
+          await live.clock.sleep(ms);
+          await live.fleet.recordLaunchFailure(failure);
+        },
+      }).o,
+    );
+    expect(first.outcome).toBe("items");
+    expect(first.items.map((i) => i.kind)).toEqual(["launch-failed"]);
+    expect(live.clock.now().getTime() - NOW.getTime()).toBe(15_000);
+    const seen = first.items.map(entryKey);
+    await live.fleet.recordLaunchFailure({ ...failure, outcome: "uncertain" });
+    const rewritten = await watchInbox(
+      live.fleet,
+      options(live, { seen, until: new Date(live.clock.now().getTime() + 15_000) }).o,
+    );
+    expect(rewritten.outcome).toBe("items");
+    expect(rewritten.items[0]?.new).toBe(true);
+    expect(rewritten.items.map((i) => i.kind)).toEqual(["launch-uncertain"]);
+  });
+
   test("the coordinator's own session is not a worker, and a new worker changes the etag", async () => {
     const live = tempFleet();
     await holding(live, "DEMO-2");

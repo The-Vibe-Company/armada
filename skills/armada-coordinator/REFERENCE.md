@@ -22,6 +22,16 @@ The watch's start and end, the last lines of coordinator commands, and `armada d
 
 Armada detects the command in user settings (`~/.claude/settings.json`) and the coordinator checkout's `.claude/settings.json` or `.claude/settings.local.json`. If the session starts elsewhere, add a command hook for Stop in user settings: `armada hook stop 2>/dev/null || true`. `armada init --merge` changes repository settings only. `ARMADA_STOP_HOOK=off` opts out; the banner says so.
 
+## The SessionStart brief
+
+`armada init` and `--merge` install both Stop and SessionStart in repository settings, once; one question accepts both, and `--no-stop-hook` skips both. `armada doctor` warns when SessionStart is missing. SessionStart matches `compact|resume` only; fresh startup still follows Start in SKILL.md.
+
+After compact or resume, `armada hook session-start` inserts plain text into Claude's context: `Armada: you coordinate <project> as <name> from <checkout>`, tickets with phases and ages, PRs and holds, up to 20 actionable inbox lines, and the watch and Stop-hook banners. The block is at most 60 lines. Run every Armada command from the named checkout; read `armada status --mine` and `armada inbox --mine` before acting. Its final line tells you to start `armada watch` with Bash `run_in_background` when none runs. The hook never starts a watch itself. A live read records presence and only the inbox keys actually shown; omitted items can still wake the watch.
+
+Live reads share a 15-second deadline and are aborted on expiry. If unavailable or refused, the brief uses the last local tickets, read time and open jobs, and names the status/inbox recovery commands. All hook errors allow the session to start. Workers (`ARMADA_TICKET`) get nothing.
+
+Resolution uses the Stop hook's registry first, then the coordinator checkout for unknown ids. A resumed session with a new id outside that checkout gets nothing. To deliver hooks for sessions starting elsewhere, install both commands at user level in `~/.claude/settings.json`: Stop runs `armada hook stop 2>/dev/null || true` (timeout 10); SessionStart runs `armada hook session-start 2>/dev/null || true` with matcher `compact|resume` (timeout 30). Init only changes repository settings.
+
 ## The watch
 
 Plain `armada watch` waits until a new own or unowned item you have not been shown needs you (a question, plan, request, hand-back, merge hold, deploy failure, job notice, silent, stopped or unstarted worker), prints it and exits. Items owned by another named coordinator stay in the listing, marked `owner: <name>`, but do not wake you, even with `--all`. Reading `armada inbox` preserves shown history; `--mine` cannot prune keys from a broader `--all` read. It exits with `nothing to watch` when nothing in its scope is in flight or open. Armada being down does not end it. A timeout prints the resume command and re-arm line on stdout; start it again when it ends without news. `--for <minutes>` bounds it cleanly.
@@ -38,6 +48,12 @@ Under Claude Code (`CLAUDECODE` set), either watch defaults to 100 minutes, leav
 - A printed line counts as seen, even if your harness never read it: use follow only where every line reaches you. Harnesses that wake only when a command ends keep plain watch.
 
 Both modes share one lock per project and name on a machine. `armada inbox --wait [--timeout <seconds>]` (300 by default) is the fallback for a runtime that cannot run a background command.
+
+Plain watch also reminds about open questions, plans, unqueued hand-backs, owner requests and decisions, runtime approval prompts, queue refusals, and unstarted or stopped workers. `[policy] coordinator_minutes` sets the first interval (10 by default); subsequent intervals double. Reminders are anchored to the first show: at 10, 30 and 70 minutes by default, even if you list the inbox between them. The output marks `! still waiting since HH:MM UTC`. `coordinator_minutes = 0` disables reminders. Other coordinators' items and queued hand-backs never remind. Losing the machine watch state restarts the clock at the next listing; follow mode retains its once-per-key stream.
+
+`armada ack <#id or key> --reason "<why>"` records a deliberate skip of a notice, with its reason on the ticket. It hides that entry until its key changes. A higher silence level or another merged blocker is a new key. The command refuses questions, plans, hand-backs, owner requests, approval prompts and holds, and names the action that resolves them. A ticketless notice stays recorded in Armada only; if its Linear comment fails, post the printed text yourself. Deploy the API and its migration before the new CLI.
+
+Eligible notices are `queue-refused`, `deploy`, `job`, `unblocked`, `silent`, `quiet`, `stopped`, `not-started`, `job-silent` and `queue-stalled`. Derived entries print `key <entry key>` on their head line. The ticket note preserves the worker's phase. Comment creation is attempted once; never retry it blindly after a failure.
 
 ## Kept deliveries
 
@@ -57,7 +73,8 @@ Confirmed delivery is terminal before Linear and inbox recording. A recording wa
 - **Conductor sessions are observed**: a session Armada sees working is only called silent past twice the allowance, and the alert says it is still working. A session idle in a working phase for five minutes without a report or answer is `stopped`: nothing will wake it.
 - A silence wakes the watch at its allowance, then at twice, four times and each doubling after.
 - **Quiet**: a live worker without a report for `quiet_minutes` (45 by default) is a note for you only.
-- **Not started**: no claim `not_started_minutes` (10 by default) after the launch. An unused token that expired produces one notice, then clears.
+- **Launch failed or uncertain**: `launch-failed` and `launch-uncertain` are recorded immediately for an attempted runtime launch, including deferred launches during merge/drain. The watch wakes on them. Read the reason and run the item’s `Next:` command. Failed launches and recovered but unconfirmed launches exit 1; preflight refusals still exit 2. An uncertain launch retains its token: inspect the worker before retrying creation. The `Launched` line and dry-run plan include the ticket title; JSON includes `title`. Repeated failures rewrite the same open item. It closes on the next claim, a successful launch binding, `armada launch revoke <ticket>`, or `armada answer <id> "<why>"`. Recording on Armada is best-effort; a recording warning never turns failure into success.
+- **Not started**: no claim `not_started_minutes` (10 by default) after the launch. An unused token that expired produces one notice, then clears. An open `launch-failed` or `launch-uncertain` item suppresses this notice for its ticket.
 - Claims end by themselves when their ticket is Done or Canceled, their hand-back merged, their session was revoked or their workspace archived.
 
 ## Upgrades
@@ -95,7 +112,7 @@ Long runs (an evaluation, a backfill, a load test) run on the project's own runn
 - `armada job stop <id>` stops one on purpose; nothing is stopped automatically, even when its ticket is Done.
 - A runner can push progress with `armada job beat <id> --progress "40/120"`, signed in with an organization API key.
 - A running job with progress unchanged past `[jobs.<name>] stall_minutes` (60 by default) shows `stalled` and a `job-stalled` inbox alert. Check it with `armada job status <id>`; use `armada job stop <id>` only when you intend to stop it. Fraction progress (`n/m`) ignores ETA/clock changes; movement clears the alert and a later stall wakes the watch again. Silent jobs take precedence, and jobs without progress are never stalled. This only covers runs tracked through `armada job`; the alert never stops the job.
-- A job without news past its silence limit is a `job-silent` entry; a finished job leaves one `job` notice. Read it, then `armada answer <item> "<what you checked>"`.
+- A job without news past its silence limit is a `job-silent` entry; a finished job leaves one `job` notice. Check it, or deliberately leave the notice alone with `armada ack <#id or key> --reason "<why>"`.
 - `armada job recover <id> --ref <reference>` attaches a runner reference that a lost answer did not record.
 
 ## Shared resources
@@ -104,4 +121,4 @@ Migration numbers, ports and other shared names are reserved per ticket through 
 
 ## The owner's channel
 
-Organization > Notifications (owner or admin) connects one chat webhook. Owner validations, escalated questions and a stopped coordinator with items waiting reach it by themselves, outside quiet hours. Each named coordinator is checked separately, including owner requests and project-wide operational items. A coordinator that keeps running commands also triggers one alert per unanswered plan, question, hand-back, decision or owner request after 3 × `[policy] coordinator_minutes` (30 minutes by default); queued or paused merges are excluded. Act on the inbox rather than relying on command activity to keep these alerts quiet. GitHub and Linear webhook refreshes check alerts even with no live worker or viewer. Digests go out at the times set there; `armada digest --send` posts one now, and `armada digest --lang en|fr` overrides `[tracker] language` for the printed text.
+Organization > Notifications (owner or admin) connects one chat webhook. Owner validations, escalated questions and a stopped coordinator with items waiting reach it by themselves, outside quiet hours. Each named coordinator is checked separately, including owner requests and project-wide operational items. A coordinator that keeps running commands also triggers one alert per unanswered plan, question, hand-back, decision or owner request after 3 × `[policy] coordinator_minutes` (30 minutes by default); queued or paused merges are excluded. Finished specs send their Linear link once after the next reading. A merge pause still open after five minutes sends its reason and project link; clearing a recorded pause sends “merges resume”. Short pauses and pre-channel history stay quiet. These milestones are channel-only, follow the alerts toggle, and are retained during quiet hours for the next summary. Act on the inbox rather than relying on command activity to keep these alerts quiet. GitHub and Linear webhook refreshes check alerts even with no live worker or viewer. Digests go out at the times set there; `armada digest --send` posts one now, and `armada digest --lang en|fr` overrides `[tracker] language` for the printed text.

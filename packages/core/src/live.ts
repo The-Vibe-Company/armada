@@ -277,6 +277,8 @@ export type InboxKind =
   | "hold"
   | "job"
   | "queue-refused"
+  | "launch-failed"
+  | "launch-uncertain"
   | "question"
   | "plan"
   | "request"
@@ -475,6 +477,16 @@ export interface ReserveRecord {
 
 export type ReserveResult = { reserved: true; reservation: Reservation } | { reserved: false; holder: Reservation };
 
+/** A runtime launch was attempted and failed, or its delivery is still unconfirmed. */
+export interface LaunchFailureRecord {
+  ticket: string;
+  outcome: "failed" | "uncertain";
+  reason: string;
+  next: string;
+  launchId: string;
+  coordinator?: string | null;
+}
+
 export interface FleetStore {
   /**
    * Keeps one immutable runtime delivery admission. A fresh row records its
@@ -504,6 +516,7 @@ export interface FleetStore {
     at: Date;
   }): Promise<PendingDelivery | null>;
 
+  recordLaunchFailure(input: LaunchFailureRecord & { project: string; at: Date }): Promise<void>;
   /** Reserves a merge notice before runtime I/O; an unknown outcome is never retried automatically. */
   prepareMergeNotice(project: string, key: string, at: Date): Promise<"reserved" | "attempted" | "delivered">;
   /** Records one resolved generated note atomically with its delivery receipt, once per ticket. */
@@ -637,9 +650,29 @@ export interface FleetStore {
   putChore(item: Item & ChoreRecord): Promise<void>;
   /** Unresolved items of a project for one recipient, optionally for one ticket, oldest first. */
   openInboxItems(q: { project: string; recipient: InboxRecipient; ticket?: string }): Promise<InboxItem[]>;
+  /** Persists one derived inbox acknowledgement; false when this key was already acknowledged. */
+  ackEntry(input: {
+    project: string;
+    entryKey: string;
+    ticket: string | null;
+    coordinator: string;
+    reason: string;
+    at: Date;
+  }): Promise<boolean>;
+  /** Reads derived acknowledgement rows for the requested stable keys. */
+  ackedKeys(project: string, entryKeys: readonly string[]): Promise<AckedEntry[]>;
   getInboxItem(project: string, id: number): Promise<StoredInboxItem | null>;
   /** Resolves one open item; false when it was already resolved. */
-  resolveInboxItem(q: { project: string; id: number; resolution: string; at: Date }): Promise<boolean>;
+  resolveInboxItem(q: {
+    project: string;
+    id: number;
+    resolution: string;
+    at: Date;
+    /** Optional compare-and-resolve fence for coalesced notices. */
+    expectedBody?: string;
+    /** An acknowledgement must still belong to this coordinator at its atomic write. */
+    ackCoordinator?: string;
+  }): Promise<boolean>;
   /** Newest resolved question, plan or relayed validation decision per ticket, bounded to tickets and a time. */
   lastAnsweredAt(
     project: string,
@@ -774,6 +807,15 @@ export async function recordClaim(store: FleetStore, project: string, c: ClaimRe
     handle: c.handle,
     at,
   });
+  for (const kind of ["launch-failed", "launch-uncertain"] as const)
+    await store.resolveInboxItems({
+      project,
+      ticket: c.ticket,
+      kind,
+      author: null,
+      resolution: `claimed by ${c.runtime} (${c.handle})`,
+      at,
+    });
   if (c.resuming) return [];
   const asked = (await store.openInboxItems({ project, recipient: "coordinator", ticket: c.ticket })).filter(
     (i) => i.kind === "launch-request",
@@ -1209,6 +1251,93 @@ export type InboxEntryKind =
   | "queue-stalled"
   | "version";
 
+/** Entry kinds a coordinator may dismiss with `armada ack`. */
+export const ACKABLE_INBOX_ENTRY_KINDS = [
+  "queue-refused",
+  "deploy",
+  "job",
+  "unblocked",
+  "silent",
+  "quiet",
+  "stopped",
+  "not-started",
+  "job-silent",
+  "queue-stalled",
+] as const satisfies readonly InboxEntryKind[];
+
+export type AckableInboxEntryKind = (typeof ACKABLE_INBOX_ENTRY_KINDS)[number];
+
+/** True when a derived or stored entry can be dismissed without a resolver command. */
+export const isAckableInboxEntryKind = (kind: InboxEntryKind | string): kind is AckableInboxEntryKind =>
+  (ACKABLE_INBOX_ENTRY_KINDS as readonly string[]).includes(kind);
+
+/** The command which must resolve an entry that `armada ack` is not allowed to dismiss. */
+export function ackRefusal(kind: InboxEntryKind | string): string | null {
+  if (isAckableInboxEntryKind(kind)) return null;
+  if (kind === "hand-back") return "armada merge <pr>";
+  if (kind === "hold") return 'armada hold clear <id> --reason "<why>"';
+  if (kind === "linear-pending") return "armada merge --finish <pr>";
+  if (kind === "version") return "armada upgrade";
+  if (kind === "job-stalled") return "armada job status <id> (or armada job stop <id>)";
+  if (kind === "runtime-blocked") return 'armada answer <ticket> "<text>"';
+  if (kind === "launch-request") return 'armada launch <ticket> (or armada answer <item|ticket> "<text>")';
+  if (
+    kind === "question" ||
+    kind === "plan" ||
+    kind === "request" ||
+    kind === "decision" ||
+    kind === "answer-request" ||
+    kind === "merge-request" ||
+    kind === "release-request" ||
+    kind === "plan-changes"
+  )
+    return 'armada answer <item|ticket> "<text>"';
+  return 'armada answer <item|ticket> "<text>"';
+}
+
+/** The result of acknowledging one current inbox entry or derived notice. */
+export interface AckResult {
+  status: "acknowledged" | "already-resolved";
+  /** A stale derived key was newly recorded; its reason still needs one ticket note. */
+  recorded?: boolean;
+  kind: InboxEntryKind;
+  ticket: string | null;
+  coordinator: string;
+  /** The latest live phase for the ticket, when a ticket has one. */
+  phase?: string | null;
+}
+
+export interface AckRecord
+  extends Partial<
+    Pick<
+      InboxQuery,
+      "silentAfterMinutes" | "launchGraceMinutes" | "ciWaitMinutes" | "quietAfterMinutes" | "notStartedMinutes"
+    >
+  > {
+  target: string | number;
+  reason: string;
+  coordinator?: string | null;
+}
+
+/** Durable metadata for an acknowledged derived entry. */
+export interface AckedEntry {
+  entryKey: string;
+  ticket: string | null;
+  coordinator: string;
+  reason: string;
+  at: string;
+}
+
+/** Raised when a target exists but requires its resolver command. */
+export class AckRefusal extends Error {
+  constructor(
+    readonly kind: InboxEntryKind,
+    readonly next: string,
+  ) {
+    super(`cannot acknowledge ${kind}; use ${next}`);
+  }
+}
+
 export interface InboxEntry {
   /** The merged blocker of a derived `unblocked` item, for stable watch keys. */
   unblockedBy?: string;
@@ -1232,6 +1361,10 @@ export interface InboxEntry {
   createdAt: string;
   /** Appeared while `armada inbox --wait` was waiting. */
   new: boolean;
+  /** Set by a reminder presentation layer when this entry should be called out again. */
+  reminder?: boolean;
+  /** The time an open entry first began waiting, when known by the presentation layer. */
+  waitingSince?: string;
   /** A hand-back already being handled by the merge queue. Not part of its wake key. */
   queue?: { state: "queued" | "merging"; position: number; detail: string | null };
   /** Dashboard requests: the question an answer-request answers, the profile a launch-request asks for. */
@@ -1241,7 +1374,7 @@ export interface InboxEntry {
 }
 
 /** Items rewritten in place: reports and a target's coalesced deploy notice. */
-const REWRITTEN: readonly InboxEntryKind[] = ["hand-back", "plan", "deploy"];
+const REWRITTEN: readonly InboxEntryKind[] = ["hand-back", "plan", "deploy", "launch-failed", "launch-uncertain"];
 
 const digest = (text: string) => createHash("sha256").update(text).digest("base64url").slice(0, 12);
 
@@ -1266,7 +1399,7 @@ export const entryKey = (
         ? `queue-stalled:${e.queueEntry}`
         : e.id !== null
           ? REWRITTEN.includes(e.kind)
-            ? `#${e.id}@${digest(e.body)}`
+            ? `#${e.id}@${digest(e.kind === "launch-failed" || e.kind === "launch-uncertain" ? `${e.kind}:${e.body}` : e.body)}`
             : `#${e.id}`
           : e.kind === "unblocked"
             ? `unblocked:${e.ticket}@${e.unblockedBy}`
@@ -1503,6 +1636,8 @@ export interface InboxReadOptions {
   quietAfterMinutes?: number;
   /** `policy.not_started_minutes`; its default when absent. */
   notStartedMinutes?: number;
+  /** Internal acknowledgement lookup: retain derived entries while resolving their current key. */
+  includeAcknowledged?: boolean;
   now: Date;
 }
 
@@ -1720,7 +1855,7 @@ async function readInboxAndFlight(
       : [],
   );
   const waiting = queue.filter(queueOpen).length;
-  const entries: InboxEntry[] = items.map((i) => ({
+  let entries: InboxEntry[] = items.map((i) => ({
     id: i.id,
     owner: ownerOfItem(i),
     kind: i.kind,
@@ -1867,6 +2002,9 @@ async function readInboxAndFlight(
   }
   // A worker launched is in flight from its launch, so a watch started then waits for its claim;
   // once it shows as not started, its entry carries it until the coordinator acts.
+  const launchNotices = new Set(
+    stored.filter((i) => i.kind === "launch-failed" || i.kind === "launch-uncertain").map((i) => i.ticket),
+  );
   const currentLaunches = launches.filter((l) => {
     const event = events[l.ticket];
     return (
@@ -1879,7 +2017,8 @@ async function readInboxAndFlight(
   const late = notStartedLaunches(currentLaunches, o.now, o.notStartedMinutes ?? CONFIG_DEFAULTS.notStartedMinutes);
   for (const l of followedLaunches(currentLaunches, o.now))
     if (!late.includes(l) && !inFlight.includes(l.ticket)) inFlight.push(l.ticket);
-  for (const l of late)
+  for (const l of late) {
+    if (launchNotices.has(l.ticket)) continue;
     entries.push({
       id: null,
       kind: "not-started",
@@ -1890,6 +2029,7 @@ async function readInboxAndFlight(
       createdAt: l.launchedAt,
       new: false,
     });
+  }
   // No tracker or forge read: the stored relations retain closed blockers.
   // Skip history entirely when this reading contains no open dependents.
   if (model && o.snapshot?.config && model.program.some((i) => !isClosed(i) && i.blockedBy.length)) {
@@ -1945,6 +2085,13 @@ async function readInboxAndFlight(
       }
     }
   }
+  if (!o.includeAcknowledged) {
+    const derivedKeys = [...new Set(entries.filter((entry) => entry.id === null).map((entry) => entryKey(entry)))];
+    if (derivedKeys.length) {
+      const acknowledged = new Set((await store.ackedKeys(o.project, derivedKeys)).map((row) => row.entryKey));
+      entries = entries.filter((entry) => entry.id !== null || !acknowledged.has(entryKey(entry)));
+    }
+  }
   return {
     items: entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.id ?? 0) - (b.id ?? 0)),
     inFlight: [...new Set(inFlight)].filter((ticket) => o.scope !== "mine" || flightOwners.get(ticket) === name).sort(),
@@ -1958,6 +2105,259 @@ async function readInboxAndFlight(
     ownedOpenJobs: jobs.filter((job) => ownerOf(job.ticket) === name).map((job) => job.id),
     pendingDeliveries,
     ownedPendingDeliveries,
+  };
+}
+
+/** A malformed or no-longer-addressable acknowledgement target. */
+export class AckInvalid extends Error {}
+
+const ackTargetOf = (target: string | number): string => {
+  if (typeof target === "number") {
+    if (!Number.isSafeInteger(target) || target < 1) throw new AckInvalid("target must be an inbox id or entry key");
+    return `#${target}`;
+  }
+  const value = target.trim();
+  if (!value) throw new AckInvalid("target is required");
+  if (/^#?\d+$/.test(value)) {
+    const id = Number(value.replace(/^#/, ""));
+    if (!Number.isSafeInteger(id) || id < 1) throw new AckInvalid("target must be an inbox id or entry key");
+    return `#${id}`;
+  }
+  return value;
+};
+
+interface ParsedDerivedAckKey {
+  kind: Extract<
+    InboxEntryKind,
+    | "unblocked"
+    | "silent"
+    | "quiet"
+    | "stopped"
+    | "not-started"
+    | "job-silent"
+    | "queue-stalled"
+    | "runtime-blocked"
+    | "version"
+  >;
+  ticket: string | null;
+  jobId?: number;
+  queueEntry?: number;
+}
+
+/** Parse only stable derived keys emitted by `entryKey`; arbitrary `kind:value` text is not an acknowledgement. */
+function parseDerivedAckKey(target: string): ParsedDerivedAckKey | null {
+  let match = /^unblocked:([^:@]+)@([^:@]+)$/.exec(target);
+  if (match?.[1]) return { kind: "unblocked", ticket: match[1] };
+  match = /^silent:([^:]+):(\d+)$/.exec(target);
+  if (match?.[1]) return { kind: "silent", ticket: match[1] };
+  match = /^quiet:([^:]+)$/.exec(target);
+  if (match?.[1]) return { kind: "quiet", ticket: match[1] };
+  match = /^stopped:([^@]+)@([^@]+)$/.exec(target);
+  if (match?.[1]) return { kind: "stopped", ticket: match[1] };
+  match = /^not-started:([^:]+)(?::expired@[A-Za-z0-9_-]{12})?$/.exec(target);
+  if (match?.[1]) return { kind: "not-started", ticket: match[1] };
+  match = /^job-silent:([1-9]\d*)$/.exec(target);
+  if (match?.[1]) return { kind: "job-silent", ticket: null, jobId: Number(match[1]) };
+  match = /^queue-stalled:([1-9]\d*)$/.exec(target);
+  if (match?.[1]) return { kind: "queue-stalled", ticket: null, queueEntry: Number(match[1]) };
+  match = /^runtime-blocked:([^:@]+)$/.exec(target);
+  if (match?.[1]) return { kind: "runtime-blocked", ticket: match[1] };
+  match = /^version:([^@]+)@[A-Za-z0-9_-]{12}$/.exec(target);
+  if (match) return { kind: "version", ticket: null };
+  return null;
+}
+
+/** The kind and ticket encoded by a durable derived key after its entry has gone. */
+function goneAckEntry(target: string, remembered?: AckedEntry): ParsedDerivedAckKey | null {
+  const parsed = parseDerivedAckKey(target);
+  if (!parsed) return null;
+  if (remembered && parsed.ticket && remembered.ticket !== parsed.ticket) return null;
+  return remembered ? { ...parsed, ticket: remembered.ticket } : parsed;
+}
+
+async function ackPhase(store: FleetStore, project: string, ticket: string | null): Promise<string | null | undefined> {
+  if (!ticket) return undefined;
+  return (await store.latestEvents(project, { tickets: [ticket] }))[ticket]?.phase ?? null;
+}
+
+/**
+ * Records a coordinator acknowledgement after reconstructing the target from
+ * the current inbox read. Stored entries resolve through inbox_items; derived
+ * entries write only their stable key, so a later silence level or blocker
+ * produces a fresh key and remains visible.
+ */
+export async function recordAck(
+  store: FleetStore,
+  project: string,
+  input: AckRecord,
+  at: Date,
+  options: { snapshot?: HandBackSnapshot; config?: ArmadaConfig } = {},
+): Promise<AckResult> {
+  const target = ackTargetOf(input.target);
+  const reason = input.reason.trim();
+  if (!reason) throw new AckInvalid("reason is required");
+  const coordinator = input.coordinator?.trim() || "default";
+  const policy = (options.config ?? options.snapshot?.config)?.policy;
+  const { items } = await readInboxAndFlight(store, {
+    // Read the whole current set so a named coordinator can distinguish an
+    // entry owned by another coordinator from a key that has genuinely gone.
+    // Ownership is checked below before any write.
+    scope: "all",
+    coordinatorName: coordinator,
+    coordinator: null,
+    project,
+    snapshot: options.snapshot,
+    silentAfterMinutes: input.silentAfterMinutes ?? policy?.silentAfterMinutes ?? CONFIG_DEFAULTS.silentAfterMinutes,
+    launchGraceMinutes: input.launchGraceMinutes ?? policy?.launchGraceMinutes ?? CONFIG_DEFAULTS.launchGraceMinutes,
+    ciWaitMinutes: input.ciWaitMinutes ?? policy?.ciWaitMinutes ?? CONFIG_DEFAULTS.ciWaitMinutes,
+    quietAfterMinutes: input.quietAfterMinutes ?? policy?.quietAfterMinutes ?? CONFIG_DEFAULTS.quietAfterMinutes,
+    notStartedMinutes: input.notStartedMinutes ?? policy?.notStartedMinutes ?? CONFIG_DEFAULTS.notStartedMinutes,
+    includeAcknowledged: true,
+    now: at,
+  });
+  const byId = /^#(\d+)(?:@[A-Za-z0-9_-]{12})?$/.exec(target);
+  const entry = byId
+    ? items.find((candidate) =>
+        target.includes("@") ? entryKey(candidate) === target : candidate.id === Number(byId[1]),
+      )
+    : items.find((candidate) => entryKey(candidate) === target);
+  let kind: InboxEntryKind;
+  let ticket: string | null;
+  if (entry) {
+    if (entry.owner !== null && entry.owner !== undefined && entry.owner !== coordinator)
+      throw new AckInvalid(`target belongs to coordinator ${entry.owner}`);
+    kind = entry.kind;
+    ticket = entry.ticket;
+    const next = ackRefusal(kind);
+    if (next) throw new AckRefusal(kind, next);
+    if (entry.id === null) {
+      const inserted = await store.ackEntry({
+        project,
+        entryKey: entryKey(entry),
+        ticket,
+        coordinator,
+        reason,
+        at,
+      });
+      const phase = await ackPhase(store, project, ticket);
+      return {
+        status: inserted ? "acknowledged" : "already-resolved",
+        kind,
+        ticket,
+        coordinator,
+        ...(phase !== undefined ? { phase } : {}),
+      };
+    }
+    const id = entry.id;
+    if (id === null) throw new AckInvalid("target is not an inbox item");
+    const resolved = await store.resolveInboxItem({
+      project,
+      id,
+      resolution: `acknowledged: ${reason}`,
+      at,
+      expectedBody: entry.body,
+      ackCoordinator: coordinator,
+    });
+    const phase = await ackPhase(store, project, ticket);
+    return {
+      status: resolved ? "acknowledged" : "already-resolved",
+      kind,
+      ticket,
+      coordinator,
+      ...(phase !== undefined ? { phase } : {}),
+    };
+  }
+
+  // A rewritten stored notice retains its id but gets a new digest. The old
+  // key is gone, while the current notice remains visible for a fresh ack.
+  if (byId && target.includes("@")) {
+    const current = items.find((candidate) => candidate.id === Number(byId[1]));
+    if (current) {
+      if (current.owner !== null && current.owner !== undefined && current.owner !== coordinator)
+        throw new AckInvalid(`target belongs to coordinator ${current.owner}`);
+      const next = ackRefusal(current.kind);
+      if (next) throw new AckRefusal(current.kind, next);
+      const phase = await ackPhase(store, project, current.ticket);
+      return {
+        status: "already-resolved",
+        kind: current.kind,
+        ticket: current.ticket,
+        coordinator,
+        ...(phase !== undefined ? { phase } : {}),
+      };
+    }
+  }
+
+  // A derived notice can advance between the inbox read and the ack request
+  // (for example, a silent worker moves to the next silence level). Preserve
+  // the key the coordinator actually saw, while leaving the newer key open.
+  const parsed = parseDerivedAckKey(target);
+  const raced = parsed
+    ? items.find((candidate) => {
+        if (candidate.id !== null || candidate.kind !== parsed.kind) return false;
+        if (parsed.jobId !== undefined) return candidate.jobId === parsed.jobId;
+        if (parsed.queueEntry !== undefined) return candidate.queueEntry === parsed.queueEntry;
+        return candidate.ticket === parsed.ticket;
+      })
+    : undefined;
+  if (raced && entryKey(raced) !== target) {
+    if (raced.owner !== null && raced.owner !== undefined && raced.owner !== coordinator)
+      throw new AckInvalid(`target belongs to coordinator ${raced.owner}`);
+    const next = ackRefusal(raced.kind);
+    if (next) throw new AckRefusal(raced.kind, next);
+    const inserted = await store.ackEntry({
+      project,
+      entryKey: target,
+      ticket: raced.ticket,
+      coordinator,
+      reason,
+      at,
+    });
+    const phase = await ackPhase(store, project, raced.ticket);
+    return {
+      status: "already-resolved",
+      recorded: inserted,
+      kind: raced.kind,
+      ticket: raced.ticket,
+      coordinator,
+      ...(phase !== undefined ? { phase } : {}),
+    };
+  }
+
+  // An explicit id may have disappeared because another coordinator resolved it.
+  if (byId) {
+    const remembered = await store.getInboxItem(project, Number(byId[1]));
+    if (remembered) {
+      kind = remembered.kind;
+      ticket = remembered.ticket;
+      if (remembered.recipient !== "coordinator") throw new AckInvalid("target is not a coordinator inbox entry");
+      const next = ackRefusal(kind);
+      if (next) throw new AckRefusal(kind, next);
+      if (remembered.resolvedAt === null) throw new AckInvalid("target is not available to this coordinator");
+      const phase = await ackPhase(store, project, ticket);
+      return {
+        status: "already-resolved",
+        kind,
+        ticket,
+        coordinator,
+        ...(phase !== undefined ? { phase } : {}),
+      };
+    }
+    throw new AckInvalid("target is not an open inbox entry");
+  }
+
+  const remembered = (await store.ackedKeys(project, [target]))[0];
+  const gone = goneAckEntry(target, remembered);
+  if (!gone) throw new AckInvalid("target is not an open acknowledgement entry");
+  const next = ackRefusal(gone.kind);
+  if (next) throw new AckRefusal(gone.kind, next);
+  const phase = await ackPhase(store, project, gone.ticket);
+  return {
+    status: "already-resolved",
+    kind: gone.kind,
+    ticket: gone.ticket,
+    coordinator,
+    ...(phase !== undefined ? { phase } : {}),
   };
 }
 
@@ -2110,8 +2510,10 @@ export async function serveInbox(
     now,
   });
   for (const launch of expired) {
+    if (items.some((i) => i.ticket === launch.ticket && (i.kind === "launch-failed" || i.kind === "launch-uncertain")))
+      continue;
     if (scoped && launch.coordinator != null && launch.coordinator !== (q.coordinatorName ?? "default")) continue;
-    items.push({
+    const item: InboxEntry = {
       id: null,
       kind: "not-started",
       ticket: launch.ticket,
@@ -2120,7 +2522,16 @@ export async function serveInbox(
       body: `not started (token expired): the unused launch of ${launch.ticket} at ${launch.launchedAt} has cleared; launch it again with armada brief ${launch.ticket} --prompt`,
       createdAt: launch.launchedAt,
       new: false,
-    });
+    };
+    items.push(item);
+  }
+  if (expired.length) {
+    const expiredKeys = [...new Set(items.filter((item) => item.id === null).map((item) => entryKey(item)))];
+    const acknowledged = new Set((await store.ackedKeys(project, expiredKeys)).map((row) => row.entryKey));
+    for (let index = items.length - 1; index >= 0; index--) {
+      const item = items[index];
+      if (item?.id === null && acknowledged.has(entryKey(item))) items.splice(index, 1);
+    }
   }
   items.sort((first, second) => first.createdAt.localeCompare(second.createdAt));
   const includesOwned = q.scope !== undefined && !!q.coordinatorName && q.coordinatorName !== "default";
@@ -2174,6 +2585,7 @@ export interface Fleet {
     reason: string;
     attempts?: number;
   }): Promise<PendingDelivery | null>;
+  recordLaunchFailure(input: LaunchFailureRecord): Promise<void>;
   prepareMergeNotice(key: string): Promise<"reserved" | "attempted" | "delivered">;
   retryDeploy(input: DeployRetryInput): Promise<DeployRecord>;
   recordDeploy(input: DeployInput): Promise<DeployRecord>;
@@ -2233,6 +2645,8 @@ export interface Fleet {
   release(r: Omit<ReleaseRecord, "workerSessionId">): Promise<{ released: boolean }>;
   /** The coordinator's inbox; null when its entries are still those of `q.etag` (not modified). */
   inbox(q: InboxQuery): Promise<InboxRead | null>;
+  /** Acknowledges one current, dismissible coordinator entry. */
+  ack(input: { target: string | number; reason: string; coordinator?: string | null }): Promise<AckResult>;
   /** One inbox item, open or resolved; null when the project has no such item. */
   inboxItem(id: number): Promise<StoredInboxItem | null>;
   /** The coordinator's open items for one ticket. */

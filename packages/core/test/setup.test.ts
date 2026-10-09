@@ -197,6 +197,7 @@ describe("repository checks", () => {
       ...Object.fromEntries(skills.map((s) => [`skill:${s}`, "error"])),
       conductor: "error",
       "stop-hook": "warning",
+      "session-start-hook": "warning",
       gitignore: "warning",
     });
     for (const c of problems(checks)) expect(c.fix).toBeTruthy();
@@ -295,7 +296,11 @@ describe("repository checks", () => {
   test("the stop hook joins the repository's Claude settings, keeps theirs, and is opt-in", async () => {
     const theirs = {
       permissions: { allow: ["Bash(bun test:*)"] },
-      hooks: { Stop: [{ hooks: [{ type: "command", command: "make notify" }] }], PreToolUse: [] },
+      hooks: {
+        Stop: [{ hooks: [{ type: "command", command: "make notify" }] }],
+        SessionStart: [{ matcher: "startup", hooks: [{ type: "command", command: "make welcome" }] }],
+        PreToolUse: [],
+      },
     };
     const repo = memoryRepo({ "armada.toml": DEMO_TOML, ".claude/settings.json": JSON.stringify(theirs) });
 
@@ -307,6 +312,10 @@ describe("repository checks", () => {
         "stop-hook",
         "run `armada init` and accept the stop hook (this repository's settings only, never your user settings)",
       ],
+      [
+        "session-start-hook",
+        "run `armada init` and accept the hooks (this repository’s settings only, never your user settings)",
+      ],
     ]);
 
     const plan = await planSetup(repo.view, { armadaVersion: VERSION, configText: null });
@@ -317,6 +326,13 @@ describe("repository checks", () => {
       ...theirs,
       hooks: {
         ...theirs.hooks,
+        SessionStart: [
+          ...theirs.hooks.SessionStart,
+          {
+            matcher: "compact|resume",
+            hooks: [{ type: "command", command: "armada hook session-start 2>/dev/null || true", timeout: 30 }],
+          },
+        ],
         Stop: [
           ...theirs.hooks.Stop,
           {
@@ -340,6 +356,7 @@ describe("repository checks", () => {
     repo.files.set(".claude/settings.json", "{ not json");
     expect(problems(await checkRepository(repo.view, VERSION)).map((c) => [c.id, c.message])).toEqual([
       ["stop-hook", "Claude Code stop hook not checked: .claude/settings.json is not valid JSON"],
+      ["session-start-hook", "Claude Code session-start hook not checked: .claude/settings.json is not valid JSON"],
     ]);
     await expect(planSetup(repo.view, { armadaVersion: VERSION, configText: null })).rejects.toThrow(
       ".claude/settings.json is not valid JSON: fix it, or leave the stop hook out with `armada init --no-stop-hook`",
@@ -558,4 +575,24 @@ test("hook detection reads user, project and local settings without modifying th
       throw new Error("unreadable");
     }, files),
   ).toBeNull();
+});
+
+test("init keeps existing SessionStart commands covering compact and resume in Claude's supported matcher forms", async () => {
+  const hook = { type: "command", command: "armada hook session-start 2>/dev/null || true" };
+  for (const matchers of [[undefined], [""], ["*"], ["compact, resume"], ["compact", "resume"], ["compact|resume"]]) {
+    const repo = memoryRepo({
+      "armada.toml": DEMO_TOML,
+      ".claude/settings.json": JSON.stringify({
+        hooks: {
+          Stop: [{ hooks: [{ type: "command", command: "armada hook stop" }] }],
+          SessionStart: matchers.map((matcher) => ({ ...(matcher === undefined ? {} : { matcher }), hooks: [hook] })),
+        },
+      }),
+    });
+    const plan = await planSetup(repo.view, { armadaVersion: VERSION, configText: null });
+    expect(plan.writes.some((write) => write.path === ".claude/settings.json")).toBe(false);
+    expect((await checkRepository(repo.view, VERSION)).find((check) => check.id === "session-start-hook")?.level).toBe(
+      "ok",
+    );
+  }
 });

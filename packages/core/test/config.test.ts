@@ -13,6 +13,16 @@ const problemsOf = (text: string) => {
 };
 
 describe("armada.toml", () => {
+  test("coordinator reminders accept zero to disable and reject invalid minutes", () => {
+    for (const minutes of [0, 3.5, 10])
+      expect(parseConfig(`${DEMO_TOML}\n[policy]\ncoordinator_minutes = ${minutes}`).policy.coordinatorMinutes).toBe(
+        minutes,
+      );
+    for (const value of ["-1", '"ten"'])
+      expect(problemsOf(`${DEMO_TOML}\n[policy]\ncoordinator_minutes = ${value}`)).toContain(
+        '"policy.coordinator_minutes" must be a non-negative number',
+      );
+  });
   test("merge queue retest defaults to CI, accepts local and rejects unknown policies", () => {
     expect(parseConfig(DEMO_TOML).merge.queueRetest).toBe("ci");
     expect(parseConfig(`${DEMO_TOML}\n[merge]\nqueue_retest = "local"`).merge.queueRetest).toBe("local");

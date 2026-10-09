@@ -657,7 +657,16 @@ export async function buildDoctor(
     [join(root, ".claude/settings.json"), join(root, ".claude/settings.local.json")].includes(hook.installedIn)
       ? relative(root, hook.installedIn)
       : hook.installedIn;
-  const repositoryChecks = await checkRepository(view, armadaVersion, installedIn);
+  const repositoryChecks = await checkRepository(
+    view,
+    armadaVersion,
+    installedIn,
+    hook.sessionStartInstalledIn
+      ? hook.sessionStartInstalledIn.startsWith(`${root}/`)
+        ? relative(root, hook.sessionStartInstalledIn)
+        : hook.sessionStartInstalledIn
+      : null,
+  );
   if (io.env.CLAUDECODE) {
     const check = repositoryChecks.find((c) => c.id === "stop-hook");
     if (check) {

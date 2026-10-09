@@ -17,6 +17,7 @@ import {
 } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
 import { acceptance } from "./acceptance.ts";
+import { ack } from "./ack.ts";
 import { apiOf, heard } from "./api.ts";
 import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
@@ -53,7 +54,7 @@ import { printSkill, updateSkills } from "./skills.ts";
 import { requireSpecCoordinator, specCommand } from "./spec.ts";
 import { upgrade } from "./upgrade.ts";
 import { askOwner, done, namedTicket, validate } from "./validate.ts";
-import { hookStop, stopHookBanner, stopWatch, watch } from "./watch.ts";
+import { hookSessionStart, hookStop, stopHookBanner, stopWatch, watch } from "./watch.ts";
 import { claim, currentTicket, release, report, statusLive } from "./worker.ts";
 
 export { authLogin } from "./auth.ts";
@@ -160,8 +161,8 @@ const COMMAND_HELP: Record<string, string> = {
                     Open one pull request that installs or updates it all, create the
                     missing Linear labels and register the project. The options are for
                     a repository without armada.toml (Linear issue at the program root).
-                    It asks before adding the Claude Code stop hook to the repository's
-                    .claude/settings.json (yes without a terminal); --no-stop-hook skips it
+                    It asks before adding Claude Code Stop and SessionStart hooks to the repository's
+                    .claude/settings.json (yes without a terminal); --no-stop-hook skips both
                     Reuses armada/setup across versions and closes legacy armada/init-* PRs.
                     --merge waits for the normal merge checks and merges only setup paths
 `,
@@ -237,6 +238,12 @@ const COMMAND_HELP: Record<string, string> = {
                     when a new item arrives or after --timeout (default 300 s); \`armada watch\`
                     is the way to keep listening. Needs a sign-in to Armada
 `,
+  ack: `  ack <#id or key> --reason "<why>"
+                    Record why a notice needs no action and post the reason on its ticket.
+                    Derived keys are printed by inbox. Questions, plans and hand-backs
+                    clear only by answering or merging; ack names the resolving command.
+                    Needs a coordinator sign-in; deploy the API before using this CLI.
+`,
   watch: `  watch             Coordinator: run in the background while workers are in flight. Waits
                     until something needs you (a question, plan, request, hand-back or silent
                     worker you have not seen), prints it and exits; exits "nothing to watch"
@@ -251,6 +258,8 @@ const COMMAND_HELP: Record<string, string> = {
                     --mine filters events and inbox by coordinator ownership, including unowned entries.
                     Named watches default to --mine; --all sees the whole fleet.
                     Plain watch wakes only for your own and unowned items, even with --all.
+                    Unhandled action items remind after policy.coordinator_minutes, then
+                    doubled intervals; inbox listings do not postpone reminders (0 disables).
                     A second plain watch waits locally for the verified holder's result,
                     or takes over if it dies without one; --stop ends its waiters too.
                     Under CLAUDECODE, default 100 min or 90% of a learned shorter limit
@@ -405,6 +414,11 @@ const COMMAND_HELP: Record<string, string> = {
                     Falls back to the coordinator checkout for unknown sessions; workers
                     are never held. Commands and doctor show if it is on. Reads local files;
                     ARMADA_STOP_HOOK=off turns it off
+  hook session-start
+                    Claude Code SessionStart hook for compact|resume: briefs registered
+                    coordinators about their checkout, tickets, inbox, watch and stop hook.
+                    Live reads have a 15 s deadline, then use cached local state. Workers
+                    and unrelated folders get nothing. Never starts a watch; always exits 0
 `,
   login: `  login             Sign this terminal in to Armada: confirm the code it shows in the browser
   login --api-key   Sign a headless coordinator in with an organization API key, read from a
@@ -463,6 +477,7 @@ const CONFIG_OPTION = new Set([
   "done",
   "hold",
   "inbox",
+  "ack",
   "watch",
   "answer",
   "stop",
@@ -704,6 +719,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
   hold: ["reason"],
+  ack: ["reason"],
   merge: [
     "finish",
     "ticket",
@@ -1087,6 +1103,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       ask,
       inbox,
       answer,
+      ack,
       stop,
       validate,
       "ask-owner": askOwner,
@@ -1153,10 +1170,11 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const { credentials } = await loadCredentials(io, { armada: false, project: config.project.slug });
       return await watch(io, config, credentials, args, path, startedAt);
     }
-    if (args.command === "hook")
-      return await hookStop(io, args.rest, (at) =>
-        findConfig({ ...at, env: { ...at.env, ARMADA_CONFIG: undefined } }, null, "hook"),
-      );
+    if (args.command === "hook") {
+      const locate = (at: Io) => findConfig({ ...at, env: { ...at.env, ARMADA_CONFIG: undefined } }, null, "hook");
+      if (args.rest.length === 1 && args.rest[0] === "session-start") return await hookSessionStart(io, locate);
+      return await hookStop(io, args.rest, locate);
+    }
     if (args.command === "merge") {
       const { path, text } = await findConfig(io, args.config, "merge", args.project);
       const config = parseConfig(text, path);

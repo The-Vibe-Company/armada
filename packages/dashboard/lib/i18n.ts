@@ -436,7 +436,7 @@ const en = {
   },
   notifications: {
     nav: "Notifications",
-    lead: "Send owner alerts to one Slack webhook or JSON endpoint. The cron is off by default; stopped coordinators are noticed on the next fleet traffic or dashboard poll.",
+    lead: "Owner alerts, finished specs, five-minute merge pauses and all-clears go to Slack or JSON.",
     channel: "Owner alert channel",
     none: "No owner notification channel configured.",
     url: "Webhook URL",
@@ -1482,7 +1482,7 @@ const fr: Strings = {
   },
   notifications: {
     nav: "Notifications",
-    lead: "Envoie les alertes du propriétaire à un webhook Slack ou à un endpoint JSON. Le cron est désactivé par défaut ; les coordinateurs arrêtés sont détectés au prochain trafic de la flotte ou sondage du tableau de bord.",
+    lead: "Alertes Slack ou JSON : specs terminées, pauses de fusion de cinq minutes et reprise des fusions.",
     channel: "Canal d'alertes du propriétaire",
     none: "Aucun canal de notifications du propriétaire n'est configuré.",
     url: "URL du webhook",
@@ -2207,3 +2207,17 @@ const fr: Strings = {
 };
 
 export const STRINGS: Record<Language, Strings> = { en, fr };
+
+/** Channel-only titles are separate from the shell's shared string bundle. */
+export const MILESTONE_TITLES = {
+  en: {
+    specClosed: (title: string) => `${title} finished`,
+    holdOpened: (project: string, reason: string) => `${project}: merges paused — ${reason}`,
+    holdCleared: (project: string) => `${project}: merges resume`,
+  },
+  fr: {
+    specClosed: (title: string) => `${title} terminé`,
+    holdOpened: (project: string, reason: string) => `${project} : fusions en pause — ${reason}`,
+    holdCleared: (project: string) => `${project} : les fusions reprennent`,
+  },
+};

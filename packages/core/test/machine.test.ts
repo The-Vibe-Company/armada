@@ -288,6 +288,44 @@ test("one watch per project: a live lock is refused, a stale one taken over, the
     stopped: null,
   });
   expect((await stat(watchFiles(paths, "widgets").state)).mode & 0o777).toBe(0o600);
+  const first = "2026-01-01T09:00:00.000Z";
+  const later = "2026-01-01T09:01:00.000Z";
+  await updateWatchState(paths, "widgets", {
+    seen: ["#4"],
+    seenScope: "all",
+    shownAt: { "#4": { first, level: 0 } },
+  });
+  const startup = (await readWatchState(paths, "widgets"))?.shownAt;
+  // A listing arrives after startup's read, before its partial state write.
+  await updateWatchState(paths, "widgets", {
+    seen: ["#4", "#5"],
+    seenScope: "all",
+    shownAt: { "#4": { first, level: 1 }, "#5": { first: later, level: 0 } },
+  });
+  expect((await readWatchState(paths, "widgets"))?.shownAt?.["#5"]).toEqual({ first: later, level: 0 });
+  await updateWatchState(paths, "widgets", { root: "/work/widgets", stopped: null, shownAt: startup });
+  expect((await readWatchState(paths, "widgets"))?.shownAt).toEqual({
+    "#4": { first, level: 1 },
+    "#5": { first: later, level: 0 },
+  });
+  const staleClocks = Object.fromEntries(Array.from({ length: 500 }, (_, i) => [`old-${i}`, { first, level: 0 }]));
+  await updateWatchState(paths, "widgets", {
+    seen: Object.keys(staleClocks),
+    seenScope: "all",
+    shownAt: staleClocks,
+  });
+  const currentClocks = Object.fromEntries([
+    ...Array.from({ length: 100 }, (_, i) => [`old-${i}`, { first, level: 1 }]),
+    ...Array.from({ length: 400 }, (_, i) => [`new-${i}`, { first: later, level: 0 }]),
+  ]);
+  await updateWatchState(paths, "widgets", {
+    seen: Object.keys(currentClocks),
+    seenScope: "all",
+    shownAt: currentClocks,
+  });
+  expect((await readWatchState(paths, "widgets"))?.shownAt).toEqual(currentClocks);
+  await updateWatchState(paths, "widgets", { shownAt: staleClocks });
+  expect((await readWatchState(paths, "widgets"))?.shownAt).toEqual(currentClocks);
   await writeFile(watchFiles(paths, "widgets").state, "not json");
   expect(await readWatchState(paths, "widgets")).toBeNull();
 });

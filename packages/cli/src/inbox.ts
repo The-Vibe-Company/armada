@@ -7,9 +7,11 @@ import {
   type Credentials,
   checkInbox,
   deliveryKey,
+  entryKey,
   freshRuntimeState,
   type InboxEntry,
   type InboxReport,
+  isAckableInboxEntryKind,
   type Rearm,
   Refusal,
   RuntimeError,
@@ -22,6 +24,7 @@ import { deliverKept } from "./deliveries.ts";
 import { type Io, UsageError } from "./io.ts";
 import { requireSignIn } from "./login.ts";
 import { detectCoordinator } from "./presence.ts";
+import { compactLine } from "./render.ts";
 import { deliverToRuntime, observingFleet } from "./runtime.ts";
 import { claimRef, guarded, launchRef, runtimeFor } from "./runtimes/adapter.ts";
 import { coordinatorHandle, rearmFor, remember, shown } from "./watch.ts";
@@ -127,7 +130,26 @@ function waitSeconds(raw: string | undefined): number {
 }
 
 /** The entries of an inbox, oldest first, with what to do about them; new ones marked *. */
-export function renderEntries(project: string, items: InboxEntry[]): string[] {
+export function renderEntries(
+  project: string,
+  items: InboxEntry[],
+  options: { compact?: boolean; limit?: number } = {},
+): string[] {
+  if (options.compact) {
+    const actionable = items.filter((e) => !e.queue);
+    const limit = options.limit ?? 20;
+    return [
+      `Inbox of ${project} (${actionable.length} need action):`,
+      ...actionable
+        .slice(0, limit)
+        .map((e) =>
+          compactLine(
+            `${e.id === null ? e.kind : `#${e.id} ${e.kind}`} · ${e.ticket ?? project} · ${e.body.split("\n").find((line) => line.trim()) ?? ""}`,
+          ),
+        ),
+      ...(actionable.length > limit ? [`… and ${actionable.length - limit} more: armada inbox --mine`] : []),
+    ];
+  }
   if (!items.length) return [`Inbox of ${project}: nothing waits for you.`];
   const out = [`Inbox of ${project} (${items.length}), oldest first:`];
   const waiting = items.filter((e) => !e.queue);
@@ -137,6 +159,7 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
     if (e === progressing[0]) out.push("In progress:");
     const head = [
       e.id === null ? e.kind : `#${e.id} ${e.kind}`,
+      e.id === null && `key ${entryKey(e)}`,
       e.ticket,
       e.owner ? `owner: ${e.owner}` : "unowned",
       e.author && `from ${e.author}`,
@@ -147,7 +170,9 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
     ]
       .filter(Boolean)
       .join(" · ");
-    out.push(`${e.new ? "* " : "  "}${head}`);
+    out.push(
+      `${e.reminder ? `! still waiting since ${e.waitingSince?.slice(11, 16)} UTC · ` : e.new ? "* " : "  "}${head}`,
+    );
     if (e.queue)
       out.push(
         `    ${e.queue.state === "queued" ? `queued in the merge queue (position ${e.queue.position})` : `merging: ${e.queue.detail ?? "starting the drain"}`}`,
@@ -176,7 +201,11 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
     );
   if (items.some((e) => e.kind === "queue-refused"))
     out.push(
-      'A refused queue entry: fix what refused it, then queue it again (armada merge --when-green <pr>, or Merge on the dashboard), or record why not with armada answer <id> "<why>".',
+      'A refused queue entry: fix what refused it, then queue it again (armada merge --when-green <pr>, or Merge on the dashboard), or record why not with armada ack <id> --reason "<why>".',
+    );
+  if (items.some((entry) => isAckableInboxEntryKind(entry.kind)))
+    out.push(
+      'Not acting on an entry? armada ack <#id or key> --reason "<why>" records why; questions, plans and hand-backs clear only by answering or merging.',
     );
   if (items.some((e) => e.kind === "delivery-failed"))
     out.push(

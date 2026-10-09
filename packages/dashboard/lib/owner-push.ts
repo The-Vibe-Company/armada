@@ -4,14 +4,15 @@ import { createHmac, randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
-import { buildDigest, type Digest, type OwnerItem, ownerItems, renderDigest } from "@armada/core/read";
+import { buildDigest, type Digest, type OwnerItem, ownerItems, ownerMilestones, renderDigest } from "@armada/core/read";
 import { type Database, iso, isoAt, type Queryable, type Row, transaction } from "./db";
 import { digestRecords } from "./digest";
 import { DEFAULT_DIGEST, type DigestSchedule, digestSchedule, digestSlots } from "./digest-slots";
 import { loadOverview, newCache, type Sources } from "./fleet-data";
 import { liveStore } from "./fleet-store";
-import { STRINGS } from "./i18n";
-import { inQuietHours, notificationTitle, notifyOf } from "./notify";
+import { MILESTONE_TITLES, STRINGS } from "./i18n";
+import { channelNotificationTitle, inQuietHours, notifyOf } from "./notify";
+import { storedSnapshot } from "./snapshots";
 import {
   type Actor,
   eraseOwnerWebhook,
@@ -261,7 +262,7 @@ export interface OwnerPayload {
 function payloadOf(channel: OwnerChannel, item: OwnerItem, baseUrl: string): OwnerPayload {
   const url = new URL(item.href, baseUrl).href;
   // Escape mrkdwn controls so a ticket title cannot tag a channel or forge a link.
-  const title = notificationTitle(STRINGS[channel.language], item)
+  const title = channelNotificationTitle(STRINGS[channel.language], item, MILESTONE_TITLES[channel.language])
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -502,17 +503,37 @@ async function queueScheduledDigest(db: Database, channel: OwnerChannel, at: Dat
         [channel.id, noticedAt],
       );
       digest.skipped = missed.rows.map((r) => String(r.key).slice("digest:".length));
+      // Quiet milestones are news even when the activity summary is otherwise empty.
+      // The last visible scheduled slot consumes them; skipped/empty slots do not.
+      const retained = current.alerts
+        ? await tx.query(
+            `SELECT p.payload FROM owner_pushes p WHERE p.channel = $1 AND p.error = 'quiet'
+              AND p.created_at >= $2 AND p.created_at <= $3
+              AND payload->'items'->0->>'kind' IN ('spec-closed','hold-opened','hold-cleared')
+              AND ($4::text IS NULL OR p.payload->'items'->0->>'project' = $4)
+              AND NOT EXISTS (SELECT 1 FROM owner_pushes d WHERE d.channel = p.channel
+                AND d.created_at >= p.created_at AND d.payload->>'kind' = 'digest'
+                AND d.payload->'items' @> jsonb_build_array(jsonb_build_object('key', p.key)))
+              ORDER BY p.created_at, p.key`,
+            [channel.id, noticedAt ?? row.created_at, at, current.project],
+          )
+        : { rows: [] };
+      const milestones = retained.rows.map((r) => r.payload as OwnerPayload);
+      if (milestones.length) digest.quiet = false;
       const payload: OwnerPayload = {
         schema: 1,
         kind: "digest",
         organization: channel.organization,
         project: current.project,
-        items: [],
-        text: renderDigest(digest, {
-          language: current.language,
-          format: current.format === "slack" ? "slack" : "plain",
-          appUrl: baseUrl,
-        }),
+        items: milestones.flatMap((m) => m.items),
+        text: [
+          renderDigest(digest, {
+            language: current.language,
+            format: current.format === "slack" ? "slack" : "plain",
+            appUrl: baseUrl,
+          }),
+          ...milestones.map((m) => m.text),
+        ].join("\n\n"),
       };
       const skip = current.digest.skipQuiet && digest.quiet;
       await tx.query(
@@ -589,7 +610,43 @@ export async function ownerTick(db: Database, opts: TickOptions): Promise<void> 
     channelGeneration.set(channel, Number(row.generation));
     const quiet = quietAt(channel, at);
     await queueScheduledDigest(db, channel, at, opts.baseUrl);
-    for (const item of channel.alerts ? items : []) {
+    const channelItems = channel.alerts ? [...items] : [];
+    if (channel.alerts) {
+      const since = new Date(Math.max(Date.parse(channel.createdAt), at.getTime() - 24 * 60 * 60_000)).toISOString();
+      for (const project of overview.projects) {
+        if (channel.project && project.slug !== channel.project) continue;
+        const [snapshot, holds, recorded] = await Promise.all([
+          storedSnapshot(db, project.slug),
+          db.query(
+            `SELECT id, project, reason, opened_at, cleared_at FROM merge_holds
+            WHERE project = $1 AND (opened_at >= $2 OR cleared_at >= $2)`,
+            [project.slug, since],
+          ),
+          db.query(`SELECT key FROM owner_pushes WHERE channel = $1 AND key LIKE $2`, [
+            channel.id,
+            `hold:${project.slug}:%`,
+          ]),
+        ]);
+        channelItems.push(
+          ...ownerMilestones({
+            project: project.slug,
+            root: snapshot?.sources.program.rootId ?? "",
+            issues: snapshot?.sources.program.issues ?? [],
+            holds: holds.rows.map((h) => ({
+              id: Number(h.id),
+              project: String(h.project),
+              reason: String(h.reason),
+              openedAt: isoAt(h.opened_at),
+              clearedAt: iso(h.cleared_at),
+            })),
+            now: at,
+            since,
+            announced: new Set(recorded.rows.map((r) => String(r.key))),
+          }),
+        );
+      }
+    }
+    for (const item of channelItems) {
       if (channel.project && item.project !== channel.project) continue;
       await db.query(
         `INSERT INTO owner_pushes (channel, key, created_at, sent_at, error, payload)

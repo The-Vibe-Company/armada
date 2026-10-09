@@ -25,6 +25,9 @@ import { attachPullRequests } from "./github.ts";
 import { JOB_NAME, JOB_PROGRESS_MAX, JOB_REF_MAX, JOB_STATES, type Job, type JobState } from "./jobs.ts";
 import type { CoordinatorFacts } from "./live.ts";
 import {
+  AckInvalid,
+  AckRefusal,
+  type AckResult,
   type AnswerRecord,
   type ChoreRecord,
   type ClaimRecord,
@@ -56,6 +59,7 @@ import {
   RUNTIME_STATES,
   type RuntimeState,
   readOverlap,
+  recordAck,
   recordAnswer,
   recordClaim,
   recordDone,
@@ -144,7 +148,9 @@ export const FLEET_OPS = [
   "runtime/stop",
   "launches",
   "launch-requests",
+  "launch/failed",
   "inbox",
+  "ack",
   "inbox/item",
   "inbox/ticket",
   "inbox/resolve",
@@ -370,6 +376,7 @@ const TRANSFER_REFUSED = Symbol("transfer refused");
 /** Writes carrying prose. Read-only polls never need the vault. */
 export const FLEET_TEXT_OPERATIONS: ReadonlySet<string> = new Set([
   "secrets/request",
+  "launch/failed",
   "claim",
   "report",
   "ask",
@@ -384,6 +391,7 @@ export const FLEET_TEXT_OPERATIONS: ReadonlySet<string> = new Set([
   "inbox/resolve",
   "deliveries/keep",
   "deliveries/settle",
+  "ack",
   "merge",
   "chore",
   "queue/add",
@@ -447,19 +455,42 @@ export async function serveFleet(
     const coordinatorName =
       caller.kind === "worker"
         ? (caller.coordinator ?? null)
-        : coordinatorNameOf(
-            b,
-            b.coordinatorName === undefined &&
-              op !== "inbox" &&
-              op !== "runtime/reference" &&
-              b.coordinator !== undefined
-              ? "coordinator"
-              : op === "coordinator" && b.coordinatorName === undefined && b.name !== undefined
-                ? "name"
-                : "coordinatorName",
-          );
+        : op === "launch/failed" && b.coordinator !== undefined
+          ? b.coordinator === null
+            ? null
+            : coordinatorNameOf(b, "coordinator")
+          : coordinatorNameOf(
+              b,
+              b.coordinatorName === undefined &&
+                op !== "inbox" &&
+                op !== "runtime/reference" &&
+                b.coordinator !== undefined
+                ? "coordinator"
+                : op === "coordinator" && b.coordinatorName === undefined && b.name !== undefined
+                  ? "name"
+                  : "coordinatorName",
+            );
     const result = await (async (): Promise<unknown> => {
       switch (op) {
+        case "launch/failed": {
+          if (b.outcome !== "failed" && b.outcome !== "uncertain")
+            throw new Invalid("outcome must be failed or uncertain");
+          const launchId = text(b, "launchId", 128);
+          if (!/^[a-zA-Z0-9_-]+$/.test(launchId)) throw new Invalid("launchId must be a launch id");
+          await store.recordLaunchFailure({
+            project: slug,
+            at,
+            ticket: ticketOf(b),
+            outcome: b.outcome,
+            reason: text(b, "reason", BODY_MAX).replace(/\s+/g, " ").trim().slice(0, 500),
+            next: (deps.redact ?? redactor([]).text)(text(b, "next", LINE_MAX))
+              .replace(/\s+/g, " ")
+              .trim(),
+            launchId,
+            coordinator: coordinatorName,
+          });
+          return null;
+        }
         case "deploy/retry": {
           const sha = shaOf(b, "sha");
           if (sha && !/^[0-9a-f]{40}$/.test(sha)) throw new Invalid("sha must be a full SHA");
@@ -950,6 +981,29 @@ export async function serveFleet(
           );
           return read ?? NOT_MODIFIED;
         }
+        case "ack": {
+          const target = typeof b.target === "number" ? idOf(b, "target") : text(b, "target", LINE_MAX);
+          const reason = text(b, "reason", BODY_MAX).trim();
+          return recordAck(
+            store,
+            slug,
+            {
+              target,
+              reason,
+              coordinator: coordinatorName,
+              silentAfterMinutes: positiveMinutes(b, "silentAfterMinutes", true),
+              launchGraceMinutes: positiveMinutes(b, "launchGraceMinutes", true),
+              ciWaitMinutes: positiveMinutes(b, "ciWaitMinutes"),
+              quietAfterMinutes: positiveMinutes(b, "quietAfterMinutes"),
+              notStartedMinutes: positiveMinutes(b, "notStartedMinutes", true),
+            },
+            at,
+            {
+              snapshot: deps.snapshot,
+              config: deps.config,
+            },
+          );
+        }
         case "inbox/item":
           return store.getInboxItem(slug, idOf(b, "id"));
         case "inbox/ticket":
@@ -1215,6 +1269,8 @@ export async function serveFleet(
     if (err instanceof JobScopeError) return refuse(403, "job is not on this ticket and project", "armada job list");
     if (err instanceof Held) return refuse(409, err.message, err.next);
     if (err instanceof RequestRefusal) return refuse(400, err.message, "armada inbox");
+    if (err instanceof AckRefusal) return refuse(400, err.message, err.next);
+    if (err instanceof AckInvalid) return refuse(400, `fleet ${op}: ${err.message}`, "armada inbox");
     if (err instanceof Invalid)
       return refuse(400, `fleet ${op}: ${err.message}`, "update the CLI: npm install -g @the-vibe-company/armada");
     throw err;
@@ -1354,6 +1410,7 @@ export function fleetClient(o: {
     attemptDelivery: (key, immediate = false) =>
       call<PendingDelivery | null>("deliveries/attempt", { key, ...(immediate ? { immediate: true } : {}) }),
     settleDelivery: (input) => call<PendingDelivery | null>("deliveries/settle", input),
+    recordLaunchFailure: (input) => call<null>("launch/failed", input).then(() => undefined),
     retryDeploy: (input) => call("deploy/retry", input),
     recordDeploy: (input) => call("deploy/record", input),
     deployState: (input = {}) => call("deploy/state", input),
@@ -1398,6 +1455,7 @@ export function fleetClient(o: {
     release: (r) => call<{ released: boolean } | null>("release", r).then((result) => result ?? { released: true }),
     // Null: not modified (304).
     inbox: (q: InboxQuery) => call<InboxRead | null>("inbox", q),
+    ack: (input) => call<AckResult>("ack", input),
     inboxItem: (id) => call<StoredInboxItem | null>("inbox/item", { id }),
     ticketItems: (ticket) => call<InboxItem[]>("inbox/ticket", { ticket }),
     prepareMergeNotice: (key) => call<"reserved" | "attempted" | "delivered">("merge-notice/prepare", { key }),

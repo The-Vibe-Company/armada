@@ -19,7 +19,15 @@ import {
   watchFiles,
 } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
-import { ARMADA_URL, DEMO_TOML, fakeArmada, fakeClock, NOW, tempFleet } from "../../core/test/support.ts";
+import {
+  ARMADA_URL,
+  DEMO_TOML,
+  fakeArmada,
+  fakeClock,
+  NOW,
+  recordedFetch,
+  tempFleet,
+} from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
 import { refreshingJobsFleet } from "../src/job.ts";
@@ -37,7 +45,7 @@ afterEach(async () => {
 });
 
 /** A coordinator's terminal on a fresh machine store, signed in to the fake Armada; `alive` lists the running pids. */
-async function coordinator(o: { key?: string; cli?: ServerCli } = {}) {
+async function coordinator(o: { key?: string; cli?: ServerCli; reminderMinutes?: number } = {}) {
   const home = await mkdtemp(join(tmpdir(), "armada-watch-"));
   dirs.push(home);
   const store = memoryFleet();
@@ -62,7 +70,11 @@ async function coordinator(o: { key?: string; cli?: ServerCli } = {}) {
       ARMADA_COORDINATOR_HANDLE: "ws-coordinator/session",
     },
     readFile: async (path) =>
-      path === `${COORDINATOR_ROOT}/armada.toml` || path === `${WORKER_ROOT}/armada.toml` ? DEMO_TOML : null,
+      path === `${COORDINATOR_ROOT}/armada.toml` || path === `${WORKER_ROOT}/armada.toml`
+        ? o.reminderMinutes === undefined
+          ? DEMO_TOML
+          : `${DEMO_TOML}\n[policy]\ncoordinator_minutes = ${o.reminderMinutes}\n`
+        : null,
     stdout: (t) => out.push(t),
     stderr: (t) => err.push(t),
     ghToken: () => null,
@@ -116,6 +128,48 @@ async function hook(
   const text = c.out();
   return text ? (JSON.parse(text) as { decision: string; reason: string }) : null;
 }
+
+test.each([10, 3])(
+  "an unanswered plan reminds at %i minutes then doubling intervals; listings preserve its first show",
+  async (minutes) => {
+    const c = await coordinator({ reminderMinutes: minutes });
+    await c.hold("DEMO-2");
+    await c.store.putPlan({ project: P, ticket: "DEMO-2", author: null, body: "Review this plan", at: c.clock.now() });
+    const [plan] = await c.store.openInboxItems({ project: P, recipient: "coordinator", ticket: "DEMO-2" });
+    expect(plan?.kind).toBe("plan");
+    if (!plan) throw new Error("no plan in inbox");
+    expect(await run(["inbox"], c.io)).toBe(0);
+    expect(c.out()).toContain(`#${plan.id} plan`);
+    const first = c.clock.now().toISOString();
+    const key = `#${plan.id}@`;
+    for (const [totalMinutes, level] of [
+      [minutes, 1],
+      [minutes * 3, 2],
+      [minutes * 7, 3],
+    ] as const) {
+      const elapsed = (c.clock.now().getTime() - Date.parse(first)) / 60_000;
+      await c.clock.sleep((totalMinutes - elapsed - 1) * 60_000);
+      // A second listing is not handling the plan, and must not postpone it.
+      expect(await run(["inbox"], c.io)).toBe(0);
+      c.reset();
+      let polls = 0;
+      const io = {
+        ...c.io,
+        sleep: async (ms: number) => {
+          polls++;
+          await c.clock.sleep(ms);
+        },
+      };
+      expect(await run(["watch"], io)).toBe(0);
+      expect(polls).toBe(4);
+      expect(c.clock.now().getTime() - Date.parse(first)).toBe(totalMinutes * 60_000);
+      expect(c.out()).toContain(`! still waiting since ${first.slice(11, 16)}`);
+      const state = await readWatchState(c.paths, P);
+      const record = Object.entries(state?.shownAt ?? {}).find(([k]) => k.startsWith(key))?.[1];
+      expect(record).toEqual({ first, level });
+    }
+  },
+);
 
 test("the coordinator session is held across checkouts; an unknown or worker session is not", async () => {
   const c = await coordinator();
@@ -1226,7 +1280,7 @@ describe("armada watch", () => {
       ].join("\n"),
     );
     expect(c.err()).toBe("");
-    expect(await readWatchState(c.paths, P)).toEqual({
+    expect(await readWatchState(c.paths, P)).toMatchObject({
       openJobs: [],
       pendingDeliveries: [],
       root: COORDINATOR_ROOT,
@@ -1823,4 +1877,218 @@ test("queued hand-backs render as in progress and do not ask the coordinator to 
   expect(c.out()).toContain("Waiting for you:");
   expect(c.out()).toContain("queued in the merge queue (position 1)");
   expect(c.out()).toContain("act on the items above");
+});
+
+async function sessionStart(
+  c: Awaited<ReturnType<typeof coordinator>>,
+  cwd: string,
+  source = "compact",
+  sessionId = "s",
+  env: Record<string, string> = {},
+) {
+  c.reset();
+  expect(
+    await run(["hook", "session-start"], {
+      ...c.io,
+      cwd: "/",
+      env: { ...c.io.env, ...env },
+      readStdin: async () => JSON.stringify({ session_id: sessionId, cwd, source, hook_event_name: "SessionStart" }),
+    }),
+  ).toBe(0);
+  return c.out();
+}
+
+test("SessionStart briefs registered coordinators across checkouts and resumed ids only in their checkout", async () => {
+  const c = await coordinator();
+  c.io.env.CLAUDECODE = "1";
+  c.io.env.CLAUDE_CODE_SESSION_ID = "s";
+  await c.hold("DEMO-11");
+  await c.store.saveRuntimeHandle({
+    project: P,
+    ticket: "DEMO-11",
+    coordinator: "default",
+    runtime: "conductor",
+    handle: "ws/DEMO-11-owned",
+    branch: null,
+    at: NOW,
+  });
+  await c.store.addInboxItem({
+    project: P,
+    ticket: "DEMO-11",
+    kind: "plan",
+    recipient: "coordinator",
+    author: null,
+    body: "Approve the synthetic plan\nDetails",
+    at: NOW,
+  });
+  await run(["inbox", "--mine"], c.io);
+  await c.store.saveRuntimeHandle({
+    project: P,
+    ticket: "DEMO-12",
+    coordinator: "front",
+    runtime: "conductor",
+    handle: "ws/other-owner",
+    branch: null,
+    at: NOW,
+  });
+  await c.store.addInboxItem({
+    project: P,
+    ticket: "DEMO-12",
+    kind: "plan",
+    recipient: "coordinator",
+    author: null,
+    body: "Other role approval",
+    at: NOW,
+  });
+  await c.store.addInboxItem({
+    project: P,
+    ticket: null,
+    kind: "question",
+    recipient: "coordinator",
+    author: null,
+    body: "Unowned question still needs an answer",
+    at: NOW,
+  });
+  const api = c.io.fetch;
+  if (!api) throw new Error("fake API missing");
+  const recorded = recordedFetch().fetch;
+  c.io.fetch = (url, init) => (String(url).startsWith(ARMADA_URL) ? api(url, init) : recorded(url, init));
+  const text = await sessionStart(c, WORKER_ROOT);
+  expect(text).toContain(`Armada: you coordinate ${P} as default from ${COORDINATOR_ROOT}`);
+  expect(text).toContain("DEMO-11 · implementing");
+  expect(text).toContain("just now");
+  expect(text).toContain("plan");
+  expect(text).toContain("Approve the synthetic plan");
+  expect(text).toContain("Unowned question still needs an answer");
+  expect(text).not.toContain("Other role approval");
+  expect(text).not.toContain("DEMO-12");
+  expect(text).toContain("No watch runs: start it now in the background");
+  expect(text).toContain("Stop hook NOT on:");
+  expect(text).toContain("Never act from memory: armada status --mine and armada inbox --mine first.");
+  expect(await sessionStart(c, WORKER_ROOT, "resume", "unknown")).toBe("");
+  expect(await sessionStart(c, "/elsewhere", "resume", "unknown")).toBe("");
+  expect(await sessionStart(c, COORDINATOR_ROOT, "resume", "unknown")).toContain("Armada: you coordinate");
+  expect(await sessionStart(c, COORDINATOR_ROOT, "startup")).toBe("");
+  expect(await sessionStart(c, COORDINATOR_ROOT, "compact", "s", { ARMADA_TICKET: "DEMO-2" })).toBe("");
+  c.reset();
+  expect(await run(["hook", "session-start"], { ...c.io, readStdin: async () => "not JSON" })).toBe(0);
+  expect(c.out()).toBe("");
+});
+
+test("SessionStart aborts a hanging live read at its injected deadline and briefs from the last local read", async () => {
+  const c = await coordinator();
+  await updateWatchState(c.paths, P, {
+    root: COORDINATOR_ROOT,
+    inFlight: ["DEMO-2"],
+    readAt: NOW.toISOString(),
+    openJobs: [42],
+    claudeSessions: { s: NOW.toISOString() },
+  });
+  let deadline: (() => Promise<void>) | undefined;
+  let cancelled = false;
+  let signal: AbortSignal | null | undefined;
+  c.io.every = (ms, tick) => {
+    expect(ms).toBe(15_000);
+    deadline = tick;
+    return () => {
+      cancelled = true;
+    };
+  };
+  c.io.fetch = async (_url, init) => {
+    signal = init.signal;
+    await c.clock.sleep(15_000);
+    if (!deadline) throw new Error("deadline missing");
+    await deadline();
+    return new Promise<Response>(() => {});
+  };
+  const text = await sessionStart(c, "/elsewhere");
+  expect(signal?.aborted).toBe(true);
+  expect(cancelled).toBe(true);
+  expect(text).toContain("Last local read");
+  expect(text).toContain(NOW.toISOString());
+  expect(text).toContain("DEMO-2");
+  expect(text).toContain("Open jobs: 42");
+  expect(text).toContain("armada status --mine");
+  expect(text).toContain("armada inbox --mine");
+  expect(text).toContain("armada watch");
+});
+
+test("SessionStart bounds a large named fleet and records only the actionable items actually shown", async () => {
+  const c = await coordinator();
+  await updateWatchState(c.paths, P, { root: COORDINATOR_ROOT, claudeSessions: { s: NOW.toISOString() } }, "front");
+  const api = c.io.fetch;
+  if (!api) throw new Error("fake API missing");
+  const recorded = recordedFetch({
+    linear: (fixture) => {
+      const nodes = fixture.Children.find((page) =>
+        page.data.issues.nodes.some((node) => node.identifier === "DEMO-11"),
+      )?.data.issues.nodes;
+      const template = nodes?.find((node) => node.identifier === "DEMO-11");
+      if (!nodes || !template) throw new Error("fixture leaf missing");
+      const comment = fixture.Comments[0];
+      if (!comment) throw new Error("fixture comments missing");
+      const leaves: (typeof template)[] = nodes;
+      for (let n = 100; n < 145; n++) {
+        leaves.push({ ...structuredClone(template), id: `uuid-demo-${n}`, identifier: `DEMO-${n}` });
+        fixture.Comments.push(structuredClone(comment));
+      }
+    },
+  }).fetch;
+  for (let n = 100; n < 145; n++)
+    await c.store.saveRuntimeHandle({
+      project: P,
+      ticket: `DEMO-${n}`,
+      coordinator: "front",
+      runtime: "conductor",
+      handle: `ws/DEMO-${n}`,
+      branch: null,
+      at: NOW,
+    });
+  const ids: number[] = [];
+  for (let n = 0; n < 25; n++)
+    ids.push(
+      await c.store.addInboxItem({
+        project: P,
+        ticket: null,
+        kind: "question",
+        recipient: "coordinator",
+        author: null,
+        body: `Synthetic question ${n}${String.fromCodePoint(0x2028, 0x2029, 0x202e)}\n${"detail\n".repeat(100)}`,
+        at: NOW,
+      }),
+    );
+  await c.store.saveRuntimeHandle({
+    project: P,
+    ticket: "DEMO-99",
+    coordinator: "back",
+    runtime: "conductor",
+    handle: "ws/other",
+    branch: null,
+    at: NOW,
+  });
+  await c.store.addInboxItem({
+    project: P,
+    ticket: "DEMO-99",
+    kind: "plan",
+    recipient: "coordinator",
+    author: null,
+    body: "Other owner's plan",
+    at: NOW,
+  });
+  await takeWatchLock(c.paths, P, 778, () => false, undefined, undefined, "front");
+  c.alive.add(778);
+  c.io.fetch = (url, init) => (String(url).startsWith(ARMADA_URL) ? api(url, init) : recorded(url, init));
+  const text = await sessionStart(c, "/elsewhere", "compact", "s", { ARMADA_STOP_HOOK: "off" });
+  expect(text).toContain("as front");
+  expect(text).toContain("In flight (45)");
+  expect(text).toContain("… more status: armada status --mine");
+  expect(text).toContain("… and 5 more: armada inbox --mine");
+  expect(text).not.toContain("Other owner's plan");
+  expect(text.trimEnd().split("\n").length).toBeLessThanOrEqual(60);
+  expect(/[\p{Cf}\p{Zl}\p{Zp}]/u.test(text)).toBe(false);
+  expect(text.split("\n").filter((line) => /^#\d+ question/.test(line))).toHaveLength(20);
+  expect(text).toContain("armada watch runs (pid 778); its result wakes you");
+  expect(text).toContain("Stop hook NOT on: off by choice");
+  expect(text).toEndWith("Next: armada inbox --mine\n");
+  expect((await readWatchState(c.paths, P, "front"))?.seen).toEqual(ids.slice(0, 20).map((id) => `#${id}`));
 });

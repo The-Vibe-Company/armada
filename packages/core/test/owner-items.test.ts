@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import type { InboxItem } from "../src/live.ts";
+import type { InboxItem, MergeHold } from "../src/live.ts";
 import type { QueueEntry } from "../src/merge-queue.ts";
 import { buildOverview, type ProjectReading } from "../src/overview.ts";
-import { coordinatorAlerts, ownerItems, pendingValidations } from "../src/owner-items.ts";
+import { coordinatorAlerts, ownerItems, ownerMilestones, pendingValidations } from "../src/owner-items.ts";
 import type { FleetOverview, OwnerValidation, ProjectOverview, WaitingItem } from "../src/read.ts";
 import type { InFlightTicket } from "../src/status.ts";
+
+import { issue } from "./support.ts";
 
 // A synthetic fleet, for these tests only.
 const project = (slug: string, state: "active" | "idle" | "unknown", seenAt: string | null = null) =>
@@ -303,4 +305,73 @@ test("alerts on neglected inbox work by owner, with stable keys and merge exclus
   expect(ownerItems(fleet(reading([inbox("question"), { ...unowned, id: 43 }], [defaultStopped])))).toMatchObject([
     { key: `coordinator:widgets:${before(40)}`, waiting: 2 },
   ]);
+});
+
+test("channel milestones select recent completed specs and durable pauses, clearing only recorded pauses", () => {
+  const now = new Date("2026-04-06T12:00:00Z");
+  const at = (minutes: number) => new Date(now.getTime() + minutes * 60_000).toISOString();
+  const spec = issue("WID-10", {
+    title: "Spec 2/10 — Search",
+    parentId: "WID-1",
+    statusType: "completed",
+    completedAt: at(-10),
+    url: "https://linear.example.test/WID-10",
+  });
+  const hold: MergeHold = {
+    id: 7,
+    project: "widgets",
+    kind: "manual",
+    ref: null,
+    reason: "Check production\nDetails",
+    openedBy: "Ada",
+    openedAt: at(-5),
+    clearedAt: null,
+    clearedBy: null,
+    clearReason: null,
+  };
+  const input = {
+    project: "widgets",
+    root: "WID-1",
+    issues: [spec],
+    holds: [hold],
+    now,
+    since: at(-60),
+    announced: new Set<string>(),
+  };
+  expect(ownerMilestones(input)).toMatchObject([
+    { key: "spec:widgets:WID-10", kind: "spec-closed", title: "Spec 2 · Search", href: spec.url },
+    {
+      key: "hold:widgets:7",
+      kind: "hold-opened",
+      title: "widgets",
+      reason: "Check production",
+      href: "/projects/widgets",
+    },
+  ]);
+  for (const change of [
+    { parentId: "WID-9" },
+    { title: "Search" },
+    { statusType: "started" as const },
+    { statusType: "canceled" as const },
+    { completedAt: null },
+    { completedAt: at(-61) },
+    { completedAt: at(1) },
+  ])
+    expect(ownerMilestones({ ...input, issues: [{ ...spec, ...change }], holds: [] })).toEqual([]);
+  expect(ownerMilestones({ ...input, holds: [], since: at(-9) })).toEqual([]);
+  expect(ownerMilestones({ ...input, holds: [], now: new Date(at(10)) })[0]?.key).toBe("spec:widgets:WID-10");
+  expect(ownerMilestones({ ...input, issues: [], since: at(-4) })).toEqual([]);
+  for (const kind of ["manual", "deploy", "main-red"] as const) {
+    const pause = { ...hold, kind };
+    expect(ownerMilestones({ ...input, issues: [], holds: [pause] })[0]?.key).toBe("hold:widgets:7");
+    expect(ownerMilestones({ ...input, issues: [], holds: [{ ...pause, openedAt: at(-4) }] })).toEqual([]);
+    expect(ownerMilestones({ ...input, issues: [], holds: [{ ...pause, clearedAt: at(-1) }] })).toEqual([]);
+  }
+  const cleared = { ...hold, openedAt: at(-1500), clearedAt: at(-1) };
+  const announced = new Set(["hold:widgets:7"]);
+  expect(ownerMilestones({ ...input, issues: [], holds: [cleared], announced })).toMatchObject([
+    { key: "hold-cleared:widgets:7", kind: "hold-cleared", href: "/projects/widgets" },
+  ]);
+  expect(ownerMilestones({ ...input, issues: [], holds: [{ ...cleared, clearedAt: at(-61) }], announced })).toEqual([]);
+  expect(ownerMilestones({ ...input, issues: [], holds: [{ ...cleared, project: "other" }], announced })).toEqual([]);
 });
