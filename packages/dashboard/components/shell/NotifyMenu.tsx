@@ -4,9 +4,8 @@
 // notifications on (the browser asks for its permission on that click), and
 // the quiet hours, in the viewer's own time. Kept per person by Armada.
 import { useState } from "react";
-import { NOTIFY_OFF } from "@/lib/notify";
+import { NOTIFY_OFF, notificationsSupported } from "@/lib/notify";
 import { useShell } from "./context";
-import { notificationsSupported } from "./Notifier";
 import { useVisit } from "./visit";
 
 const DEFAULT_QUIET = { from: "22:00", to: "08:00" };
