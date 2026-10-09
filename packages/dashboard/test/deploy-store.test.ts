@@ -295,3 +295,54 @@ test("host skips replace in-flight observations quietly, cover nothing and allow
   expect(await holds()).toHaveLength(0);
   expect(await notices()).toHaveLength(0);
 });
+
+test("retry fences old watchers, keeps the hold until healthy, and reopens manual clears on a new failure", async () => {
+  const store = fleetStore(db);
+  const input = { ...failure("retry-sha", 70), target: "retry-api" };
+  const failed = await store.recordDeploy(input);
+  const holds = async () => (await store.openHolds(PROJECT)).filter((h) => h.ref === input.target);
+  expect(await holds()).toHaveLength(1);
+  const retry = await store.retryDeploy({ project: PROJECT, target: input.target, author: "coordinator", at: at(71) });
+  expect(retry).toMatchObject({ sha: input.sha, state: "waiting", attempt: 2, startedAt: at(71).toISOString() });
+  expect(retry.sequence).toBeGreaterThan(failed.sequence);
+  expect(await holds()).toHaveLength(1);
+  await expect(
+    store.retryDeploy({ project: PROJECT, target: input.target, author: "coordinator", at: at(72) }),
+  ).rejects.toThrow("attempt 2 since");
+  expect(await store.recordDeploy({ ...input, state: "timeout", at: at(72) })).toEqual(retry);
+  const healthy = await store.recordDeploy({ ...input, state: "healthy", attempt: 2, at: at(73) });
+  expect(healthy.state).toBe("healthy");
+  expect(await holds()).toHaveLength(0);
+  expect(
+    (await store.openInboxItems({ project: PROJECT, recipient: "coordinator" })).filter((i) =>
+      i.body.includes(input.target),
+    ),
+  ).toHaveLength(0);
+  const cleared = await db.query<{ clear_reason: string }>(
+    "SELECT clear_reason FROM merge_holds WHERE project = $1 AND ref = $2",
+    [PROJECT, input.target],
+  );
+  expect(cleared.rows[0]?.clear_reason).toBe(`deployment healthy for ${input.target} (${input.sha}, attempt 2)`);
+  await expect(
+    store.retryDeploy({ project: PROJECT, target: input.target, sha: input.sha, author: "coordinator", at: at(74) }),
+  ).rejects.toThrow("already healthy");
+
+  const next = { ...input, sha: "retry-next", at: at(75) };
+  await store.recordDeploy(next);
+  const hold = (await holds())[0];
+  expect(hold).toBeDefined();
+  if (!hold) throw new Error("missing retry hold");
+  await store.clearHold({ project: PROJECT, id: hold.id, author: "owner", reason: "manual decision", at: at(76) });
+  expect(await holds()).toHaveLength(0);
+  const again = await store.retryDeploy({ project: PROJECT, target: input.target, author: "coordinator", at: at(77) });
+  expect(again.sha).toBe(next.sha);
+  await store.recordDeploy({ ...next, attempt: again.attempt, detail: "retry failed again", at: at(78) });
+  expect(await holds()).toHaveLength(1);
+  expect((await holds())[0]?.reason).toContain("retry failed again");
+  const reopenedId = (await holds())[0]?.id;
+  const third = await store.retryDeploy({ project: PROJECT, target: input.target, author: "coordinator", at: at(79) });
+  expect(third.attempt).toBe(3);
+  await store.recordDeploy({ ...next, attempt: 3, detail: "third failure", at: at(80) });
+  expect((await holds())[0]?.id).toBe(reopenedId);
+  expect((await holds())[0]?.reason).toContain("third failure");
+});

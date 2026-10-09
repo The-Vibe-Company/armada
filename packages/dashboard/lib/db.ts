@@ -980,6 +980,10 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "ALTER TABLE deploys ADD CONSTRAINT deploys_state_check CHECK (state IN ('waiting', 'live', 'healthy', 'deploy-failed', 'smoke-failed', 'timeout', 'skipped', 'not-runnable', 'not-deployed'))",
     ],
   },
+  {
+    version: 46,
+    statements: ["ALTER TABLE deploys ADD COLUMN attempt integer NOT NULL DEFAULT 1 CHECK (attempt > 0)"],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

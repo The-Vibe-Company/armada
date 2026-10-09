@@ -1,4 +1,5 @@
 import picomatch from "picomatch";
+import { shellWord } from "./brief.ts";
 import type { DeployTarget } from "./config.ts";
 
 /** Only complete changed-file coverage can prove a scoped target unaffected. */
@@ -51,7 +52,35 @@ export const DEPLOY_STATES = [
   "not-deployed",
 ] as const;
 export type DeployState = (typeof DEPLOY_STATES)[number];
+/** Config lives on the CLI; a server notice supplies both safe recovery commands. */
+export const deployRetryLine = (target: string, redeploy?: boolean): string => {
+  const command = `armada deploy retry ${shellWord(target)}`;
+  return `Retry: ${command}${redeploy === false ? " --no-redeploy" : ` (or ${command} --no-redeploy to recheck)`}`;
+};
+export interface DeployRetryInput {
+  target: string;
+  sha?: string;
+}
+export class DeployRetryRefusal extends Error {
+  constructor(
+    message: string,
+    readonly next = "armada deploy status",
+  ) {
+    super(message);
+  }
+}
+/** A waiting attempt is resumed with reads only, never another host creation. */
+export function assertDeployRetry(row: DeployRecord): void {
+  if (row.state === "waiting" || row.state === "live")
+    throw new DeployRetryRefusal(
+      `a retry is already watching (attempt ${row.attempt} since ${row.startedAt})`,
+      `armada deploy watch --sha ${row.sha} --target ${shellWord(row.target)} --attempt ${row.attempt}`,
+    );
+  if (row.state === "healthy") throw new DeployRetryRefusal("already healthy");
+  if (!deployFailed(row.state)) throw new DeployRetryRefusal(`cannot retry ${row.state}; no failed deploy`);
+}
 export interface DeployInput {
+  attempt?: number;
   target: string;
   sha: string;
   state: DeployState;
@@ -61,10 +90,11 @@ export interface DeployInput {
   coveredShas?: string[];
 }
 export interface DeployRecord extends DeployInput {
+  attempt: number;
   project: string;
   startedAt: string;
   updatedAt: string;
-  /** Server-assigned ordering of first observations, preserved on retries. */
+  /** Server-assigned ordering, advanced when a failed deploy is retried. */
   sequence: number;
 }
 export interface DeployQuery {
@@ -85,6 +115,7 @@ export function deployDetail(output: string): string {
   return tail.reverse().join("");
 }
 export interface LiveDeploy {
+  createdAt?: string;
   sha: string | null;
   state: "pending" | "success" | "failure" | "error" | "skipped";
   detail: string;
@@ -122,6 +153,7 @@ export interface WatchDeployOptions {
   target: DeployTarget;
   sha: string;
   startedAt?: Date;
+  attempt?: number;
   now: () => Date;
   sleep: (ms: number) => Promise<void>;
   live: (remainingMs: number) => Promise<LiveDeploy>;
@@ -144,6 +176,7 @@ export async function watchDeploy(o: WatchDeployOptions): Promise<DeployState> {
   const record = (state: DeployState) =>
     o.record({
       target: o.target.name,
+      attempt: o.attempt ?? 1,
       sha: o.sha,
       state,
       detail: deployDetail(detail),

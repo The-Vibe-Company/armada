@@ -94,6 +94,7 @@ test.each([
     expect(items).toHaveLength(1);
     expect(items[0]?.kind).toBe("deploy");
     expect(items[0]?.body).toContain(message);
+    expect(items[0]?.body).not.toContain("armada deploy retry");
     expect(await t.store.openHolds("widgets")).toHaveLength(0);
   },
 );
@@ -382,4 +383,139 @@ test("a check killed by the output bound stays pending instead of trusting its s
     state: "timeout",
     detail: "deploy deadline reached\ncheck output exceeded limit",
   });
+});
+
+test("retry runs redeploy once, fences its background watch, and never repeats failed or unknown creations", async () => {
+  for (const outcome of ["accepted", "failed", "timeout", "recheck", "undeclared"] as const) {
+    const t = await terminal();
+    t.io.env.ARMADA_DEPLOY_SINCE = "2026-01-01T00:00:00Z";
+    const configured = outcome === "undeclared" ? configText : `${configText}redeploy = "host-redeploy"\n`;
+    t.io.readFile = async (path) => (path === "/work/widgets/armada.toml" ? configured : null);
+    await t.store.recordDeploy({
+      project: "widgets",
+      target: "api",
+      sha,
+      state: "deploy-failed",
+      detail: "old failure",
+      pauseOnFailure: true,
+      at: NOW,
+    });
+    expect(await t.store.openHolds("widgets")).toHaveLength(1);
+    expect(await run(["deploy", "status"], t.io)).toBe(0);
+    expect(t.out.join("")).toContain(
+      outcome === "undeclared"
+        ? "Retry: armada deploy retry api --no-redeploy"
+        : "Retry: armada deploy retry api (or armada deploy retry api --no-redeploy to recheck)",
+    );
+    const notices = await t.store.openInboxItems({ project: "widgets", recipient: "coordinator" });
+    expect(notices[0]?.body).toContain("armada deploy retry api --no-redeploy");
+    let commands = 0;
+    let redeployAt: string | undefined;
+    t.io.exec = async (command, args, options) => {
+      commands++;
+      redeployAt = t.clock.now().toISOString();
+      expect(command).toBe("sh");
+      expect(args).toEqual(["-c", "host-redeploy"]);
+      expect(options.cwd).toBe("/work/widgets");
+      expect(options.timeoutMs).toBe(120_000);
+      expect(options.env?.ARMADA_DEPLOY_SHA).toBe(sha);
+      expect(options.env?.ARMADA_DEPLOY_TARGET).toBe("api");
+      return {
+        code: outcome === "failed" ? 7 : 0,
+        stdout: outcome === "failed" ? `${"x".repeat(5000)}\nhost output` : "host output",
+        stderr: t.io.env.ARMADA_API_KEY ?? "",
+        timedOut: outcome === "timeout",
+      };
+    };
+    const watches: string[][] = [];
+    t.io.startBackground = async (args) => {
+      watches.push(args);
+      return true;
+    };
+    expect(await run(["deploy", "retry", "api", ...(outcome === "recheck" ? ["--no-redeploy"] : [])], t.io)).toBe(
+      outcome === "failed" ? 1 : 0,
+    );
+    expect(commands).toBe(outcome === "recheck" || outcome === "undeclared" ? 0 : 1);
+    const row = (await t.store.deployState("widgets", { target: "api", sha }))[0];
+    expect(row).toMatchObject({ attempt: 2, state: outcome === "failed" ? "deploy-failed" : "waiting" });
+    expect(await t.store.openHolds("widgets")).toHaveLength(1);
+    if (outcome === "failed") {
+      expect(watches).toHaveLength(0);
+      expect(row?.detail).toContain("redeploy command exited 7");
+      expect(t.out.join("")).toContain("Result: not retried");
+    } else {
+      const watcher = watches[0];
+      expect(watcher).toContain("--attempt");
+      expect(watcher).toContain("2");
+      expect(watcher?.includes("--since")).toBe(outcome === "accepted" || outcome === "timeout");
+      expect(t.out.join("")).toContain(`Watching the retry of ${sha} on api (attempt 2)`);
+      expect(await run(["deploy", "retry", "api"], t.io)).toBe(1);
+      expect(commands).toBe(outcome === "recheck" || outcome === "undeclared" ? 0 : 1);
+      let smokes = 0;
+      t.io.exec = async (_command, args, options) => {
+        expect(options.env?.ARMADA_DEPLOY_SINCE).toBe(
+          outcome === "accepted" || outcome === "timeout" ? redeployAt : undefined,
+        );
+        if (args[1] === "health") smokes++;
+        return { code: 0, stdout: args[1] === "version" ? sha : "healthy", stderr: "" };
+      };
+      const watched = await run(watcher ?? [], t.io);
+      if (watched !== 0) throw new Error(t.err.join(""));
+      expect(watched).toBe(0);
+      expect(smokes).toBe(1);
+      expect(await t.store.openHolds("widgets")).toHaveLength(0);
+      expect(await t.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).toHaveLength(0);
+    }
+    if (outcome === "timeout") expect(t.out.join("")).toContain("redeploy outcome unknown");
+    expect(t.out.join("") + t.err.join("") + JSON.stringify(row)).not.toContain("armada_key_CANARY_deploy");
+  }
+});
+
+test("a retry does not clear its pause using a descendant's pre-redeploy healthy smoke cache", async () => {
+  const t = await terminal();
+  t.io.env.LINEAR_API_KEY = "synthetic-linear-key";
+  t.io.readFile = async (path) =>
+    path === "/work/widgets/armada.toml" ? `${configText}redeploy = "host-redeploy"\n` : null;
+  await t.store.recordDeploy({
+    project: "widgets",
+    target: "api",
+    sha: live,
+    state: "healthy",
+    detail: "old smoke passed",
+    pauseOnFailure: true,
+    at: new Date(NOW.getTime() - 60_000),
+  });
+  await t.store.recordDeploy({
+    project: "widgets",
+    target: "api",
+    sha,
+    state: "deploy-failed",
+    detail: "original failure",
+    pauseOnFailure: true,
+    at: NOW,
+  });
+  expect(await t.store.openHolds("widgets")).toHaveLength(1);
+  const watches: string[][] = [];
+  t.io.startBackground = async (args) => {
+    watches.push(args);
+    return true;
+  };
+  t.io.exec = async () => ({ code: 0, stdout: "accepted", stderr: "" });
+  expect(await run(["deploy", "retry", "api"], t.io)).toBe(0);
+  let smokes = 0;
+  t.io.exec = async (command, args) => {
+    if (command === "git") return { code: 0, stdout: "", stderr: "" };
+    if (args[1] === "version") return { code: 0, stdout: live, stderr: "" };
+    smokes++;
+    return { code: 1, stdout: "fresh smoke failed", stderr: "" };
+  };
+  expect(await run(watches[0] ?? [], t.io)).toBe(1);
+  expect(smokes).toBe(1);
+  expect((await t.store.deployState("widgets", { target: "api", sha }))[0]).toMatchObject({
+    attempt: 2,
+    state: "smoke-failed",
+    detail: "fresh smoke failed\n\nexit 1",
+  });
+  expect(await t.store.openHolds("widgets")).toHaveLength(1);
+  expect((await t.store.openHolds("widgets"))[0]?.reason).toContain("fresh smoke failed");
 });

@@ -136,6 +136,8 @@ describe("armada.toml", () => {
       timeoutMinutes: 20,
       pauseOnFailure: true,
     });
+    expect(parseConfig(`${text}redeploy = "host-redeploy"`).deploy?.targets[0]?.redeploy).toBe("host-redeploy");
+    expect(() => parseConfig(`${text}redeploy = 1`)).toThrow("redeploy");
     expect(parseConfig(`${text}paths = ["cmd/**", "internal/**"]`).deploy?.targets[0]?.paths).toEqual([
       "cmd/**",
       "internal/**",
@@ -150,6 +152,7 @@ describe("armada.toml", () => {
       '["__proto__"]',
       '["ARMADA_DEPLOY_SHA"]',
       '["ARMADA_DEPLOY_TARGET"]',
+      '["ARMADA_DEPLOY_SINCE"]',
     ])
       expect(() => parseConfig(`${text}requires_env = ${requires}`)).toThrow("requires_env");
     const withJobs = parseConfig(
