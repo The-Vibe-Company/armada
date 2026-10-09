@@ -46,6 +46,8 @@ export interface PeekTail {
 }
 
 export interface WatchState {
+  /** Coordinator session ids and their last registration on this machine (at most ten). */
+  claudeSessions?: Record<string, string>;
   /** The checkout (directory of armada.toml) where `armada watch` last ran: the coordinator's. */
   root: string | null;
   cursor?: string;
@@ -676,8 +678,8 @@ export type StopHookDecision = { block: false; why: string } | { block: true; re
 
 /**
  * Whether a Claude Code coordinator may end its turn. It blocks only in the
- * checkout where `armada watch` ran (a worker, in its own workspace or
- * worktree, is never held), while the last read had workers in flight and no
+ * registered coordinator session, with a checkout fallback for older sessions,
+ * while the last read had workers in flight and no
  * watch runs for the project. Reads nothing but what it is given: the hook
  * answers at once, without the network.
  */
@@ -689,22 +691,70 @@ export function stopHookDecision(o: {
   /** Pid of the live watch of the project, or null. */
   watching: number | null;
   env: Record<string, string | undefined>;
+  match?: "session" | "checkout";
 }): StopHookDecision {
   const off = o.env[STOP_HOOK_VARIABLE]?.trim().toLowerCase();
   if (off === "off" || off === "0" || off === "false") return { block: false, why: `${STOP_HOOK_VARIABLE}=${off}` };
+  if (o.env.ARMADA_TICKET?.trim()) return { block: false, why: "this is a worker session" };
   const s = o.state;
   if (!s?.root) return { block: false, why: `armada watch never ran for ${o.project} on this machine` };
-  if (s.root !== o.root) return { block: false, why: `the coordinator's checkout is ${s.root}, not this one` };
+  if (o.match !== "session" && s.root !== o.root)
+    return { block: false, why: `the coordinator's checkout is ${s.root}, not this one` };
   if (o.watching !== null) return { block: false, why: `armada watch is running (pid ${o.watching})` };
   if (s.stopped) return { block: false, why: `the last watch was refused: ${s.stopped}` };
   if (s.openJobs?.length)
     return {
       block: true,
-      reason: `${s.openJobs.length} open job${s.openJobs.length === 1 ? "" : "s"} on ${o.project} and no armada watch is running; start armada watch in the background so job alarms are heard. (${STOP_HOOK_VARIABLE}=off turns this hook off.)`,
+      reason: `${s.openJobs.length} open job${s.openJobs.length === 1 ? "" : "s"} on ${o.project} and no armada watch is running; start armada watch in the background from ${s.root} so job alarms are heard. (${STOP_HOOK_VARIABLE}=off turns this hook off.)`,
     };
   if (!s.inFlight?.length) return { block: false, why: "no worker in flight at the last read" };
   return {
     block: true,
-    reason: `${workers(s.inFlight.length)} on ${o.project} (${s.inFlight.join(", ")}) and no armada watch is running, so a hand-back or a question would go unnoticed. Start \`armada watch\` in the background now (in Claude Code, Bash with run_in_background), then end your turn: you are woken when it returns. (${STOP_HOOK_VARIABLE}=off turns this hook off.)`,
+    reason: `${workers(s.inFlight.length)} on ${o.project} (${s.inFlight.join(", ")}) and no armada watch is running, so a hand-back or a question would go unnoticed. Start \`armada watch\` in the background now from ${s.root} (in Claude Code, Bash with run_in_background), then end your turn: you are woken when it returns. (${STOP_HOOK_VARIABLE}=off turns this hook off.)`,
+  };
+}
+
+export interface HookRun {
+  at: string;
+  project: string | null;
+  why: string;
+}
+
+export type StopHookState = { state: "on" | "installed" | "off"; why: string; fix: string | null };
+
+/** Local proof of hook delivery, separate from whether a turn needed to be held. */
+export function stopHookState(o: {
+  env: Record<string, string | undefined>;
+  sessionId: string | null;
+  hookRun: HookRun | null;
+  installedIn: string | null;
+}): StopHookState {
+  const off = o.env[STOP_HOOK_VARIABLE]?.trim().toLowerCase();
+  if (["off", "0", "false"].includes(off ?? ""))
+    return { state: "off", why: "off by choice", fix: `unset ${STOP_HOOK_VARIABLE} to turn it on` };
+  if (o.env.ARMADA_TICKET?.trim())
+    return { state: "off", why: "this is a worker session", fix: "the stop hook only holds coordinator sessions" };
+  if (!o.sessionId)
+    return { state: "off", why: "no Claude Code session id", fix: "run a coordinator command in Claude Code" };
+  const run = o.hookRun;
+  if (run && Number.isFinite(Date.parse(run.at))) {
+    if (
+      run.why === "blocked" ||
+      run.why
+        .split("; ")
+        .every((why) => why === "no worker in flight at the last read" || why.startsWith("armada watch is running"))
+    )
+      return { state: "on", why: `last ran ${run.at}`, fix: null };
+    return {
+      state: "off",
+      why: run.why,
+      fix: "run armada inbox or armada watch for this project in this coordinator session, then check at your next turn end",
+    };
+  }
+  if (o.installedIn) return { state: "installed", why: o.installedIn, fix: "it confirms at your next turn end" };
+  return {
+    state: "off",
+    why: "no Armada stop hook installed",
+    fix: "add it with `armada init --merge`, or to `~/.claude/settings.json` when your session starts outside the checkout; it only holds coordinator sessions",
   };
 }

@@ -8,6 +8,7 @@ import {
   releaseEntry,
   remindDue,
   stopHookDecision,
+  stopHookState,
   transientFailure,
   type WatchState,
   watchInbox,
@@ -433,6 +434,49 @@ describe("the stop hook", () => {
     expect(why(decide(state({ stopped: "signed out" })))).toBe("the last watch was refused: signed out");
     expect(why(decide(state(), { env: { ARMADA_STOP_HOOK: "off" } }))).toBe("ARMADA_STOP_HOOK=off");
     expect(decide(state(), { env: { ARMADA_STOP_HOOK: "on" } }).block).toBe(true);
+  });
+});
+
+describe("stop hook state", () => {
+  const receipt = { at: NOW.toISOString(), project: P, why: "blocked" };
+  const installed = "/home/coordinator/.claude/settings.json";
+  const state = (o: Partial<Parameters<typeof stopHookState>[0]> = {}) =>
+    stopHookState({ env: {}, sessionId: "s", hookRun: null, installedIn: null, ...o });
+
+  test("receipts distinguish a loaded hook from installation and identity failures", () => {
+    for (const why of [
+      "blocked",
+      "no worker in flight at the last read",
+      "armada watch is running (pid 42)",
+      "no worker in flight at the last read; armada watch is running (pid 42)",
+    ]) {
+      expect(state({ hookRun: { ...receipt, why } })).toMatchObject({ state: "on", fix: null });
+    }
+    for (const why of [
+      "the coordinator's checkout is /old, not this one",
+      "the last watch was refused: signed out",
+      "could not read the coordinator's local hook state or project",
+    ]) {
+      expect(state({ hookRun: { ...receipt, why }, installedIn: installed })).toMatchObject({ state: "off", why });
+    }
+    expect(state({ installedIn: installed })).toEqual({
+      state: "installed",
+      why: installed,
+      fix: "it confirms at your next turn end",
+    });
+    expect(state().fix).toContain("~/.claude/settings.json");
+    expect(state({ sessionId: null, hookRun: receipt }).state).toBe("off");
+    expect(state({ hookRun: { ...receipt, at: "bad time" } }).state).toBe("off");
+  });
+
+  test("explicit opt-out and worker identity override a successful receipt", () => {
+    for (const value of ["off", "0", "FALSE"]) {
+      expect(state({ env: { ARMADA_STOP_HOOK: value }, hookRun: receipt })).toMatchObject({
+        state: "off",
+        why: "off by choice",
+      });
+    }
+    expect(state({ env: { ARMADA_TICKET: "DEMO-2" }, hookRun: receipt }).why).toBe("this is a worker session");
   });
 });
 

@@ -54,7 +54,7 @@ import { printSkill, updateSkills } from "./skills.ts";
 import { requireSpecCoordinator, specCommand } from "./spec.ts";
 import { upgrade } from "./upgrade.ts";
 import { askOwner, done, namedTicket, validate } from "./validate.ts";
-import { hookStop, stopWatch, watch } from "./watch.ts";
+import { hookStop, stopHookBanner, stopWatch, watch } from "./watch.ts";
 import { claim, currentTicket, release, report, statusLive } from "./worker.ts";
 
 export { authLogin } from "./auth.ts";
@@ -402,7 +402,9 @@ const COMMAND_HELP: Record<string, string> = {
 `,
   hook: `  hook stop         Claude Code's Stop hook, installed by \`armada init\`: a coordinator
                     cannot end its turn while workers are in flight and no \`armada watch\`
-                    runs for the project in this checkout. Reads only local files;
+                    runs for a registered coordinator session, across checkouts.
+                    Falls back to the coordinator checkout for unknown sessions; workers
+                    are never held. Commands and doctor show if it is on. Reads local files;
                     ARMADA_STOP_HOOK=off turns it off
 `,
   login: `  login             Sign this terminal in to Armada: confirm the code it shows in the browser
@@ -894,6 +896,8 @@ async function status(io: Io, args: Args): Promise<number> {
   );
   if (!args.json && deploys)
     for (const row of deploys.rows) io.stdout(`Deploy ${deployLine(row, (io.now ?? (() => new Date()))())}\n`);
+  const banner = await stopHookBanner(io);
+  if (banner) (args.json ? io.stderr : io.stdout)(`${banner}\n`);
   return 0;
 }
 
@@ -1201,7 +1205,13 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     }
     if (args.command === "status") {
       noExtra(args.rest);
-      return await (args.all ? statusAll(io, args.json) : status(io, args));
+      if (args.all) {
+        const code = await statusAll(io, args.json);
+        const banner = await stopHookBanner(io);
+        if (banner) (args.json ? io.stderr : io.stdout)(`${banner}\n`);
+        return code;
+      }
+      return await status(io, args);
     }
     if (args.command === "doctor") {
       noExtra(args.rest);

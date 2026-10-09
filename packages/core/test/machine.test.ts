@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigError } from "../src/config.ts";
@@ -12,8 +12,11 @@ import {
   parsePersonalConfig,
   readCoordinatorName,
   readCredentialStore,
+  readHookRuns,
   readReleaseNotices,
   readWatchState,
+  readWatchStates,
+  recordHookRun,
   releaseWatchLock,
   reserveNotice,
   runningWatch,
@@ -255,4 +258,68 @@ test("named coordinators keep independent watch locks, state and checkout prefer
   expect(await readCoordinatorName(paths, "widgets", "/work/widgets")).toBe("front");
   expect(await readCoordinatorName(paths, "widgets", "/work/other")).toBe("back");
   expect(await readCoordinatorName(paths, "other", "/work/widgets")).toBeNull();
+});
+
+test("coordinator session and hook receipts retain the newest bounded history without colliding with project slugs", async () => {
+  const paths = machinePaths({ XDG_CONFIG_HOME: await tempHome() });
+  if (!paths) throw new Error("no paths");
+  const sessions = Object.fromEntries(
+    Array.from({ length: 12 }, (_, i) => [`session-${i}`, new Date(i * 1000).toISOString()]),
+  );
+  await updateWatchState(paths, "hooks", { root: "/work/hooks", claudeSessions: sessions, inFlight: ["DEMO-2"] });
+  expect(Object.keys((await readWatchState(paths, "hooks"))?.claudeSessions ?? {})).toHaveLength(10);
+  expect((await readWatchState(paths, "hooks"))?.claudeSessions).not.toHaveProperty("session-0");
+  for (let i = 0; i < 52; i++)
+    await recordHookRun(paths, `session-${i}`, {
+      at: new Date(i * 1000).toISOString(),
+      project: "hooks",
+      why: "blocked",
+    });
+  const receipts = await readHookRuns(paths);
+  expect(Object.keys(receipts)).toHaveLength(50);
+  expect(receipts).not.toHaveProperty("session-0");
+  expect(receipts["session-51"]?.why).toBe("blocked");
+  expect((await readWatchStates(paths)).map((row) => row.project)).toEqual(["hooks"]);
+  expect((await readWatchState(paths, "hooks"))?.inFlight).toEqual(["DEMO-2"]);
+});
+
+test("concurrent coordinator registrations and Stop receipts do not overwrite another session", async () => {
+  const paths = machinePaths({ XDG_CONFIG_HOME: await tempHome() });
+  if (!paths) throw new Error("no paths");
+  await Promise.all(
+    Array.from({ length: 10 }, (_, i) =>
+      updateWatchState(paths, "widgets", {}, "front", {
+        id: `session-${i}`,
+        at: new Date(i * 1000).toISOString(),
+        root: "/work/widgets",
+      }),
+    ),
+  );
+  const state = await readWatchState(paths, "widgets", "front");
+  expect(Object.keys(state?.claudeSessions ?? {}).sort()).toEqual(Array.from({ length: 10 }, (_, i) => `session-${i}`));
+  await Promise.all(
+    Array.from({ length: 16 }, (_, i) =>
+      recordHookRun(paths, `session-${i}`, {
+        at: new Date(i * 1000).toISOString(),
+        project: "widgets",
+        why: "blocked",
+      }),
+    ),
+  );
+  expect(Object.keys(await readHookRuns(paths)).sort()).toEqual(
+    Array.from({ length: 16 }, (_, i) => `session-${i}`).sort(),
+  );
+});
+
+test("an abandoned update lock expires without an orphaned recovery guard stopping future writes", async () => {
+  const paths = machinePaths({ XDG_CONFIG_HOME: await tempHome() });
+  if (!paths) throw new Error("no paths");
+  const file = watchFiles(paths, "widgets").state;
+  const lock = `${file}.update.lock`;
+  await mkdir(lock, { recursive: true });
+  await writeFile(`${lock}.cleanup`, "0\nabandoned\n");
+  const past = new Date("2000-01-01T00:00:00Z");
+  await utimes(lock, past, past);
+  await updateWatchState(paths, "widgets", { root: "/work/widgets", inFlight: ["DEMO-2"] });
+  expect((await readWatchState(paths, "widgets"))?.inFlight).toEqual(["DEMO-2"]);
 });
