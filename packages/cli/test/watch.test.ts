@@ -726,6 +726,30 @@ describe("armada watch", () => {
     }
   });
 
+  test("bounded watch keeps worker capacity and waiting launches in the restart line", async () => {
+    const c = await coordinator();
+    await c.hold("DEMO-2");
+    await c.hold("DEMO-3");
+    const fetch = c.io.fetch;
+    if (!fetch) throw new Error("missing fake fetch");
+    c.io.fetch = async (url, init) => {
+      const response = await fetch(url, init);
+      if (!url.endsWith("/fleet/inbox") || response.status !== 200) return response;
+      const body = (await response.json()) as { result: Record<string, unknown> };
+      return Response.json(
+        { ...body, result: { ...body.result, waiting: ["DEMO-4"], slots: { taken: 2, max: 2 } } },
+        { headers: response.headers },
+      );
+    };
+    c.onSleep.push(async () => {});
+    expect(await run(["watch", "--for", "0.25"], c.io)).toBe(0);
+    expect(c.out()).toContain(
+      "2 of 2 workers in flight (DEMO-2, DEMO-3) · 1 waiting to launch — keep watching: armada watch",
+    );
+    expect((await readWatchState(c.paths, P))?.waiting).toEqual(["DEMO-4"]);
+    expect((await readWatchState(c.paths, P))?.slots).toEqual({ taken: 2, max: 2 });
+  });
+
   test("a dead watch without a result teaches a nine-minute Claude bound", async () => {
     for (const linux of [false, true]) {
       const c = await coordinator();
@@ -1209,6 +1233,8 @@ describe("armada watch", () => {
       seen: [expect.stringMatching(/^#1@/)],
       seenScope: "all",
       inFlight: ["DEMO-2", "DEMO-3"],
+      waiting: [],
+      slots: { taken: 2, max: null },
       readAt: new Date(NOW.getTime() + 30_000).toISOString(),
       stopped: null,
     });

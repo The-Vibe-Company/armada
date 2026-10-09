@@ -75,7 +75,9 @@ Done when every worker in flight is working, waiting on someone, or replaced.
 
 ### 5. Launch ready tickets
 
-One at a time, and only tickets that do not collide with work in flight.
+Launch one at a time; avoid overlaps with work in flight.
+
+Caps: REFERENCE.md.
 
 1. `armada lint --ready` lists readability problems in ready tickets and open specs, each with its fix. Fix them on the ticket, then `armada lint <ticket>` to recheck.
 2. Pick a ticket from the frontier in `armada status`. Read it and its parent spec.

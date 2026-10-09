@@ -95,7 +95,7 @@ const BRANCHES: Branch[] = [
   {
     kinds: ["launch"],
     sql: `SELECT 'l:' || "id" AS key, "project" AS project, "ticket" AS ticket, 'launch' AS kind, "createdAt" AS at,
-            'person' AS actor_kind, "launchedByLabel" AS actor, NULL::text AS body, NULL::text AS phase,
+            'person' AS actor_kind, "launchedByLabel" AS actor, "overCap" AS body, NULL::text AS phase,
             NULL::text AS detail, NULL::bigint AS ref
           FROM "armada_worker" WHERE "project" = ANY($1)`,
   },

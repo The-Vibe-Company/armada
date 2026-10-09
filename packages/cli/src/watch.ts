@@ -110,13 +110,27 @@ export async function watchOf(io: Io, project: string): Promise<{ state: WatchSt
 export async function rearmFor(
   io: Io,
   project: string,
-  o: { inFlight: string[] | null; open: number | null; openJobs?: number[]; act?: boolean },
+  o: {
+    inFlight: string[] | null;
+    open: number | null;
+    openJobs?: number[];
+    act?: boolean;
+    waiting?: number;
+    slots?: { taken: number; max: number | null };
+  },
 ): Promise<Rearm> {
   const { state, running } = await watchOf(io, project);
   const paths = machinePaths(io.env);
   const mode =
     paths && running ? (await readWatchLockInfo(paths, project, await coordinatorName(io, project)))?.mode : undefined;
-  const next = rearm({ ...o, openJobs: o.openJobs ?? state?.openJobs, running, mode });
+  const next = rearm({
+    ...o,
+    waiting: o.waiting ?? state?.waiting?.length,
+    slots: o.slots ?? state?.slots,
+    openJobs: o.openJobs ?? state?.openJobs,
+    running,
+    mode,
+  });
   const banner = await stopHookBanner(io);
   if (banner) next.line += `\n${banner}`;
   return next;
@@ -458,6 +472,8 @@ async function watchUntil(
   };
   let lastInFlight: string[] | null = null;
   let lastJobs: number[] = [];
+  let lastWaiting = 0;
+  let lastSlots: WatchState["slots"];
   const resume = () => {
     const flags = [
       ...(name === "default" ? [] : [`ARMADA_COORDINATOR=${name}`]),
@@ -479,7 +495,14 @@ async function watchUntil(
         boundPrinted = true;
       }
       const line = `No new item in ${options.minutes} min; start it again: ${flags.join(" ")}`;
-      const next = rearm({ inFlight: lastInFlight, openJobs: lastJobs, open: null, running: null });
+      const next = rearm({
+        inFlight: lastInFlight,
+        openJobs: lastJobs,
+        waiting: lastWaiting,
+        slots: lastSlots,
+        open: null,
+        running: null,
+      });
       io.stdout(
         json
           ? `${JSON.stringify({ outcome: "timeout", line, watch: next, ...(boundLine ? { bound: boundLine } : {}) }, null, 2)}\n`
@@ -523,6 +546,8 @@ async function watchUntil(
     const initialState = paths ? await readWatchState(paths, project, name) : null;
     lastInFlight = initialState?.inFlight ?? null;
     lastJobs = initialState?.openJobs ?? [];
+    lastWaiting = initialState?.waiting?.length ?? 0;
+    lastSlots = initialState?.slots;
     setBound(initialState?.harnessLimitMinutes);
     if (paths && automatic) {
       const stale = await readWatchLockInfo(paths, project, name);
@@ -673,7 +698,16 @@ async function watchUntil(
           name === "default" ? read.openJobs : (read.ownedOpenJobs ?? (scope === "mine" ? read.openJobs : []));
         lastInFlight = inFlight;
         lastJobs = openJobs ?? [];
-        if (inFlight) await remember(io, project, { inFlight, openJobs, readAt: now(io).toISOString() });
+        lastWaiting = (name === "default" ? read.waiting : read.ownedWaiting)?.length ?? 0;
+        lastSlots = read.slots;
+        if (inFlight)
+          await remember(io, project, {
+            inFlight,
+            openJobs,
+            waiting: name === "default" ? read.waiting : read.ownedWaiting,
+            slots: read.slots,
+            readAt: now(io).toISOString(),
+          });
       },
       onRetry: (message) => io.stderr(`armada: warning: ${message}\n`),
       release: pendingRelease(watchingIo, version),
@@ -723,7 +757,12 @@ async function watchUntil(
       name === "default" ? report.inFlight : (report.ownedInFlight ?? (scope === "mine" ? report.inFlight : null));
     const openJobs =
       name === "default" ? report.openJobs : (report.ownedOpenJobs ?? (scope === "mine" ? report.openJobs : undefined));
-    await remember(io, project, shown(io, report.items, inFlight, openJobs, scope));
+    const waiting = (name === "default" ? report.waiting : report.ownedWaiting) ?? [];
+    await remember(io, project, {
+      ...shown(io, report.items, inFlight, openJobs, scope),
+      waiting,
+      slots: report.slots,
+    });
     controller.signal.throwIfAborted();
     // A release is acted on between rounds: it is not an item that keeps a watch going.
     const open = report.items.filter(
@@ -735,6 +774,8 @@ async function watchUntil(
       open,
       running: null,
       act: report.items.some((e) => !e.queue && (e.owner == null || e.owner === name)),
+      waiting: waiting.length,
+      slots: report.slots,
     });
     const banner = await stopHookBanner(io);
     if (banner) next.line += `\n${banner}`;

@@ -343,12 +343,15 @@ const COMMAND_HELP: Record<string, string> = {
                     --pre-approve --reason "<why>" adds the plan-approved label before launch
                     --notes adds coordinator context from a file or stdin (at most 16 KB).
                     Pending launches and active workers are refused before a token exists.
+                    With [policy] max_workers, queue with --when-unblocked or bypass with
+                    --over-cap "<why>"; Urgent tickets pass automatically, recorded.
+                    A relaunch replaces a worker and never takes another slot.
                     Conductor uses explicit profile settings and receives the brief through stdin;
                     stdout prints its workspace, session and link, never the token.
                     Herdr creates a persistent local worktree; --harness must match its profile.
                     --dry-run prints settings and preflight and creates nothing.
   launch <ticket> --when-unblocked [--profile <name>] [--after <blocker>]
-                    Remember a launch until all Linear blockers close. --after asserts an
+                    Remember a launch until all Linear blockers close and a worker slot frees. --after asserts an
                     existing blocker; it never adds a dependency. Status shows the request.
   launch revoke <ticket>
                     Cancel the newest pending launch through Armada, including a worker
@@ -556,6 +559,7 @@ interface Args {
 }
 
 const VALUE_OPTIONS = [
+  "over-cap",
   "runs",
   "finish",
   "progress",
@@ -715,7 +719,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
     "close",
     "through-hold",
   ],
-  brief: ["pre-approve", "profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
+  brief: ["over-cap", "pre-approve", "profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
   relaunch: [
     "pre-approve",
     "runtime",
@@ -731,6 +735,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
     "keep-old",
   ],
   launch: [
+    "over-cap",
     "pre-approve",
     "runtime",
     "harness",
