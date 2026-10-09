@@ -266,6 +266,8 @@ export type InboxKind =
   | "hold"
   | "job"
   | "queue-refused"
+  | "launch-failed"
+  | "launch-uncertain"
   | "question"
   | "plan"
   | "request"
@@ -464,7 +466,18 @@ export interface ReserveRecord {
 
 export type ReserveResult = { reserved: true; reservation: Reservation } | { reserved: false; holder: Reservation };
 
+/** A runtime launch was attempted and failed, or its delivery is still unconfirmed. */
+export interface LaunchFailureRecord {
+  ticket: string;
+  outcome: "failed" | "uncertain";
+  reason: string;
+  next: string;
+  launchId: string;
+  coordinator?: string | null;
+}
+
 export interface FleetStore {
+  recordLaunchFailure(input: LaunchFailureRecord & { project: string; at: Date }): Promise<void>;
   /** Reserves a merge notice before runtime I/O; an unknown outcome is never retried automatically. */
   prepareMergeNotice(project: string, key: string, at: Date): Promise<"reserved" | "attempted" | "delivered">;
   /** Records one resolved generated note atomically with its delivery receipt, once per ticket. */
@@ -755,6 +768,15 @@ export async function recordClaim(store: FleetStore, project: string, c: ClaimRe
     handle: c.handle,
     at,
   });
+  for (const kind of ["launch-failed", "launch-uncertain"] as const)
+    await store.resolveInboxItems({
+      project,
+      ticket: c.ticket,
+      kind,
+      author: null,
+      resolution: `claimed by ${c.runtime} (${c.handle})`,
+      at,
+    });
   if (c.resuming) return [];
   const asked = (await store.openInboxItems({ project, recipient: "coordinator", ticket: c.ticket })).filter(
     (i) => i.kind === "launch-request",
@@ -1307,7 +1329,7 @@ export interface InboxEntry {
 }
 
 /** Items rewritten in place: reports and a target's coalesced deploy notice. */
-const REWRITTEN: readonly InboxEntryKind[] = ["hand-back", "plan", "deploy"];
+const REWRITTEN: readonly InboxEntryKind[] = ["hand-back", "plan", "deploy", "launch-failed", "launch-uncertain"];
 
 const digest = (text: string) => createHash("sha256").update(text).digest("base64url").slice(0, 12);
 
@@ -1332,7 +1354,7 @@ export const entryKey = (
         ? `queue-stalled:${e.queueEntry}`
         : e.id !== null
           ? REWRITTEN.includes(e.kind)
-            ? `#${e.id}@${digest(e.body)}`
+            ? `#${e.id}@${digest(e.kind === "launch-failed" || e.kind === "launch-uncertain" ? `${e.kind}:${e.body}` : e.body)}`
             : `#${e.id}`
           : e.kind === "unblocked"
             ? `unblocked:${e.ticket}@${e.unblockedBy}`
@@ -1916,6 +1938,9 @@ async function readInboxAndFlight(
   }
   // A worker launched is in flight from its launch, so a watch started then waits for its claim;
   // once it shows as not started, its entry carries it until the coordinator acts.
+  const launchNotices = new Set(
+    stored.filter((i) => i.kind === "launch-failed" || i.kind === "launch-uncertain").map((i) => i.ticket),
+  );
   const currentLaunches = launches.filter((l) => {
     const event = events[l.ticket];
     return (
@@ -1928,7 +1953,8 @@ async function readInboxAndFlight(
   const late = notStartedLaunches(currentLaunches, o.now, o.notStartedMinutes ?? CONFIG_DEFAULTS.notStartedMinutes);
   for (const l of followedLaunches(currentLaunches, o.now))
     if (!late.includes(l) && !inFlight.includes(l.ticket)) inFlight.push(l.ticket);
-  for (const l of late)
+  for (const l of late) {
+    if (launchNotices.has(l.ticket)) continue;
     entries.push({
       id: null,
       kind: "not-started",
@@ -1939,6 +1965,7 @@ async function readInboxAndFlight(
       createdAt: l.launchedAt,
       new: false,
     });
+  }
   // No tracker or forge read: the stored relations retain closed blockers.
   // Skip history entirely when this reading contains no open dependents.
   if (model && o.snapshot?.config && model.program.some((i) => !isClosed(i) && i.blockedBy.length)) {
@@ -2393,6 +2420,8 @@ export async function serveInbox(
       now,
     });
   for (const launch of expired) {
+    if (items.some((i) => i.ticket === launch.ticket && (i.kind === "launch-failed" || i.kind === "launch-uncertain")))
+      continue;
     if (scoped && launch.coordinator != null && launch.coordinator !== (q.coordinatorName ?? "default")) continue;
     const item: InboxEntry = {
       id: null,
@@ -2448,6 +2477,7 @@ export async function serveInbox(
  * API with the terminal's sign-in (`fleetClient`). Times are the server's.
  */
 export interface Fleet {
+  recordLaunchFailure(input: LaunchFailureRecord): Promise<void>;
   prepareMergeNotice(key: string): Promise<"reserved" | "attempted" | "delivered">;
   retryDeploy(input: DeployRetryInput): Promise<DeployRecord>;
   recordDeploy(input: DeployInput): Promise<DeployRecord>;

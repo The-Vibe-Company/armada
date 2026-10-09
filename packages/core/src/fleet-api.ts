@@ -140,6 +140,7 @@ export const FLEET_OPS = [
   "runtime/stop",
   "launches",
   "launch-requests",
+  "launch/failed",
   "inbox",
   "ack",
   "inbox/item",
@@ -337,6 +338,7 @@ const TRANSFER_REFUSED = Symbol("transfer refused");
 /** Writes carrying prose. Read-only polls never need the vault. */
 export const FLEET_TEXT_OPERATIONS: ReadonlySet<string> = new Set([
   "secrets/request",
+  "launch/failed",
   "claim",
   "report",
   "ask",
@@ -413,19 +415,42 @@ export async function serveFleet(
     const coordinatorName =
       caller.kind === "worker"
         ? (caller.coordinator ?? null)
-        : coordinatorNameOf(
-            b,
-            b.coordinatorName === undefined &&
-              op !== "inbox" &&
-              op !== "runtime/reference" &&
-              b.coordinator !== undefined
-              ? "coordinator"
-              : op === "coordinator" && b.coordinatorName === undefined && b.name !== undefined
-                ? "name"
-                : "coordinatorName",
-          );
+        : op === "launch/failed" && b.coordinator !== undefined
+          ? b.coordinator === null
+            ? null
+            : coordinatorNameOf(b, "coordinator")
+          : coordinatorNameOf(
+              b,
+              b.coordinatorName === undefined &&
+                op !== "inbox" &&
+                op !== "runtime/reference" &&
+                b.coordinator !== undefined
+                ? "coordinator"
+                : op === "coordinator" && b.coordinatorName === undefined && b.name !== undefined
+                  ? "name"
+                  : "coordinatorName",
+            );
     const result = await (async (): Promise<unknown> => {
       switch (op) {
+        case "launch/failed": {
+          if (b.outcome !== "failed" && b.outcome !== "uncertain")
+            throw new Invalid("outcome must be failed or uncertain");
+          const launchId = text(b, "launchId", 128);
+          if (!/^[a-zA-Z0-9_-]+$/.test(launchId)) throw new Invalid("launchId must be a launch id");
+          await store.recordLaunchFailure({
+            project: slug,
+            at,
+            ticket: ticketOf(b),
+            outcome: b.outcome,
+            reason: text(b, "reason", BODY_MAX).replace(/\s+/g, " ").trim().slice(0, 500),
+            next: (deps.redact ?? redactor([]).text)(text(b, "next", LINE_MAX))
+              .replace(/\s+/g, " ")
+              .trim(),
+            launchId,
+            coordinator: coordinatorName,
+          });
+          return null;
+        }
         case "deploy/retry": {
           const sha = shaOf(b, "sha");
           if (sha && !/^[0-9a-f]{40}$/.test(sha)) throw new Invalid("sha must be a full SHA");
@@ -1300,6 +1325,7 @@ export function fleetClient(o: {
     )) as T;
   };
   return {
+    recordLaunchFailure: (input) => call<null>("launch/failed", input).then(() => undefined),
     retryDeploy: (input) => call("deploy/retry", input),
     recordDeploy: (input) => call("deploy/record", input),
     deployState: (input = {}) => call("deploy/state", input),

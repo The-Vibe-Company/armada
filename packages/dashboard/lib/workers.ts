@@ -203,12 +203,42 @@ export async function createLaunch(
   return { worker, token };
 }
 
+/** Only this generation and older launch notices are completed by a successful launch or revoke. */
+async function resolveLaunchFailures(
+  tx: Queryable,
+  project: string,
+  ticket: string,
+  id: string,
+  now: Date,
+  reason: string,
+): Promise<number> {
+  const result = await tx.query(
+    `UPDATE inbox_items SET resolved_at = $4, resolution = $5 WHERE project = $1 AND ticket = $2
+     AND resolved_at IS NULL AND kind IN ('launch-failed', 'launch-uncertain')
+     AND (launch_id = $3 OR EXISTS (
+       SELECT 1 FROM "armada_worker" older, "armada_worker" current
+       WHERE older."id" = inbox_items.launch_id AND current."id" = $3 AND (older."createdAt", older."id") < (current."createdAt", current."id")
+     ))`,
+    [project, ticket.toUpperCase(), id, now, reason],
+  );
+  return result.rowCount;
+}
+
 /** Bind the launch to one runtime session, even before the worker signs in. */
 export async function bindLaunch(
   client: Database,
-  input: { organization: string; project: string; ticket: string; id: string; runtime: string; handle: string },
+  input: {
+    organization: string;
+    project: string;
+    ticket: string;
+    id: string;
+    runtime: string;
+    handle: string;
+    now?: Date;
+  },
 ): Promise<"bound" | "conflict" | "gone"> {
   return transaction(client, async (tx) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR UPDATE", [input.project]);
     const args = [input.id, input.organization, input.project, input.ticket.toUpperCase()];
     const found = await tx.query(
       `SELECT ${COLUMNS} FROM "armada_worker"
@@ -220,7 +250,17 @@ export async function bindLaunch(
     if (row.runtimeHandle !== null) {
       if (row.runtimeHandle !== input.handle || (row.runtime !== null && row.runtime !== input.runtime))
         return "conflict";
-      if (row.runtime === input.runtime) return "bound";
+      if (row.runtime === input.runtime) {
+        await resolveLaunchFailures(
+          tx,
+          input.project,
+          input.ticket,
+          input.id,
+          input.now ?? new Date(),
+          "launch confirmed",
+        );
+        return "bound";
+      }
       // A fast worker may sign in before the coordinator receives the launch result.
       // The matching handle permits filling its still-unknown runtime.
     }
@@ -230,6 +270,7 @@ export async function bindLaunch(
          AND "endedAt" IS NULL AND ("runtimeHandle" IS NULL OR ("runtimeHandle" = $6 AND "runtime" IS NULL))`,
       [...args, input.runtime, input.handle],
     );
+    await resolveLaunchFailures(tx, input.project, input.ticket, input.id, input.now ?? new Date(), "launch confirmed");
     return "bound";
   });
 }
@@ -423,18 +464,31 @@ export async function revokePendingLaunch(
   input: { organization: string; project: string; ticket: string; id?: string; by: Actor; now: Date },
 ): Promise<{ worker: Worker } | { reason: "claimed" | "gone" }> {
   return transaction(client, async (tx) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR UPDATE", [input.project]);
     const found = await tx.query(
       `SELECT ${COLUMNS} FROM "armada_worker" WHERE "organizationId" = $1 AND "project" = $2 AND "ticket" = $3${input.id ? ' AND "id" = $4' : ""}
        ORDER BY "createdAt" DESC, "id" DESC LIMIT 1 FOR UPDATE`,
       [input.organization, input.project, input.ticket.toUpperCase(), ...(input.id ? [input.id] : [])],
     );
     const row = found.rows[0];
-    if (!row || row.endedAt) return { reason: "gone" };
+    if (!row) return { reason: "gone" };
     const worker = workerOf(row);
+    if (row.endedAt) {
+      const cleared = await resolveLaunchFailures(
+        tx,
+        input.project,
+        worker.ticket,
+        worker.id,
+        input.now,
+        "launch revoked",
+      );
+      return cleared ? { worker } : { reason: "gone" };
+    }
     // An unused specific token cannot have claimed. Another launch's claim must
     // not prevent ending it. Exchange and revoke lock the same worker row.
     if (input.id && !worker.tokenUsedAt) {
       const ended = await endWorker(tx, { ...input, id: worker.id, reason: "revoked" });
+      if (ended) await resolveLaunchFailures(tx, input.project, worker.ticket, worker.id, input.now, "launch revoked");
       return ended ? { worker: ended } : { reason: "gone" };
     }
     const held = await tx.query(
@@ -444,6 +498,7 @@ export async function revokePendingLaunch(
     );
     if (held.rows.length) return { reason: "claimed" };
     const ended = await endWorker(tx, { ...input, id: worker.id, reason: "revoked" });
+    if (ended) await resolveLaunchFailures(tx, input.project, worker.ticket, worker.id, input.now, "launch revoked");
     return ended ? { worker: ended } : { reason: "gone" };
   });
 }

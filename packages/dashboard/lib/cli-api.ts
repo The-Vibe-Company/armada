@@ -538,6 +538,7 @@ async function bindLaunchSession(a: CliAccounts, request: Request, now: Date): P
     id: body.id,
     runtime: body.runtime,
     handle: body.handle.trim(),
+    now,
   });
   if (result !== "bound")
     return refuse(
