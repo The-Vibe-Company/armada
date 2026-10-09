@@ -279,11 +279,15 @@ export async function updateDeployEnv(
  * `armada watch` holds. The project is its armada.toml slug, already a safe
  * file name.
  */
-export function watchFiles(paths: MachinePaths, project: string, name = "default"): { state: string; lock: string } {
+export function watchFiles(
+  paths: MachinePaths,
+  project: string,
+  name = "default",
+): { state: string; lock: string; result: string } {
   if (!COORDINATOR.test(name)) throw new Error("invalid coordinator name");
   const dir = join(paths.dir, "watch");
   const key = name === "default" ? project : `${project}@${name}`;
-  return { state: join(dir, `${key}.json`), lock: join(dir, `${key}.pid`) };
+  return { state: join(dir, `${key}.json`), lock: join(dir, `${key}.pid`), result: join(dir, `${key}.result.json`) };
 }
 
 const strings = (v: unknown): string[] | null =>
@@ -365,6 +369,11 @@ export async function readWatchState(
       : {}),
     ...(typeof r.peekTail === "object" && r.peekTail !== null && !Array.isArray(r.peekTail)
       ? { peekTail: peekTails(r.peekTail) }
+      : {}),
+    ...(typeof r.harnessLimitMinutes === "number" &&
+    Number.isFinite(r.harnessLimitMinutes) &&
+    r.harnessLimitMinutes >= 5
+      ? { harnessLimitMinutes: r.harnessLimitMinutes }
       : {}),
     root: stringOr(r.root),
     seen: strings(r.seen) ?? [],
@@ -561,6 +570,8 @@ export interface WatchIdentity {
   project: string;
   configPath: string;
   started: string;
+  /** Wall-clock start of this watch; process identities can use kernel ticks. */
+  watchStartedAt?: string;
   command: string;
   cwd: string;
 }
@@ -569,6 +580,7 @@ export interface WatchLock {
   pid: number;
   identity: WatchIdentity | null;
   mode?: "follow";
+  stopRequested?: boolean;
 }
 
 /** Reads both legacy PID locks and locks with a process identity; malformed locks are unverified. */
@@ -586,6 +598,7 @@ export async function readWatchLockInfo(
       i && [i.project, i.configPath, i.started, i.command, i.cwd].every((v) => typeof v === "string" && v);
     return {
       pid,
+      ...(raw?.stopRequested === true ? { stopRequested: true } : {}),
       ...(raw?.mode === "follow" ? { mode: "follow" as const } : {}),
       identity: verified
         ? {
@@ -593,6 +606,7 @@ export async function readWatchLockInfo(
             ...(typeof i.coordinatorName === "string" ? { coordinatorName: i.coordinatorName } : {}),
             configPath: i.configPath,
             started: i.started,
+            ...(typeof i.watchStartedAt === "string" ? { watchStartedAt: i.watchStartedAt } : {}),
             command: i.command,
             cwd: i.cwd,
           }
@@ -619,6 +633,128 @@ export function sameWatchLock(a: WatchLock | null, b: WatchLock): boolean {
   return (["project", "configPath", "started", "command", "cwd"] as const).every(
     (field) => left[field] === right[field],
   );
+}
+
+/** A plain watch's private completion receipt; process identity fences old results. */
+export interface WatchResult {
+  pid: number;
+  started: string;
+  endedAt: string;
+  outcome: "items" | "nothing" | "timeout" | "stopped" | "error";
+  exit: number;
+  stdout: string;
+  stderr: string;
+  json?: boolean;
+  stopRequested?: boolean;
+}
+
+// Keep recent generations so a fast later watch cannot erase a waiter's receipt.
+const WATCH_RESULTS_KEPT = 100;
+async function watchResults(paths: MachinePaths, project: string, name: string): Promise<WatchResult[]> {
+  try {
+    const raw = JSON.parse(await readFile(watchFiles(paths, project, name).result, "utf8"));
+    return [raw, ...(Array.isArray(raw?.previous) ? raw.previous.slice(0, WATCH_RESULTS_KEPT - 1) : [])]
+      .filter(
+        (r): r is WatchResult =>
+          r &&
+          Number.isSafeInteger(r.pid) &&
+          r.pid > 0 &&
+          typeof r.started === "string" &&
+          typeof r.endedAt === "string" &&
+          Number.isFinite(Date.parse(r.endedAt)) &&
+          ["items", "nothing", "timeout", "stopped", "error"].includes(r.outcome) &&
+          Number.isInteger(r.exit) &&
+          r.exit >= 0 &&
+          r.exit <= 255 &&
+          typeof r.stdout === "string" &&
+          typeof r.stderr === "string" &&
+          (r.json === undefined || typeof r.json === "boolean") &&
+          (r.stopRequested === undefined || typeof r.stopRequested === "boolean"),
+      )
+      .map(({ pid, started, endedAt, outcome, exit, stdout, stderr, json, stopRequested }) => ({
+        pid,
+        started,
+        endedAt,
+        outcome,
+        exit,
+        stdout,
+        stderr,
+        ...(json === undefined ? {} : { json }),
+        ...(stopRequested === undefined ? {} : { stopRequested }),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+export async function readWatchResult(
+  paths: MachinePaths,
+  project: string,
+  holder: WatchLock,
+  name = "default",
+): Promise<WatchResult | null> {
+  if (!holder.identity) return null;
+  return (
+    (await watchResults(paths, project, name)).find(
+      (r) => r.pid === holder.pid && r.started === holder.identity?.started,
+    ) ?? null
+  );
+}
+
+/** A completion during command setup still belongs to that command's waiting window. */
+export async function readWatchResultSince(
+  paths: MachinePaths,
+  project: string,
+  since: Date,
+  name = "default",
+): Promise<WatchResult | null> {
+  return (
+    (await watchResults(paths, project, name))
+      .reverse()
+      .filter((r) => Date.parse(r.endedAt) > since.getTime())
+      .sort((a, b) => Date.parse(a.endedAt) - Date.parse(b.endedAt))[0] ?? null
+  );
+}
+
+/** Mark an owned generation before signalling; failed signals can undo only that generation's request. */
+export async function setWatchStopRequest(
+  paths: MachinePaths,
+  project: string,
+  holder: WatchLock,
+  requested: boolean,
+  name = "default",
+): Promise<boolean> {
+  const file = watchFiles(paths, project, name).lock;
+  return withMachineUpdate(file, async () => {
+    const current = await readWatchLockInfo(paths, project, name);
+    if (!sameWatchLock(current, holder)) return false;
+    await writePrivate(paths, file, `${JSON.stringify({ ...current, stopRequested: requested })}\n`, 0o600);
+    return true;
+  });
+}
+
+/** Only the current generation may replace its receipt, before releasing its lock. */
+export async function writeWatchResult(
+  paths: MachinePaths,
+  project: string,
+  holder: WatchLock,
+  result: WatchResult,
+  name = "default",
+): Promise<void> {
+  if (!holder.identity || result.pid !== holder.pid || result.started !== holder.identity.started) return;
+  const file = watchFiles(paths, project, name).result;
+  await withMachineUpdate(watchFiles(paths, project, name).lock, async () => {
+    if (!sameWatchLock(await readWatchLockInfo(paths, project, name), holder)) return;
+    const previous = (await watchResults(paths, project, name))
+      .filter((r) => r.pid !== result.pid || r.started !== result.started)
+      .slice(0, WATCH_RESULTS_KEPT - 1);
+    await writePrivate(
+      paths,
+      file,
+      `${JSON.stringify({ ...result, ...(previous.length ? { previous } : {}) })}\n`,
+      0o600,
+    );
+  });
 }
 
 /** True while the process `pid` exists. */
@@ -648,31 +784,33 @@ export async function takeWatchLock(
   samePidIsStale = true,
 ): Promise<{ taken: true } | { taken: false; pid: number }> {
   const { lock } = watchFiles(paths, project, name);
-  await mkdir(dirname(lock), { recursive: true, mode: 0o700 });
-  // The pid is written first, then linked into place: the lock never exists empty.
-  const tmp = `${lock}.${randomBytes(6).toString("hex")}.tmp`;
-  await writeFile(
-    tmp,
-    `${identity || mode ? JSON.stringify({ pid, identity: identity ?? null, ...(mode ? { mode } : {}) }) : pid}\n`,
-    { mode: 0o600 },
-  );
-  try {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        await link(tmp, lock);
-        return { taken: true };
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  return withMachineUpdate(lock, async () => {
+    await mkdir(dirname(lock), { recursive: true, mode: 0o700 });
+    // The pid is written first, then linked into place: the lock never exists empty.
+    const tmp = `${lock}.${randomBytes(6).toString("hex")}.tmp`;
+    await writeFile(
+      tmp,
+      `${identity || mode ? JSON.stringify({ pid, identity: identity ?? null, ...(mode ? { mode } : {}) }) : pid}\n`,
+      { mode: 0o600 },
+    );
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await link(tmp, lock);
+          return { taken: true };
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+        }
+        const held = await readWatchLock(paths, project, name);
+        if (held !== null && (held !== pid || !samePidIsStale) && alive(held)) return { taken: false, pid: held };
+        // Stale: its watch is gone. Removed only if no other watch took it over meanwhile.
+        if ((await readWatchLock(paths, project, name)) === held) await rm(lock, { force: true });
       }
-      const held = await readWatchLock(paths, project, name);
-      if (held !== null && (held !== pid || !samePidIsStale) && alive(held)) return { taken: false, pid: held };
-      // Stale: its watch is gone. Removed only if no other watch took it over meanwhile.
-      if ((await readWatchLock(paths, project, name)) === held) await rm(lock, { force: true });
+      throw new Error(`cannot take the watch lock ${lock}`);
+    } finally {
+      await rm(tmp, { force: true });
     }
-    throw new Error(`cannot take the watch lock ${lock}`);
-  } finally {
-    await rm(tmp, { force: true });
-  }
+  });
 }
 
 /** Gives the lock back, unless another watch holds it now. */
@@ -683,9 +821,11 @@ export async function releaseWatchLock(
   identity?: WatchIdentity,
   name = "default",
 ): Promise<void> {
-  const held = await readWatchLockInfo(paths, project, name).catch(() => null);
-  if (identity ? sameWatchLock(held, { pid, identity }) : held?.pid === pid)
-    await rm(watchFiles(paths, project, name).lock, { force: true });
+  await withMachineUpdate(watchFiles(paths, project, name).lock, async () => {
+    const held = await readWatchLockInfo(paths, project, name).catch(() => null);
+    if (identity ? sameWatchLock(held, { pid, identity }) : held?.pid === pid)
+      await rm(watchFiles(paths, project, name).lock, { force: true });
+  });
 }
 
 /** The pid of the live watch of the project on this machine, or null. */
