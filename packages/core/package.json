@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "picomatch": "4.0.3",
+    "proper-lockfile": "4.1.2",
     "smol-toml": "1.9.0"
   }
 }

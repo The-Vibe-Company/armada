@@ -183,7 +183,7 @@ function prText(plan: SetupPlan, version: string) {
     ...(plan.stopHook
       ? [
           "",
-          `The Claude Code stop hook in \`${CLAUDE_SETTINGS}\` keeps a coordinator from ending its turn while workers are in flight and no \`armada watch\` runs. It blocks only in the checkout where \`armada watch\` ran, never a worker's session, and \`ARMADA_STOP_HOOK=off\` turns it off.`,
+          `The Claude Code stop hook in \`${CLAUDE_SETTINGS}\` keeps a coordinator from ending its turn while workers are in flight and no \`armada watch\` runs. It holds registered coordinator sessions across checkouts, with a checkout fallback for unknown sessions; it never holds a worker's session, and \`ARMADA_STOP_HOOK=off\` turns it off.`,
         ]
       : []),
     "",
