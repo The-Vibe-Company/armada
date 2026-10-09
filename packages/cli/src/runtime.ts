@@ -14,6 +14,7 @@ import {
   Refusal,
   type RuntimeHandle,
   readWatchState,
+  releaseTicket,
   releaseWatchLock,
   runtimeNameOf,
   takeWatchLock,
@@ -21,8 +22,9 @@ import {
 } from "@armada/core";
 import type { Io } from "./io.ts";
 import { requireSignIn } from "./login.ts";
+import { outgoingRedactor, redactLinearWriter } from "./redact.ts";
 import { archiveClaimKey, claimRef, guarded, launchRef, runtimeFor } from "./runtimes/adapter.ts";
-import { liveFleet, type WorkerArgs } from "./worker.ts";
+import { endWorkerSessions, liveFleet, type WorkerArgs, workerContext } from "./worker.ts";
 
 const observing = new Set<string>();
 
@@ -174,13 +176,20 @@ export async function deliverToRuntime(
 export async function stop(io: Io, config: ArmadaConfig, credentials: Credentials, args: WorkerArgs) {
   const [raw, ...extra] = args.rest;
   if (!raw || extra.length) throw new Refusal("stop needs one ticket: armada stop <ticket>", "armada stop --help");
+  const superseded = args.options.superseded;
+  if (superseded !== undefined && !superseded.trim())
+    throw new Refusal("--superseded needs a reason", "armada stop --help");
+  if (superseded !== undefined && (args.options["merged-pr"] || args.options["claim-key"]))
+    throw new Refusal("--superseded cannot be combined with merge recovery options", "armada stop --help");
   requireSignIn(credentials);
+  if (superseded !== undefined && credentials.armadaSignIn?.kind === "worker")
+    throw new Refusal("stop --superseded is coordinator-only", 'armada release --reason "<why>"');
   const { fleet } = liveFleet(io, config, credentials);
   if (!fleet) throw new Refusal("stop needs Armada's stored claim", "armada whoami");
   const ticket = raw.toUpperCase();
-  const h = await fleet.runtimeHandle(ticket);
+  let h = await fleet.runtimeHandle(ticket);
   if (!h) throw new Refusal(`${ticket} has no runtime claim to stop`, "armada status");
-  const target = claimRef(h);
+  let target = claimRef(h);
   const mergedPr = args.options["merged-pr"];
   const claimKey = args.options["claim-key"];
   if (claimKey && archiveClaimKey(target) !== claimKey)
@@ -202,6 +211,27 @@ export async function stop(io: Io, config: ArmadaConfig, credentials: Credential
   // Guided adapters must give their guide refusal even if an active claim exists.
   if (!adapter.can.archive)
     await adapter.archive(claimRef(h), { reason: "released", whenWorking: "refuse", waitMs: 0 });
+  if (superseded !== undefined) {
+    const mask = await outgoingRedactor(io, config, credentials);
+    const ctx = workerContext(io, config, credentials);
+    ctx.linear = redactLinearWriter(ctx.linear, mask.text);
+    const outcome = await releaseTicket(ctx, {
+      ticket,
+      reason: mask.text(superseded),
+      claim: target,
+      completedOnly: true,
+    });
+    for (const warning of outcome.warnings) io.stderr(`armada: warning: ${warning}\n`);
+    await endWorkerSessions(io, config, credentials, ticket, "released", true, target.claimedAt);
+    const ended = await fleet.runtimeHandle(ticket);
+    if (
+      !ended?.releasedAt ||
+      archiveClaimKey({ ...claimRef(ended), releasedAt: target.releasedAt }) !== archiveClaimKey(target)
+    )
+      throw new Refusal(`${ticket}'s claim changed during release; left the runtime untouched`, "armada status");
+    h = ended;
+    target = claimRef(ended);
+  }
   if (adapter.name === "conductor" && !h.releasedAt)
     throw new Refusal(
       `cannot archive ${ticket} while it holds the ticket; release first`,

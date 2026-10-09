@@ -463,20 +463,37 @@ describe("release", () => {
     expect(live.store.events.map((e) => e.kind)).toEqual(["release"]);
   });
 
-  test("a replaced worker refuses before changing Linear's replacement claim", async () => {
+  test.each([false, true])(
+    "a replaced worker refuses before changing Linear's replacement claim (Done: %s)",
+    async (done) => {
+      const live = tempFleet();
+      const { linear, ctx } = setup({ live });
+      linear.add("DEMO-7");
+      await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-new/session" });
+      if (done) await linear.updateTicket("uuid-DEMO-7", { stateId: "st-done" });
+      ctx.workerHandle = "ws-old/session";
+      const before = linear.writes.length;
+      expect(await refusal(releaseTicket(ctx, { ticket: "DEMO-7", reason: "late release" }))).toContain(
+        "you were replaced; stop here",
+      );
+      expect(linear.writes.length).toBe(before);
+      expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBeNull();
+      ctx.workerHandle = "ws-new/session";
+      await releaseTicket(ctx, { ticket: "DEMO-7", reason: "done" });
+      expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
+    },
+  );
+
+  test("releases a completed ticket without reopening it", async () => {
     const live = tempFleet();
     const { linear, ctx } = setup({ live });
     linear.add("DEMO-7");
-    await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-new/session" });
-    ctx.workerHandle = "ws-old/session";
-    const before = linear.writes.length;
-    expect(await refusal(releaseTicket(ctx, { ticket: "DEMO-7", reason: "late release" }))).toContain(
-      "you were replaced; stop here",
-    );
-    expect(linear.writes.length).toBe(before);
-    expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBeNull();
-    ctx.workerHandle = "ws-new/session";
-    await releaseTicket(ctx, { ticket: "DEMO-7", reason: "done" });
+    await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1/session" });
+    await linear.updateTicket("uuid-DEMO-7", { stateId: "st-done" });
+    expect(linear.get("DEMO-7").statusType).toBe("completed");
+    await releaseTicket(ctx, { ticket: "DEMO-7", reason: "superseded by another change" });
+    expect([linear.get("DEMO-7").stateId, labelsOf(linear, "DEMO-7")]).toEqual(["st-done", []]);
+    expect(linear.bodies.at(-1)).toBe("Agent status: released — superseded by another change");
     expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
   });
 

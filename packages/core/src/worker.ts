@@ -127,10 +127,15 @@ export const projectOf = (config: ArmadaConfig) => ({
   programRoot: config.tracker.programRoot,
 });
 
-export async function readOpenTicket(ctx: WorkerContext, id: string): Promise<Ticket> {
+async function readTicket(ctx: WorkerContext, id: string): Promise<Ticket> {
   const ticket = await ctx.linear.readTicket(id);
   if (!ticket)
     throw new Refusal(`ticket ${id} not found in Linear`, "armada status, to see the tickets of the program");
+  return ticket;
+}
+
+export async function readOpenTicket(ctx: WorkerContext, id: string): Promise<Ticket> {
+  const ticket = await readTicket(ctx, id);
   if (ticket.statusType === "completed" || ticket.statusType === "canceled")
     throw new Refusal(
       `${ticket.id} is ${ticket.statusType}; there is nothing to work on`,
@@ -667,14 +672,25 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
 
 // ------------------------------------------------------------------ release
 
-/** Gives a ticket back: agent labels removed, ticket moved back to not started, `released` status posted. */
+/** Gives a ticket back: agent labels removed, started tickets moved back, Done preserved, reason posted. */
 export async function releaseTicket(
   ctx: WorkerContext,
-  input: { ticket: string; reason: string; claim?: import("./runtime.ts").ClaimRef },
+  input: {
+    ticket: string;
+    reason: string;
+    claim?: import("./runtime.ts").ClaimRef;
+    completedOnly?: boolean;
+    requireOpen?: boolean;
+  },
 ): Promise<Outcome> {
   const { config, linear } = ctx;
   const groups = config.tracker.labels;
-  const ticket = await readOpenTicket(ctx, input.ticket);
+  // Callers that continue work (relaunch) retain their open-ticket guard.
+  const ticket = input.requireOpen ? await readOpenTicket(ctx, input.ticket) : await readTicket(ctx, input.ticket);
+  if (input.completedOnly && ticket.statusType !== "completed")
+    throw new Refusal(`${ticket.id}: --superseded requires a Done ticket`, "armada status");
+  if (ticket.statusType === "canceled")
+    throw new Refusal(`${ticket.id} is canceled; there is nothing to work on`, "armada status");
   if (!ticket.agentPhase && !ticket.agentRuntime && !activeClaimComments(ticket.comments).length && !input.claim)
     throw new Refusal(
       `${ticket.id} is not claimed; there is nothing to release`,

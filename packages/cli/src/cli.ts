@@ -198,7 +198,7 @@ const COMMAND_HELP: Record<string, string> = {
                     Prints the ticket's state and what waits in this worker's inbox.
 `,
   release: `  release --reason <text>
-                    Give the ticket back: agent labels removed, ticket moved back
+                    Give the ticket back: agent labels removed, started tickets moved back; Done stays Done
 `,
   ask: `  ask "<question>" [--secret <NAME>] [--options "<a> | <b>"] [--ticket <id>]
                     Worker: ask the coordinator. The phase becomes blocked, the question
@@ -273,8 +273,9 @@ const COMMAND_HELP: Record<string, string> = {
                     up to 100), report, heartbeat, PR checks and open inbox in local TZ.
                     Includes bound launches before claim; runtime is never changed
 `,
-  stop: `  stop <ticket> [--merged-pr <url>] [--claim-key <key>]
+  stop: `  stop <ticket> [--superseded "<why>" | --merged-pr <url> --claim-key <key>]
                     Archive a Conductor workspace after release or merge. Herdr worktrees must be clean and fully pushed.
+                    --superseded: coordinator releases and archives a Done ticket, preserving Done and posting the reason.
                     Merge recovery prints --merged-pr and --claim-key to protect replacement workers;
                     copy the complete command. Ordinary stop retains its existing behavior.
 `,
@@ -592,6 +593,7 @@ const VALUE_OPTIONS = [
   "kinds",
   "merged-pr",
   "claim-key",
+  "superseded",
   "at",
   "every",
   "parent",
@@ -717,7 +719,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   status: ["mine"],
   watch: ["stop", "name", "follow", "since", "tickets", "kinds", "mine", "for"],
   coordinator: ["from"],
-  stop: ["merged-pr", "claim-key"],
+  stop: ["merged-pr", "claim-key", "superseded"],
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
   hold: ["reason"],

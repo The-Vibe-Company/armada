@@ -37,7 +37,7 @@ You are a worker. You own exactly one ticket, named in your launch brief. You tu
    - **Review threads.** Fix or answer every review thread (including bots), then resolve each one.
 9. **Hand back.** `armada report ready-to-merge --pr <number> --sha <full 40-character head SHA> --shipped-with "ship-pr-dev"` (or `--shipped-with "fallback: <exact reason>"`). Armada refuses a short SHA, a SHA that is not the head, a red check, an open review thread or a missing acceptance pass. Then reply to the coordinator: how you shipped, the pull request URL, the full SHA, the CI state, your decisions, and what the next tickets need to know. **Do not chase main after the hand-back**: the coordinator merges it, and will message you if a conflict appears or it needs a change.
 
-If you stop without finishing, run `armada release --reason "<why>"` so the ticket is free again.
+If you stop without finishing, run `armada release --reason "<why>"` so the ticket is free again. If another change already made the ticket Done, release preserves Done and posts your reason; the coordinator can release and archive your runtime together with `armada stop ABC-12 --superseded "<why>"`. Never move a Done ticket back to In Progress just to release it.
 
 ## A ticket in several pull requests
 
