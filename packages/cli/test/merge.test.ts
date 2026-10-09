@@ -33,8 +33,10 @@ import {
 } from "../../core/test/support.ts";
 import { afterMerge } from "../src/after-merge.ts";
 import { run } from "../src/cli.ts";
+import { deliveringFleet } from "../src/deliveries.ts";
 import type { Exec, Io } from "../src/io.ts";
 import { ghMerge, ghUpdateBranch } from "../src/merge.ts";
+import { liveFleet } from "../src/worker.ts";
 
 test.each([
   ["unexpected end of JSON input", true],
@@ -121,6 +123,8 @@ test.each([
   "partial",
   "herdr",
   "unknown-outcome",
+  "unknown-outcome-handed-back",
+  "recording-outage",
   "shared",
   "unsupported",
   "failed",
@@ -153,9 +157,11 @@ test.each([
     );
   const reservedKeys: string[] = [];
   const recordedKeys: { ticket: string; key: string }[] = [];
+  let recordingDown = scenario === "recording-outage";
   const recordNotice = f.store.recordMergeNotice;
   f.store.recordMergeNotice = async (input) => {
     recordedKeys.push({ ticket: input.ticket, key: input.key });
+    if (recordingDown) throw new Error("recording service unavailable");
     return recordNotice(input);
   };
   const reserveNotice = f.store.prepareMergeNotice;
@@ -272,6 +278,7 @@ test.each([
       branch: BRANCH,
       at: NOW,
     });
+  let uncertainNotice = scenario.startsWith("unknown-outcome");
   const native: { args: string[]; input?: string }[] = [];
   const exec = f.io.exec as Exec;
   f.io.exec = async (command, args, options) => {
@@ -306,7 +313,7 @@ test.each([
         at: new Date(NOW.getTime() + 1000),
       });
     if (scenario === "failed") return { code: 4, stdout: "armada_launch_CANARY", stderr: "private runtime output" };
-    if (scenario === "unknown-outcome" && args[1] === "message")
+    if (uncertainNotice && args[1] === "message")
       return { code: 4, stdout: "", stderr: "lost reply after native write" };
     if (scenario === "replaced")
       await f.store.saveRuntimeHandle({
@@ -346,8 +353,27 @@ test.each([
   }
   const messages = () => native.filter((c) => c.args[1] === "message" || c.args[1] === "prompt");
   const delivers = ["overlap", "partial", "herdr", "shared", "before-archive", "fresh-own-transfer"].includes(scenario);
-  expect(messages()).toHaveLength(delivers || scenario === "unknown-outcome" ? 1 : 0);
-  if (delivers) {
+  expect(messages()).toHaveLength(
+    delivers || scenario.startsWith("unknown-outcome") || scenario === "recording-outage" ? 1 : 0,
+  );
+  if (scenario === "recording-outage") {
+    expect(o.notified[0]).toMatchObject({ delivered: true, detail: "delivered; Armada could not record the note" });
+    expect(f.store.items.filter((i) => i.kind === "note")).toHaveLength(0);
+    recordingDown = false;
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const retried = await afterMerge(
+        f.io,
+        parseConfig(DEMO_TOML),
+        resolveCredentials({ env: f.io.env }),
+        { ...o, hints: ["A refreshed hint"] },
+        { noArchive: true },
+      );
+      expect(retried.notified[0]?.delivered).toBe(true);
+      expect(messages()).toHaveLength(1);
+      expect(f.store.items.filter((i) => i.kind === "note")).toHaveLength(1);
+      expect(recordedKeys.at(-1)?.key).toBe(messages()[0]?.args.at(-1));
+    }
+  } else if (delivers) {
     expect(o.notified.map((n: { ticket: string; delivered: boolean }) => [n.ticket, n.delivered])).toEqual(
       scenario === "shared"
         ? [
@@ -391,16 +417,46 @@ test.each([
       expect(messages()).toHaveLength(1);
       expect(f.store.items.filter((i) => i.kind === "note")).toHaveLength(1);
     }
-  } else if (["unsupported", "failed", "replaced", "old-server", "unknown-outcome"].includes(scenario)) {
+  } else if (
+    ["unsupported", "failed", "replaced", "old-server", "unknown-outcome", "unknown-outcome-handed-back"].includes(
+      scenario,
+    )
+  ) {
     expect(o.notified[0]).toMatchObject({ ticket: "DEMO-11", delivered: false });
     expect(o.notified[0].text).toContain("git merge origin/main");
     expect(f.store.items.filter((i) => i.kind === "note")).toHaveLength(0);
-    if (scenario === "unknown-outcome") {
+    if (scenario.startsWith("unknown-outcome")) {
       const retry = await afterMerge(f.io, parseConfig(DEMO_TOML), resolveCredentials({ env: f.io.env }), o, {
         noArchive: true,
       });
-      expect(retry.notified[0]?.detail).toContain("unknown outcome");
+      expect(retry.notified[0]?.detail).toContain("Armada keeps it");
       expect(messages()).toHaveLength(1);
+      const config = parseConfig(DEMO_TOML);
+      const credentials = resolveCredentials({ env: f.io.env });
+      const fleet = liveFleet(f.io, config, credentials).fleet;
+      if (!fleet) throw new Error("missing fake Armada");
+      expect(await fleet.pendingDeliveries()).toHaveLength(1);
+      if (scenario.endsWith("handed-back"))
+        await f.store.recordEvent({
+          project: "widgets",
+          ticket: "DEMO-11",
+          kind: "report",
+          phase: "ready-to-merge",
+          message: "handed back before retry",
+          at: NOW,
+        });
+      uncertainNotice = false;
+      f.armada.clock.advance(60_001);
+      f.io.now = f.armada.clock.now;
+      const polling = deliveringFleet(f.io, fleet, config, credentials);
+      await polling.inbox({ coordinator: null, coordinatorName: "default", silentAfterMinutes: 20, etag: null });
+      await polling.inbox({ coordinator: null, coordinatorName: "default", silentAfterMinutes: 20, etag: null });
+      expect(await fleet.pendingDeliveries()).toEqual([]);
+      expect(messages()).toHaveLength(scenario.endsWith("handed-back") ? 1 : 2);
+      if (!scenario.endsWith("handed-back")) {
+        expect(messages()[1]?.args.at(-1)).toBe(messages()[0]?.args.at(-1));
+        expect(f.store.items.filter((i) => i.kind === "note")).toHaveLength(1);
+      }
     }
   } else expect(o.notified).toEqual([]);
   if (

@@ -3,6 +3,9 @@
 // The coordinator reads the inbox (`armada inbox`), delivers the answer in the
 // worker's session through the runtime guide, then records it (`armada answer`).
 // Runtime delivery is injected by the CLI; other runtimes use their guide.
+
+import type { Ticket } from "./linear-write.ts";
+import type { PendingLaunch, RuntimeHandle } from "./live.ts";
 import {
   entryKey,
   type Fleet,
@@ -63,6 +66,8 @@ export async function askCoordinator(ctx: WorkerContext, input: AskInput): Promi
 // ------------------------------------------------------------------ inbox
 
 export interface InboxReport {
+  pendingDeliveries?: { id: number; ticket: string; kind: string }[];
+  ownedPendingDeliveries?: { id: number; ticket: string; kind: string }[];
   waiting?: string[];
   ownedWaiting?: string[];
   slots?: { taken: number; max: number | null };
@@ -131,6 +136,8 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
   let items = first.items;
   let inFlight = first.inFlight ?? null;
   let waiting = first.waiting ?? [];
+  let pendingDeliveries = first.pendingDeliveries ?? [];
+  let ownedPendingDeliveries = first.ownedPendingDeliveries;
   let ownedWaiting = first.ownedWaiting;
   let slots = first.slots;
   let ownedInFlight = first.ownedInFlight;
@@ -144,6 +151,8 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
     inFlight,
     waiting,
     ownedWaiting,
+    pendingDeliveries,
+    ownedPendingDeliveries,
     slots,
     ...(ownedInFlight ? { ownedInFlight } : {}),
     ...(openJobs.length ? { openJobs } : {}),
@@ -163,6 +172,8 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
     items = read.items.map((e) => ({ ...e, new: !known.has(entryKey(e)) }));
     inFlight = read.inFlight ?? null;
     waiting = read.waiting ?? [];
+    pendingDeliveries = read.pendingDeliveries ?? [];
+    ownedPendingDeliveries = read.ownedPendingDeliveries;
     ownedWaiting = read.ownedWaiting;
     slots = read.slots;
     ownedInFlight = read.ownedInFlight;
@@ -209,6 +220,7 @@ const ANSWERABLE: InboxKind[] = [
   "decision",
   "linear-pending",
   "queue-refused",
+  "delivery-failed",
 ];
 
 /**
@@ -310,6 +322,7 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
       "decision",
       "linear-pending",
       "queue-refused",
+      "delivery-failed",
       "launch-failed",
       "launch-uncertain",
     ].includes(item.kind)
@@ -326,7 +339,6 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
     question === null
       ? item
       : await live(ctx, warnings, `read the item answered by #${item?.id}`, (fleet) => fleet.inboxItem(question));
-  const answerKind = answered?.kind === "plan" ? "plan" : "question";
   // Freeze the claim generation before tracker reads or terminal delivery.
   const claim =
     ticketId && ctx.deliverAnswer
@@ -350,11 +362,12 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
   if (automatic && generationAt && answeredItems.some((i) => i.createdAt < generationAt))
     throw new Refusal("the question belongs to an earlier worker claim; no answer was delivered", "armada inbox");
   let deliveredToRuntime = false;
-  let url = "";
+  let deliveryAttempts: number | undefined;
+  let deliveredText = text;
+  let ticket: Ticket | null = null;
   if (ticketId) {
-    const ticket = await linear.readTicket(ticketId);
+    ticket = await linear.readTicket(ticketId);
     if (!ticket) throw new Refusal(`ticket ${ticketId} not found in Linear`, "armada inbox");
-    url = ticket.url;
     warnings.push(...ticket.warnings);
     const integratedClaim = automatic && (!!launch || (!!claim && !claim.releasedAt));
     const ticketRuntime = runtime ?? ticket.agentRuntime;
@@ -364,55 +377,125 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
       if (input.note)
         throw new Refusal(
           `${ticket.id} has no agent phase: no worker holds it, so there is no one to tell`,
-          "armada status, to see which tickets are in flight",
+          "armada status",
         );
       warnings.push(`${ticket.id} has no agent phase (no worker holds it); the answer was not posted on the ticket`);
-    } else {
-      const ref =
-        item?.kind === "answer-request"
-          ? `Answers ${question === null ? "the open question or plan" : `${answerKind} #${question}`}, as ${item.author ?? "the owner"} asked from the dashboard (request #${item.id}).`
-          : itemId === null
-            ? null
-            : `Answers ${answerKind} #${itemId}.`;
-      // Delivery happens only after validation and before either record is written.
-      // Throwing leaves the question/plan open, with no successful answer comment.
-      if (ctx.deliverAnswer && integratedClaim) {
-        const delivered = await ctx.deliverAnswer({
-          ticket: ticket.id,
-          text,
-          claim,
-          launch,
-          item: itemId,
-          kind: input.note ? "note" : "answer",
-        });
-        if (delivered) {
-          deliveredToRuntime = true;
-          await ctx.checkAnswerTarget?.({ claim, launch });
-          lines.push(
-            `Delivered to ${ticket.id}'s ${runtimeNameOf(runtime) === "conductor" ? "Conductor" : runtime} session (${delivered.via}${delivered.queued ? ", queued" : ""}).`,
-          );
-        }
-      } else if (runtimeNameOf(ticketRuntime) === "claude-code") {
-        lines.push("Deliver with the armada-runtime-claude-code guide first; this command records the answer.");
+    } else if (ctx.deliverAnswer && integratedClaim) {
+      const delivered = await ctx.deliverAnswer({
+        ticket: ticket.id,
+        text,
+        claim,
+        launch,
+        item: itemId,
+        kind: input.note ? "note" : "answer",
+      });
+      if (delivered) {
+        deliveredToRuntime = true;
+        deliveryAttempts = delivered.attempts;
+        deliveredText = delivered.text ?? text;
+        lines.push(
+          `Delivered to ${ticket.id}'s ${runtimeNameOf(runtime) === "conductor" ? "Conductor" : runtime} session (${delivered.via}${delivered.queued ? ", queued" : ""}).`,
+        );
       }
-      if (ticket.agentPhase) {
-        await linear.comment(ticket.uuid, statusComment(ticket.agentPhase, input.note ? "note" : "answer", text, ref), {
-          beforeWrite: deliveredToRuntime
-            ? () => ctx.checkAnswerTarget?.({ claim, launch }) ?? Promise.resolve()
-            : undefined,
-        });
-        lines.push(`${input.note ? "Note" : "Answer"} posted on ${ticket.id} (${ticket.agentPhase}).`);
-      } else warnings.push(`${ticket.id} has no tracker phase; the delivered answer is recorded in Armada`);
+    } else if (runtimeNameOf(ticketRuntime) === "claude-code") {
+      lines.push("Deliver with the armada-runtime-claude-code guide first; this command records the answer.");
     }
   }
+  try {
+    return await recordDeliveredAnswer(ctx, {
+      ticket: ticketId,
+      text: deliveredText,
+      note: !!input.note,
+      item: itemId,
+      claim,
+      launch,
+      delivered: deliveredToRuntime,
+      deliveryAttempts,
+      readTicket: ticket,
+      readItem: item,
+      warnings,
+      lines,
+    });
+  } catch (error) {
+    if (deliveredToRuntime && !(error instanceof Refusal))
+      throw new Refusal(
+        `${ticketId}'s answer was delivered; Armada could not record it`,
+        "inspect the ticket before recording manually; never send it by hand too",
+      );
+    throw error;
+  }
+}
 
-  if (deliveredToRuntime) await ctx.checkAnswerTarget?.({ claim, launch });
+/** The recording half is shared by a confirmed command and watch redelivery. Never sends a runtime message. */
+export async function recordDeliveredAnswer(
+  ctx: WorkerContext,
+  input: {
+    ticket: string | null;
+    text: string;
+    note: boolean;
+    item: number | null;
+    claim: RuntimeHandle | null;
+    launch?: PendingLaunch | null;
+    delivered?: boolean;
+    deliveryAttempts?: number;
+    readTicket?: Ticket | null;
+    readItem?: StoredInboxItem | null;
+    warnings?: string[];
+    lines?: string[];
+  },
+): Promise<Outcome> {
+  const warnings = input.warnings ?? [];
+  const lines = input.lines ?? [];
+  const ticket = input.readTicket ?? (input.ticket ? await ctx.linear.readTicket(input.ticket) : null);
+  const item =
+    input.readItem ??
+    (input.item === null
+      ? null
+      : await live(ctx, warnings, "read the delivered answer's item", (fleet) => fleet.inboxItem(input.item ?? 0)));
+  const question = item?.kind === "answer-request" ? (item.request?.question ?? null) : null;
+  const answered =
+    question === null
+      ? item
+      : await live(ctx, warnings, "read the answered question", (fleet) => fleet.inboxItem(question));
+  const answerKind = answered?.kind === "plan" ? "plan" : "question";
+  const ref =
+    item?.kind === "answer-request"
+      ? `Answers ${question === null ? "the open question or plan" : `${answerKind} #${question}`}, as ${item.author ?? "the owner"} asked from the dashboard (request #${item.id}).`
+      : input.item === null
+        ? null
+        : `Answers ${answerKind} #${input.item}.`;
+  const check = input.delivered
+    ? () => ctx.checkAnswerTarget?.({ claim: input.claim, launch: input.launch ?? null }) ?? Promise.resolve()
+    : undefined;
+  if (ticket?.agentPhase) {
+    await check?.();
+    await ctx.linear.comment(
+      ticket.uuid,
+      statusComment(ticket.agentPhase, input.note ? "note" : "answer", input.text, ref),
+      { beforeWrite: check },
+    );
+    lines.push(`${input.note ? "Note" : "Answer"} posted on ${ticket.id} (${ticket.agentPhase}).`);
+  } else if (input.delivered)
+    warnings.push(`${input.ticket} has no tracker phase; the delivered answer is recorded in Armada`);
+  await check?.();
   const recorded = await live(ctx, warnings, `record the ${input.note ? "note" : "answer"}`, (fleet) =>
-    fleet.answer({ text, note: !!input.note, ticket: ticketId, item: itemId }),
+    fleet.answer({
+      text: input.text,
+      note: input.note,
+      ticket: input.ticket,
+      item: input.item,
+      ...(input.deliveryAttempts && input.deliveryAttempts > 1 ? { deliveryAttempts: input.deliveryAttempts } : {}),
+    }),
   );
   if (recorded) lines.push(recorded);
   if (!input.note) lines.push("The worker resumes once it reports its phase again.");
-  return { ticket: ticketId ?? `#${itemId}`, url, lines, warnings: [...new Set(warnings)], inbox: null };
+  return {
+    ticket: input.ticket ?? `#${input.item}`,
+    url: ticket?.url ?? "",
+    lines,
+    warnings: [...new Set(warnings)],
+    inbox: null,
+  };
 }
 
 /** A launch the coordinator will not carry out: closed in the inbox with the reason, nothing posted on the ticket. */

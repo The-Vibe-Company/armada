@@ -471,6 +471,11 @@ export function armadaApi(opts: ArmadaApiOptions) {
           "inbox/ticket",
           "validations",
           "reservations",
+          "deliveries/pending",
+          "deliveries/due",
+          // These writes are idempotent on the project and message key.
+          "deliveries/keep",
+          "deliveries/settle",
         ].includes(op),
       });
       if (status === 304) return null;

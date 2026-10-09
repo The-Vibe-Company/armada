@@ -213,10 +213,13 @@ armada inbox                   # coordinator: what waits, oldest first
 armada watch                   # coordinator, in the background: returns when something needs you
 armada inbox --wait            # returns when a new item arrives, or after --timeout (default 300 s)
 armada ack '#12' --reason "No further action needed" # deliberately skip a notice, with the reason on its ticket
-armada answer 12 "SQLite, for the first slice."                 # after delivering it in the worker's session
-armada answer 13 "approved"                                   # a plan, after delivering approval
+armada answer 12 "SQLite, for the first slice."                 # delivers and records the answer
+armada answer 13 "approved"                                   # delivers and records plan approval
 armada answer --note ABC-12 "main moved: bring it in before you ship"  # an unsolicited message, same path
 ```
+
+If Conductor does not confirm an answer or note, Armada keeps its original message id and masked text. The command exits 1; nothing is posted on Linear and the question stays open. Keep `armada watch` running: it retries with delays of 1, 2, 5, 10 and 20 minutes (six tries total). Rerunning the same command reuses the kept delivery. A successful newer answer retires the older one; a replaced or released worker is never sent the old answer. Unconfirmed merge notices use the same path and skip workers that handed back. A permanent refusal or exhausted tries creates one `delivery-failed` inbox item; inspect the session and record your decision with `armada answer <item> "<why>"`. Status, inbox and the stop hook keep pending deliveries visible. A confirmed send is never repeated if recording fails. Herdr deliveries have no message id: inspect before retrying. Never send a kept message by hand too. Deploy the API and migration before the CLI.
+
 
 - Hand-backs already in the merge queue show their position or drain step as in progress in the inbox, watch and dashboard. They need no new coordinator action. A worker reporting another phase clears its previous hand-back; its next `ready-to-merge` report wakes the watch again. Confirmed merges clear that PR's queue refusals and owner merge requests, with cleared ids in the result line. The next inbox read also clears notices for PRs merged elsewhere, using the stored GitHub reading.
 - `ask` reports the `blocked` phase with `Agent status: blocked — question: <first line>` (the rest and the numbered options below it) and adds a `question` item to the coordinator's inbox on Armada. The worker then stops and waits for the answer in its session, and reports the phase it resumes. It finds the ticket like `report`.

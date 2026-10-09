@@ -65,6 +65,14 @@ Plain watch also reminds about open questions, plans, unqueued hand-backs, owner
 
 Eligible notices are `queue-refused`, `deploy`, `job`, `unblocked`, `silent`, `quiet`, `stopped`, `not-started`, `job-silent` and `queue-stalled`. Derived entries print `key <entry key>` on their head line. The ticket note preserves the worker's phase. Comment creation is attempted once; never retry it blindly after a failure.
 
+## Kept deliveries
+
+An unconfirmed Conductor answer, note or merge notice stays in Armada. The command exits 1 without posting an answer on Linear or closing its question. Keep `armada watch` running: plain and follow modes retry at most three due deliveries per poll, with the same message id and stored masked text. The delays are 1, 2, 5, 10 and 20 minutes, with six tries including the first send. Rerunning the same answer command reuses that delivery; edited text creates another, and confirming it retires the older pending answer for that item.
+
+Before each send Armada checks the worker generation and ownership. Merge notices also skip sessions that handed back. A changed or released worker, a permanent refusal or six unconfirmed tries produces one `delivery-failed` inbox item naming the ticket and the first line of the message. Inspect the session, decide the next step, then `armada answer <failure item> "<why>"` records your reason without sending it. A later successful answer for the ticket also resolves its failure item. Never send a kept message by hand too.
+
+Confirmed delivery is terminal before Linear and inbox recording. A recording warning asks you to inspect the ticket; Armada never sends that confirmed message again. Pending deliveries appear in status and inbox and keep the stop hook listening. Without a watch they wait. Herdr and Claude Code have no keyed delivery and stay on their runtime guide's inspect-first path. Deploy the pending-delivery API and migration before this CLI.
+
 ## Worker caps
 
 `[policy] max_workers` caps project-wide worker sessions, including open claims waiting for merge and unclaimed launches. A full fleet refuses a new launch: use `armada launch <ticket> --when-unblocked` to wait for a slot, or `armada launch <ticket> --over-cap "<why>"` for a recorded bypass. Never use relaunch to bypass the cap; it replaces an existing worker. Urgent tickets pass automatically with a recorded reason. Status and re-arm lines show running workers separately from launches waiting for a slot. Without this setting, launches are uncapped; lowering it stops no worker.

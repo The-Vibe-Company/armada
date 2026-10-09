@@ -417,6 +417,7 @@ export async function readWatchState(
       : {}),
     ...(r.seenScope === "mine" || r.seenScope === "all" ? { seenScope: r.seenScope } : {}),
     inFlight: strings(r.inFlight),
+    ...(Array.isArray(r.pendingDeliveries) ? { pendingDeliveries: strings(r.pendingDeliveries) ?? [] } : {}),
     ...(Array.isArray(r.waiting) ? { waiting: strings(r.waiting) ?? [] } : {}),
     ...(readWorkerSlots(r.slots) ? { slots: readWorkerSlots(r.slots)! } : {}),
     ...(Array.isArray(r.openJobs)
@@ -429,6 +430,15 @@ export async function readWatchState(
     ...(typeof r.freshStart === "boolean" ? { freshStart: r.freshStart } : {}),
     ...(Array.isArray(r.eventIds)
       ? { eventIds: r.eventIds.filter((id: unknown) => Number.isSafeInteger(id) && Number(id) > 0).slice(-500) }
+      : {}),
+    ...(typeof r.deliveryConfirmed === "object" && r.deliveryConfirmed !== null && !Array.isArray(r.deliveryConfirmed)
+      ? {
+          deliveryConfirmed: Object.fromEntries(
+            Object.entries(r.deliveryConfirmed).filter(
+              (entry): entry is [string, string] => typeof entry[1] === "string",
+            ),
+          ),
+        }
       : {}),
     ...(typeof r.jobObserved === "object" && r.jobObserved !== null && !Array.isArray(r.jobObserved)
       ? {

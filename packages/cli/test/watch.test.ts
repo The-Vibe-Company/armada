@@ -1283,6 +1283,7 @@ describe("armada watch", () => {
     expect(c.err()).toBe("");
     expect(await readWatchState(c.paths, P)).toMatchObject({
       openJobs: [],
+      pendingDeliveries: [],
       root: COORDINATOR_ROOT,
       // A hand-back's key follows its text: handed back on a new head, it wakes the watch again.
       seen: [expect.stringMatching(/^#1@/)],
@@ -1967,8 +1968,15 @@ test("habit reminders join watch reasons once per session and preserve transcrip
     path === `${COORDINATOR_ROOT}/armada.toml`
       ? `${DEMO_TOML}\n[[deploy.target]]\nname = "web app"\ncheck = "Deploy web"\n`
       : null;
+  await updateWatchState(c.paths, P, { inFlight: [], pendingDeliveries: ["DEMO-2"] });
   const deploy = await stop("deploy-session");
   expect(deploy?.reason).toContain("armada deploy watch --sha <merge commit of #12> --target 'web app'");
+  expect(deploy?.reason).toContain("waiting for delivery");
+  const deliveryOnly = await stop("deploy-session");
+  expect(deliveryOnly?.reason).toContain("waiting for delivery");
+  expect(deliveryOnly?.reason).not.toContain("armada merge --finish");
+  expect(deliveryOnly?.reason).not.toContain("65 seconds");
+  await updateWatchState(c.paths, P, { pendingDeliveries: [] });
   await updateWatchState(c.paths, P, { claudeSessions: { "no-config": NOW.toISOString() } });
   io.readFile = async () => {
     throw new Error("unreadable config");

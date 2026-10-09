@@ -6,6 +6,7 @@ import {
   askCoordinator,
   type Credentials,
   checkInbox,
+  deliveryKey,
   entryKey,
   freshRuntimeState,
   type InboxEntry,
@@ -19,6 +20,7 @@ import {
   shellWord,
 } from "@armada/core";
 import { coordinatorName } from "./coordinator.ts";
+import { deliverKept } from "./deliveries.ts";
 import { type Io, UsageError } from "./io.ts";
 import { requireSignIn } from "./login.ts";
 import { detectCoordinator } from "./presence.ts";
@@ -90,6 +92,19 @@ export async function answer(io: Io, config: ArmadaConfig, credentials: Credenti
         deliverAnswer: async ({ ticket, text: maskedText, claim, launch, item, kind }) => {
           const { fleet } = liveFleet(io, config, credentials);
           if (!fleet) throw new Refusal("cannot read the runtime claim before delivery", "armada whoami");
+          const ref = launch ? launchRef(launch) : claim ? claimRef(claim) : null;
+          if (ref && runtimeFor(io, config, ref.runtime).can.keyedDelivery) {
+            const key = deliveryKey({
+              project: config.project.slug,
+              ticket,
+              claimedAt: ref.launchId ? null : ref.claimedAt,
+              launchId: ref.launchId,
+              item,
+              kind,
+              text: text.trim(),
+            });
+            return deliverKept(io, fleet, config, ref, { key, text: maskedText, item, kind });
+          }
           return deliverToRuntime(
             io,
             fleet,
@@ -192,11 +207,19 @@ export function renderEntries(
     out.push(
       'Not acting on an entry? armada ack <#id or key> --reason "<why>" records why; questions, plans and hand-backs clear only by answering or merging.',
     );
+  if (items.some((e) => e.kind === "delivery-failed"))
+    out.push(
+      'A kept message could not be delivered: inspect the session and record the next step with armada answer <item> "<why>". Never send a kept message by hand too.',
+    );
   return out;
 }
 
 export function renderInbox(r: InboxReport, next: Rearm): string {
   const out = renderEntries(r.project, r.items);
+  if (r.pendingDeliveries?.length)
+    out.push(
+      `${r.pendingDeliveries.length} answer(s) waiting for delivery (${r.pendingDeliveries.map((d) => d.ticket).join(", ")}); keep armada watch running.`,
+    );
   if (r.wait?.timedOut) out.push(`No new item within ${r.wait.timeoutSeconds} s.`);
   else if (r.wait) out.push("New items are marked *.");
   out.push(next.line);
@@ -236,15 +259,20 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
   const openJobs =
     name === "default" ? report.openJobs : (report.ownedOpenJobs ?? (scope === "mine" ? report.openJobs : undefined));
   const waiting = (name === "default" ? report.waiting : report.ownedWaiting) ?? [];
+  const pendingDeliveries = ((name === "default" ? report.pendingDeliveries : report.ownedPendingDeliveries) ?? []).map(
+    (d) => d.ticket,
+  );
   await remember(io, report.project, {
     ...shown(io, report.items, inFlight, openJobs, scope),
     waiting,
+    pendingDeliveries,
     slots: report.slots,
   });
   const open = report.items.filter((e) => !e.queue && (e.owner == null || e.owner === name)).length;
   const next = await rearmFor(io, report.project, {
     inFlight,
     waiting: waiting.length,
+    pendingDeliveries,
     slots: report.slots,
     open,
     openJobs,

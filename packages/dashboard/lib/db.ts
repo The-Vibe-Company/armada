@@ -1033,6 +1033,39 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "CREATE UNIQUE INDEX inbox_one_launch_failure ON inbox_items (project, ticket) WHERE resolved_at IS NULL AND kind IN ('launch-failed', 'launch-uncertain')",
     ],
   },
+  {
+    // THE-1437: keyed runtime answers survive an unavailable or crashed
+    // runtime. The payload and generation are immutable for one project/key;
+    // retry bookkeeping is fenced by the coordinator and server clock.
+    version: 51,
+    statements: [
+      `CREATE TABLE pending_deliveries (
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        project text NOT NULL,
+        delivery_key text NOT NULL,
+        ticket text NOT NULL,
+        item bigint,
+        kind text NOT NULL CHECK (kind IN ('answer', 'note', 'merge-note')),
+        text text NOT NULL CHECK (char_length(text) <= 100000),
+        runtime text NOT NULL,
+        handle text NOT NULL,
+        claimed_at timestamptz,
+        launch_id text,
+        branch text,
+        coordinator text NOT NULL,
+        created_at timestamptz NOT NULL,
+        attempts integer NOT NULL CHECK (attempts >= 1 AND attempts <= 6),
+        attempted_at timestamptz,
+        state text NOT NULL CHECK (state IN ('pending', 'delivered', 'abandoned')),
+        ended_at timestamptz,
+        reason text CHECK (reason IS NULL OR char_length(reason) <= 100000),
+        UNIQUE (project, delivery_key)
+      )`,
+      "CREATE INDEX pending_deliveries_due ON pending_deliveries (project, coordinator, state, attempted_at, attempts)",
+      "CREATE INDEX pending_deliveries_ticket ON pending_deliveries (project, ticket, state)",
+      "CREATE UNIQUE INDEX inbox_delivery_failed_open ON inbox_items (project, ticket) WHERE kind = 'delivery-failed' AND recipient = 'coordinator' AND ticket IS NOT NULL AND resolved_at IS NULL",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;
