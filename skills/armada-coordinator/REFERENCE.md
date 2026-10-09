@@ -58,6 +58,8 @@ Specs are direct children of the program root, titled `Spec N — Name` (`Spec N
 - `[tracker] spec_titles = "N/M"` keeps totals in every title; appending then needs `--apply` too.
 - Writes are sequential and stop at the first failure, listing what was not confirmed: inspect Linear before retrying.
 
+Check the printed project and state after creation. Fill in the **In short** template before cutting the spec's tickets, then run `armada lint <ticket>` on each one.
+
 When `armada merge` closes a spec's last open ticket, it closes the spec with a summary, unless the team's own parent auto-close does it.
 
 ## Secrets
