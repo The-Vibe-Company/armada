@@ -6,6 +6,7 @@ export * from "./brief.ts";
 export * from "./catchup.ts";
 export * from "./ci.ts";
 export * from "./config.ts";
+export * from "./coordinators.ts";
 export * from "./credentials.ts";
 export * from "./deferred.ts";
 export * from "./deploy.ts";

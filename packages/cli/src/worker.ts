@@ -93,6 +93,7 @@ export function statusLive(
       runtimeHandles: () => Promise<import("@armada/core").RuntimeHandle[]>;
       holds: () => Promise<import("@armada/core").MergeHold[]>;
       queue: () => Promise<import("@armada/core").QueueEntry[]>;
+      coordinators: () => Promise<import("@armada/core").CoordinatorRecord[]>;
     }
   | undefined {
   const { fleet } = liveFleet(io, config, credentials);
@@ -106,6 +107,7 @@ export function statusLive(
         deferredLaunches: () => fleet.deferredLaunches(),
         holds: () => fleet.holds(),
         queue: () => fleet.queueList(),
+        coordinators: () => fleet.coordinators(),
         runtimeHandles: () => observeRuntimes(io, fleet, config),
       }
     : undefined;

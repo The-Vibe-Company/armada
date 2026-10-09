@@ -303,8 +303,8 @@ describe("a newer Armada release", () => {
     expect(forge.calls.length).toBeGreaterThan(0);
     await t.inbox();
     expect(t.stderr()).toBe("");
-    expect(JSON.parse(await readFile(join(t.home, "armada", "releases.json"), "utf8"))).toEqual({
-      noticed: [{ version: "99.1.0", at: NOW.toISOString() }],
+    expect(JSON.parse(await readFile(join(t.home, "armada", "notices.json"), "utf8"))).toEqual({
+      noticed: [{ key: "release:99.1.0", at: NOW.toISOString() }],
     });
   });
 

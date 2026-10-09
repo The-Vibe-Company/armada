@@ -38,6 +38,7 @@ import { lint } from "./lint.ts";
 import { setupLocal } from "./local-setup.ts";
 import { login, logout, requireSignIn, whoami } from "./login.ts";
 import { MergeCommandError, merge, notMergedResult } from "./merge.ts";
+import { statusHints } from "./notices.ts";
 import { peek, requirePeekCoordinator } from "./peek.ts";
 import { recordPresence } from "./presence.ts";
 import { statusAll } from "./projects.ts";
@@ -505,7 +506,7 @@ Files:
     projects/<slug>.json  non-secret deploy settings for this project and machine
     coordinators.json  coordinator role per project and checkout
     watch/<project>[@<name>].*  the coordinator's watch: its lock, what you were shown, who is in flight
-    releases.json      daily release notices in status/inbox, with version and time.
+    notices.json       reserved release and command hints, with keys and times.
                        Only a CLI below the server minimum interrupts armada watch
 `;
 
@@ -874,7 +875,9 @@ async function status(io: Io, args: Args): Promise<number> {
     }
   }
   io.stdout(
-    args.json ? `${JSON.stringify({ ...report, ...(deploys ? { deploys } : {}) }, null, 2)}\n` : renderStatus(report),
+    args.json
+      ? `${JSON.stringify({ ...report, ...(deploys ? { deploys } : {}) }, null, 2)}\n`
+      : renderStatus(report, await statusHints(io, config, credentials, live?.coordinators)),
   );
   if (!args.json && deploys)
     for (const row of deploys.rows) io.stdout(`Deploy ${deployLine(row, (io.now ?? (() => new Date()))())}\n`);
