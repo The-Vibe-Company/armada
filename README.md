@@ -582,12 +582,15 @@ Use the [Bun](https://bun.sh) version pinned in `package.json`'s `packageManager
 bun install
 bun run armada status   # run the CLI from source
 bun run verify          # lint, typecheck, tests
+bun run build           # CLI and dashboard production builds
 ```
 
-When changing a package under `skills/`, run `bun run skills:bundle` to regenerate
-the text payload included in the published Node bundle, then `bun run armada skills
-update` to refresh this repository's pointers and vendored packages. The bundle test compares all
-source skill files byte for byte, including nested helpers and license notices.
+When changing a package under `skills/`, commit only its source files. The gitignored
+`packages/core/src/skills.generated.json` is generated automatically during install,
+tests (including direct `bun test`), typechecks, source CLI runs and builds. Packing
+and release build the CLI with the current skill text inlined for Node. Run
+`bun run armada skills update` to refresh this repository's pointers and vendored
+packages; `bun run skills:bundle` remains available for manual regeneration.
 
 See [AGENTS.md](https://github.com/The-Vibe-Company/armada/blob/main/AGENTS.md) for the layout and the rules.
 

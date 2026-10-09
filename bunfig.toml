@@ -1,0 +1,3 @@
+[test]
+# Direct bun test runs need the same current skill payload as builds.
+preload = ["./scripts/bundle-skills.ts"]

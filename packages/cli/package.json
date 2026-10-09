@@ -31,7 +31,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "bun build src/bin.ts --target node --outfile dist/armada.js",
+    "build": "bun ../../scripts/bundle-skills.ts && bun build src/bin.ts --target node --outfile dist/armada.js",
     "prepack": "bun run build && cp ../../README.md ../../LICENSE ."
   },
   "devDependencies": {
