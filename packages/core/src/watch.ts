@@ -63,8 +63,10 @@ export interface WatchState {
   /** Transcript cursors use a dedicated <project>.peek namespace, separate from fleet watch. */
   peek?: Record<string, string>;
   peekTail?: Record<string, PeekTail>;
-  /** Entries the coordinator was shown (`entryKey`), by `inbox` or `watch`: they do not wake a watch again. */
+  /** Entries shown by inbox or watch; follow mode retains this history. */
   seen: string[];
+  /** First show and number of reminders delivered; listings never reset either. */
+  shownAt?: Record<string, { first: string; level: number }>;
   /** Scope of the last pruning read; a narrower read preserves broader history. */
   seenScope?: "mine" | "all";
   /** Tickets a worker held at the last read, the coordinator's own excluded; null when unknown. */
@@ -79,6 +81,45 @@ export interface WatchState {
 }
 
 export const EMPTY_WATCH_STATE: WatchState = { root: null, seen: [], inFlight: null, readAt: null, stopped: null };
+
+const REMINDED: readonly InboxEntryKind[] = [
+  "question",
+  "plan",
+  "hand-back",
+  "answer-request",
+  "launch-request",
+  "merge-request",
+  "release-request",
+  "plan-changes",
+  "decision",
+  "runtime-blocked",
+  "queue-refused",
+  "not-started",
+  "stopped",
+];
+
+/** Plain watch wakes only for the selected coordinator's own and unowned work. */
+export function wakingEligible(entry: InboxEntry, coordinatorName = "default"): boolean {
+  return !entry.queue && (entry.owner == null || entry.owner === coordinatorName);
+}
+
+/** Intervals double (10, then 20, then 40 more minutes), anchored to the first show. */
+export function remindDue(
+  entry: InboxEntry,
+  shownAt: WatchState["shownAt"],
+  now: Date,
+  minutes: number,
+  coordinatorName = "default",
+): boolean {
+  const shown = shownAt?.[entryKey(entry)];
+  return (
+    minutes > 0 &&
+    !!shown &&
+    wakingEligible(entry, coordinatorName) &&
+    REMINDED.includes(entry.kind) &&
+    now.getTime() - Date.parse(shown.first) >= minutes * 60_000 * (2 ** (shown.level + 1) - 1)
+  );
+}
 
 /**
  * A failure worth waiting out: Armada unreachable, timed out, overloaded or
@@ -109,6 +150,9 @@ export interface WatchOptions {
   notStartedMinutes?: number;
   /** Entries already shown to the coordinator (`WatchState.seen`). */
   seen: readonly string[];
+  shownAt?: WatchState["shownAt"];
+  /** policy.coordinator_minutes; zero disables reminders. */
+  coordinatorMinutes?: number;
   now: () => Date;
   sleep: (ms: number) => Promise<void>;
   /** After every read that answered: the entries and tickets in flight, to keep in the watch state. */
@@ -133,6 +177,7 @@ export interface WatchOptions {
 }
 
 export interface WatchReport {
+  shownAt: NonNullable<WatchState["shownAt"]>;
   waiting?: string[];
   ownedWaiting?: string[];
   slots?: { taken: number; max: number | null };
@@ -190,6 +235,7 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
   const pollMs = o.pollMs ?? WATCH_POLL_MS;
   const idlePollMs = o.idlePollMs ?? WATCH_IDLE_POLL_MS;
   let known = new Set(o.seen);
+  const shownAt = { ...o.shownAt };
   let etag: string | null = null;
   let items: InboxEntry[] = [];
   let inFlight: string[] | null = null;
@@ -201,20 +247,28 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
   let ownedOpenJobs: number[] | undefined;
   let failures = 0;
   const warnings = new Set<string>();
-  const report = (outcome: WatchReport["outcome"]): WatchReport => ({
-    project: o.project,
-    generatedAt: o.now().toISOString(),
-    outcome,
-    items,
-    inFlight,
-    waiting,
-    ownedWaiting,
-    slots,
-    ...(ownedInFlight ? { ownedInFlight } : {}),
-    ...(openJobs.length ? { openJobs } : {}),
-    ...(ownedOpenJobs ? { ownedOpenJobs } : {}),
-    warnings: [...warnings],
-  });
+  const report = (outcome: WatchReport["outcome"]): WatchReport => {
+    if (outcome === "items")
+      for (const item of items) {
+        const key = entryKey(item);
+        shownAt[key] ??= { first: o.now().toISOString(), level: 0 };
+      }
+    return {
+      project: o.project,
+      generatedAt: o.now().toISOString(),
+      shownAt,
+      outcome,
+      items,
+      inFlight,
+      waiting,
+      ownedWaiting,
+      slots,
+      ...(ownedInFlight ? { ownedInFlight } : {}),
+      ...(openJobs.length ? { openJobs } : {}),
+      ...(ownedOpenJobs ? { ownedOpenJobs } : {}),
+      warnings: [...warnings],
+    };
+  };
   for (;;) {
     if (o.until && o.now() >= o.until) return report("timeout");
     let read: Awaited<ReturnType<Fleet["inbox"]>>;
@@ -225,8 +279,7 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
         const release = await untilAborted(o.signal, () => o.release?.());
         if (release) {
           items = [...items.filter((e) => e.kind !== "version"), { ...release, new: !known.has(entryKey(release)) }];
-          if (items.some((e) => e.new && !e.queue && (e.owner == null || e.owner === (o.coordinatorName ?? "default"))))
-            return report("items");
+          if (items.some((e) => e.new && wakingEligible(e, o.coordinatorName))) return report("items");
           await untilAborted(o.signal, () => o.sleep(boundedWait(o, pollMs)));
           continue;
         }
@@ -241,6 +294,9 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     failures = 0;
     if (read) {
       items = read.items.map((e) => ({ ...e, new: !known.has(entryKey(e)) }));
+      const openKeys = new Set(items.map(entryKey));
+      for (const key of Object.keys(shownAt))
+        if (!openKeys.has(key) && !key.startsWith("version:")) delete shownAt[key];
       inFlight = read.inFlight ?? null;
       waiting = read.waiting ?? [];
       ownedWaiting = read.ownedWaiting;
@@ -268,8 +324,18 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     const release = (await untilAborted(o.signal, () => o.release?.())) ?? null;
     items = items.filter((e) => e.kind !== "version");
     if (release) items.push({ ...release, new: !known.has(entryKey(release)) });
-    if (items.some((e) => e.new && !e.queue && (e.owner == null || e.owner === (o.coordinatorName ?? "default"))))
-      return report("items");
+    for (const entry of items) {
+      const key = entryKey(entry);
+      // Old states retain seen keys, but have no reminder clock yet.
+      if (!shownAt[key] && o.seen.includes(key)) shownAt[key] = { first: o.now().toISOString(), level: 0 };
+      const shown = shownAt[key];
+      if (shown && remindDue(entry, shownAt, o.now(), o.coordinatorMinutes ?? 10, o.coordinatorName)) {
+        entry.reminder = true;
+        entry.waitingSince = shown.first;
+        shownAt[key] = { ...shown, level: shown.level + 1 };
+      }
+    }
+    if (items.some((e) => (e.new || e.reminder) && wakingEligible(e, o.coordinatorName))) return report("items");
     if (read && inFlight !== null && !inFlight.length && !openJobs.length && !waiting.length && !items.length)
       return report("nothing");
     await untilAborted(o.signal, () =>

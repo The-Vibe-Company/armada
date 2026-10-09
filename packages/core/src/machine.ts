@@ -377,6 +377,25 @@ export async function readWatchState(
       : {}),
     root: stringOr(r.root),
     seen: strings(r.seen) ?? [],
+    ...(typeof r.shownAt === "object" && r.shownAt !== null && !Array.isArray(r.shownAt)
+      ? {
+          shownAt: Object.fromEntries(
+            Object.entries(r.shownAt)
+              .filter(([_, v]) => {
+                if (typeof v !== "object" || v === null) return false;
+                const s = v as Record<string, unknown>;
+                return (
+                  typeof s.first === "string" &&
+                  Number.isFinite(Date.parse(s.first)) &&
+                  Number.isSafeInteger(s.level) &&
+                  Number(s.level) >= 0 &&
+                  Number(s.level) <= 52
+                );
+              })
+              .slice(-500),
+          ) as NonNullable<WatchState["shownAt"]>,
+        }
+      : {}),
     ...(r.seenScope === "mine" || r.seenScope === "all" ? { seenScope: r.seenScope } : {}),
     inFlight: strings(r.inFlight),
     ...(Array.isArray(r.waiting) ? { waiting: strings(r.waiting) ?? [] } : {}),
@@ -549,6 +568,34 @@ export async function updateWatchState(
         ...patch,
         seen: keys.filter((key) => !discarded.has(key)).slice(-500),
         seenScope: coversPrevious ? patch.seenScope : "all",
+        shownAt: Object.fromEntries(
+          keys
+            .filter((key) => !discarded.has(key))
+            .slice(-500)
+            .flatMap((key) => {
+              const old = before?.shownAt?.[key];
+              const next = patch.shownAt?.[key];
+              if (old) return [[key, { first: old.first, level: Math.max(old.level, next?.level ?? 0) }]];
+              return next ? [[key, next]] : [];
+            }),
+        ),
+      };
+    } else if (patch.shownAt) {
+      // Startup writes a partial cache from an earlier read. Preserve clocks
+      // added or advanced by a listing before this update acquired the lock.
+      const incoming = patch.shownAt;
+      const current = before?.shownAt ?? {};
+      const keys = [...Object.keys(incoming).filter((key) => !Object.hasOwn(current, key)), ...Object.keys(current)];
+      patch = {
+        ...patch,
+        shownAt: Object.fromEntries(
+          keys.slice(-500).flatMap((key) => {
+            const old = current[key];
+            const next = incoming[key];
+            if (old) return [[key, { first: old.first, level: Math.max(old.level, next?.level ?? 0) }]];
+            return next ? [[key, next]] : [];
+          }),
+        ),
       };
     }
     const state = { ...EMPTY_WATCH_STATE, ...before, ...patch };

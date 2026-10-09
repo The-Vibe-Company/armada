@@ -57,6 +57,11 @@ export const COMMANDS: { name: string; role: "both" | "coordinator" | "worker" |
   { name: "done", role: "coordinator", what: "Close a design ticket the owner approved" },
   { name: "hold", role: "coordinator", what: "Pause merges with a reason, then explicitly resume them" },
   { name: "inbox", role: "coordinator", what: "Questions, plans, requests, hand-backs, silent workers" },
+  {
+    name: "ack",
+    role: "coordinator",
+    what: "Record why a notice needs no action; questions and plans still need answers",
+  },
   { name: "watch", role: "coordinator", what: "Wait in the background until something needs you" },
   { name: "peek", role: "coordinator", what: "See a worker’s live state, reply, commands, checks and questions" },
   { name: "stop", role: "coordinator", what: "Stop a local worker after its work is pushed" },

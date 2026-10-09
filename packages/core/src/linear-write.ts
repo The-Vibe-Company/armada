@@ -89,6 +89,8 @@ export interface TicketChange {
 }
 
 export interface CommentWriteOptions {
+  /** A notice already recorded elsewhere must not retry comment creation. */
+  retry?: false;
   /** Recheck caller scope immediately before every physical post, including retries. */
   beforeWrite?: () => Promise<void>;
 }
@@ -287,7 +289,7 @@ async function postOnce(
     return doFetch(url, init);
   };
   const data = await gql<{ commentCreate: { success: boolean; comment: { id: string } | null } }>(
-    { ...opts, fetch: guardedFetch, retry: true },
+    { ...opts, fetch: guardedFetch, retry: options?.retry !== false },
     COMMENT_MUTATION,
     { input: { issueId: uuid, body } },
   );

@@ -785,7 +785,8 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
   let storedConfig: ArmadaConfig | undefined;
   if (
     op === "validate" ||
-    ((op === "request" || op === "inbox" || op === "launch-requests") && caller.kind === "organization") ||
+    ((op === "request" || op === "inbox" || op === "launch-requests" || op === "ack") &&
+      caller.kind === "organization") ||
     op === "overlap" ||
     op === "report"
   ) {
