@@ -328,6 +328,14 @@ function peekTails(value: unknown): Record<string, PeekTail> {
 }
 
 /** The project's watch state; null when there is none or it cannot be read as one. */
+function readWorkerSlots(value: unknown): WatchState["slots"] {
+  if (!value || typeof value !== "object") return undefined;
+  const { taken, max } = value as { taken?: unknown; max?: unknown };
+  if (typeof taken !== "number" || !Number.isSafeInteger(taken) || taken < 0) return undefined;
+  if (max !== null && (typeof max !== "number" || !Number.isSafeInteger(max) || max <= 0)) return undefined;
+  return { taken, max };
+}
+
 export async function readWatchState(
   paths: MachinePaths,
   project: string,
@@ -381,6 +389,8 @@ export async function readWatchState(
     seen: strings(r.seen) ?? [],
     ...(r.seenScope === "mine" || r.seenScope === "all" ? { seenScope: r.seenScope } : {}),
     inFlight: strings(r.inFlight),
+    ...(Array.isArray(r.waiting) ? { waiting: strings(r.waiting) ?? [] } : {}),
+    ...(readWorkerSlots(r.slots) ? { slots: readWorkerSlots(r.slots)! } : {}),
     ...(Array.isArray(r.openJobs)
       ? { openJobs: r.openJobs.filter((id: unknown) => Number.isSafeInteger(id) && Number(id) > 0) }
       : {}),

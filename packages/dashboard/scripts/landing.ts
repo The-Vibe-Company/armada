@@ -81,6 +81,7 @@ export async function landingTranscript(now = RECORDED_AT): Promise<TerminalComm
     openInboxItems: async () => items,
     openRuntimeHandles: async () => handles,
     pendingLaunches: async () => [],
+    listCoordinators: async () => [],
     listJobs: async () => [],
     queueList: async () => [],
     getLease: async () => null,
