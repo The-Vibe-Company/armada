@@ -19,7 +19,14 @@ export interface JobConfig {
 export function deployEnvName(name: string): boolean {
   return (
     /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) &&
-    !["__proto__", "constructor", "prototype", "ARMADA_DEPLOY_SHA", "ARMADA_DEPLOY_TARGET"].includes(name)
+    ![
+      "__proto__",
+      "constructor",
+      "prototype",
+      "ARMADA_DEPLOY_SHA",
+      "ARMADA_DEPLOY_TARGET",
+      "ARMADA_DEPLOY_SINCE",
+    ].includes(name)
   );
 }
 
@@ -32,6 +39,7 @@ export interface DeployTarget {
   githubEnvironment: string | null;
   liveShaCommand: string | null;
   check?: string | null;
+  redeploy?: string | null;
   smoke: string | null;
   timeoutMinutes: number;
   pauseOnFailure: boolean;
@@ -682,6 +690,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         "github_environment",
         "live_sha_command",
         "check",
+        "redeploy",
         "smoke",
         "timeout_minutes",
         "pause_on_failure",
@@ -725,6 +734,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       githubEnvironment,
       liveShaCommand,
       check,
+      ...(row.redeploy === undefined ? {} : { redeploy: optional("redeploy") }),
       smoke: optional("smoke"),
       timeoutMinutes: typeof timeoutMinutes === "number" ? timeoutMinutes : 20,
       pauseOnFailure: row.pause_on_failure !== false,
@@ -1082,6 +1092,8 @@ repository = ${q(p.repository)}
 ## requires_env = ["DEPLOY_LINK_DIR"]
 ## On each coordinator machine: armada config set deploy.env.DEPLOY_LINK_DIR /path/to/linked-service
 ## Machine settings win over the process environment; missing settings skip without a hold.
+# redeploy = "./scripts/redeploy.sh" # accept a new deploy of the latest build; never roll back
+## check reports 2 for deploys started before ARMADA_DEPLOY_SINCE, when set.
 # smoke = "curl -fsS https://example.test/health"  # without smoke, a live but broken service reads healthy
 # timeout_minutes = 20  # 1–120; smoke shares this deadline
 # pause_on_failure = true

@@ -158,7 +158,11 @@ test("fleet failure creates one deploy hold and inbox item; worker deploy calls 
   expect(items[0]).toMatchObject({ kind: "deploy" });
   expect(items[0]?.body).toContain(sha);
   expect(items[0]?.body).toContain("last build lines");
-  for (const op of ["deploy/record", "deploy/state"])
+  const retryReq = { ...req, op: "deploy/retry", input: { target: "api" } };
+  expect((await serveFleet(store, retryReq, { now: () => NOW })).status).toBe(200);
+  expect((await store.deployState("widgets", { target: "api", sha }))[0]?.attempt).toBe(2);
+  expect((await serveFleet(store, retryReq, { now: () => NOW })).status).toBe(409);
+  for (const op of ["deploy/record", "deploy/state", "deploy/retry"])
     expect(
       (await serveFleet(store, { ...req, op, caller: { kind: "worker", ticket: "DEMO-7" } }, { now: () => NOW }))
         .status,
@@ -181,7 +185,13 @@ test("GitHub deploy adapter reads exact environment and SHA comparison distingui
           data: {
             repository: {
               deployments: {
-                nodes: [{ commit: { oid: newer }, latestStatus: { state: "ERROR", description: "build failed" } }],
+                nodes: [
+                  {
+                    createdAt: NOW.toISOString(),
+                    commit: { oid: newer },
+                    latestStatus: { state: "ERROR", description: "build failed" },
+                  },
+                ],
               },
             },
           },
@@ -193,11 +203,21 @@ test("GitHub deploy adapter reads exact environment and SHA comparison distingui
   };
   expect(await fetchLiveDeploy({ ...options, environment: "production" })).toEqual({
     sha: newer,
+    createdAt: NOW.toISOString(),
     state: "error",
     detail: "production: error\nbuild failed",
   });
   expect(await fetchShaComparison({ ...options, base: sha, head: newer })).toBe(true);
   expect(calls).toBe(2);
+  expect(
+    (
+      await fetchLiveDeploy({
+        ...options,
+        environment: "production",
+        since: new Date(NOW.getTime() + 1000).toISOString(),
+      })
+    ).state,
+  ).toBe("pending");
   expect(
     await fetchShaComparison({
       ...options,
