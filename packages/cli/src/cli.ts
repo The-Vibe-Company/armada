@@ -66,7 +66,8 @@ const COMMAND_HELP: Record<string, string> = {
                     Set or remove a non-secret deploy setting for this project on this machine.
 `,
   deploy: `  deploy status [--json]
-  deploy watch --sha <sha> --target <name>
+  deploy retry <target> [--no-redeploy]
+  deploy watch --sha <sha> --target <name> [--attempt <n>] [--since <ISO>]
                     Watch a declared deploy and smoke check; failures pause merges.
 `,
   coordinator: `  coordinator use <name>
@@ -250,7 +251,11 @@ const COMMAND_HELP: Record<string, string> = {
                     --mine filters events and inbox by coordinator ownership, including unowned entries.
                     Named watches default to --mine; --all sees the whole fleet.
                     Plain watch wakes only for your own and unowned items, even with --all.
-                    --for <minutes> ends either watch cleanly with a resume command.
+                    A second plain watch waits locally for the verified holder's result,
+                    or takes over if it dies without one; --stop ends its waiters too.
+                    Under CLAUDECODE, default 100 min or 90% of a learned shorter limit
+                    (minimum 5 min); --for <minutes> overrides it. Plain timeouts print
+                    the resume command and re-arm line on stdout.
   watch --stop [--name <name>]      Stop only this project's verified watch and release its lock. Local,
                     no sign-in needed. Never stop a watch just to read inbox or status
 `,
@@ -555,6 +560,7 @@ interface Args {
 }
 
 const VALUE_OPTIONS = [
+  "attempt",
   "over-cap",
   "runs",
   "finish",
@@ -645,6 +651,7 @@ const FLAG_OPTIONS = [
   "close",
   "no-archive",
   "no-notify",
+  "no-redeploy",
   "prompt",
   "profile-line",
   "wait",
@@ -665,7 +672,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   lint: ["ready"],
   job: ["ticket", "ref", "state", "progress"],
   peek: ["actions"],
-  deploy: ["sha", "target"],
+  deploy: ["sha", "target", "attempt", "since", "no-redeploy"],
   reserve: ["ticket", "value", "next", "floor", "note", "list"],
   unreserve: ["ticket"],
   ci: ["sha", "branch", "rerun"],
@@ -1135,6 +1142,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       }
     }
     if (args.command === "watch") {
+      const startedAt = (io.now ?? (() => new Date()))();
       const { path, text } = await findConfig(io, args.config, "watch", args.project);
       const config = parseConfig(text, path);
       if (args.options.stop === "true") {
@@ -1143,8 +1151,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       }
       if (args.options.name) throw new UsageError("--name goes with watch --stop");
       const { credentials } = await loadCredentials(io, { armada: false, project: config.project.slug });
-      await recordPresence(io, config, credentials);
-      return await watch(io, config, credentials, args, path);
+      return await watch(io, config, credentials, args, path, startedAt);
     }
     if (args.command === "hook")
       return await hookStop(io, args.rest, (at) =>
