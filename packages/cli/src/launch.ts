@@ -16,6 +16,8 @@ import {
   chooseProfile,
   chooseValidations,
   DEFAULT_ARMADA_API_URL,
+  DEFERRED_LAUNCH_BACKOFF_MINUTES,
+  type DeferredLaunch,
   fetchBriefTicket,
   fetchProgram,
   HERDR_HARNESSES,
@@ -131,6 +133,7 @@ export async function prepareLaunch(
   version: string,
   configPath: string,
   replacement?: { branch: string; coordinator?: string | null; preApprovalReason?: string; command?: string },
+  deferred?: DeferredLaunch,
 ) {
   const [input, ...extra] = args.rest;
   const o = args.options;
@@ -160,7 +163,7 @@ export async function prepareLaunch(
     if (error instanceof ProfileError) throw new UsageError(error.message);
     throw error;
   }
-  const notes = await readNotes(io, o.notes);
+  const notes = o.notes !== undefined ? await readNotes(io, o.notes) : (deferred?.notes ?? null);
   const signIn = requireSignIn(credentials);
   if (!credentials.linearApiKey) throw missingKey(LINEAR_KEY);
   if (!io.exec) throw new UsageError("launch needs process execution");
@@ -172,6 +175,8 @@ export async function prepareLaunch(
     fetchProgram({ ...linear, rootId: config.tracker.programRoot, labels: config.tracker.labels, now }),
   ]);
   if (!ticket) throw new UsageError(`ticket ${ticketId} not found in Linear`);
+  if (deferred && !ticket.labels.includes(config.tracker.readyLabel))
+    throw new UsageError(`${ticketId} lacks ${config.tracker.readyLabel}; waiting launches require the ready label`);
   if (ticket.statusType === "completed" || ticket.statusType === "canceled")
     throw new UsageError(`${ticketId} is ${ticket.status}; there is nothing to launch`);
   if (!program.issues.some((i) => i.id === ticketId))
@@ -418,12 +423,38 @@ export async function launchWorker(
   version: string,
   configPath: string,
   bindLaunch?: BindLaunch,
+  deferred?: DeferredLaunch,
 ) {
-  const prepared = await prepareLaunch(io, config, credentials, args, version, configPath);
+  const { fleet } = liveFleet(io, config, credentials);
+  const automatic = !!deferred;
+  if (!deferred && fleet)
+    deferred = (await fleet.deferredLaunches()).find((r) => r.ticket === args.rest[0]?.toUpperCase());
+  if (deferred) {
+    args = {
+      ...args,
+      options: {
+        ...(deferred.pinned !== false && deferred.profile
+          ? {
+              profile: deferred.profile,
+              reason: deferred.profileReason ?? "deferred launch requested by the coordinator",
+            }
+          : {}),
+        ...(deferred.runtime ? { runtime: deferred.runtime } : {}),
+        ...args.options,
+      },
+    };
+  }
+  const prepared = await prepareLaunch(io, config, credentials, args, version, configPath, undefined, deferred);
   if (typeof prepared === "number") return prepared;
   if (args.options["dry-run"] === "true") return printLaunchPlan(prepared);
-  const { fleet } = liveFleet(io, config, credentials);
   if (!fleet) throw new UsageError("launch needs Armada's live fleet");
+  if (deferred && !automatic) {
+    const attempt = await fleet.attemptDeferredLaunch({
+      id: deferred.id,
+      backoffMinutes: DEFERRED_LAUNCH_BACKOFF_MINUTES,
+    });
+    if (!attempt.ok) throw new UsageError(`${deferred.ticket}: ${attempt.why}`);
+  }
   return withLaunchLease(io, fleet, prepared.ticketId, async () => {
     const result = await executeLaunch(prepared, bindLaunch);
     printLaunch(prepared, result);
@@ -733,7 +764,7 @@ export async function withLaunchLease<T>(
   }
 }
 
-async function readNotes(io: Io, path: string | undefined): Promise<string | null> {
+export async function readNotes(io: Io, path: string | undefined): Promise<string | null> {
   if (path === undefined) return null;
   let text: string | null;
   try {
@@ -852,17 +883,24 @@ async function deferLaunch(
   if (!input || extra.length || !/^[A-Za-z][A-Za-z0-9]{0,15}-\d{1,9}$/.test(input))
     throw new UsageError("deferred launch needs a ticket: armada launch <ticket> --when-unblocked");
   for (const key of Object.keys(args.options))
-    if (!["when-unblocked", "after", "profile"].includes(key))
+    if (!["when-unblocked", "after", "profile", "runtime", "notes", "reason"].includes(key))
       throw new UsageError(
         `--${key} cannot be stored with --when-unblocked; use it when launching the unblocked ticket`,
       );
   requireSignIn(credentials);
   const { fleet, warning } = liveFleet(io, config, credentials);
   if (!fleet) throw new UsageError(warning ?? "deferred launches need Armada");
+  if (args.options.runtime && !["conductor", "herdr"].includes(args.options.runtime))
+    throw new UsageError("--runtime must be conductor or herdr");
+  if (args.options.reason && !args.options.profile) throw new UsageError("--reason goes with --profile");
+  const notes = await readNotes(io, args.options.notes);
   const request = await fleet.deferLaunch({
     ticket: input.toUpperCase(),
     profile: args.options.profile ?? null,
     after: args.options.after ?? null,
+    runtime: args.options.runtime ?? null,
+    notes,
+    reason: args.options.reason ?? null,
   });
   const previous = (await watchOf(io, config.project.slug)).state;
   const inFlight = previous?.inFlight ?? [];
@@ -874,7 +912,9 @@ async function deferLaunch(
   io.stdout(
     args.json
       ? `${JSON.stringify({ ...request, watch }, null, 2)}\n`
-      : `${request.ticket} will launch once ${request.reason?.startsWith("waits for a worker slot") ? "a worker slot frees" : `${request.blockers?.join(", ")} ${request.blockers?.length === 1 ? "is" : "are"} done`} (request #${request.id}).\n${watch.line}\n`,
+      : request.renewed
+        ? `${request.ticket} request #${request.id} renewed until ${request.expiresAt}.\n${watch.line}\n`
+        : `${request.ticket} will launch once ${request.reason?.startsWith("waits for a worker slot") ? "a worker slot frees" : `${request.blockers?.join(", ")} ${request.blockers?.length === 1 ? "is" : "are"} done`} (request #${request.id}).\n${watch.line}\n`,
   );
   return 0;
 }

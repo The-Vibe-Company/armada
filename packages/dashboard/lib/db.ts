@@ -1012,6 +1012,20 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     ],
   },
   {
+    // THE-1432: renewable waiting launches, current routing and atomic fire admission.
+    version: 49,
+    statements: [
+      "ALTER TABLE inbox_items ADD COLUMN request_pinned boolean NOT NULL DEFAULT true",
+      "ALTER TABLE inbox_items ADD COLUMN request_expires_at timestamptz",
+      "ALTER TABLE inbox_items ADD COLUMN request_attempts int NOT NULL DEFAULT 0",
+      "ALTER TABLE inbox_items ADD COLUMN request_attempted_at timestamptz",
+      "ALTER TABLE inbox_items ADD COLUMN request_runtime text",
+      "ALTER TABLE inbox_items ADD COLUMN request_notes text",
+      "ALTER TABLE inbox_items ADD COLUMN request_reason text",
+      "UPDATE inbox_items SET request_expires_at = LEAST(created_at + interval '7 days', CURRENT_TIMESTAMP + interval '7 days') WHERE request_deferred",
+    ],
+  },
+  {
     // THE-1429: one actionable launch outcome per ticket, fenced by its launch generation.
     version: 50,
     statements: [

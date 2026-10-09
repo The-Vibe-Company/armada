@@ -1,10 +1,30 @@
 // Deferred launch state is derived from Linear's relations, never another dependency list.
 import { shellWord } from "./brief.ts";
+import type { ArmadaConfig } from "./config.ts";
 import { inFlight } from "./fleet.ts";
-import type { HandBackSnapshot, InboxItem, LatestEvent, RuntimeHandle } from "./live.ts";
+import type { HandBackSnapshot, InboxItem, LatestEvent, PendingLaunch, RuntimeHandle } from "./live.ts";
 import { isClosed, type Model } from "./model.ts";
+import { routeProfile } from "./routing.ts";
+
+export const DEFERRED_LAUNCH_DAYS = 7;
+export const DEFERRED_LAUNCH_BACKOFF_MINUTES = 5;
+export type DeferredAttempt = { ok: true; attempt: number } | { ok: false; why: string };
+
+export const deferredExpired = (item: InboxItem, now: Date) =>
+  now.getTime() >=
+  Date.parse(
+    item.request?.expiresAt ?? new Date(Date.parse(item.createdAt) + DEFERRED_LAUNCH_DAYS * 86400000).toISOString(),
+  );
 
 export interface DeferredLaunch {
+  pinned?: boolean;
+  runtime?: string | null;
+  notes?: string | null;
+  profileReason?: string | null;
+  expiresAt?: string | null;
+  expired?: boolean;
+  renewed?: boolean;
+  guided?: boolean;
   id: number;
   ticket: string;
   author: string | null;
@@ -17,17 +37,14 @@ export interface DeferredLaunch {
   owned: boolean;
 }
 
-export const deferredCommand = (ticket: string, profile: string | null, guided = false) =>
-  `armada ${guided ? "brief" : "launch"} ${shellWord(ticket)}${profile ? ` --profile ${shellWord(profile)} --reason ${shellWord("deferred launch requested by the coordinator")}` : ""}${guided ? " --prompt" : ""}`;
-
-/** Match authenticated identities independently of mutable display names. */
-function sameAuthor(stored: string | null, current?: string | null): boolean {
-  if (!stored || !current) return false;
-  const identity = (value: string) => value.match(/\[(user|api-key):([^[\]\s]+)\]$/)?.[0];
-  const a = identity(stored);
-  const b = identity(current);
-  return a || b ? !!a && a === b : stored === current;
-}
+export const deferredCommand = (
+  ticket: string,
+  profile: string | null,
+  guided = false,
+  options?: { runtime?: string | null; reason?: string | null },
+) => {
+  return `armada ${guided ? "brief" : "launch"} ${shellWord(ticket)}${profile ? ` --profile ${shellWord(profile)} --reason ${shellWord(options?.reason ?? "deferred launch requested by the coordinator")}` : ""}${options?.runtime && !guided ? ` --runtime ${shellWord(options.runtime)}` : ""}${guided ? " --prompt" : ""}`;
+};
 
 export function deferredHeld(
   model: Model,
@@ -50,38 +67,62 @@ export function deferredLaunchState(
   model: Model | null,
   parkedLabel: string | undefined,
   held: boolean,
-  author?: string | null,
+  coordinator?: string | null,
   guided = false,
   slots?: { taken: number; max: number | null },
+  options?: { now?: Date; pendingLaunch?: PendingLaunch; config?: ArmadaConfig; expired?: boolean },
 ): DeferredLaunch {
   const ticket = item.ticket ?? "";
   const issue = model?.program.find((i) => i.id === ticket);
   const blockers = issue && model ? model.openBlockersOf(issue) : null;
-  const reason =
-    !model || parkedLabel === undefined
-      ? "waiting for a stored reading"
-      : !issue || !model.isLeaf(issue)
-        ? "ticket is not in the program's launchable tickets"
-        : isClosed(issue)
-          ? `ticket is ${issue.status}`
-          : issue.labels.includes(parkedLabel)
-            ? "parked"
-            : held || issue.prs.some((pr) => pr.state === "open")
-              ? "already in flight"
-              : blockers?.length
-                ? `waits on ${blockers.join(", ")}`
-                : slots?.max && slots.taken >= slots.max
-                  ? `waits for a worker slot (${slots.taken} of ${slots.max})`
-                  : null;
+  const pinned = item.request?.pinned !== false;
+  const profile = pinned ? (item.request?.profile ?? null) : null;
+  const routed =
+    options?.config && issue
+      ? routeProfile(options.config, issue.labels, item.request?.runtime === "herdr" ? "herdr" : "conductor")?.name
+      : null;
+  guided =
+    item.request?.runtime !== "herdr" &&
+    (options?.config ? options.config.conductor.profiles[profile ?? routed ?? ""]?.runtime === "claude-code" : guided);
+  const expired = options?.expired ?? (options?.now ? deferredExpired(item, options.now) : false);
+  const pending = options?.pendingLaunch;
+  const reason = expired
+    ? `expired ${item.request?.expiresAt ?? new Date(Date.parse(item.createdAt) + DEFERRED_LAUNCH_DAYS * 86400000).toISOString()}`
+    : pending
+      ? `launched at ${pending.launchedAt.slice(11, 16)} UTC, waits for its claim`
+      : !model || parkedLabel === undefined
+        ? "waiting for a stored reading"
+        : !issue || !model.isLeaf(issue)
+          ? "ticket is not in the program's launchable tickets"
+          : isClosed(issue)
+            ? `ticket is ${issue.status}`
+            : issue.labels.includes(parkedLabel)
+              ? "parked"
+              : held || issue.prs.some((pr) => pr.state === "open")
+                ? "already in flight"
+                : blockers?.length
+                  ? `waits on ${blockers.join(", ")}`
+                  : slots?.max && slots.taken >= slots.max
+                    ? `waits for a worker slot (${slots.taken} of ${slots.max})`
+                    : options?.config && !issue.labels.includes(options.config.tracker.readyLabel)
+                      ? `lacks ${options.config.tracker.readyLabel}`
+                      : null;
   return {
     id: item.id,
     ticket,
     author: item.author,
-    profile: item.request?.profile ?? null,
+    profile,
+    pinned,
+    runtime: item.request?.runtime ?? null,
+    notes: item.request?.notes ?? null,
+    profileReason: item.request?.reason ?? null,
+    expiresAt: item.request?.expiresAt ?? null,
+    expired,
+    guided,
     blockers,
     reason,
-    command: deferredCommand(ticket, item.request?.profile ?? null, guided),
-    owned: sameAuthor(item.author, author),
+    command: deferredCommand(ticket, profile, guided, item.request),
+    owned: (item.coordinator ?? "default") === (coordinator ?? "default"),
   };
 }
 
@@ -89,4 +130,9 @@ export function deferredWakeBody(item: InboxItem, model: Model, command: string)
   const issue = model.byId.get(item.ticket ?? "");
   const closed = issue?.blockedBy.filter((b) => isClosed(model.byId.get(b.id) ?? b)).map((b) => b.id) ?? [];
   return `${item.ticket} is unblocked${closed.length ? ` (${closed.join(", ")} done)` : ""}: launch it now: ${command}`;
+}
+
+export function deferredExpiredBody(state: DeferredLaunch): string {
+  const waiting = state.blockers?.length ? `still waits on ${state.blockers.join(", ")}` : "still waits for launch";
+  return `${state.ticket} expired, ${waiting}: renew with armada launch ${state.ticket} --when-unblocked, or decline with armada answer ${state.id} "<why>"`;
 }

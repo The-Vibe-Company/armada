@@ -17,6 +17,7 @@ import {
   checkPublished,
   checkRequestedProfile,
   DEFAULT_ARMADA_API_URL,
+  DEFERRED_LAUNCH_BACKOFF_MINUTES,
   LINEAR_KEY,
   loadBrief,
   MASKED_LAUNCH_TOKEN,
@@ -26,6 +27,7 @@ import {
   shellWord,
 } from "@armada/core";
 import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
+import { readNotes } from "./launch.ts";
 import { preApprovalReason, preparePreApproval } from "./plan-approval.ts";
 import { rearmFor, remember, watchOf } from "./watch.ts";
 import { liveFleet } from "./worker.ts";
@@ -175,6 +177,27 @@ export async function brief(
   if (overCap && !promptOnly) throw new UsageError("--over-cap goes with brief --prompt");
   if (a.options["profile-line"] && !promptOnly) throw new UsageError("--profile-line goes with --prompt");
   if (a.json && promptOnly) throw new UsageError("pass --json or --prompt, not both");
+  const { fleet } = liveFleet(io, config, credentials);
+  const deferred = fleet
+    ? (
+        await fleet.deferredLaunches().catch((error) => {
+          // A prompt creates launch credentials and must not bypass an unknown waiting request.
+          if (promptOnly) throw error;
+          io.stderr("armada: warning: waiting launch context is unavailable; reading the ordinary brief\n");
+          return [];
+        })
+      ).find((r) => r.ticket === ticket.toUpperCase())
+    : undefined;
+  if (deferred?.pinned !== false && deferred?.profile)
+    a = {
+      ...a,
+      options: {
+        profile: deferred.profile,
+        reason: deferred.profileReason ?? "deferred launch requested by the coordinator",
+        ...a.options,
+      },
+    };
+  const notes = a.options.notes !== undefined ? await readNotes(io, a.options.notes) : (deferred?.notes ?? null);
   const profile = a.options.profile?.trim() || null;
   const reason = a.options.reason?.trim() || null;
   const approvalReason = preApprovalReason(a.options);
@@ -192,7 +215,6 @@ export async function brief(
   const conventions = extraPath
     ? { path: extraPath, text: await io.readFile(join(dirname(configPath), extraPath)).catch(() => null) }
     : null;
-  const { fleet } = liveFleet(io, config, credentials);
   let b: Brief | ProfileSelectionBrief;
   try {
     b = await loadBrief(config, {
@@ -214,7 +236,21 @@ export async function brief(
             },
           }
         : {}),
-      launch: launcher(io, config, credentials, overCap),
+      notes,
+      deferred: !!deferred,
+      launch: async (id, priority) => {
+        if (deferred && fleet) {
+          const [pending, handle] = await Promise.all([fleet.pendingLaunches(), fleet.runtimeHandle(id)]);
+          if (pending.some((l) => l.ticket === id) || (handle && !handle.releasedAt))
+            throw new UsageError(`${id} is already in flight`);
+          const attempt = await fleet.attemptDeferredLaunch({
+            id: deferred.id,
+            backoffMinutes: DEFERRED_LAUNCH_BACKOFF_MINUTES,
+          });
+          if (!attempt.ok) throw new UsageError(`${id}: ${attempt.why}`);
+        }
+        return launcher(io, config, credentials, overCap)(id, priority);
+      },
       overlap: liveFleet(io, config, credentials).fleet?.overlap,
       // A worker cannot install a version npm does not serve yet.
       npm: (v) => checkPublished(v, io.fetch ?? fetch),
