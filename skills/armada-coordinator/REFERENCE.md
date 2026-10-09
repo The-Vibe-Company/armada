@@ -59,6 +59,12 @@ Under Claude Code (`CLAUDECODE` set), either watch defaults to 100 minutes, leav
 
 Both modes share one lock per project and name on a machine. `armada inbox --wait [--timeout <seconds>]` (300 by default) is the fallback for a runtime that cannot run a background command.
 
+Plain watch also reminds about open questions, plans, unqueued hand-backs, owner requests and decisions, runtime approval prompts, queue refusals, and unstarted or stopped workers. `[policy] coordinator_minutes` sets the first interval (10 by default); subsequent intervals double. Reminders are anchored to the first show: at 10, 30 and 70 minutes by default, even if you list the inbox between them. The output marks `! still waiting since HH:MM UTC`. `coordinator_minutes = 0` disables reminders. Other coordinators' items and queued hand-backs never remind. Losing the machine watch state restarts the clock at the next listing; follow mode retains its once-per-key stream.
+
+`armada ack <#id or key> --reason "<why>"` records a deliberate skip of a notice, with its reason on the ticket. It hides that entry until its key changes. A higher silence level or another merged blocker is a new key. The command refuses questions, plans, hand-backs, owner requests, approval prompts and holds, and names the action that resolves them. A ticketless notice stays recorded in Armada only; if its Linear comment fails, post the printed text yourself. Deploy the API and its migration before the new CLI.
+
+Eligible notices are `queue-refused`, `deploy`, `job`, `unblocked`, `silent`, `quiet`, `stopped`, `not-started`, `job-silent` and `queue-stalled`. Derived entries print `key <entry key>` on their head line. The ticket note preserves the worker's phase. Comment creation is attempted once; never retry it blindly after a failure.
+
 ## Worker caps
 
 `[policy] max_workers` caps project-wide worker sessions, including open claims waiting for merge and unclaimed launches. A full fleet refuses a new launch: use `armada launch <ticket> --when-unblocked` to wait for a slot, or `armada launch <ticket> --over-cap "<why>"` for a recorded bypass. Never use relaunch to bypass the cap; it replaces an existing worker. Urgent tickets pass automatically with a recorded reason. Status and re-arm lines show running workers separately from launches waiting for a slot. Without this setting, launches are uncapped; lowering it stops no worker.
@@ -108,7 +114,7 @@ Long runs (an evaluation, a backfill, a load test) run on the project's own runn
 - `armada job stop <id>` stops one on purpose; nothing is stopped automatically, even when its ticket is Done.
 - A runner can push progress with `armada job beat <id> --progress "40/120"`, signed in with an organization API key.
 - A running job with progress unchanged past `[jobs.<name>] stall_minutes` (60 by default) shows `stalled` and a `job-stalled` inbox alert. Check it with `armada job status <id>`; use `armada job stop <id>` only when you intend to stop it. Fraction progress (`n/m`) ignores ETA/clock changes; movement clears the alert and a later stall wakes the watch again. Silent jobs take precedence, and jobs without progress are never stalled. This only covers runs tracked through `armada job`; the alert never stops the job.
-- A job without news past its silence limit is a `job-silent` entry; a finished job leaves one `job` notice. Read it, then `armada answer <item> "<what you checked>"`.
+- A job without news past its silence limit is a `job-silent` entry; a finished job leaves one `job` notice. Check it, or deliberately leave the notice alone with `armada ack <#id or key> --reason "<why>"`.
 - `armada job recover <id> --ref <reference>` attaches a runner reference that a lost answer did not record.
 
 ## Shared resources

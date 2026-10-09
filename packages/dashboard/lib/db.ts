@@ -989,6 +989,21 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     ],
   },
   {
+    // THE-1441: durable acknowledgement keys for derived coordinator notices.
+    version: 47,
+    statements: [
+      `CREATE TABLE inbox_acks (
+        project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+        entry_key text NOT NULL,
+        ticket text,
+        coordinator text NOT NULL,
+        reason text NOT NULL,
+        at timestamptz NOT NULL,
+        PRIMARY KEY (project, entry_key)
+      )`,
+    ],
+  },
+  {
     // THE-1449: a runner can keep answering without making progress.
     version: 48,
     statements: [

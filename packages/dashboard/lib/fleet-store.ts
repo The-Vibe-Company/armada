@@ -10,6 +10,7 @@ import { requestSecret } from "./secret-requests";
 // stays the record.
 
 import type {
+  AckedEntry,
   Attachment,
   CatchupRecords,
   ChoreRecord,
@@ -66,6 +67,7 @@ import type {
   WorkerProfile,
 } from "@armada/core/read";
 import {
+  AckInvalid,
   assertDeployRetry,
   DeployRetryRefusal,
   deployDetail,
@@ -1211,6 +1213,55 @@ export async function openInboxItems(
   return rs.rows.map(inboxItem);
 }
 
+/** Recheck ownership under the same project lock as claims and coordinator handover. */
+async function checkAckOwner(
+  db: Queryable,
+  project: string,
+  ticket: string | null,
+  coordinator: string,
+  fallback: string | null = null,
+): Promise<void> {
+  if (!ticket) return;
+  const handle = (await openRuntimeHandles(db, project)).find((entry) => entry.ticket === ticket);
+  const launch = handle
+    ? null
+    : (await pendingLaunches(db, project, new Date(0))).find((entry) => entry.ticket === ticket);
+  const owner = handle ? handle.coordinator : launch ? launch.coordinator : fallback;
+  if (owner != null && owner !== coordinator) throw new AckInvalid(`target belongs to coordinator ${owner}`);
+}
+
+/** Persists one derived coordinator acknowledgement; a duplicate key is harmless. */
+export async function ackEntry(db: Database, input: Parameters<FleetStore["ackEntry"]>[0]): Promise<boolean> {
+  return transaction(db, async (tx) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR UPDATE", [input.project]);
+    await checkAckOwner(tx, input.project, input.ticket, input.coordinator);
+    const rs = await tx.query(
+      `INSERT INTO inbox_acks (project, entry_key, ticket, coordinator, reason, at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (project, entry_key) DO NOTHING RETURNING entry_key`,
+      [input.project, input.entryKey, input.ticket, input.coordinator, input.reason, input.at],
+    );
+    return rs.rows.length > 0;
+  });
+}
+
+/** Reads only requested derived keys; the primary key supports the indexed ANY lookup. */
+export async function ackedKeys(db: Queryable, project: string, entryKeys: readonly string[]): Promise<AckedEntry[]> {
+  if (!entryKeys.length) return [];
+  const rs = await db.query(
+    `SELECT entry_key, ticket, coordinator, reason, at
+     FROM inbox_acks WHERE project = $1 AND entry_key = ANY($2::text[])`,
+    [project, [...new Set(entryKeys)]],
+  );
+  return rs.rows.map((r) => ({
+    entryKey: String(r.entry_key),
+    ticket: text(r.ticket),
+    coordinator: String(r.coordinator),
+    reason: String(r.reason),
+    at: isoAt(r.at),
+  }));
+}
+
 /** Every inbox item of a ticket, open or resolved, newest first. */
 export async function ticketInboxItems(db: Queryable, project: string, ticket: string): Promise<StoredInboxItem[]> {
   const rs = await db.query(
@@ -1246,11 +1297,24 @@ export async function getInboxItem(db: Queryable, project: string, id: number): 
 /** Resolves one open item; false when it was already resolved. */
 export async function resolveInboxItem(
   db: Queryable,
-  q: { project: string; id: number; resolution: string; at: Date },
+  q: Parameters<FleetStore["resolveInboxItem"]>[0],
 ): Promise<boolean> {
+  const coordinator = q.ackCoordinator;
+  if (coordinator !== undefined) {
+    return transaction(db as Database, async (tx) => {
+      await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR UPDATE", [q.project]);
+      const item = await getInboxItem(tx, q.project, q.id);
+      await checkAckOwner(tx, q.project, item?.ticket ?? null, coordinator, item?.coordinator ?? null);
+      return resolveInboxItem(tx, { ...q, ackCoordinator: undefined });
+    });
+  }
+  const expected = q.expectedBody === undefined ? "" : " AND body = $5";
   const rs = await db.query(
-    "UPDATE inbox_items SET resolved_at = $1, resolution = $2 WHERE project = $3 AND id = $4 AND resolved_at IS NULL",
-    [q.at, q.resolution, q.project, q.id],
+    `UPDATE inbox_items SET resolved_at = $1, resolution = $2
+     WHERE project = $3 AND id = $4 AND resolved_at IS NULL${expected}`,
+    q.expectedBody === undefined
+      ? [q.at, q.resolution, q.project, q.id]
+      : [q.at, q.resolution, q.project, q.id, q.expectedBody],
   );
   return rs.rowCount > 0;
 }
@@ -2274,6 +2338,8 @@ export const fleetStore = (db: Database): FleetStore => ({
   putHandBack: (item) => putHandBack(db, item),
   putChore: (item) => putChore(db, item),
   openInboxItems: (q) => openInboxItems(db, q),
+  ackEntry: (input) => ackEntry(db, input),
+  ackedKeys: (project, entryKeys) => ackedKeys(db, project, entryKeys),
   getInboxItem: (project, id) => getInboxItem(db, project, id),
   resolveInboxItem: (q) => resolveInboxItem(db, q),
   lastAnsweredAt: (project, opts) => lastAnsweredAt(db, project, opts),

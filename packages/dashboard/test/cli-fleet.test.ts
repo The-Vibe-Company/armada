@@ -4,11 +4,13 @@ import {
   type ArmadaSignIn,
   armadaApi,
   configTemplate,
+  entryKey,
   type Fleet,
   fleetClient,
   type Issue,
   type ProjectInput,
   parseConfig,
+  recordAck,
 } from "@armada/core/read";
 import { issue } from "../../core/test/support.ts";
 import { type Auth, createAuth, type EmailMessage, recordApiKeyCreator } from "../lib/accounts.ts";
@@ -1150,4 +1152,307 @@ test("secret requests use the authenticated fleet API, mask reasons and refuse w
       )
     )[0],
   ).toBe(403);
+});
+
+test("coordinator acknowledgements round-trip derived keys, survive idempotent retries, and guard resolvers", async () => {
+  clock = start.getTime() + 7 * 24 * 60 * 60_000;
+  const project: ProjectInput = {
+    slug: "acks",
+    name: "Acknowledgements",
+    repository: "acme/acks",
+    programRoot: "ACK-1",
+  };
+  const coordinator = fleetOf({ kind: "api-key", key: apiKey }, project);
+  await coordinator.register();
+  const store = fleetStore(client);
+  const config = parseConfig(configTemplate(project));
+  const blocker = issue("ACK-2", { parentId: project.programRoot, statusType: "completed" });
+  const dependent = issue("ACK-3", {
+    parentId: project.programRoot,
+    labels: [config.tracker.readyLabel],
+    blockedBy: [{ id: blocker.id, statusType: "backlog" }],
+  });
+  const program = {
+    rootId: project.programRoot,
+    fetchedAt: now().toISOString(),
+    issues: [issue(project.programRoot), blocker, dependent],
+    comments: [],
+    warnings: [],
+  };
+  const saveSnapshot = async () => {
+    const snapshots = dbSnapshots(client, memorySnapshots());
+    const lease = await snapshots.claim(project.slug, now(), 60_000);
+    if (!lease) throw new Error("ack snapshot lease missing");
+    await snapshots.save(
+      project.slug,
+      {
+        startedAt: now(),
+        config,
+        configWarning: null,
+        sources: { program, forge: null, forgeError: null },
+      },
+      lease,
+      { full: true, now: now() },
+    );
+  };
+  await saveSnapshot();
+  await store.recordEvent({
+    project: project.slug,
+    ticket: blocker.id,
+    kind: "merge",
+    phase: "merged",
+    runtime: "coordinator",
+    handle: "default",
+    at: now(),
+  });
+  const first = await coordinator.inbox({ ...read, etag: null });
+  const unblocked = first?.items.find((entry) => entry.kind === "unblocked");
+  if (!unblocked) throw new Error("unblocked acknowledgement prerequisite missing");
+  const oldKey = entryKey(unblocked);
+  expect(oldKey).toBe("unblocked:ACK-3@ACK-2");
+
+  const acknowledged = await coordinator.ack({ target: oldKey, reason: "already reviewed" });
+  expect(acknowledged).toMatchObject({
+    status: "acknowledged",
+    kind: "unblocked",
+    ticket: "ACK-3",
+    coordinator: "default",
+  });
+  expect((await coordinator.inbox({ ...read, etag: null }))?.items.some((entry) => entryKey(entry) === oldKey)).toBe(
+    false,
+  );
+  expect(await coordinator.ack({ target: oldKey, reason: "retry" })).toMatchObject({
+    status: "already-resolved",
+    kind: "unblocked",
+    ticket: "ACK-3",
+  });
+  expect(
+    (await client.query("SELECT project, entry_key, reason FROM inbox_acks WHERE project = $1", [project.slug])).rows,
+  ).toEqual([{ project: project.slug, entry_key: oldKey, reason: "already reviewed" }]);
+  expect(await refusal(coordinator.ack({ target: oldKey, reason: "  " }))).toEqual([
+    400,
+    expect.stringContaining("reason is required"),
+  ]);
+
+  // A new blocker gets a new stable key; acknowledging the old blocker never hides it.
+  clock += 61_000;
+  const nextBlocker = issue("ACK-4", { parentId: project.programRoot, statusType: "completed" });
+  dependent.blockedBy = [{ id: nextBlocker.id, statusType: "backlog" }];
+  program.issues.push(nextBlocker);
+  program.fetchedAt = now().toISOString();
+  await saveSnapshot();
+  await store.recordEvent({
+    project: project.slug,
+    ticket: nextBlocker.id,
+    kind: "merge",
+    phase: "merged",
+    runtime: "coordinator",
+    handle: "default",
+    at: now(),
+  });
+  const changed = await coordinator.inbox({ ...read, etag: null });
+  const newUnblocked = changed?.items.find((entry) => entry.kind === "unblocked");
+  expect(newUnblocked && entryKey(newUnblocked)).toBe("unblocked:ACK-3@ACK-4");
+  expect(await coordinator.ack({ target: "unblocked:ACK-3@ACK-4", reason: "new blocker reviewed" })).toMatchObject({
+    status: "acknowledged",
+    kind: "unblocked",
+  });
+
+  const queueRefused = await store.addInboxItem({
+    project: project.slug,
+    ticket: "ACK-3",
+    kind: "queue-refused",
+    recipient: "coordinator",
+    author: "drain",
+    body: "PR #44 refused: synthetic check",
+    at: now(),
+  });
+  expect((await coordinator.inbox({ ...read, etag: null }))?.items).toContainEqual(
+    expect.objectContaining({ id: queueRefused, kind: "queue-refused" }),
+  );
+  expect(await coordinator.ack({ target: queueRefused, reason: "checked the refusal" })).toMatchObject({
+    status: "acknowledged",
+    kind: "queue-refused",
+  });
+  expect(await coordinator.inboxItem(queueRefused)).toMatchObject({ resolution: "acknowledged: checked the refusal" });
+
+  for (const [kind, resolver] of [
+    ["question", "armada answer"],
+    ["plan", "armada answer"],
+    ["hand-back", "armada merge"],
+    ["answer-request", "armada answer"],
+    ["launch-request", "armada launch"],
+    ["merge-request", "armada answer"],
+    ["release-request", "armada answer"],
+    ["plan-changes", "armada answer"],
+    ["decision", "armada answer"],
+    ["hold", "armada hold clear"],
+    ["linear-pending", "armada merge --finish"],
+  ] as const) {
+    const id = await store.addInboxItem({
+      project: project.slug,
+      ticket: "ACK-3",
+      kind,
+      recipient: "coordinator",
+      author: "worker",
+      body: "Requires its resolving command",
+      at: now(),
+    });
+    expect((await coordinator.inbox({ ...read, etag: null }))?.items).toContainEqual(
+      expect.objectContaining({ id, kind }),
+    );
+    expect((await refusal(coordinator.ack({ target: id, reason: "skip" })))[1]).toContain(resolver);
+    expect((await coordinator.inboxItem(id))?.resolvedAt).toBeNull();
+  }
+
+  const launch = await api.launchToken(
+    { kind: "session", token: ownerToken },
+    { project: project.slug, ticket: "ACK-9" },
+  );
+  const session = await api.exchangeLaunchToken(launch.token);
+  const workerFleet = fleetOf(
+    { kind: "worker", token: session.token, ticket: "ACK-9", project: project.slug },
+    project,
+  );
+  expect((await refusal(workerFleet.ack({ target: oldKey, reason: "worker cannot ack" })))[0]).toBe(403);
+});
+
+test("ack races preserve a rewritten deploy and a higher silence level on Postgres", async () => {
+  const project = { slug: "ack-races", name: "Ack races", repository: "acme/ack-races", programRoot: "RACE-1" };
+  const coordinator = fleetOf({ kind: "api-key", key: apiKey }, project);
+  await coordinator.register();
+  const store = fleetStore(client);
+  const id = await store.addInboxItem({
+    project: project.slug,
+    ticket: "RACE-2",
+    kind: "deploy",
+    recipient: "coordinator",
+    author: null,
+    body: "First deploy notice",
+    at: now(),
+  });
+  expect((await coordinator.inboxItem(id))?.body).toBe("First deploy notice");
+  const result = await recordAck(
+    {
+      ...store,
+      resolveInboxItem: async (q) => {
+        await client.query("UPDATE inbox_items SET body = $1 WHERE project = $2 AND id = $3", [
+          "A newer deploy failed",
+          project.slug,
+          id,
+        ]);
+        return store.resolveInboxItem(q);
+      },
+    },
+    project.slug,
+    { target: id, reason: "The first deploy was checked" },
+    now(),
+  );
+  expect(result.status).toBe("already-resolved");
+  expect(await coordinator.inboxItem(id)).toMatchObject({ body: "A newer deploy failed", resolvedAt: null });
+  const read = { coordinator: null, silentAfterMinutes: 15, etag: null };
+  expect((await coordinator.inbox(read))?.items).toContainEqual(
+    expect.objectContaining({ id, body: "A newer deploy failed" }),
+  );
+
+  await coordinator.claim(claim("RACE-3", "race-workspace/session"));
+  const firstTime = clock;
+  clock += 31 * 60_000;
+  const old = (await coordinator.inbox(read))?.items.find((entry) => entry.ticket === "RACE-3");
+  expect(old?.kind).toBe("silent");
+  expect(old?.silenceLevel).toBe(0);
+  if (!old) throw new Error("no old silence");
+  const oldKey = entryKey(old);
+  clock = firstTime + 61 * 60_000;
+  const advanced = (await coordinator.inbox(read))?.items.find((entry) => entry.ticket === "RACE-3");
+  expect(advanced?.silenceLevel).toBe(1);
+  expect(await coordinator.ack({ target: oldKey, reason: "Old silence was checked" })).toMatchObject({
+    status: "already-resolved",
+    recorded: true,
+  });
+  expect(await coordinator.ack({ target: oldKey, reason: "Old silence was checked" })).toMatchObject({
+    status: "already-resolved",
+    recorded: false,
+  });
+  expect(await store.ackedKeys(project.slug, [oldKey])).toMatchObject([
+    { entryKey: oldKey, reason: "Old silence was checked" },
+  ]);
+  expect((await coordinator.inbox(read))?.items).toContainEqual(
+    expect.objectContaining({ ticket: "RACE-3", kind: "silent", silenceLevel: 1 }),
+  );
+
+  // First contact has no snapshot: use the same policy as the inbox query.
+  await coordinator.claim(claim("RACE-4", "custom/session"));
+  clock += 3 * 60_000;
+  const customPolicy = { silentAfterMinutes: 2, launchGraceMinutes: 0 };
+  const custom = (await coordinator.inbox({ ...read, ...customPolicy }))?.items.find(
+    (entry) => entry.ticket === "RACE-4",
+  );
+  expect(custom?.kind).toBe("silent");
+  if (!custom) throw new Error("no custom-policy silence");
+  expect(
+    await coordinator.ack({ target: entryKey(custom), reason: "Custom-policy runner checked", ...customPolicy }),
+  ).toMatchObject({ status: "acknowledged" });
+  expect(
+    (await coordinator.inbox({ ...read, ...customPolicy }))?.items.some((entry) => entry.ticket === "RACE-4"),
+  ).toBe(false);
+
+  // Force handover after the initial owner read, before each atomic write.
+  for (const [ticket, derived] of [
+    ["RACE-5", true],
+    ["RACE-6", false],
+  ] as const) {
+    await coordinator.claim(claim(ticket, `${ticket}/session`));
+    const id = derived
+      ? null
+      : await store.addInboxItem({
+          project: project.slug,
+          recipient: "coordinator",
+          kind: "job",
+          ticket,
+          author: null,
+          body: "Completed job",
+          at: now(),
+        });
+    if (derived) clock += 31 * 60_000;
+    const entry = (await coordinator.inbox(read))?.items.find(
+      (item) => item.ticket === ticket && (derived ? item.kind === "silent" : item.id === id),
+    );
+    if (!entry) throw new Error("no handover target");
+    const transfer = async () =>
+      expect(
+        await store.transferTickets({
+          project: project.slug,
+          tickets: [ticket],
+          from: "default",
+          to: "other",
+          at: now(),
+        }),
+      ).toBe(true);
+    const racing = derived
+      ? {
+          ...store,
+          ackEntry: async (input: Parameters<typeof store.ackEntry>[0]) => {
+            await transfer();
+            return store.ackEntry(input);
+          },
+        }
+      : {
+          ...store,
+          resolveInboxItem: async (input: Parameters<typeof store.resolveInboxItem>[0]) => {
+            await transfer();
+            return store.resolveInboxItem(input);
+          },
+        };
+    await expect(
+      recordAck(
+        racing,
+        project.slug,
+        { target: id ?? entryKey(entry), reason: "Checked before handover", coordinator: "default" },
+        now(),
+      ),
+    ).rejects.toThrow("target belongs to coordinator other");
+    if (derived) expect(await store.ackedKeys(project.slug, [entryKey(entry)])).toEqual([]);
+    else if (id !== null) expect((await store.getInboxItem(project.slug, id))?.resolvedAt).toBeNull();
+  }
 });

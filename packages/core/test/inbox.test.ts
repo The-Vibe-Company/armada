@@ -8,6 +8,7 @@ import {
   inboxTag,
   readInbox,
   reconcileHandles,
+  recordAck,
   recordMerge,
   recordReport,
   serveInbox,
@@ -1300,7 +1301,11 @@ describe("job alarms", () => {
     expect(entries[0]?.body).toContain("keeps running");
     expect(entries[0]?.body).toContain(`armada job status ${job.id}`);
     expect(entries[0]?.body).toContain(`armada job stop ${job.id}`);
-    expect(entryKey(entries[0]!)).toBe(`job-stalled:${job.id}@${at(61).toISOString()}`);
+    const stalledKey = entryKey(entries[0]!);
+    expect(stalledKey).toBe(`job-stalled:${job.id}@${at(61).toISOString()}`);
+    await expect(
+      recordAck(store, P, { target: stalledKey, reason: "checked the runner" }, NOW, { snapshot }),
+    ).rejects.toThrow("armada job status <id> (or armada job stop <id>)");
     const clock = fakeClock();
     const fleet = { ...tempFleet({ store, clock }).fleet, inbox: async () => (await read(clock.now()))! };
     const watch = (seen: string[]) =>

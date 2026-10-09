@@ -189,15 +189,22 @@ export async function stopHookBanner(io: Io): Promise<string | null> {
 
 const now = (io: Io) => (io.now ?? (() => new Date()))();
 
-/** What a read showed the coordinator: it does not wake a watch again, and the hook knows who is in flight. */
+/** What a listing showed; remember preserves each entry's original reminder clock. */
 export const shown = (
   io: Io,
   items: InboxEntry[],
   inFlight: string[] | null,
   openJobs: number[] = [],
   scope: "mine" | "all" = "all",
+  shownAt?: WatchState["shownAt"],
 ): Partial<WatchState> => ({
   seen: items.map(entryKey),
+  shownAt: Object.fromEntries(
+    items.map((entry) => {
+      const key = entryKey(entry);
+      return [key, shownAt?.[key] ?? { first: now(io).toISOString(), level: 0 }];
+    }),
+  ),
   seenScope: scope,
   openJobs,
   ...(inFlight ? { inFlight, readAt: now(io).toISOString() } : {}),
@@ -684,7 +691,10 @@ async function watchUntil(
     if (!fleet)
       throw new Refusal(`the inbox is on Armada, which cannot be reached: ${warning ?? "no answer"}`, "armada whoami");
     const before = paths ? await readWatchState(paths, project, name) : null;
-    await remember(io, project, { root: dirname(configPath), stopped: null });
+    const shownAt = Object.fromEntries(
+      (before?.seen ?? []).map((key) => [key, before?.shownAt?.[key] ?? { first: now(io).toISOString(), level: 0 }]),
+    );
+    await remember(io, project, { root: dirname(configPath), stopped: null, shownAt });
     const watchingFleet = refreshingJobsFleet(
       watchingIo,
       observingFleet(watchingIo, fleet, config),
@@ -706,6 +716,8 @@ async function watchUntil(
       quietAfterMinutes: config.policy.quietAfterMinutes,
       notStartedMinutes: config.policy.notStartedMinutes,
       seen: before?.seen ?? [],
+      shownAt,
+      coordinatorMinutes: config.policy.coordinatorMinutes,
       now: io.now ?? (() => new Date()),
       sleep,
       onRead: async (read) => {
@@ -776,7 +788,7 @@ async function watchUntil(
       name === "default" ? report.openJobs : (report.ownedOpenJobs ?? (scope === "mine" ? report.openJobs : undefined));
     const waiting = (name === "default" ? report.waiting : report.ownedWaiting) ?? [];
     await remember(io, project, {
-      ...shown(io, report.items, inFlight, openJobs, scope),
+      ...shown(io, report.items, inFlight, openJobs, scope, report.shownAt),
       waiting,
       slots: report.slots,
     });

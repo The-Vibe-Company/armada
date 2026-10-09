@@ -9,7 +9,7 @@ The coordinator turns the owner's intent into merged pull requests. Each worker 
 
 **Armada does the runtime work.** For Conductor and herdr workers, `armada launch`, `armada answer`, `armada peek`, `armada relaunch` and `armada merge` launch, deliver, observe, replace and archive by themselves. Read the runtime guide (`armada skill armada-runtime-conductor`, `-herdr` or `-claude-code`) only when a command reports a limitation, and for every Claude Code subagent: Armada does none of that for them.
 
-This file is the loop. [MERGE.md](MERGE.md) covers merging; [REFERENCE.md](REFERENCE.md) covers the watch's options, named coordinators, silence rules, upgrades, specs, secrets and long jobs.
+This file is the loop. [MERGE.md](MERGE.md) covers merging; [REFERENCE.md](REFERENCE.md) covers the watch, reminders, `armada ack`, names, silence, upgrades, specs, secrets and jobs.
 
 ## Start
 
