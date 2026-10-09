@@ -260,7 +260,11 @@ const COMMAND_HELP: Record<string, string> = {
                     Plain watch wakes only for your own and unowned items, even with --all.
                     Unhandled action items remind after policy.coordinator_minutes, then
                     doubled intervals; inbox listings do not postpone reminders (0 disables).
-                    --for <minutes> ends either watch cleanly with a resume command.
+                    A second plain watch waits locally for the verified holder's result,
+                    or takes over if it dies without one; --stop ends its waiters too.
+                    Under CLAUDECODE, default 100 min or 90% of a learned shorter limit
+                    (minimum 5 min); --for <minutes> overrides it. Plain timeouts print
+                    the resume command and re-arm line on stdout.
   watch --stop [--name <name>]      Stop only this project's verified watch and release its lock. Local,
                     no sign-in needed. Never stop a watch just to read inbox or status
 `,
@@ -1150,6 +1154,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       }
     }
     if (args.command === "watch") {
+      const startedAt = (io.now ?? (() => new Date()))();
       const { path, text } = await findConfig(io, args.config, "watch", args.project);
       const config = parseConfig(text, path);
       if (args.options.stop === "true") {
@@ -1158,8 +1163,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       }
       if (args.options.name) throw new UsageError("--name goes with watch --stop");
       const { credentials } = await loadCredentials(io, { armada: false, project: config.project.slug });
-      await recordPresence(io, config, credentials);
-      return await watch(io, config, credentials, args, path);
+      return await watch(io, config, credentials, args, path, startedAt);
     }
     if (args.command === "hook")
       return await hookStop(io, args.rest, (at) =>

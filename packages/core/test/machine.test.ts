@@ -14,6 +14,8 @@ import {
   readCredentialStore,
   readHookRuns,
   readReleaseNotices,
+  readWatchLockInfo,
+  readWatchResult,
   readWatchState,
   readWatchStates,
   recordHookRun,
@@ -26,7 +28,62 @@ import {
   updateWatchState,
   watchFiles,
   writeCoordinatorName,
+  writeWatchResult,
 } from "../src/machine.ts";
+
+test("watch receipts are private and a replaced generation cannot overwrite them", async () => {
+  const paths = machinePaths({ XDG_CONFIG_HOME: await tempHome() });
+  if (!paths) throw new Error("no machine store");
+  const identity = {
+    project: "widgets",
+    configPath: "/work/widgets/armada.toml",
+    cwd: "/work/widgets",
+    command: "armada watch",
+    started: "generation-1",
+  };
+  const first = { pid: 101, identity };
+  const result = {
+    pid: 101,
+    started: identity.started,
+    endedAt: "2026-01-01T00:00:00Z",
+    outcome: "nothing" as const,
+    exit: 0,
+    stdout: "Nothing to watch",
+    stderr: "",
+  };
+  expect(await takeWatchLock(paths, "widgets", 101, () => false, identity)).toEqual({ taken: true });
+  await writeWatchResult(paths, "widgets", first, result);
+  expect(await readWatchResult(paths, "widgets", first)).toEqual(result);
+  expect((await stat(watchFiles(paths, "widgets").result)).mode & 0o777).toBe(0o600);
+  const replacement = { pid: 101, identity: { ...identity, started: "generation-2" } };
+  expect(await takeWatchLock(paths, "widgets", 101, () => false, replacement.identity)).toEqual({ taken: true });
+  await writeWatchResult(paths, "widgets", replacement, {
+    ...result,
+    started: replacement.identity.started,
+    stdout: "new result",
+  });
+  await writeWatchResult(paths, "widgets", first, result);
+  expect((await readWatchResult(paths, "widgets", replacement))?.stdout).toBe("new result");
+  expect(await readWatchResult(paths, "widgets", first)).toEqual(result);
+  await releaseWatchLock(paths, "widgets", 101, identity);
+  expect(await readWatchLockInfo(paths, "widgets")).toEqual(replacement);
+});
+
+test("competing dead-watch takeovers keep exactly one live holder", async () => {
+  const paths = machinePaths({ XDG_CONFIG_HOME: await tempHome() });
+  if (!paths) throw new Error("no machine store");
+  await takeWatchLock(paths, "widgets", 101, () => false);
+  const alive = (pid: number) => pid !== 101;
+  const results = await Promise.all([
+    takeWatchLock(paths, "widgets", 202, alive),
+    takeWatchLock(paths, "widgets", 303, alive),
+  ]);
+  expect(results.filter((result) => result.taken)).toHaveLength(1);
+  const holder = await readWatchLockInfo(paths, "widgets");
+  if (!holder) throw new Error("missing holder");
+  expect([202, 303]).toContain(holder.pid);
+  expect(results.filter((result) => !result.taken)).toEqual([{ taken: false, pid: holder.pid }]);
+});
 
 test("notice reservations serialize commands, preserve releases, and recover a dead holder", async () => {
   const paths = machinePaths({ XDG_CONFIG_HOME: await tempHome() });
@@ -231,6 +288,44 @@ test("one watch per project: a live lock is refused, a stale one taken over, the
     stopped: null,
   });
   expect((await stat(watchFiles(paths, "widgets").state)).mode & 0o777).toBe(0o600);
+  const first = "2026-01-01T09:00:00.000Z";
+  const later = "2026-01-01T09:01:00.000Z";
+  await updateWatchState(paths, "widgets", {
+    seen: ["#4"],
+    seenScope: "all",
+    shownAt: { "#4": { first, level: 0 } },
+  });
+  const startup = (await readWatchState(paths, "widgets"))?.shownAt;
+  // A listing arrives after startup's read, before its partial state write.
+  await updateWatchState(paths, "widgets", {
+    seen: ["#4", "#5"],
+    seenScope: "all",
+    shownAt: { "#4": { first, level: 1 }, "#5": { first: later, level: 0 } },
+  });
+  expect((await readWatchState(paths, "widgets"))?.shownAt?.["#5"]).toEqual({ first: later, level: 0 });
+  await updateWatchState(paths, "widgets", { root: "/work/widgets", stopped: null, shownAt: startup });
+  expect((await readWatchState(paths, "widgets"))?.shownAt).toEqual({
+    "#4": { first, level: 1 },
+    "#5": { first: later, level: 0 },
+  });
+  const staleClocks = Object.fromEntries(Array.from({ length: 500 }, (_, i) => [`old-${i}`, { first, level: 0 }]));
+  await updateWatchState(paths, "widgets", {
+    seen: Object.keys(staleClocks),
+    seenScope: "all",
+    shownAt: staleClocks,
+  });
+  const currentClocks = Object.fromEntries([
+    ...Array.from({ length: 100 }, (_, i) => [`old-${i}`, { first, level: 1 }]),
+    ...Array.from({ length: 400 }, (_, i) => [`new-${i}`, { first: later, level: 0 }]),
+  ]);
+  await updateWatchState(paths, "widgets", {
+    seen: Object.keys(currentClocks),
+    seenScope: "all",
+    shownAt: currentClocks,
+  });
+  expect((await readWatchState(paths, "widgets"))?.shownAt).toEqual(currentClocks);
+  await updateWatchState(paths, "widgets", { shownAt: staleClocks });
+  expect((await readWatchState(paths, "widgets"))?.shownAt).toEqual(currentClocks);
   await writeFile(watchFiles(paths, "widgets").state, "not json");
   expect(await readWatchState(paths, "widgets")).toBeNull();
 });
