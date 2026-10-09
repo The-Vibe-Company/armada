@@ -14,7 +14,7 @@ import {
 import { attachPullRequests, fetchForge } from "./github.ts";
 import { herdrHarnessLabel } from "./herdr-profile.ts";
 import type { HttpRetryOptions } from "./http.ts";
-import { type Job, type JobSummary, jobOverdue } from "./jobs.ts";
+import { type Job, type JobSummary, jobOverdue, jobStalled } from "./jobs.ts";
 import { type Fetch, fetchProgram, fetchProgramChanges } from "./linear.ts";
 import {
   followedLaunches,
@@ -265,10 +265,16 @@ export function buildStatus({
     ...(jobs
       ? {
           jobs: jobs.map((job) => {
-            const maxHours = config.jobs?.[job.name]?.maxHours ?? null;
+            const def = config.jobs?.[job.name];
+            const maxHours = def?.maxHours ?? null;
+            const stallMinutes = def?.stallMinutes ?? 60;
+            const silenceMinutes = def?.silenceMinutes ?? 15;
             return {
               ...job,
               overdue: jobOverdue(job, maxHours, now),
+              stalled: jobStalled(job, stallMinutes, now, silenceMinutes),
+              stallMinutes,
+              silenceMinutes,
               ticketDone: issues.some((i) => i.id === job.ticket && i.statusType === "completed"),
               maxHours,
             };

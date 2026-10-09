@@ -980,6 +980,14 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "ALTER TABLE deploys ADD CONSTRAINT deploys_state_check CHECK (state IN ('waiting', 'live', 'healthy', 'deploy-failed', 'smoke-failed', 'timeout', 'skipped', 'not-runnable', 'not-deployed'))",
     ],
   },
+  {
+    // THE-1449: a runner can keep answering without making progress.
+    version: 48,
+    statements: [
+      "ALTER TABLE jobs ADD COLUMN progress_changed_at timestamptz",
+      "UPDATE jobs SET progress_changed_at = observed_at",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;
