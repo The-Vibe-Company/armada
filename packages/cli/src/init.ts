@@ -36,14 +36,14 @@ export interface InitOptions {
   programRoot: string | null;
   name: string | null;
   slug: string | null;
-  /** Add the Claude Code stop hook: null asks on a terminal, and says yes without one. */
+  /** Add both Claude Code hooks: null asks on a terminal, and says yes without one. */
   stopHook: boolean | null;
   /** Wait for the usual merge checks and merge only Armada setup paths. */
   merge?: boolean;
 }
 
 const STOP_HOOK_QUESTION =
-  "Add the Claude Code stop hook to this repository's .claude/settings.json? A coordinator then cannot end its turn while workers are in flight and no armada watch runs; your user settings are not touched. [Y/n] ";
+  "Add the Claude Code stop and session-start hooks to this repository's .claude/settings.json? They keep coordinators watching and brief them after compact or resume; your user settings are not touched. [Y/n] ";
 
 /** Whether to add the stop hook: the option, else the person's answer, else yes. */
 async function wantsStopHook(io: Io, opts: InitOptions): Promise<boolean> {
@@ -183,7 +183,7 @@ function prText(plan: SetupPlan, version: string) {
     ...(plan.stopHook
       ? [
           "",
-          `The Claude Code stop hook in \`${CLAUDE_SETTINGS}\` keeps a coordinator from ending its turn while workers are in flight and no \`armada watch\` runs. It holds registered coordinator sessions across checkouts, with a checkout fallback for unknown sessions; it never holds a worker's session, and \`ARMADA_STOP_HOOK=off\` turns it off.`,
+          `The Claude Code hooks in \`${CLAUDE_SETTINGS}\` keep a coordinator from ending its turn while workers are in flight and no \`armada watch\` runs. Stop holds registered coordinator sessions across checkouts, with a checkout fallback for unknown sessions; it never holds a worker's session, and \`ARMADA_STOP_HOOK=off\` turns Stop off. SessionStart briefs the coordinator after compact or resume with its checkout, tickets, actionable inbox and watch state, within 15 seconds (cached local state if unavailable).`,
         ]
       : []),
     "",
@@ -365,7 +365,7 @@ export async function init(io: Io, opts: InitOptions): Promise<number> {
       if (plan.updated.length) log(`Updates: ${plan.updated.join(", ")}`);
       if (plan.stopHook)
         log(
-          `Adds the Claude Code stop hook to ${CLAUDE_SETTINGS}: this repository's settings, not your user settings.`,
+          `Adds the Claude Code stop and session-start hooks to ${CLAUDE_SETTINGS}: this repository's settings, not your user settings.`,
         );
     }
 

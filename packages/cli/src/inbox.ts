@@ -20,6 +20,7 @@ import { coordinatorName } from "./coordinator.ts";
 import { type Io, UsageError } from "./io.ts";
 import { requireSignIn } from "./login.ts";
 import { detectCoordinator } from "./presence.ts";
+import { compactLine } from "./render.ts";
 import { deliverToRuntime, observingFleet } from "./runtime.ts";
 import { claimRef, guarded, launchRef, runtimeFor } from "./runtimes/adapter.ts";
 import { coordinatorHandle, rearmFor, remember, shown } from "./watch.ts";
@@ -112,7 +113,26 @@ function waitSeconds(raw: string | undefined): number {
 }
 
 /** The entries of an inbox, oldest first, with what to do about them; new ones marked *. */
-export function renderEntries(project: string, items: InboxEntry[]): string[] {
+export function renderEntries(
+  project: string,
+  items: InboxEntry[],
+  options: { compact?: boolean; limit?: number } = {},
+): string[] {
+  if (options.compact) {
+    const actionable = items.filter((e) => !e.queue);
+    const limit = options.limit ?? 20;
+    return [
+      `Inbox of ${project} (${actionable.length} need action):`,
+      ...actionable
+        .slice(0, limit)
+        .map((e) =>
+          compactLine(
+            `${e.id === null ? e.kind : `#${e.id} ${e.kind}`} · ${e.ticket ?? project} · ${e.body.split("\n").find((line) => line.trim()) ?? ""}`,
+          ),
+        ),
+      ...(actionable.length > limit ? [`… and ${actionable.length - limit} more: armada inbox --mine`] : []),
+    ];
+  }
   if (!items.length) return [`Inbox of ${project}: nothing waits for you.`];
   const out = [`Inbox of ${project} (${items.length}), oldest first:`];
   const waiting = items.filter((e) => !e.queue);

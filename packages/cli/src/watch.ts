@@ -10,15 +10,19 @@ import {
   type ArmadaConfig,
   type CoordinatorHabit,
   type Credentials,
+  checkInbox,
   coordinatorHabits,
   entryKey,
   eventCursor,
   FOLLOW_KINDS,
   type FollowOptions,
+  findSessionStartHook,
   findStopHook,
   followFleet,
   type HookRun,
   type InboxEntry,
+  type InboxReport,
+  loadStatus,
   type MachinePaths,
   machinePaths,
   parseConfig,
@@ -40,6 +44,7 @@ import {
   type StopHookState,
   sameWatchLock,
   setWatchStopRequest,
+  shellWord,
   stopHookDecision,
   stopHookState,
   takeWatchLock,
@@ -52,16 +57,18 @@ import {
   writeWatchResult,
 } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
+import { loadCredentials } from "./auth.ts";
 import { coordinatorName, validCoordinator } from "./coordinator.ts";
 import { renderEntries } from "./inbox.ts";
-import { type Io, UsageError, type WatchSignal } from "./io.ts";
+import { httpOptions, type Io, UsageError, type WatchSignal } from "./io.ts";
 import { refreshingJobsFleet } from "./job.ts";
 import { requireSignIn } from "./login.ts";
 import { detectCoordinator, recordPresence } from "./presence.ts";
 import { noticeRelease, pendingRelease } from "./release.ts";
+import { compactLine, renderStatus } from "./render.ts";
 import { fsRepoView } from "./repo.ts";
 import { observingFleet } from "./runtime.ts";
-import { liveFleet, type WorkerArgs } from "./worker.ts";
+import { liveFleet, statusLive, type WorkerArgs } from "./worker.ts";
 
 /** The coordinator's own session, never counted as a worker: ARMADA_COORDINATOR_HANDLE, else Conductor's. */
 export function coordinatorHandle(io: Io): string | null {
@@ -143,20 +150,27 @@ export async function rearmFor(
 export async function hookStatus(
   io: Io,
   root = io.coordinatorRoot ?? io.cwd,
-): Promise<{ status: StopHookState; installedIn: string | null }> {
+): Promise<{ status: StopHookState; installedIn: string | null; sessionStartInstalledIn: string | null }> {
   const files = [
     ...(io.env.HOME ? [join(io.env.HOME, ".claude/settings.json")] : []),
     join(root, ".claude/settings.json"),
     join(root, ".claude/settings.local.json"),
   ];
-  const installedIn = await findStopHook(io.readFile, files);
+  const [installedIn, sessionStartInstalledIn] = await Promise.all([
+    findStopHook(io.readFile, files),
+    findSessionStartHook(io.readFile, files),
+  ]);
   const paths = machinePaths(io.env);
   const sessionId = io.env.CLAUDE_CODE_SESSION_ID?.trim() || null;
   const hookRun =
     paths && sessionId
       ? ((await readHookRuns(paths).catch(() => ({}) as Record<string, HookRun>))[sessionId] ?? null)
       : null;
-  return { installedIn, status: stopHookState({ env: io.env, sessionId, hookRun, installedIn }) };
+  return {
+    installedIn,
+    sessionStartInstalledIn,
+    status: stopHookState({ env: io.env, sessionId, hookRun, installedIn }),
+  };
 }
 
 export function hookStatusLine(status: StopHookState): string {
@@ -896,47 +910,15 @@ export async function hookStop(
       typeof raw.session_id === "string" && raw.session_id.trim() && raw.session_id.length <= 256
         ? raw.session_id.trim()
         : null;
-    const registered =
-      paths && sessionId
-        ? (await readWatchStates(paths)).filter(({ state }) =>
-            Object.hasOwn(state.claudeSessions ?? {}, sessionId as string),
-          )
-        : [];
     const cwd = typeof raw.cwd === "string" && raw.cwd ? raw.cwd : io.cwd;
-    const contexts: {
-      project: string;
-      coordinator: string;
-      root: string;
-      state: WatchState | null;
-      match: "session" | "checkout";
-      config?: ArmadaConfig;
-    }[] = registered.map(({ project, coordinator, state }) => ({
-      project,
-      coordinator,
-      state,
-      root: state.root as string,
-      match: "session",
-    }));
+    const contexts = await hookCoordinators(io, { ...raw, session_id: sessionId }, findConfig);
+    if (!contexts.length) return 0;
     let current: { path: string; config: ArmadaConfig } | null = null;
     try {
       const { path, text } = await findConfig({ ...io, cwd });
       current = { path, config: parseConfig(text, path) };
     } catch {
       /* A registered coordinator may Stop outside any checkout. */
-    }
-    if (!contexts.length) {
-      if (!current) throw new Error("no coordinator project");
-      const project = current.config.project.slug;
-      const watchingIo = { ...io, coordinatorRoot: dirname(current.path) };
-      const { state } = await watchOf(watchingIo, project);
-      contexts.push({
-        project,
-        state,
-        coordinator: await coordinatorName(watchingIo, project),
-        root: dirname(current.path),
-        match: "checkout",
-        config: current.config,
-      });
     }
     const eligible = contexts.filter(
       ({ state, root, match }) => state?.root && (match === "session" || state.root === root),
@@ -976,7 +958,7 @@ export async function hookStop(
               if (loaded.has(context.project)) continue;
               loaded.add(context.project);
               try {
-                let config = currentContext && current ? current.config : context.config;
+                let config = currentContext && current ? current.config : undefined;
                 const path = currentContext && current ? current.path : join(context.root, "armada.toml");
                 if (!config) {
                   const text = await io.readFile(path);
@@ -1042,4 +1024,211 @@ export async function hookStop(
     if (paths && sessionId) await recordHookRun(paths, sessionId, receipt).catch(() => {});
   }
   return 0;
+}
+
+/** Shared identity rule for both hooks: registry first, then the previously coordinating checkout. */
+async function hookCoordinators(
+  io: Io,
+  raw: { cwd?: unknown; session_id?: unknown },
+  findConfig: (io: Io) => Promise<{ path: string; text: string }>,
+) {
+  const paths = machinePaths(io.env);
+  const session = typeof raw.session_id === "string" ? raw.session_id.trim() : "";
+  const registered =
+    paths && session
+      ? (await readWatchStates(paths)).filter(({ state }) => Object.hasOwn(state.claudeSessions ?? {}, session))
+      : [];
+  if (registered.length)
+    return registered
+      .filter(({ state }) => state.root)
+      .map((row) => ({ ...row, root: row.state.root as string, match: "session" as const }));
+  const cwd = typeof raw.cwd === "string" && raw.cwd ? raw.cwd : io.cwd;
+  const selected = { ...io, cwd };
+  const { path, text } = await findConfig(selected);
+  const root = dirname(path);
+  const project = parseConfig(text, path).project.slug;
+  const coordinator = await coordinatorName(selected, project, root);
+  const state = paths ? await readWatchState(paths, project, coordinator) : null;
+  return state?.root === root ? [{ project, coordinator, state, root, match: "checkout" as const }] : [];
+}
+
+/** SessionStart stdout is inserted into Claude's context. Never starts a watch or prevents a session start. */
+export async function hookSessionStart(
+  io: Io,
+  findConfig: (io: Io) => Promise<{ path: string; text: string }>,
+): Promise<number> {
+  let cancel: (() => void) | undefined;
+  const controller = new AbortController();
+  try {
+    const input: unknown = JSON.parse((await io.readStdin?.()) || "{}");
+    if (typeof input !== "object" || input === null || io.env.ARMADA_TICKET?.trim()) return 0;
+    const raw = input as { source?: unknown; cwd?: unknown; session_id?: unknown; hook_event_name?: unknown };
+    if (
+      !["compact", "resume"].includes(String(raw.source)) ||
+      (raw.hook_event_name && raw.hook_event_name !== "SessionStart")
+    )
+      return 0;
+    const rows = await hookCoordinators(io, raw, findConfig);
+    if (!rows.length) return 0;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      const expire = async () => {
+        controller.abort();
+        reject(new Error("session brief deadline"));
+      };
+      if (io.every) cancel = io.every(15_000, expire);
+      else {
+        const timer = setTimeout(expire, 15_000);
+        cancel = () => clearTimeout(timer);
+      }
+    });
+    const fetch = io.fetch ?? globalThis.fetch;
+    const exec = io.exec;
+    const bounded: Io = {
+      ...io,
+      stderr: () => {},
+      fetch: (url, init) => {
+        controller.signal.throwIfAborted();
+        return fetch(url, {
+          ...init,
+          signal: init.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal,
+        });
+      },
+      ...(exec
+        ? {
+            exec: (command, args, options) =>
+              exec(command, args, {
+                ...options,
+                signal: controller.signal,
+                timeoutMs: Math.min(options.timeoutMs ?? 15_000, 15_000),
+              }),
+          }
+        : {}),
+    };
+    const blocks: string[] = [];
+    // Keep room for every selected project's identity, watch, hook banner and next command.
+    const selected = rows.slice(0, 5);
+    const budget = Math.floor((60 - (rows.length > selected.length ? 1 : 0)) / selected.length);
+    for (const row of selected) {
+      const at: Io = {
+        ...bounded,
+        cwd: row.root,
+        coordinatorRoot: row.root,
+        env: {
+          ...bounded.env,
+          CLAUDECODE: "1",
+          CLAUDE_CODE_SESSION_ID: typeof raw.session_id === "string" ? raw.session_id : undefined,
+          ARMADA_COORDINATOR: row.coordinator,
+        },
+      };
+      let lines: string[];
+      try {
+        const read = await Promise.race([readSessionBrief(at, row.project, controller.signal), deadline]);
+        controller.signal.throwIfAborted();
+        // Only keys actually included in the brief are shown; omitted work must still wake the watch.
+        const room = Math.max(0, budget - 5);
+        const actionable = read.report.items.filter((e) => !e.queue);
+        const inboxRoom = Math.min(22, Math.max(2, room - 3));
+        const limit = Math.min(20, Math.max(0, inboxRoom - 1 - (actionable.length > inboxRoom - 1 ? 1 : 0)));
+        const shownItems = actionable.slice(0, limit);
+        const inboxLines = renderEntries(row.project, read.report.items, { compact: true, limit });
+        const statusRoom = room - inboxLines.length;
+        const truncated = read.statusLines.length > statusRoom;
+        lines = [
+          ...read.statusLines.slice(0, Math.max(0, statusRoom - (truncated ? 1 : 0))),
+          ...(truncated ? ["… more status: armada status --mine"] : []),
+          ...inboxLines,
+        ];
+        controller.signal.throwIfAborted();
+        await remember(at, row.project, {
+          ...shown(at, shownItems, read.report.inFlight, read.report.openJobs, "mine"),
+          waiting: read.report.waiting,
+          slots: read.report.slots,
+        });
+      } catch {
+        lines = [
+          `Armada could not be read within 15 s or refused this session. Last local read: ${row.state.readAt ?? "unknown"}.`,
+          `In flight: ${row.state.inFlight?.join(", ") || "unknown or none"}`,
+          `Open jobs: ${row.state.openJobs?.join(", ") || "none known"}`,
+        ];
+      }
+      const paths = machinePaths(at.env);
+      const pid = paths ? await runningWatch(paths, row.project, alive(at), row.coordinator).catch(() => null) : null;
+      const footer = [
+        pid !== null
+          ? `armada watch runs (pid ${pid}); its result wakes you`
+          : "No watch runs: start it now in the background (Bash run_in_background): armada watch",
+        hookStatusLine(
+          (
+            await hookStatus(at).catch(() => ({
+              status: { state: "off" as const, why: "could not read local settings", fix: "armada doctor" },
+            }))
+          ).status,
+        ),
+        "Never act from memory: armada status --mine and armada inbox --mine first.",
+        pid !== null
+          ? "Next: armada inbox --mine"
+          : "Next: start armada watch in the background (Bash run_in_background).",
+      ];
+      blocks.push(
+        [
+          `Armada: you coordinate ${row.project} as ${row.coordinator} from ${row.root}. Run every armada command there (cd ${shellWord(row.root)}).`,
+          ...lines.slice(0, Math.max(0, budget - footer.length - 1)),
+          ...footer,
+        ]
+          .map(compactLine)
+          .join("\n"),
+      );
+    }
+    if (rows.length > selected.length)
+      blocks.push(`… ${rows.length - selected.length} more coordinated projects: armada status --all`);
+    io.stdout(`${blocks.join("\n")}\n`);
+  } catch {
+  } finally {
+    cancel?.();
+    controller.abort();
+  }
+  return 0;
+}
+
+async function readSessionBrief(
+  io: Io,
+  project: string,
+  signal: AbortSignal,
+): Promise<{ statusLines: string[]; report: InboxReport }> {
+  const text = await io.readFile(join(io.cwd, "armada.toml"));
+  if (text === null) throw new Error("coordinator config missing");
+  const config = parseConfig(text, join(io.cwd, "armada.toml"));
+  if (config.project.slug !== project) throw new Error("checkout now coordinates another project");
+  const { credentials } = await loadCredentials(io, { project });
+  requireSignIn(credentials);
+  if (!credentials.linearApiKey) throw new Error("no Linear key");
+  const name = await coordinatorName(io, project);
+  const { fleet } = liveFleet(io, config, credentials);
+  if (!fleet) throw new Error("no fleet");
+  const [report, status] = await Promise.all([
+    checkInbox(fleet, {
+      project,
+      coordinatorName: name,
+      scope: "mine",
+      coordinator: coordinatorHandle(io),
+      facts: detectCoordinator(io),
+      silentAfterMinutes: config.policy.silentAfterMinutes,
+      launchGraceMinutes: config.policy.launchGraceMinutes,
+      ciWaitMinutes: config.policy.ciWaitMinutes,
+      quietAfterMinutes: config.policy.quietAfterMinutes,
+      notStartedMinutes: config.policy.notStartedMinutes,
+      now: io.now ?? (() => new Date()),
+    }),
+    loadStatus(config, {
+      linearApiKey: credentials.linearApiKey,
+      githubToken: credentials.githubToken,
+      ...statusLive(io, config, credentials),
+      runtimeHandles: () => fleet.runtimeHandles(),
+      coordinatorName: name,
+      ...httpOptions(io),
+    }),
+  ]);
+  signal.throwIfAborted();
+  const statusLines = renderStatus(status, { compact: true }).trimEnd().split("\n");
+  return { statusLines, report };
 }

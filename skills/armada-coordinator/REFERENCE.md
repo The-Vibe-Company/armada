@@ -32,6 +32,16 @@ At Stop, the hook also reads up to 1 MiB of new transcript lines for this coordi
 
 Armada detects the command in user settings (`~/.claude/settings.json`) and the coordinator checkout's `.claude/settings.json` or `.claude/settings.local.json`. If the session starts elsewhere, add a command hook for Stop in user settings: `armada hook stop 2>/dev/null || true`. `armada init --merge` changes repository settings only. `ARMADA_STOP_HOOK=off` opts out; the banner says so.
 
+## The SessionStart brief
+
+`armada init` and `--merge` install both Stop and SessionStart in repository settings, once; one question accepts both, and `--no-stop-hook` skips both. `armada doctor` warns when SessionStart is missing. SessionStart matches `compact|resume` only; fresh startup still follows Start in SKILL.md.
+
+After compact or resume, `armada hook session-start` inserts plain text into Claude's context: `Armada: you coordinate <project> as <name> from <checkout>`, tickets with phases and ages, PRs and holds, up to 20 actionable inbox lines, and the watch and Stop-hook banners. The block is at most 60 lines. Run every Armada command from the named checkout; read `armada status --mine` and `armada inbox --mine` before acting. Its final line tells you to start `armada watch` with Bash `run_in_background` when none runs. The hook never starts a watch itself. A live read records presence and only the inbox keys actually shown; omitted items can still wake the watch.
+
+Live reads share a 15-second deadline and are aborted on expiry. If unavailable or refused, the brief uses the last local tickets, read time and open jobs, and names the status/inbox recovery commands. All hook errors allow the session to start. Workers (`ARMADA_TICKET`) get nothing.
+
+Resolution uses the Stop hook's registry first, then the coordinator checkout for unknown ids. A resumed session with a new id outside that checkout gets nothing. To deliver hooks for sessions starting elsewhere, install both commands at user level in `~/.claude/settings.json`: Stop runs `armada hook stop 2>/dev/null || true` (timeout 10); SessionStart runs `armada hook session-start 2>/dev/null || true` with matcher `compact|resume` (timeout 30). Init only changes repository settings.
+
 ## The watch
 
 Plain `armada watch` waits until a new own or unowned item you have not been shown needs you (a question, plan, request, hand-back, merge hold, deploy failure, job notice, silent, stopped or unstarted worker), prints it and exits. Items owned by another named coordinator stay in the listing, marked `owner: <name>`, but do not wake you, even with `--all`. Reading `armada inbox` preserves shown history; `--mine` cannot prune keys from a broader `--all` read. It exits with `nothing to watch` when nothing in its scope is in flight or open. Armada being down does not end it. A timeout prints the resume command and re-arm line on stdout; start it again when it ends without news. `--for <minutes>` bounds it cleanly.
