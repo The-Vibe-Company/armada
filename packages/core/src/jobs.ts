@@ -20,6 +20,8 @@ export interface Job {
   startedBy: string | null;
   startedAt: string;
   observedAt: string;
+  /** Last meaningful progress movement; absent on older servers. */
+  progressChangedAt?: string;
   finishedAt: string | null;
 }
 
@@ -46,6 +48,10 @@ export interface JobQuery {
 }
 export interface JobSummary extends Job {
   overdue: boolean;
+  stalled: boolean;
+  /** Thresholds for recomputing the alert between dashboard polls. */
+  stallMinutes?: number;
+  silenceMinutes?: number;
   ticketDone: boolean;
   /** `[jobs.<name>] max_hours` of armada.toml; null when unset or the job is no longer configured. */
   maxHours: number | null;
@@ -95,6 +101,34 @@ export function jobOverdue(
 ): boolean {
   return jobIsOpen(job) && maxHours != null && now.getTime() - Date.parse(job.startedAt) > maxHours * 3_600_000;
 }
+
+/** Compare fractions before text so changing clocks and ETAs are not progress. */
+export function progressMoved(previous: string | null, next: string | null): boolean {
+  const fraction = (text: string | null) => text?.match(/(?:^|\s)(\d+)\/(\d+)(?=\s|$)/)?.[0]?.trim();
+  const oldFraction = fraction(previous);
+  const newFraction = fraction(next);
+  return oldFraction && newFraction ? oldFraction !== newFraction : previous !== next;
+}
+
+/** Silence wins: a stalled runner is still answering, but its progress is unchanged. */
+export function jobStalled(
+  job: Pick<Job, "state" | "progress" | "progressChangedAt" | "observedAt">,
+  stallMinutes: number,
+  now: Date,
+  silenceMinutes = 15,
+): boolean {
+  return (
+    job.state === "running" &&
+    !!job.progress?.trim() &&
+    job.progressChangedAt !== undefined &&
+    now.getTime() - Date.parse(job.observedAt) <= silenceMinutes * 60_000 &&
+    now.getTime() - Date.parse(job.progressChangedAt) > stallMinutes * 60_000
+  );
+}
+
+/** Minutes since movement, only used after jobStalled confirms a timestamp. */
+export const jobStalledMinutes = (job: Pick<Job, "progressChangedAt">, now: Date) =>
+  Math.floor((now.getTime() - Date.parse(job.progressChangedAt ?? "")) / 60_000);
 
 /** A terminal notice is stored once with the job transition. */
 export function jobEndedBody(job: Job): string {

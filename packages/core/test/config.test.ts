@@ -192,11 +192,26 @@ describe("armada.toml", () => {
       status: null,
       stop: "./stop.sh",
       silenceMinutes: 15,
+      stallMinutes: 60,
       maxHours: null,
     });
+    expect(
+      parseConfig(`${DEMO_TOML}\n[jobs.eval]\nstart = "start"\nstop = "stop"\nstall_minutes = 20`).jobs.eval
+        ?.stallMinutes,
+    ).toBe(20);
     expect(() => parseConfig(`${DEMO_TOML}\n[jobs.eval]\nstop = "stop"`)).toThrow("jobs.eval.start");
     expect(() => parseConfig(`${DEMO_TOML}\n[jobs.eval]\nstart = "start"`)).toThrow("jobs.eval.stop");
-    for (const field of ['start = ""', 'stop = ""', "silence_minutes = 0", "max_hours = -1", 'status = ""', "typo = 1"])
+    for (const field of [
+      'start = ""',
+      'stop = ""',
+      "silence_minutes = 0",
+      "stall_minutes = 0",
+      "stall_minutes = -1",
+      'stall_minutes = "soon"',
+      "max_hours = -1",
+      'status = ""',
+      "typo = 1",
+    ])
       expect(() => parseConfig(`${DEMO_TOML}\n[jobs.eval]\nstart = "start"\nstop = "stop"\n${field}`)).toThrow();
   });
 

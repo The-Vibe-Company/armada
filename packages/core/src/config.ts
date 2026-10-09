@@ -11,6 +11,7 @@ export interface JobConfig {
   status: string | null;
   stop: string;
   silenceMinutes: number;
+  stallMinutes: number;
   maxHours: number | null;
 }
 
@@ -740,7 +741,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         problems.push(`"${path}" must be a table`);
         continue;
       }
-      known.push([path, j, ["start", "status", "stop", "silence_minutes", "max_hours"]]);
+      known.push([path, j, ["start", "status", "stop", "silence_minutes", "stall_minutes", "max_hours"]]);
       const positive = (key: string, fallback: number | null): number | null => {
         const v = j[key];
         if (v === undefined) return fallback;
@@ -753,6 +754,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         status: j.status === undefined ? null : str(j, path, "status"),
         stop: str(j, path, "stop"),
         silenceMinutes: positive("silence_minutes", 15) ?? 15,
+        stallMinutes: positive("stall_minutes", 60) ?? 60,
         maxHours: positive("max_hours", null),
       };
     }
@@ -1133,6 +1135,7 @@ coordinator_minutes = 10 # first waiting-item reminder; intervals double, 0 disa
 # status = "./scripts/job-status.sh" # last line: running|succeeded|failed [progress, e.g. 37/120 cases]
 # stop = "./scripts/stop-eval.sh"     # exit 0 means stopped
 # silence_minutes = 15              # inbox alarm without news; watch polls at half this interval
+# stall_minutes = 60                # alert if reported progress stops moving; never stops the job
 # max_hours = 12                     # overdue, never auto-stopped
 # Remote runner: set ARMADA_API_KEY as its secret (organization API key), armada login --api-key.
 # Push news: armada job beat "$ARMADA_JOB_ID" --progress "40/120" [--state succeeded|failed].

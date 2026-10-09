@@ -5,7 +5,7 @@ import { type DeployInput, type DeployQuery, type DeployRecord, deployDetail, de
 // with its unique rules (one open plan, hand-back and launch request per
 // ticket, one open answer per question) and its atomic lease.
 
-import { type Job, jobEndedBody, jobIsOpen } from "../src/jobs.ts";
+import { type Job, jobEndedBody, jobIsOpen, progressMoved } from "../src/jobs.ts";
 import type {
   AckedEntry,
   CoordinatorPresence,
@@ -519,6 +519,7 @@ export function memoryFleet(): FleetStore & {
         startedBy: input.startedBy,
         startedAt: input.at.toISOString(),
         observedAt: input.at.toISOString(),
+        progressChangedAt: input.at.toISOString(),
         finishedAt: null,
       };
       jobs.push(job);
@@ -552,7 +553,10 @@ export function memoryFleet(): FleetStore & {
         if (job.ref === null && input.ref !== undefined) job.ref = input.ref;
         job.revision = (job.revision ?? 0) + 1;
         job.state = input.state;
-        if (input.progress !== undefined) job.progress = input.progress;
+        if (input.progress !== undefined) {
+          if (progressMoved(job.progress, input.progress)) job.progressChangedAt = input.at.toISOString();
+          job.progress = input.progress;
+        }
         job.eta = input.state === "running" ? (input.eta ?? null) : null;
         job.observedAt = input.at.toISOString();
         if (!jobIsOpen(job)) {
