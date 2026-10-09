@@ -61,6 +61,7 @@ import {
   ticketOwners,
   type ValidationRecord,
   type WorkerProfile,
+  workerSlots,
 } from "./live.ts";
 import type { QueueAdded, QueueEntry, QueueNext } from "./merge-queue.ts";
 import { buildModel } from "./model.ts";
@@ -832,10 +833,12 @@ export async function serveFleet(
           };
         }
         case "launch-requests": {
-          const [items, handles, events] = await Promise.all([
+          const launches = await store.pendingLaunches(slug, new Date(0));
+          const [items, handles, events, coordinators] = await Promise.all([
             store.openInboxItems({ project: slug, recipient: "coordinator" }),
             store.openRuntimeHandles(slug),
             store.latestEvents(slug),
+            store.listCoordinators(slug),
           ]);
           const flight = deps.snapshot?.flight;
           const model = flight
@@ -853,6 +856,10 @@ export async function serveFleet(
                 !!i.ticket && !!held?.has(i.ticket),
                 caller.kind === "organization" ? (caller.launchAuthor ?? caller.author) : null,
                 !!i.request?.profile && deps.config?.conductor.profiles[i.request.profile]?.runtime === "claude-code",
+                {
+                  ...workerSlots({ handles, launches, coordinators, now: at }),
+                  max: deps.config?.policy.maxWorkers ?? null,
+                },
               ),
             );
         }

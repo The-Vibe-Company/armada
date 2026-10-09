@@ -174,6 +174,7 @@ interface RawBriefIssue {
   title: string;
   url: string;
   branchName: string | null;
+  priority?: number;
   description: string | null;
   state: { name: string; type: string };
   labels: Connection<{ name: string }>;
@@ -197,7 +198,7 @@ const RELATION = `type issue { identifier title url state { name type } comments
 const BRIEF_QUERY = /* GraphQL */ `
   query Brief($id: String!) {
     issue(id: $id) {
-      identifier title url branchName description
+      identifier title url branchName priority description
       state { name type }
       labels(first: 50) { pageInfo { hasNextPage endCursor } nodes { name } }
       parent { identifier title url }
@@ -222,6 +223,7 @@ export interface BriefTicket {
   title: string;
   url: string;
   branchName: string | null;
+  priority?: number;
   description: string;
   status: string;
   statusType: StatusType;
@@ -258,6 +260,7 @@ export function normalizeBriefTicket(raw: RawBriefIssue, warnings: string[] = []
     title: raw.title,
     url: raw.url,
     branchName: raw.branchName || null,
+    priority: raw.priority ?? 0,
     description: raw.description?.trim() ?? "",
     status: raw.state.name,
     statusType: raw.state.type as StatusType,
@@ -836,7 +839,7 @@ export interface LoadBriefOptions extends HttpRetryOptions {
    * Else `reason` says why there is none, and is also a warning when `warn`;
    * the prompt then names the keys to pass.
    */
-  launch?: (ticket: string) => Promise<BriefLaunch | { reason: string; warn: boolean }>;
+  launch?: (ticket: string, priority?: number) => Promise<BriefLaunch | { reason: string; warn: boolean }>;
   /** Asks npm whether `version` is published (`checkPublished`), beside the Linear reads; not asked when absent. */
   npm?: (version: string) => Promise<NpmCheck>;
   /** The `[brief] extra` file, read by the caller from the repository. */
@@ -957,7 +960,9 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
 }
 
 async function launchForBrief(ticket: BriefTicket, launch: LoadBriefOptions["launch"]) {
-  return ticket.statusType !== "completed" && ticket.statusType !== "canceled" && launch ? launch(ticket.id) : null;
+  return ticket.statusType !== "completed" && ticket.statusType !== "canceled" && launch
+    ? launch(ticket.id, ticket.priority)
+    : null;
 }
 
 /** Every runtime's brief reads the holders opportunistically, with an explicit unavailable warning. */

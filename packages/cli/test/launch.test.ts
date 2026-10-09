@@ -74,7 +74,21 @@ describe("a worker signed in with its launch token", () => {
     runtimeState.armada.sessions.add("CANARY_coordinator");
     const paths = machinePaths(runtimeState.io.env);
     if (!paths) throw new Error("no machine store");
-    await updateWatchState(paths, "widgets", { inFlight: ["DEMO-7", "DEMO-8"] });
+    runtimeState.io.readFile = async (path) =>
+      path === "/work/widgets/armada.toml" ? `${DEMO_TOML}\n[policy]\nmax_workers = 2\n` : null;
+    await runtimeState.store.saveRuntimeHandle({
+      project: "widgets",
+      ticket: "DEMO-8",
+      runtime: "Conductor",
+      handle: "ws/8",
+      branch: null,
+      at: NOW,
+    });
+    await updateWatchState(paths, "widgets", {
+      inFlight: ["DEMO-7", "DEMO-8"],
+      slots: { taken: 2, max: 2 },
+      waiting: ["DEMO-9"],
+    });
     await writeFile(
       runtimeState.credentials,
       `ARMADA_SESSION_TOKEN=CANARY_coordinator\nARMADA_SIGNED_IN_TO=${ARMADA_URL}\n`,
@@ -93,7 +107,11 @@ describe("a worker signed in with its launch token", () => {
     expect(await run(["launch", "revoke", "demo-7", "--json"], runtimeState.io)).toBe(0);
     expect(revocations).toEqual([{ project: "widgets", ticket: "DEMO-7" }]);
     expect(JSON.parse(runtimeState.printed())).toMatchObject({ id: "worker-7", ticket: "DEMO-7" });
-    expect((await readWatchState(paths, "widgets"))?.inFlight).toEqual(["DEMO-8"]);
+    expect(await readWatchState(paths, "widgets")).toMatchObject({
+      inFlight: ["DEMO-8"],
+      slots: { taken: 1, max: 2 },
+      waiting: ["DEMO-9"],
+    });
     expect(runtimeState.armada.calls.some((call) => call.path === "launch-tokens")).toBe(false);
     expect(await run(["launch", "revoke"], runtimeState.io)).toBe(2);
     expect(runtimeState.printed()).toContain("armada launch revoke <ticket>");
