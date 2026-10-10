@@ -51,8 +51,10 @@ import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts
 import { dailyHint } from "./notices.ts";
 import { outgoingRedactor, redactLinearWriter } from "./redact.ts";
 import { queueLines } from "./render.ts";
+import { fsRepoView } from "./repo.ts";
 import { deliverToRuntime } from "./runtime.ts";
 import { claimRef, guarded, redactRuntimeText } from "./runtimes/adapter.ts";
+import { packageManagerChecks } from "./toolchain.ts";
 import { coordinatorHandle, rearmFor, remember, stopHookBanner, watchOf } from "./watch.ts";
 import { endWorkerSessions, liveFleet, type WorkerArgs } from "./worker.ts";
 import { countWorkerSlots } from "./worker-slots.ts";
@@ -122,7 +124,7 @@ export function ghUpdateBranch(exec: Exec, cwd: string, repository: string): Mer
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** The project's checkout: git fetch, git grep, and a test merge in a throwaway worktree. */
-export function gitRepo(exec: Exec, cwd: string): LocalRepo {
+export function gitRepo(exec: Exec, cwd: string, diagnostics?: Pick<Io, "env" | "stderr">): LocalRepo {
   const git = async (args: string[], dir = cwd) => {
     const r = await exec("git", args, { cwd: dir });
     return r;
@@ -191,6 +193,10 @@ export function gitRepo(exec: Exec, cwd: string): LocalRepo {
             step: `git merge ${head.slice(0, 7)}`,
             output: tail(`${merged.stdout}\n${merged.stderr}`),
           };
+        if (commands.length) {
+          for (const check of await packageManagerChecks(fsRepoView(dir), exec, dir, diagnostics?.env ?? {}))
+            diagnostics?.stderr(`armada: warning: ${check.message}; fix: ${check.fix}\n`);
+        }
         for (const command of commands) {
           const r = await exec("sh", ["-c", command], { cwd: dir });
           if (r.code !== 0) return { ok: false, step: command, output: tail(`${r.stdout}\n${r.stderr}`) };
@@ -420,7 +426,7 @@ export async function merge(
         preview: (sha) => fetchPreview({ ...gh, sha }),
       },
       appUrl: credentials.armadaSignIn ? credentials.armadaApi.url : null,
-      repo: gitRepo(exec, repoDir),
+      repo: gitRepo(exec, repoDir, { env: io.env, stderr: (text) => io.stderr(mask.text(text)) }),
       // Signed in, the merge lock is required: two coordinators merge one after the other.
       lockRequired: !!credentials.armadaSignIn,
       fleet: async () => {
