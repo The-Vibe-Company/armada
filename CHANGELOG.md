@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.65](https://github.com/The-Vibe-Company/armada/compare/v0.2.64...v0.2.65) (2026-10-10)
+
+
+### Bug Fixes
+
+* **cli:** repair missing setup hooks during upgrade ([#315](https://github.com/The-Vibe-Company/armada/issues/315)) ([8c45536](https://github.com/The-Vibe-Company/armada/commit/8c45536850aa3eac6ef069c85b24ae3922184ecb))
+
 ## [0.2.64](https://github.com/The-Vibe-Company/armada/compare/v0.2.63...v0.2.64) (2026-10-10)
 
 
