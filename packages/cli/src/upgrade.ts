@@ -16,7 +16,6 @@ import { CommandError, requireExec } from "./repo.ts";
 
 const ATTEMPTS = 5;
 const WAIT_MS = 30_000;
-const SETUP_CHECK = /^(skill:|skill-link:|skill-lock:|skills-version$|skills-lock$|conductor$|stop-hook$|gitignore$)/;
 
 async function targetVersion(io: Io): Promise<string> {
   const fetch = io.fetch ?? globalThis.fetch;
@@ -96,7 +95,12 @@ export async function upgrade(io: Io, running: string, root: string): Promise<nu
     )
   )
     throw new CommandError("the upgraded doctor could not check setup; run armada doctor before refreshing it");
-  const setupBehind = report.checks.some((check) => SETUP_CHECK.test(check.id) && check.level !== "ok");
+  const manualGaps = report.checks.some(
+    (check) => check.repair === "manual" && ["warning", "error"].includes(check.level),
+  );
+  const setupBehind = report.checks.some(
+    (check) => check.repair === "init" && ["warning", "error"].includes(check.level),
+  );
   if (
     report.checks.some(
       (check) => check.id === "skills-version" && check.level !== "ok" && check.fix?.includes("update the CLI"),
@@ -106,13 +110,24 @@ export async function upgrade(io: Io, running: string, root: string): Promise<nu
       `this project's skills require a CLI newer than Armada ${target}; retry after npm serves it`,
     );
   if (setupBehind) {
-    io.stdout(`Armada ${target} verified; refreshing outdated setup with armada init --merge.\n`);
+    io.stdout(`Armada ${target} verified; repairing setup gaps with armada init --merge.\n`);
+    if (manualGaps)
+      io.stderr("armada: doctor also found setup gaps needing manual repair; run armada doctor for the fixes.\n");
+    const signing = report.checks.find((check) => check.id === "git-signing" && check.level === "warning");
+    if (signing)
+      io.stderr(
+        `armada: setup commit signing: ${signing.message.replace(/\s+/g, " ")}; fix: ${signing.fix?.replace(/\s+/g, " ") ?? "run armada doctor"}; if branch rules allow unsigned commits, retry with GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false armada init --merge.\n`,
+      );
     const init = await exec("armada", ["init", "--merge"], { cwd: root, timeoutMs: 20 * 60_000 });
     if (init.code !== 0 || init.timedOut)
       throw new CommandError(
         `Armada ${target} is installed, but setup refresh did not finish; run armada init --merge to resume`,
       );
-    io.stdout(`Armada ${target} installed; setup refresh completed.\n`);
-  } else io.stdout(`Armada ${target} installed; setup is up to date.\n`);
+    io.stdout(
+      `Armada ${target} installed; setup refresh completed on the default branch; update this checkout from it and run armada doctor.\n`,
+    );
+  } else if (manualGaps)
+    io.stdout(`Armada ${target} installed; setup needs manual repair; run armada doctor for the fixes.\n`);
+  else io.stdout(`Armada ${target} installed; setup is up to date.\n`);
   return 0;
 }

@@ -1,20 +1,36 @@
 import { expect, test } from "bun:test";
-import { NPM_REGISTRY_URL } from "@armada/core";
+import { type Check, checkRepository, NPM_REGISTRY_URL, planSetup, type RepoView } from "@armada/core";
 import { DEMO_TOML } from "../../core/test/support.ts";
 import { heard } from "../src/api.ts";
 import { run } from "../src/cli.ts";
 import type { Exec, Io } from "../src/io.ts";
 import { upgrade } from "../src/upgrade.ts";
 
-function terminal(o: { missing?: number; fail?: string; installed?: string; setup?: boolean; doctor?: string } = {}) {
+function terminal(
+  o: {
+    missing?: number;
+    fail?: string;
+    installed?: string;
+    setup?: boolean;
+    doctor?: string;
+    checks?: () => Promise<Check[]>;
+    init?: () => Promise<void>;
+  } = {},
+) {
   const calls: string[] = [];
   const waits: number[] = [];
   let checks = 0;
+  const output: string[] = [];
+  const initEnvironments: (Record<string, string | undefined> | undefined)[] = [];
   const exec: Exec = async (command, args, options) => {
     expect(options.cwd).toBe("/work/widgets");
     calls.push([command, ...args].join(" "));
     if (command === "git") return { code: 0, stdout: "/work/widgets\n", stderr: "" };
     if (command === o.fail || args[0] === o.fail) return { code: 1, stdout: "", stderr: "synthetic failure" };
+    if (args[0] === "init") {
+      initEnvironments.push(options.env);
+      await o.init?.();
+    }
     return {
       code: args[0] === "doctor" && o.setup ? 1 : 0,
       stderr: "",
@@ -27,15 +43,18 @@ function terminal(o: { missing?: number; fail?: string; installed?: string; setu
                 schemaVersion: 1,
                 root: "/work/widgets",
                 armadaVersion: "1.2.4",
-                checks: [
-                  {
-                    id: "skill:armada-worker",
-                    level: o.setup ? "warning" : "ok",
-                    fix: o.setup ? "run armada init" : null,
-                  },
-                  { id: "github-rules", level: "warning", fix: "change branch rules" },
-                  { id: "optional:deploy", level: "info", message: "[deploy] optional", fix: null },
-                ],
+                checks: o.checks
+                  ? await o.checks()
+                  : [
+                      {
+                        id: "skill:armada-worker",
+                        level: o.setup ? "warning" : "ok",
+                        ...(o.setup ? { repair: "init" } : {}),
+                        fix: o.setup ? "run armada init" : null,
+                      },
+                      { id: "github-rules", level: "warning", fix: "change branch rules" },
+                      { id: "optional:deploy", level: "info", message: "[deploy] optional", fix: null },
+                    ],
               }))
             : "",
     };
@@ -44,8 +63,8 @@ function terminal(o: { missing?: number; fail?: string; installed?: string; setu
     cwd: "/work/widgets",
     env: {},
     readFile: async () => null,
-    stdout: () => {},
-    stderr: () => {},
+    stdout: (line) => output.push(line),
+    stderr: (line) => output.push(line),
     ghToken: () => null,
     exec,
     sleep: async (ms) => {
@@ -63,7 +82,7 @@ function terminal(o: { missing?: number; fail?: string; installed?: string; setu
       return new Response(null, { status: checks <= (o.missing ?? 0) ? 404 : 200 });
     },
   };
-  return { io, calls, waits };
+  return { io, calls, waits, output, initEnvironments };
 }
 
 test("upgrade waits for the exact tarball, verifies the installed version and leaves current setup alone", async () => {
@@ -81,6 +100,86 @@ test("only setup checks from the newly installed doctor trigger init --merge", a
   const c = terminal({ setup: true });
   expect(await upgrade(c.io, "1.2.3", c.io.cwd)).toBe(0);
   expect(c.calls.at(-1)).toBe("armada init --merge");
+});
+
+test("a current skills version with a missing session-start hook is repaired after upgrade", async () => {
+  const files = new Map([["armada.toml", DEMO_TOML]]);
+  const links = new Map<string, string>();
+  const view: RepoView = {
+    readFile: async (path) => files.get(path) ?? null,
+    readLink: async (path) => links.get(path) ?? null,
+    readFolder: async (dir) =>
+      [...files]
+        .filter(([path]) => path.startsWith(`${dir}/`))
+        .map(([path, content]) => ({ path: path.slice(dir.length + 1), content: new TextEncoder().encode(content) })),
+  };
+  const repair = async () => {
+    const plan = await planSetup(view, { armadaVersion: "1.2.4", configText: null });
+    for (const { path, content } of plan.writes) files.set(path, content);
+    for (const path of plan.removes) files.delete(path);
+    for (const { path, target } of plan.links) links.set(path, target);
+  };
+  await repair();
+  const settings = JSON.parse(files.get(".claude/settings.json") ?? "{}");
+  delete settings.hooks.SessionStart;
+  files.set(".claude/settings.json", JSON.stringify(settings));
+  const checks = () => checkRepository(view, "1.2.4");
+  const before = await checks();
+  expect(before.find((c) => c.id === "skills-version")?.level).toBe("ok");
+  expect(before.filter((c) => c.level !== "ok").map((c) => c.id)).toEqual(["session-start-hook"]);
+  const c = terminal({ checks, init: repair });
+  expect(await upgrade(c.io, "1.2.3", c.io.cwd)).toBe(0);
+  expect(c.calls).toContain("armada init --merge");
+  expect((await checks()).every((c) => c.level === "ok")).toBe(true);
+});
+
+test("upgrade preserves the signing diagnosis before init without disabling signing", async () => {
+  for (const [message, fix] of [
+    ["commit signing may wait for a person’s approval", "configure a noninteractive signer"],
+    ["effective Git configuration could not be read", "rerun doctor from a readable checkout"],
+  ]) {
+    const c = terminal({
+      checks: async () => [
+        { id: "stop-hook", level: "warning", message: "missing hook", fix: "run armada init", repair: "init" },
+        { id: "git-signing", level: "warning", message, fix },
+      ],
+      init: async () => {
+        expect(c.output.join("")).toContain(message);
+        expect(c.output.join("")).toContain(fix);
+        expect(c.output.join("")).toContain("GIT_CONFIG_VALUE_0=false armada init --merge");
+      },
+    });
+    expect(await upgrade(c.io, "1.2.3", c.io.cwd)).toBe(0);
+    expect(c.calls).toContain("armada init --merge");
+    expect(c.calls.some((call) => call.startsWith("git config"))).toBe(false);
+    expect(c.initEnvironments[0]?.GIT_CONFIG_VALUE_0).not.toBe("false");
+  }
+});
+
+test("manual setup repairs remain visible with and without an init-repairable gap", async () => {
+  for (const needsInit of [false, true]) {
+    const c = terminal({
+      checks: async () => [
+        { id: "conductor", level: "error", message: "invalid TOML", fix: "fix settings", repair: "manual" },
+        ...(needsInit
+          ? [
+              {
+                id: "session-start-hook",
+                level: "warning",
+                message: "missing hook",
+                fix: "run init",
+                repair: "init",
+              } as const,
+            ]
+          : []),
+      ],
+      init: async () => expect(c.output.join("")).toContain("manual repair"),
+    });
+    expect(await upgrade(c.io, "1.2.3", c.io.cwd)).toBe(0);
+    expect(c.calls.includes("armada init --merge")).toBe(needsInit);
+    expect(c.output.join("")).toContain("manual repair");
+    expect(c.output.join("")).not.toContain("setup is up to date");
+  }
 });
 
 test("publication waits are bounded to five checks and four sleeps, with no install", async () => {
