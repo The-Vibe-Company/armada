@@ -208,6 +208,7 @@ describe("repository checks", () => {
 
   test("the plan for an empty repository makes every check pass", async () => {
     const repo = memoryRepo({ "bun.lock": "{}" });
+    expect(problems(await checkRepository(repo.view, VERSION)).every((c) => c.repair === "init")).toBe(true);
     const plan = await planSetup(repo.view, { armadaVersion: VERSION, configText: DEMO_TOML });
     expect(plan.installed).toEqual(BUNDLED_SKILLS.map((s) => s.name));
     repo.apply(plan);
@@ -377,6 +378,7 @@ describe("repository checks", () => {
       {
         id: "config",
         level: "error",
+        repair: "manual",
         message:
           'armada.toml is invalid:\n  - "conductor.routing[1].profile" is "codex", but there is no [conductor.profiles.codex]',
         fix: "fix the keys listed above in armada.toml",
@@ -390,6 +392,7 @@ describe("repository checks", () => {
       {
         id: "brief-extra",
         level: "warning",
+        repair: "manual",
         message: "[brief] extra names docs/workers.md, which is missing: briefs go out without the project conventions",
         fix: "add docs/workers.md, or fix the path in armada.toml",
       },
@@ -408,6 +411,8 @@ describe("repository checks", () => {
 
   test("a Conductor setup Armada cannot add safely is left to a person", async () => {
     const repo = memoryRepo({ "armada.toml": DEMO_TOML, ".conductor/settings.toml": '[scripts]\nsetup = ""\n' });
+    const check = (await checkRepository(repo.view, VERSION)).find((c) => c.id === "conductor");
+    expect(check).toMatchObject({ level: "error", repair: "manual" });
     await expect(planSetup(repo.view, { armadaVersion: VERSION, configText: null })).rejects.toThrow(
       ".conductor/settings.toml has a [scripts] table Armada cannot add a setup command to safely",
     );
@@ -419,6 +424,7 @@ describe("repository checks", () => {
     expect(checks.find((c) => c.id === "skills-lock")).toMatchObject({
       level: "error",
       message: "skills-lock.json is not valid JSON",
+      repair: "manual",
     });
     await expect(planSetup(repo.view, { armadaVersion: VERSION, configText: null })).rejects.toThrow(SetupError);
   });

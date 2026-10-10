@@ -153,9 +153,9 @@ const COMMAND_HELP: Record<string, string> = {
 `,
   upgrade: `  upgrade           Install the newest Armada npm serves, verify armada --version,
                     then check setup with the upgraded doctor. Waits up to five publication
-                    checks over about two minutes. Runs armada init --merge only for
-                    outdated setup. Requires armada.toml at the selected Git root;
-                    workers keep their launch's pinned version
+                    checks over about two minutes. Runs armada init --merge for
+                    setup gaps the upgraded doctor marks as repairable by init.
+                    Requires armada.toml at the selected Git root; workers keep their launch's pinned version
 `,
   init: `  init [--program-root <ISSUE-ID>] [--name <name>] [--slug <slug>] [--no-stop-hook] [--merge]
                     Open one pull request that installs or updates it all, create the

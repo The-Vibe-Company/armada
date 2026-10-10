@@ -89,7 +89,7 @@ Confirmed delivery is terminal before Linear and inbox recording. A recording wa
 
 ## Upgrades
 
-`armada status` and `armada inbox` mention a new Armada release at most once a day; ordinary releases leave the watch running. Only a CLI below the server minimum stops either watch mode with a `version` item, worded `Armada <x> required (you run <y>)`. Setup behind gets a separate daily notice in status, inbox and plain watch's final output: “This project's Armada setup is behind <version>: `armada upgrade`, then merge the setup pull request it opens.” Setup drift leaves the watch running. Run `armada upgrade`: it waits for npm, installs the release, checks `armada --version`, and runs `armada init --merge` only when the project's setup is outdated. Workers in flight keep the version their brief pinned.
+`armada status` and `armada inbox` mention a new Armada release at most once a day; ordinary releases leave the watch running. Only a CLI below the server minimum stops either watch mode with a `version` item, worded `Armada <x> required (you run <y>)`. Setup behind gets a separate daily notice in status, inbox and plain watch's final output; `armada upgrade` refreshes it through the normal setup merge checks. Setup drift leaves the watch running. Run `armada upgrade`: it waits for npm, installs the release, checks `armada --version`, and runs `armada init --merge` when the upgraded doctor finds a setup gap init can repair, including a missing hook. If signing may wait for a person, upgrade prints a one-line fix before init; it never disables signing automatically. Update this checkout from the default branch after the setup merge and run `armada doctor`. Workers in flight keep the version their brief pinned.
 
 ## Specs
 

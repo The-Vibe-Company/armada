@@ -56,6 +56,8 @@ export interface Check {
   message: string;
   /** How to fix it; null when level is ok. */
   fix: string | null;
+  /** How this setup gap is repaired; upgrade consumes the upgraded doctor’s classification. */
+  repair?: "init" | "manual";
 }
 
 const ok = (id: string, message: string): Check => ({ id, level: "ok", message, fix: null });
@@ -64,6 +66,16 @@ const bad = (id: string, level: Exclude<CheckLevel, "ok">, message: string, fix:
   level,
   message,
   fix,
+});
+
+const manualGap = (id: string, level: Exclude<CheckLevel, "ok">, message: string, fix: string): Check => ({
+  ...bad(id, level, message, fix),
+  repair: "manual",
+});
+
+const initGap = (id: string, level: Exclude<CheckLevel, "ok">, message: string, fix: string): Check => ({
+  ...bad(id, level, message, fix),
+  repair: "init",
 });
 
 export type InfoCheck = Omit<Check, "level"> & { level: "info" };
@@ -371,7 +383,7 @@ export async function checkRepository(
   const configText = await view.readFile(CONFIG_FILE);
   if (configText === null)
     checks.push(
-      bad(
+      initGap(
         "config",
         "error",
         `${CONFIG_FILE} is missing`,
@@ -386,7 +398,7 @@ export async function checkRepository(
       if (extra)
         checks.push(
           (await view.readFile(extra)) === null
-            ? bad(
+            ? manualGap(
                 "brief-extra",
                 "warning",
                 `[brief] extra names ${extra}, which is missing: briefs go out without the project conventions`,
@@ -396,7 +408,7 @@ export async function checkRepository(
         );
     } catch (err) {
       if (!(err instanceof ConfigError)) throw err;
-      checks.push(bad("config", "error", err.message, `fix the keys listed above in ${CONFIG_FILE}`));
+      checks.push(manualGap("config", "error", err.message, `fix the keys listed above in ${CONFIG_FILE}`));
     }
 
   let lock: SkillsLock | null = null;
@@ -407,7 +419,7 @@ export async function checkRepository(
     if (!(err instanceof SetupError)) throw err;
     lockError = err.message;
   }
-  if (lockError) checks.push(bad("skills-lock", "error", lockError, `repair or delete ${SKILLS_LOCK_FILE}`));
+  if (lockError) checks.push(manualGap("skills-lock", "error", lockError, `repair or delete ${SKILLS_LOCK_FILE}`));
 
   const wholeDir = await linksWholeDir(view);
   const differing: string[] = [];
@@ -417,14 +429,16 @@ export async function checkRepository(
     const id = `skill:${skill.name}`;
     if (installed === null) {
       // Its link and lock entry come with the install; one line per missing skill is enough.
-      checks.push(bad(id, "error", `skill ${skill.name} is missing from ${AGENTS_SKILLS_DIR}`, "run `armada init`"));
+      checks.push(
+        initGap(id, "error", `skill ${skill.name} is missing from ${AGENTS_SKILLS_DIR}`, "run `armada init`"),
+      );
       continue;
     }
     present++;
     if (installed !== deliveredHash(skill, skillRef(lock?.skills[skill.name]))) {
       differing.push(skill.name);
       checks.push(
-        bad(
+        initGap(
           id,
           "warning",
           `skill ${skill.name} differs from the version in Armada ${armadaVersion}`,
@@ -440,7 +454,7 @@ export async function checkRepository(
       checks.push(ok(linkId, `${linkPath(skill.name)} links to ${skillDir(skill.name)}`));
     else
       checks.push(
-        bad(
+        initGap(
           linkId,
           "error",
           target === null
@@ -454,14 +468,19 @@ export async function checkRepository(
     const entry = lock?.skills[skill.name];
     const lockId = `skill-lock:${skill.name}`;
     if (!entry)
-      checks.push(bad(lockId, "error", `${SKILLS_LOCK_FILE} does not record ${skill.name}`, "run `armada init`"));
+      checks.push(initGap(lockId, "error", `${SKILLS_LOCK_FILE} does not record ${skill.name}`, "run `armada init`"));
     else if (entry.sourceType !== (skill.delivery === "pointer" ? "armada-cli" : "github"))
       checks.push(
-        bad(lockId, "warning", `${SKILLS_LOCK_FILE} records the wrong delivery for ${skill.name}`, "run `armada init`"),
+        initGap(
+          lockId,
+          "warning",
+          `${SKILLS_LOCK_FILE} records the wrong delivery for ${skill.name}`,
+          "run `armada init`",
+        ),
       );
     else if (installed !== null && entry.computedHash !== installed)
       checks.push(
-        bad(
+        initGap(
           lockId,
           "warning",
           `${SKILLS_LOCK_FILE} records a different content for ${skill.name} than ${skillDir(skill.name)}`,
@@ -473,7 +492,7 @@ export async function checkRepository(
   const behind = behindOf(lock, differing);
   if (behind)
     checks.push(
-      bad(
+      (ahead(behind, armadaVersion) ? manualGap : initGap)(
         "skills-version",
         "warning",
         skillsBehindMessage(behind, armadaVersion),
@@ -485,23 +504,31 @@ export async function checkRepository(
   const settings = await view.readFile(CONDUCTOR_SETTINGS);
   if (settings === null)
     checks.push(
-      bad("conductor", "error", `${CONDUCTOR_SETTINGS} is missing`, "run `armada init` to add it with a setup script"),
+      initGap(
+        "conductor",
+        "error",
+        `${CONDUCTOR_SETTINGS} is missing`,
+        "run `armada init` to add it with a setup script",
+      ),
     );
   else
     try {
-      checks.push(
-        conductorSetup(settings)
-          ? ok("conductor", `${CONDUCTOR_SETTINGS} has a setup script`)
-          : bad(
-              "conductor",
-              "error",
-              `${CONDUCTOR_SETTINGS} has no [scripts] setup`,
-              "run `armada init`, or add a setup command under [scripts]",
-            ),
-      );
+      if (conductorSetup(settings)) checks.push(ok("conductor", `${CONDUCTOR_SETTINGS} has a setup script`));
+      else {
+        // Share init's editability check: valid but unsupported TOML layouts need a person.
+        withSetup(settings, await guessSetupCommand(view));
+        checks.push(
+          initGap(
+            "conductor",
+            "error",
+            `${CONDUCTOR_SETTINGS} has no [scripts] setup`,
+            "run `armada init`, or add a setup command under [scripts]",
+          ),
+        );
+      }
     } catch (err) {
       if (!(err instanceof SetupError)) throw err;
-      checks.push(bad("conductor", "error", err.message, `fix ${CONDUCTOR_SETTINGS}`));
+      checks.push(manualGap("conductor", "error", err.message, `fix ${CONDUCTOR_SETTINGS}`));
     }
 
   checks.push(await stopHookCheck(view, stopHookInstalledIn));
@@ -510,7 +537,7 @@ export async function checkRepository(
   checks.push(
     ignoresShipArtifacts(await view.readFile(GITIGNORE))
       ? ok("gitignore", `${GITIGNORE} ignores ${SHIP_ARTIFACTS}`)
-      : bad(
+      : initGap(
           "gitignore",
           "warning",
           `${GITIGNORE} does not ignore ${SHIP_ARTIFACTS}, so the ship-pr-dev skill refuses to start`,
@@ -638,9 +665,11 @@ async function sessionStartHookCheck(view: RepoView, installedIn?: string | null
   if (installedIn)
     return ok(id, `${installedIn} has Armada’s session-start hook: briefs coordinators after compact or resume`);
   try {
-    return hasSessionStartHook(claudeSettings(await view.readFile(CLAUDE_SETTINGS)))
+    const text = await view.readFile(CLAUDE_SETTINGS);
+    withArmadaHooks(text);
+    return hasSessionStartHook(claudeSettings(text))
       ? ok(id, `${CLAUDE_SETTINGS} has Armada's session-start hook: briefs coordinators after compact or resume`)
-      : bad(
+      : initGap(
           id,
           "warning",
           `${CLAUDE_SETTINGS} has no Armada session-start hook, so compact or resume can lose the coordinator's watch context`,
@@ -648,7 +677,12 @@ async function sessionStartHookCheck(view: RepoView, installedIn?: string | null
         );
   } catch (err) {
     if (!(err instanceof SetupError)) throw err;
-    return bad(id, "warning", `Claude Code session-start hook not checked: ${err.message}`, `fix ${CLAUDE_SETTINGS}`);
+    return manualGap(
+      id,
+      "warning",
+      `Claude Code session-start hook not checked: ${err.message}`,
+      `fix ${CLAUDE_SETTINGS}`,
+    );
   }
 }
 
@@ -657,17 +691,19 @@ async function stopHookCheck(view: RepoView, installedIn?: string | null): Promi
   if (installedIn) return ok(id, `${installedIn} has Armada's stop hook (ARMADA_STOP_HOOK=off turns it off)`);
   let settings: Json | null;
   try {
-    settings = claudeSettings(await view.readFile(CLAUDE_SETTINGS));
+    const text = await view.readFile(CLAUDE_SETTINGS);
+    withArmadaHooks(text);
+    settings = claudeSettings(text);
   } catch (err) {
     if (!(err instanceof SetupError)) throw err;
-    return bad(id, "warning", `Claude Code stop hook not checked: ${err.message}`, `fix ${CLAUDE_SETTINGS}`);
+    return manualGap(id, "warning", `Claude Code stop hook not checked: ${err.message}`, `fix ${CLAUDE_SETTINGS}`);
   }
   return hasStopHook(settings)
     ? ok(
         id,
         `${CLAUDE_SETTINGS} has Armada's stop hook: a Claude Code coordinator cannot end its turn while workers are in flight and no armada watch runs (ARMADA_STOP_HOOK=off turns it off)`,
       )
-    : bad(
+    : initGap(
         id,
         "warning",
         `${CLAUDE_SETTINGS} has no Armada stop hook, so a Claude Code coordinator can stop watching its fleet without noticing`,
