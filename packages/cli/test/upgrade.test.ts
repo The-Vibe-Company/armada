@@ -137,7 +137,7 @@ test("upgrade preserves the signing diagnosis before init without disabling sign
   for (const [message, fix] of [
     ["commit signing may wait for a person’s approval", "configure a noninteractive signer"],
     ["effective Git configuration could not be read", "rerun doctor from a readable checkout"],
-  ]) {
+  ] as const) {
     const c = terminal({
       checks: async () => [
         { id: "stop-hook", level: "warning", message: "missing hook", fix: "run armada init", repair: "init" },
