@@ -161,3 +161,7 @@ armada launch ABC-12 --runtime conductor --profile backend --pre-approve --reaso
 ```
 
 One `--reason` explains both the profile choice and the pre-approval. `--runtime conductor|herdr` may be left out when the profile settles it. `--notes <file|->` adds what only you know (the boundary with a parallel worker, a decision not yet on the ticket), up to 16 KB; notes never approve a plan. `--dry-run` checks everything and creates nothing. The command refuses a ticket already launched or claimed, mints the token, starts the worker and prints its handle and link, never the token. For failed or uncertain launches, follow REFERENCE.md. Put worker conventions in `[brief] extra`. For a Claude Code profile, run `armada brief <ticket> --prompt` with the same flags and launch through the Agent tool as its runtime guide says.
+
+## Stop a superseded worker on a Done ticket
+
+When another change covered a worker's ticket and it is already Done, run `armada stop ABC-12 --superseded "<why>"`. It posts the reason on Linear, releases the exact claim, ends only worker sessions launched by its claim time and archives that runtime workspace. Done stays Done; no workflow-state workaround is needed. A replacement claim refuses cleanup, and herdr still requires a clean, fully pushed worktree. If archival fails after release, retry the same command. `--superseded` requires Done; unfinished tickets use ordinary release and stop. Alternatively, `armada release --ticket ABC-12 --reason "<why>"` preserves Done, followed by `armada stop ABC-12` for archival.
