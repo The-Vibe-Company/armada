@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.64](https://github.com/The-Vibe-Company/armada/compare/v0.2.63...v0.2.64) (2026-10-10)
+
+
+### Features
+
+* **cli:** warn when the local package manager differs from the project pin ([#312](https://github.com/The-Vibe-Company/armada/issues/312)) ([5e66e79](https://github.com/The-Vibe-Company/armada/commit/5e66e79b79990086ea9e7614919697bdb368d2d7))
+
+
+### Bug Fixes
+
+* **ci:** treat transient container pulls as runner problems ([#310](https://github.com/The-Vibe-Company/armada/issues/310)) ([2d10f59](https://github.com/The-Vibe-Company/armada/commit/2d10f59f2dec32eb3e53e9bc70801c91a38c4f46))
+* **cli:** stop superseded workers on Done tickets ([#311](https://github.com/The-Vibe-Company/armada/issues/311)) ([54fff3f](https://github.com/The-Vibe-Company/armada/commit/54fff3f66bbeb15856fc11b8fe44886dbd012d44))
+* **workers:** preserve clean hand-backs when main moves ([#313](https://github.com/The-Vibe-Company/armada/issues/313)) ([cd3649c](https://github.com/The-Vibe-Company/armada/commit/cd3649cc14b0ee4be40066c621fb416ab7a6aa34))
+
 ## [0.2.63](https://github.com/The-Vibe-Company/armada/compare/v0.2.62...v0.2.63) (2026-10-09)
 
 
