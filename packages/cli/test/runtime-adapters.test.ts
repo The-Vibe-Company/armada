@@ -20,7 +20,7 @@ import {
   watchFiles,
 } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
-import { ARMADA_URL, DEMO_TOML, fakeArmada, fakeClock, NOW } from "../../core/test/support.ts";
+import { ARMADA_URL, DEMO_TOML, FakeLinear, fakeArmada, fakeClock, NOW } from "../../core/test/support.ts";
 import { run } from "../src/cli.ts";
 import type { Io } from "../src/io.ts";
 import { observeRuntimes } from "../src/runtime.ts";
@@ -662,6 +662,93 @@ test.each(
     );
     expect(error.message + error.next).not.toMatch(/CANARY|private native error/);
   }
+});
+
+test.each([false, true])("stop superseded releases and archives a Done claim (retry: %s)", async (retry) => {
+  const f = await fixture();
+  const linear = new FakeLinear();
+  linear.add("DEMO-7", {
+    statusType: "completed",
+    stateId: "st-done",
+    labels: [{ id: "phase-implementing", name: "implementing", group: "Agent phase" }],
+  });
+  f.io.linearWriter = () => linear;
+  const endRequests: unknown[] = [];
+  const fetch = f.io.fetch;
+  if (!fetch) throw new Error("missing fake API");
+  f.io.fetch = async (url, init) => {
+    if (String(url).endsWith("/workers/end")) endRequests.push(JSON.parse(String(init?.body)));
+    return fetch(url, init);
+  };
+  if (retry) await f.store.releaseRuntimeHandle(config.project.slug, "DEMO-7", NOW);
+  expect((await f.fleet.runtimeHandle("DEMO-7"))?.releasedAt).toBe(retry ? NOW.toISOString() : null);
+  expect(await run(["stop", "DEMO-7", "--superseded", "covered by another change", "--json"], f.io)).toBe(0);
+  expect(linear.get("DEMO-7").stateId).toBe("st-done");
+  expect(linear.get("DEMO-7").labels).toEqual([]);
+  expect(linear.bodies.at(-1)).toBe("Agent status: released — covered by another change");
+  expect(f.calls.some((c) => c.args.includes("archive"))).toBe(true);
+  expect((await f.fleet.runtimeHandle("DEMO-7"))?.releasedAt).toBeTruthy();
+  expect(endRequests).toEqual([
+    { project: "widgets", ticket: "DEMO-7", reason: "released", claimedAt: NOW.toISOString() },
+  ]);
+  expect(JSON.parse(f.output.at(-1) ?? "{}").stopped).toBe(true);
+});
+
+test.each(["started", "canceled"])("stop superseded refuses a %s ticket before releasing", async (statusType) => {
+  const f = await fixture();
+  const linear = new FakeLinear();
+  linear.add("DEMO-7", {
+    statusType,
+    labels: [{ id: "phase-implementing", name: "implementing", group: "Agent phase" }],
+  });
+  f.io.linearWriter = () => linear;
+  expect((await f.fleet.runtimeHandle("DEMO-7"))?.releasedAt).toBeNull();
+  expect(await run(["stop", "DEMO-7", "--superseded", "another change"], f.io)).toBe(1);
+  expect(f.output.join("")).toContain("requires a Done ticket");
+  expect(linear.writes).toEqual([]);
+  expect(f.calls).toEqual([]);
+  expect((await f.fleet.runtimeHandle("DEMO-7"))?.releasedAt).toBeNull();
+});
+
+test.each(["release", "archive"])("stop superseded cannot end a replacement during %s", async (step) => {
+  const f = await fixture();
+  const linear = new FakeLinear();
+  linear.add("DEMO-7", {
+    statusType: "completed",
+    stateId: "st-done",
+    labels: [{ id: "phase-implementing", name: "implementing", group: "Agent phase" }],
+  });
+  f.io.linearWriter = () => linear;
+  const replace = async () => {
+    await f.store.releaseRuntimeHandle(config.project.slug, "DEMO-7", NOW);
+    await recordClaim(
+      f.store,
+      config.project.slug,
+      {
+        ticket: "DEMO-7",
+        runtime: "conductor",
+        handle: "ws-new/ses-new",
+        branch: "feature/demo-7",
+        phase: "implementing",
+        resuming: false,
+        profile: null,
+      },
+      new Date(NOW.getTime() + 1000),
+    );
+  };
+  expect((await f.fleet.runtimeHandle("DEMO-7"))?.handle).toBe("ws-1/ses-1");
+  if (step === "release") {
+    const read = linear.readTicket.bind(linear);
+    linear.readTicket = async (id) => {
+      await replace();
+      return read(id);
+    };
+  } else f.set({ beforeRead: replace });
+  expect(await run(["stop", "DEMO-7", "--superseded", "another change"], f.io)).not.toBe(0);
+  expect(f.calls.some((c) => c.args.includes("cancel") || c.args.includes("archive"))).toBe(false);
+  const current = await f.fleet.runtimeHandle("DEMO-7");
+  expect([current?.handle, current?.releasedAt]).toEqual(["ws-new/ses-new", null]);
+  if (step === "release") expect(linear.writes).toEqual([]);
 });
 
 test("Conductor refuses active archive, verifies workspace ownership, waits boundedly and stops only ended generations", async () => {

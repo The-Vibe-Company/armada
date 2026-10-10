@@ -258,7 +258,7 @@ export async function relaunch(
         context.linear = redactLinearWriter(context.linear, mask.text);
         context.workerHandle = old.handle;
         const outcome = await guarded(fleet, old, rule, () =>
-          releaseTicket(context, { ticket, reason: `relaunch: ${reason}`, claim: old }),
+          releaseTicket(context, { ticket, reason: `relaunch: ${reason}`, claim: old, requireOpen: true }),
         );
         if (outcome.warnings.length) throw new UsageError("release could not be recorded consistently");
         await recheckMutation();

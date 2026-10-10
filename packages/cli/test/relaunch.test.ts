@@ -305,6 +305,27 @@ test("fresh relaunch cancels, releases and ends the old generation before launch
   expect(f.text()).not.toContain("launching again makes a second worker");
 });
 
+test("relaunch refuses a ticket that becomes Done during cancellation", async () => {
+  const f = await fixture();
+  expect(f.linear.get("DEMO-13").statusType).toBe("started");
+  const exec = f.io.exec;
+  if (!exec) throw new Error("missing fake runtime");
+  f.io.exec = async (command, args, options) => {
+    const result = await exec(command, args, options);
+    if (args[2] === "cancel") await f.linear.updateTicket("uuid-DEMO-13", { stateId: "st-done" });
+    return result;
+  };
+  expect(await f.relaunch("--fresh"), f.text()).toBe(2);
+  expect(f.order).toContain("cancel");
+  expect(f.text()).toContain("is completed; there is nothing to work on");
+  expect(f.linear.get("DEMO-13").stateId).toBe("st-done");
+  expect(f.order).not.toContain("fleet/release");
+  expect(f.order).not.toContain("workers/end");
+  expect(f.order).not.toContain("launch-tokens");
+  expect(f.order).not.toContain("create");
+  expect((await f.store.getRuntimeHandle("widgets", "DEMO-13"))?.releasedAt).toBeNull();
+});
+
 test("known launch failure names the released state and releases the lease", async () => {
   const f = await fixture();
   f.set({ failCreate: true });
