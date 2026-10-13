@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { fetchBranchRules, fetchForge, fetchMainHealth, fetchPullRequest, ticketIdFromBranch } from "../src/github.ts";
+import {
+  fetchBranchRules,
+  fetchForge,
+  fetchMainHealth,
+  fetchMergePull,
+  fetchPullRequest,
+  ticketIdFromBranch,
+} from "../src/github.ts";
 import { NOW, pullResponse, recordedFetch } from "./support.ts";
 
 describe("fetchBranchRules", () => {
@@ -310,4 +317,93 @@ test("the pull reader requests rename metadata so acceptance does not skip renam
     fetch: recorded.fetch,
   });
   expect(pr?.files?.[0]).toMatchObject({ path: "docs/Dockerfile", changeType: "RENAMED" });
+});
+
+// The adapter owns selection: every merge caller receives this same head reading.
+test("merge checks use the newest workflow run on the head and retain cancellation evidence", async () => {
+  const head = "a".repeat(40);
+  const suite = (number: number, workflow = "workflow-build", sha = head, attempt = 1) => ({
+    commit: { oid: sha },
+    workflowRun: { databaseId: 900 + number, runNumber: number, runAttempt: attempt, workflow: { id: workflow } },
+  });
+  const check = (
+    name: string,
+    conclusion: string | null,
+    checkSuite: ReturnType<typeof suite> | null,
+    status = "COMPLETED",
+  ) => ({
+    __typename: "CheckRun",
+    name,
+    status,
+    conclusion,
+    checkSuite,
+  });
+  const old = check("old matrix job", "CANCELLED", suite(1));
+  const green = check("test", "SUCCESS", suite(2, "workflow-build", head, 2));
+  const read = async (
+    nodes: unknown[],
+    suites: unknown[] = [],
+    incomplete = false,
+    state: "OPEN" | "MERGED" = "OPEN",
+  ) => {
+    const response = pullResponse({ number: 9, headSha: head, checks: [], state });
+    const raw = response.data.repository.pullRequest;
+    const commit = raw.commits.nodes[0]?.commit;
+    if (!commit) throw new Error("fixture has no commit");
+    Object.assign(raw, {
+      mergeStateStatus: "CLEAN",
+      baseRefName: "main",
+      mergeCommit: null,
+      reviewThreads: { totalCount: 0, nodes: [] },
+    });
+    Object.assign(commit, { checkSuites: { nodes: suites, pageInfo: { hasNextPage: incomplete } } });
+    Object.assign(commit.statusCheckRollup.contexts, { nodes, pageInfo: { hasNextPage: false } });
+    return fetchMergePull({
+      token: "synthetic-token",
+      repository: "acme/widgets",
+      number: 9,
+      fetch: recordedFetch({ github: response }).fetch,
+    });
+  };
+  expect(await read([old, green])).toMatchObject({
+    ci: "success",
+    checks: [{ name: "test", state: "success", runId: 902, runAttempt: 2 }],
+  });
+  expect((await read([green, old]))?.checks).toHaveLength(1);
+  expect(await read([old, { ...green, status: "IN_PROGRESS", conclusion: null }])).toMatchObject({
+    ci: "pending",
+    checks: [{ name: "test", state: "pending" }],
+  });
+  expect(await read([old])).toMatchObject({
+    ci: "failure",
+    checks: [{ name: "old matrix job", state: "failure", conclusion: "cancelled", runId: 901, runAttempt: 1 }],
+  });
+  // Different workflow, different head, and absent metadata cannot supersede it.
+  for (const replacement of [
+    { ...green, checkSuite: suite(2, "workflow-other") },
+    { ...green, checkSuite: suite(2, "workflow-build", "b".repeat(40)) },
+    { ...green, checkSuite: null },
+  ])
+    expect((await read([old, replacement]))?.ci).toBe("failure");
+  expect((await read([old, green, { __typename: "StatusContext", context: "external", state: "FAILURE" }]))?.ci).toBe(
+    "failure",
+  );
+  const cancelledSuite = { ...suite(3), status: "COMPLETED", conclusion: "CANCELLED" };
+  expect(await read([], [cancelledSuite])).toMatchObject({
+    ci: "failure",
+    checks: [{ workflow: true, state: "failure", conclusion: "cancelled", runId: 903, runAttempt: 1 }],
+  });
+  expect(await read([{ ...green, checkSuite: cancelledSuite }], [cancelledSuite])).toMatchObject({ ci: "failure" });
+  expect(await read([green], [cancelledSuite, { ...suite(4), status: "QUEUED", conclusion: null }])).toMatchObject({
+    ci: "pending",
+  });
+  // A replacement can be queued before its first job exists. Do not use old green evidence.
+  expect(await read([old], [{ ...suite(2), status: "QUEUED", conclusion: null }])).toMatchObject({ ci: "pending" });
+  await expect(read([old, green], [], true)).rejects.toThrow("merge CI reading is incomplete");
+  // CI incompleteness cannot hide an already-confirmed merge from recovery reads.
+  expect(await read([old, green], [], true, "MERGED")).toMatchObject({
+    state: "merged",
+    checksComplete: false,
+    ci: "pending",
+  });
 });

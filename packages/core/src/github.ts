@@ -12,7 +12,7 @@ import {
   readJson,
   retryStatus,
 } from "./http.ts";
-import type { CiState, ForgeData, Issue, MainCommit, MainHealth, ProgramData, PullRequest } from "./types.ts";
+import type { CiCheck, CiState, ForgeData, Issue, MainCommit, MainHealth, ProgramData, PullRequest } from "./types.ts";
 
 export const GITHUB_GRAPHQL = "https://api.github.com/graphql";
 
@@ -59,8 +59,27 @@ export function ticketIdFromBranch(branch: string, known: ReadonlySet<string>): 
 
 // ------------------------------------------------------------------ raw shapes
 
+interface RawWorkflowRun {
+  databaseId: number | null;
+  runNumber: number;
+  runAttempt: number;
+  workflow: { id: string };
+}
+interface RawCheckSuite {
+  status?: string;
+  conclusion?: string | null;
+  commit: { oid: string };
+  workflowRun: RawWorkflowRun | null;
+}
+
 type RawContext =
-  | { __typename: "CheckRun"; name: string; status: string; conclusion: string | null }
+  | {
+      __typename: "CheckRun";
+      name: string;
+      status: string;
+      conclusion: string | null;
+      checkSuite?: RawCheckSuite | null;
+    }
   | { __typename: "StatusContext"; context: string; state: string };
 
 interface RawMainBranch {
@@ -121,6 +140,7 @@ export interface RawPull {
   commits: {
     nodes: {
       commit: {
+        checkSuites?: { nodes: RawCheckSuite[]; pageInfo: { hasNextPage: boolean } };
         statusCheckRollup: {
           state: string;
           contexts: { nodes: RawContext[]; pageInfo?: { hasNextPage: boolean } };
@@ -131,18 +151,20 @@ export interface RawPull {
 }
 
 export function normalizePull(raw: RawPull, repo: string): PullRequest {
-  const status = raw.commits.nodes[0]?.commit.statusCheckRollup ?? null;
-  const checks = status?.contexts.nodes.map((c) =>
-    c.__typename === "CheckRun"
-      ? { name: c.name, state: checkState(c.status, c.conclusion) }
-      : { name: c.context, state: checkState("", c.state) },
-  );
+  const commit = raw.commits.nodes[0]?.commit;
+  const status = commit?.statusCheckRollup ?? null;
+  const checks = headChecks(status?.contexts.nodes ?? [], commit?.checkSuites?.nodes ?? [], raw.headRefOid);
+  const incomplete =
+    status?.contexts.pageInfo?.hasNextPage === true || commit?.checkSuites?.pageInfo.hasNextPage === true;
+  const ci = rollup(checks.map((c) => c.state));
   return {
     files: raw.files?.nodes ?? null,
     additions: raw.additions ?? null,
     deletions: raw.deletions ?? null,
     filesComplete: !!raw.files && !raw.files.pageInfo.hasNextPage,
-    checksComplete: !status || status.contexts.pageInfo?.hasNextPage === false,
+    checksComplete:
+      (!status || status.contexts.pageInfo?.hasNextPage === false) &&
+      commit?.checkSuites?.pageInfo.hasNextPage !== true,
     mergeability:
       raw.mergeable === "CONFLICTING" || raw.mergeStateStatus === "DIRTY"
         ? "conflicting"
@@ -157,12 +179,8 @@ export function normalizePull(raw: RawPull, repo: string): PullRequest {
     title: raw.title,
     state: raw.state === "OPEN" ? "open" : raw.state === "MERGED" ? "merged" : "closed",
     draft: raw.isDraft,
-    ci: status?.contexts.pageInfo?.hasNextPage
-      ? checkState("", status.state)
-      : checks
-        ? rollup(checks.map((c) => c.state))
-        : "none",
-    checks: checks ?? [],
+    ci: incomplete ? (ci === "failure" || status?.state === "FAILURE" ? "failure" : "pending") : ci,
+    checks,
     mergeable: raw.mergeable,
     headRef: raw.headRefName,
     headSha: raw.headRefOid,
@@ -172,13 +190,86 @@ export function normalizePull(raw: RawPull, repo: string): PullRequest {
   };
 }
 
+/** Select workflow runs by identity on this head, never by job name or display title. */
+function headChecks(contexts: RawContext[], suites: RawCheckSuite[], head: string): CiCheck[] {
+  const latest = new Map<string, RawCheckSuite>();
+  const workflowRun = (suite: RawCheckSuite | null | undefined) =>
+    suite?.commit.oid === head ? suite.workflowRun : null;
+  for (const suite of [
+    ...suites,
+    ...contexts.flatMap((c) => (c.__typename === "CheckRun" && c.checkSuite ? [c.checkSuite] : [])),
+  ]) {
+    const run = workflowRun(suite);
+    if (!run) continue;
+    const previous = latest.get(run.workflow.id)?.workflowRun;
+    if (
+      !previous ||
+      run.runNumber > previous.runNumber ||
+      (run.runNumber === previous.runNumber && run.runAttempt > previous.runAttempt)
+    )
+      latest.set(run.workflow.id, suite);
+  }
+  const checks: CiCheck[] = [];
+  const represented = new Set<string>();
+  for (const c of contexts) {
+    if (c.__typename === "StatusContext") {
+      checks.push({ name: c.context, state: checkState("", c.state) });
+      continue;
+    }
+    const run = workflowRun(c.checkSuite);
+    const newestSuite = run && latest.get(run.workflow.id);
+    const newest = newestSuite?.workflowRun;
+    if (
+      run &&
+      newest &&
+      (run.runNumber < newest.runNumber || (run.runNumber === newest.runNumber && run.runAttempt < newest.runAttempt))
+    )
+      continue;
+    if (run) represented.add(run.workflow.id);
+    const suiteCancelled = newestSuite?.status === "COMPLETED" && newestSuite.conclusion === "CANCELLED";
+    checks.push({
+      name: c.name,
+      state: suiteCancelled ? "failure" : checkState(c.status, c.conclusion),
+      ...(suiteCancelled || c.conclusion === "CANCELLED" ? { conclusion: "cancelled" } : {}),
+      ...(run?.databaseId != null ? { runId: run.databaseId, runAttempt: run.runAttempt } : {}),
+    });
+  }
+  // A queued replacement may not have emitted jobs yet. It must not make an old run look green.
+  for (const [id, suite] of latest) {
+    const run = suite.workflowRun;
+    if (!run) continue;
+    const cancelled = suite.status === "COMPLETED" && suite.conclusion === "CANCELLED";
+    // Cancellation belongs to the whole workflow even if only successful jobs were emitted.
+    const state = checkState(suite.status, suite.conclusion);
+    const hasProblem = checks.some((check) => check.runId === run.databaseId && check.state !== "success");
+    if (
+      cancelled ||
+      (!represented.has(id) && state !== "success") ||
+      (suite.status && state !== "success" && !hasProblem)
+    ) {
+      checks.push({
+        name: `workflow run ${run.databaseId ?? run.runNumber}`,
+        state,
+        workflow: true,
+        ...(cancelled ? { conclusion: "cancelled" } : {}),
+        ...(run.databaseId != null ? { runId: run.databaseId, runAttempt: run.runAttempt } : {}),
+      });
+    }
+  }
+  return checks;
+}
+
+const WORKFLOW_RUN_FIELDS = `status conclusion commit { oid } workflowRun { databaseId runNumber runAttempt workflow { id } }`;
+
 const PULL_FIELDS = /* GraphQL */ `
   fragment P on PullRequest {
     number title url state isDraft mergeable mergeStateStatus headRefName headRefOid createdAt updatedAt mergedAt additions deletions
     files(first: 100) { nodes { path additions deletions changeType } pageInfo { hasNextPage } }
-    commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 50) { pageInfo { hasNextPage } nodes {
+    commits(last: 1) { nodes { commit {
+      checkSuites(first: 50) { nodes { ${WORKFLOW_RUN_FIELDS} } pageInfo { hasNextPage } }
+      statusCheckRollup { state contexts(first: 50) { pageInfo { hasNextPage } nodes {
       __typename
-      ... on CheckRun { name status conclusion }
+      ... on CheckRun { name status conclusion checkSuite { ${WORKFLOW_RUN_FIELDS} } }
       ... on StatusContext { context state }
     } } } } } }
   }`;
@@ -306,6 +397,9 @@ export async function fetchForge(opts: FetchForgeOptions): Promise<ForgeData> {
         ...(pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts.pageInfo?.hasNextPage
           ? [`PR #${pr.number}: checks are incomplete (first 50)`]
           : []),
+        ...(pr.commits.nodes[0]?.commit.checkSuites?.pageInfo.hasNextPage
+          ? [`PR #${pr.number}: workflow suites are incomplete (first 50)`]
+          : []),
       ]),
     ],
   };
@@ -403,7 +497,7 @@ export async function fetchDefaultBranchFile(opts: FetchFileOptions): Promise<st
 export interface MergePull extends PullRequest {
   state: "open" | "merged" | "closed";
   headSha: string;
-  checks: { name: string; state: CiState }[];
+  checks: CiCheck[];
   /** GitHub's mergeStateStatus: CLEAN, BEHIND, BLOCKED, DIRTY, DRAFT, HAS_HOOKS, UNKNOWN, UNSTABLE. */
   mergeStateStatus: string;
   /** Name of the branch the pull request merges into. */
@@ -441,6 +535,14 @@ export async function fetchMergePull(opts: FetchForgeOptions & { number: number 
   });
   const raw = json.data?.repository?.pullRequest;
   if (!raw) return null;
+  const commit = raw.commits.nodes[0]?.commit;
+  if (
+    raw.state === "OPEN" &&
+    (commit?.checkSuites?.pageInfo.hasNextPage || commit?.statusCheckRollup?.contexts.pageInfo?.hasNextPage)
+  )
+    throw new GithubError(
+      "GitHub: merge CI reading is incomplete (first 50 check suites or contexts); nothing was merged",
+    );
   const pr = normalizePull(raw, opts.repository);
   const threads = raw.reviewThreads.nodes;
   return {

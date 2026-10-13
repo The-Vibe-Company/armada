@@ -4,7 +4,7 @@
 import type { AcceptanceRule } from "./config.ts";
 import { type ArmadaConfig, type PlanPolicy, routingLabelKey } from "./config.ts";
 import { globToRegExp } from "./overlap.ts";
-import type { CiState, Comment, LabelPhase, PullRequest } from "./types.ts";
+import type { CiCheck, Comment, LabelPhase, PullRequest } from "./types.ts";
 import { LABEL_PHASES } from "./types.ts";
 
 /**
@@ -84,6 +84,7 @@ export function handBackProblems({ pr, repository, sha, requiredChecks }: HandBa
   if (!pr.headSha) problems.push(`the head of pull request #${pr.number} could not be read from GitHub`);
   else if (sha && FULL_SHA.test(sha) && pr.headSha !== sha)
     problems.push(`${sha} is not the head of pull request #${pr.number} (head is ${pr.headSha}); push, then report`);
+  if (pr.checksComplete === false) problems.push("GitHub CI reading is incomplete; cannot verify the head checks");
   problems.push(...checkProblems(pr.checks ?? [], requiredChecks));
   return problems;
 }
@@ -96,26 +97,24 @@ export interface CheckIssue {
 
 /**
  * Why the checks on a head are not green enough to hand back or merge: every
- * required check reported and green on every run, or, with none declared, at
+ * required check reported and green on the current workflow runs, or, with none declared, at
  * least one check and all of them green.
  */
-export function checkIssues(
-  checks: readonly { name: string; state: CiState }[],
-  requiredChecks: readonly string[],
-): CheckIssue[] {
+export function checkIssues(checks: readonly CiCheck[], requiredChecks: readonly string[]): CheckIssue[] {
   const issues: CheckIssue[] = [];
-  const of = (name: string, state: CiState, required: boolean) => ({
-    text: `${required ? "required " : ""}check "${name}" is ${state}`,
-    pending: state !== "failure",
+  const of = (check: CiCheck, required: boolean) => ({
+    text: `${required ? "required " : ""}check "${check.name}" is ${check.conclusion === "cancelled" ? "cancelled" : check.state}${check.runId !== undefined ? ` (run ${check.runId}, attempt ${check.runAttempt ?? "unknown"})` : ""}`,
+    pending: check.state !== "failure",
   });
   if (requiredChecks.length) {
+    for (const check of checks) if (check.workflow && check.state !== "success") issues.push(of(check, false));
     for (const name of requiredChecks) {
-      // A check can report more than once on a head (push and pull_request): every run must be green.
+      // A check can report more than once on a head (push and pull_request): every current workflow must be green.
       const runs = checks.filter((c) => c.name === name);
       const bad = runs.find((c) => c.state === "failure") ?? runs.find((c) => c.state !== "success");
       if (!runs.length)
         issues.push({ text: `required check "${name}" has not reported on the head yet`, pending: true });
-      else if (bad) issues.push(of(name, bad.state, true));
+      else if (bad) issues.push(of(bad, true));
     }
   } else if (!checks.length) {
     issues.push({
@@ -123,12 +122,12 @@ export function checkIssues(
       pending: true,
     });
   } else {
-    for (const c of checks) if (c.state !== "success") issues.push(of(c.name, c.state, false));
+    for (const c of checks) if (c.state !== "success") issues.push(of(c, false));
   }
   return issues;
 }
 
-export const checkProblems = (checks: readonly { name: string; state: CiState }[], requiredChecks: readonly string[]) =>
+export const checkProblems = (checks: readonly CiCheck[], requiredChecks: readonly string[]) =>
   checkIssues(checks, requiredChecks).map((i) => i.text);
 
 /** Rules apply conservatively when GitHub could not enumerate every changed file. */

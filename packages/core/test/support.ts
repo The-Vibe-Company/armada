@@ -459,6 +459,7 @@ export function pullResponse(o: {
                   statusCheckRollup: {
                     state: "SUCCESS",
                     contexts: {
+                      pageInfo: { hasNextPage: false },
                       nodes: o.checks.map((c) => ({
                         __typename: "CheckRun",
                         name: c.name,
