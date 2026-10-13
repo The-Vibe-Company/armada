@@ -11,6 +11,17 @@ export const isShippingStage = (value: unknown): value is ShippingStage => value
 
 export type CiState = "success" | "failure" | "pending" | "none";
 
+/** A head check, with optional GitHub evidence for diagnostics. */
+export interface CiCheck {
+  name: string;
+  state: CiState;
+  conclusion?: string;
+  runId?: number;
+  runAttempt?: number;
+  /** A workflow without representative jobs still contributes head evidence. */
+  workflow?: true;
+}
+
 /** Values of the "Agent phase" label group (the fleet protocol). */
 export const LABEL_PHASES = [
   "planning",
@@ -44,7 +55,7 @@ export interface PullRequest {
   state?: "open" | "merged" | "closed";
   draft?: boolean;
   ci?: CiState;
-  checks?: { name: string; state: CiState }[];
+  checks?: CiCheck[];
   mergeable?: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
   headRef?: string;
   headSha?: string;

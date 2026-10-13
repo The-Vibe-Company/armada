@@ -112,6 +112,36 @@ describe("hand-back gate", () => {
       ],
     });
     expect(gate({ pr: twice, required: ["test"] })).toEqual(['required check "test" is failure']);
+    const cancelled = pr({
+      checks: [{ name: "test", state: "failure", conclusion: "cancelled", runId: 902, runAttempt: 2 }],
+    });
+    expect(gate({ pr: cancelled, required: ["test"] })).toEqual([
+      'required check "test" is cancelled (run 902, attempt 2)',
+    ]);
+
+    expect(
+      gate({
+        pr: pr({
+          checks: [
+            {
+              name: "workflow run 903",
+              workflow: true,
+              state: "failure",
+              conclusion: "cancelled",
+              runId: 903,
+              runAttempt: 1,
+            },
+          ],
+        }),
+        required: ["test"],
+      }),
+    ).toEqual([
+      'check "workflow run 903" is cancelled (run 903, attempt 1)',
+      'required check "test" has not reported on the head yet',
+    ]);
+    expect(gate({ pr: pr({ checksComplete: false }) })).toEqual([
+      "GitHub CI reading is incomplete; cannot verify the head checks",
+    ]);
     // Only required checks count once they are declared.
     expect(
       gate({ pr: pr({ checks: [...(pr().checks ?? []), { name: "flaky", state: "failure" }] }), required: ["test"] }),
