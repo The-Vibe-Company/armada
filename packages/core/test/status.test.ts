@@ -1,10 +1,49 @@
 import { describe, expect, test } from "bun:test";
 import { parseConfig } from "../src/config.ts";
 import { normalizeComment } from "../src/linear.ts";
+import type { QueueEntry } from "../src/merge-queue.ts";
 import { buildStatus, loadStatus, readStatusSources, refreshStatusSources } from "../src/status.ts";
 import { DEMO_TOML, demoConfig, issue, NOW, recordedFetch } from "./support.ts";
 
 describe("loadStatus", () => {
+  test("queue hides merged and superseded refusals while retaining the latest unresolved refusal", async () => {
+    const entry = (id: number, pr: number, state: QueueEntry["state"]): QueueEntry => ({
+      id,
+      pr,
+      state,
+      project: "widgets",
+      ticket: null,
+      noTicket: true,
+      keepOpen: false,
+      throughHold: null,
+      reason: null,
+      headSha: "a".repeat(40),
+      queuedBy: "coordinator",
+      detail: state === "refused" ? "DIRTY" : null,
+      attempts: 0,
+      notBefore: null,
+      queuedAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+      finishedAt: state === "queued" ? null : NOW.toISOString(),
+      mergeCommit: null,
+    });
+    const queue = [
+      entry(1, 6, "refused"),
+      entry(2, 7, "refused"),
+      entry(3, 8, "refused"),
+      entry(4, 8, "merged"),
+      entry(5, 9, "refused"),
+      entry(6, 9, "refused"),
+      entry(7, 10, "refused"),
+      entry(8, 10, "queued"),
+    ];
+    const options = { linearApiKey: "k", githubToken: "t", now: () => NOW, queue: async () => queue };
+    const unavailable = await loadStatus(demoConfig(), { ...options, githubToken: null, fetch: recordedFetch().fetch });
+    expect(unavailable.queue?.map((e) => e.id)).toEqual([8, 6, 2, 1]);
+    const report = await loadStatus(demoConfig(), { ...options, fetch: recordedFetch().fetch });
+    expect(report.queue?.map((e) => e.id)).toEqual([8, 6, 2]);
+  });
+
   test("mine filters owned work after full derivation and retains the whole frontier with launch owners", async () => {
     const launch = (ticket: string, coordinator: string) => ({
       ticket,
