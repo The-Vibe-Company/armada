@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.66](https://github.com/The-Vibe-Company/armada/compare/v0.2.65...v0.2.66) (2026-10-13)
+
+
+### Bug Fixes
+
+* **ci:** judge merges on newest workflow runs ([#318](https://github.com/The-Vibe-Company/armada/issues/318)) ([83fff14](https://github.com/The-Vibe-Company/armada/commit/83fff1496feac75ca9c7a900e713c82d945a5c48))
+* **cli:** hide merge queue refusals for merged PRs ([#317](https://github.com/The-Vibe-Company/armada/issues/317)) ([793d342](https://github.com/The-Vibe-Company/armada/commit/793d34274dd39c1eea892ffa63cc1dc07aa2ec20))
+
 ## [0.2.65](https://github.com/The-Vibe-Company/armada/compare/v0.2.64...v0.2.65) (2026-10-10)
 
 
