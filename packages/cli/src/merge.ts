@@ -23,6 +23,7 @@ import {
   fetchMergePull,
   fetchPreview,
   fetchPullDiff,
+  fetchPullRequest,
   finishMerge,
   LINEAR_KEY,
   type LocalRepo,
@@ -40,6 +41,7 @@ import {
   queueOpen,
   readStatusSources,
   shellWord,
+  shownQueue,
   type TestMergeResult,
   unblockedBy,
 } from "@armada/core";
@@ -308,7 +310,33 @@ export async function merge(
       }
       if (a.rest.length !== 1)
         throw new UsageError("use armada merge queue [--json] or armada merge queue remove <pr>");
-      const entries = await fleet.queueList();
+      const history = await fleet.queueList();
+      const now = (io.now ?? (() => new Date()))();
+      const candidates = shownQueue(history, now).filter((entry) => entry.state === "refused");
+      const merged: number[] = [];
+      if (credentials.githubToken) {
+        const token = credentials.githubToken;
+        const results = await Promise.allSettled(
+          candidates.map((entry) =>
+            fetchPullRequest({
+              token,
+              repository: config.github.repository,
+              number: entry.pr,
+              ...httpOptions(io),
+            }),
+          ),
+        );
+        for (const result of results) {
+          if (result.status === "fulfilled" && result.value?.state === "merged") merged.push(result.value.number);
+        }
+        if (results.some((result) => result.status === "rejected"))
+          io.stderr("Warning: GitHub could not be read for some refused PRs; their refusals remain shown.\n");
+      } else if (candidates.length) {
+        io.stderr("Warning: GitHub was not read (no token); unresolved refusals remain shown.\n");
+      }
+      const visible = new Set(shownQueue(history, now, merged).map((entry) => entry.id));
+      // Keep the command's finished history, but show only current unresolved refusals.
+      const entries = history.filter((entry) => entry.state !== "refused" || visible.has(entry.id));
       const watch = await queueWatch();
       io.stdout(
         a.json

@@ -1245,6 +1245,65 @@ test.each([
     expect(f.out()).not.toContain("armada_launch_");
   },
 );
+test.each(["open", "merged", "unavailable", "missing-token", "missing-pr"])(
+  "merge queue retains only unresolved refusals with GitHub evidence (%s)",
+  async (state) => {
+    const f = await fixture();
+    const input = {
+      project: "widgets",
+      pr: 9,
+      ticket: "DEMO-18",
+      noTicket: false,
+      keepOpen: false,
+      throughHold: null,
+      reason: null,
+      headSha: f.head,
+      queuedBy: "coordinator",
+      at: NOW,
+    };
+    const added = await f.store.queueAdd(input);
+    expect(added).toHaveProperty("id");
+    await f.store.acquireLease({ project: "widgets", name: "merge-queue", holder: "test", at: NOW, ttlMs: 60_000 });
+    await f.store.queueNext({ project: "widgets", holder: "test", at: NOW });
+    expect(
+      await f.store.queueFinish({
+        project: "widgets",
+        id: (added as { id: number }).id,
+        holder: "test",
+        outcome: "refused",
+        detail: "DIRTY",
+        at: NOW,
+      }),
+    ).toBe(true);
+    const original = f.io.fetch!;
+    const reads: number[] = [];
+    f.io.fetch = async (url, init) => {
+      if (url === GITHUB_GRAPHQL) {
+        const body = JSON.parse(String(init?.body));
+        reads.push(body.variables.number);
+        if (state === "unavailable") return Response.json({ errors: [{ message: "unavailable" }] });
+        if (state === "missing-pr") return Response.json({ data: { repository: { pullRequest: null } } });
+        const response = await original(url, init);
+        const result = (await response.json()) as { data: { repository: { pullRequest: RawPull } } };
+        result.data.repository.pullRequest.state = state === "merged" ? "MERGED" : "OPEN";
+        return Response.json(result);
+      }
+      return original(url, init);
+    };
+    if (state === "missing-token") delete f.io.env.GITHUB_TOKEN;
+    for (const json of [false, true]) {
+      const out: string[] = [];
+      expect(await run(["merge", "queue", ...(json ? ["--json"] : [])], { ...f.io, stdout: (s) => out.push(s) })).toBe(
+        0,
+      );
+      if (json) expect(JSON.parse(out.join("")).entries).toHaveLength(state === "merged" ? 0 : 1);
+      else expect(out.join("").includes("#9  refused")).toBe(state !== "merged");
+    }
+    expect(reads).toEqual(state === "missing-token" ? [] : [9, 9]);
+    expect((await f.store.queueList("widgets", { since: NOW }))[0]?.state).toBe("refused");
+  },
+);
+
 test("when-green persists intent without merging, deduplicates, lists on a new invocation and removes", async () => {
   const f = await fixture();
   f.pr.state = "BEHIND";

@@ -58,9 +58,9 @@ export const REFUSED_SHOWN_MS = 24 * 60 * 60_000;
 /**
  * The queue as status and the dashboard show it: the open entries in drain
  * order (the one merging first), then the entries refused within a day whose
- * pull request was not queued again, newest first.
+ * pull request was not merged or queued again, newest first.
  */
-export function shownQueue(entries: readonly QueueEntry[], now: Date): QueueEntry[] {
+export function shownQueue(entries: readonly QueueEntry[], now: Date, mergedPrs: readonly number[] = []): QueueEntry[] {
   const open = entries
     .filter(queueOpen)
     .sort(
@@ -74,6 +74,7 @@ export function shownQueue(entries: readonly QueueEntry[], now: Date): QueueEntr
     .filter(
       (e) =>
         e.state === "refused" &&
+        !mergedPrs.includes(e.pr) &&
         Date.parse(e.finishedAt ?? e.updatedAt) >= since &&
         !entries.some((o) => o.pr === e.pr && o.id > e.id),
     )

@@ -506,6 +506,7 @@ function statusOf(snap: Snapshot, l: LiveProject | null, now: Date): StatusRepor
           },
           launches: l.launches,
           jobs: l.jobs,
+          queue: l.queue,
         }
       : {}),
     now,

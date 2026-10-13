@@ -623,7 +623,7 @@ export function buildOverview(input: {
         : {}),
       ...(p.live?.queue
         ? {
-            queue: shownQueue(p.live.queue, input.now).map(
+            queue: (p.report?.queue ?? shownQueue(p.live.queue, input.now)).map(
               ({ id, pr, ticket, state, detail, queuedBy, queuedAt, updatedAt, notBefore }) => ({
                 id,
                 pr,

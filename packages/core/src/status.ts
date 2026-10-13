@@ -295,7 +295,9 @@ export function buildStatus({
     ...(launchWhenUnblocked ? { launchWhenUnblocked } : {}),
     ...(slots ? { slots } : {}),
     ...(holds ? { holds } : {}),
-    ...(queue ? { queue: shownQueue(queue, now) } : {}),
+    ...(queue
+      ? { queue: shownQueue(queue, now, forge?.prs.filter((p) => p.state === "merged").map((p) => p.number) ?? []) }
+      : {}),
     main: forge?.main ? mainHealth(forge.main, config.gates.requiredChecks, forge.mainComplete) : null,
     progress: {
       done: m.program.filter((ticket) => m.isLeaf(ticket) && isDone(ticket)).length,
