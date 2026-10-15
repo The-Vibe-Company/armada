@@ -36,6 +36,8 @@ const isBusy = (o: FleetOverview) =>
 
 /** The signed-in person and their organizations, as the sidebar shows them. */
 export interface Account {
+  /** The person's account id: what analytics identify them by. */
+  id: string;
   canSetSecrets?: boolean;
   name: string;
   email: string;

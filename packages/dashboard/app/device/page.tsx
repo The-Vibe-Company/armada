@@ -2,9 +2,10 @@ import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { approveDevice, denyDevice, signOut } from "@/app/auth-actions";
+import { approveDevice, denyDevice } from "@/app/auth-actions";
 import { AuthCard, AuthNotice } from "@/components/AuthCard";
 import { Button, Form, Input } from "@/components/page";
+import { SignOutForm } from "@/components/SignOutForm";
 import { requireAccounts, requireSession } from "@/lib/accounts-server";
 import { accountsModeOf, DEVICE_PATH } from "@/lib/accounts-settings";
 import { DEVICE_ERRORS, type DeviceError, LANGUAGE_COOKIE, STRINGS } from "@/lib/i18n";
@@ -111,11 +112,11 @@ export default async function Device({ searchParams }: { searchParams: Params })
         </Form>
       </div>
       <p className="au-hint">{t.device.signedInAs(viewer.user.email)}</p>
-      <form action={signOut} className="au-foot">
+      <SignOutForm className="au-foot">
         <button type="submit" className="au-link">
           {t.auth.logout}
         </button>
-      </form>
+      </SignOutForm>
     </AuthCard>
   );
 }
