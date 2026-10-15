@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
-import { acceptInvitation, createOrganization, rejectInvitation, signOut } from "@/app/auth-actions";
+import { acceptInvitation, createOrganization, rejectInvitation } from "@/app/auth-actions";
 import { AuthCard, AuthNotice } from "@/components/AuthCard";
 import { Button, Form, Input } from "@/components/page";
+import { SignOutForm } from "@/components/SignOutForm";
 import { isRole } from "@/lib/accounts";
 import { requireAccounts, requireSession } from "@/lib/accounts-server";
 import { accountsModeOf } from "@/lib/accounts-settings";
@@ -75,11 +76,11 @@ export default async function Welcome({ searchParams }: { searchParams: Params }
           </Button>
         </form>
       )}
-      <form action={signOut} className="au-foot">
+      <SignOutForm className="au-foot">
         <button type="submit" className="au-link">
           {t.auth.logout}
         </button>
-      </form>
+      </SignOutForm>
     </AuthCard>
   );
 }

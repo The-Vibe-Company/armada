@@ -89,16 +89,22 @@ describe("the dashboard's fonts (THE-889)", () => {
     const css = readFileSync(join(ROOT, "app/globals.css"), "utf8");
     expect(css).toContain("--font-sans: var(--font-geist-sans-full), var(--font-geist-sans),");
     expect(css).toContain("--font-mono: var(--font-geist-mono-full), var(--font-geist-mono),");
-    const layout = renderModule(join(ROOT, "app/layout.tsx"), {
-      "./fonts/geist": {
-        geist: { variable: "sans-latin" },
-        geistFull: { variable: "sans-full" },
-        geistMono: { variable: "mono-latin" },
-        geistMonoFull: { variable: "mono-full" },
+    const layout = renderModule(
+      join(ROOT, "app/layout.tsx"),
+      {
+        "./fonts/geist": {
+          geist: { variable: "sans-latin" },
+          geistFull: { variable: "sans-full" },
+          geistMono: { variable: "mono-latin" },
+          geistMonoFull: { variable: "mono-full" },
+        },
+        "./globals.css": {},
+        "@vercel/speed-insights/next": { SpeedInsights: () => null },
+        "@/components/Analytics": { Analytics: () => null },
+        "@/lib/analytics": { analyticsOf: () => null },
       },
-      "./globals.css": {},
-      "@vercel/speed-insights/next": { SpeedInsights: () => null },
-    }).default as ComponentType<{ children?: string }>;
+      { process: { env: {} } },
+    ).default as ComponentType<{ children?: string }>;
     const html = renderToStaticMarkup(createElement(layout, null, "Font registration"));
     expect(
       html

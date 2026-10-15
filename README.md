@@ -316,6 +316,10 @@ Digests default to 09:00, 13:00 and 18:00 on weekdays in the channel’s IANA ti
 
 **Optional scheduler, off by default.** `GET /api/cron/owner` requires `Authorization: Bearer <CRON_SECRET>`. Production ships with no enabled `crons` entry. Without a scheduler, a coordinator that stops with no worker in flight is noticed on the next fleet call, dashboard poll or GitHub/Linear webhook refresh. To enable Vercel Cron deliberately, set `CRON_SECRET` in the deployment and add `"crons": [{"path":"/api/cron/owner","schedule":"*/15 * * * *"}]` to `packages/dashboard/vercel.json`, then redeploy. Every 15 minutes requires a paid plan; the free plan allows a daily schedule such as `"0 9 * * *"`. The endpoint never refreshes Linear or GitHub and does nothing under the shared-password gate.
 
+**Product analytics.** Armada's own production deployment (Vercel production built from `The-Vibe-Company/armada`) reports page views, including moves inside the app, and PostHog's default autocapture to Armada's PostHog project (US cloud). Any other deployment (a fork or another owner's copy, previews, local development, CI) reports nothing unless `NEXT_PUBLIC_POSTHOG_KEY` is set; `NEXT_PUBLIC_POSTHOG_HOST` names another PostHog host. The browser calls PostHog directly, so no dashboard cookie reaches it, and one-time codes in addresses (`user_code`, `code`, `state`) are masked before sending. The SDK loads after the page is idle. With accounts, the browser is identified by the account id with its email and name, forgotten on sign-out, and the server sends `signed_up` once when an account is created.
+
+**Stats.** `GET /api/stats` answers `{"total_users","new_users_1d","new_users_7d","active_users_1d","active_users_7d"}` to `Authorization: Bearer <STATS_TOKEN>`; without `STATS_TOKEN` it answers 401 to everyone. Users are accounts with a confirmed address, new ones by creation time; active users are those the dashboard saw in a browser (the shell's visit beacon), not CLI use. Every number is `null` under the shared-password gate, which has no accounts.
+
 Try it locally with synthetic data and no key:
 
 ```sh

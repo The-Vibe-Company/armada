@@ -14,12 +14,14 @@ import type { FleetOverview } from "@armada/core/read";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { signOut, switchOrganization } from "@/app/auth-actions";
+import { switchOrganization } from "@/app/auth-actions";
 import { type Crumb, crumbsOf, escapeTarget, paths, placeOf, type Section, sectionOf } from "@/lib/fleet-view";
 import { LANGUAGES, type Language, type Strings } from "@/lib/i18n";
 import { ownsKeys } from "@/lib/keyboard";
+import { AnalyticsViewer } from "../Analytics";
 import { Alert, Button } from "../page";
 import { HeaderSlotProvider, PageHeader } from "../page-client";
+import { SignOutForm } from "../SignOutForm";
 import { useLazy } from "../use-lazy";
 import { Announcer } from "./Announcer";
 import { type Account, FleetProvider, useFleet, useNow, useShell } from "./context";
@@ -64,6 +66,7 @@ export function Shell({
       canLogOut={canLogOut}
       initialAuthor={initialAuthor}
     >
+      {account && <AnalyticsViewer id={account.id} email={account.email} name={account.name} />}
       <VisitProvider>
         <Frame>{children}</Frame>
       </VisitProvider>
@@ -400,11 +403,11 @@ function OrgMenu({ open, setOpen, label }: { open: boolean; setOpen: (open: bool
                 <span>{account.name}</span>
                 <span className="faint">{account.email}</span>
               </div>
-              <form action={signOut}>
+              <SignOutForm>
                 <button type="submit" className="sh-menu-item">
                   {t.auth.logout}
                 </button>
-              </form>
+              </SignOutForm>
             </>
           )}
           {canLogOut && (

@@ -29,6 +29,7 @@ import {
   DEVICE_PATH,
   INVITATION_PATH,
 } from "./accounts-settings";
+import type { NewAccount } from "./analytics";
 import { LOGIN_PATH } from "./auth";
 import { type Database, PgDialect, type Queryable } from "./db";
 
@@ -66,6 +67,8 @@ export interface AccountsDeps {
   client: Database;
   sender: EmailSender;
   now?: () => Date;
+  /** Told once of each account created (analytics' `signed_up`); it must not throw. */
+  onSignUp?: (user: NewAccount) => void;
 }
 
 export const invitationUrl = (baseUrl: string, id: string) =>
@@ -157,7 +160,7 @@ export async function apiKeyCreatorRole(client: Queryable, keyId: string, organi
   return rs.rows.length ? (isRole(role) ? role : "member") : null;
 }
 
-export function createAuth(settings: AuthSettings, { client, sender, now = () => new Date() }: AccountsDeps) {
+export function createAuth(settings: AuthSettings, { client, sender, now = () => new Date(), onSignUp }: AccountsDeps) {
   const owner = (email: string) => settings.owners.includes(email.trim().toLowerCase());
   const https = new URL(settings.baseUrl).protocol === "https:";
   return betterAuth({
@@ -231,6 +234,7 @@ export function createAuth(settings: AuthSettings, { client, sender, now = () =>
               message: "Armada accounts are by invitation: ask an organization owner to invite this address.",
             });
           },
+          after: async (user) => onSignUp?.({ id: user.id, email: user.email, name: user.name }),
         },
       },
       session: {

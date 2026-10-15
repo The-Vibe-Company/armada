@@ -1,5 +1,7 @@
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import type { Metadata, Viewport } from "next";
+import { Analytics } from "@/components/Analytics";
+import { analyticsOf } from "@/lib/analytics";
 import { geist, geistFull, geistMono, geistMonoFull } from "./fonts/geist";
 import "./globals.css";
 
@@ -27,6 +29,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {children}
         {/* Real page speed from viewers' browsers (THE-853); a no-op outside Vercel. */}
         <SpeedInsights />
+        {/* Product analytics (lib/analytics.ts): production only, unless NEXT_PUBLIC_POSTHOG_KEY is set. */}
+        <Analytics settings={analyticsOf(process.env)} />
       </body>
     </html>
   );

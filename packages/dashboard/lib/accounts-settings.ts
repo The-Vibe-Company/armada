@@ -73,6 +73,13 @@ export const isCliApi = (pathname: string) => pathname === CLI_API_PREFIX || pat
 /** Linear's and the GitHub App's webhooks (THE-853): they carry a signature, never a cookie, and check it themselves. */
 export const WEBHOOKS_PREFIX = "/api/webhooks";
 export const isWebhook = (pathname: string) => pathname.startsWith(`${WEBHOOKS_PREFIX}/`);
+/**
+ * GET routes that check their own bearer behind either gate: the optional owner
+ * cron (CRON_SECRET, `owner-cron.ts`) and the stats (STATS_TOKEN, `stats.ts`).
+ */
+const BEARER_ROUTES = ["/api/cron/owner", "/api/stats"];
+export const isBearerRead = (request: { method: string; nextUrl: { pathname: string } }) =>
+  request.method === "GET" && BEARER_ROUTES.includes(request.nextUrl.pathname);
 /** The client id `armada login` sends; device codes for any other are refused. */
 export const CLI_CLIENT_ID = "armada-cli";
 /** Every organization API key starts with it, so a leaked one is recognisable. */

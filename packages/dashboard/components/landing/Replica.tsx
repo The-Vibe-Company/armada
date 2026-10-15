@@ -34,6 +34,7 @@ const still = () => {};
 
 /** The demo world's owner, signed in: requests are signed with her name. */
 const VIEWER = {
+  id: "lea",
   name: OWNER,
   email: "lea@acme.example",
   organization: { id: "acme", name: "Acme" },

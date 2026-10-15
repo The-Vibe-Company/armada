@@ -5,6 +5,7 @@
 import "server-only";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { after } from "next/server";
 import { cache } from "react";
 import {
   type Auth,
@@ -15,6 +16,7 @@ import {
   type ViewerOrganization,
 } from "./accounts";
 import { type AuthSettings, accountsModeOf, signatureOf, WELCOME_PATH } from "./accounts-settings";
+import { analyticsOf, captureSignUp, type NewAccount } from "./analytics";
 import { appDatabase } from "./app-db";
 import { LOGIN_PATH } from "./auth";
 import type { Database } from "./db";
@@ -26,6 +28,19 @@ export interface Accounts {
   client: Database;
   settings: AuthSettings;
   home?: string | undefined;
+}
+
+/** `signed_up`, sent after the response so a sign-up never waits on PostHog. */
+function reportSignUp(user: NewAccount): void {
+  const analytics = analyticsOf(process.env);
+  if (!analytics) return;
+  const send = () => captureSignUp(analytics, user, fetch);
+  try {
+    after(send);
+  } catch {
+    // Outside a request (no `after`): sent now, still never awaited by the sign-up.
+    void send();
+  }
 }
 
 // One instance per server process, kept across hot reloads in development and
@@ -46,7 +61,7 @@ export async function accounts(): Promise<Accounts | null> {
         client,
         settings: mode.settings,
         // The only email sender for now: messages go to the server log (see consoleSender).
-        auth: createAuth(mode.settings, { client, sender: consoleSender }),
+        auth: createAuth(mode.settings, { client, sender: consoleSender, onSignUp: reportSignUp }),
       };
     });
     opening.catch(() => {
