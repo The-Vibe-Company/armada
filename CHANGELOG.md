@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.67](https://github.com/The-Vibe-Company/armada/compare/v0.2.66...v0.2.67) (2026-10-15)
+
+
+### Features
+
+* **dashboard:** add PostHog analytics and a token-guarded stats endpoint ([#320](https://github.com/The-Vibe-Company/armada/issues/320)) ([ed65458](https://github.com/The-Vibe-Company/armada/commit/ed65458ca5c0e472560ac9f7803ce9fbec2ec779))
+
 ## [0.2.66](https://github.com/The-Vibe-Company/armada/compare/v0.2.65...v0.2.66) (2026-10-13)
 
 
