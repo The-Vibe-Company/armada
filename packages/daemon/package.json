@@ -12,6 +12,8 @@
     "./events": "./src/events.ts",
     "./fold": "./src/fold.ts",
     "./store": "./src/store.ts",
+    "./keychain": "./src/keychain.ts",
+    "./credentials": "./src/credentials.ts",
     "./server": "./src/server/index.ts",
     "./coordinator": "./coordinator/index.ts"
   },
@@ -24,6 +26,7 @@
     "@earendil-works/chord": "1.4.0",
     "@earendil-works/pi-ai": "1.4.0",
     "@earendil-works/pi-durable": "1.4.0",
+    "@napi-rs/keyring": "2.1.2",
     "typebox": "1.3.27",
     "ws": "8.21.3"
   },

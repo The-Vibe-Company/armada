@@ -71,7 +71,8 @@ export interface LinearOptions {
   project: string;
   rootId: string;
   phaseGroup: string;
-  secrets: SecretAccessor;
+  /** Defaults to the host keychain; tests/embedders can supply the same gateway interface. */
+  secrets?: SecretAccessor;
   fetch: LinearFetch;
   now: () => Date;
 }

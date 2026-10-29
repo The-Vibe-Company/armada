@@ -12,6 +12,8 @@ import {
   type ServerMessage,
 } from "@armada/protocol";
 import type { ServerWebSocket } from "bun";
+import { dispatchCredentials } from "../../daemon/src/credentials.ts";
+import { Keychain } from "../../daemon/src/keychain.ts";
 
 export interface FakeDaemon {
   url: string;
@@ -65,6 +67,16 @@ export function startFakeDaemon({
   events?: Omit<ProtocolEvent, "seq">[];
   version?: ProtocolVersion;
 } = {}): FakeDaemon {
+  const entries = new Map<string, string>();
+  const credentials = new Keychain({
+    storage: "os-keychain",
+    async read(service, account) {
+      return entries.get(`${service}/${account}`) ?? null;
+    },
+    async write(service, account, value) {
+      entries.set(`${service}/${account}`, value);
+    },
+  });
   const log: ProtocolEvent[] = [];
   const sockets = new Set<ServerWebSocket<Socket>>();
   let subscription = 0;
@@ -90,7 +102,7 @@ export function startFakeDaemon({
     websocket: {
       open: (ws) => void sockets.add(ws),
       close: (ws) => void sockets.delete(ws),
-      message(ws, raw) {
+      async message(ws, raw) {
         let input: unknown;
         try {
           input = JSON.parse(String(raw));
@@ -106,6 +118,9 @@ export function startFakeDaemon({
         const request = admitted.request;
         const known = (id: string) => projects.some((p) => p.id === id);
         switch (request.type) {
+          case "credentials.status":
+          case "credentials.set":
+            return say(ws, await dispatchCredentials(request, credentials));
           case "projects.list":
             return say(ws, { type: "projects.result", version, id: request.id, projects });
           case "project.subscribe": {
