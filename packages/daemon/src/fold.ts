@@ -1,68 +1,31 @@
 import type {
   FleetEvent,
-  InboxRequest,
+  FleetTables,
+  Hold,
+  InboxItem,
   Phase,
   PullRequest,
+  QueueEntry,
+  Session,
   SessionRef,
+  SessionState,
   ShippingStage,
   Ticket,
-  ValidationRequest,
-} from "./events.ts";
-import { type FlowStep, flowStep, pipelineStep } from "./rules.ts";
+  Validation,
+} from "@armada/protocol";
+import { flowStep, pipelineStep } from "./rules.ts";
 
-export type SessionState = "blocked" | "waiting-for-owner" | "in-progress" | "ready-to-merge" | "merged" | "released";
-export interface Session extends SessionRef {
-  generation: number;
-  owner: string;
-  runtime: string;
-  handle: string;
-  title: string;
-  phase: Phase;
-  state: SessionState;
-  reason: string;
-  step: number;
-  flowStep: FlowStep;
-  at: string;
-  heartbeat: string | null;
-}
-export interface InboxItem extends InboxRequest {
-  at: string;
-  actor: string;
-  seq: number;
-}
-export interface QueueEntry extends SessionRef {
-  id: string;
-  pr: number;
-  head: string;
-  at: string;
-  seq: number;
-  state: "queued" | "running";
-}
-export interface Hold {
-  id: string;
-  reason: string;
-  at: string;
-  actor: string;
-}
-export interface Validation extends ValidationRequest {
-  at: string;
-  actor: string;
-  decision: null | { decision: "approved" | "changes-requested"; note: string; at: string; actor: string };
-}
-export interface ProjectTables {
-  tickets: Ticket[];
-  pullRequests: PullRequest[];
-  sessions: Session[];
-  sessionsByState: Record<SessionState, Session[]>;
-  inbox: InboxItem[];
-  queue: QueueEntry[];
-  holds: Hold[];
-  validations: Validation[];
-}
-export interface FleetTables {
-  seq: number;
-  projects: Record<string, ProjectTables>;
-}
+export type {
+  FleetTables,
+  Hold,
+  InboxItem,
+  ProjectTables,
+  QueueEntry,
+  Session,
+  SessionState,
+  Validation,
+} from "@armada/protocol";
+
 interface Draft extends SessionRef {
   generation: number;
   owner: string;

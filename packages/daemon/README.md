@@ -53,9 +53,11 @@ a local claim takes precedence over later tracker phase observations. PR reads
 enrich CI and conflict state; `merge.confirmed` records a local merge outcome.
 The copied phase/flow rules name their core source in `src/rules.ts`.
 
-The event vocabulary is temporarily in `src/events.ts` while THE-1985 builds
-`packages/protocol`. Follow-up adapters should use these contracts until that
-package carries the shared kinds. Nothing in the app should import the daemon.
+The event vocabulary and folded-table schemas live in `packages/protocol`.
+`src/events.ts` re-exports its event types for daemon adapters; `fold` consumes
+those shared contracts and the server validates its serialized tables with the
+protocol schema. The wire envelope remains open to kinds a reader does not use.
+Nothing in the app should import the daemon.
 
 Run `bun run test:daemon` from the repository root for Node's test runner. The
 same tests run in the Bun suite; `bun run verify` and CI also exercise native
