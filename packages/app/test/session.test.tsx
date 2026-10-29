@@ -208,7 +208,7 @@ test("the facts line, the ticket's title as the one h1, and the six steps with t
   expect(facts).toBe(
     "← Harbor · HAR-15 · codex · feature/har-15-price-berths · #41 checks red · claimed 09:00 · last report 09:00",
   );
-  // Back to the project's room (the home until the room lands).
+  // Back to the project's page (its room once it lands).
   expect(html).toContain('href="#/projects/harbor"');
   expect(html).toContain('href="https://example.test/harbor/pull/41"');
   expect(steps(html)).toEqual([

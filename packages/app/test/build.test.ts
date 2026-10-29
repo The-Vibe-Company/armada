@@ -265,8 +265,13 @@ describe("in a browser, served by a running daemon", () => {
     await page.getByRole("navigation", { name: "Session" }).getByRole("link", { name: /Files/ }).click();
     await page.locator('[data-file="src/berths/price.ts"]').waitFor({ timeout: 5_000 });
     expect(new URL(page.url()).hash).toBe("#/sessions/HAR-15?tab=files");
-    // Back to the project (its room once it lands; the fleet today), then a row by the keyboard.
+    // Back to the project's page (its room once it lands), then from the fleet a row by the keyboard.
     await page.getByRole("link", { name: "← Harbor" }).click();
+    await page.getByRole("heading", { level: 1, name: "Harbor" }).waitFor({ timeout: 5_000 });
+    expect(new URL(page.url()).hash).toBe("#/projects/harbor");
+    await page.evaluate(() => {
+      window.location.hash = "#/";
+    });
     await page.getByRole("heading", { level: 1, name: "Fleet" }).waitFor({ timeout: 5_000 });
     await page.locator('[data-row="lantern/LAN-7"]').focus();
     await page.keyboard.press("Enter");

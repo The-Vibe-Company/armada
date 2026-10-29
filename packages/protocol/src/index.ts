@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export * from "./fleet.js";
+export * from "./rules.js";
 
 /** Wire version, independent of the daemon/app release versions. */
 export const PROTOCOL_VERSION = { major: 1, minor: 1 } as const;

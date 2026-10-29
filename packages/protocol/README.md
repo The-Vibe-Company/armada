@@ -119,3 +119,11 @@ and may leave it out of empty frames and of the history frame that follows a
 snapshot-bearing `project.subscribed`. A client renders the daemon's fold from
 these snapshots without folding, keeping the one at the highest cursor. Older
 clients ignore the field; this app says so when events arrive without one.
+
+Project rules are an additive `ProjectTables.rules: {revision,value}` slice. It is
+optional when validating older snapshots; the current daemon always folds it,
+with revision 0 and an empty value before configuration. `projectRulesSchema` and
+`rulesStateSchema` own its routing/default, placement and policy contract. The
+native coordinator tool derives JSON Schema from that same definition, and the
+app reads it directly. Rules still use the existing `coordinator.checkpoint` kind
+under the reserved `armada.tools` v1 format; no event vocabulary change is needed.

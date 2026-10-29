@@ -229,5 +229,21 @@ test("folded tables validate known rows while preserving extension fields and se
     assert.equal(projectTablesSchema.safeParse({ ...tables, sessions: [row] }).success, false);
   }
   assert.equal(projectTablesSchema.safeParse({ ...tables, sessionsByState: {} }).success, false);
+  const rules = {
+    revision: 1,
+    value: {
+      routing: [{ when: "Backend work", cli: "claude", model: "oak" }],
+      placement: { workers: "vm", coordinator: "local" },
+      policy: { maxWorkers: null },
+    },
+  };
+  const configured = { ...tables, rules };
+  assert.equal(JSON.stringify(projectTablesSchema.parse(configured)), JSON.stringify(configured));
+  assert.equal(projectTablesSchema.safeParse({ ...tables, rules: { ...rules, revision: -1 } }).success, false);
+  assert.equal(
+    projectTablesSchema.safeParse({ ...tables, rules: { revision: 1, value: { policy: { silenceMinutes: 0 } } } })
+      .success,
+    false,
+  );
   assert.equal(projectTablesSchema.safeParse({ ...tables, extension: { value: undefined } }).success, false);
 });

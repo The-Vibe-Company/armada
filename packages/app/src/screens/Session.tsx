@@ -77,7 +77,7 @@ export function Session({
   useEffect(() => {
     const main = document.querySelector("main");
     main?.scrollTo?.(0, 0);
-    const title = main?.querySelector("header h1");
+    const title = main?.querySelector<HTMLElement>("header h1");
     if (!title) return;
     title.tabIndex = -1;
     title.classList.add("outline-none");

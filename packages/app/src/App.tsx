@@ -1,8 +1,10 @@
 import { lazy, Suspense } from "react";
 import { Shell } from "@/components/shell/Shell";
+import { useRoute } from "@/lib/route";
 import type { DaemonClient } from "@/protocol/client";
 import { DaemonProvider } from "@/protocol/store";
 import { Home } from "@/screens/Home";
+import { Project } from "@/screens/Project";
 import { useSessionRoute } from "@/session/route";
 
 // The sky's story page (`?story=sky`), loaded only behind its flag: never in the first load.
@@ -21,6 +23,7 @@ export function App({
   onReload: () => void;
   story?: string | null;
 }) {
+  const route = useRoute();
   const session = useSessionRoute();
   return (
     <DaemonProvider client={client}>
@@ -33,6 +36,8 @@ export function App({
           <Suspense fallback={null}>
             <Session key={session.ticket} ticket={session.ticket} tab={session.tab} />
           </Suspense>
+        ) : route.kind === "project" ? (
+          <Project id={route.id} onReload={onReload} />
         ) : (
           <Home address={address} onReload={onReload} />
         )}
