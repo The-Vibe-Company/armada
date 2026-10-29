@@ -13,6 +13,7 @@
 // side by side, most urgent first, each under its label. The stage (the
 // hangar) gives each project its own formation: the coordinator's V, its
 // agents fanned out beneath it, its merged V far behind.
+import { countsOf, type Fact, squadronFacts, urgentGroup } from "@/fleet/hangar";
 import { GROUP_LABEL, GROUPS, type Group } from "@/fleet/overview";
 import type { Harness, SkyAgent, SkyProject } from "@/fleet/sky";
 import {
@@ -63,9 +64,11 @@ export interface SkyLabel {
   group: Group | null;
   text: string;
   count: number | null;
-  /** The stage's project labels: what is in flight, in words, within their cell's width. */
-  detail?: string;
+  /** The stage's project labels: its counts under its name, within their cell's width. */
+  facts?: Fact[];
   width?: number;
+  /** The stage: the squadron's whole extent, its ships and its label, which a link covers (Sky's `link`). */
+  area?: { x: number; y: number; width: number; height: number };
 }
 
 export interface SkyLayout {
@@ -283,6 +286,23 @@ function band(projects: readonly SkyProject[], width: number, height: number): S
   return { targets, arcs, labels, compact: !words };
 }
 
+/**
+ * The hangar's squadrons fly in depth (THE-2025): one with an agent blocked
+ * or waiting for the owner flies nearest and largest, one at work further,
+ * one with nothing in flight furthest and smallest.
+ */
+export const SQUADRON_SCALE: Record<Group | "idle", number> = {
+  blocked: 1,
+  you: 1,
+  running: 0.84,
+  ready: 0.84,
+  merged: 0.7,
+  idle: 0.7,
+};
+
+/** About how tall a squadron's label is (its name, its counts, "Enter the room"), and how wide at most. */
+const SQUADRON_LABEL = { height: 84, width: 440 } as const;
+
 /** The hangar: one formation per project, spread over the sky. */
 function stage(projects: readonly SkyProject[], width: number, height: number): SkyLayout {
   const targets: Target[] = [];
@@ -296,9 +316,10 @@ function stage(projects: readonly SkyProject[], width: number, height: number): 
   const cell = { width: usable.width / cols, height: usable.height / rows };
   const fit = Math.max(0.45, Math.min(1.3, Math.min(cell.width / 400, cell.height / 330)));
   projects.forEach((project, i) => {
-    // A crowded project's formation is smaller, so it stays in its cell.
+    const urgent = urgentGroup(project.agents);
+    // A crowded project's formation is smaller, so it stays in its cell; a quieter one flies further away.
     const crowd = project.agents.filter((a) => a.group !== "merged").length;
-    const f = fit * Math.max(0.55, Math.min(1, Math.sqrt(14 / Math.max(14, crowd))));
+    const f = fit * Math.max(0.55, Math.min(1, Math.sqrt(14 / Math.max(14, crowd)))) * SQUADRON_SCALE[urgent ?? "idle"];
     const col = i % cols;
     const row = Math.floor(i / cols);
     // Every other column sits a little lower: squadrons, not a table.
@@ -307,20 +328,11 @@ function stage(projects: readonly SkyProject[], width: number, height: number): 
     const cy = usable.y + cell.height * (row + 0.45) + stagger;
     const lean = i % 2 ? 0.2 : -0.2;
     const wings = wingsOf(project, "stage");
-    let bottom = cy;
+    const own: Target[] = [];
     for (const w of wings) {
       if (w.id === "coordinator") {
         const len = lengthOf(w, f);
-        const placed = place(
-          { ...w, tilt: lean },
-          cx,
-          cy - 70 * f,
-          f,
-          V_BACK * len * w.spread,
-          V_SIDE * len * w.spread,
-        );
-        targets.push(...placed);
-        bottom = Math.max(bottom, ...placed.map((t) => t.y));
+        own.push(...place({ ...w, tilt: lean }, cx, cy - 70 * f, f, V_BACK * len * w.spread, V_SIDE * len * w.spread));
       }
     }
     // Its agents in flight, fanned out on arcs beneath the coordinator, most urgent first.
@@ -336,13 +348,11 @@ function stage(projects: readonly SkyProject[], width: number, height: number): 
       const x = cx + t * half;
       const y = cy + (24 + (1 - t * t) * 26 + r * 44) * f;
       const fan = UP + t * 0.45 + (wing.group === "blocked" ? LOOK.blocked.tilt : 0);
-      targets.push({ ...ship, x, y, angle: fan, depth: wing.depth, size: 1.1 * f, stretch: DART });
-      bottom = Math.max(bottom, y);
+      own.push({ ...ship, x, y, angle: fan, depth: wing.depth, size: 1.1 * f, stretch: DART });
     });
-    if (ships.length) {
-      const urgent = flying[0]?.group ?? "running";
+    targets.push(...own);
+    if (ships.length && urgent)
       arcs.push({ key: project.id, color: STATE_COLOR[urgent], members: ships.map((s) => s.ship.key) });
-    }
     // The day's merges: a faint V flying away behind it.
     const merged = wings.find((w) => w.group === "merged");
     if (merged) {
@@ -358,25 +368,26 @@ function stage(projects: readonly SkyProject[], width: number, height: number): 
         ),
       );
     }
-    const count = (g: Group) => project.agents.filter((a) => a.group === g).length;
-    const inFlight = project.agents.length - count("merged");
-    const detail = [
-      `${inFlight} in flight`,
-      count("blocked") && `${count("blocked")} blocked`,
-      count("you") && `${count("you")} waiting for you`,
-      count("merged") && `${count("merged")} merged today`,
-    ]
-      .filter(Boolean)
-      .join(" · ");
+    const reach = SHIP * f;
+    const xs = own.map((t) => t.x);
+    const ys = own.map((t) => t.y);
+    // Under its arc (drawn about 20 px below its lowest ship), with some air.
+    const y = Math.max(cy, ...ys) + 34 * f + 18;
+    const wordsWidth = Math.min(cell.width - 24, SQUADRON_LABEL.width);
+    const left = Math.max(0, Math.min(cx - wordsWidth / 2, ...xs.map((x) => x - reach)));
+    const top = Math.max(0, Math.min(...ys) - reach * 2);
+    const right = Math.min(width, Math.max(cx + wordsWidth / 2, ...xs.map((x) => x + reach)));
+    const bottom = Math.min(height, y + SQUADRON_LABEL.height);
     labels.push({
       key: project.id,
       x: cx,
-      y: bottom + 34 * f,
-      group: null,
+      y,
+      group: urgent,
       text: project.name,
       count: null,
-      detail,
-      width: cell.width - 24,
+      facts: squadronFacts(countsOf(project.agents)),
+      width: wordsWidth,
+      area: { x: left, y: top, width: right - left, height: bottom - top },
     });
   });
   return { targets, arcs, labels };

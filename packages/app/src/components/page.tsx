@@ -19,6 +19,21 @@ export function PageHeader({ facts, title, quiet }: { facts?: ReactNode; title: 
   );
 }
 
+/**
+ * A full-bleed page's title and facts on one line, across its top (the
+ * hangar, after the direction kept with the owner, `.aeom/direction`): the
+ * title, then the facts, then what sits at the right end.
+ */
+export function PageBar({ title, facts, end }: { title: ReactNode; facts?: ReactNode; end?: ReactNode }) {
+  return (
+    <header className="flex h-12 min-w-0 flex-none items-center gap-3.5 overflow-hidden whitespace-nowrap border-line border-b px-4 text-body text-text-2">
+      <h1 className="m-0 font-semibold text-bar text-text">{title}</h1>
+      {facts}
+      {end && <div className="ml-auto flex items-center gap-3.5 text-text-3">{end}</div>}
+    </header>
+  );
+}
+
 /** One of the page's blocks, under its quiet heading. */
 export function Block({ heading, children }: { heading: ReactNode; children: ReactNode }) {
   return (

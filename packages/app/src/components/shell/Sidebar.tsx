@@ -1,5 +1,6 @@
 import { sessionsInFlight } from "@/fleet/sessions";
 import { fleetOf } from "@/fleet/state";
+import { href, useRoute } from "@/lib/route";
 import type { ConnectionStatus } from "@/protocol/client";
 import { useDaemon } from "@/protocol/store";
 import { Count } from "./Count";
@@ -10,12 +11,15 @@ const item =
 const current = "aria-[current=page]:bg-item-current aria-[current=page]:text-text";
 
 /**
- * The sidebar (design/dashboard-v7): the mark, the fleet, one line per
+ * The sidebar (design/dashboard-v7): the mark, the hangar, one line per
  * project with its sessions in flight (once its folded state arrived, so
- * nothing counts up on the first paint), and the live reading of the daemon.
+ * nothing counts up on the first paint), then at its bottom the settings and
+ * the live reading of the daemon. The current route's line is marked.
  */
 export function Sidebar() {
   const { projects, fleets, status } = useDaemon();
+  const route = useRoute();
+  const at = (on: boolean) => (on ? ("page" as const) : undefined);
   return (
     <aside
       aria-label="Sidebar"
@@ -26,8 +30,8 @@ export function Sidebar() {
         <span className="font-semibold text-sub">Armada</span>
       </div>
       <nav aria-label="Sections" className="flex flex-col gap-0.5">
-        <a href="#/" className={`${item} ${current}`} aria-current="page">
-          <span className="min-w-0 flex-1 truncate">Fleet</span>
+        <a href={href.hangar} className={`${item} ${current}`} aria-current={at(route.screen === "hangar")}>
+          <span className="min-w-0 flex-1 truncate">Hangar</span>
         </a>
       </nav>
       <nav aria-labelledby="sidebar-projects" className="flex flex-col gap-0.5">
@@ -39,7 +43,13 @@ export function Sidebar() {
         {projects?.map((p) => {
           const fleet = fleets[p.id];
           return (
-            <a key={p.id} href={`#/projects/${encodeURIComponent(p.id)}`} className={item} title={p.repository}>
+            <a
+              key={p.id}
+              href={href.project(p.id)}
+              className={`${item} ${current}`}
+              aria-current={at(route.screen === "project" && route.id === p.id)}
+              title={p.repository}
+            >
               <span className="min-w-0 flex-1 truncate">{p.name}</span>
               {fleet && <Sessions count={sessionsInFlight(fleetOf(fleet))} />}
             </a>
@@ -47,6 +57,11 @@ export function Sidebar() {
         })}
       </nav>
       <span className="flex-1" />
+      <nav aria-label="App" className="flex flex-col gap-0.5">
+        <a href={href.settings} className={`${item} ${current}`} aria-current={at(route.screen === "settings")}>
+          <span className="min-w-0 flex-1 truncate">Settings</span>
+        </a>
+      </nav>
       <Live status={status} />
     </aside>
   );

@@ -1,8 +1,11 @@
 import { lazy, Suspense } from "react";
 import { Shell } from "@/components/shell/Shell";
+import { useRoute } from "@/lib/route";
 import type { DaemonClient } from "@/protocol/client";
 import { DaemonProvider } from "@/protocol/store";
-import { Home } from "@/screens/Home";
+import { Hangar } from "@/screens/Hangar";
+import { ProjectFleet } from "@/screens/ProjectFleet";
+import { Settings } from "@/screens/Settings";
 
 // The sky's story page (`?story=sky`), loaded only behind its flag: never in the first load.
 const SkyStory = lazy(() => import("@/screens/SkyStory").then((m) => ({ default: m.SkyStory })));
@@ -26,9 +29,22 @@ export function App({
             <SkyStory />
           </Suspense>
         ) : (
-          <Home address={address} onReload={onReload} />
+          <Screen address={address} onReload={onReload} />
         )}
       </Shell>
     </DaemonProvider>
   );
+}
+
+/** The screen the address's route names (src/lib/route.ts). */
+function Screen({ address, onReload }: { address: string; onReload: () => void }) {
+  const route = useRoute();
+  switch (route.screen) {
+    case "project":
+      return <ProjectFleet key={route.id} id={route.id} />;
+    case "settings":
+      return <Settings address={address} />;
+    default:
+      return <Hangar onReload={onReload} />;
+  }
 }
