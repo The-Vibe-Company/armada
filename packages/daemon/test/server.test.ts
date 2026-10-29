@@ -51,23 +51,27 @@ const holding = (...events: FleetEvent[]) => ({
 // Queue frames immediately, including replies that arrive together. No sleeps or polling.
 async function connect(url: string) {
   const ws = new WebSocket(url);
-  const frames: unknown[] = [];
+  const frames: string[] = [];
   let wake: (() => void) | undefined;
   ws.on("message", (data) => {
-    frames.push(JSON.parse(String(data)));
+    frames.push(String(data));
     wake?.();
   });
   await once(ws, "open");
+  async function nextRaw(): Promise<string> {
+    if (!frames.length)
+      await new Promise<void>((resolve) => {
+        wake = resolve;
+      });
+    wake = undefined;
+    return frames.shift() as string;
+  }
   return {
     ws,
+    nextRaw,
     send: (body: Record<string, unknown>) => ws.send(JSON.stringify({ version, id: "r1", ...body })),
     async next(): Promise<ServerMessage> {
-      if (!frames.length)
-        await new Promise<void>((resolve) => {
-          wake = resolve;
-        });
-      wake = undefined;
-      return serverMessageSchema.parse(frames.shift());
+      return serverMessageSchema.parse(JSON.parse(await nextRaw()));
     },
   };
 }
@@ -528,4 +532,36 @@ test("credential socket writes and fake-model use never expose the key to replie
     provider: "anthropic",
     storage: "os-keychain",
   });
+});
+
+// Recorded before the vocabulary migration; the rules slice is an intentional additive extension.
+// Only the random subscription UUID is normalized.
+test("subscription bytes stay compatible with the recorded daemon vocabulary and folded tables", async (t) => {
+  const fixture = new URL("./support/protocol-subscription.json", import.meta.url);
+  const inputs = JSON.parse(readFileSync(fixture, "utf8")) as { history: EventInput[]; live: EventInput[] };
+  const store = new EventStore(":memory:");
+  for (const event of inputs.history) store.append(event);
+  const server = await startServer({ store, projects });
+  t.after(async () => {
+    await server.close();
+    store.close();
+  });
+  const client = await connect(server.wsUrl);
+  const frames: string[] = [];
+  client.send({ type: "project.subscribe", project: "orchard", after: 0 });
+  const initial = await client.nextRaw();
+  const subscriptionId = JSON.parse(initial).subscriptionId as string;
+  frames.push(initial.replaceAll(subscriptionId, "<subscription>"));
+  frames.push((await client.nextRaw()).replaceAll(subscriptionId, "<subscription>"));
+  for (const event of inputs.live) store.append(event);
+  frames.push((await client.nextRaw()).replaceAll(subscriptionId, "<subscription>"));
+  store.append(hold("harbor"));
+  frames.push((await client.nextRaw()).replaceAll(subscriptionId, "<subscription>"));
+  client.send({ type: "project.subscribe", project: "orchard", after: inputs.history.length });
+  const replay = await client.nextRaw();
+  const replayId = JSON.parse(replay).subscriptionId as string;
+  frames.push(replay.replaceAll(replayId, "<subscription>"));
+  frames.push((await client.nextRaw()).replaceAll(replayId, "<subscription>"));
+  const recording = new URL("./support/protocol-subscription.ndjson", import.meta.url);
+  assert.equal(`${frames.join("\n")}\n`, readFileSync(recording, "utf8"));
 });

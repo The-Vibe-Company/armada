@@ -56,7 +56,9 @@ safe integer or no cap); policy patches retain omitted numbers. A reason is mand
 
 Rules remain versioned `coordinator.checkpoint` events with reserved
 `format: armada.tools`, `version: 1`, `type: rules`, `rules: {revision,value}`.
-The shared fold projects them into `ProjectTables.rules`, sent live with each
+The protocol owns the rule schemas; the native tool derives its JSON Schema
+from that definition and the app reads it directly. The shared fold projects
+them into `ProjectTables.rules`, sent live with each
 project's snapshot. Revision 0 and an empty value mean no rules have been set;
 unset policy numbers and placement do not imply operational defaults. Existing
 v1 checkpoints replay unchanged. Pi storage ignores this format. The event log,

@@ -32,13 +32,16 @@ export function sampleEvents(at: string): EventInput[] {
     ({ project, kind, at, actor, payload }) as EventInput;
   const ticket = (project: string, id: string, title: string) =>
     e(project, "ticket.seen", { id, title, status: "started" }, "tracker");
+  // Each worker runs one of the vendors' CLIs: the sky draws it in that harness's colour.
+  const runtimes = ["claude", "codex", "opencode"];
+  let claims = 0;
   const claim = (project: string, id: string, generation = 1) =>
     e(project, "session.claimed", {
       ticket: id,
       session: `s-${id.toLowerCase()}-${generation}`,
       generation,
       owner: "default",
-      runtime: "local",
+      runtime: runtimes[claims++ % runtimes.length] ?? "claude",
       handle: `s-${id.toLowerCase()}`,
     });
   const report = (project: string, id: string, phase: Of<"session.reported">["phase"], reason: string) =>
@@ -157,7 +160,7 @@ if (import.meta.main) {
         session: `s-tid-7-${g}`,
         generation: g,
         owner: "default",
-        runtime: "local",
+        runtime: "codex",
         handle: "s-tid-7",
       },
     }),

@@ -201,7 +201,7 @@ function decide(
   importedRules?: ProjectRules,
 ): Decision {
   const tables = projectFacts(events, project);
-  const rules = tables.rules;
+  const rules = tables.rules ?? emptyRules();
   const no = (code: string, message: string, next: string): Decision => ({ result: refuse(code, message, next) });
   const changed = (event: EventInput, result: JsonObject): Decision => ({ event, result: { ok: true, ...result } });
   const base = { project, at, actor: "coordinator" };
@@ -489,7 +489,7 @@ export function nativeTools(
           if (name === "rules.set" && typeof (args as JsonObject).importFile === "string") {
             let problem: JsonObject | null;
             try {
-              problem = rulesProblem(args as JsonObject, projectFacts(events, scope.project).rules);
+              problem = rulesProblem(args as JsonObject, projectFacts(events, scope.project).rules ?? emptyRules());
             } catch {
               return output(
                 refuse(

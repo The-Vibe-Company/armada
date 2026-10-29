@@ -1,26 +1,6 @@
-import { z } from "zod";
+import { rulesStateSchema as schema } from "@armada/protocol";
 import { Block } from "@/components/page";
 
-// Read only the daemon's rules slice. The app has no repository-config or daemon runtime imports.
-const target = { cli: z.enum(["claude", "codex", "opencode"]), model: z.string(), effort: z.string().optional() };
-const place = z.enum(["local", "vm"]);
-const schema = z.object({
-  revision: z.number().int().nonnegative(),
-  value: z.object({
-    routing: z
-      .array(z.union([z.object({ labels: z.array(z.string()), ...target }), z.object({ when: z.string(), ...target })]))
-      .optional(),
-    defaultRoute: z.object(target).nullable().optional(),
-    placement: z.object({ workers: place, coordinator: place }).optional(),
-    policy: z
-      .object({
-        silenceMinutes: z.number().positive().optional(),
-        quietMinutes: z.number().positive().optional(),
-        maxWorkers: z.number().int().positive().nullable().optional(),
-      })
-      .optional(),
-  }),
-});
 const placement = (value: "local" | "vm" | undefined) =>
   value === "local" ? "On this machine" : value === "vm" ? "In a VM" : "Not set";
 const minutes = (value: number | undefined) => (value === undefined ? "Not set" : `${value} min`);

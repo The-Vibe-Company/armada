@@ -44,7 +44,7 @@ test("a chat-triggered V1 import leaves unrelated file content out of the durabl
       context,
     );
     assert.equal((await submission.wait(context)).status, "done");
-    assert.equal(fold(store.readSince(0)).projects.orchard?.rules.value.policy?.maxWorkers, 2);
+    assert.equal(fold(store.readSince(0)).projects.orchard?.rules?.value.policy?.maxWorkers, 2);
     assert.ok(!modelTranscript.includes("synthetic-file-only-note"));
     assert.ok(!JSON.stringify(store.readSince(0)).includes("synthetic-file-only-note"));
   } finally {
