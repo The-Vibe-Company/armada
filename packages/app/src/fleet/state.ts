@@ -50,6 +50,8 @@ const validationSchema = z.object({
   ticket: text,
   session: text,
   question: text,
+  /** What the owner checks (the session's page lists them). */
+  checks: z.array(text).optional(),
   decision: z.object({ decision: text }).nullable(),
 });
 
