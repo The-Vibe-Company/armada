@@ -3,6 +3,8 @@ import {
   type ClientMessage,
   type CredentialsResult,
   DAEMON_TOO_OLD,
+  type PluginRequest,
+  type PluginsResult,
   PROTOCOL_VERSION,
   type Project,
   type ProtocolEvent,
@@ -33,6 +35,12 @@ export interface DaemonState {
   /** Each project's folded state, the latest the daemon sent; its shape is the daemon's (src/fleet/state.ts reads it). */
   fleets: Readonly<Record<string, Snapshot>>;
   credentials: Omit<CredentialsResult, "id" | "type" | "version"> | null;
+  /** The bundled plugins as the daemon last listed them; null until it did (kept across reconnects). */
+  plugins: Pick<PluginsResult, "plugins" | "restartable"> | null;
+  /** Why the daemon could not list them (an older daemon, a broken app configuration). */
+  pluginsProblem: string | null;
+  /** The daemon confirmed a restart and is not back yet. */
+  restarting: boolean;
 }
 
 /** The part of a browser WebSocket the client uses, so tests hand it a fake. */
@@ -60,13 +68,25 @@ export interface DaemonClient {
   start(): void;
   stop(): void;
   saveCredentials(provider: "anthropic" | "openai", key: string): Promise<void>;
+  /** Each resolves once the daemon saved the change and listed the plugins again; none is replayed after a drop. */
+  setPluginEnabled(plugin: string, enabled: boolean): Promise<void>;
+  configurePlugin(plugin: string, seam: string, kind: string, config: Json): Promise<void>;
+  setPluginSecret(plugin: string, name: string, value: string): Promise<void>;
+  /** Asks the daemon to restart (the desktop shell starts it again); the client reconnects as after any drop. */
+  restartDaemon(): Promise<void>;
 }
+
+/** A request before the client gives it its id and version. */
+type Unaddressed<M> = M extends unknown ? Omit<M, "id" | "version"> : never;
+type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
 const BACKOFF = [250, 500, 1000, 2000, 5000];
 export const UNREADABLE = "The daemon sent a message this app cannot read";
 export const NOT_FOLDED = "The daemon does not send its folded state live: update it";
 export const LOG_BEHIND = "The daemon's log is behind what this app has read: reload the app";
 export const unusableAddress = (url: string) => `This daemon address is not usable: ${url}`;
+export const NO_PLUGINS = "This daemon has no Plugins screen: update it";
+export const UNCONFIRMED = "The daemon did not confirm this change. Check the list before trying again.";
 
 export const initialState: DaemonState = {
   status: "connecting",
@@ -75,6 +95,9 @@ export const initialState: DaemonState = {
   logs: {},
   fleets: {},
   credentials: null,
+  plugins: null,
+  pluginsProblem: null,
+  restarting: false,
 };
 
 /**
@@ -107,6 +130,41 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
     pendingCredential = null;
     pending?.cancel();
     pending?.reject(new Error("Key was not confirmed saved. Reconnect and check its status before trying again."));
+  }
+  let pluginListId: string | null = null;
+  /** Every plugin request of this connection: a reply past its deadline is still recognised as one. */
+  let pluginIds = new Set<string>();
+  /** Plugin changes and the restart awaiting their answer, by request id. */
+  const pendingPlugins = new Map<string, { resolve: () => void; reject: (error: Error) => void; cancel: () => void }>();
+  function settlePlugin(requestId: string, error?: Error) {
+    const pending = pendingPlugins.get(requestId);
+    if (!pending) return false;
+    pendingPlugins.delete(requestId);
+    pending.cancel();
+    if (error) pending.reject(error);
+    else pending.resolve();
+    return true;
+  }
+  function failPlugins() {
+    for (const requestId of [...pendingPlugins.keys()]) settlePlugin(requestId, new Error(UNCONFIRMED));
+  }
+  function askPlugins(message: Unaddressed<PluginRequest>) {
+    if (state.status !== "live" || !state.plugins)
+      return Promise.reject(new Error("Wait for the daemon before changing a plugin."));
+    return new Promise<void>((resolve, reject) => {
+      const requestId = id();
+      pluginIds.add(requestId);
+      pendingPlugins.set(requestId, {
+        resolve,
+        reject,
+        cancel: options.schedule(() => settlePlugin(requestId, new Error(UNCONFIRMED)), 10000),
+      });
+      try {
+        send({ ...message, version, id: requestId });
+      } catch {
+        settlePlugin(requestId, new Error(UNCONFIRMED));
+      }
+    });
   }
   /** Why the last connection ended: after an unreadable frame, the backoff keeps growing. */
   let lastDrop: "close" | "unreadable" = "close";
@@ -144,7 +202,10 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   /** Leave the current connection, if any, and try again after the next wait. */
   function reconnect() {
     failCredential();
+    failPlugins();
     credentialStatusId = null;
+    pluginListId = null;
+    pluginIds = new Set();
     const closing = socket;
     socket = null;
     closing?.close();
@@ -163,7 +224,10 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
 
   function refuse(problem: string) {
     failCredential();
+    failPlugins();
     credentialStatusId = null;
+    pluginListId = null;
+    pluginIds = new Set();
     set({ status: "refused", problem, credentials: null });
     const closing = socket;
     socket = null;
@@ -196,6 +260,12 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
           credentialStatusId = id();
           send({ type: "credentials.status", version, id: credentialStatusId });
         }
+        // Listed again on every connection: a restarted daemon says what it loaded.
+        if (message.version.minor >= 2) {
+          pluginListId = id();
+          pluginIds.add(pluginListId);
+          send({ type: "plugins.list", version, id: pluginListId });
+        } else set({ plugins: null, pluginsProblem: NO_PLUGINS, restarting: false });
         for (const project of message.projects) {
           send({ type: "project.subscribe", version, id: id(), project: project.id, after: cursor(project.id) });
         }
@@ -231,11 +301,30 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
         }
         return;
       }
+      case "plugins.result":
+        // Always the whole list as saved now: a late reply is still the freshest one.
+        if (!pluginIds.has(message.id)) return;
+        // A restart ends once the daemon that came back listed what it loaded.
+        set({
+          plugins: { plugins: message.plugins, restartable: message.restartable },
+          pluginsProblem: null,
+          restarting: false,
+        });
+        settlePlugin(message.id);
+        return;
+      case "daemon.restarting":
+        if (settlePlugin(message.id)) set({ restarting: true });
+        return;
       case "error":
         if (pendingCredential && message.id === pendingCredential.id) {
           failCredential();
           return;
         }
+        if (message.id !== undefined && settlePlugin(message.id, new Error(message.message))) return;
+        if (message.id !== undefined && message.id === pluginListId)
+          return set({ pluginsProblem: message.message, restarting: false });
+        // A plugin change's refusal past its deadline is not the fleet's problem.
+        if (message.id !== undefined && pluginIds.has(message.id)) return;
         if (message.code === "app-too-old" || message.code === "daemon-too-old") return refuse(message.message);
         // The key's status failing is not the fleet's problem: it never hides one already said (and its Reload).
         if (message.id !== undefined && message.id === credentialStatusId && state.problem) return;
@@ -276,6 +365,11 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
         }
       });
     },
+    setPluginEnabled: (plugin, enabled) => askPlugins({ type: enabled ? "plugins.enable" : "plugins.disable", plugin }),
+    configurePlugin: (plugin, seam, kind, config) =>
+      askPlugins({ type: "plugins.configure", plugin, seam, kind, config }),
+    setPluginSecret: (plugin, name, value) => askPlugins({ type: "plugins.secret", plugin, name, value }),
+    restartDaemon: () => askPlugins({ type: "daemon.restart" }),
     getState: () => state,
     subscribe(listener) {
       listeners.add(listener);
@@ -288,6 +382,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
     },
     stop() {
       failCredential();
+      failPlugins();
       running = false;
       cancelRetry?.();
       cancelRetry = null;

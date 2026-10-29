@@ -88,6 +88,21 @@ server serializes credential reads/writes across connections (at most 32 pending
 and drains accepted operations on shutdown. Embedders can inject `keychain` into
 `startServer`; the production default is `systemKeychain()`.
 
+The app's Plugins screen (THE-2019) goes through `dispatchPlugins`
+(`src/server/plugins.ts`), also after admission and serialized the same way, given
+a `PluginHost` by `startServer`'s `plugins` option: the boot's catalog, what it
+loaded and the settings it read (`loadPlugins` returns them), the app
+configuration's path and a keychain. Every answer is `plugins.result`, the whole
+catalog as saved now. A switch and a contribution's config are written with
+`updateAppConfig` (`setPluginEnabled`, `setPluginConfig`), and a config is first
+checked with the loader's own rule (`validateContribution`). A secret is accepted
+only under a name the plugin declares, written to `armada.plugins`, and reported
+as set or missing. `restartRequired` compares the saved switch and config with the
+boot's. `daemon.restart` sends `daemon.restarting`, then calls `startServer`'s
+`restart`; `armadad --restartable` (the desktop shell's flag) closes and exits
+with code 75 for the shell to start it again. Without `plugins` or `restart` those
+requests answer `not-found`. `test/plugins-server.test.ts` covers this side.
+
 ## Local server (`armadad`)
 
 Build the browser app with `bun run --cwd packages/app build`, then run the

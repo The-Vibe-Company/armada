@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { type PluginSetting, pluginSettingSchema } from "@armada/plugin-api";
+import { type Json, type PluginSetting, pluginSettingSchema, type Seam } from "@armada/plugin-api";
 import { lock } from "proper-lockfile";
 
 export function appConfigPath(env: Record<string, string | undefined> = process.env): string {
@@ -43,6 +43,19 @@ export function setPluginEnabled(
     ...config,
     plugins: [...settings.filter((s) => s.id !== id), { ...previous, id, enabled, config: previous?.config ?? {} }],
   };
+}
+/** The app's Plugins screen: one contribution's config, the plugin's switch and other configs kept. */
+export function setPluginConfig(
+  config: Record<string, unknown>,
+  id: string,
+  seam: Seam,
+  kind: string,
+  value: Json,
+): Record<string, unknown> {
+  const settings = pluginSettings(config);
+  const previous = settings.find((s) => s.id === id);
+  const configs = { ...previous?.config, [seam]: { ...previous?.config?.[seam], [kind]: value } };
+  return { ...config, plugins: [...settings.filter((s) => s.id !== id), { ...previous, id, config: configs }] };
 }
 
 /** Atomic app configuration write, shared by the app and terminal switches. */

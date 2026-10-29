@@ -3,9 +3,13 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseArgs } from "node:util";
 import { bootDaemon } from "../boot.ts";
+import { systemKeychain } from "../keychain.ts";
 import { readPluginSecret } from "../plugins/keychain.ts";
 import { startServer } from "./index.ts";
 import { daemonProjectSchema, startReaders } from "./readers.ts";
+
+/** The exit code that asks the desktop shell to start the daemon again (packages/desktop/src/daemon.ts). */
+const RESTART_EXIT_CODE = 75;
 
 try {
   const { values } = parseArgs({
@@ -14,12 +18,13 @@ try {
       projects: { type: "string" },
       port: { type: "string" },
       "static-dir": { type: "string" },
+      restartable: { type: "boolean" },
       help: { type: "boolean" },
     },
   });
   if (values.help) {
     console.log(
-      "armadad --database <sqlite-file> --projects <projects.json> [--port <port>] [--static-dir <app-dist>]",
+      "armadad --database <sqlite-file> --projects <projects.json> [--port <port>] [--static-dir <app-dist>] [--restartable]",
     );
   } else {
     if (!values.database || !values.projects) throw new Error("--database and --projects are required");
@@ -35,10 +40,31 @@ try {
       log: { info: (line) => console.error(line), error: (line) => console.error(line) },
     });
     try {
-      const server = await startServer({ store: daemon.store, projects, port, staticDir: values["static-dir"] });
+      let stopping = false;
+      const server = await startServer({
+        store: daemon.store,
+        projects,
+        port,
+        staticDir: values["static-dir"],
+        // The keychain is opened on first use, as the plugins' own secret getter does.
+        plugins: {
+          configPath: daemon.configPath,
+          catalog: daemon.catalog,
+          boot: daemon,
+          keychain: {
+            read: (service, account) => systemKeychain().read(service, account),
+            write: (service, account, value) => systemKeychain().write(service, account, value),
+          },
+        },
+        // --restartable: the shell starts a daemon that exits with RESTART_EXIT_CODE again.
+        restart: values.restartable
+          ? () => {
+              void stop().finally(() => process.exit(RESTART_EXIT_CODE));
+            }
+          : undefined,
+      });
       let readers: Awaited<ReturnType<typeof startReaders>> | undefined;
       const controller = new AbortController();
-      let stopping = false;
       const stop = async () => {
         if (stopping) return;
         stopping = true;

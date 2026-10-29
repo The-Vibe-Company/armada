@@ -74,6 +74,32 @@ strings), copied into `src/fleet/overview.ts`, never imported:
 `test/fleet.test.tsx` renders the home on the daemon's fold of a synthetic log
 and reads the groups, the reasons and their colours.
 
+## The Plugins screen
+
+`src/screens/Plugins.tsx` at `#/plugins` (`src/lib/route.ts`; the sidebar's
+Plugins entry) is loaded on demand, off the first load. It follows the same
+anatomy: the catalog's numbers on the facts line (plugins, on, loaded, refused),
+the title and a quiet line, then every bundled plugin in one list grouped by seam
+(`src/plugins/list.ts`: Runtimes, Trackers, Forges, Nodes, Models, then Other).
+Each row has its name, version, description and contributions, its state in a
+word and colour (loaded, off, refused, restart to apply) and a switch
+(`src/components/ui/switch.tsx`, lime when on). A "Configure" disclosure holds
+each contribution's form, generated from its JSON Schema by `src/plugins/schema.ts`
+with the page kit's `Form`, `Field`, `Input` and `Select`, and each declared
+secret as set or missing with a password field. The secret follows the coordinator
+key's rule: the field is cleared before the daemon answers, and the value is never
+kept or replayed.
+
+The client (`setPluginEnabled`, `configurePlugin`, `setPluginSecret`,
+`restartDaemon`) asks the daemon, which saves at once and answers with the whole
+list. A change then shows "Restart to apply" and a notice with Restart. Restart
+asks the daemon to restart (the desktop shell starts it again); the client
+reconnects as after any drop and lists the plugins again. A daemon the shell does
+not supervise says to quit and reopen instead. `test/plugins.test.tsx` renders a
+synthetic catalog over a fake socket. `test/build.test.ts` flips a switch in
+Chromium, saves a setting and a secret, and presses Restart on a daemon the test
+restarts on the same port, until the row reads Loaded.
+
 ## The look
 
 The v7 design (`design/dashboard-v7`) lives on as tokens and rules, not as CSS.

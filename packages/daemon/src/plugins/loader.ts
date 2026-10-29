@@ -1,11 +1,14 @@
 import {
   type Json,
+  type JsonSchema,
   manifestSchema,
   PLUGIN_API_VERSION,
   type PluginConfig,
   type PluginContext,
   type PluginManifest,
+  type PluginSetting,
   SEAMS,
+  type Seam,
 } from "@armada/plugin-api";
 import { Ajv } from "ajv";
 import { satisfies, valid, validRange } from "semver";
@@ -26,8 +29,19 @@ export type PluginServices = Pick<PluginContext, "events" | "secrets" | "log">;
 export interface PluginBoot {
   registry: PluginRegistry;
   plugins: PluginState[];
+  /** The saved switches and configs this boot read: what a later change is compared with. */
+  settings: PluginSetting[];
 }
 const line = (message: string) => message.replace(/[\r\n\t]+/g, " ");
+
+/** One contribution's config against its JSON Schema; shared by the boot and the app's Plugins screen. */
+export function validateContribution(schema: JsonSchema, seam: Seam, kind: string, value: Json): void {
+  const ajv = new Ajv({ allErrors: true });
+  const check = ajv.compile(schema);
+  if ("$async" in check && check.$async) throw new Error("config schemas must be synchronous");
+  if (!check(value))
+    throw new Error(`config ${seam}.${kind}: ${ajv.errorsText(check.errors, { dataVar: "config", separator: "; " })}`);
+}
 
 function validateConfig(manifest: PluginManifest, config: PluginConfig): PluginConfig {
   const validated: PluginConfig = {};
@@ -36,15 +50,9 @@ function validateConfig(manifest: PluginManifest, config: PluginConfig): PluginC
       if (!Object.hasOwn(manifest.contributions[seam] ?? {}, kind))
         throw new Error(`config for undeclared contribution ${seam}.${kind}`);
     for (const [kind, contribution] of Object.entries(manifest.contributions[seam] ?? {})) {
-      const ajv = new Ajv({ allErrors: true });
-      const check = ajv.compile(contribution.config);
-      if ("$async" in check && check.$async) throw new Error("config schemas must be synchronous");
       const values = config[seam];
       const value = values && Object.hasOwn(values, kind) ? (values[kind] as Json) : {};
-      if (!check(value))
-        throw new Error(
-          `config ${seam}.${kind}: ${ajv.errorsText(check.errors, { dataVar: "config", separator: "; " })}`,
-        );
+      validateContribution(contribution.config as JsonSchema, seam, kind, value);
       const target = validated[seam] ?? {};
       target[kind] = structuredClone(value);
       validated[seam] = target;
@@ -116,5 +124,5 @@ export async function loadPlugins(
       services.log.error(`Plugin ${state.id} refused: ${state.error}`);
     }
   }
-  return { registry, plugins };
+  return { registry, plugins, settings };
 }
