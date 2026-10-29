@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "types": ["node"], "lib": ["ES2023", "DOM"] },
+  "include": ["src", "test", "electron.vite.config.ts"],
+  "exclude": []
+}
