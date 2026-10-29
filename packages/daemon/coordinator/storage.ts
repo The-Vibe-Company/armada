@@ -1,6 +1,6 @@
 import type { Context } from "@earendil-works/chord";
 import { type Id, MemoryStorage, type Seq, type Storage, type StorageWrite } from "@earendil-works/pi-durable";
-import type { Json } from "../src/events.ts";
+import type { EventInput, FleetEvent, Json } from "../src/events.ts";
 import type { EventStore } from "../src/store.ts";
 
 export interface LogStorageOptions {
@@ -16,7 +16,7 @@ type Checkpoint =
 const owners = new WeakMap<EventStore, Set<string>>();
 
 /** One pi Session per project, using the same append boundary as fleet readers and subscriptions. */
-export function openCoordinatorStorage(options: LogStorageOptions): Storage {
+export function openCoordinatorStorage(options: LogStorageOptions): CoordinatorStorage {
   const projects = owners.get(options.store) ?? new Set<string>();
   if (projects.has(options.project)) throw new Error(`Coordinator storage already open for ${options.project}`);
   const storage = new LogStorage(options, () => projects.delete(options.project));
@@ -25,12 +25,35 @@ export function openCoordinatorStorage(options: LogStorageOptions): Storage {
   return storage;
 }
 
+/** The admitted project's writer capability. Native tools cannot outlive this storage owner. */
+export interface CoordinatorStorage extends Storage {
+  readonly project: string;
+  readEvents(): FleetEvent[];
+  appendEvent(event: EventInput): FleetEvent;
+}
+
 /** MemoryStorage is pi's validated projection, never a second source of truth. */
-class LogStorage extends MemoryStorage {
+class LogStorage extends MemoryStorage implements CoordinatorStorage {
   readonly #options: LogStorageOptions;
   readonly #release: () => void;
   #nextId = 2;
   #closed = false;
+
+  get project(): string {
+    return this.#options.project;
+  }
+
+  readEvents(): FleetEvent[] {
+    if (this.#closed) throw new Error("Coordinator storage is closed");
+    return this.#options.store.readSince(0, this.project);
+  }
+
+  appendEvent(event: EventInput): FleetEvent {
+    if (this.#closed) throw new Error("Coordinator storage is closed");
+    if (event.project !== this.project || event.actor !== "coordinator")
+      throw new Error("Coordinator write is outside its project scope");
+    return this.#options.store.append(event);
+  }
 
   constructor(options: LogStorageOptions, release: () => void) {
     super();
@@ -72,13 +95,15 @@ class LogStorage extends MemoryStorage {
   }
 
   override async close(context: Context): Promise<void> {
-    await super.close(context);
+    if (this.#closed) return;
     this.#closed = true;
+    await super.close(context);
     this.#release();
     // The daemon owns the shared EventStore, whose lifetime includes other projects and the server.
   }
 
   #append(checkpoint: Checkpoint): void {
+    if (this.#closed) throw new Error("Coordinator storage is closed");
     this.#options.store.append({
       project: this.#options.project,
       kind: "coordinator.checkpoint",
