@@ -9,6 +9,18 @@ test("owner keychain wins; absent/locked entries fall back to gh without leaking
   const owner = randomUUID();
   const fallback = randomUUID();
   const calls: string[] = [];
+  assert.equal(
+    await githubToken({
+      platform: "darwin",
+      command: async (file, args) => {
+        calls.push(file);
+        assert.deepEqual(args, ["find-generic-password", "-s", "armada.github", "-a", "github", "-w"]);
+        return owner;
+      },
+    }),
+    owner,
+  );
+  assert.deepEqual(calls, ["security"]);
   const chain = new Keychain(new FakeKeychain());
   await chain.write("github", "github", owner);
   assert.equal(await githubToken({ keychain: chain, command: async () => assert.fail("keychain wins") }), owner);

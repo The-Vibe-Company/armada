@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmod, mkdtemp, readdir, readFile, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -52,6 +53,41 @@ test("Linux fallback persists private files, replaces atomically and refuses loo
     await rm(file);
     await chmod(credentials, 0o755);
     await assert.rejects(chain.setCoordinator("openai", key), /^Error: Credential could not be saved$/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Linux system storage accepts only trimmed absolute XDG roots, otherwise uses the private home config", {
+  skip: process.platform !== "linux",
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "armada-keychain-root-"));
+  try {
+    for (const xdg of ["", "relative", " ./relative ", ` ${join(directory, "absolute")} `]) {
+      const home = join(directory, "home");
+      const script = `
+        import assert from "node:assert/strict";
+        import { existsSync } from "node:fs";
+        import { randomBytes } from "node:crypto";
+        import { join, isAbsolute } from "node:path";
+        import { systemKeychain } from ${JSON.stringify(new URL("../src/keychain.ts", import.meta.url).href)};
+        const keychain = systemKeychain();
+        await keychain.setCoordinator("openai", randomBytes(24).toString("hex"));
+        assert.equal((await keychain.coordinator())?.provider, "openai");
+        const asked = process.env.XDG_CONFIG_HOME.trim();
+        const root = isAbsolute(asked) ? asked : join(process.env.HOME, ".config");
+        assert.equal(existsSync(join(root, "armada", "desktop", "credentials")), true);
+        assert.equal(existsSync(join(process.cwd(), "relative")), false);
+        assert.equal(existsSync(join(process.cwd(), "armada")), false);
+      `;
+      const result = spawnSync("node", ["--input-type=module", "-e", script], {
+        cwd: directory,
+        env: { ...process.env, HOME: home, XDG_CONFIG_HOME: xdg },
+        encoding: "utf8",
+        timeout: 10000,
+      });
+      assert.equal(result.status, 0, result.stderr);
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

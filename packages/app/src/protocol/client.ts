@@ -144,7 +144,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
     socket = null;
     closing?.close();
     if (!running || state.status === "refused") return;
-    set({ status: "reconnecting" });
+    set({ status: "reconnecting", credentials: null });
     const wait = backoff[Math.min(attempt, backoff.length - 1)] ?? 1000;
     attempt += 1;
     cancelRetry = options.schedule(connect, wait);
@@ -158,7 +158,8 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
 
   function refuse(problem: string) {
     failCredential();
-    set({ status: "refused", problem });
+    credentialStatusId = null;
+    set({ status: "refused", problem, credentials: null });
     const closing = socket;
     socket = null;
     closing?.close();

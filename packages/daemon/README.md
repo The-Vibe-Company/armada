@@ -62,7 +62,6 @@ same tests run in the Bun suite; `bun run verify` and CI also exercise native
 Node SQLite explicitly. Store tests use disposable database files; fold tests
 use invented tickets and people without I/O.
 
-
 ## Credential boundary
 
 `keychain.ts` is the host's only secret-read gateway. `systemKeychain()` uses
@@ -81,9 +80,11 @@ Backend errors are replaced by fixed messages without a cause. Consumers and
 plugins must not import `secrets/*` or a native keychain module. Tests inject a
 `FakeKeychain`; test keys are generated at runtime rather than stored in fixtures.
 
-`dispatchCredentials` is a standalone request handler while transport integration
-lands. Call it only after `admitRequest`, before project-scoped dispatch. It
-returns status or a fixed error and has no event-store/logger dependency.
+`dispatchCredentials` runs after `admitRequest`, before project-scoped dispatch.
+It returns status or a fixed error and has no event-store/logger dependency. The
+server serializes credential reads/writes across connections (at most 32 pending)
+and drains accepted operations on shutdown. Embedders can inject `keychain` into
+`startServer`; the production default is `systemKeychain()`.
 
 ## Local server (`armadad`)
 

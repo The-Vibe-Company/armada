@@ -80,7 +80,6 @@ Both sides accept minor differences within the same major. App consumers validat
 with `serverMessageSchema` and check the server's major before applying frames;
 a major mismatch requires reconnecting with a compatible app/daemon pair.
 
-
 ### Credentials (minor 1)
 
 A local app sends `credentials.status` after connection to discover the saved

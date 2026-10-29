@@ -38,8 +38,13 @@ test("admitted credential writes return status only; backend failures and malfor
   });
   const failure = await dispatchCredentials(admitted.request, failing);
   assert.equal(failure.type, "error");
+  const readFailure = await dispatchCredentials(
+    { type: "credentials.status", version: PROTOCOL_VERSION, id: "locked-status" },
+    failing,
+  );
+  assert.equal(readFailure.type, "error");
   assert.equal(admitRequest({ ...request, key: `${key}\n` }).ok, false);
   assert.equal(admitRequest({ ...request, provider: "unsupported" }).ok, false);
-  assert.equal(JSON.stringify([response, failure, output]).includes(key), false);
+  assert.equal(JSON.stringify([response, failure, readFailure, output]).includes(key), false);
   assert.deepEqual(output, []);
 });

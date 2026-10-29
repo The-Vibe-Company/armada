@@ -11,7 +11,9 @@ import {
   PROTOCOL_VERSION as version,
 } from "@armada/protocol";
 import { WebSocket, WebSocketServer } from "ws";
+import { dispatchCredentials } from "../credentials.ts";
 import { fold, type ProjectTables } from "../fold.ts";
+import { type Keychain, systemKeychain } from "../keychain.ts";
 import type { EventStore } from "../store.ts";
 import { serveStatic } from "./static.ts";
 
@@ -24,6 +26,8 @@ export interface ServerOptions {
   staticDir?: string;
   /** Additional trusted browser origins, e.g. a separate local Vite dev server. */
   allowedOrigins?: readonly string[];
+  /** Host-owned gateway. Tests inject a fake; only this daemon can persist app credentials. */
+  keychain?: Keychain;
 }
 export interface DaemonServer {
   url: string;
@@ -62,6 +66,8 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   const staticDir = options.staticDir ?? fileURLToPath(new URL("../../../app/dist/", import.meta.url));
   let authority = "";
   let closing = false;
+  let credentialQueue = Promise.resolve();
+  let pendingCredentials = 0;
   const server = createServer((req, res) => {
     if (req.headers.host !== authority) {
       res.writeHead(403);
@@ -142,6 +148,22 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       }
       const request = admitted.request;
       try {
+        if (request.type === "credentials.set" || request.type === "credentials.status") {
+          if (pendingCredentials >= 32)
+            return error(ws, request.id, "invalid-message", "Too many pending credential requests");
+          pendingCredentials += 1;
+          // Serialize status with writes across connections. Never append/log the request or echo its body.
+          credentialQueue = credentialQueue.then(async () => {
+            try {
+              send(ws, await dispatchCredentials(request, options.keychain ?? systemKeychain()));
+            } catch {
+              error(ws, request.id, "internal", "Could not access credential storage");
+            } finally {
+              pendingCredentials -= 1;
+            }
+          });
+          return;
+        }
         if (request.type === "projects.list") {
           send(ws, { type: "projects.result", version, id: request.id, projects });
           return;
@@ -223,7 +245,10 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         for (const ws of sockets.clients) ws.terminate();
         connections.clear();
         sockets.close();
-        server.close((error) => (error ? reject(error) : resolve()));
+        server.close((error) => {
+          if (error) reject(error);
+          else void credentialQueue.then(resolve, reject);
+        });
         server.closeAllConnections();
       });
       return closed;

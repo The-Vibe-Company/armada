@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { KeychainBackend } from "./secrets/backend.ts";
 import { fileKeychain } from "./secrets/file.ts";
 import { macKeychain } from "./secrets/macos.ts";
@@ -79,9 +79,9 @@ export class Keychain {
 export function systemKeychain(): Keychain {
   if (process.platform === "darwin") return new Keychain(macKeychain());
   if (process.platform !== "linux") throw new Error("Credential storage is unsupported on this platform");
-  return new Keychain(
-    fileKeychain(join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "armada", "desktop", "credentials")),
-  );
+  const configured = process.env.XDG_CONFIG_HOME?.trim();
+  const root = configured && isAbsolute(configured) ? configured : join(homedir(), ".config");
+  return new Keychain(fileKeychain(join(root, "armada", "desktop", "credentials")));
 }
 
 /** Compatibility with the Linear provider's injected accessor. */
@@ -119,7 +119,12 @@ export async function githubToken(options: GithubTokenOptions = {}): Promise<str
   };
   if (!options.signal?.aborted) {
     try {
-      const token = usable(await (options.keychain ?? systemKeychain()).read("github", "github"));
+      const chain =
+        options.keychain ??
+        (options.command && (options.platform ?? process.platform) === "darwin"
+          ? new Keychain(macKeychain(options.command, options.signal))
+          : systemKeychain());
+      const token = usable(await chain.read("github", "github"));
       if (token) return token;
     } catch {
       /* Missing/locked keychain falls through; backend details never escape. */

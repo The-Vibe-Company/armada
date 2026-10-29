@@ -172,8 +172,18 @@ describe("the daemon client", () => {
 
   test("takes the daemon's own refusal as final", () => {
     const { client, timers, socket } = setup();
+    listAndSubscribe(socket());
+    const status = socket().sent.find((m) => m.type === "credentials.status");
+    socket().receive({
+      type: "credentials.result",
+      version: V,
+      id: status?.id,
+      provider: "openai",
+      storage: "os-keychain",
+    });
+    expect(client.getState().credentials?.provider).toBe("openai");
     socket().receive({ type: "error", version: V, code: "app-too-old", message: APP_TOO_OLD });
-    expect(client.getState()).toMatchObject({ status: "refused", problem: APP_TOO_OLD });
+    expect(client.getState()).toMatchObject({ status: "refused", problem: APP_TOO_OLD, credentials: null });
     socket().drop();
     expect(timers).toHaveLength(0);
   });
