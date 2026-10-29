@@ -14,7 +14,8 @@ const current = "aria-[current=page]:bg-item-current aria-[current=page]:text-te
 /**
  * The sidebar (design/dashboard-v7): the mark, the fleet, one line per
  * project with its sessions in flight (once its folded state arrived, so
- * nothing counts up on the first paint), and the live reading of the daemon.
+ * nothing counts up on the first paint), the app's own settings (Plugins)
+ * and the live reading of the daemon.
  */
 export function Sidebar() {
   const { projects, fleets, status } = useDaemon();
@@ -59,6 +60,15 @@ export function Sidebar() {
         })}
       </nav>
       <span className="flex-1" />
+      <nav aria-label="Armada" className="flex flex-col gap-0.5">
+        <a
+          href="#/plugins"
+          className={`${item} ${current}`}
+          aria-current={route.kind === "plugins" ? "page" : undefined}
+        >
+          <span className="min-w-0 flex-1 truncate">Plugins</span>
+        </a>
+      </nav>
       <Live status={status} />
     </aside>
   );

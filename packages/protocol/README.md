@@ -127,3 +127,31 @@ with revision 0 and an empty value before configuration. `projectRulesSchema` an
 native coordinator tool derives JSON Schema from that same definition, and the
 app reads it directly. Rules still use the existing `coordinator.checkpoint` kind
 under the reserved `armada.tools` v1 format; no event vocabulary change is needed.
+
+### Plugins (minor 2)
+
+The app's Plugins screen (THE-2019); the schemas live in `src/plugins.ts`.
+
+| Client request | Fields besides `type`, `version`, `id` | Server reply |
+| --- | --- | --- |
+| `plugins.list` | — | `plugins.result` |
+| `plugins.enable`, `plugins.disable` | `plugin` | `plugins.result` |
+| `plugins.configure` | `plugin`, `seam`, `kind`, `config` (JSON) | `plugins.result` |
+| `plugins.secret` | `plugin`, `name`, `value` | `plugins.result` |
+| `daemon.restart` | — | `daemon.restarting` |
+
+`plugins.result` is always the whole bundled catalog as saved now, plus
+`restartable`. Each plugin has its `id`, `version`, `description`, saved
+`enabled`, the running daemon's boot result (`loaded`, `error`) and
+`restartRequired`, which is true when the saved switch or config differs from that
+boot. Its `contributions` carry their `seam`, `kind`, `description`, the config's
+JSON Schema (`schema`), the saved `config`, and each declared secret as
+`{ name, set }`. A change is saved at once and applies when the daemon restarts.
+
+A refused config (the contribution's schema), an unknown plugin or contribution,
+and an undeclared secret answer `error` with the request's id. `plugins.secret`
+follows the credential rules: one explicit submission, the value never comes
+back, enters an event or a log, and a dropped write is not replayed.
+`daemon.restart` is answered before the daemon closes, and only when a supervisor
+starts it again (`restartable`). The client then reconnects as after any drop. An
+app talking to a daemon below minor 2 shows no plugins.

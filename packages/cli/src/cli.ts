@@ -66,6 +66,8 @@ const COMMAND_HELP: Record<string, string> = {
   plugin: `  plugin list [--json]
   plugin enable|disable <id>
                     List bundled plugins or change a switch (restart the daemon to apply).
+  plugin test <dir> [--report <file>] [--json]
+                    Run the plugin's seam fixtures locally, without credentials.
                     ARMADA_APP_CONFIG selects its app config.json.
 `,
   config: `  config set deploy.env.<VAR> <value>
@@ -584,6 +586,7 @@ interface Args {
 }
 
 const VALUE_OPTIONS = [
+  "report",
   "attempt",
   "over-cap",
   "runs",
@@ -692,6 +695,7 @@ const FLAG_OPTIONS = [
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  plugin: ["report"],
   acceptance: ["ticket", "name", "runs", "reason"],
   doctor: ["deep"],
   lint: ["ready"],
@@ -998,7 +1002,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     if (args.all) args.options.all = "true";
     if (args.passthrough && args.command !== "run")
       throw new UsageError(`-- does not apply to ${args.command}: only \`armada run\` runs a command`);
-    if (args.command === "plugin") return await pluginCommand(io, args.rest, args.json);
+    if (args.command === "plugin") return await pluginCommand(io, args.rest, args.json, args.options.report);
     if (args.command === "secrets" || args.command === "run") {
       const { path, text } = await findConfig(io, args.config, args.command, args.project);
       const config = parseConfig(text, path);

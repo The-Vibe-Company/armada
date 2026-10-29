@@ -4,6 +4,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
+import { bootDaemon } from "@armada/daemon";
+import { Keychain } from "@armada/daemon/keychain";
+import type { PluginCatalogEntry } from "@armada/daemon/plugins/catalog";
+import { type DaemonServer, startServer } from "@armada/daemon/server";
 import { type Browser, chromium, type Page } from "playwright-core";
 import { type DevDaemon, SAMPLE_PROJECTS, sampleEvents, startDevDaemon } from "../scripts/dev-daemon";
 
@@ -290,4 +294,131 @@ describe("in a browser, served by a running daemon", () => {
     await page.getByRole("heading", { level: 1, name: "Pick the lanterns' colour" }).waitFor({ timeout: 5_000 });
     await expect(page.getByRole("region", { name: "State" }).getAttribute("data-state")).resolves.toBe("you");
   }, 15_000);
+});
+
+describe("the Plugins screen in a browser, on a daemon that restarts", () => {
+  // A synthetic catalog booted as armadad boots it; Restart closes the daemon and
+  // boots it again on the same port, as the desktop shell does.
+  const manifest = (id: string, enabledByDefault: boolean) => ({
+    id,
+    version: "1.0.0",
+    pluginApi: "^0.1.0",
+    enabledByDefault,
+    description: `The ${id} provider`,
+    contributions: {
+      tracker: {
+        [id]: {
+          config: { type: "object", properties: { team: { type: "string" } } },
+          secrets: [`${id.toUpperCase()}_TOKEN`],
+        },
+      },
+    },
+  });
+  const catalog: PluginCatalogEntry[] = [manifest("lamps", true), manifest("buoys", false)].map((m) => ({
+    id: m.id,
+    manifest: m,
+    load: async () => ({
+      activate(ctx) {
+        ctx.register.tracker(m.id, { read: async () => {}, write: async () => {} });
+      },
+    }),
+  }));
+  const dir = mkdtempSync(join(tmpdir(), "armada-app-plugins-"));
+  const configPath = join(dir, "config.json");
+  const secrets = new Map<string, string>();
+  const keychain = new Keychain({
+    storage: "os-keychain",
+    read: async (service, account) => secrets.get(`${service}/${account}`) ?? null,
+    write: async (service, account, value) => {
+      secrets.set(`${service}/${account}`, value);
+    },
+  });
+  let running: { daemon: Awaited<ReturnType<typeof bootDaemon>>; server: DaemonServer } | undefined;
+  let restarts = 0;
+  let browser: Browser | undefined;
+  let page: Page;
+
+  async function open(port = 0) {
+    const daemon = await bootDaemon({
+      databasePath: ":memory:",
+      configPath,
+      catalog,
+      secrets: { get: async () => null },
+      log: { info() {}, error() {} },
+    });
+    const server = await startServer({
+      store: daemon.store,
+      projects: SAMPLE_PROJECTS,
+      port,
+      staticDir: out,
+      plugins: { configPath, catalog: daemon.catalog, boot: daemon, keychain },
+      restart: () => {
+        restarts += 1;
+        const bound = Number(new URL(server.url).port);
+        void close().then(() => open(bound));
+      },
+    });
+    running = { daemon, server };
+    return server;
+  }
+  async function close() {
+    await running?.server.close();
+    running?.daemon.close();
+    running = undefined;
+  }
+
+  beforeAll(async () => {
+    await open();
+    browser = await chromium.launch({ timeout: 15_000 });
+    page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  }, 20_000);
+  afterAll(async () => {
+    await browser?.close();
+    await close();
+    rmSync(dir, { recursive: true, force: true });
+  }, 10_000);
+
+  test("a switch is saved, says to restart, and reads loaded once Restart brought the daemon back", async () => {
+    await page.goto(running?.server.url ?? "");
+    await page.getByRole("complementary", { name: "Sidebar" }).getByRole("link", { name: "Plugins" }).click();
+    const buoys = page.locator('[data-plugin="buoys"]');
+    await buoys.locator("[data-state]").filter({ hasText: "Off" }).waitFor({ timeout: 5_000 });
+    expect(page.url()).toEndWith("#/plugins");
+    await expect(page.locator('[data-plugin="lamps"] [data-state]').innerText()).resolves.toBe("Loaded");
+
+    await page.getByRole("switch", { name: "buoys" }).click();
+    await buoys.locator("[data-state]").filter({ hasText: "Restart to apply" }).waitFor({ timeout: 5_000 });
+    await expect(page.getByRole("switch", { name: "buoys" }).getAttribute("aria-checked")).resolves.toBe("true");
+    expect(JSON.parse(readFileSync(configPath, "utf8")).plugins).toEqual([{ id: "buoys", enabled: true, config: {} }]);
+    const notice = page.locator("[data-restart-notice]");
+    await expect(notice.innerText()).resolves.toContain("One plugin changed since the daemon started.");
+
+    // A setting from the contribution's form, and a secret that never comes back.
+    await page.locator('[data-plugin="lamps"] summary').click();
+    await page.getByLabel("team").first().fill("harbour");
+    await page.locator('[data-plugin="lamps"]').getByRole("button", { name: "Save", exact: true }).click();
+    await notice.filter({ hasText: "2 plugins changed" }).waitFor({ timeout: 5_000 });
+    await page.locator('[data-plugin="lamps"]').getByRole("button", { name: "Set", exact: true }).click();
+    const token = randomBytes(12).toString("hex");
+    await page.getByRole("textbox", { name: "LAMPS_TOKEN" }).fill(token);
+    await page.locator('[data-secret="LAMPS_TOKEN"]').getByRole("button", { name: "Save", exact: true }).click();
+    await page.locator('[data-secret="LAMPS_TOKEN"]').getByText("Set", { exact: true }).waitFor({ timeout: 5_000 });
+    expect(secrets.get("armada.plugins/LAMPS_TOKEN")).toBe(token);
+    expect(await page.evaluate(() => document.body.innerHTML)).not.toContain(token);
+
+    // The page's anatomy: one h1, the 22 px title, in Geist.
+    const anatomy = await page.evaluate(() => ({
+      h1: [...document.querySelectorAll("h1")].map((h) => [h.textContent, getComputedStyle(h).fontSize]),
+      fonts: [...new Set([...document.querySelectorAll("body *")].map((e) => getComputedStyle(e).fontFamily))],
+    }));
+    expect(anatomy.h1).toEqual([["Plugins", "22px"]]);
+    for (const family of anatomy.fonts) expect(family).toMatch(/^"?Geist( Mono)?"?,/);
+
+    await notice.getByRole("button", { name: "Restart" }).click();
+    await buoys.locator("[data-state]").filter({ hasText: "Loaded" }).waitFor({ timeout: 10_000 });
+    expect(restarts).toBe(1);
+    await notice.waitFor({ state: "detached", timeout: 5_000 });
+    await expect(page.locator('[data-plugin="lamps"] [data-state]').innerText()).resolves.toBe("Loaded");
+    await page.getByRole("status").filter({ hasText: "Live" }).waitFor({ timeout: 5_000 });
+  }, 20_000);
 });

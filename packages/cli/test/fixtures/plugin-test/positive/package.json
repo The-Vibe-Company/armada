@@ -1,0 +1,18 @@
+{
+  "type": "module",
+  "main": "index.mjs",
+  "armada": {
+    "id": "plugin-conformance",
+    "version": "1.0.0",
+    "pluginApi": "^0.1.0",
+    "enabledByDefault": false,
+    "description": "Reference fixture providers for the contract runner",
+    "contributions": {
+      "tracker": { "reference": { "config": { "type": "object", "required": ["endpoint"] }, "secrets": [] } },
+      "forge": { "reference": { "config": { "type": "object", "required": ["endpoint"] }, "secrets": [] } },
+      "runtime": { "reference": { "config": { "type": "object", "required": ["workspaceRoot"] }, "secrets": [] } },
+      "node": { "reference": { "config": { "type": "object", "required": ["workspaceRoot"] }, "secrets": [] } },
+      "model": { "reference": { "config": { "type": "object", "required": ["endpoint"] }, "secrets": [] } }
+    }
+  }
+}

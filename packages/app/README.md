@@ -85,8 +85,8 @@ Its route is `src/session/route.ts`, one line of `App.tsx`; its reading is
 subscription replayed (the client keeps them per project): the app reads one
 ticket's lines out of the log, it never folds.
 
-- **The facts line**: back to the project (`#/projects/<id>`, its room once it
-  lands, the fleet until then), the ticket, the runtime and its harness, the
+- **The facts line**: back to the project (`#/projects/<id>`, its page, its room
+  once that lands), the ticket, the runtime and its harness, the
   branch and the pull request's address from the forge's events, the pull
   request and its checks, claimed at, last report at. Then the ticket's title
   (the 22 px h1) and the state on the quiet line.
@@ -110,6 +110,32 @@ ticket's lines out of the log, it never folds.
 daemon's fold and checks the card, the steps and both tabs; `test/build.test.ts`
 opens a row by a click and by the keyboard in Chromium, and holds every row's
 time whole at 900 px.
+
+## The Plugins screen
+
+`src/screens/Plugins.tsx` at `#/plugins` (`src/lib/route.ts`; the sidebar's
+Plugins entry) is loaded on demand, off the first load. It follows the same
+anatomy: the catalog's numbers on the facts line (plugins, on, loaded, refused),
+the title and a quiet line, then every bundled plugin in one list grouped by seam
+(`src/plugins/list.ts`: Runtimes, Trackers, Forges, Nodes, Models, then Other).
+Each row has its name, version, description and contributions, its state in a
+word and colour (loaded, off, refused, restart to apply) and a switch
+(`src/components/ui/switch.tsx`, lime when on). A "Configure" disclosure holds
+each contribution's form, generated from its JSON Schema by `src/plugins/schema.ts`
+with the page kit's `Form`, `Field`, `Input` and `Select`, and each declared
+secret as set or missing with a password field. The secret follows the coordinator
+key's rule: the field is cleared before the daemon answers, and the value is never
+kept or replayed.
+
+The client (`setPluginEnabled`, `configurePlugin`, `setPluginSecret`,
+`restartDaemon`) asks the daemon, which saves at once and answers with the whole
+list. A change then shows "Restart to apply" and a notice with Restart. Restart
+asks the daemon to restart (the desktop shell starts it again); the client
+reconnects as after any drop and lists the plugins again. A daemon the shell does
+not supervise says to quit and reopen instead. `test/plugins.test.tsx` renders a
+synthetic catalog over a fake socket. `test/build.test.ts` flips a switch in
+Chromium, saves a setting and a secret, and presses Restart on a daemon the test
+restarts on the same port, until the row reads Loaded.
 
 ## The look
 

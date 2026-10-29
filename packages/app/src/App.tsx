@@ -11,6 +11,8 @@ import { useSessionRoute } from "@/session/route";
 const SkyStory = lazy(() => import("@/screens/SkyStory").then((m) => ({ default: m.SkyStory })));
 // A session's page, fetched when a row opens it: off the first-load budget.
 const Session = lazy(() => import("@/screens/Session").then((m) => ({ default: m.Session })));
+// A screen of the app's own settings: off the first load (perf-budget.json), fetched when opened.
+const Plugins = lazy(() => import("@/screens/Plugins").then((m) => ({ default: m.Plugins })));
 
 export function App({
   client,
@@ -35,6 +37,11 @@ export function App({
         ) : session ? (
           <Suspense fallback={null}>
             <Session key={session.ticket} ticket={session.ticket} tab={session.tab} />
+          </Suspense>
+        ) : route.kind === "plugins" ? (
+          // The shell stays while the screen's code arrives.
+          <Suspense fallback={null}>
+            <Plugins />
           </Suspense>
         ) : route.kind === "project" ? (
           <Project id={route.id} onReload={onReload} />
