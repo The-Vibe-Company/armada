@@ -7,7 +7,7 @@ Private: not published. Electron (`packages/desktop`) opens it, and the daemon
 can serve it to a browser.
 
 ```sh
-bun run fake-daemon                 # a stand-in daemon on ws://127.0.0.1:4824, synthetic projects
+bun run dev-daemon                  # armadad on ws://127.0.0.1:4824, a synthetic fleet that moves
 bun run dev                         # the app on http://localhost:4823, connected to it
 bun run build                       # dist/, what the desktop shell and the daemon serve
 ```
@@ -15,7 +15,7 @@ bun run build                       # dist/, what the desktop shell and the daem
 ## Where the daemon is
 
 `?daemon=ws://host:port/` in the page's address wins (the desktop shell opens the
-app on its own daemon), then the build's `VITE_ARMADA_DAEMON_URL`, then the fake
+app on its own daemon), then the build's `VITE_ARMADA_DAEMON_URL`, then the dev
 daemon's port in development, else the page's own origin (the daemon serving the
 app). `src/protocol/address.ts` holds the rule.
 
@@ -31,13 +31,48 @@ the timer are injected (`SocketLike`, `schedule`), so tests drive it without a
 network or a clock. Screens read the state with `useDaemon()`
 (`src/protocol/store.tsx`, `useSyncExternalStore`).
 
-Event kinds belong to the daemon. The app reads the few it needs, ignoring any
-other kind or shape: `src/fleet/sessions.ts` counts a project's sessions in
-flight (`session.claimed` until `session.released` or `merge.confirmed`).
+The daemon folds its log; the app never folds. `project.subscribed` carries the
+project's folded state (`snapshot`), and so does every `events` frame that
+carries events; the client keeps the latest per project (`fleets`, never an
+older cursor's). `src/fleet/state.ts` reads the few fields the screens need,
+row by row: a row of another shape is skipped, any other field ignored.
 
-`scripts/fake-daemon.ts` is for development and this package's browser test only
-(Bun), until `packages/daemon` serves the protocol: it admits every request with
-`admitRequest`, as the daemon must.
+`scripts/dev-daemon.ts` is armadad's own server (`@armada/daemon/server`, a
+dev dependency for scripts and tests only) over an in-memory log seeded with a
+synthetic fleet, one session in every state; in development Tidewater's TID-7
+takes a step every three seconds. The browser test runs the same server, which
+serves the build.
+
+## The home: the fleet by state
+
+`src/screens/Home.tsx`, in the v7 anatomy: the facts line (the daemon, then how
+many agents are in flight across how many projects, moving on their own, ready to
+merge, merged today), the title, the quiet line (what is blocked and what waits
+for the owner), then the fleet (`src/components/fleet/FleetList.tsx`): every
+project's sessions in one list grouped by state, most urgent first.
+
+The rules are V1's overview (`packages/dashboard/lib/coordinator-view.ts` and its
+strings), copied into `src/fleet/overview.ts`, never imported:
+
+- **The group is the fold's state**: blocked, waiting for your decision
+  (`waiting-for-owner`), in progress, ready to merge, merged today (merged on the
+  viewer's day, in their zone). Released sessions and older merges are not shown.
+- **The reason** says why, in V1's words: an unanswered question, red CI or a
+  conflict on the pull request, the worker's blocked line; a plan to approve, the
+  validation's question; the worker's last line (else "At work"); handed back
+  with the pull request's CI, or its place in the merge queue; `#N merged`.
+- **The colour** is the state's: red, amber, blue, green, merged grey, on the
+  row's dot, its group's dot, its step and its reason (quiet ink for in progress
+  and merged).
+- **The six-step bar** (Plan, Approval, Code, Review & CI, Ready, Merged): the
+  done steps grey, the one at work in the state's colour; all grey once merged.
+- A row's time is the hour on the viewer's day, else the date: a still word.
+- **Past 100 rows** each row is `content-visibility: auto` at its 48 px, so the
+  browser skips the rows off screen; every row stays in the page.
+
+`test/overview.test.ts` holds the rules on synthetic folded states;
+`test/fleet.test.tsx` renders the home on the daemon's fold of a synthetic log
+and reads the groups, the reasons and their colours.
 
 ## The look
 
@@ -72,18 +107,26 @@ loops in the working view.**
   breathing dots: a waiting state is a word ("Reconnecting"), with a still dot.
 - Nothing moves on the first paint (`AnimatePresence initial={false}`), and the
   keyboard never animates.
-- Transform and opacity only, about 150 ms, on the theme's `ease-out`. The system's
-  reduced-motion setting is honoured (`MotionConfig reducedMotion="user"`).
-- Motion loads through `LazyMotion` with `m` components; its features arrive after
-  the first paint (`src/components/shell/motion-features.ts`).
+- **A row that changes state glides to its new group.** The fleet's headers and
+  rows are siblings of one list, keyed by group and by `project/ticket`, so the
+  row is the same element moved, and Motion's layout animation (`layout`) carries
+  it there, drawn above the rows it passes. A row that arrives fades in, one that
+  leaves fades out, and the rows around them make room.
+- Transform and opacity only, about 150 ms (200 ms for a row's glide, which
+  travels further), on the theme's `ease-out`. The system's reduced-motion setting is honoured (`MotionConfig reducedMotion="user"`).
+- Motion loads through `LazyMotion` with `m` components; its features (`domMax`,
+  for layout animations) arrive after the first paint
+  (`src/components/shell/motion-features.ts`).
 - Rive is reserved for future scenes, in a canvas apart from the lists.
 
 ## First-load budget
 
 `perf-budget.json` caps the first-load JS (the entry script and its preloads,
 gzipped) at 150 KB; `test/build.test.ts` builds the app as `bun run build` does
-and fails past it. The same test opens the build in Chromium against the fake
-daemon and checks the sidebar lists the projects with their counts, a claim
-reaches it live, the one `h1` is the 22 px title, and every element is set in
-Geist or Geist Mono. Install the browser once with `bun run test:browser:install`
-at the repository root.
+and fails past it. The same test opens the build in Chromium, served by armadad's
+own server on a synthetic log, and checks the sidebar lists the projects with
+their sessions in flight, the fleet's groups, that a report arriving over the
+subscription glides the same row into Blocked without a reload, that a claim
+reaches the sidebar and the list live, that the one `h1` is the 22 px title, and
+that every element is set in Geist or Geist Mono. Install the browser once with
+`bun run test:browser:install` at the repository root.

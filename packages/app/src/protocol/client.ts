@@ -8,6 +8,7 @@ import {
   type ProtocolEvent,
   type ProtocolVersion,
   type ServerMessage,
+  type Snapshot,
   serverMessageSchema,
   versionSchema,
 } from "@armada/protocol";
@@ -29,6 +30,8 @@ export interface DaemonState {
   /** null until the daemon listed them; kept across reconnects so the sidebar never blanks. */
   projects: readonly Project[] | null;
   logs: Readonly<Record<string, ProjectLog>>;
+  /** Each project's folded state, the latest the daemon sent; its shape is the daemon's (src/fleet/state.ts reads it). */
+  fleets: Readonly<Record<string, Snapshot>>;
   credentials: Omit<CredentialsResult, "id" | "type" | "version"> | null;
 }
 
@@ -61,6 +64,7 @@ export interface DaemonClient {
 
 const BACKOFF = [250, 500, 1000, 2000, 5000];
 export const UNREADABLE = "The daemon sent a message this app cannot read";
+export const NOT_FOLDED = "The daemon does not send its folded state live: update it";
 export const LOG_BEHIND = "The daemon's log is behind what this app has read: reload the app";
 export const unusableAddress = (url: string) => `This daemon address is not usable: ${url}`;
 
@@ -69,14 +73,15 @@ export const initialState: DaemonState = {
   problem: null,
   projects: null,
   logs: {},
+  fleets: {},
   credentials: null,
 };
 
 /**
  * The app's one connection to the daemon (packages/protocol): list the
  * projects, subscribe to each from its last applied cursor, apply the event
- * frames, and reconnect after a drop, resuming where each project stopped.
- * A frame it cannot read may have carried events, so it drops the connection
+ * frames and keep the folded state they carry, and reconnect after a drop,
+ * resuming where each project stopped. A frame it cannot read may have carried events, so it drops the connection
  * and resumes from the last applied cursor rather than skip them. A daemon of
  * another major is refused with one line and never retried.
  */
@@ -198,13 +203,21 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       }
       case "project.subscribed":
         subscriptions.set(message.project, message.subscriptionId);
+        if (message.snapshot) set({ fleets: folded(message.project, message.snapshot) });
         return;
       case "events": {
         if (subscriptions.get(message.project) !== message.subscriptionId) return;
         const log = state.logs[message.project] ?? { seq: 0, events: [] };
         if (message.seq < log.seq) return set({ problem: LOG_BEHIND });
         const fresh = message.events.filter((event) => event.seq > log.seq);
-        set({ logs: { ...state.logs, [message.project]: { seq: message.seq, events: [...log.events, ...fresh] } } });
+        // Events past the folded state held, without a newer one: the daemon does not fold live for this app.
+        const held = state.fleets[message.project];
+        const stale = !message.snapshot && fresh.length > 0 && held !== undefined && message.seq > held.seq;
+        set({
+          logs: { ...state.logs, [message.project]: { seq: message.seq, events: [...log.events, ...fresh] } },
+          fleets: folded(message.project, message.snapshot),
+          ...(stale ? { problem: NOT_FOLDED } : {}),
+        });
         return;
       }
       case "credentials.result": {
@@ -224,10 +237,19 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
           return;
         }
         if (message.code === "app-too-old" || message.code === "daemon-too-old") return refuse(message.message);
+        // The key's status failing is not the fleet's problem: it never hides one already said (and its Reload).
+        if (message.id !== undefined && message.id === credentialStatusId && state.problem) return;
         return set({ problem: message.message });
       case "session.result":
         return;
     }
+  }
+
+  /** The folded states with this project's snapshot, unless the app already holds a later one. */
+  function folded(project: string, snapshot: Snapshot | undefined): DaemonState["fleets"] {
+    const held = state.fleets[project];
+    if (!snapshot || (held && snapshot.seq < held.seq)) return state.fleets;
+    return { ...state.fleets, [project]: snapshot };
   }
 
   const cursor = (project: string) => state.logs[project]?.seq ?? 0;

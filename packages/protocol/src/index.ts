@@ -78,14 +78,16 @@ export const projectsResultSchema = z.object({
   type: z.literal("projects.result"),
   projects: z.array(projectSchema),
 });
+/** A project's folded state at the inclusive cursor `seq`. Shape is owned by the daemon. */
+const snapshotSchema = z.object({ seq: counter, state: z.json() });
 export const subscribedSchema = z.object({
   ...request,
   type: z.literal("project.subscribed"),
   subscriptionId: identifier,
   project: identifier,
   after: counter,
-  /** Initial folded project state; omitted on replay. Shape is owned by the daemon. */
-  snapshot: z.object({ seq: counter, state: z.json() }).optional(),
+  /** Initial folded project state; omitted on replay. */
+  snapshot: snapshotSchema.optional(),
 });
 
 const history = { project: identifier, seq: counter, events: z.array(eventSchema) };
@@ -110,8 +112,19 @@ export const sessionResultSchema = z
   .object({ ...request, ...history, type: z.literal("session.result"), sessionId: identifier })
   .superRefine(checkHistory);
 export const eventBatchSchema = z
-  .object({ version: versionSchema, ...history, type: z.literal("events"), subscriptionId: identifier })
-  .superRefine(checkHistory);
+  .object({
+    version: versionSchema,
+    ...history,
+    type: z.literal("events"),
+    subscriptionId: identifier,
+    /** The project's folded state after this frame's events; omitted on a frame without any. */
+    snapshot: snapshotSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    checkHistory(value, ctx);
+    if (value.snapshot && value.snapshot.seq !== value.seq)
+      ctx.addIssue({ code: "custom", path: ["snapshot", "seq"], message: "A frame's snapshot is at its cursor" });
+  });
 export const errorSchema = z.object({
   version: versionSchema,
   type: z.literal("error"),
@@ -129,6 +142,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
 ]);
 export type ProjectsResult = z.infer<typeof projectsResultSchema>;
 export type Subscribed = z.infer<typeof subscribedSchema>;
+export type Snapshot = z.infer<typeof snapshotSchema>;
 export type SessionResult = z.infer<typeof sessionResultSchema>;
 export type EventBatch = z.infer<typeof eventBatchSchema>;
 export type ProtocolError = z.infer<typeof errorSchema>;
