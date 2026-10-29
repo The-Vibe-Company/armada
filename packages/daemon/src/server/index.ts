@@ -47,6 +47,7 @@ interface Subscription {
   after: number;
 }
 const emptyProject = (): ProjectTables => ({
+  rules: { revision: 0, value: {} },
   tickets: [],
   pullRequests: [],
   sessions: [],
