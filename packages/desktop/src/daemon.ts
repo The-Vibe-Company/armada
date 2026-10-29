@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 export type DaemonAddress = { url: string; wsUrl: string };
+/** armadad's exit when the app asked it to restart (`daemon.restart`, packages/daemon/src/server/main.ts). */
+export const RESTART_EXIT_CODE = 75;
 type Exit = { code: number | null; signal: NodeJS.Signals | null };
 type Options = {
   executable: string;
@@ -9,6 +11,10 @@ type Options = {
   database: string;
   projects: string;
   staticDir: string;
+  /** 0 (the default) lets the OS choose; a restart asks for the previous daemon's port again. */
+  port?: number;
+  /** Lets the app restart the daemon: armadad exits with RESTART_EXIT_CODE for the shell to start it again. */
+  restartable?: boolean;
   env?: NodeJS.ProcessEnv;
   startupMs?: number;
   shutdownMs?: number;
@@ -35,9 +41,10 @@ export class DaemonProcess {
         "--projects",
         options.projects,
         "--port",
-        "0",
+        String(options.port ?? 0),
         "--static-dir",
         options.staticDir,
+        ...(options.restartable ? ["--restartable"] : []),
       ],
       { env: options.env ?? process.env, stdio: ["ignore", "pipe", "ignore"] },
     );
@@ -105,5 +112,22 @@ export class DaemonProcess {
     } finally {
       clearTimeout(force);
     }
+  }
+}
+
+/**
+ * After a restart exit: the daemon again on its port, so the app's socket
+ * reconnects to the same address and resumes. If that port was taken
+ * meanwhile, on a new one; the caller then opens the app at that address.
+ * `start` hands over each child as soon as it exists, so a quit stops it.
+ */
+export async function restartDaemon(
+  previous: DaemonAddress,
+  start: (port: number) => DaemonProcess,
+): Promise<DaemonAddress> {
+  try {
+    return await start(Number(new URL(previous.url).port)).ready;
+  } catch {
+    return await start(0).ready;
   }
 }

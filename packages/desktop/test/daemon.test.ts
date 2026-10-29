@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { DaemonProcess } from "../src/daemon.ts";
+import { DaemonProcess, RESTART_EXIT_CODE, restartDaemon } from "../src/daemon.ts";
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "armada-desktop-"));
@@ -49,6 +50,50 @@ test("ready daemon serves the app on an allocated port; repeated stop awaits pro
     gone(daemon.pid);
   } finally {
     await daemon.stop();
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+/** Asks the daemon at `wsUrl` to restart, as the app's Restart button does, and reads its answer. */
+async function askRestart(wsUrl: string): Promise<string> {
+  const ws = new WebSocket(wsUrl);
+  await new Promise((resolve) => ws.addEventListener("open", resolve, { once: true }));
+  const answer = new Promise<string>((resolve) =>
+    ws.addEventListener("message", (event) => resolve(JSON.parse(String(event.data)).type), { once: true }),
+  );
+  ws.send(JSON.stringify({ version: { major: 1, minor: 2 }, id: "restart-1", type: "daemon.restart" }));
+  return answer;
+}
+
+test("the app's restart ends a restartable daemon with the restart code; it comes back on its port, else another", async () => {
+  const f = fixture();
+  const children: DaemonProcess[] = [];
+  const start = (port: number) => {
+    const child = new DaemonProcess({ ...f.options, port, restartable: true });
+    children.push(child);
+    return child;
+  };
+  const blocker = createServer();
+  try {
+    const first = start(0);
+    const address = await first.ready;
+    assert.equal(await askRestart(address.wsUrl), "daemon.restarting");
+    assert.equal((await first.exited).code, RESTART_EXIT_CODE);
+    gone(first.pid);
+    // Its port is free again: the same address, so the app's socket reconnects on its own.
+    const again = await restartDaemon(address, start);
+    assert.deepEqual(again, address);
+    assert.equal(await (await fetch(again.url)).text(), "<title>Armada</title>");
+    assert.equal(await askRestart(again.wsUrl), "daemon.restarting");
+    assert.equal((await children[1]?.exited)?.code, RESTART_EXIT_CODE);
+    // Taken meanwhile: another port.
+    await new Promise<void>((resolve) => blocker.listen(Number(new URL(address.url).port), "127.0.0.1", resolve));
+    const moved = await restartDaemon(address, start);
+    assert.notEqual(moved.url, address.url);
+    assert.equal(await (await fetch(moved.url)).text(), "<title>Armada</title>");
+  } finally {
+    blocker.close();
+    await Promise.all(children.map((child) => child.stop()));
     rmSync(f.dir, { recursive: true, force: true });
   }
 });

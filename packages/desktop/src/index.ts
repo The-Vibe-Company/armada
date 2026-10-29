@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow } from "electron";
-import { DaemonProcess } from "./daemon.ts";
+import { type DaemonAddress, DaemonProcess, RESTART_EXIT_CODE, restartDaemon } from "./daemon.ts";
 
 app.setName("Armada");
 let daemon: DaemonProcess | undefined;
@@ -24,23 +24,49 @@ void app.whenReady().then(async () => {
   if (quitting) return;
   try {
     const dataDir = app.getPath("userData");
-    daemon = new DaemonProcess({
-      executable: process.execPath,
-      entry: fileURLToPath(new URL("./armadad.js", import.meta.url)),
-      database: process.env.ARMADA_DESKTOP_DATABASE ?? join(dataDir, "fleet.sqlite"),
-      projects: process.env.ARMADA_DESKTOP_PROJECTS ?? join(dataDir, "projects.json"),
-      staticDir: fileURLToPath(new URL("../../../app/dist/", import.meta.url)),
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-    });
-    const address = await daemon.ready;
+    const start = (port: number) => {
+      daemon = new DaemonProcess({
+        executable: process.execPath,
+        entry: fileURLToPath(new URL("./armadad.js", import.meta.url)),
+        database: process.env.ARMADA_DESKTOP_DATABASE ?? join(dataDir, "fleet.sqlite"),
+        projects: process.env.ARMADA_DESKTOP_PROJECTS ?? join(dataDir, "projects.json"),
+        staticDir: fileURLToPath(new URL("../../../app/dist/", import.meta.url)),
+        port,
+        restartable: true,
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      });
+      return daemon;
+    };
+    let address = await start(0).ready;
     if (quitting) return;
-    void daemon.exited.then(() => {
-      if (!quitting) {
+    const appUrl = (at: DaemonAddress) => {
+      const url = new URL(at.url);
+      url.searchParams.set("daemon", at.wsUrl);
+      return url.toString();
+    };
+    // The app's Restart (the Plugins screen) ends the daemon with RESTART_EXIT_CODE: start it again.
+    const supervise = (child: DaemonProcess) =>
+      void child.exited.then(async ({ code }) => {
+        if (quitting) return;
+        if (code === RESTART_EXIT_CODE) {
+          try {
+            const next = await restartDaemon(address, start);
+            if (quitting) return;
+            supervise(daemon as DaemonProcess);
+            if (next.url !== address.url) {
+              address = next;
+              await window?.loadURL(appUrl(next));
+            }
+            return;
+          } catch {
+            if (quitting) return;
+          }
+        }
         console.error("Armada: the daemon stopped unexpectedly.");
         exitCode = 1;
         app.quit();
-      }
-    });
+      });
+    supervise(daemon as DaemonProcess);
     window = new BrowserWindow({
       width: 1280,
       height: 860,
@@ -56,9 +82,7 @@ void app.whenReady().then(async () => {
     });
     window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     window.once("ready-to-show", () => window?.show());
-    const url = new URL(address.url);
-    url.searchParams.set("daemon", address.wsUrl);
-    await window.loadURL(url.toString());
+    await window.loadURL(appUrl(address));
   } catch {
     if (quitting) return;
     console.error(

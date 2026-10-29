@@ -17,6 +17,7 @@ import { dispatchCredentials } from "../credentials.ts";
 import { fold, type ProjectTables } from "../fold.ts";
 import { type Keychain, systemKeychain } from "../keychain.ts";
 import type { EventStore } from "../store.ts";
+import { dispatchPlugins, isPluginsRequest, type PluginHost } from "./plugins.ts";
 import { serveStatic } from "./static.ts";
 
 export interface ServerOptions {
@@ -32,6 +33,13 @@ export interface ServerOptions {
   allowedOrigins?: readonly string[];
   /** Host-owned gateway. Tests inject a fake; only this daemon can persist app credentials. */
   keychain?: Keychain;
+  /** The app's Plugins screen; without it, plugin requests answer `not-found`. */
+  plugins?: PluginHost;
+  /**
+   * Asked by `daemon.restart` once the answer is sent: the host closes and exits
+   * for its supervisor to start it again. Without it the app says to quit and reopen.
+   */
+  restart?: () => void;
 }
 export interface DaemonServer {
   url: string;
@@ -80,6 +88,8 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   let closing = false;
   let credentialQueue = Promise.resolve();
   let pendingCredentials = 0;
+  let pluginQueue = Promise.resolve();
+  let pendingPlugins = 0;
   const server = createServer((req, res) => {
     if (req.headers.host !== authority) {
       res.writeHead(403);
@@ -219,6 +229,34 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           });
           return;
         }
+        if (isPluginsRequest(request) || request.type === "daemon.restart") {
+          const host = options.plugins;
+          if (!host) return error(ws, request.id, "not-found", "This daemon has no plugin catalog");
+          if (request.type === "daemon.restart" && !options.restart)
+            return error(ws, request.id, "not-found", "This daemon cannot restart itself: quit and reopen Armada");
+          if (pendingPlugins >= 32) return error(ws, request.id, "invalid-message", "Too many pending plugin requests");
+          pendingPlugins += 1;
+          // One at a time, in order: a restart waits for the changes asked before it. Never log a request (secrets).
+          pluginQueue = pluginQueue.then(async () => {
+            try {
+              if (request.type === "daemon.restart") {
+                await new Promise<void>((resolve) =>
+                  ws.readyState === WebSocket.OPEN
+                    ? ws.send(JSON.stringify({ type: "daemon.restarting", version, id: request.id }), () => resolve())
+                    : resolve(),
+                );
+                if (!closing) options.restart?.();
+                return;
+              }
+              send(ws, await dispatchPlugins(request, host, !!options.restart));
+            } catch {
+              error(ws, request.id, "internal", "The daemon could not read its plugins");
+            } finally {
+              pendingPlugins -= 1;
+            }
+          });
+          return;
+        }
         if (request.type === "projects.list") {
           send(ws, { type: "projects.result", version, id: request.id, projects });
           return;
@@ -292,7 +330,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         server.close((error) => (error ? reject(error) : resolve()));
         server.closeAllConnections();
       });
-      const results = await Promise.allSettled([transport, credentialQueue, coordinatorManager?.close()]);
+      const results = await Promise.allSettled([transport, credentialQueue, pluginQueue, coordinatorManager?.close()]);
       const failed = results.find((result) => result.status === "rejected");
       if (failed?.status === "rejected") throw failed.reason;
     })();

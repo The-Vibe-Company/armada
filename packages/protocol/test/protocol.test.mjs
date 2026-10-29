@@ -34,7 +34,38 @@ const requests = [
   { type: "projects.list", version, id: "list-a" },
   { type: "project.subscribe", version, id: "subscribe-a", project: "project-a", after: 6 },
   { type: "session.read", version, id: "read-a", project: "project-a", sessionId: "session-a" },
+  { type: "plugins.list", version, id: "plugins-a" },
+  { type: "plugins.enable", version, id: "plugins-b", plugin: "lantern" },
+  { type: "plugins.disable", version, id: "plugins-c", plugin: "lantern" },
+  {
+    type: "plugins.configure",
+    version,
+    id: "plugins-d",
+    plugin: "lantern",
+    seam: "tracker",
+    kind: "lamps",
+    config: { team: "EX", depth: 3 },
+  },
+  { type: "plugins.secret", version, id: "plugins-e", plugin: "lantern", name: "LAMP_TOKEN", value: "example-value" },
+  { type: "daemon.restart", version, id: "restart-a" },
 ];
+const plugin = {
+  id: "lantern",
+  version: "1.0.0",
+  description: "Reads the lamps",
+  enabled: false,
+  loaded: true,
+  restartRequired: true,
+  contributions: [
+    {
+      seam: "tracker",
+      kind: "lamps",
+      schema: { type: "object", properties: { team: { type: "string" } } },
+      config: { team: "EX" },
+      secrets: [{ name: "LAMP_TOKEN", set: false }],
+    },
+  ],
+};
 const frames = [
   {
     type: "projects.result",
@@ -56,6 +87,15 @@ const frames = [
   { ...batch, seq: 11, events: [] },
   { type: "error", version, id: "read-a", code: "not-found", message: "Session not found" },
   { type: "error", version, code: "invalid-message", message: "Invalid request" },
+  { type: "plugins.result", version, id: "plugins-a", restartable: true, plugins: [plugin] },
+  {
+    type: "plugins.result",
+    version,
+    id: "plugins-b",
+    restartable: false,
+    plugins: [{ ...plugin, version: null, description: null, error: "pluginApi ^9 excludes 0.1.0", contributions: [] }],
+  },
+  { type: "daemon.restarting", version, id: "restart-a" },
 ];
 
 test("all client and server messages survive the JSON wire and runtime validation", () => {
@@ -116,6 +156,10 @@ test("invalid requests never become dispatchable and errors retain only a valid 
     { ...requests[1], after: Number.MAX_SAFE_INTEGER + 1 },
     { ...requests[1], project: "" },
     { ...requests[2], sessionId: null },
+    { ...requests[4], plugin: "" },
+    { ...requests[6], config: { value: undefined } },
+    { ...requests[7], value: "" },
+    { ...requests[7], value: "two words" },
   ]) {
     assert.equal(clientMessageSchema.safeParse(request).success, false);
     const result = admitRequest(request);
