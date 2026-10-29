@@ -11,9 +11,21 @@
     ".": "./src/index.ts",
     "./events": "./src/events.ts",
     "./fold": "./src/fold.ts",
-    "./store": "./src/store.ts"
+    "./store": "./src/store.ts",
+    "./server": "./src/server/index.ts"
   },
   "scripts": {
-    "test": "node --test test/*.test.ts"
+    "test": "node --test test/*.test.ts",
+    "start": "node src/server/main.ts"
+  },
+  "dependencies": {
+    "@armada/protocol": "workspace:*",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.1"
+  },
+  "bin": {
+    "armadad": "./src/server/main.ts"
   }
 }

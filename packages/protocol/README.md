@@ -79,3 +79,13 @@ requires a major change or explicit feature negotiation in a later protocol.
 Both sides accept minor differences within the same major. App consumers validate
 with `serverMessageSchema` and check the server's major before applying frames;
 a major mismatch requires reconnecting with a compatible app/daemon pair.
+
+## Initial folded snapshot (additive)
+
+`project.subscribed` may include `snapshot: {seq,state}` on an initial
+`after: 0` subscription. `state` is JSON whose fold shape is owned by the daemon;
+`seq` is its inclusive global cursor. Servers still send the event-history frame
+so clients that fold locally continue to work. A client using the snapshot must
+apply only events after the snapshot cursor. Replay subscriptions with a positive
+`after` omit the snapshot and send only missed event batches. This optional field
+adds no required operation or dependency on daemon types.
