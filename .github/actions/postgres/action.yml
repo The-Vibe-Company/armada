@@ -1,0 +1,15 @@
+name: Start PostgreSQL
+description: Start the runner's PostgreSQL with the throwaway CI password and database
+runs:
+  using: composite
+  steps:
+    - name: Start and configure PostgreSQL
+      shell: bash
+      # ubuntu-latest's Ubuntu 26.04 image ships PostgreSQL 18 (20261025.179.1).
+      run: |
+        sudo systemctl start postgresql
+        sudo -u postgres psql --set ON_ERROR_STOP=1 \
+          --command "ALTER USER postgres WITH PASSWORD 'postgres';" \
+          --command "CREATE DATABASE armada;" \
+          --command "SHOW server_version;"
+        pg_isready -h localhost -p 5432 -U postgres -d armada
