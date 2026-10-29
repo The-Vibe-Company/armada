@@ -7,7 +7,7 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "bun run build && electron-vite preview --skipBuild",
-    "build": "bun run --cwd ../app build && electron-vite build",
+    "build": "node ../../scripts/plugin-catalog.ts && bun run --cwd ../plugin-api build && bun run --cwd ../app build && electron-vite build",
     "typecheck": "tsc --noEmit -p .",
     "test": "bun run build && node --test test/*.test.ts"
   },
