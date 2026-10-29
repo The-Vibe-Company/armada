@@ -1,0 +1,517 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { type TestContext, test } from "node:test";
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import type { ToolExecutionApi } from "@earendil-works/pi-durable";
+import { type MergeEvidence, nativeTools } from "../coordinator/native.ts";
+import { openCoordinatorStorage } from "../coordinator/storage.ts";
+import type { CoordinatorToolName } from "../coordinator/tools.ts";
+import { fold, type InboxItem, type ProjectTables } from "../src/fold.ts";
+import { EventStore } from "../src/store.ts";
+
+interface TestFacts {
+  ok: boolean;
+  code: string;
+  message: string;
+  project: string;
+  id: string;
+  next: string;
+  delivery: string;
+  tables: ProjectTables;
+  items: InboxItem[];
+  problems: string[];
+  rules: { value: { policy: { maxWorkers: number } } };
+}
+
+const at = "2030-01-01T00:00:00.000Z";
+const head = "a".repeat(40);
+const seed = (store: EventStore, project = "orchard") => {
+  const append = (event: Parameters<EventStore["append"]>[0]) => store.append(event);
+  append({
+    project,
+    at,
+    actor: "reader",
+    kind: "ticket.seen",
+    payload: { id: "SEED-1", title: "Plant", status: "started" },
+  });
+  append({
+    project,
+    at,
+    actor: "worker",
+    kind: "session.claimed",
+    payload: { ticket: "SEED-1", session: "one", generation: 1, owner: "Mira", runtime: "codex", handle: "local/one" },
+  });
+  append({
+    project,
+    at,
+    actor: "worker",
+    kind: "session.reported",
+    payload: { ticket: "SEED-1", session: "one", phase: "ready-to-merge", reason: "Green" },
+  });
+  append({
+    project,
+    at,
+    actor: "reader",
+    kind: "pull-request.seen",
+    payload: { number: 7, ticket: "SEED-1", head, state: "open", ci: "success", conflicting: false },
+  });
+  append({
+    project,
+    at,
+    actor: "worker",
+    kind: "inbox.opened",
+    payload: { id: "q", ticket: "SEED-1", kind: "question", body: "Which seed?" },
+  });
+  append({
+    project,
+    at,
+    actor: "worker",
+    kind: "inbox.opened",
+    payload: {
+      id: "back",
+      ticket: "SEED-1",
+      kind: "hand-back",
+      body: `Agent status: ready-to-merge — PR #7, head ${head}`,
+    },
+  });
+};
+const evidence: MergeEvidence = {
+  head,
+  base: "c".repeat(40),
+  observedAt: at,
+  checksComplete: true,
+  title: "feat(garden): plant seeds",
+  draft: false,
+  mergeState: "CLEAN",
+  checks: [{ name: "verify", state: "success" }],
+  requiredChecks: ["verify"],
+  reviewThreads: { complete: true, total: 1, read: 1, unresolved: 0 },
+  acceptance: { state: "passed", head },
+  ownerApproval: { state: "not-required", head },
+  baseTest: { state: "passed", head, base: "c".repeat(40) },
+};
+
+async function fixture(t: TestContext) {
+  const store = new EventStore(":memory:");
+  seed(store);
+  seed(store, "other");
+  const scope = openCoordinatorStorage({ store, project: "orchard", now: () => at });
+  const tools = nativeTools(scope, {
+    now: () => at,
+    mergeEvidence: async () => evidence,
+    deliverAnswerOnce: async ({ beforeWrite }) => {
+      beforeWrite();
+      return true;
+    },
+  });
+  t.after(async () => {
+    await scope.close(context);
+    store.close();
+  });
+  let call = 0;
+  const run = async (name: CoordinatorToolName, args: object = {}, id = String(++call)) => {
+    const result = await tools[name].execute(args, { taskId: 1, callId: id } as ToolExecutionApi, context);
+    const first = result.output?.[0];
+    assert.ok(first?.type === "text");
+    assert.deepEqual(JSON.parse(first.text), result.details);
+    return result.details as unknown as TestFacts;
+  };
+  return { store, scope, run };
+}
+
+test("fleet.status returns detached project facts and refuses an inactive coordinator", async (t) => {
+  const { store, scope, run } = await fixture(t);
+  const facts = await run("fleet.status");
+  assert.equal(facts.ok, true);
+  assert.equal(facts.project, "orchard");
+  assert.equal(facts.tables.sessions.length, 1);
+  facts.tables.sessions.length = 0;
+  assert.equal((await run("fleet.status")).tables.sessions.length, 1);
+  assert.equal(store.readSince(0, "other").length, 6);
+  await scope.close(context);
+  assert.equal((await run("fleet.status")).code, "coordinator_inactive");
+});
+
+test("inbox.list reads open items oldest first without resolving them", async (t) => {
+  const { run, store } = await fixture(t);
+  const before = store.sequence;
+  assert.deepEqual(
+    (await run("inbox.list")).items.map((i: InboxItem) => i.id),
+    ["q", "back"],
+  );
+  assert.equal((await run("inbox.list", { extra: true })).code, "invalid_arguments");
+  assert.equal(store.sequence, before);
+});
+
+test("inbox.answer resolves a question once, preserves phase and refuses missing/empty/unanswerable targets", async (t) => {
+  const { run, store } = await fixture(t);
+  assert.equal((await run("inbox.answer", { id: "q", answer: " " })).code, "empty_answer");
+  assert.equal((await run("inbox.answer", { id: "missing", answer: "Oak" })).code, "no_item");
+  assert.equal((await run("inbox.answer", { id: "back", answer: "Merged" })).code, "not_answerable");
+  const args = { id: "q", answer: "Oak" };
+  const result = await run("inbox.answer", args, "answer");
+  assert.equal(result.ok, true);
+  assert.equal(result.delivery, "confirmed");
+  const seq = store.sequence;
+  assert.deepEqual(await run("inbox.answer", args, "answer"), result);
+  assert.equal(store.sequence, seq);
+  assert.equal((await run("inbox.answer", { ...args, answer: "Pine" }, "answer")).code, "call_conflict");
+  assert.equal((await run("inbox.answer", args)).code, "item_closed");
+  assert.equal(fold(store.readSince(0)).projects.orchard?.sessions[0]?.phase, "ready-to-merge");
+  assert.ok(fold(store.readSince(0)).projects.other?.inbox.some((i) => i.id === "q"));
+});
+
+for (const name of ["worker.launch", "worker.relaunch", "worker.message", "worker.stop", "merge.run"] as const) {
+  test(`${name} refuses unavailable actions without writing`, async (t) => {
+    const { run, store } = await fixture(t);
+    const before = store.sequence;
+    const result = await run(name, { ticket: "SEED-1", session: "one", pr: 7 });
+    assert.equal(result.code, "not_available_yet");
+    assert.equal(result.message, "not available yet");
+    assert.ok(result.next);
+    assert.equal(store.sequence, before);
+  });
+}
+
+test("merge.check requires the pinned hand-back, all checks, review evidence and cleared holds", async (t) => {
+  const { run, scope, store } = await fixture(t);
+  assert.equal((await run("merge.check", { pr: 7 })).ok, true);
+  assert.equal((await run("merge.check", { pr: 99 })).code, "no_pr");
+  const missing = nativeTools(scope, { now: () => at });
+  const result = await missing["merge.check"].execute({ pr: 7 }, {} as ToolExecutionApi, context);
+  assert.equal((result.details as unknown as TestFacts).code, "merge_refused");
+  assert.ok((result.details as unknown as TestFacts).problems.some((s: string) => s.includes("evidence")));
+  for (const change of [
+    { head: "b".repeat(40) },
+    { draft: true },
+    { title: "plant seeds" },
+    { mergeState: "DIRTY" },
+    { checks: [{ name: "verify", state: "failure" as const }] },
+    { checks: [] },
+    { checksComplete: false },
+    { observedAt: "2029-12-31T23:59:59.000Z" },
+    { checks: undefined },
+    { reviewThreads: { complete: false, total: 0, read: 0, unresolved: 0 } },
+    { reviewThreads: { complete: true, total: 0, read: 1, unresolved: 0 } },
+    { acceptance: { state: "passed" as const, head: "b".repeat(40) } },
+    { baseTest: { state: "passed" as const, head, base: "d".repeat(40) } },
+    { reviewThreads: { complete: true, total: 2, read: 1, unresolved: 0 } },
+    { reviewThreads: { complete: true, total: 1, read: 1, unresolved: 1 } },
+    { acceptance: { state: "unknown" as const, head } },
+    { ownerApproval: { state: "pending" as const, head } },
+    { baseTest: { state: "unknown" as const, head, base: "c".repeat(40) } },
+  ]) {
+    const tools = nativeTools(scope, {
+      now: () => at,
+      mergeEvidence: async () => ({ ...evidence, ...change }) as MergeEvidence,
+    });
+    assert.equal((await tools["merge.check"].execute({ pr: 7 }, {} as ToolExecutionApi, context)).isError, true);
+  }
+  await run("hold.add", { reason: "Main is red" });
+  assert.equal((await run("merge.check", { pr: 7 })).ok, false);
+  assert.equal(store.readSince(0).filter((e) => e.kind.startsWith("merge.")).length, 0);
+});
+
+test("hold.add opens a visible merge pause and refuses an empty reason", async (t) => {
+  const { run, store } = await fixture(t);
+  assert.equal((await run("hold.add", { reason: " " })).code, "empty_reason");
+  const opened = await run("hold.add", { reason: "Main is red" });
+  assert.equal(opened.ok, true);
+  assert.equal(fold(store.readSince(0)).projects.orchard?.holds[0]?.id, opened.id);
+  const facts = await run("fleet.status");
+  assert.equal(Object.hasOwn(facts.tables.holds[0] ?? {}, "receipt"), false);
+});
+
+test("hold.clear requires a known pause and recovery reason", async (t) => {
+  const { run, store } = await fixture(t);
+  const { id } = await run("hold.add", { reason: "Main is red" });
+  assert.equal((await run("hold.clear", { id, reason: " " })).code, "empty_reason");
+  assert.equal((await run("hold.clear", { id: "missing", reason: "Recovered" })).code, "no_hold");
+  assert.equal((await run("hold.clear", { id, reason: "Verified main is green" })).ok, true);
+  assert.equal(fold(store.readSince(0)).projects.orchard?.holds.length, 0);
+  assert.equal((await run("hold.clear", { id, reason: "Again" })).code, "hold_closed");
+});
+
+test("owner.ask records choices in a project inbox and refuses missing choices or ticket", async (t) => {
+  const { run, store } = await fixture(t);
+  const args = { ticket: "SEED-1", question: "Which tree?", choices: ["Oak", "Pine"] };
+  assert.equal((await run("owner.ask", { ...args, choices: [] })).code, "no_choices");
+  assert.equal((await run("owner.ask", { ...args, question: " " })).code, "empty_question");
+  assert.equal((await run("owner.ask", { ...args, ticket: "SEED-9" })).code, "no_ticket");
+  const result = await run("owner.ask", args);
+  const item = fold(store.readSince(0)).projects.orchard?.inbox.find((i) => i.id === result.id);
+  assert.ok(item);
+  assert.equal(item.kind, "owner-request");
+  assert.equal(Object.hasOwn((await run("inbox.list")).items.find((i) => i.id === result.id) ?? {}, "receipt"), false);
+  assert.match(item.body, /1\. Oak\n2\. Pine/);
+  assert.equal((await run("inbox.answer", { id: result.id, answer: "Oak" })).code, "not_answerable");
+});
+
+test("rules.set persists validated intent with revision checks and cannot overwrite newer rules on replay", async (t) => {
+  const { run } = await fixture(t);
+  const args = {
+    expectedRevision: 0,
+    reason: "Owner chose local workers",
+    rules: { placement: { workers: "local", coordinator: "local" }, policy: { maxWorkers: 3 } },
+  };
+  assert.equal((await run("rules.set", { ...args, reason: " " })).code, "empty_reason");
+  assert.equal((await run("rules.set", { ...args, rules: { policy: { maxWorkers: -1 } } })).code, "invalid_arguments");
+  assert.equal((await run("rules.set", args, "rules-one")).ok, true);
+  assert.equal((await run("rules.set", args)).code, "rules_changed");
+  assert.equal(
+    (await run("rules.set", { ...args, expectedRevision: 1, rules: { policy: { maxWorkers: 5 } } })).ok,
+    true,
+  );
+  assert.equal((await run("rules.set", args, "rules-one")).ok, true);
+  assert.equal((await run("fleet.status")).rules.value.policy.maxWorkers, 5);
+  assert.equal(
+    (
+      await run("rules.set", {
+        ...args,
+        expectedRevision: 2,
+        rules: { policy: { silenceMinutes: 0, quietMinutes: 1 } },
+      })
+    ).code,
+    "invalid_arguments",
+  );
+  assert.equal(
+    (
+      await run("rules.set", {
+        ...args,
+        expectedRevision: 2,
+        rules: { routing: [{ labels: [], cli: "codex", model: "garden" }] },
+      })
+    ).code,
+    "invalid_arguments",
+  );
+  assert.equal(
+    (
+      await run("rules.set", {
+        ...args,
+        expectedRevision: 2,
+        rules: { policy: { silenceMinutes: 0.5, quietMinutes: 600000, maxWorkers: 1001 } },
+      })
+    ).ok,
+    true,
+  );
+  assert.equal(
+    (await run("rules.set", { ...args, expectedRevision: 3, rules: { policy: { maxWorkers: null } } })).ok,
+    true,
+  );
+  assert.equal((await run("fleet.status")).rules.value.policy.maxWorkers, null);
+});
+
+test("only one coordinator owns project writes; disk replay preserves receipts and permits a successor", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "armada-native-"));
+  const file = join(directory, "fleet.sqlite");
+  let store = new EventStore(file);
+  let scope = openCoordinatorStorage({ store, project: "orchard", now: () => at });
+  try {
+    const tools = nativeTools(scope, { now: () => at });
+    assert.throws(() => openCoordinatorStorage({ store, project: "orchard", now: () => at }), /already open/);
+    const api = { taskId: 9, callId: "pause" } as ToolExecutionApi;
+    const first = await tools["hold.add"].execute({ reason: "Recover main" }, api, context);
+    const before = store.sequence;
+    await scope.close(context);
+    assert.equal((await tools["hold.add"].execute({ reason: "Stale owner" }, api, context)).isError, true);
+    store.close();
+    store = new EventStore(file);
+    scope = openCoordinatorStorage({ store, project: "orchard", now: () => at });
+    const restored = nativeTools(scope, { now: () => at });
+    assert.deepEqual(await restored["hold.add"].execute({ reason: "Recover main" }, api, context), first);
+    assert.equal(store.sequence, before);
+    assert.equal(fold(store.readSince(0)).projects.orchard?.holds.length, 1);
+  } finally {
+    await scope.close(context);
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("answer delivery keeps an unconfirmed item open and fences a replacement before a runtime write", async (t) => {
+  const { store, scope } = await fixture(t);
+  const api = { taskId: 20, callId: "deliver" } as ToolExecutionApi;
+  const args = { id: "q", answer: "Oak" };
+  const absent = nativeTools(scope, { now: () => at });
+  assert.equal((await absent["inbox.answer"].execute(args, api, context)).isError, true);
+  const unconfirmed = nativeTools(scope, { now: () => at, deliverAnswerOnce: async () => false });
+  const result = await unconfirmed["inbox.answer"].execute(args, api, context);
+  assert.equal((result.details as unknown as TestFacts).code, "delivery_unconfirmed");
+  assert.ok(fold(store.readSince(0)).projects.orchard?.inbox.some((i) => i.id === "q"));
+  let delivered = false;
+  const replaced = nativeTools(scope, {
+    now: () => at,
+    deliverAnswerOnce: async ({ beforeWrite }) => {
+      store.append({
+        project: "orchard",
+        at,
+        actor: "launcher",
+        kind: "session.claimed",
+        payload: {
+          ticket: "SEED-1",
+          session: "replacement",
+          generation: 2,
+          owner: "Mira",
+          runtime: "codex",
+          handle: "local/two",
+        },
+      });
+      beforeWrite();
+      delivered = true;
+      return true;
+    },
+  });
+  assert.equal((await replaced["inbox.answer"].execute(args, api, context)).isError, true);
+  assert.equal(delivered, false);
+  assert.ok(fold(store.readSince(0)).projects.orchard?.inbox.some((i) => i.id === "q"));
+});
+
+test("merge.check re-reads after an adapter yields and refuses changed evidence or a closed owner", async (t) => {
+  const { store, scope } = await fixture(t);
+  let release: (value: MergeEvidence) => void = () => {
+    throw new Error("reader not started");
+  };
+  const tools = nativeTools(scope, {
+    now: () => at,
+    mergeEvidence: () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  });
+  const checked = tools["merge.check"].execute({ pr: 7 }, {} as ToolExecutionApi, context);
+  store.append({
+    project: "orchard",
+    at,
+    actor: "reader",
+    kind: "pull-request.seen",
+    payload: { number: 7, ticket: "SEED-1", head: "b".repeat(40), state: "open", ci: "success", conflicting: false },
+  });
+  release(evidence);
+  assert.equal((await checked).isError, true);
+  const closed = tools["merge.check"].execute({ pr: 7 }, {} as ToolExecutionApi, context);
+  await scope.close(context);
+  release(evidence);
+  assert.equal(((await closed).details as unknown as TestFacts).code, "coordinator_inactive");
+});
+
+test("shared answer delivery deduplicates within a project without suppressing another project's identical pi identity", async (t) => {
+  const { store, scope } = await fixture(t);
+  const other = openCoordinatorStorage({ store, project: "other", now: () => at });
+  t.after(() => other.close(context));
+  const keys = new Set<string>();
+  let deliveries = 0;
+  const deliverAnswerOnce: NonNullable<Parameters<typeof nativeTools>[1]["deliverAnswerOnce"]> = async ({
+    key,
+    beforeWrite,
+  }) => {
+    beforeWrite();
+    if (!keys.has(key)) {
+      keys.add(key);
+      deliveries++;
+    }
+    return true;
+  };
+  const api = { taskId: 50, callId: "same-provider-id" } as ToolExecutionApi;
+  for (const owner of [scope, scope, other]) {
+    const tools = nativeTools(owner, { now: () => at, deliverAnswerOnce });
+    assert.equal((await tools["inbox.answer"].execute({ id: "q", answer: "Oak" }, api, context)).isError, false);
+  }
+  assert.equal(deliveries, 2);
+  assert.equal(keys.size, 2);
+});
+
+test("unsupported or malformed durable rules produce a structured refusal without writing", async (t) => {
+  for (const checkpoint of [
+    { format: "armada.tools", version: 2, type: "rules", rules: { revision: 1, value: {} } },
+    { format: "armada.tools", version: 1, type: "future", rules: { revision: 1, value: {} } },
+    { format: "armada.tools", version: 1, type: "rules", rules: { revision: -1, value: {} } },
+  ]) {
+    const { store, run } = await fixture(t);
+    assert.equal((await run("fleet.status")).ok, true);
+    store.append({
+      project: "orchard",
+      at,
+      actor: "coordinator",
+      kind: "coordinator.checkpoint",
+      payload: { checkpoint },
+    });
+    const before = store.sequence;
+    const result = await run("fleet.status");
+    assert.equal(result.code, "state_unavailable");
+    assert.ok(result.next);
+    assert.equal(store.sequence, before);
+  }
+});
+
+test("merge.check refuses malformed hand-backs and coordinator notes instead of treating PR text as approval", async (t) => {
+  const { store, run } = await fixture(t);
+  assert.equal((await run("merge.check", { pr: 7 })).ok, true);
+  store.append({
+    project: "orchard",
+    at,
+    actor: "coordinator",
+    kind: "inbox.answered",
+    payload: { id: "back", answer: "replaced for test" },
+  });
+  for (const [index, body] of [
+    `PR #7, head ${head}`,
+    `Agent status: ready-to-merge — note: PR #7, head ${head}`,
+    `Agent status: ready-to-merge — acceptance: PR #7, head ${head}`,
+  ].entries()) {
+    store.append({
+      project: "orchard",
+      at,
+      actor: "worker",
+      kind: "inbox.opened",
+      payload: { id: `bad-${index}`, ticket: "SEED-1", kind: "hand-back", body },
+    });
+    assert.equal((await run("merge.check", { pr: 7 })).code, "merge_refused");
+  }
+});
+
+test("merge.check uses the latest validation so corrected work can be approved", async (t) => {
+  const { store, run } = await fixture(t);
+  assert.equal((await run("merge.check", { pr: 7 })).ok, true);
+  const append = (event: Parameters<EventStore["append"]>[0]) => store.append(event);
+  append({
+    project: "orchard",
+    at,
+    actor: "worker",
+    kind: "validation.opened",
+    payload: { id: "first", ticket: "SEED-1", session: "one", question: "Is the tree right?", checks: [] },
+  });
+  assert.equal((await run("merge.check", { pr: 7 })).code, "merge_refused");
+  append({
+    project: "orchard",
+    at,
+    actor: "owner",
+    kind: "validation.decided",
+    payload: { id: "first", decision: "changes-requested", note: "Use oak" },
+  });
+  assert.equal((await run("merge.check", { pr: 7 })).code, "merge_refused");
+  append({
+    project: "orchard",
+    at,
+    actor: "worker",
+    kind: "validation.opened",
+    payload: { id: "corrected", ticket: "SEED-1", session: "one", question: "Is the oak right?", checks: [] },
+  });
+  append({
+    project: "orchard",
+    at,
+    actor: "owner",
+    kind: "validation.decided",
+    payload: { id: "corrected", decision: "approved", note: "Yes" },
+  });
+  assert.equal((await run("merge.check", { pr: 7 })).ok, true);
+  append({
+    project: "orchard",
+    at,
+    actor: "worker",
+    kind: "validation.opened",
+    payload: { id: "new-question", ticket: "SEED-1", session: "one", question: "A new decision?", checks: [] },
+  });
+  assert.equal((await run("merge.check", { pr: 7 })).code, "merge_refused");
+});

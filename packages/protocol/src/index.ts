@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export * from "./fleet.js";
+
 /** Wire version, independent of the daemon/app release versions. */
 export const PROTOCOL_VERSION = { major: 1, minor: 1 } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
@@ -17,7 +19,7 @@ export const projectSchema = z.object({
 });
 export type Project = z.infer<typeof projectSchema>;
 
-/** Kinds and payload semantics belong to the daemon, not to the transport. */
+/** Forward-compatible envelope: known kinds and payloads are defined in fleet.ts. */
 export const eventSchema = z.object({
   seq: counter.min(1),
   project: identifier,
@@ -78,7 +80,7 @@ export const projectsResultSchema = z.object({
   type: z.literal("projects.result"),
   projects: z.array(projectSchema),
 });
-/** A project's folded state at the inclusive cursor `seq`. Shape is owned by the daemon. */
+/** A project's folded state at the inclusive cursor `seq`; readers may consume a subset. */
 const snapshotSchema = z.object({ seq: counter, state: z.json() });
 export const subscribedSchema = z.object({
   ...request,
