@@ -1,4 +1,4 @@
-// A daemon host with an injected fake model. Parent kills it via IPC gates, never a clock delay.
+// A daemon host with an injected fake model. Parent kills it at stdout gates, never a clock delay.
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -13,7 +13,7 @@ const store = new EventStore(file);
 const faux = fauxProvider({ models: [{ id: "coordinator-test" }] });
 const models = createModels();
 models.setProvider(faux.provider);
-const send = (value: unknown) => process.send?.(value);
+const send = (value: unknown) => console.log(JSON.stringify(value));
 const paused = () => new Promise<never>(() => {});
 const now = () => Date.parse("2026-10-29T18:45:00.000Z");
 const tool = defineTool({
@@ -82,5 +82,4 @@ if (mode === "start") {
   send({ type: "done", entries: history.items, calls: faux.state.callCount });
   await server.close();
   store.close();
-  process.disconnect?.();
 }
