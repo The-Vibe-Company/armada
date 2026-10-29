@@ -1,0 +1,16 @@
+name: Build and seed the dashboard demo
+description: Build the dashboard and seed its throwaway demo world and accounts
+runs:
+  using: composite
+  steps:
+    - name: Draw the demo's session secret
+      shell: bash
+      run: echo "ARMADA_AUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+    - name: Build the dashboard
+      shell: bash
+      working-directory: packages/dashboard
+      run: bun run build
+    - name: Seed the demo world, an owner and an invited member
+      shell: bash
+      working-directory: packages/dashboard
+      run: bun run demo:seed && bun run a11y seed
