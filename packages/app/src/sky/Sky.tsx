@@ -26,6 +26,8 @@ export interface SkyProps {
   clock?: SkyClock;
   /** Overrides the system's reduced-motion setting: with it, the sky changes without flying. */
   reducedMotion?: boolean;
+  /** The stage: where each squadron leads (the hangar's `#/projects/<id>`); the whole squadron is the link. */
+  link?: (project: string) => string;
   className?: string;
 }
 
@@ -74,7 +76,7 @@ function useDevicePixels(): number {
   return dpr;
 }
 
-export function Sky({ projects, size, clock = animationFrames, reducedMotion, className }: SkyProps) {
+export function Sky({ projects, size, clock = animationFrames, reducedMotion, link, className }: SkyProps) {
   const box = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const drawn = useRef({ width: 0, height: 0, dpr: 0 });
@@ -145,32 +147,34 @@ export function Sky({ projects, size, clock = animationFrames, reducedMotion, cl
     >
       <canvas ref={canvas} aria-hidden className="absolute inset-0 block h-full w-full" />
       {layout.labels.map((label) => (
-        <Label key={label.key} label={label} size={size} still={still} />
+        <Label key={label.key} label={label} size={size} still={still} link={link} />
       ))}
-      <div className="pointer-events-none absolute right-6 bottom-3 left-6 flex justify-between gap-6 text-body text-text-3">
-        <Legend
-          className={cn("min-w-0 overflow-hidden", layout.compact ? "flex-wrap" : "flex-nowrap @max-2xl:flex-wrap")}
-          items={GROUPS.map((g) => ({
-            key: g,
-            label: SKY_GROUP_LABEL[g],
-            count: counts.groups[g],
-            mark: <span className="size-1.75 rounded-full" style={{ background: STATE_COLOR[g] }} />,
-          }))}
-        />
-        <Legend
-          className={layout.compact ? "hidden" : "flex-wrap @max-4xl:hidden"}
-          items={counts.harnesses.map((h) => ({
-            key: h,
-            label: HARNESS_LABEL[h],
-            count: null,
-            mark: (
-              <svg width="10" height="10" viewBox="-6 -6 12 12" aria-hidden>
-                <path d="M0 -6 L5.2 5 L-5.2 5 Z" fill={HARNESS_COLOR[h]} />
-              </svg>
-            ),
-          }))}
-        />
-      </div>
+      {projects.length > 0 && (
+        <div className="pointer-events-none absolute right-6 bottom-3 left-6 flex justify-between gap-6 text-body text-text-3">
+          <Legend
+            className={cn("min-w-0 overflow-hidden", layout.compact ? "flex-wrap" : "flex-nowrap @max-2xl:flex-wrap")}
+            items={GROUPS.map((g) => ({
+              key: g,
+              label: SKY_GROUP_LABEL[g],
+              count: counts.groups[g],
+              mark: <span className="size-1.75 rounded-full" style={{ background: STATE_COLOR[g] }} />,
+            }))}
+          />
+          <Legend
+            className={layout.compact ? "hidden" : "flex-wrap @max-4xl:hidden"}
+            items={counts.harnesses.map((h) => ({
+              key: h,
+              label: HARNESS_LABEL[h],
+              count: null,
+              mark: (
+                <svg width="10" height="10" viewBox="-6 -6 12 12" aria-hidden>
+                  <path d="M0 -6 L5.2 5 L-5.2 5 Z" fill={HARNESS_COLOR[h]} />
+                </svg>
+              ),
+            }))}
+          />
+        </div>
+      )}
     </section>
   );
 }
@@ -198,7 +202,17 @@ function Legend({
 }
 
 /** A label over the sky, centred on its group or project; it moves with it (transform only). */
-function Label({ label, size, still }: { label: SkyLabel; size: SkySize; still: boolean }) {
+function Label({
+  label,
+  size,
+  still,
+  link,
+}: {
+  label: SkyLabel;
+  size: SkySize;
+  still: boolean;
+  link?: (project: string) => string;
+}) {
   const glide = still ? "" : "motion-safe:transition-transform motion-safe:duration-200";
   const place = { transform: `translate(${label.x}px, ${label.y}px) translateX(-50%)` };
   if (size === "band")
@@ -216,14 +230,53 @@ function Label({ label, size, still }: { label: SkyLabel; size: SkySize; still: 
         {label.count !== null && <span className="ml-1.5 font-mono text-text-2">{label.count}</span>}
       </div>
     );
+  const words = (
+    <>
+      <div className="truncate font-semibold text-sub text-text">{label.text}</div>
+      {label.facts && (
+        <div className="mt-0.5 line-clamp-2 text-body text-text-2" data-counts>
+          {label.facts.map((f, k) => (
+            <span key={f.key}>
+              {k > 0 && " · "}
+              <span className={cn("font-mono tnum", f.group ? LABEL_COLOR[f.group] : "text-text")}>{f.n}</span> {f.text}
+            </span>
+          ))}
+        </div>
+      )}
+    </>
+  );
+  const area = label.area;
+  // The hangar's squadron: its ships and its words are one link into its room.
+  if (link && area)
+    return (
+      <a
+        href={link(label.key)}
+        className={cn("group absolute top-0 left-0 rounded-card", glide)}
+        style={{ transform: `translate(${area.x}px, ${area.y}px)`, width: area.width, height: area.height }}
+        data-label={label.key}
+        data-squadron={label.key}
+      >
+        <span
+          className="absolute top-0 left-0 block text-center text-balance"
+          style={{
+            transform: `translate(${label.x - area.x}px, ${label.y - area.y}px) translateX(-50%)`,
+            width: label.width,
+          }}
+        >
+          {words}
+          <span className="mt-2.5 inline-block text-body text-text-3 transition-colors group-hover:text-text group-focus-visible:text-text">
+            Enter the room →
+          </span>
+        </span>
+      </a>
+    );
   return (
     <div
       className={cn("pointer-events-none absolute top-0 left-0 text-center text-balance", glide)}
       style={{ ...place, maxWidth: label.width }}
       data-label={label.key}
     >
-      <div className="font-semibold text-sub text-text">{label.text}</div>
-      {label.detail && <div className="mt-0.5 text-body text-text-2">{label.detail}</div>}
+      {words}
     </div>
   );
 }
