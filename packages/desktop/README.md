@@ -46,9 +46,16 @@ for the daemon to close its sockets and SQLite, then escalates to SIGKILL after
 five seconds if needed. An unexpected daemon exit closes the shell with a
 failure code. A hard OS kill cannot run quit handlers.
 
+The shell starts armadad with `--restartable`. The app's Restart (on the Plugins
+screen) makes the daemon close and exit with code 75 (`RESTART_EXIT_CODE`), and
+the shell starts it again on the same port, so the app's socket reconnects and
+resumes as after any drop. If that port was taken in the meantime, the daemon
+starts on a new one and the window reopens at its address (`restartDaemon`).
+
 `bun run test:desktop` runs Node lifecycle tests against the real daemon in
 temporary directories, checking readiness and static serving, graceful shutdown
-and process disappearance, failed startup, quit during startup, and deadline
+and process disappearance, a restart on the same port (or another when it is
+taken), failed startup, quit during startup, and deadline
 cleanup of an unresponsive child. Root `bun run verify` includes these Node
 tests through `test:daemon`; the Bun suite also discovers them. The root
 TypeScript gate includes this package and its electron-vite configuration.

@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 // A project's room (THE-1996): the owner's conversation with the project's
-// coordinator, and the owner's answer to a question pinned in it. Wire minor 2.
+// coordinator, and the owner's answer to a question pinned in it. Wire minor 4.
 // index.ts adds these to the message unions; this file imports nothing from it
 // (its primitives are restated) so the two modules never wait on each other.
 
@@ -17,7 +17,7 @@ const message = z
   .regex(/\S/);
 
 /** The first wire minor that carries the room's messages. */
-export const CHAT_MINOR = 2;
+export const CHAT_MINOR = 4;
 
 /**
  * One line of the conversation, as the daemon reads it: the owner's message,

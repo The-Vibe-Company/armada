@@ -1,0 +1,45 @@
+{
+  "response": {
+    "pullRequests": [
+      {
+        "number": 17,
+        "ticket": "CHECK-1",
+        "state": "open",
+        "ci": "success",
+        "conflicting": false,
+        "head": "0123456789abcdef0123456789abcdef01234567",
+        "checks": [
+          {
+            "name": "verify",
+            "state": "success",
+            "runId": 101,
+            "runAttempt": 1
+          }
+        ],
+        "checksComplete": true
+      }
+    ]
+  },
+  "expectedEvents": [
+    {
+      "kind": "pull-request.seen",
+      "payload": {
+        "number": 17,
+        "ticket": "CHECK-1",
+        "state": "open",
+        "ci": "success",
+        "conflicting": false,
+        "head": "0123456789abcdef0123456789abcdef01234567",
+        "checks": [
+          {
+            "name": "verify",
+            "state": "success",
+            "runId": 101,
+            "runAttempt": 1
+          }
+        ],
+        "checksComplete": true
+      }
+    }
+  ]
+}

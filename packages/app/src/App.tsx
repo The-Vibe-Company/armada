@@ -13,6 +13,8 @@ const Room = lazy(() => import("@/screens/Room").then((m) => ({ default: m.Room 
 const SessionPlaceholder = lazy(() =>
   import("@/room/SessionPlaceholder").then((m) => ({ default: m.SessionPlaceholder })),
 );
+// A screen of the app's own settings: off the first load (perf-budget.json), fetched when opened.
+const Plugins = lazy(() => import("@/screens/Plugins").then((m) => ({ default: m.Plugins })));
 
 export function App({
   client,
@@ -32,6 +34,11 @@ export function App({
         {story === "sky" ? (
           <Suspense>
             <SkyStory />
+          </Suspense>
+        ) : route.kind === "plugins" ? (
+          // The shell stays while the screen's code arrives.
+          <Suspense fallback={null}>
+            <Plugins />
           </Suspense>
         ) : route.kind === "project" ? (
           <Suspense>
