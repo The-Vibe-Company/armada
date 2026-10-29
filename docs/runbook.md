@@ -428,3 +428,60 @@ Beat calls the existing project-scoped observation API without executing a runne
 A successful start with no stdout reference is still recorded and shown with `no runner reference`; status and stop refuse to contact it. Find the existing run on the runner, then attach its reference with `armada job recover <id> --ref <reference>`. Recovery runs no shell command, keeps existing references fixed, and cannot change a terminal job's outcome. Use `--state failed`, `--state lost` or `--state stopped` to finalize a starting record after an observation outage when that outcome is known. Repair the runner's start command before dispatching another job. Closing a terminal never stops an already-dispatched runner.
 
 Set `[policy] max_workers` to a positive integer to enforce the project-wide promise. A full fleet refuses `launch` and `brief --prompt` before minting a token; `--when-unblocked` queues the launch, and `--over-cap "<why>"` bypasses with a recorded count and reason. Linear Urgent priority also passes with a recorded reason. A relaunch replaces a session and is exempt; never use it to evade the cap. Waiting requests do not count as workers and keep watch listening. Lowering the cap stops nothing already running. Read/count failures refuse a capped launch unless an override is supplied; every launch still requires a confirmed slot lease. Deploy the API migration before the CLI; older CLIs ignore the cap.
+
+
+## Dashboard end-to-end journeys
+
+The dashboard journeys use [tester-army/e2e](https://e2e.tester.army/docs/quickstart)
+0.21, with Playwright underneath. Install with `bun install` and
+`npx e2e-web install chromium` (Node 22.22.3 or newer). Start a **throwaway**
+Postgres database on localhost:5432 named `armada`, with user/password
+`postgres`/`postgres`, or set `ARMADA_DEMO_DATABASE_URL` to a separate demo
+database. Never use a real fleet database. On a fresh database:
+
+```sh
+armada run -- bun e2e/prepare.ts
+armada run -- npx e2e run
+armada run -- npx e2e run --headed e2e/tests/dashboard.e2e.ts
+```
+
+`prepare.ts` builds the dashboard, seeds the fleet and the accessibility
+check's owner, Olive Owner. The runner starts and stops the built dashboard
+on http://localhost:4822, with `NODE_ENV=test` so its real email/password
+form is available (production permits GitHub sign-in only). Each attempt
+gets a fresh browser session; the approval journey restores its one demo
+decision and decision inbox item before acting, so retries and later runs remain independent. Reset
+the throwaway database before running `prepare.ts` again.
+
+Write journeys in `e2e/tests/*.e2e.ts`; typecheck them and the config with
+`bunx tsc --noEmit -p e2e`. Import `test` from `@e2e-dev/web`
+and `expect` from `e2e`. Use one plain-language `agent.act` goal per outcome,
+then check the outcome with a locator assertion: these checks verify the
+recorded actions and need no model. Exact inputs can use role/label locators;
+sign in through the real form, never by injecting cookies. Reuse `e2e/act.ts`'s cache-miss handling for new agent steps. Add future app targets to
+the root `e2e.config.ts`; the dashboard is the only target today.
+
+One agent uses Microsoft Foundry through `@ai-sdk/openai-compatible`:
+`AZURE_AI_ENDPOINT`, `AZURE_AI_API_KEY` and `AZURE_AI_MODEL`, supplied through
+`armada run` locally and the same repository secrets in CI. The resource's
+`/openai/v1` base supports chat completions with image parts and tool calls
+(owner verified); use that base, rather than appending `/chat/completions`
+or using `/models`. No direct OpenAI provider or fallback agent is configured.
+Do not put these values in files, instructions, recordings or logs. The config
+registers them with e2e's redactor, including model provenance.
+
+**Commit `.e2e/cache/`** after a verified recording. Review its contents as
+test data; `bun test e2e/cache.test.ts` rejects an API key's `sk-` prefix.
+Refresh a journey by running
+`armada run -- npx e2e run --no-cache e2e/tests/dashboard.e2e.ts` to check the live agent, then clear its old
+recordings with `npx e2e cache clear` and run normally to save fresh ones.
+`--no-cache` disables both replay and recording, so that final normal run is
+necessary. Commit the refreshed JSON files together with the journey.
+
+With no endpoint, `npx e2e run --reporter list,junit` replays without a model;
+a new agent step missing a recording skips its journey with one reason line.
+A stale recording or a browser assertion failure fails the job. CI runs one
+worker with one retry and telemetry disabled; cache files are read-only.
+The nonrequired **End-to-end journeys** job shares WCAG's demo build/seed
+action and uploads JUnit, the run report and failure evidence. Its log should
+show replayed steps and zero model calls on an unchanged journey.
