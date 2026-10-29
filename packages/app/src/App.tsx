@@ -4,6 +4,7 @@ import { useRoute } from "@/lib/route";
 import type { DaemonClient } from "@/protocol/client";
 import { DaemonProvider } from "@/protocol/store";
 import { Home } from "@/screens/Home";
+import { Project } from "@/screens/Project";
 
 // The sky's story page (`?story=sky`), loaded only behind its flag: never in the first load.
 const SkyStory = lazy(() => import("@/screens/SkyStory").then((m) => ({ default: m.SkyStory })));
@@ -29,11 +30,13 @@ export function App({
           <Suspense>
             <SkyStory />
           </Suspense>
-        ) : route === "plugins" ? (
+        ) : route.kind === "plugins" ? (
           // The shell stays while the screen's code arrives.
           <Suspense fallback={null}>
             <Plugins />
           </Suspense>
+        ) : route.kind === "project" ? (
+          <Project id={route.id} onReload={onReload} />
         ) : (
           <Home address={address} onReload={onReload} />
         )}

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { rulesStateSchema } from "./rules.js";
 
 const text = z.string();
 const integer = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
@@ -154,6 +155,8 @@ const validationSchema = validationRequestSchema.extend({
 });
 export type Validation = z.infer<typeof validationSchema>;
 const tablesSchema = z.object({
+  // Absent on older snapshots; current daemon folds always supply this slice.
+  rules: rulesStateSchema.optional(),
   tickets: z.array(ticketSchema),
   pullRequests: z.array(pullRequestSchema),
   sessions: z.array(sessionSchema),

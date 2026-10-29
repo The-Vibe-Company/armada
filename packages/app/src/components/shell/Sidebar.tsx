@@ -29,7 +29,7 @@ export function Sidebar() {
         <span className="font-semibold text-sub">Armada</span>
       </div>
       <nav aria-label="Sections" className="flex flex-col gap-0.5">
-        <a href="#/" className={`${item} ${current}`} aria-current={route === "home" ? "page" : undefined}>
+        <a href="#/" className={`${item} ${current}`} aria-current={route.kind === "home" ? "page" : undefined}>
           <span className="min-w-0 flex-1 truncate">Fleet</span>
         </a>
       </nav>
@@ -42,7 +42,13 @@ export function Sidebar() {
         {projects?.map((p) => {
           const fleet = fleets[p.id];
           return (
-            <a key={p.id} href={`#/projects/${encodeURIComponent(p.id)}`} className={item} title={p.repository}>
+            <a
+              key={p.id}
+              href={`#/projects/${encodeURIComponent(p.id)}`}
+              className={`${item} ${current}`}
+              aria-current={route.kind === "project" && route.id === p.id ? "page" : undefined}
+              title={p.repository}
+            >
               <span className="min-w-0 flex-1 truncate">{p.name}</span>
               {fleet && <Sessions count={sessionsInFlight(fleetOf(fleet))} />}
             </a>
@@ -51,7 +57,7 @@ export function Sidebar() {
       </nav>
       <span className="flex-1" />
       <nav aria-label="Armada" className="flex flex-col gap-0.5">
-        <a href="#/plugins" className={`${item} ${current}`} aria-current={route === "plugins" ? "page" : undefined}>
+        <a href="#/plugins" className={`${item} ${current}`} aria-current={route.kind === "plugins" ? "page" : undefined}>
           <span className="min-w-0 flex-1 truncate">Plugins</span>
         </a>
       </nav>

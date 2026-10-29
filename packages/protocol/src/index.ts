@@ -3,6 +3,7 @@ import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
 
 export * from "./fleet.js";
 export * from "./plugins.js";
+export * from "./rules.js";
 
 /** Wire version, independent of the daemon/app release versions. */
 export const PROTOCOL_VERSION = { major: 1, minor: 2 } as const;

@@ -30,6 +30,7 @@ const hold = (project = "orchard", id = "rain"): EventInput => ({
 
 /** A project's folded tables holding only these open holds, as the protocol carries them. */
 const holding = (...events: FleetEvent[]) => ({
+  rules: { revision: 0, value: {} },
   tickets: [],
   pullRequests: [],
   sessions: [],
@@ -533,8 +534,9 @@ test("credential socket writes and fake-model use never expose the key to replie
   });
 });
 
-// Recorded on the pre-migration daemon. Only the random subscription UUID is normalized; the
-// frames' wire version moved from 1.1 to 1.2 with THE-2019's additive plugin messages.
+// Recorded before the vocabulary migration; the rules slice is an intentional additive extension.
+// Only the random subscription UUID is normalized; the frames' wire version moved from 1.1 to 1.2
+// with THE-2019's additive plugin messages.
 test("subscription bytes stay compatible with the recorded daemon vocabulary and folded tables", async (t) => {
   const fixture = new URL("./support/protocol-subscription.json", import.meta.url);
   const inputs = JSON.parse(readFileSync(fixture, "utf8")) as { history: EventInput[]; live: EventInput[] };
