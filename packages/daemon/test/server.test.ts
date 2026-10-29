@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,6 +53,11 @@ test("armadad announces its address, serves without an app build and quits clean
   const dir = mkdtempSync(join(tmpdir(), "armada-process-"));
   const catalog = join(dir, "projects.json");
   writeFileSync(catalog, JSON.stringify(projects));
+  // Keep the executable boot test offline even on a developer's signed-in machine.
+  for (const command of ["gh", "security"]) {
+    writeFileSync(join(dir, command), "#!/bin/sh\nexit 1\n");
+    chmodSync(join(dir, command), 0o755);
+  }
   const child = spawn(
     "node",
     [
@@ -64,7 +69,10 @@ test("armadad announces its address, serves without an app build and quits clean
       "--static-dir",
       join(dir, "missing"),
     ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, GITHUB_TOKEN: "", PATH: `${dir}:${process.env.PATH}` },
+    },
   );
   const exited = once(child, "exit");
   child.stderr.resume();
@@ -77,6 +85,10 @@ test("armadad announces its address, serves without an app build and quits clean
   const [ready] = await once(lines, "line");
   lines.close();
   const address = JSON.parse(ready);
+  assert.deepEqual(
+    address.readers,
+    projects.map((project) => ({ project: project.id, tracker: false, forge: false })),
+  );
   assert.equal((await fetch(address.url)).status, 404);
   const client = await connect(address.wsUrl);
   client.send({ type: "projects.list" });
