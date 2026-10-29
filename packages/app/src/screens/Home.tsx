@@ -1,16 +1,52 @@
 import { APP_TOO_OLD, DAEMON_TOO_OLD } from "@armada/protocol";
-import { Block, Dot, Page, PageHeader } from "@/components/page";
+import { useMemo } from "react";
+import { FleetList } from "@/components/fleet/FleetList";
+import { Dot, Page, PageHeader } from "@/components/page";
 import { Button } from "@/components/ui/button";
-import { sessionsInFlight } from "@/fleet/sessions";
+import { fleetItems, groupCounts, headline, subline } from "@/fleet/overview";
+import { fleetOf } from "@/fleet/state";
 import { LOG_BEHIND } from "@/protocol/client";
 import { useDaemon } from "@/protocol/store";
 
-/** The home page, in the v7 anatomy; app/fleet fills its blocks with the fleet by state. */
-export function Home({ address, onReload }: { address: string; onReload: () => void }) {
-  const { projects, logs, problem, status } = useDaemon();
-  const sessions = (projects ?? []).reduce((n, p) => n + sessionsInFlight(logs[p.id]?.events ?? []), 0);
-  // Counted once every project's first frame arrived, so the line never says 0 before it knows.
-  const read = projects?.every((p) => logs[p.id]) ?? false;
+const viewerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+/**
+ * The home page, in the v7 anatomy: the daemon and the fleet's numbers on the
+ * facts line, the title, what is blocked and what waits for the owner on the
+ * quiet line, then the fleet by state (`FleetList`), from each project's
+ * folded state as the daemon sends it. `now` and `zone` decide "merged today";
+ * the viewer's own unless a test gives them.
+ */
+export function Home({
+  address,
+  onReload,
+  now: givenNow,
+  zone: givenZone,
+}: {
+  address: string;
+  onReload: () => void;
+  now?: number;
+  zone?: string;
+}) {
+  const { projects, fleets, problem, status } = useDaemon();
+  // Read on each render: each frame re-renders the list, and nothing on screen ticks between them.
+  const now = givenNow ?? Date.now();
+  const zone = givenZone ?? viewerZone();
+  // Shown once every project's folded state arrived, so the page never says 0 before it knows.
+  const read = projects?.every((p) => fleets[p.id]) ?? false;
+  const items = useMemo(
+    () =>
+      fleetItems(
+        (projects ?? []).flatMap((p) => {
+          const snapshot = fleets[p.id];
+          return snapshot ? [{ id: p.id, state: fleetOf(snapshot) }] : [];
+        }),
+        { now, zone },
+      ),
+    [projects, fleets, now, zone],
+  );
+  const names = useMemo(() => new Map((projects ?? []).map((p) => [p.id, p.name])), [projects]);
+  const counts = groupCounts(items);
   // Reloading helps after an update, or when the daemon's log went back; not with an address it cannot open.
   const reload = problem === LOG_BEHIND || problem === APP_TOO_OLD || problem === DAEMON_TOO_OLD;
   return (
@@ -21,6 +57,14 @@ export function Home({ address, onReload }: { address: string; onReload: () => v
             <span>Daemon</span>
             <Dot />
             <span className="font-mono">{address}</span>
+            {projects &&
+              read &&
+              subline(counts, projects.length).map((fact) => (
+                <span key={fact} className="contents">
+                  <Dot />
+                  <span>{fact}</span>
+                </span>
+              ))}
           </>
         }
         title="Fleet"
@@ -28,7 +72,7 @@ export function Home({ address, onReload }: { address: string; onReload: () => v
           projects === null
             ? "Waiting for the daemon to list its projects."
             : read
-              ? `${plural(projects.length, "project")} · ${plural(sessions, "session")} in flight`
+              ? headline(counts)
               : `${plural(projects.length, "project")} · reading their logs`
         }
       />
@@ -45,21 +89,7 @@ export function Home({ address, onReload }: { address: string; onReload: () => v
           )}
         </div>
       )}
-      {projects && projects.length > 0 && (
-        <Block heading="Projects">
-          <ul className="m-0 flex list-none flex-col p-0">
-            {projects.map((p) => (
-              <li key={p.id} className="flex h-row items-center gap-3 border-line-soft border-b">
-                <span className="min-w-0 flex-1 truncate text-text">{p.name}</span>
-                <span className="font-mono text-meta text-text-3">{p.repository}</span>
-                <span className="w-24 text-right text-text-2 tnum">
-                  {logs[p.id] && plural(sessionsInFlight(logs[p.id]?.events ?? []), "session")}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </Block>
-      )}
+      {projects && projects.length > 0 && read && <FleetList items={items} names={names} now={now} zone={zone} />}
     </Page>
   );
 }

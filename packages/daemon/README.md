@@ -98,6 +98,11 @@ carry an optional `snapshot: {seq,state}` on `after: 0`: `state` is that project
 `ProjectTables` from the pure fold, including empty tables for an empty project.
 The daemon also sends the initial event history for clients that fold locally.
 A snapshot consumer should ignore events at or before the snapshot's cursor.
+Every later frame that carries events carries the project's refolded state too
+(`snapshot`, at the frame's cursor; one fold per project per commit notice,
+shared by the sockets), so the app renders the fold without folding; empty
+frames and the history frame right after a snapshot carry none. Each such frame
+folds the project's log from the start, as `fold` requires.
 A reconnect with a positive `after` omits the snapshot and replays only later
 events, followed by live commits. Re-subscribing replaces the prior subscription
 for that project on that socket. Other project commits emit empty batches that

@@ -1,4 +1,4 @@
-/** The fake daemon's port in development (`bun run fake-daemon`, reserved for THE-1990). */
+/** The dev daemon's port in development (`bun run dev-daemon`, reserved for THE-1990). */
 export const DEV_DAEMON_URL = "ws://127.0.0.1:4824";
 
 /**

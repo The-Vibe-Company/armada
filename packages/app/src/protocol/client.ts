@@ -7,6 +7,7 @@ import {
   type ProtocolEvent,
   type ProtocolVersion,
   type ServerMessage,
+  type Snapshot,
   serverMessageSchema,
   versionSchema,
 } from "@armada/protocol";
@@ -28,6 +29,8 @@ export interface DaemonState {
   /** null until the daemon listed them; kept across reconnects so the sidebar never blanks. */
   projects: readonly Project[] | null;
   logs: Readonly<Record<string, ProjectLog>>;
+  /** Each project's folded state, the latest the daemon sent; its shape is the daemon's (src/fleet/state.ts reads it). */
+  fleets: Readonly<Record<string, Snapshot>>;
 }
 
 /** The part of a browser WebSocket the client uses, so tests hand it a fake. */
@@ -61,13 +64,13 @@ export const UNREADABLE = "The daemon sent a message this app cannot read";
 export const LOG_BEHIND = "The daemon's log is behind what this app has read: reload the app";
 export const unusableAddress = (url: string) => `This daemon address is not usable: ${url}`;
 
-export const initialState: DaemonState = { status: "connecting", problem: null, projects: null, logs: {} };
+export const initialState: DaemonState = { status: "connecting", problem: null, projects: null, logs: {}, fleets: {} };
 
 /**
  * The app's one connection to the daemon (packages/protocol): list the
  * projects, subscribe to each from its last applied cursor, apply the event
- * frames, and reconnect after a drop, resuming where each project stopped.
- * A frame it cannot read may have carried events, so it drops the connection
+ * frames and keep the folded state they carry, and reconnect after a drop,
+ * resuming where each project stopped. A frame it cannot read may have carried events, so it drops the connection
  * and resumes from the last applied cursor rather than skip them. A daemon of
  * another major is refused with one line and never retried.
  */
@@ -168,13 +171,17 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       }
       case "project.subscribed":
         subscriptions.set(message.project, message.subscriptionId);
+        if (message.snapshot) set({ fleets: folded(message.project, message.snapshot) });
         return;
       case "events": {
         if (subscriptions.get(message.project) !== message.subscriptionId) return;
         const log = state.logs[message.project] ?? { seq: 0, events: [] };
         if (message.seq < log.seq) return set({ problem: LOG_BEHIND });
         const fresh = message.events.filter((event) => event.seq > log.seq);
-        set({ logs: { ...state.logs, [message.project]: { seq: message.seq, events: [...log.events, ...fresh] } } });
+        set({
+          logs: { ...state.logs, [message.project]: { seq: message.seq, events: [...log.events, ...fresh] } },
+          fleets: folded(message.project, message.snapshot),
+        });
         return;
       }
       case "error":
@@ -183,6 +190,13 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       case "session.result":
         return;
     }
+  }
+
+  /** The folded states with this project's snapshot, unless the app already holds a later one. */
+  function folded(project: string, snapshot: Snapshot | undefined): DaemonState["fleets"] {
+    const held = state.fleets[project];
+    if (!snapshot || (held && snapshot.seq < held.seq)) return state.fleets;
+    return { ...state.fleets, [project]: snapshot };
   }
 
   const cursor = (project: string) => state.logs[project]?.seq ?? 0;

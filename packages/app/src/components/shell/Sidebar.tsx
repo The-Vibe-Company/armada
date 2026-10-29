@@ -1,4 +1,5 @@
 import { sessionsInFlight } from "@/fleet/sessions";
+import { fleetOf } from "@/fleet/state";
 import type { ConnectionStatus } from "@/protocol/client";
 import { useDaemon } from "@/protocol/store";
 import { Count } from "./Count";
@@ -10,11 +11,11 @@ const current = "aria-[current=page]:bg-item-current aria-[current=page]:text-te
 
 /**
  * The sidebar (design/dashboard-v7): the mark, the fleet, one line per
- * project with its sessions in flight (once its first frame arrived, so
+ * project with its sessions in flight (once its folded state arrived, so
  * nothing counts up on the first paint), and the live reading of the daemon.
  */
 export function Sidebar() {
-  const { projects, logs, status } = useDaemon();
+  const { projects, fleets, status } = useDaemon();
   return (
     <aside
       aria-label="Sidebar"
@@ -35,12 +36,15 @@ export function Sidebar() {
         </div>
         {projects === null && <div className="px-2 py-1.5 text-small text-text-3">Waiting for the daemon</div>}
         {projects?.length === 0 && <div className="px-2 py-1.5 text-small text-text-3">No project yet</div>}
-        {projects?.map((p) => (
-          <a key={p.id} href={`#/projects/${encodeURIComponent(p.id)}`} className={item} title={p.repository}>
-            <span className="min-w-0 flex-1 truncate">{p.name}</span>
-            {logs[p.id] && <Sessions count={sessionsInFlight(logs[p.id]?.events ?? [])} />}
-          </a>
-        ))}
+        {projects?.map((p) => {
+          const fleet = fleets[p.id];
+          return (
+            <a key={p.id} href={`#/projects/${encodeURIComponent(p.id)}`} className={item} title={p.repository}>
+              <span className="min-w-0 flex-1 truncate">{p.name}</span>
+              {fleet && <Sessions count={sessionsInFlight(fleetOf(fleet))} />}
+            </a>
+          );
+        })}
       </nav>
       <span className="flex-1" />
       <Live status={status} />

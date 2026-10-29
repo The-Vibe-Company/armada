@@ -80,7 +80,7 @@ Both sides accept minor differences within the same major. App consumers validat
 with `serverMessageSchema` and check the server's major before applying frames;
 a major mismatch requires reconnecting with a compatible app/daemon pair.
 
-## Initial folded snapshot (additive)
+## Folded snapshots (additive)
 
 `project.subscribed` may include `snapshot: {seq,state}` on an initial
 `after: 0` subscription. `state` is JSON whose fold shape is owned by the daemon;
@@ -89,3 +89,11 @@ so clients that fold locally continue to work. A client using the snapshot must
 apply only events after the snapshot cursor. Replay subscriptions with a positive
 `after` omit the snapshot and send only missed event batches. This optional field
 adds no required operation or dependency on daemon types.
+
+An `events` frame may carry the same optional `snapshot`: the project's folded
+state after that frame's events, at the frame's own cursor (`snapshot.seq` equals
+`seq`; the schema refuses another). A server sends it on frames that carry events
+and may leave it out of empty frames and of the history frame that follows a
+snapshot-bearing `project.subscribed`. A client renders the daemon's fold from
+these snapshots without folding, keeping the one at the highest cursor. Older
+clients ignore the field.

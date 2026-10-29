@@ -111,6 +111,47 @@ describe("the daemon client", () => {
     expect(client.getState().logs.beta).toBeUndefined();
   });
 
+  test("keeps each project's folded state, from its subscription and then each frame, never an older one", () => {
+    const { client, socket } = setup();
+    const list = socket().sent.find((m) => m.type === "projects.list");
+    socket().receive({ type: "projects.result", version: V, id: list?.id, projects });
+    const subscribe = socket().sent.find((m) => m.type === "project.subscribe" && m.project === "alpha");
+    const state = (n: number) => ({ sessions: [{ ticket: `EX-${n}` }] });
+    socket().receive({
+      ...subscribe,
+      type: "project.subscribed",
+      subscriptionId: "sub-alpha",
+      snapshot: { seq: 2, state: state(2) },
+    });
+    expect(client.getState().fleets.alpha).toEqual({ seq: 2, state: state(2) });
+    const changes: unknown[] = [];
+    client.subscribe(() => changes.push(client.getState().fleets.alpha));
+    const frame = (seq: number, snapshot?: { seq: number; state: unknown }) =>
+      socket().receive({
+        type: "events",
+        version: V,
+        subscriptionId: "sub-alpha",
+        project: "alpha",
+        seq,
+        events: [event(seq, "alpha", `s${seq}`)],
+        ...(snapshot ? { snapshot } : {}),
+      });
+    frame(4, { seq: 4, state: state(4) });
+    // One change per frame: its events and its folded state together.
+    expect(changes).toEqual([{ seq: 4, state: state(4) }]);
+    frame(5);
+    expect(client.getState().fleets.alpha).toEqual({ seq: 4, state: state(4) });
+    // A resubscription's snapshot older than the one held is not taken.
+    socket().receive({
+      ...subscribe,
+      type: "project.subscribed",
+      subscriptionId: "sub-alpha-2",
+      snapshot: { seq: 3, state: state(3) },
+    });
+    expect(client.getState().fleets.alpha).toEqual({ seq: 4, state: state(4) });
+    expect(client.getState().fleets.beta).toBeUndefined();
+  });
+
   test("after a drop, waits, reconnects and resumes each project at its last cursor, keeping the projects", () => {
     const { client, sockets, timers, socket } = setup();
     listAndSubscribe(socket());
