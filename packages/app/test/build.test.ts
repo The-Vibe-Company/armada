@@ -104,8 +104,9 @@ describe("in a browser, served by a running daemon", () => {
     ]);
     expect(rows).toHaveLength(SAMPLE_PROJECTS.length);
     await expect(sidebar.getByRole("status").innerText()).resolves.toBe("Live");
-    const main = page.getByRole("main");
-    expect((await main.getByRole("heading", { level: 2 }).allInnerTexts()).map((h) => h.split("\n")[0])).toEqual([
+    // The fleet's group headers, in order (the coordinator's key block above has its own).
+    const groups = page.getByRole("main").locator('h2[id^="fleet-"]');
+    expect((await groups.allInnerTexts()).map((h) => h.split("\n")[0])).toEqual([
       "Blocked",
       "Waiting for your decision",
       "In progress",
