@@ -367,13 +367,16 @@ test("a narrow band keeps every group in it, its labels giving way to the legend
   ]);
   const wide = layoutSky([all], "band", 1100, 200);
   expect(wide.labels.map((l) => l.key)).toEqual(["coordinator", "blocked", "you", "running", "ready", "merged"]);
-  for (const width of [700, 504]) {
+  expect(wide.compact).toBe(false);
+  for (const width of [800, 700, 504]) {
     const narrow = layoutSky([all], "band", width, 200);
     expect(narrow.targets).toHaveLength(5 + 5);
     for (const t of narrow.targets) {
       expect(t.x).toBeGreaterThan(0);
       expect(t.x).toBeLessThan(width);
     }
-    if (width === 504) expect(narrow.labels).toEqual([]);
+    // The labels gave way: the legend names the groups (Sky.tsx wraps its states and drops its harnesses).
+    expect(narrow.labels).toEqual([]);
+    expect(narrow.compact).toBe(true);
   }
 });

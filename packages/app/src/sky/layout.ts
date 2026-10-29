@@ -72,6 +72,8 @@ export interface SkyLayout {
   targets: Target[];
   arcs: SkyArc[];
   labels: SkyLabel[];
+  /** The band's labels gave way: the legend names the groups, its states on two lines, without the harnesses. */
+  compact?: boolean;
 }
 
 const NEAR = 2;
@@ -181,9 +183,10 @@ function wingsOf(project: SkyProject, size: SkySize): Wing[] {
 
 /**
  * Above the ships, the labels (none once they gave way); below, the arcs and
- * the legend, on two lines on a sky narrower than 576 px (Sky.tsx's `@max-xl`).
+ * the legend, on two lines once the labels gave way or on a sky narrower than
+ * 672 px (Sky.tsx's `@max-2xl`).
  */
-const BAND = { top: 44, bare: 16, bottom: 60, narrow: 576, wrapped: 84 } as const;
+const BAND = { top: 44, bare: 16, bottom: 60, narrow: 672, wrapped: 84 } as const;
 /** A group's V on the band is flatter and wider than the flock's: the band is short. */
 const BAND_V = { back: 0.55, side: 1.2 } as const;
 /** A crowded group flies as several V's of at most this many, side by side. */
@@ -246,7 +249,7 @@ function band(projects: readonly SkyProject[], width: number, height: number): S
   const words = withWords.used <= room.width;
   const { f, lines, widthOf, used } = words ? withWords : fit(false);
   const top = words ? BAND.top : BAND.bare;
-  const roomHeight = height - top - (width < BAND.narrow ? BAND.wrapped : BAND.bottom);
+  const roomHeight = height - top - (!words || width < BAND.narrow ? BAND.wrapped : BAND.bottom);
   const air = Math.max(0, room.width - used) / (wings.length + 1);
   const targets: Target[] = [];
   const arcs: SkyArc[] = [];
@@ -277,7 +280,7 @@ function band(projects: readonly SkyProject[], width: number, height: number): S
     if (w.group && w.group !== "merged")
       arcs.push({ key: w.id, color: STATE_COLOR[w.group], members: placed.map((t) => t.key) });
   }
-  return { targets, arcs, labels };
+  return { targets, arcs, labels, compact: !words };
 }
 
 /** The hangar: one formation per project, spread over the sky. */

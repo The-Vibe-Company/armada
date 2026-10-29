@@ -149,7 +149,7 @@ export function Sky({ projects, size, clock = animationFrames, reducedMotion, cl
       ))}
       <div className="pointer-events-none absolute right-6 bottom-3 left-6 flex justify-between gap-6 text-body text-text-3">
         <Legend
-          className="min-w-0 flex-nowrap overflow-hidden @max-xl:flex-wrap"
+          className={cn("min-w-0 overflow-hidden", layout.compact ? "flex-wrap" : "flex-nowrap @max-2xl:flex-wrap")}
           items={GROUPS.map((g) => ({
             key: g,
             label: SKY_GROUP_LABEL[g],
@@ -158,7 +158,7 @@ export function Sky({ projects, size, clock = animationFrames, reducedMotion, cl
           }))}
         />
         <Legend
-          className="flex-wrap @max-2xl:hidden"
+          className={layout.compact ? "hidden" : "flex-wrap @max-4xl:hidden"}
           items={counts.harnesses.map((h) => ({
             key: h,
             label: HARNESS_LABEL[h],
@@ -175,7 +175,7 @@ export function Sky({ projects, size, clock = animationFrames, reducedMotion, cl
   );
 }
 
-/** One line of the legend: on a narrow sky the states stay on it, and the harnesses give way. */
+/** The legend: on a narrow sky, or once the band's labels gave way, the states wrap to a second line and the harnesses give way. */
 function Legend({
   items,
   className,

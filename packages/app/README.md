@@ -152,7 +152,8 @@ the quiet legend) are HTML in Geist; the canvas draws no text.
   through launches, state changes and merges, no frame makes more than 400
   calls and writes to the context, and a frame's work averages under 4 ms.
 - **A narrow band** (a room beside its panels) keeps every group: its labels
-  give way to the legend, whose harnesses give way under 672 px.
+  give way to the legend, whose states then wrap to a second line (also under
+  672 px) and whose harnesses give way (also under 896 px).
 
 `test/sky.test.ts` draws it on synthetic fleets with a fake 2D context and a
 hand-turned clock: the triangles per state and colour, the bank on a state
