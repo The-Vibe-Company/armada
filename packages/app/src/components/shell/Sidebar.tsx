@@ -10,7 +10,8 @@ const current = "aria-[current=page]:bg-item-current aria-[current=page]:text-te
 
 /**
  * The sidebar (design/dashboard-v7): the mark, the fleet, one line per
- * project with its sessions in flight, and the live reading of the daemon.
+ * project with its sessions in flight (once its first frame arrived, so
+ * nothing counts up on the first paint), and the live reading of the daemon.
  */
 export function Sidebar() {
   const { projects, logs, status } = useDaemon();
@@ -37,7 +38,7 @@ export function Sidebar() {
         {projects?.map((p) => (
           <a key={p.id} href={`#/projects/${encodeURIComponent(p.id)}`} className={item} title={p.repository}>
             <span className="min-w-0 flex-1 truncate">{p.name}</span>
-            <Sessions count={sessionsInFlight(logs[p.id]?.events ?? [])} />
+            {logs[p.id] && <Sessions count={sessionsInFlight(logs[p.id]?.events ?? [])} />}
           </a>
         ))}
       </nav>

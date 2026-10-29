@@ -80,7 +80,9 @@ describe("in a browser, against a running daemon", () => {
     await page.goto(`http://127.0.0.1:${app.port}/?daemon=${encodeURIComponent(daemon.url)}`);
     const sidebar = page.getByRole("complementary", { name: "Sidebar" });
     const projects = sidebar.getByRole("navigation", { name: "Projects" });
-    await projects.getByRole("link", { name: /Tidewater/ }).waitFor({ timeout: 5_000 });
+    // A project's count shows once its first frame arrived.
+    for (const name of [/Harbor 2 sessions/, /Lantern 1 session/, /Tidewater 0 sessions/])
+      await projects.getByRole("link", { name }).waitFor({ timeout: 5_000 });
     const rows = await projects.getByRole("link").allInnerTexts();
     expect(rows.map((r) => r.replace(/\s+/g, " ").trim())).toEqual([
       "Harbor 2 sessions in flight",

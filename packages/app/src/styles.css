@@ -1,7 +1,7 @@
 /* Armada V2's look: the owner's v7 design (design/dashboard-v7) kept as
    tokens and rules, not as CSS. Values copied from
    packages/dashboard/app/globals.css; the dashboard is never imported.
-   Dark only, Geist and Geist Mono only (test/anatomy.test.ts). */
+   Dark only, Geist and Geist Mono only (test/anatomy.test.tsx). */
 @import "tailwindcss";
 
 @font-face {

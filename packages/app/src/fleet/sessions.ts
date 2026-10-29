@@ -1,8 +1,9 @@
 import type { ProtocolEvent } from "@armada/protocol";
 
 // The daemon owns its event kinds (packages/protocol README). These are the
-// ones it writes today for a session's life (packages/daemon, THE-1986);
-// any other kind, or a payload of another shape, is ignored.
+// ones its event log names for a session's life in THE-1986 (PR #324, not yet
+// on main); any other kind, or a payload of another shape, is ignored. app/fleet
+// reads the daemon's kinds in full.
 const STARTS = new Set(["session.claimed"]);
 const ENDS = new Set(["session.released", "merge.confirmed"]);
 

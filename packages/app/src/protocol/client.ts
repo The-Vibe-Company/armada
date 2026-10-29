@@ -58,6 +58,8 @@ export interface DaemonClient {
 
 const BACKOFF = [250, 500, 1000, 2000, 5000];
 export const UNREADABLE = "The daemon sent a message this app cannot read";
+export const LOG_BEHIND = "The daemon's log is behind what this app has read: reload the app";
+export const unusableAddress = (url: string) => `This daemon address is not usable: ${url}`;
 
 export const initialState: DaemonState = { status: "connecting", problem: null, projects: null, logs: {} };
 
@@ -65,7 +67,9 @@ export const initialState: DaemonState = { status: "connecting", problem: null, 
  * The app's one connection to the daemon (packages/protocol): list the
  * projects, subscribe to each from its last applied cursor, apply the event
  * frames, and reconnect after a drop, resuming where each project stopped.
- * A daemon of another major is refused with one line and never retried.
+ * A frame it cannot read may have carried events, so it drops the connection
+ * and resumes from the last applied cursor rather than skip them. A daemon of
+ * another major is refused with one line and never retried.
  */
 export function createDaemonClient(options: ClientOptions): DaemonClient {
   const version = options.version ?? PROTOCOL_VERSION;
@@ -77,6 +81,8 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   let attempt = 0;
   let nextId = 0;
   let running = false;
+  /** Why the last connection ended: after an unreadable frame, the backoff keeps growing. */
+  let lastDrop: "close" | "unreadable" = "close";
   /** Per connection: the subscription each project's frames arrive under. */
   let subscriptions = new Map<string, string>();
 
@@ -90,7 +96,12 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   function connect() {
     cancelRetry = null;
     subscriptions = new Map();
-    const current = options.open(options.url);
+    let current: SocketLike;
+    try {
+      current = options.open(options.url);
+    } catch {
+      return refuse(unusableAddress(options.url));
+    }
     socket = current;
     current.onopen = () => send({ type: "projects.list", version, id: id() });
     current.onmessage = (event) => {
@@ -98,13 +109,27 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
     };
     current.onclose = () => {
       if (socket !== current) return;
-      socket = null;
-      if (!running || state.status === "refused") return;
-      set({ status: "reconnecting" });
-      const wait = backoff[Math.min(attempt, backoff.length - 1)] ?? 1000;
-      attempt += 1;
-      cancelRetry = options.schedule(connect, wait);
+      lastDrop = "close";
+      reconnect();
     };
+  }
+
+  /** Leave the current connection, if any, and try again after the next wait. */
+  function reconnect() {
+    const closing = socket;
+    socket = null;
+    closing?.close();
+    if (!running || state.status === "refused") return;
+    set({ status: "reconnecting" });
+    const wait = backoff[Math.min(attempt, backoff.length - 1)] ?? 1000;
+    attempt += 1;
+    cancelRetry = options.schedule(connect, wait);
+  }
+
+  function unreadable() {
+    set({ problem: UNREADABLE });
+    lastDrop = "unreadable";
+    reconnect();
   }
 
   function refuse(problem: string) {
@@ -119,7 +144,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
     try {
       input = JSON.parse(String(data));
     } catch {
-      return set({ problem: UNREADABLE });
+      return unreadable();
     }
     // The major first, before the body: a newer daemon's shape still gets its line.
     const envelope = versionSchema.safeParse((input as { version?: unknown } | null)?.version);
@@ -127,14 +152,14 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       return refuse(envelope.data.major > version.major ? APP_TOO_OLD : DAEMON_TOO_OLD);
     }
     const parsed = serverMessageSchema.safeParse(input);
-    if (!parsed.success) return set({ problem: UNREADABLE });
+    if (!parsed.success) return unreadable();
     apply(parsed.data);
   }
 
   function apply(message: ServerMessage) {
     switch (message.type) {
       case "projects.result": {
-        attempt = 0;
+        if (lastDrop === "close") attempt = 0;
         set({ status: "live", problem: null, projects: message.projects });
         for (const project of message.projects) {
           send({ type: "project.subscribe", version, id: id(), project: project.id, after: cursor(project.id) });
@@ -147,7 +172,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       case "events": {
         if (subscriptions.get(message.project) !== message.subscriptionId) return;
         const log = state.logs[message.project] ?? { seq: 0, events: [] };
-        if (message.seq < log.seq) return;
+        if (message.seq < log.seq) return set({ problem: LOG_BEHIND });
         const fresh = message.events.filter((event) => event.seq > log.seq);
         set({ logs: { ...state.logs, [message.project]: { seq: message.seq, events: [...log.events, ...fresh] } } });
         return;

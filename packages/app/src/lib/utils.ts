@@ -1,6 +1,6 @@
 import { createCn } from "cn/config";
 
-/** The v7 theme's names `cn` must know; test/utils.test.ts holds them to src/styles.css's @theme. */
+/** The v7 theme's names `cn` must know; test/anatomy.test.tsx holds them to src/styles.css's @theme. */
 export const THEME_NAMES = {
   text: ["label", "heading", "small", "meta", "body", "sub", "title"],
   radius: ["xs", "sm", "md", "control", "btn", "card", "lg", "deck"],

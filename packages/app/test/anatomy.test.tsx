@@ -56,6 +56,8 @@ describe("the app's sources", () => {
       }
       for (const [, src] of text.matchAll(/@font-face\s*{[^}]*src:\s*([^;]+)/g))
         if (!/url\("\.\/fonts\/geist(-mono)?\.woff2"\)/.test(src ?? "")) offenders.push(`${rel(file)}: ${src}`);
+      // The `font:` shorthand would hide a family among the size and weight: the tokens set fonts.
+      if (/(?<![\w-])font\s*:/.test(text)) offenders.push(`${rel(file)}: the font shorthand`);
       if (/fontFamily|font-\[|font-\(|@fontsource|fonts\.(googleapis|gstatic)|@import\s+url/.test(text))
         offenders.push(`${rel(file)}: a font of its own`);
     }

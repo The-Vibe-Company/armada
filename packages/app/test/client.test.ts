@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { APP_TOO_OLD, type ClientMessage, PROTOCOL_VERSION, type ProtocolEvent } from "@armada/protocol";
-import { createDaemonClient, type SocketLike, UNREADABLE } from "../src/protocol/client";
+import {
+  APP_TOO_OLD,
+  type ClientMessage,
+  DAEMON_TOO_OLD,
+  PROTOCOL_VERSION,
+  type ProtocolEvent,
+  type ProtocolVersion,
+} from "@armada/protocol";
+import { createDaemonClient, LOG_BEHIND, type SocketLike, UNREADABLE, unusableAddress } from "../src/protocol/client";
 
 const V = PROTOCOL_VERSION;
 
@@ -25,12 +32,14 @@ class FakeSocket implements SocketLike {
   }
 }
 
-function setup() {
+function setup({ version = V, refuseOpen = false }: { version?: ProtocolVersion; refuseOpen?: boolean } = {}) {
   const sockets: FakeSocket[] = [];
   const timers: { run: () => void; ms: number; canceled: boolean }[] = [];
   const client = createDaemonClient({
     url: "ws://daemon.test/",
-    open: () => {
+    version,
+    open: (url) => {
+      if (refuseOpen) throw new SyntaxError(`bad address ${url}`);
       const socket = new FakeSocket();
       sockets.push(socket);
       return socket;
@@ -46,7 +55,7 @@ function setup() {
   });
   client.start();
   const socket = () => sockets.at(-1) as FakeSocket;
-  socket().onopen?.();
+  socket()?.onopen?.();
   return { client, sockets, timers, socket };
 }
 
@@ -145,6 +154,13 @@ describe("the daemon client", () => {
     expect(timers).toHaveLength(0);
   });
 
+  test("refuses an older daemon with its own line", () => {
+    const { client, socket } = setup({ version: { major: V.major + 1, minor: 0 } });
+    expect(client.getState().status).toBe("connecting");
+    socket().receive({ type: "projects.result", version: V, id: "r1", projects });
+    expect(client.getState()).toMatchObject({ status: "refused", problem: DAEMON_TOO_OLD, projects: null });
+  });
+
   test("takes the daemon's own refusal as final", () => {
     const { client, timers, socket } = setup();
     socket().receive({ type: "error", version: V, code: "app-too-old", message: APP_TOO_OLD });
@@ -153,29 +169,76 @@ describe("the daemon client", () => {
     expect(timers).toHaveLength(0);
   });
 
-  test("says when a frame cannot be read, and keeps what it had", () => {
+  test("drops the connection on a frame it cannot read and resumes from the last applied cursor", () => {
+    const { client, sockets, timers, socket } = setup();
+    listAndSubscribe(socket());
+    const batch = (seq: number, events: ProtocolEvent[]) =>
+      socket().receive({ type: "events", version: V, subscriptionId: "sub-alpha", project: "alpha", seq, events });
+    batch(2, [event(2, "alpha", "s1")]);
+    expect(client.getState().problem).toBeNull();
+    // Events out of order break the frame's own rule: what it carried is not applied, nor skipped.
+    batch(5, [event(5, "alpha", "s2"), event(4, "alpha", "s3")]);
+    expect(client.getState()).toMatchObject({ status: "reconnecting", problem: UNREADABLE, projects });
+    expect(sockets[0]?.closed).toBe(true);
+    // The old socket's late frames and close change nothing.
+    sockets[0]?.receive({
+      type: "events",
+      version: V,
+      subscriptionId: "sub-alpha",
+      project: "alpha",
+      seq: 9,
+      events: [],
+    });
+    sockets[0]?.drop();
+    expect(timers).toHaveLength(1);
+    expect(client.getState().logs.alpha?.seq).toBe(2);
+
+    timers[0]?.run();
+    socket().onopen?.();
+    listAndSubscribe(socket());
+    expect(socket().sent.find((m) => m.type === "project.subscribe" && m.project === "alpha")).toMatchObject({
+      after: 2,
+    });
+    expect(client.getState()).toMatchObject({ status: "live", problem: null });
+    // Not JSON at all: the same. A daemon that keeps sending such frames waits longer each time.
+    socket().onmessage?.({ data: "not json" });
+    expect(timers.map((t) => t.ms)).toEqual([100, 400]);
+  });
+
+  test("says when the daemon's log is behind the app's cursor, and keeps what it had", () => {
     const { client, socket } = setup();
     listAndSubscribe(socket());
-    expect(client.getState().problem).toBeNull();
-    socket().onmessage?.({ data: "not json" });
-    expect(client.getState()).toMatchObject({ status: "live", problem: UNREADABLE, projects });
-    // Events out of order break the frame's own rule.
     socket().receive({
       type: "events",
       version: V,
       subscriptionId: "sub-alpha",
       project: "alpha",
-      seq: 5,
-      events: [event(5, "alpha", "s1"), event(2, "alpha", "s2")],
+      seq: 6,
+      events: [event(6, "alpha", "s1")],
     });
-    expect(client.getState().logs.alpha).toBeUndefined();
+    expect(client.getState().problem).toBeNull();
+    socket().receive({ type: "events", version: V, subscriptionId: "sub-alpha", project: "alpha", seq: 3, events: [] });
+    expect(client.getState()).toMatchObject({ status: "live", problem: LOG_BEHIND });
+    expect(client.getState().logs.alpha?.seq).toBe(6);
+  });
+
+  test("refuses an address the browser cannot open, without retrying", () => {
+    const { client, timers } = setup({ refuseOpen: true });
+    expect(client.getState()).toMatchObject({ status: "refused", problem: unusableAddress("ws://daemon.test/") });
+    expect(timers).toHaveLength(0);
   });
 
   test("stops: closes the socket and cancels a pending reconnect", () => {
-    const { client, timers, socket } = setup();
+    const { client, sockets, timers, socket } = setup();
     socket().drop();
     expect(timers).toHaveLength(1);
     client.stop();
     expect(timers[0]?.canceled).toBe(true);
+    client.start();
+    expect(sockets).toHaveLength(2);
+    client.stop();
+    expect(socket().closed).toBe(true);
+    socket().drop();
+    expect(timers).toHaveLength(1);
   });
 });

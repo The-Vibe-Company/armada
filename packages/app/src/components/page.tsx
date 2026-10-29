@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 /**
  * The v7 page anatomy (design/dashboard-v7): a line of facts, the 22 px title
  * and a quiet line, then the page's blocks. The title is the app's only h1
- * (test/anatomy.test.ts refuses one anywhere else).
+ * (test/anatomy.test.tsx refuses one anywhere else).
  */
 export function Page({ children }: { children: ReactNode }) {
   return <div className="flex min-w-0 max-w-[1080px] flex-col gap-5.5 px-8 pt-7 pb-14">{children}</div>;
