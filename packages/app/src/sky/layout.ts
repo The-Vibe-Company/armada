@@ -300,8 +300,8 @@ export const SQUADRON_SCALE: Record<Group | "idle", number> = {
   idle: 0.7,
 };
 
-/** About how tall a squadron's label is (its name, its counts, "Enter the room"), and how wide at most. */
-const SQUADRON_LABEL = { height: 84, width: 440 } as const;
+/** About how tall a squadron's label is (its name, its counts on up to two lines, "Enter the room"), and how wide at most. */
+export const SQUADRON_LABEL = { height: 104, width: 440 } as const;
 
 /** The hangar: one formation per project, spread over the sky. */
 function stage(projects: readonly SkyProject[], width: number, height: number): SkyLayout {
@@ -325,7 +325,7 @@ function stage(projects: readonly SkyProject[], width: number, height: number): 
     // Every other column sits a little lower: squadrons, not a table.
     const stagger = cols > 1 && rows === 1 ? (col % 2 ? 0.08 : -0.06) * cell.height : 0;
     const cx = usable.x + cell.width * (col + 0.5);
-    const cy = usable.y + cell.height * (row + 0.45) + stagger;
+    const cy = usable.y + cell.height * (row + 0.38) + stagger;
     const lean = i % 2 ? 0.2 : -0.2;
     const wings = wingsOf(project, "stage");
     const own: Target[] = [];
@@ -371,16 +371,17 @@ function stage(projects: readonly SkyProject[], width: number, height: number): 
     const reach = SHIP * f;
     const xs = own.map((t) => t.x);
     const ys = own.map((t) => t.y);
-    // Under its arc (drawn about 20 px below its lowest ship), with some air.
-    const y = Math.max(cy, ...ys) + 34 * f + 18;
     const wordsWidth = Math.min(cell.width - 24, SQUADRON_LABEL.width);
-    // The link stays in its own cell (the first row reaches the top, the last the bottom), so two never overlap.
+    // The link and its words stay in their own cell (the first row reaches the top, the last the
+    // bottom), so no squadron's words lie under another's link.
     const bounds = {
       left: usable.x + cell.width * col,
       right: usable.x + cell.width * (col + 1),
       top: row === 0 ? 0 : usable.y + cell.height * row,
       bottom: row === rows - 1 ? height : usable.y + cell.height * (row + 1),
     };
+    // Under its arc (drawn about 20 px below its lowest ship), with some air; raised on a short cell.
+    const y = Math.max(bounds.top, Math.min(Math.max(cy, ...ys) + 34 * f + 18, bounds.bottom - SQUADRON_LABEL.height));
     const left = Math.max(bounds.left, Math.min(cx - wordsWidth / 2, ...xs.map((x) => x - reach)));
     const top = Math.max(bounds.top, Math.min(...ys) - reach * 2);
     const right = Math.min(bounds.right, Math.max(cx + wordsWidth / 2, ...xs.map((x) => x + reach)));

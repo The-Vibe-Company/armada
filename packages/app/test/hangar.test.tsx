@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { PROTOCOL_VERSION } from "@armada/protocol";
+import { APP_TOO_OLD, PROTOCOL_VERSION } from "@armada/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { skyProject } from "../src/fleet/sky";
 import { type FoldedSession, readFleetState } from "../src/fleet/state";
@@ -7,9 +7,11 @@ import { parseRoute } from "../src/lib/route";
 import { createDaemonClient, type SocketLike } from "../src/protocol/client";
 import { DaemonProvider } from "../src/protocol/store";
 import { Hangar } from "../src/screens/Hangar";
+import { ProjectFleet } from "../src/screens/ProjectFleet";
+import { Settings } from "../src/screens/Settings";
 import type { SkyContext } from "../src/sky/draw";
 import { BONE, LIME } from "../src/sky/flock";
-import { HARNESS_COLOR, layoutSky, STATE_COLOR } from "../src/sky/layout";
+import { HARNESS_COLOR, layoutSky, SQUADRON_LABEL, STATE_COLOR } from "../src/sky/layout";
 import { createSkyView } from "../src/sky/view";
 
 // The hangar on two synthetic projects: each one a squadron of the stage,
@@ -190,9 +192,17 @@ test("on a crowded or short sky, no squadron's link reaches over another's", () 
     [4, 3, 900, 420],
     [10, 12, 1200, 700],
     [6, 2, 1100, 700],
+    [6, 3, 1000, 500],
   ] as const) {
-    const areas = layoutSky(crowd(n, agents), "stage", w, h).labels.map((l) => l.area);
+    const labels = layoutSky(crowd(n, agents), "stage", w, h).labels;
+    const areas = labels.map((l) => l.area);
     expect(areas).toHaveLength(n);
+    // Each squadron's words, "Enter the room" included, lie inside its own link.
+    for (const l of labels) {
+      if (!l.area) throw new Error("a squadron has no area");
+      expect(l.y).toBeGreaterThanOrEqual(l.area.y);
+      expect(l.y + SQUADRON_LABEL.height).toBeLessThanOrEqual(l.area.y + l.area.height + 0.001);
+    }
     for (const [i, a] of areas.entries())
       for (const b of areas.slice(i + 1)) {
         if (!a || !b) throw new Error("a squadron has no area");
@@ -202,8 +212,8 @@ test("on a crowded or short sky, no squadron's link reaches over another's", () 
   }
 });
 
-/** The hangar as the app renders it, on these folded states, before the sky measures itself. */
-function render(states: Record<string, { sessions: FoldedSession[] }>) {
+/** A client the daemon told of these projects and their folded states, and how to tell it more. */
+function connect(states: Record<string, { sessions: FoldedSession[] }>) {
   let socket: SocketLike | null = null;
   const client = createDaemonClient({
     url: "ws://daemon.test/",
@@ -226,6 +236,12 @@ function render(states: Record<string, { sessions: FoldedSession[] }>) {
       after: 0,
       snapshot: { seq: 1, state: states[p.id] },
     });
+  return { client, say };
+}
+
+/** The hangar as the app renders it, on these folded states, before the sky measures itself. */
+function render(states: Record<string, { sessions: FoldedSession[] }>) {
+  const { client } = connect(states);
   return renderToStaticMarkup(
     <DaemonProvider client={client}>
       <Hangar onReload={() => {}} now={NOW} zone={ZONE} />
@@ -260,6 +276,21 @@ test("an empty fleet leaves the sky empty, with one quiet line", () => {
   // No squadron and no legend: the sky is empty.
   expect(html).toContain('data-sky="stage"');
   expect(html).not.toContain("data-legend");
+});
+
+test("the daemon's problem, with its Reload, shows on every screen, not only the hangar", () => {
+  const { client, say } = connect(STATES);
+  say({ type: "error", code: "app-too-old", message: APP_TOO_OLD });
+  const screens = [
+    <Hangar key="hangar" onReload={() => {}} now={NOW} zone={ZONE} />,
+    <Settings key="settings" address="ws://daemon.test/" onReload={() => {}} />,
+    <ProjectFleet key="room" id="kestrel" onReload={() => {}} now={NOW} zone={ZONE} />,
+  ];
+  for (const screen of screens) {
+    const html = renderToStaticMarkup(<DaemonProvider client={client}>{screen}</DaemonProvider>);
+    const alert = html.match(/<div role="alert"[^>]*>(.*?)<\/div>/)?.[1]?.replace(/<[^>]+>/g, " ");
+    expect(alert?.replace(/\s+/g, " ").trim()).toBe(`${APP_TOO_OLD} Reload`);
+  }
 });
 
 test("the address's hash names the screen: the hangar, a project's room, the settings", () => {
