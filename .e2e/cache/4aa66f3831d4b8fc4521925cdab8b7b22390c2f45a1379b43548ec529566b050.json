@@ -1,0 +1,107 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-29T16:31:22.092Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap button \"Approve\" in \"To validate\"",
+        "target": {
+          "role": "button",
+          "name": "Approve",
+          "within": "To validate"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "e2e/tests/dashboard.e2e.ts::the%20owner%20approves%20a%20waiting%20validation%20and%20the%20list%20moves%20on",
+      "targetId": "dashboard",
+      "instructionDigest": "575ab9eec97a3eda4d30bf1ad64629c1495339831599df74a4c5d56bef087cfd",
+      "paramsDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "callIndex": 0,
+      "agent": "default"
+    },
+    "recordedBy": {
+      "provider": "azure-foundry.chat",
+      "model": "foundry-dashboard-agent"
+    },
+    "summary": "Approved the GAD-9 product card design validation via the Approve button on /approve/2. The app moved to the next waiting validation #1 (WID-18 'Add a dark theme to the settings page'), status showed 'GAD-9: sent to the coordinator.', waiting count dropped 3→2, and GAD-9 now appears under Decided t…",
+    "startPath": "/approve/2",
+    "endPath": "/approve/1",
+    "endAnchors": [
+      {
+        "role": "status",
+        "name": "GAD-9: sent to the coordinator."
+      },
+      {
+        "role": "heading",
+        "name": "#1"
+      },
+      {
+        "text": "#1"
+      },
+      {
+        "text": "Approved by Olive Owner <olive.owner@example.test>"
+      },
+      {
+        "role": "link",
+        "name": "WID-18"
+      },
+      {
+        "role": "link",
+        "name": "Add a dark theme to the settings page"
+      },
+      {
+        "text": "Why you: touches the settings page users see: the rule keeps front-end changes for you"
+      },
+      {
+        "text": "Pull request"
+      }
+    ],
+    "goneAnchors": [
+      {
+        "role": "heading",
+        "name": "#2"
+      },
+      {
+        "text": "#2"
+      },
+      {
+        "text": "To validate"
+      },
+      {
+        "text": "GAD-9"
+      },
+      {
+        "role": "link",
+        "name": "GAD-9"
+      },
+      {
+        "role": "link",
+        "name": "Two directions for the product card: A keeps the photo square, B lets it bleed to the edges. Pick one, or say what to change."
+      },
+      {
+        "role": "image",
+        "name": "Direction A: square photo"
+      },
+      {
+        "text": "Direction A: square photo"
+      }
+    ],
+    "endWaitMs": 15009,
+    "keyedBy": {
+      "cacheSchema": "trace-1",
+      "policyVersion": "conservative/6",
+      "project": "d9f04bfe4ce6a142f74b18e1316e67dd0397c1a9b00b0010b5a4fe2d5aecb24a",
+      "platform": "web",
+      "engineName": "web",
+      "engineSpiVersion": 1,
+      "appIdentity": "c8c95ddd16958bfed4668feafbf5dde25894a6aef493732af183166578835b19",
+      "agentContextDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}
