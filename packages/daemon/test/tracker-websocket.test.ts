@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { after, before, describe, test } from "node:test";
 import { setImmediate } from "node:timers/promises";
@@ -13,7 +12,8 @@ import { WebSocket } from "ws";
 import { startServer } from "../src/server/index.ts";
 import { startReaders } from "../src/server/readers.ts";
 import { EventStore } from "../src/store.ts";
-import { github, issue, now, page, project } from "./support/reader-recordings.ts";
+import { readerRegistry } from "./support/reader-plugins.ts";
+import { github, issue, page, project } from "./support/reader-recordings.ts";
 
 // Promise gates control provider progress; no real network or polling delays.
 function gate() {
@@ -82,7 +82,7 @@ describe("reader/WebSocket composition", { timeout: 4000 }, () => {
 
   test("hanging Linear reads leave subscription, replay and both readers' live delivery responsive", {
     timeout: 2000,
-  }, async () => {
+  }, async (t) => {
     const entered = gate();
     let requestSignal: AbortSignal | undefined;
     let linearReturned = false;
@@ -92,27 +92,24 @@ describe("reader/WebSocket composition", { timeout: 4000 }, () => {
       Comments: [{ issues: { nodes: ["SEED-1", "SEED-2"].map((identifier) => ({ identifier, comments: page([]) })) } }],
       Pulls: [github],
     };
+    t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, init?: RequestInit) => {
+      const { query } = JSON.parse(String(init?.body));
+      const operation = /query\s+(\w+)/.exec(query)?.[1] ?? "?";
+      const data = bodies[operation]?.shift();
+      assert.ok(data, `unexpected ${operation}`);
+      if (operation === "Root") {
+        assert.ok(init?.signal);
+        requestSignal = init.signal;
+        entered.release();
+        await linear.pending;
+        linearReturned = true;
+      } else if (operation === "Pulls") await forge.pending;
+      return Response.json({ data });
+    });
     readers = await startReaders({
-      store,
+      registry: await readerRegistry(store, [project]),
       projects: [project],
-      now,
       schedule: () => () => {},
-      secrets: async () => randomUUID(),
-      token: async () => randomUUID(),
-      fetch: async (_url, init) => {
-        const { query } = JSON.parse(String(init?.body));
-        const operation = /query\s+(\w+)/.exec(query)?.[1] ?? "?";
-        const data = bodies[operation]?.shift();
-        assert.ok(data, `unexpected ${operation}`);
-        if (operation === "Root") {
-          assert.ok(init?.signal);
-          requestSignal = init.signal;
-          entered.release();
-          await linear.pending;
-          linearReturned = true;
-        } else if (operation === "Pulls") await forge.pending;
-        return Response.json({ data });
-      },
       log: (line) => assert.fail(line),
     });
     await entered.pending;

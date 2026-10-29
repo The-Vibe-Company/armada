@@ -30,8 +30,9 @@ query Pull($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) { pullRequest(number: $number) { ...P } }
 }`;
 interface Options {
+  endpoint?: string;
   repository: string;
-  tickets: () => ReadonlySet<string>;
+  tickets: () => ReadonlySet<string> | Promise<ReadonlySet<string>>;
   token?: (signal: AbortSignal) => Promise<string>;
   fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 }
@@ -61,7 +62,7 @@ class GithubForge implements Forge {
     const [owner, name] = options.repository.split("/");
     const query = async (query: string, variables: object) => {
       signal.throwIfAborted();
-      const response = await (options.fetch ?? fetch)("https://api.github.com/graphql", {
+      const response = await (options.fetch ?? fetch)(options.endpoint ?? "https://api.github.com/graphql", {
         method: "POST",
         redirect: "error",
         signal,
@@ -85,7 +86,7 @@ class GithubForge implements Forge {
     };
     const pulls = new Map<number, GithubPullRequest>();
     const cursors = new Set<string>();
-    const tickets = options.tickets();
+    const tickets = await options.tickets();
     let after: string | null = null;
     // Whole open-list reads are necessary: check runs do not reliably change PR updatedAt.
     for (;;) {
@@ -149,6 +150,7 @@ export class GithubReader {
   readonly #options: ReaderOptions;
   readonly #forge: Forge;
   #active: Promise<ForgeRefresh> | undefined;
+  #providerPending = false;
   #controller: AbortController | undefined;
   #running = false;
   #loop = 0;
@@ -168,6 +170,7 @@ export class GithubReader {
 
   refresh(): Promise<ForgeRefresh> {
     if (this.#active) return this.#active;
+    if (this.#providerPending) return Promise.resolve({ ok: false, error: "GitHub reading still pending" });
     this.#active = this.#refresh().finally(() => {
       this.#active = undefined;
     });
@@ -186,9 +189,13 @@ export class GithubReader {
       timedOut = true;
       controller.abort();
     }, options.timeoutMs ?? 15000);
+    const append = async (event: EventInput) => {
+      controller.signal.throwIfAborted();
+      return await options.store.append(event);
+    };
     try {
       const previous = this.#previous;
-      for (const event of options.store.readSince(this.#cursor, options.project)) {
+      for (const event of await options.store.readSince(this.#cursor, options.project)) {
         if (event.kind === "pull-request.seen") {
           const pr = event.payload as GithubPullRequest;
           if (pr.repository === options.repository) {
@@ -215,14 +222,20 @@ export class GithubReader {
         this.#cursor = event.seq;
       }
       for (const [id, pending] of this.#pending) {
-        options.store.append(pending);
+        await append(pending);
         this.#pending.delete(id);
       }
+      controller.signal.throwIfAborted();
+      this.#providerPending = true;
       const reading = await Promise.race([
-        this.#forge.read(
-          [...previous.values()].filter((pr) => pr.state === "open").map((pr) => pr.number),
-          controller.signal,
-        ),
+        this.#forge
+          .read(
+            [...previous.values()].filter((pr) => pr.state === "open").map((pr) => pr.number),
+            controller.signal,
+          )
+          .finally(() => {
+            this.#providerPending = false;
+          }),
         aborted,
       ]);
       controller.signal.throwIfAborted();
@@ -231,7 +244,7 @@ export class GithubReader {
       for (const pr of reading) {
         const before = previous.get(pr.number);
         if (JSON.stringify(before) === JSON.stringify(pr)) continue;
-        options.store.append({
+        await append({
           project: options.project,
           actor: options.actor,
           at,
@@ -239,7 +252,7 @@ export class GithubReader {
           payload: pr,
         });
         for (const kind of transitions(before, pr))
-          options.store.append({ project: options.project, actor: options.actor, at, kind, payload: pr });
+          await append({ project: options.project, actor: options.actor, at, kind, payload: pr });
         changed++;
       }
       return { ok: true, changed };

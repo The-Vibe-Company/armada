@@ -1,0 +1,54 @@
+{
+  "name": "@armada/plugin-github",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "armada": {
+    "id": "github",
+    "version": "0.1.0",
+    "pluginApi": "^0.1.0",
+    "enabledByDefault": true,
+    "description": "Read Github observations into the fleet event log.",
+    "contributions": {
+      "forge": {
+        "github": {
+          "config": {
+            "type": "object",
+            "properties": {
+              "projects": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "repository": {
+                      "type": "string",
+                      "pattern": "^[\\w.-]+/[\\w.-]+$"
+                    }
+                  },
+                  "required": [
+                    "repository"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "endpoint": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "secrets": [
+            "GITHUB_TOKEN"
+          ]
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@armada/plugin-api": "workspace:*"
+  },
+  "devDependencies": {
+    "@armada/daemon": "workspace:*"
+  }
+}

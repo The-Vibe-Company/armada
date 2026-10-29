@@ -172,19 +172,29 @@ test("invalid manifest, config and activation leave no partial registrations and
     }
   }));
 
-test("missing app config boots the bundled hello plugin", async () =>
+test("missing app config boots default reader providers without reader credential lookup", async () =>
   fixture(async (dir) => {
     const daemon = await bootDaemon({
       databasePath: ":memory:",
       configPath: join(dir, "missing.json"),
       log: { info() {}, error() {} },
-      secrets: { get: async () => null },
+      secrets: {
+        get: async (name) => {
+          assert.ok(
+            name !== "LINEAR_API_KEY" && name !== "GITHUB_TOKEN",
+            "reader activation must not look up credentials",
+          );
+          return null;
+        },
+      },
     });
     try {
       assert.deepEqual(
-        daemon.plugins.map((p) => [p.id, p.loaded]),
-        [["hello", true]],
+        daemon.plugins.filter((p) => p.enabled && !p.loaded),
+        [],
       );
+      assert.ok(daemon.registry.get("tracker", "linear"));
+      assert.ok(daemon.registry.get("forge", "github"));
     } finally {
       daemon.close();
     }
@@ -412,9 +422,10 @@ test("armadad loads the bundled catalog before announcing server readiness", asy
       });
       assert.match(JSON.parse(output.trim()).wsUrl, /^ws:\/\/127\.0\.0\.1:/);
       const status = JSON.parse(await readFile(`${configPath}.plugins.json`, "utf8"));
+      assert.equal(status.plugins.find((p: { id: string }) => p.id === "hello")?.loaded, true);
       assert.deepEqual(
-        status.plugins.map((p: { id: string; loaded: boolean }) => [p.id, p.loaded]),
-        [["hello", true]],
+        status.plugins.filter((p: { enabled: boolean; loaded: boolean }) => p.enabled && !p.loaded),
+        [],
       );
     } finally {
       child.kill("SIGTERM");

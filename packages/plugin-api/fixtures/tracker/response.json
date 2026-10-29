@@ -16,7 +16,7 @@
         "updatedAt": "2030-01-01T10:00:00.000Z",
         "phase": "implementing",
         "summary": "The fixture is ready.",
-        "body": "The fixture is ready.\n\nA synthetic worker report."
+        "body": "Agent status: implementing \u2014 The fixture is ready.\n\nA synthetic worker report."
       }
     ]
   },
@@ -39,8 +39,139 @@
         "updatedAt": "2030-01-01T10:00:00.000Z",
         "phase": "implementing",
         "summary": "The fixture is ready.",
-        "body": "The fixture is ready.\n\nA synthetic worker report."
+        "body": "Agent status: implementing \u2014 The fixture is ready.\n\nA synthetic worker report."
       }
     }
-  ]
+  ],
+  "operations": {
+    "Root": {
+      "data": {
+        "issue": {
+          "id": "CHECK-1",
+          "identifier": "CHECK-1",
+          "title": "Exercise a plugin seam",
+          "url": "https://linear.example/issue/CHECK-1",
+          "state": {
+            "type": "started"
+          },
+          "assignee": {
+            "name": "Avery"
+          },
+          "parent": null,
+          "labels": {
+            "nodes": [
+              {
+                "id": "label-implementing",
+                "name": "implementing",
+                "parent": {
+                  "name": "Agent phase"
+                }
+              }
+            ],
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": null
+            }
+          },
+          "attachments": {
+            "nodes": [],
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": null
+            }
+          }
+        }
+      }
+    },
+    "Children": {
+      "data": {
+        "issues": {
+          "nodes": [],
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          }
+        }
+      }
+    },
+    "Comments": {
+      "data": {
+        "issues": {
+          "nodes": [
+            {
+              "identifier": "CHECK-1",
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "comment-1",
+                    "body": "Agent status: implementing \u2014 The fixture is ready.\n\nA synthetic worker report.",
+                    "createdAt": "2030-01-01T10:00:00.000Z",
+                    "updatedAt": "2030-01-01T10:00:00.000Z",
+                    "user": {
+                      "name": "Avery"
+                    }
+                  }
+                ],
+                "pageInfo": {
+                  "hasNextPage": false,
+                  "endCursor": null
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "WriteIssue": {
+      "data": {
+        "issue": {
+          "id": "CHECK-1",
+          "team": {
+            "id": "fixture-team"
+          },
+          "labels": {
+            "nodes": [],
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": null
+            }
+          }
+        }
+      }
+    },
+    "UpdatePhase": {
+      "data": {
+        "issueUpdate": {
+          "success": true
+        }
+      }
+    },
+    "PostComment": {
+      "data": {
+        "commentCreate": {
+          "success": true
+        }
+      }
+    },
+    "PhaseLabels": {
+      "data": {
+        "issueLabels": {
+          "nodes": [
+            {
+              "id": "label-implementing",
+              "name": "implementing",
+              "parent": {
+                "name": "Agent phase"
+              },
+              "team": null
+            }
+          ],
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          }
+        }
+      }
+    }
+  }
 }
