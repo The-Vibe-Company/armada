@@ -1,0 +1,81 @@
+# @armada/protocol
+
+The V2 daemon/app wire contract. ESM, Node 22 or a browser; Zod is the only
+runtime dependency. No V1 API, daemon imports, transport or I/O.
+
+`bun run build` emits JavaScript and declarations in `dist/`. Consumers import
+`@armada/protocol`; types are inferred from the exported runtime schemas.
+`bun run test` builds and exercises the compiled package with Node's test runner.
+Root installation builds the package so direct `bun test` also works on a clean
+checkout. The root workspace glob already includes this package. Root lint, typecheck and
+verify include it, and CI runs its Node tests before the repository's Bun suite.
+
+## Messages
+
+Each WebSocket text frame is one JSON object. All messages carry
+`version: { major, minor }`; the initial wire version is **1.0**, independent of
+application release numbers. Request `id` values correlate replies; clients keep
+outstanding ids unique. Errors without an id concern the connection or an
+uncorrelatable request. Schema parsing ignores additive object fields.
+
+| Client request | Fields besides `type`, `version`, `id` | Server reply |
+| --- | --- | --- |
+| `projects.list` | — | `projects.result`: `projects` (`id`, `name`, GitHub `repository`, e.g. `example/repo`) |
+| `project.subscribe` | `project`, `after` | `project.subscribed`: `project`, `subscriptionId`, `after` |
+| `session.read` | `project`, `sessionId` | `session.result`: `project`, `sessionId`, `seq`, `events` |
+
+A subscription acknowledges the requested exclusive cursor `after` (0 means
+from the beginning), then emits `events` frames with `subscriptionId`, `project`,
+`seq`, and `events`. `seq` is the inclusive high-water mark of the scanned log,
+including empty batches. Reconnect with `after` equal to the last fully applied
+frame's `seq`. A server must emit frames with nondecreasing cursors and events
+strictly after the subscription's previous cursor. Per-frame validation checks
+strict event ordering, the upper cursor bound and project isolation; tracking
+previous frames belongs to the connection, not these stateless schemas.
+
+Every event has `(seq, project, kind, at, actor, payload)`: a positive safe integer
+sequence, project id, kind, ISO timestamp with a timezone, actor id and JSON
+payload. Cursors are nonnegative safe integers. Global sequence gaps are allowed
+because a log contains multiple projects. Event kinds and their payload meanings
+are owned by the daemon; this package validates their transport envelope only.
+
+A session read returns that session's event history, in order, at the log cursor
+`seq`. The daemon selects events belonging to the requested session; the wire
+schema checks their envelope and project. A missing project or session returns
+`error` with code `not-found`, rather than an empty successful session. This
+keeps fold models out of the protocol while the daemon defines its event kinds.
+The other error codes are `invalid-message`, `app-too-old`, `daemon-too-old`,
+and `internal`; `message` is a single human explanation.
+
+## Admission and versioning
+
+The daemon must call `admitRequest` before dispatching **every** request:
+
+```ts
+import { admitRequest } from "@armada/protocol";
+
+// `input` is JSON decoded by the transport adapter.
+const result = admitRequest(input);
+if (!result.ok) {
+  socket.send(JSON.stringify(result.error));
+  if (result.close) socket.close();
+  return; // never dispatch a rejected request
+}
+dispatch(result.request);
+```
+
+A lower client major yields only an `app-too-old` error whose message is exactly:
+
+> Armada app is older than the daemon: update it
+
+The adapter sends that error once and closes without executing the request.
+Version is inspected before the request body, so an obsolete message shape still
+gets this line. A higher client major similarly gets `daemon-too-old` and closes.
+Invalid requests get `invalid-message` and are never dispatched.
+
+A major change is breaking. Minor changes must be additive optional fields;
+unknown message kinds still fail validation, so introducing a required operation
+requires a major change or explicit feature negotiation in a later protocol.
+Both sides accept minor differences within the same major. App consumers validate
+with `serverMessageSchema` and check the server's major before applying frames;
+a major mismatch requires reconnecting with a compatible app/daemon pair.

@@ -46,7 +46,7 @@ jobs:
       - run: bun run typecheck
       - name: Install the pinned test browser and system libraries
         uses: ./.github/actions/test-browser
-      - run: bun test
+      - run: bun run test
 
   dashboard:
     name: Dashboard builds
