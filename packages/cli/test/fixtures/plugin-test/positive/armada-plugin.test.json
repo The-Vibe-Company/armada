@@ -1,0 +1,7 @@
+{
+  "tracker": { "reference": { "endpoint": "${endpoint}/tracker" } },
+  "forge": { "reference": { "endpoint": "${endpoint}/forge" } },
+  "runtime": { "reference": { "workspaceRoot": "${directory}/runtime-workspace" } },
+  "node": { "reference": { "workspaceRoot": "${directory}/node-workspace" } },
+  "model": { "reference": { "endpoint": "${endpoint}/model" } }
+}

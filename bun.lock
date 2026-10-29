@@ -50,6 +50,8 @@
       "devDependencies": {
         "@armada/core": "workspace:*",
         "@armada/daemon": "workspace:*",
+        "@armada/plugin-api": "workspace:*",
+        "ai": "7.0.156",
       },
     },
     "packages/core": {
@@ -78,6 +80,7 @@
         "ajv": "8.20.0",
         "proper-lockfile": "4.1.2",
         "semver": "7.7.4",
+        "smol-toml": "1.9.0",
         "typebox": "1.3.27",
         "ws": "8.21.3",
         "zod": "4.6.5",
@@ -124,7 +127,11 @@
     "packages/desktop": {
       "name": "@armada/desktop",
       "version": "0.0.0",
+      "dependencies": {
+        "@napi-rs/keyring": "2.1.2",
+      },
       "devDependencies": {
+        "@armada/protocol": "workspace:*",
         "@types/node": "22.20.5",
         "electron": "45.1.0",
         "electron-vite": "6.0.0",

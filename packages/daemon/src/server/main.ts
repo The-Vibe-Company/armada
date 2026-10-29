@@ -8,6 +8,9 @@ import { startServer } from "./index.ts";
 import { coordinatorModels, loadedModelKinds, modelEnvironment } from "./models.ts";
 import { daemonProjectSchema, startReaders } from "./readers.ts";
 
+/** The exit code that asks the desktop shell to start the daemon again (packages/desktop/src/daemon.ts). */
+const RESTART_EXIT_CODE = 75;
+
 try {
   const { values } = parseArgs({
     options: {
@@ -15,12 +18,13 @@ try {
       projects: { type: "string" },
       port: { type: "string" },
       "static-dir": { type: "string" },
+      restartable: { type: "boolean" },
       help: { type: "boolean" },
     },
   });
   if (values.help) {
     console.log(
-      "armadad --database <sqlite-file> --projects <projects.json> [--port <port>] [--static-dir <app-dist>]",
+      "armadad --database <sqlite-file> --projects <projects.json> [--port <port>] [--static-dir <app-dist>] [--restartable]",
     );
   } else {
     if (!values.database || !values.projects) throw new Error("--database and --projects are required");
@@ -46,6 +50,7 @@ try {
         onSkipped: (project) =>
           console.error(`Coordinator for ${project} not started: check model plugin configuration and credentials`),
       });
+      let stopping = false;
       const server = await startServer({
         store: daemon.store,
         projects,
@@ -54,10 +59,25 @@ try {
         keychain,
         coordinators,
         modelKinds: loadedModelKinds(daemon.registry),
+        // The keychain is opened on first use, as the plugins' own secret getter does.
+        plugins: {
+          configPath: daemon.configPath,
+          catalog: daemon.catalog,
+          boot: daemon,
+          keychain: {
+            read: (service, account) => keychain.read(service, account),
+            write: (service, account, value) => keychain.write(service, account, value),
+          },
+        },
+        // --restartable: the shell starts a daemon that exits with RESTART_EXIT_CODE again.
+        restart: values.restartable
+          ? () => {
+              void stop().finally(() => process.exit(RESTART_EXIT_CODE));
+            }
+          : undefined,
       });
       let readers: Awaited<ReturnType<typeof startReaders>> | undefined;
       const controller = new AbortController();
-      let stopping = false;
       const stop = async () => {
         if (stopping) return;
         stopping = true;

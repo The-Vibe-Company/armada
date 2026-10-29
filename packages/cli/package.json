@@ -31,10 +31,12 @@
     "access": "public"
   },
   "scripts": {
-    "build": "node ../../scripts/plugin-catalog.ts && bun ../../scripts/bundle-skills.ts && bun build src/bin.ts --target node --outfile dist/armada.js",
+    "build": "node ../../scripts/plugin-catalog.ts && bun ../../scripts/bundle-skills.ts && bun build src/bin.ts --target node --outfile dist/armada.js && mkdir -p dist/plugin-fixtures && cp -R ../../packages/plugin-api/fixtures/. dist/plugin-fixtures/",
     "prepack": "bun run build && cp ../../README.md ../../LICENSE ."
   },
   "devDependencies": {
+    "@armada/plugin-api": "workspace:*",
+    "ai": "7.0.156",
     "@armada/core": "workspace:*",
     "@armada/daemon": "workspace:*"
   }

@@ -1,16 +1,18 @@
 import { createHash } from "node:crypto";
-import { type CoordinatorModel, coordinatorModelSchema } from "@armada/protocol";
 import { defineTool, type JsonObject, type ToolRegistration } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import * as Value from "typebox/value";
-import { z } from "zod";
 import type { EventInput, FleetEvent } from "../src/events.ts";
 import { fold, type ProjectTables, type Session } from "../src/fold.ts";
+import { emptyRules, type ProjectRules, type RulesState, rulesSchema } from "./rules.ts";
+import { readV1RulesFile } from "./rules-file.ts";
 import type { CoordinatorStorage } from "./storage.ts";
 import { type CoordinatorToolName, TOOL_NAMES } from "./tools.ts";
 
 export interface NativeToolOptions {
   now: () => string;
+  /** Optional host restriction/adapter for explicitly requested, local V1 file imports. */
+  readRulesImport?: (file: string) => Promise<ProjectRules>;
   mergeEvidence?: (pr: number) => Promise<MergeEvidence | null>;
   /** Must deduplicate by key across restarts, and call beforeWrite immediately before delivery.
    * Unknown outcomes must return false; never retry an unkeyed runtime write here. */
@@ -25,35 +27,8 @@ export interface NativeToolOptions {
 
 const text = Type.String({ maxLength: 4000 });
 const id = Type.String({ minLength: 1, maxLength: 200, pattern: "\\S" });
-const placement = Type.Union([Type.Literal("local"), Type.Literal("vm")]);
 const object = <T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
   Type.Object(properties, { additionalProperties: false });
-// Copied from core/src/config.ts: positive finite minutes, positive safe worker quota or no cap.
-const minutes = Type.Number({ exclusiveMinimum: 0 });
-const rulesSchema = object({
-  coordinatorModel: Type.Optional(Type.Unsafe<CoordinatorModel>(z.toJSONSchema(coordinatorModelSchema))),
-  routing: Type.Optional(
-    Type.Array(
-      object({
-        labels: Type.Array(id, { minItems: 1, maxItems: 50 }),
-        cli: Type.Union([Type.Literal("claude"), Type.Literal("codex"), Type.Literal("opencode")]),
-        model: id,
-        effort: Type.Optional(id),
-      }),
-      { maxItems: 100 },
-    ),
-  ),
-  placement: Type.Optional(object({ workers: placement, coordinator: placement })),
-  policy: Type.Optional(
-    object({
-      silenceMinutes: Type.Optional(minutes),
-      quietMinutes: Type.Optional(minutes),
-      maxWorkers: Type.Optional(
-        Type.Union([Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }), Type.Null()]),
-      ),
-    }),
-  ),
-});
 const sha = Type.String({ pattern: "^[0-9a-f]{40}$" });
 const checkState = Type.Union([
   Type.Literal("none"),
@@ -108,7 +83,12 @@ const schemas = {
   "hold.add": object({ reason: text }),
   "hold.clear": object({ id, reason: text }),
   "owner.ask": object({ ticket: id, question: text, choices: Type.Array(text, { maxItems: 6 }) }),
-  "rules.set": object({ expectedRevision: Type.Integer({ minimum: 0 }), reason: text, rules: rulesSchema }),
+  "rules.set": object({
+    expectedRevision: Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER - 1 }),
+    reason: text,
+    rules: Type.Optional(rulesSchema),
+    importFile: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+  }),
 };
 const descriptions: Record<CoordinatorToolName, string> = {
   "fleet.status": "Read the project's folded fleet and current rules. Missing evidence is listed explicitly.",
@@ -126,7 +106,7 @@ const descriptions: Record<CoordinatorToolName, string> = {
   "hold.clear": "Clear a known project pause with a recorded recovery reason.",
   "owner.ask": "Record a ticket's owner decision with numbered choices. Only the owner may decide it.",
   "rules.set":
-    "Patch project routing, placement and policy with a reason and the current rules revision from fleet.status.",
+    "Patch project routing (ordered labels or when descriptions), defaultRoute, placement and policy with the revision from fleet.status. Alternatively importFile (absolute local file path) imports V1 routing/profiles/policy once into an unconfigured project; never pass file contents in chat. Placement must be chosen explicitly. A reason is required.",
 };
 const refuse = (code: string, message: string, next: string, extra: JsonObject = {}): JsonObject => ({
   ok: false,
@@ -141,11 +121,6 @@ const output = (details: JsonObject) => ({
   isError: details.ok === false,
 });
 
-// This checkpoint namespace is reserved for THE-1994. Pi storage ignores other formats.
-interface RulesState {
-  revision: number;
-  value: JsonObject;
-}
 interface Receipt {
   format: "armada.tools";
   version: 1;
@@ -163,29 +138,8 @@ const canonical = (value: unknown): string => {
   return JSON.stringify(value);
 };
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
-function rulesOf(events: FleetEvent[]): RulesState {
-  let rules: RulesState = { revision: 0, value: {} };
-  for (const event of events) {
-    if (event.kind !== "coordinator.checkpoint") continue;
-    const checkpoint = event.payload.checkpoint;
-    if (
-      !checkpoint ||
-      typeof checkpoint !== "object" ||
-      Array.isArray(checkpoint) ||
-      checkpoint.format !== "armada.tools"
-    )
-      continue;
-    if (checkpoint.version !== 1) throw new Error("Unsupported native tools checkpoint");
-    if (
-      checkpoint.type !== "rules" ||
-      !Value.Check(object({ revision: Type.Integer({ minimum: 1 }), value: rulesSchema }), checkpoint.rules)
-    )
-      throw new Error("Invalid native tools checkpoint");
-    rules = checkpoint.rules as unknown as RulesState;
-  }
-  return rules;
-}
 const emptyTables = (): ProjectTables => ({
+  rules: emptyRules(),
   tickets: [],
   pullRequests: [],
   sessions: [],
@@ -211,6 +165,30 @@ function projectFacts(events: FleetEvent[], project: string): ProjectTables {
 
 type Decision = { result: JsonObject; event?: EventInput };
 
+function rulesProblem(args: JsonObject, rules: RulesState): JsonObject | null {
+  if ((args.rules === undefined) === (args.importFile === undefined))
+    return refuse(
+      "invalid_arguments",
+      "supply exactly one of rules or importFile",
+      "rules.set with either a patch or a one-time import",
+    );
+  const reason = (args.reason as string).trim();
+  if (!reason) return refuse("empty_reason", "a rules change needs a reason", "rules.set with the owner's intent");
+  if (args.importFile !== undefined && rules.revision !== 0)
+    return refuse(
+      "rules_already_set",
+      "the project's rules have already been configured",
+      "use a rules patch with the current revision",
+    );
+  if (args.expectedRevision !== rules.revision)
+    return refuse(
+      "rules_changed",
+      "the project's rules changed since they were read",
+      "fleet.status, then rules.set with its rules revision",
+    );
+  return null;
+}
+
 /** Pure decisions over a fresh, project-scoped reading. Writes are published by the admitted owner below. */
 function decide(
   name: CoordinatorToolName,
@@ -220,9 +198,10 @@ function decide(
   at: string,
   operation: string,
   evidence: MergeEvidence | null,
+  importedRules?: ProjectRules,
 ): Decision {
   const tables = projectFacts(events, project);
-  const rules = rulesOf(events);
+  const rules = tables.rules ?? emptyRules();
   const no = (code: string, message: string, next: string): Decision => ({ result: refuse(code, message, next) });
   const changed = (event: EventInput, result: JsonObject): Decision => ({ event, result: { ok: true, ...result } });
   const base = { project, at, actor: "coordinator" };
@@ -314,15 +293,11 @@ function decide(
       );
     }
     case "rules.set": {
+      const problem = rulesProblem(args, rules);
+      if (problem) return { result: problem };
       const reason = (args.reason as string).trim();
-      if (!reason) return no("empty_reason", "a rules change needs a reason", "rules.set with the owner's intent");
-      if (args.expectedRevision !== rules.revision)
-        return no(
-          "rules_changed",
-          "the project's rules changed since they were read",
-          "fleet.status, then rules.set with its rules revision",
-        );
-      const patch = args.rules as JsonObject;
+      const patch = args.importFile === undefined ? (args.rules as JsonObject) : importedRules;
+      if (!patch) throw new Error("Missing normalized import");
       if (!Object.keys(patch).length)
         return no("empty_rules", "say which rules change", "rules.set with routing, placement or policy");
       const value = {
@@ -510,6 +485,48 @@ export function nativeTools(
                   ),
             );
           }
+          let importedRules: ProjectRules | undefined;
+          if (name === "rules.set" && typeof (args as JsonObject).importFile === "string") {
+            let problem: JsonObject | null;
+            try {
+              problem = rulesProblem(args as JsonObject, projectFacts(events, scope.project).rules ?? emptyRules());
+            } catch {
+              return output(
+                refuse(
+                  "state_unavailable",
+                  "the project's durable rules state is unsupported or invalid",
+                  "upgrade or repair the project log",
+                ),
+              );
+            }
+            if (problem) return output(problem);
+            try {
+              importedRules = await (options.readRulesImport ?? readV1RulesFile)(
+                (args as JsonObject).importFile as string,
+              );
+              if (!Value.Check(rulesSchema, importedRules)) throw new Error("Invalid imported rules");
+            } catch {
+              return output(
+                refuse(
+                  "invalid_import",
+                  "V1 routing, profiles or policy cannot be imported from that local file",
+                  "check the absolute file path, TOML syntax, profile references, supported CLIs and policy numbers",
+                ),
+              );
+            }
+            // A file read can yield: re-read revisions and fence a closed writer before deciding.
+            try {
+              events = scope.readEvents();
+            } catch {
+              return output(
+                refuse(
+                  "coordinator_inactive",
+                  "the project's coordinator no longer owns its writer scope",
+                  "open the project's coordinator",
+                ),
+              );
+            }
+          }
           let evidence: MergeEvidence | null = null;
           const readStarted = Date.parse(options.now());
           if (name === "merge.check" && options.mergeEvidence) {
@@ -561,6 +578,7 @@ export function nativeTools(
               options.now(),
               `tool:${digest(key)}`,
               evidence,
+              importedRules,
             );
           } catch {
             return output(

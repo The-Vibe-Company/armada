@@ -13,6 +13,7 @@ import type {
   Ticket,
   Validation,
 } from "@armada/protocol";
+import { checkpointRules, emptyRules, type RulesState } from "../coordinator/rules.ts";
 import { flowStep, pipelineStep } from "./rules.ts";
 
 export type {
@@ -39,6 +40,7 @@ interface Draft extends SessionRef {
   stage?: ShippingStage;
 }
 interface Projection {
+  rules: RulesState;
   tickets: Map<string, Ticket>;
   prs: Map<number, PullRequest>;
   sessions: Map<string, Draft>;
@@ -49,6 +51,7 @@ interface Projection {
   validations: Map<string, Validation>;
 }
 const empty = (): Projection => ({
+  rules: emptyRules(),
   tickets: new Map(),
   prs: new Map(),
   sessions: new Map(),
@@ -210,9 +213,12 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
           v.decision = { decision: e.payload.decision, note: e.payload.note, at: e.at, actor: e.actor };
         break;
       }
-      // Durable conversation and checkpoint events need no fleet projection.
+      case "coordinator.checkpoint": {
+        const rules = checkpointRules(e.payload.checkpoint);
+        if (rules) p.rules = rules;
+        break;
+      }
       case "coordinator.message":
-      case "coordinator.checkpoint":
         break;
     }
   }
@@ -268,6 +274,7 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
     };
     for (const s of sessions) sessionsByState[s.state].push(s);
     tables.projects[project] = {
+      rules: p.rules,
       tickets: [...p.tickets.values()],
       pullRequests: [...p.prs.values()],
       sessions,

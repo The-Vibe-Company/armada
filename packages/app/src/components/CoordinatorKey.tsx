@@ -4,7 +4,7 @@ import { useDaemon, useDaemonClient } from "@/protocol/store";
 
 /** A key lives only in the password field until one explicit submit. Never in app state/storage. */
 export function CoordinatorKey() {
-  const { credentials, status } = useDaemon();
+  const { credentials, status, plugins } = useDaemon();
   const client = useDaemonClient();
   const field = useId();
   const [selected, setSelected] = useState<string | null>(null);
@@ -12,8 +12,24 @@ export function CoordinatorKey() {
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   if (!credentials) return null;
-  const hasCatalog = credentials.models !== undefined;
-  const models = credentials.models ?? [];
+  const catalog = plugins?.plugins;
+  const hasCatalog =
+    credentials.models !== undefined ||
+    catalog?.some((plugin) => plugin.contributions.some((entry) => entry.seam === "model")) === true;
+  const models =
+    catalog && hasCatalog
+      ? catalog.flatMap((plugin) =>
+          plugin.loaded
+            ? plugin.contributions
+                .filter((entry) => entry.seam === "model")
+                .map((entry) => ({
+                  kind: entry.kind,
+                  description: entry.description ?? entry.kind,
+                  config: credentials.models?.find((model) => model.kind === entry.kind)?.config ?? entry.schema,
+                }))
+            : [],
+        )
+      : (credentials.models ?? []);
   const chosen = models.find((entry) => entry.kind === (selected ?? credentials.provider)) ?? models[0];
   const schema = chosen?.config as
     | { required?: string[]; properties?: Record<string, { default?: string }> }

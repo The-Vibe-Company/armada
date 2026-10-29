@@ -367,7 +367,10 @@ test("model boot honors project rules over env, recognizes z.ai/Azure and saved 
     payload: {
       checkpoint: {
         format: "armada.tools",
+        version: 1,
+        type: "rules",
         rules: {
+          revision: 1,
           value: {
             coordinatorModel: { kind: "openai-compatible", config: { ...saved.selected?.config, model: "rule-model" } },
           },

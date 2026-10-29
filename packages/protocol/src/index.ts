@@ -1,8 +1,11 @@
 import { z } from "zod";
 import { modelConfigSchema, modelKindEntrySchema, modelKindSchema } from "./models.js";
+import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
 
 export * from "./fleet.js";
 export * from "./models.js";
+export * from "./plugins.js";
+export * from "./rules.js";
 
 /** Wire version, independent of the daemon/app release versions. */
 export const PROTOCOL_VERSION = { major: 1, minor: 3 } as const;
@@ -73,6 +76,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   listProjectsRequestSchema,
   subscribeRequestSchema,
   readSessionRequestSchema,
+  ...pluginRequestSchemas,
 ]);
 export type CredentialsResult = z.infer<typeof credentialsResultSchema>;
 export type ListProjectsRequest = z.infer<typeof listProjectsRequestSchema>;
@@ -146,6 +150,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   sessionResultSchema,
   eventBatchSchema,
   errorSchema,
+  ...pluginResultSchemas,
 ]);
 export type ProjectsResult = z.infer<typeof projectsResultSchema>;
 export type Subscribed = z.infer<typeof subscribedSchema>;

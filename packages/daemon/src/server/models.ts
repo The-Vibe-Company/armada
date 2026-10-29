@@ -6,8 +6,8 @@ import {
   modelConfigSchema,
 } from "@armada/protocol";
 import type { LanguageModel } from "ai";
-import { z } from "zod";
 import type { CoordinatorOptions } from "../../coordinator/index.ts";
+import { checkpointRules } from "../../coordinator/rules.ts";
 import type { Keychain } from "../keychain.ts";
 import { pluginModels } from "../model-sdk.ts";
 import { BUNDLED_PLUGINS, type PluginCatalogEntry } from "../plugins/catalog.ts";
@@ -97,13 +97,6 @@ export async function modelEnvironment(env: Readonly<Record<string, string | und
   };
 }
 
-const checkpoint = z.object({
-  checkpoint: z.object({
-    format: z.literal("armada.tools"),
-    rules: z.object({ value: z.object({ coordinatorModel: coordinatorModelSchema.optional() }) }),
-  }),
-});
-
 /** Project rules win over the boot default. Provider code is always obtained from the registry. */
 export function coordinatorModels(options: {
   projects: readonly { id: string; coordinatorModel?: CoordinatorModel }[];
@@ -113,15 +106,14 @@ export function coordinatorModels(options: {
   onSkipped?: (project: string) => void;
 }): CoordinatorOptions[] {
   return options.projects.flatMap((project) => {
-    let selection = project.coordinatorModel ?? options.selected;
-    for (const event of options.store.readSince(0, project.id)) {
-      if (event.kind !== "coordinator.checkpoint") continue;
-      const parsed = checkpoint.safeParse(event.payload);
-      if (parsed.success && parsed.data.checkpoint.rules.value.coordinatorModel)
-        selection = parsed.data.checkpoint.rules.value.coordinatorModel;
-    }
-    if (!selection) return [];
     try {
+      let selection = project.coordinatorModel ?? options.selected;
+      for (const event of options.store.readSince(0, project.id)) {
+        if (event.kind !== "coordinator.checkpoint") continue;
+        const rules = checkpointRules(event.payload.checkpoint);
+        if (rules?.value.coordinatorModel) selection = rules.value.coordinatorModel;
+      }
+      if (!selection) return [];
       const config = modelConfigSchema.parse({
         ...(options.selected?.kind === selection.kind ? options.selected.config : {}),
         ...selection.config,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
@@ -250,7 +250,7 @@ test("owner.ask records choices in a project inbox and refuses missing choices o
 });
 
 test("rules.set persists validated intent with revision checks and cannot overwrite newer rules on replay", async (t) => {
-  const { run } = await fixture(t);
+  const { run, store } = await fixture(t);
   const args = {
     expectedRevision: 0,
     reason: "Owner chose local workers",
@@ -274,6 +274,15 @@ test("rules.set persists validated intent with revision checks and cannot overwr
   assert.equal((await run("rules.set", args, "rules-one")).ok, true);
   assert.equal((await run("fleet.status")).rules.value.policy.maxWorkers, 5);
   assert.equal((await run("fleet.status")).rules.value.coordinatorModel?.kind, "openai-compatible");
+  assert.deepEqual(fold(store.readSince(0)).projects.orchard?.rules, {
+    revision: 2,
+    value: {
+      placement: { workers: "local", coordinator: "local" },
+      policy: { maxWorkers: 5 },
+      coordinatorModel: args.rules.coordinatorModel,
+    },
+  });
+  assert.deepEqual(fold(store.readSince(0)).projects.other?.rules, { revision: 0, value: {} });
   assert.equal(
     (
       await run("rules.set", {
@@ -321,6 +330,17 @@ test("only one coordinator owns project writes; disk replay preserves receipts a
     assert.throws(() => openCoordinatorStorage({ store, project: "orchard", now: () => at }), /already open/);
     const api = { taskId: 9, callId: "pause" } as ToolExecutionApi;
     const first = await tools["hold.add"].execute({ reason: "Recover main" }, api, context);
+    await tools["rules.set"].execute(
+      {
+        expectedRevision: 0,
+        reason: "Owner chose VM workers",
+        rules: {
+          placement: { workers: "vm", coordinator: "local" },
+        },
+      },
+      { taskId: 10, callId: "rules" } as ToolExecutionApi,
+      context,
+    );
     const before = store.sequence;
     await scope.close(context);
     assert.equal((await tools["hold.add"].execute({ reason: "Stale owner" }, api, context)).isError, true);
@@ -331,6 +351,13 @@ test("only one coordinator owns project writes; disk replay preserves receipts a
     assert.deepEqual(await restored["hold.add"].execute({ reason: "Recover main" }, api, context), first);
     assert.equal(store.sequence, before);
     assert.equal(fold(store.readSince(0)).projects.orchard?.holds.length, 1);
+    const rules = { revision: 1, value: { placement: { workers: "vm", coordinator: "local" } } };
+    assert.deepEqual(fold(store.readSince(0)).projects.orchard?.rules, rules);
+    assert.deepEqual(
+      ((await restored["fleet.status"].execute({}, {} as ToolExecutionApi, context)).details as unknown as TestFacts)
+        .rules,
+      rules,
+    );
   } finally {
     await scope.close(context);
     store.close();
@@ -522,4 +549,142 @@ test("merge.check uses the latest validation so corrected work can be approved",
     payload: { id: "new-question", ticket: "SEED-1", session: "one", question: "A new decision?", checks: [] },
   });
   assert.equal((await run("merge.check", { pr: 7 })).code, "merge_refused");
+});
+
+// A synthetic V1 project: policy aliases, ordered labels, a kind-of-work profile and fallback.
+const v1Toml = `
+[project]
+name = "Orchard"
+slug = "orchard"
+[github]
+repository = "example/orchard"
+[tracker]
+program_root = "SEED-1"
+[policy]
+silent_after_minutes = 12
+quiet_minutes = 40
+max_workers = 3
+[conductor]
+default_profile = "general"
+[conductor.profiles.general]
+agent = "codex"
+model = "garden"
+effort = "medium"
+[conductor.profiles.api]
+agent = "claude"
+model = "oak"
+effort = "high"
+[conductor.profiles.ui]
+agent = "codex"
+model = "sun"
+effort = "high"
+when = "Frontend work"
+[[conductor.routing]]
+labels = ["backend", "api"]
+profile = "api"
+`;
+const importedValue = {
+  routing: [
+    { labels: ["backend", "api"], cli: "claude", model: "oak", effort: "high" },
+    { when: "Frontend work", cli: "codex", model: "sun", effort: "high" },
+  ],
+  defaultRoute: { cli: "codex", model: "garden", effort: "medium" },
+  policy: { silenceMinutes: 12, quietMinutes: 40, maxWorkers: 3 },
+};
+
+test("rules.set imports V1 once into the same folded rules as chat, without storing the TOML", async (t) => {
+  const { run, store } = await fixture(t);
+  const directory = mkdtempSync(join(tmpdir(), "armada-rules-import-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, "armada.toml");
+  writeFileSync(file, v1Toml);
+  const args = { expectedRevision: 0, reason: "Import the owner's V1 rules", importFile: file };
+  const result = await run("rules.set", args, "import");
+  assert.equal(result.ok, true);
+  assert.deepEqual(fold(store.readSince(0)).projects.orchard?.rules, {
+    revision: 1,
+    value: importedValue,
+  });
+  const committed = store.sequence;
+  rmSync(file); // Receipt replay must not read a changed or removed source file.
+  assert.deepEqual(await run("rules.set", args, "import"), result);
+  assert.equal(store.sequence, committed);
+  assert.equal((await run("rules.set", { ...args, expectedRevision: 1 })).code, "rules_already_set");
+  assert.equal(store.sequence, committed);
+  assert.ok(!JSON.stringify(store.readSince(0)).includes("program_root"));
+  // Setting the same intent from the chat produces the same public projection.
+  const other = openCoordinatorStorage({ store, project: "chat", now: () => at });
+  t.after(() => other.close(context));
+  const tools = nativeTools(other, { now: () => at });
+  assert.equal(
+    (
+      await tools["rules.set"].execute(
+        { expectedRevision: 0, reason: "Owner's choice", rules: importedValue },
+        { taskId: 8, callId: "chat" } as ToolExecutionApi,
+        context,
+      )
+    ).isError,
+    false,
+  );
+  assert.deepEqual(fold(store.readSince(0)).projects.chat?.rules, result.rules);
+});
+
+test("invalid imports and ambiguous patches refuse before writing; placement stays explicit", async (t) => {
+  const { run, store } = await fixture(t);
+  assert.equal((await run("fleet.status")).ok, true);
+  const before = store.sequence;
+  assert.equal((await run("rules.set", { expectedRevision: 0, reason: "Missing intent" })).code, "invalid_arguments");
+  assert.equal(store.sequence, before);
+  const directory = mkdtempSync(join(tmpdir(), "armada-rules-invalid-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, "armada.toml");
+  for (const body of [
+    "[broken",
+    v1Toml.replace('profile = "api"', 'profile = "missing"'),
+    v1Toml.replace('agent = "claude"', 'agent = "cursor"'),
+    v1Toml.replace("max_workers = 3", "max_workers = 0"),
+    v1Toml.replace("quiet_minutes = 40", 'quiet_minutes = "later"'),
+    v1Toml.replace("silent_after_minutes = 12", "silent_after_minutes = 12\nsilence_minutes = 5"),
+  ]) {
+    writeFileSync(file, body);
+    assert.equal(
+      (await run("rules.set", { expectedRevision: 0, reason: "Import", importFile: file })).code,
+      "invalid_import",
+    );
+    assert.equal(store.sequence, before);
+  }
+  for (const importFile of [directory, join(directory, "missing.toml"), "armada.toml"]) {
+    assert.equal(
+      (await run("rules.set", { expectedRevision: 0, reason: "Import", importFile })).code,
+      "invalid_import",
+    );
+    assert.equal(store.sequence, before);
+  }
+  writeFileSync(file, " ".repeat(262145));
+  assert.equal(
+    (await run("rules.set", { expectedRevision: 0, reason: "Too large", importFile: file })).code,
+    "invalid_import",
+  );
+  assert.equal(store.sequence, before);
+  assert.equal(
+    (await run("rules.set", { expectedRevision: 0, reason: "Mixed", importFile: file, rules: {} })).code,
+    "invalid_arguments",
+  );
+  assert.equal(
+    (
+      await run("rules.set", {
+        expectedRevision: 0,
+        reason: "VM workers",
+        rules: {
+          placement: { workers: "vm", coordinator: "local" },
+          routing: [{ when: "Backend work", cli: "claude", model: "oak" }],
+        },
+      })
+    ).ok,
+    true,
+  );
+  assert.equal(
+    (await run("rules.set", { expectedRevision: 1, reason: "Import", importFile: file })).code,
+    "rules_already_set",
+  );
 });
