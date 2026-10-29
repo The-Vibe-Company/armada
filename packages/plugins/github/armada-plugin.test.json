@@ -1,0 +1,12 @@
+{
+  "forge": {
+    "github": {
+      "endpoint": "${endpoint}/forge",
+      "projects": {
+        "plugin-conformance": {
+          "repository": "example/fixture"
+        }
+      }
+    }
+  }
+}

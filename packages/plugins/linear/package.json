@@ -1,0 +1,58 @@
+{
+  "name": "@armada/plugin-linear",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "armada": {
+    "id": "linear",
+    "version": "0.1.0",
+    "pluginApi": "^0.2.0",
+    "enabledByDefault": true,
+    "description": "Read Linear observations into the fleet event log.",
+    "contributions": {
+      "tracker": {
+        "linear": {
+          "config": {
+            "type": "object",
+            "properties": {
+              "projects": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "programRoot": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "phaseGroup": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "programRoot"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "endpoint": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "secrets": [
+            "LINEAR_API_KEY"
+          ]
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@armada/plugin-api": "workspace:*"
+  },
+  "devDependencies": {
+    "@armada/daemon": "workspace:*"
+  }
+}

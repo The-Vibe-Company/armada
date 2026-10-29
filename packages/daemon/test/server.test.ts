@@ -106,6 +106,29 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
   await crashed;
   assert.equal(lstatSync(stalePath).isSocket(), true);
   writeFileSync(catalog, JSON.stringify(projects.map((project) => ({ ...project, programRoot: "SEED-1" }))));
+  writeFileSync(
+    join(dir, "config.json"),
+    JSON.stringify({
+      plugins: [
+        {
+          id: "linear",
+          config: {
+            tracker: {
+              linear: { projects: Object.fromEntries(projects.map((p) => [p.id, { programRoot: "SEED-1" }])) },
+            },
+          },
+        },
+        {
+          id: "github",
+          config: {
+            forge: {
+              github: { projects: Object.fromEntries(projects.map((p) => [p.id, { repository: p.repository }])) },
+            },
+          },
+        },
+      ],
+    }),
+  );
   // Native Node preload keeps real boot offline, with active, abortable provider reads.
   const preload = `globalThis.fetch = async (_url, init) => {
     process.stderr.write("armada-test-reader-started\\n");
@@ -475,7 +498,7 @@ test("HTTP serves built assets and SPA routes, refuses escapes and foreign brows
   assert.equal(status, 403);
 });
 
-test("credential socket writes and fake-model use never expose the key to replies, events or logs", {
+test("credential socket writes never expose the key to replies, events or logs", {
   timeout: 10000,
 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "armada-credential-socket-"));
@@ -530,24 +553,16 @@ test("credential socket writes and fake-model use never expose the key to replie
   await next();
   const credential = await keychain.coordinator();
   assert.deepEqual(credential, { provider: "anthropic", key });
-  // A fake model consumes the actual saved credential; only its answer becomes a fleet event.
-  const model = async (input: { provider: string; key: string }) => {
-    assert.equal(input.key, key);
-    assert.equal(input.provider, "anthropic");
-    return "Ready to coordinate Orchard.";
-  };
-  if (!credential) throw new Error("Missing saved credential");
-  const body = await model(credential);
   const event = store.append({
     project: "orchard",
     kind: "coordinator.message",
     at: "2030-01-01T10:00:00Z",
     actor: "coordinator",
-    payload: { role: "coordinator", body },
+    payload: { role: "coordinator", body: "Ready to coordinate Orchard." },
   });
   const batch = await next();
   assert.equal(batch.type, "events");
-  if (batch.type !== "events") throw new Error("Expected model event");
+  if (batch.type !== "events") throw new Error("Expected coordinator event");
   assert.deepEqual(batch.events, [event]);
   assert.equal(store.sequence, 1);
   assert.equal(JSON.stringify([replies, store.readSince(0), logs]).includes(key), false);
@@ -567,7 +582,8 @@ test("credential socket writes and fake-model use never expose the key to replie
 });
 
 // Recorded before the vocabulary migration; the rules slice is an intentional additive extension.
-// Only the random subscription UUID is normalized.
+// Only the random subscription UUID is normalized; the frames' wire version moved from 1.1 to 1.2
+// with THE-2019's additive plugin messages.
 test("subscription bytes stay compatible with the recorded daemon vocabulary and folded tables", async (t) => {
   const fixture = new URL("./support/protocol-subscription.json", import.meta.url);
   const inputs = JSON.parse(readFileSync(fixture, "utf8")) as { history: EventInput[]; live: EventInput[] };

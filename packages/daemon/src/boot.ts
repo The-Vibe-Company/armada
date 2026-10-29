@@ -37,8 +37,9 @@ export async function bootDaemon(options: DaemonOptions) {
       options.catalog,
     );
     await mkdir(dirname(configPath), { recursive: true });
-    await writePluginStatus(configPath, options.catalog ?? BUNDLED_PLUGINS, plugins.plugins);
-    return { ...plugins, store, close: () => store.close() };
+    const catalog = options.catalog ?? BUNDLED_PLUGINS;
+    await writePluginStatus(configPath, catalog, plugins.plugins);
+    return { ...plugins, configPath, catalog, store, close: () => store.close() };
   } catch (error) {
     store.close();
     throw error;

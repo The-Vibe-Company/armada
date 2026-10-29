@@ -5,11 +5,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import { bootDaemon } from "../boot.ts";
+import { systemKeychain } from "../keychain.ts";
 import { readPluginSecret } from "../plugins/keychain.ts";
 import { Workers } from "../workers/service.ts";
 import { startWorkerSocket } from "../workers/socket.ts";
 import { startServer } from "./index.ts";
 import { daemonProjectSchema, startReaders } from "./readers.ts";
+
+/** The exit code that asks the desktop shell to start the daemon again (packages/desktop/src/daemon.ts). */
+const RESTART_EXIT_CODE = 75;
 
 try {
   const { values } = parseArgs({
@@ -18,12 +22,13 @@ try {
       projects: { type: "string" },
       port: { type: "string" },
       "static-dir": { type: "string" },
+      restartable: { type: "boolean" },
       help: { type: "boolean" },
     },
   });
   if (values.help) {
     console.log(
-      "armadad --database <sqlite-file> --projects <projects.json> [--port <port>] [--static-dir <app-dist>]",
+      "armadad --database <sqlite-file> --projects <projects.json> [--port <port>] [--static-dir <app-dist>] [--restartable]",
     );
   } else {
     if (!values.database || !values.projects) throw new Error("--database and --projects are required");
@@ -58,9 +63,32 @@ try {
         await rm(workerDirectory, { recursive: true, force: true });
         throw error;
       }
+      let stopping = false;
       let server: Awaited<ReturnType<typeof startServer>>;
       try {
-        server = await startServer({ store: daemon.store, projects, port, staticDir: values["static-dir"], workers });
+        server = await startServer({
+          store: daemon.store,
+          projects,
+          port,
+          staticDir: values["static-dir"],
+          workers,
+          // The keychain is opened on first use, as the plugins' own secret getter does.
+          plugins: {
+            configPath: daemon.configPath,
+            catalog: daemon.catalog,
+            boot: daemon,
+            keychain: {
+              read: (service, account) => systemKeychain().read(service, account),
+              write: (service, account, value) => systemKeychain().write(service, account, value),
+            },
+          },
+          // --restartable: the shell starts a daemon that exits with RESTART_EXIT_CODE again.
+          restart: values.restartable
+            ? () => {
+                void stop().finally(() => process.exit(RESTART_EXIT_CODE));
+              }
+            : undefined,
+        });
       } catch (error) {
         await socket.close();
         await rm(workerDirectory, { recursive: true, force: true });
@@ -72,7 +100,6 @@ try {
       workerPoll.unref();
       let readers: Awaited<ReturnType<typeof startReaders>> | undefined;
       const controller = new AbortController();
-      let stopping = false;
       const stop = async () => {
         if (stopping) return;
         stopping = true;
@@ -96,7 +123,7 @@ try {
         void stop();
       });
       try {
-        readers = await startReaders({ store: daemon.store, projects, signal: controller.signal });
+        readers = await startReaders({ registry: daemon.registry, projects, signal: controller.signal });
       } catch (error) {
         await stop();
         throw error;

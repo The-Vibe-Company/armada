@@ -1,23 +1,26 @@
 import { projectSchema } from "@armada/protocol";
-import { GithubReader } from "../forge/github.ts";
-import { type Schedule, schedule } from "../forge/types.ts";
-import { githubToken, readLinearKey, type SecretAccessor, systemKeychain } from "../keychain.ts";
-import type { EventStore } from "../store.ts";
-import { linearTracker, TrackerPoller } from "../tracker/index.ts";
+import type { PluginRegistry } from "../plugins/registry.ts";
 
-/** Daemon-only catalog fields; the public project protocol remains unchanged. */
+/** Catalog selection is host-owned; provider configuration belongs to each plugin. */
 export const daemonProjectSchema = projectSchema.extend({
   programRoot: projectSchema.shape.id.optional(),
   phaseGroup: projectSchema.shape.name.default("Agent phase"),
+  tracker: projectSchema.shape.id.default("linear"),
+  forge: projectSchema.shape.id.default("github"),
 });
-type ReaderProject = { id: string; name: string; repository: string; programRoot?: string; phaseGroup?: string };
+type ReaderProject = {
+  id: string;
+  name: string;
+  repository: string;
+  programRoot?: string;
+  phaseGroup?: string;
+  tracker?: string;
+  forge?: string;
+};
+type Schedule = (callback: () => void, milliseconds: number) => () => void;
 interface ReaderOptions {
-  store: EventStore;
+  registry: Pick<PluginRegistry, "get">;
   projects: readonly ReaderProject[];
-  secrets?: SecretAccessor;
-  token?: (signal: AbortSignal) => Promise<string>;
-  fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-  now?: () => Date;
   schedule?: Schedule;
   log?: (line: string) => void;
   signal?: AbortSignal;
@@ -27,22 +30,15 @@ export interface ReaderState {
   tracker: boolean;
   forge: boolean;
 }
+const schedule: Schedule = (callback, delay) => {
+  const timer = setTimeout(callback, delay);
+  return () => clearTimeout(timer);
+};
 
-/** Boot's sole reader composition point, to be replaced by the plugin registry.
- * Credential preflight is independent of reads; no provider request delays readiness.
- * Environment overrides and the shared keychain remain host-owned sources.
- */
+/** Independent background consumers. Request handlers only read the committed log. */
 export async function startReaders(options: ReaderOptions): Promise<{ readers: ReaderState[]; stop(): void }> {
   const projects = options.projects.map((project) => daemonProjectSchema.parse(project));
-  const now = options.now ?? (() => new Date());
   const set = options.schedule ?? schedule;
-  const fetch = options.fetch ?? globalThis.fetch;
-  const secrets: SecretAccessor =
-    options.secrets ??
-    (async (service, account) => process.env.LINEAR_API_KEY?.trim() || systemKeychain().read(service, account));
-  const token =
-    options.token ?? (async (signal: AbortSignal) => process.env.GITHUB_TOKEN?.trim() || githubToken({ signal }));
-  const log = options.log ?? console.error;
   const stops: (() => void)[] = [];
   const readers: ReaderState[] = [];
   let stopped = false;
@@ -53,72 +49,54 @@ export async function startReaders(options: ReaderOptions): Promise<{ readers: R
   };
   options.signal?.addEventListener("abort", stop, { once: true });
   if (options.signal?.aborted) stop();
-  try {
-    for (const project of projects) {
-      if (stopped) break;
-      // Catalog names must not create extra stderr lines or terminal controls.
-      const logProject = project.id.replace(
-        /[\p{Cc}\p{Zl}\p{Zp}]/gu,
-        (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
-      );
-      const state: ReaderState = { project: project.id, tracker: false, forge: false };
-      readers.push(state);
-      if (project.programRoot) {
-        let available = false;
+  for (const project of projects) {
+    const state: ReaderState = { project: project.id, tracker: false, forge: false };
+    readers.push(state);
+    if (stopped) continue;
+    for (const seam of ["tracker", "forge"] as const) {
+      const provider = options.registry.get(seam, project[seam]);
+      if (!provider) continue;
+      state[seam] = true;
+      let cancelNext: (() => void) | undefined;
+      let cancelDeadline: (() => void) | undefined;
+      let active: AbortController | undefined;
+      let running = true;
+      stops.push(() => {
+        running = false;
+        cancelNext?.();
+        cancelDeadline?.();
+        active?.abort();
+      });
+      const tick = async () => {
+        if (!running) return;
+        const controller = new AbortController();
+        active = controller;
+        const cancelReadDeadline = set(() => controller.abort(), 30_000);
+        cancelDeadline = cancelReadDeadline;
         try {
-          await readLinearKey(secrets, project.id);
-          available = true;
+          // Await settlement even after abort: an uncooperative plugin must not accumulate reads.
+          await provider.read({ project: project.id, signal: controller.signal });
         } catch {
-          /* Safe fixed diagnostic below. */
+          if (running) {
+            const id = project.id.replace(
+              /[\p{Cc}\p{Zl}\p{Zp}]/gu,
+              (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+            );
+            (options.log ?? console.error)(`armadad: ${id}: ${seam} read failed`);
+          }
+        } finally {
+          cancelReadDeadline();
+          cancelDeadline = undefined;
+          active = undefined;
+          if (running)
+            cancelNext = set(() => {
+              void tick();
+            }, 30_000);
         }
-        if (stopped) break;
-        if (available) {
-          const tracker = linearTracker({
-            project: project.id,
-            rootId: project.programRoot,
-            phaseGroup: project.phaseGroup,
-            secrets,
-            fetch,
-            now,
-          });
-          const poller = new TrackerPoller({ project: project.id, tracker, store: options.store, clock: { now, set } });
-          stops.push(() => poller.stop());
-          poller.start();
-          state.tracker = true;
-        } else log(`armadad: ${logProject}: tracker skipped (Linear key unavailable)`);
-      }
-      let available = false;
-      try {
-        available = Boolean((await token(options.signal ?? new AbortController().signal)).trim());
-      } catch {
-        /* Never log credential errors. */
-      }
-      if (stopped) break;
-      if (available) {
-        const forge = new GithubReader({
-          project: project.id,
-          repository: project.repository,
-          actor: "owner",
-          store: options.store,
-          tickets: () =>
-            new Set(
-              options.store
-                .readSince(0, project.id)
-                .flatMap((event) => (event.kind === "ticket.seen" ? [event.payload.id] : [])),
-            ),
-          token,
-          fetch,
-          now,
-          schedule: set,
-        });
-        stops.push(() => forge.stop());
-        forge.start();
-        state.forge = true;
-      } else log(`armadad: ${logProject}: forge skipped (GitHub key unavailable)`);
+      };
+      // Start independently of boot readiness and of the other seam.
+      void Promise.resolve().then(tick);
     }
-    return { readers, stop };
-  } catch (error) {
-    stop();
-    throw error;
   }
+  return { readers, stop };
 }

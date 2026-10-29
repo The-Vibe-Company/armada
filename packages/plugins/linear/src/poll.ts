@@ -1,8 +1,8 @@
-import type { EventInput, FleetEvent } from "../events.ts";
+import type { EventInput, FleetEvent } from "@armada/daemon/events";
 import { trackerChanges } from "./changes.ts";
 import type { Tracker, TrackerReading } from "./types.ts";
 
-export interface PollClock {
+interface PollClock {
   now(): Date;
   /** Return a cancel function; the host supplies setTimeout/clearTimeout. */
   set(callback: () => void, delayMs: number): () => void;
@@ -18,7 +18,10 @@ export interface PollStatus {
 export interface PollOptions {
   project: string;
   tracker: Tracker;
-  store: { append(event: EventInput): FleetEvent; readSince(seq: number, project?: string): FleetEvent[] };
+  store: {
+    append(event: EventInput): FleetEvent | Promise<FleetEvent>;
+    readSince(seq: number, project?: string): FleetEvent[] | Promise<FleetEvent[]>;
+  };
   clock: PollClock;
   intervalMs?: number;
   timeoutMs?: number;
@@ -119,9 +122,12 @@ export class TrackerPoller {
         this.#controller = undefined;
       });
     this.#active = Promise.race([read, canceled])
-      .then((reading) => {
+      .then(async (reading) => {
         controller.signal.throwIfAborted();
-        for (const event of trackerChanges(project, store.readSince(0, project), reading)) store.append(event);
+        for (const event of trackerChanges(project, await store.readSince(0, project), reading)) {
+          controller.signal.throwIfAborted();
+          await store.append(event);
+        }
         this.#previous = reading;
         if (full) this.#lastFull = Date.parse(startedAt);
         this.#status.lastCompletedAt = clock.now().toISOString();

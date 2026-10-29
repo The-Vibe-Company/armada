@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import type { FormHTMLAttributes, InputHTMLAttributes, ReactNode, Ref, SelectHTMLAttributes } from "react";
+import { cn } from "@/lib/utils";
 
 /**
  * The v7 page anatomy (design/dashboard-v7): a line of facts, the 22 px title
@@ -15,6 +16,22 @@ export function PageHeader({ facts, title, quiet }: { facts?: ReactNode; title: 
       {facts && <div className="m-0 flex flex-wrap items-center gap-2 text-meta text-text-2">{facts}</div>}
       <h1 className="m-0 text-pretty text-title">{title}</h1>
       {quiet && <p className="m-0 text-sub text-text-2">{quiet}</p>}
+    </header>
+  );
+}
+
+/**
+ * A full-bleed page's title and facts on one line, across its top (the
+ * hangar, after the direction kept with the owner, `.aeom/direction`): the
+ * title, then the facts, then what sits at the right end; on a narrow
+ * window the facts wrap to a second line rather than leave any out.
+ */
+export function PageBar({ title, facts, end }: { title: ReactNode; facts?: ReactNode; end?: ReactNode }) {
+  return (
+    <header className="flex min-h-12 min-w-0 flex-none flex-wrap items-center gap-x-3.5 gap-y-1 whitespace-nowrap border-line border-b px-4 py-2.5 text-body text-text-2">
+      <h1 className="m-0 font-semibold text-bar text-text">{title}</h1>
+      {facts}
+      {end && <div className="ml-auto flex items-center gap-3.5 text-text-3">{end}</div>}
     </header>
   );
 }
@@ -36,4 +53,48 @@ export function Dot() {
       ·
     </span>
   );
+}
+
+/** A form of the page kit: its fields in a column, its buttons on the last line. */
+export function Form({ className, ...props }: FormHTMLAttributes<HTMLFormElement>) {
+  return <form {...props} className={cn("m-0 flex max-w-[560px] flex-col gap-3", className)} />;
+}
+
+/** One field: its label above the control, an optional hint under it. */
+export function Field({
+  label,
+  hint,
+  htmlFor,
+  children,
+}: {
+  label: ReactNode;
+  hint?: ReactNode;
+  htmlFor: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5">
+      <label htmlFor={htmlFor} className="text-meta text-text-2">
+        {label}
+      </label>
+      {children}
+      {hint && <p className="m-0 text-small text-text-3">{hint}</p>}
+    </div>
+  );
+}
+
+const control =
+  "h-7.5 w-full min-w-0 rounded-control bg-sunken px-2.5 text-body text-text shadow-ring outline-none placeholder:text-text-3 focus-visible:shadow-ring-hover disabled:opacity-50";
+
+/** A text field on the buttons' height; give it a label (`Field`), visible or `sr-only`. */
+export function Input({
+  className,
+  ...props
+}: InputHTMLAttributes<HTMLInputElement> & { ref?: Ref<HTMLInputElement> }) {
+  return <input {...props} className={cn(control, className)} />;
+}
+
+/** A choice on the buttons' height. */
+export function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
+  return <select {...props} className={cn(control, "pr-1.5", className)} />;
 }

@@ -267,8 +267,18 @@ required. Status describes the last boot, independently of process liveness.
 `armada plugin enable|disable <id>` changes that switch under a shared process-safe read/modify/write lock, preserves
 other app/provider settings, and says to restart the daemon to apply it.
 `setPluginEnabled` and `updateAppConfig` are shared with the app's Plugins screen
-(THE-2019), which will show switches and contribution config forms from their
-JSON Schemas and restart the daemon. THE-2013 adds `armada plugin test <dir>`
+(THE-2019, `#/plugins`, in the sidebar). The screen lists the catalog grouped by
+seam. Each plugin shows its version, contributions, state (loaded, off, refused,
+restart to apply) and a switch, plus a "Configure" disclosure: each contribution's
+config form, generated from its JSON Schema, and each declared secret as set or
+missing, with a password field. It speaks protocol minor 2 (`plugins.list`,
+`enable`, `disable`, `configure`, `secret`, `daemon.restart`). The daemon saves
+each change at once, checking a config with the loader's own rule, and marks it
+"restart to apply" until the next boot. Restart asks the daemon to exit with code
+75, and the desktop shell starts it again on the same port, so the app reconnects
+on its own. A browser-served daemon without the shell says to quit and reopen.
+
+THE-2013 adds `armada plugin test <dir>`
 with seam conformance fixtures. Follow-ups move the Linear/GitHub readers, three
 CLI runtimes, local/boat nodes and coordinator models behind the definitions.
 

@@ -12,20 +12,27 @@
       "project": ["src/**/*.ts", "test/**/*.mjs"]
     },
     "packages/daemon": {
-      "entry": ["test/**/*.test.ts", "test/**/*.integration.ts", "src/tracker/index.ts"],
-      "project": ["src/**/*.ts", "test/**/*.ts"]
+      "entry": ["test/**/*.test.ts"],
+      "project": ["src/**/*.ts", "coordinator/**/*.ts", "test/**/*.ts"]
     },
     "packages/app": {
       "entry": ["test/**/*.test.{ts,tsx}"],
       "project": ["src/**/*.{ts,tsx,css}", "scripts/**/*.ts", "test/**/*.{ts,tsx}"],
       "ignoreIssues": {
-        "src/components/ui/button.tsx": ["exports"],
-        "src/protocol/client.ts": ["types"]
+        "src/protocol/client.ts": ["types"],
+        "src/components/fleet/FleetList.tsx": ["exports"],
+        "src/fleet/state.ts": ["types"]
       }
     },
     "packages/desktop": {
       "entry": ["test/**/*.test.ts"],
       "project": ["src/**/*.ts", "test/**/*.ts"]
+    },
+    "packages/plugin-api": {
+      "project": ["src/**/*.ts"]
+    },
+    "packages/plugins/*": {
+      "project": ["src/**/*.ts"]
     }
   },
   "ignoreWorkspaces": ["packages/core", "packages/cli", "packages/dashboard"],

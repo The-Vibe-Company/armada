@@ -2,7 +2,7 @@ import { createCn } from "cn/config";
 
 /** The v7 theme's names `cn` must know; test/anatomy.test.tsx holds them to src/styles.css's @theme. */
 export const THEME_NAMES = {
-  text: ["label", "heading", "small", "meta", "body", "sub", "title"],
+  text: ["label", "heading", "small", "meta", "body", "sub", "bar", "title"],
   radius: ["xs", "sm", "md", "control", "btn", "card", "lg", "deck"],
   shadow: ["ring", "ring-hover", "control", "control-hover", "pop"],
 };

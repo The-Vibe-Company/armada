@@ -154,11 +154,31 @@
         "@armada/plugin-api": "workspace:*",
       },
     },
+    "packages/plugins/github": {
+      "name": "@armada/plugin-github",
+      "version": "0.1.0",
+      "dependencies": {
+        "@armada/plugin-api": "workspace:*",
+      },
+      "devDependencies": {
+        "@armada/daemon": "workspace:*",
+      },
+    },
     "packages/plugins/hello": {
       "name": "@armada/plugin-hello",
       "version": "0.1.0",
       "devDependencies": {
         "@armada/plugin-api": "workspace:*",
+      },
+    },
+    "packages/plugins/linear": {
+      "name": "@armada/plugin-linear",
+      "version": "0.1.0",
+      "dependencies": {
+        "@armada/plugin-api": "workspace:*",
+      },
+      "devDependencies": {
+        "@armada/daemon": "workspace:*",
       },
     },
     "packages/plugins/node-local": {
@@ -204,7 +224,11 @@
 
     "@armada/plugin-claude": ["@armada/plugin-claude@workspace:packages/plugins/claude"],
 
+    "@armada/plugin-github": ["@armada/plugin-github@workspace:packages/plugins/github"],
+
     "@armada/plugin-hello": ["@armada/plugin-hello@workspace:packages/plugins/hello"],
+
+    "@armada/plugin-linear": ["@armada/plugin-linear@workspace:packages/plugins/linear"],
 
     "@armada/plugin-node-local": ["@armada/plugin-node-local@workspace:packages/plugins/node-local"],
 

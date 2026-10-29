@@ -43,13 +43,50 @@ synthetic fleet, one session in every state; in development Tidewater's TID-7
 takes a step every three seconds. The browser test runs the same server, which
 serves the build.
 
-## The home: the fleet by state
+## The routes
 
-`src/screens/Home.tsx`, in the v7 anatomy: the facts line (the daemon, then how
-many agents are in flight across how many projects, moving on their own, ready to
-merge, merged today), the title, the quiet line (what is blocked and what waits
-for the owner), then the fleet (`src/components/fleet/FleetList.tsx`): every
-project's sessions in one list grouped by state, most urgent first.
+The address's hash names the screen (`src/lib/route.ts`, `routeOf` and
+`useRoute`): `#/` the hangar, `#/projects/<id>` a project, `#/plugins` the
+Plugins screen, `#/settings` the settings; anything else is the hangar. The
+daemon serves one page and the desktop shell opens it from a file, so the path
+never moves. A screen is one line there and one in `src/App.tsx`; the sidebar
+marks the current one (`aria-current`).
+
+## The hangar: every project a squadron in one sky
+
+`src/screens/Hangar.tsx` (THE-2025), the home, after the direction kept with the
+owner (`.aeom/direction/index.html`, "hangar-sky-mix"): the title and the
+fleet's facts on one line across the top (`PageBar` in `src/components/page.tsx`:
+agents in flight, moving on their own, ready to merge, merged today, then apart
+what is blocked and what waits for the owner, and how many projects), and the
+whole view is the sky (`Sky` at `stage` size). Every project is a squadron
+flying in depth: its coordinator's V of five, its agents in their harness
+colours, a hairline arc in its most urgent state's colour, its name and counts
+under it (zero counts left out, `src/fleet/hangar.ts`), and "Enter the room".
+The whole squadron, its ships and its words, is one link to `#/projects/<id>`
+(`Sky`'s `link`; the layout gives each squadron its `area`). A squadron with an
+agent blocked or waiting for the owner flies nearest and largest, one at work
+further, one with nothing in flight furthest (`SQUADRON_SCALE` in
+`src/sky/layout.ts`). When nothing is in flight the sky is empty, with one quiet
+line. The sky is drawn once every project's folded state arrived, so its first
+paint holds every squadron in place.
+
+`test/hangar.test.tsx` lays out two synthetic projects and checks each
+squadron's ships, colours, depth, arc, counts and link area, the facts line, and
+the empty sky's quiet line.
+
+## Settings
+
+`src/screens/Settings.tsx` at `#/settings`, reached from the sidebar's bottom:
+the daemon's address on the facts line, then the coordinator's model
+(`src/components/CoordinatorKey.tsx`, the key form, unchanged).
+
+## A project's fleet by state
+
+`#/projects/<id>` is the project's page (`src/screens/Project.tsx`: its rules,
+THE-1997, then its sessions by state in `src/components/fleet/FleetList.tsx`)
+until the project's room (THE-1996) takes the route and the list moves to its
+rail: groups most urgent first.
 
 The rules are V1's overview (`packages/dashboard/lib/coordinator-view.ts` and its
 strings), copied into `src/fleet/overview.ts`, never imported:
@@ -71,8 +108,34 @@ strings), copied into `src/fleet/overview.ts`, never imported:
   browser skips the rows off screen; every row stays in the page.
 
 `test/overview.test.ts` holds the rules on synthetic folded states;
-`test/fleet.test.tsx` renders the home on the daemon's fold of a synthetic log
+`test/fleet.test.tsx` renders the list on the daemon's fold of a synthetic log
 and reads the groups, the reasons and their colours.
+
+## The Plugins screen
+
+`src/screens/Plugins.tsx` at `#/plugins` (`src/lib/route.ts`; the sidebar's
+Plugins entry) is loaded on demand, off the first load. It follows the same
+anatomy: the catalog's numbers on the facts line (plugins, on, loaded, refused),
+the title and a quiet line, then every bundled plugin in one list grouped by seam
+(`src/plugins/list.ts`: Runtimes, Trackers, Forges, Nodes, Models, then Other).
+Each row has its name, version, description and contributions, its state in a
+word and colour (loaded, off, refused, restart to apply) and a switch
+(`src/components/ui/switch.tsx`, lime when on). A "Configure" disclosure holds
+each contribution's form, generated from its JSON Schema by `src/plugins/schema.ts`
+with the page kit's `Form`, `Field`, `Input` and `Select`, and each declared
+secret as set or missing with a password field. The secret follows the coordinator
+key's rule: the field is cleared before the daemon answers, and the value is never
+kept or replayed.
+
+The client (`setPluginEnabled`, `configurePlugin`, `setPluginSecret`,
+`restartDaemon`) asks the daemon, which saves at once and answers with the whole
+list. A change then shows "Restart to apply" and a notice with Restart. Restart
+asks the daemon to restart (the desktop shell starts it again); the client
+reconnects as after any drop and lists the plugins again. A daemon the shell does
+not supervise says to quit and reopen instead. `test/plugins.test.tsx` renders a
+synthetic catalog over a fake socket. `test/build.test.ts` flips a switch in
+Chromium, saves a setting and a secret, and presses Restart on a daemon the test
+restarts on the same port, until the row reads Loaded.
 
 ## The look
 
@@ -87,8 +150,9 @@ reset: `font-serif` or `bg-blue-500` builds nothing.
 
 - **Geist and Geist Mono only**, self-hosted (`src/fonts`, from `design/dashboard-v7/fonts`).
 - **Every page has the v7 anatomy** (`src/components/page.tsx`): a line of facts,
-  the 22 px title, a quiet line, then the page's blocks. The title is the page's
-  only `h1`.
+  the 22 px title, a quiet line, then the page's blocks. The hangar, a full-bleed
+  sky, keeps the direction's one line instead (`PageBar`: its 15 px title, then
+  its facts). The title is the page's only `h1`.
 - **shadcn on Base UI** (`components.json`, style `base-nova`): components are
   copied into `src/components/ui` when a screen needs one, then set on the v7
   tokens. `cn` (`src/lib/utils.ts`) is told the theme's size, radius and shadow
@@ -167,7 +231,8 @@ all, live, and a synthetic fleet moved by hand (loaded only behind that flag).
 gzipped) at 150 KB; `test/build.test.ts` builds the app as `bun run build` does
 and fails past it. The same test opens the build in Chromium, served by armadad's
 own server on a synthetic log, and checks the sidebar lists the projects with
-their sessions in flight, the fleet's groups, that a report arriving over the
+their sessions in flight, the hangar's squadrons and their links, a project's
+groups once its squadron is clicked, that a report arriving over the
 subscription glides the same row into Blocked without a reload, that a claim
 reaches the sidebar and the list live, that the one `h1` is the 22 px title, and
 that every element is set in Geist or Geist Mono. Install the browser once with

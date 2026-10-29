@@ -41,5 +41,109 @@
         "checksComplete": true
       }
     }
+  ],
+  "operations": {
+    "Pulls": {
+      "data": {
+        "repository": {
+          "open": {
+            "nodes": [
+              {
+                "number": 17,
+                "title": "Exercise a plugin seam",
+                "url": "https://github.com/example/fixture/pull/17",
+                "state": "OPEN",
+                "isDraft": false,
+                "mergeable": "MERGEABLE",
+                "mergeStateStatus": "CLEAN",
+                "headRefName": "feature/check-1-plugin",
+                "headRefOid": "0123456789abcdef0123456789abcdef01234567",
+                "reviewDecision": null,
+                "commits": {
+                  "nodes": [
+                    {
+                      "commit": {
+                        "oid": "0123456789abcdef0123456789abcdef01234567",
+                        "checkSuites": {
+                          "nodes": [
+                            {
+                              "status": "COMPLETED",
+                              "conclusion": "SUCCESS",
+                              "commit": {
+                                "oid": "0123456789abcdef0123456789abcdef01234567"
+                              },
+                              "workflowRun": {
+                                "databaseId": 101,
+                                "runNumber": 1,
+                                "runAttempt": 1,
+                                "workflow": {
+                                  "id": "verify"
+                                }
+                              }
+                            }
+                          ],
+                          "pageInfo": {
+                            "hasNextPage": false,
+                            "endCursor": null
+                          }
+                        },
+                        "statusCheckRollup": {
+                          "state": "SUCCESS",
+                          "contexts": {
+                            "nodes": [
+                              {
+                                "__typename": "CheckRun",
+                                "name": "verify",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "checkSuite": {
+                                  "status": "COMPLETED",
+                                  "conclusion": "SUCCESS",
+                                  "commit": {
+                                    "oid": "0123456789abcdef0123456789abcdef01234567"
+                                  },
+                                  "workflowRun": {
+                                    "databaseId": 101,
+                                    "runNumber": 1,
+                                    "runAttempt": 1,
+                                    "workflow": {
+                                      "id": "verify"
+                                    }
+                                  }
+                                }
+                              }
+                            ],
+                            "pageInfo": {
+                              "hasNextPage": false,
+                              "endCursor": null
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": null
+            }
+          }
+        }
+      }
+    }
+  },
+  "initialEvents": [
+    {
+      "kind": "ticket.seen",
+      "payload": {
+        "id": "CHECK-1",
+        "title": "Exercise a plugin seam",
+        "status": "started",
+        "phase": "implementing",
+        "owner": "Avery"
+      }
+    }
   ]
 }

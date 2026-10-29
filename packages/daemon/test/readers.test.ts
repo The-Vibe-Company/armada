@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,8 +11,9 @@ import { fold } from "../src/fold.ts";
 import { startServer } from "../src/server/index.ts";
 import { daemonProjectSchema, startReaders } from "../src/server/readers.ts";
 import { EventStore } from "../src/store.ts";
+import { readerRegistry } from "./support/reader-plugins.ts";
 
-import { github, issue, now, page, project } from "./support/reader-recordings.ts";
+import { github, issue, page, project } from "./support/reader-recordings.ts";
 
 function clock() {
   const tasks = new Map<() => void, number>();
@@ -83,30 +83,29 @@ test("daemon readers commit recorded Linear/GitHub facts to the subscribed store
       }
     });
   });
+  t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, init?: RequestInit) => {
+    const { query, variables } = JSON.parse(String(init?.body));
+    const operation = /query\s+(\w+)/.exec(query)?.[1] ?? "?";
+    calls.push(operation);
+    if (operation === "Root") assert.equal(variables.id, "SEED-1");
+    if (operation === "Pulls") assert.deepEqual([variables.owner, variables.name], ["example", "orchard"]);
+    const data = bodies[operation]?.shift();
+    if (data) return Response.json({ data });
+    assert.ok(operation === "Changed" || operation === "Pulls", `unexpected ${operation}`);
+    assert.ok(init?.signal);
+    signals.push(init.signal);
+    if (signals.length === 2) bothEntered();
+    return new Promise<Response>((resolve) => release.push(() => resolve(Response.json({ data: github }))));
+  });
   const readers = await startReaders({
-    store,
+    registry: await readerRegistry(store, [project], {
+      get: async (name) => {
+        if (name === "GITHUB_TOKEN") await trackerReady;
+        return "synthetic-key";
+      },
+    }),
     projects: [project],
-    now,
     schedule: timer.schedule,
-    secrets: async () => randomUUID(),
-    token: async () => {
-      await trackerReady;
-      return randomUUID();
-    },
-    fetch: async (_url, init) => {
-      const { query, variables } = JSON.parse(String(init?.body));
-      const operation = /query\s+(\w+)/.exec(query)?.[1] ?? "?";
-      calls.push(operation);
-      if (operation === "Root") assert.equal(variables.id, "SEED-1");
-      if (operation === "Pulls") assert.deepEqual([variables.owner, variables.name], ["example", "orchard"]);
-      const data = bodies[operation]?.shift();
-      if (data) return Response.json({ data });
-      assert.ok(operation === "Changed" || operation === "Pulls", `unexpected ${operation}`);
-      assert.ok(init?.signal);
-      signals.push(init.signal);
-      if (signals.length === 2) bothEntered();
-      return new Promise<Response>((resolve) => release.push(() => resolve(Response.json({ data: github }))));
-    },
     log: (line) => assert.fail(line),
   });
   t.after(() => readers.stop());
@@ -149,55 +148,14 @@ test("daemon readers commit recorded Linear/GitHub facts to the subscribed store
   assert.equal(store.sequence, cursor, "late provider results cannot append after shutdown");
 });
 
-test("a catalog without programRoot starts only the forge; missing credentials skip once per reader", async () => {
-  const store = new EventStore(":memory:");
+test("disabled providers never start a read; cancellation before startup leaves no timers", async () => {
   const timer = clock();
-  const lines: string[] = [];
-  const credential = randomUUID();
-  const meadow = "meadow\n\u001b[31m\u0085\u2028";
-  const plain = { id: "harbor", name: "Harbor", repository: "example/harbor" };
-  let fetched = 0;
-  let lookedUp = 0;
-  const readers = await startReaders({
-    store,
-    projects: [plain, project, { ...project, id: meadow }],
-    now,
-    schedule: timer.schedule,
-    secrets: async () => {
-      lookedUp++;
-      throw new Error(credential);
-    },
-    token: async () => {
-      if (lookedUp) throw new Error(credential);
-      return credential;
-    },
-    fetch: async () => {
-      fetched++;
-      return Response.json({ data: { repository: { open: page([]) } } });
-    },
-    log: (line) => lines.push(line),
-  });
-  try {
-    await setImmediate();
-    assert.deepEqual(readers.readers, [
-      { project: "harbor", tracker: false, forge: true },
-      { project: "orchard", tracker: false, forge: false },
-      { project: meadow, tracker: false, forge: false },
-    ]);
-    assert.equal(lookedUp, 2, "no Linear lookup for a project without a root");
-    assert.equal(fetched, 1, "skipped readers never fetch");
-    assert.deepEqual(lines, [
-      "armadad: orchard: tracker skipped (Linear key unavailable)",
-      "armadad: orchard: forge skipped (GitHub key unavailable)",
-      "armadad: meadow\\u000a\\u001b[31m\\u0085\\u2028: tracker skipped (Linear key unavailable)",
-      "armadad: meadow\\u000a\\u001b[31m\\u0085\\u2028: forge skipped (GitHub key unavailable)",
-    ]);
-    assert.equal(lines.join().includes(credential), false);
-  } finally {
-    readers.stop();
-    await setImmediate();
-    store.close();
-  }
+  const { PluginRegistry } = await import("../src/plugins/registry.ts");
+  const registry = new PluginRegistry();
+  const readers = await startReaders({ registry, projects: [project], schedule: timer.schedule });
+  assert.deepEqual(readers.readers, [{ project: project.id, tracker: false, forge: false }]);
+  assert.equal(timer.tasks.size, 0);
+  readers.stop();
 });
 
 test("reader catalog validates optional roots and phase groups before boot", () => {
@@ -207,30 +165,46 @@ test("reader catalog validates optional roots and phase groups before boot", () 
   assert.equal(daemonProjectSchema.safeParse({ ...project, phaseGroup: 42 }).success, false);
 });
 
-test("shutdown during credential preflight cannot start readers against a closed store", async () => {
-  for (const stage of ["tracker", "forge"]) {
-    const store = new EventStore(":memory:");
-    const controller = new AbortController();
-    let release: (key: string) => void = () => {};
-    const key = new Promise<string>((resolve) => {
-      release = resolve;
-    });
-    const pending = startReaders({
-      store,
-      projects: [{ ...project, programRoot: stage === "tracker" ? project.programRoot : undefined }],
-      signal: controller.signal,
-      secrets: () => key,
-      token: () => key,
-      fetch: async () => {
-        assert.fail("shutdown must prevent provider fetches");
-      },
-      log: (line) => assert.fail(line),
-    });
-    controller.abort();
-    store.close();
-    release(randomUUID());
-    const readers = await pending;
-    assert.deepEqual(readers.readers, [{ project: "orchard", tracker: false, forge: false }]);
+test("shutdown clears the deadline even when a registry provider ignores cancellation", async () => {
+  const { PluginRegistry } = await import("../src/plugins/registry.ts");
+  const registry = new PluginRegistry();
+  const activation = registry.activation({
+    id: "fixture",
+    version: "1.0.0",
+    pluginApi: "^0.2.0",
+    enabledByDefault: true,
+    description: "Uncooperative fixture",
+    contributions: { tracker: { linear: { config: true, secrets: [] } } },
+  });
+  let release: () => void = () => {};
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered: () => void = () => {};
+  const ready = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let signal: AbortSignal | undefined;
+  activation.register.tracker("linear", {
+    read: async (request) => {
+      signal = request.signal;
+      entered();
+      await pending;
+    },
+    write: async () => {},
+  });
+  activation.commit();
+  const timer = clock();
+  const readers = await startReaders({ registry, projects: [project], schedule: timer.schedule });
+  await ready;
+  assert.equal(timer.tasks.size, 1, "the active read has a deadline");
+  try {
     readers.stop();
+    assert.equal(signal?.aborted, true);
+    assert.equal(timer.tasks.size, 0, "shutdown releases the deadline without waiting for the provider");
+  } finally {
+    release();
   }
+  await setImmediate();
+  assert.equal(timer.tasks.size, 0);
 });

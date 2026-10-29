@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { setImmediate } from "node:timers/promises";
-import { fold } from "../src/fold.ts";
-import { EventStore } from "../src/store.ts";
-import { type LinearFetch, linearTracker } from "../src/tracker/linear/index.ts";
-import { TrackerPoller } from "../src/tracker/poll.ts";
+import { fold } from "@armada/daemon/fold";
+import { EventStore } from "@armada/daemon/store";
+import { type LinearFetch, linearTracker } from "../src/linear/index.ts";
+import { TrackerPoller } from "../src/poll.ts";
 
 const t0 = "2030-01-01T10:00:00.000Z";
 const t1 = "2030-01-01T10:01:00.000Z";

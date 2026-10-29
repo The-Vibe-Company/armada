@@ -1,0 +1,12 @@
+{
+  "tracker": {
+    "linear": {
+      "endpoint": "${endpoint}/tracker",
+      "projects": {
+        "plugin-conformance": {
+          "programRoot": "CHECK-1"
+        }
+      }
+    }
+  }
+}

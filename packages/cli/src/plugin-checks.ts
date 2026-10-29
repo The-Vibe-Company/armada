@@ -29,6 +29,7 @@ export interface SeamCheckOptions {
 }
 interface Recording {
   expectedEvents: { kind: string; payload: unknown }[];
+  initialEvents?: { kind: string; payload: import("@armada/plugin-api").Json }[];
 }
 const project = "plugin-conformance";
 const ticket = "CHECK-1";
@@ -47,6 +48,15 @@ export async function runSeamChecks(options: SeamCheckOptions): Promise<void> {
           const recording = JSON.parse(
             await readFile(join(options.fixtureRoot, seam, "response.json"), "utf8"),
           ) as Recording;
+          for (const event of recording.initialEvents ?? []) {
+            options.events.push({
+              ...event,
+              project,
+              seq: options.events.length + 1,
+              actor: "fixture",
+              at: "2030-01-01T10:00:00.000Z",
+            });
+          }
           const eventStart = options.events.length;
           const requestStart = options.requests.length;
           await provider.read({ project, signal: AbortSignal.timeout(4000) });
@@ -79,12 +89,9 @@ export async function runSeamChecks(options: SeamCheckOptions): Promise<void> {
             });
             const writes = writeRequests(options, start, seam);
             assert(
-              writes.some((request) => {
-                const body = JSON.stringify(request.body);
-                return (
-                  body.includes(comment) && body.includes("implementing") && `${request.path} ${body}`.includes(ticket)
-                );
-              }),
+              [comment, "implementing", ticket].every((value) =>
+                writes.some((request) => `${request.path} ${JSON.stringify(request.body)}`.includes(value)),
+              ),
               "write did not send its unique comment to the fixture",
             );
           });
