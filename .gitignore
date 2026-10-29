@@ -30,3 +30,4 @@ packages/core/src/skills.generated.json
 .e2e/summary.md
 .e2e/logs/
 .e2e/videos/
+.aeom/runs/

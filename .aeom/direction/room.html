@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Armada · Room</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .main.room-open .sky.band, .main.room-open .chat { margin-right: 33.333%; }
+</style>
+</head>
+<body>
+<div class="window">
+  <aside class="side">
+    <div class="brand">
+      <svg width="22" height="18" viewBox="0 0 22 18" aria-hidden="true">
+        <path d="M11 1 L14 6 L8 6 Z" fill="#b6f15a"/>
+        <path d="M6.5 7 L9.5 12 L3.5 12 Z" fill="#e6e7e9"/>
+        <path d="M15.5 7 L18.5 12 L12.5 12 Z" fill="#e6e7e9"/>
+        <path d="M2 12.5 L5 17.5 L-1 17.5 Z" fill="#e6e7e9" opacity=".45"/>
+        <path d="M20 12.5 L23 17.5 L17 17.5 Z" fill="#e6e7e9" opacity=".45"/>
+      </svg>
+      Armada
+    </div>
+    <nav class="nav">
+      <a href="index.html">Hangar</a>
+      <div class="group">Projects</div>
+      <a class="on" href="room.html">Armada <i class="dot blocked"></i></a>
+      <a href="room.html">Quivr <i class="dot waiting"></i></a>
+    </nav>
+    <div class="live"><i></i> Live · <span class="mono">20:53</span></div>
+  </aside>
+
+  <section class="main room-open">
+    <header class="facts">
+      <span class="title">Armada</span>
+      <span class="repo">The-Vibe-Company/armada</span>
+      <span class="f"><b>3</b> agents in flight</span>
+      <span class="f"><b>2</b> moving on their own</span>
+      <span class="f ready"><b>0</b> ready to merge</span>
+      <span class="f"><b>13</b> merged today</span>
+      <span class="sep"></span>
+      <span class="f blocked"><b>1</b> blocked</span>
+      <span class="f"><b>0</b> waiting for you</span>
+      <span class="right"><a href="room.html">Agents <span class="mono">3</span> ‹</a></span>
+    </header>
+
+    <!-- the sky, narrowed to a band -->
+    <div class="sky band">
+      <svg viewBox="0 0 755 200" preserveAspectRatio="xMidYMid slice" aria-label="This project's agents, grouped by state">
+        <defs><path id="tri" d="M0 -6 L5.2 5 L-5.2 5 Z"/></defs>
+        <!-- far depth -->
+        <g fill="#e6e7e9" opacity=".10">
+          <use href="#tri" transform="translate(40 60) rotate(-20) scale(.7)"/>
+          <use href="#tri" transform="translate(70 48) rotate(-20) scale(.7)"/>
+          <use href="#tri" transform="translate(290 150) rotate(20) scale(.6)"/>
+          <use href="#tri" transform="translate(318 162) rotate(20) scale(.6)"/>
+          <use href="#tri" transform="translate(480 56) rotate(0) scale(.55)"/>
+        </g>
+        <!-- middle depth -->
+        <g fill="#e6e7e9" opacity=".2">
+          <use href="#tri" transform="translate(160 150) rotate(-15) scale(1)"/>
+          <use href="#tri" transform="translate(190 140) rotate(-15) scale(1)"/>
+          <use href="#tri" transform="translate(700 150) rotate(10) scale(.9)"/>
+        </g>
+
+        <!-- near depth: the coordinator, a V of five -->
+        <g transform="translate(104 106) rotate(-8) scale(2.3)">
+          <use href="#tri" transform="translate(0 -22)" fill="#b6f15a"/>
+          <use href="#tri" transform="translate(-14 -8)" fill="#e6e7e9"/>
+          <use href="#tri" transform="translate(14 -8)" fill="#e6e7e9"/>
+          <use href="#tri" transform="translate(-28 6)" fill="#e6e7e9" opacity=".45"/>
+          <use href="#tri" transform="translate(28 6)" fill="#e6e7e9" opacity=".45"/>
+        </g>
+
+        <!-- Blocked: THE-2012, banked away -->
+        <a href="room.html"><use href="#tri" transform="translate(254 100) rotate(-42) scale(3.6)" fill="#10a37f"/></a>
+        <path d="M226 134 Q254 148 282 134" fill="none" stroke="#e5484d" stroke-width="1.5" opacity=".8"/>
+
+        <!-- In progress: THE-1993, THE-2023 -->
+        <a href="room.html"><use href="#tri" transform="translate(366 92) rotate(-6) scale(3.6)" fill="#10a37f"/></a>
+        <a href="room.html"><use href="#tri" transform="translate(432 116) rotate(4) scale(3.6)" fill="#10a37f"/></a>
+        <path d="M342 144 Q399 158 456 144" fill="none" stroke="#b6f15a" stroke-width="1.5" opacity=".7"/>
+
+        <!-- Merged today: thirteen, a bone V flying away at the far depth -->
+        <g transform="translate(626 86) rotate(-16) scale(.95)" fill="#e6e7e9" opacity=".6">
+          <use href="#tri" transform="translate(0 -36)"/>
+          <use href="#tri" transform="translate(-14 -22)"/>
+          <use href="#tri" transform="translate(14 -22)"/>
+          <use href="#tri" transform="translate(-28 -8)"/>
+          <use href="#tri" transform="translate(28 -8)"/>
+          <use href="#tri" transform="translate(-42 6)"/>
+          <use href="#tri" transform="translate(42 6)"/>
+          <use href="#tri" transform="translate(-56 20)"/>
+          <use href="#tri" transform="translate(56 20)"/>
+          <use href="#tri" transform="translate(-70 34)"/>
+          <use href="#tri" transform="translate(70 34)"/>
+          <use href="#tri" transform="translate(-84 48)"/>
+          <use href="#tri" transform="translate(84 48)"/>
+        </g>
+      </svg>
+
+      <div class="group-label" style="left:58px">Coordinator</div>
+      <div class="group-label blocked" style="left:224px">Blocked <b>1</b></div>
+      <div class="group-label progress" style="left:352px">In progress <b>2</b></div>
+      <div class="group-label" style="left:590px">Merged today <b>13</b></div>
+
+      <div class="legend">
+        <span><i style="background:#e5484d"></i>Blocked <span class="n">1</span></span>
+        <span><i style="background:#f2b43a"></i>Waiting for you <span class="n">0</span></span>
+        <span><i style="background:#b6f15a"></i>In progress <span class="n">2</span></span>
+        <span><i style="background:#5aa9f1"></i>Ready to merge <span class="n">0</span></span>
+        <span><i style="background:#e6e7e9"></i>Merged today <span class="n">13</span></span>
+      </div>
+    </div>
+
+    <!-- the conversation -->
+    <div class="chat">
+        <div class="pinned">
+    <div class="ask">
+          <div class="card">
+            <div class="from">
+              <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#10a37f"/></svg><span class="id">THE-1993</span>
+              <span class="ellip">Run the coordinator as a pi agent in the daemon, checkpointed in the log</span>
+              <span class="harness"><svg width="10" height="10" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#10a37f"/></svg>Codex</span>
+              <span class="time">20:53</span>
+            </div>
+            <div class="q">The test merge into main fails two of my tests by timeout under the Bun suite. Raise the timeout to 60 s, or fix the wait?</div>
+            <div class="choices">
+              <button class="btn primary">Fix the wait <small>· recommended</small></button>
+              <button class="btn">Raise the timeout</button>
+              <button class="btn">Let me look</button>
+            </div>
+            <div class="field"><label for="note">Note</label><input class="note" id="note" type="text" placeholder="Add a note…"></div>
+          </div>
+        </div>
+    </div>
+      <div class="thread">
+        <div class="msg owner">
+          <div class="who">You</div>
+          <div class="body">Merge the hygiene PR first, then the coordinator. <span class="time">20:40</span></div>
+        </div>
+        <div class="msg">
+          <div class="who">Coordinator</div>
+          <div class="body">Merging <span class="pr">#338</span> now; <span class="pr">#334</span> after its checks. <span class="time">20:41</span></div>
+        </div>
+        <div class="msg line">
+          <div class="who"></div>
+          <div class="body"><i style="background:#e6e7e9"></i><span class="pr">#338</span> merged. <span class="id">THE-2021</span> done. <span class="time">20:46</span></div>
+        </div>
+        <div class="msg line">
+          <div class="who"></div>
+          <div class="body"><i style="background:#e5484d"></i><span class="id blocked">THE-2012</span> is blocked: <span class="pr">#332</span> conflicts with main. I told its worker to merge main in. <span class="time">20:48</span></div>
+        </div>
+        <div class="msg line">
+          <div class="who"></div>
+          <div class="body"><i style="background:#e6e7e9"></i><span class="pr">#335</span> merged: the fleet screen is live. <span class="time">20:51</span></div>
+        </div>
+
+      </div>
+
+      <form class="composer" onsubmit="return false">
+        <label for="msg">Message</label>
+        <input id="msg" type="text" placeholder="Tell the coordinator…">
+        <button class="btn primary" type="submit">Send</button>
+      </form>
+    </div>
+
+    <!-- the agents' rail, slid in from the right -->
+    <aside class="rail">
+      <div class="head">Agents <span class="n">3 in flight · 13 merged today</span><a class="close" href="room.html" aria-label="Close">×</a></div>
+      <div class="list">
+        <div class="state"><i style="background:#e5484d"></i>Blocked <b>1</b></div>
+        <a class="row" href="room.html">
+          <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#10a37f"/></svg>
+          <div class="t">
+            <div class="ellip"><span class="id">THE-2012</span><span class="title">Load the bundled plugins at boot through a versioned plugin API</span></div>
+            <div class="sub"><span class="step">Review &amp; CI</span><span class="when">20:48</span></div>
+            <div class="rep ellip">Conflict with main on #332</div>
+          </div>
+        </a>
+
+        <div class="state"><i style="background:#f2b43a"></i>Waiting for you <b>0</b></div>
+        <div class="empty">Nothing waits for you.</div>
+
+        <div class="state"><i style="background:#b6f15a"></i>In progress <b>2</b></div>
+        <a class="row" href="room.html">
+          <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#10a37f"/></svg>
+          <div class="t">
+            <div class="ellip"><span class="id">THE-1993</span><span class="title">Run the coordinator as a pi agent in the daemon, checkpointed in the log</span></div>
+            <div class="sub"><span class="step">Review &amp; CI</span><span class="when">20:45</span></div>
+            <div class="rep ellip">Merged origin/main cleanly. Reproducing the bun run verify timeouts, fixing the underlying wait, then fresh review and CI.</div>
+          </div>
+        </a>
+        <a class="row" href="room.html">
+          <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#10a37f"/></svg>
+          <div class="t">
+            <div class="ellip"><span class="id">THE-2023</span><span class="title">Run the tracker and WebSocket composition test in verify</span></div>
+            <div class="sub"><span class="step">Review &amp; CI</span><span class="when">20:53</span></div>
+            <div class="rep ellip">Candidate frozen; focused 5/5 green. Independent review starts now.</div>
+          </div>
+        </a>
+
+        <div class="state"><i style="background:#5aa9f1"></i>Ready to merge <b>0</b></div>
+        <div class="empty">Nothing is ready to merge.</div>
+
+        <div class="state"><i style="background:#e6e7e9"></i>Merged today <b>13</b></div>
+        <a class="row compact" href="room.html">
+          <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#d97757"/></svg>
+          <div class="t"><div class="ellip"><span class="id">THE-1991</span><span class="title">Show a project's fleet grouped by state, live</span></div></div>
+          <div class="when"><span class="pr">#335</span><span>20:51</span></div>
+        </a>
+        <a class="row compact" href="room.html">
+          <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#e6e7e9" opacity=".6"/></svg>
+          <div class="t"><div class="ellip"><span class="id">THE-2021</span><span class="title">Hygiene 1: audit tests, architecture and dead code</span></div></div>
+          <div class="when"><span class="pr">#338</span><span>20:46</span></div>
+        </a>
+        <a class="row compact" href="room.html">
+          <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#e6e7e9" opacity=".6"/></svg>
+          <div class="t"><div class="ellip"><span class="id">THE-2020</span><span class="title">Start the Linear and GitHub readers with the daemon</span></div></div>
+          <div class="when"><span class="pr">#337</span><span>20:42</span></div>
+        </a>
+        <a class="row compact" href="room.html">
+          <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#e6e7e9" opacity=".6"/></svg>
+          <div class="t"><div class="ellip"><span class="id">THE-2002</span><span class="title">CI: run Postgres from the runner itself</span></div></div>
+          <div class="when"><span class="pr">#325</span></div>
+        </a>
+        <a class="row compact" href="room.html">
+          <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#e6e7e9" opacity=".6"/></svg>
+          <div class="t"><div class="ellip"><span class="id">THE-2001</span><span class="title">Set up tester-army/e2e with a first dashboard journey in CI</span></div></div>
+          <div class="when"><span class="pr">#328</span></div>
+        </a>
+        <a class="row compact" href="room.html">
+          <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#e6e7e9" opacity=".6"/></svg>
+          <div class="t"><div class="ellip"><span class="id">THE-1995</span><span class="title">Keep the coordinator's API key in the OS keychain</span></div></div>
+          <div class="when"><span class="pr">#336</span></div>
+        </a>
+        <a class="row compact" href="room.html">
+          <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#e6e7e9" opacity=".6"/></svg>
+          <div class="t"><div class="ellip"><span class="id">THE-1992</span><span class="title">Open the app in an Electron window that owns the daemon</span></div></div>
+          <div class="when"><span class="pr">#333</span></div>
+        </a>
+        <a class="row compact" href="room.html">
+          <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#d97757"/></svg>
+          <div class="t"><div class="ellip"><span class="id">THE-1990</span><span class="title">Build the app's skeleton</span></div></div>
+          <div class="when"><span class="pr">#327</span></div>
+        </a>
+        <a class="row compact" href="room.html">
+          <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#e6e7e9" opacity=".6"/></svg>
+          <div class="t"><div class="ellip"><span class="id">THE-1989</span><span class="title">Read pull requests and checks from GitHub into events</span></div></div>
+          <div class="when"><span class="pr">#330</span></div>
+        </a>
+        <a class="row compact" href="room.html">
+          <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#e6e7e9" opacity=".6"/></svg>
+          <div class="t"><div class="ellip"><span class="id">THE-1988</span><span class="title">Read a project's tickets from Linear into events</span></div></div>
+          <div class="when"><span class="pr">#331</span></div>
+        </a>
+        <a class="row compact" href="room.html">
+          <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#e6e7e9" opacity=".6"/></svg>
+          <div class="t"><div class="ellip"><span class="id">THE-1987</span><span class="title">Serve the fleet over WebSocket with subscriptions and replay</span></div></div>
+          <div class="when"><span class="pr">#329</span></div>
+        </a>
+        <a class="row compact" href="room.html">
+          <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#e6e7e9" opacity=".6"/></svg>
+          <div class="t"><div class="ellip"><span class="id">THE-1986</span><span class="title">Keep the fleet in an append-only event log</span></div></div>
+          <div class="when"><span class="pr">#324</span></div>
+        </a>
+        <a class="row compact" href="room.html">
+          <svg width="12" height="12" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#e6e7e9" opacity=".6"/></svg>
+          <div class="t"><div class="ellip"><span class="id">THE-1985</span><span class="title">Define the daemon's protocol</span></div></div>
+          <div class="when"><span class="pr">#323</span></div>
+        </a>
+      </div>
+    </aside>
+  </section>
+</div>
+</body>
+</html>
