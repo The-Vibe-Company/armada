@@ -62,6 +62,7 @@ same tests run in the Bun suite; `bun run verify` and CI also exercise native
 Node SQLite explicitly. Store tests use disposable database files; fold tests
 use invented tickets and people without I/O.
 
+
 ## Credential boundary
 
 `keychain.ts` is the host's only secret-read gateway. `systemKeychain()` uses
@@ -83,3 +84,59 @@ plugins must not import `secrets/*` or a native keychain module. Tests inject a
 `dispatchCredentials` is a standalone request handler while transport integration
 lands. Call it only after `admitRequest`, before project-scoped dispatch. It
 returns status or a fixed error and has no event-store/logger dependency.
+
+## Local server (`armadad`)
+
+Build the browser app with `bun run --cwd packages/app build`, then run the
+Node daemon (Node 22.18+):
+
+```sh
+node packages/daemon/src/server/main.ts --database .context/fleet.sqlite --projects .context/projects.json
+```
+
+The project catalog is a JSON array, for example
+`[{"id":"orchard","name":"Orchard","repository":"example/orchard"}]`.
+The daemon binds `127.0.0.1`, uses an OS-assigned port unless `--port` is given,
+and prints one JSON readiness line with `url` and `wsUrl`. Open `url` in a browser;
+Electron can read the same line to open its window. `SIGINT` and `SIGTERM` close
+connections and SQLite. `--static-dir` overrides `packages/app/dist`; a missing
+build answers 404 while WebSocket requests still work. Static assets include
+content types and HEAD support; HTML navigation falls back to `index.html`.
+Paths and symlinks cannot escape the build directory.
+
+Embedders import `startServer` from `@armada/daemon/server`, supplying a store and
+catalog; it returns `{url, wsUrl, close}`. The caller owns the store and closes it
+after awaiting the server's idempotent `close()`. Adapters must append through
+that same EventStore instance: this is one daemon's single writer, not a watcher
+for external SQLite writers. `store.subscribe()` notifies after a committed
+append, and `store.sequence` reads the global committed cursor. A throwing
+observer is detached so it cannot turn a committed append into an apparent
+failure. The server detaches its observer on close or a bind failure.
+
+WebSocket text frames at `/` use `@armada/protocol`. Every request is admitted
+before dispatch. List-projects reads the catalog; unknown projects/sessions
+return `not-found`. A session read returns the events that explicitly name its
+session ID, in order, at the global log cursor. Subscription acknowledgments
+carry an optional `snapshot: {seq,state}` on `after: 0`: `state` is that project's
+`ProjectTables` from the pure fold, including empty tables for an empty project.
+The daemon also sends the initial event history for clients that fold locally.
+A snapshot consumer should ignore events at or before the snapshot's cursor.
+A reconnect with a positive `after` omits the snapshot and replays only later
+events, followed by live commits. Re-subscribing replaces the prior subscription
+for that project on that socket. Other project commits emit empty batches that
+advance the global cursor without leaking their events. A cursor ahead of the
+log is refused, preserving any existing subscription.
+
+There is no polling or wall-clock ordering. Registration, replay and commit
+notices run synchronously against SQLite, preventing a gap between replay and
+live delivery. Disconnects discard connection state; durable sequence replay
+works across daemon restarts. Slow clients with more than 8 MiB already queued
+are disconnected and can replay. Requests are limited to 1 MiB. The local server
+requires its bound Host header and permits absent (native client) or same-origin
+browser Origin headers; `allowedOrigins` explicitly admits a separate trusted
+dev app. Do not expose this unauthenticated local endpoint on a remote interface.
+
+`test/server.test.ts` owns transport coverage using real SQLite, OS-assigned
+loopback sockets and message/close events, including process readiness/shutdown.
+It never sleeps, polls a clock, or contacts an external service.
+

@@ -80,6 +80,7 @@ Both sides accept minor differences within the same major. App consumers validat
 with `serverMessageSchema` and check the server's major before applying frames;
 a major mismatch requires reconnecting with a compatible app/daemon pair.
 
+
 ### Credentials (minor 1)
 
 A local app sends `credentials.status` after connection to discover the saved
@@ -96,3 +97,14 @@ Credential requests must go through admission and the daemon's private credentia
 dispatch, before project-scoped fleet dispatch. Do not log request frames or
 backend errors. The transport accepts writes only on its loopback socket under
 its existing trusted-origin check. There is no credential-read message.
+
+## Initial folded snapshot (additive)
+
+`project.subscribed` may include `snapshot: {seq,state}` on an initial
+`after: 0` subscription. `state` is JSON whose fold shape is owned by the daemon;
+`seq` is its inclusive global cursor. Servers still send the event-history frame
+so clients that fold locally continue to work. A client using the snapshot must
+apply only events after the snapshot cursor. Replay subscriptions with a positive
+`after` omit the snapshot and send only missed event batches. This optional field
+adds no required operation or dependency on daemon types.
+

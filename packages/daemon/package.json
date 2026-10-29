@@ -13,13 +13,22 @@
     "./fold": "./src/fold.ts",
     "./store": "./src/store.ts",
     "./keychain": "./src/keychain.ts",
-    "./credentials": "./src/credentials.ts"
+    "./credentials": "./src/credentials.ts",
+    "./server": "./src/server/index.ts"
   },
   "scripts": {
-    "test": "node --test test/*.test.ts"
+    "test": "node --test test/*.test.ts",
+    "start": "node src/server/main.ts"
   },
   "dependencies": {
     "@armada/protocol": "workspace:*",
-    "@napi-rs/keyring": "2.1.2"
+    "@napi-rs/keyring": "2.1.2",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.1"
+  },
+  "bin": {
+    "armadad": "./src/server/main.ts"
   }
 }

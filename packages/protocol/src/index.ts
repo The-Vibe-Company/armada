@@ -84,6 +84,8 @@ export const subscribedSchema = z.object({
   subscriptionId: identifier,
   project: identifier,
   after: counter,
+  /** Initial folded project state; omitted on replay. Shape is owned by the daemon. */
+  snapshot: z.object({ seq: counter, state: z.json() }).optional(),
 });
 
 const history = { project: identifier, seq: counter, events: z.array(eventSchema) };
