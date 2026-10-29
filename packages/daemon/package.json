@@ -1,0 +1,19 @@
+{
+  "name": "@armada/daemon",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Armada V2 local event log and pure fleet projections.",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./events": "./src/events.ts",
+    "./fold": "./src/fold.ts",
+    "./store": "./src/store.ts"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts"
+  }
+}

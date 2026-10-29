@@ -14,10 +14,11 @@
     "format": "biome check --write .",
     "typecheck": "bun run skills:bundle && tsc --noEmit && tsc --noEmit -p packages/dashboard && bun run --cwd packages/protocol build",
     "test": "bun run --cwd packages/protocol test && bun test",
-    "verify": "bun run lint && bun run typecheck && bun run test",
+    "verify": "bun run lint && bun run typecheck && bun run test && bun run test:daemon",
     "test:browser:install": "bun run --cwd packages/dashboard test:browser:install",
     "postinstall": "bun run skills:bundle && bun run --cwd packages/protocol build",
-    "build": "bun run --cwd packages/cli build && bun run --cwd packages/dashboard build"
+    "build": "bun run --cwd packages/cli build && bun run --cwd packages/dashboard build",
+    "test:daemon": "bun run --cwd packages/daemon test"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",

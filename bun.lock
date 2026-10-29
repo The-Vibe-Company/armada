@@ -31,6 +31,10 @@
         "smol-toml": "1.9.0",
       },
     },
+    "packages/daemon": {
+      "name": "@armada/daemon",
+      "version": "0.0.0",
+    },
     "packages/dashboard": {
       "name": "@armada/dashboard",
       "version": "0.0.0",
@@ -74,6 +78,8 @@
   },
   "packages": {
     "@armada/core": ["@armada/core@workspace:packages/core"],
+
+    "@armada/daemon": ["@armada/daemon@workspace:packages/daemon"],
 
     "@armada/dashboard": ["@armada/dashboard@workspace:packages/dashboard"],
 
