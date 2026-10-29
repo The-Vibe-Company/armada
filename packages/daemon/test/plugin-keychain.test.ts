@@ -31,13 +31,16 @@ test("plugin secrets use the reserved keychain service and hide missing/locked c
     }),
     null,
   );
+  let offPlatformCalls = 0;
   assert.equal(
     await readPluginSecret("MODEL_KEY", {
       platform: "linux",
       command: async () => {
-        assert.fail("must not run a keychain command off macOS");
+        offPlatformCalls++;
+        return "fixture-secret";
       },
     }),
     null,
   );
+  assert.equal(offPlatformCalls, 0);
 });
