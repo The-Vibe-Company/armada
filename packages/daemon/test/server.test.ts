@@ -64,7 +64,10 @@ test("armadad announces its address, serves without an app build and quits clean
       "--static-dir",
       join(dir, "missing"),
     ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    {
+      env: { ...process.env, ARMADA_APP_CONFIG: join(dir, "config.json") },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
   );
   const exited = once(child, "exit");
   child.stderr.resume();
