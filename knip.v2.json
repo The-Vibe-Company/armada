@@ -1,0 +1,34 @@
+{
+  "$schema": "https://unpkg.com/knip@6.43.0/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": ["e2e.config.ts", "e2e/prepare.ts", "e2e/**/*.test.ts", "e2e/tests/**/*.e2e.ts"],
+      "project": ["e2e/**/*.ts"],
+      "ignoreDependencies": ["@types/picomatch", "@types/proper-lockfile"],
+      "typescript": false
+    },
+    "packages/protocol": {
+      "entry": ["test/**/*.test.mjs"],
+      "project": ["src/**/*.ts", "test/**/*.mjs"]
+    },
+    "packages/daemon": {
+      "entry": ["test/**/*.test.ts", "test/**/*.integration.ts", "src/tracker/index.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts"]
+    },
+    "packages/app": {
+      "entry": ["test/**/*.test.{ts,tsx}"],
+      "project": ["src/**/*.{ts,tsx,css}", "scripts/**/*.ts", "test/**/*.{ts,tsx}"],
+      "ignoreIssues": {
+        "src/components/ui/button.tsx": ["exports"],
+        "src/protocol/client.ts": ["types"]
+      }
+    },
+    "packages/desktop": {
+      "entry": ["test/**/*.test.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts"]
+    }
+  },
+  "ignoreWorkspaces": ["packages/core", "packages/cli", "packages/dashboard"],
+  "github-actions": false,
+  "bun": false
+}
