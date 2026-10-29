@@ -28,6 +28,8 @@ const sessionSchema = z.object({
   reason: text,
   flowStep: z.enum(["plan", "implementing", "review", "ci", "merged"]),
   at: text,
+  /** Where the worker runs: the sky reads its harness from it (src/fleet/sky.ts). */
+  runtime: text.optional(),
 });
 const pullRequestSchema = z.object({
   number: z.number().int(),

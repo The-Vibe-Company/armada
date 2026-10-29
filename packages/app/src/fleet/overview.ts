@@ -29,7 +29,7 @@ export const GROUP_HINT: Record<Group, string> = {
 };
 
 /** The group of each folded state; a released session is not shown. */
-const GROUP_OF: Record<FoldedSession["state"], Group | null> = {
+export const GROUP_OF: Record<FoldedSession["state"], Group | null> = {
   blocked: "blocked",
   "waiting-for-owner": "you",
   "in-progress": "running",
