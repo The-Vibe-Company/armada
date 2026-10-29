@@ -5,14 +5,15 @@
   "type": "module",
   "description": "Armada V2 local event log and pure fleet projections.",
   "engines": {
-    "node": ">=22.18.0"
+    "node": ">=22.19.0"
   },
   "exports": {
     ".": "./src/index.ts",
     "./events": "./src/events.ts",
     "./fold": "./src/fold.ts",
     "./store": "./src/store.ts",
-    "./server": "./src/server/index.ts"
+    "./server": "./src/server/index.ts",
+    "./coordinator": "./coordinator/index.ts"
   },
   "scripts": {
     "test": "node --test test/*.test.ts",
@@ -20,6 +21,10 @@
   },
   "dependencies": {
     "@armada/protocol": "workspace:*",
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-durable": "1.4.0",
+    "typebox": "1.3.27",
     "ws": "8.21.3"
   },
   "devDependencies": {

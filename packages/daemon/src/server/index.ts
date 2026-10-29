@@ -11,12 +11,15 @@ import {
   PROTOCOL_VERSION as version,
 } from "@armada/protocol";
 import { WebSocket, WebSocketServer } from "ws";
+import type { CoordinatorOptions, ProjectCoordinator } from "../../coordinator/index.ts";
 import { fold, type ProjectTables } from "../fold.ts";
 import type { EventStore } from "../store.ts";
 import { serveStatic } from "./static.ts";
 
 export interface ServerOptions {
   store: EventStore;
+  /** Caller-injected model access; omitted until model configuration is available. */
+  coordinators?: readonly CoordinatorOptions[];
   projects: readonly Project[];
   /** 0 asks the OS for a free port. Always bound to IPv4 loopback. */
   port?: number;
@@ -28,6 +31,7 @@ export interface ServerOptions {
 export interface DaemonServer {
   url: string;
   wsUrl: string;
+  coordinators: ReadonlyMap<string, ProjectCoordinator>;
   /** Closes connections/listeners; the caller still owns and closes the store. Idempotent. */
   close(): Promise<void>;
 }
@@ -59,6 +63,13 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   const projects = options.projects.map((p) => projectSchema.parse(p));
   if (new Set(projects.map((p) => p.id)).size !== projects.length) throw new Error("Duplicate project id");
   const known = new Set(projects.map((p) => p.id));
+  const configured = options.coordinators ?? [];
+  if (new Set(configured.map((entry) => entry.project)).size !== configured.length)
+    throw new Error("Duplicate coordinator project");
+  if (configured.some((entry) => !known.has(entry.project))) throw new Error("Unknown coordinator project");
+  const coordinatorManager = configured.length
+    ? new (await import("../../coordinator/index.ts")).Coordinators(store)
+    : undefined;
   const staticDir = options.staticDir ?? fileURLToPath(new URL("../../../app/dist/", import.meta.url));
   let authority = "";
   let closing = false;
@@ -212,21 +223,36 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Daemon did not bind a TCP port");
   authority = `127.0.0.1:${address.port}`;
+  const coordinators = new Map<string, ProjectCoordinator>();
   let closed: Promise<void> | undefined;
-  return {
-    url: `http://${authority}`,
-    wsUrl: `ws://${authority}/`,
-    close() {
-      closed ??= new Promise<void>((resolve, reject) => {
-        closing = true;
-        unsubscribe();
-        for (const ws of sockets.clients) ws.terminate();
-        connections.clear();
-        sockets.close();
+  const close = () => {
+    closed ??= (async () => {
+      closing = true;
+      unsubscribe();
+      for (const ws of sockets.clients) ws.terminate();
+      connections.clear();
+      sockets.close();
+      const transport = new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
         server.closeAllConnections();
       });
-      return closed;
-    },
+      const results = await Promise.allSettled([transport, coordinatorManager?.close()]);
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
+    })();
+    return closed;
+  };
+  try {
+    if (coordinatorManager)
+      for (const config of configured) coordinators.set(config.project, await coordinatorManager.open(config));
+  } catch (error) {
+    await close();
+    throw error;
+  }
+  return {
+    url: `http://${authority}`,
+    wsUrl: `ws://${authority}/`,
+    coordinators,
+    close,
   };
 }

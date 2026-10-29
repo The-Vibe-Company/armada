@@ -1,7 +1,7 @@
 # Armada daemon store
 
 `@armada/daemon` is the V2 daemon's private workspace package. It runs on Node
-22.18+ (native TypeScript support), uses `node:sqlite`, and has no V1 imports.
+22.19+ (native TypeScript support), uses `node:sqlite`, and has no V1 imports.
 The root `packages/*` workspace glob includes it.
 
 ```ts
@@ -65,7 +65,7 @@ use invented tickets and people without I/O.
 ## Local server (`armadad`)
 
 Build the browser app with `bun run --cwd packages/app build`, then run the
-Node daemon (Node 22.18+):
+Node daemon (Node 22.19+):
 
 ```sh
 node packages/daemon/src/server/main.ts --database .context/fleet.sqlite --projects .context/projects.json
@@ -116,3 +116,59 @@ dev app. Do not expose this unauthenticated local endpoint on a remote interface
 `test/server.test.ts` owns transport coverage using real SQLite, OS-assigned
 loopback sockets and message/close events, including process readiness/shutdown.
 It never sleeps, polls a clock, or contacts an external service.
+
+## Durable coordinators
+
+`startServer({ store, projects, coordinators })` opens one coordinator per configured
+project and resumes its pending tasks before returning. Each configuration supplies
+`{ project, models, model, tools?, now?, setTimer?, onReport? }`: `models` is the caller's
+pi-ai SDK `Models` collection (or a getter), `model` is `{provider, modelId}`. The
+server returns a `coordinators` map of `{harness, conversation}` handles; submit input
+with a stable `requestId` using pi-durable's conversation API. Its idempotent
+`close()` stops all harnesses before the caller closes the shared EventStore.
+Unknown or duplicate coordinator projects are refused. Configuration is optional:
+the standalone CLI starts without a model until the model-plugin boot path supplies
+one. No provider, key lookup or environment credentials are constructed here.
+
+`@armada/daemon/coordinator` exports the lifecycle manager for other daemon hosts,
+the prompt and tool contract. `coordinator/system.md` adapts the V1 coordinator
+SKILL/MERGE/REFERENCE policies to the thirteen native tools. Tool implementations
+supply pi-durable `ToolRegistration` objects keyed by `CoordinatorToolName`, with
+their own schemas and structured facts/refusals. Missing tools return
+`tool_unavailable`. All tools execute sequentially for the project's single writer;
+replay defaults to unsafe unless an implementation explicitly declares it safe.
+THE-1994 supplies real tools; THE-2017 supplies model plugins, and THE-1996 adds chat
+requests. Those paths need not change the storage contract.
+
+Pinned pi-durable 1.4 owns its scheduler directly over pi-ai; pi-agent-core is a
+separate non-durable agent loop, so nesting it would create a second scheduler.
+The custom Storage adapter uses pi's public `MemoryStorage.prepareCommit` to validate
+and detach mutations. Each complete batch is one `coordinator.checkpoint` event
+(`checkpoint.format = "armada.pi"`, `version = 1`, `type = "commit"`, `seq`, `writes`).
+An ID reservation is a checkpoint with `type = "id"` and `id`, preserving unused IDs
+across reopen. Batch sequences are local to pi; the outer event `seq` remains the
+global fleet replay cursor. Other projects and non-pi checkpoint formats are ignored;
+unsupported versions of this format refuse startup rather than discard history.
+Append succeeds before the in-memory projection advances. Reopening folds the
+project's checkpoints back through pi's reference storage, including task state,
+entries, documents and deduplicated submission receipts. No second database or
+conversation file exists. This first adapter retains the pi projection and replay
+history in memory; memory and restart time grow with conversation history.
+
+One daemon process owns the store. In-process duplicate opens of a project's
+coordinator storage are refused, including through a second manager. Use that same
+EventStore for all writes so subscribers receive committed checkpoint events too.
+A completed model turn/tool result is reused on recovery. An uncommitted model
+request can be retried. A process crash during an external tool effect is **not**
+exactly-once: pi retries only explicitly safe tools; unsafe interrupted calls become
+error results. Tool writers must use stable call IDs/idempotency for external writes.
+Never put secrets in prompts, arguments, outputs or checkpoints.
+
+`test/coordinator.test.ts` runs the actual Node server with an injected faux pi-ai
+model in a child process, SIGKILLs it at deterministic model/tool gates, and reopens
+the same SQLite log. It proves three model turns, one tool call, input deduplication,
+preserved transcript/log prefix, and safe handling of interrupted unsafe effects.
+No external network, key or wall-clock sleep is used. The prompt/tool inventory is
+checked independently. The adapter's own test covers disk replay, project isolation,
+durable ID allocation and failed-write atomicity. Storage compatibility findings are
+recorded on THE-1984 before loop implementation.
