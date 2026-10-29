@@ -1,7 +1,6 @@
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 const execute = promisify(execFile);
-import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 
@@ -38,11 +37,8 @@ export function activate(ctx) {
         return {id:randomUUID(),path,node:'local'};
       },
       async launch({workspace, worker, command, args}) {
-        const quote = (s) => "'"+s.replaceAll("'", "'\\''")+"'";
-        const scriptArgs = process.platform === 'darwin'
-          ? ['-q','/dev/null',command,...args]
-          : ['-q','-c',[command,...args].map(quote).join(' '),'/dev/null'];
-        const child = spawn('script',scriptArgs,{cwd:workspace.path,stdio:'pipe'});
+        // This reference transport must work without a controlling terminal on macOS too.
+        const child = spawn(command,args,{cwd:workspace.path,stdio:'pipe'});
         const record = {child,state:'running',reply:''};
         child.stdout.on('data',(chunk) => {record.reply += chunk;});
         child.stderr.on('data',(chunk) => {record.reply += chunk;});
@@ -56,7 +52,7 @@ export function activate(ctx) {
       async stop(ref) {
         const record=workers.get(ref.handle);
         if(record.state==='stopped') return;
-        // Ask the real worker to exit, then close script after it drains.
+        // Ask the real worker to exit and wait for its process to finish.
         record.child.stdin.write('exit\n');
         await new Promise((resolve) => record.child.once('exit',resolve));
       },

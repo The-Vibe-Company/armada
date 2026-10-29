@@ -41,9 +41,12 @@ these recordings do not imitate any vendor's API.
 
 Runtime and node checks initialize a local Git repository and ask `prepare`
 for a real workspace inside the temporary sandbox. They copy `runtime/worker.mjs`
-into that workspace and launch Node. The fixture emits its readiness marker
-only when both stdin and stdout are TTYs, acknowledges each delivered nonce,
-and exits normally on `exit`. Checks separately observe running, delivery,
+into that workspace and launch Node. The fixture emits its readiness marker,
+acknowledges each delivered nonce, and exits normally on `exit`. It supports
+both a provider's PTY and piped stdin/stdout; the reference test provider uses
+pipes so it runs without a controlling terminal, including on macOS. These
+checks exercise the worker I/O protocol without requiring the test runner to
+own a terminal. Checks separately observe running, delivery,
 stop, and normal process exit. Providers must put output in `observe().reply`.
 The public node API has no workspace teardown operation; the runner stops
 workers and removes the whole owned temporary sandbox after the checks.

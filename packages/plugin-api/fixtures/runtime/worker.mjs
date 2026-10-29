@@ -1,11 +1,7 @@
 import { createInterface } from "node:readline";
 
-if (process.stdin.isTTY && process.stdout.isTTY) {
-  console.log("ARMADA_CONFORMANCE_TTY_READY");
-} else {
-  console.log("ARMADA_CONFORMANCE_NO_TTY");
-  process.exit(2);
-}
+// The I/O protocol works with a provider's PTY or a headless reference transport.
+console.log("ARMADA_CONFORMANCE_READY");
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
 input.on("line", (line) => {
   if (line === "exit") {

@@ -247,7 +247,7 @@ async function workerChecks(options: SeamCheckOptions, seam: "runtime" | "node",
         provider,
         worker,
         (observation) =>
-          observation.state === "running" && observation.reply?.includes("ARMADA_CONFORMANCE_TTY_READY") === true,
+          observation.state === "running" && observation.reply?.includes("ARMADA_CONFORMANCE_READY") === true,
         undefined,
         signal,
       );
@@ -288,7 +288,7 @@ async function workerChecks(options: SeamCheckOptions, seam: "runtime" | "node",
         provider,
         worker,
         (observation) =>
-          observation.state === "running" && observation.reply?.includes("ARMADA_CONFORMANCE_TTY_READY") === true,
+          observation.state === "running" && observation.reply?.includes("ARMADA_CONFORMANCE_READY") === true,
         deadline,
         signal,
       );

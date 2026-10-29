@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { bootDaemon } from "@armada/daemon";
 import type { PluginCatalogEntry } from "@armada/daemon/plugins/catalog";
@@ -216,40 +216,47 @@ test("plugin test loads hello, reports a named tracker failure and preserves loa
   }
 });
 
-test("plugin test exercises recorded reads, writes, PTYs, workspaces and a model tool call", async () => {
-  let out = "";
-  let err = "";
-  const io: Io = {
-    cwd: process.cwd(),
-    env: {},
-    ghToken: () => null,
-    readFile: async (path) => readFile(path, "utf8").catch(() => null),
-    stdout: (s) => {
-      out += s;
-    },
-    stderr: (s) => {
-      err += s;
-    },
-  };
-  const code = await run(["plugin", "test", "packages/cli/test/fixtures/plugin-test/positive", "--json"], io);
-  expect(err).toBe("");
-  const report = JSON.parse(out);
-  expect(report.checks.filter((check: { passed: boolean }) => !check.passed)).toEqual([]);
-  expect(code).toBe(0);
-  expect(report.checks.map((check: { name: string }) => check.name)).toEqual(
-    expect.arrayContaining([
-      "tracker.reference.read-events",
-      "tracker.reference.write",
-      "forge.reference.read-events",
-      "forge.reference.merge",
-      "runtime.reference.launch",
-      "runtime.reference.deliver",
-      "runtime.reference.stop",
-      "runtime.reference.normal-exit",
-      "node.reference.launch",
-      "model.reference.tool-call",
-    ]),
-  );
+test("plugin test exercises recorded reads, writes, headless workers, workspaces and a model tool call", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "armada-plugin-headless-"));
+  try {
+    // Reproduce BSD script's failure without depending on the host OS or a terminal.
+    await writeFile(
+      join(directory, "script"),
+      '#!/bin/sh\necho "script: tcgetattr/ioctl: Operation not supported on socket" >&2\nexit 2\n',
+      { mode: 0o755 },
+    );
+    const { createExec } = await import("../src/spawn.ts");
+    const result = await createExec()(
+      process.execPath,
+      ["packages/cli/src/main.ts", "plugin", "test", "packages/cli/test/fixtures/plugin-test/positive", "--json"],
+      {
+        cwd: process.cwd(),
+        timeoutMs: 20_000,
+        processGroup: true,
+        env: { PATH: `${directory}${delimiter}${process.env.PATH ?? ""}`, XDG_CONFIG_HOME: directory },
+      },
+    );
+    expect(result.stderr).toBe("");
+    const report = JSON.parse(result.stdout);
+    expect(report.checks.filter((check: { passed: boolean }) => !check.passed)).toEqual([]);
+    expect(result.code).toBe(0);
+    expect(report.checks.map((check: { name: string }) => check.name)).toEqual(
+      expect.arrayContaining([
+        "tracker.reference.read-events",
+        "tracker.reference.write",
+        "forge.reference.read-events",
+        "forge.reference.merge",
+        "runtime.reference.launch",
+        "runtime.reference.deliver",
+        "runtime.reference.stop",
+        "runtime.reference.normal-exit",
+        "node.reference.launch",
+        "model.reference.tool-call",
+      ]),
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }, 30_000);
 
 test("a handle returned after cancellation is stopped before the runner can observe it", async () => {
