@@ -99,14 +99,7 @@ jobs:
         with:
           node-version: 22
       - run: bun install --frozen-lockfile
-      - name: Draw the demo's session secret
-        run: echo "ARMADA_AUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
-      - name: Build the dashboard
-        working-directory: packages/dashboard
-        run: bun run build
-      - name: Seed the demo world, an owner and an invited member
-        working-directory: packages/dashboard
-        run: bun run demo:seed && bun run a11y seed
+      - uses: ./.github/actions/dashboard-demo
       - name: Start the dashboard
         working-directory: packages/dashboard
         run: |
@@ -122,6 +115,56 @@ jobs:
       - name: The dashboard's log
         if: failure()
         run: cat "$RUNNER_TEMP/dashboard.log"
+
+  journeys:
+    name: End-to-end journeys
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      ARMADA_DATABASE_URL: postgres://postgres:postgres@localhost:5432/armada?sslmode=disable
+      ARMADA_DEMO_DATABASE_URL: postgres://postgres:postgres@localhost:5432/armada?sslmode=disable
+      ARMADA_DASHBOARD_DEMO: fleet
+      ARMADA_AUTH_URL: http://localhost:4822
+      ARMADA_AUTH_OWNER_EMAILS: olive.owner@example.test
+      ARMADA_AUTH_GITHUB_CLIENT_ID: a11y-demo
+      ARMADA_AUTH_GITHUB_CLIENT_SECRET: a11y-demo
+      E2E_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: package.json
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - name: Typecheck the journeys and config
+        run: bunx tsc --noEmit -p e2e
+      - uses: ./.github/actions/postgres
+      - uses: ./.github/actions/dashboard-demo
+      - name: Install the e2e browser and system libraries
+        run: npx e2e-web install chromium --with-deps
+      - name: Run the dashboard journeys
+        run: npx e2e run --reporter list,junit
+        env:
+          AZURE_AI_ENDPOINT: ${{ secrets.AZURE_AI_ENDPOINT }}
+          AZURE_AI_API_KEY: ${{ secrets.AZURE_AI_API_KEY }}
+          AZURE_AI_MODEL: ${{ secrets.AZURE_AI_MODEL }}
+      - name: Upload journey reports and evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dashboard-journeys
+          include-hidden-files: true
+          path: |
+            .e2e/report.json
+            .e2e/junit.xml
+            .e2e/results/
+          retention-days: 7
+      - name: The dashboard's log
+        if: failure()
+        run: cat .e2e/logs/dashboard.log
 
   performance:
     name: Dashboard performance budgets

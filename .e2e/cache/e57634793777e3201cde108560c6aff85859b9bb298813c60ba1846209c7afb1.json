@@ -1,0 +1,121 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-29T16:39:50.303Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "type",
+        "summary": "type \"olive.owner@example.test\" into textbox \"Email\"",
+        "target": {
+          "role": "textbox",
+          "name": "Email"
+        },
+        "value": "olive.owner@example.test"
+      },
+      {
+        "name": "typeSecret",
+        "summary": "fill secret \"owner.password\" into textbox \"Password\"",
+        "target": {
+          "role": "textbox",
+          "name": "Password",
+          "inputPurpose": "password"
+        },
+        "secret": "owner.password"
+      },
+      {
+        "name": "tap",
+        "summary": "tap button \"Sign in\"",
+        "target": {
+          "role": "button",
+          "name": "Sign in"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "e2e/tests/dashboard.e2e.ts::the%20owner%20signs%20in%20and%20sees%20the%20overview%20headline",
+      "targetId": "dashboard",
+      "instructionDigest": "5f84c49bf3ae68d6907e474f147b8bce703b54732a21001f626cb7cec1d46fff",
+      "paramsDigest": "bef5202cdf7393a22dc6faf7348a394a6c3ad9bb0b8c1eeace23d6deb254504e",
+      "callIndex": 0,
+      "agent": "default"
+    },
+    "recordedBy": {
+      "provider": "azure-foundry.chat",
+      "model": "foundry-dashboard-agent"
+    },
+    "summary": "Signed in at /login with olive.owner@example.test and the owner password; the app redirected to \"/\" and the Overview screen loads with heading \"Overview\", sidebar org \"Acme\", and section counts (Blocked 4, Waiting for your decision 4, In progress 2, Ready to merge 1, Merged today 8).",
+    "startPath": "/login",
+    "endPath": "/",
+    "endAnchors": [
+      {
+        "role": "link",
+        "name": "Skip to content"
+      },
+      {
+        "text": "Armada"
+      },
+      {
+        "text": "Acme"
+      },
+      {
+        "text": "Search a ticket…"
+      },
+      {
+        "text": "⌘K"
+      },
+      {
+        "text": "Overview"
+      },
+      {
+        "text": "Validations"
+      },
+      {
+        "text": "Activity"
+      }
+    ],
+    "goneAnchors": [
+      {
+        "text": "Private fleet"
+      },
+      {
+        "role": "heading",
+        "name": "Sign in to Armada"
+      },
+      {
+        "text": "Your organization's tickets, agents and pull requests in flight, for its members only."
+      },
+      {
+        "role": "button",
+        "name": "Continue with GitHub"
+      },
+      {
+        "text": "or with your email"
+      },
+      {
+        "text": "Email"
+      },
+      {
+        "role": "textbox",
+        "name": "Email"
+      },
+      {
+        "text": "Password"
+      }
+    ],
+    "endWaitMs": 15271,
+    "keyedBy": {
+      "cacheSchema": "trace-1",
+      "policyVersion": "conservative/6",
+      "project": "d9f04bfe4ce6a142f74b18e1316e67dd0397c1a9b00b0010b5a4fe2d5aecb24a",
+      "platform": "web",
+      "engineName": "web",
+      "engineSpiVersion": 1,
+      "appIdentity": "c8c95ddd16958bfed4668feafbf5dde25894a6aef493732af183166578835b19",
+      "agentContextDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}
