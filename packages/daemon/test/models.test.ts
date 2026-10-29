@@ -14,6 +14,7 @@ import { dispatchCredentials } from "../src/credentials.ts";
 import { Keychain } from "../src/keychain.ts";
 import { startServer } from "../src/server/index.ts";
 import { coordinatorModels, loadedModelKinds, modelEnvironment } from "../src/server/models.ts";
+import { daemonProjectSchema } from "../src/server/readers.ts";
 import { FakeKeychain } from "./support/keychain.ts";
 
 interface FixtureBody {
@@ -253,6 +254,12 @@ test("model boot honors project rules over env, recognizes z.ai/Azure and saved 
   const saved = await modelEnvironment({}, chain);
   assert.equal(saved.selected?.config.model, "saved-model");
   assert.equal((await saved.secrets.get("ARMADA_MODEL_API_KEY")) === key, true);
+  const custom = new Keychain(new FakeKeychain());
+  await custom.setCoordinator("custom", key, { model: "custom", apiKeySecret: "CUSTOM_API_KEY" });
+  const customAccess = await modelEnvironment({}, custom);
+  assert.equal(customAccess.selected?.config.apiKeySecret, "CUSTOM_API_KEY");
+  assert.equal((await customAccess.secrets.get("CUSTOM_API_KEY")) === key, true);
+  assert.equal(await customAccess.secrets.get("ARMADA_MODEL_API_KEY"), null);
   const zai = await modelEnvironment(
     { ZAI_BASE_URL: "https://api.z.ai/api/coding/paas/v4", ZAI_MODEL: "glm-5.3-flash", ZAI_API_KEY: key },
     chain,
@@ -352,13 +359,32 @@ test("model boot honors project rules over env, recognizes z.ai/Azure and saved 
     0,
   );
   assert.deepEqual(skipped, ["p"]);
+  const invalid = await modelEnvironment({ ARMADA_MODEL_KIND: "bad kind", ARMADA_MODEL_BASE_URL: "invalid" }, chain);
+  const malformed = daemonProjectSchema.parse({
+    id: "bad",
+    name: "Bad",
+    repository: "example/bad",
+    coordinatorModel: { kind: "bad kind", config: {} },
+  });
+  assert.equal(
+    coordinatorModels({
+      projects: [{ id: "bad-env" }],
+      store: daemon.store,
+      registry: daemon.registry,
+      selected: invalid.selected,
+      onSkipped: (id) => skipped.push(id),
+    }).length,
+    0,
+  );
   const configs = coordinatorModels({
-    projects: [{ id: "p" }],
+    projects: [malformed, { id: "p" }],
+    onSkipped: (id) => skipped.push(id),
     store: daemon.store,
     registry: daemon.registry,
     selected: saved.selected,
   });
   assert.equal(configs[0]?.model.modelId, "saved-model");
+  assert.deepEqual(skipped, ["p", "bad-env", "bad"]);
   daemon.store.append({
     project: "p",
     actor: "coordinator",

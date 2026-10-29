@@ -36,6 +36,12 @@ test("admitted credential writes return status only; backend failures and malfor
   const damaged = new Keychain(new FakeKeychain());
   await damaged.write("coordinator", "coordinator", "{");
   await assert.rejects(damaged.coordinator(), /Saved model credential is invalid/);
+  const repairStatus = await dispatchCredentials(
+    { type: "credentials.status", version: PROTOCOL_VERSION, id: "repair" },
+    damaged,
+  );
+  assert.equal(repairStatus.type === "credentials.result" && repairStatus.needsRepair, true);
+  assert.equal(JSON.stringify(repairStatus).includes(key), false);
   const recovered = await dispatchCredentials(admitted.request, damaged);
   assert.equal(recovered.type, "credentials.result");
   assert.equal((await damaged.coordinator())?.key === key, true);

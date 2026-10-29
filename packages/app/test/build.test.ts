@@ -103,9 +103,10 @@ describe("in a browser, served by a running daemon", () => {
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
   });
 
-  test("configures and rotates a key when a same-major daemon does not advertise a model catalog", async () => {
+  test("repairs and rotates a key when a same-major daemon does not advertise a model catalog", async () => {
     const store = new EventStore(":memory:");
     const chain = new Keychain(new FakeKeychain());
+    await chain.write("coordinator", "coordinator", "{");
     const legacy = await startServer({ store, projects: [], staticDir: out, keychain: chain });
     const tab = await browser?.newPage();
     if (!tab) throw new Error("Browser not started");
@@ -113,6 +114,7 @@ describe("in a browser, served by a running daemon", () => {
       await tab.goto(`${legacy.url}#/settings`);
       const provider = tab.getByRole("textbox", { name: "Provider", exact: true });
       await provider.waitFor({ timeout: 5000 });
+      await tab.getByText("The saved model setting could not be read.", { exact: false }).waitFor();
       await provider.fill("anthropic");
       const first = randomBytes(24).toString("hex");
       await tab.getByLabel("API key", { exact: true }).fill(first);

@@ -68,6 +68,7 @@ export const credentialsResultSchema = z.object({
   provider: modelProviderSchema.nullable(),
   config: modelConfigSchema.optional(),
   models: z.array(modelKindEntrySchema).optional(),
+  needsRepair: z.boolean().optional(),
   storage: z.enum(["os-keychain", "file"]),
 });
 export const clientMessageSchema = z.discriminatedUnion("type", [

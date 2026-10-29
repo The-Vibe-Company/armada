@@ -56,9 +56,10 @@ export async function modelEnvironment(env: Readonly<Record<string, string | und
     model: await value("AZURE_AI_MODEL"),
     key: await value("AZURE_AI_API_KEY"),
   };
+  const savedSecret = saved?.config?.apiKeySecret === undefined ? "ARMADA_MODEL_API_KEY" : saved.config.apiKeySecret;
   let selected: CoordinatorModel | undefined;
   if (generic.kind) {
-    selected = coordinatorModelSchema.parse({
+    selected = {
       kind: generic.kind,
       config: {
         ...(saved?.provider === generic.kind ? saved.config : {}),
@@ -66,7 +67,7 @@ export async function modelEnvironment(env: Readonly<Record<string, string | und
         ...(generic.baseURL ? { baseURL: generic.baseURL } : {}),
         apiKeySecret: "ARMADA_MODEL_API_KEY",
       },
-    });
+    };
   } else if (zai.baseURL && zai.model && zai.key) {
     selected = {
       kind: "openai-compatible",
@@ -81,7 +82,7 @@ export async function modelEnvironment(env: Readonly<Record<string, string | und
     // Read old OpenAI entries without retaining the old identity in the app or catalog.
     selected = {
       kind: saved.provider,
-      config: { ...saved.config, apiKeySecret: "ARMADA_MODEL_API_KEY" },
+      config: { ...saved.config, apiKeySecret: savedSecret },
     };
   }
   return {
@@ -90,7 +91,10 @@ export async function modelEnvironment(env: Readonly<Record<string, string | und
       async get(name: string) {
         if (env[name]) return env[name] ?? null;
         if (name === "ARMADA_MODEL_API_KEY")
-          return generic.key ?? (selected?.kind === saved?.provider ? (saved?.key ?? null) : null);
+          return (
+            generic.key ?? (selected?.kind === saved?.provider && savedSecret === name ? (saved?.key ?? null) : null)
+          );
+        if (name === savedSecret) return saved?.key ?? null;
         return keychain.read("plugin", name).catch(() => null);
       },
     } satisfies PluginContext["secrets"],
@@ -99,7 +103,7 @@ export async function modelEnvironment(env: Readonly<Record<string, string | und
 
 /** Project rules win over the boot default. Provider code is always obtained from the registry. */
 export function coordinatorModels(options: {
-  projects: readonly { id: string; coordinatorModel?: CoordinatorModel }[];
+  projects: readonly { id: string; coordinatorModel?: unknown }[];
   store: EventStore;
   registry: PluginRegistry;
   selected?: CoordinatorModel;
@@ -107,13 +111,14 @@ export function coordinatorModels(options: {
 }): CoordinatorOptions[] {
   return options.projects.flatMap((project) => {
     try {
-      let selection = project.coordinatorModel ?? options.selected;
+      let candidate = project.coordinatorModel === undefined ? options.selected : project.coordinatorModel;
       for (const event of options.store.readSince(0, project.id)) {
         if (event.kind !== "coordinator.checkpoint") continue;
         const rules = checkpointRules(event.payload.checkpoint);
-        if (rules?.value.coordinatorModel) selection = rules.value.coordinatorModel;
+        if (rules?.value.coordinatorModel) candidate = rules.value.coordinatorModel;
       }
-      if (!selection) return [];
+      if (candidate === undefined) return [];
+      const selection = coordinatorModelSchema.parse(candidate);
       const config = modelConfigSchema.parse({
         ...(options.selected?.kind === selection.kind ? options.selected.config : {}),
         ...selection.config,

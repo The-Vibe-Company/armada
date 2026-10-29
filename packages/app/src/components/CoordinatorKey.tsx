@@ -81,6 +81,11 @@ export function CoordinatorKey() {
           </Button>
         )}
       </div>
+      {credentials.needsRepair && (
+        <p className="text-text-2">
+          The saved model setting could not be read. Choose a provider and save a replacement key.
+        </p>
+      )}
       {saved ? (
         <p role="status" className="mb-0 text-text-2">
           <span className="text-green">{provider} connected.</span>{" "}

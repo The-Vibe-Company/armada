@@ -299,6 +299,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
             storage: message.storage,
             ...(message.models ? { models: message.models } : {}),
             ...(message.config ? { config: message.config } : {}),
+            ...(message.needsRepair ? { needsRepair: true } : {}),
           },
         });
         if (message.id === pendingCredential?.id) {

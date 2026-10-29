@@ -17,6 +17,7 @@ export interface CoordinatorCredential {
 export interface CredentialStatus {
   provider: ModelProvider | null;
   storage: KeychainBackend["storage"];
+  needsRepair?: boolean;
   config?: CoordinatorModel["config"];
 }
 /** Migrate the pre-plugin OpenAI identity without persisting or exposing its key. */
@@ -28,6 +29,8 @@ export function coordinatorModelConfig(provider: string, config?: CoordinatorMod
       }
     : { provider, config };
 }
+class InvalidCoordinatorCredential extends Error {}
+
 const services = {
   coordinator: "armada.coordinator",
   linear: "armada.linear",
@@ -97,12 +100,18 @@ export class Keychain {
         ...(normalized.config ? { config: normalized.config } : {}),
       };
     } catch {
-      throw new Error("Saved model credential is invalid");
+      throw new InvalidCoordinatorCredential("Saved model credential is invalid");
     }
   }
 
   async status(): Promise<CredentialStatus> {
-    const saved = await this.coordinator();
+    let saved: CoordinatorCredential | null;
+    try {
+      saved = await this.coordinator();
+    } catch (error) {
+      if (!(error instanceof InvalidCoordinatorCredential)) throw error;
+      return { provider: null, storage: this.#backend.storage, needsRepair: true };
+    }
     return {
       provider: saved?.provider ?? null,
       storage: this.#backend.storage,
