@@ -8,7 +8,14 @@ import {
   type ProtocolEvent,
   type ProtocolVersion,
 } from "@armada/protocol";
-import { createDaemonClient, LOG_BEHIND, type SocketLike, UNREADABLE, unusableAddress } from "../src/protocol/client";
+import {
+  createDaemonClient,
+  LOG_BEHIND,
+  NOT_FOLDED,
+  type SocketLike,
+  UNREADABLE,
+  unusableAddress,
+} from "../src/protocol/client";
 
 const V = PROTOCOL_VERSION;
 
@@ -120,6 +127,61 @@ describe("the daemon client", () => {
     expect(client.getState().logs.beta).toBeUndefined();
   });
 
+  test("keeps each project's folded state, from its subscription and then each frame, never an older one", () => {
+    const { client, socket } = setup();
+    const list = socket().sent.find((m) => m.type === "projects.list");
+    socket().receive({ type: "projects.result", version: V, id: list?.id, projects });
+    const subscribe = socket().sent.find((m) => m.type === "project.subscribe" && m.project === "alpha");
+    const state = (n: number) => ({ sessions: [{ ticket: `EX-${n}` }] });
+    socket().receive({
+      ...subscribe,
+      type: "project.subscribed",
+      subscriptionId: "sub-alpha",
+      snapshot: { seq: 2, state: state(2) },
+    });
+    expect(client.getState().fleets.alpha).toEqual({ seq: 2, state: state(2) });
+    // The history that follows is at the snapshot's own cursor and carries none: nothing is missing.
+    socket().receive({
+      type: "events",
+      version: V,
+      subscriptionId: "sub-alpha",
+      project: "alpha",
+      seq: 2,
+      events: [event(1, "alpha", "s1"), event(2, "alpha", "s2")],
+    });
+    expect(client.getState().logs.alpha?.seq).toBe(2);
+    expect(client.getState().problem).toBeNull();
+    const changes: unknown[] = [];
+    client.subscribe(() => changes.push(client.getState().fleets.alpha));
+    const frame = (seq: number, snapshot?: { seq: number; state: unknown }, subscriptionId = "sub-alpha") =>
+      socket().receive({
+        type: "events",
+        version: V,
+        subscriptionId,
+        project: "alpha",
+        seq,
+        events: [event(seq, "alpha", `s${seq}`)],
+        ...(snapshot ? { snapshot } : {}),
+      });
+    frame(4, { seq: 4, state: state(4) });
+    // One change per frame: its events and its folded state together.
+    expect(changes).toEqual([{ seq: 4, state: state(4) }]);
+    // A resubscription's snapshot older than the one held is not taken.
+    socket().receive({
+      ...subscribe,
+      type: "project.subscribed",
+      subscriptionId: "sub-alpha-2",
+      snapshot: { seq: 3, state: state(3) },
+    });
+    expect(client.getState().fleets.alpha).toEqual({ seq: 4, state: state(4) });
+    expect(client.getState().fleets.beta).toBeUndefined();
+    expect(client.getState().problem).toBeNull();
+    // Events past the held state without a newer one: the list would freeze, so the app says why.
+    frame(5, undefined, "sub-alpha-2");
+    expect(client.getState().fleets.alpha).toEqual({ seq: 4, state: state(4) });
+    expect(client.getState().problem).toBe(NOT_FOLDED);
+  });
+
   test("after a drop, waits, reconnects and resumes each project at its last cursor, keeping the projects", () => {
     const { client, sockets, timers, socket } = setup();
     listAndSubscribe(socket());
@@ -168,6 +230,34 @@ describe("the daemon client", () => {
     expect(client.getState().status).toBe("connecting");
     socket().receive({ type: "projects.result", version: V, id: "r1", projects });
     expect(client.getState()).toMatchObject({ status: "refused", problem: DAEMON_TOO_OLD, projects: null });
+  });
+
+  test("a key status that fails never hides the fleet's own line", () => {
+    const failing = (problem: string | null) => {
+      const { client, socket } = setup();
+      listAndSubscribe(socket());
+      if (problem) {
+        const frame = (seq: number, events: ProtocolEvent[]) =>
+          socket().receive({ type: "events", version: V, subscriptionId: "sub-alpha", project: "alpha", seq, events });
+        frame(6, [event(6, "alpha", "s1")]);
+        frame(3, []);
+        expect(client.getState().problem).toBe(problem);
+      }
+      const status = socket().sent.find((m) => m.type === "credentials.status");
+      expect(status).toBeDefined();
+      socket().receive({
+        type: "error",
+        version: V,
+        id: status?.id,
+        code: "internal",
+        message: "Could not access credential storage",
+      });
+      return client.getState().problem;
+    };
+    // Alone, the failure is said.
+    expect(failing(null)).toBe("Could not access credential storage");
+    // After the fleet's line (here the log behind the app), that line and its Reload stay.
+    expect(failing(LOG_BEHIND)).toBe(LOG_BEHIND);
   });
 
   test("takes the daemon's own refusal as final", () => {

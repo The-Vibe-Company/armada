@@ -144,15 +144,22 @@ carry an optional `snapshot: {seq,state}` on `after: 0`: `state` is that project
 `ProjectTables` from the pure fold, including empty tables for an empty project.
 The daemon also sends the initial event history for clients that fold locally.
 A snapshot consumer should ignore events at or before the snapshot's cursor.
+Every later frame that carries events carries the project's refolded state too
+(`snapshot`, at the frame's cursor), so the app renders the fold without
+folding; empty frames and the history frame right after a snapshot carry none.
+Each such frame folds the project's log from the start, as `fold` requires, once
+per project per flush, shared by the sockets.
 A reconnect with a positive `after` omits the snapshot and replays only later
 events, followed by live commits. Re-subscribing replaces the prior subscription
 for that project on that socket. Other project commits emit empty batches that
 advance the global cursor without leaking their events. A cursor ahead of the
 log is refused, preserving any existing subscription.
 
-There is no polling or wall-clock ordering. Registration, replay and commit
-notices run synchronously against SQLite, preventing a gap between replay and
-live delivery. Disconnects discard connection state; durable sequence replay
+There is no polling or wall-clock ordering. Registration and replay run
+synchronously against SQLite, and every subscription reads from its own cursor,
+preventing a gap between replay and live delivery. Commit notices coalesce into
+one flush per microtask: a burst of appends in one task (a tracker's read) sends
+each subscription one frame, with one fold per project. Disconnects discard connection state; durable sequence replay
 works across daemon restarts. Slow clients with more than 8 MiB already queued
 are disconnected and can replay. Requests are limited to 1 MiB. The local server
 requires its bound Host header and permits absent (native client) or same-origin

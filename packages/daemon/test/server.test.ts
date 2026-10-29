@@ -10,7 +10,7 @@ import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { type ServerMessage, serverMessageSchema, PROTOCOL_VERSION as version } from "@armada/protocol";
 import { WebSocket } from "ws";
-import type { EventInput } from "../src/events.ts";
+import type { EventInput, FleetEvent } from "../src/events.ts";
 import { Keychain } from "../src/keychain.ts";
 import { startServer } from "../src/server/index.ts";
 import { EventStore } from "../src/store.ts";
@@ -26,6 +26,25 @@ const hold = (project = "orchard", id = "rain"): EventInput => ({
   at: "2030-01-01T10:00:00Z",
   actor: "Mira",
   payload: { id, reason: "Wait for CI" },
+});
+
+/** A project's folded tables holding only these open holds, as the protocol carries them. */
+const holding = (...events: FleetEvent[]) => ({
+  tickets: [],
+  pullRequests: [],
+  sessions: [],
+  sessionsByState: {
+    blocked: [],
+    "waiting-for-owner": [],
+    "in-progress": [],
+    "ready-to-merge": [],
+    merged: [],
+    released: [],
+  },
+  inbox: [],
+  queue: [],
+  holds: events.map((e) => ({ ...(e.payload as { id: string; reason: string }), at: e.at, actor: e.actor })),
+  validations: [],
 });
 
 // Queue frames immediately, including replies that arrive together. No sleeps or polling.
@@ -140,26 +159,8 @@ test("subscription returns folded state then committed batches, isolated and rep
   const subscribed = await client.next();
   assert.equal(subscribed.type, "project.subscribed");
   if (subscribed.type !== "project.subscribed") throw new Error("Expected subscription");
-  assert.deepEqual(subscribed.snapshot, {
-    seq: first.seq,
-    state: {
-      tickets: [],
-      pullRequests: [],
-      sessions: [],
-      sessionsByState: {
-        blocked: [],
-        "waiting-for-owner": [],
-        "in-progress": [],
-        "ready-to-merge": [],
-        merged: [],
-        released: [],
-      },
-      inbox: [],
-      queue: [],
-      holds: [{ id: "rain", reason: "Wait for CI", at: first.at, actor: "Mira" }],
-      validations: [],
-    },
-  });
+  assert.deepEqual(subscribed.snapshot, { seq: first.seq, state: holding(first) });
+  // The history right after carries no second snapshot: the acknowledgment holds its fold.
   assert.deepEqual(await client.next(), {
     type: "events",
     version,
@@ -185,6 +186,7 @@ test("subscription returns folded state then committed batches, isolated and rep
     project: "orchard",
     seq: later.seq,
     events: [later],
+    snapshot: { seq: later.seq, state: holding(first, later) },
   });
   client.send({ type: "project.subscribe", project: "orchard", after: later.seq });
   const replacement = await client.next();
@@ -201,8 +203,37 @@ test("subscription returns folded state then committed batches, isolated and rep
     project: "orchard",
     seq: newest.seq,
     events: [newest],
+    snapshot: { seq: newest.seq, state: holding(first, later, newest) },
   });
   // An ordered reply is a barrier: no duplicate delivery from the old subscription.
+  client.send({ type: "projects.list", id: "barrier" });
+  assert.equal((await client.next()).type, "projects.result");
+});
+
+test("a burst of appends in one task reaches a subscription as one frame with one refolded state", async (t) => {
+  const store = new EventStore(":memory:");
+  const server = await startServer({ store, projects });
+  t.after(async () => {
+    await server.close();
+    store.close();
+  });
+  const client = await connect(server.wsUrl);
+  client.send({ type: "project.subscribe", project: "orchard", after: 0 });
+  const subscribed = await client.next();
+  if (subscribed.type !== "project.subscribed") throw new Error("Expected subscription");
+  assert.equal((await client.next()).type, "events");
+  const burst = ["a", "b", "c"].map((id) => store.append(hold("orchard", id)));
+  const last = burst.at(-1) as FleetEvent;
+  assert.deepEqual(await client.next(), {
+    type: "events",
+    version,
+    subscriptionId: subscribed.subscriptionId,
+    project: "orchard",
+    seq: last.seq,
+    events: burst,
+    snapshot: { seq: last.seq, state: holding(...burst) },
+  });
+  // An ordered reply is a barrier: no second frame for the same burst.
   client.send({ type: "projects.list", id: "barrier" });
   assert.equal((await client.next()).type, "projects.result");
 });
@@ -245,6 +276,7 @@ test("reconnect after daemon/store restart replays only later events and refuses
     project: "orchard",
     seq: later.seq,
     events: [later],
+    snapshot: { seq: later.seq, state: holding(first, later) },
   });
   resumed.send({ type: "project.subscribe", project: "orchard", after: later.seq + 1 });
   const refused = await resumed.next();

@@ -5,11 +5,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 import { type Browser, chromium, type Page } from "playwright-core";
-import { type FakeDaemon, SAMPLE_PROJECTS, startFakeDaemon } from "../scripts/fake-daemon";
+import { type DevDaemon, SAMPLE_PROJECTS, sampleEvents, startDevDaemon } from "../scripts/dev-daemon";
 
 // The built app, as a browser loads it: its first-load JS under the package's
-// budget (perf-budget.json), then opened in Chromium against a daemon (the
-// fake one, on localhost) to show the sidebar with the projects.
+// budget (perf-budget.json), then opened in Chromium from armadad's own server
+// (on a synthetic log, on localhost) to show the fleet by state, live.
 
 const ROOT = resolve(import.meta.dir, "..");
 const budget = JSON.parse(readFileSync(join(ROOT, "perf-budget.json"), "utf8")) as { firstLoadJsGzipKb: number };
@@ -50,42 +50,53 @@ test("first-load JS stays under the package's budget", () => {
   expect(files.some((f) => f.includes("motion-features"))).toBe(false);
 });
 
-describe("in a browser, against a running daemon", () => {
-  let daemon: FakeDaemon;
-  let app: ReturnType<typeof Bun.serve>;
+describe("in a browser, served by a running daemon", () => {
+  let daemon: DevDaemon;
   let browser: Browser | undefined;
   let page: Page;
 
   beforeAll(async () => {
-    daemon = startFakeDaemon();
-    app = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch(request) {
-        const path = new URL(request.url).pathname;
-        const file = Bun.file(join(out, path === "/" ? "index.html" : path));
-        return file.size ? new Response(file) : new Response("Not found", { status: 404 });
-      },
-    });
+    // armadad's own server on a synthetic log, serving this build: the app finds it at its own origin.
+    daemon = await startDevDaemon({ staticDir: out, events: sampleEvents(new Date().toISOString()) });
     // Use the headless shell pinned to Playwright, installed before the suite.
     browser = await chromium.launch({ timeout: 15_000 });
-    page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   }, 20_000);
   afterAll(async () => {
     await browser?.close();
-    app?.stop(true);
-    daemon?.stop();
+    await daemon?.stop();
   }, 10_000);
 
   test("saves the coordinator provider once and remembers it after reload without storing a browser credential", async () => {
-    await page.goto(`http://127.0.0.1:${app.port}/?daemon=${encodeURIComponent(daemon.url)}`);
+    await page.goto(daemon.url);
     const provider = page.getByRole("combobox", { name: "Provider", exact: true });
     await provider.waitFor({ timeout: 5000 });
     const key = randomBytes(24).toString("hex");
     await provider.selectOption("openai");
     await page.getByLabel("API key", { exact: true }).fill(key);
+    // The key's card changes height above the fleet: the list moves as a whole, and no row glides for it.
+    const row = page.locator("[data-row]").first();
+    await row.waitFor({ timeout: 5000 });
+    const top = await row.evaluate((el) => {
+      const moves: string[] = [];
+      let frames = 0;
+      const sample = () => {
+        moves.push(getComputedStyle(el).transform);
+        if (++frames < 30) requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+      (window as { moves?: string[] }).moves = moves;
+      return el.getBoundingClientRect().top;
+    });
     await page.getByRole("button", { name: "Save key", exact: true }).click();
     await page.getByRole("status").filter({ hasText: "OpenAI connected" }).waitFor({ timeout: 5000 });
+    await page.waitForFunction(() => ((window as { moves?: string[] }).moves?.length ?? 0) >= 30);
+    const still = await row.evaluate((el) => ({
+      top: el.getBoundingClientRect().top,
+      moves: (window as { moves?: string[] }).moves ?? [],
+    }));
+    expect(still.top).not.toBe(top);
+    expect(still.moves.filter((t) => t !== "none" && t !== "matrix(1, 0, 0, 1, 0, 0)")).toEqual([]);
     expect(await page.getByLabel("API key", { exact: true }).count()).toBe(0);
     const browserState = await page.evaluate(() =>
       JSON.stringify([localStorage, sessionStorage, document.body.innerHTML]),
@@ -99,31 +110,30 @@ describe("in a browser, against a running daemon", () => {
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
   });
 
-  test("shows the sidebar with the projects and their sessions in flight, in Geist", async () => {
-    await page.goto(`http://127.0.0.1:${app.port}/?daemon=${encodeURIComponent(daemon.url)}`);
+  test("shows the fleet by state and the projects' sessions in flight, in Geist", async () => {
+    await page.goto(daemon.url);
     const sidebar = page.getByRole("complementary", { name: "Sidebar" });
     const projects = sidebar.getByRole("navigation", { name: "Projects" });
-    // A project's count shows once its first frame arrived.
-    for (const name of [/Harbor 2 sessions/, /Lantern 1 session/, /Tidewater 0 sessions/])
+    // A project's count shows once its folded state arrived.
+    for (const name of [/Harbor 4 sessions/, /Lantern 2 sessions/, /Tidewater 0 sessions/])
       await projects.getByRole("link", { name }).waitFor({ timeout: 5_000 });
     const rows = await projects.getByRole("link").allInnerTexts();
     expect(rows.map((r) => r.replace(/\s+/g, " ").trim())).toEqual([
-      "Harbor 2 sessions in flight",
-      "Lantern 1 session in flight",
+      "Harbor 4 sessions in flight",
+      "Lantern 2 sessions in flight",
       "Tidewater 0 sessions in flight",
     ]);
     expect(rows).toHaveLength(SAMPLE_PROJECTS.length);
     await expect(sidebar.getByRole("status").innerText()).resolves.toBe("Live");
-
-    // A claim on the daemon reaches the sidebar without a reload.
-    daemon.append({
-      project: "tidewater",
-      kind: "session.claimed",
-      at: "2026-01-05T10:00:00.000Z",
-      actor: "worker",
-      payload: { ticket: "TID-1", session: "s-tid-1" },
-    });
-    await projects.getByRole("link", { name: /Tidewater\s+1/ }).waitFor({ timeout: 5_000 });
+    // The fleet's group headers, in order (the coordinator's key block above has its own).
+    const groups = page.getByRole("main").locator('h2[id^="fleet-"]');
+    expect((await groups.allInnerTexts()).map((h) => h.split("\n")[0])).toEqual([
+      "Blocked",
+      "Waiting for your decision",
+      "In progress",
+      "Ready to merge",
+      "Merged today",
+    ]);
 
     const anatomy = await page.evaluate(() => ({
       h1: [...document.querySelectorAll("h1")].map((h) => ({
@@ -141,5 +151,63 @@ describe("in a browser, against a running daemon", () => {
     });
     expect(loaded).toContain("Geist");
     expect(loaded.filter((f) => f !== "Geist" && f !== "Geist Mono")).toEqual([]);
+  });
+
+  test("a state change over the subscription glides the same row to its new group, without a reload", async () => {
+    const row = page.locator('[data-row="harbor/HAR-12"]');
+    await row.and(page.locator('[data-group="running"]')).waitFor({ timeout: 5_000 });
+    const before = await row.evaluate((el) => {
+      (window as { unreloaded?: boolean }).unreloaded = true;
+      (el as { kept?: boolean }).kept = true;
+      // Watch the row's transform on each frame from its next change of state: a glide moves it there.
+      const moves: string[] = [];
+      new MutationObserver(() => {
+        let frames = 0;
+        const sample = () => {
+          moves.push(getComputedStyle(el).transform);
+          if (++frames < 30) requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+      }).observe(el, { attributeFilter: ["data-group"] });
+      (window as { moves?: string[] }).moves = moves;
+      return el.getBoundingClientRect().top;
+    });
+    daemon.append({
+      project: "harbor",
+      kind: "session.reported",
+      at: new Date().toISOString(),
+      actor: "worker",
+      payload: { ticket: "HAR-12", session: "s-har-12-1", phase: "blocked", reason: "Waiting for the tide tables" },
+    });
+    await row.and(page.locator('[data-group="blocked"]')).waitFor({ timeout: 5_000 });
+    await expect(row.locator("[data-reason]").innerText()).resolves.toBe("Blocked: Waiting for the tide tables");
+    await expect(row.locator("[data-reason]").getAttribute("class")).resolves.toContain("text-red");
+    await page.waitForFunction(() => ((window as { moves?: string[] }).moves?.length ?? 0) >= 30);
+    const after = await row.evaluate((el) => ({
+      kept: (el as { kept?: boolean }).kept === true,
+      unreloaded: (window as { unreloaded?: boolean }).unreloaded === true,
+      top: el.getBoundingClientRect().top,
+      moves: (window as { moves?: string[] }).moves ?? [],
+    }));
+    // The same element, on the same page: no remount, no reload.
+    expect(after.kept).toBe(true);
+    expect(after.unreloaded).toBe(true);
+    // Up into Blocked, and on its way it was carried by a transform that then let go.
+    expect(after.top).toBeLessThan(before);
+    expect(after.moves.some((t) => t !== "none" && !/^matrix\(1, 0, 0, 1, 0, 0\)$/.test(t))).toBe(true);
+    expect(after.moves.at(-1)).toMatch(/^(none|matrix\(1, 0, 0, 1, 0, 0\))$/);
+    // And a claim reaches the sidebar's count and the list.
+    daemon.append({
+      project: "tidewater",
+      kind: "session.claimed",
+      at: new Date().toISOString(),
+      actor: "worker",
+      payload: { ticket: "TID-1", session: "s-tid-1", generation: 1, owner: "default", runtime: "local", handle: "h" },
+    });
+    await page
+      .getByRole("complementary", { name: "Sidebar" })
+      .getByRole("link", { name: /Tidewater\s+1/ })
+      .waitFor({ timeout: 5_000 });
+    await page.locator('[data-row="tidewater/TID-1"][data-group="running"]').waitFor({ timeout: 5_000 });
   });
 });

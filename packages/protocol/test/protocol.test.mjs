@@ -52,6 +52,7 @@ const frames = [
   },
   session,
   batch,
+  { ...batch, snapshot: { seq: 10, state: { sessions: [{ ticket: "EX-1", state: "blocked" }] } } },
   { ...batch, seq: 11, events: [] },
   { type: "error", version, id: "read-a", code: "not-found", message: "Session not found" },
   { type: "error", version, code: "invalid-message", message: "Invalid request" },
@@ -123,6 +124,12 @@ test("invalid requests never become dispatchable and errors retain only a valid 
     assert.deepEqual(serverMessageSchema.parse(result.error), result.error);
   }
   assert.equal(admitRequest({ ...requests[1], after: -1 }).error.id, "subscribe-a");
+});
+
+test("a frame's folded snapshot is at the frame's own cursor", () => {
+  const snapshot = { seq: 10, state: { sessions: [] } };
+  assert.equal(serverMessageSchema.safeParse({ ...batch, snapshot }).success, true);
+  assert.equal(serverMessageSchema.safeParse({ ...batch, snapshot: { ...snapshot, seq: 9 } }).success, false);
 });
 
 test("replay frames preserve project isolation and strictly ordered safe sequence cursors", () => {

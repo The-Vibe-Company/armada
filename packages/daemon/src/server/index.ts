@@ -8,6 +8,7 @@ import {
   type ProtocolError,
   projectSchema,
   type ServerMessage,
+  type Snapshot,
   PROTOCOL_VERSION as version,
 } from "@armada/protocol";
 import { WebSocket, WebSocketServer } from "ws";
@@ -93,23 +94,66 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   const error = (ws: WebSocket, id: string | undefined, code: ProtocolError["code"], message: string) =>
     send(ws, { type: "error", version, ...(id ? { id } : {}), code, message });
 
-  function batch(ws: WebSocket, project: string, subscription: Subscription): void {
+  /** A project's folded tables at the store's cursor, as the protocol's JSON value. */
+  function snapshotOf(project: string): Snapshot {
+    const seq = store.sequence;
+    // JSON serialization is the boundary from daemon types to the protocol's JSON value.
+    const tables = fold(store.readSince(0, project)).projects[project] ?? emptyProject();
+    return { seq, state: JSON.parse(JSON.stringify(tables)) };
+  }
+
+  /**
+   * Sends what the subscription has not seen. A frame with events also carries
+   * the project's refolded state (`folded` shares one fold per project between
+   * sockets); `folded: null` leaves it out right after a subscription's own.
+   */
+  function batch(
+    ws: WebSocket,
+    project: string,
+    subscription: Subscription,
+    folded: Map<string, Snapshot> | null = new Map(),
+  ): void {
     // Synchronous store reads and registration cannot interleave with an append in this process.
     const seq = store.sequence;
     const events = store.readSince(subscription.after, project).map((event) => eventSchema.parse(event));
-    send(ws, { type: "events", version, project, subscriptionId: subscription.id, seq, events });
+    let snapshot: Snapshot | undefined;
+    if (events.length && folded) {
+      snapshot = folded.get(project) ?? snapshotOf(project);
+      folded.set(project, snapshot);
+    }
+    send(ws, {
+      type: "events",
+      version,
+      project,
+      subscriptionId: subscription.id,
+      seq,
+      events,
+      ...(snapshot ? { snapshot } : {}),
+    });
     subscription.after = seq;
   }
+  // Commit notices coalesce to one flush per microtask: a burst of appends in one
+  // task (a tracker's read) sends each subscription one frame and folds each
+  // project once. Every subscription reads from its own cursor, so nothing is lost.
+  let flushing = false;
   const unsubscribe = store.subscribe(() => {
+    if (flushing) return;
+    flushing = true;
+    queueMicrotask(flush);
+  });
+  function flush(): void {
+    flushing = false;
+    if (closing) return;
+    const folded = new Map<string, Snapshot>();
     for (const [ws, subscriptions] of connections) {
       try {
-        for (const [project, subscription] of subscriptions) batch(ws, project, subscription);
+        for (const [project, subscription] of subscriptions) batch(ws, project, subscription, folded);
       } catch {
         // The write is already committed; this client can recover by replaying it.
         ws.terminate();
       }
     }
-  });
+  }
 
   server.on("upgrade", (req, socket, head) => {
     const origin = req.headers.origin;
@@ -174,18 +218,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           if (request.after > seq)
             return error(ws, request.id, "invalid-message", "Replay cursor is ahead of the daemon log");
           const subscription = { id: randomUUID(), after: request.after };
-          const snapshot =
-            request.after === 0
-              ? {
-                  seq,
-                  // JSON serialization is the boundary from daemon types to the protocol's JSON value.
-                  state: JSON.parse(
-                    JSON.stringify(
-                      fold(store.readSince(0, request.project)).projects[request.project] ?? emptyProject(),
-                    ),
-                  ),
-                }
-              : undefined;
+          const snapshot = request.after === 0 ? snapshotOf(request.project) : undefined;
           subscriptions.set(request.project, subscription);
           send(ws, {
             ...request,
@@ -194,7 +227,8 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
             subscriptionId: subscription.id,
             ...(snapshot ? { snapshot } : {}),
           });
-          batch(ws, request.project, subscription);
+          // The acknowledgment already holds the folded state of the history that follows.
+          batch(ws, request.project, subscription, snapshot ? null : new Map());
           return;
         }
         const seq = store.sequence;

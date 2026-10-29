@@ -9,7 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p .",
-    "fake-daemon": "bun scripts/fake-daemon.ts"
+    "dev-daemon": "bun scripts/dev-daemon.ts"
   },
   "dependencies": {
     "@armada/protocol": "workspace:*",
@@ -18,9 +18,11 @@
     "cn": "0.5.0",
     "motion": "14.7.1",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "zod": "4.6.5"
   },
   "devDependencies": {
+    "@armada/daemon": "workspace:*",
     "@tailwindcss/vite": "4.3.3",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",

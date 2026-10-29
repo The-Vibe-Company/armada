@@ -1,3 +1,4 @@
-import { domAnimation } from "motion/react";
+import { domMax } from "motion/react";
 
-export default domAnimation;
+// domMax: animations, and the layout animations a row that changes state glides with.
+export default domMax;
