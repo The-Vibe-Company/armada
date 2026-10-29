@@ -262,6 +262,49 @@ change, the regroup on a merge, the frame budget. `?story=sky` in the dev
 server shows the band of each of the daemon's projects and the stage of them
 all, live, and a synthetic fleet moved by hand (loaded only behind that flag).
 
+## A project's room
+
+`#/projects/<id>` (`src/screens/Room.tsx`, THE-1996), after the direction kept
+with the owner (`.aeom/direction/room.html`): the v7 anatomy (the repository and
+the project's numbers on the facts line, its name as the title, what is blocked
+and what waits on the quiet line), then the sky as a 200 px band, the oldest
+question waiting for the owner pinned under it (an open `owner-request`: its
+choices from V1's "Options:" list, the one said "(recommended)" primary, a
+labelled note; absent when nothing waits), the conversation with the project's
+coordinator, and the owner's field fixed at the bottom. The agents' rail
+(`src/room/Rail.tsx`) slides in from the right at a third of the width, the
+project's agents grouped by state, a row opening its session's page
+(`#/sessions/<ticket>`, THE-2028). The fleet list by state, with the project's
+rules, is at `#/projects/<id>/rules`, linked from the facts line. The sidebar stays.
+
+- **The conversation** (`src/room/chat.ts`) is the daemon's reading
+  (`chat.read`, protocol minor 4): read when the room opens, and again whenever
+  the subscription brings a `coordinator.*` event past the last reading. A
+  message keeps one `requestId` until the daemon admitted it, so sending it
+  again after a drop is the same message. The client's `request()` correlates a
+  reply with its request and rejects it when the connection drops; nothing is
+  replayed.
+- **What it shows** (`src/room/Thread.tsx`, rules in `src/room/view.ts`): the
+  owner's and the coordinator's messages as bubbles under who said them; the
+  coordinator's own lines quiet, on a dot in the state of the ticket they name
+  (the newest line about a ticket; older ones a quiet dot); each tool call one
+  quiet line (`<details>`) that opens on a click to its input and result.
+  Ticket ids and pull requests are set in mono, an id in its ticket's state.
+- **Type** never under 13 px, 12.5 px only for Geist Mono ids and times; the
+  state's colour on a dot or a triangle (an agent is the mark's triangle in its
+  harness's colour, as in the sky), never a side border; every field labelled.
+- **Movement**: the rail slides on the owner's toggle; a new message fades in.
+- `scripts/dev-daemon.ts` gives every project a coordinator on pi-ai's faux
+  model (it reads the fleet with one tool call, then answers in one line), and
+  seeds Harbor with a pinned question and a coordinator line.
+
+`test/room.test.tsx` renders the room on the daemon's fold of the synthetic log
+and a synthetic conversation (two tool calls, a pinned question) and reads the
+anatomy, the band, the card, the quiet lines and the rail. The browser test
+opens Harbor's room, sends a message, waits for the faux coordinator's answer,
+reloads to find the same conversation, answers the pinned question, and checks
+the fonts and that no text is under 13 px.
+
 ## First-load budget
 
 `perf-budget.json` caps the first-load JS (the entry script and its preloads,

@@ -19,6 +19,7 @@ import { dispatchCredentials } from "../credentials.ts";
 import { fold } from "../fold.ts";
 import { type Keychain, systemKeychain } from "../keychain.ts";
 import type { EventStore } from "../store.ts";
+import { dispatchChat } from "./chat.ts";
 import { dispatchPlugins, isPluginsRequest, type PluginHost } from "./plugins.ts";
 import { serveStatic } from "./static.ts";
 
@@ -86,6 +87,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   const coordinatorManager = configured.length
     ? new (await import("../../coordinator/index.ts")).Coordinators(store)
     : undefined;
+  const coordinators = new Map<string, ProjectCoordinator>();
   const staticDir = options.staticDir ?? fileURLToPath(new URL("../../../app/dist/", import.meta.url));
   let authority = "";
   let closing = false;
@@ -265,6 +267,13 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           return;
         }
         if (!known.has(request.project)) return error(ws, request.id, "not-found", "No such project");
+        if (request.type === "chat.read" || request.type === "chat.send" || request.type === "owner.answer") {
+          // The room's requests (THE-1996, server/chat.ts): each answers once, its failure as one line.
+          void dispatchChat(request, { store, coordinator: coordinators.get(request.project) }).then((reply) =>
+            send(ws, reply),
+          );
+          return;
+        }
         if (request.type === "project.subscribe") {
           const seq = store.sequence;
           if (request.after > seq)
@@ -320,7 +329,6 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Daemon did not bind a TCP port");
   authority = `127.0.0.1:${address.port}`;
-  const coordinators = new Map<string, ProjectCoordinator>();
   let closed: Promise<void> | undefined;
   const close = () => {
     closed ??= (async () => {
