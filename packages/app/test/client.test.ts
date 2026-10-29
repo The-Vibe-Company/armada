@@ -131,6 +131,17 @@ describe("the daemon client", () => {
       snapshot: { seq: 2, state: state(2) },
     });
     expect(client.getState().fleets.alpha).toEqual({ seq: 2, state: state(2) });
+    // The history that follows is at the snapshot's own cursor and carries none: nothing is missing.
+    socket().receive({
+      type: "events",
+      version: V,
+      subscriptionId: "sub-alpha",
+      project: "alpha",
+      seq: 2,
+      events: [event(1, "alpha", "s1"), event(2, "alpha", "s2")],
+    });
+    expect(client.getState().logs.alpha?.seq).toBe(2);
+    expect(client.getState().problem).toBeNull();
     const changes: unknown[] = [];
     client.subscribe(() => changes.push(client.getState().fleets.alpha));
     const frame = (seq: number, snapshot?: { seq: number; state: unknown }, subscriptionId = "sub-alpha") =>
