@@ -11,6 +11,7 @@ import { Dot, Page, PageHeader } from "@/components/page";
 import { dayIn, fleetItems, type Group, groupCounts, headline, rowTime } from "@/fleet/overview";
 import { type Harness, skyProject } from "@/fleet/sky";
 import { type FleetState, fleetOf } from "@/fleet/state";
+import { rulesHref } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import { useDaemon } from "@/protocol/store";
 import { Composer } from "@/room/Composer";
@@ -140,13 +141,16 @@ export function RoomView({ project, snapshot, live, now, zone, clock, chat }: Ro
                   </Fact>
                 </>
               )}
+              <a href={rulesHref(project.id)} className="ml-auto rounded-sm px-1.5 text-text-2 hover:text-text">
+                Rules
+              </a>
               <button
                 type="button"
                 onClick={() => setOpen(!open)}
                 aria-expanded={open}
                 aria-controls={open ? RAIL_ID : undefined}
                 ref={toggle}
-                className="ml-auto inline-flex cursor-pointer items-center gap-1.5 rounded-sm px-1.5 text-text-2 hover:text-text"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-sm px-1.5 text-text-2 hover:text-text"
               >
                 Agents <span className="font-mono text-meta tnum">{flying}</span>
                 <span aria-hidden>{open ? "›" : "‹"}</span>

@@ -3,8 +3,8 @@ import { fold } from "@armada/daemon/fold";
 import type { ChatItem } from "@armada/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SAMPLE_PROJECTS, sampleEvents } from "../scripts/dev-daemon";
+import { routeOf } from "../src/lib/route";
 import { type Chat, lastCoordinatorSeq, withSent } from "../src/room/chat";
-import { routeOf } from "../src/room/route";
 import { parseQuestion, segments, toolLine } from "../src/room/view";
 import { RoomView } from "../src/screens/Room";
 
@@ -164,11 +164,13 @@ test("the owner's field is labelled and sends; without a coordinator it says why
 });
 
 test("the room's rules: its address, a question's choices, ids in a message, a tool's quiet line", () => {
-  expect(routeOf("#/projects/harbor")).toEqual({ screen: "room", project: "harbor" });
-  expect(routeOf("#/projects/a%20b")).toEqual({ screen: "room", project: "a b" });
-  expect(routeOf("#/sessions/HAR-15")).toEqual({ screen: "session", ticket: "HAR-15" });
-  expect(routeOf("#/projects/harbor/extra")).toEqual({ screen: "home" });
-  expect(routeOf("")).toEqual({ screen: "home" });
+  expect(routeOf("#/projects/harbor")).toEqual({ kind: "project", id: "harbor" });
+  expect(routeOf("#/projects/a%20b")).toEqual({ kind: "project", id: "a b" });
+  expect(routeOf("#/projects/harbor/rules")).toEqual({ kind: "rules", id: "harbor" });
+  expect(routeOf("#/sessions/HAR-15")).toEqual({ kind: "session", ticket: "HAR-15" });
+  expect(routeOf("#/projects/harbor/extra")).toEqual({ kind: "home" });
+  expect(routeOf("#/projects/%E0%A4%A")).toEqual({ kind: "home" });
+  expect(routeOf("")).toEqual({ kind: "home" });
   expect(parseQuestion("Which?\n\nOptions:\n- North — recommended\n- South")).toEqual({
     question: "Which?",
     choices: [

@@ -36,14 +36,16 @@ previous frames belongs to the connection, not these stateless schemas.
 Every event has `(seq, project, kind, at, actor, payload)`: a positive safe integer
 sequence, project id, kind, ISO timestamp with a timezone, actor id and JSON
 payload. Cursors are nonnegative safe integers. Global sequence gaps are allowed
-because a log contains multiple projects. Event kinds and their payload meanings
-are owned by the daemon; this package validates their transport envelope only.
+because a log contains multiple projects. This package owns the event kinds and
+payloads in `eventPayloadSchemas`, with `EventPayloads`, `EventInput` and
+`FleetEvent` inferred from that vocabulary. `eventSchema` deliberately validates
+only the open transport envelope, so an app can ignore kinds it does not use.
 
 A session read returns that session's event history, in order, at the log cursor
 `seq`. The daemon selects events belonging to the requested session; the wire
 schema checks their envelope and project. A missing project or session returns
 `error` with code `not-found`, rather than an empty successful session. This
-keeps fold models out of the protocol while the daemon defines its event kinds.
+lets consumers read session history without implementing the daemon's fold.
 The other error codes are `invalid-message`, `app-too-old`, `daemon-too-old`,
 and `internal`; `message` is a single human explanation.
 
@@ -100,12 +102,15 @@ its existing trusted-origin check. There is no credential-read message.
 ## Folded snapshots (additive)
 
 `project.subscribed` may include `snapshot: {seq,state}` on an initial
-`after: 0` subscription. `state` is JSON whose fold shape is owned by the daemon;
+`after: 0` subscription. `state` carries the protocol's `ProjectTables`;
 `seq` is its inclusive global cursor. Servers still send the event-history frame
 so clients that fold locally continue to work. A client using the snapshot must
 apply only events after the snapshot cursor. Replay subscriptions with a positive
 `after` omit the snapshot and send only missed event batches. This optional field
-adds no required operation or dependency on daemon types.
+adds no required operation or dependency on daemon types. The daemon validates
+its JSON-normalized tables through `projectTablesSchema`, preserving extension
+fields and key order. The wire schema accepts JSON so apps can read a subset of
+the tables and remain compatible with additive changes.
 
 An `events` frame may carry the same optional `snapshot`: the project's folded
 state after that frame's events, at the frame's own cursor (`snapshot.seq` equals
@@ -114,6 +119,14 @@ and may leave it out of empty frames and of the history frame that follows a
 snapshot-bearing `project.subscribed`. A client renders the daemon's fold from
 these snapshots without folding, keeping the one at the highest cursor. Older
 clients ignore the field; this app says so when events arrive without one.
+
+Project rules are an additive `ProjectTables.rules: {revision,value}` slice. It is
+optional when validating older snapshots; the current daemon always folds it,
+with revision 0 and an empty value before configuration. `projectRulesSchema` and
+`rulesStateSchema` own its routing/default, placement and policy contract. The
+native coordinator tool derives JSON Schema from that same definition, and the
+app reads it directly. Rules still use the existing `coordinator.checkpoint` kind
+under the reserved `armada.tools` v1 format; no event vocabulary change is needed.
 
 ### A project's room (minor 2)
 

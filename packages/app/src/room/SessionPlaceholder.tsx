@@ -3,8 +3,8 @@
 // It names the ticket and leads back to its project's room.
 import { Dot, Page, PageHeader } from "@/components/page";
 import { fleetOf } from "@/fleet/state";
+import { roomHref } from "@/lib/route";
 import { useDaemon } from "@/protocol/store";
-import { roomHref } from "./route";
 
 export function SessionPlaceholder({ ticket }: { ticket: string }) {
   const { projects, fleets } = useDaemon();

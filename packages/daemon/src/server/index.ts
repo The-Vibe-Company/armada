@@ -5,8 +5,10 @@ import {
   admitRequest,
   eventSchema,
   type Project,
+  type ProjectTables,
   type ProtocolError,
   projectSchema,
+  projectTablesSchema,
   type ServerMessage,
   type Snapshot,
   PROTOCOL_VERSION as version,
@@ -14,7 +16,7 @@ import {
 import { WebSocket, WebSocketServer } from "ws";
 import type { CoordinatorOptions, ProjectCoordinator } from "../../coordinator/index.ts";
 import { dispatchCredentials } from "../credentials.ts";
-import { fold, type ProjectTables } from "../fold.ts";
+import { fold } from "../fold.ts";
 import { type Keychain, systemKeychain } from "../keychain.ts";
 import type { EventStore } from "../store.ts";
 import { dispatchChat } from "./chat.ts";
@@ -46,6 +48,7 @@ interface Subscription {
   after: number;
 }
 const emptyProject = (): ProjectTables => ({
+  rules: { revision: 0, value: {} },
   tickets: [],
   pullRequests: [],
   sessions: [],
@@ -110,9 +113,9 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   /** A project's folded tables at the store's cursor, as the protocol's JSON value. */
   function snapshotOf(project: string): Snapshot {
     const seq = store.sequence;
-    // JSON serialization is the boundary from daemon types to the protocol's JSON value.
+    // Normalize optional undefined fields to JSON, then validate without changing wire key order.
     const tables = fold(store.readSince(0, project)).projects[project] ?? emptyProject();
-    return { seq, state: JSON.parse(JSON.stringify(tables)) };
+    return { seq, state: projectTablesSchema.parse(JSON.parse(JSON.stringify(tables))) };
   }
 
   /**

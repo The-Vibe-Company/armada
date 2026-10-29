@@ -1,0 +1,239 @@
+{
+  "history": [
+    {
+      "project": "orchard",
+      "kind": "ticket.seen",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "id": "ORC-1",
+        "title": "Tend the orchard",
+        "status": "started",
+        "phase": "implementing",
+        "owner": "Mira"
+      }
+    },
+    {
+      "project": "orchard",
+      "kind": "pull-request.seen",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "number": 7,
+        "ticket": "ORC-1",
+        "state": "open",
+        "ci": "pending",
+        "conflicting": false,
+        "head": "abc123",
+        "repository": "example/orchard",
+        "title": "Tend the orchard",
+        "url": "https://github.com/example/orchard/pull/7",
+        "headRef": "feature/orc-1",
+        "draft": false,
+        "review": "none",
+        "checks": [
+          {
+            "name": "test",
+            "state": "pending",
+            "runId": 12,
+            "runAttempt": 1
+          }
+        ],
+        "checksComplete": true
+      }
+    },
+    {
+      "project": "orchard",
+      "kind": "session.claimed",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "ticket": "ORC-1",
+        "session": "s1",
+        "generation": 1,
+        "owner": "Mira",
+        "runtime": "codex",
+        "handle": "local"
+      }
+    },
+    {
+      "project": "orchard",
+      "kind": "session.reported",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "ticket": "ORC-1",
+        "session": "s1",
+        "phase": "shipping",
+        "reason": "Reviewing",
+        "stage": "review"
+      }
+    },
+    {
+      "project": "orchard",
+      "kind": "session.heartbeat",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "ticket": "ORC-1",
+        "session": "s1"
+      }
+    },
+    {
+      "project": "orchard",
+      "kind": "inbox.opened",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "id": "question-a",
+        "ticket": "ORC-1",
+        "kind": "question",
+        "body": "Which tree?"
+      }
+    },
+    {
+      "project": "orchard",
+      "kind": "merge.queued",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "ticket": "ORC-1",
+        "session": "s1",
+        "id": "queue-a",
+        "pr": 7,
+        "head": "abc123"
+      }
+    },
+    {
+      "project": "orchard",
+      "kind": "merge.started",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "id": "queue-a"
+      }
+    },
+    {
+      "project": "orchard",
+      "kind": "hold.opened",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "id": "rain",
+        "reason": "Wait for CI"
+      }
+    },
+    {
+      "project": "orchard",
+      "kind": "validation.opened",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "ticket": "ORC-1",
+        "session": "s1",
+        "id": "validation-a",
+        "question": "Is the tree ready?",
+        "checks": ["Leaves are green"]
+      }
+    },
+    {
+      "project": "orchard",
+      "kind": "validation.decided",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "id": "validation-a",
+        "decision": "approved",
+        "note": "Ready"
+      }
+    },
+    {
+      "project": "orchard",
+      "kind": "coordinator.message",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "role": "coordinator",
+        "body": "Checking the orchard"
+      }
+    },
+    {
+      "project": "orchard",
+      "kind": "coordinator.checkpoint",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "checkpoint": {
+          "format": "armada.pi",
+          "version": 1,
+          "type": "id",
+          "id": "turn-a",
+          "nested": [null, true, 3]
+        }
+      }
+    }
+  ],
+  "live": [
+    {
+      "project": "orchard",
+      "kind": "inbox.answered",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "id": "question-a",
+        "answer": "The apple tree"
+      }
+    },
+    {
+      "project": "orchard",
+      "kind": "session.reported",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "ticket": "ORC-1",
+        "session": "s1",
+        "phase": "ready-to-merge",
+        "reason": "Checks passed"
+      }
+    },
+    {
+      "project": "orchard",
+      "kind": "pull-request.checks-green",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "number": 7,
+        "ticket": "ORC-1",
+        "state": "open",
+        "ci": "success",
+        "conflicting": false,
+        "head": "abc123",
+        "repository": "example/orchard",
+        "title": "Tend the orchard",
+        "url": "https://github.com/example/orchard/pull/7",
+        "headRef": "feature/orc-1",
+        "draft": false,
+        "review": "none",
+        "checks": [
+          {
+            "name": "test",
+            "state": "success",
+            "runId": 12,
+            "runAttempt": 1
+          }
+        ],
+        "checksComplete": true
+      }
+    },
+    {
+      "project": "orchard",
+      "kind": "hold.cleared",
+      "at": "2030-01-01T10:00:00Z",
+      "actor": "Mira",
+      "payload": {
+        "id": "rain",
+        "reason": "CI passed"
+      }
+    }
+  ]
+}
