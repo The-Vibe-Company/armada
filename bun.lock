@@ -14,7 +14,7 @@
     },
     "packages/cli": {
       "name": "@the-vibe-company/armada",
-      "version": "0.2.66",
+      "version": "0.2.67",
       "bin": {
         "armada": "dist/armada.js",
       },
@@ -30,6 +30,10 @@
         "proper-lockfile": "4.1.2",
         "smol-toml": "1.9.0",
       },
+    },
+    "packages/daemon": {
+      "name": "@armada/daemon",
+      "version": "0.0.0",
     },
     "packages/dashboard": {
       "name": "@armada/dashboard",
@@ -67,6 +71,8 @@
   },
   "packages": {
     "@armada/core": ["@armada/core@workspace:packages/core"],
+
+    "@armada/daemon": ["@armada/daemon@workspace:packages/daemon"],
 
     "@armada/dashboard": ["@armada/dashboard@workspace:packages/dashboard"],
 
