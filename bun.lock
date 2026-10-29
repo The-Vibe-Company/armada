@@ -50,6 +50,8 @@
       "devDependencies": {
         "@armada/core": "workspace:*",
         "@armada/daemon": "workspace:*",
+        "@armada/plugin-api": "workspace:*",
+        "ai": "7.0.156",
       },
     },
     "packages/core": {

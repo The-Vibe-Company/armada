@@ -147,3 +147,148 @@ test("bundled catalog can be listed and disabled before the first daemon boot", 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("plugin test loads hello, reports a named tracker failure and preserves loader refusals", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "armada-plugin-conformance-"));
+  let out = "";
+  let err = "";
+  const io: Io = {
+    cwd: process.cwd(),
+    env: {},
+    ghToken: () => null,
+    readFile: async (path) => readFile(path, "utf8").catch(() => null),
+    writeFile: async (path, text) => {
+      await writeFile(path, text);
+    },
+    stdout: (s) => {
+      out += s;
+    },
+    stderr: (s) => {
+      err += s;
+    },
+  };
+  try {
+    expect(await run(["plugin", "test", "packages/plugins/hello", "--report", join(dir, "report.json")], io)).toBe(0);
+    expect(out).toContain("0 checks: 0 passed, 0 failed");
+    expect(JSON.parse(await readFile(join(dir, "report.json"), "utf8"))).toMatchObject({
+      plugin: "hello",
+      passed: 0,
+      failed: 0,
+      checks: [],
+    });
+    const wrong = join(dir, "wrong");
+    await mkdir(wrong);
+    await writeFile(
+      join(wrong, "package.json"),
+      JSON.stringify({
+        type: "module",
+        main: "./index.mjs",
+        armada: {
+          id: "wrong",
+          version: "1.0.0",
+          pluginApi: "^0.1.0",
+          enabledByDefault: false,
+          description: "Deliberately wrong tracker",
+          contributions: { tracker: { wrong: { config: true, secrets: [] } } },
+        },
+      }),
+    );
+    await writeFile(
+      join(wrong, "index.mjs"),
+      await readFile(new URL("./fixtures/plugin-test/wrong-tracker.mjs", import.meta.url), "utf8"),
+    );
+    await writeFile(
+      join(wrong, "armada-plugin.test.json"),
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the runner expands fixture placeholders
+      JSON.stringify({ tracker: { wrong: { endpoint: "${endpoint}/tracker" } } }),
+    );
+    out = "";
+    expect(await run(["plugin", "test", wrong], io)).toBe(1);
+    expect(out).toContain("FAIL tracker.wrong.read-events");
+    expect(out).toContain("read did not append the recorded ticket.seen payload");
+    expect(out).toContain("failed");
+    err = "";
+    expect(await run(["plugin", "test", dir], io)).toBe(1);
+    expect(err.trim()).toMatch(/^Plugin .+ refused:/);
+    expect(err.trim().split("\n")).toHaveLength(1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("plugin test exercises recorded reads, writes, PTYs, workspaces and a model tool call", async () => {
+  let out = "";
+  let err = "";
+  const io: Io = {
+    cwd: process.cwd(),
+    env: {},
+    ghToken: () => null,
+    readFile: async (path) => readFile(path, "utf8").catch(() => null),
+    stdout: (s) => {
+      out += s;
+    },
+    stderr: (s) => {
+      err += s;
+    },
+  };
+  const code = await run(["plugin", "test", "packages/cli/test/fixtures/plugin-test/positive", "--json"], io);
+  expect(err).toBe("");
+  const report = JSON.parse(out);
+  expect(report.checks.filter((check: { passed: boolean }) => !check.passed)).toEqual([]);
+  expect(code).toBe(0);
+  expect(report.checks.map((check: { name: string }) => check.name)).toEqual(
+    expect.arrayContaining([
+      "tracker.reference.read-events",
+      "tracker.reference.write",
+      "forge.reference.read-events",
+      "forge.reference.merge",
+      "runtime.reference.launch",
+      "runtime.reference.deliver",
+      "runtime.reference.stop",
+      "runtime.reference.normal-exit",
+      "node.reference.launch",
+      "model.reference.tool-call",
+    ]),
+  );
+}, 30_000);
+
+test("plugin test stops a real worker whose launch returns after the deadline", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "armada-plugin-late-"));
+  const marker = join(dir, "stopped");
+  try {
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({
+        type: "module",
+        main: "index.mjs",
+        armada: {
+          id: "late",
+          version: "1.0.0",
+          pluginApi: "^0.1.0",
+          enabledByDefault: true,
+          description: "Late worker cleanup regression",
+          contributions: { runtime: { late: { config: true, secrets: [] } } },
+        },
+      }),
+    );
+    await writeFile(
+      join(dir, "index.mjs"),
+      await readFile(new URL("./fixtures/plugin-test/late-launch/index.mjs", import.meta.url), "utf8"),
+    );
+    await writeFile(join(dir, "armada-plugin.test.json"), JSON.stringify({ runtime: { late: { marker } } }));
+    const { createExec } = await import("../src/spawn.ts");
+    const result = await createExec()(process.execPath, ["packages/cli/src/main.ts", "plugin", "test", dir], {
+      cwd: process.cwd(),
+      timeoutMs: 12_000,
+      processGroup: true,
+      env: { PATH: process.env.PATH },
+    });
+    expect(result.timedOut).not.toBe(true);
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain("FAIL runtime.late.launch: check timed out after 5 seconds");
+    expect(result.stdout).not.toContain("must not continue");
+    expect(await readFile(marker, "utf8")).toBe("stopped");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
