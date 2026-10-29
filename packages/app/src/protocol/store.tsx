@@ -16,3 +16,10 @@ export function useDaemon(): DaemonState {
   const client = useContext(DaemonContext);
   return useSyncExternalStore(client?.subscribe ?? nothing, client?.getState ?? still, client?.getState ?? still);
 }
+
+/** Commands use the same single connection as the live state. */
+export function useDaemonClient(): DaemonClient {
+  const client = useContext(DaemonContext);
+  if (!client) throw new Error("DaemonProvider is missing");
+  return client;
+}

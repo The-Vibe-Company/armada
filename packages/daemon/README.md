@@ -62,6 +62,30 @@ same tests run in the Bun suite; `bun run verify` and CI also exercise native
 Node SQLite explicitly. Store tests use disposable database files; fold tests
 use invented tickets and people without I/O.
 
+## Credential boundary
+
+`keychain.ts` is the host's only secret-read gateway. `systemKeychain()` uses
+`@napi-rs/keyring` (macOS Security framework) on macOS, without subprocess
+arguments. A locked or unavailable Keychain fails closed; it never creates a
+plaintext fallback on macOS. Linux/CI explicitly uses private files under
+`$XDG_CONFIG_HOME/armada/desktop/credentials` (default `~/.config`): mode 0700
+directory, mode 0600 files, no symlink reads, atomic replacements. Keep that
+folder out of backups/exports of fleet events. Other platforms are refused.
+
+The reserved services are `armada.coordinator` (account `coordinator`, one
+atomic provider/key entry), `armada.linear` (account is the project id), and
+`armada.github` (account `github`). Use `Keychain.read` and `write` for provider
+credentials; `setCoordinator`, `coordinator`, and `status` handle the model key.
+Backend errors are replaced by fixed messages without a cause. Consumers and
+plugins must not import `secrets/*` or a native keychain module. Tests inject a
+`FakeKeychain`; test keys are generated at runtime rather than stored in fixtures.
+
+`dispatchCredentials` runs after `admitRequest`, before project-scoped dispatch.
+It returns status or a fixed error and has no event-store/logger dependency. The
+server serializes credential reads/writes across connections (at most 32 pending)
+and drains accepted operations on shutdown. Embedders can inject `keychain` into
+`startServer`; the production default is `systemKeychain()`.
+
 ## Local server (`armadad`)
 
 Build the browser app with `bun run --cwd packages/app build`, then run the
@@ -94,9 +118,10 @@ seconds after completion); both append through the very same store the server
 subscribes to. GitHub correlates branches with ticket IDs already in that
 project's log, including tickets read after boot, on subsequent reads.
 Credentials are preflighted at startup: Linear uses the `readLinearKey` accessor
-with a host `LINEAR_API_KEY` source; GitHub uses `GITHUB_TOKEN`, then its existing
-OS keychain / `gh auth token` accessor. The host credential sources remain
-replaceable for THE-1995; no provider reads the environment itself. A missing
+with a host `LINEAR_API_KEY` override, falling back to the shared
+`systemKeychain().read("linear", project)` gateway. GitHub uses `GITHUB_TOKEN`,
+then the shared keychain / `gh auth token` accessor. No provider reads the
+environment itself. A missing
 credential skips only that reader and emits one fixed, credential-free stderr
 line per project/reader. Restart after supplying a missing key. Provider failures
 retain the existing log and retry on the reader's next scheduled tick; neither
@@ -137,3 +162,4 @@ dev app. Do not expose this unauthenticated local endpoint on a remote interface
 `test/server.test.ts` owns transport coverage using real SQLite, OS-assigned
 loopback sockets and message/close events, including process readiness/shutdown.
 It never sleeps, polls a clock, or contacts an external service.
+

@@ -1,8 +1,7 @@
 import { projectSchema } from "@armada/protocol";
 import { GithubReader } from "../forge/github.ts";
-import { githubToken } from "../forge/keychain.ts";
 import { type Schedule, schedule } from "../forge/types.ts";
-import { readLinearKey, type SecretAccessor } from "../keychain.ts";
+import { githubToken, readLinearKey, type SecretAccessor, systemKeychain } from "../keychain.ts";
 import type { EventStore } from "../store.ts";
 import { linearTracker, TrackerPoller } from "../tracker/index.ts";
 
@@ -31,14 +30,16 @@ export interface ReaderState {
 
 /** Boot's sole reader composition point, to be replaced by the plugin registry.
  * Credential preflight is independent of reads; no provider request delays readiness.
- * The host supplies environment credentials until THE-1995's keychain is wired here.
+ * Environment overrides and the shared keychain remain host-owned sources.
  */
 export async function startReaders(options: ReaderOptions): Promise<{ readers: ReaderState[]; stop(): void }> {
   const projects = options.projects.map((project) => daemonProjectSchema.parse(project));
   const now = options.now ?? (() => new Date());
   const set = options.schedule ?? schedule;
   const fetch = options.fetch ?? globalThis.fetch;
-  const secrets: SecretAccessor = options.secrets ?? (async () => process.env.LINEAR_API_KEY?.trim() || null);
+  const secrets: SecretAccessor =
+    options.secrets ??
+    (async (service, account) => process.env.LINEAR_API_KEY?.trim() || systemKeychain().read(service, account));
   const token =
     options.token ?? (async (signal: AbortSignal) => process.env.GITHUB_TOKEN?.trim() || githubToken({ signal }));
   const log = options.log ?? console.error;

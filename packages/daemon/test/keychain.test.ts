@@ -1,51 +1,58 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
-import { githubToken, type TokenCommand } from "../src/forge/keychain.ts";
+import { githubToken } from "../src/forge/keychain.ts";
+import { Keychain } from "../src/keychain.ts";
+import { FakeKeychain } from "./support/keychain.ts";
 
-test("owner keychain wins on macOS; absent/locked entries fall back to gh without leaking command errors", async () => {
+test("owner keychain wins; absent/locked entries fall back to gh without leaking source errors", async () => {
   const owner = randomUUID();
   const fallback = randomUUID();
   const calls: string[] = [];
   assert.equal(
     await githubToken({
       platform: "darwin",
-      command: async (file) => {
+      command: async (file, args) => {
         calls.push(file);
+        assert.deepEqual(args, ["find-generic-password", "-s", "armada.github", "-a", "github", "-w"]);
         return owner;
       },
     }),
     owner,
   );
   assert.deepEqual(calls, ["security"]);
+  const chain = new Keychain(new FakeKeychain());
+  await chain.write("github", "github", owner);
+  assert.equal(await githubToken({ keychain: chain, command: async () => assert.fail("keychain wins") }), owner);
   for (const missing of ["empty", "locked"]) {
     calls.length = 0;
-    const command: TokenCommand = async (file) => {
-      calls.push(file);
-      if (file === "security") {
+    const keychain = {
+      read: async () => {
+        calls.push("keychain");
         if (missing === "locked") throw new Error(owner);
-        return "";
-      }
-      return `${fallback}\n`;
-    };
-    assert.equal(await githubToken({ platform: "darwin", command }), fallback);
-    assert.deepEqual(calls, ["security", "gh"]);
-  }
-  calls.length = 0;
-  assert.equal(
-    await githubToken({
-      platform: "linux",
-      command: async (file) => {
-        calls.push(file);
-        return fallback;
+        return null;
       },
-    }),
-    fallback,
-  );
-  assert.deepEqual(calls, ["gh"]);
+    };
+    assert.equal(
+      await githubToken({
+        keychain,
+        command: async (file, args) => {
+          calls.push(file);
+          assert.deepEqual(args, ["auth", "token"]);
+          return `${fallback}\n`;
+        },
+      }),
+      fallback,
+    );
+    assert.deepEqual(calls, ["keychain", "gh"]);
+  }
   await assert.rejects(
     githubToken({
-      platform: "darwin",
+      keychain: {
+        read: async () => {
+          throw new Error(owner);
+        },
+      },
       command: async () => {
         throw new Error(owner);
       },
