@@ -114,3 +114,26 @@ and may leave it out of empty frames and of the history frame that follows a
 snapshot-bearing `project.subscribed`. A client renders the daemon's fold from
 these snapshots without folding, keeping the one at the highest cursor. Older
 clients ignore the field; this app says so when events arrive without one.
+
+### A project's room (minor 2)
+
+`src/chat.ts` carries the room's messages (THE-1996). A client sends them only to
+a daemon whose `projects.result` says minor 2 or more (`CHAT_MINOR`); an older
+daemon would refuse them as unknown, and the app says so instead.
+
+| Client request | Fields besides `type`, `version`, `id` | Server reply |
+| --- | --- | --- |
+| `chat.read` | `project` | `chat.result`: `project`, `seq`, `coordinator` (one runs), `items` |
+| `chat.send` | `project`, `requestId`, `body` | `chat.sent`: `project`, `requestId` |
+| `owner.answer` | `project`, `item`, `choice`, optional `note` | `owner.answered`: `project`, `item` |
+
+`items` is the conversation oldest first, its latest 200 when long: `owner`
+(the owner's message), `coordinator` (its answer), `line` (its own short line,
+said when the fleet moved, not in answer to the owner) and `tool` (`name`,
+`input`, `output` (null while it runs), `failed`). The daemon derives them; the
+app never reads pi's checkpoints. A message keeps its `requestId` until
+admitted: sending it again after a drop is the same message, admitted once. Its
+effect reaches every subscriber as the coordinator's `coordinator.checkpoint`
+events; a client reads the conversation again when one arrives. `owner.answer`
+answers an open `owner-request` of the project's inbox; anything else is
+`not-found`, as is `chat.send` to a project without a coordinator.

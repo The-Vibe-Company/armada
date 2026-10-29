@@ -210,4 +210,70 @@ describe("in a browser, served by a running daemon", () => {
       .waitFor({ timeout: 5_000 });
     await page.locator('[data-row="tidewater/TID-1"][data-group="running"]').waitFor({ timeout: 5_000 });
   });
+
+  test("a project's room: the band, the pinned question, a message the coordinator answers, kept across a reload", async () => {
+    await page.goto(`${daemon.url}/#/projects/harbor`);
+    await page.getByRole("heading", { level: 1, name: "Harbor" }).waitFor({ timeout: 5_000 });
+    const band = page.locator('[data-sky="band"]');
+    await expect(band.evaluate((el) => el.getBoundingClientRect().height)).resolves.toBe(200);
+    const card = page.getByRole("region", { name: "A question waiting for you" });
+    await card.getByText("Two berth tests time out under the full suite.").waitFor({ timeout: 5_000 });
+    const rail = page.getByRole("complementary", { name: "Agents" });
+    await rail.getByRole("link", { name: /HAR-15/ }).waitFor({ timeout: 5_000 });
+    // The coordinator's own line from the log is there before anything is said.
+    await page
+      .locator('[data-item="line"]')
+      .filter({ hasText: "HAR-9's quays have names" })
+      .waitFor({ timeout: 5_000 });
+
+    // A message sent through the protocol: the coordinator's checkpoint brings it back with the answer.
+    const field = page.getByLabel("Message", { exact: true });
+    await field.fill("Merge HAR-20 first.");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    const answer = page.locator('[data-item="coordinator"]').filter({ hasText: "Noted: “Merge HAR-20 first.”" });
+    await answer.waitFor({ timeout: 10_000 });
+    await expect(field.inputValue()).resolves.toBe("");
+    await page.locator('[data-item="owner"]').filter({ hasText: "Merge HAR-20 first." }).waitFor();
+    // Its tool call is one quiet line, closed until a click opens it.
+    const call = page.locator('details[data-tool="fleet.status"]').first();
+    await expect(call.evaluate((el) => (el as HTMLDetailsElement).open)).resolves.toBe(false);
+    await call.locator("summary").click();
+    await expect(call.evaluate((el) => (el as HTMLDetailsElement).open)).resolves.toBe(true);
+    await call.getByText("Result").waitFor();
+
+    // Closed and opened again: the same conversation, read from the log.
+    await page.reload();
+    await answer.waitFor({ timeout: 10_000 });
+    await page.locator('[data-item="owner"]').filter({ hasText: "Merge HAR-20 first." }).waitFor();
+
+    // The owner answers the pinned question: the card leaves, the answer joins the conversation.
+    await card.getByRole("button", { name: /Fix the wait/ }).click();
+    await card.waitFor({ state: "detached", timeout: 5_000 });
+    await page
+      .locator('[data-item="owner"]')
+      .filter({ hasText: "On HAR-15: Fix the wait" })
+      .waitFor({ timeout: 10_000 });
+
+    // The rail closes and opens from the facts line.
+    await page.getByRole("button", { name: "Close the agents" }).click();
+    await rail.waitFor({ state: "detached", timeout: 5_000 });
+    await page.getByRole("button", { name: /^Agents/ }).click();
+    await rail.waitFor({ timeout: 5_000 });
+
+    const anatomy = await page.evaluate(() => ({
+      h1: [...document.querySelectorAll("h1")].map((h) => [h.textContent, getComputedStyle(h).fontSize]),
+      fonts: [...new Set([...document.querySelectorAll("body *")].map((e) => getComputedStyle(e).fontFamily))],
+      // Type never under 13 px; 12.5 px only in Geist Mono (ids and times).
+      small: [...document.querySelectorAll("main *")]
+        .filter((e) => [...e.childNodes].some((n) => n.nodeType === 3 && n.textContent?.trim()))
+        .map((e) => getComputedStyle(e))
+        .filter(
+          (s) => Number.parseFloat(s.fontSize) < 13 && !(s.fontSize === "12.5px" && /Geist Mono/.test(s.fontFamily)),
+        )
+        .map((s) => `${s.fontSize} ${s.fontFamily}`),
+    }));
+    expect(anatomy.h1).toEqual([["Harbor", "22px"]]);
+    for (const family of anatomy.fonts) expect(family).toMatch(/^"?Geist( Mono)?"?,/);
+    expect(anatomy.small).toEqual([]);
+  }, 30_000);
 });

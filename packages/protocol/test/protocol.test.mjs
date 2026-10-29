@@ -34,6 +34,10 @@ const requests = [
   { type: "projects.list", version, id: "list-a" },
   { type: "project.subscribe", version, id: "subscribe-a", project: "project-a", after: 6 },
   { type: "session.read", version, id: "read-a", project: "project-a", sessionId: "session-a" },
+  { type: "chat.read", version, id: "chat-a", project: "project-a" },
+  { type: "chat.send", version, id: "send-a", project: "project-a", requestId: "message-a", body: "Merge #12 first" },
+  { type: "owner.answer", version, id: "answer-a", project: "project-a", item: "ask-a", choice: "Fix the wait" },
+  { type: "owner.answer", version, id: "answer-b", project: "project-a", item: "ask-a", choice: "Wait", note: "Why?" },
 ];
 const frames = [
   {
@@ -54,6 +58,39 @@ const frames = [
   batch,
   { ...batch, snapshot: { seq: 10, state: { sessions: [{ ticket: "EX-1", state: "blocked" }] } } },
   { ...batch, seq: 11, events: [] },
+  {
+    type: "chat.result",
+    version,
+    id: "chat-a",
+    project: "project-a",
+    seq: 10,
+    coordinator: true,
+    items: [
+      { kind: "owner", id: "e2", at: "2026-01-01T00:00:00.000Z", body: "Merge #12 first" },
+      { kind: "coordinator", id: "e3", at: "2026-01-01T00:00:01.000Z", body: "Merging #12 now" },
+      { kind: "line", id: "m9", at: "2026-01-01T00:00:02.000Z", body: "#12 merged" },
+      {
+        kind: "tool",
+        id: "call-a",
+        at: "2026-01-01T00:00:01.000Z",
+        name: "fleet.status",
+        input: { ticket: "EX-1" },
+        output: '{"ok":true}',
+        failed: false,
+      },
+      {
+        kind: "tool",
+        id: "call-b",
+        at: "2026-01-01T00:00:01.000Z",
+        name: "hold.add",
+        input: {},
+        output: null,
+        failed: false,
+      },
+    ],
+  },
+  { type: "chat.sent", version, id: "send-a", project: "project-a", requestId: "message-a" },
+  { type: "owner.answered", version, id: "answer-a", project: "project-a", item: "ask-a" },
   { type: "error", version, id: "read-a", code: "not-found", message: "Session not found" },
   { type: "error", version, code: "invalid-message", message: "Invalid request" },
 ];
@@ -116,6 +153,11 @@ test("invalid requests never become dispatchable and errors retain only a valid 
     { ...requests[1], after: Number.MAX_SAFE_INTEGER + 1 },
     { ...requests[1], project: "" },
     { ...requests[2], sessionId: null },
+    { ...requests[4], body: " \n " },
+    { ...requests[4], body: "x".repeat(16 * 1024 + 1) },
+    { ...requests[4], requestId: "" },
+    { ...requests[5], choice: "" },
+    { ...requests[5], item: undefined },
   ]) {
     assert.equal(clientMessageSchema.safeParse(request).success, false);
     const result = admitRequest(request);
