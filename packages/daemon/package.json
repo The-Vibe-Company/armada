@@ -12,6 +12,8 @@
     "./events": "./src/events.ts",
     "./fold": "./src/fold.ts",
     "./store": "./src/store.ts",
+    "./keychain": "./src/keychain.ts",
+    "./credentials": "./src/credentials.ts",
     "./server": "./src/server/index.ts",
     "./plugins": "./src/plugins/index.ts",
     "./plugins/list": "./src/plugins/list.ts",
@@ -24,6 +26,7 @@
   },
   "dependencies": {
     "@armada/protocol": "workspace:*",
+    "@napi-rs/keyring": "2.1.2",
     "ws": "8.21.3",
     "@armada/plugin-api": "workspace:*",
     "ajv": "8.20.0",

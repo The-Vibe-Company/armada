@@ -1,46 +1,26 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
+import { Keychain } from "../src/keychain.ts";
 import { readPluginSecret } from "../src/plugins/keychain.ts";
+import { FakeKeychain } from "./support/keychain.ts";
 
-test("plugin secrets use the reserved keychain service and hide missing/locked command errors", async () => {
-  const calls: [string, string[]][] = [];
+test("plugin secrets use the shared gateway and reserved namespace without altering values", async () => {
+  const backend = new FakeKeychain();
+  const keychain = new Keychain(backend);
+  const value = `  ${randomBytes(24).toString("hex")}\nvalue \n`;
+  await keychain.write("plugin", "MODEL_KEY", value);
+  await keychain.write("github", "OTHER_KEY", randomBytes(24).toString("hex"));
+  assert.equal(await readPluginSecret("MODEL_KEY", keychain), value);
+  assert.equal(backend.entries.get(JSON.stringify(["armada.plugins", "MODEL_KEY"])), value);
+  assert.equal(await readPluginSecret("OTHER_KEY", keychain), null);
+  assert.equal(await readPluginSecret("MISSING_KEY", keychain), null);
   assert.equal(
     await readPluginSecret("MODEL_KEY", {
-      platform: "darwin",
-      command: async (file, args) => {
-        calls.push([file, args]);
-        return "fixture-secret\n";
-      },
-    }),
-    "fixture-secret",
-  );
-  assert.deepEqual(calls, [["security", ["find-generic-password", "-s", "armada.plugins", "-a", "MODEL_KEY", "-w"]]]);
-  assert.equal(
-    await readPluginSecret("MULTILINE_KEY", {
-      platform: "darwin",
-      command: async () => "  fixture\nvalue \n",
-    }),
-    "  fixture\nvalue ",
-  );
-  assert.equal(
-    await readPluginSecret("MISSING_KEY", {
-      platform: "darwin",
-      command: async () => {
-        throw new Error("private command output");
+      read: async () => {
+        throw new Error("private backend output");
       },
     }),
     null,
   );
-  let offPlatformCalls = 0;
-  assert.equal(
-    await readPluginSecret("MODEL_KEY", {
-      platform: "linux",
-      command: async () => {
-        offPlatformCalls++;
-        return "fixture-secret";
-      },
-    }),
-    null,
-  );
-  assert.equal(offPlatformCalls, 0);
 });

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,8 +11,10 @@ import { test } from "node:test";
 import { type ServerMessage, serverMessageSchema, PROTOCOL_VERSION as version } from "@armada/protocol";
 import { WebSocket } from "ws";
 import type { EventInput } from "../src/events.ts";
+import { Keychain } from "../src/keychain.ts";
 import { startServer } from "../src/server/index.ts";
 import { EventStore } from "../src/store.ts";
+import { FakeKeychain } from "./support/keychain.ts";
 
 const projects = [
   { id: "orchard", name: "Orchard", repository: "example/orchard" },
@@ -372,4 +375,95 @@ test("HTTP serves built assets and SPA routes, refuses escapes and foreign brows
     request.end();
   });
   assert.equal(status, 403);
+});
+
+test("credential socket writes and fake-model use never expose the key to replies, events or logs", {
+  timeout: 10000,
+}, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "armada-credential-socket-"));
+  const store = new EventStore(join(dir, "fleet.sqlite"));
+  const backend = new FakeKeychain();
+  const keychain = new Keychain(backend);
+  const key = randomBytes(24).toString("hex");
+  const logs: unknown[] = [];
+  for (const method of ["log", "info", "warn", "error", "debug"] as const)
+    t.mock.method(console, method, (...args: unknown[]) => logs.push(args));
+  const server = await startServer({ store, projects, keychain });
+  t.after(async () => {
+    await server.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const client = await connect(server.wsUrl);
+  const replies: ServerMessage[] = [];
+  const next = async () => {
+    const frame = await client.next();
+    replies.push(frame);
+    return frame;
+  };
+  client.send({ type: "credentials.status", id: "status-before" });
+  assert.deepEqual(await next(), {
+    type: "credentials.result",
+    version,
+    id: "status-before",
+    provider: null,
+    storage: "os-keychain",
+  });
+  // Enqueue read immediately after the write; asynchronous keychain operations must preserve order.
+  client.send({ type: "credentials.set", id: "save", provider: "anthropic", key });
+  client.send({ type: "credentials.status", id: "status-after" });
+  assert.deepEqual(await next(), {
+    type: "credentials.result",
+    version,
+    id: "save",
+    provider: "anthropic",
+    storage: "os-keychain",
+  });
+  assert.deepEqual(await next(), {
+    type: "credentials.result",
+    version,
+    id: "status-after",
+    provider: "anthropic",
+    storage: "os-keychain",
+  });
+  assert.equal(store.sequence, 0);
+  client.send({ type: "project.subscribe", project: "orchard", after: 0 });
+  await next();
+  await next();
+  const credential = await keychain.coordinator();
+  assert.deepEqual(credential, { provider: "anthropic", key });
+  // A fake model consumes the actual saved credential; only its answer becomes a fleet event.
+  const model = async (input: { provider: string; key: string }) => {
+    assert.equal(input.key, key);
+    assert.equal(input.provider, "anthropic");
+    return "Ready to coordinate Orchard.";
+  };
+  if (!credential) throw new Error("Missing saved credential");
+  const body = await model(credential);
+  const event = store.append({
+    project: "orchard",
+    kind: "coordinator.message",
+    at: "2030-01-01T10:00:00Z",
+    actor: "coordinator",
+    payload: { role: "coordinator", body },
+  });
+  const batch = await next();
+  assert.equal(batch.type, "events");
+  if (batch.type !== "events") throw new Error("Expected model event");
+  assert.deepEqual(batch.events, [event]);
+  assert.equal(store.sequence, 1);
+  assert.equal(JSON.stringify([replies, store.readSince(0), logs]).includes(key), false);
+  for (const name of readdirSync(dir)) assert.equal(readFileSync(join(dir, name)).includes(Buffer.from(key)), false);
+  const closed = once(client.ws, "close");
+  client.ws.close();
+  await closed;
+  const reopened = await connect(server.wsUrl);
+  reopened.send({ type: "credentials.status", id: "reconnected" });
+  assert.deepEqual(await reopened.next(), {
+    type: "credentials.result",
+    version,
+    id: "reconnected",
+    provider: "anthropic",
+    storage: "os-keychain",
+  });
 });

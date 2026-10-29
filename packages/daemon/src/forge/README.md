@@ -32,7 +32,7 @@ after completion. `now`, `schedule`, `fetch`, `token`, and the `Forge` itself ar
 injectable. The server should serve the local log/fold and never wait on GitHub.
 This ticket supplies the adapter, not the daemon boot/server wiring.
 
-The token accessor tries macOS Keychain service `armada.github`, account
+The shared host keychain gateway reads service `armada.github`, account
 `github`, then `gh auth token`; other platforms use `gh`. Child processes have a
 five-second timeout and bounded output. Tokens stay in memory/request headers.
 Raw provider, GraphQL and child-process errors never cross the adapter boundary;
