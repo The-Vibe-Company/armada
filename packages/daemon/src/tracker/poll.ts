@@ -2,7 +2,7 @@ import type { EventInput, FleetEvent } from "../events.ts";
 import { trackerChanges } from "./changes.ts";
 import type { Tracker, TrackerReading } from "./types.ts";
 
-export interface PollClock {
+interface PollClock {
   now(): Date;
   /** Return a cancel function; the host supplies setTimeout/clearTimeout. */
   set(callback: () => void, delayMs: number): () => void;

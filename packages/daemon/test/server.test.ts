@@ -443,7 +443,7 @@ test("HTTP serves built assets and SPA routes, refuses escapes and foreign brows
   assert.equal(status, 403);
 });
 
-test("credential socket writes and fake-model use never expose the key to replies, events or logs", {
+test("credential socket writes never expose the key to replies, events or logs", {
   timeout: 10000,
 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "armada-credential-socket-"));
@@ -498,24 +498,16 @@ test("credential socket writes and fake-model use never expose the key to replie
   await next();
   const credential = await keychain.coordinator();
   assert.deepEqual(credential, { provider: "anthropic", key });
-  // A fake model consumes the actual saved credential; only its answer becomes a fleet event.
-  const model = async (input: { provider: string; key: string }) => {
-    assert.equal(input.key, key);
-    assert.equal(input.provider, "anthropic");
-    return "Ready to coordinate Orchard.";
-  };
-  if (!credential) throw new Error("Missing saved credential");
-  const body = await model(credential);
   const event = store.append({
     project: "orchard",
     kind: "coordinator.message",
     at: "2030-01-01T10:00:00Z",
     actor: "coordinator",
-    payload: { role: "coordinator", body },
+    payload: { role: "coordinator", body: "Ready to coordinate Orchard." },
   });
   const batch = await next();
   assert.equal(batch.type, "events");
-  if (batch.type !== "events") throw new Error("Expected model event");
+  if (batch.type !== "events") throw new Error("Expected coordinator event");
   assert.deepEqual(batch.events, [event]);
   assert.equal(store.sequence, 1);
   assert.equal(JSON.stringify([replies, store.readSince(0), logs]).includes(key), false);
