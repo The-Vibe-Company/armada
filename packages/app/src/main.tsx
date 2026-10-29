@@ -24,6 +24,11 @@ const root = document.getElementById("root");
 if (!root) throw new Error("index.html has no #root");
 createRoot(root).render(
   <StrictMode>
-    <App client={client} address={address} onReload={() => window.location.reload()} />
+    <App
+      client={client}
+      address={address}
+      onReload={() => window.location.reload()}
+      story={new URLSearchParams(window.location.search).get("story")}
+    />
   </StrictMode>,
 );
