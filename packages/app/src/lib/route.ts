@@ -3,9 +3,13 @@ import { useSyncExternalStore } from "react";
 /**
  * The page the address names. Hash routes, because the daemon serves one
  * index.html at its root: `#/projects/<id>` a project, `#/plugins` the Plugins
- * screen, anything else the fleet. Off a browser (a test's static render) it is the fleet.
+ * screen, `#/settings` the coordinator's model, anything else the hangar (the
+ * home, THE-2025). Off a browser (a test's static render) it is the hangar.
  */
-export type Route = { kind: "home" } | { kind: "project"; id: string } | { kind: "plugins" };
+export type Route = { kind: "home" } | { kind: "project"; id: string } | { kind: "plugins" } | { kind: "settings" };
+
+/** Where a project's squadron and its sidebar line lead. */
+export const projectHref = (id: string) => `#/projects/${encodeURIComponent(id)}`;
 
 const subscribe = (listener: () => void) => {
   window.addEventListener("hashchange", listener);
@@ -16,6 +20,7 @@ const server = () => "#/";
 
 export function routeOf(hash: string): Route {
   if (hash === "#/plugins") return { kind: "plugins" };
+  if (hash === "#/settings") return { kind: "settings" };
   const match = /^#\/projects\/([^/?#]+)$/.exec(hash);
   if (match?.[1]) {
     try {

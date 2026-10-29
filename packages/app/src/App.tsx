@@ -3,8 +3,9 @@ import { Shell } from "@/components/shell/Shell";
 import { useRoute } from "@/lib/route";
 import type { DaemonClient } from "@/protocol/client";
 import { DaemonProvider } from "@/protocol/store";
-import { Home } from "@/screens/Home";
+import { Hangar } from "@/screens/Hangar";
 import { Project } from "@/screens/Project";
+import { Settings } from "@/screens/Settings";
 
 // The sky's story page (`?story=sky`), loaded only behind its flag: never in the first load.
 const SkyStory = lazy(() => import("@/screens/SkyStory").then((m) => ({ default: m.SkyStory })));
@@ -37,8 +38,10 @@ export function App({
           </Suspense>
         ) : route.kind === "project" ? (
           <Project id={route.id} onReload={onReload} />
+        ) : route.kind === "settings" ? (
+          <Settings address={address} onReload={onReload} />
         ) : (
-          <Home address={address} onReload={onReload} />
+          <Hangar onReload={onReload} />
         )}
       </Shell>
     </DaemonProvider>

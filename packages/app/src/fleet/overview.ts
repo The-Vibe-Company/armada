@@ -58,7 +58,7 @@ export interface FleetItem {
 }
 
 /** Where a session is on the six steps: its phase's, else its flow step (V1's `sessionStep`). */
-export function sessionStep(s: Pick<FoldedSession, "phase" | "flowStep">): number {
+function sessionStep(s: Pick<FoldedSession, "phase" | "flowStep">): number {
   if (s.phase === "merged") return STEPS.length;
   if (s.phase === "awaiting-approval") return 1;
   if (s.phase === "ready-to-merge") return 4;
@@ -84,7 +84,7 @@ function ownLine(s: FoldedSession): string | null {
 }
 
 /** Why a session is in its group, in V1's words. */
-export function sessionReason(s: FoldedSession, group: Group, state: FleetState): string {
+function sessionReason(s: FoldedSession, group: Group, state: FleetState): string {
   // The ticket's pull request as the fold reads it: its latest one not closed.
   const pr = state.pullRequests.findLast((p) => p.ticket === s.ticket && p.state !== "closed");
   const prText = pr ? `#${pr.number}${CI_WORD[pr.ci] ? ` ${CI_WORD[pr.ci]}` : ""}` : "";
