@@ -37,7 +37,7 @@ interface Options {
 }
 
 /** Owner-token GitHub implementation; only observations cross the provider boundary. */
-export class GithubForge implements Forge {
+class GithubForge implements Forge {
   readonly #options: Options;
   constructor(options: Options) {
     if (!/^[\w.-]+\/[\w.-]+$/.test(options.repository)) throw new Error("GitHub repository must be owner/name");
