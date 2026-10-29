@@ -4,6 +4,7 @@ import type { EventInput, FleetEvent } from "./events.ts";
 /** The only durable store: callers supply time and identity; SQLite supplies order. */
 export class EventStore {
   readonly #db: DatabaseSync;
+  readonly #listeners = new Set<() => void>();
 
   constructor(path: string) {
     this.#db = new DatabaseSync(path);
@@ -42,7 +43,29 @@ export class EventStore {
       .prepare("INSERT INTO events (project, kind, at, actor, payload) VALUES (?, ?, ?, ?, ?)")
       .run(event.project, event.kind, event.at, event.actor, payload);
     // Return exactly what was persisted, detached from the caller's objects.
-    return { ...event, payload: JSON.parse(payload), seq: Number(result.lastInsertRowid) } as FleetEvent;
+    const stored = { ...event, payload: JSON.parse(payload), seq: Number(result.lastInsertRowid) } as FleetEvent;
+    for (const listener of [...this.#listeners]) {
+      try {
+        listener();
+      } catch {
+        // A failed observer cannot make a committed write look unsuccessful.
+        this.#listeners.delete(listener);
+      }
+    }
+    return stored;
+  }
+
+  /** Global committed high-water mark, including events of other projects. */
+  get sequence(): number {
+    return Number(this.#db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM events").get()?.seq);
+  }
+
+  /** In-process commit notice. Readers resume from their own cursor; no event objects are shared. */
+  subscribe(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
   }
 
   /** Exclusive global cursor; a project filter never renumbers the log. */
@@ -58,6 +81,7 @@ export class EventStore {
   }
 
   close(): void {
+    this.#listeners.clear();
     this.#db.close();
   }
 }

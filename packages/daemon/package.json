@@ -12,22 +12,30 @@
     "./events": "./src/events.ts",
     "./fold": "./src/fold.ts",
     "./store": "./src/store.ts",
+    "./server": "./src/server/index.ts",
     "./plugins": "./src/plugins/index.ts",
     "./plugins/list": "./src/plugins/list.ts",
     "./plugins/catalog": "./src/plugins/catalog.ts",
     "./plugins/config": "./src/plugins/config.ts"
   },
   "scripts": {
-    "test": "node --test test/*.test.ts"
+    "test": "node --test test/*.test.ts",
+    "start": "node src/server/main.ts"
   },
   "dependencies": {
+    "@armada/protocol": "workspace:*",
+    "ws": "8.21.3",
     "@armada/plugin-api": "workspace:*",
     "ajv": "8.20.0",
     "semver": "7.7.4",
     "proper-lockfile": "4.1.2"
   },
   "devDependencies": {
+    "@types/ws": "8.18.1",
     "@types/semver": "7.7.1",
     "@types/proper-lockfile": "4.1.4"
+  },
+  "bin": {
+    "armadad": "./src/server/main.ts"
   }
 }

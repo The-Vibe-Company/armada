@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFileSync, spawn } from "node:child_process";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -368,5 +368,45 @@ test("the build catalog discovers all packages, prefers standalone manifests and
       );
     } finally {
       daemon.close();
+    }
+  }));
+
+test("armadad loads the bundled catalog before announcing server readiness", async () =>
+  fixture(async (dir) => {
+    const configPath = join(dir, "config.json");
+    const projects = join(dir, "projects.json");
+    await writeFile(projects, JSON.stringify([{ id: "orchard", name: "Orchard", repository: "example/orchard" }]));
+    const child = spawn(
+      process.execPath,
+      [
+        new URL("../src/server/main.ts", import.meta.url).pathname,
+        "--database",
+        join(dir, "fleet.sqlite"),
+        "--projects",
+        projects,
+      ],
+      { env: { ...process.env, ARMADA_APP_CONFIG: configPath }, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    let output = "";
+    child.stderr.resume();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("exit", () => reject(new Error("armadad exited before readiness")));
+        child.stdout.on("data", (chunk) => {
+          output += chunk;
+          if (output.includes("\n")) resolve();
+        });
+      });
+      assert.match(JSON.parse(output.trim()).wsUrl, /^ws:\/\/127\.0\.0\.1:/);
+      const status = JSON.parse(await readFile(`${configPath}.plugins.json`, "utf8"));
+      assert.deepEqual(
+        status.plugins.map((p: { id: string; loaded: boolean }) => [p.id, p.loaded]),
+        [["hello", true]],
+      );
+    } finally {
+      child.kill("SIGTERM");
+      await exited;
     }
   }));

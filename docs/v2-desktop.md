@@ -251,7 +251,11 @@ the context; registration ends when activation does. These are trusted
 in-process modules. Secret names use the existing owner secret flow.
 
 The shell calls `bootDaemon` with the event database, keychain secret getter and
-logger and retains its registry. It also atomically saves the boot catalog and
+logger and retains its registry. The `armadad` entry does this before starting
+its WebSocket server; plugin logs go to stderr so stdout keeps its one JSON
+readiness line. Its macOS getter uses keychain service `armada.plugins` with
+the declared secret name as the account; missing/locked entries return null.
+Embedded hosts can supply their own keychain getter. It also atomically saves the boot catalog and
 results in the private `<config.json>.plugins.json` status file.
 `armada plugin list` prints the catalog, versions, contributions, enabled state
 and last boot's loaded/refused state; `--json` returns the same data. Before the
