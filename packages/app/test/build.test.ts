@@ -250,12 +250,24 @@ describe("in a browser, served by a running daemon", () => {
       } as never,
     });
     // Opened from a scrolled list, the page starts at its top with the focus on its title.
-    await page.getByRole("main").evaluate((main) => main.scrollTo(0, 400));
+    await expect(
+      page.getByRole("main").evaluate((main) => {
+        main.scrollTo(0, 400);
+        return main.scrollTop;
+      }),
+    ).resolves.toBeGreaterThan(0);
     await page.locator('[data-row="harbor/HAR-15"]').click();
     await page.getByRole("heading", { level: 1, name: "Price berths by the hour" }).waitFor({ timeout: 5_000 });
     expect(new URL(page.url()).hash).toBe("#/sessions/HAR-15");
     await expect(page.getByRole("main").evaluate((main) => main.scrollTop)).resolves.toBe(0);
     await expect(page.evaluate(() => document.activeElement?.tagName)).resolves.toBe("H1");
+    // The sidebar's Fleet is not the current page on a session's page.
+    await expect(
+      page
+        .getByRole("navigation", { name: "Sections" })
+        .getByRole("link", { name: "Fleet" })
+        .getAttribute("aria-current"),
+    ).resolves.toBeNull();
     await expect(page.getByRole("region", { name: "State" }).getAttribute("data-state")).resolves.toBe("blocked");
     await page.getByText("feature/har-15-price-berths").waitFor({ timeout: 5_000 });
     // A report opens on a click to its whole text.
