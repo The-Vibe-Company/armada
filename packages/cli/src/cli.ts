@@ -41,6 +41,7 @@ import { login, logout, requireSignIn, whoami } from "./login.ts";
 import { MergeCommandError, merge, notMergedResult } from "./merge.ts";
 import { statusHints } from "./notices.ts";
 import { peek, requirePeekCoordinator } from "./peek.ts";
+import { pluginCommand } from "./plugin.ts";
 import { recordPresence } from "./presence.ts";
 import { statusAll } from "./projects.ts";
 import { relaunch } from "./relaunch.ts";
@@ -62,6 +63,11 @@ export type { Io } from "./io.ts";
 
 /** Each command's help block, in the order of the full usage; `armada <command> --help` prints its own. */
 const COMMAND_HELP: Record<string, string> = {
+  plugin: `  plugin list [--json]
+  plugin enable|disable <id>
+                    List bundled plugins or change a switch (restart the daemon to apply).
+                    ARMADA_APP_CONFIG selects its app config.json.
+`,
   config: `  config set deploy.env.<VAR> <value>
   config unset deploy.env.<VAR>
                     Set or remove a non-secret deploy setting for this project on this machine.
@@ -992,6 +998,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     if (args.all) args.options.all = "true";
     if (args.passthrough && args.command !== "run")
       throw new UsageError(`-- does not apply to ${args.command}: only \`armada run\` runs a command`);
+    if (args.command === "plugin") return await pluginCommand(io, args.rest, args.json);
     if (args.command === "secrets" || args.command === "run") {
       const { path, text } = await findConfig(io, args.config, args.command, args.project);
       const config = parseConfig(text, path);

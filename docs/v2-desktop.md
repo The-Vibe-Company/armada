@@ -153,3 +153,129 @@ Published in Linear under the program root THE-1982 (Spec 1/7 THE-1983, Spec 2/7
 - Multi-user and sync: an encrypted relay is the likely shape (the log is already the unit of sync); revisit with the business model.
 - A phone page for decisions: the daemon can serve the SPA; a tunnel or relay is the missing piece.
 - The galaxy: a Rive scene over the same fold, once the working view is proven.
+
+
+## Plugins
+
+Spec 8/8 (THE-2011) makes everything that varies a provider behind a versioned
+service definition. Consumers read the daemon's one registry. Plugins are
+in-process ES modules exporting `activate(ctx)`, loaded once at boot. Nothing is
+unloaded. A changed switch or configuration takes effect when the daemon
+restarts. V2 runs the official worker CLIs itself.
+
+`@armada/plugin-api` (`packages/plugin-api`, API **0.1.0**) owns the manifest
+schema and TypeScript contracts, independently of Armada and wire protocol
+versions. Its only runtime dependency is Zod, also used by the protocol. The five
+seams are `runtime` (prepare, launch a CLI in a PTY, deliver, observe, stop, with
+a worker generation on every action), `tracker` (read tickets/comments into
+events; write phase labels/comments), `forge` (read PRs/checks into events;
+merge at a head), `node` (workspace and PTY facilities, local or VM), and `model`
+(create the coordinator's AI SDK model instance). These are definitions only.
+Tracker and forge readers use `read({ project, signal })` and append observations
+through context events; their consumers own scheduling. The generic model result
+lets consumers use their AI SDK version without coupling this API to that SDK.
+
+Every plugin ships with the application under `packages/plugins/<id>/`. The
+build runs `scripts/plugin-catalog.ts` to resolve every package's manifest and
+module entry into `daemon/src/plugins/catalog.generated.ts`: literal module
+imports and embedded manifests, without runtime discovery. Install, typecheck,
+daemon tests and CLI builds regenerate the catalog. A new plugin package needs
+no loader edit. Its directory name and manifest `id` must agree. `hello` is enabled
+by default, contributes nothing, and proves this build-to-activation path.
+
+A manifest is `armada-plugin.json` beside `package.json`, or the package's
+`armada` field. If both exist, the standalone file wins. The build resolves the
+ES module entry from `exports` (string or `.` with `import`/`default`), then
+`main`, then `index.js`. For example:
+
+```json
+{
+  "id": "linear",
+  "version": "1.0.0",
+  "pluginApi": "^0.1.0",
+  "enabledByDefault": true,
+  "description": "Read the project's tickets from Linear",
+  "contributions": {
+    "tracker": {
+      "linear": {
+        "config": {
+          "type": "object",
+          "required": ["team"],
+          "properties": { "team": { "type": "string", "minLength": 1 } },
+          "additionalProperties": false
+        },
+        "secrets": ["LINEAR_API_KEY"]
+      }
+    }
+  }
+}
+```
+
+The app's configuration is `$XDG_CONFIG_HOME/armada/config.json` (otherwise
+`~/.config/armada/config.json`); `ARMADA_APP_CONFIG` selects a different file.
+It belongs to the app, independently of repository configuration. Its `plugins`
+list keeps `{ id, enabled, config }` for catalog entries. An omitted switch uses
+the manifest's `enabledByDefault`; a missing file/list uses all catalog defaults.
+Disabled plugins are never imported or activated at boot. Configuration selects
+only catalog IDs; it cannot select code. For example:
+
+```json
+{
+  "plugins": [
+    { "id": "hello", "enabled": false, "config": {} },
+    {
+      "id": "linear",
+      "enabled": true,
+      "config": { "tracker": { "linear": { "team": "ENG" } } }
+    }
+  ]
+}
+```
+
+The loader validates enabled manifests, checks their identity and Plugin API
+semver range, and validates each contribution's config with JSON Schema draft 7
+(Ajv; local references only, synchronous schemas). Missing contribution config is `{}`; explicit
+`null` is validated as null. Invalid schemas, unknown contribution config, API
+incompatibility and activation errors refuse that plugin with one line and leave
+other plugins available. API refusal names the requested range and the daemon's
+version. Registrations must match the declared seam/kind, be unique in the
+registry, and finish during activation. Every declared contribution must
+register. Failed activation publishes no partial providers.
+
+`activate` receives only `ctx.events` (append/read a project's log and fold on
+request), `ctx.secrets.get(name)` (through the host's keychain adapter, limited
+to names declared in that plugin's contributions), `ctx.config` (validated,
+keyed by seam then kind), `ctx.log`, and `ctx.register.<seam>(kind, provider)`.
+It receives no database handle, socket or other plugin. Providers may retain
+the context; registration ends when activation does. These are trusted
+in-process modules. Secret names use the existing owner secret flow.
+
+The shell calls `bootDaemon` with the event database, keychain secret getter and
+logger and retains its registry. The `armadad` entry does this before starting
+its WebSocket server; plugin logs go to stderr so stdout keeps its one JSON
+readiness line. Its secret getter uses the shared credential gateway with service
+`armada.plugins` and the declared secret name as the account; missing/locked
+entries return null. The gateway owns OS storage and the explicit Linux file
+fallback. Embedded hosts can supply their own keychain getter. It also atomically saves the boot catalog and
+results in the private `<config.json>.plugins.json` status file.
+`armada plugin list` prints the catalog, versions, contributions, enabled state
+and last boot's loaded/refused state; `--json` returns the same data. Before the
+first boot it uses the built-in catalog. Listing never activates a module or
+reads secrets. A saved switch that differs from the last boot says restart is
+required. Status describes the last boot, independently of process liveness.
+
+`armada plugin enable|disable <id>` changes that switch under a shared process-safe read/modify/write lock, preserves
+other app/provider settings, and says to restart the daemon to apply it.
+`setPluginEnabled` and `updateAppConfig` are shared with the app's Plugins screen
+(THE-2019), which will show switches and contribution config forms from their
+JSON Schemas and restart the daemon. THE-2013 adds `armada plugin test <dir>`
+with seam conformance fixtures. Follow-ups move the Linear/GitHub readers, three
+CLI runtimes, local/boat nodes and coordinator models behind the definitions.
+
+The references are [Quivr's manifest](https://github.com/The-Vibe-Company/quivr/blob/main/plugins/rss/quivr-plugin.yaml)
+and [versioned SDK](https://github.com/The-Vibe-Company/quivr/blob/main/sdks/go/README.md)
+for contributions, schemas and API compatibility, and DeepSeek Harness for the
+service definition/provider/consumer vocabulary. Third-party installation,
+UI plugins, hot reload, process isolation, layered config, signed plugins and
+a plugin marketplace are outside this version. Conductor and herdr are not
+V2 runtimes.

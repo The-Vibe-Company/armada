@@ -6,7 +6,7 @@ import { fileKeychain } from "./secrets/file.ts";
 import { macKeychain } from "./secrets/macos.ts";
 
 export type ModelProvider = "anthropic" | "openai";
-export type SecretService = "coordinator" | "linear" | "github";
+export type SecretService = "coordinator" | "linear" | "github" | "plugin";
 export type SecretAccessor = (service: "linear", project: string) => Promise<string | null>;
 export interface CoordinatorCredential {
   provider: ModelProvider;
@@ -16,7 +16,12 @@ export interface CredentialStatus {
   provider: ModelProvider | null;
   storage: KeychainBackend["storage"];
 }
-const services = { coordinator: "armada.coordinator", linear: "armada.linear", github: "armada.github" } as const;
+const services = {
+  coordinator: "armada.coordinator",
+  linear: "armada.linear",
+  github: "armada.github",
+  plugin: "armada.plugins",
+} as const;
 const validKey = (key: string) => key.length > 0 && key.length <= 8192 && /^[!-~]+$/.test(key);
 
 /** The only secret-read boundary. Providers receive read(), never the raw backend.

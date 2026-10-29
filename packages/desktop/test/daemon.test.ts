@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,12 +15,18 @@ function fixture() {
   return {
     dir,
     options: {
-      executable: process.execPath,
+      executable: "node",
       entry: fileURLToPath(new URL("../../daemon/src/server/main.ts", import.meta.url)),
       database: join(dir, "fleet.sqlite"),
       projects,
       staticDir: dir,
-      env: { ...process.env, XDG_CONFIG_HOME: dir },
+      env: {
+        ...process.env,
+        XDG_CONFIG_HOME: dir,
+        ARMADA_APP_CONFIG: join(dir, "config.json"),
+        GITHUB_TOKEN: randomBytes(24).toString("hex"),
+        NODE_OPTIONS: `--import=data:text/javascript,${encodeURIComponent('globalThis.fetch = async () => { throw new Error("offline fixture"); };')}`,
+      },
     },
   };
 }

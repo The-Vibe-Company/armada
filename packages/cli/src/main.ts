@@ -4,6 +4,7 @@ import { createReadStream } from "node:fs";
 import { open, readFile, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { isatty } from "node:tty";
+import { updateAppConfig } from "@armada/daemon/plugins/config";
 import { run } from "./cli.ts";
 import { readCodexModels } from "./codex-models.ts";
 import { cliFetch } from "./http.ts";
@@ -116,6 +117,7 @@ const code = await run(process.argv.slice(2), {
     }),
   readFileRange: readTranscriptRange,
   writeFile: (path, text) => writeFile(path, text, "utf8"),
+  updateAppConfig,
   stdout: (t) => process.stdout.write(t),
   readBinaryFile: async (path, maxBytes) => {
     const file = await open(path, "r").catch((err: NodeJS.ErrnoException) => {

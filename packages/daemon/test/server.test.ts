@@ -101,6 +101,7 @@ test("armadad announces its address, serves without an app build and quits clean
       stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...process.env,
+        ARMADA_APP_CONFIG: join(dir, "config.json"),
         XDG_CONFIG_HOME: dir,
         LINEAR_API_KEY: randomBytes(24).toString("hex"),
         GITHUB_TOKEN: randomBytes(24).toString("hex"),

@@ -2,7 +2,8 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseArgs } from "node:util";
-import { EventStore } from "../store.ts";
+import { bootDaemon } from "../boot.ts";
+import { readPluginSecret } from "../plugins/keychain.ts";
 import { startServer } from "./index.ts";
 import { daemonProjectSchema, startReaders } from "./readers.ts";
 
@@ -28,9 +29,13 @@ try {
     if (!Array.isArray(catalog)) throw new Error("--projects must name a JSON array of projects");
     const projects = catalog.map((project) => daemonProjectSchema.parse(project));
     mkdirSync(dirname(values.database), { recursive: true });
-    const store = new EventStore(values.database);
+    const daemon = await bootDaemon({
+      databasePath: values.database,
+      secrets: { get: readPluginSecret },
+      log: { info: (line) => console.error(line), error: (line) => console.error(line) },
+    });
     try {
-      const server = await startServer({ store, projects, port, staticDir: values["static-dir"] });
+      const server = await startServer({ store: daemon.store, projects, port, staticDir: values["static-dir"] });
       let readers: Awaited<ReturnType<typeof startReaders>> | undefined;
       const controller = new AbortController();
       let stopping = false;
@@ -40,7 +45,7 @@ try {
         controller.abort();
         readers?.stop();
         await server.close();
-        store.close();
+        daemon.close();
       };
       process.once("SIGINT", () => {
         void stop();
@@ -49,7 +54,7 @@ try {
         void stop();
       });
       try {
-        readers = await startReaders({ store, projects, signal: controller.signal });
+        readers = await startReaders({ store: daemon.store, projects, signal: controller.signal });
       } catch (error) {
         await stop();
         throw error;
@@ -61,7 +66,7 @@ try {
         console.log(JSON.stringify({ url: server.url, wsUrl: server.wsUrl, readers: readers.readers }));
       }
     } catch (error) {
-      store.close();
+      daemon.close();
       throw error;
     }
   }
