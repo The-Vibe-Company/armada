@@ -176,7 +176,18 @@ test("the room sends the owner's message to the coordinator and reads its answer
   assert.deepEqual(answer?.payload, { id: "ask-1", answer: "North\n\nNote: Start at the gate" });
   await idle();
   const again = await client.ask({ type: "owner.answer", project: "orchard", item: "ask-1", choice: "South" });
-  assert.equal(again.type, "error");
+  assert.match(again.type === "error" ? again.message : "", /already answered/);
+  // The same answer again tells the coordinator again, which pi admits once: no new turn.
+  const repeated = await client.ask({
+    type: "owner.answer",
+    project: "orchard",
+    item: "ask-1",
+    choice: "North",
+    note: "Start at the gate",
+  });
+  assert.equal(repeated.type, "owner.answered");
+  await idle();
+  assert.equal(faux.state.callCount, 3);
   const after = await client.ask({ type: "chat.read", project: "orchard" });
   assert.ok(after.type === "chat.result");
   const conversation = after.type === "chat.result" ? after.items : [];
@@ -217,6 +228,11 @@ test("without a coordinator the room reads the log's lines and refuses to send",
   const refused = await client.ask({ type: "chat.send", project: "orchard", requestId: "m", body: "Hello" });
   assert.equal(refused.type === "error" && refused.code, "not-found");
   assert.match(refused.type === "error" ? refused.message : "", /No coordinator runs for this project/);
+  // The owner's answer is still recorded without a coordinator to tell.
+  store.append(seed("inbox.opened", { id: "ask-2", ticket: "ORC-2", kind: "owner-request", body: "Ship it?" }));
+  const answered = await client.ask({ type: "owner.answer", project: "orchard", item: "ask-2", choice: "Yes" });
+  assert.equal(answered.type, "owner.answered");
+  assert.deepEqual(fold(store.readSince(0, "orchard")).projects.orchard?.inbox, []);
   const unknown = await client.ask({ type: "chat.read", project: "nowhere" });
   assert.equal(unknown.type === "error" && unknown.code, "not-found");
   client.ws.close();

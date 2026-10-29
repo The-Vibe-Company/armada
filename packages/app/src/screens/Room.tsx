@@ -6,7 +6,7 @@
 // taking the width, the owner's field fixed at the bottom. The agents' rail
 // slides in from the right at a third of the width. The sidebar stays.
 import { AnimatePresence } from "motion/react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Dot, Page, PageHeader } from "@/components/page";
 import { dayIn, fleetItems, type Group, groupCounts, headline, rowTime } from "@/fleet/overview";
 import { type Harness, skyProject } from "@/fleet/sky";
@@ -22,6 +22,8 @@ import { ownerQuestions } from "@/room/view";
 import { Sky } from "@/sky/Sky";
 import type { SkyClock } from "@/sky/view";
 
+/** Below this window width the rail starts closed: a third of it would leave the conversation too narrow. */
+const RAIL_MIN_WINDOW = 1100;
 const viewerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 const EMPTY_STATE: FleetState = { sessions: [], pullRequests: [], inbox: [], queue: [], validations: [] };
 
@@ -94,7 +96,9 @@ export function RoomView({ project, snapshot, live, now, zone, clock, chat }: Ro
   const harnessOf = (ticket: string) => harness.get(ticket) ?? null;
   const counts = groupCounts(items);
   const flying = counts.blocked + counts.you + counts.running + counts.ready;
-  const [open, setOpen] = useState(true);
+  // Open by default (the direction), unless the window is too narrow to keep the conversation readable beside it.
+  const [open, setOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= RAIL_MIN_WINDOW);
+  const toggle = useRef<HTMLButtonElement>(null);
   const questions = ownerQuestions(state);
   const pinned = questions[0];
 
@@ -140,7 +144,8 @@ export function RoomView({ project, snapshot, live, now, zone, clock, chat }: Ro
                 type="button"
                 onClick={() => setOpen(!open)}
                 aria-expanded={open}
-                aria-controls={RAIL_ID}
+                aria-controls={open ? RAIL_ID : undefined}
+                ref={toggle}
                 className="ml-auto inline-flex cursor-pointer items-center gap-1.5 rounded-sm px-1.5 text-text-2 hover:text-text"
               >
                 Agents <span className="font-mono text-meta tnum">{flying}</span>
@@ -178,10 +183,27 @@ export function RoomView({ project, snapshot, live, now, zone, clock, chat }: Ro
                 : "Nothing said yet. Tell the coordinator what to do.")
             }
           />
+          {chat.problem && chat.items.length > 0 && (
+            <p role="alert" className="m-0 flex-none px-7 pb-2 text-body text-amber">
+              {chat.problem}
+            </p>
+          )}
           <Composer send={chat.send} disabled={!live || chat.status !== "ready" || !chat.coordinator} hint={hint} />
         </div>
         <AnimatePresence initial={false}>
-          {open && <Rail items={items} harnessOf={harnessOf} now={now} zone={zone} onClose={() => setOpen(false)} />}
+          {open && (
+            <Rail
+              items={items}
+              harnessOf={harnessOf}
+              now={now}
+              zone={zone}
+              onClose={() => {
+                setOpen(false);
+                // The rail's close button leaves with it: the focus goes back to the toggle.
+                toggle.current?.focus();
+              }}
+            />
+          )}
         </AnimatePresence>
       </div>
     </div>

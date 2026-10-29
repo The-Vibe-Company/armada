@@ -3,7 +3,7 @@ import { fold } from "@armada/daemon/fold";
 import type { ChatItem } from "@armada/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SAMPLE_PROJECTS, sampleEvents } from "../scripts/dev-daemon";
-import type { Chat } from "../src/room/chat";
+import { type Chat, lastCoordinatorSeq, withSent } from "../src/room/chat";
 import { routeOf } from "../src/room/route";
 import { parseQuestion, segments, toolLine } from "../src/room/view";
 import { RoomView } from "../src/screens/Room";
@@ -194,4 +194,22 @@ test("the room's rules: its address, a question's choices, ids in a message, a t
   } as const;
   expect(toolLine(running)).toEqual({ args: "pr: 41", outcome: "running" });
   expect(toolLine({ ...running, output: "boom", failed: true })).toEqual({ args: "pr: 41", outcome: "failed" });
+});
+
+test("a sent message stays until a reading holds it, and the room reads again past its last coordinator event", () => {
+  const sent = [{ project: "harbor", id: "m1", body: "Merge HAR-20 first", at: Date.parse(at(10)) }];
+  const before = withSent(conversation, sent, "harbor");
+  expect(before.at(-1)).toEqual({ kind: "owner", id: "sent:m1", at: at(10), body: "Merge HAR-20 first" });
+  // Another project's message is not this room's.
+  expect(withSent(conversation, sent, "lantern")).toBe(conversation);
+  // The same words said earlier do not stand for it; said once it was sent, they do.
+  const earlier = [...conversation, { kind: "owner" as const, id: "e9", at: at(1), body: "Merge HAR-20 first" }];
+  expect(withSent(earlier, sent, "harbor").at(-1)?.id).toBe("sent:m1");
+  const placed = [...conversation, { kind: "owner" as const, id: "e10", at: at(10), body: "Merge HAR-20 first" }];
+  expect(withSent(placed, sent, "harbor")).toBe(placed);
+  const event = (seq: number, kind: string) => ({ seq, project: "harbor", kind, at: AT, actor: "a", payload: {} });
+  expect(
+    lastCoordinatorSeq({ seq: 9, events: [event(3, "coordinator.checkpoint"), event(7, "session.reported")] }),
+  ).toBe(3);
+  expect(lastCoordinatorSeq(undefined)).toBe(0);
 });

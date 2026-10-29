@@ -13,7 +13,7 @@ import {
   PROTOCOL_VERSION as version,
 } from "@armada/protocol";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import type { EntryRecord } from "@earendil-works/pi-durable";
+import type { EntryRecord, SubmissionDraft } from "@earendil-works/pi-durable";
 import type { ProjectCoordinator } from "../../coordinator/index.ts";
 import type { Json } from "../events.ts";
 import { fold } from "../fold.ts";
@@ -56,54 +56,77 @@ export async function dispatchChat(request: ChatRequest, options: ChatOptions): 
       case "chat.send": {
         if (!options.coordinator) return error("not-found", NO_COORDINATOR);
         // The same requestId again (a retry after a drop) is the same input: pi admits it once.
+        // Mid-run, the owner steers: the message joins the running work after its tool round,
+        // and shows in the conversation then, rather than waiting for the whole run to end.
         await options.coordinator.conversation.submit(
-          { type: "input", content: request.body, requestId: request.requestId },
+          { type: "input", content: request.body, requestId: request.requestId, whenBusy: "steer" },
           context,
         );
         return { type: "chat.sent", version, id, project, requestId: request.requestId };
       }
-      case "owner.answer":
-        return answerOwner(request, options) ?? error("not-found", "No such question waits for you");
+      case "owner.answer": {
+        const answer = recordAnswer(request, options);
+        if (answer === "missing") return error("not-found", "No such question waits for you");
+        if (answer === "taken") return error("not-found", "This question was already answered");
+        if (options.coordinator)
+          try {
+            await options.coordinator.conversation.submit(answer, context);
+          } catch {
+            return error(
+              "internal",
+              "Your answer is recorded, but the coordinator was not told: answer the same again",
+            );
+          }
+        return { type: "owner.answered", version, id, project, item: request.item };
+      }
     }
   } catch {
     return error("internal", request.type === "chat.read" ? "Could not read the conversation" : "Could not send it");
   }
 }
 
+const NOTE = "\n\nNote: ";
+
 /**
  * Records the owner's answer to an open `owner-request` (the fold and the
- * append run without a wait between them: two answers cannot both land), then
- * tells the coordinator, which delivers it to the worker. The coordinator's
- * input is keyed by the item, so a repeated answer is one input.
+ * append run without a wait between them: two answers cannot both land) and
+ * returns the coordinator's input that tells it, keyed by the item. The same
+ * answer again, once recorded, returns that input again: a coordinator that
+ * was not told gets it, one that was gets nothing new (pi admits it once).
  */
-function answerOwner(request: OwnerAnswerRequest, options: ChatOptions): ServerMessage | null {
+function recordAnswer(
+  request: OwnerAnswerRequest,
+  options: ChatOptions,
+): "missing" | "taken" | Extract<SubmissionDraft, { type: "input" }> {
   const { store, project, item } = { ...options, ...request };
-  const open = fold(store.readSince(0, project)).projects[project]?.inbox.find(
-    (i) => i.id === item && i.kind === "owner-request",
+  const events = store.readSince(0, project);
+  const asked = events.find(
+    (e) => e.kind === "inbox.opened" && e.payload.id === item && e.payload.kind === "owner-request",
   );
-  if (!open) return null;
+  if (asked?.kind !== "inbox.opened") return "missing";
   const note = request.note?.trim() || null;
-  store.append({
-    project,
-    kind: "inbox.answered",
-    at: new Date((options.now ?? Date.now)()).toISOString(),
-    actor: "owner",
-    payload: { id: item, answer: note ? `${request.choice}\n\nNote: ${note}` : request.choice },
-  });
-  if (options.coordinator)
-    void options.coordinator.conversation
-      .submit(
-        {
-          type: "input",
-          content: `The owner answered ${open.ticket}'s question: ${request.choice}${note ? `\nNote: ${note}` : ""}`,
-          requestId: `owner-answer:${item}`,
-          entry: { kind: OWNER_ANSWER_ENTRY, data: { ticket: open.ticket, choice: request.choice, note } },
-        },
-        context,
-      )
-      // The answer is recorded; the coordinator reads the inbox on its next turn either way.
-      .catch(() => {});
-  return { type: "owner.answered", version, id: request.id, project, item };
+  const answer = note ? `${request.choice}${NOTE}${note}` : request.choice;
+  if (fold(events).projects[project]?.inbox.some((i) => i.id === item)) {
+    store.append({
+      project,
+      kind: "inbox.answered",
+      at: new Date((options.now ?? Date.now)()).toISOString(),
+      actor: "owner",
+      payload: { id: item, answer },
+    });
+  } else {
+    const recorded = events.findLast((e) => e.kind === "inbox.answered" && e.payload.id === item);
+    if (recorded?.kind !== "inbox.answered" || recorded.actor !== "owner" || recorded.payload.answer !== answer)
+      return "taken";
+  }
+  const ticket = asked.payload.ticket;
+  return {
+    type: "input",
+    content: `The owner answered ${ticket}'s question: ${request.choice}${note ? `\nNote: ${note}` : ""}`,
+    requestId: `owner-answer:${item}`,
+    whenBusy: "steer",
+    entry: { kind: OWNER_ANSWER_ENTRY, data: { ticket, choice: request.choice, note } },
+  };
 }
 
 type Message = {
@@ -112,6 +135,7 @@ type Message = {
   timestamp?: number;
   toolCallId?: string;
   isError?: boolean;
+  stopReason?: string;
 };
 
 const textOf = (content: unknown): string =>
@@ -193,6 +217,15 @@ export function chatOf(entries: readonly EntryRecord[]): ChatItem[] {
       const time = at(message);
       const body = textOf(message.content);
       if (body.trim()) items.push({ kind: owner ? "coordinator" : "line", id, at: time, body });
+      else if (message.stopReason === "error")
+        // A turn the model failed says so, rather than leaving the owner to silence.
+        items.push({
+          kind: "line",
+          id,
+          at: time,
+          // A fixed line: a provider's error text could echo what it was sent.
+          body: "The coordinator's model failed on this turn.",
+        });
       for (const block of Array.isArray(message.content) ? message.content : [])
         if (block?.type === "toolCall" && typeof block.id === "string" && typeof block.name === "string") {
           const call = {

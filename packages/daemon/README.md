@@ -200,10 +200,13 @@ events, never pi's storage writes: `pi.user` and `armada.owner-answer` inputs ar
 owner's, assistant text is an answer after the owner spoke and the coordinator's own
 `line` after any other input, each tool call is paired with its result (cut at 8 KiB;
 `failed` on an error or facts saying `ok: false`). `chat.send` submits pi input with
-the app's `requestId`, so a retry is one input; the checkpoint it commits is the event
-subscribers receive. `owner.answer` folds the project, appends `inbox.answered` (actor
-`owner`) for an open `owner-request` in the same synchronous step, then hands the
-answer to the coordinator as an `armada.owner-answer` input keyed by the item.
+the app's `requestId`, so a retry is one input; mid-run it steers (placed after the
+current tool round). The checkpoint it commits is the event subscribers receive. A
+failed model turn reads as a line saying so. `owner.answer` folds the project, appends
+`inbox.answered` (actor `owner`) for an open `owner-request` in the same synchronous
+step, then awaits handing the answer to the coordinator as an `armada.owner-answer`
+input keyed by the item. If that fails it says so; the same answer again tells the
+coordinator again (pi admits it once), while a different one is refused.
 Without a coordinator, `chat.read` answers the log's lines with `coordinator: false`
 and `chat.send` refuses with one line. `test/chat-server.test.ts` runs them over a
 file log and a faux model, through a restart.

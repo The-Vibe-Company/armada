@@ -77,11 +77,15 @@ export function useChat(project: string): Chat {
   }, [client, project, live, able, stale, latest, seq]);
 
   const draft = useRef<{ body: string; id: string } | null>(null);
+  // Sent and admitted, not yet in a reading (the coordinator places it after its tool round).
+  const [sent, setSent] = useState<{ project: string; id: string; body: string; at: number }[]>([]);
   const send = useCallback(
     async (body: string) => {
       if (draft.current?.body !== body) draft.current = { body, id: newId() };
-      await client.request({ type: "chat.send", project, requestId: draft.current.id, body });
+      const id = draft.current.id;
+      await client.request({ type: "chat.send", project, requestId: id, body });
       draft.current = null;
+      setSent((list) => [...list, { project, id, body, at: Date.now() }]);
     },
     [client, project],
   );
@@ -93,12 +97,40 @@ export function useChat(project: string): Chat {
     [client, project],
   );
 
+  const items = useMemo(() => withSent(mine?.items ?? [], sent, project), [mine, sent, project]);
   return {
     status: minor !== null && !able ? "unavailable" : mine ? "ready" : "reading",
     coordinator: mine?.coordinator ?? null,
-    items: mine?.items ?? [],
+    items,
     problem,
     send,
     answer,
   };
+}
+
+/**
+ * The reading, then the owner's messages sent since that it does not hold yet
+ * (an owner item with the same words, said from a moment before it was sent,
+ * stands for it), so a message never vanishes between Send and its turn.
+ */
+export function withSent(
+  items: readonly ChatItem[],
+  sent: readonly { project: string; id: string; body: string; at: number }[],
+  project: string,
+): readonly ChatItem[] {
+  const waiting = sent.filter(
+    (m) =>
+      m.project === project &&
+      !items.some((i) => i.kind === "owner" && i.body === m.body && Date.parse(i.at) >= m.at - 5_000),
+  );
+  if (!waiting.length) return items;
+  return [
+    ...items,
+    ...waiting.map((m) => ({
+      kind: "owner" as const,
+      id: `sent:${m.id}`,
+      at: new Date(m.at).toISOString(),
+      body: m.body,
+    })),
+  ];
 }

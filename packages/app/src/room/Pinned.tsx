@@ -73,7 +73,14 @@ export function Pinned({
             ))}
           </div>
         )}
-        <div className="flex items-center gap-3">
+        <form
+          className="flex items-center gap-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            // Enter answers a question without choices; with choices, a button does.
+            if (!choices.length && note.trim() && !sending) choose(note.trim(), false);
+          }}
+        >
           <label htmlFor={`${field}-note`} className="w-11 flex-none text-body text-text-2">
             Note
           </label>
@@ -82,17 +89,17 @@ export function Pinned({
             type="text"
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            maxLength={4096}
+            maxLength={choices.length ? 4096 : 1024}
             placeholder={choices.length ? "Add a note…" : "Your answer…"}
             disabled={sending}
             className="h-8.5 min-w-0 flex-1 rounded-sm bg-bg px-3 text-sub text-text shadow-ring placeholder:text-text-3"
           />
           {choices.length === 0 && (
-            <Button variant="primary" disabled={sending || !note.trim()} onClick={() => choose(note.trim(), false)}>
+            <Button type="submit" variant="primary" disabled={sending || !note.trim()}>
               Answer
             </Button>
           )}
-        </div>
+        </form>
         {problem && (
           <p role="alert" className="m-0 mt-2 text-body text-red">
             {problem}

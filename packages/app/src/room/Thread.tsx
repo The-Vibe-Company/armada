@@ -5,7 +5,7 @@
 // new items while the owner reads the end, and stays put when they scrolled up.
 import type { ChatItem } from "@armada/protocol";
 import { AnimatePresence, m } from "motion/react";
-import { type ReactNode, useLayoutEffect, useRef } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { TONE } from "@/components/fleet/FleetList";
 import { type Group, rowTime } from "@/fleet/overview";
 import { cn } from "@/lib/utils";
@@ -31,6 +31,12 @@ export function Thread({
   const box = useRef<HTMLDivElement>(null);
   const atEnd = useRef(true);
   const dots = lineGroups(items, groupOf);
+  // Announced once the first reading is on screen: what arrives after, never the history.
+  const [announce, setAnnounce] = useState(false);
+  const read = items.length > 0;
+  useEffect(() => {
+    if (read) setAnnounce(true);
+  }, [read]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: each new item scrolls to it, if the owner was at the end.
   useLayoutEffect(() => {
     const el = box.current;
@@ -46,7 +52,12 @@ export function Thread({
       }}
       className="flex min-h-0 flex-1 flex-col overflow-y-auto px-7 pt-3.5 pb-3"
     >
-      <ol className="m-0 mt-auto flex list-none flex-col gap-3 p-0" data-thread>
+      <ol
+        className="m-0 mt-auto flex list-none flex-col gap-3 p-0"
+        aria-live={announce ? "polite" : "off"}
+        aria-relevant="additions"
+        data-thread
+      >
         {items.length === 0 && <li className="py-6 text-center text-body text-text-3">{empty}</li>}
         <AnimatePresence initial={false}>
           {items.map((item) => (
@@ -56,6 +67,8 @@ export function Thread({
               animate={{ opacity: 1, y: 0 }}
               transition={ARRIVE}
               data-item={item.kind}
+              // A message on its way is announced once, when the conversation holds it.
+              aria-hidden={item.id.startsWith("sent:") || undefined}
               className="grid max-w-[760px] grid-cols-[92px_minmax(0,1fr)] items-start gap-3"
             >
               <Item item={item} dot={dots.get(item.id) ?? null} groupOf={groupOf} time={rowTime(item.at, now, zone)} />
