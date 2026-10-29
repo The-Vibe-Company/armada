@@ -249,32 +249,57 @@ describe.each(["band", "stage"] as const)("the %s", (size) => {
     expect(clock.waiting).toBe(0);
   });
 
-  test(`a frame with ${budget.skyFrame.triangles} agents flying stays under the package's budget`, () => {
+  test(`every frame with ${budget.skyFrame.triangles} agents in flight stays under the package's budget`, () => {
     const harnesses = ["claude", "codex", "opencode"] as const;
     const groups = ["running", "running", "running", "blocked", "you", "ready"] as const;
-    const many = project(
-      Array.from({ length: budget.skyFrame.triangles }, (_, k) =>
-        agent(`HAR-${k}`, groups[k % groups.length] ?? "running", harnesses[k % 3] ?? null),
-      ),
-    );
+    const fleet = (n: number, turn = 0) =>
+      project(
+        Array.from({ length: n }, (_, k) =>
+          agent(`HAR-${k}`, groups[(k + turn) % groups.length] ?? "running", harnesses[k % 3] ?? null),
+        ),
+      );
     const { fake, clock, show } = sky(size, [project([])]);
-    // Every one flies in at once.
-    show([many]);
-    clock.tick();
-    fake.takeCalls();
-    clock.tick();
-    const calls = fake.takeCalls();
-    console.log(`sky ${size}: ${calls} canvas calls per frame (budget ${budget.skyFrame.maxCanvasCalls})`);
-    expect(calls).toBeLessThanOrEqual(budget.skyFrame.maxCanvasCalls);
-    expect(Object.values(fake.triangles()).reduce((a, b) => a + b, 0)).toBe(budget.skyFrame.triangles + 5);
-
-    const frames = 60;
-    const start = performance.now();
-    for (let k = 0; k < frames; k++) clock.tick();
-    const ms = (performance.now() - start) / frames;
-    console.log(`sky ${size}: ${ms.toFixed(3)} ms per frame (budget ${budget.skyFrame.maxMs} ms)`);
-    expect(clock.waiting).toBe(1);
+    // The worst a flight gets: launches every few frames, so ships fly in at
+    // every opacity at once, then every one changing state, then merges.
+    let maxCalls = 0;
+    let totalMs = 0;
+    let frames = 0;
+    const turn = () => {
+      fake.takeCalls();
+      const start = performance.now();
+      clock.tick();
+      totalMs += performance.now() - start;
+      maxCalls = Math.max(maxCalls, fake.takeCalls());
+      frames++;
+    };
+    const { triangles } = budget.skyFrame;
+    for (let n = 6; n <= triangles; n += 6) {
+      show([fleet(n)]);
+      for (let k = 0; k < 4; k++) turn();
+    }
+    show([fleet(triangles, 1)]);
+    for (let k = 0; k < 20; k++) turn();
+    const merged = fleet(triangles, 1);
+    for (const a of merged.agents.slice(0, 15)) a.group = "merged";
+    show([merged]);
+    while (clock.waiting) turn();
+    expect(Object.values(fake.triangles()).reduce((a, b) => a + b, 0)).toBe(triangles + 5);
+    // Calls are counted on the worst frame; time, a noisy reading, is the flight's mean.
+    const ms = totalMs / frames;
+    console.log(
+      `sky ${size}: at most ${maxCalls} canvas calls (budget ${budget.skyFrame.maxCanvasCalls}), ${ms.toFixed(2)} ms a frame on average (budget ${budget.skyFrame.maxMs} ms), over ${frames} frames`,
+    );
+    expect(frames).toBeGreaterThan(60);
+    expect(maxCalls).toBeLessThanOrEqual(budget.skyFrame.maxCanvasCalls);
     expect(ms).toBeLessThan(budget.skyFrame.maxMs);
+  });
+
+  test("a ship whose colour changes in place is drawn again without flying", () => {
+    const { fake, clock, show } = sky(size, [project([agent("HAR-1", "running", "claude")])]);
+    show([project([agent("HAR-1", "running", "codex")])]);
+    expect(clock.waiting).toBe(0);
+    expect(fake.triangles()[HARNESS_COLOR.codex]).toBe(1);
+    expect(fake.triangles()[HARNESS_COLOR.claude]).toBeUndefined();
   });
 
   test("renders a canvas and a quiet legend, and no h1", () => {
@@ -330,4 +355,25 @@ test("the sky reads each session's harness from its runtime, and the day's merge
     ["T-6", "merged", "codex"],
   ]);
   expect(sky.coordinator).toBe(true);
+});
+
+test("a narrow band keeps every group in it, its labels giving way to the legend", () => {
+  const all = project([
+    agent("HAR-1", "blocked", "codex"),
+    agent("HAR-2", "you", "opencode"),
+    agent("HAR-3", "running", "claude"),
+    agent("HAR-4", "ready", "codex"),
+    agent("HAR-5", "merged", "claude"),
+  ]);
+  const wide = layoutSky([all], "band", 1100, 200);
+  expect(wide.labels.map((l) => l.key)).toEqual(["coordinator", "blocked", "you", "running", "ready", "merged"]);
+  for (const width of [700, 504]) {
+    const narrow = layoutSky([all], "band", width, 200);
+    expect(narrow.targets).toHaveLength(5 + 5);
+    for (const t of narrow.targets) {
+      expect(t.x).toBeGreaterThan(0);
+      expect(t.x).toBeLessThan(width);
+    }
+    if (width === 504) expect(narrow.labels).toEqual([]);
+  }
 });

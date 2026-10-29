@@ -148,8 +148,11 @@ the quiet legend) are HTML in Geist; the canvas draws no text.
   and the springs that fly a ship to its place; `layout.ts` gives each ship its
   place for the band and the stage; `draw.ts` draws on the few methods of a 2D
   context it names, one path per depth, colour and opacity.
-- **Its budget**: `perf-budget.json`'s `skyFrame`: a frame with 60 agents
-  flying stays under 360 calls and writes to the context, and under 4 ms.
+- **Its budget**: `perf-budget.json`'s `skyFrame`: with 60 agents in flight,
+  through launches, state changes and merges, no frame makes more than 400
+  calls and writes to the context, and a frame's work averages under 4 ms.
+- **A narrow band** (a room beside its panels) keeps every group: its labels
+  give way to the legend, whose harnesses give way under 672 px.
 
 `test/sky.test.ts` draws it on synthetic fleets with a fake 2D context and a
 hand-turned clock: the triangles per state and colour, the bank on a state

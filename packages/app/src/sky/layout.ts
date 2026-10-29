@@ -179,7 +179,11 @@ function wingsOf(project: SkyProject, size: SkySize): Wing[] {
   return wings;
 }
 
-const BAND = { top: 44, bottom: 60, edge: 40, gap: 28 } as const;
+/**
+ * Above the ships, the labels (none once they gave way); below, the arcs and
+ * the legend, on two lines on a sky narrower than 576 px (Sky.tsx's `@max-xl`).
+ */
+const BAND = { top: 44, bare: 16, bottom: 60, narrow: 576, wrapped: 84 } as const;
 /** A group's V on the band is flatter and wider than the flock's: the band is short. */
 const BAND_V = { back: 0.55, side: 1.2 } as const;
 /** A crowded group flies as several V's of at most this many, side by side. */
@@ -190,9 +194,11 @@ function band(projects: readonly SkyProject[], width: number, height: number): S
   const project = projects[0];
   if (!project) return { targets: [], arcs: [], labels: [] };
   const wings = wingsOf(project, "band");
+  // A narrow band (a room beside its panels) keeps less air at its edges and between its groups.
+  const edge = width < 720 ? 20 : 40;
+  const gap = width < 720 ? 12 : 28;
   const room = {
-    width: width - 2 * BAND.edge - BAND.gap * (wings.length - 1),
-    height: height - BAND.top - BAND.bottom,
+    width: width - 2 * edge - gap * (wings.length - 1),
   };
   const natural = (w: Wing, f: number) => {
     const len = lengthOf(w, f);
@@ -220,33 +226,40 @@ function band(projects: readonly SkyProject[], width: number, height: number): S
     return out;
   };
   const shipsWidth = (w: Wing, f: number, lines: number) => Math.max(0, ...linesOf(w, f, lines).map((l) => l.width));
-  const widthOf = (w: Wing, f: number, lines: number) => Math.max(shipsWidth(w, f, lines), labelWidth(w));
-  // Shrink everything together when the groups do not fit side by side; past
-  // half size, a crowded group's V's stack on two lines, then three.
-  const total = (f: number, lines: number) => wings.reduce((n, w) => n + widthOf(w, f, lines), 0);
-  let f = 1;
-  let lines = 1;
-  while (total(f, lines) > room.width && (f > 0.3 || lines < 3)) {
-    if (f > 0.5 || (lines === 3 && f > 0.3)) f -= 0.05;
-    else {
-      lines += 1;
-      f = 0.8;
+  /** Shrink everything together when the groups do not fit side by side; past half size, a crowded group's V's stack on two lines, then three. */
+  const fit = (words: boolean) => {
+    const widthOf = (w: Wing, f: number, lines: number) => Math.max(shipsWidth(w, f, lines), words ? labelWidth(w) : 0);
+    const total = (f: number, lines: number) => wings.reduce((n, w) => n + widthOf(w, f, lines), 0);
+    let f = 1;
+    let lines = 1;
+    while (total(f, lines) > room.width && (f > 0.3 || lines < 3)) {
+      if (f > 0.5 || (lines === 3 && f > 0.3)) f -= 0.05;
+      else {
+        lines += 1;
+        f = 0.8;
+      }
     }
-  }
-  const used = total(f, lines);
+    return { f, lines, widthOf, used: total(f, lines) };
+  };
+  // Too narrow for the groups' words: the labels give way and the legend names them.
+  const withWords = fit(true);
+  const words = withWords.used <= room.width;
+  const { f, lines, widthOf, used } = words ? withWords : fit(false);
+  const top = words ? BAND.top : BAND.bare;
+  const roomHeight = height - top - (width < BAND.narrow ? BAND.wrapped : BAND.bottom);
   const air = Math.max(0, room.width - used) / (wings.length + 1);
   const targets: Target[] = [];
   const arcs: SkyArc[] = [];
   const labels: SkyLabel[] = [];
-  let x = BAND.edge + air;
+  let x = edge + air;
   for (const w of wings) {
     const span = widthOf(w, f, lines);
     const cx = x + span / 2;
-    x += span + BAND.gap + air;
+    x += span + gap + air;
     const { len, back: open, side } = natural(w, f);
     const placed: Target[] = [];
     const rowsOfLines = linesOf(w, f, lines);
-    const lineHeight = room.height / rowsOfLines.length;
+    const lineHeight = roomHeight / rowsOfLines.length;
     rowsOfLines.forEach((line, l) => {
       let left = cx - line.width / 2;
       for (const ships of line.vs) {
@@ -254,13 +267,13 @@ function band(projects: readonly SkyProject[], width: number, height: number): S
         const vw = vWidth(ships.length, len, side);
         // A long V flattens rather than leave its line.
         const back = Math.max(0, Math.min(open, rows ? (lineHeight - 2 * len) / rows : 0));
-        const top = BAND.top + l * lineHeight + (lineHeight - rows * back) / 2;
-        placed.push(...place({ ...w, ships }, left + vw / 2, top, f, back, side));
+        const lead = top + l * lineHeight + (lineHeight - rows * back) / 2;
+        placed.push(...place({ ...w, ships }, left + vw / 2, lead, f, back, side));
         left += vw + len;
       }
     });
     targets.push(...placed);
-    labels.push({ key: w.id, x: cx, y: 12, group: w.group, text: w.label, count: w.group ? w.count : null });
+    if (words) labels.push({ key: w.id, x: cx, y: 12, group: w.group, text: w.label, count: w.group ? w.count : null });
     if (w.group && w.group !== "merged")
       arcs.push({ key: w.id, color: STATE_COLOR[w.group], members: placed.map((t) => t.key) });
   }

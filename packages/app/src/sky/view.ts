@@ -75,8 +75,10 @@ export function createSkyView(ctx: SkyContext, clock: SkyClock): SkyView {
         draw();
         return;
       }
-      // The same places as before: nothing flies, nothing to draw again.
-      if (!cancel && !atRest(flock)) cancel = clock.frame(frame);
+      if (cancel) return;
+      // The same places as before: nothing flies; drawn once, for a colour that changed in place.
+      if (atRest(flock)) draw();
+      else cancel = clock.frame(frame);
     },
     stop() {
       cancel?.();

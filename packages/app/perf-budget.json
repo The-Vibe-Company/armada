@@ -1,5 +1,5 @@
 {
-  "$comment": "First-load JS of the built app, gzipped: the entry script and every module it preloads (test/build.test.ts). Motion's features load after the first paint and are not counted. skyFrame: one frame of the sky (src/sky) with `triangles` agents in flight, every one flying: the 2D context's calls and property writes, and the frame's work (step and draw) on a fake context (test/sky.test.ts).",
+  "$comment": "First-load JS of the built app, gzipped: the entry script and every module it preloads (test/build.test.ts). Motion's features load after the first paint and are not counted. skyFrame: the sky (src/sky) with `triangles` agents in flight through a whole flight (staggered launches, every state changing, merges): the 2D context's calls and property writes on its worst frame (356 measured on the band), and the mean frame's work (step and draw) on a fake context (test/sky.test.ts).",
   "firstLoadJsGzipKb": 150,
-  "skyFrame": { "triangles": 60, "maxCanvasCalls": 360, "maxMs": 4 }
+  "skyFrame": { "triangles": 60, "maxCanvasCalls": 400, "maxMs": 4 }
 }

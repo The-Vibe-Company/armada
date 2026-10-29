@@ -12,7 +12,6 @@ export type SkyContext = Pick<
   | "beginPath"
   | "moveTo"
   | "lineTo"
-  | "closePath"
   | "fill"
   | "stroke"
   | "quadraticCurveTo"
@@ -63,9 +62,10 @@ export function drawSky(ctx: SkyContext, flock: Flock, arcs: readonly SkyArc[], 
   const ships = [...flock.ships.values()].sort((a, b) => a.depth - b.depth);
   const batches = new Map<string, typeof ships>();
   for (const s of ships) {
-    const alpha = Math.round(depthLook(s.depth).alpha * s.tone * 40) / 40;
+    // Opacity in tenths and depth in halves: ships in flight share a path with their neighbours.
+    const alpha = Math.round(depthLook(s.depth).alpha * s.tone * 10) / 10;
     if (alpha <= 0) continue;
-    const key = `${Math.round(s.depth * 10)}|${s.color}|${alpha}`;
+    const key = `${Math.round(s.depth * 2)}|${s.color}|${alpha}`;
     const batch = batches.get(key);
     if (batch) batch.push(s);
     else batches.set(key, [s]);
@@ -81,8 +81,8 @@ export function drawSky(ctx: SkyContext, flock: Flock, arcs: readonly SkyArc[], 
       const [ax, ay, bx, by, cx, cy] = trianglePoints(s.x, s.y, s.angle + s.bank * LEAN, u, s.stretch, s.bank);
       ctx.moveTo(ax, ay);
       ctx.lineTo(bx, by);
+      // `fill` closes each triangle: no closePath.
       ctx.lineTo(cx, cy);
-      ctx.closePath();
     }
     ctx.fill();
   }

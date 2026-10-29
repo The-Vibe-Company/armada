@@ -50,13 +50,38 @@ function useReducedMotion(given: boolean | undefined): boolean {
   return given ?? system;
 }
 
+/** Device pixels per CSS pixel, two at most: sharper costs frames. */
+const devicePixels = () => (typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 2));
+
+/** The device's pixels, followed when the window moves to a screen of another density. */
+function useDevicePixels(): number {
+  const [dpr, setDpr] = useState(devicePixels);
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    let query: MediaQueryList | null = null;
+    // A resolution query matches one density: listen again at each change.
+    const listen = () => {
+      query = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      query.addEventListener("change", change, { once: true });
+    };
+    const change = () => {
+      setDpr(devicePixels());
+      listen();
+    };
+    listen();
+    return () => query?.removeEventListener("change", change);
+  }, []);
+  return dpr;
+}
+
 export function Sky({ projects, size, clock = animationFrames, reducedMotion, className }: SkyProps) {
   const box = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
-  const drawn = useRef({ width: 0, height: 0 });
+  const drawn = useRef({ width: 0, height: 0, dpr: 0 });
   const [area, setArea] = useState({ width: 0, height: 0 });
   const [view, setView] = useState<SkyView | null>(null);
   const still = useReducedMotion(reducedMotion);
+  const dpr = useDevicePixels();
   const layout = useMemo(() => layoutSky(projects, size, area.width, area.height), [projects, size, area]);
 
   useEffect(() => {
@@ -65,7 +90,7 @@ export function Sky({ projects, size, clock = animationFrames, reducedMotion, cl
     if (!el || !ctx) return;
     const made = createSkyView(ctx, clock);
     // A new view has drawn nothing yet: the effect below sizes it and shows the fleet.
-    drawn.current = { width: 0, height: 0 };
+    drawn.current = { width: 0, height: 0, dpr: 0 };
     setView(made);
     const measure = () => {
       const r = el.getBoundingClientRect();
@@ -84,18 +109,17 @@ export function Sky({ projects, size, clock = animationFrames, reducedMotion, cl
   useEffect(() => {
     const c = canvas.current;
     if (!view || !c || !area.width || !area.height) return;
-    // A new size puts every ship in its new place: only the fleet's changes fly.
-    const resized = drawn.current.width !== area.width || drawn.current.height !== area.height;
+    // A new size (or another screen's pixels) puts every ship in its new place: only the fleet's changes fly.
+    const resized =
+      drawn.current.width !== area.width || drawn.current.height !== area.height || drawn.current.dpr !== dpr;
     if (resized) {
-      // Two device pixels per CSS pixel at most: sharper costs frames.
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
       c.width = Math.round(area.width * dpr);
       c.height = Math.round(area.height * dpr);
       view.resize(area.width, area.height, dpr);
-      drawn.current = area;
+      drawn.current = { ...area, dpr };
     }
     view.show(layout, { still: still || resized });
-  }, [view, layout, area, still]);
+  }, [view, layout, area, still, dpr]);
 
   const counts = useMemo(() => {
     const groups = { blocked: 0, you: 0, running: 0, ready: 0, merged: 0 } as Record<Group, number>;
@@ -114,17 +138,18 @@ export function Sky({ projects, size, clock = animationFrames, reducedMotion, cl
       aria-label={size === "band" ? "This project's agents, grouped by state" : "The fleet's squadrons"}
       data-sky={size}
       className={cn(
-        "relative w-full overflow-hidden bg-bg",
+        "@container relative w-full overflow-hidden bg-bg",
         size === "band" ? "h-50 flex-none" : "h-full min-h-105 flex-1",
         className,
       )}
     >
       <canvas ref={canvas} aria-hidden className="absolute inset-0 block h-full w-full" />
       {layout.labels.map((label) => (
-        <Label key={label.key} label={label} size={size} />
+        <Label key={label.key} label={label} size={size} still={still} />
       ))}
       <div className="pointer-events-none absolute right-6 bottom-3 left-6 flex justify-between gap-6 text-body text-text-3">
         <Legend
+          className="min-w-0 flex-nowrap overflow-hidden @max-xl:flex-wrap"
           items={GROUPS.map((g) => ({
             key: g,
             label: SKY_GROUP_LABEL[g],
@@ -133,6 +158,7 @@ export function Sky({ projects, size, clock = animationFrames, reducedMotion, cl
           }))}
         />
         <Legend
+          className="flex-wrap @max-2xl:hidden"
           items={counts.harnesses.map((h) => ({
             key: h,
             label: HARNESS_LABEL[h],
@@ -149,10 +175,17 @@ export function Sky({ projects, size, clock = animationFrames, reducedMotion, cl
   );
 }
 
-function Legend({ items }: { items: { key: string; label: string; count: number | null; mark: React.ReactNode }[] }) {
+/** One line of the legend: on a narrow sky the states stay on it, and the harnesses give way. */
+function Legend({
+  items,
+  className,
+}: {
+  items: { key: string; label: string; count: number | null; mark: React.ReactNode }[];
+  className: string;
+}) {
   if (!items.length) return <span />;
   return (
-    <ul className="m-0 flex list-none flex-wrap gap-x-3.5 gap-y-1 p-0" data-legend>
+    <ul className={cn("m-0 flex list-none gap-x-3.5 gap-y-1 p-0", className)} data-legend>
       {items.map((i) => (
         <li key={i.key} className="inline-flex items-center gap-1.5 whitespace-nowrap">
           {i.mark}
@@ -165,13 +198,15 @@ function Legend({ items }: { items: { key: string; label: string; count: number 
 }
 
 /** A label over the sky, centred on its group or project; it moves with it (transform only). */
-function Label({ label, size }: { label: SkyLabel; size: SkySize }) {
+function Label({ label, size, still }: { label: SkyLabel; size: SkySize; still: boolean }) {
+  const glide = still ? "" : "motion-safe:transition-transform motion-safe:duration-200";
   const place = { transform: `translate(${label.x}px, ${label.y}px) translateX(-50%)` };
   if (size === "band")
     return (
       <div
         className={cn(
-          "pointer-events-none absolute top-0 left-0 whitespace-nowrap text-body transition-transform duration-200",
+          "pointer-events-none absolute top-0 left-0 whitespace-nowrap text-body",
+          glide,
           label.group ? LABEL_COLOR[label.group] : "text-text-3",
         )}
         style={place}
@@ -183,7 +218,7 @@ function Label({ label, size }: { label: SkyLabel; size: SkySize }) {
     );
   return (
     <div
-      className="pointer-events-none absolute top-0 left-0 text-center text-balance transition-transform duration-200"
+      className={cn("pointer-events-none absolute top-0 left-0 text-center text-balance", glide)}
       style={{ ...place, maxWidth: label.width }}
       data-label={label.key}
     >
