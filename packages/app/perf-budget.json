@@ -1,0 +1,4 @@
+{
+  "$comment": "First-load JS of the built app, gzipped: the entry script and every module it preloads (test/build.test.ts). Motion's features load after the first paint and are not counted.",
+  "firstLoadJsGzipKb": 150
+}

@@ -12,7 +12,7 @@
     "armada": "bun run skills:bundle && bun packages/cli/src/main.ts",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "typecheck": "bun run skills:bundle && tsc --noEmit && tsc --noEmit -p packages/dashboard && bun run --cwd packages/protocol build",
+    "typecheck": "bun run skills:bundle && tsc --noEmit && tsc --noEmit -p packages/dashboard && tsc --noEmit -p packages/app && bun run --cwd packages/protocol build",
     "test": "bun run --cwd packages/protocol test && bun test",
     "verify": "bun run lint && bun run typecheck && bun run test && bun run test:daemon",
     "test:browser:install": "bun run --cwd packages/dashboard test:browser:install",

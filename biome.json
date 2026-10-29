@@ -7,6 +7,10 @@
   "javascript": { "formatter": { "quoteStyle": "double" } },
   "overrides": [
     {
+      "includes": ["packages/app/**/*.css"],
+      "css": { "parser": { "tailwindDirectives": true } }
+    },
+    {
       "includes": ["skills/**/companion.json", ".agents/skills/**/companion.json"],
       "formatter": { "enabled": false }
     },
