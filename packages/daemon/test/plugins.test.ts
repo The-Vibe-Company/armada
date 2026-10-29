@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -377,15 +378,25 @@ test("armadad loads the bundled catalog before announcing server readiness", asy
     const projects = join(dir, "projects.json");
     await writeFile(projects, JSON.stringify([{ id: "orchard", name: "Orchard", repository: "example/orchard" }]));
     const child = spawn(
-      process.execPath,
+      "node",
       [
+        "--import",
+        `data:text/javascript,${encodeURIComponent('globalThis.fetch = async () => { throw new Error("offline fixture"); };')}`,
         new URL("../src/server/main.ts", import.meta.url).pathname,
         "--database",
         join(dir, "fleet.sqlite"),
         "--projects",
         projects,
       ],
-      { env: { ...process.env, ARMADA_APP_CONFIG: configPath }, stdio: ["ignore", "pipe", "pipe"] },
+      {
+        env: {
+          ...process.env,
+          ARMADA_APP_CONFIG: configPath,
+          XDG_CONFIG_HOME: dir,
+          GITHUB_TOKEN: randomBytes(24).toString("hex"),
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
     );
     const exited = new Promise((resolve) => child.once("exit", resolve));
     let output = "";

@@ -5,6 +5,7 @@ import { parseArgs } from "node:util";
 import { bootDaemon } from "../boot.ts";
 import { readPluginSecret } from "../plugins/keychain.ts";
 import { startServer } from "./index.ts";
+import { daemonProjectSchema, startReaders } from "./readers.ts";
 
 try {
   const { values } = parseArgs({
@@ -24,8 +25,9 @@ try {
     if (!values.database || !values.projects) throw new Error("--database and --projects are required");
     const port = values.port === undefined ? 0 : Number(values.port);
     if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("--port must be between 0 and 65535");
-    const projects = JSON.parse(readFileSync(values.projects, "utf8"));
-    if (!Array.isArray(projects)) throw new Error("--projects must name a JSON array of projects");
+    const catalog = JSON.parse(readFileSync(values.projects, "utf8"));
+    if (!Array.isArray(catalog)) throw new Error("--projects must name a JSON array of projects");
+    const projects = catalog.map((project) => daemonProjectSchema.parse(project));
     mkdirSync(dirname(values.database), { recursive: true });
     const daemon = await bootDaemon({
       databasePath: values.database,
@@ -34,10 +36,14 @@ try {
     });
     try {
       const server = await startServer({ store: daemon.store, projects, port, staticDir: values["static-dir"] });
+      let readers: Awaited<ReturnType<typeof startReaders>> | undefined;
+      const controller = new AbortController();
       let stopping = false;
       const stop = async () => {
         if (stopping) return;
         stopping = true;
+        controller.abort();
+        readers?.stop();
         await server.close();
         daemon.close();
       };
@@ -47,8 +53,18 @@ try {
       process.once("SIGTERM", () => {
         void stop();
       });
-      // One readiness line for the Electron parent, emitted only after binding.
-      console.log(JSON.stringify({ url: server.url, wsUrl: server.wsUrl }));
+      try {
+        readers = await startReaders({ store: daemon.store, projects, signal: controller.signal });
+      } catch (error) {
+        await stop();
+        throw error;
+      }
+      if (stopping) {
+        readers.stop();
+      } else {
+        // One readiness line for the Electron parent, emitted only after binding.
+        console.log(JSON.stringify({ url: server.url, wsUrl: server.wsUrl, readers: readers.readers }));
+      }
     } catch (error) {
       daemon.close();
       throw error;
