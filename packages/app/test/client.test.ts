@@ -232,6 +232,34 @@ describe("the daemon client", () => {
     expect(client.getState()).toMatchObject({ status: "refused", problem: DAEMON_TOO_OLD, projects: null });
   });
 
+  test("a key status that fails never hides the fleet's own line", () => {
+    const failing = (problem: string | null) => {
+      const { client, socket } = setup();
+      listAndSubscribe(socket());
+      if (problem) {
+        const frame = (seq: number, events: ProtocolEvent[]) =>
+          socket().receive({ type: "events", version: V, subscriptionId: "sub-alpha", project: "alpha", seq, events });
+        frame(6, [event(6, "alpha", "s1")]);
+        frame(3, []);
+        expect(client.getState().problem).toBe(problem);
+      }
+      const status = socket().sent.find((m) => m.type === "credentials.status");
+      expect(status).toBeDefined();
+      socket().receive({
+        type: "error",
+        version: V,
+        id: status?.id,
+        code: "internal",
+        message: "Could not access credential storage",
+      });
+      return client.getState().problem;
+    };
+    // Alone, the failure is said.
+    expect(failing(null)).toBe("Could not access credential storage");
+    // After the fleet's line (here the log behind the app), that line and its Reload stay.
+    expect(failing(LOG_BEHIND)).toBe(LOG_BEHIND);
+  });
+
   test("takes the daemon's own refusal as final", () => {
     const { client, timers, socket } = setup();
     listAndSubscribe(socket());

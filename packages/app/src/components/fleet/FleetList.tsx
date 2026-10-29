@@ -55,6 +55,9 @@ export function FleetList({
     );
   // A long list lets the browser skip the rows off screen; every row stays in the page.
   const long = items.length > LONG_LIST;
+  // Each line's place in the list: Motion measures a header or a row only when its own place
+  // changes, so the list moving as a whole (a block above it appearing) glides nothing.
+  let place = 0;
   return (
     <div className="flex min-w-0 flex-col border-line border-t">
       <AnimatePresence initial={false} mode="popLayout">
@@ -63,6 +66,7 @@ export function FleetList({
             key={`group:${group}`}
             id={`fleet-${group}`}
             layout="position"
+            layoutDependency={place++}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -83,6 +87,7 @@ export function FleetList({
               projectName={names.get(item.project) ?? item.project}
               time={rowTime(item.at, now, zone)}
               long={long}
+              place={place++}
             />
           )),
         ])}
@@ -96,11 +101,13 @@ function Row({
   projectName,
   time,
   long,
+  place,
 }: {
   item: FleetItem;
   projectName: string;
   time: string;
   long: boolean;
+  place: number;
 }) {
   const tone = TONE[i.group];
   // The row that changed group passes over the others on its way: drawn above them while it glides.
@@ -113,6 +120,7 @@ function Row({
     <m.div
       ref={self}
       layout="position"
+      layoutDependency={`${place} ${i.group}`}
       onLayoutAnimationStart={() => raise(self.current, settled.current !== i.group)}
       onLayoutAnimationComplete={() => {
         settled.current = i.group;

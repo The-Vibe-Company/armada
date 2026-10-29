@@ -74,8 +74,29 @@ describe("in a browser, served by a running daemon", () => {
     const key = randomBytes(24).toString("hex");
     await provider.selectOption("openai");
     await page.getByLabel("API key", { exact: true }).fill(key);
+    // The key's card changes height above the fleet: the list moves as a whole, and no row glides for it.
+    const row = page.locator("[data-row]").first();
+    await row.waitFor({ timeout: 5000 });
+    const top = await row.evaluate((el) => {
+      const moves: string[] = [];
+      let frames = 0;
+      const sample = () => {
+        moves.push(getComputedStyle(el).transform);
+        if (++frames < 30) requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+      (window as { moves?: string[] }).moves = moves;
+      return el.getBoundingClientRect().top;
+    });
     await page.getByRole("button", { name: "Save key", exact: true }).click();
     await page.getByRole("status").filter({ hasText: "OpenAI connected" }).waitFor({ timeout: 5000 });
+    await page.waitForFunction(() => ((window as { moves?: string[] }).moves?.length ?? 0) >= 30);
+    const still = await row.evaluate((el) => ({
+      top: el.getBoundingClientRect().top,
+      moves: (window as { moves?: string[] }).moves ?? [],
+    }));
+    expect(still.top).not.toBe(top);
+    expect(still.moves.filter((t) => t !== "none" && t !== "matrix(1, 0, 0, 1, 0, 0)")).toEqual([]);
     expect(await page.getByLabel("API key", { exact: true }).count()).toBe(0);
     const browserState = await page.evaluate(() =>
       JSON.stringify([localStorage, sessionStorage, document.body.innerHTML]),

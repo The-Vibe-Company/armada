@@ -237,6 +237,8 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
           return;
         }
         if (message.code === "app-too-old" || message.code === "daemon-too-old") return refuse(message.message);
+        // The key's status failing is not the fleet's problem: it never hides one already said (and its Reload).
+        if (message.id !== undefined && message.id === credentialStatusId && state.problem) return;
         return set({ problem: message.message });
       case "session.result":
         return;
