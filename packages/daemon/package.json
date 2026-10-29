@@ -11,9 +11,15 @@
     ".": "./src/index.ts",
     "./events": "./src/events.ts",
     "./fold": "./src/fold.ts",
-    "./store": "./src/store.ts"
+    "./store": "./src/store.ts",
+    "./keychain": "./src/keychain.ts",
+    "./credentials": "./src/credentials.ts"
   },
   "scripts": {
     "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@armada/protocol": "workspace:*",
+    "@napi-rs/keyring": "2.1.2"
   }
 }

@@ -1,0 +1,58 @@
+import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { chmod, mkdtemp, readdir, readFile, rm, stat, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { Keychain, readLinearKey } from "../src/keychain.ts";
+import { fileKeychain } from "../src/secrets/file.ts";
+import { FakeKeychain } from "./support/keychain.ts";
+
+test("one gateway stores coordinator provider/key atomically and scopes Linear and GitHub entries", async () => {
+  const backend = new FakeKeychain();
+  const chain = new Keychain(backend);
+  assert.deepEqual(await chain.status(), { provider: null, storage: "os-keychain" });
+  const key = randomBytes(24).toString("hex");
+  await chain.setCoordinator("anthropic", key);
+  assert.deepEqual(await chain.coordinator(), { provider: "anthropic", key });
+  await chain.setCoordinator("openai", key);
+  assert.deepEqual(await new Keychain(backend).coordinator(), { provider: "openai", key });
+  assert.deepEqual(await chain.status(), { provider: "openai", storage: "os-keychain" });
+  await chain.write("linear", "harbor", key);
+  await chain.write("github", "github", key);
+  assert.equal(await readLinearKey(chain.read.bind(chain), "harbor"), key);
+  assert.equal(await chain.read("linear", "other"), null);
+  assert.equal(await chain.read("github", "github"), key);
+  await assert.rejects(chain.setCoordinator("openai", `${key}\n`), /Invalid model credential/);
+  assert.deepEqual(await chain.coordinator(), { provider: "openai", key });
+});
+
+test("Linux fallback persists private files, replaces atomically and refuses loose permissions or symlinks", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "armada-keychain-"));
+  const credentials = join(directory, "credentials");
+  const key = randomBytes(24).toString("hex");
+  try {
+    const chain = new Keychain(fileKeychain(credentials));
+    assert.equal(await chain.coordinator(), null);
+    await chain.setCoordinator("openai", key);
+    assert.deepEqual(await new Keychain(fileKeychain(credentials)).coordinator(), { provider: "openai", key });
+    assert.equal((await stat(credentials)).mode & 0o777, 0o700);
+    const files = await readdir(credentials);
+    assert.equal(files.length, 1);
+    const file = join(credentials, files[0] as string);
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+    await chain.setCoordinator("anthropic", key);
+    assert.equal((await JSON.parse(await readFile(file, "utf8"))).provider, "anthropic");
+    assert.deepEqual(await readdir(credentials), files);
+    await chmod(file, 0o644);
+    await assert.rejects(chain.coordinator(), /^Error: Credential lookup failed$/);
+    await rm(file);
+    await symlink(join(directory, "outside"), file);
+    await assert.rejects(chain.coordinator(), /^Error: Credential lookup failed$/);
+    await rm(file);
+    await chmod(credentials, 0o755);
+    await assert.rejects(chain.setCoordinator("openai", key), /^Error: Credential could not be saved$/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

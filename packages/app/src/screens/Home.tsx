@@ -1,4 +1,5 @@
 import { APP_TOO_OLD, DAEMON_TOO_OLD } from "@armada/protocol";
+import { CoordinatorKey } from "@/components/CoordinatorKey";
 import { Block, Dot, Page, PageHeader } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { sessionsInFlight } from "@/fleet/sessions";
@@ -45,6 +46,7 @@ export function Home({ address, onReload }: { address: string; onReload: () => v
           )}
         </div>
       )}
+      <CoordinatorKey />
       {projects && projects.length > 0 && (
         <Block heading="Projects">
           <ul className="m-0 flex list-none flex-col p-0">
