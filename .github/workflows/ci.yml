@@ -46,7 +46,9 @@ jobs:
       - run: bun run typecheck
       - name: Install the pinned test browser and system libraries
         uses: ./.github/actions/test-browser
-      - run: bun test
+      - run: bun run test
+      - name: Test the daemon on Node
+        run: bun run test:daemon
 
   dashboard:
     name: Dashboard builds
@@ -76,16 +78,7 @@ jobs:
     # The demo world on Postgres (PGlite is for development only), with
     # accounts so the organization's pages are checked signed in. Every value
     # here is the throwaway demo's; the secret is drawn per run.
-    services:
-      postgres:
-        # Docker Official Image mirror avoids Docker Hub pull limits on shared runners.
-        image: public.ecr.aws/docker/library/postgres:17
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: armada
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 20
+    # Use the runner's PostgreSQL: shared Docker Hub/ECR pull limits can block CI.
     env:
       NEXT_TELEMETRY_DISABLED: "1"
       ARMADA_DATABASE_URL: postgres://postgres:postgres@localhost:5432/armada?sslmode=disable
@@ -97,6 +90,8 @@ jobs:
       ARMADA_AUTH_GITHUB_CLIENT_SECRET: a11y-demo
     steps:
       - uses: actions/checkout@v4
+      - name: Start PostgreSQL
+        uses: ./.github/actions/postgres
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: package.json
@@ -125,16 +120,6 @@ jobs:
     name: End-to-end journeys
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    services:
-      postgres:
-        # Docker Official Image mirror avoids Docker Hub pull limits on shared runners.
-        image: public.ecr.aws/docker/library/postgres:17
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: armada
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 20
     env:
       NEXT_TELEMETRY_DISABLED: "1"
       ARMADA_DATABASE_URL: postgres://postgres:postgres@localhost:5432/armada?sslmode=disable
@@ -156,6 +141,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Typecheck the journeys and config
         run: bunx tsc --noEmit -p e2e
+      - uses: ./.github/actions/postgres
       - uses: ./.github/actions/dashboard-demo
       - name: Install the e2e browser and system libraries
         run: npx e2e-web install chromium --with-deps
@@ -190,18 +176,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    services:
-      postgres:
-        # Docker Official Image mirror avoids Docker Hub pull limits on shared runners.
-        image: public.ecr.aws/docker/library/postgres:17
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 30
+    # Use the runner's PostgreSQL: shared Docker Hub/ECR pull limits can block CI.
     env:
       NEXT_TELEMETRY_DISABLED: "1"
       # The gate of this job's own servers, on a throwaway database: not a secret.
@@ -213,6 +188,8 @@ jobs:
         working-directory: packages/dashboard
     steps:
       - uses: actions/checkout@v4
+      - name: Start PostgreSQL
+        uses: ./.github/actions/postgres
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: package.json
