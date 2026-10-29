@@ -57,7 +57,11 @@ export function Sidebar() {
       </nav>
       <span className="flex-1" />
       <nav aria-label="Armada" className="flex flex-col gap-0.5">
-        <a href="#/plugins" className={`${item} ${current}`} aria-current={route.kind === "plugins" ? "page" : undefined}>
+        <a
+          href="#/plugins"
+          className={`${item} ${current}`}
+          aria-current={route.kind === "plugins" ? "page" : undefined}
+        >
           <span className="min-w-0 flex-1 truncate">Plugins</span>
         </a>
       </nav>
