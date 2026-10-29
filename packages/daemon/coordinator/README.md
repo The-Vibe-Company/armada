@@ -1,0 +1,63 @@
+# Native project tools
+
+`Coordinators.open()` installs `nativeTools(storage, options)` by default, then
+applies explicit `tools` overrides. The existing admitted `CoordinatorStorage`
+is their writer capability. A second manager/storage for the same project on
+that daemon's EventStore is refused. Closing it fences old tool handles before
+a successor can open it. The daemon still owns its single EventStore; this is
+not cross-process SQLite locking. Worker and merge execution will add their
+leases inside this capability in Specs 3/4, rather than introduce another writer.
+
+Every call returns JSON facts in both `details` and a JSON text block. Refusals
+have `ok: false`, `code`, `message` and `next`. Writes run sequentially. Fleet
+status and inbox read only the admitted project's folded events; status lists
+facts the current fold cannot supply under `unavailable`, rather than inventing
+a frontier, runtime observation or launch capacity.
+
+The five mutations (`inbox.answer`, `hold.add`, `hold.clear`, `owner.ask`,
+`rules.set`) use pi's durable `(project, taskId, callId)` as their operation identity.
+An effect and its `payload.receipt` commit in one EventStore append. Replay
+returns the committed result, even if the item's current state has changed;
+reusing the identity with different arguments refuses. Generated item IDs are
+`tool:<sha256(identity)>`, scoped by project. The native projection strips receipt metadata from ordinary hold and inbox
+records; raw log events retain it for replay. A failed append publishes
+no success receipt. No external effect is inferred from a local checkpoint.
+
+`inbox.answer` copies V1's question/plan and generation guards. It preserves the
+worker's phase. Inject `native.deliverAnswerOnce` to deliver with a stable key;
+the adapter must deduplicate that key across restarts and invoke `beforeWrite`
+immediately before each runtime write. Missing/unconfirmed delivery leaves the
+item open. A replacement or ended session is fenced before delivery and again
+before recording. Do not adapt an unkeyed send API by retrying it. This ticket
+supplies the orchestration contract; Spec 3 supplies runtime adapters. Owner
+requests and hand-backs cannot be dismissed with `inbox.answer`.
+
+`merge.check` copies the applicable V1 checklist (source comments identify it),
+including a full pinned hand-back SHA, phase, checks, title, draft, threads,
+validations and holds. Inject `native.mergeEvidence` for the facts the fleet
+fold lacks. Evidence belongs to the exact head; it must include required check
+names and explicit check-enumeration completeness, all visible check states,
+consistent review-thread counts and completeness, acceptance/owner approval
+pinned to the current head, and a test pinned to both current head and base.
+The reading timestamp must fall within the adapter call; malformed, cached or
+partially enumerated evidence refuses. Missing evidence refuses. The tool re-reads the
+fleet after an asynchronous read. A successful check is a reading, never a
+merge authorization that can be reused after state changes. Spec 4 must run the
+checklist again under its merge lease, against fresh base/head evidence.
+
+`rules.set` patches routing, placement and policy using `expectedRevision` from
+`fleet.status.rules`; stale revisions refuse. Routing is an ordered list of
+`{labels, cli: claude|codex|opencode, model, effort?}`. Placement selects `local`
+or `vm` separately for workers and coordinator. Policy uses `silenceMinutes`,
+`quietMinutes` (finite positive numbers) and nullable `maxWorkers` (a positive
+safe integer or no cap); policy patches retain omitted numbers. A reason
+is mandatory. Rules are versioned `coordinator.checkpoint` events with reserved
+`format: armada.tools`, `version: 1`, `type: rules`, `rules: {revision,value}`.
+Pi storage ignores that format. THE-1997 can promote this projection into the
+shared fold and add V1 import/app editing without changing pi storage. Model
+catalog validation and placement execution belong to the launch implementation;
+storing intent does not claim a provider or VM is available.
+
+All four `worker.*` actions and `merge.run` return `not_available_yet` with the
+message `not available yet`, naming Spec 3 or 4 as the next step. They write
+nothing. No native tool shells out or imports V1 core.

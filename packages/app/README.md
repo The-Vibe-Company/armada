@@ -145,6 +145,48 @@ loops in the working view.**
   (`src/components/shell/motion-features.ts`).
 - Rive is reserved for future scenes, in a canvas apart from the lists.
 
+## The sky
+
+`src/sky/Sky.tsx` (THE-2024) is the picture the hangar and a project's room
+share, after the direction kept with the owner (`.aeom/direction`): the mark's
+triangles in V formations on the night surface, drawn from the fleet's state,
+never from randomness. Its props are slices of the fold (`src/fleet/sky.ts`:
+each session's group and its harness, read from its runtime) and one injected
+clock; `size` is `band` (200 px, full width, a project's room) or `stage`
+(fills its container, the hangar). The words over it (group or project labels,
+the quiet legend) are HTML in Geist; the canvas draws no text.
+
+- **What it draws**: the coordinator as a V of five with the lime lead; one
+  triangle per agent in flight in its harness's colour (Claude `#d97757`,
+  Codex `#10a37f`, OpenCode `#bb87fc`, bone for another runtime), a blocked
+  one banked away; an arc under each state's agents in the state's colour (the
+  app's tokens, so the sky and the list agree); the day's merges as a faint
+  bone V flying away. Three depths: near (in flight), middle (ready to merge),
+  far (merged today).
+- **Movement says something**: a ship banks and flies to its new group when its
+  session changes state; a merge flies it to the merged V while its squadron
+  closes ranks; a new session flies in from below, an ended one out through the
+  top. Between two changes the sky holds still and asks for no frame
+  (`src/sky/view.ts`): nothing loops. The first paint and a resize put every
+  ship in place; reduced motion does so for every change.
+- **The rules**: `flock.ts` holds the landing's pure rules
+  (`packages/dashboard/components/landing/flock.ts`, copied, never imported)
+  and the springs that fly a ship to its place; `layout.ts` gives each ship its
+  place for the band and the stage; `draw.ts` draws on the few methods of a 2D
+  context it names, one path per depth, colour and opacity.
+- **Its budget**: `perf-budget.json`'s `skyFrame`: with 60 agents in flight,
+  through launches, state changes and merges, no frame makes more than 400
+  calls and writes to the context, and a frame's work averages under 4 ms.
+- **A narrow band** (a room beside its panels) keeps every group: its labels
+  give way to the legend, whose states then wrap to a second line (also under
+  672 px) and whose harnesses give way (also under 896 px).
+
+`test/sky.test.ts` draws it on synthetic fleets with a fake 2D context and a
+hand-turned clock: the triangles per state and colour, the bank on a state
+change, the regroup on a merge, the frame budget. `?story=sky` in the dev
+server shows the band of each of the daemon's projects and the stage of them
+all, live, and a synthetic fleet moved by hand (loaded only behind that flag).
+
 ## First-load budget
 
 `perf-budget.json` caps the first-load JS (the entry script and its preloads,

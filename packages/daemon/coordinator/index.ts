@@ -10,9 +10,11 @@ import {
   section,
 } from "@earendil-works/pi-durable";
 import type { EventStore } from "../src/store.ts";
+import { type NativeToolOptions, nativeTools } from "./native.ts";
 import { openCoordinatorStorage } from "./storage.ts";
 import { type CoordinatorTools, coordinatorTools } from "./tools.ts";
 
+export { type MergeEvidence, type NativeToolOptions, nativeTools } from "./native.ts";
 export { openCoordinatorStorage } from "./storage.ts";
 export { type CoordinatorToolName, type CoordinatorTools, coordinatorTools, TOOL_NAMES } from "./tools.ts";
 
@@ -24,6 +26,8 @@ export interface CoordinatorOptions {
   models: HarnessOptions["models"];
   model: ModelRef;
   tools?: CoordinatorTools;
+  /** Optional read adapters for facts the folded fleet cannot establish. */
+  native?: Omit<NativeToolOptions, "now">;
   now?: () => number;
   setTimer?: HarnessOptions["setTimer"];
   onReport?: HarnessOptions["onReport"];
@@ -66,7 +70,10 @@ export class Coordinators {
       registry.install(
         defineExtension({
           name: "armada.coordinator",
-          tools: coordinatorTools(options.tools),
+          tools: coordinatorTools({
+            ...nativeTools(storage, { ...options.native, now: () => new Date(now()).toISOString() }),
+            ...options.tools,
+          }),
           sections: [section("armada_coordinator", () => SYSTEM_PROMPT, { tag: false })],
         }),
       );
