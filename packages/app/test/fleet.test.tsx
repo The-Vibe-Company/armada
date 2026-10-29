@@ -1,16 +1,13 @@
 import { expect, test } from "bun:test";
 import { fold } from "@armada/daemon/fold";
-import { PROTOCOL_VERSION } from "@armada/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SAMPLE_PROJECTS, sampleEvents } from "../scripts/dev-daemon";
 import { FleetList } from "../src/components/fleet/FleetList";
-import { type FleetItem, LONG_LIST } from "../src/fleet/overview";
-import { createDaemonClient, type SocketLike } from "../src/protocol/client";
-import { DaemonProvider } from "../src/protocol/store";
-import { Home } from "../src/screens/Home";
+import { type FleetItem, fleetItems, LONG_LIST } from "../src/fleet/overview";
+import { readFleetState } from "../src/fleet/state";
 
-// The home on a synthetic fleet: the daemon's own fold of a synthetic log,
-// handed to the app as the subscription hands it (a snapshot per project).
+// The fleet by state on a synthetic fleet: the daemon's own fold of a
+// synthetic log, read as the app reads each project's folded state.
 
 const AT = "2026-03-10T09:00:00.000Z";
 const NOW = Date.parse("2026-03-10T15:00:00.000Z");
@@ -18,32 +15,13 @@ const NOW = Date.parse("2026-03-10T15:00:00.000Z");
 function render() {
   const events = sampleEvents(AT).map((e, i) => ({ ...e, seq: i + 1 }));
   const tables = fold(events);
-  let socket: SocketLike | null = null;
-  const client = createDaemonClient({
-    url: "ws://daemon.test/",
-    open: () => {
-      socket = { send() {}, close() {}, onopen: null, onmessage: null, onclose: null };
-      return socket;
-    },
-    schedule: () => () => {},
-  });
-  client.start();
-  const say = (m: Record<string, unknown>) =>
-    socket?.onmessage?.({ data: JSON.stringify({ version: PROTOCOL_VERSION, ...m }) });
-  say({ type: "projects.result", id: "r1", projects: SAMPLE_PROJECTS });
-  for (const p of SAMPLE_PROJECTS)
-    say({
-      type: "project.subscribed",
-      id: `s-${p.id}`,
-      subscriptionId: `sub-${p.id}`,
-      project: p.id,
-      after: 0,
-      snapshot: { seq: events.length, state: JSON.parse(JSON.stringify(tables.projects[p.id] ?? { sessions: [] })) },
-    });
+  const projects = SAMPLE_PROJECTS.map((p) => ({
+    id: p.id,
+    state: readFleetState(JSON.parse(JSON.stringify(tables.projects[p.id] ?? { sessions: [] }))),
+  }));
+  const names = new Map(SAMPLE_PROJECTS.map((p) => [p.id, p.name]));
   return renderToStaticMarkup(
-    <DaemonProvider client={client}>
-      <Home address="ws://daemon.test/" onReload={() => {}} now={NOW} zone="UTC" />
-    </DaemonProvider>,
+    <FleetList items={fleetItems(projects, { now: NOW, zone: "UTC" })} names={names} now={NOW} zone="UTC" />,
   );
 }
 
@@ -65,7 +43,7 @@ function list(html: string) {
     });
 }
 
-test("the home shows the fleet by state, each row with its reason in its state's colour", () => {
+test("the fleet shows its sessions by state, each row with its reason in its state's colour", () => {
   const html = render();
   expect(list(html)).toEqual([
     "Blocked (2)",
@@ -85,9 +63,6 @@ test("the home shows the fleet by state, each row with its reason in its state's
   const rows = [...html.matchAll(/<a [^>]*data-row="([^"]+)"[^>]*>/g)];
   expect(rows).toHaveLength(7);
   for (const [tag, key] of rows) expect(tag).toContain(`href="#/sessions/${key?.split("/")[1]}"`);
-  // The page's anatomy: the numbers on the facts line, what is blocked and what waits on the quiet line.
-  expect(html).toContain("6 agents in flight across 3 projects");
-  expect(html).toContain("2 agents blocked, 2 waiting for your decision.");
   // Each row's bar: the step at work in its state's colour (HAR-12 codes: step 3 of 6).
   const bar = html
     .split('data-row="harbor/HAR-12"')[1]

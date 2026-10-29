@@ -58,7 +58,7 @@ export interface FleetItem {
 }
 
 /** Where a session is on the six steps: its phase's, else its flow step (V1's `sessionStep`). */
-export function sessionStep(s: Pick<FoldedSession, "phase" | "flowStep">): number {
+function sessionStep(s: Pick<FoldedSession, "phase" | "flowStep">): number {
   if (s.phase === "merged") return STEPS.length;
   if (s.phase === "awaiting-approval") return 1;
   if (s.phase === "ready-to-merge") return 4;

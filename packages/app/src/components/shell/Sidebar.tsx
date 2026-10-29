@@ -1,6 +1,6 @@
 import { sessionsInFlight } from "@/fleet/sessions";
 import { fleetOf } from "@/fleet/state";
-import { useRoute } from "@/lib/route";
+import { projectHref, useRoute } from "@/lib/route";
 import type { ConnectionStatus } from "@/protocol/client";
 import { useDaemon } from "@/protocol/store";
 import { useSessionRoute } from "@/session/route";
@@ -12,15 +12,15 @@ const item =
 const current = "aria-[current=page]:bg-item-current aria-[current=page]:text-text";
 
 /**
- * The sidebar (design/dashboard-v7): the mark, the fleet, one line per
+ * The sidebar (design/dashboard-v7): the mark, the hangar, one line per
  * project with its sessions in flight (once its folded state arrived, so
- * nothing counts up on the first paint), the app's own settings (Plugins)
- * and the live reading of the daemon.
+ * nothing counts up on the first paint), the app's own settings (Plugins,
+ * Settings) and the live reading of the daemon.
  */
 export function Sidebar() {
   const { projects, fleets, status } = useDaemon();
   const route = useRoute();
-  // A session's page is none of the sections: the fleet is not the current page there.
+  // A session's page is none of the sections: the hangar is not the current page there.
   const session = useSessionRoute();
   const home = route.kind === "home" && !session;
   return (
@@ -34,7 +34,7 @@ export function Sidebar() {
       </div>
       <nav aria-label="Sections" className="flex flex-col gap-0.5">
         <a href="#/" className={`${item} ${current}`} aria-current={home ? "page" : undefined}>
-          <span className="min-w-0 flex-1 truncate">Fleet</span>
+          <span className="min-w-0 flex-1 truncate">Hangar</span>
         </a>
       </nav>
       <nav aria-labelledby="sidebar-projects" className="flex flex-col gap-0.5">
@@ -48,7 +48,7 @@ export function Sidebar() {
           return (
             <a
               key={p.id}
-              href={`#/projects/${encodeURIComponent(p.id)}`}
+              href={projectHref(p.id)}
               className={`${item} ${current}`}
               aria-current={route.kind === "project" && route.id === p.id ? "page" : undefined}
               title={p.repository}
@@ -67,6 +67,13 @@ export function Sidebar() {
           aria-current={route.kind === "plugins" ? "page" : undefined}
         >
           <span className="min-w-0 flex-1 truncate">Plugins</span>
+        </a>
+        <a
+          href="#/settings"
+          className={`${item} ${current}`}
+          aria-current={route.kind === "settings" ? "page" : undefined}
+        >
+          <span className="min-w-0 flex-1 truncate">Settings</span>
         </a>
       </nav>
       <Live status={status} />

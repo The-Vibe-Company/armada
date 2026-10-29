@@ -81,13 +81,11 @@ describe("the app's sources", () => {
   });
 });
 
-test("the shell renders one h1, in the title line, under the facts line", () => {
+test("the shell renders one h1, the hangar's title, on its line of facts", () => {
   const quiet: SocketLike = { send() {}, close() {}, onopen: null, onmessage: null, onclose: null };
   const client = createDaemonClient({ url: "ws://daemon.test/", open: () => quiet, schedule: () => () => {} });
   const html = renderToStaticMarkup(<App client={client} address="ws://daemon.test/" onReload={() => {}} />);
   expect(html.match(/<h1\b/g)).toHaveLength(1);
-  expect(html).toMatch(
-    /<header[^>]*>(?:(?!<\/header>).)*ws:\/\/daemon\.test\/(?:(?!<\/header>).)*<h1[^>]*>Fleet<\/h1>/,
-  );
+  expect(html).toMatch(/<header[^>]*><h1[^>]*>Hangar<\/h1><span>Waiting for the daemon<\/span>/);
   expect(html).toContain('aria-label="Sidebar"');
 });

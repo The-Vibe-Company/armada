@@ -98,7 +98,7 @@ export function Session({
           facts={
             <span className="text-body">
               <a href="#/" className="text-text-2 hover:text-text">
-                ← Fleet
+                ← Hangar
               </a>
             </span>
           }
