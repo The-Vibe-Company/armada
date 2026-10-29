@@ -73,15 +73,18 @@ async function fixture(
 async function connect(url: string) {
   const ws = new WebSocket(url);
   const frames: string[] = [];
+  /** Every raw frame received, kept: the queue above is drained as the test reads it. */
+  const seen: string[] = [];
   let wake: (() => void) | undefined;
   ws.on("message", (data) => {
     frames.push(String(data));
+    seen.push(String(data));
     wake?.();
   });
   await once(ws, "open");
   let n = 0;
   return {
-    frames,
+    seen,
     async ask(body: Record<string, unknown>): Promise<ServerMessage> {
       ws.send(JSON.stringify({ version, id: `r${++n}`, ...body }));
       if (!frames.length)
@@ -206,7 +209,8 @@ test("the Plugins screen lists the catalog, saves switches and configs, keeps se
       // A restart is answered first, then asked of the host.
       assert.deepEqual((await client.ask({ type: "daemon.restart" })).type, "daemon.restarting");
       assert.equal(restarts, 1);
-      for (const frame of client.frames) assert.ok(!frame.includes(value));
+      assert.equal(client.seen.length, 10);
+      for (const frame of client.seen) assert.ok(!frame.includes(value));
     } finally {
       client.close();
       await server.close();

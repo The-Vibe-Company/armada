@@ -119,15 +119,18 @@ export class DaemonProcess {
  * After a restart exit: the daemon again on its port, so the app's socket
  * reconnects to the same address and resumes. If that port was taken
  * meanwhile, on a new one; the caller then opens the app at that address.
- * `start` hands over each child as soon as it exists, so a quit stops it.
+ * `start` hands over each child as soon as it exists, so a quit stops it; a
+ * quit during the first attempt (`stopped`) starts no second one.
  */
 export async function restartDaemon(
   previous: DaemonAddress,
   start: (port: number) => DaemonProcess,
+  stopped: () => boolean = () => false,
 ): Promise<DaemonAddress> {
   try {
     return await start(Number(new URL(previous.url).port)).ready;
-  } catch {
+  } catch (error) {
+    if (stopped()) throw error;
     return await start(0).ready;
   }
 }

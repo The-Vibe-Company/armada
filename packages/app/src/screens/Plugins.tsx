@@ -16,7 +16,7 @@ import { useDaemon, useDaemonClient } from "@/protocol/store";
  * applies when it restarts: the notice above the list says so, with Restart.
  */
 export function Plugins() {
-  const { plugins, pluginsProblem, status, restarting } = useDaemon();
+  const { plugins, pluginsProblem, status, restarting, problem } = useDaemon();
   const list = plugins?.plugins ?? [];
   const counts = pluginCounts(list);
   return (
@@ -47,7 +47,9 @@ export function Plugins() {
             ? "Everything that varies in Armada is a plugin shipped with the app. A switch or a setting applies when the daemon restarts."
             : pluginsProblem
               ? null
-              : "Waiting for the daemon to list its plugins."
+              : status === "refused"
+                ? problem
+                : "Waiting for the daemon to list its plugins."
         }
       />
       {pluginsProblem && (
@@ -357,6 +359,8 @@ function Secret({ plugin, name, set, live }: { plugin: string; name: string; set
     event.preventDefault();
     const form = event.currentTarget;
     const value = String(new FormData(form).get("value") ?? "");
+    // The protocol's rule (printable ASCII, no space), checked before the field is cleared.
+    if (!/^[!-~]+$/.test(value)) return setProblem("Paste the value without spaces or accented characters.");
     setSaving(true);
     setProblem(null);
     const request = client.setPluginSecret(plugin, name, value);
@@ -394,7 +398,6 @@ function Secret({ plugin, name, set, live }: { plugin: string; name: string; set
               spellCheck={false}
               required
               maxLength={8192}
-              pattern="[^\s]+"
               disabled={saving}
             />
           </Field>

@@ -238,6 +238,8 @@ test("a switch sends its message and says to restart; after the restart the row 
   // The reconnect's wait, not a request's ten-second deadline.
   timers.findLast((t) => t.ms < 10000)?.run();
   connect();
+  // Back, but not yet listed: still restarting, never a stale Restart button.
+  expect(render()).toContain("Restarting the daemon.");
   const loaded = changed.map((p) => (p.id === "dinghy" ? { ...p, loaded: true, restartRequired: false } : p));
   socket().receive({
     type: "plugins.result",
@@ -266,6 +268,30 @@ test("a daemon that cannot restart itself says to quit and reopen; an older one 
   const older = setup(1);
   expect(older.socket().last("plugins.list")).toBeUndefined();
   expect(older.render()).toContain(NO_PLUGINS);
+});
+
+test("a reply past its deadline still updates the list, and a late refusal is not the fleet's problem", async () => {
+  const { client, socket, timers } = setup();
+  socket().receive({
+    type: "plugins.result",
+    id: socket().last("plugins.list").id,
+    plugins: catalog,
+    restartable: true,
+  });
+  const late = client.setPluginEnabled("hello", false);
+  const asked = socket().last("plugins.disable");
+  timers.findLast((t) => t.ms === 10000)?.run();
+  await expect(late).rejects.toThrow(UNCONFIRMED);
+  const off = catalog.map((p) => (p.id === "hello" ? { ...p, enabled: false, restartRequired: true } : p));
+  socket().receive({ type: "plugins.result", id: asked.id, plugins: off, restartable: true });
+  expect(client.getState().plugins?.plugins.find((p) => p.id === "hello")?.enabled).toBe(false);
+
+  const refused = client.configurePlugin("hello", "runtime", "x", {});
+  const configure = socket().last("plugins.configure");
+  timers.findLast((t) => t.ms === 10000)?.run();
+  await expect(refused).rejects.toThrow(UNCONFIRMED);
+  socket().receive({ type: "error", id: configure.id, code: "not-found", message: "Plugin hello has no contribution" });
+  expect(client.getState().problem).toBeNull();
 });
 
 describe("a contribution's config form from its JSON Schema", () => {

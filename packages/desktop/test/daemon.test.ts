@@ -98,6 +98,22 @@ test("the app's restart ends a restartable daemon with the restart code; it come
   }
 });
 
+test("a quit during a restart's first attempt starts no second daemon", async () => {
+  const ports: number[] = [];
+  let quitting = false;
+  const start = (port: number) => {
+    ports.push(port);
+    // The quit stops this child, which rejects its readiness.
+    quitting = true;
+    return { ready: Promise.reject(new Error("armadad stopped before readiness")) } as unknown as DaemonProcess;
+  };
+  await assert.rejects(
+    restartDaemon({ url: "http://127.0.0.1:4999", wsUrl: "ws://127.0.0.1:4999/" }, start, () => quitting),
+    /stopped before readiness/,
+  );
+  assert.deepEqual(ports, [4999]);
+});
+
 test("startup failure rejects readiness and reaps the failed child", async () => {
   const f = fixture();
   writeFileSync(f.options.projects, "invalid");

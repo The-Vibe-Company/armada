@@ -276,7 +276,9 @@ missing, with a password field. It speaks protocol minor 2 (`plugins.list`,
 each change at once, checking a config with the loader's own rule, and marks it
 "restart to apply" until the next boot. Restart asks the daemon to exit with code
 75, and the desktop shell starts it again on the same port, so the app reconnects
-on its own. A browser-served daemon without the shell says to quit and reopen. THE-2013 adds `armada plugin test <dir>`
+on its own. A browser-served daemon without the shell says to quit and reopen.
+
+THE-2013 adds `armada plugin test <dir>`
 with seam conformance fixtures. Follow-ups move the Linear/GitHub readers, three
 CLI runtimes, local/boat nodes and coordinator models behind the definitions.
 

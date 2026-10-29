@@ -50,7 +50,7 @@ void app.whenReady().then(async () => {
         if (quitting) return;
         if (code === RESTART_EXIT_CODE) {
           try {
-            const next = await restartDaemon(address, start);
+            const next = await restartDaemon(address, start, () => quitting);
             if (quitting) return;
             supervise(daemon as DaemonProcess);
             if (next.url !== address.url) {
