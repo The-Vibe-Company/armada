@@ -11,6 +11,7 @@ import { checkpointRules } from "../../coordinator/rules.ts";
 import type { Keychain } from "../keychain.ts";
 import { pluginModels } from "../model-sdk.ts";
 import { BUNDLED_PLUGINS, type PluginCatalogEntry } from "../plugins/catalog.ts";
+import { readPluginSecret } from "../plugins/keychain.ts";
 import type { PluginRegistry } from "../plugins/registry.ts";
 import type { EventStore } from "../store.ts";
 
@@ -95,7 +96,7 @@ export async function modelEnvironment(env: Readonly<Record<string, string | und
             generic.key ?? (selected?.kind === saved?.provider && savedSecret === name ? (saved?.key ?? null) : null)
           );
         if (name === savedSecret) return saved?.key ?? null;
-        return keychain.read("plugin", name).catch(() => null);
+        return readPluginSecret(name, keychain);
       },
     } satisfies PluginContext["secrets"],
   };

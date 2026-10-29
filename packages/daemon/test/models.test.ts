@@ -260,6 +260,8 @@ test("model boot honors project rules over env, recognizes z.ai/Azure and saved 
   assert.equal(customAccess.selected?.config.apiKeySecret, "CUSTOM_API_KEY");
   assert.equal((await customAccess.secrets.get("CUSTOM_API_KEY")) === key, true);
   assert.equal(await customAccess.secrets.get("ARMADA_MODEL_API_KEY"), null);
+  await chain.write("github", "github", key);
+  assert.equal((await saved.secrets.get("GITHUB_TOKEN")) === key, true);
   const zai = await modelEnvironment(
     { ZAI_BASE_URL: "https://api.z.ai/api/coding/paas/v4", ZAI_MODEL: "glm-5.3-flash", ZAI_API_KEY: key },
     chain,
