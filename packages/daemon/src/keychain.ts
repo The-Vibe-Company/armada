@@ -85,10 +85,10 @@ export function systemKeychain(): Keychain {
 }
 
 /** Compatibility with the Linear provider's injected accessor. */
-export async function readLinearKey(access: SecretAccessor, project: string): Promise<string> {
+export async function readLinearKey(access: SecretAccessor | undefined, project: string): Promise<string> {
   let key: string | null;
   try {
-    key = await access("linear", project);
+    key = access ? await access("linear", project) : await systemKeychain().read("linear", project);
   } catch {
     throw new Error("Linear keychain lookup failed");
   }

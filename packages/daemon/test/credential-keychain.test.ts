@@ -70,10 +70,13 @@ test("Linux system storage accepts only trimmed absolute XDG roots, otherwise us
         import { existsSync } from "node:fs";
         import { randomBytes } from "node:crypto";
         import { join, isAbsolute } from "node:path";
-        import { systemKeychain } from ${JSON.stringify(new URL("../src/keychain.ts", import.meta.url).href)};
+        import { systemKeychain, readLinearKey } from ${JSON.stringify(new URL("../src/keychain.ts", import.meta.url).href)};
         const keychain = systemKeychain();
         await keychain.setCoordinator("openai", randomBytes(24).toString("hex"));
         assert.equal((await keychain.coordinator())?.provider, "openai");
+        const linearKey = randomBytes(24).toString("hex");
+        await keychain.write("linear", "orchard", linearKey);
+        assert.equal((await readLinearKey(undefined, "orchard")) === linearKey, true);
         const asked = process.env.XDG_CONFIG_HOME.trim();
         const root = isAbsolute(asked) ? asked : join(process.env.HOME, ".config");
         assert.equal(existsSync(join(root, "armada", "desktop", "credentials")), true);
