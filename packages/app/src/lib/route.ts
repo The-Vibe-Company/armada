@@ -2,8 +2,9 @@
 // index.html at its root. `#/projects/<id>` is a project's room (THE-1996),
 // `#/projects/<id>/rules` its rules and fleet (THE-1997), `#/sessions/<ticket>`
 // a session's page (a placeholder until the local runtime, docs/v2-desktop.md
-// step 3), `#/plugins` the Plugins screen; anything else, and off a browser
-// (a test's static render), the fleet.
+// step 3), `#/plugins` the Plugins screen, `#/settings` the coordinator's
+// model; anything else, and off a browser (a test's static render), the hangar
+// (the home, THE-2025).
 import { useSyncExternalStore } from "react";
 
 export type Route =
@@ -11,13 +12,14 @@ export type Route =
   | { kind: "project"; id: string }
   | { kind: "rules"; id: string }
   | { kind: "session"; ticket: string }
-  | { kind: "plugins" };
+  | { kind: "plugins" }
+  | { kind: "settings" };
 
 const decode = (part: string) => {
   try {
     return decodeURIComponent(part);
   } catch {
-    // A malformed address returns to the fleet.
+    // A malformed address returns to the hangar.
     return null;
   }
 };
@@ -25,6 +27,7 @@ const decode = (part: string) => {
 /** The screen a hash names. */
 export function routeOf(hash: string): Route {
   if (hash === "#/plugins") return { kind: "plugins" };
+  if (hash === "#/settings") return { kind: "settings" };
   const [kind, id, more, ...rest] = hash.replace(/^#?\/?/, "").split("/");
   const value = id && !rest.length ? decode(id) : null;
   if (!value) return { kind: "home" };
@@ -34,8 +37,10 @@ export function routeOf(hash: string): Route {
   return { kind: "home" };
 }
 
-export const roomHref = (project: string) => `#/projects/${encodeURIComponent(project)}`;
-export const rulesHref = (project: string) => `${roomHref(project)}/rules`;
+/** Where a project's squadron and its sidebar line lead: its room. */
+export const projectHref = (id: string) => `#/projects/${encodeURIComponent(id)}`;
+export const roomHref = projectHref;
+export const rulesHref = (project: string) => `${projectHref(project)}/rules`;
 export const sessionHref = (ticket: string) => `#/sessions/${encodeURIComponent(ticket)}`;
 
 const subscribe = (listener: () => void) => {
@@ -45,7 +50,7 @@ const subscribe = (listener: () => void) => {
 const current = () => window.location.hash;
 const server = () => "#/";
 
-/** The current route, re-rendered when the hash changes; the fleet on the server. */
+/** The current route, re-rendered when the hash changes; the hangar on the server. */
 export function useRoute(): Route {
   return routeOf(useSyncExternalStore(subscribe, current, server));
 }

@@ -109,7 +109,7 @@ export function RoomView({ project, snapshot, live, now, zone, clock, chat }: Ro
       : !live
         ? "Waiting for the daemon."
         : chat.coordinator === false
-          ? "No coordinator runs for this project yet: save its model key on the Fleet page, then restart the daemon."
+          ? "No coordinator runs for this project yet: save its model key in Settings, then restart the daemon."
           : null;
 
   return (

@@ -72,35 +72,14 @@ describe("in a browser, served by a running daemon", () => {
   }, 10_000);
 
   test("saves the coordinator provider once and remembers it after reload without storing a browser credential", async () => {
-    await page.goto(daemon.url);
+    await page.goto(`${daemon.url}#/settings`);
     const provider = page.getByRole("combobox", { name: "Provider", exact: true });
     await provider.waitFor({ timeout: 5000 });
     const key = randomBytes(24).toString("hex");
     await provider.selectOption("openai");
     await page.getByLabel("API key", { exact: true }).fill(key);
-    // The key's card changes height above the fleet: the list moves as a whole, and no row glides for it.
-    const row = page.locator("[data-row]").first();
-    await row.waitFor({ timeout: 5000 });
-    const top = await row.evaluate((el) => {
-      const moves: string[] = [];
-      let frames = 0;
-      const sample = () => {
-        moves.push(getComputedStyle(el).transform);
-        if (++frames < 30) requestAnimationFrame(sample);
-      };
-      requestAnimationFrame(sample);
-      (window as { moves?: string[] }).moves = moves;
-      return el.getBoundingClientRect().top;
-    });
     await page.getByRole("button", { name: "Save key", exact: true }).click();
     await page.getByRole("status").filter({ hasText: "OpenAI connected" }).waitFor({ timeout: 5000 });
-    await page.waitForFunction(() => ((window as { moves?: string[] }).moves?.length ?? 0) >= 30);
-    const still = await row.evaluate((el) => ({
-      top: el.getBoundingClientRect().top,
-      moves: (window as { moves?: string[] }).moves ?? [],
-    }));
-    expect(still.top).not.toBe(top);
-    expect(still.moves.filter((t) => t !== "none" && t !== "matrix(1, 0, 0, 1, 0, 0)")).toEqual([]);
     expect(await page.getByLabel("API key", { exact: true }).count()).toBe(0);
     const browserState = await page.evaluate(() =>
       JSON.stringify([localStorage, sessionStorage, document.body.innerHTML]),
@@ -114,7 +93,7 @@ describe("in a browser, served by a running daemon", () => {
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
   });
 
-  test("shows the fleet by state and the projects' sessions in flight, in Geist", async () => {
+  test("shows every project a squadron in the hangar, each the link to its fleet by state, in Geist", async () => {
     await page.goto(daemon.url);
     const sidebar = page.getByRole("complementary", { name: "Sidebar" });
     const projects = sidebar.getByRole("navigation", { name: "Projects" });
@@ -129,26 +108,53 @@ describe("in a browser, served by a running daemon", () => {
     ]);
     expect(rows).toHaveLength(SAMPLE_PROJECTS.length);
     await expect(sidebar.getByRole("status").innerText()).resolves.toBe("Live");
-    // The fleet's group headers, in order (the coordinator's key block above has its own).
-    const groups = page.getByRole("main").locator('h2[id^="fleet-"]');
-    expect((await groups.allInnerTexts()).map((h) => h.split("\n")[0])).toEqual([
-      "Blocked",
-      "Waiting for your decision",
-      "In progress",
-      "Ready to merge",
-      "Merged today",
-    ]);
+    await expect(sidebar.getByRole("link", { name: "Hangar" }).getAttribute("aria-current")).resolves.toBe("page");
+    await expect(sidebar.getByRole("link", { name: "Settings" }).getAttribute("href")).resolves.toBe("#/settings");
 
+    // The hangar: the fleet's facts on one line, then a squadron per project, each one link into its room.
+    const main = page.getByRole("main");
+    await main.locator("[data-squadron]").first().waitFor({ timeout: 5_000 });
+    await expect(main.locator("header").innerText()).resolves.toMatch(/^Hangar\s+6\s+agents in flight/);
+    const squadrons = await main
+      .locator("[data-squadron]")
+      .evaluateAll((links) =>
+        links.map((a) => [a.getAttribute("href"), a.querySelector("[data-counts]")?.textContent?.trim()]),
+      );
+    expect(squadrons).toEqual([
+      [
+        "#/projects/harbor",
+        "4 in flight · 1 on their own · 1 blocked · 1 waiting for you · 1 ready to merge · 1 merged today",
+      ],
+      ["#/projects/lantern", "2 in flight · 1 blocked · 1 waiting for you"],
+      ["#/projects/tidewater", "0 in flight"],
+    ]);
     const anatomy = await page.evaluate(() => ({
       h1: [...document.querySelectorAll("h1")].map((h) => ({
         text: h.textContent,
-        size: getComputedStyle(h).fontSize,
         inHeader: h.parentElement?.tagName,
       })),
       fonts: [...new Set([...document.querySelectorAll("body *")].map((e) => getComputedStyle(e).fontFamily))],
     }));
-    expect(anatomy.h1).toEqual([{ text: "Fleet", size: "22px", inHeader: "HEADER" }]);
+    expect(anatomy.h1).toEqual([{ text: "Hangar", inHeader: "HEADER" }]);
     for (const family of anatomy.fonts) expect(family).toMatch(/^"?Geist( Mono)?"?,/);
+
+    // Entering Harbor's room (THE-1996): its agents by state in the rail, under the v7 title.
+    await main.getByRole("link", { name: /^Harbor/ }).click();
+    await page.waitForURL(/#\/projects\/harbor$/);
+    const groups = main.locator("[data-rail-group]");
+    await groups.first().waitFor({ timeout: 5_000 });
+    expect(await groups.evaluateAll((all) => all.map((g) => g.getAttribute("data-rail-group")))).toEqual([
+      "blocked",
+      "you",
+      "running",
+      "ready",
+      "merged",
+    ]);
+    await expect(projects.getByRole("link", { name: /Harbor/ }).getAttribute("aria-current")).resolves.toBe("page");
+    const title = await page.evaluate(() =>
+      [...document.querySelectorAll("h1")].map((h) => ({ text: h.textContent, size: getComputedStyle(h).fontSize })),
+    );
+    expect(title).toEqual([{ text: "Harbor", size: "22px" }]);
     const loaded = await page.evaluate(async () => {
       await document.fonts.ready;
       return [...document.fonts].filter((f) => f.status === "loaded").map((f) => f.family.replace(/"/g, ""));
@@ -158,6 +164,8 @@ describe("in a browser, served by a running daemon", () => {
   });
 
   test("a state change over the subscription glides the same row to its new group, without a reload", async () => {
+    // The fleet by state of one project, on its rules page beside the room.
+    await page.goto(`${daemon.url}/#/projects/harbor/rules`);
     const row = page.locator('[data-row="harbor/HAR-12"]');
     await row.and(page.locator('[data-group="running"]')).waitFor({ timeout: 5_000 });
     const before = await row.evaluate((el) => {
@@ -200,7 +208,7 @@ describe("in a browser, served by a running daemon", () => {
     expect(after.top).toBeLessThan(before);
     expect(after.moves.some((t) => t !== "none" && !/^matrix\(1, 0, 0, 1, 0, 0\)$/.test(t))).toBe(true);
     expect(after.moves.at(-1)).toMatch(/^(none|matrix\(1, 0, 0, 1, 0, 0\))$/);
-    // And a claim reaches the sidebar's count and the list.
+    // And a claim reaches the sidebar's count, and the list of its project.
     daemon.append({
       project: "tidewater",
       kind: "session.claimed",
@@ -208,11 +216,11 @@ describe("in a browser, served by a running daemon", () => {
       actor: "worker",
       payload: { ticket: "TID-1", session: "s-tid-1", generation: 1, owner: "default", runtime: "local", handle: "h" },
     });
-    await page
-      .getByRole("complementary", { name: "Sidebar" })
-      .getByRole("link", { name: /Tidewater\s+1/ })
-      .waitFor({ timeout: 5_000 });
-    await page.locator('[data-row="tidewater/TID-1"][data-group="running"]').waitFor({ timeout: 5_000 });
+    const tidewater = page.getByRole("complementary", { name: "Sidebar" }).getByRole("link", { name: /Tidewater\s+1/ });
+    await tidewater.waitFor({ timeout: 5_000 });
+    await tidewater.click();
+    // Its room's rail holds the new agent in progress.
+    await page.locator('[data-rail-group="running"] [data-rail-row="TID-1"]').waitFor({ timeout: 5_000 });
   });
 
   test("a project's room: the band, the pinned question, a message the coordinator answers, kept across a reload", async () => {
