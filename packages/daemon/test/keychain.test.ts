@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
-import { githubToken } from "../src/forge/keychain.ts";
-import { Keychain } from "../src/keychain.ts";
+import { githubToken, Keychain } from "../src/keychain.ts";
 import { FakeKeychain } from "./support/keychain.ts";
 
 test("owner keychain wins; absent/locked entries fall back to gh without leaking source errors", async () => {

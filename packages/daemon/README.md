@@ -113,11 +113,31 @@ node packages/daemon/src/server/main.ts --database .context/fleet.sqlite --proje
 ```
 
 The project catalog is a JSON array, for example
-`[{"id":"orchard","name":"Orchard","repository":"example/orchard","programRoot":"SEED-1"}]`.
-`programRoot` is the Linear program's root issue identifier; omit it for a
-GitHub-only project. Optional `phaseGroup` names the Linear phase label group
-(default `Agent phase`). These fields configure daemon readers, not the public
-project protocol.
+`[{"id":"orchard","name":"Orchard","repository":"example/orchard"}]`.
+Optional `tracker` and `forge` select registry kinds (defaults `linear` and
+`github`). A disabled or refused plugin has no provider, so that seam does not
+start. Configure provider-specific project metadata in the app configuration
+(`ARMADA_APP_CONFIG`, otherwise `$XDG_CONFIG_HOME/armada/config.json`):
+
+```json
+{
+  "plugins": [
+    { "id": "linear", "config": { "tracker": { "linear": {
+      "projects": { "orchard": { "programRoot": "SEED-1", "phaseGroup": "Agent phase" } }
+    } } } },
+    { "id": "github", "config": { "forge": { "github": {
+      "projects": { "orchard": { "repository": "example/orchard" } }
+    } } } }
+  ]
+}
+```
+
+Both plugins are enabled by default. A project omitted from a provider's map
+is outside its scope and causes no requests. `programRoot` and `phaseGroup` in
+the old project catalog are accepted for compatibility but no longer configure
+readers; move them into the Linear plugin's project map above. GitHub's map is
+also explicit so the plugin never needs host internals to resolve a repository.
+
 The daemon binds `127.0.0.1`, uses an OS-assigned port unless `--port` is given,
 and prints one JSON readiness line with `url`, `wsUrl`, and
 `readers: [{project, tracker, forge}]` (booleans indicating which readers started).
@@ -129,20 +149,22 @@ build answers 404 while WebSocket requests still work. Static assets include
 content types and HEAD support; HTML navigation falls back to `index.html`.
 Paths and symlinks cannot escape the build directory.
 
-Boot composes the existing `TrackerPoller` and `GithubReader` in
-`src/server/readers.ts`. Each project has independent polling schedules (30
-seconds after completion); both append through the very same store the server
-subscribes to. GitHub correlates branches with ticket IDs already in that
-project's log, including tickets read after boot, on subsequent reads.
-Credentials are preflighted at startup: Linear uses the `readLinearKey` accessor
-with a host `LINEAR_API_KEY` override, falling back to the shared
-`systemKeychain().read("linear", project)` gateway. GitHub uses `GITHUB_TOKEN`,
-then the shared keychain / `gh auth token` accessor. No provider reads the
-environment itself. A missing
-credential skips only that reader and emits one fixed, credential-free stderr
-line per project/reader. Restart after supplying a missing key. Provider failures
-retain the existing log and retry on the reader's next scheduled tick; neither
-network reads nor credential lookup run in a protocol handler.
+Boot reads tracker and forge providers only from the plugin registry in
+`src/server/readers.ts`. Each project/seam has an independent polling schedule
+(30 seconds after completion), an abort deadline, and one outstanding read.
+Providers append through `ctx.events` to the same store the server subscribes
+to. GitHub correlates branches with ticket IDs in that project's log, including
+arrivals after boot. Neither network reads nor credential lookup runs in a
+protocol handler. Read failures leave existing observations intact, log a fixed
+credential-free diagnostic and retry on the next tick.
+
+Plugins request only their declared `LINEAR_API_KEY` or `GITHUB_TOKEN` through
+`ctx.secrets`. The host gateway accepts those environment overrides and the
+plugin keychain entries (`armada.plugins`, account equal to the secret name);
+GitHub also retains the owner's `armada.github` / `github` entry. If no GitHub
+secret is available, the plugin runs bounded `gh auth token`. Linear no longer
+reads project-keychain entries directly: save its key as the declared plugin
+secret. No provider imports the host keychain, store or server implementation.
 
 Embedders import `startServer` from `@armada/daemon/server`, supplying a store and
 catalog; it returns `{url, wsUrl, close}`. The caller owns the store and closes it

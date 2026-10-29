@@ -1,7 +1,8 @@
 // Queries adapted from packages/core/src/linear.ts (V1 Root, Children, Comments,
 // Changed, ChangedComments and connection pagination). No V1 runtime imports.
-// This folder is the future Linear plugin; scheduling/persistence live outside it.
-import { readLinearKey, type SecretAccessor } from "../../keychain.ts";
+// Provider wire adapter; scheduling/persistence live outside it.
+type SecretAccessor = (service: "linear", project: string) => Promise<string | null>;
+
 import type { Tracker, TrackerReading, TrackerTicket } from "../types.ts";
 
 interface Connection<T> {
@@ -68,11 +69,12 @@ const chunks = <T>(values: T[], size: number): T[][] =>
 export type LinearFetch = (url: string, init: RequestInit) => Promise<Response>;
 
 export interface LinearOptions {
+  endpoint?: string;
   project: string;
   rootId: string;
   phaseGroup: string;
   /** Defaults to the host keychain; tests/embedders can supply the same gateway interface. */
-  secrets?: SecretAccessor;
+  secrets: SecretAccessor;
   fetch: LinearFetch;
   now: () => Date;
 }
@@ -82,14 +84,21 @@ export function linearTracker(options: LinearOptions): Tracker {
   return {
     async read({ previous, signal }) {
       const startedAt = options.now().toISOString();
-      const apiKey = await readLinearKey(options.secrets, options.project);
+      let apiKey: string | null;
+      try {
+        apiKey = await options.secrets("linear", options.project);
+      } catch {
+        throw new Error("Linear credential lookup failed");
+      }
+      if (!apiKey) throw new Error("Linear key unavailable");
+      const key = apiKey;
       async function gql<T>(query: string, variables: object): Promise<T> {
         signal.throwIfAborted();
         let response: Response;
         try {
-          response = await options.fetch("https://api.linear.app/graphql", {
+          response = await options.fetch(options.endpoint ?? "https://api.linear.app/graphql", {
             method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: apiKey },
+            headers: { "Content-Type": "application/json", Authorization: key },
             body: JSON.stringify({ query, variables }),
             signal,
           });
