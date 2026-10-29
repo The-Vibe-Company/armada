@@ -1,0 +1,46 @@
+{
+  "response": {
+    "tickets": [
+      {
+        "id": "CHECK-1",
+        "title": "Exercise a plugin seam",
+        "status": "started",
+        "phase": "implementing",
+        "owner": "Avery"
+      }
+    ],
+    "comments": [
+      {
+        "id": "comment-1",
+        "ticket": "CHECK-1",
+        "updatedAt": "2030-01-01T10:00:00.000Z",
+        "phase": "implementing",
+        "summary": "The fixture is ready.",
+        "body": "The fixture is ready.\n\nA synthetic worker report."
+      }
+    ]
+  },
+  "expectedEvents": [
+    {
+      "kind": "ticket.seen",
+      "payload": {
+        "id": "CHECK-1",
+        "title": "Exercise a plugin seam",
+        "status": "started",
+        "phase": "implementing",
+        "owner": "Avery"
+      }
+    },
+    {
+      "kind": "ticket.report-posted",
+      "payload": {
+        "ticket": "CHECK-1",
+        "comment": "comment-1",
+        "updatedAt": "2030-01-01T10:00:00.000Z",
+        "phase": "implementing",
+        "summary": "The fixture is ready.",
+        "body": "The fixture is ready.\n\nA synthetic worker report."
+      }
+    }
+  ]
+}
