@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { KeychainBackend } from "./secrets/backend.ts";
@@ -93,4 +94,44 @@ export async function readLinearKey(access: SecretAccessor, project: string): Pr
   }
   if (!key) throw new Error("Linear key is missing from the keychain");
   return key;
+}
+
+export type TokenCommand = (file: string, args: readonly string[], signal?: AbortSignal) => Promise<string>;
+export interface GithubTokenOptions {
+  signal?: AbortSignal;
+  command?: TokenCommand;
+  platform?: string;
+  keychain?: Pick<Keychain, "read">;
+}
+const command: TokenCommand = (file, args, signal) =>
+  new Promise((resolve, reject) => {
+    execFile(file, [...args], { encoding: "utf8", timeout: 5000, maxBuffer: 16 * 1024, signal }, (error, stdout) => {
+      if (error) reject(new Error("GitHub credential command failed"));
+      else resolve(stdout);
+    });
+  });
+
+/** Owner keychain first, then gh's signed-in owner. All credential sources live at this boundary. */
+export async function githubToken(options: GithubTokenOptions = {}): Promise<string> {
+  const usable = (value: string | null) => {
+    const token = value?.trim();
+    return token && !/\s/.test(token) && !options.signal?.aborted ? token : null;
+  };
+  if (!options.signal?.aborted) {
+    try {
+      const token = usable(await (options.keychain ?? systemKeychain()).read("github", "github"));
+      if (token) return token;
+    } catch {
+      /* Missing/locked keychain falls through; backend details never escape. */
+    }
+  }
+  if (!options.signal?.aborted) {
+    try {
+      const token = usable(await (options.command ?? command)("gh", ["auth", "token"], options.signal));
+      if (token) return token;
+    } catch {
+      /* gh errors can contain a credential; never propagate them. */
+    }
+  }
+  throw new Error("GitHub credentials unavailable; sign in with gh auth login or save the owner token in the keychain");
 }
