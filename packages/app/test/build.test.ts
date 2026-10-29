@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -65,6 +66,28 @@ describe("in a browser, served by a running daemon", () => {
     await browser?.close();
     await daemon?.stop();
   }, 10_000);
+
+  test("saves the coordinator provider once and remembers it after reload without storing a browser credential", async () => {
+    await page.goto(daemon.url);
+    const provider = page.getByRole("combobox", { name: "Provider", exact: true });
+    await provider.waitFor({ timeout: 5000 });
+    const key = randomBytes(24).toString("hex");
+    await provider.selectOption("openai");
+    await page.getByLabel("API key", { exact: true }).fill(key);
+    await page.getByRole("button", { name: "Save key", exact: true }).click();
+    await page.getByRole("status").filter({ hasText: "OpenAI connected" }).waitFor({ timeout: 5000 });
+    expect(await page.getByLabel("API key", { exact: true }).count()).toBe(0);
+    const browserState = await page.evaluate(() =>
+      JSON.stringify([localStorage, sessionStorage, document.body.innerHTML]),
+    );
+    expect(browserState).not.toContain(key);
+    await page.reload();
+    await page.getByRole("status").filter({ hasText: "OpenAI connected" }).waitFor({ timeout: 5000 });
+    expect(await page.getByRole("button", { name: "Save key", exact: true }).count()).toBe(0);
+    await page.getByRole("button", { name: "Change key", exact: true }).click();
+    expect(await page.getByLabel("API key", { exact: true }).inputValue()).toBe("");
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  });
 
   test("shows the fleet by state and the projects' sessions in flight, in Geist", async () => {
     await page.goto(daemon.url);

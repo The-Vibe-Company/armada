@@ -1,9 +1,10 @@
 // armadad's own WebSocket server (packages/daemon) over an in-memory event
 // log seeded with a synthetic fleet, for development and this package's
-// browser test: no Linear, no GitHub, no file. Bun runs it; the app never
+// browser test: no Linear, no GitHub, no file, no keychain. Bun runs it; the app never
 // imports it (the app only speaks the protocol).
 
 import type { EventInput, FleetEvent } from "@armada/daemon/events";
+import { Keychain } from "@armada/daemon/keychain";
 import { startServer } from "@armada/daemon/server";
 import { EventStore } from "@armada/daemon/store";
 import type { Project } from "@armada/protocol";
@@ -113,7 +114,18 @@ export async function startDevDaemon({
 } = {}): Promise<DevDaemon> {
   const store = new EventStore(":memory:");
   for (const event of events) store.append(event);
-  const server = await startServer({ store, projects, port, staticDir, allowedOrigins });
+  // Keys saved from the app stay in this process: never the machine's own keychain.
+  const entries = new Map<string, string>();
+  const keychain = new Keychain({
+    storage: "os-keychain",
+    async read(service, account) {
+      return entries.get(`${service}/${account}`) ?? null;
+    },
+    async write(service, account, value) {
+      entries.set(`${service}/${account}`, value);
+    },
+  });
+  const server = await startServer({ store, projects, port, staticDir, allowedOrigins, keychain });
   return {
     url: server.url,
     wsUrl: server.wsUrl,

@@ -1,5 +1,6 @@
 import { APP_TOO_OLD, DAEMON_TOO_OLD } from "@armada/protocol";
 import { useMemo } from "react";
+import { CoordinatorKey } from "@/components/CoordinatorKey";
 import { FleetList } from "@/components/fleet/FleetList";
 import { Dot, Page, PageHeader } from "@/components/page";
 import { Button } from "@/components/ui/button";
@@ -93,6 +94,7 @@ export function Home({
           )}
         </div>
       )}
+      <CoordinatorKey />
       {projects && projects.length > 0 && read && <FleetList items={items} names={names} now={now} zone={zone} />}
     </Page>
   );

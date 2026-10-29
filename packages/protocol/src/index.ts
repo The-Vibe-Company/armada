@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /** Wire version, independent of the daemon/app release versions. */
-export const PROTOCOL_VERSION = { major: 1, minor: 0 } as const;
+export const PROTOCOL_VERSION = { major: 1, minor: 1 } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
 
@@ -42,11 +42,32 @@ export const readSessionRequestSchema = z.object({
   project: identifier,
   sessionId: identifier,
 });
+export const modelProviderSchema = z.enum(["anthropic", "openai"]);
+export const credentialsStatusRequestSchema = z.object({ ...request, type: z.literal("credentials.status") });
+export const credentialsSetRequestSchema = z.object({
+  ...request,
+  type: z.literal("credentials.set"),
+  provider: modelProviderSchema,
+  key: z
+    .string()
+    .min(1)
+    .max(8192)
+    .regex(/^[!-~]+$/),
+});
+export const credentialsResultSchema = z.object({
+  ...request,
+  type: z.literal("credentials.result"),
+  provider: modelProviderSchema.nullable(),
+  storage: z.enum(["os-keychain", "file"]),
+});
 export const clientMessageSchema = z.discriminatedUnion("type", [
+  credentialsStatusRequestSchema,
+  credentialsSetRequestSchema,
   listProjectsRequestSchema,
   subscribeRequestSchema,
   readSessionRequestSchema,
 ]);
+export type CredentialsResult = z.infer<typeof credentialsResultSchema>;
 export type ListProjectsRequest = z.infer<typeof listProjectsRequestSchema>;
 export type SubscribeRequest = z.infer<typeof subscribeRequestSchema>;
 export type ReadSessionRequest = z.infer<typeof readSessionRequestSchema>;
@@ -112,6 +133,7 @@ export const errorSchema = z.object({
   message: identifier,
 });
 export const serverMessageSchema = z.discriminatedUnion("type", [
+  credentialsResultSchema,
   projectsResultSchema,
   subscribedSchema,
   sessionResultSchema,

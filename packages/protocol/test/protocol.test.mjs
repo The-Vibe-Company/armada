@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { admitRequest, clientMessageSchema, serverMessageSchema } from "../dist/index.js";
+import { admitRequest, clientMessageSchema, PROTOCOL_VERSION, serverMessageSchema } from "../dist/index.js";
 
 const version = { major: 1, minor: 0 };
 const event = {
@@ -79,7 +79,7 @@ test("an older app gets the exact upgrade line and a close instruction before bo
     close: true,
     error: {
       type: "error",
-      version,
+      version: PROTOCOL_VERSION,
       id: "old-a",
       code: "app-too-old",
       message: "Armada app is older than the daemon: update it",
