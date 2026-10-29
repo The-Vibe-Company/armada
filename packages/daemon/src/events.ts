@@ -71,9 +71,28 @@ export interface EventPayloads {
   "validation.decided": { id: string; decision: "approved" | "changes-requested"; note: string };
   "coordinator.message": { role: "owner" | "coordinator"; body: string };
   "coordinator.checkpoint": { checkpoint: Json };
+  "pull-request.opened": GithubPullRequest;
+  "pull-request.head-moved": GithubPullRequest;
+  "pull-request.checks-green": GithubPullRequest;
+  "pull-request.checks-red": GithubPullRequest;
+  "pull-request.review-changed": GithubPullRequest;
+  "pull-request.closed": GithubPullRequest;
+  "pull-request.merged": GithubPullRequest;
 }
 export type EventKind = keyof EventPayloads;
 export type EventInput = {
   [K in EventKind]: { project: string; kind: K; at: string; actor: string; payload: EventPayloads[K] };
 }[EventKind];
 export type FleetEvent = EventInput & { seq: number };
+
+/** GitHub observations extend the existing fleet snapshot without changing its fold. */
+export interface GithubPullRequest extends PullRequest {
+  repository: string;
+  title: string;
+  url: string;
+  headRef: string;
+  draft: boolean;
+  review: "none" | "approved" | "changes_requested" | "review_required";
+  checks: { name: string; state: PullRequest["ci"]; runId?: number; runAttempt?: number }[];
+  checksComplete: boolean;
+}
