@@ -75,6 +75,11 @@ export interface Io {
   codexModels?: (cwd: string) => Promise<string[] | null>;
   /** Save a model chosen by the owner in the existing repository configuration. */
   writeFile?: (path: string, text: string) => Promise<void>;
+  /** Atomically save app configuration, creating its private directory if needed. */
+  updateAppConfig?: (
+    path: string,
+    update: (current: Record<string, unknown>) => Record<string, unknown>,
+  ) => Promise<void>;
   /** Bounded regular-file transcript tail; offsets are bytes at complete line boundaries. */
   readFileRange?: (
     path: string,

@@ -43,6 +43,7 @@
       },
       "devDependencies": {
         "@armada/core": "workspace:*",
+        "@armada/daemon": "workspace:*",
       },
     },
     "packages/core": {
@@ -57,6 +58,16 @@
     "packages/daemon": {
       "name": "@armada/daemon",
       "version": "0.0.0",
+      "dependencies": {
+        "@armada/plugin-api": "workspace:*",
+        "ajv": "8.20.0",
+        "proper-lockfile": "4.1.2",
+        "semver": "7.7.4",
+      },
+      "devDependencies": {
+        "@types/proper-lockfile": "4.1.4",
+        "@types/semver": "7.7.1",
+      },
     },
     "packages/dashboard": {
       "name": "@armada/dashboard",
@@ -91,6 +102,20 @@
         "wawoff2": "2.0.1",
       },
     },
+    "packages/plugin-api": {
+      "name": "@armada/plugin-api",
+      "version": "0.1.0",
+      "dependencies": {
+        "zod": "4.6.5",
+      },
+    },
+    "packages/plugins/hello": {
+      "name": "@armada/plugin-hello",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@armada/plugin-api": "workspace:*",
+      },
+    },
     "packages/protocol": {
       "name": "@armada/protocol",
       "version": "1.0.0",
@@ -107,6 +132,10 @@
     "@armada/daemon": ["@armada/daemon@workspace:packages/daemon"],
 
     "@armada/dashboard": ["@armada/dashboard@workspace:packages/dashboard"],
+
+    "@armada/plugin-api": ["@armada/plugin-api@workspace:packages/plugin-api"],
+
+    "@armada/plugin-hello": ["@armada/plugin-hello@workspace:packages/plugins/hello"],
 
     "@armada/protocol": ["@armada/protocol@workspace:packages/protocol"],
 
@@ -414,6 +443,8 @@
 
     "@types/retry": ["@types/retry@0.12.5", "", {}, "sha512-3xSjTp3v03X/lSQLkczaN9UIEwJMoMCA1+Nb5HfbJEQWogdeQIyVtTvxPXDQjZ5zws8rFQfVfRdz03ARihPJgw=="],
 
+    "@types/semver": ["@types/semver@7.7.1", "", {}, "sha512-FmgJfu+MOcQ370SD0ev7EI8TlCAfKYU+B4m5T3yXc1CiRN94g/SZPtsCkk506aUDtlMnFZvasDwHHUcZUEaYuA=="],
+
     "@types/trusted-types": ["@types/trusted-types@2.0.7", "", {}, "sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw=="],
 
     "@vercel/cli-config": ["@vercel/cli-config@0.3.0", "", { "dependencies": { "xdg-app-paths": "5", "zod": "4.1.11" } }, "sha512-kQLt5Pm8wKd7/imzDY9/9u0tf8OuRkAuXI+s7j057FSUrXapAmumJSKwDqnR4ZZqdWoUcNLlFAgVIAdiwcGTcw=="],
@@ -708,7 +739,7 @@
 
     "scheduler": ["scheduler@0.28.0", "", {}, "sha512-juorfCmIkIw8tT+p5BXSm6PJjQF/ycEYmKyzURCIt/RaZIhL+PulbQ9Yu2z1HdOJDdqDTlxA1+xKBmHXJsczAw=="],
 
-    "semver": ["semver@7.8.5", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA=="],
+    "semver": ["semver@7.7.4", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-vFKC2IEtQnVhpT78h1Yp8wzwrf8CM+MzKMHGJZfBtzhZNycRFnXsHk6E5TxIkkMsgNS7mdX3AGB7x2QM2di4lA=="],
 
     "server-only": ["server-only@0.0.1", "", {}, "sha512-qepMx2JxAa5jjfzxG79yPPq+8BuFToHd1hm7kI+Z4zAq1ftQiP7HcxMhDDItrbtwVeLg/cY2JnKnrcFkmiswNA=="],
 
@@ -829,6 +860,8 @@
     "next/postcss": ["postcss@8.5.23", "", { "dependencies": { "nanoid": "^3.3.16", "picocolors": "^1.1.1", "source-map-js": "^1.2.1" } }, "sha512-g50586zr4bZmwFiTlflMu8E0bDTb5I5gertgwAKmsdUlTQIhZtunzUlD1WSzwcVWPoAVpsrA6vlfCD7oXvRwgg=="],
 
     "puppeteer-core/ws": ["ws@8.22.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg=="],
+
+    "sharp/semver": ["semver@7.8.5", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA=="],
 
     "tinyglobby/picomatch": ["picomatch@4.0.7", "", {}, "sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA=="],
 
