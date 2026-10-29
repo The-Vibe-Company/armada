@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -341,10 +342,31 @@ test("HTTP serves built assets and SPA routes, refuses escapes and foreign brows
   const allowed = new WebSocket(server.wsUrl, { origin: server.url });
   await once(allowed, "open");
   allowed.terminate();
-  const foreign = new WebSocket(server.wsUrl, { origin: "https://foreign.example" });
-  foreign.on("error", () => {});
-  const [, response] = await once(foreign, "unexpected-response");
-  assert.equal(response.statusCode, 403);
-  response.destroy();
-  foreign.terminate();
+  // Exercise the rejected HTTP upgrade directly: Bun 1.4.2's ws compatibility
+  // client does not expose ws's Node-only unexpected-response event.
+  const status = await new Promise<number | undefined>((resolve, reject) => {
+    const request = httpRequest(
+      server.url,
+      {
+        headers: {
+          Connection: "Upgrade",
+          Upgrade: "websocket",
+          "Sec-WebSocket-Version": "13",
+          "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+          Origin: "https://foreign.example",
+        },
+      },
+      (response) => {
+        response.resume();
+        resolve(response.statusCode);
+      },
+    );
+    request.on("error", reject);
+    request.on("upgrade", (_response, socket) => {
+      socket.destroy();
+      reject(new Error("Foreign origin unexpectedly upgraded"));
+    });
+    request.end();
+  });
+  assert.equal(status, 403);
 });
