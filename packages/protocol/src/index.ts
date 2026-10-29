@@ -1,14 +1,23 @@
 import { z } from "zod";
+import {
+  chatReadRequestSchema,
+  chatResultSchema,
+  chatSendRequestSchema,
+  chatSentSchema,
+  ownerAnsweredSchema,
+  ownerAnswerRequestSchema,
+} from "./chat.js";
 import { modelConfigSchema, modelKindEntrySchema, modelKindSchema } from "./models.js";
 import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
 
+export * from "./chat.js";
 export * from "./fleet.js";
 export * from "./models.js";
 export * from "./plugins.js";
 export * from "./rules.js";
 
 /** Wire version, independent of the daemon/app release versions. */
-export const PROTOCOL_VERSION = { major: 1, minor: 3 } as const;
+export const PROTOCOL_VERSION = { major: 1, minor: 4 } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
 
@@ -77,6 +86,9 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   listProjectsRequestSchema,
   subscribeRequestSchema,
   readSessionRequestSchema,
+  chatReadRequestSchema,
+  chatSendRequestSchema,
+  ownerAnswerRequestSchema,
   ...pluginRequestSchemas,
 ]);
 export type CredentialsResult = z.infer<typeof credentialsResultSchema>;
@@ -151,6 +163,9 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   sessionResultSchema,
   eventBatchSchema,
   errorSchema,
+  chatResultSchema,
+  chatSentSchema,
+  ownerAnsweredSchema,
   ...pluginResultSchemas,
 ]);
 export type ProjectsResult = z.infer<typeof projectsResultSchema>;

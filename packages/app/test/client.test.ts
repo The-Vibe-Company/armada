@@ -408,3 +408,34 @@ test("refuses credential writes to a remote daemon even when its fleet connectio
   expect(socket().sent.some((m) => m.type === "credentials.set")).toBe(false);
   client.stop();
 });
+
+test("a screen's request gets its own reply, its error's line, or a refusal when the connection drops", async () => {
+  const { client, socket } = setup();
+  await expect(client.request({ type: "chat.read", project: "p" })).rejects.toThrow(/not connected/);
+  socket().receive({ type: "projects.result", version: V, id: "r1", projects: [] });
+  expect(client.getState().minor).toBe(V.minor);
+  const read = client.request({ type: "chat.read", project: "p" });
+  const sent = socket().sent.at(-1) as ClientMessage & { id: string };
+  expect(sent).toEqual({ type: "chat.read", project: "p", version: V, id: sent.id });
+  // Another request's reply is not this one's; its own resolves it.
+  socket().receive({ type: "chat.sent", version: V, id: "other", project: "p", requestId: "m" });
+  socket().receive({
+    type: "chat.result",
+    version: V,
+    id: sent.id,
+    project: "p",
+    seq: 3,
+    coordinator: false,
+    items: [],
+  });
+  expect((await read).seq).toBe(3);
+  const refused = client.request({ type: "chat.send", project: "p", requestId: "m", body: "Hi" });
+  const asked = socket().sent.at(-1) as { id: string };
+  socket().receive({ type: "error", version: V, id: asked.id, code: "not-found", message: "No coordinator" });
+  await expect(refused).rejects.toThrow("No coordinator");
+  // A request's error is not the fleet's problem.
+  expect(client.getState().problem).toBeNull();
+  const dropped = client.request({ type: "owner.answer", project: "p", item: "q", choice: "Yes" });
+  socket().drop();
+  await expect(dropped).rejects.toThrow(/connection dropped/);
+});

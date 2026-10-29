@@ -3,11 +3,14 @@
 // browser test: no Linear, no GitHub, no file, no keychain. Bun runs it; the app never
 // imports it (the app only speaks the protocol).
 
+import type { CoordinatorOptions } from "@armada/daemon/coordinator";
 import type { EventInput, FleetEvent } from "@armada/daemon/events";
 import { Keychain } from "@armada/daemon/keychain";
 import { startServer } from "@armada/daemon/server";
 import { EventStore } from "@armada/daemon/store";
 import type { Project } from "@armada/protocol";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 
 export interface DevDaemon {
   /** The daemon's page address: it serves `staticDir` there, the app it was given. */
@@ -77,6 +80,24 @@ export function sampleEvents(at: string): EventInput[] {
       { id: "m-har-9", ticket: "HAR-9", session: "s-har-9-1", pr: 39, head: "head-39" },
       "coordinator",
     ),
+    // The room's pinned question and one of the coordinator's own lines (THE-1996).
+    e(
+      "harbor",
+      "coordinator.message",
+      { role: "coordinator", body: "#39 merged: HAR-9's quays have names." },
+      "coordinator",
+    ),
+    e(
+      "harbor",
+      "inbox.opened",
+      {
+        id: "ask-har-15",
+        ticket: "HAR-15",
+        kind: "owner-request",
+        body: "Two berth tests time out under the full suite. Fix the wait, or raise the timeout?\n\nOptions:\n1. Fix the wait (recommended)\n2. Raise the timeout\n3. Let me look",
+      },
+      "coordinator",
+    ),
     ticket("lantern", "LAN-3", "Dim the lanterns at dawn"),
     claim("lantern", "LAN-3"),
     report("lantern", "LAN-3", "implementing", "Reading the sunrise table"),
@@ -102,18 +123,69 @@ export function sampleEvents(at: string): EventInput[] {
   ];
 }
 
+/** What the faux coordinator says of the facts `fleet.status` returned. */
+function fleetLine(facts: string): string {
+  try {
+    const sessions = (JSON.parse(facts) as { tables?: { sessions?: unknown[] } }).tables?.sessions;
+    if (Array.isArray(sessions)) return `I read the fleet: ${sessions.length} sessions.`;
+  } catch {
+    /* Another shape: said plainly. */
+  }
+  return "I read the fleet.";
+}
+
+/**
+ * A project's coordinator on pi-ai's faux model: to each message it reads the
+ * fleet (one tool call), then answers in one line. Endless: each answer queues
+ * the next. Development and tests only; a real coordinator gets its model from
+ * the owner's key.
+ */
+export function devCoordinator(project: string): CoordinatorOptions {
+  const faux = fauxProvider({ models: [{ id: "dev-coordinator" }] });
+  const models = createModels();
+  models.setProvider(faux.provider);
+  let calls = 0;
+  const answer = (transcript: { messages: readonly { role: string; content?: unknown }[] }) => {
+    faux.appendResponses([answer]);
+    const last = transcript.messages.at(-1);
+    const text = (m: typeof last) =>
+      typeof m?.content === "string"
+        ? m.content
+        : Array.isArray(m?.content)
+          ? m.content.map((c: { text?: string }) => c.text ?? "").join("")
+          : "";
+    if (last?.role !== "toolResult")
+      return fauxAssistantMessage(fauxToolCall("fleet.status", {}, { id: `status-${++calls}` }), {
+        stopReason: "toolUse",
+        timestamp: Date.now(),
+      });
+    const said = text(transcript.messages.findLast((m) => m.role === "user")).trim();
+    return fauxAssistantMessage(`Noted: “${said.slice(0, 120)}”. ${fleetLine(text(last))}`, { timestamp: Date.now() });
+  };
+  faux.setResponses([answer]);
+  return {
+    project,
+    models,
+    model: { provider: faux.getModel().provider, modelId: faux.getModel().id },
+    setTimer: () => () => {},
+  };
+}
+
 export async function startDevDaemon({
   port = 0,
   projects = SAMPLE_PROJECTS,
   events = sampleEvents(new Date().toISOString()),
   staticDir,
   allowedOrigins,
+  coordinators = true,
 }: {
   port?: number;
   projects?: Project[];
   events?: EventInput[];
   staticDir?: string;
   allowedOrigins?: string[];
+  /** Each project's coordinator, on a faux model that answers (no key, no network). */
+  coordinators?: boolean;
 } = {}): Promise<DevDaemon> {
   const store = new EventStore(":memory:");
   for (const event of events) store.append(event);
@@ -146,6 +218,7 @@ export async function startDevDaemon({
         },
       },
     ],
+    coordinators: coordinators ? projects.map((p) => devCoordinator(p.id)) : [],
   });
   return {
     url: server.url,

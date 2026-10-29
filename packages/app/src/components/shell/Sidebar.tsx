@@ -50,7 +50,9 @@ export function Sidebar() {
               key={p.id}
               href={projectHref(p.id)}
               className={`${item} ${current}`}
-              aria-current={route.kind === "project" && route.id === p.id ? "page" : undefined}
+              aria-current={
+                (route.kind === "project" || route.kind === "rules") && route.id === p.id ? "page" : undefined
+              }
               title={p.repository}
             >
               <span className="min-w-0 flex-1 truncate">{p.name}</span>
