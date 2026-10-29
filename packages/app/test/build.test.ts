@@ -210,4 +210,63 @@ describe("in a browser, served by a running daemon", () => {
       .waitFor({ timeout: 5_000 });
     await page.locator('[data-row="tidewater/TID-1"][data-group="running"]').waitFor({ timeout: 5_000 });
   });
+  test("every row opens its session's page, by a click or the keyboard, and holds from 900 px up", async () => {
+    await page.setViewportSize({ width: 900, height: 800 });
+    await page.goto(daemon.url);
+    const rows = page.locator("[data-row]");
+    await rows.first().waitFor({ timeout: 5_000 });
+    // Each row's time is whole at the window's narrowest supported width; the title gives way.
+    const clipped = await rows.evaluateAll((els) =>
+      els.flatMap((el) => {
+        const time = el.lastElementChild as HTMLElement;
+        const row = el.getBoundingClientRect();
+        const box = time.getBoundingClientRect();
+        return time.scrollWidth > time.clientWidth || box.right > row.right ? [el.getAttribute("data-row")] : [];
+      }),
+    );
+    expect(clipped).toEqual([]);
+    // The forge reads HAR-15's pull request, with its branch and files.
+    daemon.append({
+      project: "harbor",
+      kind: "pull-request.opened",
+      at: new Date().toISOString(),
+      actor: "github",
+      payload: {
+        number: 41,
+        ticket: "HAR-15",
+        state: "open",
+        ci: "failure",
+        conflicting: false,
+        head: "head-41",
+        repository: "example/harbor",
+        title: "Price berths by the hour",
+        url: "https://example.test/harbor/pull/41",
+        headRef: "feature/har-15-price-berths",
+        draft: false,
+        review: "none",
+        checks: [],
+        checksComplete: true,
+        files: [{ path: "src/berths/price.ts", additions: 42, deletions: 3 }],
+      } as never,
+    });
+    await page.locator('[data-row="harbor/HAR-15"]').click();
+    await page.getByRole("heading", { level: 1, name: "Price berths by the hour" }).waitFor({ timeout: 5_000 });
+    expect(new URL(page.url()).hash).toBe("#/sessions/HAR-15");
+    await expect(page.getByRole("region", { name: "State" }).getAttribute("data-state")).resolves.toBe("blocked");
+    await page.getByText("feature/har-15-price-berths").waitFor({ timeout: 5_000 });
+    // A report opens on a click to its whole text.
+    const report = page.locator("[data-entry] details").first();
+    await report.locator("summary").click();
+    await expect(report.getAttribute("open")).resolves.toBe("");
+    await page.getByRole("tab", { name: /Files/ }).click();
+    await page.locator('[data-file="src/berths/price.ts"]').waitFor({ timeout: 5_000 });
+    expect(new URL(page.url()).hash).toBe("#/sessions/HAR-15?tab=files");
+    // Back to the project (its room once it lands; the fleet today), then a row by the keyboard.
+    await page.getByRole("link", { name: "← Harbor" }).click();
+    await page.getByRole("heading", { level: 1, name: "Fleet" }).waitFor({ timeout: 5_000 });
+    await page.locator('[data-row="lantern/LAN-7"]').focus();
+    await page.keyboard.press("Enter");
+    await page.getByRole("heading", { level: 1, name: "Pick the lanterns' colour" }).waitFor({ timeout: 5_000 });
+    await expect(page.getByRole("region", { name: "State" }).getAttribute("data-state")).resolves.toBe("you");
+  });
 });

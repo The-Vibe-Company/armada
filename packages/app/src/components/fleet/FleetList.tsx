@@ -11,6 +11,7 @@ import {
   STEPS,
 } from "@/fleet/overview";
 import { cn } from "@/lib/utils";
+import { sessionHref } from "@/session/route";
 
 /** Each state's colour: its dot, its group's dot, its reason and its step on the bar. */
 export const TONE: Record<Group, { text: string; bg: string }> = {
@@ -115,9 +116,10 @@ function Row({
   const raise = (el: HTMLElement | null, up: boolean) => {
     if (el) el.style.zIndex = up ? "1" : "";
   };
-  const self = useRef<HTMLDivElement>(null);
+  const self = useRef<HTMLAnchorElement>(null);
+  // The whole row is a link to the session's page: focusable, opened by a click or Enter.
   return (
-    <m.div
+    <m.a
       ref={self}
       layout="position"
       layoutDependency={`${place} ${i.group}`}
@@ -130,11 +132,13 @@ function Row({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ ...GLIDE, layout: GLIDE }}
+      href={sessionHref(i.ticket)}
       data-row={i.key}
       data-group={i.group}
       aria-describedby={`fleet-${i.group}`}
       className={cn(
-        "relative grid h-12 grid-cols-[8px_72px_minmax(0,1fr)_96px_64px_48px] items-center gap-3.5 border-line-soft border-b bg-bg px-3",
+        // The fixed columns hold their words from a 900 px window up; the title gives way, with an ellipsis.
+        "relative grid h-12 grid-cols-[8px_80px_minmax(0,1fr)_minmax(0,96px)_64px_56px] items-center gap-3.5 border-line-soft border-b bg-bg px-3 outline-offset-[-2px] hover:bg-item-hover focus-visible:bg-item-hover",
         long && "[contain-intrinsic-size:auto_48px] [content-visibility:auto]",
       )}
     >
@@ -148,8 +152,8 @@ function Row({
       </span>
       <span className="truncate text-small text-text-2">{projectName}</span>
       <StepBar step={i.step} bg={tone.bg} />
-      <span className="text-right font-mono text-heading text-text-3 tnum">{time}</span>
-    </m.div>
+      <span className="whitespace-nowrap text-right font-mono text-heading text-text-3 tnum">{time}</span>
+    </m.a>
   );
 }
 
