@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { bootDaemon } from "@armada/daemon";
 import type { PluginCatalogEntry } from "@armada/daemon/plugins/catalog";
 import { updateAppConfig } from "@armada/daemon/plugins/config";
@@ -252,43 +252,98 @@ test("plugin test exercises recorded reads, writes, PTYs, workspaces and a model
   );
 }, 30_000);
 
-test("plugin test stops a real worker whose launch returns after the deadline", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "armada-plugin-late-"));
-  const marker = join(dir, "stopped");
+test("a handle returned after cancellation is stopped before the runner can observe it", async () => {
+  const { spawn, execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const { PluginRegistry } = await import("@armada/daemon/plugins");
+  const { manifestSchema } = await import("@armada/plugin-api");
+  const { runSeamChecks } = await import("../src/plugin-checks.ts");
+  const execute = promisify(execFile);
+  const directory = await mkdtemp(join(tmpdir(), "armada-plugin-cancel-"));
+  const manifest = manifestSchema.parse({
+    id: "late",
+    version: "1.0.0",
+    pluginApi: "^0.1.0",
+    enabledByDefault: true,
+    description: "Late worker cleanup regression",
+    contributions: { runtime: { late: { config: true, secrets: [] } } },
+  });
+  const registry = new PluginRegistry();
+  const activation = registry.activation(manifest);
+  const controller = new AbortController();
+  const cancellation = new Error("fixture deadline");
+  let entered!: () => void;
+  const launchEntered = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let release!: () => void;
+  const returnedHandle = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let child: ReturnType<typeof spawn> | undefined;
+  let exited: Promise<unknown> | undefined;
+  let stopped = 0;
+  let observed = 0;
+  let lateAction: Promise<void> | undefined;
+  activation.register.runtime("late", {
+    async prepare({ repository, branch }) {
+      await execute("git", ["-C", repository, "switch", "--quiet", "-c", branch]);
+      return { id: "late", node: "local", path: repository };
+    },
+    async launch({ worker }) {
+      child = spawn("node", ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+      exited = new Promise((resolve) => {
+        child?.once("exit", resolve);
+      });
+      entered();
+      await returnedHandle;
+      return { ...worker, handle: "late-child" };
+    },
+    async observe() {
+      observed++;
+      return { state: "unknown" };
+    },
+    async deliver() {
+      throw new Error("cancelled launch cannot deliver");
+    },
+    async stop() {
+      stopped++;
+      child?.kill("SIGTERM");
+      await exited;
+    },
+  });
+  activation.commit();
   try {
-    await writeFile(
-      join(dir, "package.json"),
-      JSON.stringify({
-        type: "module",
-        main: "index.mjs",
-        armada: {
-          id: "late",
-          version: "1.0.0",
-          pluginApi: "^0.1.0",
-          enabledByDefault: true,
-          description: "Late worker cleanup regression",
-          contributions: { runtime: { late: { config: true, secrets: [] } } },
-        },
-      }),
-    );
-    await writeFile(
-      join(dir, "index.mjs"),
-      await readFile(new URL("./fixtures/plugin-test/late-launch/index.mjs", import.meta.url), "utf8"),
-    );
-    await writeFile(join(dir, "armada-plugin.test.json"), JSON.stringify({ runtime: { late: { marker } } }));
-    const { createExec } = await import("../src/spawn.ts");
-    const result = await createExec()(process.execPath, ["packages/cli/src/main.ts", "plugin", "test", dir], {
-      cwd: process.cwd(),
-      timeoutMs: 12_000,
-      processGroup: true,
-      env: { PATH: process.env.PATH },
+    await runSeamChecks({
+      registry,
+      manifest,
+      events: [],
+      directory,
+      fixtureRoot: fileURLToPath(new URL("../../plugin-api/fixtures/", import.meta.url)),
+      endpoint: "http://127.0.0.1",
+      requests: [],
+      check: async (name, action) => {
+        if (name.endsWith(".launch")) {
+          lateAction = action(controller.signal);
+          await launchEntered;
+          controller.abort(cancellation);
+          return false;
+        }
+        await action(controller.signal);
+        return true;
+      },
     });
-    expect(result.timedOut).not.toBe(true);
-    expect(result.code).toBe(1);
-    expect(result.stdout).toContain("FAIL runtime.late.launch: check timed out after 5 seconds");
-    expect(result.stdout).not.toContain("must not continue");
-    expect(await readFile(marker, "utf8")).toBe("stopped");
+    // The runner already completed its normal finally before this handle exists.
+    expect(stopped).toBe(0);
+    release();
+    await expect(lateAction).rejects.toBe(cancellation);
+    expect(stopped).toBe(1);
+    expect(observed).toBe(0);
+    expect(child?.signalCode).toBe("SIGTERM");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    release();
+    if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await exited;
+    await rm(directory, { recursive: true, force: true });
   }
-}, 20_000);
+});
