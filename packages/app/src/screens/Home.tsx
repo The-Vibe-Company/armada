@@ -3,9 +3,9 @@ import { useMemo } from "react";
 import { FleetList } from "@/components/fleet/FleetList";
 import { Dot, Page, PageHeader } from "@/components/page";
 import { Button } from "@/components/ui/button";
-import { fleetItems, groupCounts, headline, subline } from "@/fleet/overview";
+import { dayIn, fleetItems, groupCounts, headline, subline } from "@/fleet/overview";
 import { fleetOf } from "@/fleet/state";
-import { LOG_BEHIND } from "@/protocol/client";
+import { LOG_BEHIND, NOT_FOLDED } from "@/protocol/client";
 import { useDaemon } from "@/protocol/store";
 
 const viewerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -34,6 +34,9 @@ export function Home({
   const zone = givenZone ?? viewerZone();
   // Shown once every project's folded state arrived, so the page never says 0 before it knows.
   const read = projects?.every((p) => fleets[p.id]) ?? false;
+  // The list changes with the fleet and with the viewer's day, not with each millisecond.
+  const today = dayIn(now, zone);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `now` only decides the day, which `today` stands for.
   const items = useMemo(
     () =>
       fleetItems(
@@ -43,12 +46,13 @@ export function Home({
         }),
         { now, zone },
       ),
-    [projects, fleets, now, zone],
+    [projects, fleets, today, zone],
   );
   const names = useMemo(() => new Map((projects ?? []).map((p) => [p.id, p.name])), [projects]);
   const counts = groupCounts(items);
   // Reloading helps after an update, or when the daemon's log went back; not with an address it cannot open.
-  const reload = problem === LOG_BEHIND || problem === APP_TOO_OLD || problem === DAEMON_TOO_OLD;
+  const reload =
+    problem === LOG_BEHIND || problem === NOT_FOLDED || problem === APP_TOO_OLD || problem === DAEMON_TOO_OLD;
   return (
     <Page>
       <PageHeader

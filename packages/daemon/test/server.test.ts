@@ -176,6 +176,34 @@ test("subscription returns folded state then committed batches, isolated and rep
   assert.equal((await client.next()).type, "projects.result");
 });
 
+test("a burst of appends in one task reaches a subscription as one frame with one refolded state", async (t) => {
+  const store = new EventStore(":memory:");
+  const server = await startServer({ store, projects });
+  t.after(async () => {
+    await server.close();
+    store.close();
+  });
+  const client = await connect(server.wsUrl);
+  client.send({ type: "project.subscribe", project: "orchard", after: 0 });
+  const subscribed = await client.next();
+  if (subscribed.type !== "project.subscribed") throw new Error("Expected subscription");
+  assert.equal((await client.next()).type, "events");
+  const burst = ["a", "b", "c"].map((id) => store.append(hold("orchard", id)));
+  const last = burst.at(-1) as FleetEvent;
+  assert.deepEqual(await client.next(), {
+    type: "events",
+    version,
+    subscriptionId: subscribed.subscriptionId,
+    project: "orchard",
+    seq: last.seq,
+    events: burst,
+    snapshot: { seq: last.seq, state: holding(...burst) },
+  });
+  // An ordered reply is a barrier: no second frame for the same burst.
+  client.send({ type: "projects.list", id: "barrier" });
+  assert.equal((await client.next()).type, "projects.result");
+});
+
 test("reconnect after daemon/store restart replays only later events and refuses a future cursor", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "armada-server-"));
   const path = join(dir, "fleet.sqlite");

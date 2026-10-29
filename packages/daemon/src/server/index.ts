@@ -99,7 +99,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   /**
    * Sends what the subscription has not seen. A frame with events also carries
    * the project's refolded state (`folded` shares one fold per project between
-   * sockets); `snapshot: false` leaves it out right after a subscription's own.
+   * sockets); `folded: null` leaves it out right after a subscription's own.
    */
   function batch(
     ws: WebSocket,
@@ -126,7 +126,18 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     });
     subscription.after = seq;
   }
+  // Commit notices coalesce to one flush per microtask: a burst of appends in one
+  // task (a tracker's read) sends each subscription one frame and folds each
+  // project once. Every subscription reads from its own cursor, so nothing is lost.
+  let flushing = false;
   const unsubscribe = store.subscribe(() => {
+    if (flushing) return;
+    flushing = true;
+    queueMicrotask(flush);
+  });
+  function flush(): void {
+    flushing = false;
+    if (closing) return;
     const folded = new Map<string, Snapshot>();
     for (const [ws, subscriptions] of connections) {
       try {
@@ -136,7 +147,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         ws.terminate();
       }
     }
-  });
+  }
 
   server.on("upgrade", (req, socket, head) => {
     const origin = req.headers.origin;

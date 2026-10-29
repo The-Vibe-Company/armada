@@ -61,6 +61,7 @@ export interface DaemonClient {
 
 const BACKOFF = [250, 500, 1000, 2000, 5000];
 export const UNREADABLE = "The daemon sent a message this app cannot read";
+export const NOT_FOLDED = "The daemon does not send its folded state live: update it";
 export const LOG_BEHIND = "The daemon's log is behind what this app has read: reload the app";
 export const unusableAddress = (url: string) => `This daemon address is not usable: ${url}`;
 
@@ -178,9 +179,13 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
         const log = state.logs[message.project] ?? { seq: 0, events: [] };
         if (message.seq < log.seq) return set({ problem: LOG_BEHIND });
         const fresh = message.events.filter((event) => event.seq > log.seq);
+        // Events past the folded state held, without a newer one: the daemon does not fold live for this app.
+        const held = state.fleets[message.project];
+        const stale = !message.snapshot && fresh.length > 0 && held !== undefined && message.seq > held.seq;
         set({
           logs: { ...state.logs, [message.project]: { seq: message.seq, events: [...log.events, ...fresh] } },
           fleets: folded(message.project, message.snapshot),
+          ...(stale ? { problem: NOT_FOLDED } : {}),
         });
         return;
       }

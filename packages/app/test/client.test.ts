@@ -7,7 +7,14 @@ import {
   type ProtocolEvent,
   type ProtocolVersion,
 } from "@armada/protocol";
-import { createDaemonClient, LOG_BEHIND, type SocketLike, UNREADABLE, unusableAddress } from "../src/protocol/client";
+import {
+  createDaemonClient,
+  LOG_BEHIND,
+  NOT_FOLDED,
+  type SocketLike,
+  UNREADABLE,
+  unusableAddress,
+} from "../src/protocol/client";
 
 const V = PROTOCOL_VERSION;
 
@@ -126,11 +133,11 @@ describe("the daemon client", () => {
     expect(client.getState().fleets.alpha).toEqual({ seq: 2, state: state(2) });
     const changes: unknown[] = [];
     client.subscribe(() => changes.push(client.getState().fleets.alpha));
-    const frame = (seq: number, snapshot?: { seq: number; state: unknown }) =>
+    const frame = (seq: number, snapshot?: { seq: number; state: unknown }, subscriptionId = "sub-alpha") =>
       socket().receive({
         type: "events",
         version: V,
-        subscriptionId: "sub-alpha",
+        subscriptionId,
         project: "alpha",
         seq,
         events: [event(seq, "alpha", `s${seq}`)],
@@ -139,8 +146,6 @@ describe("the daemon client", () => {
     frame(4, { seq: 4, state: state(4) });
     // One change per frame: its events and its folded state together.
     expect(changes).toEqual([{ seq: 4, state: state(4) }]);
-    frame(5);
-    expect(client.getState().fleets.alpha).toEqual({ seq: 4, state: state(4) });
     // A resubscription's snapshot older than the one held is not taken.
     socket().receive({
       ...subscribe,
@@ -150,6 +155,11 @@ describe("the daemon client", () => {
     });
     expect(client.getState().fleets.alpha).toEqual({ seq: 4, state: state(4) });
     expect(client.getState().fleets.beta).toBeUndefined();
+    expect(client.getState().problem).toBeNull();
+    // Events past the held state without a newer one: the list would freeze, so the app says why.
+    frame(5, undefined, "sub-alpha-2");
+    expect(client.getState().fleets.alpha).toEqual({ seq: 4, state: state(4) });
+    expect(client.getState().problem).toBe(NOT_FOLDED);
   });
 
   test("after a drop, waits, reconnects and resumes each project at its last cursor, keeping the projects", () => {

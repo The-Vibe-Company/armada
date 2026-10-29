@@ -112,8 +112,8 @@ loops in the working view.**
   row is the same element moved, and Motion's layout animation (`layout`) carries
   it there, drawn above the rows it passes. A row that arrives fades in, one that
   leaves fades out, and the rows around them make room.
-- Transform and opacity only, about 150 ms, on the theme's `ease-out`. The system's
-  reduced-motion setting is honoured (`MotionConfig reducedMotion="user"`).
+- Transform and opacity only, about 150 ms (200 ms for a row's glide, which
+  travels further), on the theme's `ease-out`. The system's reduced-motion setting is honoured (`MotionConfig reducedMotion="user"`).
 - Motion loads through `LazyMotion` with `m` components; its features (`domMax`,
   for layout animations) arrive after the first paint
   (`src/components/shell/motion-features.ts`).

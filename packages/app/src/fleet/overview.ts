@@ -120,32 +120,38 @@ export function sessionReason(s: FoldedSession, group: Group, state: FleetState)
   }
 }
 
-const zoneOf = (zone: string) => {
-  try {
-    new Intl.DateTimeFormat("en", { timeZone: zone });
-    return zone;
-  } catch {
-    return "UTC";
+const formats = new Map<string, Intl.DateTimeFormat>();
+
+/** One formatter per zone and use, built once: a list re-renders on every frame. */
+function format(zone: string, use: "day" | "hour" | "date"): Intl.DateTimeFormat {
+  const key = `${zone} ${use}`;
+  let f = formats.get(key);
+  if (!f) {
+    const options: Intl.DateTimeFormatOptions =
+      use === "day"
+        ? { year: "numeric", month: "2-digit", day: "2-digit" }
+        : use === "hour"
+          ? { hour: "2-digit", minute: "2-digit" }
+          : { day: "numeric", month: "short" };
+    try {
+      f = new Intl.DateTimeFormat(use === "day" ? "en-CA" : "en-GB", { ...options, timeZone: zone });
+    } catch {
+      // A zone the runtime does not know reads as UTC.
+      f = format("UTC", use);
+    }
+    formats.set(key, f);
   }
-};
+  return f;
+}
 
 /** A time's calendar day in a zone, `YYYY-MM-DD`. */
-export const dayIn = (at: string | number, zone: string) =>
-  new Intl.DateTimeFormat("en-CA", {
-    timeZone: zoneOf(zone),
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date(at));
+export const dayIn = (at: string | number, zone: string) => format(zone, "day").format(new Date(at));
 
 /** A row's time: the hour on the viewer's day, else the date. A still word, never a clock that ticks. */
 export function rowTime(at: string, now: number, zone: string): string {
   const time = Date.parse(at);
   if (Number.isNaN(time)) return "";
-  const z = zoneOf(zone);
-  return dayIn(time, z) === dayIn(now, z)
-    ? new Intl.DateTimeFormat("en-GB", { timeZone: z, hour: "2-digit", minute: "2-digit" }).format(time)
-    : new Intl.DateTimeFormat("en-GB", { timeZone: z, day: "numeric", month: "short" }).format(time);
+  return format(zone, dayIn(time, zone) === dayIn(now, zone) ? "hour" : "date").format(time);
 }
 
 /**

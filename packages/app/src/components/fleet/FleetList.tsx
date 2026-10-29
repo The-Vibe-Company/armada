@@ -56,7 +56,7 @@ export function FleetList({
   // A long list lets the browser skip the rows off screen; every row stays in the page.
   const long = items.length > LONG_LIST;
   return (
-    <div className="flex min-w-0 flex-col border-line border-t" data-long={long || undefined}>
+    <div className="flex min-w-0 flex-col border-line border-t">
       <AnimatePresence initial={false} mode="popLayout">
         {groups.flatMap(({ group, items }) => [
           <m.h2
