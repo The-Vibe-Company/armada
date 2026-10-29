@@ -62,6 +62,35 @@ function log(): EventInput[] {
       actor: "worker",
       payload: { id: "p-har-18", ticket: "HAR-18", kind: "plan", body: "1. Add a booking form.\n2. Test it." },
     },
+    // Handed for validation before the coordinator opened one.
+    {
+      project: "harbor",
+      kind: "ticket.seen",
+      at,
+      actor: "tracker",
+      payload: { id: "HAR-30", title: "Light the quay", status: "started" },
+    },
+    {
+      project: "harbor",
+      kind: "session.claimed",
+      at,
+      actor: "worker",
+      payload: {
+        ticket: "HAR-30",
+        session: "s-har-30-1",
+        generation: 1,
+        owner: "default",
+        runtime: "claude",
+        handle: "h",
+      },
+    },
+    {
+      project: "harbor",
+      kind: "session.reported",
+      at,
+      actor: "worker",
+      payload: { ticket: "HAR-30", session: "s-har-30-1", phase: "awaiting-validation", reason: "Lights on" },
+    },
   ];
 }
 
@@ -150,6 +179,11 @@ test("each state's card says the state, why, and what to do about it, edged in t
     "Waiting for you 1. Add a booking form. 2. Test it. Approve the plan Ask for changes Note Not available yet.",
   );
 
+  // Waiting for a validation the coordinator has not opened yet: a validation's choices, not a plan's.
+  expect(words(card(render("HAR-30")))).toBe(
+    "Waiting for you Waiting for your validation Approve Request changes Note Not available yet.",
+  );
+
   const running = card(render("HAR-12"));
   expect(running).toContain("border-blue/45");
   expect(words(running)).toBe("In progress Last report 09:00 Wiring the map to the tide feed");
@@ -158,6 +192,11 @@ test("each state's card says the state, why, and what to do about it, edged in t
   const merged = card(render("HAR-9"));
   expect(merged).toContain("border-merged/45");
   expect(words(merged)).toBe("Merged #39 merged");
+  // Released: no longer in the list, its page says so (an old link, or live while it is open).
+  const released = render("LAN-4");
+  expect(card(released)).toContain("border-merged/45");
+  expect(words(card(released))).toBe("Released superseded");
+  expect(released).toContain("Released: no worker holds this ticket now.");
 });
 
 test("the facts line, the ticket's title as the one h1, and the six steps with the current one marked", () => {
@@ -196,7 +235,7 @@ test("the facts line, the ticket's title as the one h1, and the six steps with t
 
 test("the reports tab lists the session's reports and events newest first, each opening on a click", () => {
   const html = render("HAR-15");
-  expect(html).toMatch(/<a role="tab" aria-selected="true" href="#\/sessions\/HAR-15"[^>]*>Reports/);
+  expect(html).toMatch(/<a aria-current="page" href="#\/sessions\/HAR-15"[^>]*>Reports/);
   const entries = [...html.matchAll(/<li data-entry="\d+"[^>]*>(.*?)<\/li>/g)].map(([, e]) => ({
     open: e?.startsWith("<details") ?? false,
     text: words(e ?? ""),
@@ -214,11 +253,11 @@ test("the reports tab lists the session's reports and events newest first, each 
 
 test("the files tab lists the pull request's files with their counts, or says there are none", () => {
   const html = render("HAR-15", "files");
-  expect(html).toMatch(/<a role="tab" aria-selected="true" href="#\/sessions\/HAR-15\?tab=files"/);
+  expect(html).toMatch(/<a aria-current="page" href="#\/sessions\/HAR-15\?tab=files"/);
   const files = [...html.matchAll(/<li data-file="[^"]+"[^>]*>(.*?)<\/li>/g)].map(([, f]) => words(f ?? ""));
   expect(files).toEqual(["src/berths/price.ts +42 −3", "test/price.test.ts +18 −0"]);
-  expect(words(part(render("HAR-20", "files"), /<div role="tabpanel"/, "</div>"))).toBe("No file of #44 read yet.");
-  expect(words(part(render("HAR-12", "files"), /<div role="tabpanel"/, "</div>"))).toBe("No pull request yet.");
+  expect(words(part(render("HAR-20", "files"), /<div data-tab=/, "</div>"))).toBe("No file of #44 read yet.");
+  expect(words(part(render("HAR-12", "files"), /<div data-tab=/, "</div>"))).toBe("No pull request yet.");
 });
 
 test("a ticket no project holds says so under its id", () => {

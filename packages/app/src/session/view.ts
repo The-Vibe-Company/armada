@@ -13,13 +13,17 @@ import type { FleetState, FoldedPullRequest, FoldedSession } from "@/fleet/state
 /** The page's six steps, from the plan to done. */
 export const PAGE_STEPS = ["Plan", "Build", "Ship", "Review & CI", "Merge", "Done"] as const;
 
+/** A session's state on its page: the list's groups, and released (no longer in the list, still a page). */
+export type PageState = Group | "released";
+
 /** The state's word on the card, the list's group labels said of one session. */
-export const STATE_LABEL: Record<Group, string> = {
+export const STATE_LABEL: Record<PageState, string> = {
   blocked: "Blocked",
   you: "Waiting for you",
   running: "In progress",
   ready: "Ready to merge",
   merged: "Merged",
+  released: "Released",
 };
 
 const CHECKS_WORD: Record<FoldedPullRequest["ci"], string> = {
@@ -67,7 +71,8 @@ export type Card =
     }
   | { kind: "running"; report: string; at: string }
   | { kind: "ready"; reason: string; pr: PullRequestFact | null }
-  | { kind: "merged"; reason: string; pr: PullRequestFact | null };
+  | { kind: "merged"; reason: string; pr: PullRequestFact | null }
+  | { kind: "released"; reason: string };
 
 export interface PullRequestFact {
   number: number;
@@ -97,7 +102,7 @@ export interface SessionView {
   project: Project;
   ticket: string;
   title: string;
-  group: Group;
+  group: PageState;
   /** The facts line, in order. */
   facts: {
     runtime: string;
@@ -145,8 +150,8 @@ export function sessionView(
   state: FleetState,
   events: readonly ProtocolEvent[],
 ): SessionView {
-  // A released session is not in the list; its page still says where it stopped, as in progress.
-  const group = GROUP_OF[s.state] ?? "running";
+  // A released session is not in the list; its page still says so, from an old link or live.
+  const group: PageState = GROUP_OF[s.state] ?? "released";
   const own = sessionEvents(events, s.ticket);
   const pr =
     state.pullRequests.findLast((p) => p.ticket === s.ticket && p.state !== "closed") ??
@@ -190,7 +195,8 @@ export function sessionView(
   };
 }
 
-function cardOf(s: FoldedSession, group: Group, state: FleetState, pr: PullRequestFact | null): Card {
+function cardOf(s: FoldedSession, group: PageState, state: FleetState, pr: PullRequestFact | null): Card {
+  if (group === "released") return { kind: "released", reason: s.reason.trim() || "Released" };
   const reason = sessionReason(s, group, state);
   switch (group) {
     case "blocked": {
@@ -210,6 +216,15 @@ function cardOf(s: FoldedSession, group: Group, state: FleetState, pr: PullReque
       const owner = state.inbox.find((i) => i.ticket === s.ticket && i.kind === "owner-request");
       if (owner) return { kind: "you", ask: "question", checks: [], ...questionOf(owner.body) };
       const plan = state.inbox.find((i) => i.ticket === s.ticket && i.kind === "plan");
+      // Handed for validation before the coordinator opened one: a validation still, not a plan.
+      if (!plan && s.phase !== "awaiting-approval")
+        return {
+          kind: "you",
+          ask: "validation",
+          question: reason,
+          checks: [],
+          choices: ["Approve", "Request changes"],
+        };
       return {
         kind: "you",
         ask: "plan",

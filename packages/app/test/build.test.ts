@@ -249,16 +249,20 @@ describe("in a browser, served by a running daemon", () => {
         files: [{ path: "src/berths/price.ts", additions: 42, deletions: 3 }],
       } as never,
     });
+    // Opened from a scrolled list, the page starts at its top with the focus on its title.
+    await page.getByRole("main").evaluate((main) => main.scrollTo(0, 400));
     await page.locator('[data-row="harbor/HAR-15"]').click();
     await page.getByRole("heading", { level: 1, name: "Price berths by the hour" }).waitFor({ timeout: 5_000 });
     expect(new URL(page.url()).hash).toBe("#/sessions/HAR-15");
+    await expect(page.getByRole("main").evaluate((main) => main.scrollTop)).resolves.toBe(0);
+    await expect(page.evaluate(() => document.activeElement?.tagName)).resolves.toBe("H1");
     await expect(page.getByRole("region", { name: "State" }).getAttribute("data-state")).resolves.toBe("blocked");
     await page.getByText("feature/har-15-price-berths").waitFor({ timeout: 5_000 });
     // A report opens on a click to its whole text.
     const report = page.locator("[data-entry] details").first();
     await report.locator("summary").click();
     await expect(report.getAttribute("open")).resolves.toBe("");
-    await page.getByRole("tab", { name: /Files/ }).click();
+    await page.getByRole("navigation", { name: "Session" }).getByRole("link", { name: /Files/ }).click();
     await page.locator('[data-file="src/berths/price.ts"]').waitFor({ timeout: 5_000 });
     expect(new URL(page.url()).hash).toBe("#/sessions/HAR-15?tab=files");
     // Back to the project (its room once it lands; the fleet today), then a row by the keyboard.
@@ -268,5 +272,5 @@ describe("in a browser, served by a running daemon", () => {
     await page.keyboard.press("Enter");
     await page.getByRole("heading", { level: 1, name: "Pick the lanterns' colour" }).waitFor({ timeout: 5_000 });
     await expect(page.getByRole("region", { name: "State" }).getAttribute("data-state")).resolves.toBe("you");
-  });
+  }, 15_000);
 });
