@@ -71,6 +71,15 @@ export interface EventPayloads {
   "validation.decided": { id: string; decision: "approved" | "changes-requested"; note: string };
   "coordinator.message": { role: "owner" | "coordinator"; body: string };
   "coordinator.checkpoint": { checkpoint: Json };
+  "ticket.phase-changed": { ticket: string; from: Phase | null; to: Phase | null };
+  "ticket.report-posted": {
+    ticket: string;
+    comment: string;
+    updatedAt: string;
+    phase: Phase;
+    summary: string;
+    body: string;
+  };
 }
 export type EventKind = keyof EventPayloads;
 export type EventInput = {
