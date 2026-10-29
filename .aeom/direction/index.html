@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hangar · Armada</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="window">
+  <aside class="side">
+    <div class="brand">
+      <svg width="22" height="18" viewBox="0 0 22 18" aria-hidden="true">
+        <path d="M11 1 L14 6 L8 6 Z" fill="#b6f15a"/>
+        <path d="M6.5 7 L9.5 12 L3.5 12 Z" fill="#e6e7e9"/>
+        <path d="M15.5 7 L18.5 12 L12.5 12 Z" fill="#e6e7e9"/>
+        <path d="M2 12.5 L5 17.5 L-1 17.5 Z" fill="#e6e7e9" opacity=".45"/>
+        <path d="M20 12.5 L23 17.5 L17 17.5 Z" fill="#e6e7e9" opacity=".45"/>
+      </svg>
+      Armada
+    </div>
+    <nav class="nav">
+      <a class="on" href="index.html">Hangar</a>
+      <div class="group">Projects</div>
+      <a href="room.html">Armada <i class="dot blocked"></i></a>
+      <a href="room.html">Quivr <i class="dot waiting"></i></a>
+    </nav>
+    <div class="live"><i></i> Live · <span class="mono">20:53</span></div>
+  </aside>
+
+  <section class="main">
+    <header class="facts">
+      <span class="title">Hangar</span>
+      <span class="f"><b>9</b> agents in flight</span>
+      <span class="f"><b>2</b> moving on their own</span>
+      <span class="f ready"><b>0</b> ready to merge</span>
+      <span class="f"><b>13</b> merged today</span>
+      <span class="sep"></span>
+      <span class="f blocked"><b>1</b> blocked</span>
+      <span class="f waiting"><b>1</b> waiting for you</span>
+      <span class="right">2 projects</span>
+    </header>
+
+    <div class="sky full">
+      <svg viewBox="-18 0 1132 752" preserveAspectRatio="xMidYMid slice" aria-label="Two squadrons in the night">
+        <defs>
+          <path id="tri" d="M0 -6 L5.2 5 L-5.2 5 Z"/>
+        </defs>
+
+        <!-- far layer: small, faint -->
+        <g fill="#e6e7e9" opacity=".10">
+          <use href="#tri" transform="translate(90 120) rotate(-20) scale(.45)"/>
+          <use href="#tri" transform="translate(140 96) rotate(-20) scale(.45)"/>
+          <use href="#tri" transform="translate(620 80) rotate(10) scale(.4)"/>
+          <use href="#tri" transform="translate(655 96) rotate(10) scale(.4)"/>
+          <use href="#tri" transform="translate(690 112) rotate(10) scale(.4)"/>
+          <use href="#tri" transform="translate(960 180) rotate(-35) scale(.45)"/>
+          <use href="#tri" transform="translate(1010 150) rotate(-35) scale(.45)"/>
+          <use href="#tri" transform="translate(300 640) rotate(25) scale(.4)"/>
+          <use href="#tri" transform="translate(340 660) rotate(25) scale(.4)"/>
+          <use href="#tri" transform="translate(880 600) rotate(-10) scale(.45)"/>
+          <use href="#tri" transform="translate(920 585) rotate(-10) scale(.45)"/>
+          <use href="#tri" transform="translate(960 570) rotate(-10) scale(.45)"/>
+          <use href="#tri" transform="translate(520 420) rotate(0) scale(.35)"/>
+          <use href="#tri" transform="translate(1040 420) rotate(-50) scale(.4)"/>
+        </g>
+
+        <!-- middle layer -->
+        <g fill="#e6e7e9" opacity=".2">
+          <use href="#tri" transform="translate(200 560) rotate(-15) scale(.7)"/>
+          <use href="#tri" transform="translate(236 545) rotate(-15) scale(.7)"/>
+          <use href="#tri" transform="translate(272 530) rotate(-15) scale(.7)"/>
+          <use href="#tri" transform="translate(760 220) rotate(30) scale(.65)"/>
+          <use href="#tri" transform="translate(790 248) rotate(30) scale(.65)"/>
+          <use href="#tri" transform="translate(1000 680) rotate(-25) scale(.7)"/>
+          <use href="#tri" transform="translate(1030 660) rotate(-25) scale(.7)"/>
+          <use href="#tri" transform="translate(60 380) rotate(15) scale(.6)"/>
+        </g>
+
+        <!-- Armada squadron: coordinator V of five, three Codex agents in flight -->
+        <a href="room.html" class="squadron">
+          <!-- blocked state: a thin arc of the most urgent state under the squadron -->
+          <path d="M240 372 Q360 400 480 372" fill="none" stroke="#e5484d" stroke-width="1" opacity=".55"/>
+          <g transform="translate(360 300) rotate(-12)">
+            <!-- coordinator V -->
+            <g transform="scale(1.6)">
+              <use href="#tri" transform="translate(0 -22)" fill="#b6f15a"/>
+              <use href="#tri" transform="translate(-14 -8)" fill="#e6e7e9"/>
+              <use href="#tri" transform="translate(14 -8)" fill="#e6e7e9"/>
+              <use href="#tri" transform="translate(-28 6)" fill="#e6e7e9" opacity=".45"/>
+              <use href="#tri" transform="translate(28 6)" fill="#e6e7e9" opacity=".45"/>
+            </g>
+            <!-- agents -->
+            <use href="#tri" transform="translate(-78 42) rotate(-30) scale(1.5)" fill="#10a37f"/>
+            <use href="#tri" transform="translate(6 56) rotate(-4) scale(1.5)" fill="#10a37f"/>
+            <use href="#tri" transform="translate(84 44) rotate(28) scale(1.5)" fill="#10a37f"/>
+          </g>
+        </a>
+
+        <!-- Quivr squadron: smaller, further, one waiting -->
+        <a href="room.html" class="squadron">
+          <path d="M690 516 Q790 540 890 516" fill="none" stroke="#f2b43a" stroke-width="1" opacity=".45"/>
+          <g transform="translate(790 440) rotate(14)">
+            <g transform="scale(1.25)">
+              <use href="#tri" transform="translate(0 -22)" fill="#b6f15a"/>
+              <use href="#tri" transform="translate(-14 -8)" fill="#e6e7e9"/>
+              <use href="#tri" transform="translate(14 -8)" fill="#e6e7e9"/>
+              <use href="#tri" transform="translate(-28 6)" fill="#e6e7e9" opacity=".45"/>
+              <use href="#tri" transform="translate(28 6)" fill="#e6e7e9" opacity=".45"/>
+            </g>
+            <use href="#tri" transform="translate(-96 36) rotate(-24) scale(1.2)" fill="#d97757"/>
+            <use href="#tri" transform="translate(-58 54) rotate(-14) scale(1.2)" fill="#bb87fc"/>
+            <use href="#tri" transform="translate(-18 62) rotate(-4) scale(1.2)" fill="#10a37f"/>
+            <use href="#tri" transform="translate(22 62) rotate(6) scale(1.2)" fill="#d97757"/>
+            <use href="#tri" transform="translate(62 52) rotate(16) scale(1.2)" fill="#d97757"/>
+            <use href="#tri" transform="translate(100 34) rotate(26) scale(1.2)" fill="#bb87fc"/>
+          </g>
+        </a>
+      </svg>
+
+      <a href="room.html" class="label squadron" style="left:378px; top:398px">
+        <div class="name">Armada</div>
+        <div class="counts"><em>3</em> in flight · <em>2</em> on their own · <em class="blocked">1</em> blocked · <em>13</em> merged today</div>
+        <div class="enter">Enter the room →</div>
+      </a>
+      <a href="room.html" class="label squadron" style="left:808px; top:540px">
+        <div class="name">Quivr</div>
+        <div class="counts"><em>6</em> in flight · <em class="waiting">1</em> waiting for you</div>
+        <div class="enter">Enter the room →</div>
+      </a>
+
+      <div class="legend">
+        <span><svg width="10" height="10" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#d97757"/></svg>Claude</span>
+        <span><svg width="10" height="10" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#10a37f"/></svg>Codex</span>
+        <span><svg width="10" height="10" viewBox="-6 -6 12 12"><path d="M0 -6 L5.2 5 L-5.2 5 Z" fill="#bb87fc"/></svg>OpenCode</span>
+      </div>
+      <div class="legend right">
+        <span><i style="background:#e5484d"></i>Blocked</span>
+        <span><i style="background:#f2b43a"></i>Waiting for you</span>
+        <span><i style="background:#b6f15a"></i>In progress</span>
+        <span><i style="background:#5aa9f1"></i>Ready to merge</span>
+        <span><i style="background:#e6e7e9"></i>Merged</span>
+      </div>
+    </div>
+  </section>
+</div>
+</body>
+</html>
