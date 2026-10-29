@@ -122,7 +122,11 @@
     "packages/desktop": {
       "name": "@armada/desktop",
       "version": "0.0.0",
+      "dependencies": {
+        "@napi-rs/keyring": "2.1.2",
+      },
       "devDependencies": {
+        "@armada/protocol": "workspace:*",
         "@types/node": "22.20.5",
         "electron": "45.1.0",
         "electron-vite": "6.0.0",

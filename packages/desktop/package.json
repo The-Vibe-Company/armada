@@ -6,12 +6,17 @@
   "description": "Replaceable Electron shell for the local Armada daemon and app.",
   "main": "out/main/index.js",
   "scripts": {
+    "postinstall": "install-electron",
     "dev": "bun run build && electron-vite preview --skipBuild",
     "build": "node ../../scripts/plugin-catalog.ts && bun run --cwd ../plugin-api build && bun run --cwd ../app build && electron-vite build",
     "typecheck": "tsc --noEmit -p .",
-    "test": "bun run build && node --test test/*.test.ts"
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@napi-rs/keyring": "2.1.2"
   },
   "devDependencies": {
+    "@armada/protocol": "workspace:*",
     "@types/node": "22.20.5",
     "electron": "45.1.0",
     "electron-vite": "6.0.0",
