@@ -22,11 +22,12 @@ export function PageHeader({ facts, title, quiet }: { facts?: ReactNode; title: 
 /**
  * A full-bleed page's title and facts on one line, across its top (the
  * hangar, after the direction kept with the owner, `.aeom/direction`): the
- * title, then the facts, then what sits at the right end.
+ * title, then the facts, then what sits at the right end; on a narrow
+ * window the facts wrap to a second line rather than leave any out.
  */
 export function PageBar({ title, facts, end }: { title: ReactNode; facts?: ReactNode; end?: ReactNode }) {
   return (
-    <header className="flex h-12 min-w-0 flex-none items-center gap-3.5 overflow-hidden whitespace-nowrap border-line border-b px-4 text-body text-text-2">
+    <header className="flex min-h-12 min-w-0 flex-none flex-wrap items-center gap-x-3.5 gap-y-1 whitespace-nowrap border-line border-b px-4 py-2.5 text-body text-text-2">
       <h1 className="m-0 font-semibold text-bar text-text">{title}</h1>
       {facts}
       {end && <div className="ml-auto flex items-center gap-3.5 text-text-3">{end}</div>}

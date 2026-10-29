@@ -41,9 +41,9 @@ function Screen({ address, onReload }: { address: string; onReload: () => void }
   const route = useRoute();
   switch (route.screen) {
     case "project":
-      return <ProjectFleet key={route.id} id={route.id} />;
+      return <ProjectFleet key={route.id} id={route.id} onReload={onReload} />;
     case "settings":
-      return <Settings address={address} />;
+      return <Settings address={address} onReload={onReload} />;
     default:
       return <Hangar onReload={onReload} />;
   }

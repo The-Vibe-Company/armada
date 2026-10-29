@@ -374,10 +374,17 @@ function stage(projects: readonly SkyProject[], width: number, height: number): 
     // Under its arc (drawn about 20 px below its lowest ship), with some air.
     const y = Math.max(cy, ...ys) + 34 * f + 18;
     const wordsWidth = Math.min(cell.width - 24, SQUADRON_LABEL.width);
-    const left = Math.max(0, Math.min(cx - wordsWidth / 2, ...xs.map((x) => x - reach)));
-    const top = Math.max(0, Math.min(...ys) - reach * 2);
-    const right = Math.min(width, Math.max(cx + wordsWidth / 2, ...xs.map((x) => x + reach)));
-    const bottom = Math.min(height, y + SQUADRON_LABEL.height);
+    // The link stays in its own cell (the first row reaches the top, the last the bottom), so two never overlap.
+    const bounds = {
+      left: usable.x + cell.width * col,
+      right: usable.x + cell.width * (col + 1),
+      top: row === 0 ? 0 : usable.y + cell.height * row,
+      bottom: row === rows - 1 ? height : usable.y + cell.height * (row + 1),
+    };
+    const left = Math.max(bounds.left, Math.min(cx - wordsWidth / 2, ...xs.map((x) => x - reach)));
+    const top = Math.max(bounds.top, Math.min(...ys) - reach * 2);
+    const right = Math.min(bounds.right, Math.max(cx + wordsWidth / 2, ...xs.map((x) => x + reach)));
+    const bottom = Math.min(bounds.bottom, y + SQUADRON_LABEL.height);
     labels.push({
       key: project.id,
       x: cx,

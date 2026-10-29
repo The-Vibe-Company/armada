@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { DaemonProblem } from "@/components/DaemonProblem";
 import { FleetList } from "@/components/fleet/FleetList";
 import { Dot, Page, PageHeader } from "@/components/page";
 import { dayIn, fleetItems, groupCounts, headline } from "@/fleet/overview";
@@ -14,7 +15,17 @@ const viewerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UT
  * until the project's room (THE-1996) takes this route and the list moves to
  * its rail. `now` and `zone` decide "merged today"; the viewer's own unless a test gives them.
  */
-export function ProjectFleet({ id, now: givenNow, zone: givenZone }: { id: string; now?: number; zone?: string }) {
+export function ProjectFleet({
+  id,
+  onReload,
+  now: givenNow,
+  zone: givenZone,
+}: {
+  id: string;
+  onReload: () => void;
+  now?: number;
+  zone?: string;
+}) {
   const { projects, fleets } = useDaemon();
   const now = givenNow ?? Date.now();
   const zone = givenZone ?? viewerZone();
@@ -62,6 +73,7 @@ export function ProjectFleet({ id, now: givenNow, zone: givenZone }: { id: strin
                 : "Reading its log."
         }
       />
+      <DaemonProblem onReload={onReload} />
       {project && snapshot && <FleetList items={items} names={names} now={now} zone={zone} />}
     </Page>
   );

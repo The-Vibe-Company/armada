@@ -1,14 +1,12 @@
-import { APP_TOO_OLD, DAEMON_TOO_OLD } from "@armada/protocol";
 import { useMemo } from "react";
+import { DaemonProblem } from "@/components/DaemonProblem";
 import { PageBar } from "@/components/page";
-import { Button } from "@/components/ui/button";
 import { countsOf, type Fact, hangarFacts, inFlight } from "@/fleet/hangar";
 import { dayIn } from "@/fleet/overview";
 import { skyProject } from "@/fleet/sky";
 import { fleetOf } from "@/fleet/state";
 import { href } from "@/lib/route";
 import { cn } from "@/lib/utils";
-import { LOG_BEHIND, NOT_FOLDED } from "@/protocol/client";
 import { useDaemon } from "@/protocol/store";
 import { Sky } from "@/sky/Sky";
 import type { SkyClock } from "@/sky/view";
@@ -37,7 +35,7 @@ export function Hangar({
   zone?: string;
   clock?: SkyClock;
 }) {
-  const { projects, fleets, problem, status } = useDaemon();
+  const { projects, fleets } = useDaemon();
   // Read on each render: each frame re-renders the sky, and nothing on screen ticks between them.
   const now = givenNow ?? Date.now();
   const zone = givenZone ?? viewerZone();
@@ -56,9 +54,6 @@ export function Hangar({
   const counts = countsOf(squadrons.flatMap((s) => s.agents));
   const flying = inFlight(counts) > 0;
   const facts = hangarFacts(counts);
-  // Reloading helps after an update, or when the daemon's log went back; not with an address it cannot open.
-  const reload =
-    problem === LOG_BEHIND || problem === NOT_FOLDED || problem === APP_TOO_OLD || problem === DAEMON_TOO_OLD;
   const quiet =
     projects === null
       ? "Waiting for the daemon to list its projects."
@@ -104,22 +99,7 @@ export function Hangar({
             {quiet}
           </p>
         )}
-        {problem && (
-          <div
-            role="alert"
-            className={cn(
-              "absolute inset-x-4 top-4 flex items-center gap-3 rounded-card bg-card px-4 py-3 shadow-ring",
-              status === "refused" ? "text-red" : "text-amber",
-            )}
-          >
-            <span className="flex-1">{problem}</span>
-            {reload && (
-              <Button variant="soft" onClick={onReload}>
-                Reload
-              </Button>
-            )}
-          </div>
-        )}
+        <DaemonProblem onReload={onReload} className="absolute inset-x-4 top-4" />
       </div>
     </div>
   );

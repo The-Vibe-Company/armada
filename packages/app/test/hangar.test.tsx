@@ -173,6 +173,35 @@ test("each project is a squadron: its size, its agents' colours, its arc and its
   expect((a?.x ?? 0) + (a?.width ?? 0)).toBeLessThanOrEqual(b?.x ?? 0);
 });
 
+test("on a crowded or short sky, no squadron's link reaches over another's", () => {
+  const crowd = (n: number, agents: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `p${i}`,
+      name: `Project ${i}`,
+      coordinator: true,
+      agents: Array.from({ length: agents }, (_, k) => ({
+        key: `p${i}/T-${k}`,
+        ticket: `T-${k}`,
+        group: k === 0 ? ("blocked" as const) : ("running" as const),
+        harness: "claude" as const,
+      })),
+    }));
+  for (const [n, agents, w, h] of [
+    [4, 3, 900, 420],
+    [10, 12, 1200, 700],
+    [6, 2, 1100, 700],
+  ] as const) {
+    const areas = layoutSky(crowd(n, agents), "stage", w, h).labels.map((l) => l.area);
+    expect(areas).toHaveLength(n);
+    for (const [i, a] of areas.entries())
+      for (const b of areas.slice(i + 1)) {
+        if (!a || !b) throw new Error("a squadron has no area");
+        const apart = a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y;
+        expect(apart).toBe(true);
+      }
+  }
+});
+
 /** The hangar as the app renders it, on these folded states, before the sky measures itself. */
 function render(states: Record<string, { sessions: FoldedSession[] }>) {
   let socket: SocketLike | null = null;
