@@ -36,7 +36,9 @@
     "@armada/plugin-api": "workspace:*",
     "ajv": "8.20.0",
     "semver": "7.7.4",
-    "proper-lockfile": "4.1.2"
+    "proper-lockfile": "4.1.2",
+    "ai": "7.0.156",
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@types/ws": "8.18.1",

@@ -1,14 +1,58 @@
-import { type ClientMessage, PROTOCOL_VERSION, type ServerMessage } from "@armada/protocol";
-import type { Keychain } from "./keychain.ts";
+import { type ClientMessage, type ModelKindEntry, PROTOCOL_VERSION, type ServerMessage } from "@armada/protocol";
+import { Ajv } from "ajv";
+import { coordinatorModelConfig, type Keychain } from "./keychain.ts";
 
 export type CredentialRequest = Extract<ClientMessage, { type: "credentials.set" | "credentials.status" }>;
 
 /** Called only after protocol admission. No event writer or logger has access to the request. */
-export async function dispatchCredentials(request: CredentialRequest, keychain: Keychain): Promise<ServerMessage> {
+export async function dispatchCredentials(
+  request: CredentialRequest,
+  keychain: Keychain,
+  models?: readonly ModelKindEntry[],
+): Promise<ServerMessage> {
   const base = { version: PROTOCOL_VERSION, id: request.id };
   try {
-    if (request.type === "credentials.set") await keychain.setCoordinator(request.provider, request.key);
-    return { ...base, type: "credentials.result", ...(await keychain.status()) };
+    if (request.type === "credentials.set") {
+      const normalized = coordinatorModelConfig(request.provider, request.config);
+      const entry = models?.find((entry) => entry.kind === normalized.provider);
+      if (models && !entry)
+        return {
+          ...base,
+          type: "error",
+          code: "invalid-message",
+          message: "Model provider is not loaded. Enable its plugin and restart the daemon.",
+        };
+      const existing = await keychain.coordinator().catch(() => null);
+      const prior = existing?.provider === normalized.provider ? existing.config : undefined;
+      const config = structuredClone({ ...normalized.config, ...prior, ...request.config });
+      if (
+        entry &&
+        !new Ajv({
+          useDefaults: true,
+          strict: false,
+          formats: { uri: { type: "string", validate: URL.canParse } },
+        }).compile(entry.config as object)(config)
+      )
+        return {
+          ...base,
+          type: "error",
+          code: "invalid-message",
+          message: "Complete the model settings required by this provider.",
+        };
+      await keychain.setCoordinator(
+        normalized.provider,
+        request.key,
+        entry || Object.keys(config).length || request.config ? config : undefined,
+      );
+    }
+    const status = await keychain.status();
+    return {
+      ...base,
+      type: "credentials.result",
+      ...status,
+      ...(request.version.minor < 3 && status.provider === "openai-compatible" ? { provider: "openai" } : {}),
+      ...(models ? { models: [...models] } : {}),
+    };
   } catch {
     return {
       ...base,

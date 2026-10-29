@@ -227,3 +227,49 @@ No external network, key or wall-clock sleep is used. The prompt/tool inventory 
 checked independently. The adapter's own test covers disk replay, project isolation,
 durable ID allocation and failed-write atomicity. Storage compatibility findings are
 recorded on THE-1984 before loop implementation.
+
+## Coordinator model plugins
+
+`armadad` resolves the coordinator model from the loaded `model` registry. Both
+bundled plugins are enabled by default; neither contacts a service at activation.
+`model-anthropic` returns an `@ai-sdk/anthropic` model; `model-openai-compatible`
+returns an `@ai-sdk/openai-compatible` chat model. The daemon adapts that SDK
+model to pi-ai; durable scheduling and tool execution remain in pi-durable.
+SDK failures are replaced by a fixed error before they can enter checkpoints.
+
+For an explicit boot default set `ARMADA_MODEL_KIND=anthropic|openai-compatible`,
+`ARMADA_MODEL_NAME`, `ARMADA_MODEL_BASE_URL` (required for compatible endpoints),
+and `ARMADA_MODEL_API_KEY`. A complete `ZAI_BASE_URL`, `ZAI_MODEL`, `ZAI_API_KEY`
+triple selects the compatible plugin automatically, before a complete
+`AZURE_AI_ENDPOINT` (or `AZURE_AI_BASE_URL`), `AZURE_AI_MODEL`, `AZURE_AI_API_KEY` triple. These named
+settings can also live under the plugin keychain service. Otherwise the
+coordinator keychain entry supplies its kind, public config and key. The app's
+key form lists loaded model contributions and saves that entry atomically;
+restart to apply it. Disabled providers never appear in that form.
+
+Each project catalog entry may set `coordinatorModel: {kind, config}`. A saved
+`rules.set` rule of the same name wins over that entry, then the boot default.
+Configuration is public: `model`, `baseURL`, `apiKeySecret`, `apiKeyHeader`
+(`authorization` or Azure's `api-key`), and `supportsStructuredOutputs` for
+compatible endpoints. Only secret *names* belong in config. The manifest lists
+accepted names (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ARMADA_MODEL_API_KEY`,
+`ZAI_API_KEY`, `AZURE_AI_API_KEY`, according to the plugin). `apiKeySecret: null`
+explicitly selects a keyless local compatible server. Plugin settings can
+provide these same defaults under `config.model.<kind>`; per-project config
+wins. A missing key, invalid config or unavailable plugin skips that project's
+coordinator with one fixed diagnostic; the fleet/readers remain available.
+Model rule changes take effect on daemon restart, like plugin settings.
+
+Run `node --test packages/daemon/test/models.test.ts` from the repository root.
+It loads the actual catalog against local endpoint fixtures, checks tools and
+structured JSON, and runs a durable coordinator through a tool/result round trip
+for each provider. Test credentials are generated in memory and never recorded
+in fixtures. For conformance, each model package carries
+`armada-plugin.test.json` pointing to the runner's local endpoint.
+
+Model providers may publish a `configSchema` for creation-time settings separately
+from their optional activation defaults. The key form uses that schema's required
+fields/defaults, and credential writes validate it before saving a key. Legacy
+`openai` entries migrate to `openai-compatible` with the OpenAI API endpoint and
+`gpt-4.1-mini` unless configured otherwise; older apps retain their `openai` wire
+identity while key rotation preserves the saved endpoint/model.

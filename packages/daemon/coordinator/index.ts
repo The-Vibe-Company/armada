@@ -92,6 +92,9 @@ export class Coordinators {
       const conversation = await harness.root(BACKGROUND_CONTEXT, {
         agent: { model: options.model },
       });
+      const current = (await conversation.agent(BACKGROUND_CONTEXT)).model;
+      if (current?.provider !== options.model.provider || current?.modelId !== options.model.modelId)
+        await conversation.configure({ model: options.model }, BACKGROUND_CONTEXT);
       harness.resume();
       return { harness, conversation };
     } catch (error) {

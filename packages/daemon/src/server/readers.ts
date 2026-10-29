@@ -1,4 +1,4 @@
-import { projectSchema } from "@armada/protocol";
+import { coordinatorModelSchema, projectSchema } from "@armada/protocol";
 import { GithubReader } from "../forge/github.ts";
 import { type Schedule, schedule } from "../forge/types.ts";
 import { githubToken, readLinearKey, type SecretAccessor, systemKeychain } from "../keychain.ts";
@@ -7,6 +7,7 @@ import { linearTracker, TrackerPoller } from "../tracker/index.ts";
 
 /** Daemon-only catalog fields; the public project protocol remains unchanged. */
 export const daemonProjectSchema = projectSchema.extend({
+  coordinatorModel: coordinatorModelSchema.optional(),
   programRoot: projectSchema.shape.id.optional(),
   phaseGroup: projectSchema.shape.name.default("Agent phase"),
 });

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import {
   admitRequest,
   eventSchema,
+  type ModelKindEntry,
   type Project,
   type ProjectTables,
   type ProtocolError,
@@ -34,6 +35,7 @@ export interface ServerOptions {
   allowedOrigins?: readonly string[];
   /** Host-owned gateway. Tests inject a fake; only this daemon can persist app credentials. */
   keychain?: Keychain;
+  modelKinds?: readonly ModelKindEntry[];
 }
 export interface DaemonServer {
   url: string;
@@ -212,7 +214,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           // Serialize status with writes across connections. Never append/log the request or echo its body.
           credentialQueue = credentialQueue.then(async () => {
             try {
-              send(ws, await dispatchCredentials(request, options.keychain ?? systemKeychain()));
+              send(ws, await dispatchCredentials(request, options.keychain ?? systemKeychain(), options.modelKinds));
             } catch {
               error(ws, request.id, "internal", "Could not access credential storage");
             } finally {

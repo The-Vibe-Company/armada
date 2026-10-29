@@ -1,20 +1,32 @@
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { type CoordinatorModel, modelConfigSchema, modelKindSchema } from "@armada/protocol";
 import type { KeychainBackend } from "./secrets/backend.ts";
 import { fileKeychain } from "./secrets/file.ts";
 import { macKeychain } from "./secrets/macos.ts";
 
-export type ModelProvider = "anthropic" | "openai";
+export type ModelProvider = string;
 export type SecretService = "coordinator" | "linear" | "github" | "plugin";
 export type SecretAccessor = (service: "linear", project: string) => Promise<string | null>;
 export interface CoordinatorCredential {
   provider: ModelProvider;
   key: string;
+  config?: CoordinatorModel["config"];
 }
 export interface CredentialStatus {
   provider: ModelProvider | null;
   storage: KeychainBackend["storage"];
+  config?: CoordinatorModel["config"];
+}
+/** Migrate the pre-plugin OpenAI identity without persisting or exposing its key. */
+export function coordinatorModelConfig(provider: string, config?: CoordinatorModel["config"]) {
+  return provider === "openai"
+    ? {
+        provider: "openai-compatible",
+        config: { baseURL: "https://api.openai.com/v1", model: "gpt-4.1-mini", ...config },
+      }
+    : { provider, config };
 }
 const services = {
   coordinator: "armada.coordinator",
@@ -51,11 +63,19 @@ export class Keychain {
     }
   }
 
-  async setCoordinator(provider: ModelProvider, key: string): Promise<void> {
-    if ((provider !== "anthropic" && provider !== "openai") || !validKey(key))
+  async setCoordinator(provider: ModelProvider, key: string, config?: CoordinatorModel["config"]): Promise<void> {
+    if (
+      !modelKindSchema.safeParse(provider).success ||
+      !validKey(key) ||
+      (config && !modelConfigSchema.safeParse(config).success)
+    )
       throw new Error("Invalid model credential");
     // One entry atomically replaces both the provider and its key.
-    await this.write("coordinator", "coordinator", JSON.stringify({ provider, key }));
+    await this.write(
+      "coordinator",
+      "coordinator",
+      JSON.stringify({ ...coordinatorModelConfig(provider, config), key }),
+    );
   }
 
   async coordinator(): Promise<CoordinatorCredential | null> {
@@ -64,19 +84,30 @@ export class Keychain {
     try {
       const parsed = JSON.parse(value);
       if (
-        (parsed.provider !== "anthropic" && parsed.provider !== "openai") ||
+        !modelKindSchema.safeParse(parsed.provider).success ||
         typeof parsed.key !== "string" ||
         !validKey(parsed.key)
       )
         throw new Error();
-      return { provider: parsed.provider, key: parsed.key };
+      const config = parsed.config === undefined ? undefined : modelConfigSchema.parse(parsed.config);
+      const normalized = coordinatorModelConfig(parsed.provider, config);
+      return {
+        provider: normalized.provider,
+        key: parsed.key,
+        ...(normalized.config ? { config: normalized.config } : {}),
+      };
     } catch {
       throw new Error("Saved model credential is invalid");
     }
   }
 
   async status(): Promise<CredentialStatus> {
-    return { provider: (await this.coordinator())?.provider ?? null, storage: this.#backend.storage };
+    const saved = await this.coordinator();
+    return {
+      provider: saved?.provider ?? null,
+      storage: this.#backend.storage,
+      ...(saved?.config ? { config: saved.config } : {}),
+    };
   }
 }
 

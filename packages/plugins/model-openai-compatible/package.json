@@ -1,0 +1,69 @@
+{
+  "name": "@armada/plugin-model-openai-compatible",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "armada": {
+    "id": "model-openai-compatible",
+    "version": "0.1.0",
+    "pluginApi": "^0.1.0",
+    "enabledByDefault": true,
+    "description": "OpenAI-compatible endpoints models for the coordinator.",
+    "contributions": {
+      "model": {
+        "openai-compatible": {
+          "description": "OpenAI compatible",
+          "config": {
+            "type": "object",
+            "properties": {
+              "model": {
+                "type": "string",
+                "minLength": 1
+              },
+              "baseURL": {
+                "type": "string",
+                "minLength": 1
+              },
+              "apiKeySecret": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "OPENAI_API_KEY",
+                  "ARMADA_MODEL_API_KEY",
+                  "ZAI_API_KEY",
+                  "AZURE_AI_API_KEY",
+                  null
+                ]
+              },
+              "apiKeyHeader": {
+                "type": "string",
+                "enum": [
+                  "authorization",
+                  "api-key"
+                ]
+              },
+              "supportsStructuredOutputs": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "secrets": [
+            "OPENAI_API_KEY",
+            "ARMADA_MODEL_API_KEY",
+            "ZAI_API_KEY",
+            "AZURE_AI_API_KEY"
+          ]
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "3.0.80",
+    "@armada/plugin-api": "workspace:*",
+    "zod": "4.6.5"
+  }
+}

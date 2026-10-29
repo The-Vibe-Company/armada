@@ -1,9 +1,11 @@
 import { z } from "zod";
+import { modelConfigSchema, modelKindEntrySchema, modelKindSchema } from "./models.js";
 
 export * from "./fleet.js";
+export * from "./models.js";
 
 /** Wire version, independent of the daemon/app release versions. */
-export const PROTOCOL_VERSION = { major: 1, minor: 1 } as const;
+export const PROTOCOL_VERSION = { major: 1, minor: 3 } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
 
@@ -44,12 +46,13 @@ export const readSessionRequestSchema = z.object({
   project: identifier,
   sessionId: identifier,
 });
-export const modelProviderSchema = z.enum(["anthropic", "openai"]);
+export const modelProviderSchema = modelKindSchema;
 export const credentialsStatusRequestSchema = z.object({ ...request, type: z.literal("credentials.status") });
 export const credentialsSetRequestSchema = z.object({
   ...request,
   type: z.literal("credentials.set"),
   provider: modelProviderSchema,
+  config: modelConfigSchema.optional(),
   key: z
     .string()
     .min(1)
@@ -60,6 +63,8 @@ export const credentialsResultSchema = z.object({
   ...request,
   type: z.literal("credentials.result"),
   provider: modelProviderSchema.nullable(),
+  config: modelConfigSchema.optional(),
+  models: z.array(modelKindEntrySchema).optional(),
   storage: z.enum(["os-keychain", "file"]),
 });
 export const clientMessageSchema = z.discriminatedUnion("type", [

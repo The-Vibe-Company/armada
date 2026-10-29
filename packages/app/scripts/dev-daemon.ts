@@ -128,7 +128,25 @@ export async function startDevDaemon({
       entries.set(`${service}/${account}`, value);
     },
   });
-  const server = await startServer({ store, projects, port, staticDir, allowedOrigins, keychain });
+  const server = await startServer({
+    store,
+    projects,
+    port,
+    staticDir,
+    allowedOrigins,
+    keychain,
+    modelKinds: [
+      {
+        kind: "development-model",
+        description: "Development model",
+        config: {
+          type: "object",
+          properties: { model: { type: "string" }, baseURL: { type: "string" } },
+          required: ["model", "baseURL"],
+        },
+      },
+    ],
+  });
   return {
     url: server.url,
     wsUrl: server.wsUrl,

@@ -1,6 +1,7 @@
 import {
   APP_TOO_OLD,
   type ClientMessage,
+  type CoordinatorModel,
   type CredentialsResult,
   DAEMON_TOO_OLD,
   PROTOCOL_VERSION,
@@ -59,7 +60,7 @@ export interface DaemonClient {
   subscribe(listener: () => void): () => void;
   start(): void;
   stop(): void;
-  saveCredentials(provider: "anthropic" | "openai", key: string): Promise<void>;
+  saveCredentials(provider: string, key: string, config?: CoordinatorModel["config"]): Promise<void>;
 }
 
 const BACKOFF = [250, 500, 1000, 2000, 5000];
@@ -222,7 +223,14 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       }
       case "credentials.result": {
         if (message.id !== credentialStatusId && message.id !== pendingCredential?.id) return;
-        set({ credentials: { provider: message.provider, storage: message.storage } });
+        set({
+          credentials: {
+            provider: message.provider,
+            storage: message.storage,
+            ...(message.models ? { models: message.models } : {}),
+            ...(message.config ? { config: message.config } : {}),
+          },
+        });
         if (message.id === pendingCredential?.id) {
           const pending = pendingCredential;
           pendingCredential = null;
@@ -255,7 +263,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   const cursor = (project: string) => state.logs[project]?.seq ?? 0;
 
   return {
-    saveCredentials(provider, key) {
+    saveCredentials(provider, key, config) {
       let local = false;
       try {
         const url = new URL(options.url);
@@ -270,7 +278,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
         const requestId = id();
         pendingCredential = { id: requestId, resolve, reject, cancel: options.schedule(failCredential, 10000) };
         try {
-          send({ type: "credentials.set", version, id: requestId, provider, key });
+          send({ type: "credentials.set", version, id: requestId, provider, key, ...(config ? { config } : {}) });
         } catch {
           failCredential();
         }

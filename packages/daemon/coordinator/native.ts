@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import { type CoordinatorModel, coordinatorModelSchema } from "@armada/protocol";
 import { defineTool, type JsonObject, type ToolRegistration } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import * as Value from "typebox/value";
+import { z } from "zod";
 import type { EventInput, FleetEvent } from "../src/events.ts";
 import { fold, type ProjectTables, type Session } from "../src/fold.ts";
 import type { CoordinatorStorage } from "./storage.ts";
@@ -29,6 +31,7 @@ const object = <T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
 // Copied from core/src/config.ts: positive finite minutes, positive safe worker quota or no cap.
 const minutes = Type.Number({ exclusiveMinimum: 0 });
 const rulesSchema = object({
+  coordinatorModel: Type.Optional(Type.Unsafe<CoordinatorModel>(z.toJSONSchema(coordinatorModelSchema))),
   routing: Type.Optional(
     Type.Array(
       object({

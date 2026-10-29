@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { bootDaemon } from "../src/boot.ts";
+import { EventStore } from "../src/store.ts";
 
 async function fixture(run: (dir: string) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), "armada-plugins-"));
@@ -181,10 +182,7 @@ test("missing app config boots the bundled hello plugin", async () =>
       secrets: { get: async () => null },
     });
     try {
-      assert.deepEqual(
-        daemon.plugins.map((p) => [p.id, p.loaded]),
-        [["hello", true]],
-      );
+      assert.equal(daemon.plugins.find((plugin) => plugin.id === "hello")?.loaded, true);
     } finally {
       daemon.close();
     }
@@ -394,6 +392,10 @@ test("armadad loads the bundled catalog before announcing server readiness", asy
           ARMADA_APP_CONFIG: configPath,
           XDG_CONFIG_HOME: dir,
           GITHUB_TOKEN: randomBytes(24).toString("hex"),
+          ARMADA_MODEL_KIND: "openai-compatible",
+          ARMADA_MODEL_BASE_URL: "http://fixture.invalid/v1",
+          ARMADA_MODEL_NAME: "boot-model",
+          ARMADA_MODEL_API_KEY: randomBytes(24).toString("hex"),
         },
         stdio: ["ignore", "pipe", "pipe"],
       },
@@ -412,12 +414,24 @@ test("armadad loads the bundled catalog before announcing server readiness", asy
       });
       assert.match(JSON.parse(output.trim()).wsUrl, /^ws:\/\/127\.0\.0\.1:/);
       const status = JSON.parse(await readFile(`${configPath}.plugins.json`, "utf8"));
-      assert.deepEqual(
-        status.plugins.map((p: { id: string; loaded: boolean }) => [p.id, p.loaded]),
-        [["hello", true]],
-      );
+      assert.equal(status.plugins.find((plugin: { id: string }) => plugin.id === "hello")?.loaded, true);
     } finally {
       child.kill("SIGTERM");
       await exited;
+    }
+    const reopened = new EventStore(join(dir, "fleet.sqlite"));
+    try {
+      assert.equal(
+        reopened
+          .readSince(0)
+          .some(
+            (event) =>
+              event.kind === "coordinator.checkpoint" &&
+              JSON.stringify(event.payload).includes('"modelId":"boot-model"'),
+          ),
+        true,
+      );
+    } finally {
+      reopened.close();
     }
   }));
