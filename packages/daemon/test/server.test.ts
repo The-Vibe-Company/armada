@@ -55,10 +55,21 @@ async function connect(url: string) {
 test("armadad announces its address, serves without an app build and quits cleanly on SIGTERM", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "armada-process-"));
   const catalog = join(dir, "projects.json");
-  writeFileSync(catalog, JSON.stringify(projects));
+  writeFileSync(catalog, JSON.stringify(projects.map((project) => ({ ...project, programRoot: "SEED-1" }))));
+  // Native Node preload keeps real boot offline, with active, abortable provider reads.
+  const preload = `globalThis.fetch = async (_url, init) => {
+    process.stderr.write("armada-test-reader-started\\n");
+    return new Promise((_resolve, reject) => {
+      const abort = () => reject(new Error("aborted"));
+      if (init.signal.aborted) abort();
+      else init.signal.addEventListener("abort", abort, { once: true });
+    });
+  };`;
   const child = spawn(
     "node",
     [
+      "--import",
+      `data:text/javascript,${encodeURIComponent(preload)}`,
       new URL("../src/server/main.ts", import.meta.url).pathname,
       "--database",
       join(dir, "data", "fleet.sqlite"),
@@ -67,19 +78,39 @@ test("armadad announces its address, serves without an app build and quits clean
       "--static-dir",
       join(dir, "missing"),
     ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        XDG_CONFIG_HOME: dir,
+        LINEAR_API_KEY: randomBytes(24).toString("hex"),
+        GITHUB_TOKEN: randomBytes(24).toString("hex"),
+      },
+    },
   );
   const exited = once(child, "exit");
-  child.stderr.resume();
+  const errors = createInterface({ input: child.stderr });
+  const readersActive = new Promise<void>((resolve) => {
+    let fetching = 0;
+    errors.on("line", (line) => {
+      if (line === "armada-test-reader-started" && ++fetching === projects.length * 2) resolve();
+    });
+  });
   t.after(async () => {
     if (child.exitCode === null) child.kill("SIGTERM");
     await exited;
+    errors.close();
     rmSync(dir, { recursive: true, force: true });
   });
   const lines = createInterface({ input: child.stdout });
   const [ready] = await once(lines, "line");
   lines.close();
   const address = JSON.parse(ready);
+  assert.deepEqual(
+    address.readers,
+    projects.map((project) => ({ project: project.id, tracker: true, forge: true })),
+  );
+  await readersActive;
   assert.equal((await fetch(address.url)).status, 404);
   const client = await connect(address.wsUrl);
   client.send({ type: "projects.list" });

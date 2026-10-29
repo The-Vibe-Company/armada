@@ -96,14 +96,36 @@ node packages/daemon/src/server/main.ts --database .context/fleet.sqlite --proje
 ```
 
 The project catalog is a JSON array, for example
-`[{"id":"orchard","name":"Orchard","repository":"example/orchard"}]`.
+`[{"id":"orchard","name":"Orchard","repository":"example/orchard","programRoot":"SEED-1"}]`.
+`programRoot` is the Linear program's root issue identifier; omit it for a
+GitHub-only project. Optional `phaseGroup` names the Linear phase label group
+(default `Agent phase`). These fields configure daemon readers, not the public
+project protocol.
 The daemon binds `127.0.0.1`, uses an OS-assigned port unless `--port` is given,
-and prints one JSON readiness line with `url` and `wsUrl`. Open `url` in a browser;
+and prints one JSON readiness line with `url`, `wsUrl`, and
+`readers: [{project, tracker, forge}]` (booleans indicating which readers started).
+Readiness means the listener and readers started, not that their first reads
+finished. Open `url` in a browser;
 Electron can read the same line to open its window. `SIGINT` and `SIGTERM` close
-connections and SQLite. `--static-dir` overrides `packages/app/dist`; a missing
+readers first (canceling polls and active reads), then connections and SQLite. `--static-dir` overrides `packages/app/dist`; a missing
 build answers 404 while WebSocket requests still work. Static assets include
 content types and HEAD support; HTML navigation falls back to `index.html`.
 Paths and symlinks cannot escape the build directory.
+
+Boot composes the existing `TrackerPoller` and `GithubReader` in
+`src/server/readers.ts`. Each project has independent polling schedules (30
+seconds after completion); both append through the very same store the server
+subscribes to. GitHub correlates branches with ticket IDs already in that
+project's log, including tickets read after boot, on subsequent reads.
+Credentials are preflighted at startup: Linear uses the `readLinearKey` accessor
+with a host `LINEAR_API_KEY` override, falling back to the shared
+`systemKeychain().read("linear", project)` gateway. GitHub uses `GITHUB_TOKEN`,
+then the shared keychain / `gh auth token` accessor. No provider reads the
+environment itself. A missing
+credential skips only that reader and emits one fixed, credential-free stderr
+line per project/reader. Restart after supplying a missing key. Provider failures
+retain the existing log and retry on the reader's next scheduled tick; neither
+network reads nor credential lookup run in a protocol handler.
 
 Embedders import `startServer` from `@armada/daemon/server`, supplying a store and
 catalog; it returns `{url, wsUrl, close}`. The caller owns the store and closes it
