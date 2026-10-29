@@ -3,11 +3,12 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { coordinatorTools } from "../coordinator/index.ts";
+import { Coordinators, coordinatorTools } from "../coordinator/index.ts";
+import { fold } from "../src/fold.ts";
 import { startServer } from "../src/server/index.ts";
 import { EventStore } from "../src/store.ts";
 
-test("daemon refuses invalid coordinator configuration, releases failed startup and exposes missing tools as refusals", async () => {
+test("daemon refuses invalid coordinator configuration, releases failed startup and exposes unavailable actions as refusals", async () => {
   const store = new EventStore(":memory:");
   const faux = fauxProvider({ models: [{ id: "lifecycle" }] });
   const models = createModels();
@@ -30,19 +31,30 @@ test("daemon refuses invalid coordinator configuration, releases failed startup 
       /name mismatch/,
     );
     faux.setResponses([
-      fauxAssistantMessage(fauxToolCall("worker.launch", {}), { stopReason: "toolUse", timestamp: 0 }),
+      fauxAssistantMessage(
+        [
+          fauxToolCall("fleet.status", {}),
+          fauxToolCall("hold.add", { reason: "Main red" }),
+          fauxToolCall("worker.launch", {}),
+        ],
+        { stopReason: "toolUse", timestamp: 0 },
+      ),
       async (transcript) => {
-        assert.match(JSON.stringify(transcript.messages), /tool_unavailable/);
+        assert.match(JSON.stringify(transcript.messages), /not_available_yet/);
         return fauxAssistantMessage("Launching is unavailable", { timestamp: 0 });
       },
     ]);
     const server = await startServer({ store, projects, coordinators: [config] });
     try {
+      const second = new Coordinators(store);
+      await assert.rejects(second.open(config), /already open/);
+      await second.close();
       const coordinator = server.coordinators.get("p");
       assert.ok(coordinator);
       const submission = await coordinator.conversation.submit({ type: "input", content: "Launch work" }, context);
       assert.equal((await submission.wait(context)).status, "done");
       assert.equal(faux.state.callCount, 2);
+      assert.equal(fold(store.readSince(0)).projects.p?.holds[0]?.reason, "Main red");
     } finally {
       await Promise.all([server.close(), server.close()]);
     }

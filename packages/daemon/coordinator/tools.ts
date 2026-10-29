@@ -2,7 +2,7 @@ import type { JsonObject, ToolRegistration } from "@earendil-works/pi-durable";
 import { defineTool } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 
-/** Spec 2/7's native vocabulary. THE-1994 provides the real schemas and implementations. */
+/** Spec 2/7's native vocabulary; native.ts supplies admitted project implementations. */
 export const TOOL_NAMES = [
   "fleet.status",
   "inbox.list",
@@ -37,7 +37,13 @@ export function coordinatorTools(implementations: CoordinatorTools = {}): ToolRe
       replay: "safe",
       executionMode: "sequential",
       async execute() {
-        const refusal: JsonObject = { ok: false, code: "tool_unavailable", tool: name };
+        const refusal: JsonObject = {
+          ok: false,
+          code: "not_available_yet",
+          message: "not available yet",
+          next: "open the project's coordinator with its native tool scope",
+          tool: name,
+        };
         return { output: [{ type: "text", text: JSON.stringify(refusal) }], details: refusal, isError: true };
       },
     });
