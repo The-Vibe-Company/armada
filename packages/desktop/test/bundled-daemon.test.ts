@@ -12,13 +12,16 @@ import { PROTOCOL_VERSION, serverMessageSchema } from "@armada/protocol";
 import { EventStore } from "../../daemon/src/store.ts";
 import { DaemonProcess } from "../src/daemon.ts";
 
-before(() => {
-  execFileSync("bun", ["run", "build"], {
-    cwd: fileURLToPath(new URL("..", import.meta.url)),
-    timeout: 60000,
-    stdio: "pipe",
-  });
-});
+before(
+  () => {
+    execFileSync("bun", ["run", "build"], {
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
+      timeout: 60000,
+      stdio: "pipe",
+    });
+  },
+  { timeout: 60000 },
+);
 
 test("Electron's bundled daemon starts a configured coordinator and reads credentials through native keyring", {
   timeout: 20000,

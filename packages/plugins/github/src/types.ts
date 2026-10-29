@@ -7,8 +7,8 @@ export interface Forge {
 
 /** Injected event sink; providers never import a daemon store/server implementation. */
 export interface ForgeEvents {
-  append(event: EventInput): FleetEvent;
-  readSince(sequence: number, project?: string): FleetEvent[];
+  append(event: EventInput): FleetEvent | Promise<FleetEvent>;
+  readSince(sequence: number, project?: string): FleetEvent[] | Promise<FleetEvent[]>;
 }
 export type Schedule = (callback: () => void, milliseconds: number) => () => void;
 export const schedule: Schedule = (callback, milliseconds) => {

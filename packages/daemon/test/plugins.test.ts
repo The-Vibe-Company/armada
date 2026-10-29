@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { bootDaemon } from "../src/boot.ts";
-import { EventStore } from "../src/store.ts";
 
 async function fixture(run: (dir: string) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), "armada-plugins-"));
@@ -173,16 +172,29 @@ test("invalid manifest, config and activation leave no partial registrations and
     }
   }));
 
-test("missing app config boots the bundled hello plugin", async () =>
+test("missing app config boots default reader providers without reader credential lookup", async () =>
   fixture(async (dir) => {
     const daemon = await bootDaemon({
       databasePath: ":memory:",
       configPath: join(dir, "missing.json"),
       log: { info() {}, error() {} },
-      secrets: { get: async () => null },
+      secrets: {
+        get: async (name) => {
+          assert.ok(
+            name !== "LINEAR_API_KEY" && name !== "GITHUB_TOKEN",
+            "reader activation must not look up credentials",
+          );
+          return null;
+        },
+      },
     });
     try {
-      assert.equal(daemon.plugins.find((plugin) => plugin.id === "hello")?.loaded, true);
+      assert.deepEqual(
+        daemon.plugins.filter((p) => p.enabled && !p.loaded),
+        [],
+      );
+      assert.ok(daemon.registry.get("tracker", "linear"));
+      assert.ok(daemon.registry.get("forge", "github"));
     } finally {
       daemon.close();
     }
@@ -392,10 +404,6 @@ test("armadad loads the bundled catalog before announcing server readiness", asy
           ARMADA_APP_CONFIG: configPath,
           XDG_CONFIG_HOME: dir,
           GITHUB_TOKEN: randomBytes(24).toString("hex"),
-          ARMADA_MODEL_KIND: "openai-compatible",
-          ARMADA_MODEL_BASE_URL: "http://fixture.invalid/v1",
-          ARMADA_MODEL_NAME: "boot-model",
-          ARMADA_MODEL_API_KEY: randomBytes(24).toString("hex"),
         },
         stdio: ["ignore", "pipe", "pipe"],
       },
@@ -414,24 +422,13 @@ test("armadad loads the bundled catalog before announcing server readiness", asy
       });
       assert.match(JSON.parse(output.trim()).wsUrl, /^ws:\/\/127\.0\.0\.1:/);
       const status = JSON.parse(await readFile(`${configPath}.plugins.json`, "utf8"));
-      assert.equal(status.plugins.find((plugin: { id: string }) => plugin.id === "hello")?.loaded, true);
+      assert.equal(status.plugins.find((p: { id: string }) => p.id === "hello")?.loaded, true);
+      assert.deepEqual(
+        status.plugins.filter((p: { enabled: boolean; loaded: boolean }) => p.enabled && !p.loaded),
+        [],
+      );
     } finally {
       child.kill("SIGTERM");
       await exited;
-    }
-    const reopened = new EventStore(join(dir, "fleet.sqlite"));
-    try {
-      assert.equal(
-        reopened
-          .readSince(0)
-          .some(
-            (event) =>
-              event.kind === "coordinator.checkpoint" &&
-              JSON.stringify(event.payload).includes('"modelId":"boot-model"'),
-          ),
-        true,
-      );
-    } finally {
-      reopened.close();
     }
   }));

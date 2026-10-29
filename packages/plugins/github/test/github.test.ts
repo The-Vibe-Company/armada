@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
-import { fold } from "../src/fold.ts";
-import { GithubReader } from "../src/forge/github.ts";
-import { EventStore } from "../src/store.ts";
+import { fold } from "@armada/daemon/fold";
+import { EventStore } from "@armada/daemon/store";
+import { GithubReader } from "../src/github.ts";
 
 // Invented GraphQL recordings; credentials are generated at runtime, never recorded.
 function pull(number = 41, changes: Record<string, unknown> = {}) {
@@ -197,20 +197,41 @@ test("deadlines cover token, fetch and body hangs without late events; concurren
     const hang = new Promise<never>((resolve) => {
       release = resolve;
     });
+    let entered: () => void = () => {};
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
     const reader = new GithubReader({
       ...identity,
       store,
       schedule: timer.schedule,
-      token: () => (stage === "token" ? hang : Promise.resolve(randomUUID())),
-      fetch: async () => (stage === "fetch" ? hang : Object.assign(new Response(), { json: () => hang })),
+      token: async () => {
+        if (stage === "token") {
+          entered();
+          return hang;
+        }
+        return randomUUID();
+      },
+      fetch: async () => {
+        if (stage === "fetch") {
+          entered();
+          return hang;
+        }
+        return Object.assign(new Response(), {
+          json: () => {
+            entered();
+            return hang;
+          },
+        });
+      },
     });
     try {
       const pending = reader.refresh();
       assert.equal(reader.refresh(), pending);
-      await Promise.resolve();
-      await Promise.resolve();
+      await ready;
       timer.fire();
       assert.deepEqual(await pending, { ok: false, error: "GitHub reading timed out" });
+      assert.deepEqual(await reader.refresh(), { ok: false, error: "GitHub reading still pending" });
       release(
         (stage === "token"
           ? randomUUID()

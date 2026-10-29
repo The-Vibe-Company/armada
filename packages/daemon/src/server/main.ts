@@ -93,7 +93,7 @@ try {
         void stop();
       });
       try {
-        readers = await startReaders({ store: daemon.store, projects, signal: controller.signal });
+        readers = await startReaders({ registry: daemon.registry, projects, signal: controller.signal });
       } catch (error) {
         await stop();
         throw error;
