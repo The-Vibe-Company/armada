@@ -232,9 +232,9 @@ function Label({
     );
   const words = (
     <>
-      <div className="font-semibold text-sub text-text">{label.text}</div>
+      <div className="truncate font-semibold text-sub text-text">{label.text}</div>
       {label.facts && (
-        <div className="mt-0.5 text-body text-text-2" data-counts>
+        <div className="mt-0.5 line-clamp-2 text-body text-text-2" data-counts>
           {label.facts.map((f, k) => (
             <span key={f.key}>
               {k > 0 && " · "}

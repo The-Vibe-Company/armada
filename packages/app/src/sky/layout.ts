@@ -300,7 +300,7 @@ export const SQUADRON_SCALE: Record<Group | "idle", number> = {
   idle: 0.7,
 };
 
-/** About how tall a squadron's label is (its name, its counts on up to two lines, "Enter the room"), and how wide at most. */
+/** How tall a squadron's label is at most (its name on one line, its counts clamped to two, "Enter the room"), and how wide. */
 export const SQUADRON_LABEL = { height: 104, width: 440 } as const;
 
 /** The hangar: one formation per project, spread over the sky. */
