@@ -1,0 +1,96 @@
+# Armada V2 program (THE-1982) on this repository: select it with ARMADA_CONFIG=armada.v2.toml.
+# No secrets here: LINEAR_API_KEY and GITHUB_TOKEN (or `gh auth login`) come from the environment.
+
+[project]
+name = "Armada V2"
+slug = "armada-v2"          # stable id: one project = one repository + one program root
+
+[tracker]
+program_root = "THE-1982" # Linear issue at the root of the program
+language = "fr"          # language of owner-facing output
+ready_label = "ready-for-agent"
+
+[tracker.labels]
+phase_group = "Agent phase"
+runtime_group = "Agent runtime"
+
+[github]
+repository = "The-Vibe-Company/armada"
+
+[policy]
+silence_minutes = 15     # since the newest report, heartbeat or answer
+# launch_grace_minutes = 15 # extra allowance before first report/heartbeat; defaults to silence_minutes
+# ci_wait_minutes = 45     # shipping --stage ci silence allowance
+quiet_minutes = 45      # alive but no report: a coordinator-only note
+# No merge_approval: the owner asked on 2026-10-01 for every merge to go through without them.
+
+# Kinds of tickets whose work the owner validates first (THE-885): the coordinator judges at launch.
+[[policy.validation]]
+when = "a design ticket: a mockup, a visual direction or the look of a new screen"
+then = "produce the design, attach it, ask the owner to validate it on Armada, and stop until they decide; never merge or build it on your own"
+
+[gates]
+required_checks = ["Lint, typecheck and test"]
+# Run by `armada merge` on a test merge when a head lacks commits of main.
+local_commands = ["bun install --frozen-lockfile", "bun run test:browser:install", "bun run verify"]
+
+# How `armada brief` launches workers on Conductor; `conductor model` lists the ids.
+[conductor]
+default_profile = "codex"  # legacy fallback only when no profile has a when rule
+
+[conductor.profiles.opus]
+when = "front end: dashboard pages, components, styles, design, UI copy (Opus 5.5)"
+agent = "claude"
+model = "opus-5-5-1m"
+effort = "high"
+
+[conductor.profiles.codex]
+when = "back end: CLI, core rules, API, database, migrations, tests, docs (GPT 6.1 Sol)"
+agent = "codex"
+model = "gpt-6.1-sol"
+effort = "high"
+
+[conductor.profiles.debug]
+when = "a bug to diagnose"
+agent = "codex"
+model = "gpt-6.1-sol"
+effort = "xhigh"
+
+# The first rule with a label the ticket carries picks its profile, in file order.
+[[conductor.routing]]
+labels = ["web"]  # front end: Opus 5.5
+profile = "opus"
+
+[[conductor.routing]]
+labels = ["api"]
+profile = "codex"
+
+[[conductor.routing]]
+labels = ["Bug"]
+profile = "debug"
+
+# Local DeepSeek worker: a persistent OpenCode session (native dsh: THE-949).
+[herdr.profiles.deepseek]
+harness = "deepseek" # deepseek (OpenCode + DeepSeek model)
+model = "opencode/deepseek-v4.1-flash" # exact ID selected by the owner
+effort = "high"
+permissions = "full"
+
+[herdr.profiles.claude]
+harness = "claude"
+model = "opus"
+effort = "high"
+permissions = "full"
+
+[herdr.profiles.codex]
+harness = "codex"
+model = "gpt-6.1-sol"
+effort = "high"
+permissions = "full"
+extra_args = ["-c", "check_for_update_on_startup=false"] # no update prompt
+
+[herdr.profiles.opencode]
+harness = "opencode"
+model = "opencode/gemini-3.1-pro" # exact ID from `opencode models`
+effort = "high"
+permissions = "full"

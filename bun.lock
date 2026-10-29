@@ -68,6 +68,13 @@
         "wawoff2": "2.0.1",
       },
     },
+    "packages/protocol": {
+      "name": "@armada/protocol",
+      "version": "1.0.0",
+      "dependencies": {
+        "zod": "4.6.5",
+      },
+    },
   },
   "packages": {
     "@armada/core": ["@armada/core@workspace:packages/core"],
@@ -75,6 +82,8 @@
     "@armada/daemon": ["@armada/daemon@workspace:packages/daemon"],
 
     "@armada/dashboard": ["@armada/dashboard@workspace:packages/dashboard"],
+
+    "@armada/protocol": ["@armada/protocol@workspace:packages/protocol"],
 
     "@axe-core/playwright": ["@axe-core/playwright@4.13.0", "", { "dependencies": { "axe-core": "~4.13.0" }, "peerDependencies": { "playwright-core": ">= 1.0.0" } }, "sha512-6YLx+kxXu5GJceG4ozFg+33a2EMTdjYwWGloJ3sb9Kta5pp+ZNS53uxGVog5JetIY8s++P5UrtX+cri+u0VAVg=="],
 
