@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { defineTool, type JsonObject, type ToolRegistration } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import * as Value from "typebox/value";
+import { z } from "zod";
 import type { EventInput, FleetEvent } from "../src/events.ts";
 import { fold, type ProjectTables, type Session } from "../src/fold.ts";
+import { type Workers, type WorkerTool, workerToolSchemas } from "../src/workers/service.ts";
 import { emptyRules, type ProjectRules, type RulesState, rulesSchema } from "./rules.ts";
 import { readV1RulesFile } from "./rules-file.ts";
 import type { CoordinatorStorage } from "./storage.ts";
@@ -11,6 +13,7 @@ import { type CoordinatorToolName, TOOL_NAMES } from "./tools.ts";
 
 export interface NativeToolOptions {
   now: () => string;
+  workers?: Workers;
   /** Optional host restriction/adapter for explicitly requested, local V1 file imports. */
   readRulesImport?: (file: string) => Promise<ProjectRules>;
   mergeEvidence?: (pr: number) => Promise<MergeEvidence | null>;
@@ -74,10 +77,10 @@ const schemas = {
   "fleet.status": object({}),
   "inbox.list": object({}),
   "inbox.answer": object({ id, answer: text }),
-  "worker.launch": Type.Object({}, { additionalProperties: true }),
+  "worker.launch": Type.Unsafe(z.toJSONSchema(workerToolSchemas["worker.launch"])),
   "worker.relaunch": Type.Object({}, { additionalProperties: true }),
-  "worker.message": Type.Object({}, { additionalProperties: true }),
-  "worker.stop": Type.Object({}, { additionalProperties: true }),
+  "worker.message": Type.Unsafe(z.toJSONSchema(workerToolSchemas["worker.message"])),
+  "worker.stop": Type.Unsafe(z.toJSONSchema(workerToolSchemas["worker.stop"])),
   "merge.check": object({ pr: Type.Integer({ minimum: 1 }) }),
   "merge.run": Type.Object({}, { additionalProperties: true }),
   "hold.add": object({ reason: text }),
@@ -95,10 +98,10 @@ const descriptions: Record<CoordinatorToolName, string> = {
   "inbox.list": "Read open project inbox items in event order without resolving them.",
   "inbox.answer":
     "Deliver and record an answer to a question or plan once. Refuses without a keyed delivery adapter; the worker reports its resumed phase.",
-  "worker.launch": "Launch a worker (not available yet; Spec 3).",
+  "worker.launch": "Launch a ticket through the configured runtime and node plugins, with its branch and brief.",
   "worker.relaunch": "Replace a worker (not available yet; Spec 3).",
-  "worker.message": "Message a worker (not available yet; Spec 3).",
-  "worker.stop": "Stop a worker (not available yet; Spec 3).",
+  "worker.message": "Deliver a keyed message to the current worker generation.",
+  "worker.stop": "Stop the current worker generation and release its capability.",
   "merge.check":
     "Check a pinned hand-back against recorded fleet facts and adapter evidence. Missing evidence refuses the check.",
   "merge.run": "Merge a checked PR (not available yet; Spec 4).",
@@ -453,6 +456,37 @@ export function nativeTools(
                 `call ${name} with its declared parameters`,
               ),
             );
+          if (["worker.launch", "worker.message", "worker.stop"].includes(name) && options.workers) {
+            if (!api.callId || !Number.isSafeInteger(api.taskId))
+              return output(
+                refuse(
+                  "missing_call_id",
+                  "a worker action needs its durable call identity",
+                  "invoke through the coordinator harness",
+                ),
+              );
+            try {
+              return output(
+                await options.workers.tool(
+                  scope.project,
+                  name as WorkerTool,
+                  args,
+                  JSON.stringify([scope.project, api.taskId, api.callId]),
+                  () => {
+                    scope.readEvents();
+                  },
+                ),
+              );
+            } catch {
+              return output(
+                refuse(
+                  "worker_refused",
+                  "worker action could not be confirmed; inspect fleet state before retrying",
+                  "fleet.status",
+                ),
+              );
+            }
+          }
           const mutation = ["inbox.answer", "hold.add", "hold.clear", "owner.ask", "rules.set"].includes(name);
           if (mutation && (!api.callId || !Number.isSafeInteger(api.taskId)))
             return output(

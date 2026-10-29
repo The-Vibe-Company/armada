@@ -7,7 +7,7 @@
   "armada": {
     "id": "hello",
     "version": "0.1.0",
-    "pluginApi": "^0.1.0",
+    "pluginApi": "^0.2.0",
     "description": "Proves the bundled plugin boot path without contributing a provider.",
     "contributions": {},
     "enabledByDefault": true

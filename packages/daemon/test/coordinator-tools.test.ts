@@ -167,7 +167,15 @@ for (const name of ["worker.launch", "worker.relaunch", "worker.message", "worke
   test(`${name} refuses unavailable actions without writing`, async (t) => {
     const { run, store } = await fixture(t);
     const before = store.sequence;
-    const result = await run(name, { ticket: "SEED-1", session: "one", pr: 7 });
+    const args =
+      name === "worker.launch"
+        ? { ticket: "SEED-1", branch: "worker/seed", brief: "Plant" }
+        : name === "worker.message"
+          ? { ticket: "SEED-1", message: "Plant" }
+          : name === "worker.stop"
+            ? { ticket: "SEED-1", reason: "Finished" }
+            : { ticket: "SEED-1", session: "one", pr: 7 };
+    const result = await run(name, args);
     assert.equal(result.code, "not_available_yet");
     assert.equal(result.message, "not available yet");
     assert.ok(result.next);

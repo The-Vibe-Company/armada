@@ -1,0 +1,53 @@
+{
+  "name": "@armada/plugin-node-local",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "armada": {
+    "id": "node-local",
+    "version": "0.1.0",
+    "pluginApi": "^0.2.0",
+    "enabledByDefault": true,
+    "description": "Prepares local git worktrees and runs workers as local processes.",
+    "contributions": {
+      "node": {
+        "local": {
+          "config": {
+            "type": "object",
+            "properties": {
+              "workspaceRoot": {
+                "type": "string",
+                "minLength": 1
+              },
+              "transport": {
+                "enum": [
+                  "auto",
+                  "pipe",
+                  "pty"
+                ]
+              },
+              "outputTail": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "stopTimeoutMs": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "killTimeoutMs": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "additionalProperties": false
+          },
+          "secrets": []
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@armada/plugin-api": "workspace:*"
+  }
+}

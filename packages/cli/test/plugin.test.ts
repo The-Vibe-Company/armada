@@ -14,8 +14,8 @@ test("plugin list shows the boot catalog and switches preserve config until rest
   try {
     const catalog: PluginCatalogEntry[] = [];
     for (const [id, pluginApi, enabledByDefault] of [
-      ["working", "^0.1.0", true],
-      ["disabled", "^0.1.0", false],
+      ["working", "^0.2.0", true],
+      ["disabled", "^0.2.0", false],
       ["future", ">=2.0.0", true],
     ] as const) {
       const path = join(dir, id);
@@ -88,8 +88,8 @@ test("plugin list shows the boot catalog and switches preserve config until rest
         "  └─ model.test enabled, loaded",
         "disabled@1.0.0 disabled, not loaded",
         "  └─ model.test disabled, not loaded",
-        "future@1.0.0 enabled, refused: pluginApi >=2.0.0 excludes daemon Plugin API 0.1.0",
-        "  └─ model.test enabled, refused: pluginApi >=2.0.0 excludes daemon Plugin API 0.1.0",
+        "future@1.0.0 enabled, refused: pluginApi >=2.0.0 excludes daemon Plugin API 0.2.0",
+        "  └─ model.test enabled, refused: pluginApi >=2.0.0 excludes daemon Plugin API 0.2.0",
         "",
       ]);
       out = "";
@@ -186,7 +186,7 @@ test("plugin test loads hello, reports a named tracker failure and preserves loa
         armada: {
           id: "wrong",
           version: "1.0.0",
-          pluginApi: "^0.1.0",
+          pluginApi: "^0.2.0",
           enabledByDefault: false,
           description: "Deliberately wrong tracker",
           contributions: { tracker: { wrong: { config: true, secrets: [] } } },
@@ -270,7 +270,7 @@ test("a handle returned after cancellation is stopped before the runner can obse
   const manifest = manifestSchema.parse({
     id: "late",
     version: "1.0.0",
-    pluginApi: "^0.1.0",
+    pluginApi: "^0.2.0",
     enabledByDefault: true,
     description: "Late worker cleanup regression",
     contributions: { runtime: { late: { config: true, secrets: [] } } },

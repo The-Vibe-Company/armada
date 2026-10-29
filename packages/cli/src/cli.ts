@@ -37,6 +37,7 @@ import { jobCommand } from "./job.ts";
 import { launch } from "./launch.ts";
 import { lint } from "./lint.ts";
 import { setupLocal } from "./local-setup.ts";
+import { localWorker } from "./local-worker.ts";
 import { login, logout, requireSignIn, whoami } from "./login.ts";
 import { MergeCommandError, merge, notMergedResult } from "./merge.ts";
 import { statusHints } from "./notices.ts";
@@ -1002,6 +1003,8 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     if (args.all) args.options.all = "true";
     if (args.passthrough && args.command !== "run")
       throw new UsageError(`-- does not apply to ${args.command}: only \`armada run\` runs a command`);
+    const local = await localWorker(io, { ...args, command: args.command });
+    if (local !== null) return local;
     if (args.command === "plugin") return await pluginCommand(io, args.rest, args.json, args.options.report);
     if (args.command === "secrets" || args.command === "run") {
       const { path, text } = await findConfig(io, args.config, args.command, args.project);

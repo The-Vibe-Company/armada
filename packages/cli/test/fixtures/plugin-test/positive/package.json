@@ -4,7 +4,7 @@
   "armada": {
     "id": "plugin-conformance",
     "version": "1.0.0",
-    "pluginApi": "^0.1.0",
+    "pluginApi": "^0.2.0",
     "enabledByDefault": false,
     "description": "Reference fixture providers for the contract runner",
     "contributions": {

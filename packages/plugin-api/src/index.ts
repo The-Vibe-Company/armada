@@ -1,7 +1,19 @@
+import type { NodeProvider, RuntimeProvider } from "./runtime.js";
+
+export type {
+  LaunchRequest,
+  NodeProvider,
+  PrepareRequest,
+  RuntimeProvider,
+  WorkerObservation,
+  WorkerRef,
+  Workspace,
+} from "./runtime.js";
+
 import { z } from "zod";
 
 /** Independent of Armada releases and of the daemon/app wire protocol. */
-export const PLUGIN_API_VERSION = "0.1.0";
+export const PLUGIN_API_VERSION = "0.2.0";
 export const SEAMS = ["runtime", "tracker", "forge", "node", "model"] as const;
 export type Seam = (typeof SEAMS)[number];
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -65,50 +77,6 @@ export interface TrackerProvider {
 export interface ForgeProvider {
   read(request: ProjectRequest): Promise<void>;
   merge(request: ProjectRequest & { number: number; head: string }): Promise<{ merged: boolean }>;
-}
-export interface Workspace {
-  id: string;
-  path: string;
-  node: string;
-}
-export interface PrepareRequest extends ProjectRequest {
-  ticket: string;
-  repository: string;
-  branch: string;
-}
-/** Generation is pinned on every action, including delivery and stop. */
-export interface WorkerRef {
-  project: string;
-  ticket: string;
-  session: string;
-  generation: number;
-  handle: string;
-}
-export interface LaunchRequest {
-  workspace: Workspace;
-  worker: Omit<WorkerRef, "handle">;
-  command: string;
-  args: string[];
-  env: Record<string, string>;
-}
-export interface WorkerObservation {
-  state: "starting" | "running" | "stopped" | "failed" | "unknown";
-  reply?: string;
-}
-export interface RuntimeProvider {
-  prepare(request: PrepareRequest): Promise<Workspace>;
-  launch(request: LaunchRequest): Promise<WorkerRef>;
-  deliver(worker: WorkerRef, message: string, deliveryKey: string): Promise<void>;
-  observe(worker: WorkerRef): Promise<WorkerObservation>;
-  stop(worker: WorkerRef): Promise<void>;
-}
-/** A runtime consumes a node's workspace and PTY facilities. */
-export interface NodeProvider {
-  prepare(request: PrepareRequest): Promise<Workspace>;
-  launch(request: LaunchRequest): Promise<WorkerRef>;
-  deliver(worker: WorkerRef, message: string, deliveryKey: string): Promise<void>;
-  observe(worker: WorkerRef): Promise<WorkerObservation>;
-  stop(worker: WorkerRef): Promise<void>;
 }
 /** Model is the consumer's AI SDK model type; the API has no SDK runtime dependency. */
 export interface ModelProvider<Model = unknown> {

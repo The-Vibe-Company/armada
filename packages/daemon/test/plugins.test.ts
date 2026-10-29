@@ -16,7 +16,7 @@ async function fixture(run: (dir: string) => Promise<void>) {
     await rm(dir, { recursive: true, force: true });
   }
 }
-const manifest = (id: string, pluginApi = "^0.1.0") => ({
+const manifest = (id: string, pluginApi = "^0.2.0") => ({
   id,
   version: "1.2.3",
   pluginApi,
@@ -111,7 +111,7 @@ test("daemon boot loads a temporary catalog once, exposes providers/events and r
           ["future", "1.2.3", false],
         ],
       );
-      assert.match(lines.join("\n"), /future.*>=2\.0\.0.*0\.1\.0/);
+      assert.match(lines.join("\n"), /future.*>=2\.0\.0.*0\.2\.0/);
       assert.equal(lines.length, 1);
       const provider = daemon.registry.get("tracker", "tickets");
       assert.ok(provider);
@@ -181,10 +181,7 @@ test("missing app config boots the bundled hello plugin", async () =>
       secrets: { get: async () => null },
     });
     try {
-      assert.deepEqual(
-        daemon.plugins.map((p) => [p.id, p.loaded]),
-        [["hello", true]],
-      );
+      assert.equal(daemon.plugins.find((p) => p.id === "hello")?.loaded, true);
     } finally {
       daemon.close();
     }
@@ -291,7 +288,7 @@ test("catalog providers isolate schema ids and close registration after boot", a
       {
         id: "lifecycle",
         version: "1.2.3",
-        pluginApi: "^0.1.0",
+        pluginApi: "^0.2.0",
         enabledByDefault: true,
         description: "Provider lifecycle",
         contributions: { model: { first: contribution, second: contribution } },
@@ -412,10 +409,7 @@ test("armadad loads the bundled catalog before announcing server readiness", asy
       });
       assert.match(JSON.parse(output.trim()).wsUrl, /^ws:\/\/127\.0\.0\.1:/);
       const status = JSON.parse(await readFile(`${configPath}.plugins.json`, "utf8"));
-      assert.deepEqual(
-        status.plugins.map((p: { id: string; loaded: boolean }) => [p.id, p.loaded]),
-        [["hello", true]],
-      );
+      assert.equal(status.plugins.find((p: { id: string }) => p.id === "hello")?.loaded, true);
     } finally {
       child.kill("SIGTERM");
       await exited;

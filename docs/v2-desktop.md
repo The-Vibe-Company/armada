@@ -163,7 +163,7 @@ in-process ES modules exporting `activate(ctx)`, loaded once at boot. Nothing is
 unloaded. A changed switch or configuration takes effect when the daemon
 restarts. V2 runs the official worker CLIs itself.
 
-`@armada/plugin-api` (`packages/plugin-api`, API **0.1.0**) owns the manifest
+`@armada/plugin-api` (`packages/plugin-api`, API **0.2.0**) owns the manifest
 schema and TypeScript contracts, independently of Armada and wire protocol
 versions. Its only runtime dependency is Zod, also used by the protocol. The five
 seams are `runtime` (prepare, launch a CLI in a PTY, deliver, observe, stop, with
@@ -192,7 +192,7 @@ ES module entry from `exports` (string or `.` with `import`/`default`), then
 {
   "id": "linear",
   "version": "1.0.0",
-  "pluginApi": "^0.1.0",
+  "pluginApi": "^0.2.0",
   "enabledByDefault": true,
   "description": "Read the project's tickets from Linear",
   "contributions": {

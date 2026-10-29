@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { PluginRegistry } from "@armada/daemon/plugins";
 import { type PluginEvent, type PluginManifest, type Providers, SEAMS, type WorkerRef } from "@armada/plugin-api";
+import { guarded } from "@armada/plugin-api/guard";
 import { generateText, jsonSchema, type LanguageModel } from "ai";
 
 export interface FixtureRequest {
@@ -177,7 +179,40 @@ function writeRequests(options: SeamCheckOptions, start: number, seam: string): 
 
 async function workerChecks(options: SeamCheckOptions, seam: "runtime" | "node", kind: string): Promise<void> {
   const name = `${seam}.${kind}`;
-  const provider = options.registry.get(seam, kind);
+  let provider = options.registry.get(seam, kind);
+  let hostNode: Providers["node"] | undefined;
+  if (seam === "runtime" && provider && "withNode" in provider && provider.withNode) {
+    const { fixtureNode } = await import(pathToFileURL(join(options.fixtureRoot, "node", "host.mjs")).href);
+    hostNode = fixtureNode(options.directory) as Providers["node"];
+    provider = provider.withNode(hostNode);
+  }
+  if (provider) {
+    const raw = provider;
+    // A fixture generation is authoritative for this isolated sandbox only.
+    provider = {
+      prepare: (request) => raw.prepare(request),
+      launch: (request) =>
+        guarded(
+          request.worker,
+          () => {},
+          () => raw.launch(request),
+        ),
+      deliver: (ref, message, key) =>
+        guarded(
+          ref,
+          () => {},
+          () => raw.deliver(ref, message, key),
+        ),
+      observe: (ref) => raw.observe(ref),
+      stop: (ref) =>
+        guarded(
+          ref,
+          () => {},
+          () => raw.stop(ref),
+        ),
+      ...("dispose" in raw && raw.dispose ? { dispose: raw.dispose.bind(raw) } : {}),
+    };
+  }
   let worker: WorkerRef | undefined;
   let workspace: Awaited<ReturnType<Providers["node"]["prepare"]>> | undefined;
   try {
@@ -299,6 +334,15 @@ async function workerChecks(options: SeamCheckOptions, seam: "runtime" | "node",
     });
   } finally {
     if (worker && provider) await options.check(`${name}.cleanup`, () => provider.stop(worker as WorkerRef));
+    const node = seam === "node" ? (provider as Providers["node"]) : hostNode;
+    if (workspace && node?.dispose) {
+      const prepared = workspace;
+      const dispose = node.dispose.bind(node);
+      await options.check(`${name}.dispose`, async () => {
+        await rm(join(prepared.path, "worker.mjs"), { force: true });
+        await dispose(prepared);
+      });
+    }
   }
 }
 async function launchWorker(
