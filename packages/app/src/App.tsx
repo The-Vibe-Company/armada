@@ -4,7 +4,7 @@ import { useRoute } from "@/lib/route";
 import type { DaemonClient } from "@/protocol/client";
 import { DaemonProvider } from "@/protocol/store";
 import { Hangar } from "@/screens/Hangar";
-import { ProjectFleet } from "@/screens/ProjectFleet";
+import { Project } from "@/screens/Project";
 import { Settings } from "@/screens/Settings";
 
 // The sky's story page (`?story=sky`), loaded only behind its flag: never in the first load.
@@ -41,7 +41,7 @@ function Screen({ address, onReload }: { address: string; onReload: () => void }
   const route = useRoute();
   switch (route.screen) {
     case "project":
-      return <ProjectFleet key={route.id} id={route.id} onReload={onReload} />;
+      return <Project key={route.id} id={route.id} onReload={onReload} />;
     case "settings":
       return <Settings address={address} onReload={onReload} />;
     default:

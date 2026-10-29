@@ -82,10 +82,10 @@ the daemon's address on the facts line, then the coordinator's model
 
 ## A project's fleet by state
 
-`#/projects/<id>` shows the project's sessions by state
-(`src/screens/ProjectFleet.tsx`, the v7 anatomy around
-`src/components/fleet/FleetList.tsx`) until the project's room (THE-1996) takes
-the route and the list moves to its rail: groups most urgent first.
+`#/projects/<id>` is the project's page (`src/screens/Project.tsx`: its rules,
+THE-1997, then its sessions by state in `src/components/fleet/FleetList.tsx`)
+until the project's room (THE-1996) takes the route and the list moves to its
+rail: groups most urgent first.
 
 The rules are V1's overview (`packages/dashboard/lib/coordinator-view.ts` and its
 strings), copied into `src/fleet/overview.ts`, never imported:

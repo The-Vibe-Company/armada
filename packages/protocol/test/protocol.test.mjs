@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { admitRequest, clientMessageSchema, PROTOCOL_VERSION, serverMessageSchema } from "../dist/index.js";
+import {
+  admitRequest,
+  clientMessageSchema,
+  eventPayloadSchemas,
+  PROTOCOL_VERSION,
+  projectTablesSchema,
+  serverMessageSchema,
+} from "../dist/index.js";
 
 const version = { major: 1, minor: 0 };
 const event = {
@@ -151,4 +158,92 @@ test("replay frames preserve project isolation and strictly ordered safe sequenc
       assert.equal(serverMessageSchema.safeParse({ ...frame, ...change }).success, false);
     }
   }
+});
+
+test("known payload contracts validate checkpoint JSON and correlate session reporting phases", () => {
+  const report = { ticket: "EX-1", session: "session-a", phase: "shipping", reason: "Review", stage: "review" };
+  assert.deepEqual(eventPayloadSchemas["session.reported"].parse(report), report);
+  for (const phase of ["released", "merged", "unknown"]) {
+    assert.equal(eventPayloadSchemas["session.reported"].safeParse({ ...report, phase }).success, false);
+  }
+  const checkpoint = { checkpoint: { format: "example", writes: [null, true, 3, { body: "hello" }] } };
+  assert.deepEqual(eventPayloadSchemas["coordinator.checkpoint"].parse(checkpoint), checkpoint);
+  assert.equal(
+    eventPayloadSchemas["coordinator.checkpoint"].safeParse({ checkpoint: { value: Infinity } }).success,
+    false,
+  );
+});
+
+test("folded tables validate known rows while preserving extension fields and serialized key order", () => {
+  const claim = {
+    handle: "local",
+    runtime: "codex",
+    owner: "Mira",
+    generation: 1,
+    session: "session-a",
+    ticket: "EX-1",
+    title: "Tend the orchard",
+    phase: "shipping",
+    state: "in-progress",
+    reason: "Review",
+    step: 3,
+    flowStep: "review",
+    at: "2030-01-01T10:00:00Z",
+    heartbeat: null,
+  };
+  const tables = {
+    tickets: [],
+    pullRequests: [
+      {
+        head: "abc",
+        number: 7,
+        ticket: "EX-1",
+        state: "open",
+        ci: "pending",
+        conflicting: false,
+        review: "approved",
+        checks: [],
+      },
+    ],
+    sessions: [claim],
+    sessionsByState: {
+      blocked: [],
+      "waiting-for-owner": [],
+      "in-progress": [claim],
+      "ready-to-merge": [],
+      merged: [],
+      released: [],
+    },
+    inbox: [],
+    queue: [],
+    holds: [],
+    validations: [],
+    extension: { value: true },
+  };
+  assert.equal(JSON.stringify(projectTablesSchema.parse(tables)), JSON.stringify(tables));
+  for (const row of [
+    { ...claim, phase: "unknown" },
+    { ...claim, generation: -1 },
+    { ...claim, heartbeat: 1 },
+  ]) {
+    assert.equal(projectTablesSchema.safeParse({ ...tables, sessions: [row] }).success, false);
+  }
+  assert.equal(projectTablesSchema.safeParse({ ...tables, sessionsByState: {} }).success, false);
+  const rules = {
+    revision: 1,
+    value: {
+      routing: [{ when: "Backend work", cli: "claude", model: "oak" }],
+      placement: { workers: "vm", coordinator: "local" },
+      policy: { maxWorkers: null },
+    },
+  };
+  const configured = { ...tables, rules };
+  assert.equal(JSON.stringify(projectTablesSchema.parse(configured)), JSON.stringify(configured));
+  assert.equal(projectTablesSchema.safeParse({ ...tables, rules: { ...rules, revision: -1 } }).success, false);
+  assert.equal(
+    projectTablesSchema.safeParse({ ...tables, rules: { revision: 1, value: { policy: { silenceMinutes: 0 } } } })
+      .success,
+    false,
+  );
+  assert.equal(projectTablesSchema.safeParse({ ...tables, extension: { value: undefined } }).success, false);
 });
