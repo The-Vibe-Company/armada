@@ -80,6 +80,23 @@ Both sides accept minor differences within the same major. App consumers validat
 with `serverMessageSchema` and check the server's major before applying frames;
 a major mismatch requires reconnecting with a compatible app/daemon pair.
 
+### Credentials (minor 1)
+
+A local app sends `credentials.status` after connection to discover the saved
+coordinator provider (`anthropic`, `openai`, or `null`) and storage type
+(`os-keychain` or the explicit Linux/CI `file` fallback). Only an explicit form
+submission sends `credentials.set` with `provider` and `key`. Both operations
+answer `credentials.result`, containing status only: keys never travel back,
+enter subscriptions, or become events. A dropped/unconfirmed write is never
+replayed; reconnect queries status instead. The app keeps neither a key nor a
+pending write body in its store or browser storage. A daemon below minor 1 still
+serves the fleet; the app does not offer credential configuration on it.
+
+Credential requests must go through admission and the daemon's private credential
+dispatch, before project-scoped fleet dispatch. Do not log request frames or
+backend errors. The transport accepts writes only on its loopback socket under
+its existing trusted-origin check. There is no credential-read message.
+
 ## Initial folded snapshot (additive)
 
 `project.subscribed` may include `snapshot: {seq,state}` on an initial
@@ -89,3 +106,4 @@ so clients that fold locally continue to work. A client using the snapshot must
 apply only events after the snapshot cursor. Replay subscriptions with a positive
 `after` omit the snapshot and send only missed event batches. This optional field
 adds no required operation or dependency on daemon types.
+

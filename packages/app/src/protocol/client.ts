@@ -1,6 +1,7 @@
 import {
   APP_TOO_OLD,
   type ClientMessage,
+  type CredentialsResult,
   DAEMON_TOO_OLD,
   PROTOCOL_VERSION,
   type Project,
@@ -28,6 +29,7 @@ export interface DaemonState {
   /** null until the daemon listed them; kept across reconnects so the sidebar never blanks. */
   projects: readonly Project[] | null;
   logs: Readonly<Record<string, ProjectLog>>;
+  credentials: Omit<CredentialsResult, "id" | "type" | "version"> | null;
 }
 
 /** The part of a browser WebSocket the client uses, so tests hand it a fake. */
@@ -54,6 +56,7 @@ export interface DaemonClient {
   subscribe(listener: () => void): () => void;
   start(): void;
   stop(): void;
+  saveCredentials(provider: "anthropic" | "openai", key: string): Promise<void>;
 }
 
 const BACKOFF = [250, 500, 1000, 2000, 5000];
@@ -61,7 +64,13 @@ export const UNREADABLE = "The daemon sent a message this app cannot read";
 export const LOG_BEHIND = "The daemon's log is behind what this app has read: reload the app";
 export const unusableAddress = (url: string) => `This daemon address is not usable: ${url}`;
 
-export const initialState: DaemonState = { status: "connecting", problem: null, projects: null, logs: {} };
+export const initialState: DaemonState = {
+  status: "connecting",
+  problem: null,
+  projects: null,
+  logs: {},
+  credentials: null,
+};
 
 /**
  * The app's one connection to the daemon (packages/protocol): list the
@@ -81,6 +90,19 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   let attempt = 0;
   let nextId = 0;
   let running = false;
+  let credentialStatusId: string | null = null;
+  let pendingCredential: {
+    id: string;
+    resolve: () => void;
+    reject: (error: Error) => void;
+    cancel: () => void;
+  } | null = null;
+  function failCredential() {
+    const pending = pendingCredential;
+    pendingCredential = null;
+    pending?.cancel();
+    pending?.reject(new Error("Key was not confirmed saved. Reconnect and check its status before trying again."));
+  }
   /** Why the last connection ended: after an unreadable frame, the backoff keeps growing. */
   let lastDrop: "close" | "unreadable" = "close";
   /** Per connection: the subscription each project's frames arrive under. */
@@ -116,11 +138,13 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
 
   /** Leave the current connection, if any, and try again after the next wait. */
   function reconnect() {
+    failCredential();
+    credentialStatusId = null;
     const closing = socket;
     socket = null;
     closing?.close();
     if (!running || state.status === "refused") return;
-    set({ status: "reconnecting" });
+    set({ status: "reconnecting", credentials: null });
     const wait = backoff[Math.min(attempt, backoff.length - 1)] ?? 1000;
     attempt += 1;
     cancelRetry = options.schedule(connect, wait);
@@ -133,7 +157,9 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   }
 
   function refuse(problem: string) {
-    set({ status: "refused", problem });
+    failCredential();
+    credentialStatusId = null;
+    set({ status: "refused", problem, credentials: null });
     const closing = socket;
     socket = null;
     closing?.close();
@@ -161,6 +187,10 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       case "projects.result": {
         if (lastDrop === "close") attempt = 0;
         set({ status: "live", problem: null, projects: message.projects });
+        if (message.version.minor >= 1) {
+          credentialStatusId = id();
+          send({ type: "credentials.status", version, id: credentialStatusId });
+        }
         for (const project of message.projects) {
           send({ type: "project.subscribe", version, id: id(), project: project.id, after: cursor(project.id) });
         }
@@ -177,7 +207,22 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
         set({ logs: { ...state.logs, [message.project]: { seq: message.seq, events: [...log.events, ...fresh] } } });
         return;
       }
+      case "credentials.result": {
+        if (message.id !== credentialStatusId && message.id !== pendingCredential?.id) return;
+        set({ credentials: { provider: message.provider, storage: message.storage } });
+        if (message.id === pendingCredential?.id) {
+          const pending = pendingCredential;
+          pendingCredential = null;
+          pending.cancel();
+          pending.resolve();
+        }
+        return;
+      }
       case "error":
+        if (pendingCredential && message.id === pendingCredential.id) {
+          failCredential();
+          return;
+        }
         if (message.code === "app-too-old" || message.code === "daemon-too-old") return refuse(message.message);
         return set({ problem: message.message });
       case "session.result":
@@ -188,6 +233,27 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   const cursor = (project: string) => state.logs[project]?.seq ?? 0;
 
   return {
+    saveCredentials(provider, key) {
+      let local = false;
+      try {
+        const url = new URL(options.url);
+        local = ["ws:", "wss:"].includes(url.protocol) && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+      } catch {
+        /* An invalid address is refused below. */
+      }
+      if (!local) return Promise.reject(new Error("Open the app on this device to save a key."));
+      if (state.status !== "live" || !state.credentials || pendingCredential)
+        return Promise.reject(new Error("Wait for the daemon before saving a key."));
+      return new Promise<void>((resolve, reject) => {
+        const requestId = id();
+        pendingCredential = { id: requestId, resolve, reject, cancel: options.schedule(failCredential, 10000) };
+        try {
+          send({ type: "credentials.set", version, id: requestId, provider, key });
+        } catch {
+          failCredential();
+        }
+      });
+    },
     getState: () => state,
     subscribe(listener) {
       listeners.add(listener);
@@ -199,6 +265,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       connect();
     },
     stop() {
+      failCredential();
       running = false;
       cancelRetry?.();
       cancelRetry = null;

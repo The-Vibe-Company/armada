@@ -3,9 +3,12 @@
 `linearTracker` implements `Tracker` without importing V1, the store, the fold,
 HTTP handlers or runtime code. `linear/` is self-contained apart from the
 Tracker type boundary and the single `readLinearKey` secrets accessor. It can
-move into the Linear plugin when the boot-time plugin loader lands. The host
-must supply a `SecretAccessor`; THE-1995 will connect it to the OS keychain.
-There is no environment or credential-file fallback.
+move into the Linear plugin when the boot-time plugin loader lands. The default
+`readLinearKey` uses the host's shared `Keychain.read` gateway (macOS OS Keychain;
+explicit private Linux/CI app-config fallback). The Linear account is the project
+id under service `armada.linear`. There is no environment or V1 credential-file
+fallback. Embedders/tests can still supply a `SecretAccessor`; bind a `Keychain`
+instance with `keychain.read.bind(keychain)`.
 
 At daemon boot, create one reader and poller per configured project:
 
@@ -16,7 +19,6 @@ const tracker = linearTracker({
   project: project.id,
   rootId: project.linearRoot, // human identifier, e.g. SEED-1
   phaseGroup: project.phaseGroup,
-  secrets: keychain.read,
   fetch,
   now: () => new Date(),
 });
