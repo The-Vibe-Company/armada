@@ -1,48 +1,37 @@
-// The app's routes, in the address's hash (THE-2025): the daemon serves one
-// page, and the desktop shell opens it from a file, so the path never moves.
-// Pure rules and one hook; a screen's route is one line here and one in App.tsx.
 import { useSyncExternalStore } from "react";
 
-export type Route =
-  /** `#/`: the hangar, every project a squadron in one sky (the home). */
-  | { screen: "hangar" }
-  /** `#/projects/<id>`: a project's room. */
-  | { screen: "project"; id: string }
-  /** `#/settings`: the coordinator's model. */
-  | { screen: "settings" };
+/**
+ * The page the address names. Hash routes, because the daemon serves one
+ * index.html at its root: `#/projects/<id>` a project, `#/plugins` the Plugins
+ * screen, `#/settings` the coordinator's model, anything else the hangar (the
+ * home, THE-2025). Off a browser (a test's static render) it is the hangar.
+ */
+export type Route = { kind: "home" } | { kind: "project"; id: string } | { kind: "plugins" } | { kind: "settings" };
 
-export const href = {
-  hangar: "#/",
-  project: (id: string) => `#/projects/${encodeURIComponent(id)}`,
-  settings: "#/settings",
-} as const;
+/** Where a project's squadron and its sidebar line lead. */
+export const projectHref = (id: string) => `#/projects/${encodeURIComponent(id)}`;
 
-/** The route a hash names; any other hash is the hangar. */
-export function parseRoute(hash: string): Route {
-  const path = hash.replace(/^#\/?/, "").replace(/\/+$/, "");
-  if (path === "settings") return { screen: "settings" };
-  const project = path.match(/^projects\/([^/]+)$/)?.[1];
-  if (project) {
+const subscribe = (listener: () => void) => {
+  window.addEventListener("hashchange", listener);
+  return () => window.removeEventListener("hashchange", listener);
+};
+const current = () => window.location.hash;
+const server = () => "#/";
+
+export function routeOf(hash: string): Route {
+  if (hash === "#/plugins") return { kind: "plugins" };
+  if (hash === "#/settings") return { kind: "settings" };
+  const match = /^#\/projects\/([^/?#]+)$/.exec(hash);
+  if (match?.[1]) {
     try {
-      return { screen: "project", id: decodeURIComponent(project) };
+      return { kind: "project", id: decodeURIComponent(match[1]) };
     } catch {
-      // A malformed escape names no project.
+      /* A malformed address returns to the fleet. */
     }
   }
-  return { screen: "hangar" };
+  return { kind: "home" };
 }
 
-const subscribe = (change: () => void) => {
-  window.addEventListener("hashchange", change);
-  return () => window.removeEventListener("hashchange", change);
-};
-
-/** The current route, followed as the hash changes; the hangar on the server. */
 export function useRoute(): Route {
-  const hash = useSyncExternalStore(
-    subscribe,
-    () => window.location.hash,
-    () => "",
-  );
-  return parseRoute(hash);
+  return routeOf(useSyncExternalStore(subscribe, current, server));
 }

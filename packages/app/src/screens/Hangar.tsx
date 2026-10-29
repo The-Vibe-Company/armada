@@ -5,7 +5,7 @@ import { countsOf, type Fact, hangarFacts, inFlight } from "@/fleet/hangar";
 import { dayIn } from "@/fleet/overview";
 import { skyProject } from "@/fleet/sky";
 import { fleetOf } from "@/fleet/state";
-import { href } from "@/lib/route";
+import { projectHref } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import { useDaemon } from "@/protocol/store";
 import { Sky } from "@/sky/Sky";
@@ -90,7 +90,7 @@ export function Hangar({
       <div className="relative flex min-h-0 flex-1">
         {/* Drawn once the fleet is read, so its first paint holds every squadron still in place. */}
         {read ? (
-          <Sky projects={flying ? squadrons : []} size="stage" link={href.project} clock={clock} />
+          <Sky projects={flying ? squadrons : []} size="stage" link={projectHref} clock={clock} />
         ) : (
           <div className="flex-1" />
         )}

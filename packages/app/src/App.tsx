@@ -9,6 +9,8 @@ import { Settings } from "@/screens/Settings";
 
 // The sky's story page (`?story=sky`), loaded only behind its flag: never in the first load.
 const SkyStory = lazy(() => import("@/screens/SkyStory").then((m) => ({ default: m.SkyStory })));
+// A screen of the app's own settings: off the first load (perf-budget.json), fetched when opened.
+const Plugins = lazy(() => import("@/screens/Plugins").then((m) => ({ default: m.Plugins })));
 
 export function App({
   client,
@@ -21,6 +23,7 @@ export function App({
   onReload: () => void;
   story?: string | null;
 }) {
+  const route = useRoute();
   return (
     <DaemonProvider client={client}>
       <Shell>
@@ -28,23 +31,19 @@ export function App({
           <Suspense>
             <SkyStory />
           </Suspense>
+        ) : route.kind === "plugins" ? (
+          // The shell stays while the screen's code arrives.
+          <Suspense fallback={null}>
+            <Plugins />
+          </Suspense>
+        ) : route.kind === "project" ? (
+          <Project id={route.id} onReload={onReload} />
+        ) : route.kind === "settings" ? (
+          <Settings address={address} onReload={onReload} />
         ) : (
-          <Screen address={address} onReload={onReload} />
+          <Hangar onReload={onReload} />
         )}
       </Shell>
     </DaemonProvider>
   );
-}
-
-/** The screen the address's route names (src/lib/route.ts). */
-function Screen({ address, onReload }: { address: string; onReload: () => void }) {
-  const route = useRoute();
-  switch (route.screen) {
-    case "project":
-      return <Project key={route.id} id={route.id} onReload={onReload} />;
-    case "settings":
-      return <Settings address={address} onReload={onReload} />;
-    default:
-      return <Hangar onReload={onReload} />;
-  }
 }

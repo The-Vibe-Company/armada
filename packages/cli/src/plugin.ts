@@ -8,16 +8,19 @@ import {
   renderPluginList,
 } from "@armada/daemon/plugins/list";
 import { type Io, UsageError } from "./io.ts";
+import { testPlugin } from "./plugin-test.ts";
 
-export async function pluginCommand(io: Io, rest: string[], json: boolean): Promise<number> {
+export async function pluginCommand(io: Io, rest: string[], json: boolean, report?: string): Promise<number> {
   const [command, id] = rest;
+  if (command === "test" && id && rest.length === 2) return testPlugin(io, id, report, json);
+  if (report) throw new UsageError("--report applies to plugin test only");
   if (
     !(
       (command === "list" && rest.length === 1) ||
       ((command === "enable" || command === "disable") && rest.length === 2)
     )
   )
-    throw new UsageError("use armada plugin list or plugin enable|disable <id>");
+    throw new UsageError("use armada plugin list, plugin enable|disable <id> or plugin test <dir> [--report <file>]");
   const path = appConfigPath(io.env);
   const config = parseAppConfig(await io.readFile(path));
   const body = await io.readFile(pluginStatusPath(path));

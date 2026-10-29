@@ -71,6 +71,8 @@
   --color-blue: #60aaf3;
   --color-green: #61cb7c;
   --color-merged: #84888f;
+  /* The direction's accent (.aeom/direction): the mark's lead, a switch that is on. */
+  --color-lime: #b6f15a;
   /* A step's bar: done, to come. */
   --color-step-done: #5a5e66;
   --color-step-next: #26282d;

@@ -3,7 +3,7 @@ import { APP_TOO_OLD, PROTOCOL_VERSION } from "@armada/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { skyProject } from "../src/fleet/sky";
 import { type FoldedSession, readFleetState } from "../src/fleet/state";
-import { parseRoute } from "../src/lib/route";
+import { routeOf } from "../src/lib/route";
 import { createDaemonClient, type SocketLike } from "../src/protocol/client";
 import { DaemonProvider } from "../src/protocol/store";
 import { Hangar } from "../src/screens/Hangar";
@@ -293,14 +293,9 @@ test("the daemon's problem, with its Reload, shows on every screen, not only the
   }
 });
 
-test("the address's hash names the screen: the hangar, a project's room, the settings", () => {
-  expect(["", "#", "#/", "#/elsewhere"].map((h) => parseRoute(h).screen)).toEqual([
-    "hangar",
-    "hangar",
-    "hangar",
-    "hangar",
-  ]);
-  expect(parseRoute("#/projects/sea%20lane")).toEqual({ screen: "project", id: "sea lane" });
-  expect(parseRoute("#/projects/%E0%A4%A")).toEqual({ screen: "hangar" });
-  expect(parseRoute("#/settings")).toEqual({ screen: "settings" });
+test("the address's hash names the screen: the hangar, a project, the settings", () => {
+  expect(["", "#", "#/", "#/elsewhere"].map((h) => routeOf(h).kind)).toEqual(["home", "home", "home", "home"]);
+  expect(routeOf("#/projects/sea%20lane")).toEqual({ kind: "project", id: "sea lane" });
+  expect(routeOf("#/projects/%E0%A4%A")).toEqual({ kind: "home" });
+  expect(routeOf("#/settings")).toEqual({ kind: "settings" });
 });
