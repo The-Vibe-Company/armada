@@ -1,5 +1,6 @@
 import { sessionsInFlight } from "@/fleet/sessions";
 import { fleetOf } from "@/fleet/state";
+import { useRoute } from "@/lib/route";
 import type { ConnectionStatus } from "@/protocol/client";
 import { useDaemon } from "@/protocol/store";
 import { Count } from "./Count";
@@ -16,6 +17,7 @@ const current = "aria-[current=page]:bg-item-current aria-[current=page]:text-te
  */
 export function Sidebar() {
   const { projects, fleets, status } = useDaemon();
+  const route = useRoute();
   return (
     <aside
       aria-label="Sidebar"
@@ -26,7 +28,7 @@ export function Sidebar() {
         <span className="font-semibold text-sub">Armada</span>
       </div>
       <nav aria-label="Sections" className="flex flex-col gap-0.5">
-        <a href="#/" className={`${item} ${current}`} aria-current="page">
+        <a href="#/" className={`${item} ${current}`} aria-current={route.kind === "home" ? "page" : undefined}>
           <span className="min-w-0 flex-1 truncate">Fleet</span>
         </a>
       </nav>
@@ -39,7 +41,13 @@ export function Sidebar() {
         {projects?.map((p) => {
           const fleet = fleets[p.id];
           return (
-            <a key={p.id} href={`#/projects/${encodeURIComponent(p.id)}`} className={item} title={p.repository}>
+            <a
+              key={p.id}
+              href={`#/projects/${encodeURIComponent(p.id)}`}
+              className={`${item} ${current}`}
+              aria-current={route.kind === "project" && route.id === p.id ? "page" : undefined}
+              title={p.repository}
+            >
               <span className="min-w-0 flex-1 truncate">{p.name}</span>
               {fleet && <Sessions count={sessionsInFlight(fleetOf(fleet))} />}
             </a>

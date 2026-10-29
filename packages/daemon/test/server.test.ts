@@ -30,6 +30,7 @@ const hold = (project = "orchard", id = "rain"): EventInput => ({
 
 /** A project's folded tables holding only these open holds, as the protocol carries them. */
 const holding = (...events: FleetEvent[]) => ({
+  rules: { revision: 0, value: {} },
   tickets: [],
   pullRequests: [],
   sessions: [],

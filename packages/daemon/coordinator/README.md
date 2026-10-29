@@ -47,15 +47,43 @@ checklist again under its merge lease, against fresh base/head evidence.
 
 `rules.set` patches routing, placement and policy using `expectedRevision` from
 `fleet.status.rules`; stale revisions refuse. Routing is an ordered list of
-`{labels, cli: claude|codex|opencode, model, effort?}`. Placement selects `local`
+`{labels, cli: claude|codex|opencode, model, effort?}` or `{when, cli, model, effort?}`,
+where `when` describes a kind of work for the coordinator to judge. `defaultRoute`
+is an optional CLI/model/effort fallback (null clears it). Placement selects `local`
 or `vm` separately for workers and coordinator. Policy uses `silenceMinutes`,
 `quietMinutes` (finite positive numbers) and nullable `maxWorkers` (a positive
-safe integer or no cap); policy patches retain omitted numbers. A reason
-is mandatory. Rules are versioned `coordinator.checkpoint` events with reserved
+safe integer or no cap); policy patches retain omitted numbers. A reason is mandatory.
+
+Rules remain versioned `coordinator.checkpoint` events with reserved
 `format: armada.tools`, `version: 1`, `type: rules`, `rules: {revision,value}`.
-Pi storage ignores that format. THE-1997 can promote this projection into the
-shared fold and add V1 import/app editing without changing pi storage. Model
-catalog validation and placement execution belong to the launch implementation;
+The shared fold projects them into `ProjectTables.rules`, sent live with each
+project's snapshot. Revision 0 and an empty value mean no rules have been set;
+unset policy numbers and placement do not imply operational defaults. Existing
+v1 checkpoints replay unchanged. Pi storage ignores this format. The event log,
+owned by the app's daemon independently of repository files, is the only authority;
+plugin switches continue to use the separate app configuration file.
+
+Instead of `rules`, pass `importFile` with an absolute path to a V1 armada.toml
+on the daemon's machine to import once into a project at revision 0. The local
+adapter reads a regular UTF-8 file of at most 256 KiB; hosts can restrict it with
+`native.readRulesImport`. The file's contents never become model tool arguments:
+only its reference and normalized rules enter the durable conversation and log.
+Do not paste file contents into chat. The import reads `conductor.routing` in file
+order, profile `when` descriptions after label routes, the default profile, and
+`policy.silence_minutes` (or its old `silent_after_minutes` alias), `quiet_minutes`
+and `max_workers`, including V1 defaults (15, 45, no cap). Only those fields are
+read; tracker/forge/secrets and other V1 tables are not imported.
+Malformed input, unknown profiles, unsupported CLI agents, fast mode, or herdr
+routing refuse atomically instead of losing intent. Runtime wrappers such as
+Conductor are not V2 runtimes and do not establish placement: tell the coordinator
+where to run workers and itself after importing. After the file read, ownership
+and revision are checked again. A later import refuses even if all rules were
+subsequently cleared; replaying a committed call returns its receipt without
+reading a changed or removed source file.
+
+The app's project page shows these folded rules in a read-only block. Tell the
+coordinator new intent through its chat; the app never reads armada.toml directly.
+Model catalog validation and placement execution belong to the launch implementation;
 storing intent does not claim a provider or VM is available.
 
 All four `worker.*` actions and `merge.run` return `not_available_yet` with the
