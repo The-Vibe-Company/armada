@@ -1,4 +1,4 @@
-import type { Phase, Ticket } from "../events.ts";
+import type { Phase, Ticket } from "@armada/daemon/events";
 
 export interface TrackerTicket {
   uuid: string;

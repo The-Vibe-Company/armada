@@ -167,7 +167,8 @@ test("the room's rules: its address, a question's choices, ids in a message, a t
   expect(routeOf("#/projects/harbor")).toEqual({ kind: "project", id: "harbor" });
   expect(routeOf("#/projects/a%20b")).toEqual({ kind: "project", id: "a b" });
   expect(routeOf("#/projects/harbor/rules")).toEqual({ kind: "rules", id: "harbor" });
-  expect(routeOf("#/sessions/HAR-15")).toEqual({ kind: "session", ticket: "HAR-15" });
+  // A session's page has its own route (src/session/route.ts): the rail's rows lead there.
+  expect(routeOf("#/sessions/HAR-15")).toEqual({ kind: "home" });
   expect(routeOf("#/projects/harbor/extra")).toEqual({ kind: "home" });
   expect(routeOf("#/projects/%E0%A4%A")).toEqual({ kind: "home" });
   expect(routeOf("")).toEqual({ kind: "home" });

@@ -144,11 +144,31 @@
         "zod": "4.6.5",
       },
     },
+    "packages/plugins/github": {
+      "name": "@armada/plugin-github",
+      "version": "0.1.0",
+      "dependencies": {
+        "@armada/plugin-api": "workspace:*",
+      },
+      "devDependencies": {
+        "@armada/daemon": "workspace:*",
+      },
+    },
     "packages/plugins/hello": {
       "name": "@armada/plugin-hello",
       "version": "0.1.0",
       "devDependencies": {
         "@armada/plugin-api": "workspace:*",
+      },
+    },
+    "packages/plugins/linear": {
+      "name": "@armada/plugin-linear",
+      "version": "0.1.0",
+      "dependencies": {
+        "@armada/plugin-api": "workspace:*",
+      },
+      "devDependencies": {
+        "@armada/daemon": "workspace:*",
       },
     },
     "packages/protocol": {
@@ -185,7 +205,11 @@
 
     "@armada/plugin-api": ["@armada/plugin-api@workspace:packages/plugin-api"],
 
+    "@armada/plugin-github": ["@armada/plugin-github@workspace:packages/plugins/github"],
+
     "@armada/plugin-hello": ["@armada/plugin-hello@workspace:packages/plugins/hello"],
+
+    "@armada/plugin-linear": ["@armada/plugin-linear@workspace:packages/plugins/linear"],
 
     "@armada/protocol": ["@armada/protocol@workspace:packages/protocol"],
 

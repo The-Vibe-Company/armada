@@ -80,6 +80,29 @@ test("armadad announces its address, serves without an app build and quits clean
   const dir = mkdtempSync(join(tmpdir(), "armada-process-"));
   const catalog = join(dir, "projects.json");
   writeFileSync(catalog, JSON.stringify(projects.map((project) => ({ ...project, programRoot: "SEED-1" }))));
+  writeFileSync(
+    join(dir, "config.json"),
+    JSON.stringify({
+      plugins: [
+        {
+          id: "linear",
+          config: {
+            tracker: {
+              linear: { projects: Object.fromEntries(projects.map((p) => [p.id, { programRoot: "SEED-1" }])) },
+            },
+          },
+        },
+        {
+          id: "github",
+          config: {
+            forge: {
+              github: { projects: Object.fromEntries(projects.map((p) => [p.id, { repository: p.repository }])) },
+            },
+          },
+        },
+      ],
+    }),
+  );
   // Native Node preload keeps real boot offline, with active, abortable provider reads.
   const preload = `globalThis.fetch = async (_url, init) => {
     process.stderr.write("armada-test-reader-started\\n");

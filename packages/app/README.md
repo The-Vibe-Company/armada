@@ -103,13 +103,50 @@ strings), copied into `src/fleet/overview.ts`, never imported:
   and merged).
 - **The six-step bar** (Plan, Approval, Code, Review & CI, Ready, Merged): the
   done steps grey, the one at work in the state's colour; all grey once merged.
-- A row's time is the hour on the viewer's day, else the date: a still word.
+- A row's time is the hour on the viewer's day, else the date: a still word,
+  whole from a 900 px window up (the title gives way, with an ellipsis).
 - **Past 100 rows** each row is `content-visibility: auto` at its 48 px, so the
   browser skips the rows off screen; every row stays in the page.
 
 `test/overview.test.ts` holds the rules on synthetic folded states;
 `test/fleet.test.tsx` renders the list on the daemon's fold of a synthetic log
 and reads the groups, the reasons and their colours.
+
+## A session's page
+
+Every row of the fleet is a link (the whole row, focusable, Enter opens it) to
+its session's page, `#/sessions/<ticket>` (`?tab=files` for the second tab):
+`src/screens/Session.tsx`, loaded when a row opens it, never in the first load.
+Its route is `src/session/route.ts`, one line of `App.tsx`; its reading is
+`src/session/view.ts`, pure, from the project's folded state and the events the
+subscription replayed (the client keeps them per project): the app reads one
+ticket's lines out of the log, it never folds.
+
+- **The facts line**: back to the project (`#/projects/<id>`, its page, its room
+  once that lands), the ticket, the runtime and its harness, the
+  branch and the pull request's address from the forge's events, the pull
+  request and its checks, claimed at, last report at. Then the ticket's title
+  (the 22 px h1) and the state on the quiet line.
+- **The state card**, edged in the state's colour: blocked says why (the
+  worker's question and its choices when it asked one) with Answer, Release
+  the ticket and Open the session; waiting for you says the validation, the
+  coordinator's question or the plan, with its choices and a Note field;
+  in progress the last report; ready to merge the hand-back; merged the pull
+  request. The acting buttons are disabled with "Not available yet." until the
+  daemon can act on workers (Spec 3) and answer the owner's decisions.
+- **The six steps** (Plan, Build, Ship, Review & CI, Merge, Done): the done ones
+  grey, the current one in the state's colour and marked (`aria-current`).
+- **Reports**: the ticket's reports and events, newest first (claims, reports,
+  questions and answers, validations and decisions, the merge queue, the pull
+  request's moves; heartbeats and unchanged readings left out), each on one line
+  cut with an ellipsis, opened on a click to its whole text.
+- **Files**: the pull request's files with their +/- counts when a forge event
+  carries `files`; one quiet line when none.
+
+`test/session.test.tsx` renders a synthetic session in each state on the
+daemon's fold and checks the card, the steps and both tabs; `test/build.test.ts`
+opens a row by a click and by the keyboard in Chromium, and holds every row's
+time whole at 900 px.
 
 ## The Plugins screen
 
@@ -236,8 +273,9 @@ choices from V1's "Options:" list, the one said "(recommended)" primary, a
 labelled note; absent when nothing waits), the conversation with the project's
 coordinator, and the owner's field fixed at the bottom. The agents' rail
 (`src/room/Rail.tsx`) slides in from the right at a third of the width, the
-project's agents grouped by state, a row opening `#/sessions/<ticket>`
-(a placeholder until the session's page). The sidebar stays.
+project's agents grouped by state, a row opening its session's page
+(`#/sessions/<ticket>`, THE-2028). The fleet list by state, with the project's
+rules, is at `#/projects/<id>/rules`, linked from the facts line. The sidebar stays.
 
 - **The conversation** (`src/room/chat.ts`) is the daemon's reading
   (`chat.read`, protocol minor 4): read when the room opens, and again whenever

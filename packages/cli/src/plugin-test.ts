@@ -120,7 +120,10 @@ export async function testPlugin(io: Io, path: string, reportPath?: string, json
         req.method !== "GET" &&
         (body.includes('"head"') || /mutation\b/.test(body) || path.endsWith("/merge"));
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(mutatingForge ? { merged: true } : fixture.response));
+      const operation = body ? /(?:query|mutation)\s+(\w+)/.exec(JSON.parse(body).query ?? "")?.[1] : undefined;
+      const response = operation ? fixture.operations?.[operation] : fixture.response;
+      if (!mutatingForge && operation && !response) throw new Error("unknown fixture operation");
+      res.end(JSON.stringify(mutatingForge ? { merged: true } : response));
     } catch {
       res.writeHead(400).end();
     }

@@ -6,7 +6,7 @@ import { m } from "motion/react";
 import { TONE } from "@/components/fleet/FleetList";
 import { type FleetItem, GROUP_LABEL, GROUPS, type Group, rowTime, STEPS } from "@/fleet/overview";
 import type { Harness } from "@/fleet/sky";
-import { sessionHref } from "@/lib/route";
+import { sessionHref } from "@/session/route";
 import { Ship } from "./Ship";
 
 const EMPTY: Record<Group, string> = {

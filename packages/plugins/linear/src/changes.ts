@@ -1,4 +1,4 @@
-import type { EventInput, FleetEvent, Phase, Ticket } from "../events.ts";
+import type { EventInput, FleetEvent, Phase, Ticket } from "@armada/daemon/events";
 import type { TrackerComment, TrackerReading } from "./types.ts";
 
 const phases: Phase[] = [

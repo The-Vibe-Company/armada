@@ -84,7 +84,7 @@ function ownLine(s: FoldedSession): string | null {
 }
 
 /** Why a session is in its group, in V1's words. */
-function sessionReason(s: FoldedSession, group: Group, state: FleetState): string {
+export function sessionReason(s: FoldedSession, group: Group, state: FleetState): string {
   // The ticket's pull request as the fold reads it: its latest one not closed.
   const pr = state.pullRequests.findLast((p) => p.ticket === s.ticket && p.state !== "closed");
   const prText = pr ? `#${pr.number}${CI_WORD[pr.ci] ? ` ${CI_WORD[pr.ci]}` : ""}` : "";

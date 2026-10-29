@@ -1,17 +1,15 @@
 // Where the app is: the address's hash, because the daemon serves one
 // index.html at its root. `#/projects/<id>` is a project's room (THE-1996),
-// `#/projects/<id>/rules` its rules and fleet (THE-1997), `#/sessions/<ticket>`
-// a session's page (a placeholder until the local runtime, docs/v2-desktop.md
-// step 3), `#/plugins` the Plugins screen, `#/settings` the coordinator's
-// model; anything else, and off a browser (a test's static render), the hangar
-// (the home, THE-2025).
+// `#/projects/<id>/rules` its rules and fleet (THE-1997), `#/plugins` the
+// Plugins screen, `#/settings` the coordinator's model; anything else, and off
+// a browser (a test's static render), the hangar (the home, THE-2025). A
+// session's page, `#/sessions/<ticket>`, has its own route (src/session/route.ts).
 import { useSyncExternalStore } from "react";
 
 export type Route =
   | { kind: "home" }
   | { kind: "project"; id: string }
   | { kind: "rules"; id: string }
-  | { kind: "session"; ticket: string }
   | { kind: "plugins" }
   | { kind: "settings" };
 
@@ -33,7 +31,6 @@ export function routeOf(hash: string): Route {
   if (!value) return { kind: "home" };
   if (kind === "projects" && more === undefined) return { kind: "project", id: value };
   if (kind === "projects" && more === "rules") return { kind: "rules", id: value };
-  if (kind === "sessions" && more === undefined) return { kind: "session", ticket: value };
   return { kind: "home" };
 }
 
@@ -41,7 +38,6 @@ export function routeOf(hash: string): Route {
 export const projectHref = (id: string) => `#/projects/${encodeURIComponent(id)}`;
 export const roomHref = projectHref;
 export const rulesHref = (project: string) => `${projectHref(project)}/rules`;
-export const sessionHref = (ticket: string) => `#/sessions/${encodeURIComponent(ticket)}`;
 
 const subscribe = (listener: () => void) => {
   window.addEventListener("hashchange", listener);
