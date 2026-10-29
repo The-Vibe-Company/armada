@@ -105,7 +105,6 @@ export type TokenCommand = (file: string, args: readonly string[], signal?: Abor
 export interface GithubTokenOptions {
   signal?: AbortSignal;
   command?: TokenCommand;
-  platform?: string;
   keychain?: Pick<Keychain, "read">;
 }
 const command: TokenCommand = (file, args, signal) =>
@@ -124,11 +123,7 @@ export async function githubToken(options: GithubTokenOptions = {}): Promise<str
   };
   if (!options.signal?.aborted) {
     try {
-      const chain =
-        options.keychain ??
-        (options.command && (options.platform ?? process.platform) === "darwin"
-          ? new Keychain(macKeychain(options.command, options.signal))
-          : systemKeychain());
+      const chain = options.keychain ?? systemKeychain();
       const token = usable(await chain.read("github", "github"));
       if (token) return token;
     } catch {
