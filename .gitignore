@@ -40,3 +40,6 @@ packages/daemon/src/plugins/catalog.generated.ts
 
 # Node-compatible shared account adapters
 packages/core/dist/
+
+# Native Node build of shared test helpers
+packages/core/test/support.node.js
