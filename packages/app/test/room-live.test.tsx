@@ -237,9 +237,14 @@ describe("the room streams the coordinator's turn in a browser", () => {
     await emit(page, frame(turn("tool", at(15), { tool: { id: tool.id, name: tool.name }, queued: 1 })));
     expect(await working.textContent()).toBe("Working for 15s· 1 queued");
 
-    // An empty field: Stop, which interrupts the turn. pi's abort withdraws both messages still waiting: the
-    // reading right after the Stop holds the stopped answer and the call's result, not them, and their words
-    // come back to the field rather than vanish.
+    // The steered message is placed: a checkpoint's reading holds it, so it is no longer on its way.
+    await checkpoint(page, [owner, { kind: "owner", id: "e2", at: at(14), body: "Merge #44 first." }]);
+    await page.locator('[data-item="owner"]').nth(1).getByText("Merge #44 first.").waitFor({ timeout: 2_000 });
+
+    // An empty field: Stop, which interrupts the turn. pi's abort withdraws the queued message: the reading
+    // right after the Stop holds the stopped answer and the call's result, not it, and its words come back
+    // to the field rather than vanish. The steered one, delivered, stays delivered even past the reading's
+    // window (this reading leaves it out).
     await reading(
       page,
       [
@@ -259,11 +264,9 @@ describe("the room streams the coordinator's turn in a browser", () => {
     const stop = page.getByRole("button", { name: "Stop generation" });
     expect(await stop.getAttribute("title")).toBe("Interrupt");
     await stop.click();
-    await page.waitForFunction(
-      () => document.querySelector("textarea")?.value === "Merge #44 first.\n\nThen look at HAR-15.",
-      undefined,
-      { timeout: 2_000 },
-    );
+    await page.waitForFunction(() => document.querySelector("textarea")?.value === "Then look at HAR-15.", undefined, {
+      timeout: 2_000,
+    });
     expect((await requests(page)).map((r) => r.type).slice(-2)).toEqual(["chat.stop", "chat.read"]);
     await emit(page, frame(turn("idle", at(20))));
     const read = page.locator('[data-mark="partial"]');
@@ -272,7 +275,7 @@ describe("the room streams the coordinator's turn in a browser", () => {
     expect(await read.locator("[data-stopped]").textContent()).toBe("stoppedYou stopped this response");
     expect(await read.locator('[data-thought="done"] [data-preview]').textContent()).toBe("Counting the berths");
     expect(await page.locator("[data-working]").count()).toBe(0);
-    // Neither the queued bubble nor the steered one on its way stays.
+    // No queued bubble stays, nor a message on its way.
     expect(await page.locator("[data-queued]").count()).toBe(0);
     expect(await page.locator('[data-item="owner"]').count()).toBe(1);
     // The call's row stays where it was, its result read: it no longer shines.

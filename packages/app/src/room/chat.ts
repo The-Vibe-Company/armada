@@ -182,9 +182,12 @@ export function useChat(project: string): Chat {
   useEffect(() => {
     if (!live) setTurn({ project, live: NO_LIVE });
   }, [live, project]);
-  const mine = read?.project === project ? read : null;
-  const stale = !mine || latest > mine.seq;
-  const seq = mine?.seq;
+  const draft = useRef<{ body: string; id: string } | null>(null);
+  // Sent and admitted, not yet in a reading (the coordinator places it after its tool round).
+  const [sent, setSent] = useState<Sent[]>([]);
+  const sentNow = useRef(sent);
+  sentNow.current = sent;
+  const [withdrawn, setWithdrawn] = useState<{ key: number; bodies: readonly string[] } | null>(null);
   const land = useCallback(
     (r: { seq: number; coordinator: boolean; items: ChatItem[]; turn?: ChatTurn }) => {
       setRead({ project, seq: r.seq, coordinator: r.coordinator, items: r.items });
@@ -192,10 +195,18 @@ export function useChat(project: string): Chat {
         project,
         live: afterReading(held.project === project ? held.live : NO_LIVE, r.items, r.turn),
       }));
+      // A message the conversation holds is no longer on its way: only those still waiting stay.
+      setSent((list) => {
+        const waiting = list.filter((m) => m.project !== project || !holds(r.items, m));
+        return waiting.length === list.length ? list : waiting;
+      });
       setProblem(null);
     },
     [project],
   );
+  const mine = read?.project === project ? read : null;
+  const stale = !mine || latest > mine.seq;
+  const seq = mine?.seq;
   // Read when the reading is missing or behind the log; a reconnect (`live`) or a newer reading asks again if still behind.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `seq` and `latest` decide `stale`; a new one asks again.
   useEffect(() => {
@@ -214,12 +225,6 @@ export function useChat(project: string): Chat {
     };
   }, [client, project, live, able, stale, latest, seq, land]);
 
-  const draft = useRef<{ body: string; id: string } | null>(null);
-  // Sent and admitted, not yet in a reading (the coordinator places it after its tool round).
-  const [sent, setSent] = useState<Sent[]>([]);
-  const sentNow = useRef(sent);
-  sentNow.current = sent;
-  const [withdrawn, setWithdrawn] = useState<{ key: number; bodies: readonly string[] } | null>(null);
   const send = useCallback(
     async (body: string, whenBusy?: WhenBusy) => {
       if (draft.current?.body !== body) draft.current = { body, id: newId() };
@@ -244,8 +249,11 @@ export function useChat(project: string): Chat {
   const stop = useCallback(async () => {
     const asked = Date.now();
     await client.request({ type: "chat.stop", project });
-    const r = await client.request({ type: "chat.read", project });
+    // The coordinator stopped; what follows is best effort (the next checkpoint's reading lands as ever).
+    const r = await client.request({ type: "chat.read", project }).catch(() => null);
+    if (!r) return;
     land(r);
+    // Every message sent stays listed only until a reading holds it: those listed here were still waiting.
     const gone = sentNow.current.filter((m) => m.project === project && m.at <= asked && !holds(r.items, m));
     if (!gone.length) return;
     const ids = new Set(gone.map((m) => m.id));
