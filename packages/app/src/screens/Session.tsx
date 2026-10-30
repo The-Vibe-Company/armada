@@ -620,14 +620,21 @@ function OutputDrawer({
   const [problem, setProblem] = useState<string | null>(null);
   const close = useRef<HTMLButtonElement>(null);
   const screen = useRef<HTMLPreElement>(null);
+  const leave = useRef(onClose);
+  leave.current = onClose;
+  // Opened: the focus on Close, given back on closing to what opened it (Open the session).
   useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     close.current?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") leave.current();
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      opener?.focus();
+    };
+  }, []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` is the subscription's word that the session moved.
   useEffect(() => {
     if (status !== "live") return;

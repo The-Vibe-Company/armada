@@ -262,8 +262,8 @@ function cardOf(s: FoldedSession, group: PageState, state: FleetState, pr: PullR
   }
 }
 
-/** A V1 claim comment, as V1 writes it (core/src/worker.ts). */
-const V1_CLAIM = /^Agent claim — runtime: (\S+) · session: (\S+)/;
+/** A V1 claim comment's line, as V1 writes it under its status line (core/src/worker.ts). */
+const V1_CLAIM = /^Agent claim — runtime: (\S+) · session: (\S+)/m;
 
 function actsOf(s: FoldedSession, card: Card, state: FleetState): Acts {
   if (card.kind === "released" || card.kind === "merged") return NO_ACTS;
@@ -278,11 +278,13 @@ function actsOf(s: FoldedSession, card: Card, state: FleetState): Acts {
   const answer: Acts["answer"] =
     kind && asked ? { item: asked.id, kind, choices: questionOf(asked.body).choices.map(choiceOf) } : null;
   if (s.runtime === "tracker") {
-    // The latest claim says where it runs; Conductor opens the workspace of a `<workspace>/<session>` handle.
+    // The latest claim (the tracker hands its comments newest first) says where it runs;
+    // Conductor opens the workspace of a `<workspace>/<session>` handle. The Linear reader
+    // keeps a ticket's last 12 comments: a claim older than those leaves no link to open.
     const claim = state.tickets
       .find((t) => t.id === s.ticket)
       ?.comments?.map((c) => c.body.match(V1_CLAIM))
-      .findLast((m) => m);
+      .find((m) => m);
     const workspace = claim?.[1] === "conductor" ? claim[2]?.split("/")[0] : undefined;
     return {
       // The coordinator's question to the owner is the owner's to answer, whichever runtime the worker is on.

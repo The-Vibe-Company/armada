@@ -146,7 +146,8 @@ ticket's lines out of the log, it never folds.
     (`session.output`, its last 200 lines). The drawer reads it again on each
     new event of the session while it is open; Escape closes it.
   - A V1 session (the tracker's reading, runtime `tracker`) opens its Conductor
-    workspace from its claim comment. It is released from its own runtime.
+    workspace from its claim comment, when the claim is among the ticket's last 12
+    comments the Linear reader keeps. It is released from its own runtime.
 - **The six steps** (Plan, Build, Ship, Review & CI, Merge, Done): the done ones
   grey, the current one in the state's colour and marked (`aria-current`).
 - **Reports**: the ticket's reports and events, newest first (claims, reports,

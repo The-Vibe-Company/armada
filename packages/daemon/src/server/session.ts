@@ -25,6 +25,29 @@ export interface SessionOptions {
 
 const NO_WORKERS = "No worker runtime runs in this daemon";
 const ended = (phase: string) => phase === "released" || phase === "merged";
+/** The input entry the owner's answer is placed as in the coordinator's conversation (reserved: entry-kind). */
+export const OWNER_ANSWER_ENTRY = "armada.owner-answer";
+/** How an answer carries the owner's note, to the worker and in the log. */
+export const NOTE = "\n\nNote: ";
+
+const queues = new WeakMap<EventStore, Map<string, Promise<unknown>>>();
+/**
+ * One release or answer at a time per project: each decides on the log as the
+ * previous one left it, so two clicks (or two windows) never stop a generation
+ * twice nor deliver two answers to one question.
+ */
+function serial<T>(store: EventStore, project: string, action: () => Promise<T>): Promise<T> {
+  const byProject = queues.get(store) ?? new Map<string, Promise<unknown>>();
+  queues.set(store, byProject);
+  const next = (byProject.get(project) ?? Promise.resolve()).catch(() => {}).then(action);
+  byProject.set(project, next);
+  void next
+    .finally(() => {
+      if (byProject.get(project) === next) byProject.delete(project);
+    })
+    .catch(() => {});
+  return next;
+}
 
 /** The ticket's current session when it is the request's generation and still runs here; else the line saying why not. */
 function current(store: EventStore, request: SessionRequest) {
@@ -47,7 +70,14 @@ function current(store: EventStore, request: SessionRequest) {
 }
 
 /** Answers one of the session page's requests. */
-export async function dispatchSession(request: SessionRequest, options: SessionOptions): Promise<ServerMessage> {
+export function dispatchSession(request: SessionRequest, options: SessionOptions): Promise<ServerMessage> {
+  // A read waits for nothing; a release waits for the project's previous release or answer.
+  return request.type === "session.release"
+    ? serial(options.store, request.project, () => act(request, options))
+    : act(request, options);
+}
+
+async function act(request: SessionRequest, options: SessionOptions): Promise<ServerMessage> {
   const { id, project, ticket } = request;
   const refuse = (message: string, code: "not-found" | "internal" = "not-found"): ServerMessage => ({
     type: "error",
@@ -63,8 +93,23 @@ export async function dispatchSession(request: SessionRequest, options: SessionO
   const ref = { project, ticket, session: session.session, generation: session.generation, handle: session.handle };
   try {
     if (request.type === "session.release") {
-      // Workers.stop fences the exact generation before and after the runtime's stop.
-      const stopped = await workers.stop(ref, request.reason.trim(), () => {});
+      // Workers.stop fences the exact generation before and after the runtime's stop, one stop
+      // at a time per project (the coordinator's worker.stop and merges too). Its first check
+      // sees the log as the stop before left it: a generation that one ended is not stopped
+      // again. Its later ones allow only the release this stop records itself.
+      const released = () =>
+        options.store
+          .readSince(0, project)
+          .filter((e) => e.kind === "session.released" && e.payload.session === ref.session).length;
+      let first = true;
+      const fresh = () => {
+        if (first) {
+          first = false;
+          const now = current(options.store, request);
+          if (typeof now === "string") throw new WorkerRefusal(now);
+        } else if (released() > 1) throw new WorkerRefusal(`${ticket}'s worker is already released`);
+      };
+      const stopped = await workers.stop(ref, request.reason.trim(), fresh);
       return {
         type: "session.release.result",
         version,
@@ -109,8 +154,6 @@ export function outputLines(output: string): string[] {
   return lines.slice(-OUTPUT_LINES);
 }
 
-const NOTE = "\n\nNote: ";
-
 /**
  * The owner's answer to a worker's open question, with the guards of the
  * coordinator's `inbox.answer` (copied from coordinator/native.ts): the
@@ -119,13 +162,20 @@ const NOTE = "\n\nNote: ";
  * it is recorded; the same answer again, once recorded, is not delivered again.
  * Returns the coordinator's input that tells it, or the line saying why not.
  */
-export async function answerWorker(
+export function answerWorker(
+  request: OwnerAnswerRequest,
+  options: SessionOptions & { now: () => number },
+): Promise<{ refused: string } | "taken" | Extract<SubmissionDraft, { type: "input" }>> {
+  return serial(options.store, request.project, () => answer(request, options));
+}
+
+async function answer(
   request: OwnerAnswerRequest,
   options: SessionOptions & { now: () => number },
 ): Promise<{ refused: string } | "taken" | Extract<SubmissionDraft, { type: "input" }>> {
   const { store, project, item } = { ...options, ...request };
   const note = request.note?.trim() || null;
-  const answer = note ? `${request.choice}${NOTE}${note}` : request.choice;
+  const text = note ? `${request.choice}${NOTE}${note}` : request.choice;
   const events = store.readSince(0, project);
   const tables = fold(events).projects[project];
   const asked = tables?.inbox.find((i) => i.id === item);
@@ -134,12 +184,12 @@ export async function answerWorker(
     content: `The owner answered ${ticket}'s question to its worker: ${request.choice}${note ? `\nNote: ${note}` : ""}`,
     requestId: `owner-answer:${item}`,
     whenBusy: "steer",
-    entry: { kind: "armada.owner-answer", data: { ticket, choice: request.choice, note } },
+    entry: { kind: OWNER_ANSWER_ENTRY, data: { ticket, choice: request.choice, note } },
   });
   if (!asked) {
     const recorded = events.findLast((e) => e.kind === "inbox.answered" && e.payload.id === item);
     const opened = events.find((e) => e.kind === "inbox.opened" && e.payload.id === item);
-    if (recorded?.kind !== "inbox.answered" || recorded.actor !== "owner" || recorded.payload.answer !== answer)
+    if (recorded?.kind !== "inbox.answered" || recorded.actor !== "owner" || recorded.payload.answer !== text)
       return "taken";
     return told(opened?.kind === "inbox.opened" ? opened.payload.ticket : "");
   }
@@ -162,7 +212,7 @@ export async function answerWorker(
       {
         key: `owner-answer:${item}`,
         session: { ticket: session.ticket, session: session.session },
-        answer,
+        answer: text,
         beforeWrite: unchanged,
       },
       project,
@@ -175,14 +225,15 @@ export async function answerWorker(
           : "The answer's delivery or its worker could not be confirmed; the question stays open",
     };
   }
-  // Delivered: recorded unless another answer closed the question meanwhile.
-  if (fold(store.readSince(0, project)).projects[project]?.inbox.some((i) => i.id === item))
-    store.append({
-      project,
-      kind: "inbox.answered",
-      at: new Date(options.now()).toISOString(),
-      actor: "owner",
-      payload: { id: item, answer },
-    });
+  // Delivered; the coordinator's own answer may have closed the question meanwhile (as its inbox.answer, unconfirmed).
+  if (!fold(store.readSince(0, project)).projects[project]?.inbox.some((i) => i.id === item))
+    return { refused: "Another answer closed this question while yours was delivered; check the session" };
+  store.append({
+    project,
+    kind: "inbox.answered",
+    at: new Date(options.now()).toISOString(),
+    actor: "owner",
+    payload: { id: item, answer: text },
+  });
   return told(asked.ticket);
 }

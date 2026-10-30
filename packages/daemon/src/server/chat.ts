@@ -19,14 +19,12 @@ import type { Json } from "../events.ts";
 import { fold } from "../fold.ts";
 import type { EventStore } from "../store.ts";
 import type { Workers } from "../workers/service.ts";
-import { answerWorker } from "./session.ts";
+import { answerWorker, NOTE, OWNER_ANSWER_ENTRY } from "./session.ts";
 
 /** At most this many items of a long conversation: its latest. */
 const CHAT_LIMIT = 200;
 /** A tool's result past this many characters is cut: the room shows a reading, not a dump. */
 const OUTPUT_LIMIT = 8 * 1024;
-/** The input entry the owner's answer to a pinned question is placed as (reserved: entry-kind). */
-const OWNER_ANSWER_ENTRY = "armada.owner-answer";
 
 export type ChatRequest = ChatReadRequest | ChatSendRequest | OwnerAnswerRequest;
 export interface ChatOptions {
@@ -95,8 +93,6 @@ export async function dispatchChat(request: ChatRequest, options: ChatOptions): 
     return error("internal", request.type === "chat.read" ? "Could not read the conversation" : "Could not send it");
   }
 }
-
-const NOTE = "\n\nNote: ";
 
 /**
  * Records the owner's answer to an open `owner-request` (the fold and the

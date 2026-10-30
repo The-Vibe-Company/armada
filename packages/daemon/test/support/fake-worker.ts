@@ -15,6 +15,8 @@ export interface FakeRuntime {
   disposed: string[];
   /** What `observe` answers as the worker's output, by session. */
   output: Map<string, string>;
+  /** While set, a stop waits for it: a test holds one stop in flight. */
+  gate?: Promise<void>;
 }
 
 const MANIFEST = {
@@ -58,6 +60,7 @@ export function fakeWorkers(store: EventStore, projects: { id: string; repositor
       };
     },
     async stop(ref) {
+      await fake.gate;
       running.delete(ref.session);
       fake.stopped.push(ref);
     },

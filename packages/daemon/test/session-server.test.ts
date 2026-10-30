@@ -6,7 +6,7 @@ import { WebSocket } from "ws";
 import type { EventInput } from "../src/events.ts";
 import { fold } from "../src/fold.ts";
 import { startServer } from "../src/server/index.ts";
-import { outputLines } from "../src/server/session.ts";
+import { dispatchSession, outputLines } from "../src/server/session.ts";
 import { EventStore } from "../src/store.ts";
 import { fakeWorkers } from "./support/fake-worker.ts";
 
@@ -35,10 +35,11 @@ const ticket = (id: string): EventInput => ({
 async function connect(url: string) {
   const ws = new WebSocket(url);
   const frames: ServerMessage[] = [];
-  let wake: (() => void) | undefined;
+  // Every pending request is woken by each frame: two can wait at once.
+  const waiting = new Set<() => void>();
   ws.on("message", (data) => {
     frames.push(serverMessageSchema.parse(JSON.parse(String(data))));
-    wake?.();
+    for (const wake of [...waiting]) wake();
   });
   await once(ws, "open");
   let n = 0;
@@ -51,7 +52,11 @@ async function connect(url: string) {
         const k = frames.findIndex((f) => "id" in f && f.id === id);
         if (k >= 0) return frames.splice(k, 1)[0] as ServerMessage;
         await new Promise<void>((resolve) => {
-          wake = resolve;
+          const wake = () => {
+            waiting.delete(wake);
+            resolve();
+          };
+          waiting.add(wake);
         });
       }
     },
@@ -107,7 +112,26 @@ test("the owner answers a blocked worker's question once: delivered to its gener
   assert.equal(other.type === "error" && other.message, "This question was already answered");
 });
 
-test("a question from an earlier claim, or of an ended worker, is not delivered", async (t) => {
+test("two answers sent at once reach the worker once: the second is refused, not delivered", async (t) => {
+  const { store, live, client } = await fixture(t);
+  const worker = await live.launch(project, "ORC-1");
+  await worker.ask("Which row first?");
+  const item = fold(store.readSince(0, project)).projects[project]?.inbox[0]?.id;
+  assert.ok(item);
+  const replies = await Promise.all(
+    ["The first", "The last"].map((choice) => client.ask({ type: "owner.answer", project, item, choice })),
+  );
+  assert.deepEqual(
+    replies.map((r) => (r.type === "error" ? r.message : r.type)),
+    ["owner.answered", "This question was already answered"],
+  );
+  assert.deepEqual(
+    live.fake.delivered.filter((d) => d.key.startsWith("owner-answer:")).map((d) => d.message),
+    ["The first"],
+  );
+});
+
+test("a question of a released worker is not delivered", async (t) => {
   const { store, live, client } = await fixture(t);
   const worker = await live.launch(project, "ORC-1");
   await worker.ask("Which orchard row first?");
@@ -146,11 +170,11 @@ test("the owner reads a worker's output: its last lines, cleaned and masked, fro
   assert.equal(other.type === "error" && other.message, "ORC-1's worker generation changed; open its current session");
 });
 
-test("the owner releases exactly the named generation, never a replacement nor a V1 session", async (t) => {
-  const { live, client, session } = await fixture(t);
+test("the owner releases exactly the named generation once, never another one nor a V1 session", async (t) => {
+  const { store, live, client, session } = await fixture(t);
   const worker = await live.launch(project, "ORC-2");
   const release = {
-    type: "session.release",
+    type: "session.release" as const,
     project,
     ticket: "ORC-2",
     session: worker.session,
@@ -161,7 +185,9 @@ test("the owner releases exactly the named generation, never a replacement nor a
   assert.equal(stale.type === "error" && stale.message, "ORC-2's worker generation changed; nothing was released");
   assert.equal(live.fake.stopped.length, 0);
 
-  const released = await client.ask(release);
+  // Two clicks at once: the first stops it, the second finds it released.
+  const [released, twice] = await Promise.all([client.ask(release), client.ask(release)]);
+  assert.equal(twice?.type === "error" && twice.message, "ORC-2's worker is already released");
   assert.deepEqual(released, {
     type: "session.release.result",
     version,
@@ -177,8 +203,33 @@ test("the owner releases exactly the named generation, never a replacement nor a
   );
   assert.equal(session("ORC-2")?.phase, "released");
   assert.equal(session("ORC-2")?.reason, "Superseded by ORC-1");
-  const again = await client.ask(release);
-  assert.equal(again.type === "error" && again.message, "ORC-2's worker is already released");
+
+  // The owner clicks while the coordinator's stop of the same generation is in flight: one stop.
+  const next = await live.launch(project, "ORC-1");
+  const ref = {
+    project,
+    ticket: "ORC-1",
+    session: next.session,
+    generation: next.generation,
+    handle: `fake-${next.session}`,
+  };
+  let open = () => {};
+  live.fake.gate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  const coordinator = live.workers.stop(ref, "The coordinator stops it", () => {});
+  const owner = dispatchSession(
+    { ...release, version, id: "owner", ticket: "ORC-1", session: next.session, generation: next.generation },
+    { store, workers: live.workers },
+  );
+  // The owner's release passed its first reading and waits behind the coordinator's stop.
+  await new Promise((resolve) => setImmediate(resolve));
+  open();
+  await coordinator;
+  const refusal = await owner;
+  assert.equal(refusal.type === "error" && refusal.message, "ORC-1's worker is already released");
+  assert.equal(live.fake.stopped.filter((r) => r.session === next.session).length, 1);
+  assert.equal(session("ORC-1")?.reason, "The coordinator stops it");
 
   const v1 = session("ORC-9");
   assert.equal(v1?.runtime, "tracker");
@@ -187,7 +238,7 @@ test("the owner releases exactly the named generation, never a replacement nor a
     refused.type === "error" && refused.message,
     "ORC-9 runs on a V1 runtime: release it there with armada stop",
   );
-  assert.equal(live.fake.stopped.length, 1);
+  assert.equal(live.fake.stopped.length, 2);
 });
 
 test("a terminal's output reads as its screen: control sequences out, a carriage return's last write kept", () => {

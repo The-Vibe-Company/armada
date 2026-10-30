@@ -513,8 +513,17 @@ describe("a session's page in a browser: its buttons act on a live worker", () =
     for (const family of anatomy.fonts) expect(family).toMatch(/^"?Geist( Mono)?"?,/);
     expect(anatomy.small).toEqual([]);
     expect(anatomy.unlabelled).toBe(0);
+    // The subscription's readings never take the focus from the output.
+    await output.focus();
+    await live.workers.request(worker.token, { command: "heartbeat", ticket: "QUA-1" });
+    live.fake.output.set(worker.session, "Reading the bollard list\n3 tests pass\nPushed the branch\nOpened #12\n");
+    await live.workers.request(worker.token, { command: "heartbeat", ticket: "QUA-1" });
+    await output.getByText("Opened #12").waitFor({ timeout: 5_000 });
+    await expect(page.evaluate(() => document.activeElement?.getAttribute("aria-label"))).resolves.toBe("Output");
     await page.keyboard.press("Escape");
     await drawer.waitFor({ state: "detached", timeout: 5_000 });
+    // Closed: the focus is back on what opened it.
+    await expect(page.evaluate(() => document.activeElement?.textContent)).resolves.toBe("Open the session");
 
     // Release asks first: a confirmation line with a required reason, then stops this generation only.
     await state.getByRole("button", { name: "Release the ticket" }).click();

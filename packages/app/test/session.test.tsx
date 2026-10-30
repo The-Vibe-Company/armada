@@ -369,9 +369,16 @@ test("a V1 session opens its Conductor workspace, and is released from its own r
         title: "Paint the buoys",
         status: "started",
         phase: "implementing",
+        // Newest first, as the tracker hands them: the latest claim, under its status line, wins.
         comments: [
+          { body: "Agent status: implementing — painting", author: "A. Worker", at: LATER },
           {
-            body: "Agent claim — runtime: conductor · session: ws-7/s-3 · branch: feature/har-40 · started: 2026-03-10",
+            body: "Agent status: planning — claimed by Conductor (ws-7/s-3)\n\nAgent claim — runtime: conductor · session: ws-7/s-3 · branch: feature/har-40 · started: 2026-03-10",
+            author: "A. Worker",
+            at: AT,
+          },
+          {
+            body: "Agent status: planning — claimed by Conductor (ws-1/s-1)\n\nAgent claim — runtime: conductor · session: ws-1/s-1 · branch: feature/har-40 · started: 2026-03-09",
             author: "A. Worker",
             at: AT,
           },

@@ -37,7 +37,9 @@ without a reserve/release race. The daemon's one readiness JSON line supplies
 both addresses. Only then does one sandboxed, isolated window open on the
 built app served by that daemon, with `?daemon=ws://127.0.0.1:<allocated-port>/`.
 There is no preload or IPC bridge. New windows and cross-origin navigation
-are refused; the renderer has no Node access.
+are refused; the renderer has no Node access. The one exception is a
+`conductor://` link (a V1 session's workspace, from the session page's Open the
+session). It is handed to the OS to open in Conductor and never loads in the window.
 
 Closing the last window, choosing Quit, or receiving SIGINT/SIGTERM stops the
 child before exiting Electron, on macOS too. Startup failure exits with a short

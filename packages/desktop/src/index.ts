@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, shell } from "electron";
 import { type DaemonAddress, DaemonProcess, RESTART_EXIT_CODE, restartDaemon } from "./daemon.ts";
 
 app.setName("Armada");
@@ -78,7 +78,11 @@ void app.whenReady().then(async () => {
     });
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-navigate", (event, url) => {
-      if (new URL(url).origin !== address.url) event.preventDefault();
+      const target = new URL(url);
+      if (target.origin !== address.url) event.preventDefault();
+      // A V1 session's Conductor workspace (the session page's Open the session, THE-2045)
+      // is the one link the window hands to another app.
+      if (target.protocol === "conductor:") void shell.openExternal(url).catch(() => {});
     });
     window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     window.once("ready-to-show", () => window?.show());
