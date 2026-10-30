@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.2.68](https://github.com/The-Vibe-Company/armada/compare/v0.2.67...v0.2.68) (2026-10-30)
+
+
+### Features
+
+* **app:** a session's page, and every fleet row opens it ([#350](https://github.com/The-Vibe-Company/armada/issues/350)) ([9dd20db](https://github.com/The-Vibe-Company/armada/commit/9dd20db65a17ec6c6e2f9b6b7e4517b3b6f70a51))
+* **app:** build the app's skeleton on Vite, Tailwind v4 and the v7 tokens ([#327](https://github.com/The-Vibe-Company/armada/issues/327)) ([aeddf9c](https://github.com/The-Vibe-Company/armada/commit/aeddf9c56c60fe7b2d8c15332d1f8374067297d8))
+* **app:** draw the fleet's sky, the landing's flock as a live band and stage ([#341](https://github.com/The-Vibe-Company/armada/issues/341)) ([2411d75](https://github.com/The-Vibe-Company/armada/commit/2411d75f73b0c1348cf1bb2a6fdc246cbdb73025))
+* **app:** enable, disable and configure plugins from the Plugins screen ([#345](https://github.com/The-Vibe-Company/armada/issues/345)) ([ae5990e](https://github.com/The-Vibe-Company/armada/commit/ae5990ede787245b3b8b778d0bdada3fc52e35d8))
+* **app:** make the hangar the home, every project a squadron in one sky ([#346](https://github.com/The-Vibe-Company/armada/issues/346)) ([2b1e7a6](https://github.com/The-Vibe-Company/armada/commit/2b1e7a616447117642b016e8f19295637297efab))
+* **app:** open a project's room, the coordinator's chat under its sky ([#348](https://github.com/The-Vibe-Company/armada/issues/348)) ([e90e623](https://github.com/The-Vibe-Company/armada/commit/e90e623c97128ec1ac0e69e7ddb86c109f950b3c))
+* **app:** show the fleet grouped by state, live ([#335](https://github.com/The-Vibe-Company/armada/issues/335)) ([72023e9](https://github.com/The-Vibe-Company/armada/commit/72023e9b8253520944b8be2f0ddc5b44c8b4c7fe))
+* **app:** the session page's buttons answer, release and open the session ([#362](https://github.com/The-Vibe-Company/armada/issues/362)) ([328b96e](https://github.com/The-Vibe-Company/armada/commit/328b96ed7c54db932da4a766c873bf07fc41ee73))
+* **coordinator:** launch, message, relaunch and stop workers ([#361](https://github.com/The-Vibe-Company/armada/issues/361)) ([f57e8fa](https://github.com/The-Vibe-Company/armada/commit/f57e8fa7db0b0a8bb261fdd1b2b84cb222edfc53))
+* **daemon:** add append-only event log and pure fleet fold ([#324](https://github.com/The-Vibe-Company/armada/issues/324)) ([6609b72](https://github.com/The-Vibe-Company/armada/commit/6609b727868be7b2f51c30b08b25000de9a08edd))
+* **daemon:** check and merge pull requests through plugins ([#360](https://github.com/The-Vibe-Company/armada/issues/360)) ([e106200](https://github.com/The-Vibe-Company/armada/commit/e106200e47cf36052340de50324762eccc9685d5))
+* **daemon:** expose native coordinator fleet tools ([#342](https://github.com/The-Vibe-Company/armada/issues/342)) ([c4da066](https://github.com/The-Vibe-Company/armada/commit/c4da066eb528aef5557626616fbdb78e7b3d0729))
+* **daemon:** give coordinators models through plugins ([#352](https://github.com/The-Vibe-Company/armada/issues/352)) ([c0d9ca3](https://github.com/The-Vibe-Company/armada/commit/c0d9ca3d882d356d81697611e697ed90be5c071a))
+* **daemon:** keep coordinator API keys in the OS keychain ([#336](https://github.com/The-Vibe-Company/armada/issues/336)) ([7ade337](https://github.com/The-Vibe-Company/armada/commit/7ade337670845ee4c980d28fc901f59909046b05))
+* **daemon:** read GitHub pull requests and checks into events ([#330](https://github.com/The-Vibe-Company/armada/issues/330)) ([754d8ac](https://github.com/The-Vibe-Company/armada/commit/754d8acc113e9bd4a0611dee2f4be963e1728c00))
+* **daemon:** read Linear ticket changes into events ([#331](https://github.com/The-Vibe-Company/armada/issues/331)) ([88e57e0](https://github.com/The-Vibe-Company/armada/commit/88e57e00caffce12a9e6f83a3562903bffe5460c))
+* **daemon:** run durable project coordinators from the event log ([#334](https://github.com/The-Vibe-Company/armada/issues/334)) ([f42718f](https://github.com/The-Vibe-Company/armada/commit/f42718f3b7e97312ebc87adae2f90304e8ae5947))
+* **daemon:** serve fleet subscriptions with durable replay ([#329](https://github.com/The-Vibe-Company/armada/issues/329)) ([eecd740](https://github.com/The-Vibe-Company/armada/commit/eecd74037e778cc087e3e5c12209547ae38fa86a))
+* **daemon:** store project rules from coordinator chat ([#347](https://github.com/The-Vibe-Company/armada/issues/347)) ([351e0fd](https://github.com/The-Vibe-Company/armada/commit/351e0fd0b9e35975613229a35f47de82ecb23b89))
+* **desktop:** open the app in an Electron shell that owns armadad ([#333](https://github.com/The-Vibe-Company/armada/issues/333)) ([5c575ba](https://github.com/The-Vibe-Company/armada/commit/5c575ba911edce158a932d910453d6ca0cef9e83))
+* **e2e:** run recorded dashboard journeys in CI ([#328](https://github.com/The-Vibe-Company/armada/issues/328)) ([c1744f3](https://github.com/The-Vibe-Company/armada/commit/c1744f3865b26061651f073a2a111fa3cbf337f5))
+* **plugins:** add Codex and OpenCode worker runtimes ([#357](https://github.com/The-Vibe-Company/armada/issues/357)) ([39003d6](https://github.com/The-Vibe-Company/armada/commit/39003d6da5ba89f963f4aa34812058fab3d92d9f))
+* **plugins:** check providers with seam conformance fixtures ([#344](https://github.com/The-Vibe-Company/armada/issues/344)) ([e5e8d77](https://github.com/The-Vibe-Company/armada/commit/e5e8d7706334d441ce8934cf8d18cdce4e903b6e))
+* **plugins:** load bundled providers through a versioned API ([#332](https://github.com/The-Vibe-Company/armada/issues/332)) ([17f4e41](https://github.com/The-Vibe-Company/armada/commit/17f4e4115469d1f796e181c769d6ce7cd03b4389))
+* **plugins:** move Linear and GitHub readers into plugins ([#353](https://github.com/The-Vibe-Company/armada/issues/353)) ([7ac6593](https://github.com/The-Vibe-Company/armada/commit/7ac6593860464b0f0988ad5375be6355d7473b26))
+* **protocol:** define the versioned daemon wire contract ([#323](https://github.com/The-Vibe-Company/armada/issues/323)) ([a5cedaa](https://github.com/The-Vibe-Company/armada/commit/a5cedaae3adfc638da8270f82bac2e66100060df))
+* **runtime:** launch Claude workers through local node plugins ([#354](https://github.com/The-Vibe-Company/armada/issues/354)) ([046f95a](https://github.com/The-Vibe-Company/armada/commit/046f95a982c1f6a693676cd927288b47fdccc69e))
+
+
+### Bug Fixes
+
+* **ci:** use runner PostgreSQL instead of service images ([#325](https://github.com/The-Vibe-Company/armada/issues/325)) ([6df0eea](https://github.com/The-Vibe-Company/armada/commit/6df0eeae85150165cff18bda295b98f34859780b))
+* **coordinator:** refresh fleet facts and qualify stale readings ([#358](https://github.com/The-Vibe-Company/armada/issues/358)) ([0a57d2c](https://github.com/The-Vibe-Company/armada/commit/0a57d2ce04a23893c9a54841102d2284c843a779))
+* **daemon:** restore plugin readers and truthful readiness ([#363](https://github.com/The-Vibe-Company/armada/issues/363)) ([471f45c](https://github.com/The-Vibe-Company/armada/commit/471f45c9c207b7cae44aa83f4d64dbc561d03215))
+* **daemon:** start project readers at boot ([#337](https://github.com/The-Vibe-Company/armada/issues/337)) ([de190f5](https://github.com/The-Vibe-Company/armada/commit/de190f5aa2f43f6fd1dea2f26ab9b8af1ab74790))
+* **desktop:** preserve native keyring in bundled daemon ([#349](https://github.com/The-Vibe-Company/armada/issues/349)) ([81ff10e](https://github.com/The-Vibe-Company/armada/commit/81ff10ef34620bb3affb29a3b16898b7c872f4d6))
+* **node-local:** poll process tests against a bounded clock ([#359](https://github.com/The-Vibe-Company/armada/issues/359)) ([e837b60](https://github.com/The-Vibe-Company/armada/commit/e837b6050c22ac442358ba84e8691b1de9c48aa3))
+
 ## [0.2.67](https://github.com/The-Vibe-Company/armada/compare/v0.2.66...v0.2.67) (2026-10-15)
 
 
