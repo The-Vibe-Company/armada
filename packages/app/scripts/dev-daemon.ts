@@ -135,6 +135,35 @@ function fleetLine(facts: string): string {
   return "I read the fleet.";
 }
 
+/** The faux coordinator's answer to "show markdown": what the room's thread draws (THE-2050). */
+const MARKDOWN_SAMPLE = [
+  "HAR-15 is blocked on #41: two berth tests time out under the full suite.",
+  "",
+  "## What I would change",
+  "",
+  '```ts title="src/berths/price.test.ts"',
+  "await waitFor(() => quay.isOpen(), { timeout: 10_000 });",
+  "```",
+  "",
+  "| Ticket | Phase | Pull request | Checks |",
+  "| --- | --- | --- | --- |",
+  "| HAR-15 | Review & CI | #41 | 2 failing |",
+  "| HAR-20 | Ready | #44 | green |",
+  "| HAR-12 | Code | none yet | n/a |",
+  "",
+  "> [!WARNING]",
+  "> Raising the timeout hides the slow wait; fixing the wait is the better choice.",
+  "",
+  "<details><summary>The failing tests</summary>",
+  "",
+  "- `prices a berth by the hour`",
+  "- `refunds a cancelled booking`",
+  "",
+  "</details>",
+  "",
+  "See [the tide service's docs](https://tides.example.com/docs) for the quay's hours.",
+].join("\n");
+
 /**
  * A project's coordinator on pi-ai's faux model: to each message it reads the
  * fleet (one tool call), then answers in one line. Endless: each answer queues
@@ -161,6 +190,7 @@ export function devCoordinator(project: string): CoordinatorOptions {
         timestamp: Date.now(),
       });
     const said = text(transcript.messages.findLast((m) => m.role === "user")).trim();
+    if (/^show markdown$/i.test(said)) return fauxAssistantMessage(MARKDOWN_SAMPLE, { timestamp: Date.now() });
     return fauxAssistantMessage(`Noted: “${said.slice(0, 120)}”. ${fleetLine(text(last))}`, { timestamp: Date.now() });
   };
   faux.setResponses([answer]);
