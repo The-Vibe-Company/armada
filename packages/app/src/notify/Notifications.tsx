@@ -29,14 +29,7 @@ const openRoom = (project: string) => {
   window.location.hash = projectHref(project);
 };
 
-/** Runs `run` after `ms`; returns its cancel. A test's page hands its own clock. */
-export type Schedule = (run: () => void, ms: number) => () => void;
-const windowSchedule: Schedule = (run, ms) => {
-  const timer = window.setTimeout(run, ms);
-  return () => window.clearTimeout(timer);
-};
-
-export function Notifications({ schedule = windowSchedule }: { schedule?: Schedule }) {
+export function Notifications() {
   const client = useDaemonClient();
   const { projects, fleets } = useDaemon();
   const names = useRef(new Map<string, string>());
@@ -77,7 +70,7 @@ export function Notifications({ schedule = windowSchedule }: { schedule?: Schedu
     return () => window.removeEventListener("hashchange", change);
   }, []);
   const close = (tag: string) => setToasts((list) => list.filter((t) => t.tag !== tag));
-  return <Toasts toasts={toasts} close={close} open={openRoom} schedule={schedule} />;
+  return <Toasts toasts={toasts} close={close} open={openRoom} />;
 }
 
 /** The toasts, newest at the bottom; each closes itself after TOAST_MS unless hovered or focused. */
@@ -85,12 +78,10 @@ export function Toasts({
   toasts,
   close,
   open,
-  schedule = windowSchedule,
 }: {
   toasts: readonly Notice[];
   close: (tag: string) => void;
   open: (project: string) => void;
-  schedule?: Schedule;
 }) {
   return (
     // One live region, always there, so each toast that arrives in it is announced; not a landmark of its own.
@@ -111,7 +102,6 @@ export function Toasts({
           >
             <Toast
               notice={notice}
-              schedule={schedule}
               close={() => close(notice.tag)}
               open={() => {
                 close(notice.tag);
@@ -125,24 +115,15 @@ export function Toasts({
   );
 }
 
-function Toast({
-  notice,
-  schedule,
-  close,
-  open,
-}: {
-  notice: Notice;
-  schedule: Schedule;
-  close: () => void;
-  open: () => void;
-}) {
+function Toast({ notice, close, open }: { notice: Notice; close: () => void; open: () => void }) {
   const [held, setHeld] = useState(false);
   const shut = useRef(close);
   shut.current = close;
   useEffect(() => {
     if (held) return;
-    return schedule(() => shut.current(), TOAST_MS);
-  }, [held, schedule]);
+    const timer = window.setTimeout(() => shut.current(), TOAST_MS);
+    return () => window.clearTimeout(timer);
+  }, [held]);
   const id = useId();
   const Icon = notice.kind === "answered" ? CircleCheck : MessageCircleQuestionMark;
   return (

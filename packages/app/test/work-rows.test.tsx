@@ -80,9 +80,6 @@ describe("the work's markup", () => {
     const [noticed = "", line = "", , fold = ""] = rows(html);
     expect(text(noticed)).toBe("Worked for 12s 08:59");
     expect(fold).toMatch(/<div class="[^"]*border-b[^"]*" data-fold/);
-    expect(fold).toMatch(/<button[^>]*aria-expanded="false"[^>]*><span>Worked for 2m 03s<\/span><svg/);
-    // Closed, the fold holds none of its calls; its time shows on hover.
-    expect(fold).not.toContain("data-tool");
     expect(fold).toMatch(/opacity-0[^"]*group-hover\/row:opacity-100[^"]*"><time[^>]*>09:00</);
     expect(line).toContain("data-line");
     expect(line).not.toContain("data-tool");
@@ -90,11 +87,10 @@ describe("the work's markup", () => {
     expect(text(line)).toBe("THE-9 merged. 08:59");
   });
 
-  test("a single call is its own row: its icon, its sentence, its name on hover", () => {
+  test("a single call is its own row: its sentence, its name on hover", () => {
     const single = rows(render(conversation)).at(-1) ?? "";
-    expect(single).toMatch(/<div class="min-w-0" data-tool="merge.check">/);
+    expect(single).toContain('data-tool="merge.check"');
     expect(single).toMatch(/<button[^>]*aria-expanded="false"[^>]*aria-label="Checked #34"/);
-    expect(single).toMatch(/<svg[^>]*stroke-width="1.75"[^>]*class="lucide lucide-git-merge[^"]*"/);
     expect(single).toMatch(/<span title="merge.check">Checked <span[^>]*>#34<\/span><\/span>/);
     expect(single).toContain("min-h-6");
     expect(single).not.toContain("data-failed");

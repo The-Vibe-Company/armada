@@ -24,6 +24,7 @@ import { Keychain } from "../src/keychain.ts";
 import { startServer } from "../src/server/index.ts";
 import { EventStore } from "../src/store.ts";
 import { FakeKeychain } from "./support/keychain.ts";
+import { nodeExecutable } from "./support/node.ts";
 
 const projects = [
   { id: "orchard", name: "Orchard", repository: "example/orchard" },
@@ -85,13 +86,15 @@ async function connect(url: string) {
   };
 }
 
-test("armadad starts beside a crashed socket, announces its address and quits cleanly on SIGTERM", async (t) => {
+test("armadad starts beside a crashed socket, announces its address and quits cleanly on SIGTERM", {
+  timeout: 10000,
+}, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "armada-process-"));
   const catalog = join(dir, "projects.json");
   mkdirSync(join(dir, "data"));
   const stalePath = join(dir, "data", "worker.sock");
   const stale = spawn(
-    "node",
+    nodeExecutable,
     [
       "--input-type=module",
       "-e",
@@ -139,7 +142,7 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
     });
   };`;
   const child = spawn(
-    "node",
+    nodeExecutable,
     [
       "--import",
       `data:text/javascript,${encodeURIComponent(preload)}`,

@@ -330,8 +330,6 @@ describe("the notifications in a browser", () => {
     return page;
   }
 
-  const elapse = (page: Page, ms: number) =>
-    page.evaluate((n) => (window as unknown as { daemon: { elapse(ms: number): void } }).daemon.elapse(n), ms);
   const readCount = (page: Page) =>
     page.evaluate(() => (window as unknown as { daemon: { reads: number } }).daemon.reads);
 
@@ -365,40 +363,39 @@ describe("the notifications in a browser", () => {
     }, JSON.stringify(ANSWERED));
 
   test("a toast in the live region, held while hovered, gone on its own after its time; Open the room opens it", async () => {
-    const page = await open();
+    let page = await open();
+    await page.clock.install({ time: new Date(T0) });
     expect(await page.evaluate(() => document.hasFocus())).toBe(true);
     await answer(page);
-    const toast = page.locator('[aria-live="polite"] [data-toast="answered"]');
+    let toast = page.locator('[aria-live="polite"] [data-toast="answered"]');
     await toast.waitFor({ timeout: 2_000 });
     expect(await toast.locator("p").allTextContents()).toEqual(["Coordinator answered", "LanternBerths"]);
     expect(await toast.locator("p span").allTextContents()).toEqual(["Lantern", "Berths"]);
     // Held while the pointer is on it, however long: its timer is cancelled.
     await toast.hover();
-    await page.waitForFunction(
-      () => (window as unknown as { daemon: { pending: number } }).daemon.pending === 0,
-      undefined,
-      {
-        timeout: 2_000,
-      },
-    );
-    await elapse(page, 60_000);
+    await page.clock.pauseAt(new Date(Date.parse(T0) + 60_000));
+    await page.clock.runFor(60_000);
     expect(await toast.count()).toBe(1);
     // Left alone, it goes.
     const box = await toast.boundingBox();
     await page.mouse.move(10, (box?.y ?? 0) + (box?.height ?? 0) + 200);
-    // Released: its time starts again once its timer is set.
-    await page.waitForFunction(
-      () => (window as unknown as { daemon: { pending: number } }).daemon.pending === 1,
-      undefined,
-      {
-        timeout: 2_000,
-      },
-    );
-    await elapse(page, TOAST_MS - 1);
+    // Released: the production timeout starts again, on the paused browser clock.
+    await page.clock.runFor(TOAST_MS - 1);
     expect(await toast.count()).toBe(1);
-    await elapse(page, 1);
+    await page.clock.runFor(1);
+    // Playwright advances performance.now(), not document.timeline; finish the native exit animation
+    // only after the production timeout removed the toast from React's list.
+    await page.clock.resume();
+    await page.waitForFunction(() => document.getAnimations().length > 0, undefined, { timeout: 2_000 });
+    await page.evaluate(() => {
+      for (const animation of document.getAnimations()) animation.finish();
+    });
     await toast.waitFor({ state: "detached", timeout: 2_000 });
+    await page.context().close();
 
+    // A fresh page leaves the virtual clock behind for the ordinary Open interaction.
+    page = await open();
+    toast = page.locator('[aria-live="polite"] [data-toast="answered"]');
     // Another answer; its button opens Lantern's room and closes it.
     await answer(page);
     await toast.waitFor({ timeout: 2_000 });

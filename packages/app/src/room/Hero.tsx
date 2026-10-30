@@ -7,7 +7,7 @@
 import { useState } from "react";
 import type { StarterAsk } from "./view";
 
-export const HERO_HEADLINE = "What should we work on?";
+const HERO_HEADLINE = "What should we work on?";
 
 /** The headline, at the bottom of the space above the field. */
 export function HeroHeadline() {

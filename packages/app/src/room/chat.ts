@@ -51,7 +51,7 @@ export interface Streaming {
   reasoning: string;
 }
 /** What streamed of the turn and is not in the reading yet, oldest first. */
-export type LiveEntry = Streaming | (ToolItem & { live: true });
+type LiveEntry = Streaming | (ToolItem & { live: true });
 
 export interface Live {
   /** The turn's state as the daemon last said it; null before it said any. */
