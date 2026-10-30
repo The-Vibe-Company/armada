@@ -14,9 +14,8 @@ const current = "aria-[current=page]:bg-item-current aria-[current=page]:text-te
 /**
  * The sidebar (design/dashboard-v7): the mark, the hangar, one line per
  * project with its sessions in flight (once its folded state arrived, so
- * nothing counts up on the first paint), the app's own settings (every
- * section of them, the providers too, since THE-2069) and the live reading of
- * the daemon.
+ * nothing counts up on the first paint), the app's own settings (plugins
+ * inside) and the live reading of the daemon.
  */
 export function Sidebar() {
   const { projects, fleets, status } = useDaemon();
@@ -67,7 +66,7 @@ export function Sidebar() {
         <a
           href="#/settings"
           className={`${item} ${current}`}
-          aria-current={route.kind === "settings" && !session ? "page" : undefined}
+          aria-current={route.kind === "settings" ? "page" : undefined}
         >
           <Gear />
           <span className="min-w-0 flex-1 truncate">Settings</span>
