@@ -138,10 +138,9 @@ and a fake room on screen.
 
 ## A project's fleet by state
 
-`#/projects/<id>` is the project's page (`src/screens/Project.tsx`: its rules,
-THE-1997, then its sessions by state in `src/components/fleet/FleetList.tsx`)
-until the project's room (THE-1996) takes the route and the list moves to its
-rail: groups most urgent first.
+A project's sessions by state are its room's panel's Agents tab
+(`src/components/fleet/FleetList.tsx`, THE-2085): every group headed, most
+urgent first, a row that changes state gliding to its new group.
 
 The rules are V1's overview (`packages/dashboard/lib/coordinator-view.ts` and its
 strings), copied into `src/fleet/overview.ts`, never imported:
@@ -292,11 +291,12 @@ loops in the working view.**
 ## The sky
 
 `src/sky/Sky.tsx` (THE-2024) is the picture the hangar and a project's room
-share, after the direction kept with the owner (`.aeom/direction`): the mark's
+drew, after the direction kept with the owner (`.aeom/direction`); since THE-2085
+it flies in the hangar only, the band kept for `?story=sky`: the mark's
 triangles in V formations on the night surface, drawn from the fleet's state,
 never from randomness. Its props are slices of the fold (`src/fleet/sky.ts`:
 each session's group and its harness, read from its runtime) and one injected
-clock; `size` is `band` (200 px, full width, a project's room) or `stage`
+clock; `size` is `band` (200 px, full width, the story page) or `stage`
 (fills its container, the hangar). The words over it (group or project labels,
 the quiet legend) are HTML in Geist; the canvas draws no text.
 
@@ -333,18 +333,45 @@ all, live, and a synthetic fleet moved by hand (loaded only behind that flag).
 
 ## A project's room
 
-`#/projects/<id>` (`src/screens/Room.tsx`, THE-1996), after the direction kept
-with the owner (`.aeom/direction/room.html`): the v7 anatomy (the repository and
-the project's numbers on the facts line, its name as the title, what is blocked
-and what waits on the quiet line), then the sky as a 200 px band, the oldest
-question waiting for the owner pinned under it (an open `owner-request`: its
-choices from V1's "Options:" list, the one said "(recommended)" primary, a
-labelled note; absent when nothing waits), the conversation with the project's
-coordinator, and the owner's field fixed at the bottom. The agents' rail
-(`src/room/Rail.tsx`) slides in from the right at a third of the width, the
-project's agents grouped by state, a row opening its session's page
-(`#/sessions/<ticket>`, THE-2028). The fleet list by state, with the project's
-rules, is at `#/projects/<id>/rules`, linked from the facts line. The sidebar stays.
+`#/projects/<id>` (`src/screens/Room.tsx`, THE-1996) is the project's chat, full
+height (THE-2085, after T3 Code's chat view; `Room.tsx` is only the composition):
+
+- **The header** (`src/room/Header.tsx`, `PageStrip` of `src/components/page.tsx`):
+  one 44 px line, the project's name (the page's h1, 13.5 px) and its repository
+  in mono, then a pill per state that holds an agent (blocked red, waiting for
+  you amber, in progress blue, ready to merge green, merged today grey: its dot,
+  its number, its words), a provider read over three minutes ago ("Linear 25
+  min ago"), and the panel's toggle (`aria-pressed`). A pill opens the panel's
+  Agents at its group, its heading focused. Under 900 px of header the pills keep
+  their dot and number, their words for screen readers.
+- **The conversation** takes the rest, the owner's field at the bottom; with
+  nothing said, the empty room's hero, its headline over the fleet's sentence
+  ("1 agent blocked, nothing waits for your decision.").
+- **The panel** (`src/room/Panel.tsx`, rules in `src/room/panel-rules.ts`, after
+  T3 Code's right panel): tabs on top, Agents, Pull requests, Rules, Log; the
+  tab in the address (`?panel=agents|prs|rules|log`, replaced, never pushed);
+  320 px, 240 to 480 by dragging its left edge or by the arrow keys on it, kept
+  with whether it is open in `localStorage` (`armada.room.panel`). `⌘.` toggles
+  it, `⌘1` to `⌘4` pick a tab while it is open. Below a 900 px window it is a
+  sheet over the conversation, closed at first and closed by Escape or a press
+  beside it; opened by a pill it leaves the focus where it was (the field).
+  - **Agents**: the oldest question waiting for the owner first (an open
+    `owner-request`, `src/room/Pinned.tsx`: its choices from V1's "Options:"
+    list, the one said "(recommended)" primary, a labelled note; answered
+    through `owner.answer`), then the agents by state, a row's title opening
+    its session's page (`#/sessions/<ticket>`, THE-2028), its report's ids
+    links of their own (a ticket to its session, `#34` to its pull request).
+    While that card is not on screen the field says the question waits, with
+    Answer (`src/room/Asking.tsx`).
+  - **Pull requests** (`src/room/PullRequests.tsx`): the open pull requests of
+    the tickets in flight with their checks from the fold; merging from it is THE-2086's.
+  - **Rules**: the project's rules (`src/rules/ProjectRules.tsx`, THE-1997);
+    the old `#/projects/<id>/rules` is replaced by `?panel=rules`.
+  - **Log** (`src/room/Log.tsx`): the project's last 50 events from the
+    subscription, newest first, as time · kind · ticket.
+
+The focus goes header, thread, field, panel. The hangar's squadrons open a
+room on its agents (`?panel=agents`). The sidebar stays.
 
 - **The conversation** (`src/room/chat.ts`) is the daemon's reading
   (`chat.read`, protocol minor 4): read when the room opens, and again whenever
@@ -392,14 +419,18 @@ rules, is at `#/projects/<id>/rules`, linked from the facts line. The sidebar st
   glides down to its dock (Motion's layout animation, 250 ms, only on leaving
   the hero; none under reduced motion). `test/hero.test.tsx` holds the asks,
   the hero's markup, and in Chromium a chip's message and the glide.
-- **Movement**: the rail slides on the owner's toggle; a new message fades in.
+- **Movement**: the sheet slides in; a new message fades in; an agent's row glides to its new group.
 - `scripts/dev-daemon.ts` gives every project a coordinator on pi-ai's faux
   model (it reads the fleet with one tool call, then answers in one line), and
   seeds Harbor with a pinned question and a coordinator line.
 
 `test/room.test.tsx` renders the room on the daemon's fold of the synthetic log
 and a synthetic conversation (two tool calls, a pinned question) and reads the
-anatomy, the band, the card, the quiet lines and the rail. The browser test
+header, the conversation, the panel and its card; `test/room-header.test.tsx`
+holds the pills and the freshness, and `test/room-panel.test.tsx`, in Chromium
+on the app's own Tailwind build, the tabs and their keys, the width dragged
+and kept, the agents' links, a pill going to its group, the question answered
+from its card and from the field's line, the rules, the log and the sheet. The browser test
 opens Harbor's room, sends a message, waits for the faux coordinator's answer,
 reloads to find the same conversation, answers the pinned question, and checks
 the fonts and that no text is under 13 px.

@@ -18,11 +18,11 @@ import { HARNESS_COLOR, layoutSky, SKY_GROUP_LABEL, type SkyLabel, type SkySize,
 import { animationFrames, createSkyView, type SkyView } from "./view";
 
 export interface SkyProps {
-  /** The projects it draws: one for the band (a project's room), any number on the stage (the hangar). */
+  /** The projects it draws: one for the band (the sky's story page), any number on the stage (the hangar). */
   projects: readonly SkyProject[];
   /** `band`: about 200 px tall, full width; `stage`: fills its container. */
   size: SkySize;
-  /** The stage: where each squadron leads (the hangar's `#/projects/<id>`); the whole squadron is the link. */
+  /** The stage: where each squadron leads (the hangar's `#/projects/<id>?panel=agents`); the whole squadron is the link. */
   link?: (project: string) => string;
   className?: string;
 }
