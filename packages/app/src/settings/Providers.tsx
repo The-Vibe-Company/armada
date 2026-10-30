@@ -1,57 +1,28 @@
 import type { Plugin, PluginContribution } from "@armada/protocol";
 import { type FormEvent, useId, useState } from "react";
-import { Dot, Field, Form, Input, Page, PageHeader, Select } from "@/components/page";
+import { Dot, Field, Form, Input, Select } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { pluginCounts, pluginGroups, pluginState } from "@/plugins/list";
 import { type ConfigField, configFields, configValue } from "@/plugins/schema";
 import { useDaemon, useDaemonClient } from "@/protocol/store";
+import { SettingsFold, SettingsRow, SettingsSection, StateDot } from "./Layout";
 
 /**
- * The Plugins screen (THE-2019), in the v7 anatomy: the catalog's numbers on
- * the facts line, the title and its quiet line, then every bundled plugin in
- * one list grouped by seam, each with its switch and a "Configure" disclosure
- * (its contributions' config forms, from their JSON Schemas, and its declared
- * secrets, set or missing). Every change is saved by the daemon at once and
- * applies when it restarts: the notice above the list says so, with Restart.
+ * Settings' Providers (THE-2069; the Plugins screen of THE-2019 before it):
+ * every bundled plugin, a group per what it provides (Models, Runtimes,
+ * Trackers, Forges, Nodes, Other), each a row with its state on a dot and its
+ * switch, its settings folded below it (its contributions' config forms, from
+ * their JSON Schemas, and its declared secrets, set or missing). Every change
+ * is saved by the daemon at once and applies when it restarts: the notice
+ * above the list says so, with Restart.
  */
-export function Plugins() {
-  const { plugins, pluginsProblem, status, restarting, problem } = useDaemon();
+export function Providers() {
+  const { plugins, pluginsProblem, status, restarting } = useDaemon();
   const list = plugins?.plugins ?? [];
   const counts = pluginCounts(list);
   return (
-    <Page>
-      <PageHeader
-        facts={
-          plugins ? (
-            <>
-              <span>{plural(counts.total, "plugin")}</span>
-              <Dot />
-              <span>{counts.enabled} on</span>
-              <Dot />
-              <span>{counts.loaded} loaded</span>
-              {counts.refused > 0 && (
-                <>
-                  <Dot />
-                  <span className="text-red">{counts.refused} refused</span>
-                </>
-              )}
-            </>
-          ) : (
-            <span>Plugins</span>
-          )
-        }
-        title="Plugins"
-        quiet={
-          plugins
-            ? "Everything that varies in Armada is a plugin shipped with the app. A switch or a setting applies when the daemon restarts."
-            : pluginsProblem
-              ? null
-              : status === "refused"
-                ? problem
-                : "Waiting for the daemon to list its plugins."
-        }
-      />
+    <>
       {pluginsProblem && (
         <div role="alert" className="rounded-card bg-card px-4 py-3 text-amber shadow-ring">
           {pluginsProblem}
@@ -66,26 +37,46 @@ export function Plugins() {
         />
       )}
       {plugins && list.length === 0 && <p className="m-0 text-text-2">This build of Armada ships no plugin.</p>}
-      {plugins && list.length > 0 && (
-        <div className="flex min-w-0 flex-col border-line border-t">
-          {pluginGroups(list).map((group) => (
-            <section key={group.seam} aria-labelledby={`plugins-${group.seam}`} className="flex flex-col">
-              <h2
-                id={`plugins-${group.seam}`}
-                className="m-0 flex h-8.5 items-center gap-2.5 whitespace-nowrap border-line border-b bg-band px-3 font-semibold text-meta"
-              >
-                <span>{group.label}</span>
-                <span className="font-mono font-normal text-heading text-text-3 tnum">{group.plugins.length}</span>
-              </h2>
-              {group.plugins.map((plugin) => (
-                <PluginRow key={plugin.id} plugin={plugin} live={status === "live"} />
-              ))}
-            </section>
+      {pluginGroups(list).map((group) => (
+        <SettingsSection key={group.seam} title={group.label} count={group.plugins.length}>
+          {group.plugins.map((plugin) => (
+            <PluginRow key={plugin.id} plugin={plugin} live={status === "live"} />
           ))}
-        </div>
-      )}
-    </Page>
+        </SettingsSection>
+      ))}
+    </>
   );
+}
+
+/** The facts line's numbers, once the daemon listed its plugins. */
+export function ProvidersFacts() {
+  const { plugins } = useDaemon();
+  if (!plugins) return <span>Providers</span>;
+  const counts = pluginCounts(plugins.plugins);
+  return (
+    <>
+      <span>{plural(counts.total, "plugin")}</span>
+      <Dot />
+      <span>{counts.enabled} on</span>
+      <Dot />
+      <span>{counts.loaded} loaded</span>
+      {counts.refused > 0 && (
+        <>
+          <Dot />
+          <span className="text-red">{counts.refused} refused</span>
+        </>
+      )}
+    </>
+  );
+}
+
+/** The quiet line: what a switch does, or why the list is not there yet. */
+export function useProvidersQuiet(): string | null {
+  const { plugins, pluginsProblem, status } = useDaemon();
+  if (plugins)
+    return "Everything that varies in Armada is a plugin shipped with the app. A switch or a setting applies when the daemon restarts.";
+  // A problem says itself above the list (or above the page, the daemon's own).
+  return pluginsProblem || status === "refused" ? null : "Waiting for the daemon to list its plugins.";
 }
 
 function RestartNotice({
@@ -167,61 +158,67 @@ function PluginRow({ plugin, live }: { plugin: Plugin; live: boolean }) {
     }
   }
   return (
-    <div data-plugin={plugin.id} className="flex flex-col border-line-soft border-b bg-bg px-3 py-2.5">
-      <div className="grid min-h-9 grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3.5">
-        <span className="flex min-w-0 flex-col gap-0.5">
-          <span className="flex min-w-0 items-baseline gap-2">
-            <span className="truncate font-medium text-text">{plugin.id}</span>
-            {plugin.version && <span className="font-mono text-heading text-text-3 tnum">{plugin.version}</span>}
-          </span>
-          {plugin.description && <span className="truncate text-small text-text-2">{plugin.description}</span>}
-          {plugin.contributions.length > 0 && (
-            <span className="flex flex-wrap gap-1.5 pt-0.5">
-              {plugin.contributions.map((c) => (
-                <span
-                  key={`${c.seam}.${c.kind}`}
-                  className="rounded-xs bg-fill px-1.5 font-mono text-label text-text-2"
-                >
-                  {c.seam}.{c.kind}
-                </span>
-              ))}
-            </span>
+    <SettingsRow
+      data-plugin={plugin.id}
+      title={
+        <>
+          <span className="truncate">{plugin.id}</span>
+          {plugin.version && (
+            <span className="font-mono font-normal text-heading text-text-3 tnum">{plugin.version}</span>
           )}
-        </span>
-        <span data-state className={`text-small ${state.ink}`} title={plugin.error}>
-          {state.word}
-        </span>
+        </>
+      }
+      description={
+        (plugin.description || plugin.contributions.length > 0) && (
+          <span className="flex flex-col gap-1">
+            {plugin.description && <span>{plugin.description}</span>}
+            {plugin.contributions.length > 0 && (
+              <span className="flex flex-wrap gap-1.5">
+                {plugin.contributions.map((c) => (
+                  <span
+                    key={`${c.seam}.${c.kind}`}
+                    className="rounded-xs bg-fill px-1.5 font-mono text-label text-text-2"
+                  >
+                    {c.seam}.{c.kind}
+                  </span>
+                ))}
+              </span>
+            )}
+          </span>
+        )
+      }
+      status={
+        <>
+          <StateDot {...state} title={plugin.error} />
+          {plugin.error && plugin.enabled && !plugin.restartRequired && (
+            <p className="m-0 pt-1 text-red">{plugin.error}</p>
+          )}
+          {problem && (
+            <p role="alert" className="m-0 pt-1 text-red">
+              {problem}
+            </p>
+          )}
+        </>
+      }
+      control={
         <Switch
           aria-label={plugin.id}
           checked={plugin.enabled}
           disabled={saving || !live}
           onCheckedChange={(checked) => void flip(checked)}
         />
-      </div>
-      {plugin.error && plugin.enabled && !plugin.restartRequired && (
-        <p className="m-0 pt-1 text-small text-red">{plugin.error}</p>
-      )}
-      {problem && (
-        <p role="alert" className="m-0 pt-1 text-small text-red">
-          {problem}
-        </p>
-      )}
+      }
+    >
       {configurable && (
-        <details className="group pt-1.5">
-          <summary className="w-fit cursor-pointer select-none list-none text-small text-text-2 hover:text-text [&::-webkit-details-marker]:hidden">
-            <span aria-hidden className="inline-block pr-1 transition-transform group-open:rotate-90">
-              ›
-            </span>
-            Configure
-          </summary>
-          <div className="flex flex-col gap-5 pt-3 pb-1.5 pl-3">
+        <SettingsFold label="Settings">
+          <div className="flex flex-col gap-5">
             {plugin.contributions.map((c) => (
               <Contribution key={`${c.seam}.${c.kind}`} plugin={plugin.id} contribution={c} live={live} />
             ))}
           </div>
-        </details>
+        </SettingsFold>
       )}
-    </div>
+    </SettingsRow>
   );
 }
 

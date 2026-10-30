@@ -1,12 +1,12 @@
 import type { Plugin } from "@armada/protocol";
 
-/** The seams in the plugin API's order (packages/plugin-api), as the screen names its groups. */
+/** The seams as Settings' Providers names its groups (THE-2069): the coordinator's models first. */
 const SEAM_GROUPS = [
+  { seam: "model", label: "Models" },
   { seam: "runtime", label: "Runtimes" },
   { seam: "tracker", label: "Trackers" },
   { seam: "forge", label: "Forges" },
   { seam: "node", label: "Nodes" },
-  { seam: "model", label: "Models" },
 ] as const;
 const OTHER = { seam: "other", label: "Other" } as const;
 
@@ -36,13 +36,13 @@ export function pluginCounts(plugins: readonly Plugin[]) {
 }
 
 /**
- * A row's state in a word and its colour: a change waits for the restart
- * (amber), loaded (green), refused at boot (red), off or not loaded (quiet).
+ * A row's state in a word, its ink and its dot: a change waits for the
+ * restart (amber), loaded (green), refused at boot (red), off or not loaded (quiet).
  */
-export function pluginState(plugin: Plugin): { word: string; ink: string } {
-  if (plugin.restartRequired) return { word: "Restart to apply", ink: "text-amber" };
-  if (!plugin.enabled) return { word: "Off", ink: "text-text-3" };
-  if (plugin.loaded) return { word: "Loaded", ink: "text-green" };
-  if (plugin.error !== undefined) return { word: "Refused", ink: "text-red" };
-  return { word: "Not loaded", ink: "text-text-3" };
+export function pluginState(plugin: Plugin): { word: string; ink: string; dot: string } {
+  if (plugin.restartRequired) return { word: "Restart to apply", ink: "text-amber", dot: "bg-amber" };
+  if (!plugin.enabled) return { word: "Off", ink: "text-text-3", dot: "bg-text-3" };
+  if (plugin.loaded) return { word: "Loaded", ink: "text-green", dot: "bg-green" };
+  if (plugin.error !== undefined) return { word: "Refused", ink: "text-red", dot: "bg-red" };
+  return { word: "Not loaded", ink: "text-text-3", dot: "bg-text-3" };
 }

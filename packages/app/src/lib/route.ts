@@ -1,17 +1,24 @@
 // Where the app is: the address's hash, because the daemon serves one
 // index.html at its root. `#/projects/<id>` is a project's room (THE-1996),
-// `#/projects/<id>/rules` its rules and fleet (THE-1997), `#/plugins` the
-// Plugins screen, `#/settings` the coordinator's model; anything else, and off
-// a browser (a test's static render), the hangar (the home, THE-2025). A
+// `#/projects/<id>/rules` its rules and fleet (THE-1997), `#/settings/<section>`
+// a section of the settings (THE-2069: `#/settings` opens the coordinator's,
+// the old `#/plugins` is replaced by the providers'); anything else, and off a
+// browser (a test's static render), the hangar (the home, THE-2025). A
 // session's page, `#/sessions/<ticket>`, has its own route (src/session/route.ts).
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
+
+/** The settings' sections, in the nav's order; the first is `#/settings`. */
+export const SETTINGS_SECTIONS = ["coordinator", "providers", "account", "about"] as const;
+export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 export type Route =
   | { kind: "home" }
   | { kind: "project"; id: string }
   | { kind: "rules"; id: string }
-  | { kind: "plugins" }
-  | { kind: "settings" };
+  | { kind: "settings"; section: SettingsSection; redirect?: string };
+
+/** Where a section of the settings is. */
+export const settingsHref = (section: SettingsSection) => `#/settings/${section}`;
 
 const decode = (part: string) => {
   try {
@@ -24,9 +31,13 @@ const decode = (part: string) => {
 
 /** The screen a hash names. */
 export function routeOf(hash: string): Route {
-  if (hash === "#/plugins") return { kind: "plugins" };
-  if (hash === "#/settings") return { kind: "settings" };
   const [kind, id, more, ...rest] = hash.replace(/^#?\/?/, "").split("/");
+  // The Plugins screen became the providers' section: its old address is replaced, once.
+  if (kind === "plugins" && !id) return { kind: "settings", section: "providers", redirect: settingsHref("providers") };
+  if (kind === "settings" && more === undefined) {
+    const section = SETTINGS_SECTIONS.find((s) => s === id) ?? "coordinator";
+    return { kind: "settings", section };
+  }
   const value = id && !rest.length ? decode(id) : null;
   if (!value) return { kind: "home" };
   if (kind === "projects" && more === undefined) return { kind: "project", id: value };
@@ -47,5 +58,11 @@ const server = () => "#/";
 
 /** The current route, re-rendered when the hash changes; the hangar on the server. */
 export function useRoute(): Route {
-  return routeOf(useSyncExternalStore(subscribe, current, server));
+  const route = routeOf(useSyncExternalStore(subscribe, current, server));
+  const redirect = route.kind === "settings" ? route.redirect : undefined;
+  useEffect(() => {
+    // Replaced, not pushed: Back never returns to the old address.
+    if (redirect) window.location.replace(redirect);
+  }, [redirect]);
+  return route;
 }
