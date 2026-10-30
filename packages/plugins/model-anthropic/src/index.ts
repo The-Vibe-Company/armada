@@ -1,5 +1,6 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import type { JsonSchema, PluginContext } from "@armada/plugin-api";
+import { secretConnection } from "@armada/plugin-api/secret-auth";
 import { z } from "zod";
 
 const schema = z.strictObject({
@@ -11,7 +12,12 @@ const schema = z.strictObject({
 export async function activate(ctx: PluginContext) {
   const secrets = new Map<string, string | null>();
   for (const name of ["ANTHROPIC_API_KEY", "ARMADA_MODEL_API_KEY"]) secrets.set(name, await ctx.secrets.get(name));
+  const secretName =
+    (ctx.config.model?.anthropic as { apiKeySecret?: string } | undefined)?.apiKeySecret ?? "ANTHROPIC_API_KEY";
   ctx.register.model("anthropic", {
+    ...secretConnection(ctx.secrets, secretName, "Anthropic", (key) => {
+      secrets.set(secretName, key);
+    }),
     configSchema: z.toJSONSchema(schema, { target: "draft-7", io: "input" }) as JsonSchema,
     create(model, overrides) {
       const parsed = schema.safeParse({

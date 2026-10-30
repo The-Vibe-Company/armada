@@ -140,7 +140,7 @@ test("bundled catalog can be listed and disabled before the first daemon boot", 
       ghToken: () => null,
     };
     expect(await run(["plugin", "list"], io)).toBe(0);
-    expect(out).toContain("hello@0.1.0 enabled, not loaded (restart required)");
+    expect(out).toContain("hello@0.1.0 disabled, not loaded (restart required)");
     expect(await run(["plugin", "disable", "hello"], io)).toBe(0);
     expect(JSON.parse(await readFile(path, "utf8")).plugins[0].enabled).toBe(false);
   } finally {

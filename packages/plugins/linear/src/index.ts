@@ -2,6 +2,7 @@ import type { FleetEvent } from "@armada/daemon/events";
 import type { PluginContext, TrackerProvider } from "@armada/plugin-api";
 import { linearTracker } from "./linear/index.ts";
 import { TrackerPoller } from "./poll.ts";
+import { linearConnection } from "./status.ts";
 
 interface Config {
   endpoint?: string;
@@ -49,6 +50,7 @@ export function activate(ctx: PluginContext): void {
   const config = ctx.config.tracker?.linear as Config;
   const readers = new Map<string, TrackerPoller>();
   const provider: TrackerProvider = {
+    ...linearConnection(ctx.secrets, config.endpoint),
     async read({ project, signal }) {
       signal?.throwIfAborted();
       const settings = config.projects?.[project];

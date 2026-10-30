@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import fs, { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { machinePaths, readCredentialStore, resolveCredentials, updateCredentialStore } from "@armada/core/account";
 import { PROTOCOL_VERSION, type ServerMessage } from "@armada/protocol";
 import { WebSocket } from "ws";
-import { ARMADA_URL, fakeArmada } from "../../core/test/support.ts";
+import { ARMADA_URL, fakeArmada } from "../../core/test/support.node.js";
 import { Keychain } from "../src/keychain.ts";
 import { Account } from "../src/server/account.ts";
 import { startServer } from "../src/server/index.ts";
@@ -367,14 +367,10 @@ test("shutdown during the credential commit revokes the new session and leaves n
   if (process.versions.bun) {
     // Node's live builtin export instrumentation is unavailable in Bun. Run
     // this same race against the production Node runtime, without skipping it.
+    const nativeNode = execFileSync("node", ["-p", "process.execPath"], { encoding: "utf8" }).trim();
     const child = spawn(
-      "node",
-      [
-        "--experimental-transform-types",
-        "--test",
-        "--test-name-pattern=shutdown during the credential commit",
-        fileURLToPath(import.meta.url),
-      ],
+      nativeNode,
+      ["--test", "--test-name-pattern=shutdown during the credential commit", fileURLToPath(import.meta.url)],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
     const output: Buffer[] = [];

@@ -1,3 +1,4 @@
+import type { ProviderConnection } from "./connection.js";
 import type { ProjectRequest } from "./index.js";
 import type { TestMergeRequest, TestMergeResult } from "./merge.js";
 
@@ -33,7 +34,7 @@ export interface WorkerObservation {
   /** CLI activity is independent of the operating-system process state. */
   activity?: "working" | "idle";
 }
-export interface RuntimeProvider {
+export interface RuntimeProvider extends ProviderConnection {
   /** The host supplies facilities; plugins never look up another provider. */
   withNode?(node: NodeProvider): RuntimeProvider;
   prepare(request: PrepareRequest): Promise<Workspace>;

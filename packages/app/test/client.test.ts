@@ -7,6 +7,7 @@ import {
   PROTOCOL_VERSION,
   type ProtocolEvent,
   type ProtocolVersion,
+  type Provider,
 } from "@armada/protocol";
 import {
   createDaemonClient,
@@ -579,4 +580,89 @@ test("account login exposes its device code, settles on approval, applies pushes
   socket().drop();
   await expect(dropped).rejects.toThrow("connection dropped");
   client.stop();
+});
+
+test("provider connection uses shared auth, only its catalog settles it, and a dropped login is never replayed", async () => {
+  const { client, socket, timers } = setup();
+  listAndSubscribe(socket());
+  const list = socket().sent.find((message) => message.type === "providers.list");
+  const providers: Provider[] = [
+    {
+      id: "codex",
+      seam: "agent",
+      name: "Codex",
+      mark: "codex",
+      state: "disconnected",
+      enabled: true,
+      config: { binary: "codex" },
+      restartRequired: false,
+    },
+  ];
+  socket().receive({ type: "providers.catalog", version: V, id: list?.id, providers });
+  expect(client.getState().providers).toEqual(providers);
+  const frames: unknown[] = [];
+  const leave = client.auth((frame) => frames.push(frame));
+  const connecting = client.connectProvider("codex");
+  const flow = client.getState().authFlow as string;
+  expect(flow).toBe(socket().sent.at(-1)?.id ?? "no request");
+  socket().receive({
+    type: "auth.prompt",
+    version: V,
+    flow: "foreign",
+    id: "wrong",
+    promptType: "secret",
+    message: "Wrong flow",
+  });
+  socket().receive({
+    type: "auth.prompt",
+    version: V,
+    flow,
+    id: "prompt-one",
+    promptType: "manual_code",
+    message: "Paste code",
+  });
+  expect(frames).toHaveLength(1);
+  client.answerProvider("prompt-one", "one-use-code");
+  expect(socket().sent.at(-1)).toEqual({
+    type: "providers.answer",
+    version: V,
+    flow,
+    id: "prompt-one",
+    value: "one-use-code",
+  });
+  socket().receive({ type: "providers.catalog", version: V, id: "push:other", providers });
+  expect(client.getState().authFlow).toBe(flow);
+  socket().receive({
+    type: "providers.catalog",
+    version: V,
+    id: flow,
+    providers: [{ ...providers[0], state: "connected" }],
+  });
+  await connecting;
+  expect(client.getState().authFlow).toBeNull();
+  const pending = client.connectProvider("codex");
+  const active = client.getState().authFlow;
+  const cancelling = client.cancelProvider();
+  const cancel = socket().sent.at(-1);
+  expect(cancel?.type).toBe("providers.cancel");
+  socket().receive({ type: "error", version: V, id: active, code: "internal", message: "Sign-in cancelled" });
+  await expect(pending).rejects.toThrow("Sign-in cancelled");
+  socket().receive({ type: "providers.catalog", version: V, id: cancel?.id, providers });
+  await cancelling;
+  const dropped = client.connectProvider("codex");
+  socket().drop();
+  await expect(dropped).rejects.toThrow("connection dropped");
+  expect(client.getState().authFlow).toBeNull();
+  timers.findLast((timer) => !timer.canceled)?.run();
+  socket().onopen?.();
+  listAndSubscribe(socket());
+  expect(
+    socket().sent.some(
+      (message) =>
+        message.type === "providers.connect" || message.type === "auth.answer" || message.type === "providers.answer",
+    ),
+  ).toBe(false);
+  leave();
+  client.stop();
+  await expect(client.connectProvider("codex")).rejects.toThrow("Connect to a daemon");
 });

@@ -1,6 +1,5 @@
 import { pluginEventSchema } from "@armada/plugin-api";
 import { z } from "zod";
-import { AUTH_MINOR, authRequestSchemas, authResultSchemas } from "./auth.js";
 import {
   ACCOUNT_MINOR,
   accountDeviceSchema,
@@ -9,6 +8,7 @@ import {
   accountResultSchema,
   accountStatusRequestSchema,
 } from "./account.js";
+import { AUTH_MINOR, authRequestSchemas, authResultSchemas } from "./auth.js";
 import {
   chatDeltaSchema,
   chatReadRequestSchema,
@@ -31,6 +31,7 @@ import {
   modelsRequestSchemas,
 } from "./models.js";
 import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
+import { PROVIDERS_MINOR, providerRequestSchemas, providersCatalogSchema } from "./providers.js";
 import {
   sessionOutputRequestSchema,
   sessionOutputResultSchema,
@@ -38,17 +39,18 @@ import {
   sessionReleaseResultSchema,
 } from "./session.js";
 
-export * from "./auth.js";
 export * from "./account.js";
+export * from "./auth.js";
 export * from "./chat.js";
 export * from "./fleet.js";
 export * from "./models.js";
 export * from "./plugins.js";
+export * from "./providers.js";
 export * from "./rules.js";
 export * from "./session.js";
 
 /** Wire version, independent of the daemon/app release versions. */
-export const PROTOCOL_VERSION = { major: 1, minor: AUTH_MINOR } as const;
+export const PROTOCOL_VERSION = { major: 1, minor: PROVIDERS_MINOR } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
 
@@ -122,6 +124,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   ...pluginRequestSchemas,
   ...authRequestSchemas,
   ...modelsRequestSchemas,
+  ...providerRequestSchemas,
 ]);
 export type CredentialsResult = z.infer<typeof credentialsResultSchema>;
 export type ListProjectsRequest = z.infer<typeof listProjectsRequestSchema>;
@@ -218,6 +221,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   ...pluginResultSchemas,
   ...authResultSchemas,
   modelsCatalogSchema,
+  providersCatalogSchema,
 ]);
 export type ProjectsResult = z.infer<typeof projectsResultSchema>;
 export type Subscribed = z.infer<typeof subscribedSchema>;

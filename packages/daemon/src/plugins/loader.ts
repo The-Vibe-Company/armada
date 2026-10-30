@@ -120,6 +120,30 @@ export async function loadPlugins(
             if (!declared.has(name)) throw new Error(`undeclared secret ${name}`);
             return services.secrets.get(name, project);
           },
+          ...(services.secrets.source
+            ? {
+                source: async (name: string, project?: string) => {
+                  if (!declared.has(name)) throw new Error(`undeclared secret ${name}`);
+                  return services.secrets.source!(name, project);
+                },
+              }
+            : {}),
+          ...(services.secrets.set
+            ? {
+                set: async (name: string, value: string) => {
+                  if (!declared.has(name)) throw new Error(`undeclared secret ${name}`);
+                  await services.secrets.set!(name, value);
+                },
+              }
+            : {}),
+          ...(services.secrets.delete
+            ? {
+                delete: async (name: string) => {
+                  if (!declared.has(name)) throw new Error(`undeclared secret ${name}`);
+                  await services.secrets.delete!(name);
+                },
+              }
+            : {}),
         },
       });
       activation.commit();
