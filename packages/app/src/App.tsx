@@ -13,6 +13,8 @@ const SkyStory = lazy(() => import("@/screens/SkyStory").then((m) => ({ default:
 const Room = lazy(() => import("@/screens/Room").then((m) => ({ default: m.Room })));
 // A session's page, fetched when a row opens it: off the first-load budget.
 const Session = lazy(() => import("@/screens/Session").then((m) => ({ default: m.Session })));
+// The notifications (THE-2055): every screen hears them, off the first load, once the shell is drawn.
+const Notifications = lazy(() => import("@/notify/Notifications").then((m) => ({ default: m.Notifications })));
 // The app's own settings: off the first load (perf-budget.json), fetched when opened.
 const Settings = lazy(() => import("@/screens/Settings").then((m) => ({ default: m.Settings })));
 
@@ -54,6 +56,10 @@ export function App({
         ) : (
           <Hangar onReload={onReload} />
         )}
+        {/* A coordinator's answer or a question for the owner, from a room not on screen (THE-2055). */}
+        <Suspense fallback={null}>
+          <Notifications />
+        </Suspense>
       </Shell>
     </DaemonProvider>
   );

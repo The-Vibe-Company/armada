@@ -73,6 +73,13 @@ test("Enter and ⌘Enter send; Shift+Enter is left to the textarea, which insert
   expect(keyIntent(press("Enter", { isComposing: true }), anywhere)).toBeNull();
   expect(keyIntent(press("Enter", { keyCode: 229 }), anywhere)).toBeNull();
   expect(keyIntent(press("a"), anywhere)).toBeNull();
+});
+
+test("PageUp and PageDown page the thread from the field (THE-2054); with a modifier they are the field's", () => {
+  expect(keyIntent(press("PageUp"), anywhere)).toBe("page-up");
+  expect(keyIntent(press("PageDown"), anywhere)).toBe("page-down");
+  expect(keyIntent(press("PageUp", { shiftKey: true }), anywhere)).toBeNull();
+  expect(keyIntent(press("PageDown", { metaKey: true }), anywhere)).toBeNull();
   // The field is a textarea: a key left to it writes a new line.
   expect(render()).toMatch(/<textarea id="[^"]+" rows="2"/);
 });
