@@ -15,8 +15,9 @@ import { rulesHref } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import { useDaemon } from "@/protocol/store";
 import { Composer } from "@/room/Composer";
-import { type Chat, NO_CHAT, useChat } from "@/room/chat";
+import { type Chat, NO_CHAT, threadItems, useChat } from "@/room/chat";
 import { coordinatorModel, ownerHistory } from "@/room/compose";
+import { Queued, TurnActions } from "@/room/Live";
 import { ticketPrefix } from "@/room/markdown-rules";
 import { Pinned } from "@/room/Pinned";
 import { RAIL_ID, Rail } from "@/room/Rail";
@@ -115,6 +116,11 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
   const questions = ownerQuestions(state);
   const pinned = questions[0];
   const history = useMemo(() => ownerHistory(chat.items), [chat.items]);
+  // The coordinator's turn (THE-2052): null on a daemon older than CHAT_LIVE_MINOR, which shows nothing live.
+  const turn = chat.live?.turn ?? null;
+  const busy = turn !== null && turn.state !== "idle";
+  const shown = useMemo(() => threadItems(chat.items, chat.live), [chat.items, chat.live]);
+  const stop = chat.stop;
 
   const hint =
     chat.status === "unavailable"
@@ -202,7 +208,9 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
             />
           )}
           <Thread
-            items={chat.items}
+            items={shown}
+            turn={turn}
+            started={chat.live?.started ?? null}
             project={project.id}
             repository={project.repository}
             prefixes={prefixes}
@@ -224,9 +232,13 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
               {chat.problem}
             </p>
           )}
+          <Queued items={chat.queued ?? []} />
           <Composer
             project={project.id}
             send={chat.send}
+            busy={busy}
+            primary={busy && stop ? (field) => <TurnActions field={field} stop={stop} /> : undefined}
+            restore={chat.withdrawn ?? null}
             disabled={!live || chat.status !== "ready" || !chat.coordinator}
             hint={hint}
             history={history}

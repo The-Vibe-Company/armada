@@ -8,8 +8,10 @@
 // turn folded under "Worked for 2m 03s" above its answer, each opening on a
 // click and remembered for the project's tab. Newest at the bottom; it
 // follows new items while the owner reads the end, and stays put when they
-// scrolled up.
-import type { ChatItem } from "@armada/protocol";
+// scrolled up. On a live daemon (THE-2052) the answer being written shows as
+// the coordinator's message, its reasoning as a Thinking row, the running call
+// shines, and the Working row closes the thread while the coordinator works.
+import type { ChatItem, ChatTurn } from "@armada/protocol";
 import {
   ChevronRight,
   Eye,
@@ -30,6 +32,8 @@ import { TONE } from "@/components/fleet/FleetList";
 import { type Group, rowTime } from "@/fleet/overview";
 import { cn } from "@/lib/utils";
 import { CopyButton } from "./Copy";
+import type { ThreadItem } from "./chat";
+import { Shine, Stopped, Thought, Working } from "./Live";
 import { Markdown, TicketGroups } from "./Markdown";
 import { folds } from "./markdown-rules";
 import {
@@ -37,6 +41,7 @@ import {
   lineGroups,
   pretty,
   refusal,
+  type Said,
   segments,
   summarizeWork,
   type ThreadRow,
@@ -58,8 +63,10 @@ export function Thread({
   now,
   zone,
   empty,
+  turn = null,
+  started = null,
 }: {
-  items: readonly ChatItem[];
+  items: readonly ThreadItem[];
   /** The project's id: the rows the owner opened are kept for it in the tab's `sessionStorage`. */
   project?: string;
   /** The project's repository (`owner/name`): `#34` links to its pull request. */
@@ -72,12 +79,34 @@ export function Thread({
   zone: string;
   /** Said when there is nothing yet. */
   empty: ReactNode;
+  /** The coordinator's turn (THE-2052): the Working row while it is not idle. */
+  turn?: ChatTurn | null;
+  /** When that turn began, if seen; null for "Working…". */
+  started?: string | null;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const atEnd = useRef(true);
-  const dots = lineGroups(items, groupOf);
+  const dots = lineGroups(
+    items.filter((i): i is ChatItem => i.kind !== "streaming"),
+    groupOf,
+  );
   const rows = workRows(items);
   const open = useOpen(project);
+  const working = turn !== null && turn.state !== "idle";
+  const tail = items.at(-1);
+  // The call the turn runs now shines (THE-2052).
+  const running = working ? (turn?.tool?.id ?? null) : null;
+  const list = useRef<HTMLOListElement>(null);
+  // An answer written in place is never an addition the thread's live region hears: once read, it is said whole.
+  const streamed = useRef(new Set<string>());
+  const [finished, setFinished] = useState("");
+  useEffect(() => {
+    for (const item of items) {
+      if (item.kind === "streaming") streamed.current.add(item.id);
+      else if (streamed.current.delete(item.id) && (item.kind === "coordinator" || item.kind === "line"))
+        setFinished(item.body.trim() ? `Coordinator: ${item.body}` : "");
+    }
+  }, [items]);
   // Announced once the first reading is on screen: what arrives after, never the history.
   const [announce, setAnnounce] = useState(false);
   const read = items.length > 0;
@@ -89,6 +118,19 @@ export function Thread({
     const el = box.current;
     if (el && atEnd.current) el.scrollTop = el.scrollHeight;
   }, [items.length]);
+  // The thread also grows without a new item (an answer being written, its reading in its place), or its box
+  // shrinks (a queued message under it): it keeps the end in view then too.
+  useEffect(() => {
+    const el = box.current;
+    const content = list.current;
+    if (!el || !content || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (atEnd.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(content);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
   return (
     <section
       ref={box}
@@ -101,6 +143,7 @@ export function Thread({
     >
       <TicketGroups value={groupOf}>
         <ol
+          ref={list}
           className="m-0 mx-auto mt-auto flex w-full min-w-0 max-w-(--chat-content-max-width) list-none flex-col gap-3 p-0"
           aria-live={announce ? "polite" : "off"}
           aria-relevant="additions"
@@ -108,7 +151,7 @@ export function Thread({
         >
           {items.length === 0 && <li className="py-6 text-center text-body text-text-3">{empty}</li>}
           <AnimatePresence initial={false}>
-            {rows.map((row) => (
+            {rows.map((row, k) => (
               <m.li
                 key={row.id}
                 initial={{ opacity: 0, y: 6 }}
@@ -117,6 +160,8 @@ export function Thread({
                 data-item={rowKind(row)}
                 // A message on its way is announced once, when the conversation holds it; its controls wait for it too.
                 inert={row.id.startsWith("sent:") || undefined}
+                // Still written: assistive technology waits for it (the status below says it once read).
+                aria-busy={(row.kind === "said" && row.item.kind === "streaming") || undefined}
                 className="group/row min-w-0"
               >
                 {row.kind === "said" ? (
@@ -128,6 +173,8 @@ export function Thread({
                     groupOf={groupOf}
                     time={rowTime(row.item.at, now, zone)}
                     full={fullTime(row.item.at, zone)}
+                    thinking={working && turn?.state === "thinking" && row.item === tail}
+                    folded={rows[k - 1]?.kind === "fold"}
                   />
                 ) : row.kind === "fold" ? (
                   <Fold
@@ -138,13 +185,21 @@ export function Thread({
                     full={fullTime(row.work.at, zone)}
                   />
                 ) : (
-                  <WorkBlock work={row.work} open={open} groupOf={groupOf} />
+                  <WorkBlock work={row.work} open={open} groupOf={groupOf} running={running} />
                 )}
               </m.li>
             ))}
           </AnimatePresence>
+          {working && (
+            <li className="min-w-0" data-item="working">
+              <Working started={started} queued={turn?.queued ?? 0} />
+            </li>
+          )}
         </ol>
       </TicketGroups>
+      <p role="status" className="sr-only">
+        {finished}
+      </p>
     </section>
   );
 }
@@ -160,14 +215,20 @@ function Item({
   groupOf,
   time,
   full,
+  thinking,
+  folded,
 }: {
-  item: Exclude<ChatItem, { kind: "tool" }>;
+  item: Said;
   dot: Group | null;
   repository: string;
   prefixes: string;
   groupOf: (ticket: string) => Group | null;
   time: string;
   full: string;
+  /** The answer being written is still thinking: its Thinking row shimmers. */
+  thinking: boolean;
+  /** Its work folds above it, under a label that already says when it was stopped. */
+  folded: boolean;
 }) {
   const when = (
     <Time at={item.at} full={full}>
@@ -190,18 +251,39 @@ function Item({
           </Meta>
         </div>
       );
+    case "streaming":
+      // The answer as it is written: no time and no Copy until it is read.
+      return (
+        <div className="flex min-w-0 flex-col gap-1" data-streaming-item>
+          {item.reasoning && (
+            <Thought reasoning={item.reasoning} active={thinking} repository={repository} prefixes={prefixes} />
+          )}
+          {item.text.trim() && (
+            <div className="min-w-0 px-1 py-0.5">
+              <span className="sr-only">Coordinator: </span>
+              <Markdown text={item.text} repository={repository} prefixes={prefixes} streaming />
+            </div>
+          )}
+        </div>
+      );
     case "coordinator": {
       const said = item.body.trim();
       return (
         <div className="flex min-w-0 flex-col gap-1">
-          <div className="min-w-0 px-1 py-0.5">
-            <span className="sr-only">Coordinator: </span>
-            {said ? (
-              <Markdown text={item.body} repository={repository} prefixes={prefixes} />
-            ) : (
-              <p className="m-0 text-sub text-text-3">(empty response)</p>
-            )}
-          </div>
+          {item.reasoning && (
+            <Thought reasoning={item.reasoning} active={false} repository={repository} prefixes={prefixes} />
+          )}
+          {(said || !item.aborted) && (
+            <div className="min-w-0 px-1 py-0.5">
+              <span className="sr-only">Coordinator: </span>
+              {said ? (
+                <Markdown text={item.body} repository={repository} prefixes={prefixes} />
+              ) : (
+                <p className="m-0 text-sub text-text-3">(empty response)</p>
+              )}
+            </div>
+          )}
+          {item.aborted && <Stopped said={!folded} />}
           <Meta>
             {said && <CopyButton text={item.body} label="Copy message" />}
             {when}
@@ -219,6 +301,7 @@ function Item({
           />
           <Text text={item.body} groupOf={groupOf} />
           {when}
+          {item.aborted && <Stopped said={!folded} />}
         </div>
       );
   }
@@ -355,13 +438,34 @@ function Fold({
 }
 
 /** A turn's work: one call on its own row, two or more under their sentence. */
-function WorkBlock({ work, open, groupOf }: { work: Work; open: Open; groupOf: (ticket: string) => Group | null }) {
+function WorkBlock({
+  work,
+  open,
+  groupOf,
+  running = null,
+}: {
+  work: Work;
+  open: Open;
+  groupOf: (ticket: string) => Group | null;
+  /** The call the coordinator's turn runs now (THE-2052): it shines. */
+  running?: string | null;
+}) {
   const [only] = work.tools;
-  if (only && work.tools.length === 1) return <ToolRow item={only} open={open} groupOf={groupOf} />;
-  return <WorkGroup work={work} open={open} groupOf={groupOf} />;
+  if (only && work.tools.length === 1) return <ToolRow item={only} open={open} groupOf={groupOf} running={running} />;
+  return <WorkGroup work={work} open={open} groupOf={groupOf} running={running} />;
 }
 
-function WorkGroup({ work, open, groupOf }: { work: Work; open: Open; groupOf: (ticket: string) => Group | null }) {
+function WorkGroup({
+  work,
+  open,
+  groupOf,
+  running,
+}: {
+  work: Work;
+  open: Open;
+  groupOf: (ticket: string) => Group | null;
+  running: string | null;
+}) {
   const id = `group:${work.id}`;
   const shown = open.has(id);
   const body = useId();
@@ -380,7 +484,10 @@ function WorkGroup({ work, open, groupOf }: { work: Work; open: Open; groupOf: (
       >
         <WorkLine
           icon={<Icon strokeWidth={1.75} className="size-4" />}
-          label={summary}
+          label={
+            // Closed, the group's sentence shines for the call running inside it.
+            <Shine active={!shown && work.tools.some((t) => t.id === running && t.output === null)}>{summary}</Shine>
+          }
           trailing={
             <>
               {failed && <Failed />}
@@ -392,7 +499,7 @@ function WorkGroup({ work, open, groupOf }: { work: Work; open: Open; groupOf: (
       {shown && (
         <div id={body} className="flex max-h-[min(18rem,50dvh)] min-w-0 flex-col overflow-y-auto">
           {work.tools.map((tool) => (
-            <ToolRow key={tool.id} item={tool} open={open} groupOf={groupOf} grouped />
+            <ToolRow key={tool.id} item={tool} open={open} groupOf={groupOf} running={running} grouped />
           ))}
         </div>
       )}
@@ -406,11 +513,13 @@ function ToolRow({
   open,
   groupOf,
   grouped = false,
+  running = null,
 }: {
   item: Tool;
   open: Open;
   groupOf: (ticket: string) => Group | null;
   grouped?: boolean;
+  running?: string | null;
 }) {
   const id = `tool:${item.id}`;
   const shown = open.has(id);
@@ -432,7 +541,9 @@ function ToolRow({
           icon={<Icon strokeWidth={1.75} className="size-4" />}
           label={
             <span title={item.name}>
-              <Text text={label} groupOf={groupOf} />
+              <Shine active={item.id === running && item.output === null}>
+                <Text text={label} groupOf={groupOf} />
+              </Shine>
             </span>
           }
           trailing={

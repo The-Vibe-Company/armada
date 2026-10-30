@@ -72,6 +72,11 @@ export const chatSendRequestSchema = z.object({
   project: identifier,
   requestId: identifier.max(200),
   body: message,
+  /**
+   * Mid-run, `steer` (the default) joins the running work after its tool round;
+   * `queue` waits for the run to end. A daemon older than the field steers.
+   */
+  whenBusy: z.enum(["steer", "queue"]).optional(),
 });
 /** The owner's answer to a question waiting for them (an open `owner-request` of the project's inbox). */
 export const ownerAnswerRequestSchema = z.object({

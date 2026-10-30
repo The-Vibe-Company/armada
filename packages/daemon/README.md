@@ -240,7 +240,8 @@ owner's, assistant text is an answer after the owner spoke and the coordinator's
 `line` after any other input, each tool call is paired with its result (cut at 8 KiB;
 `failed` on an error or facts saying `ok: false`). `chat.send` submits pi input with
 the app's `requestId`, so a retry is one input; mid-run it steers (placed after the
-current tool round). The checkpoint it commits is the event subscribers receive. A
+current tool round), or with `whenBusy: "queue"` waits for the run's end (pi's
+`followUp`, THE-2052). The checkpoint it commits is the event subscribers receive. A
 failed model turn reads as a line saying so. `owner.answer` folds the project, appends
 `inbox.answered` (actor `owner`) for an open `owner-request` in the same synchronous
 step, then awaits handing the answer to the coordinator as an `armada.owner-answer`

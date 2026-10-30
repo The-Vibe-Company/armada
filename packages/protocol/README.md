@@ -166,7 +166,7 @@ daemon would refuse them as unknown, and the app says so instead.
 | Client request | Fields besides `type`, `version`, `id` | Server reply |
 | --- | --- | --- |
 | `chat.read` | `project` | `chat.result`: `project`, `seq`, `coordinator` (one runs), `items` |
-| `chat.send` | `project`, `requestId`, `body` | `chat.sent`: `project`, `requestId` |
+| `chat.send` | `project`, `requestId`, `body`, optional `whenBusy` | `chat.sent`: `project`, `requestId` |
 | `owner.answer` | `project`, `item`, `choice`, optional `note` | `owner.answered`: `project`, `item` |
 
 `items` is the conversation oldest first, its latest 200 when long: `owner`
@@ -174,7 +174,9 @@ daemon would refuse them as unknown, and the app says so instead.
 said when the fleet moved, not in answer to the owner) and `tool` (`name`,
 `input`, `output` (null while it runs), `failed`). The daemon derives them; the
 app never reads pi's checkpoints. A message keeps its `requestId` until
-admitted: sending it again after a drop is the same message, admitted once. Its
+admitted: sending it again after a drop is the same message, admitted once.
+Mid-run it steers by default (`whenBusy: "steer"`); `whenBusy: "queue"` (THE-2052)
+waits for the run to end. An older daemon ignores the field and steers. Its
 effect reaches every subscriber as the coordinator's `coordinator.checkpoint`
 events; a client reads the conversation again when one arrives. `owner.answer`
 answers an open `owner-request` of the project's inbox; anything else is
