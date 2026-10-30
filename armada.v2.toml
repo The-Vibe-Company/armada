@@ -94,3 +94,26 @@ harness = "opencode"
 model = "opencode/gemini-3.1-pro" # exact ID from `opencode models`
 effort = "high"
 permissions = "full"
+
+# Desktop runtime provider, enabled explicitly in Settings > Providers.
+[plugins.conductor]
+binary = "conductor"
+defaultProfile = "codex"
+
+[plugins.conductor.profiles.opus]
+agent = "claude"
+model = "opus-5-5-1m"
+effort = "high"
+
+[plugins.conductor.profiles.codex]
+agent = "codex"
+model = "gpt-6.1-sol"
+effort = "high"
+
+[[plugins.conductor.routing]]
+labels = ["web"]
+profile = "opus"
+
+[[plugins.conductor.routing]]
+labels = ["api"]
+profile = "codex"

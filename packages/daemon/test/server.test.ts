@@ -612,8 +612,9 @@ test("credential socket writes never expose the key to replies, events or logs",
 // Only the random subscription UUID is normalized; THE-2043 intentionally advances
 // the recorded envelope to minor 5 for per-client plan-policy snapshot projection,
 // THE-2045 to minor 6 for the session page, THE-2049 to minor 7 for live chat,
-// THE-2073 to reserved minor 9 for shared auth and the pi model catalog
-// THE-2080 advances to minor 12; the recorded frames are otherwise unchanged.
+// THE-2080 adds runtime projects at minor 12;
+// THE-2072 to reserved minor 13 for hosted Conductor routing
+// (the recorded frames have no coordinator attached and are otherwise unchanged).
 test("subscription bytes stay compatible with the recorded daemon vocabulary and folded tables", async (t) => {
   const fixture = new URL("./support/protocol-subscription.json", import.meta.url);
   const inputs = JSON.parse(readFileSync(fixture, "utf8")) as { history: EventInput[]; live: EventInput[] };
@@ -692,4 +693,48 @@ test("minor-4 clients retain readable legacy Rules in initial and live snapshots
   rules(3, 3, false);
   assert.deepEqual(rulesValue(await modern.next()), { gates });
   assert.deepEqual(rulesValue(await legacy.next()), {});
+});
+
+test("pre-Conductor clients receive compatible routing in initial and live snapshots", async (t) => {
+  const store = new EventStore(":memory:");
+  const server = await startServer({ store, projects });
+  const legacy = await connect(server.wsUrl);
+  const modern = await connect(server.wsUrl);
+  t.after(async () => {
+    legacy.ws.terminate();
+    modern.ws.terminate();
+    await server.close();
+    store.close();
+  });
+  const route = { cli: "conductor" as const, model: "web" };
+  const rules = (revision: number) =>
+    store.append({
+      project: "orchard",
+      actor: "coordinator",
+      at: hold().at,
+      kind: "coordinator.checkpoint",
+      payload: {
+        checkpoint: {
+          format: "armada.tools",
+          version: 1,
+          type: "rules",
+          rules: { revision, value: { routing: [{ labels: ["web"], ...route }], defaultRoute: route } },
+        },
+      },
+    });
+  const value = (frame: ServerMessage) => {
+    assert(frame.type === "project.subscribed" || frame.type === "events");
+    assert(frame.snapshot);
+    return (frame.snapshot.state as unknown as { rules: { value: unknown } }).rules.value;
+  };
+  rules(1);
+  legacy.send({ type: "project.subscribe", project: "orchard", after: 0, version: { major: 1, minor: 12 } });
+  modern.send({ type: "project.subscribe", project: "orchard", after: 0 });
+  assert.deepEqual(value(await legacy.next()), { routing: [], defaultRoute: null });
+  assert.deepEqual(value(await modern.next()), { routing: [{ labels: ["web"], ...route }], defaultRoute: route });
+  await legacy.next();
+  await modern.next();
+  rules(2);
+  assert.deepEqual(value(await legacy.next()), { routing: [], defaultRoute: null });
+  assert.deepEqual(value(await modern.next()), { routing: [{ labels: ["web"], ...route }], defaultRoute: route });
 });

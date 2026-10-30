@@ -11,6 +11,7 @@ import { Merges } from "../merge/service.ts";
 import { ModelRegistry } from "../models/registry.ts";
 import { connectionSecrets } from "../plugins/connection-secrets.ts";
 import { type DaemonProject, Projects } from "../projects.ts";
+import { startHostedReader } from "../workers/hosted.ts";
 import { Workers } from "../workers/service.ts";
 import { startWorkerSocket } from "../workers/socket.ts";
 import { Account } from "./account.ts";
@@ -128,9 +129,10 @@ try {
           store: daemon.store,
           registry: daemon.registry,
           get projects() {
-            return registry.list.flatMap((p) => (p.checkout ? [{ ...p, checkout: p.checkout }] : []));
+            return registry.list;
           },
           socketPath: workerSocket,
+          account,
           refresh,
         });
         merges = new Merges({
@@ -229,6 +231,14 @@ try {
           await rm(workerDirectory, { recursive: true, force: true });
           throw error;
         }
+        const hostedReader = startHostedReader({
+          store: daemon.store,
+          account,
+          get projects() {
+            return registry.list;
+          },
+          recover: (project) => workers.recoverHosted(project),
+        });
         const workerPoll = setInterval(() => {
           void workers.observeAll();
         }, 1000);
@@ -240,6 +250,7 @@ try {
           for (const readers of readerGroups.values()) readers.stop();
           clearInterval(workerPoll);
           try {
+            await hostedReader.stop();
             await registry.close();
             await server?.close();
             const results = await Promise.allSettled([workers.close(), socket.close()]);

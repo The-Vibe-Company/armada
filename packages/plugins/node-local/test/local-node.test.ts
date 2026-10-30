@@ -16,7 +16,17 @@ const execute = promisify(execFile);
 async function repository(root: string): Promise<string> {
   const path = join(root, "repository");
   await mkdir(path, { recursive: true });
-  await execute("git", ["init", "--quiet", path]);
+  // Neither the fixture branch nor hooks/ignore rules come from the developer's HOME.
+  await execute("git", ["init", "--quiet", "--initial-branch=fixture-base", "--template=", path]);
+  const hooks = join(root, "empty-hooks");
+  const excludes = join(root, "empty-excludes");
+  await mkdir(hooks, { recursive: true });
+  await writeFile(excludes, "");
+  await execute("git", ["-C", path, "config", "--local", "core.hooksPath", hooks]);
+  await execute("git", ["-C", path, "config", "--local", "core.excludesFile", excludes]);
+  await execute("git", ["-C", path, "config", "--local", "core.autocrlf", "false"]);
+  await mkdir(join(path, ".git", "info"), { recursive: true });
+  await writeFile(join(path, ".git", "info", "exclude"), "# Fixture-local excludes\n");
   await writeFile(join(path, "README.md"), "local node fixture\n");
   await execute("git", ["-C", path, "add", "README.md"]);
   await execute("git", [
