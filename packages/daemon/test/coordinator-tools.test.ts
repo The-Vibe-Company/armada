@@ -22,7 +22,7 @@ interface TestFacts {
   tables: ProjectTables;
   items: InboxItem[];
   problems: string[];
-  rules: { value: { policy: { maxWorkers: number } } };
+  rules: { value: { policy: { maxWorkers: number }; coordinatorModel?: { kind: string } } };
 }
 
 const at = "2030-01-01T00:00:00.000Z";
@@ -262,7 +262,14 @@ test("rules.set persists validated intent with revision checks and cannot overwr
   const args = {
     expectedRevision: 0,
     reason: "Owner chose local workers",
-    rules: { placement: { workers: "local", coordinator: "local" }, policy: { maxWorkers: 3 } },
+    rules: {
+      placement: { workers: "local", coordinator: "local" },
+      policy: { maxWorkers: 3 },
+      coordinatorModel: {
+        kind: "openai-compatible",
+        config: { model: "night-model", baseURL: "https://example.invalid/v1", apiKeySecret: "ZAI_API_KEY" },
+      },
+    },
   };
   assert.equal((await run("rules.set", { ...args, reason: " " })).code, "empty_reason");
   assert.equal((await run("rules.set", { ...args, rules: { policy: { maxWorkers: -1 } } })).code, "invalid_arguments");
@@ -274,9 +281,14 @@ test("rules.set persists validated intent with revision checks and cannot overwr
   );
   assert.equal((await run("rules.set", args, "rules-one")).ok, true);
   assert.equal((await run("fleet.status")).rules.value.policy.maxWorkers, 5);
+  assert.equal((await run("fleet.status")).rules.value.coordinatorModel?.kind, "openai-compatible");
   assert.deepEqual(fold(store.readSince(0)).projects.orchard?.rules, {
     revision: 2,
-    value: { placement: { workers: "local", coordinator: "local" }, policy: { maxWorkers: 5 } },
+    value: {
+      placement: { workers: "local", coordinator: "local" },
+      policy: { maxWorkers: 5 },
+      coordinatorModel: args.rules.coordinatorModel,
+    },
   });
   assert.deepEqual(fold(store.readSince(0)).projects.other?.rules, { revision: 0, value: {} });
   assert.equal(

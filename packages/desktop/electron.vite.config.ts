@@ -1,8 +1,14 @@
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "electron-vite";
 
 export default defineConfig({
   main: {
+    define: {
+      __ARMADA_COORDINATOR_PROMPT__: JSON.stringify(
+        readFileSync(new URL("../daemon/coordinator/system.md", import.meta.url), "utf8"),
+      ),
+    },
     build: {
       externalizeDeps: false,
       rollupOptions: {

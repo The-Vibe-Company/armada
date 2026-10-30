@@ -18,7 +18,12 @@ export { type MergeEvidence, type NativeToolOptions, nativeTools } from "./nativ
 export { openCoordinatorStorage } from "./storage.ts";
 export { type CoordinatorToolName, type CoordinatorTools, coordinatorTools, TOOL_NAMES } from "./tools.ts";
 
-export const SYSTEM_PROMPT = readFileSync(new URL("./system.md", import.meta.url), "utf8");
+// Desktop builds embed the same source bytes; native Node runs read the adjacent file.
+declare const __ARMADA_COORDINATOR_PROMPT__: string | undefined;
+export const SYSTEM_PROMPT =
+  typeof __ARMADA_COORDINATOR_PROMPT__ === "string"
+    ? __ARMADA_COORDINATOR_PROMPT__
+    : readFileSync(new URL("./system.md", import.meta.url), "utf8");
 
 export interface CoordinatorOptions {
   project: string;
@@ -92,6 +97,9 @@ export class Coordinators {
       const conversation = await harness.root(BACKGROUND_CONTEXT, {
         agent: { model: options.model },
       });
+      const current = (await conversation.agent(BACKGROUND_CONTEXT)).model;
+      if (current?.provider !== options.model.provider || current?.modelId !== options.model.modelId)
+        await conversation.configure({ model: options.model }, BACKGROUND_CONTEXT);
       harness.resume();
       return { harness, conversation };
     } catch (error) {

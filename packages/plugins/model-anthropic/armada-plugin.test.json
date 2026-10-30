@@ -1,0 +1,8 @@
+{
+  "model": {
+    "anthropic": {
+      "baseURL": "${endpoint}/model",
+      "model": "conformance-model"
+    }
+  }
+}

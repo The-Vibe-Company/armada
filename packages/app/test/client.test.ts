@@ -354,35 +354,44 @@ describe("the daemon client", () => {
 
 test("saves a key once, keeps only status, and never replays the key across reconnects", async () => {
   const { client, socket, timers } = setup({ url: "ws://127.0.0.1:4824/" });
-  const readStatus = (provider: "openai" | null) => {
+  const models = [{ kind: "custom-model", description: "Custom model", config: {} }];
+  const readStatus = (provider: "custom-model" | null) => {
     const status = socket().sent.find((m) => m.type === "credentials.status");
-    socket().receive({ type: "credentials.result", version: V, id: status?.id, provider, storage: "os-keychain" });
+    socket().receive({
+      type: "credentials.result",
+      version: V,
+      id: status?.id,
+      models,
+      provider,
+      storage: "os-keychain",
+    });
   };
   listAndSubscribe(socket());
   readStatus(null);
   const key = randomBytes(24).toString("hex");
-  const saved = client.saveCredentials("openai", key);
+  const saved = client.saveCredentials("custom-model", key);
   const write = socket().sent.find((m) => m.type === "credentials.set");
-  expect(write).toMatchObject({ provider: "openai", key });
+  expect(write).toMatchObject({ provider: "custom-model", key });
   socket().receive({
     type: "credentials.result",
     version: V,
     id: write?.id,
-    provider: "openai",
+    provider: "custom-model",
+    models,
     storage: "os-keychain",
   });
   await saved;
-  expect(client.getState().credentials).toEqual({ provider: "openai", storage: "os-keychain" });
+  expect(client.getState().credentials).toEqual({ provider: "custom-model", models, storage: "os-keychain" });
   expect(JSON.stringify(client.getState())).not.toContain(key);
   // Losing a write acknowledgement rejects the attempt; only status is requested on reconnect.
-  const unconfirmed = client.saveCredentials("openai", key);
+  const unconfirmed = client.saveCredentials("custom-model", key);
   socket().drop();
   await expect(unconfirmed).rejects.toThrow("not confirmed saved");
   const reconnect = timers.findLast((t) => !t.canceled);
   reconnect?.run();
   socket().onopen?.();
   listAndSubscribe(socket());
-  readStatus("openai");
+  readStatus("custom-model");
   expect(socket().sent.some((m) => m.type === "credentials.status")).toBe(true);
   expect(socket().sent.some((m) => m.type === "credentials.set")).toBe(false);
   expect(JSON.stringify(socket().sent)).not.toContain(key);

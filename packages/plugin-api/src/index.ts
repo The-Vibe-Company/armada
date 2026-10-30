@@ -80,7 +80,9 @@ export interface ForgeProvider {
 }
 /** Model is the consumer's AI SDK model type; the API has no SDK runtime dependency. */
 export interface ModelProvider<Model = unknown> {
-  create(model: string): Model;
+  /** Public settings required when a consumer creates a model (activation may have no settings yet). */
+  readonly configSchema?: JsonSchema;
+  create(model: string, config?: Json): Model;
 }
 export interface Providers {
   runtime: RuntimeProvider;

@@ -8,7 +8,9 @@ import { bootDaemon } from "@armada/daemon";
 import { Keychain } from "@armada/daemon/keychain";
 import type { PluginCatalogEntry } from "@armada/daemon/plugins/catalog";
 import { type DaemonServer, startServer } from "@armada/daemon/server";
+import { EventStore } from "@armada/daemon/store";
 import { type Browser, chromium, type Page } from "playwright-core";
+import { FakeKeychain } from "../../daemon/test/support/keychain";
 import { type DevDaemon, SAMPLE_PROJECTS, sampleEvents, startDevDaemon } from "../scripts/dev-daemon";
 
 // The built app, as a browser loads it: its first-load JS under the package's
@@ -76,22 +78,66 @@ describe("in a browser, served by a running daemon", () => {
     const provider = page.getByRole("combobox", { name: "Provider", exact: true });
     await provider.waitFor({ timeout: 5000 });
     const key = randomBytes(24).toString("hex");
-    await provider.selectOption("openai");
+    expect(await provider.locator("option").allTextContents()).toEqual(["Development model"]);
+    await provider.selectOption("development-model");
+    expect(await page.getByLabel("Model", { exact: true }).getAttribute("required")).not.toBeNull();
+    expect(
+      await page.getByLabel("Endpoint (if required by your provider)", { exact: true }).getAttribute("required"),
+    ).not.toBeNull();
+    await page.getByLabel("Model", { exact: true }).fill("local-deployment");
+    await page.getByLabel("Endpoint (if required by your provider)", { exact: true }).fill("http://localhost/v1");
     await page.getByLabel("API key", { exact: true }).fill(key);
     await page.getByRole("button", { name: "Save key", exact: true }).click();
-    await page.getByRole("status").filter({ hasText: "OpenAI connected" }).waitFor({ timeout: 5000 });
+    await page.getByRole("status").filter({ hasText: "Development model connected" }).waitFor({ timeout: 5000 });
     expect(await page.getByLabel("API key", { exact: true }).count()).toBe(0);
     const browserState = await page.evaluate(() =>
       JSON.stringify([localStorage, sessionStorage, document.body.innerHTML]),
     );
     expect(browserState).not.toContain(key);
     await page.reload();
-    await page.getByRole("status").filter({ hasText: "OpenAI connected" }).waitFor({ timeout: 5000 });
+    await page.getByRole("status").filter({ hasText: "Development model connected" }).waitFor({ timeout: 5000 });
     expect(await page.getByRole("button", { name: "Save key", exact: true }).count()).toBe(0);
     await page.getByRole("button", { name: "Change key", exact: true }).click();
     expect(await page.getByLabel("API key", { exact: true }).inputValue()).toBe("");
+    expect(await page.getByLabel("Model", { exact: true }).inputValue()).toBe("local-deployment");
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
   });
+
+  test("repairs and rotates a key when a same-major daemon does not advertise a model catalog", async () => {
+    const store = new EventStore(":memory:");
+    const chain = new Keychain(new FakeKeychain());
+    await chain.write("coordinator", "coordinator", "{");
+    const legacy = await startServer({ store, projects: [], staticDir: out, keychain: chain });
+    const tab = await browser?.newPage();
+    if (!tab) throw new Error("Browser not started");
+    try {
+      await tab.goto(`${legacy.url}#/settings`);
+      const provider = tab.getByRole("textbox", { name: "Provider", exact: true });
+      await provider.waitFor({ timeout: 5000 });
+      await tab.getByText("The saved model setting could not be read.", { exact: false }).waitFor();
+      await provider.fill("anthropic");
+      const first = randomBytes(24).toString("hex");
+      await tab.getByLabel("API key", { exact: true }).fill(first);
+      await tab.getByRole("button", { name: "Save key", exact: true }).click();
+      await tab.getByRole("status").filter({ hasText: "anthropic connected" }).waitFor({ timeout: 5000 });
+      expect((await chain.coordinator())?.key === first).toBe(true);
+      await tab.reload();
+      await tab.getByRole("button", { name: "Change key", exact: true }).click();
+      expect(await provider.inputValue()).toBe("anthropic");
+      const replacement = randomBytes(24).toString("hex");
+      await tab.getByLabel("API key", { exact: true }).fill(replacement);
+      await tab.getByRole("button", { name: "Save key", exact: true }).click();
+      await tab.getByRole("status").filter({ hasText: "anthropic connected" }).waitFor({ timeout: 5000 });
+      expect((await chain.coordinator())?.key === replacement).toBe(true);
+      expect(
+        await tab.evaluate(() => JSON.stringify([localStorage, sessionStorage, document.body.innerHTML])),
+      ).not.toContain(replacement);
+    } finally {
+      await tab.close();
+      await legacy.close();
+      store.close();
+    }
+  }, 10000);
 
   test("shows every project a squadron in the hangar, each the link to its fleet by state, in Geist", async () => {
     await page.goto(daemon.url);
