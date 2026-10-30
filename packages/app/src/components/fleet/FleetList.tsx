@@ -42,9 +42,10 @@ const GLIDE = { duration: 0.2, ease: [0.23, 1, 0.32, 1] } as const;
  * one list, keyed by group and by `project/ticket`, so a row that changes
  * state is the same element moved, and Motion's layout animation glides it
  * there. Nothing moves on the first paint; a row that arrives fades in, one
- * that leaves fades out. A row's title opens the session's page; the ids its
- * report names link on their own, a ticket to its session and `#34` to its
- * pull request.
+ * that leaves fades out. A row's title opens the agent (in the room, its page
+ * in the lane, THE-2089; elsewhere the session's page), the row shown marked
+ * current; the ids its report names link on their own, a ticket to its agent
+ * and `#34` to its pull request.
  */
 export function FleetList({
   items,
@@ -53,6 +54,9 @@ export function FleetList({
   prefixes,
   now,
   zone,
+  hrefOf = sessionHref,
+  current = null,
+  onOpen,
 }: {
   items: readonly FleetItem[];
   harnessOf: (ticket: string) => Harness | null;
@@ -62,6 +66,12 @@ export function FleetList({
   prefixes: string;
   now: number;
   zone: string;
+  /** Where a ticket's row and the report's ids lead: the session's page unless the room says otherwise. */
+  hrefOf?: (ticket: string) => string;
+  /** The ticket the room's lane shows: its row is marked current. */
+  current?: string | null;
+  /** Told when a row's title is followed (the room's sheet closes then). */
+  onOpen?: (ticket: string) => void;
 }) {
   // A long list lets the browser skip the rows off screen; every row stays in the page.
   const long = items.length > LONG_LIST;
@@ -112,11 +122,14 @@ export function FleetList({
                     time={rowTime(item.at, now, zone)}
                     long={long}
                     place={place++}
+                    href={hrefOf(item.ticket)}
+                    current={item.ticket === current}
+                    onOpen={onOpen}
                     link={(s) =>
                       s.kind === "pr"
                         ? `https://github.com/${repository}/pull/${s.text.slice(1)}`
                         : teams.has(ticketPrefix(s.text))
-                          ? sessionHref(s.text)
+                          ? hrefOf(s.text)
                           : null
                     }
                   />
@@ -134,6 +147,9 @@ function Row({
   time,
   long,
   place,
+  href,
+  current,
+  onOpen,
   link,
 }: {
   item: FleetItem;
@@ -141,6 +157,9 @@ function Row({
   time: string;
   long: boolean;
   place: number;
+  href: string;
+  current: boolean;
+  onOpen: ((ticket: string) => void) | undefined;
   link: (s: { kind: "ticket" | "pr"; text: string }) => string | null;
 }) {
   // The row that changed group passes over the others on its way: drawn above them while it glides.
@@ -154,9 +173,11 @@ function Row({
   // The title is the row's link, stretched over the whole row; the report's own links sit above it.
   const open = (
     <a
-      href={sessionHref(i.ticket)}
+      href={href}
       data-open
+      aria-current={current ? "page" : undefined}
       aria-describedby={groupHeadingId(i.group)}
+      onClick={onOpen && (() => onOpen(i.ticket))}
       className="min-w-0 truncate outline-none after:absolute after:inset-0 focus-visible:after:shadow-[inset_0_0_0_2px_var(--color-blue)]"
     >
       <span className="mr-2 font-mono text-meta text-text-2">{i.ticket}</span>
@@ -179,8 +200,10 @@ function Row({
       transition={{ ...GLIDE, layout: GLIDE }}
       data-row={i.key}
       data-group={i.group}
+      data-current={current || undefined}
       className={cn(
-        "relative grid gap-2.5 border-line border-b bg-card px-4 hover:bg-panel-3",
+        "relative grid gap-2.5 border-line border-b px-4",
+        current ? "bg-panel-3" : "bg-card hover:bg-panel-3",
         merged
           ? "grid-cols-[16px_minmax(0,1fr)_auto] items-center py-1.5"
           : "grid-cols-[16px_minmax(0,1fr)] items-start py-2",

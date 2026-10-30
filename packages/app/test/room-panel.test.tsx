@@ -1,11 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
 import { fold } from "@armada/daemon/fold";
-import { type Browser, chromium, type Page } from "playwright-core";
-import { compile } from "tailwindcss";
+import type { Page } from "playwright-core";
 import { SAMPLE_PROJECTS, sampleEvents } from "../scripts/dev-daemon";
 import { clampWidth, PANEL_KEY, panelKey, readPanel } from "../src/room/panel-rules";
+import { type RoomBrowser, roomBrowser } from "./room-browser";
 
 // The room's panel (THE-2085), after T3 Code's right panel: its rules on
 // synthetic input, then the room in Chromium on a fake daemon client
@@ -41,38 +39,11 @@ test("⌘. toggles the panel, ⌘1 to ⌘4 pick its tab; nothing else is the pan
   expect(key("1", { shiftKey: true })).toBeNull();
 });
 
-const ORIGIN = "http://room-panel.test";
-const ROOT = resolve(import.meta.dir, "..");
-
-/** The app's own stylesheet, built for the classes the page's bundle names. */
-async function stylesFor(bundle: string): Promise<string> {
-  const tailwind = dirname(Bun.resolveSync("tailwindcss/package.json", ROOT));
-  const compiler = await compile(readFileSync(join(ROOT, "src/styles.css"), "utf8"), {
-    base: join(ROOT, "src"),
-    loadStylesheet: async (id: string, base: string) => {
-      const path = id === "tailwindcss" ? join(tailwind, "index.css") : join(base, id);
-      return { path, base: dirname(path), content: readFileSync(path, "utf8") };
-    },
-  });
-  return compiler.build([...new Set(bundle.match(/[^\s"'`\\<>{};,]+/g) ?? [])]);
-}
-
 describe("the room's panel in a browser", () => {
-  let browser: Browser | undefined;
-  let bundle = "";
-  let css = "";
-  let seed = "";
+  let room: RoomBrowser | undefined;
 
   // The page's bundle, its styles and the headless shell (installed before the suite) are setup, not behaviour deadlines.
   beforeAll(async () => {
-    const built = await Bun.build({
-      entrypoints: [resolve(import.meta.dir, "room-panel-page.tsx")],
-      target: "browser",
-      define: { "process.env.NODE_ENV": '"production"' },
-    });
-    if (!built.success) throw new Error(built.logs.join("\n"));
-    bundle = (await built.outputs[0]?.text()) ?? "";
-    css = await stylesFor(bundle);
     // Harbor's fold, and its log with more events than the Log shows.
     const AT = "2026-03-10T09:00:00.000Z";
     const events = sampleEvents(AT).map((e, i) => ({ ...e, seq: i + 1 }));
@@ -87,37 +58,16 @@ describe("the room's panel in a browser", () => {
       actor: "worker",
       payload: { ticket: k % 2 ? "HAR-12" : "HAR-20" },
     }));
-    seed = JSON.stringify({ state, events: [...log, ...more] });
-    browser = await chromium.launch({ timeout: 15_000 });
+    room = await roomBrowser(JSON.stringify({ state, events: [...log, ...more] }));
   }, 60_000);
   afterAll(async () => {
-    await browser?.close();
+    await room?.close();
   }, 10_000);
 
-  async function open(width = 1280, hash = "#/projects/harbor", height = 800): Promise<Page> {
-    if (!browser) throw new Error("browser setup did not complete");
-    const context = await browser.newContext({ viewport: { width, height } });
-    const page = await context.newPage();
-    // A step that does not happen fails on its own line, before the test's deadline.
-    page.setDefaultTimeout(2_000);
-    await context.addInitScript((json) => {
-      (window as unknown as { seed: unknown }).seed = JSON.parse(json);
-    }, seed);
-    // No network: the page, its styles and its script are served here, anything else is refused.
-    await context.route("**/*", (route) => {
-      const url = new URL(route.request().url());
-      if (url.origin === ORIGIN && url.pathname === "/")
-        return route.fulfill({
-          contentType: "text/html",
-          body: `<!doctype html><html class="dark"><style>${css}</style><body style="margin:0"><div id="root"></div><script type="module" src="/room.js"></script></body></html>`,
-        });
-      if (url.href === `${ORIGIN}/room.js`) return route.fulfill({ contentType: "text/javascript", body: bundle });
-      return route.abort();
-    });
-    await page.goto(`${ORIGIN}/${hash}`);
-    await page.locator("[data-room]").waitFor({ timeout: 5_000 });
-    return page;
-  }
+  const open = (width?: number, hash?: string, height?: number): Promise<Page> => {
+    if (!room) throw new Error("browser setup did not complete");
+    return room.open(width, hash, height);
+  };
 
   const panel = (page: Page) => page.getByRole("complementary", { name: "Panel" });
   const hash = (page: Page) => page.evaluate(() => window.location.hash);
@@ -208,7 +158,7 @@ describe("the room's panel in a browser", () => {
     await page.close();
   }, 15_000);
 
-  test("an agent's row opens its session, its report's #41 its pull request; a pill goes to its group", async () => {
+  test("an agent's row opens it in the lane, its report's #41 its pull request; a pill goes to its group", async () => {
     // A short window: the agents scroll under the tabs.
     const page = await open(1280, "#/projects/harbor?panel=log", 520);
     const side = panel(page);
@@ -235,7 +185,9 @@ describe("the room's panel in a browser", () => {
     await expect(focused(page)).resolves.toBe("h2#agents-blocked");
     await expect(place("agents-blocked")).resolves.toEqual({ top: 0, shown: true, end: false });
     const row = side.locator('[data-row="harbor/HAR-15"]');
-    await expect(row.locator("a[data-open]").getAttribute("href")).resolves.toBe("#/sessions/HAR-15");
+    await expect(row.locator("a[data-open]").getAttribute("href")).resolves.toBe(
+      "#/projects/harbor?panel=agents&agent=HAR-15",
+    );
     const pr = row.getByRole("link", { name: "#41" });
     await expect(pr.getAttribute("href")).resolves.toBe("https://github.com/example/harbor/pull/41");
     // The report's link sits above the row's: a click on #41 reaches it, not the session.
@@ -252,7 +204,7 @@ describe("the room's panel in a browser", () => {
       ),
     ).resolves.toBe("https://github.com/example/harbor/pull/41");
     await row.locator("a[data-open]").click();
-    await expect(hash(page)).resolves.toBe("#/sessions/HAR-15");
+    await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=agents&agent=HAR-15");
     await page.close();
   }, 15_000);
 
