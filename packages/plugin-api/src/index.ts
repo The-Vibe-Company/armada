@@ -109,7 +109,8 @@ export interface Providers {
 export type PluginRegister = { [S in Seam]: (kind: string, provider: Providers[S]) => void };
 export interface PluginContext {
   events: PluginEvents;
-  secrets: { get(name: string): Promise<string | null> };
+  /** Project is optional; tracker/forge reads pass it for project-scoped credentials. */
+  secrets: { get(name: string, project?: string): Promise<string | null> };
   /** Validated config, keyed by seam then contribution kind. Missing values become {}. */
   config: PluginConfig;
   log: PluginLog;

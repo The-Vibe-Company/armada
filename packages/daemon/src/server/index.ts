@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import {
+  ACCOUNT_MINOR,
   admitRequest,
   CHAT_LIVE_MINOR,
   eventSchema,
@@ -28,6 +29,7 @@ import type { ModelRegistry } from "../models/registry.ts";
 import type { EventStore } from "../store.ts";
 import type { Workers } from "../workers/service.ts";
 import { AuthFlows } from "./auth.ts";
+import type { Account } from "./account.ts";
 import { dispatchChat } from "./chat.ts";
 import { type ChatClock, ChatLive } from "./chat-live.ts";
 import { dispatchPlugins, isPluginsRequest, type PluginHost } from "./plugins.ts";
@@ -53,6 +55,7 @@ export interface ServerOptions {
   allowedOrigins?: readonly string[];
   /** Host-owned gateway. Tests inject a fake; only this daemon can persist app credentials. */
   keychain?: Keychain;
+  account?: Account;
   modelKinds?: readonly ModelKindEntry[];
   modelRegistry?: ModelRegistry;
   /** Resolve current global/project selection at the next turn, including first configuration. */
@@ -134,6 +137,10 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   const minors = new Map<WebSocket, number>();
   const auth = new AuthFlows();
   const chat = new ChatLive(options.chatClock);
+  const unsubscribeAccount = options.account?.subscribe((state) => {
+    for (const [ws, minor] of minors)
+      if (minor >= ACCOUNT_MINOR) send(ws, { type: "account.result", version, ...state });
+  });
 
   function send(ws: WebSocket, message: ServerMessage): void {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -409,6 +416,15 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           });
           return;
         }
+        if (
+          request.type === "account.status" ||
+          request.type === "account.login" ||
+          request.type === "account.logout"
+        ) {
+          if (!options.account) return error(ws, request.id, "offline", "Armada account is unavailable");
+          void options.account.dispatch(request, (reply) => send(ws, reply));
+          return;
+        }
         if (request.type === "credentials.set" || request.type === "credentials.status") {
           if (pendingCredentials >= 32)
             return error(ws, request.id, "invalid-message", "Too many pending credential requests");
@@ -561,6 +577,8 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     closed ??= (async () => {
       closing = true;
       const authClosing = auth.close();
+      unsubscribeAccount?.();
+      const accountClosed = options.account?.close();
       unsubscribe();
       for (const ws of sockets.clients) ws.terminate();
       connections.clear();
@@ -576,6 +594,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         pluginQueue,
         authClosing,
         coordinatorManager?.close(),
+        accountClosed,
       ]);
       const failed = results.find((result) => result.status === "rejected");
       if (failed?.status === "rejected") throw failed.reason;

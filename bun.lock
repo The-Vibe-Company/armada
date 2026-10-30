@@ -50,7 +50,7 @@
     },
     "packages/cli": {
       "name": "@the-vibe-company/armada",
-      "version": "0.2.67",
+      "version": "0.2.68",
       "bin": {
         "armada": "dist/armada.js",
       },
@@ -77,6 +77,7 @@
         "armadad": "./src/server/main.ts",
       },
       "dependencies": {
+        "@armada/core": "workspace:*",
         "@armada/plugin-api": "workspace:*",
         "@armada/protocol": "workspace:*",
         "@earendil-works/chord": "1.4.0",

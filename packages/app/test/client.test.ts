@@ -534,3 +534,49 @@ test("model sign-in delivers generic auth prompts, settles on catalog, and never
   ])
     await expect(request).rejects.toThrow("Connect to a daemon");
 });
+
+test("account login exposes its device code, settles on approval, applies pushes and keeps account errors separate", async () => {
+  const { client, socket } = setup();
+  listAndSubscribe(socket());
+  expect(socket().sent.some((m) => m.type === "account.status")).toBe(true);
+  const login = client.login();
+  const request = socket().sent.findLast((m) => m.type === "account.login");
+  expect(request).toBeDefined();
+  socket().receive({
+    type: "account.device",
+    version: V,
+    id: request?.id,
+    code: "ABCD-EFGH",
+    verificationUrl: "https://armada.example/device",
+    expiresAt: "2026-10-01T12:15:00Z",
+  });
+  expect(client.getState().accountDevice?.code).toBe("ABCD-EFGH");
+  const account = {
+    signedIn: true,
+    apiUrl: "https://armada.example",
+    email: "owner@example.test",
+    organization: { name: "Orchard", slug: "orchard" },
+    projects: [],
+    keys: { linear: true, github: false },
+  };
+  socket().receive({ type: "account.result", version: V, id: request?.id, ...account });
+  await login;
+  expect(client.getState().account).toEqual(account);
+  expect(client.getState().accountDevice).toBeNull();
+  const logout = client.logout();
+  const out = socket().sent.findLast((m) => m.type === "account.logout");
+  socket().receive({ type: "account.result", version: V, signedIn: false, apiUrl: account.apiUrl });
+  socket().receive({ type: "account.result", version: V, id: out?.id, signedIn: false, apiUrl: account.apiUrl });
+  await logout;
+  expect(client.getState().account?.signedIn).toBe(false);
+  const denied = client.login();
+  const deniedRequest = socket().sent.findLast((m) => m.type === "account.login");
+  socket().receive({ type: "error", version: V, id: deniedRequest?.id, code: "denied", message: "Sign-in was denied" });
+  await expect(denied).rejects.toThrow("Sign-in was denied");
+  expect(client.getState().accountProblem).toBe("Sign-in was denied");
+  expect(client.getState().problem).toBeNull();
+  const dropped = client.login();
+  socket().drop();
+  await expect(dropped).rejects.toThrow("connection dropped");
+  client.stop();
+});
