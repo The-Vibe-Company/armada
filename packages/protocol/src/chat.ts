@@ -22,6 +22,8 @@ export const CHAT_MINOR = 4;
 export const CHAT_LIVE_MINOR = 7;
 /** Fleet wake inputs are quiet room rows, never owner messages. */
 export const CHAT_WAKE_MINOR = 11;
+/** The coordinator's line for a turn its model failed: fixed, since a provider's error text could echo what it was sent. */
+export const CHAT_MODEL_FAILED = "The coordinator's model failed on this turn.";
 
 const assistant = { reasoning: z.string().optional(), aborted: z.literal(true).optional() };
 export const toolProgressSchema = z.enum([

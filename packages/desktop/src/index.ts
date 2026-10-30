@@ -1,10 +1,13 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, ipcMain, nativeImage, shell } from "electron";
 import { BADGE_CHANNEL, badgeCount, fromApp, REVEAL_CHANNEL } from "./bridge.ts";
 import { type DaemonAddress, DaemonProcess, RESTART_EXIT_CODE, restartDaemon } from "./daemon.ts";
 
 app.setName("Armada");
+// The app's icon (resources/icon.png, the mark on its tile): the dock on macOS, the window elsewhere,
+// until a packaged build carries resources/icon.icns itself.
+const ICON = fileURLToPath(new URL("../../resources/icon.png", import.meta.url));
 let daemon: DaemonProcess | undefined;
 let window: BrowserWindow | undefined;
 let quitting = false;
@@ -23,6 +26,7 @@ process.once("SIGINT", () => app.quit());
 
 void app.whenReady().then(async () => {
   if (quitting) return;
+  if (process.platform === "darwin") app.dock?.setIcon(nativeImage.createFromPath(ICON));
   try {
     const dataDir = app.getPath("userData");
     const start = (port: number) => {
@@ -75,6 +79,7 @@ void app.whenReady().then(async () => {
       minHeight: 560,
       show: false,
       title: "Armada",
+      icon: ICON,
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,

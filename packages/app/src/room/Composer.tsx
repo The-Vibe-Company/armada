@@ -2,7 +2,8 @@
 // T3 Code's composer (THE-2051): a glass card in the thread's lane (THE-2050), a textarea
 // that grows from two lines to `max-h-52`, Enter sends and Shift+Enter breaks
 // the line, ↑ and ↓ walk the owner's earlier messages, the draft kept per
-// project, the coordinator's model on the left and a round Send on the right.
+// project, the coordinator's model on the left and a round Send on the right;
+// PageUp and PageDown scroll the thread above it (THE-2054).
 // The text stays in the field until the daemon admitted it; a failure says why
 // under it and keeps it for another try (the same message). The rules are
 // `compose.ts`'s.
@@ -55,6 +56,7 @@ export function Composer({
   model = null,
   primary,
   restore = null,
+  onPage,
   storage = browserStorage(),
   timers,
 }: {
@@ -73,6 +75,8 @@ export function Composer({
   primary?: (field: ComposerField) => ReactNode;
   /** Messages a Stop withdrew (THE-2052): each new `key` puts their words back in the field, after what it holds. */
   restore?: { key: number; bodies: readonly string[] } | null;
+  /** PageUp and PageDown from the field page the thread (THE-2054). */
+  onPage?: (direction: "up" | "down") => void;
   /** Where drafts are kept (`localStorage`; null keeps none). */
   storage?: DraftStorage | null;
   timers?: Timers;
@@ -178,6 +182,12 @@ export function Composer({
     if (intent === "send") {
       event.preventDefault();
       void submit(busy && (event.metaKey || event.ctrlKey) ? "queue" : undefined);
+      return;
+    }
+    if (intent === "page-up" || intent === "page-down") {
+      if (!onPage) return;
+      event.preventDefault();
+      onPage(intent === "page-up" ? "up" : "down");
       return;
     }
     const step = stepHistory(history, body, recall, intent);

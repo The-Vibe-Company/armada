@@ -144,12 +144,12 @@ describe("in a browser, served by a running daemon", () => {
     await page.goto(daemon.url);
     const sidebar = page.getByRole("complementary", { name: "Sidebar" });
     const projects = sidebar.getByRole("navigation", { name: "Projects" });
-    // A project's count shows once its folded state arrived.
-    for (const name of [/Harbor 4 sessions/, /Lantern 2 sessions/, /Tidewater 0 sessions/])
+    // A project's count shows once its folded state arrived; Harbor's pinned question says Awaiting input (THE-2054).
+    for (const name of [/Harbor Awaiting input 4 sessions/, /Lantern 2 sessions/, /Tidewater 0 sessions/])
       await projects.getByRole("link", { name }).waitFor({ timeout: 5_000 });
     const rows = await projects.getByRole("link").allInnerTexts();
     expect(rows.map((r) => r.replace(/\s+/g, " ").trim())).toEqual([
-      "Harbor 4 sessions in flight",
+      "Harbor Awaiting input 4 sessions in flight",
       "Lantern 2 sessions in flight",
       "Tidewater 0 sessions in flight",
     ]);

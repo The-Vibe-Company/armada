@@ -6,6 +6,7 @@
 // but `chat.send` (the coordinator's checkpoint) and `owner.answer`.
 import {
   CHAT_LIVE_MINOR,
+  CHAT_MODEL_FAILED,
   CHAT_WAKE_MINOR,
   type ChatItem,
   type ChatReadRequest,
@@ -287,8 +288,7 @@ export function chatOf(entries: readonly EntryRecord[], modern = true, wakes = t
           kind: "line",
           id: assistantId,
           at: time,
-          // A fixed line: a provider's error text could echo what it was sent.
-          body: "The coordinator's model failed on this turn.",
+          body: CHAT_MODEL_FAILED,
           ...metadata,
         });
       for (const block of Array.isArray(message.content) ? message.content : [])

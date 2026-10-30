@@ -25,6 +25,10 @@ is `fleet.sqlite` under Electron's `app.getPath("userData")` for Armada
 exist; project onboarding belongs to the app. An empty array opens an empty
 fleet. The shell does not seed synthetic data or poll external services.
 
+The app's icon is `resources/icon.svg`, the mark on its tile, rendered as
+`icon.png` (1024 px, set on the dock and the window at launch) and `icon.icns`
+for a packaged build; `test/icon.test.ts` holds the three together.
+
 `bun run desktop` builds the existing app, bundles the main process and daemon,
 then launches Electron. Run it again after source edits. `bun run build:desktop`
 builds without opening a window. This is a source checkout launcher, not an
