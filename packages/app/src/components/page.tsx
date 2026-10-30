@@ -36,6 +36,22 @@ export function PageBar({ title, facts, end }: { title: ReactNode; facts?: React
   );
 }
 
+/**
+ * A working screen's strip (the room, THE-2085, after T3 Code's chat header):
+ * one 44 px line, its title in the body's size, what follows it, then what
+ * sits at the right end. It is the screen's query container: what it holds
+ * can give way on a narrow strip.
+ */
+export function PageStrip({ title, children, end }: { title: ReactNode; children?: ReactNode; end?: ReactNode }) {
+  return (
+    <header className="@container/strip flex h-11 min-w-0 flex-none items-center gap-2.5 whitespace-nowrap border-line border-b px-4 text-body text-text-2">
+      <h1 className="m-0 flex-none font-medium text-sub text-text">{title}</h1>
+      {children}
+      {end && <div className="ml-auto flex flex-none items-center gap-1.5">{end}</div>}
+    </header>
+  );
+}
+
 /** One of the page's blocks, under its quiet heading. */
 export function Block({ heading, children }: { heading: ReactNode; children: ReactNode }) {
   return (

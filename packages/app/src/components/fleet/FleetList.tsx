@@ -1,16 +1,11 @@
 import { AnimatePresence, m } from "motion/react";
 import { useRef } from "react";
-import {
-  type FleetItem,
-  GROUP_HINT,
-  GROUP_LABEL,
-  type Group,
-  groupItems,
-  LONG_LIST,
-  rowTime,
-  STEPS,
-} from "@/fleet/overview";
+import { type FleetItem, GROUP_LABEL, GROUPS, type Group, LONG_LIST, rowTime, STEPS } from "@/fleet/overview";
+import type { Harness } from "@/fleet/sky";
 import { cn } from "@/lib/utils";
+import { ticketPrefix } from "@/room/markdown-rules";
+import { Ship } from "@/room/Ship";
+import { segments } from "@/room/view";
 import { sessionHref } from "@/session/route";
 
 /** Each state's colour: its dot, its group's dot, its reason and its step on the bar. */
@@ -25,73 +20,109 @@ export const TONE: Record<Group, { text: string; bg: string }> = {
 /** In progress and merged say their reason quietly; the others in their state's colour (V1). */
 const QUIET = new Set<Group>(["running", "merged"]);
 
+const EMPTY: Record<Group, string> = {
+  blocked: "Nothing is blocked.",
+  you: "Nothing waits for you.",
+  running: "Nothing in progress.",
+  ready: "Nothing is ready to merge.",
+  merged: "Nothing merged today.",
+};
+
+/** A group's heading in the room's panel: a pill scrolls to it and gives it the focus. */
+export const groupHeadingId = (group: Group) => `agents-${group}`;
+
 /** A row that changed state glides to its group: transform and opacity only, on the theme's ease-out. */
 const GLIDE = { duration: 0.2, ease: [0.23, 1, 0.32, 1] } as const;
 
 /**
- * The fleet by state (design/dashboard-v7's overview list): each group's
- * header, then its rows. Headers and rows are siblings of one list, keyed by
- * group and by `project/ticket`, so a row that changes state is the same
- * element moved, and Motion's layout animation glides it there. Nothing moves
- * on the first paint; a row that arrives fades in, one that leaves fades out.
+ * A project's agents by state, the room's panel's Agents tab (THE-2085, the
+ * agents' rail of THE-1996 before it): each group's heading, then its rows,
+ * one per agent (its triangle, id, title cut with an ellipsis, step, time and
+ * last report; the day's merges compact). Headings and rows are siblings of
+ * one list, keyed by group and by `project/ticket`, so a row that changes
+ * state is the same element moved, and Motion's layout animation glides it
+ * there. Nothing moves on the first paint; a row that arrives fades in, one
+ * that leaves fades out. A row's title opens the session's page; the ids its
+ * report names link on their own, a ticket to its session and `#34` to its
+ * pull request.
  */
 export function FleetList({
   items,
-  names,
+  harnessOf,
+  repository,
+  prefixes,
   now,
   zone,
 }: {
   items: readonly FleetItem[];
-  /** Each project's name by id. */
-  names: ReadonlyMap<string, string>;
+  harnessOf: (ticket: string) => Harness | null;
+  /** The project's repository: `#34` links to its pull request there. */
+  repository: string;
+  /** The project's ticket prefixes, space-separated: only their ids link (`UTF-8` stays a word). */
+  prefixes: string;
   now: number;
   zone: string;
 }) {
-  const groups = groupItems(items);
-  if (!groups.length)
-    return (
-      <p className="m-0 rounded-card border border-line-strong border-dashed px-4 py-6 text-center text-text-2">
-        No agent in flight and nothing merged today.
-      </p>
-    );
   // A long list lets the browser skip the rows off screen; every row stays in the page.
   const long = items.length > LONG_LIST;
-  // Each line's place in the list: Motion measures a header or a row only when its own place
-  // changes, so the list moving as a whole (a block above it appearing) glides nothing.
+  const teams = new Set(prefixes.split(" ").filter(Boolean));
+  // Each line's place in the list: Motion measures a heading or a row only when its own place
+  // changes, so the list moving as a whole (the question's card above it leaving) glides nothing.
   let place = 0;
   return (
-    <div className="flex min-w-0 flex-col border-line border-t">
+    <div className="flex min-w-0 flex-col pb-2">
       <AnimatePresence initial={false} mode="popLayout">
-        {groups.flatMap(({ group, items }) => [
-          <m.h2
-            key={`group:${group}`}
-            id={`fleet-${group}`}
-            layout="position"
-            layoutDependency={place++}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ ...GLIDE, layout: GLIDE }}
-            className="m-0 flex h-8.5 items-center gap-2.5 whitespace-nowrap border-line border-b bg-band px-3 font-semibold text-meta"
-          >
-            <span aria-hidden className={`size-2 flex-none rounded-full ${TONE[group].bg}`} />
-            <span>{GROUP_LABEL[group]}</span>
-            <span className="font-mono font-normal text-heading text-text-3 tnum">{items.length}</span>
-            {GROUP_HINT[group] && (
-              <span className="min-w-0 truncate font-normal text-small text-text-3">{GROUP_HINT[group]}</span>
-            )}
-          </m.h2>,
-          ...items.map((item) => (
-            <Row
-              key={`row:${item.key}`}
-              item={item}
-              projectName={names.get(item.project) ?? item.project}
-              time={rowTime(item.at, now, zone)}
-              long={long}
-              place={place++}
-            />
-          )),
-        ])}
+        {GROUPS.flatMap((group) => {
+          const rows = items.filter((i) => i.group === group);
+          return [
+            <m.h2
+              key={`group:${group}`}
+              id={groupHeadingId(group)}
+              tabIndex={-1}
+              data-group-heading={group}
+              layout="position"
+              layoutDependency={place++}
+              transition={{ layout: GLIDE }}
+              className="m-0 flex scroll-mt-2 items-center gap-2 px-4 pt-3 pb-1 font-normal text-body text-text-3 outline-offset-[-2px]"
+            >
+              <span aria-hidden className={`size-2 rounded-full ${TONE[group].bg}`} />
+              {GROUP_LABEL[group]}
+              <span className="font-medium font-mono text-meta text-text-2 tnum">{rows.length}</span>
+            </m.h2>,
+            ...(rows.length === 0
+              ? [
+                  <m.p
+                    key={`empty:${group}`}
+                    layout="position"
+                    layoutDependency={place++}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ ...GLIDE, layout: GLIDE }}
+                    className="m-0 px-4 pt-1.5 pb-2 text-body text-text-3"
+                  >
+                    {EMPTY[group]}
+                  </m.p>,
+                ]
+              : rows.map((item) => (
+                  <Row
+                    key={`row:${item.key}`}
+                    item={item}
+                    harness={harnessOf(item.ticket)}
+                    time={rowTime(item.at, now, zone)}
+                    long={long}
+                    place={place++}
+                    link={(s) =>
+                      s.kind === "pr"
+                        ? `https://github.com/${repository}/pull/${s.text.slice(1)}`
+                        : teams.has(ticketPrefix(s.text))
+                          ? sessionHref(s.text)
+                          : null
+                    }
+                  />
+                ))),
+          ];
+        })}
       </AnimatePresence>
     </div>
   );
@@ -99,27 +130,41 @@ export function FleetList({
 
 function Row({
   item: i,
-  projectName,
+  harness,
   time,
   long,
   place,
+  link,
 }: {
   item: FleetItem;
-  projectName: string;
+  harness: Harness | null;
   time: string;
   long: boolean;
   place: number;
+  link: (s: { kind: "ticket" | "pr"; text: string }) => string | null;
 }) {
-  const tone = TONE[i.group];
   // The row that changed group passes over the others on its way: drawn above them while it glides.
   const settled = useRef(i.group);
   const raise = (el: HTMLElement | null, up: boolean) => {
     if (el) el.style.zIndex = up ? "1" : "";
   };
-  const self = useRef<HTMLAnchorElement>(null);
-  // The whole row is a link to the session's page: focusable, opened by a click or Enter.
+  const self = useRef<HTMLDivElement>(null);
+  const merged = i.group === "merged";
+  const pr = merged ? i.reason.match(/^#(\d+) merged$/)?.[1] : undefined;
+  // The title is the row's link, stretched over the whole row; the report's own links sit above it.
+  const open = (
+    <a
+      href={sessionHref(i.ticket)}
+      data-open
+      aria-describedby={groupHeadingId(i.group)}
+      className="min-w-0 truncate outline-none after:absolute after:inset-0 focus-visible:after:shadow-[inset_0_0_0_2px_var(--color-blue)]"
+    >
+      <span className="mr-2 font-mono text-meta text-text-2">{i.ticket}</span>
+      <span className={merged ? "text-body text-text-2" : "text-sub text-text"}>{i.title}</span>
+    </a>
+  );
   return (
-    <m.a
+    <m.div
       ref={self}
       layout="position"
       layoutDependency={`${place} ${i.group}`}
@@ -132,42 +177,71 @@ function Row({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ ...GLIDE, layout: GLIDE }}
-      href={sessionHref(i.ticket)}
       data-row={i.key}
       data-group={i.group}
-      aria-describedby={`fleet-${i.group}`}
       className={cn(
-        // The fixed columns hold their words from a 900 px window up; the title gives way, with an ellipsis.
-        "relative grid h-12 grid-cols-[8px_80px_minmax(0,1fr)_minmax(0,96px)_64px_56px] items-center gap-3.5 border-line-soft border-b bg-bg px-3 outline-offset-[-2px] hover:bg-item-hover focus-visible:bg-item-hover",
-        long && "[contain-intrinsic-size:auto_48px] [content-visibility:auto]",
+        "relative grid gap-2.5 border-line border-b bg-card px-4 hover:bg-panel-3",
+        merged
+          ? "grid-cols-[16px_minmax(0,1fr)_auto] items-center py-1.5"
+          : "grid-cols-[16px_minmax(0,1fr)] items-start py-2",
+        long && "[contain-intrinsic-size:auto_64px] [content-visibility:auto]",
       )}
     >
-      <span aria-hidden className={`size-2 rounded-full ${tone.bg}`} />
-      <span className="truncate font-mono text-small text-text-2">{i.ticket}</span>
-      <span className="flex min-w-0 flex-col gap-0.5">
-        <span className="truncate text-text">{i.title}</span>
-        <span data-reason className={`truncate text-small ${QUIET.has(i.group) ? "text-text-2" : tone.text}`}>
-          {i.reason}
-        </span>
-      </span>
-      <span className="truncate text-small text-text-2">{projectName}</span>
-      <StepBar step={i.step} bg={tone.bg} />
-      <span className="whitespace-nowrap text-right font-mono text-heading text-text-3 tnum">{time}</span>
-    </m.a>
+      {merged ? (
+        <>
+          <Ship harness={harness} merged />
+          {open}
+          <span className="whitespace-nowrap font-mono text-meta text-text-3 tnum" data-time>
+            {pr && <span className="text-text-2">#{pr} · </span>}
+            {time}
+          </span>
+        </>
+      ) : (
+        <>
+          <span className="mt-1">
+            <Ship harness={harness} />
+          </span>
+          <span className="flex min-w-0 flex-col">
+            {open}
+            <span className="mt-px flex justify-between gap-2.5 text-body text-text-3">
+              <span className="truncate text-text-2">{STEPS[Math.min(i.step, STEPS.length - 1)]}</span>
+              <span className="whitespace-nowrap font-mono text-meta tnum" data-time>
+                {time}
+              </span>
+            </span>
+            <span
+              data-reason
+              className={cn("mt-px truncate text-body", QUIET.has(i.group) ? "text-text-3" : TONE[i.group].text)}
+            >
+              <Report text={i.reason} link={link} />
+            </span>
+          </span>
+        </>
+      )}
+    </m.div>
   );
 }
 
-/** The six steps: the done ones grey, the one at work in its state's colour, those to come dark. */
-function StepBar({ step, bg }: { step: number; bg: string }) {
-  const label = STEPS[Math.min(step, STEPS.length - 1)];
+/** A report with its ids as links, above the row's own link. */
+function Report({ text, link }: { text: string; link: (s: { kind: "ticket" | "pr"; text: string }) => string | null }) {
   return (
-    <span role="img" aria-label={`Step: ${label}`} className="flex gap-0.5">
-      {STEPS.map((s, k) => (
-        <span
-          key={s}
-          className={`h-1 flex-1 rounded-[1px] ${k < step ? "bg-step-done" : k === step ? bg : "bg-step-next"}`}
-        />
-      ))}
-    </span>
+    <>
+      {segments(text).map((s) => {
+        const href = s.kind === "text" ? null : link({ kind: s.kind, text: s.text });
+        if (!href) return s.text;
+        const external = s.kind === "pr";
+        return (
+          <a
+            key={s.at}
+            href={href}
+            {...(external ? { target: "_blank", rel: "noreferrer" } : {})}
+            {...(external ? { "data-pr": s.text } : { "data-ticket": s.text })}
+            className="relative z-1 font-mono text-meta underline decoration-current/40 underline-offset-2 hover:decoration-current"
+          >
+            {s.text}
+          </a>
+        );
+      })}
+    </>
   );
 }

@@ -1,82 +1,112 @@
 import { expect, test } from "bun:test";
 import { fold } from "@armada/daemon/fold";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SAMPLE_PROJECTS, sampleEvents } from "../scripts/dev-daemon";
+import { sampleEvents } from "../scripts/dev-daemon";
 import { FleetList } from "../src/components/fleet/FleetList";
 import { type FleetItem, fleetItems, LONG_LIST } from "../src/fleet/overview";
 import { readFleetState } from "../src/fleet/state";
 
-// The fleet by state on a synthetic fleet: the daemon's own fold of a
-// synthetic log, read as the app reads each project's folded state.
+// A project's agents by state (the room's panel's Agents, THE-2085) on a
+// synthetic fleet: the daemon's own fold of a synthetic log, read as the app
+// reads each project's folded state.
 
 const AT = "2026-03-10T09:00:00.000Z";
 const NOW = Date.parse("2026-03-10T15:00:00.000Z");
 
-function render() {
+function render(project = "harbor", prefixes = "HAR") {
   const events = sampleEvents(AT).map((e, i) => ({ ...e, seq: i + 1 }));
   const tables = fold(events);
-  const projects = SAMPLE_PROJECTS.map((p) => ({
-    id: p.id,
-    state: readFleetState(JSON.parse(JSON.stringify(tables.projects[p.id] ?? { sessions: [] }))),
-  }));
-  const names = new Map(SAMPLE_PROJECTS.map((p) => [p.id, p.name]));
+  const state = readFleetState(JSON.parse(JSON.stringify(tables.projects[project] ?? { sessions: [] })));
   return renderToStaticMarkup(
-    <FleetList items={fleetItems(projects, { now: NOW, zone: "UTC" })} names={names} now={NOW} zone="UTC" />,
+    <FleetList
+      items={fleetItems([{ id: project, state }], { now: NOW, zone: "UTC" })}
+      harnessOf={() => null}
+      repository={`example/${project}`}
+      prefixes={prefixes}
+      now={NOW}
+      zone="UTC"
+    />,
   );
 }
 
-/** The list as it reads: each group's header, then each row's ticket, group, reason and the reason's colour. */
+/** The list as it reads: each group's heading, then each row's ticket, group, report and the report's colour. */
 function list(html: string) {
   return html
-    .split(/(?=<h2\b|<a[^>]*data-row=)/)
+    .split(/(?=<h2\b|<div[^>]*data-row=|<p\b)/)
     .slice(1)
     .map((block) => {
       if (block.startsWith("<h2")) {
-        const [, label, count] = block.match(/<span>([^<]+)<\/span><span[^>]*>(\d+)<\/span>/) ?? [];
+        const [, label, count] = block.match(/<\/span>([^<]+)<span[^>]*>(\d+)<\/span>/) ?? [];
         return `${label} (${count})`;
       }
+      if (block.startsWith("<p")) return `  ${block.match(/<p[^>]*>([^<]+)</)?.[1]}`;
       const group = block.match(/data-group="([^"]+)"/)?.[1];
-      const [, ink, reason] = block.match(/<span data-reason="true" class="[^"]* (text-[a-z0-9-]+)">([^<]*)</) ?? [];
-      const dot = block.match(/<span aria-hidden="true" class="size-2 rounded-full (bg-[a-z]+)"/)?.[1];
-      const ticket = block.match(/<span class="truncate font-mono[^"]*">([^<]+)</)?.[1];
-      return `  ${ticket} ${group} ${dot} | ${reason} | ${ink}`;
+      const [, ink, report] =
+        block.match(/<span data-reason="true" class="[^"]* (text-[a-z0-9-]+)">(.*?)<\/span><\/span>/) ?? [];
+      const ticket = block.match(/<span class="mr-2 font-mono[^"]*">([^<]+)</)?.[1];
+      return `  ${ticket} ${group} | ${report?.replace(/<[^>]+>/g, "") ?? "-"} | ${ink ?? "-"}`;
     });
 }
 
-test("the fleet shows its sessions by state, each row with its reason in its state's colour", () => {
+test("a project's agents by state, every group headed, each row with its report in its state's colour", () => {
   const html = render();
   expect(list(html)).toEqual([
-    "Blocked (2)",
-    "  HAR-15 blocked bg-red | Red CI on #41 | text-red",
-    "  LAN-3 blocked bg-red | Unanswered question: Should dawn follow the local sunrise or a fixed hour? | text-red",
-    "Waiting for your decision (2)",
-    "  HAR-18 you bg-amber | Plan to approve | text-amber",
-    "  LAN-7 you bg-amber | Does the amber read as a lantern at night? | text-amber",
+    "Blocked (1)",
+    "  HAR-15 blocked | Red CI on #41 | text-red",
+    "Waiting for your decision (1)",
+    "  HAR-18 you | Plan to approve | text-amber",
     "In progress (1)",
-    "  HAR-12 running bg-blue | Wiring the map to the tide feed | text-text-2",
+    "  HAR-12 running | Wiring the map to the tide feed | text-text-3",
     "Ready to merge (1)",
-    "  HAR-20 ready bg-green | Handed back · #44 green | text-green",
+    "  HAR-20 ready | Handed back · #44 green | text-green",
     "Merged today (1)",
-    "  HAR-9 merged bg-merged | #39 merged | text-text-2",
+    "  HAR-9 merged | - | -",
   ]);
-  // Every row is a link to its session's page (THE-2028): the whole row is the target.
-  const rows = [...html.matchAll(/<a [^>]*data-row="([^"]+)"[^>]*>/g)];
-  expect(rows).toHaveLength(7);
-  for (const [tag, key] of rows) expect(tag).toContain(`href="#/sessions/${key?.split("/")[1]}"`);
-  // Each row's bar: the step at work in its state's colour (HAR-12 codes: step 3 of 6).
-  const bar = html
-    .split('data-row="harbor/HAR-12"')[1]
-    ?.match(
-      /<span role="img" aria-label="Step: Code"[^>]*>(.*?)<\/span><span class="whitespace-nowrap text-right/,
-    )?.[1];
-  expect(bar?.match(/bg-[a-z-]+/g)).toEqual([
-    "bg-step-done",
-    "bg-step-done",
-    "bg-blue",
-    "bg-step-next",
-    "bg-step-next",
-    "bg-step-next",
+  // Each heading can take the focus: a pill of the room's header goes to it.
+  expect(html).toMatch(/<h2 id="agents-blocked" tabindex="-1" data-group-heading="blocked"/);
+  // Each row's title is its link to the session's page, stretched over the row (THE-2028).
+  const links = [...html.matchAll(/<a href="([^"]+)" data-open="true" aria-describedby="agents-([a-z]+)"/g)];
+  expect(links.map((m) => `${m[1]} ${m[2]}`)).toEqual([
+    "#/sessions/HAR-15 blocked",
+    "#/sessions/HAR-18 you",
+    "#/sessions/HAR-12 running",
+    "#/sessions/HAR-20 ready",
+    "#/sessions/HAR-9 merged",
   ]);
+  // The ids a report names link on their own: `#41` to its pull request on the project's repository.
+  expect(html).toMatch(
+    /<a href="https:\/\/github.com\/example\/harbor\/pull\/41" target="_blank" rel="noreferrer" data-pr="#41"/,
+  );
+});
+
+test("an empty group says so; a report's ticket ids link only under the project's prefixes", () => {
+  const item: FleetItem = {
+    key: "harbor/HAR-2",
+    project: "harbor",
+    ticket: "HAR-2",
+    title: "Moor the ferries",
+    group: "blocked",
+    reason: "Waits on HAR-12, UTF-8 and #7",
+    step: 2,
+    at: AT,
+  };
+  const html = renderToStaticMarkup(
+    <FleetList items={[item]} harnessOf={() => null} repository="example/harbor" prefixes="HAR" now={NOW} zone="UTC" />,
+  );
+  expect(list(html)).toEqual([
+    "Blocked (1)",
+    "  HAR-2 blocked | Waits on HAR-12, UTF-8 and #7 | text-red",
+    "Waiting for your decision (0)",
+    "  Nothing waits for you.",
+    "In progress (0)",
+    "  Nothing in progress.",
+    "Ready to merge (0)",
+    "  Nothing is ready to merge.",
+    "Merged today (0)",
+    "  Nothing merged today.",
+  ]);
+  const links = [...html.matchAll(/<a href="([^"]+)"[^>]*data-(?:ticket|pr)="([^"]+)"/g)].map((m) => `${m[2]} ${m[1]}`);
+  expect(links).toEqual(["HAR-12 #/sessions/HAR-12", "#7 https://github.com/example/harbor/pull/7"]);
 });
 
 test("past 100 rows, the rows off screen skip their layout and paint", () => {
@@ -92,7 +122,9 @@ test("past 100 rows, the rows off screen skip their layout and paint", () => {
       at: AT,
     }));
   const html = (n: number) =>
-    renderToStaticMarkup(<FleetList items={items(n)} names={new Map()} now={NOW} zone="UTC" />);
+    renderToStaticMarkup(
+      <FleetList items={items(n)} harnessOf={() => null} repository="example/p" prefixes="EX" now={NOW} zone="UTC" />,
+    );
   const skipping = (markup: string) => markup.match(/\[content-visibility:auto\]/g)?.length ?? 0;
   expect(skipping(html(LONG_LIST))).toBe(0);
   expect(skipping(html(LONG_LIST + 1))).toBe(LONG_LIST + 1);

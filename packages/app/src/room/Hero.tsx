@@ -1,6 +1,7 @@
 // The empty room's hero (THE-2055), after T3 Code's draft hero
 // (`DraftHeroHeadline.tsx`): with nothing said yet, the thread's place holds
-// "What should we work on?" above the owner's field, centred, and the starter
+// "What should we work on?" above the owner's field, centred, with the fleet's
+// sentence under it (THE-2085: the room's header lost its quiet line), and the starter
 // asks the fleet's facts justify under it (`starterAsks` in view.ts). A chip
 // sends its words as the field would. The room keeps the field in the same
 // place in both layouts, so on the first Send it glides down to its dock.
@@ -9,11 +10,12 @@ import type { StarterAsk } from "./view";
 
 const HERO_HEADLINE = "What should we work on?";
 
-/** The headline, at the bottom of the space above the field. */
-export function HeroHeadline() {
+/** The headline and the fleet's sentence, at the bottom of the space above the field. */
+export function HeroHeadline({ sentence }: { sentence?: string | null }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col justify-end px-3 pb-5 sm:px-12" data-hero>
       <h2 className="m-0 text-balance text-center font-normal text-hero text-text sm:text-hero-lg">{HERO_HEADLINE}</h2>
+      {sentence && <p className="m-0 mt-2 text-balance text-center text-sub text-text-2">{sentence}</p>}
     </div>
   );
 }

@@ -10,8 +10,10 @@ import { parseQuestion, segments } from "../src/room/view";
 import { RoomView } from "../src/screens/Room";
 
 // A project's room (THE-1996) on the daemon's own fold of a synthetic log and a
-// synthetic conversation: the band, the pinned question, the conversation with
-// its tool calls folded above the answer, and the agents' rail. The live part (a message
+// synthetic conversation: its header, the conversation with its tool calls
+// folded above the answer, and the panel (THE-2085) opening on the agents with
+// the pinned question first. The header's own rules are test/room-header.test.tsx's,
+// the panel's in a browser test/room-panel.test.tsx's; the live part (a message
 // sent, the coordinator's answer, a reload) runs in a browser (test/build.test.ts).
 
 const AT = "2026-03-10T09:00:00.000Z";
@@ -85,25 +87,38 @@ const block = (html: string, marker: RegExp, end: RegExp) => {
   return stop < 0 ? rest : rest.slice(0, stop + 1);
 };
 
-test("the room reads in the v7 anatomy: the facts line, then the project's name as the one h1", () => {
+test("the room is its chat: one header line, no sky, the conversation, then the panel on the agents", () => {
   const html = render();
   expect(html.match(/<h1\b/g)).toHaveLength(1);
   const header = block(html, /<header/, /<\/header>/);
-  expect(header).toMatch(/example\/harbor(?:(?!<h1).)*<h1[^>]*>Harbor<\/h1>/);
-  expect(text(header)).toContain("4 agents in flight · 1 moving on their own · 1 ready to merge · 1 merged today");
-  expect(text(header)).toContain("1 blocked · 2 waiting for you");
-  expect(header).toMatch(/aria-expanded="true"[^>]*aria-controls="room-agents"/);
+  expect(header).toMatch(/<h1[^>]*>Harbor<\/h1><span[^>]*>example\/harbor<\/span>/);
+  expect(text(header)).toBe(
+    "Harbor example/harbor 1 blocked 1 waiting for you 1 in progress 1 ready to merge 1 merged today",
+  );
+  expect(header).toMatch(/aria-pressed="true" aria-controls="room-panel"/);
+  // The sky flies in the hangar only; the facts line and the quiet sentence are gone.
+  expect(html).not.toContain("data-sky");
+  expect(html).not.toContain("in flight");
+  // The focus goes header, thread, field, panel: the page's order.
+  const order = ["<header", "data-thread", 'aria-label="Message the coordinator"', 'id="room-panel"'].map((m) =>
+    html.indexOf(m),
+  );
+  expect(order.every((at, k) => at > (order[k - 1] ?? -1))).toBe(true);
 });
 
-test("the sky flies as a 200 px band, the question waits pinned under it with its choices and a labelled note", () => {
+test("the panel opens on the agents, the question waiting first with its choices and a labelled note", () => {
   const html = render();
-  const sky = block(html, /<section[^>]*data-sky="band"/, /<\/section>/);
-  expect(sky).toContain("This project&#x27;s agents, grouped by state");
-  expect(sky).toContain("h-50");
-  // The card comes right after the band, before the conversation.
-  expect(html.indexOf('data-sky="band"')).toBeLessThan(html.indexOf("data-pinned"));
-  expect(html.indexOf("data-pinned")).toBeLessThan(html.indexOf("data-thread"));
-  const card = block(html, /<section[^>]*data-pinned/, /<section/);
+  const panel = block(html, /<aside[^>]*id="room-panel"/, /<\/aside>/);
+  const tabs = [...panel.matchAll(/<button[^>]*role="tab"[^>]*aria-selected="(true|false)"[^>]*>([^<]+)<\/button>/g)];
+  expect(tabs.map((m) => `${m[2]}${m[1] === "true" ? " (open)" : ""}`)).toEqual([
+    "Agents (open)",
+    "Pull requests",
+    "Rules",
+    "Log",
+  ]);
+  // The card comes first, then the agents by state.
+  expect(panel.indexOf("data-pinned")).toBeLessThan(panel.indexOf('data-group-heading="blocked"'));
+  const card = block(panel, /<section[^>]*data-pinned/, /<\/section>/);
   expect(text(card)).toStartWith("HAR-15 Price berths by the hour Codex");
   expect(text(card)).toContain("Two berth tests time out under the full suite. Fix the wait, or raise the timeout?");
   const buttons = [...card.matchAll(/<button[^>]*>(.*?)<\/button>/g)].map((m) => text(m[1] ?? ""));
@@ -112,7 +127,10 @@ test("the sky flies as a 200 px band, the question waits pinned under it with it
   expect(card).toMatch(/<button[^>]*class="[^"]*bg-text text-bg[^"]*"[^>]*>Fix the wait/);
   const note = card.match(/<label for="([^"]+)"[^>]*>Note<\/label><input id="([^"]+)"/);
   expect(note?.[1]).toBe(note?.[2]);
-  // Nothing waits: no card, nothing pinned.
+  const rows = [...panel.matchAll(/data-row="harbor\/([^"]+)"/g)].map((m) => m[1]);
+  expect(rows).toEqual(["HAR-15", "HAR-18", "HAR-12", "HAR-20", "HAR-9"]);
+  // With its card on screen, the field does not say it again; nothing waits: no card.
+  expect(html).not.toContain("data-asking");
   expect(render({}, { asked: false })).not.toContain("data-pinned");
 });
 
@@ -132,26 +150,6 @@ test("the conversation shows who said what, the turn's tool calls folded above t
   expect(thread).toMatch(/<span class="font-mono text-meta text-red">HAR-15<\/span> is blocked/);
 });
 
-test("the agents' rail groups the project's agents by state, one row per agent opening its session", () => {
-  const html = render();
-  const rail = block(html, /<aside[^>]*id="room-agents"/, /<\/aside>/);
-  expect(text(rail.match(/<div class="flex h-11[^"]*">(.*?)<\/div>/)?.[1] ?? "")).toBe(
-    "Agents 4 in flight · 1 merged today ×",
-  );
-  const groups = [...rail.matchAll(/data-rail-group="([a-z]+)"/g)].map((m) => m[1]);
-  expect(groups).toEqual(["blocked", "you", "running", "ready", "merged"]);
-  const rows = [...rail.matchAll(/<a href="([^"]+)" data-rail-row="([^"]+)"[^>]*>(.*?)<\/a>/g)].map(
-    (m) => `${m[2]} ${m[1]} | ${text(m[3] ?? "")}`,
-  );
-  expect(rows).toEqual([
-    "HAR-15 #/sessions/HAR-15 | HAR-15 Price berths by the hour Review & CI 09:00 Red CI on #41",
-    "HAR-18 #/sessions/HAR-18 | HAR-18 Let skippers book a berth from the quay Approval 09:00 Plan to approve",
-    "HAR-12 #/sessions/HAR-12 | HAR-12 Draw the harbour map from the tide tables Code 09:00 Wiring the map to the tide feed",
-    "HAR-20 #/sessions/HAR-20 | HAR-20 Show the pilot's schedule Ready 09:00 Handed back · #44 green",
-    "HAR-9 #/sessions/HAR-9 | HAR-9 Name the harbour's quays #39 · 09:00",
-  ]);
-});
-
 test("the owner's field is labelled and sends; without a coordinator it says why", () => {
   const html = render();
   const form = block(html, /<form[^>]*aria-label="Message the coordinator"/, /<\/form>/);
@@ -160,16 +158,23 @@ test("the owner's field is labelled and sends; without a coordinator it says why
   expect(form).toMatch(/<button type="submit" aria-label="Send"/);
   const alone = render({ coordinator: false, items: [] });
   expect(text(alone)).toContain("No coordinator runs for this project yet");
-  // Nothing said yet: the empty room's hero (THE-2055).
-  expect(text(alone)).toContain("What should we work on?");
+  // Nothing said yet: the empty room's hero (THE-2055), with the fleet's sentence the header no longer says (THE-2085).
+  expect(text(alone)).toContain("What should we work on? 1 agent blocked, 1 waiting for your decision.");
   expect(alone).toMatch(/<textarea id="[^"]+"[^>]*disabled=""/);
 });
 
 test("the room's rules: its address, a question's choices, ids in a message", () => {
   expect(routeOf("#/projects/harbor")).toEqual({ kind: "project", id: "harbor" });
   expect(routeOf("#/projects/a%20b")).toEqual({ kind: "project", id: "a b" });
-  expect(routeOf("#/projects/harbor/rules")).toEqual({ kind: "rules", id: "harbor" });
-  // A session's page has its own route (src/session/route.ts): the rail's rows lead there.
+  // The panel's tab is in the address; the old rules page is replaced by the Rules tab.
+  expect(routeOf("#/projects/harbor?panel=prs")).toEqual({ kind: "project", id: "harbor", panel: "prs" });
+  expect(routeOf("#/projects/harbor?panel=elsewhere")).toEqual({ kind: "project", id: "harbor" });
+  expect(routeOf("#/projects/harbor/rules")).toEqual({
+    kind: "rules",
+    id: "harbor",
+    redirect: "#/projects/harbor?panel=rules",
+  });
+  // A session's page has its own route (src/session/route.ts): the agents' rows lead there.
   expect(routeOf("#/sessions/HAR-15")).toEqual({ kind: "home" });
   expect(routeOf("#/projects/harbor/extra")).toEqual({ kind: "home" });
   expect(routeOf("#/projects/%E0%A4%A")).toEqual({ kind: "home" });
@@ -213,16 +218,4 @@ test("a sent message stays until a reading holds it, and the room reads again pa
     }),
   ).toBe(3);
   expect(lastCoordinatorSeq(undefined)).toBe(0);
-});
-
-test("the room qualifies stale provider readings quietly in its facts line, leaving fresh readings quiet", () => {
-  const html = render(
-    {},
-    { readAt: { linear: new Date(NOW - 240_000).toISOString(), github: new Date(NOW - 120_000).toISOString() } },
-  );
-  const header = block(html, /<header/, /<\/header>/);
-  expect(text(header)).toContain("Linear last read 4 min ago");
-  expect(text(header)).not.toContain("GitHub last read");
-  expect(header).toContain("text-meta text-text-3");
-  expect(render()).not.toContain("last read");
 });

@@ -10,8 +10,6 @@ import { useSessionRoute } from "@/session/route";
 const SkyStory = lazy(() => import("@/screens/SkyStory").then((m) => ({ default: m.SkyStory })));
 // A project's room (`#/projects/<id>`), loaded when opened.
 const Room = lazy(() => import("@/screens/Room").then((m) => ({ default: m.Room })));
-// Project rules are fetched when opened, alongside the other project screens.
-const Project = lazy(() => import("@/screens/Project").then((m) => ({ default: m.Project })));
 // A session's page, fetched when a row opens it: off the first-load budget.
 const Session = lazy(() => import("@/screens/Session").then((m) => ({ default: m.Session })));
 // The notifications (THE-2055): every screen hears them, off the first load, once the shell is drawn.
@@ -48,13 +46,10 @@ export function App({
           <Suspense fallback={null}>
             <Settings section={route.section} address={address} onReload={onReload} />
           </Suspense>
-        ) : route.kind === "project" ? (
+        ) : route.kind === "project" || route.kind === "rules" ? (
+          // The old rules page is the room's Rules tab: its address is replaced on the way.
           <Suspense>
-            <Room project={route.id} />
-          </Suspense>
-        ) : route.kind === "rules" ? (
-          <Suspense>
-            <Project id={route.id} onReload={onReload} />
+            <Room project={route.id} onReload={onReload} />
           </Suspense>
         ) : (
           <Hangar onReload={onReload} />

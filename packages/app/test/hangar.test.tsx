@@ -7,7 +7,7 @@ import { routeOf } from "../src/lib/route";
 import { createDaemonClient, type SocketLike } from "../src/protocol/client";
 import { DaemonProvider } from "../src/protocol/store";
 import { Hangar } from "../src/screens/Hangar";
-import { Project } from "../src/screens/Project";
+import { Room } from "../src/screens/Room";
 import { Settings } from "../src/screens/Settings";
 import type { SkyContext } from "../src/sky/draw";
 import { BONE, LIME } from "../src/sky/flock";
@@ -284,7 +284,7 @@ test("the daemon's problem, with its Reload, shows on every screen, not only the
   const screens = [
     <Hangar key="hangar" onReload={() => {}} now={NOW} zone={ZONE} />,
     <Settings key="settings" section="coordinator" address="ws://daemon.test/" onReload={() => {}} />,
-    <Project key="room" id="kestrel" onReload={() => {}} />,
+    <Room key="room" project="kestrel" onReload={() => {}} now={NOW} zone={ZONE} />,
   ];
   for (const screen of screens) {
     const html = renderToStaticMarkup(<DaemonProvider client={client}>{screen}</DaemonProvider>);

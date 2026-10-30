@@ -20,14 +20,6 @@ export const GROUP_LABEL: Record<Group, string> = {
   merged: "Merged today",
 };
 
-export const GROUP_HINT: Record<Group, string> = {
-  blocked: "can't go on without someone",
-  you: "a plan, a merge or a question for you",
-  running: "moving on its own",
-  ready: "approved, the coordinator merges",
-  merged: "",
-};
-
 /** The group of each folded state; a released session is not shown. */
 export const GROUP_OF: Record<FoldedSession["state"], Group | null> = {
   blocked: "blocked",
@@ -183,13 +175,6 @@ export function fleetItems(
   const merged = (i: FleetItem) => (i.group === "merged" ? 1 : 0);
   // Array.prototype.sort is stable: the sessions keep the fold's order, then the merges, newest first.
   return items.sort((a, b) => merged(a) - merged(b) || (merged(a) ? Date.parse(b.at) - Date.parse(a.at) : 0));
-}
-
-/** The list's groups in their order, each with its lines; the empty ones left out. */
-export function groupItems(items: readonly FleetItem[]): { group: Group; items: FleetItem[] }[] {
-  return GROUPS.map((group) => ({ group, items: items.filter((i) => i.group === group) })).filter(
-    (g) => g.items.length > 0,
-  );
 }
 
 /** How many lines each state holds. */
