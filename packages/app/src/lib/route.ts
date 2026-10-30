@@ -1,6 +1,7 @@
 // Where the app is: the address's hash, because the daemon serves one
 // index.html at its root. `#/projects/<id>` is a project's room (THE-1996),
-// `#/projects/<id>/rules` its rules and fleet (THE-1997), `#/settings/<section>`
+// `?panel=agents|prs|rules|log` the tab its panel shows (THE-2085; the old
+// rules page, `#/projects/<id>/rules`, is replaced by its Rules tab), `#/settings/<section>`
 // a section of the settings (THE-2069: `#/settings` opens the coordinator's,
 // the old `#/plugins` is replaced by the providers'); anything else, and off a
 // browser (a test's static render), the hangar (the home, THE-2025). A
@@ -11,10 +12,14 @@ import { useEffect, useSyncExternalStore } from "react";
 export const SETTINGS_SECTIONS = ["coordinator", "providers", "account", "about"] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
+/** The room's panel's tabs (THE-2085), in their order: `⌘1` to `⌘4`. */
+export const PANEL_TABS = ["agents", "prs", "rules", "log"] as const;
+export type PanelTab = (typeof PANEL_TABS)[number];
+
 export type Route =
   | { kind: "home" }
-  | { kind: "project"; id: string }
-  | { kind: "rules"; id: string }
+  | { kind: "project"; id: string; panel?: PanelTab }
+  | { kind: "rules"; id: string; redirect: string }
   | { kind: "settings"; section: SettingsSection; redirect?: string };
 
 /** Where a section of the settings is. */
@@ -31,7 +36,8 @@ const decode = (part: string) => {
 
 /** The screen a hash names. */
 export function routeOf(hash: string): Route {
-  const [kind, id, more, ...rest] = hash.replace(/^#?\/?/, "").split("/");
+  const [path = "", query = ""] = hash.replace(/^#?\/?/, "").split("?");
+  const [kind, id, more, ...rest] = path.split("/");
   // The Plugins screen became the providers' section: its old address is replaced, once.
   if (kind === "plugins" && !id) return { kind: "settings", section: "providers", redirect: settingsHref("providers") };
   if (kind === "settings" && more === undefined) {
@@ -40,14 +46,25 @@ export function routeOf(hash: string): Route {
   }
   const value = id && !rest.length ? decode(id) : null;
   if (!value) return { kind: "home" };
-  if (kind === "projects" && more === undefined) return { kind: "project", id: value };
-  if (kind === "projects" && more === "rules") return { kind: "rules", id: value };
+  if (kind === "projects" && more === undefined) {
+    const panel = panelOf(query);
+    return panel ? { kind: "project", id: value, panel } : { kind: "project", id: value };
+  }
+  // The rules page became the room's Rules tab: its old address is replaced, once.
+  if (kind === "projects" && more === "rules") return { kind: "rules", id: value, redirect: roomHref(value, "rules") };
   return { kind: "home" };
 }
 
-/** Where a project's squadron and its sidebar line lead: its room. */
+/** The panel's tab a hash's query names, if it names one. */
+export function panelOf(query: string): PanelTab | undefined {
+  const tab = new URLSearchParams(query).get("panel");
+  return PANEL_TABS.find((t) => t === tab);
+}
+
+/** Where a project's sidebar line leads: its room. */
 export const projectHref = (id: string) => `#/projects/${encodeURIComponent(id)}`;
-export const rulesHref = (project: string) => `${projectHref(project)}/rules`;
+/** A project's room with its panel on a tab: the hangar's squadrons open it on Agents. */
+export const roomHref = (id: string, panel?: PanelTab) => `${projectHref(id)}${panel ? `?panel=${panel}` : ""}`;
 
 const subscribe = (listener: () => void) => {
   window.addEventListener("hashchange", listener);
@@ -57,7 +74,7 @@ const current = () => window.location.hash;
 const server = () => "#/";
 
 /** The address a route is replaced by, if any. */
-const redirectOf = (route: Route) => (route.kind === "settings" ? route.redirect : undefined);
+const redirectOf = (route: Route) => (route.kind === "settings" || route.kind === "rules" ? route.redirect : undefined);
 
 /** The current route, re-rendered when the hash changes; the hangar on the server. */
 export function useRoute(): Route {
