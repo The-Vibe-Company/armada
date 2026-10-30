@@ -154,7 +154,7 @@ describe("an agent's page in the room's lane, in a browser", () => {
     await page.close();
   }, 20_000);
 
-  test("the lane's Answer sends owner.answer; Open full page goes to the session's page; a pill keeps the lane", async () => {
+  test("the lane's Answer sends owner.answer; the drawer keeps its keys; ← Coordinator and Open full page lead away; a pill keeps the lane", async () => {
     const page = await open(1280, "#/projects/harbor?panel=log&agent=HAR-12");
     // An address naming an agent shows it, the panel on the tab it names.
     await expect(panel(page).getByRole("tab", { name: "Log" }).getAttribute("aria-selected")).resolves.toBe("true");
@@ -171,6 +171,28 @@ describe("an agent's page in the room's lane, in a browser", () => {
     expect(answers.map(({ project, item, choice }) => ({ project, item, choice }))).toEqual([
       { project: "harbor", item: "q-har-12", choice: "the navy's" },
     ]);
+
+    // The worker's output drawer keeps its arrows and its Escape; the next Escape returns to the chat.
+    await card.getByRole("button", { name: "Open the session" }).click();
+    const drawer = page.getByRole("dialog", { name: "HAR-12's session" });
+    await drawer.waitFor();
+    await page.keyboard.press("ArrowDown");
+    await expect(lane(page).getAttribute("data-agent-lane")).resolves.toBe("HAR-12");
+    await page.keyboard.press("Escape");
+    await drawer.waitFor({ state: "detached" });
+    await expect(lane(page).getAttribute("data-agent-lane")).resolves.toBe("HAR-12");
+    await page.keyboard.press("Escape");
+    await lane(page).waitFor({ state: "detached" });
+    // The focus that was in the lane goes to the Coordinator's row: the keys still hop.
+    await expect(page.evaluate(() => !!document.activeElement?.closest("[data-coordinator]"))).resolves.toBe(true);
+    await page.keyboard.press("j");
+    await expect(lane(page).getAttribute("data-agent-lane")).resolves.toBe("HAR-12");
+
+    // ← Coordinator is the lane's way back to the chat; Open full page, to the session's own page.
+    await lane(page).getByRole("link", { name: "← Coordinator" }).click();
+    await lane(page).waitFor({ state: "detached" });
+    await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=agents");
+    await panel(page).locator('[data-row="harbor/HAR-12"] a[data-open]').click();
     await lane(page).getByRole("link", { name: "Open full page →" }).click();
     await expect(hash(page)).resolves.toBe("#/sessions/HAR-12");
     await page.close();
@@ -224,6 +246,14 @@ describe("an agent's page in the room's lane, in a browser", () => {
     await sheet.waitFor({ state: "detached" });
     await expect(lane(page).getByRole("region", { name: "State" }).getAttribute("data-state")).resolves.toBe("ready");
     await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=agents&agent=HAR-20");
+    // Escape closes the sheet first, the lane next.
+    await page.getByRole("button", { name: "Panel", exact: true }).click();
+    await sheet.waitFor();
+    await page.keyboard.press("Escape");
+    await sheet.waitFor({ state: "detached" });
+    await expect(lane(page).getAttribute("data-agent-lane")).resolves.toBe("HAR-20");
+    await page.keyboard.press("Escape");
+    await lane(page).waitFor({ state: "detached" });
     await page.close();
   }, 15_000);
 });

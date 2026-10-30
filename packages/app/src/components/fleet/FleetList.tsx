@@ -236,7 +236,7 @@ function Row({
               data-reason
               className={cn("mt-px truncate text-body", QUIET.has(i.group) ? "text-text-3" : TONE[i.group].text)}
             >
-              <Report text={i.reason} link={link} />
+              <Report text={i.reason} link={link} onTicket={onOpen} />
             </span>
           </span>
         </>
@@ -246,7 +246,16 @@ function Row({
 }
 
 /** A report with its ids as links, above the row's own link. */
-function Report({ text, link }: { text: string; link: (s: { kind: "ticket" | "pr"; text: string }) => string | null }) {
+function Report({
+  text,
+  link,
+  onTicket,
+}: {
+  text: string;
+  link: (s: { kind: "ticket" | "pr"; text: string }) => string | null;
+  /** Told when a ticket's id is followed, as the row's own link tells it. */
+  onTicket: ((ticket: string) => void) | undefined;
+}) {
   return (
     <>
       {segments(text).map((s) => {
@@ -258,7 +267,7 @@ function Report({ text, link }: { text: string; link: (s: { kind: "ticket" | "pr
             key={s.at}
             href={href}
             {...(external ? { target: "_blank", rel: "noreferrer" } : {})}
-            {...(external ? { "data-pr": s.text } : { "data-ticket": s.text })}
+            {...(external ? { "data-pr": s.text } : { "data-ticket": s.text, onClick: () => onTicket?.(s.text) })}
             className="relative z-1 font-mono text-meta underline decoration-current/40 underline-offset-2 hover:decoration-current"
           >
             {s.text}

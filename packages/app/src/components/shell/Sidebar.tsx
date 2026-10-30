@@ -30,8 +30,8 @@ export function Sidebar() {
   // A session's page is none of the sections: the hangar is not the current page there.
   const session = useSessionRoute();
   const home = route.kind === "home" && !session;
-  // The room on screen reads its own conversation, and its project has nothing unread.
-  const open = route.kind === "project" && !session ? route.id : null;
+  // The room on screen reads its own conversation, and its project has nothing unread; not under an agent's page.
+  const open = route.kind === "project" && !session && !route.agent ? route.id : null;
   const lines = (badges?: Badges): ReactNode =>
     projects?.map((p) => {
       const fleet = fleets[p.id];

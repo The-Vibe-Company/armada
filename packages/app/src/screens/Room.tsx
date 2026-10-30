@@ -185,6 +185,17 @@ export function RoomView({
   // The agents in the panel's order, the Coordinator (the chat) before them: what ↑ and ↓ walk.
   const order = useMemo(() => GROUPS.flatMap((g) => items.filter((i) => i.group === g).map((i) => i.ticket)), [items]);
   useAgentKeys({ project: project.id, agent, order, panel: side.root, lane, agents: tab === "agents", sheet, open });
+  // Back to the chat with the focus lost in the lane that left: the Coordinator's row takes it, or the field.
+  const lastAgent = useRef(agent);
+  useEffect(() => {
+    const was = lastAgent.current;
+    lastAgent.current = agent;
+    if (was === null || agent !== null) return;
+    const held = document.activeElement;
+    if (held && held !== document.body) return;
+    const row = open && tab === "agents" ? side.root.current?.querySelector<HTMLElement>("[data-coordinator] a") : null;
+    (row ?? column.current?.querySelector<HTMLElement>("[data-composer] textarea"))?.focus({ preventScroll: true });
+  }, [agent, open, tab, side.root]);
   // A row followed on the sheet shows its agent and closes the sheet over it.
   const opened = () => {
     if (sheet) side.setOpen(false);
@@ -235,6 +246,7 @@ export function RoomView({
                 repository={project.repository}
                 prefixes={prefixes}
                 groupOf={groupOf}
+                away={agent !== null}
                 now={now}
                 zone={zone}
                 empty={
@@ -420,6 +432,8 @@ function useAgentKeys({
       const key = agentKey(e);
       if (!key || e.defaultPrevented || editable(e.target)) return;
       const target = e.target instanceof Node ? e.target : null;
+      // The session's output drawer keeps its own keys: its arrows scroll, its Escape closes it.
+      if (target instanceof Element && target.closest('[role="dialog"]')) return;
       if (key.kind === "chat") {
         if (agent === null || (sheet && open)) return;
         e.preventDefault();
