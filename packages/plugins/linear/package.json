@@ -28,6 +28,14 @@
                     "phaseGroup": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "runtimeGroup": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "readyLabel": {
+                      "type": "string",
+                      "minLength": 1
                     }
                   },
                   "required": [

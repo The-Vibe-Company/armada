@@ -64,7 +64,16 @@ export function importV1Rules(body: string): ProjectRules {
   if (policy.silence_minutes !== undefined && policy.silent_after_minutes !== undefined)
     throw new Error("Duplicate silence policy");
   // V1 defaults, copied from CONFIG_DEFAULTS in core/src/config.ts.
+  const gates = table(raw.gates ?? {});
   const result: ProjectRules = {
+    ...(raw.gates === undefined
+      ? {}
+      : {
+          gates: {
+            requiredChecks: (gates.required_checks ?? []) as string[],
+            localCommands: (gates.local_commands ?? []) as string[],
+          },
+        }),
     routing,
     ...(conductor.default_profile === undefined ? {} : { defaultRoute: profile(conductor.default_profile) }),
     policy: {

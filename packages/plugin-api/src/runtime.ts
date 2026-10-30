@@ -1,4 +1,5 @@
 import type { ProjectRequest } from "./index.js";
+import type { TestMergeRequest, TestMergeResult } from "./merge.js";
 
 export interface Workspace {
   id: string;
@@ -43,6 +44,8 @@ export interface RuntimeProvider {
 }
 /** A runtime consumes a node's workspace and PTY facilities. */
 export interface NodeProvider {
+  /** Detached throwaway merge, local gates in order, cleanup even on failure. */
+  testMerge?(request: TestMergeRequest): Promise<TestMergeResult>;
   /** Refuse while a worker still uses it or local changes would be lost. */
   dispose?(workspace: Workspace): Promise<void>;
   prepare(request: PrepareRequest): Promise<Workspace>;

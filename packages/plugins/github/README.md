@@ -18,8 +18,12 @@ the single-read gate until it settles. Reflected credentials are redacted and
 raw transport errors never escape.
 
 `merge` uses the owner's REST endpoint with the requested head in `sha`, uses
-squash merge, confirms GitHub's `merged` response, and never retries a write.
-Optional `endpoint` replaces the GraphQL base (the merge path is appended) for
+squash merge, confirms GitHub's `merged` response, and returns GitHub's valid
+squash SHA when present without changing the old result when it is absent. It
+never retries a write. `inspect` reads a fresh pinned head/base, check and
+review evidence, branch-protection checks and an exact REST base...head
+comparison; truncated enumerations are explicitly incomplete. Optional
+`endpoint` replaces the GraphQL base (the REST paths use the same origin) for
 local conformance fixtures.
 
 ```sh

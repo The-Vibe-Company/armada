@@ -1,8 +1,13 @@
 import { createHash } from "node:crypto";
 import { defineTool, type JsonObject, type ToolRegistration } from "@earendil-works/pi-durable";
-import { type Static, Type } from "typebox";
+import { Type } from "typebox";
 import * as Value from "typebox/value";
 import { z } from "zod";
+import { checkMerge, type MergeEvidence, mergeEvidenceSchema } from "../src/merge/checklist.ts";
+import type { Merges } from "../src/merge/service.ts";
+
+export type { MergeEvidence } from "../src/merge/checklist.ts";
+
 import type { EventInput, FleetEvent } from "../src/events.ts";
 import { fold, type ProjectTables, type Session } from "../src/fold.ts";
 import { type Workers, type WorkerTool, workerToolSchemas } from "../src/workers/service.ts";
@@ -14,6 +19,7 @@ import { type CoordinatorToolName, TOOL_NAMES } from "./tools.ts";
 export interface NativeToolOptions {
   now: () => string;
   workers?: Workers;
+  merges?: Merges;
   /** Host-owned, bounded refresh of the project's tracker and forge readers. */
   refresh?: () => Promise<void>;
   /** Optional host restriction/adapter for explicitly requested, local V1 file imports. */
@@ -34,46 +40,6 @@ const text = Type.String({ maxLength: 4000 });
 const id = Type.String({ minLength: 1, maxLength: 200, pattern: "\\S" });
 const object = <T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
   Type.Object(properties, { additionalProperties: false });
-const sha = Type.String({ pattern: "^[0-9a-f]{40}$" });
-const checkState = Type.Union([
-  Type.Literal("none"),
-  Type.Literal("pending"),
-  Type.Literal("success"),
-  Type.Literal("failure"),
-]);
-const mergeEvidenceSchema = object({
-  head: sha,
-  base: sha,
-  observedAt: Type.String(),
-  checksComplete: Type.Boolean(),
-  title: Type.String(),
-  draft: Type.Boolean(),
-  mergeState: Type.String(),
-  checks: Type.Array(object({ name: id, state: checkState })),
-  requiredChecks: Type.Array(id),
-  reviewThreads: object({
-    complete: Type.Boolean(),
-    total: Type.Integer({ minimum: 0 }),
-    read: Type.Integer({ minimum: 0 }),
-    unresolved: Type.Integer({ minimum: 0 }),
-  }),
-  acceptance: object({
-    state: Type.Union([Type.Literal("passed"), Type.Literal("not-required"), Type.Literal("unknown")]),
-    head: sha,
-  }),
-  ownerApproval: object({
-    state: Type.Union([
-      Type.Literal("approved"),
-      Type.Literal("not-required"),
-      Type.Literal("pending"),
-      Type.Literal("unknown"),
-    ]),
-    head: sha,
-  }),
-  baseTest: object({ state: Type.Union([Type.Literal("passed"), Type.Literal("unknown")]), head: sha, base: sha }),
-});
-/** Adapter facts must explicitly prove complete enumeration and name the heads/base they concern. */
-export type MergeEvidence = Static<typeof mergeEvidenceSchema>;
 
 const schemas = {
   "fleet.status": object({}),
@@ -84,7 +50,7 @@ const schemas = {
   "worker.message": Type.Unsafe(z.toJSONSchema(workerToolSchemas["worker.message"])),
   "worker.stop": Type.Unsafe(z.toJSONSchema(workerToolSchemas["worker.stop"])),
   "merge.check": object({ pr: Type.Integer({ minimum: 1 }) }),
-  "merge.run": Type.Object({}, { additionalProperties: true }),
+  "merge.run": object({ pr: Type.Integer({ minimum: 1 }) }),
   "hold.add": object({ reason: text }),
   "hold.clear": object({ id, reason: text }),
   "owner.ask": object({ ticket: id, question: text, choices: Type.Array(text, { maxItems: 6 }) }),
@@ -106,12 +72,12 @@ const descriptions: Record<CoordinatorToolName, string> = {
   "worker.stop": "Stop the current worker generation and release its capability.",
   "merge.check":
     "Check a pinned hand-back against recorded fleet facts and adapter evidence. Missing evidence refuses the check.",
-  "merge.run": "Merge a checked PR (not available yet; Spec 4).",
+  "merge.run": "Check and squash-merge a handed-back PR, then complete its tracker and worker cleanup.",
   "hold.add": "Pause project merges with a concrete reason.",
   "hold.clear": "Clear a known project pause with a recorded recovery reason.",
   "owner.ask": "Record a ticket's owner decision with numbered choices. Only the owner may decide it.",
   "rules.set":
-    "Patch project routing (ordered labels or when descriptions), defaultRoute, placement and policy with the revision from fleet.status. Alternatively importFile (absolute local file path) imports V1 routing/profiles/policy once into an unconfigured project; never pass file contents in chat. Placement must be chosen explicitly. A reason is required.",
+    "Patch project routing (ordered labels or when descriptions), defaultRoute, placement, policy and gates (requiredChecks/localCommands) with the revision from fleet.status. Alternatively importFile (absolute local file path) imports V1 routing/profiles/policy once into an unconfigured project; never pass file contents in chat. Placement must be chosen explicitly. A reason is required.",
 };
 const refuse = (code: string, message: string, next: string, extra: JsonObject = {}): JsonObject => ({
   ok: false,
@@ -314,7 +280,7 @@ function decide(
       const patch = args.importFile === undefined ? (args.rules as JsonObject) : importedRules;
       if (!patch) throw new Error("Missing normalized import");
       if (!Object.keys(patch).length)
-        return no("empty_rules", "say which rules change", "rules.set with routing, placement or policy");
+        return no("empty_rules", "say which rules change", "rules.set with routing, placement, policy or gates");
       const value = {
         ...rules.value,
         ...patch,
@@ -332,98 +298,8 @@ function decide(
         { rules: next },
       );
     }
-    case "merge.check": {
-      const pr = tables.pullRequests.find((p) => p.number === args.pr);
-      if (!pr) return no("no_pr", `PR #${args.pr} is not open in ${project}`, "fleet.status");
-      const session = tables.sessions.find((s) => s.ticket === pr.ticket);
-      const handBack = [...tables.inbox]
-        .reverse()
-        .find(
-          (i) =>
-            i.ticket === pr.ticket &&
-            i.kind === "hand-back" &&
-            /^Agent status: ready-to-merge — (?!note:|answer:|acceptance:)/m.test(i.body) &&
-            i.actor !== "coordinator",
-        );
-      const problems: string[] = [];
-      // Copied from core/src/merge.ts assess / mergeProblems. Unknown evidence always refuses.
-      if (session?.phase !== "ready-to-merge")
-        problems.push(
-          `${pr.ticket} has not been handed back: its agent phase is ${session?.phase ?? "not set"}, not ready-to-merge`,
-        );
-      if (!handBack) problems.push(`${pr.ticket} has no "Agent status: ready-to-merge" comment carrying the head SHA`);
-      else {
-        const sha = handBack.body.match(/\bhead ([0-9a-f]+)\b/i)?.[1]?.toLowerCase();
-        const number = handBack.body.match(/\bPR #(\d+)/i)?.[1];
-        if (number && Number(number) !== pr.number)
-          problems.push(`the hand-back on ${pr.ticket} names PR #${number}, not #${pr.number}`);
-        if (!sha || !/^[0-9a-f]{40}$/.test(sha))
-          problems.push(
-            `the handed-back SHA ${sha ?? "missing"} is not a full 40-character SHA; ask the worker to report ready-to-merge again`,
-          );
-        else if (sha !== pr.head)
-          problems.push(
-            `the head of #${pr.number} is ${pr.head}, not the handed-back ${sha}: it moved after the hand-back; ask the worker to report again`,
-          );
-      }
-      if (pr.state !== "open") problems.push(`#${pr.number} is ${pr.state}, not open`);
-      if (pr.conflicting)
-        problems.push(`#${pr.number} conflicts with its base; ask the worker to merge it in or rebase`);
-      if (pr.ci !== "success") problems.push(`#${pr.number} checks are ${pr.ci}`);
-      for (const hold of tables.holds) problems.push(`merge hold ${hold.id}: ${hold.reason}`);
-      // Copied from core/src/validations.ts lastValidation: a newer submission replaces the earlier decision.
-      const validation = tables.validations
-        .filter((v) => v.ticket === pr.ticket && v.session === session?.session)
-        .at(-1);
-      if (validation && validation.decision?.decision !== "approved")
-        problems.push("owner validation is pending or changes were requested");
-      if (!evidence) problems.push("merge review, acceptance, approval and base-test evidence is unavailable");
-      else {
-        if (evidence.head !== pr.head) problems.push("merge evidence is for a different head");
-        if (evidence.draft) problems.push(`#${pr.number} is a draft`);
-        if (
-          !/^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([\w./,-]+\))?!?: \S/.test(evidence.title)
-        )
-          problems.push(`the title "${evidence.title}" is not in Commitizen format, e.g. "feat(cli): add a command"`);
-        if (!["CLEAN", "HAS_HOOKS"].includes(evidence.mergeState))
-          problems.push(`GitHub reports #${pr.number} as ${evidence.mergeState}, not CLEAN`);
-        for (const name of evidence.requiredChecks)
-          if (!evidence.checks.some((c) => c.name === name && c.state === "success"))
-            problems.push(`required check ${name} has not passed`);
-        if (!evidence.checks.length || evidence.checks.some((c) => c.state !== "success"))
-          problems.push("not every visible check is green");
-        if (!evidence.checksComplete) problems.push("check enumeration is incomplete");
-        const { total, read, unresolved, complete } = evidence.reviewThreads;
-        if (!complete || total !== read || unresolved > read)
-          problems.push("review-thread evidence is incomplete or inconsistent");
-        if (unresolved)
-          problems.push(`#${pr.number} has ${unresolved} unresolved review thread${unresolved > 1 ? "s" : ""}`);
-        else if (total > read)
-          problems.push(`#${pr.number} has more than ${read} review threads; check they are resolved by hand`);
-        if (!["passed", "not-required"].includes(evidence.acceptance.state))
-          problems.push("acceptance evidence is unavailable");
-        if (!["approved", "not-required"].includes(evidence.ownerApproval.state))
-          problems.push("owner merge approval is pending or unavailable");
-        if (evidence.baseTest.state !== "passed") problems.push("fresh-main test evidence is unavailable");
-        if (
-          evidence.acceptance.head !== pr.head ||
-          evidence.ownerApproval.head !== pr.head ||
-          evidence.baseTest.head !== pr.head ||
-          evidence.baseTest.base !== evidence.base
-        )
-          problems.push("acceptance, approval or base-test evidence is for an earlier head/base");
-      }
-      return {
-        result: problems.length
-          ? refuse(
-              "merge_refused",
-              `#${pr.number} cannot be merged`,
-              "fix the listed prerequisites, then merge.check",
-              { problems },
-            )
-          : { ok: true, pr: pr.number, head: pr.head, ticket: pr.ticket },
-      };
-    }
+    case "merge.check":
+      return checkMerge(tables, args.pr as number, project, evidence);
     default:
       return no(
         "not_available_yet",
@@ -482,6 +358,24 @@ export function nativeTools(
                 ),
               );
             }
+          }
+          if ((name === "merge.check" || name === "merge.run") && options.merges) {
+            if (name === "merge.run" && (!api.callId || !Number.isSafeInteger(api.taskId)))
+              return output(
+                refuse(
+                  "missing_call_id",
+                  "a write needs its durable tool call identity",
+                  "invoke through the coordinator harness",
+                ),
+              );
+            return output(
+              await options.merges.tool(
+                scope,
+                name,
+                (args as JsonObject).pr as number,
+                JSON.stringify([scope.project, api.taskId, api.callId]),
+              ),
+            );
           }
           if (["worker.launch", "worker.message", "worker.stop"].includes(name) && options.workers) {
             if (!api.callId || !Number.isSafeInteger(api.taskId))
