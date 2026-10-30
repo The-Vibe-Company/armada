@@ -116,9 +116,9 @@ export async function loadPlugins(
         log: services.log,
         register: activation.register,
         secrets: {
-          get: async (name) => {
+          get: async (name, project) => {
             if (!declared.has(name)) throw new Error(`undeclared secret ${name}`);
-            return services.secrets.get(name);
+            return services.secrets.get(name, project);
           },
         },
       });

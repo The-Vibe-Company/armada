@@ -1,14 +1,12 @@
 import { z } from "zod";
+import { counter, identifier, versionSchema as version } from "./envelope.js";
 
 // A session's page acts (THE-2045): the owner releases one worker generation,
 // and reads its terminal output from the runtime's `observe`. Wire minor 6.
 // From that minor `owner.answer` (chat.ts) also answers a worker's question.
 // index.ts adds these to the message unions; this file imports nothing from it
-// (its primitives are restated) so the two modules never wait on each other.
+// so the two modules never wait on each other; envelope.ts holds their shared primitives.
 
-const counter = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
-const identifier = z.string().min(1);
-const version = z.object({ major: counter, minor: counter });
 const request = { version, id: identifier };
 const generation = { project: identifier, ticket: identifier, session: identifier };
 
