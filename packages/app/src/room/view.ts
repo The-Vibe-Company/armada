@@ -18,11 +18,14 @@ export function parseQuestion(body: string): { question: string; choices: Choice
     .split("\n")
     .map((line) => line.match(/^\s*(?:\d+[.)]|[-*•])\s+(.+?)\s*$/)?.[1])
     .filter((label): label is string => !!label)
-    .map((label) => {
-      const plain = label.replace(/\s*(?:\((?:recommended)\)|[—–-]\s*recommended)\s*$/i, "");
-      return { label: plain, recommended: plain !== label };
-    });
+    .map(choiceOf);
   return { question: question.trim(), choices };
+}
+
+/** One choice as written: "(recommended)" or "— recommended" at its end makes it the primary one. */
+export function choiceOf(label: string): Choice {
+  const plain = label.replace(/\s*(?:\((?:recommended)\)|[—–-]\s*recommended)\s*$/i, "");
+  return { label: plain, recommended: plain !== label };
 }
 
 /** The questions waiting for the owner, oldest first: the open owner requests of the fold's inbox. */

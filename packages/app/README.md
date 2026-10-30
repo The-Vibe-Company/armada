@@ -128,12 +128,26 @@ ticket's lines out of the log, it never folds.
   request and its checks, claimed at, last report at. Then the ticket's title
   (the 22 px h1) and the state on the quiet line.
 - **The state card**, edged in the state's colour: blocked says why (the
-  worker's question and its choices when it asked one) with Answer, Release
-  the ticket and Open the session; waiting for you says the validation, the
-  coordinator's question or the plan, with its choices and a Note field;
-  in progress the last report; ready to merge the hand-back; merged the pull
-  request. The acting buttons are disabled with "Not available yet." until the
-  daemon can act on workers (Spec 3) and answer the owner's decisions.
+  worker's question when it asked one); waiting for you says the validation, the
+  coordinator's question or the plan; in progress the last report; ready to
+  merge the hand-back; merged the pull request. Plans and validations keep
+  their choices and Note disabled with "Not available yet.".
+- **The card's buttons act** (THE-2045, protocol minor 6). The card of any
+  session in flight has them; against an older daemon they stay disabled with a
+  line saying why.
+  - **Answer** opens the worker's question: its choices (the recommended one
+    primary) and a labelled Note. A choice sends `owner.answer`, which the
+    daemon delivers to that worker generation.
+  - The coordinator's question to the owner shows its choices and Note at once,
+    as the room's card does.
+  - **Release the ticket** opens a confirmation line with a required Reason,
+    then sends `session.release` naming the session and its generation.
+  - **Open the session** opens a read-only drawer with the worker's output
+    (`session.output`, its last 200 lines). The drawer reads it again on each
+    new event of the session while it is open; Escape closes it.
+  - A V1 session (the tracker's reading, runtime `tracker`) opens its Conductor
+    workspace from its claim comment, when the claim is among the ticket's last 12
+    comments the Linear reader keeps. It is released from its own runtime.
 - **The six steps** (Plan, Build, Ship, Review & CI, Merge, Done): the done ones
   grey, the current one in the state's colour and marked (`aria-current`).
 - **Reports**: the ticket's reports and events, newest first (claims, reports,

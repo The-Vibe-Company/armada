@@ -250,6 +250,23 @@ Without a coordinator, `chat.read` answers the log's lines with `coordinator: fa
 and `chat.send` refuses with one line. `test/chat-server.test.ts` runs them over a
 file log and a faux model, through a restart.
 
+The session page's requests (THE-2045, `src/server/session.ts`, protocol minor 6) go
+through the same `Workers` as the coordinator's tools, never to a runtime directly.
+
+- `session.release` checks that the fold's current session is the named generation and
+  still runs (not a V1 `tracker` session), then calls `Workers.stop`: the
+  generation-fenced stop the merge uses, which releases and disposes a clean workspace.
+- `session.output` answers `Workers.observe` (the masked reply), cut to its last 200
+  lines without control sequences.
+- `owner.answer` on a worker's `question` applies the guards of the coordinator's
+  `inbox.answer`: the question is open, its worker claimed it, still runs, and the
+  question is not from an earlier claim. It delivers the answer through
+  `Workers.answer`, keyed `owner-answer:<item>`, then records `inbox.answered`
+  (actor `owner`) and tells the coordinator as for an owner request.
+
+Each refusal is one line. `test/session-server.test.ts` runs them over the real server
+on a fake runtime (`test/support/fake-worker.ts`).
+
 Pinned pi-durable 1.4 owns its scheduler directly over pi-ai; pi-agent-core is a
 separate non-durable agent loop, so nesting it would create a second scheduler.
 The custom Storage adapter uses pi's public `MemoryStorage.prepareCommit` to validate

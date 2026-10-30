@@ -25,7 +25,7 @@ import { Sky } from "@/sky/Sky";
 /** Below this window width the rail starts closed: a third of it would leave the conversation too narrow. */
 const RAIL_MIN_WINDOW = 1100;
 const viewerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-const EMPTY_STATE: FleetState = { sessions: [], pullRequests: [], inbox: [], queue: [], validations: [] };
+const EMPTY_STATE: FleetState = { sessions: [], tickets: [], pullRequests: [], inbox: [], queue: [], validations: [] };
 
 export function Room({
   project: id,

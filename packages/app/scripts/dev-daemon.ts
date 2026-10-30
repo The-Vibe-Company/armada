@@ -6,6 +6,7 @@
 import type { CoordinatorOptions } from "@armada/daemon/coordinator";
 import type { EventInput, FleetEvent } from "@armada/daemon/events";
 import { Keychain } from "@armada/daemon/keychain";
+import type { Workers } from "@armada/daemon/server";
 import { startServer } from "@armada/daemon/server";
 import { EventStore } from "@armada/daemon/store";
 import type { Project } from "@armada/protocol";
@@ -178,6 +179,7 @@ export async function startDevDaemon({
   staticDir,
   allowedOrigins,
   coordinators = true,
+  workers: makeWorkers,
 }: {
   port?: number;
   projects?: Project[];
@@ -186,9 +188,12 @@ export async function startDevDaemon({
   allowedOrigins?: string[];
   /** Each project's coordinator, on a faux model that answers (no key, no network). */
   coordinators?: boolean;
+  /** The workers the session page's buttons act on, over this daemon's log (a test's fake runtime). */
+  workers?: (store: EventStore) => Workers;
 } = {}): Promise<DevDaemon> {
   const store = new EventStore(":memory:");
   for (const event of events) store.append(event);
+  const workers = makeWorkers?.(store);
   // Keys saved from the app stay in this process: never the machine's own keychain.
   const entries = new Map<string, string>();
   const keychain = new Keychain({
@@ -202,6 +207,7 @@ export async function startDevDaemon({
   });
   const server = await startServer({
     store,
+    ...(workers ? { workers } : {}),
     projects,
     port,
     staticDir,
@@ -226,6 +232,7 @@ export async function startDevDaemon({
     append: (event) => store.append(event),
     async stop() {
       await server.close();
+      await workers?.close();
       store.close();
     },
   };

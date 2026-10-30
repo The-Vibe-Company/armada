@@ -25,7 +25,11 @@ import type { EventStore } from "../store.ts";
 import type { Workers } from "../workers/service.ts";
 import { dispatchChat } from "./chat.ts";
 import { dispatchPlugins, isPluginsRequest, type PluginHost } from "./plugins.ts";
+import { dispatchSession } from "./session.ts";
 import { serveStatic } from "./static.ts";
+
+/** The worker service a host (or the app's dev daemon) hands `startServer`. */
+export type { Workers } from "../workers/service.ts";
 
 export interface ServerOptions {
   store: EventStore;
@@ -295,9 +299,14 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         if (!known.has(request.project)) return error(ws, request.id, "not-found", "No such project");
         if (request.type === "chat.read" || request.type === "chat.send" || request.type === "owner.answer") {
           // The room's requests (THE-1996, server/chat.ts): each answers once, its failure as one line.
-          void dispatchChat(request, { store, coordinator: coordinators.get(request.project) }).then((reply) =>
+          void dispatchChat(request, { store, workers, coordinator: coordinators.get(request.project) }).then((reply) =>
             send(ws, reply),
           );
+          return;
+        }
+        if (request.type === "session.release" || request.type === "session.output") {
+          // The session page's actions (THE-2045, server/session.ts), through the coordinator's own Workers.
+          void dispatchSession(request, { store, workers }).then((reply) => send(ws, reply));
           return;
         }
         if (request.type === "project.subscribe") {

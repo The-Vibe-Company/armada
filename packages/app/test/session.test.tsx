@@ -94,7 +94,12 @@ function log(): EventInput[] {
   ];
 }
 
-function render(ticket: string, tab: "reports" | "files" = "reports", inputs: EventInput[] = log()) {
+function render(
+  ticket: string,
+  tab: "reports" | "files" = "reports",
+  inputs: EventInput[] = log(),
+  version: { major: number; minor: number } = PROTOCOL_VERSION,
+) {
   const events = inputs.map((e, i) => ({ ...e, seq: i + 1 }));
   const tables = fold(events);
   let socket: SocketLike | null = null;
@@ -107,8 +112,7 @@ function render(ticket: string, tab: "reports" | "files" = "reports", inputs: Ev
     schedule: () => () => {},
   });
   client.start();
-  const say = (m: Record<string, unknown>) =>
-    socket?.onmessage?.({ data: JSON.stringify({ version: PROTOCOL_VERSION, ...m }) });
+  const say = (m: Record<string, unknown>) => socket?.onmessage?.({ data: JSON.stringify({ version, ...m }) });
   say({ type: "projects.result", id: "r1", projects: SAMPLE_PROJECTS });
   for (const p of SAMPLE_PROJECTS) {
     const seq = events.length;
@@ -158,37 +162,42 @@ test("each state's card says the state, why, and what to do about it, edged in t
   const blocked = render("HAR-15");
   expect(card(blocked)).toContain('data-state="blocked"');
   expect(card(blocked)).toContain("border-red/55");
-  expect(words(card(blocked))).toBe(
-    "Blocked Red CI on #41 Answer Release the ticket Open the session Not available yet.",
-  );
-  // The acting buttons wait for the workers' runtime (Spec 3).
-  expect(card(blocked).match(/<button[^>]*disabled=""/g)).toHaveLength(3);
+  // Blocked by its checks: nothing to answer; the worker can be released, its session opened.
+  expect(words(card(blocked))).toBe("Blocked Red CI on #41 Release the ticket Open the session");
+  // Each button acts once the daemon speaks the session's messages (THE-2045).
+  expect(card(blocked)).not.toMatch(/<button[^>]*disabled=""/);
 
-  // A worker's question blocks its session: the question and its choices.
+  // A worker's question blocks its session: the question, then Answer opens its choices.
   expect(words(card(render("LAN-3")))).toBe(
-    "Blocked Should dawn follow the local sunrise or a fixed hour? sunrise fixed Answer Release the ticket Open the session Not available yet.",
+    "Blocked Should dawn follow the local sunrise or a fixed hour? Answer Release the ticket Open the session",
   );
 
   const validation = card(render("LAN-7"));
   expect(validation).toContain("border-amber/55");
+  // Plans and validations are not decided here yet: their buttons stay disabled, the worker's do not.
   expect(words(validation)).toBe(
-    "Waiting for you Does the amber read as a lantern at night? ✓ The amber is warm Approve Request changes Note Not available yet.",
+    "Waiting for you Does the amber read as a lantern at night? ✓ The amber is warm Approve Request changes Note Not available yet. Release the ticket Open the session",
   );
   expect(validation).toMatch(/<label[^>]*><span[^>]*>Note<\/span><input type="text" disabled=""/);
+  expect(validation.match(/<button[^>]*disabled=""/g)).toHaveLength(2);
   expect(words(card(render("HAR-18")))).toBe(
-    "Waiting for you 1. Add a booking form. 2. Test it. Approve the plan Ask for changes Note Not available yet.",
+    "Waiting for you 1. Add a booking form. 2. Test it. Approve the plan Ask for changes Note Not available yet. Release the ticket Open the session",
   );
 
   // Waiting for a validation the coordinator has not opened yet: a validation's choices, not a plan's.
   expect(words(card(render("HAR-30")))).toBe(
-    "Waiting for you Waiting for your validation Approve Request changes Note Not available yet.",
+    "Waiting for you Waiting for your validation Approve Request changes Note Not available yet. Release the ticket Open the session",
   );
 
   const running = card(render("HAR-12"));
   expect(running).toContain("border-blue/45");
-  expect(words(running)).toBe("In progress Last report 09:00 Wiring the map to the tide feed");
+  expect(words(running)).toBe(
+    "In progress Last report 09:00 Wiring the map to the tide feed Release the ticket Open the session",
+  );
 
-  expect(words(card(render("HAR-20")))).toBe("Ready to merge Handed back · #44 green");
+  expect(words(card(render("HAR-20")))).toBe(
+    "Ready to merge Handed back · #44 green Release the ticket Open the session",
+  );
   const merged = card(render("HAR-9"));
   expect(merged).toContain("border-merged/45");
   expect(words(merged)).toBe("Merged #39 merged");
@@ -320,4 +329,73 @@ test("the session retains launch steps and branch after the worker claims", () =
   expect(page).toContain("Launched on claude");
   expect(page).toContain("worker/har-99");
   expect(page).toContain("Claimed on claude");
+});
+
+test("the coordinator's question to the owner shows its choices and a labelled note at once", () => {
+  const inputs: EventInput[] = [
+    ...log(),
+    {
+      project: "harbor",
+      kind: "inbox.opened",
+      at: LATER,
+      actor: "coordinator",
+      payload: {
+        id: "ask-har-30",
+        ticket: "HAR-30",
+        kind: "owner-request",
+        body: "Warm or cold light?\n\nOptions:\n1. Warm (recommended)\n2. Cold",
+      },
+    },
+  ];
+  const html = card(render("HAR-30", "reports", inputs));
+  expect(words(html)).toBe(
+    "Waiting for you Warm or cold light? Warm · recommended Cold Note Release the ticket Open the session",
+  );
+  expect(html).toMatch(/<form aria-label="Answer"/);
+  expect(html).toMatch(/<label for="([^"]+)-note"[^>]*>Note<\/label><input id="\1-note"/);
+  expect(html).not.toMatch(/<button[^>]*disabled=""/);
+});
+
+test("a V1 session opens its Conductor workspace, and is released from its own runtime", () => {
+  const inputs: EventInput[] = [
+    ...log(),
+    {
+      project: "harbor",
+      kind: "ticket.seen",
+      at: AT,
+      actor: "tracker",
+      payload: {
+        id: "HAR-40",
+        title: "Paint the buoys",
+        status: "started",
+        phase: "implementing",
+        // Newest first, as the tracker hands them: the latest claim, under its status line, wins.
+        comments: [
+          { body: "Agent status: implementing — painting", author: "A. Worker", at: LATER },
+          {
+            body: "Agent status: planning — claimed by Conductor (ws-7/s-3)\n\nAgent claim — runtime: conductor · session: ws-7/s-3 · branch: feature/har-40 · started: 2026-03-10",
+            author: "A. Worker",
+            at: AT,
+          },
+          {
+            body: "Agent status: planning — claimed by Conductor (ws-1/s-1)\n\nAgent claim — runtime: conductor · session: ws-1/s-1 · branch: feature/har-40 · started: 2026-03-09",
+            author: "A. Worker",
+            at: AT,
+          },
+        ],
+      },
+    },
+  ];
+  const html = card(render("HAR-40", "reports", inputs));
+  expect(html).toMatch(/<a href="conductor:\/\/workspace\?id=ws-7"[^>]*>Open the session<\/a>/);
+  expect(words(html)).toBe(
+    "In progress Last report 09:00 At work Release the ticket Open the session A V1 session: release it from its own runtime with armada stop.",
+  );
+  expect(html.match(/<button[^>]*disabled=""/g)).toHaveLength(1);
+});
+
+test("against an older daemon the buttons wait, saying why", () => {
+  const html = card(render("LAN-3", "reports", log(), { major: 1, minor: 5 }));
+  expect(html.match(/<button[^>]*disabled=""/g)).toHaveLength(3);
+  expect(words(html)).toContain("This daemon is older than the app: update it to act on a session.");
 });

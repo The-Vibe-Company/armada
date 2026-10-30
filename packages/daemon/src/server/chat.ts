@@ -18,19 +18,21 @@ import type { ProjectCoordinator } from "../../coordinator/index.ts";
 import type { Json } from "../events.ts";
 import { fold } from "../fold.ts";
 import type { EventStore } from "../store.ts";
+import type { Workers } from "../workers/service.ts";
+import { answerWorker, NOTE, OWNER_ANSWER_ENTRY } from "./session.ts";
 
 /** At most this many items of a long conversation: its latest. */
 const CHAT_LIMIT = 200;
 /** A tool's result past this many characters is cut: the room shows a reading, not a dump. */
 const OUTPUT_LIMIT = 8 * 1024;
-/** The input entry the owner's answer to a pinned question is placed as (reserved: entry-kind). */
-const OWNER_ANSWER_ENTRY = "armada.owner-answer";
 
 export type ChatRequest = ChatReadRequest | ChatSendRequest | OwnerAnswerRequest;
 export interface ChatOptions {
   store: EventStore;
   /** The project's coordinator, when one runs. */
   coordinator: ProjectCoordinator | undefined;
+  /** Delivers the owner's answer to a worker's question (THE-2045). */
+  workers?: Workers;
   now?: () => number;
 }
 
@@ -65,8 +67,15 @@ export async function dispatchChat(request: ChatRequest, options: ChatOptions): 
         return { type: "chat.sent", version, id, project, requestId: request.requestId };
       }
       case "owner.answer": {
-        const answer = recordAnswer(request, options);
+        // A worker's question (THE-2045) is answered to the worker; an owner request, to the coordinator.
+        const worker = options.store
+          .readSince(0, project)
+          .some((e) => e.kind === "inbox.opened" && e.payload.id === request.item && e.payload.kind === "question");
+        const answer = worker
+          ? await answerWorker(request, { ...options, now: options.now ?? Date.now })
+          : recordAnswer(request, options);
         if (answer === "missing") return error("not-found", "No such question waits for you");
+        if (typeof answer === "object" && "refused" in answer) return error("not-found", answer.refused);
         if (answer === "taken") return error("not-found", "This question was already answered");
         if (options.coordinator)
           try {
@@ -84,8 +93,6 @@ export async function dispatchChat(request: ChatRequest, options: ChatOptions): 
     return error("internal", request.type === "chat.read" ? "Could not read the conversation" : "Could not send it");
   }
 }
-
-const NOTE = "\n\nNote: ";
 
 /**
  * Records the owner's answer to an open `owner-request` (the fold and the
