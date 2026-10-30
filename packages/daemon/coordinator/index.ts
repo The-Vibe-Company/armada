@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import type { CoordinatorModel } from "@armada/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type Conversation,
@@ -31,6 +32,8 @@ export interface CoordinatorOptions {
   /** A caller-owned pi-ai SDK instance. No provider creation or credential lookup occurs here. */
   models: HarnessOptions["models"];
   model: ModelRef;
+  /** Public selection identity, including plugin config, for hot model replacement. */
+  selection?: CoordinatorModel;
   tools?: CoordinatorTools;
   /** Optional read adapters for facts the folded fleet cannot establish. */
   native?: Omit<NativeToolOptions, "now">;

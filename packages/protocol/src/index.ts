@@ -1,5 +1,6 @@
 import { pluginEventSchema } from "@armada/plugin-api";
 import { z } from "zod";
+import { authRequestSchemas, authResultSchemas } from "./auth.js";
 import {
   CHAT_WAKE_MINOR,
   chatDeltaSchema,
@@ -14,7 +15,13 @@ import {
   ownerAnsweredSchema,
   ownerAnswerRequestSchema,
 } from "./chat.js";
-import { modelConfigSchema, modelKindEntrySchema, modelKindSchema } from "./models.js";
+import {
+  modelConfigSchema,
+  modelKindEntrySchema,
+  modelKindSchema,
+  modelsCatalogSchema,
+  modelsRequestSchemas,
+} from "./models.js";
 import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
 import {
   sessionOutputRequestSchema,
@@ -23,6 +30,7 @@ import {
   sessionReleaseResultSchema,
 } from "./session.js";
 
+export * from "./auth.js";
 export * from "./chat.js";
 export * from "./fleet.js";
 export * from "./models.js";
@@ -71,6 +79,8 @@ export const credentialsSetRequestSchema = z.object({
   ...request,
   type: z.literal("credentials.set"),
   provider: modelProviderSchema,
+  /** Built-in pi is the modern default; plugin settings/older clients retain their namespace. */
+  target: z.enum(["pi", "plugin"]).optional(),
   config: modelConfigSchema.optional(),
   key: z
     .string()
@@ -100,6 +110,8 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   sessionReleaseRequestSchema,
   sessionOutputRequestSchema,
   ...pluginRequestSchemas,
+  ...authRequestSchemas,
+  ...modelsRequestSchemas,
 ]);
 export type CredentialsResult = z.infer<typeof credentialsResultSchema>;
 export type ListProjectsRequest = z.infer<typeof listProjectsRequestSchema>;
@@ -183,6 +195,8 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   sessionReleaseResultSchema,
   sessionOutputResultSchema,
   ...pluginResultSchemas,
+  ...authResultSchemas,
+  modelsCatalogSchema,
 ]);
 export type ProjectsResult = z.infer<typeof projectsResultSchema>;
 export type Subscribed = z.infer<typeof subscribedSchema>;

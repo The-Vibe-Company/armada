@@ -13,7 +13,7 @@ Armada V2 is a desktop app for one person who runs a fleet of coding agents on t
 1. **One user, local first.** No hosted Armada API, no web dashboard, no sync between people. The owner's machine is the authority.
 2. **One coordinator per GitHub repository.** A repository is a project. The coordinator is a pi agent (`pi-agent-core`, `pi-ai`, `pi-durable`) running inside the daemon, with the Armada commands (status, inbox, launch, answer, merge, hold, ask the owner) as native tools, not shell calls. Its conversation is durable: the owner can close the app, come back, and continue it.
 3. **The coordinator runs where the owner chooses, per project:** on the machine, or in a boat.dev VM. The app stays the authority either way: a VM node registers with the daemon, receives configuration and secrets at launch, and reports back. Leases (launch slots, merge) need no distributed consensus because the coordinator is the single writer for its project.
-4. **Workers are the official CLIs**, signed in by the owner in each CLI. Armada never touches a subscription token. The coordinator's own model access is an API key the owner enters once, kept in the OS keychain. Routing rules ("backend on Opus, frontend on Astra, every ticket in a VM") are told to the coordinator in the chat and stored by the app.
+4. **Workers are the official CLIs**, signed in by the owner in each CLI. Armada never touches a subscription token. The coordinator's own model access comes from pi's provider registry: an API key or pi's provider OAuth sign-in, kept in the OS keychain. Routing rules ("backend on Opus, frontend on Astra, every ticket in a VM") are told to the coordinator in the chat and stored by the app.
 5. **Configuration lives in the app**, not in the repository. `armada.toml` is an import for projects that have one. A VM clone knows nothing about Armada until the app hands it what it needs.
 6. **Tracker behind an interface.** Linear is the first implementation and the one V2 ships on. A minimal internal tracker follows, behind the same interface: ticket, state, labels, comments, parent and program root, attachments. Nothing else (no cycles, no views, no projects).
 7. **GitHub is mandatory**, read and written with the owner's own token (`gh auth` or the device flow). Pull requests, checks and merges carry the owner's name.
@@ -29,7 +29,7 @@ Armada V2 is a desktop app for one person who runs a fleet of coding agents on t
 
 ### Refused in V1
 
-Several people on one project, a relay or sync engine, a web site, a phone page, reply by chat channel, SSH machines, the galaxy, Effect, subscription OAuth.
+Several people on one project, a relay or sync engine, a web site, a phone page, reply by chat channel, SSH machines, the galaxy, Effect. Coordinator subscription OAuth is supported through pi (THE-2073); worker CLI sign-ins stay with their own CLIs.
 
 ### Assumptions (not blocking)
 
@@ -322,3 +322,78 @@ the openai-compatible model plugin, with pi-durable checkpoints in the log.
 
 Specs 4 to 7 (owner decisions, the boat.dev node, the internal tracker, signing
 and auto-update) are cut from here.
+## Coordinator model connections
+
+Protocol minor 9 lists pi's built-in providers through `models.providers` and
+answers `models.catalog`. The catalog contains each provider's public model
+metadata, available auth methods, environment variable names, connection status,
+and the selected `{ provider, model }` or custom plugin `{ kind, config }`.
+OpenAI Codex (ChatGPT) appears first. Keys and OAuth credentials stay in the
+daemon keychain under service `armada.pi`, account = provider id. Pi refreshes
+OAuth credentials through that same store. Existing custom endpoint plugins and
+saved plugin selections continue to work.
+
+The app client exposes `getState().catalog`, `login(provider, authType)`,
+`answer(flow, promptId, value)`, `cancel(flow?)`, `logout(provider)`,
+`select(provider, model)` and `auth(listener)`. Login's promise resolves on the
+final catalog or rejects on a fixed error line; `getState().authFlow` is set
+synchronously to its flow id. Auth frames are delivered to `auth(listener)`.
+These mutations are never replayed when a connection drops.
+
+The shared transport in `packages/protocol/src/auth.ts` is also the contract for
+interactive plugin connections:
+
+- `models.login { id, provider, authType: "oauth" | "api_key" }` starts a flow
+  whose id is the request's `id`. All messages include the protocol `version`.
+- `auth.event { flow, event }` carries `auth_url`, `device_code`, `progress`,
+  `info` (pi's public fields), or `terminal { output }` for terminal providers.
+- `auth.prompt { flow, id, promptType, message, placeholder?, options? }` carries
+  `text`, `secret`, `select`, or `manual_code`. `promptType` distinguishes the
+  prompt kind from the envelope's `type: "auth.prompt"`. Options have
+  `{ id, label, description? }`.
+- `auth.answer { flow, id, value }` uses the **prompt's id**. It has no success
+  reply: the flow continues with its next event/prompt or terminal result.
+- `auth.cancel { flow, id }` aborts the flow. Its own request gets a catalog;
+  the login request gets an error. The cancel reply waits until that flow is
+  terminal and its login slot is free. Disconnect and daemon shutdown abort too.
+- A successful login, `models.logout { provider }`, or
+  `models.select { provider, model }` returns a catalog. Auth/selection/key
+  changes also push a catalog to all minor-9 clients with an independent
+  `push:<uuid>` id, so broadcasts cannot complete another client's request.
+
+There is one login at a time, owned by its initiating connection; other clients
+cannot answer or cancel its prompts. The daemon never opens a browser. The app
+opens an `auth_url` through its desktop bridge or `window.open`; pi's localhost
+callback listener runs in the daemon, and a `manual_code` prompt covers a
+browser on another machine. Never log answers, copy them into fleet events, or
+render a saved credential. `credentials.set` with a pi provider id stores an
+API-key credential for that provider without selecting a model. Explicit
+`target: "pi" | "plugin"` disambiguates a built-in provider from a plugin with
+the same id. Without it, a modern request without `config` targets pi;
+requests carrying plugin config and clients before minor 9 retain the plugin
+path. Selecting pi preserves the previous plugin credential/config in the
+keychain, so project plugin overrides remain usable after restart.
+
+Provider connection handlers can reuse the daemon's `AuthFlows` adapter in
+`src/server/auth.ts`: `start(owner, flowId, send, run, scope?)` runs one
+`FlowInteraction` with `signal`, `notify(event)` (including terminal output),
+and `prompt(prompt)` returning the answer. `cancel(owner, flowId?)` resolves
+to whether it cancelled a flow, once terminal; `cancelScope(scope)` cancels a
+matching flow before logout, independent of which client started it; `close()`
+aborts and awaits the active flow. Scope strings are opaque (models use
+`model:<provider>`). Handlers own their terminal success result; the adapter
+emits a fixed error on failure/cancellation. A handler must honor its signal
+and settle after cancellation. Neither answers nor terminal secret material
+belong in logs or durable events.
+
+Selection requires a known model on a configured provider. The next room turn
+resolves the current selection (project/checkpoint rules still win), configures
+the durable coordinator and streams directly through pi. A room can be
+configured for the first time without restarting the daemon. An active turn
+finishes on its model before a newly selected model starts a turn. The daemon
+honors pi's environment sources and `ARMADA_MODEL_PROVIDER`,
+`ARMADA_MODEL_NAME`, `ARMADA_MODEL_API_KEY`; the legacy `ARMADA_MODEL_KIND` and
+custom endpoint settings remain supported. The pinned pi 1.4.0 package does not
+export its `findEnvKeys` helper as a package subpath, so the registry imports
+that module beside the daemon dependency; the desktop build bundles it and
+pi's statically registered OAuth flows.

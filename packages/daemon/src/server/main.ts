@@ -8,6 +8,7 @@ import { bootDaemon } from "../boot.ts";
 import { fold } from "../fold.ts";
 import { systemKeychain } from "../keychain.ts";
 import { Merges } from "../merge/service.ts";
+import { ModelRegistry } from "../models/registry.ts";
 import { Workers } from "../workers/service.ts";
 import { startWorkerSocket } from "../workers/socket.ts";
 import { startServer } from "./index.ts";
@@ -45,6 +46,7 @@ try {
     mkdirSync(dirname(values.database), { recursive: true });
     const keychain = systemKeychain();
     const modelAccess = await modelEnvironment(process.env, keychain);
+    const modelRegistry = new ModelRegistry({ keychain, selected: modelAccess.selected });
     const daemon = await bootDaemon({
       databasePath: values.database,
       projects,
@@ -58,6 +60,8 @@ try {
         store: daemon.store,
         registry: daemon.registry,
         selected: modelAccess.selected,
+        pluginSelected: modelAccess.pluginSelected,
+        pi: modelRegistry,
         onSkipped: (project) =>
           console.error(`Coordinator for ${project} not started: check model plugin configuration and credentials`),
       });
@@ -126,6 +130,27 @@ try {
           staticDir: values["static-dir"],
           workers,
           keychain,
+          modelRegistry,
+          resolveCoordinator: async (project) => {
+            const config = coordinatorModels({
+              projects: projects.filter((p) => p.id === project),
+              store: daemon.store,
+              registry: daemon.registry,
+              pi: modelRegistry,
+              selected: (await modelRegistry.selection()) ?? undefined,
+              pluginSelected: modelAccess.pluginSelected,
+            })[0];
+            return config
+              ? {
+                  ...config,
+                  native: {
+                    ...config.native,
+                    merges,
+                    refresh: () => readers?.refresh(config.project) ?? Promise.resolve(),
+                  },
+                }
+              : undefined;
+          },
           coordinators: coordinators.map((config) => ({
             ...config,
             native: { ...config.native, merges, refresh: () => readers?.refresh(config.project) ?? Promise.resolve() },

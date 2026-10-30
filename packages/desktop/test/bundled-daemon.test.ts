@@ -6,26 +6,21 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { before, test } from "node:test";
+import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { PROTOCOL_VERSION, serverMessageSchema } from "@armada/protocol";
 import { EventStore } from "../../daemon/src/store.ts";
 import { DaemonProcess } from "../src/daemon.ts";
 
-before(
-  () => {
-    execFileSync("bun", ["run", "build"], {
-      cwd: fileURLToPath(new URL("..", import.meta.url)),
-      timeout: 60000,
-      stdio: "pipe",
-    });
-  },
-  { timeout: 60000 },
-);
-
 test("Electron's bundled daemon starts a configured coordinator and reads credentials through native keyring", {
-  timeout: 20000,
+  timeout: 60000,
 }, async (t) => {
+  // Keep the single test's build under its explicit deadline in both Node and Bun.
+  execFileSync("bun", ["run", "build"], {
+    cwd: fileURLToPath(new URL("..", import.meta.url)),
+    timeout: 60000,
+    stdio: "pipe",
+  });
   const dir = mkdtempSync(join(tmpdir(), "armada-desktop-bundle-"));
   const projects = join(dir, "projects.json");
   writeFileSync(projects, JSON.stringify([{ id: "bundle", name: "Bundle", repository: "example/bundle" }]));

@@ -10,6 +10,7 @@ import type { CoordinatorOptions } from "../../coordinator/index.ts";
 import { checkpointRules } from "../../coordinator/rules.ts";
 import type { Keychain } from "../keychain.ts";
 import { pluginModels } from "../model-sdk.ts";
+import type { ModelRegistry } from "../models/registry.ts";
 import { BUNDLED_PLUGINS, type PluginCatalogEntry } from "../plugins/catalog.ts";
 import { readPluginSecret } from "../plugins/keychain.ts";
 import type { PluginRegistry } from "../plugins/registry.ts";
@@ -39,6 +40,7 @@ export function loadedModelKinds(
 /** Boot-only credential source. Plugins never read the host environment or keychain themselves. */
 export async function modelEnvironment(env: Readonly<Record<string, string | undefined>>, keychain: Keychain) {
   const saved = await keychain.coordinator().catch(() => null);
+  const plugin = await keychain.pluginCoordinator().catch(() => null);
   const value = async (name: string) =>
     env[name] || (await keychain.read("plugin", name).catch(() => null)) || undefined;
   const generic = {
@@ -57,13 +59,18 @@ export async function modelEnvironment(env: Readonly<Record<string, string | und
     model: await value("AZURE_AI_MODEL"),
     key: await value("AZURE_AI_API_KEY"),
   };
-  const savedSecret = saved?.config?.apiKeySecret === undefined ? "ARMADA_MODEL_API_KEY" : saved.config.apiKeySecret;
+  const savedSecret = plugin?.config?.apiKeySecret === undefined ? "ARMADA_MODEL_API_KEY" : plugin.config.apiKeySecret;
+  const pluginSelected = plugin
+    ? { kind: plugin.provider, config: { ...plugin.config, apiKeySecret: savedSecret } }
+    : undefined;
   let selected: CoordinatorModel | undefined;
-  if (generic.kind) {
+  if ((env.ARMADA_MODEL_PROVIDER || generic.kind) && !generic.baseURL && env.ARMADA_MODEL_PROVIDER && generic.model) {
+    selected = { provider: env.ARMADA_MODEL_PROVIDER, model: generic.model };
+  } else if (generic.kind) {
     selected = {
       kind: generic.kind,
       config: {
-        ...(saved?.provider === generic.kind ? saved.config : {}),
+        ...(plugin?.provider === generic.kind ? plugin.config : {}),
         ...(generic.model ? { model: generic.model } : {}),
         ...(generic.baseURL ? { baseURL: generic.baseURL } : {}),
         apiKeySecret: "ARMADA_MODEL_API_KEY",
@@ -79,6 +86,8 @@ export async function modelEnvironment(env: Readonly<Record<string, string | und
       kind: "openai-compatible",
       config: { baseURL: azure.baseURL, model: azure.model, apiKeySecret: "AZURE_AI_API_KEY", apiKeyHeader: "api-key" },
     };
+  } else if (saved?.model) {
+    selected = { provider: saved.provider, model: saved.model };
   } else if (saved) {
     // Read old OpenAI entries without retaining the old identity in the app or catalog.
     selected = {
@@ -88,14 +97,13 @@ export async function modelEnvironment(env: Readonly<Record<string, string | und
   }
   return {
     selected,
+    pluginSelected,
     secrets: {
       async get(name: string) {
         if (env[name]) return env[name] ?? null;
         if (name === "ARMADA_MODEL_API_KEY")
-          return (
-            generic.key ?? (selected?.kind === saved?.provider && savedSecret === name ? (saved?.key ?? null) : null)
-          );
-        if (name === savedSecret) return saved?.key ?? null;
+          return generic.key ?? (savedSecret === name ? ((await keychain.pluginCoordinator())?.key ?? null) : null);
+        if (name === savedSecret) return (await keychain.pluginCoordinator())?.key ?? null;
         return readPluginSecret(name, keychain);
       },
     } satisfies PluginContext["secrets"],
@@ -107,10 +115,12 @@ export function coordinatorModels(options: {
   projects: readonly { id: string; coordinatorModel?: unknown }[];
   store: EventStore;
   registry: PluginRegistry;
+  pi?: ModelRegistry;
   selected?: CoordinatorModel;
+  pluginSelected?: Extract<CoordinatorModel, { kind: string }>;
   onSkipped?: (project: string) => void;
 }): CoordinatorOptions[] {
-  return options.projects.flatMap((project) => {
+  return options.projects.flatMap<CoordinatorOptions>((project) => {
     try {
       let candidate = project.coordinatorModel === undefined ? options.selected : project.coordinatorModel;
       for (const event of options.store.readSince(0, project.id)) {
@@ -120,15 +130,35 @@ export function coordinatorModels(options: {
       }
       if (candidate === undefined) return [];
       const selection = coordinatorModelSchema.parse(candidate);
+      if ("provider" in selection) {
+        if (!options.pi?.models.getModel(selection.provider, selection.model)) throw new Error("Model unavailable");
+        return [
+          {
+            project: project.id,
+            models: options.pi.models,
+            model: { provider: selection.provider, modelId: selection.model },
+            selection,
+          },
+        ];
+      }
       const config = modelConfigSchema.parse({
-        ...(options.selected?.kind === selection.kind ? options.selected.config : {}),
+        ...(options.pluginSelected?.kind === selection.kind ? options.pluginSelected.config : {}),
+        ...(options.selected && "kind" in options.selected && options.selected.kind === selection.kind
+          ? options.selected.config
+          : {}),
         ...selection.config,
       });
       const provider = options.registry.get("model", selection.kind);
       if (!provider) throw new Error("Model plugin unavailable");
       const sdk = provider.create(config.model ?? "", config) as LanguageModel;
       if (typeof sdk !== "object" || !sdk || !("modelId" in sdk)) throw new Error("Invalid plugin model");
-      return [{ project: project.id, ...pluginModels(selection.kind, config.model ?? sdk.modelId, sdk) }];
+      return [
+        {
+          project: project.id,
+          ...pluginModels(selection.kind, config.model ?? sdk.modelId, sdk),
+          selection: { ...selection, config },
+        },
+      ];
     } catch {
       options.onSkipped?.(project.id);
       return [];

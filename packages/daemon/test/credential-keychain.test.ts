@@ -7,8 +7,35 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { Keychain } from "../src/keychain.ts";
 import { fileKeychain } from "../src/secrets/file.ts";
+import { macKeychain } from "../src/secrets/macos.ts";
 import { FakeKeychain } from "./support/keychain.ts";
 import { nodeExecutable } from "./support/node.ts";
+
+test("native Keychain instances serialize shared mutations without storing a credential on disk", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "armada-native-lock-"));
+  const prior = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = directory;
+  t.after(async () => {
+    if (prior === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prior;
+    await rm(directory, { recursive: true, force: true });
+  });
+  const first = new Keychain(macKeychain());
+  const second = new Keychain(macKeychain());
+  const release = await first.lock("pi", "orchard");
+  let entered = false;
+  const next = second.lock("pi", "orchard").then((unlock) => {
+    entered = true;
+    return unlock;
+  });
+  const unrelated = await second.lock("pi", "other");
+  assert.equal(entered, false);
+  await unrelated();
+  await release();
+  await (await next)();
+  assert.equal(entered, true);
+  assert.deepEqual(await readdir(join(directory, "armada", "desktop", "keychain-locks")), []);
+});
 
 test("one gateway stores coordinator provider/key atomically and scopes Linear and GitHub entries", async () => {
   const backend = new FakeKeychain();

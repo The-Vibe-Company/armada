@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,9 +14,14 @@ import { Type } from "typebox";
 import { WebSocket } from "ws";
 import type { EventInput } from "../src/events.ts";
 import { fold } from "../src/fold.ts";
+import { Keychain } from "../src/keychain.ts";
+import { ModelRegistry } from "../src/models/registry.ts";
+import { PluginRegistry } from "../src/plugins/registry.ts";
 import { type ChatOptions, dispatchChat, textOf } from "../src/server/chat.ts";
 import { startServer } from "../src/server/index.ts";
+import { coordinatorModels } from "../src/server/models.ts";
 import { EventStore } from "../src/store.ts";
+import { FakeKeychain } from "./support/keychain.ts";
 
 // A project's room (THE-1996) over the real server, a file log and a faux model:
 // a message sent through the protocol becomes the coordinator's input, its answer
@@ -76,6 +82,96 @@ function coordinator(responses: Parameters<ReturnType<typeof fauxProvider>["setR
     },
   };
 }
+
+test("a pi selection configures a room after startup, switches the next turn, and keeps provider errors out of checkpoints", {
+  timeout: 10000,
+}, async (t) => {
+  const first = fauxProvider({ provider: "orchard-one", models: [{ id: "small" }] });
+  const second = fauxProvider({ provider: "orchard-two", models: [{ id: "large" }] });
+  const token = randomBytes(24).toString("hex");
+  let releaseFirst = () => {};
+  let firstStarted = () => {};
+  const started = new Promise<void>((resolve) => {
+    firstStarted = resolve;
+  });
+  let firstSignal: AbortSignal | undefined;
+  first.setResponses([
+    async (_transcript, options) => {
+      firstSignal = options?.signal;
+      firstStarted();
+      return new Promise((resolve) => {
+        releaseFirst = () => resolve(fauxAssistantMessage("First provider answer"));
+      });
+    },
+  ]);
+  second.setResponses([
+    fauxAssistantMessage("Second provider answer"),
+    {
+      ...fauxAssistantMessage("", { stopReason: "error", errorMessage: token }),
+      diagnostics: [
+        { type: "provider-error", timestamp: NOW, error: { message: token, stack: token }, details: { body: token } },
+      ],
+    },
+  ]);
+  const keychain = new Keychain(new FakeKeychain());
+  const pi = new ModelRegistry({ keychain, env: {}, providers: [first.provider, second.provider] });
+  const store = new EventStore(":memory:");
+  const registry = new PluginRegistry();
+  const server = await startServer({
+    store,
+    projects,
+    keychain,
+    modelRegistry: pi,
+    resolveCoordinator: async () =>
+      coordinatorModels({
+        projects,
+        store,
+        registry,
+        pi,
+        selected: (await pi.selection()) ?? undefined,
+      })[0],
+  });
+  const client = await connect(server.wsUrl);
+  t.after(async () => {
+    client.ws.terminate();
+    await server.close();
+    store.close();
+  });
+  const before = await client.ask({ type: "chat.read", project: "orchard" });
+  assert.equal(before.type === "chat.result" && before.coordinator, false);
+  assert.equal(
+    (await client.ask({ type: "models.select", provider: "orchard-one", model: "small" })).type,
+    "models.catalog",
+  );
+  assert.equal(
+    (await client.ask({ type: "chat.send", project: "orchard", requestId: "one", body: "First" })).type,
+    "chat.sent",
+  );
+  await started;
+  assert.equal(
+    (await client.ask({ type: "models.select", provider: "orchard-two", model: "large" })).type,
+    "models.catalog",
+  );
+  const nextTurn = client.ask({ type: "chat.send", project: "orchard", requestId: "two", body: "Second" });
+  assert.equal(firstSignal?.aborted, false);
+  assert.equal(second.state.callCount, 0);
+  releaseFirst();
+  assert.equal((await nextTurn).type, "chat.sent");
+  await server.coordinators.get("orchard")?.harness.waitForIdle(context);
+  const two = await client.ask({ type: "chat.read", project: "orchard" });
+  assert.ok(two.type === "chat.result");
+  assert.ok(two.items.some((i) => i.kind === "coordinator" && i.body === "First provider answer"));
+  assert.ok(two.items.some((i) => i.kind === "coordinator" && i.body === "Second provider answer"));
+  assert.equal(second.state.callCount, 1);
+  assert.equal(first.state.callCount, 1);
+  assert.deepEqual(await keychain.coordinator(), { provider: "orchard-two", model: "large" });
+  assert.equal(
+    (await client.ask({ type: "chat.send", project: "orchard", requestId: "failed", body: "Fail" })).type,
+    "chat.sent",
+  );
+  await server.coordinators.get("orchard")?.harness.waitForIdle(context);
+  assert.equal(JSON.stringify(store.readSince(0)).includes(token), false);
+});
 
 test("the room sends the owner's message to the coordinator and reads its answer and tool calls, after a restart too", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "armada-room-"));
@@ -281,6 +377,12 @@ test("Stop preserves pi's committed partial and reasoning with the live id after
       return stream;
     },
   });
+  // Exercise the daemon registry's stream boundary too: Stop must retain the partial.
+  config.models = new ModelRegistry({
+    keychain: new Keychain(new FakeKeychain()),
+    env: {},
+    providers: config.models.getProviders(),
+  }).models;
   // Flush pi's progress commit on an injected microtask, with no real-time sleep.
   config.setTimer = (callback: () => void, delay: number) => {
     let cancelled = false;
