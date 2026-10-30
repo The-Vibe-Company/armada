@@ -9,8 +9,9 @@
 // run; a reading that holds an answer or a call replaces it under the same id.
 import { CHAT_LIVE_MINOR, CHAT_MINOR, type ChatItem, type ChatTurn } from "@armada/protocol";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChatFrame, ProjectLog } from "@/protocol/client";
+import type { ChatFrame } from "@/protocol/client";
 import { useDaemon, useDaemonClient } from "@/protocol/store";
+import { lastCoordinatorSeq } from "./unread";
 
 export const NO_CHAT = "This daemon has no chat: update it.";
 
@@ -136,16 +137,6 @@ export function threadItems(items: readonly ChatItem[], live: Live | null | unde
     }),
     ...live.entries.filter((e) => !read.has(e.id) && !(e.kind === "streaming" && blank(e))),
   ];
-}
-
-/** Last conversation event, excluding reader freshness checkpoints (0 for none). */
-export function lastCoordinatorSeq(log: ProjectLog | undefined): number {
-  const events = log?.events ?? [];
-  for (let k = events.length - 1; k >= 0; k--) {
-    const event = events[k];
-    if (event?.kind.startsWith("coordinator.") && event.actor !== "reader") return event.seq;
-  }
-  return 0;
 }
 
 const newId = () =>

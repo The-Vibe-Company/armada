@@ -6,7 +6,7 @@
 // taking the width, the owner's field fixed at the bottom. The agents' rail
 // slides in from the right at a third of the width. The sidebar stays.
 import { AnimatePresence, m } from "motion/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Dot, Page, PageHeader } from "@/components/page";
 import { dayIn, fleetItems, type Group, groupCounts, headline, rowTime } from "@/fleet/overview";
 import { type Harness, skyProject } from "@/fleet/sky";
@@ -15,14 +15,14 @@ import { rulesHref } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import { useDaemon } from "@/protocol/store";
 import { Composer } from "@/room/Composer";
-import { type Chat, NO_CHAT, threadItems, useChat } from "@/room/chat";
+import { type Chat, NO_CHAT, threadItems, useChat, type WhenBusy } from "@/room/chat";
 import { coordinatorModel, ownerHistory } from "@/room/compose";
 import { HeroHeadline, StarterAsks } from "@/room/Hero";
 import { Queued, TurnActions } from "@/room/Live";
 import { ticketPrefix } from "@/room/markdown-rules";
 import { Pinned } from "@/room/Pinned";
 import { RAIL_ID, Rail } from "@/room/Rail";
-import { Thread } from "@/room/Thread";
+import { Thread, type ThreadControl } from "@/room/Thread";
 import { ownerQuestions, starterAsks } from "@/room/view";
 import { Sky } from "@/sky/Sky";
 
@@ -125,6 +125,16 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
   const busy = turn !== null && turn.state !== "idle";
   const shown = useMemo(() => threadItems(chat.items, chat.live), [chat.items, chat.live]);
   const stop = chat.stop;
+  // The thread's scroll (THE-2054): a message the thread shows is pinned near its top; the field pages it.
+  const thread = useRef<ThreadControl>(null);
+  const send = chat.send;
+  const sendAndAnchor = useCallback(
+    async (body: string, whenBusy?: WhenBusy) => {
+      await (whenBusy ? send(body, whenBusy) : send(body));
+      if (whenBusy !== "queue") thread.current?.anchor(body);
+    },
+    [send],
+  );
   // Nothing said yet (THE-2055): the hero holds the thread's place, the field centred under it.
   const hero = chat.status === "ready" && shown.length === 0 && !busy && !chat.queued?.length && !chat.problem;
   const asks = useMemo(() => starterAsks(state), [state]);
@@ -223,6 +233,7 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
             <HeroHeadline />
           ) : (
             <Thread
+              control={thread}
               items={shown}
               turn={turn}
               started={chat.live?.started ?? null}
@@ -252,7 +263,8 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
           <m.div layout="position" layoutDependency={dock.glides} transition={DOCK} className="flex-none" data-dock>
             <Composer
               project={project.id}
-              send={chat.send}
+              send={sendAndAnchor}
+              onPage={(direction) => thread.current?.page(direction)}
               busy={busy}
               primary={busy && stop ? (field) => <TurnActions field={field} stop={stop} /> : undefined}
               restore={chat.withdrawn ?? null}
