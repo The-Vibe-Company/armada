@@ -7,10 +7,12 @@ import {
   ownerAnsweredSchema,
   ownerAnswerRequestSchema,
 } from "./chat.js";
+import { modelConfigSchema, modelKindEntrySchema, modelKindSchema } from "./models.js";
 import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
 
 export * from "./chat.js";
 export * from "./fleet.js";
+export * from "./models.js";
 export * from "./plugins.js";
 export * from "./rules.js";
 
@@ -56,12 +58,13 @@ export const readSessionRequestSchema = z.object({
   project: identifier,
   sessionId: identifier,
 });
-export const modelProviderSchema = z.enum(["anthropic", "openai"]);
+export const modelProviderSchema = modelKindSchema;
 export const credentialsStatusRequestSchema = z.object({ ...request, type: z.literal("credentials.status") });
 export const credentialsSetRequestSchema = z.object({
   ...request,
   type: z.literal("credentials.set"),
   provider: modelProviderSchema,
+  config: modelConfigSchema.optional(),
   key: z
     .string()
     .min(1)
@@ -72,6 +75,9 @@ export const credentialsResultSchema = z.object({
   ...request,
   type: z.literal("credentials.result"),
   provider: modelProviderSchema.nullable(),
+  config: modelConfigSchema.optional(),
+  models: z.array(modelKindEntrySchema).optional(),
+  needsRepair: z.boolean().optional(),
   storage: z.enum(["os-keychain", "file"]),
 });
 export const clientMessageSchema = z.discriminatedUnion("type", [

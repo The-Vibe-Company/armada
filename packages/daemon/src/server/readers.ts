@@ -1,8 +1,11 @@
 import { projectSchema } from "@armada/protocol";
+import { z } from "zod";
 import type { PluginRegistry } from "../plugins/registry.ts";
 
 /** Catalog selection is host-owned; provider configuration belongs to each plugin. */
 export const daemonProjectSchema = projectSchema.extend({
+  // Model validation belongs to coordinator boot, so readers survive a bad selection.
+  coordinatorModel: z.unknown().optional(),
   programRoot: projectSchema.shape.id.optional(),
   phaseGroup: projectSchema.shape.name.default("Agent phase"),
   tracker: projectSchema.shape.id.default("linear"),

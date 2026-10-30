@@ -1,6 +1,6 @@
 {
   "response": {
-    "id": "chatcmpl-conformance",
+    "id": "msg-conformance",
     "object": "chat.completion",
     "created": 1893492000,
     "model": "conformance-model",
@@ -19,15 +19,32 @@
                 "arguments": "{\"message\":\"fixture-tool-call\"}"
               }
             }
-          ]
+          ],
+          "reasoning_content": "fixture-reasoning"
         },
         "finish_reason": "tool_calls"
       }
     ],
     "usage": {
+      "input_tokens": 10,
+      "output_tokens": 8,
       "prompt_tokens": 10,
       "completion_tokens": 8,
       "total_tokens": 18
-    }
+    },
+    "type": "message",
+    "role": "assistant",
+    "content": [
+      {
+        "type": "tool_use",
+        "id": "call-conformance",
+        "name": "conformance_echo",
+        "input": {
+          "message": "fixture-tool-call"
+        }
+      }
+    ],
+    "stop_reason": "tool_use",
+    "stop_sequence": null
   }
 }

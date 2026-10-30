@@ -207,6 +207,17 @@ export async function startDevDaemon({
     staticDir,
     allowedOrigins,
     keychain,
+    modelKinds: [
+      {
+        kind: "development-model",
+        description: "Development model",
+        config: {
+          type: "object",
+          properties: { model: { type: "string" }, baseURL: { type: "string" } },
+          required: ["model", "baseURL"],
+        },
+      },
+    ],
     coordinators: coordinators ? projects.map((p) => devCoordinator(p.id)) : [],
   });
   return {

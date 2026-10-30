@@ -37,6 +37,8 @@
     "ajv": "8.20.0",
     "semver": "7.7.4",
     "proper-lockfile": "4.1.2",
+    "ai": "7.0.156",
+    "zod": "4.6.5",
     "smol-toml": "1.9.0"
   },
   "devDependencies": {

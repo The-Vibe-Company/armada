@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { coordinatorModelSchema } from "./models.js";
 
 const id = z.string().min(1).max(200).regex(/\S/);
 const target = { cli: z.enum(["claude", "codex", "opencode"]), model: id, effort: id.optional() };
@@ -6,6 +7,7 @@ const placement = z.enum(["local", "vm"]);
 const minutes = z.number().positive();
 // V1 policy numbers: positive finite minutes, positive safe worker quota or no cap.
 export const projectRulesSchema = z.strictObject({
+  coordinatorModel: coordinatorModelSchema.optional(),
   routing: z
     .array(
       z.union([

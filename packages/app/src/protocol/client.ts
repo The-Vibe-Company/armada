@@ -3,6 +3,7 @@ import {
   type ChatReadRequest,
   type ChatSendRequest,
   type ClientMessage,
+  type CoordinatorModel,
   type CredentialsResult,
   DAEMON_TOO_OLD,
   type OwnerAnswerRequest,
@@ -72,7 +73,7 @@ export interface DaemonClient {
   subscribe(listener: () => void): () => void;
   start(): void;
   stop(): void;
-  saveCredentials(provider: "anthropic" | "openai", key: string): Promise<void>;
+  saveCredentials(provider: string, key: string, config?: CoordinatorModel["config"]): Promise<void>;
   /** Each resolves once the daemon saved the change and listed the plugins again; none is replayed after a drop. */
   setPluginEnabled(plugin: string, enabled: boolean): Promise<void>;
   configurePlugin(plugin: string, seam: string, kind: string, config: Json): Promise<void>;
@@ -323,7 +324,15 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       }
       case "credentials.result": {
         if (message.id !== credentialStatusId && message.id !== pendingCredential?.id) return;
-        set({ credentials: { provider: message.provider, storage: message.storage } });
+        set({
+          credentials: {
+            provider: message.provider,
+            storage: message.storage,
+            ...(message.models ? { models: message.models } : {}),
+            ...(message.config ? { config: message.config } : {}),
+            ...(message.needsRepair ? { needsRepair: true } : {}),
+          },
+        });
         if (message.id === pendingCredential?.id) {
           const pending = pendingCredential;
           pendingCredential = null;
@@ -389,7 +398,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   const cursor = (project: string) => state.logs[project]?.seq ?? 0;
 
   return {
-    saveCredentials(provider, key) {
+    saveCredentials(provider, key, config) {
       let local = false;
       try {
         const url = new URL(options.url);
@@ -404,7 +413,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
         const requestId = id();
         pendingCredential = { id: requestId, resolve, reject, cancel: options.schedule(failCredential, 10000) };
         try {
-          send({ type: "credentials.set", version, id: requestId, provider, key });
+          send({ type: "credentials.set", version, id: requestId, provider, key, ...(config ? { config } : {}) });
         } catch {
           failCredential();
         }

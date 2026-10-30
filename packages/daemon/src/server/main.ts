@@ -4,8 +4,8 @@ import { dirname } from "node:path";
 import { parseArgs } from "node:util";
 import { bootDaemon } from "../boot.ts";
 import { systemKeychain } from "../keychain.ts";
-import { readPluginSecret } from "../plugins/keychain.ts";
 import { startServer } from "./index.ts";
+import { coordinatorModels, loadedModelKinds, modelEnvironment } from "./models.ts";
 import { daemonProjectSchema, startReaders } from "./readers.ts";
 
 /** The exit code that asks the desktop shell to start the daemon again (packages/desktop/src/daemon.ts). */
@@ -34,26 +34,39 @@ try {
     if (!Array.isArray(catalog)) throw new Error("--projects must name a JSON array of projects");
     const projects = catalog.map((project) => daemonProjectSchema.parse(project));
     mkdirSync(dirname(values.database), { recursive: true });
+    const keychain = systemKeychain();
+    const modelAccess = await modelEnvironment(process.env, keychain);
     const daemon = await bootDaemon({
       databasePath: values.database,
-      secrets: { get: readPluginSecret },
+      secrets: modelAccess.secrets,
       log: { info: (line) => console.error(line), error: (line) => console.error(line) },
     });
     try {
+      const coordinators = coordinatorModels({
+        projects,
+        store: daemon.store,
+        registry: daemon.registry,
+        selected: modelAccess.selected,
+        onSkipped: (project) =>
+          console.error(`Coordinator for ${project} not started: check model plugin configuration and credentials`),
+      });
       let stopping = false;
       const server = await startServer({
         store: daemon.store,
         projects,
         port,
         staticDir: values["static-dir"],
+        keychain,
+        coordinators,
+        modelKinds: loadedModelKinds(daemon.registry),
         // The keychain is opened on first use, as the plugins' own secret getter does.
         plugins: {
           configPath: daemon.configPath,
           catalog: daemon.catalog,
           boot: daemon,
           keychain: {
-            read: (service, account) => systemKeychain().read(service, account),
-            write: (service, account, value) => systemKeychain().write(service, account, value),
+            read: (service, account) => keychain.read(service, account),
+            write: (service, account, value) => keychain.write(service, account, value),
           },
         },
         // --restartable: the shell starts a daemon that exits with RESTART_EXIT_CODE again.

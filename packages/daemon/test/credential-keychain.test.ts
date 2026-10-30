@@ -16,16 +16,16 @@ test("one gateway stores coordinator provider/key atomically and scopes Linear a
   const key = randomBytes(24).toString("hex");
   await chain.setCoordinator("anthropic", key);
   assert.deepEqual(await chain.coordinator(), { provider: "anthropic", key });
-  await chain.setCoordinator("openai", key);
-  assert.deepEqual(await new Keychain(backend).coordinator(), { provider: "openai", key });
-  assert.deepEqual(await chain.status(), { provider: "openai", storage: "os-keychain" });
+  await chain.setCoordinator("openai-compatible", key);
+  assert.deepEqual(await new Keychain(backend).coordinator(), { provider: "openai-compatible", key });
+  assert.deepEqual(await chain.status(), { provider: "openai-compatible", storage: "os-keychain" });
   await chain.write("linear", "harbor", key);
   await chain.write("github", "github", key);
   assert.equal(await readLinearKey(chain.read.bind(chain), "harbor"), key);
   assert.equal(await chain.read("linear", "other"), null);
   assert.equal(await chain.read("github", "github"), key);
-  await assert.rejects(chain.setCoordinator("openai", `${key}\n`), /Invalid model credential/);
-  assert.deepEqual(await chain.coordinator(), { provider: "openai", key });
+  await assert.rejects(chain.setCoordinator("openai-compatible", `${key}\n`), /Invalid model credential/);
+  assert.deepEqual(await chain.coordinator(), { provider: "openai-compatible", key });
 });
 
 test("Linux fallback persists private files, replaces atomically and refuses loose permissions or symlinks", async () => {
@@ -35,8 +35,11 @@ test("Linux fallback persists private files, replaces atomically and refuses loo
   try {
     const chain = new Keychain(fileKeychain(credentials));
     assert.equal(await chain.coordinator(), null);
-    await chain.setCoordinator("openai", key);
-    assert.deepEqual(await new Keychain(fileKeychain(credentials)).coordinator(), { provider: "openai", key });
+    await chain.setCoordinator("openai-compatible", key);
+    assert.deepEqual(await new Keychain(fileKeychain(credentials)).coordinator(), {
+      provider: "openai-compatible",
+      key,
+    });
     assert.equal((await stat(credentials)).mode & 0o777, 0o700);
     const files = await readdir(credentials);
     assert.equal(files.length, 1);
@@ -52,7 +55,7 @@ test("Linux fallback persists private files, replaces atomically and refuses loo
     await assert.rejects(chain.coordinator(), /^Error: Credential lookup failed$/);
     await rm(file);
     await chmod(credentials, 0o755);
-    await assert.rejects(chain.setCoordinator("openai", key), /^Error: Credential could not be saved$/);
+    await assert.rejects(chain.setCoordinator("openai-compatible", key), /^Error: Credential could not be saved$/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -72,8 +75,8 @@ test("Linux system storage accepts only trimmed absolute XDG roots, otherwise us
         import { join, isAbsolute } from "node:path";
         import { systemKeychain, readLinearKey } from ${JSON.stringify(new URL("../src/keychain.ts", import.meta.url).href)};
         const keychain = systemKeychain();
-        await keychain.setCoordinator("openai", randomBytes(24).toString("hex"));
-        assert.equal((await keychain.coordinator())?.provider, "openai");
+        await keychain.setCoordinator("openai-compatible", randomBytes(24).toString("hex"));
+        assert.equal((await keychain.coordinator())?.provider, "openai-compatible");
         const linearKey = randomBytes(24).toString("hex");
         await keychain.write("linear", "orchard", linearKey);
         assert.equal((await readLinearKey(undefined, "orchard")) === linearKey, true);
