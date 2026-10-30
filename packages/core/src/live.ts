@@ -470,6 +470,8 @@ type Item = {
   coordinator?: string | null;
   body: string;
   at: Date;
+  /** Report writes compare this captured claim in the same transaction as the mutation. */
+  guard?: ReleaseGuard;
 };
 
 /**
@@ -590,11 +592,11 @@ export interface FleetStore {
   upsertProject(p: ProjectInput, at: Date): Promise<void>;
   listProjects(): Promise<ProjectRecord[]>;
 
-  saveTicketPaths(project: string, ticket: string, paths: string[], at: Date): Promise<void>;
+  saveTicketPaths(project: string, ticket: string, paths: string[], at: Date, guard?: ReleaseGuard): Promise<void>;
   ticketPaths(project: string): Promise<Record<string, string[]>>;
   deleteTicketPaths(project: string, ticket: string, guard?: ReleaseGuard): Promise<void>;
 
-  recordEvent(e: EventInput): Promise<void>;
+  recordEvent(e: EventInput, guard?: ReleaseGuard): Promise<void>;
   eventsSince(project: string, query: EventsSinceQuery): Promise<FleetEvent[]>;
   recordHeartbeat(
     input: HeartbeatRecord & { project: string; workerSessionId?: string | null; at: Date },
@@ -734,7 +736,13 @@ export interface FleetStore {
   /** Resolves the open answer-requests for one question; returns how many. */
   resolveAnswerRequests(q: { project: string; question: number; resolution: string; at: Date }): Promise<number>;
   /** Resolves a ticket's open plan and the answer-requests waiting on it; returns how many plans. */
-  resolvePlans(input: { project: string; ticket: string; resolution: string; at: Date }): Promise<number>;
+  resolvePlans(input: {
+    project: string;
+    ticket: string;
+    resolution: string;
+    at: Date;
+    guard?: ReleaseGuard;
+  }): Promise<number>;
 
   queueAdd(e: QueueInput & { project: string; at: Date }): Promise<QueueAdded>;
   queueList(project: string, opts: { since: Date }): Promise<QueueEntry[]>;
@@ -900,7 +908,14 @@ export async function recordReport(
     if (reportingHandle && (reportingHandle.releasedAt || reportingHandle.workerSessionId !== r.workerSessionId))
       throw new Error("the worker session no longer holds this ticket");
   }
-  if (r.paths !== undefined) await store.saveTicketPaths(project, r.ticket, r.paths, at);
+  const guard: ReleaseGuard = reportingHandle
+    ? {
+        handle: reportingHandle.handle,
+        claimedAt: reportingHandle.claimedAt,
+        workerSessionId: r.workerSessionId ?? reportingHandle.workerSessionId,
+      }
+    : { absent: true };
+  if (r.paths !== undefined) await store.saveTicketPaths(project, r.ticket, r.paths, at, guard);
   const reading = r.paths !== undefined ? await readOverlap(store, project, r.ticket, r.paths, at, snapshot) : null;
   const notes = reading ? overlapLines(reading) : [];
   const handle =
@@ -912,36 +927,46 @@ export async function recordReport(
       ? (r.shippingStage ??
         (r.previous === "shipping" ? await currentShippingStage(store, project, r.ticket, handle?.claimedAt) : null))
       : null;
-  await store.recordEvent({
-    project,
-    ticket: r.ticket,
-    kind: "report",
-    phase: r.phase,
-    shippingStage,
-    message: r.summary,
-    prUrl: r.prUrl,
-    headSha: r.headSha,
-    at,
-  });
+  await store.recordEvent(
+    {
+      project,
+      ticket: r.ticket,
+      kind: "report",
+      // Capture the caller's generation before overlap/path awaits; a later replacement cannot relabel this report.
+      runtime: reportingHandle?.runtime ?? null,
+      handle: reportingHandle?.handle ?? null,
+      phase: r.phase,
+      shippingStage,
+      message: r.summary,
+      prUrl: r.prUrl,
+      headSha: r.headSha,
+      at,
+    },
+    guard,
+  );
   if (r.phase === "awaiting-approval" && (r.previous !== r.phase || r.paths !== undefined)) {
-    const handle = await store.getRuntimeHandle(project, r.ticket);
     await store.putPlan({
       project,
       ticket: r.ticket,
-      author: handle && !handle.releasedAt ? handle.handle : null,
-      coordinator: handle && !handle.releasedAt ? (handle.coordinator ?? null) : null,
+      author: reportingHandle && !reportingHandle.releasedAt ? reportingHandle.handle : null,
+      coordinator: reportingHandle && !reportingHandle.releasedAt ? (reportingHandle.coordinator ?? null) : null,
+      guard,
       body: [r.message, ...notes].join("\n\n"),
       at,
     });
   } else if (r.phase !== "awaiting-approval")
-    await store.resolvePlans({ project, ticket: r.ticket, resolution: `worker reported ${r.phase}`, at });
+    await store.resolvePlans({ project, ticket: r.ticket, resolution: `worker reported ${r.phase}`, at, guard });
   if (r.phase === "ready-to-merge") {
-    const held = await store.getRuntimeHandle(project, r.ticket);
     await store.putHandBack({
       project,
       ticket: r.ticket,
-      author: r.workerSessionId ?? (held && !held.releasedAt ? (held.workerSessionId ?? held.handle) : null),
-      coordinator: held && !held.releasedAt ? (held.coordinator ?? null) : null,
+      author:
+        r.workerSessionId ??
+        (reportingHandle && !reportingHandle.releasedAt
+          ? (reportingHandle.workerSessionId ?? reportingHandle.handle)
+          : null),
+      coordinator: reportingHandle && !reportingHandle.releasedAt ? (reportingHandle.coordinator ?? null) : null,
+      guard,
       body: `Agent status: ${r.phase} — ${r.summary}`,
       at,
     });

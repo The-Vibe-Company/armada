@@ -614,7 +614,10 @@ export function fakeArmada(
   const sessions = new Set<string>();
   const keys = new Map(Object.entries(o.keys ?? {}));
   const calls: ArmadaCall[] = [];
-  const launches = new Map<string, { project: string; ticket: string; coordinator?: string | null; used: boolean }>();
+  const launches = new Map<
+    string,
+    { id?: string; project: string; ticket: string; coordinator?: string | null; used: boolean }
+  >();
   const workers = new Map<
     string,
     {
@@ -788,6 +791,7 @@ export function fakeArmada(
       }
       const t = `armada_launch_CANARY_${launches.size + 1}`;
       launches.set(t, {
+        id: `wk-${launches.size + 1}`,
         project: String(body.project),
         ticket: String(body.ticket),
         coordinator:
@@ -816,6 +820,27 @@ export function fakeArmada(
         organization: { id: "org-1", name: "Acme", slug: "acme" },
       });
     }
+    if (route === "POST launch-tokens/bind" || route === "POST workers/revoke-pending") {
+      if (!person) return Response.json({ error: "not signed in to Armada" }, { status: 401 });
+      const row = store.launches.find(
+        (row) => row.id === body.id && row.project === body.project && row.ticket === body.ticket,
+      );
+      if (!row || row.endedAt) return Response.json({ error: "launch unavailable" }, { status: 409 });
+      if (route === "POST launch-tokens/bind") {
+        if (row.handle && (row.handle !== body.handle || row.runtime !== body.runtime))
+          return Response.json({ error: "launch already bound" }, { status: 409 });
+        row.handle = String(body.handle);
+        row.runtime = String(body.runtime);
+      } else {
+        const held = await store.getRuntimeHandle(row.project, row.ticket);
+        if (row.tokenUsedAt && held && !held.releasedAt)
+          return Response.json({ error: "launch claimed" }, { status: 409 });
+        row.endedAt = clock.now().toISOString();
+        const launch = [...launches.values()].find((launch) => launch.id === row.id);
+        if (launch) launch.used = true;
+      }
+      return Response.json({ id: row.id, ticket: row.ticket });
+    }
     if (route === "POST launch-tokens/exchange") {
       const launch = launches.get(String(body.token));
       if (!launch || launch.used)
@@ -828,23 +853,22 @@ export function fakeArmada(
         );
       launch.used = true;
       const t = `armada_worker_CANARY_${workers.size + 1}`;
+      const workerId = launch.id ?? `wk-${workers.size + 1}`;
       workers.set(t, {
         project: launch.project,
         ticket: launch.ticket,
         coordinator: launch.coordinator,
         ended: null,
         createdAt: clock.now().toISOString(),
-        id: `wk-${workers.size + 1}`,
+        id: workerId,
       });
-      const pending = store.launches.find(
-        (row) => row.project === launch.project && row.ticket === launch.ticket && !row.endedAt,
-      );
+      const pending = store.launches.find((row) => row.id === launch.id);
       if (pending) pending.tokenUsedAt = clock.now().toISOString();
       return Response.json({
         schemaVersion: 1,
         token: t,
         worker: {
-          id: `wk-${workers.size}`,
+          id: workerId,
           project: launch.project,
           ticket: launch.ticket,
           launchedBy: "Ada Example",

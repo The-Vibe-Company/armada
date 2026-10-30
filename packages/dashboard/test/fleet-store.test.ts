@@ -513,6 +513,112 @@ describe("live data", () => {
     ).toBeNull();
   });
 
+  test("delayed reports cannot overwrite a replacement's paths, plan or hand-back in the database", async () => {
+    const project = "guarded-report";
+    await upsertProject(
+      db,
+      { slug: project, name: "Reports", repository: "acme/reports", programRoot: "WID-1" },
+      at(0),
+    );
+    for (const phase of ["awaiting-approval", "implementing", "ready-to-merge"] as const) {
+      const ticket = `WID-${phase}`;
+      const store = fleetStore(db);
+      await saveRuntimeHandle(db, {
+        project,
+        ticket,
+        runtime: "Conductor",
+        handle: "ws/old",
+        branch: null,
+        workerSessionId: "old",
+        at: at(0),
+      });
+      const savePaths = store.saveTicketPaths.bind(store);
+      let resume!: () => void;
+      let entered!: () => void;
+      const waiting = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      store.saveTicketPaths = async (...args) => {
+        entered();
+        await waiting;
+        return savePaths(...args);
+      };
+      const delayed = recordReport(
+        store,
+        project,
+        {
+          ticket,
+          workerSessionId: "old",
+          phase,
+          previous: "planning",
+          prUrl: null,
+          headSha: null,
+          summary: "Old report",
+          message: "Old report",
+          paths: ["old.ts"],
+        },
+        at(4),
+      );
+      await started;
+      store.saveTicketPaths = savePaths;
+      await saveRuntimeHandle(db, {
+        project,
+        ticket,
+        runtime: "Conductor",
+        handle: "ws/new",
+        branch: null,
+        workerSessionId: "new",
+        at: at(2),
+      });
+      const replacementPath = `replacement-${phase}.ts`;
+      await recordReport(
+        store,
+        project,
+        {
+          ticket,
+          workerSessionId: "new",
+          phase: "awaiting-approval",
+          previous: "planning",
+          prUrl: null,
+          headSha: null,
+          summary: "Replacement plan",
+          message: "Replacement plan",
+          paths: [replacementPath],
+        },
+        at(3),
+      );
+      resume();
+      await delayed;
+      expect((await store.ticketPaths(project))[ticket]).toEqual([replacementPath]);
+      expect(
+        (await store.listSessions(project, { since: at(0) })).find(
+          (session) => session.ticket === ticket && !session.releasedAt,
+        )?.lastReport,
+      ).toMatchObject({ message: "Replacement plan", phase: "awaiting-approval" });
+      expect(
+        (
+          await store.eventsSince(project, {
+            afterAt: at(0).toISOString(),
+            afterId: 0,
+            tickets: [ticket],
+            kinds: ["report"],
+            limit: 200,
+          })
+        ).some((event) => event.message === "Old report" && event.handle === "ws/old"),
+      ).toBe(true);
+      const items = await store.openInboxItems({ project, recipient: "coordinator", ticket });
+      expect(items.filter((item) => item.kind === "plan")).toHaveLength(1);
+      expect(items.find((item) => item.kind === "plan")).toMatchObject({
+        author: "ws/new",
+        body: expect.stringMatching(/^Replacement plan(?:\n|$)/),
+      });
+      expect(items.some((item) => item.kind === "hand-back")).toBe(false);
+    }
+  });
+
   test("heartbeats atomically target the current claim, never change reports, and stop on release or replacement", async () => {
     const ticket = "WID-99";
     const handle = {

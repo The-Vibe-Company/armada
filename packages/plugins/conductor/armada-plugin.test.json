@@ -1,0 +1,9 @@
+{
+  "runtime": {
+    "conductor": {
+      "binary": "${directory}/conductor-worker.mjs",
+      "defaultProfile": "fixture",
+      "profiles": { "fixture": { "agent": "claude", "model": "fixture", "effort": "high" } }
+    }
+  }
+}

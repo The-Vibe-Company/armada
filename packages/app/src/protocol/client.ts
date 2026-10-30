@@ -100,7 +100,8 @@ export interface DaemonClient {
   subscribe(listener: () => void): () => void;
   start(): void;
   stop(): void;
-  saveCredentials(provider: string, key: string, config?: ModelConfig): Promise<void>;
+  /** `target` names where the key goes: pi's provider (`pi`) or the coordinator model plugin's (`plugin`). */
+  saveCredentials(provider: string, key: string, config?: ModelConfig, target?: "pi" | "plugin"): Promise<void>;
   login(): Promise<void>;
   login(provider: string, authType: "oauth" | "api_key"): Promise<void>;
   answer(flow: string, id: string, value: string): void;
@@ -662,7 +663,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       authListeners.add(listener);
       return () => authListeners.delete(listener);
     },
-    saveCredentials(provider, key, config) {
+    saveCredentials(provider, key, config, target) {
       let local = false;
       try {
         const url = new URL(options.url);
@@ -677,7 +678,15 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
         const requestId = id();
         pendingCredential = { id: requestId, resolve, reject, cancel: options.schedule(failCredential, 10000) };
         try {
-          send({ type: "credentials.set", version, id: requestId, provider, key, ...(config ? { config } : {}) });
+          send({
+            type: "credentials.set",
+            version,
+            id: requestId,
+            provider,
+            key,
+            ...(config ? { config } : {}),
+            ...(target ? { target } : {}),
+          });
         } catch {
           failCredential();
         }

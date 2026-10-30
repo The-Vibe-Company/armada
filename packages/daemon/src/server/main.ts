@@ -10,6 +10,8 @@ import { systemKeychain } from "../keychain.ts";
 import { Merges } from "../merge/service.ts";
 import { ModelRegistry } from "../models/registry.ts";
 import { connectionSecrets } from "../plugins/connection-secrets.ts";
+
+import { startHostedReader } from "../workers/hosted.ts";
 import { Workers } from "../workers/service.ts";
 import { startWorkerSocket } from "../workers/socket.ts";
 import { Account } from "./account.ts";
@@ -86,8 +88,9 @@ try {
       const workers = new Workers({
         store: daemon.store,
         registry: daemon.registry,
-        projects: projects.flatMap((project) => (project.checkout ? [{ ...project, checkout: project.checkout }] : [])),
+        projects,
         socketPath: workerSocket,
+        account,
         refresh: (project) => readers?.refresh(project) ?? Promise.resolve(),
       });
       const merges = new Merges({
@@ -197,6 +200,12 @@ try {
         await rm(workerDirectory, { recursive: true, force: true });
         throw error;
       }
+      const hostedReader = startHostedReader({
+        store: daemon.store,
+        account,
+        projects,
+        recover: (project) => workers.recoverHosted(project),
+      });
       const workerPoll = setInterval(() => {
         void workers.observeAll();
       }, 1000);
@@ -209,6 +218,7 @@ try {
         clearInterval(workerPoll);
         try {
           await server.close();
+          await hostedReader.stop();
           const results = await Promise.allSettled([workers.close(), socket.close()]);
           const failed = results.find((result) => result.status === "rejected");
           if (failed?.status === "rejected") throw failed.reason;
