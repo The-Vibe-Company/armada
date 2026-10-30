@@ -14,6 +14,8 @@ import { type CoordinatorToolName, TOOL_NAMES } from "./tools.ts";
 export interface NativeToolOptions {
   now: () => string;
   workers?: Workers;
+  /** Host-owned, bounded refresh of the project's tracker and forge readers. */
+  refresh?: () => Promise<void>;
   /** Optional host restriction/adapter for explicitly requested, local V1 file imports. */
   readRulesImport?: (file: string) => Promise<ProjectRules>;
   mergeEvidence?: (pr: number) => Promise<MergeEvidence | null>;
@@ -215,6 +217,8 @@ function decide(
           ok: true,
           project,
           seq: events.at(-1)?.seq ?? 0,
+          at,
+          readAt: JSON.parse(JSON.stringify(tables.readAt ?? {})),
           tables: JSON.parse(JSON.stringify(tables)),
           rules: JSON.parse(JSON.stringify(rules)),
           unavailable: [
@@ -227,7 +231,15 @@ function decide(
         },
       };
     case "inbox.list":
-      return { result: { ok: true, project, items: JSON.parse(JSON.stringify(tables.inbox)) } };
+      return {
+        result: {
+          ok: true,
+          project,
+          at,
+          readAt: JSON.parse(JSON.stringify(tables.readAt ?? {})),
+          items: JSON.parse(JSON.stringify(tables.inbox)),
+        },
+      };
     case "inbox.answer": {
       const answer = (args.answer as string).trim();
       // Copied from core/src/inbox.ts answerItem; limits from core/src/requests.ts requestAnswer.
@@ -456,6 +468,21 @@ export function nativeTools(
                 `call ${name} with its declared parameters`,
               ),
             );
+          if ((name === "fleet.status" || name === "inbox.list") && options.refresh) {
+            // The host bounds the refresh; failure leaves the last committed facts and their age.
+            await options.refresh().catch(() => {});
+            try {
+              events = scope.readEvents();
+            } catch {
+              return output(
+                refuse(
+                  "coordinator_inactive",
+                  "the project's coordinator no longer owns its writer scope",
+                  "open the project's coordinator",
+                ),
+              );
+            }
+          }
           if (["worker.launch", "worker.message", "worker.stop"].includes(name) && options.workers) {
             if (!api.callId || !Number.isSafeInteger(api.taskId))
               return output(

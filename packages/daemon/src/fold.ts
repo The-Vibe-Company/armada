@@ -13,6 +13,7 @@ import type {
   Ticket,
   Validation,
 } from "@armada/protocol";
+import { z } from "zod";
 import { checkpointRules, emptyRules, type RulesState } from "../coordinator/rules.ts";
 import { flowStep, pipelineStep } from "./rules.ts";
 
@@ -37,12 +38,21 @@ interface Draft extends SessionRef {
   at: string;
   heartbeat: string | null;
   earlier: Phase[];
+  claimSeq?: number;
   stage?: ShippingStage;
 }
+const readerCheckpoint = z.object({
+  format: z.literal("armada.readers"),
+  version: z.literal(1),
+  provider: z.string().min(1),
+});
+
 interface Projection {
+  readAt: Record<string, string>;
   rules: RulesState;
   tickets: Map<string, Ticket>;
   prs: Map<number, PullRequest>;
+  mergedAt: Map<number, { at: string; seq: number }>;
   sessions: Map<string, Draft>;
   claims: Set<string>;
   inbox: Map<string, InboxItem>;
@@ -52,8 +62,10 @@ interface Projection {
 }
 const empty = (): Projection => ({
   rules: emptyRules(),
+  readAt: Object.create(null),
   tickets: new Map(),
   prs: new Map(),
+  mergedAt: new Map(),
   sessions: new Map(),
   claims: new Set(),
   inbox: new Map(),
@@ -109,9 +121,18 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
         }
         break;
       }
+      case "pull-request.opened":
+      case "pull-request.head-moved":
+      case "pull-request.checks-green":
+      case "pull-request.checks-red":
+      case "pull-request.review-changed":
+      case "pull-request.closed":
+      case "pull-request.merged":
       case "pull-request.seen":
+        if (e.payload.state === "merged" && p.prs.get(e.payload.number)?.state !== "merged")
+          p.mergedAt.set(e.payload.number, { at: e.at, seq: e.seq });
         p.prs.delete(e.payload.number);
-        p.prs.set(e.payload.number, e.payload);
+        p.prs.set(e.payload.number, { ...e.payload, conflicting: e.payload.state === "open" && e.payload.conflicting });
         break;
       case "session.claimed":
         if (!Number.isSafeInteger(e.payload.generation) || e.payload.generation < 1)
@@ -123,6 +144,7 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
         )
           p.sessions.set(e.payload.ticket, {
             ...e.payload,
+            claimSeq: e.seq,
             phase: "planning",
             reason: "Claimed",
             at: e.at,
@@ -214,6 +236,8 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
         break;
       }
       case "coordinator.checkpoint": {
+        const reading = readerCheckpoint.safeParse(e.payload.checkpoint);
+        if (reading.success && Number.isFinite(Date.parse(e.at))) p.readAt[reading.data.provider] = e.at;
         const rules = checkpointRules(e.payload.checkpoint);
         if (rules) p.rules = rules;
         break;
@@ -225,7 +249,13 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
   const tables: FleetTables = { seq, projects: Object.create(null) };
   for (const [project, p] of projects) {
     const sessions = [...p.sessions.values()].map((s): Session => {
-      const pr = [...p.prs.values()].reverse().find((pr) => pr.ticket === s.ticket && pr.state !== "closed");
+      const pr = [...p.prs.values()].reverse().find(
+        (pr) =>
+          pr.ticket === s.ticket &&
+          pr.state !== "closed" &&
+          // Re-observing an old merge cannot end a later worker generation.
+          !(pr.state === "merged" && s.claimSeq !== undefined && (p.mergedAt.get(pr.number)?.seq ?? 0) < s.claimSeq),
+      );
       const validation = [...p.validations.values()].find(
         (v) => v.ticket === s.ticket && v.session === s.session && !v.decision,
       );
@@ -235,8 +265,11 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
       const question = [...p.inbox.values()].find((i) => i.ticket === s.ticket && i.kind === "question");
       let state: SessionState = "in-progress";
       let reason = s.reason;
-      if (s.phase === "merged" || s.phase === "released") state = s.phase;
-      else if (s.phase === "blocked") state = "blocked";
+      const phase = s.phase !== "released" && pr?.state === "merged" ? "merged" : s.phase;
+      if (phase === "merged" || phase === "released") {
+        state = phase;
+        if (pr?.state === "merged" && phase === "merged") reason = `Pull request #${pr.number} merged`;
+      } else if (s.phase === "blocked") state = "blocked";
       else if (validation || s.phase === "awaiting-approval" || (s.phase === "awaiting-validation" && !decision)) {
         state = "waiting-for-owner";
         if (validation) reason = validation.question;
@@ -255,12 +288,12 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
         runtime: s.runtime,
         handle: s.handle,
         title: p.tickets.get(s.ticket)?.title ?? s.ticket,
-        phase: s.phase,
+        phase,
         state,
         reason,
-        step: pipelineStep(s.phase, pr),
-        flowStep: flowStep(s.phase, s.stage, pr, s.earlier),
-        at: s.at,
+        step: pipelineStep(phase, pr),
+        flowStep: flowStep(phase, s.stage, pr, s.earlier),
+        at: phase === "merged" && pr?.state === "merged" ? (p.mergedAt.get(pr.number)?.at ?? s.at) : s.at,
         heartbeat: s.heartbeat,
       };
     });
@@ -275,6 +308,7 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
     for (const s of sessions) sessionsByState[s.state].push(s);
     tables.projects[project] = {
       rules: p.rules,
+      ...(Object.keys(p.readAt).length ? { readAt: p.readAt } : {}),
       tickets: [...p.tickets.values()],
       pullRequests: [...p.prs.values()],
       sessions,

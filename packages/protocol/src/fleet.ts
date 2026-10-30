@@ -166,6 +166,8 @@ export type Validation = z.infer<typeof validationSchema>;
 const tablesSchema = z.object({
   // Absent on older snapshots; current daemon folds always supply this slice.
   rules: rulesStateSchema.optional(),
+  /** Successful provider reads, even when no facts changed; absent on older snapshots. */
+  readAt: z.record(z.string(), z.iso.datetime()).optional(),
   tickets: z.array(ticketSchema),
   pullRequests: z.array(pullRequestSchema),
   sessions: z.array(sessionSchema),

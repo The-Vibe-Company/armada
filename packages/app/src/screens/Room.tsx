@@ -6,7 +6,7 @@
 // taking the width, the owner's field fixed at the bottom. The agents' rail
 // slides in from the right at a third of the width. The sidebar stays.
 import { AnimatePresence } from "motion/react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Dot, Page, PageHeader } from "@/components/page";
 import { dayIn, fleetItems, type Group, groupCounts, headline, rowTime } from "@/fleet/overview";
 import { type Harness, skyProject } from "@/fleet/sky";
@@ -37,6 +37,11 @@ export function Room({
   zone?: string;
 }) {
   const { projects, fleets, status } = useDaemon();
+  const [clock, setClock] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setClock(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
   const project = projects?.find((p) => p.id === id);
   if (!project)
     return (
@@ -54,7 +59,7 @@ export function Room({
       project={project}
       snapshot={fleets[project.id]}
       live={status === "live"}
-      now={givenNow ?? Date.now()}
+      now={givenNow ?? clock}
       zone={givenZone ?? viewerZone()}
     />
   );
@@ -135,6 +140,19 @@ export function RoomView({ project, snapshot, live, now, zone, chat }: RoomProps
                   </Fact>
                 </>
               )}
+              {Object.entries(state.readAt ?? {}).map(([provider, at]) => {
+                const age = now - Date.parse(at);
+                if (age <= 180_000) return null;
+                const name = provider === "linear" ? "Linear" : provider === "github" ? "GitHub" : provider;
+                return (
+                  <span key={provider} className="inline-flex items-center gap-2 text-meta text-text-3">
+                    <Dot />
+                    <span title={at}>
+                      {name} last read {Math.floor(age / 60_000)} min ago
+                    </span>
+                  </span>
+                );
+              })}
               <a href={rulesHref(project.id)} className="ml-auto rounded-sm px-1.5 text-text-2 hover:text-text">
                 Rules
               </a>

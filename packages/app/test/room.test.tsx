@@ -41,11 +41,15 @@ const conversation: ChatItem[] = [
   { kind: "line", id: "m1", at: at(4), body: "HAR-15 is blocked: #41 is red. I told its worker." },
 ];
 
-function render(chat: Partial<Chat> = {}, { asked = true } = {}) {
+function render(
+  chat: Partial<Chat> = {},
+  { asked = true, readAt = undefined as Record<string, string> | undefined } = {},
+) {
   const events = sampleEvents(AT)
     .filter((e) => asked || !(e.kind === "inbox.opened" && e.payload.kind === "owner-request"))
     .map((e, i) => ({ ...e, seq: i + 1 }));
   const state = JSON.parse(JSON.stringify(fold(events).projects.harbor));
+  if (readAt) state.readAt = readAt;
   const project = SAMPLE_PROJECTS[0];
   if (!project) throw new Error("no sample project");
   const full: Chat = {
@@ -212,7 +216,26 @@ test("a sent message stays until a reading holds it, and the room reads again pa
   expect(withSent(placed, sent, "harbor")).toBe(placed);
   const event = (seq: number, kind: string) => ({ seq, project: "harbor", kind, at: AT, actor: "a", payload: {} });
   expect(
-    lastCoordinatorSeq({ seq: 9, events: [event(3, "coordinator.checkpoint"), event(7, "session.reported")] }),
+    lastCoordinatorSeq({
+      seq: 9,
+      events: [
+        event(3, "coordinator.checkpoint"),
+        event(7, "session.reported"),
+        { ...event(9, "coordinator.checkpoint"), actor: "reader" },
+      ],
+    }),
   ).toBe(3);
   expect(lastCoordinatorSeq(undefined)).toBe(0);
+});
+
+test("the room qualifies stale provider readings quietly in its facts line, leaving fresh readings quiet", () => {
+  const html = render(
+    {},
+    { readAt: { linear: new Date(NOW - 240_000).toISOString(), github: new Date(NOW - 120_000).toISOString() } },
+  );
+  const header = block(html, /<header/, /<\/header>/);
+  expect(text(header)).toContain("Linear last read 4 min ago");
+  expect(text(header)).not.toContain("GitHub last read");
+  expect(header).toContain("text-meta text-text-3");
+  expect(render()).not.toContain("last read");
 });
