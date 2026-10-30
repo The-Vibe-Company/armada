@@ -283,7 +283,7 @@ test("the daemon's problem, with its Reload, shows on every screen, not only the
   say({ type: "error", code: "app-too-old", message: APP_TOO_OLD });
   const screens = [
     <Hangar key="hangar" onReload={() => {}} now={NOW} zone={ZONE} />,
-    <Settings key="settings" address="ws://daemon.test/" onReload={() => {}} />,
+    <Settings key="settings" section="coordinator" address="ws://daemon.test/" onReload={() => {}} />,
     <Project key="room" id="kestrel" onReload={() => {}} />,
   ];
   for (const screen of screens) {
@@ -293,9 +293,8 @@ test("the daemon's problem, with its Reload, shows on every screen, not only the
   }
 });
 
-test("the address's hash names the screen: the hangar, a project, the settings", () => {
+test("the address's hash names the screen: the hangar, a project", () => {
   expect(["", "#", "#/", "#/elsewhere"].map((h) => routeOf(h).kind)).toEqual(["home", "home", "home", "home"]);
   expect(routeOf("#/projects/sea%20lane")).toEqual({ kind: "project", id: "sea lane" });
   expect(routeOf("#/projects/%E0%A4%A")).toEqual({ kind: "home" });
-  expect(routeOf("#/settings")).toEqual({ kind: "settings" });
 });

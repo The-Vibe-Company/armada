@@ -46,8 +46,9 @@ serves the build.
 ## The routes
 
 The address's hash names the screen (`src/lib/route.ts`, `routeOf` and
-`useRoute`): `#/` the hangar, `#/projects/<id>` a project, `#/plugins` the
-Plugins screen, `#/settings` the settings; anything else is the hangar. The
+`useRoute`): `#/` the hangar, `#/projects/<id>` a project, `#/settings/<section>`
+a section of the settings (`#/settings` the coordinator's; the old `#/plugins`
+is replaced by `#/settings/providers`, once); anything else is the hangar. The
 daemon serves one page and the desktop shell opens it from a file, so the path
 never moves. A screen is one line there and one in `src/App.tsx`; the sidebar
 marks the current one (`aria-current`).
@@ -77,9 +78,30 @@ the empty sky's quiet line.
 
 ## Settings
 
-`src/screens/Settings.tsx` at `#/settings`, reached from the sidebar's bottom:
-the daemon's address on the facts line, then the coordinator's model
-(`src/components/CoordinatorKey.tsx`, the key form, unchanged).
+`src/screens/Settings.tsx` at `#/settings/<section>` (THE-2069), reached from the
+sidebar's one Settings entry (a gear, at its bottom) and loaded on demand, off the
+first load. It has the anatomy of T3 Code's settings (`pingdotgg/t3code`,
+`apps/web/src/components/settings`) on the v7 title line. `src/settings/Layout.tsx`
+holds its parts. `SettingsNav` is the nav of sections: Coordinator, Providers,
+Account, About, each with its lucide icon. The current one is `aria-current`
+and is the nav's one tab stop, and the arrow keys, Home and End move between
+them. Below 720 px of the settings' own width it becomes an icon rail with a
+tooltip per icon. `SettingsSection` is a heading over a `SettingsGroup`, the
+grouped card whose rows are divided by a hairline. `SettingsRow` takes a
+`title`, a `description`, a `status` and one `control` on the right, and
+`SettingsFold` holds a row's settings folded below it. `StateDot` puts a state
+word on its dot.
+
+The sections:
+
+- **Coordinator** (`src/settings/Coordinator.tsx`): the coordinator's model, the key form unchanged.
+- **Providers**: the plugins (below).
+- **Account** (`src/settings/Account.tsx`): a disabled "Sign in to Armada" row until THE-2071.
+- **About** (`src/settings/About.tsx`):
+  - the daemon's address
+  - the app's version (`__ARMADA_APP_VERSION__`, from `package.json` by `vite.config.ts`)
+  - the protocol version the app speaks and the minor the daemon answers with
+  - the daemon's version and its data folder, which read "Not reported by this daemon" until the protocol carries them
 
 ## A project's fleet by state
 
@@ -162,16 +184,15 @@ daemon's fold and checks the card, the steps and both tabs; `test/build.test.ts`
 opens a row by a click and by the keyboard in Chromium, and holds every row's
 time whole at 900 px.
 
-## The Plugins screen
+## Providers: the plugins
 
-`src/screens/Plugins.tsx` at `#/plugins` (`src/lib/route.ts`; the sidebar's
-Plugins entry) is loaded on demand, off the first load. It follows the same
-anatomy: the catalog's numbers on the facts line (plugins, on, loaded, refused),
-the title and a quiet line, then every bundled plugin in one list grouped by seam
-(`src/plugins/list.ts`: Runtimes, Trackers, Forges, Nodes, Models, then Other).
-Each row has its name, version, description and contributions, its state in a
-word and colour (loaded, off, refused, restart to apply) and a switch
-(`src/components/ui/switch.tsx`, lime when on). A "Configure" disclosure holds
+`src/settings/Providers.tsx` at `#/settings/providers` (the Plugins screen of
+THE-2019 before THE-2069) shows the catalog's numbers on the facts line (plugins,
+on, loaded, refused). Below them, every bundled plugin is listed in grouped cards
+by what it provides (`src/plugins/list.ts`: Models, Runtimes, Trackers, Forges,
+Nodes, then Other). Each row has its name, version, description and
+contributions, its state word on a dot (loaded, off, refused, restart to apply)
+and a switch (`src/components/ui/switch.tsx`, lime when on). Its "Settings" fold holds
 each contribution's form, generated from its JSON Schema by `src/plugins/schema.ts`
 with the page kit's `Form`, `Field`, `Input` and `Select`, and each declared
 secret as set or missing with a password field. The secret follows the coordinator
@@ -183,8 +204,9 @@ The client (`setPluginEnabled`, `configurePlugin`, `setPluginSecret`,
 list. A change then shows "Restart to apply" and a notice with Restart. Restart
 asks the daemon to restart (the desktop shell starts it again); the client
 reconnects as after any drop and lists the plugins again. A daemon the shell does
-not supervise says to quit and reopen instead. `test/plugins.test.tsx` renders a
-synthetic catalog over a fake socket. `test/build.test.ts` flips a switch in
+not supervise says to quit and reopen instead. `test/settings.test.tsx` renders
+the route table, the nav and a synthetic catalog over a fake socket.
+`test/build.test.ts` opens `#/plugins` and lands on Providers, flips a switch in
 Chromium, saves a setting and a secret, and presses Restart on a daemon the test
 restarts on the same port, until the row reads Loaded.
 
