@@ -9,11 +9,13 @@ import { fold } from "../fold.ts";
 import { systemKeychain } from "../keychain.ts";
 import { Merges } from "../merge/service.ts";
 import { ModelRegistry } from "../models/registry.ts";
+import { connectionSecrets } from "../plugins/connection-secrets.ts";
 import { Workers } from "../workers/service.ts";
 import { startWorkerSocket } from "../workers/socket.ts";
 import { Account } from "./account.ts";
 import { startServer } from "./index.ts";
 import { coordinatorModels, loadedModelKinds, modelEnvironment } from "./models.ts";
+import { Providers } from "./providers.ts";
 import { daemonProjectSchema, startReaders } from "./readers.ts";
 
 /** The exit code that asks the desktop shell to start the daemon again (packages/desktop/src/daemon.ts). */
@@ -50,10 +52,20 @@ try {
     void account.refresh();
     const modelAccess = await modelEnvironment(process.env, keychain, account.secrets);
     const modelRegistry = new ModelRegistry({ keychain, selected: modelAccess.selected });
+    const secrets = connectionSecrets(modelAccess.secrets, keychain);
+    const providersFor = (daemon: Awaited<ReturnType<typeof bootDaemon>>) =>
+      new Providers({
+        configPath: daemon.configPath,
+        catalog: daemon.catalog,
+        boot: daemon,
+        registry: daemon.registry,
+        keychain,
+        secrets,
+      });
     const daemon = await bootDaemon({
       databasePath: values.database,
       projects,
-      secrets: modelAccess.secrets,
+      secrets,
       log: { info: (line) => console.error(line), error: (line) => console.error(line) },
     });
     let readers: Awaited<ReturnType<typeof startReaders>> | undefined;
@@ -160,6 +172,7 @@ try {
             native: { ...config.native, merges, refresh: () => readers?.refresh(config.project) ?? Promise.resolve() },
           })),
           modelKinds: loadedModelKinds(daemon.registry),
+          providers: providersFor(daemon),
           // The keychain is opened on first use, as the plugins' own secret getter does.
           plugins: {
             configPath: daemon.configPath,

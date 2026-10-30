@@ -167,13 +167,14 @@ describe("in a browser, served by a running daemon", () => {
       .evaluateAll((links) =>
         links.map((a) => [a.getAttribute("href"), a.querySelector("[data-counts]")?.textContent?.trim()]),
       );
+    // Each squadron opens its room on the agents (THE-2085).
     expect(squadrons).toEqual([
       [
-        "#/projects/harbor",
+        "#/projects/harbor?panel=agents",
         "4 in flight · 1 on their own · 1 blocked · 1 waiting for you · 1 ready to merge · 1 merged today",
       ],
-      ["#/projects/lantern", "2 in flight · 1 blocked · 1 waiting for you"],
-      ["#/projects/tidewater", "0 in flight"],
+      ["#/projects/lantern?panel=agents", "2 in flight · 1 blocked · 1 waiting for you"],
+      ["#/projects/tidewater?panel=agents", "0 in flight"],
     ]);
     const anatomy = await page.evaluate(() => ({
       h1: [...document.querySelectorAll("h1")].map((h) => ({
@@ -185,12 +186,13 @@ describe("in a browser, served by a running daemon", () => {
     expect(anatomy.h1).toEqual([{ text: "Hangar", inHeader: "HEADER" }]);
     for (const family of anatomy.fonts) expect(family).toMatch(/^"?Geist( Mono)?"?,/);
 
-    // Entering Harbor's room (THE-1996): its agents by state in the rail, under the v7 title.
+    // Entering Harbor's room (THE-1996): its agents by state in the panel; the sky stays in the hangar (THE-2085).
     await main.getByRole("link", { name: /^Harbor/ }).click();
-    await page.waitForURL(/#\/projects\/harbor$/);
-    const groups = main.locator("[data-rail-group]");
+    await page.waitForURL(/#\/projects\/harbor\?panel=agents$/);
+    const groups = main.locator("[data-group-heading]");
     await groups.first().waitFor({ timeout: 5_000 });
-    expect(await groups.evaluateAll((all) => all.map((g) => g.getAttribute("data-rail-group")))).toEqual([
+    await expect(main.locator("[data-sky]").count()).resolves.toBe(0);
+    expect(await groups.evaluateAll((all) => all.map((g) => g.getAttribute("data-group-heading")))).toEqual([
       "blocked",
       "you",
       "running",
@@ -207,8 +209,8 @@ describe("in a browser, served by a running daemon", () => {
   }, 20_000);
 
   test("a state change over the subscription glides the same row to its new group, without a reload", async () => {
-    // The fleet by state of one project, on its rules page beside the room.
-    await page.goto(`${daemon.url}/#/projects/harbor/rules`);
+    // The fleet by state of one project, in its room's panel.
+    await page.goto(`${daemon.url}/#/projects/harbor?panel=agents`);
     const row = page.locator('[data-row="harbor/HAR-12"]');
     await row.and(page.locator('[data-group="running"]')).waitFor({ timeout: 5_000 });
     const before = await row.evaluate((el) => {
@@ -262,19 +264,20 @@ describe("in a browser, served by a running daemon", () => {
     const tidewater = page.getByRole("complementary", { name: "Sidebar" }).getByRole("link", { name: /Tidewater\s+1/ });
     await tidewater.waitFor({ timeout: 5_000 });
     await tidewater.click();
-    // Its room's rail holds the new agent in progress.
-    await page.locator('[data-rail-group="running"] [data-rail-row="TID-1"]').waitFor({ timeout: 5_000 });
+    // Its room's panel holds the new agent in progress.
+    await page.locator('[data-row="tidewater/TID-1"][data-group="running"]').waitFor({ timeout: 5_000 });
   });
 
-  test("a project's room: the band, the pinned question, a message the coordinator answers, kept across a reload", async () => {
+  test("a project's room: its header, the pinned question, a message the coordinator answers, kept across a reload", async () => {
     await page.goto(`${daemon.url}/#/projects/harbor`);
     await page.getByRole("heading", { level: 1, name: "Harbor" }).waitFor({ timeout: 5_000 });
-    const band = page.locator('[data-sky="band"]');
-    await expect(band.evaluate((el) => el.getBoundingClientRect().height)).resolves.toBe(200);
+    // One 44 px header, no sky: the conversation takes the rest (THE-2085).
+    await expect(page.locator("main header").evaluate((el) => el.getBoundingClientRect().height)).resolves.toBe(44);
+    await expect(page.locator("[data-sky]").count()).resolves.toBe(0);
     const card = page.getByRole("region", { name: "A question waiting for you" });
     await card.getByText("Two berth tests time out under the full suite.").waitFor({ timeout: 5_000 });
-    const rail = page.getByRole("complementary", { name: "Agents" });
-    await rail.getByRole("link", { name: /HAR-15/ }).waitFor({ timeout: 5_000 });
+    const panel = page.getByRole("complementary", { name: "Panel" });
+    await panel.getByRole("link", { name: /HAR-15/ }).waitFor({ timeout: 5_000 });
     // The coordinator's own line from the log is there before anything is said.
     await page
       .locator('[data-item="line"]')
@@ -341,11 +344,11 @@ describe("in a browser, served by a running daemon", () => {
       .filter({ hasText: "On HAR-15: Fix the wait" })
       .waitFor({ timeout: 10_000 });
 
-    // The rail closes and opens from the facts line.
-    await page.getByRole("button", { name: "Close the agents" }).click();
-    await rail.waitFor({ state: "detached", timeout: 5_000 });
-    await page.getByRole("button", { name: /^Agents/ }).click();
-    await rail.waitFor({ timeout: 5_000 });
+    // The panel closes, and opens again from the header's toggle.
+    await page.getByRole("button", { name: "Close the panel" }).click();
+    await panel.waitFor({ state: "detached", timeout: 5_000 });
+    await page.getByRole("button", { name: "Panel", exact: true }).click();
+    await panel.waitFor({ timeout: 5_000 });
 
     const anatomy = await page.evaluate(() => ({
       h1: [...document.querySelectorAll("h1")].map((h) => [h.textContent, getComputedStyle(h).fontSize]),
@@ -359,26 +362,33 @@ describe("in a browser, served by a running daemon", () => {
         )
         .map((s) => `${s.fontSize} ${s.fontFamily}`),
     }));
-    expect(anatomy.h1).toEqual([["Harbor", "22px"]]);
+    expect(anatomy.h1).toEqual([["Harbor", "13.5px"]]);
     for (const family of anatomy.fonts) expect(family).toMatch(/^"?Geist( Mono)?"?,/);
     expect(anatomy.small).toEqual([]);
 
-    // A rail row opens its session's page (THE-2028).
-    await rail.locator('[data-rail-row="HAR-15"]').click();
+    // An agent's row opens its session's page (THE-2028).
+    await panel.locator('[data-row="harbor/HAR-15"] a[data-open]').click();
     await page.getByRole("heading", { level: 1, name: "Price berths by the hour" }).waitFor({ timeout: 5_000 });
     expect(new URL(page.url()).hash).toBe("#/sessions/HAR-15");
   }, 30_000);
 
   test("every row opens its session's page, by a click or the keyboard, and holds from 900 px up", async () => {
     await page.setViewportSize({ width: 900, height: 800 });
-    // A project's fleet list is on its rules page, beside its room (the hangar is the home since THE-2025).
+    // The old rules page is the room's Rules tab (THE-2085): its address is replaced.
     await page.goto(`${daemon.url}#/projects/harbor/rules`);
-    const rows = page.locator("[data-row]");
+    await page.waitForURL(/#\/projects\/harbor\?panel=rules$/);
+    const panel = page.getByRole("complementary", { name: "Panel" });
+    await panel.getByRole("heading", { level: 2, name: "Rules" }).waitFor({ timeout: 5_000 });
+    await expect(panel.getByRole("tab", { name: "Rules" }).getAttribute("aria-selected")).resolves.toBe("true");
+    // The fleet by state is its Agents tab.
+    await panel.getByRole("tab", { name: "Agents" }).click();
+    await page.waitForURL(/#\/projects\/harbor\?panel=agents$/);
+    const rows = panel.locator("[data-row]");
     await rows.first().waitFor({ timeout: 5_000 });
     // Each row's time is whole at the window's narrowest supported width; the title gives way.
     const clipped = await rows.evaluateAll((els) =>
       els.flatMap((el) => {
-        const time = el.lastElementChild as HTMLElement;
+        const time = el.querySelector("[data-time]") as HTMLElement;
         const row = el.getBoundingClientRect();
         const box = time.getBoundingClientRect();
         return time.scrollWidth > time.clientWidth || box.right > row.right ? [el.getAttribute("data-row")] : [];
@@ -409,17 +419,10 @@ describe("in a browser, served by a running daemon", () => {
         files: [{ path: "src/berths/price.ts", additions: 42, deletions: 3 }],
       } as never,
     });
-    // Opened from a scrolled list, the page starts at its top with the focus on its title.
-    await expect(
-      page.getByRole("main").evaluate((main) => {
-        main.scrollTo(0, 400);
-        return main.scrollTop;
-      }),
-    ).resolves.toBeGreaterThan(0);
-    await page.locator('[data-row="harbor/HAR-15"]').click();
+    // Opened from the panel, the page has the focus on its title.
+    await page.locator('[data-row="harbor/HAR-15"] a[data-open]').click();
     await page.getByRole("heading", { level: 1, name: "Price berths by the hour" }).waitFor({ timeout: 5_000 });
     expect(new URL(page.url()).hash).toBe("#/sessions/HAR-15");
-    await expect(page.getByRole("main").evaluate((main) => main.scrollTop)).resolves.toBe(0);
     await expect(page.evaluate(() => document.activeElement?.tagName)).resolves.toBe("H1");
     // The sidebar's Hangar is not the current page on a session's page.
     await expect(
@@ -442,10 +445,10 @@ describe("in a browser, served by a running daemon", () => {
     await page.getByRole("heading", { level: 1, name: "Harbor" }).waitFor({ timeout: 5_000 });
     expect(new URL(page.url()).hash).toBe("#/projects/harbor");
     await page.evaluate(() => {
-      window.location.hash = "#/projects/lantern/rules";
+      window.location.hash = "#/projects/lantern?panel=agents";
     });
     await page.getByRole("heading", { level: 1, name: "Lantern" }).waitFor({ timeout: 5_000 });
-    await page.locator('[data-row="lantern/LAN-7"]').focus();
+    await page.locator('[data-row="lantern/LAN-7"] a[data-open]').focus();
     await page.keyboard.press("Enter");
     await page.getByRole("heading", { level: 1, name: "Pick the lanterns' colour" }).waitFor({ timeout: 5_000 });
     await expect(page.getByRole("region", { name: "State" }).getAttribute("data-state")).resolves.toBe("you");

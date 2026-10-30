@@ -1,3 +1,7 @@
+import type { ProviderConnection } from "./connection.js";
+
+export type { AuthEvent, AuthInteraction, AuthPrompt, ProviderConnection, ProviderStatus } from "./connection.js";
+
 import type { ForgeInspection, TrackerWriteRequest } from "./merge.js";
 
 export {
@@ -81,11 +85,11 @@ export interface ProjectRequest {
   signal?: AbortSignal;
 }
 /** Readers append observations through ctx.events; daemon owns polling/checkpoints. */
-export interface TrackerProvider {
+export interface TrackerProvider extends ProviderConnection {
   read(request: ProjectRequest): Promise<void>;
   write(request: TrackerWriteRequest): Promise<void>;
 }
-export interface ForgeProvider {
+export interface ForgeProvider extends ProviderConnection {
   read(request: ProjectRequest): Promise<void>;
   /** Complete fresh facts for the merge checklist. Absence refuses merge tools. */
   inspect?(request: ProjectRequest & { number: number }): Promise<ForgeInspection>;
@@ -94,7 +98,7 @@ export interface ForgeProvider {
   ): Promise<{ merged: boolean; mergeCommit?: string }>;
 }
 /** Model is the consumer's AI SDK model type; the API has no SDK runtime dependency. */
-export interface ModelProvider<Model = unknown> {
+export interface ModelProvider<Model = unknown> extends ProviderConnection {
   /** Public settings required when a consumer creates a model (activation may have no settings yet). */
   readonly configSchema?: JsonSchema;
   create(model: string, config?: Json): Model;
@@ -110,7 +114,12 @@ export type PluginRegister = { [S in Seam]: (kind: string, provider: Providers[S
 export interface PluginContext {
   events: PluginEvents;
   /** Project is optional; tracker/forge reads pass it for project-scoped credentials. */
-  secrets: { get(name: string, project?: string): Promise<string | null> };
+  secrets: {
+    get(name: string, project?: string): Promise<string | null>;
+    source?(name: string, project?: string): Promise<string | null>;
+    set?(name: string, value: string): Promise<void>;
+    delete?(name: string): Promise<void>;
+  };
   /** Validated config, keyed by seam then contribution kind. Missing values become {}. */
   config: PluginConfig;
   log: PluginLog;

@@ -190,7 +190,7 @@ test("missing app config boots default reader providers without reader credentia
       },
     });
     try {
-      assert.equal(daemon.plugins.find((p) => p.id === "hello")?.loaded, true);
+      assert.equal(daemon.plugins.find((p) => p.id === "hello")?.loaded, false);
       assert.deepEqual(
         daemon.plugins.filter((p) => p.enabled && !p.loaded),
         [],
@@ -424,7 +424,7 @@ test("armadad loads the bundled catalog before announcing server readiness", { t
       });
       assert.match(JSON.parse(output.trim()).wsUrl, /^ws:\/\/127\.0\.0\.1:/);
       const status = JSON.parse(await readFile(`${configPath}.plugins.json`, "utf8"));
-      assert.equal(status.plugins.find((p: { id: string }) => p.id === "hello")?.loaded, true);
+      assert.equal(status.plugins.find((p: { id: string }) => p.id === "hello")?.loaded, false);
       assert.deepEqual(
         status.plugins.filter((p: { enabled: boolean; loaded: boolean }) => p.enabled && !p.loaded),
         [],

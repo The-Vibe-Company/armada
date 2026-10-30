@@ -12,6 +12,14 @@
     "./guard": {
       "types": "./dist/guard.d.ts",
       "default": "./dist/guard.js"
+    },
+    "./connection": {
+      "types": "./dist/cli-auth.d.ts",
+      "default": "./dist/cli-auth.js"
+    },
+    "./secret-auth": {
+      "types": "./dist/secret-auth.d.ts",
+      "default": "./dist/secret-auth.js"
     }
   },
   "files": [
