@@ -51,6 +51,7 @@ type FoldedValidation = z.infer<typeof validationSchema>;
 
 /** One project's folded state, as far as the fleet's screens read it. */
 export interface FleetState {
+  readAt?: Record<string, string>;
   sessions: FoldedSession[];
   pullRequests: FoldedPullRequest[];
   inbox: FoldedInboxItem[];
@@ -85,7 +86,9 @@ export function fleetOf(snapshot: { state: unknown }): FleetState {
 export function readFleetState(state: unknown): FleetState {
   const o =
     state !== null && typeof state === "object" && !Array.isArray(state) ? (state as Record<string, unknown>) : {};
+  const reading = z.record(text, z.iso.datetime()).safeParse(o.readAt);
   return {
+    ...(reading.success ? { readAt: reading.data } : {}),
     sessions: rows(o.sessions, sessionSchema),
     pullRequests: rows(o.pullRequests, pullRequestSchema),
     inbox: rows(o.inbox, inboxSchema),

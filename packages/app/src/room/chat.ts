@@ -25,12 +25,12 @@ export interface Chat {
   answer(item: string, choice: string, note: string): Promise<void>;
 }
 
-/** The cursor of the project's last coordinator event the subscription brought (0 for none). */
+/** Last conversation event, excluding reader freshness checkpoints (0 for none). */
 export function lastCoordinatorSeq(log: ProjectLog | undefined): number {
   const events = log?.events ?? [];
   for (let k = events.length - 1; k >= 0; k--) {
     const event = events[k];
-    if (event?.kind.startsWith("coordinator.")) return event.seq;
+    if (event?.kind.startsWith("coordinator.") && event.actor !== "reader") return event.seq;
   }
   return 0;
 }

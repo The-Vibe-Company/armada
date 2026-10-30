@@ -48,6 +48,7 @@ try {
       secrets: modelAccess.secrets,
       log: { info: (line) => console.error(line), error: (line) => console.error(line) },
     });
+    let readers: Awaited<ReturnType<typeof startReaders>> | undefined;
     try {
       const coordinators = coordinatorModels({
         projects,
@@ -75,7 +76,14 @@ try {
       }
       let stopping = false;
       let server: Awaited<ReturnType<typeof startServer>>;
+      const controller = new AbortController();
       try {
+        readers = await startReaders({
+          registry: daemon.registry,
+          store: daemon.store,
+          projects,
+          signal: controller.signal,
+        });
         server = await startServer({
           store: daemon.store,
           projects,
@@ -83,7 +91,10 @@ try {
           staticDir: values["static-dir"],
           workers,
           keychain,
-          coordinators,
+          coordinators: coordinators.map((config) => ({
+            ...config,
+            native: { ...config.native, refresh: () => readers?.refresh(config.project) ?? Promise.resolve() },
+          })),
           modelKinds: loadedModelKinds(daemon.registry),
           // The keychain is opened on first use, as the plugins' own secret getter does.
           plugins: {
@@ -103,6 +114,8 @@ try {
             : undefined,
         });
       } catch (error) {
+        controller.abort();
+        readers?.stop();
         await socket.close();
         await rm(workerDirectory, { recursive: true, force: true });
         throw error;
@@ -111,8 +124,6 @@ try {
         void workers.observeAll();
       }, 1000);
       workerPoll.unref();
-      let readers: Awaited<ReturnType<typeof startReaders>> | undefined;
-      const controller = new AbortController();
       const stop = async () => {
         if (stopping) return;
         stopping = true;
@@ -135,12 +146,6 @@ try {
       process.once("SIGTERM", () => {
         void stop();
       });
-      try {
-        readers = await startReaders({ registry: daemon.registry, projects, signal: controller.signal });
-      } catch (error) {
-        await stop();
-        throw error;
-      }
       if (stopping) {
         readers.stop();
       } else {

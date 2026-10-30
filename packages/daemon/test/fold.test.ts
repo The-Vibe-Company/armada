@@ -193,3 +193,52 @@ test("a late old claim cannot replace a higher generation even when it was never
     [["tree", "implementing", "Still growing"]],
   );
 });
+
+test("a merged PR completes its session, but cannot complete a later claim of the same ticket", () => {
+  const events: EventInput[] = [
+    {
+      project: "orchard",
+      kind: "session.claimed",
+      at,
+      actor: "worker",
+      payload: {
+        ticket: "SEED-1",
+        session: "old",
+        generation: 1,
+        owner: "Mira",
+        runtime: "codex",
+        handle: "local/old",
+      },
+    },
+    {
+      project: "orchard",
+      kind: "pull-request.seen",
+      at,
+      actor: "forge",
+      payload: {
+        number: 41,
+        ticket: "SEED-1",
+        head: "a".repeat(40),
+        state: "merged",
+        ci: "failure",
+        conflicting: true,
+      },
+    },
+  ];
+  const reading = () => fold(events.map((e, i) => ({ ...e, seq: i + 1 }))).projects.orchard;
+  assert.equal(reading()?.sessions[0]?.state, "merged");
+  events.push({
+    project: "orchard",
+    kind: "session.claimed",
+    at,
+    actor: "worker",
+    payload: { ticket: "SEED-1", session: "new", generation: 2, owner: "Mira", runtime: "codex", handle: "local/new" },
+  });
+  // Repeated observations of the already merged PR do not make it belong to this claim.
+  events.push(events[1] as EventInput);
+  const current = reading()?.sessions[0];
+  assert.equal(current?.session, "new");
+  assert.equal(current?.phase, "planning");
+  assert.equal(current?.state, "in-progress");
+  assert.equal(current?.flowStep, "plan");
+});

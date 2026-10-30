@@ -20,7 +20,7 @@ export function activate(ctx: PluginContext): void {
     async read({ project, signal }) {
       signal?.throwIfAborted();
       const settings = config.projects?.[project];
-      if (!settings) return;
+      if (!settings) throw new Error("GitHub project is not configured");
       let reader = readers.get(project);
       if (!reader) {
         reader = new GithubReader({
