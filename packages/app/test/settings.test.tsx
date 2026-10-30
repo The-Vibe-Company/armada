@@ -191,9 +191,7 @@ test("the nav lists every section and marks the one shown, beside its content, u
     expect(html.match(/<a\b[^>]*tabindex="0"[^>]*>/g)).toHaveLength(1);
     expect(html.match(/<h1\b[^>]*>(.*?)<\/h1>/g)).toEqual([expect.stringContaining(">Settings</h1>")]);
   }
-  expect(render("account")).toMatch(
-    /Account.*Reading the sign-in….*<button[^>]*disabled=""[^>]*>Sign in<\/button>/,
-  );
+  expect(render("account")).toMatch(/Account.*Reading the sign-in….*<button[^>]*disabled=""[^>]*>Sign in<\/button>/);
   const about = render("about");
   expect(about).toContain("ws://127.0.0.1:4824/");
   expect(about).toMatch(/data-protocol[^>]*>.*>1\.\d+<.*daemon.*>1\.\d+</);
