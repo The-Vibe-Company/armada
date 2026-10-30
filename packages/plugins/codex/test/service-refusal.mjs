@@ -1,4 +1,5 @@
 // Executed by the Bun owner test on Node: the daemon's real store uses node:sqlite.
+import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -110,6 +111,14 @@ try {
   } catch (error) {
     refusal = error.message;
   }
+  // Retry only the known refusal this fixture exercises. An unexpected failure before a
+  // handle is returned intentionally leaves the daemon's launch intent unresolved.
+  // Assert the original cause now so a retry cannot replace it with the safety refusal.
+  assert.match(
+    refusal,
+    mode === "rules-change" ? /^Launch prerequisites changed$/ : new RegExp(`^${kind} credentials unavailable;`),
+    `Expected a known startup refusal before retry; original launch error: ${refusal || "(none)"}`,
+  );
   const sessions = fold(store.readSince(0, project)).projects[project].sessions;
   const remaining = await readdir(join(root, "worktrees"));
   const receipts = store

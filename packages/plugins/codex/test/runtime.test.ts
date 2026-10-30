@@ -166,13 +166,6 @@ for (const [kind, create] of [
           { timeout: 10_000 },
         );
         const observed = JSON.parse(result.stdout);
-        expect(observed.refusal).toContain(
-          mode === "ordinary"
-            ? kind === "codex"
-              ? "codex login"
-              : "opencode auth login"
-            : "Launch prerequisites changed",
-        );
         expect(observed.remaining).toEqual([]);
         expect(observed.receipts).toMatchObject([{ key: "refused", result: { ok: false, code: "launch_failed" } }]);
         expect(observed.released).toBe(mode === "ordinary");
