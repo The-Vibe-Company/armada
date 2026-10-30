@@ -2,9 +2,13 @@ import { execFile } from "node:child_process";
 import { type Keychain, systemKeychain } from "../keychain.ts";
 
 /** Called only after declaration checks; the shared gateway owns storage and redaction. */
-export async function readPluginSecret(name: string, keychain?: Pick<Keychain, "read">): Promise<string | null> {
+export async function readPluginSecret(
+  name: string,
+  keychain?: Pick<Keychain, "read">,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): Promise<string | null> {
   try {
-    const environment = process.env[name];
+    const environment = env[name];
     if (environment?.trim()) return environment.trim();
     let chain: Pick<Keychain, "read"> | undefined = keychain;
     try {

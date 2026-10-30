@@ -38,7 +38,11 @@ export function loadedModelKinds(
 }
 
 /** Boot-only credential source. Plugins never read the host environment or keychain themselves. */
-export async function modelEnvironment(env: Readonly<Record<string, string | undefined>>, keychain: Keychain) {
+export async function modelEnvironment(
+  env: Readonly<Record<string, string | undefined>>,
+  keychain: Keychain,
+  accountSecrets?: PluginContext["secrets"],
+) {
   const saved = await keychain.coordinator().catch(() => null);
   const plugin = await keychain.pluginCoordinator().catch(() => null);
   const value = async (name: string) =>
@@ -99,12 +103,12 @@ export async function modelEnvironment(env: Readonly<Record<string, string | und
     selected,
     pluginSelected,
     secrets: {
-      async get(name: string) {
+      async get(name: string, project?: string) {
         if (env[name]) return env[name] ?? null;
         if (name === "ARMADA_MODEL_API_KEY")
           return generic.key ?? (savedSecret === name ? ((await keychain.pluginCoordinator())?.key ?? null) : null);
         if (name === savedSecret) return (await keychain.pluginCoordinator())?.key ?? null;
-        return readPluginSecret(name, keychain);
+        return accountSecrets ? accountSecrets.get(name, project) : readPluginSecret(name, keychain, env);
       },
     } satisfies PluginContext["secrets"],
   };

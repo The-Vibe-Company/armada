@@ -11,6 +11,7 @@ import { Merges } from "../merge/service.ts";
 import { ModelRegistry } from "../models/registry.ts";
 import { Workers } from "../workers/service.ts";
 import { startWorkerSocket } from "../workers/socket.ts";
+import { Account } from "./account.ts";
 import { startServer } from "./index.ts";
 import { coordinatorModels, loadedModelKinds, modelEnvironment } from "./models.ts";
 import { daemonProjectSchema, startReaders } from "./readers.ts";
@@ -45,7 +46,9 @@ try {
     }));
     mkdirSync(dirname(values.database), { recursive: true });
     const keychain = systemKeychain();
-    const modelAccess = await modelEnvironment(process.env, keychain);
+    const account = new Account({ keychain, log: (line) => console.error(line) });
+    void account.refresh();
+    const modelAccess = await modelEnvironment(process.env, keychain, account.secrets);
     const modelRegistry = new ModelRegistry({ keychain, selected: modelAccess.selected });
     const daemon = await bootDaemon({
       databasePath: values.database,
@@ -129,6 +132,7 @@ try {
           port,
           staticDir: values["static-dir"],
           workers,
+          account,
           keychain,
           modelRegistry,
           resolveCoordinator: async (project) => {
@@ -197,6 +201,7 @@ try {
           if (failed?.status === "rejected") throw failed.reason;
         } finally {
           await rm(workerDirectory, { recursive: true, force: true });
+          await account.close();
           daemon.close();
         }
       };
@@ -213,6 +218,7 @@ try {
         console.log(JSON.stringify({ url: server.url, wsUrl: server.wsUrl, readers: readers.readers }));
       }
     } catch (error) {
+      await account.close();
       daemon.close();
       throw error;
     }

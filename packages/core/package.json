@@ -7,11 +7,18 @@
   "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
-    "./read": "./src/read.ts"
+    "./read": "./src/read.ts",
+    "./account": {
+      "types": "./src/account.ts",
+      "default": "./dist/account.js"
+    }
   },
   "dependencies": {
     "picomatch": "4.0.3",
     "proper-lockfile": "4.1.2",
     "smol-toml": "1.9.0"
+  },
+  "scripts": {
+    "build:account": "bun build --target=node --packages=external ./src/account.ts --outfile=dist/account.js"
   }
 }

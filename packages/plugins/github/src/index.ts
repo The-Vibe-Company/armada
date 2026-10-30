@@ -12,10 +12,10 @@ interface Config {
 export function activate(ctx: PluginContext): void {
   const config = ctx.config.forge?.github as Config;
   const readers = new Map<string, GithubReader>();
-  const token = (signal?: AbortSignal) =>
+  const token = (project: string, signal?: AbortSignal) =>
     githubToken({
       signal,
-      keychain: { read: async () => ctx.secrets.get("GITHUB_TOKEN") },
+      keychain: { read: async () => ctx.secrets.get("GITHUB_TOKEN", project) },
     });
   const provider: ForgeProvider = {
     async read({ project, signal }) {
@@ -29,7 +29,7 @@ export function activate(ctx: PluginContext): void {
           repository: settings.repository,
           actor: "owner",
           endpoint: config.endpoint,
-          token,
+          token: (signal) => token(project, signal),
           tickets: async () =>
             new Set(
               (await ctx.events.read(project, 0)).flatMap((event) =>
@@ -58,7 +58,7 @@ export function activate(ctx: PluginContext): void {
       try {
         const repository = config.projects?.[project]?.repository;
         if (!repository || !Number.isSafeInteger(number) || number <= 0) throw new Error();
-        const key = await token(signal);
+        const key = await token(project, signal);
         const inspectionSignal = signal ?? new AbortController().signal;
         return await inspectGithub({
           endpoint: config.endpoint,
@@ -78,7 +78,7 @@ export function activate(ctx: PluginContext): void {
         const repository = config.projects?.[project]?.repository;
         if (!repository || !Number.isSafeInteger(number) || number <= 0 || !/^[a-f0-9]{40}$/i.test(head))
           throw new Error();
-        const key = await token(signal);
+        const key = await token(project, signal);
         signal?.throwIfAborted();
         beforeWrite?.();
         let rest = config.endpoint ?? "https://api.github.com";
