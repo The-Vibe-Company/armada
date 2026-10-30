@@ -79,6 +79,8 @@ export interface LinearOptions {
   now: () => Date;
 }
 
+export class LinearReadError extends Error {}
+
 /** Each read owns its key only until the promises settle; errors never quote server bodies or causes. */
 export function linearTracker(options: LinearOptions): Tracker {
   return {
@@ -88,9 +90,9 @@ export function linearTracker(options: LinearOptions): Tracker {
       try {
         apiKey = await options.secrets("linear", options.project);
       } catch {
-        throw new Error("Linear credential lookup failed");
+        throw new LinearReadError("Linear credential lookup failed");
       }
-      if (!apiKey) throw new Error("Linear key unavailable");
+      if (!apiKey) throw new LinearReadError("Linear key missing");
       const key = apiKey;
       async function gql<T>(query: string, variables: object): Promise<T> {
         signal.throwIfAborted();
@@ -103,15 +105,15 @@ export function linearTracker(options: LinearOptions): Tracker {
             signal,
           });
         } catch {
-          throw new Error("Linear request failed");
+          throw new LinearReadError("Linear network request failed");
         }
-        if (!response.ok) throw new Error(`Linear request failed (HTTP ${response.status})`);
+        if (!response.ok) throw new LinearReadError(`Linear answered ${response.status}`);
         try {
           const body = (await response.json()) as { data?: T; errors?: unknown[] };
-          if (!body.data || body.errors?.length) throw new Error();
+          if (!body.data || body.errors?.length) throw new LinearReadError();
           return body.data;
         } catch {
-          throw new Error("Linear returned an invalid or incomplete response");
+          throw new LinearReadError("Linear returned an invalid or incomplete response");
         }
       }
       async function pages<T>(query: string, field: "issues" | "comments", variables: object): Promise<T[]> {
@@ -124,14 +126,14 @@ export function linearTracker(options: LinearOptions): Tracker {
             after,
           });
           const connection: Connection<T> | undefined = data[field];
-          if (!connection?.nodes || !connection.pageInfo) throw new Error("Linear page is incomplete");
+          if (!connection?.nodes || !connection.pageInfo) throw new LinearReadError("Linear page is incomplete");
           result.push(...connection.nodes);
           if (!connection.pageInfo.hasNextPage) return result;
           after = connection.pageInfo.endCursor;
-          if (!after || cursors.has(after)) throw new Error("Linear pagination did not advance");
+          if (!after || cursors.has(after)) throw new LinearReadError("Linear pagination did not advance");
           cursors.add(after);
         }
-        throw new Error("Linear reading exceeds the page limit");
+        throw new LinearReadError("Linear reading exceeds the page limit");
       }
       async function rest<T>(id: string, field: string, selection: string, connection: Connection<T>): Promise<T[]> {
         const nodes = [...connection.nodes];
@@ -139,7 +141,7 @@ export function linearTracker(options: LinearOptions): Tracker {
         let info = connection.pageInfo;
         for (let count = 0; info.hasNextPage && count < 100; count++) {
           const after = info.endCursor;
-          if (!after || cursors.has(after)) throw new Error("Linear pagination did not advance");
+          if (!after || cursors.has(after)) throw new LinearReadError("Linear pagination did not advance");
           cursors.add(after);
           const data = await gql<{ issue: Record<string, Connection<T>> | null }>(
             `query More${field}($id: String!, $after: String) { issue(id: $id) {
@@ -148,11 +150,11 @@ export function linearTracker(options: LinearOptions): Tracker {
             { id, after },
           );
           const next = data.issue?.[field];
-          if (!next?.pageInfo || !next.nodes) throw new Error("Linear connection is incomplete");
+          if (!next?.pageInfo || !next.nodes) throw new LinearReadError("Linear connection is incomplete");
           nodes.push(...next.nodes);
           info = next.pageInfo;
         }
-        if (info.hasNextPage) throw new Error("Linear reading exceeds the page limit");
+        if (info.hasNextPage) throw new LinearReadError("Linear reading exceeds the page limit");
         return nodes;
       }
       const raws: RawIssue[] = [];
@@ -160,7 +162,7 @@ export function linearTracker(options: LinearOptions): Tracker {
       let parents: string[];
       if (!previous) {
         const { issue } = await gql<{ issue: RawIssue | null }>(rootQuery, { id: options.rootId });
-        if (!issue) throw new Error("Linear program root was not found");
+        if (!issue) throw new LinearReadError("Linear program root was not found");
         raws.push(issue);
         parents = [issue.id];
       } else {
@@ -179,12 +181,12 @@ export function linearTracker(options: LinearOptions): Tracker {
       for (const ticket of previous?.tickets ?? []) {
         if (!ticket.blockers?.length || raws.some((raw) => raw.id === ticket.uuid)) continue;
         const { issue } = await gql<{ issue: RawIssue | null }>(rootQuery, { id: ticket.id });
-        if (!issue) throw new Error("Linear blocker evidence is unavailable");
+        if (!issue) throw new LinearReadError("Linear blocker evidence is unavailable");
         raws.push(issue);
       }
       const seen = new Set([...known, ...raws.map((ticket) => ticket.id)]);
       for (let depth = 0; parents.length; depth++) {
-        if (depth >= 100) throw new Error("Linear program exceeds the depth limit");
+        if (depth >= 100) throw new LinearReadError("Linear program exceeds the depth limit");
         const next: string[] = [];
         for (const ids of chunks(parents, 200)) {
           for (const child of await pages<RawIssue>(childrenQuery, "issues", { parents: ids })) {
@@ -266,7 +268,7 @@ export function linearTracker(options: LinearOptions): Tracker {
               issue: { id: { in: ids } },
             },
           })) {
-            if (!comment.issue) throw new Error("Linear comment has no ticket");
+            if (!comment.issue) throw new LinearReadError("Linear comment has no ticket");
             add(comment, comment.issue.identifier);
           }
       }
@@ -278,7 +280,7 @@ export function linearTracker(options: LinearOptions): Tracker {
           commentsQuery,
           { ids },
         );
-        if (data.issues.nodes.length !== ids.length) throw new Error("Linear comments reading is incomplete");
+        if (data.issues.nodes.length !== ids.length) throw new LinearReadError("Linear comments reading is incomplete");
         for (const node of data.issues.nodes)
           for (const comment of await rest(node.identifier, "comments", commentFields, node.comments))
             add(comment, node.identifier);

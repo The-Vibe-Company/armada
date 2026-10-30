@@ -35,6 +35,8 @@ export interface ReaderState {
   project: string;
   tracker: boolean;
   forge: boolean;
+  trackerError?: string;
+  forgeError?: string;
 }
 const schedule: Schedule = (callback, delay) => {
   const timer = setTimeout(callback, delay);
@@ -44,10 +46,11 @@ const schedule: Schedule = (callback, delay) => {
 /** Independent background consumers; coordinator reads can request one bounded refresh. */
 export async function startReaders(
   options: ReaderOptions,
-): Promise<{ readers: ReaderState[]; refresh(project: string): Promise<void>; stop(): void }> {
+): Promise<{ readers: ReaderState[]; ready: Promise<void>; refresh(project: string): Promise<void>; stop(): void }> {
   const projects = options.projects.map((project) => daemonProjectSchema.parse(project));
   const set = options.schedule ?? schedule;
   const stops: (() => void)[] = [];
+  const firstReads: Promise<void>[] = [];
   const readers: ReaderState[] = [];
   const refreshers = new Map<string, { read(): Promise<void>; abort(): void }[]>();
   const waiting = new Set<() => void>();
@@ -69,7 +72,8 @@ export async function startReaders(
     for (const seam of ["tracker", "forge"] as const) {
       const provider = options.registry.get(seam, project[seam]);
       if (!provider) continue;
-      state[seam] = true;
+      const errorKey = `${seam}Error` as const;
+      state[errorKey] = "First read pending";
       let cancelNext: (() => void) | undefined;
       let cancelDeadline: (() => void) | undefined;
       let active: AbortController | undefined;
@@ -94,7 +98,7 @@ export async function startReaders(
           try {
             // Await settlement even after abort: an uncooperative plugin must not accumulate reads.
             await provider.read({ project: project.id, signal: controller.signal });
-            if (running && !controller.signal.aborted)
+            if (running && !controller.signal.aborted) {
               options.store?.append({
                 project: project.id,
                 kind: "coordinator.checkpoint",
@@ -102,13 +106,30 @@ export async function startReaders(
                 at: (options.now ?? (() => new Date().toISOString()))(),
                 payload: { checkpoint: { format: "armada.readers", version: 1, provider: project[seam] } },
               });
-          } catch {
+              state[seam] = true;
+              delete state[errorKey];
+            }
+          } catch (error) {
             if (running) {
               const id = project.id.replace(
                 /[\p{Cc}\p{Zl}\p{Zp}]/gu,
                 (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
               );
-              (options.log ?? console.error)(`armadad: ${id}: ${seam} read failed`);
+              // Accept only adapter-owned categories: never log arbitrary plugin/transport text.
+              const message = error instanceof Error ? error.message : "";
+              const safe =
+                !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(message) &&
+                (/^(?:Linear|GitHub) (?:key missing|credentials unavailable|credential lookup failed|network request failed|answered [1-5]\d{2}|project is not configured|returned an invalid or incomplete response|returned an incomplete reading|returned an incomplete open list|open list contains a closed pull request|pagination did not complete|lost a previously open pull request|reading failed|reading timed out|reading stopped|page is incomplete|pagination did not advance|connection is incomplete|reading exceeds the page limit|program root was not found|blocker evidence is unavailable|program exceeds the depth limit|comment has no ticket|comments reading is incomplete)$/.test(
+                  message,
+                ) ||
+                  /^Tracker read (?:failed|timed out)$/.test(message));
+              state[seam] = false;
+              state[errorKey] = controller.signal.aborted
+                ? "Read timed out"
+                : safe
+                  ? message
+                  : "Reader failed (details withheld)";
+              (options.log ?? console.error)(`armadad: ${id}: ${seam} read failed: ${state[errorKey]}`);
             }
           } finally {
             cancelReadDeadline();
@@ -125,11 +146,12 @@ export async function startReaders(
       };
       sources.push({ read: tick, abort: () => active?.abort() });
       // Start independently of boot readiness and of the other seam.
-      void Promise.resolve().then(tick);
+      firstReads.push(Promise.resolve().then(tick));
     }
   }
   return {
     readers,
+    ready: Promise.all(firstReads).then(() => {}),
     stop,
     async refresh(project) {
       const sources = refreshers.get(project);

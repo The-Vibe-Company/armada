@@ -24,3 +24,21 @@ test("plugin secrets use the shared gateway and reserved namespace without alter
     null,
   );
 });
+
+test("declared secrets prefer the environment, then plugin storage, then legacy GitHub storage", async (t) => {
+  const backend = new FakeKeychain();
+  const keychain = new Keychain(backend);
+  const previous = process.env.GITHUB_TOKEN;
+  t.after(() => {
+    if (previous === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = previous;
+  });
+  await keychain.write("github", "github", "legacy-github-credential");
+  await keychain.write("plugin", "GITHUB_TOKEN", "plugin-github-credential");
+  process.env.GITHUB_TOKEN = "environment-github-credential";
+  assert.equal(await readPluginSecret("GITHUB_TOKEN", keychain), "environment-github-credential");
+  delete process.env.GITHUB_TOKEN;
+  assert.equal(await readPluginSecret("GITHUB_TOKEN", keychain), "plugin-github-credential");
+  backend.entries.delete(JSON.stringify(["armada.plugins", "GITHUB_TOKEN"]));
+  assert.equal(await readPluginSecret("GITHUB_TOKEN", keychain), "legacy-github-credential");
+});

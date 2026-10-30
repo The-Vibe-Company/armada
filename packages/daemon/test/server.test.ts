@@ -188,7 +188,13 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
   assert.equal(lstatSync(stalePath).isSocket(), true, "startup never deletes another instance socket");
   assert.deepEqual(
     address.readers,
-    projects.map((project) => ({ project: project.id, tracker: true, forge: true })),
+    projects.map((project) => ({
+      project: project.id,
+      tracker: false,
+      forge: false,
+      trackerError: "First read pending",
+      forgeError: "First read pending",
+    })),
   );
   await readersActive;
   assert.equal((await fetch(address.url)).status, 404);

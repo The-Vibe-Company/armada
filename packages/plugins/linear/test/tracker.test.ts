@@ -375,7 +375,7 @@ test("failed and non-advancing pages append nothing and retry from the last comp
     const before = store.readSince(0);
     c.advance(t1);
     await poller.readNow();
-    assert.equal(poller.status.error, "Tracker read failed");
+    assert.equal(poller.status.error, "Linear pagination did not advance");
     assert.equal(poller.status.lastCompletedAt, t0);
     assert.deepEqual(store.readSince(0), before);
     await poller.readNow();
