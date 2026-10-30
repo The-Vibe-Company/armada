@@ -289,3 +289,33 @@ service definition/provider/consumer vocabulary. Third-party installation,
 UI plugins, hot reload, process isolation, layered config, signed plugins and
 a plugin marketplace are outside this version. Conductor and herdr are not
 V2 runtimes.
+
+## The night run (THE-1998, 2026-10-29 to 2026-10-30)
+
+The first risk is retired. The daemon ran the Armada repository's own fleet on
+the owner's Mac through the night that merged Specs 1, 2, 3 and 8: the Electron
+window, `armadad` on `node:sqlite`, the pi coordinator on GLM 5.3 Flash through
+the openai-compatible model plugin, with pi-durable checkpoints in the log.
+
+- **Durability held.** The daemon was restarted eleven times (merges, plugin
+  changes, the `daemon.restart` button). Every restart replayed the log, the
+  coordinator's conversation came back whole, and the chat continued where it
+  had stopped. No checkpoint was lost or applied twice.
+- **The log carried everything.** About 1,300 events by morning, 118 of them
+  coordinator checkpoints; the fold rebuilt the room's facts and the hangar's
+  counts from the log alone on every boot.
+- **Freshness failed, then was fixed.** From THE-2032 (the readers behind the
+  plugin loader) to THE-2047, `ctx.secrets.get` read the plugin keychain only,
+  so a daemon launched with keys in its environment never read Linear or
+  GitHub and the room's facts froze while the UI said "live". THE-2047 reads
+  env, then the keychain, then `gh` for GitHub, and the readiness line names a
+  reader that failed and why. Verified on the owner's machine: ticket and
+  pull-request events resume within a minute of a restart.
+- **Cost is not metered yet.** The coordinator's tokens are not counted in the
+  log; a later ticket adds usage to the checkpoint event.
+- **Still manual.** Launching a worker and merging a pull request from the room
+  (THE-2042) exist as tools but have not yet been exercised end to end on a
+  real ticket by the owner; that is the first acceptance of the morning.
+
+Specs 4 to 7 (owner decisions, the boat.dev node, the internal tracker, signing
+and auto-update) are cut from here.
