@@ -1,5 +1,5 @@
 import type { AccountDevice, AccountState } from "@armada/protocol";
-import { type ReactNode, useEffect, useReducer, useState } from "react";
+import { type ReactNode, useEffect, useId, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { openExternal } from "@/lib/external";
 import { useDaemon, useDaemonClient } from "@/protocol/store";
@@ -13,10 +13,28 @@ const NOT_PROVIDED = { word: "Not provided", dot: "bg-text-3", ink: "text-text-3
 
 /**
  * The sign-ins this app started, kept beside the section (it unmounts with
- * each other section): the latest one, the latest one cancelled, and the code
- * whose page already opened.
+ * each other section, and a sign-in outlives that): the latest one, whether it
+ * is waiting, the latest one cancelled, the code whose page already opened,
+ * and how the latest one failed.
  */
-const sign = { attempt: 0, cancelled: 0, opened: null as string | null };
+interface Sign {
+  attempt: number;
+  waiting: boolean;
+  cancelled: number;
+  opened: string | null;
+  failure: string | null;
+}
+let sign: Sign = { attempt: 0, waiting: false, cancelled: 0, opened: null, failure: null };
+const watchers = new Set<() => void>();
+function setSign(next: Partial<Sign>) {
+  sign = { ...sign, ...next };
+  for (const watch of watchers) watch();
+}
+const watchSign = (watch: () => void) => {
+  watchers.add(watch);
+  return () => watchers.delete(watch);
+};
+const readSign = () => sign;
 
 /**
  * Settings' Account (THE-2071): the sign-in `armada login` does, run by the
@@ -29,31 +47,32 @@ const sign = { attempt: 0, cancelled: 0, opened: null as string | null };
 export function Account() {
   const { account, accountDevice, accountProblem, projects } = useDaemon();
   const client = useDaemonClient();
-  const [busy, setBusy] = useState<"login" | "logout" | null>(null);
+  const flow = useSyncExternalStore(watchSign, readSign, readSign);
+  const [signingOut, setSigningOut] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-  const [, redraw] = useReducer((n: number) => n + 1, 0);
+  const [outFailure, setOutFailure] = useState<string | null>(null);
+  const warning = useId();
 
   // The verification page opens once per code, as `armada login` opens it, and not again on coming back here.
   useEffect(() => {
     if (!accountDevice || sign.cancelled === sign.attempt || sign.opened === accountDevice.code) return;
-    sign.opened = accountDevice.code;
+    setSign({ opened: accountDevice.code });
     openExternal(accountDevice.verificationUrl);
   }, [accountDevice]);
 
   async function signIn() {
-    const attempt = ++sign.attempt;
-    sign.opened = null;
-    setFailure(null);
-    setBusy("login");
+    const attempt = sign.attempt + 1;
+    setSign({ attempt, waiting: true, opened: null, failure: null });
     try {
       await client.login();
+      if (attempt === sign.attempt) setSign({ waiting: false });
     } catch (error) {
       // A cancelled or superseded sign-in's end is not news: the account the daemon publishes is.
       if (attempt === sign.attempt && sign.cancelled !== attempt)
-        setFailure((error as { code?: string }).code === "expired" ? EXPIRED : lineOf(error));
-    } finally {
-      if (attempt === sign.attempt) setBusy(null);
+        setSign({
+          waiting: false,
+          failure: (error as { code?: string }).code === "expired" ? EXPIRED : lineOf(error),
+        });
     }
   }
 
@@ -62,21 +81,19 @@ export function Account() {
   // Sign out is its only path. The daemon's code stays valid until it expires;
   // Sign in again joins it.
   function cancel() {
-    sign.cancelled = sign.attempt;
-    setBusy(null);
-    redraw();
+    setSign({ cancelled: sign.attempt, waiting: false });
   }
 
   async function signOut() {
     setConfirming(false);
-    setFailure(null);
-    setBusy("logout");
+    setOutFailure(null);
+    setSigningOut(true);
     try {
       await client.logout();
     } catch (error) {
-      setFailure(lineOf(error));
+      setOutFailure(lineOf(error));
     } finally {
-      setBusy(null);
+      setSigningOut(false);
     }
   }
 
@@ -93,7 +110,8 @@ export function Account() {
     );
 
   // The daemon holds the code while its login is pending: coming back to this section mid-way shows it again.
-  const signingIn = busy === "login" || (accountDevice !== null && sign.cancelled !== sign.attempt);
+  const signingIn = flow.waiting || (accountDevice !== null && flow.cancelled !== flow.attempt);
+  const failure = account.signedIn ? outFailure : flow.failure;
   const problem = failure && (
     <p role="alert" className="m-0 pt-1 text-red">
       {failure}
@@ -112,7 +130,7 @@ export function Account() {
                   {account.organization.name}
                 </span>
                 {confirming && (
-                  <p data-confirm className="m-0 pt-1 text-text-2">
+                  <p id={warning} role="status" data-confirm className="m-0 pt-1 text-text-2">
                     This signs out the CLI on this device too.
                   </p>
                 )}
@@ -125,11 +143,13 @@ export function Account() {
                   <Button variant="ghost" onClick={() => setConfirming(false)}>
                     Keep
                   </Button>
-                  <Button onClick={() => void signOut()}>Sign out</Button>
+                  <Button aria-describedby={warning} onClick={() => void signOut()}>
+                    Sign out
+                  </Button>
                 </>
               ) : (
-                <Button disabled={busy !== null} onClick={() => setConfirming(true)}>
-                  {busy === "logout" ? "Signing out…" : "Sign out"}
+                <Button disabled={signingOut} onClick={() => setConfirming(true)}>
+                  {signingOut ? "Signing out…" : "Sign out"}
                 </Button>
               )
             }

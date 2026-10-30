@@ -144,7 +144,9 @@ describe("the Account section in a browser", () => {
     const login = await startSignIn();
     await receive({ ...SIGNED_IN, id: login.id });
     await button("Sign out").click();
-    expect(await page.locator("[data-confirm]").textContent()).toBe("This signs out the CLI on this device too.");
+    const warning = page.getByRole("status").filter({ hasText: "This signs out the CLI on this device too." });
+    expect(await warning.count()).toBe(1);
+    expect(await button("Sign out").getAttribute("aria-describedby")).toBe(await warning.getAttribute("id"));
     expect((await sent()).some((m) => m.type === "account.logout")).toBe(false);
     await button("Sign out").click();
     const logout = await last("account.logout");
@@ -209,6 +211,15 @@ describe("the Account section in a browser", () => {
     expect(await page.locator("[data-code]").textContent()).toBe("ABCD-EFGH");
     expect(await button("Cancel").count()).toBe(1);
     expect(await opened()).toEqual([DEVICE_URL]);
+  });
+
+  test("a code that expires after coming back to the section still says so", async () => {
+    const login = await startSignIn();
+    await page.locator("[data-code]").waitFor({ timeout: 2_000 });
+    await page.evaluate(() => (window as unknown as { fake: { remount(): void } }).fake.remount());
+    await receive({ type: "error", id: login.id, code: "expired", message: "Sign-in code expired" });
+    await button("Sign in again").waitFor({ timeout: 2_000 });
+    expect(await page.getByRole("alert").textContent()).toBe("The code expired");
   });
 });
 
