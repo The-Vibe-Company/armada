@@ -163,7 +163,7 @@ describe("the room's panel in a browser", () => {
     await page.keyboard.press("Meta+.");
     await side.waitFor({ state: "detached" });
     await expect(toggle.getAttribute("aria-pressed")).resolves.toBe("false");
-    await expect(columnWidth(page)).resolves.toBe(beside + 320);
+    expect(await columnWidth(page)).toBe(beside + 320);
     // ⌘1 picks nothing while it is closed; ⌘. brings it back.
     await page.keyboard.press("Meta+2");
     await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=agents");
@@ -204,7 +204,7 @@ describe("the room's panel in a browser", () => {
     // The arrow keys move it too.
     await panel(page).locator("[data-panel-edge]").focus();
     await page.keyboard.press("ArrowRight");
-    await expect(panel(page).evaluate((el) => el.getBoundingClientRect().width)).resolves.toBe(464);
+    expect(await panel(page).evaluate((el) => el.getBoundingClientRect().width)).toBe(464);
     await page.close();
   }, 15_000);
 
@@ -230,7 +230,7 @@ describe("the room's panel in a browser", () => {
           end,
         };
       });
-    await expect(place("agents-merged")).resolves.toMatchObject({ shown: true, end: true });
+    expect(await place("agents-merged")).toMatchObject({ shown: true, end: true });
     await page.getByRole("button", { name: "1 blocked" }).click();
     await expect(focused(page)).resolves.toBe("h2#agents-blocked");
     await expect(place("agents-blocked")).resolves.toEqual({ top: 0, shown: true, end: false });
