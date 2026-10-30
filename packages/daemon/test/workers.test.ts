@@ -525,6 +525,24 @@ test("shutdown revokes every capability and stops later workers after one provid
   );
   await assert.rejects(f.workers.close(), AggregateError);
   assert.equal((await f.inspect()).state, "stopped", "the later real process was still stopped");
+  const afterStop = fold(f.daemon.store.readSince(0, project)).projects[project];
+  assert.equal(
+    afterStop?.sessions.find((s) => s.ticket === "SEED-2")?.phase,
+    "released",
+    "a confirmed stop durably frees launch capacity",
+  );
+  assert.equal(
+    afterStop?.sessions.find((s) => s.ticket === "SEED-1")?.phase,
+    "planning",
+    "a failed stop retains its active generation",
+  );
+  assert(
+    f.daemon.store
+      .readSince(0, project)
+      .some(
+        (e) => e.kind === "session.runtime-observed" && e.payload.ticket === "SEED-2" && e.payload.state === "stopped",
+      ),
+  );
   assert.equal((await socketCall(f.socketPath, firstToken, { command: "claim", ticket: "SEED-1" })).status, 403);
   assert.equal((await socketCall(f.socketPath, f.token(), { command: "claim", ticket: "SEED-2" })).status, 403);
 });

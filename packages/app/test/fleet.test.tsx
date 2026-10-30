@@ -28,7 +28,7 @@ function render() {
 /** The list as it reads: each group's header, then each row's ticket, group, reason and the reason's colour. */
 function list(html: string) {
   return html
-    .split(/(?=<h2\b|<div[^>]*data-row=)/)
+    .split(/(?=<h2\b|<a[^>]*data-row=)/)
     .slice(1)
     .map((block) => {
       if (block.startsWith("<h2")) {
@@ -59,10 +59,16 @@ test("the fleet shows its sessions by state, each row with its reason in its sta
     "Merged today (1)",
     "  HAR-9 merged bg-merged | #39 merged | text-text-2",
   ]);
+  // Every row is a link to its session's page (THE-2028): the whole row is the target.
+  const rows = [...html.matchAll(/<a [^>]*data-row="([^"]+)"[^>]*>/g)];
+  expect(rows).toHaveLength(7);
+  for (const [tag, key] of rows) expect(tag).toContain(`href="#/sessions/${key?.split("/")[1]}"`);
   // Each row's bar: the step at work in its state's colour (HAR-12 codes: step 3 of 6).
   const bar = html
     .split('data-row="harbor/HAR-12"')[1]
-    ?.match(/<span role="img" aria-label="Step: Code"[^>]*>(.*?)<\/span><span class="text-right/)?.[1];
+    ?.match(
+      /<span role="img" aria-label="Step: Code"[^>]*>(.*?)<\/span><span class="whitespace-nowrap text-right/,
+    )?.[1];
   expect(bar?.match(/bg-[a-z-]+/g)).toEqual([
     "bg-step-done",
     "bg-step-done",

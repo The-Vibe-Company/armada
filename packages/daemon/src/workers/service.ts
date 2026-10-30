@@ -536,6 +536,18 @@ export class Workers {
           () => this.#cleanupCheck(row.ref),
           () => row.runtime.stop(row.ref),
         );
+        this.#record(row.ref, { state: "stopped" });
+        const current = this.#tables(row.ref.project)?.sessions.find((s) => s.ticket === row.ref.ticket);
+        if (current && same({ project: row.ref.project, ...current }, row.ref) && !ended(current.phase))
+          this.#append({
+            project: row.ref.project,
+            kind: "session.released",
+            payload: {
+              ticket: row.ref.ticket,
+              session: row.ref.session,
+              reason: "Daemon stopped",
+            },
+          });
       }),
     );
     const failed = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));

@@ -11,7 +11,7 @@ export type Harness = (typeof HARNESSES)[number];
 export const HARNESS_LABEL: Record<Harness, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode" };
 
 /** The harness a session's runtime names (`claude`, `claude-code`, `codex`, `opencode`); null for any other. */
-function harnessOf(runtime: string | undefined): Harness | null {
+export function harnessOf(runtime: string | undefined): Harness | null {
   const r = (runtime ?? "").toLowerCase();
   if (r.includes("opencode")) return "opencode";
   if (r.includes("claude")) return "claude";

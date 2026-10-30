@@ -103,13 +103,50 @@ strings), copied into `src/fleet/overview.ts`, never imported:
   and merged).
 - **The six-step bar** (Plan, Approval, Code, Review & CI, Ready, Merged): the
   done steps grey, the one at work in the state's colour; all grey once merged.
-- A row's time is the hour on the viewer's day, else the date: a still word.
+- A row's time is the hour on the viewer's day, else the date: a still word,
+  whole from a 900 px window up (the title gives way, with an ellipsis).
 - **Past 100 rows** each row is `content-visibility: auto` at its 48 px, so the
   browser skips the rows off screen; every row stays in the page.
 
 `test/overview.test.ts` holds the rules on synthetic folded states;
 `test/fleet.test.tsx` renders the list on the daemon's fold of a synthetic log
 and reads the groups, the reasons and their colours.
+
+## A session's page
+
+Every row of the fleet is a link (the whole row, focusable, Enter opens it) to
+its session's page, `#/sessions/<ticket>` (`?tab=files` for the second tab):
+`src/screens/Session.tsx`, loaded when a row opens it, never in the first load.
+Its route is `src/session/route.ts`, one line of `App.tsx`; its reading is
+`src/session/view.ts`, pure, from the project's folded state and the events the
+subscription replayed (the client keeps them per project): the app reads one
+ticket's lines out of the log, it never folds.
+
+- **The facts line**: back to the project (`#/projects/<id>`, its page, its room
+  once that lands), the ticket, the runtime and its harness, the
+  branch and the pull request's address from the forge's events, the pull
+  request and its checks, claimed at, last report at. Then the ticket's title
+  (the 22 px h1) and the state on the quiet line.
+- **The state card**, edged in the state's colour: blocked says why (the
+  worker's question and its choices when it asked one) with Answer, Release
+  the ticket and Open the session; waiting for you says the validation, the
+  coordinator's question or the plan, with its choices and a Note field;
+  in progress the last report; ready to merge the hand-back; merged the pull
+  request. The acting buttons are disabled with "Not available yet." until the
+  daemon can act on workers (Spec 3) and answer the owner's decisions.
+- **The six steps** (Plan, Build, Ship, Review & CI, Merge, Done): the done ones
+  grey, the current one in the state's colour and marked (`aria-current`).
+- **Reports**: the ticket's reports and events, newest first (claims, reports,
+  questions and answers, validations and decisions, the merge queue, the pull
+  request's moves; heartbeats and unchanged readings left out), each on one line
+  cut with an ellipsis, opened on a click to its whole text.
+- **Files**: the pull request's files with their +/- counts when a forge event
+  carries `files`; one quiet line when none.
+
+`test/session.test.tsx` renders a synthetic session in each state on the
+daemon's fold and checks the card, the steps and both tabs; `test/build.test.ts`
+opens a row by a click and by the keyboard in Chromium, and holds every row's
+time whole at 900 px.
 
 ## The Plugins screen
 
@@ -224,6 +261,49 @@ hand-turned clock: the triangles per state and colour, the bank on a state
 change, the regroup on a merge, the frame budget. `?story=sky` in the dev
 server shows the band of each of the daemon's projects and the stage of them
 all, live, and a synthetic fleet moved by hand (loaded only behind that flag).
+
+## A project's room
+
+`#/projects/<id>` (`src/screens/Room.tsx`, THE-1996), after the direction kept
+with the owner (`.aeom/direction/room.html`): the v7 anatomy (the repository and
+the project's numbers on the facts line, its name as the title, what is blocked
+and what waits on the quiet line), then the sky as a 200 px band, the oldest
+question waiting for the owner pinned under it (an open `owner-request`: its
+choices from V1's "Options:" list, the one said "(recommended)" primary, a
+labelled note; absent when nothing waits), the conversation with the project's
+coordinator, and the owner's field fixed at the bottom. The agents' rail
+(`src/room/Rail.tsx`) slides in from the right at a third of the width, the
+project's agents grouped by state, a row opening its session's page
+(`#/sessions/<ticket>`, THE-2028). The fleet list by state, with the project's
+rules, is at `#/projects/<id>/rules`, linked from the facts line. The sidebar stays.
+
+- **The conversation** (`src/room/chat.ts`) is the daemon's reading
+  (`chat.read`, protocol minor 4): read when the room opens, and again whenever
+  the subscription brings a `coordinator.*` event past the last reading. A
+  message keeps one `requestId` until the daemon admitted it, so sending it
+  again after a drop is the same message. The client's `request()` correlates a
+  reply with its request and rejects it when the connection drops; nothing is
+  replayed.
+- **What it shows** (`src/room/Thread.tsx`, rules in `src/room/view.ts`): the
+  owner's and the coordinator's messages as bubbles under who said them; the
+  coordinator's own lines quiet, on a dot in the state of the ticket they name
+  (the newest line about a ticket; older ones a quiet dot); each tool call one
+  quiet line (`<details>`) that opens on a click to its input and result.
+  Ticket ids and pull requests are set in mono, an id in its ticket's state.
+- **Type** never under 13 px, 12.5 px only for Geist Mono ids and times; the
+  state's colour on a dot or a triangle (an agent is the mark's triangle in its
+  harness's colour, as in the sky), never a side border; every field labelled.
+- **Movement**: the rail slides on the owner's toggle; a new message fades in.
+- `scripts/dev-daemon.ts` gives every project a coordinator on pi-ai's faux
+  model (it reads the fleet with one tool call, then answers in one line), and
+  seeds Harbor with a pinned question and a coordinator line.
+
+`test/room.test.tsx` renders the room on the daemon's fold of the synthetic log
+and a synthetic conversation (two tool calls, a pinned question) and reads the
+anatomy, the band, the card, the quiet lines and the rail. The browser test
+opens Harbor's room, sends a message, waits for the faux coordinator's answer,
+reloads to find the same conversation, answers the pinned question, and checks
+the fonts and that no text is under 13 px.
 
 ## First-load budget
 

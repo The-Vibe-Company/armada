@@ -38,7 +38,8 @@ const pullRequestSchema = z.object({
   ci: z.enum(["none", "pending", "success", "failure"]),
   conflicting: z.boolean(),
 });
-const inboxSchema = z.object({ id: text, ticket: text, kind: text, body: text });
+/** `at`: when it was asked (the room's pinned question shows it). */
+const inboxSchema = z.object({ id: text, ticket: text, kind: text, body: text, at: text.optional() });
 const queueSchema = z.object({
   ticket: text,
   session: text,
@@ -50,6 +51,8 @@ const validationSchema = z.object({
   ticket: text,
   session: text,
   question: text,
+  /** What the owner checks (the session's page lists them). */
+  checks: z.array(text).optional(),
   decision: z.object({ decision: text }).nullable(),
 });
 

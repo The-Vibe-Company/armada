@@ -232,6 +232,24 @@ replay defaults to unsafe unless an implementation explicitly declares it safe.
 THE-1994 supplies real tools; THE-2017 supplies model plugins, and THE-1996 adds chat
 requests. Those paths need not change the storage contract.
 
+The room's requests (THE-1996, `src/server/chat.ts`, protocol minor 4) are answered
+after admission, one reply each. `chat.read` reads the conversation through pi-durable's
+public `conversation.entries` (newest 200 entries) and the project's `coordinator.message`
+events, never pi's storage writes: `pi.user` and `armada.owner-answer` inputs are the
+owner's, assistant text is an answer after the owner spoke and the coordinator's own
+`line` after any other input, each tool call is paired with its result (cut at 8 KiB;
+`failed` on an error or facts saying `ok: false`). `chat.send` submits pi input with
+the app's `requestId`, so a retry is one input; mid-run it steers (placed after the
+current tool round). The checkpoint it commits is the event subscribers receive. A
+failed model turn reads as a line saying so. `owner.answer` folds the project, appends
+`inbox.answered` (actor `owner`) for an open `owner-request` in the same synchronous
+step, then awaits handing the answer to the coordinator as an `armada.owner-answer`
+input keyed by the item. If that fails it says so; the same answer again tells the
+coordinator again (pi admits it once), while a different one is refused.
+Without a coordinator, `chat.read` answers the log's lines with `coordinator: false`
+and `chat.send` refuses with one line. `test/chat-server.test.ts` runs them over a
+file log and a faux model, through a restart.
+
 Pinned pi-durable 1.4 owns its scheduler directly over pi-ai; pi-agent-core is a
 separate non-durable agent loop, so nesting it would create a second scheduler.
 The custom Storage adapter uses pi's public `MemoryStorage.prepareCommit` to validate
@@ -303,7 +321,8 @@ one-second daemon poll feeds these observations; fleet reads stay read-only.
 After a daemon crash, sessions and intents remain, but processes and capabilities
 are not reattached: uncertain launches refuse a duplicate and require inspection.
 No unknown-outcome native launch is retried automatically. Shutdown stops only
-processes this daemon owns, with a fresh generation check at each native write.
+processes this daemon owns, with a fresh generation check at each native write. Confirmed stops record their runtime state and release only the exact
+still-current active generation; failed stops retain active records for inspection.
 
 `test/workers.test.ts` owns real-worktree/process lifecycle and socket admission;
 `armada plugin test packages/plugins/node-local` and `.../claude` exercise both

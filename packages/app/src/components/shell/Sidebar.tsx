@@ -3,6 +3,7 @@ import { fleetOf } from "@/fleet/state";
 import { projectHref, useRoute } from "@/lib/route";
 import type { ConnectionStatus } from "@/protocol/client";
 import { useDaemon } from "@/protocol/store";
+import { useSessionRoute } from "@/session/route";
 import { Count } from "./Count";
 import { Logo } from "./Logo";
 
@@ -19,6 +20,9 @@ const current = "aria-[current=page]:bg-item-current aria-[current=page]:text-te
 export function Sidebar() {
   const { projects, fleets, status } = useDaemon();
   const route = useRoute();
+  // A session's page is none of the sections: the hangar is not the current page there.
+  const session = useSessionRoute();
+  const home = route.kind === "home" && !session;
   return (
     <aside
       aria-label="Sidebar"
@@ -29,7 +33,7 @@ export function Sidebar() {
         <span className="font-semibold text-sub">Armada</span>
       </div>
       <nav aria-label="Sections" className="flex flex-col gap-0.5">
-        <a href="#/" className={`${item} ${current}`} aria-current={route.kind === "home" ? "page" : undefined}>
+        <a href="#/" className={`${item} ${current}`} aria-current={home ? "page" : undefined}>
           <span className="min-w-0 flex-1 truncate">Hangar</span>
         </a>
       </nav>
@@ -46,7 +50,9 @@ export function Sidebar() {
               key={p.id}
               href={projectHref(p.id)}
               className={`${item} ${current}`}
-              aria-current={route.kind === "project" && route.id === p.id ? "page" : undefined}
+              aria-current={
+                (route.kind === "project" || route.kind === "rules") && route.id === p.id ? "page" : undefined
+              }
               title={p.repository}
             >
               <span className="min-w-0 flex-1 truncate">{p.name}</span>

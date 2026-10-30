@@ -138,17 +138,17 @@ describe("in a browser, served by a running daemon", () => {
     expect(anatomy.h1).toEqual([{ text: "Hangar", inHeader: "HEADER" }]);
     for (const family of anatomy.fonts) expect(family).toMatch(/^"?Geist( Mono)?"?,/);
 
-    // Entering Harbor's room: its fleet by state, under the v7 title.
+    // Entering Harbor's room (THE-1996): its agents by state in the rail, under the v7 title.
     await main.getByRole("link", { name: /^Harbor/ }).click();
     await page.waitForURL(/#\/projects\/harbor$/);
-    const groups = main.locator('h2[id^="fleet-"]');
+    const groups = main.locator("[data-rail-group]");
     await groups.first().waitFor({ timeout: 5_000 });
-    expect((await groups.allInnerTexts()).map((h) => h.split("\n")[0])).toEqual([
-      "Blocked",
-      "Waiting for your decision",
-      "In progress",
-      "Ready to merge",
-      "Merged today",
+    expect(await groups.evaluateAll((all) => all.map((g) => g.getAttribute("data-rail-group")))).toEqual([
+      "blocked",
+      "you",
+      "running",
+      "ready",
+      "merged",
     ]);
     await expect(projects.getByRole("link", { name: /Harbor/ }).getAttribute("aria-current")).resolves.toBe("page");
     const title = await page.evaluate(() =>
@@ -164,6 +164,8 @@ describe("in a browser, served by a running daemon", () => {
   });
 
   test("a state change over the subscription glides the same row to its new group, without a reload", async () => {
+    // The fleet by state of one project, on its rules page beside the room.
+    await page.goto(`${daemon.url}/#/projects/harbor/rules`);
     const row = page.locator('[data-row="harbor/HAR-12"]');
     await row.and(page.locator('[data-group="running"]')).waitFor({ timeout: 5_000 });
     const before = await row.evaluate((el) => {
@@ -217,8 +219,162 @@ describe("in a browser, served by a running daemon", () => {
     const tidewater = page.getByRole("complementary", { name: "Sidebar" }).getByRole("link", { name: /Tidewater\s+1/ });
     await tidewater.waitFor({ timeout: 5_000 });
     await tidewater.click();
-    await page.locator('[data-row="tidewater/TID-1"][data-group="running"]').waitFor({ timeout: 5_000 });
+    // Its room's rail holds the new agent in progress.
+    await page.locator('[data-rail-group="running"] [data-rail-row="TID-1"]').waitFor({ timeout: 5_000 });
   });
+
+  test("a project's room: the band, the pinned question, a message the coordinator answers, kept across a reload", async () => {
+    await page.goto(`${daemon.url}/#/projects/harbor`);
+    await page.getByRole("heading", { level: 1, name: "Harbor" }).waitFor({ timeout: 5_000 });
+    const band = page.locator('[data-sky="band"]');
+    await expect(band.evaluate((el) => el.getBoundingClientRect().height)).resolves.toBe(200);
+    const card = page.getByRole("region", { name: "A question waiting for you" });
+    await card.getByText("Two berth tests time out under the full suite.").waitFor({ timeout: 5_000 });
+    const rail = page.getByRole("complementary", { name: "Agents" });
+    await rail.getByRole("link", { name: /HAR-15/ }).waitFor({ timeout: 5_000 });
+    // The coordinator's own line from the log is there before anything is said.
+    await page
+      .locator('[data-item="line"]')
+      .filter({ hasText: "HAR-9's quays have names" })
+      .waitFor({ timeout: 5_000 });
+
+    // A message sent through the protocol: the coordinator's checkpoint brings it back with the answer.
+    const field = page.getByLabel("Message", { exact: true });
+    await field.fill("Merge HAR-20 first.");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    const answer = page.locator('[data-item="coordinator"]').filter({ hasText: "Noted: “Merge HAR-20 first.”" });
+    await answer.waitFor({ timeout: 10_000 });
+    await expect(field.inputValue()).resolves.toBe("");
+    await page.locator('[data-item="owner"]').filter({ hasText: "Merge HAR-20 first." }).waitFor();
+    // Its tool call is one quiet line, closed until a click opens it.
+    const call = page.locator('details[data-tool="fleet.status"]').first();
+    await expect(call.evaluate((el) => (el as HTMLDetailsElement).open)).resolves.toBe(false);
+    await call.locator("summary").click();
+    await expect(call.evaluate((el) => (el as HTMLDetailsElement).open)).resolves.toBe(true);
+    await call.getByText("Result").waitFor();
+
+    // Closed and opened again: the same conversation, read from the log.
+    await page.reload();
+    await answer.waitFor({ timeout: 10_000 });
+    await page.locator('[data-item="owner"]').filter({ hasText: "Merge HAR-20 first." }).waitFor();
+
+    // The owner answers the pinned question: the card leaves, the answer joins the conversation.
+    await card.getByRole("button", { name: /Fix the wait/ }).click();
+    await card.waitFor({ state: "detached", timeout: 5_000 });
+    await page
+      .locator('[data-item="owner"]')
+      .filter({ hasText: "On HAR-15: Fix the wait" })
+      .waitFor({ timeout: 10_000 });
+
+    // The rail closes and opens from the facts line.
+    await page.getByRole("button", { name: "Close the agents" }).click();
+    await rail.waitFor({ state: "detached", timeout: 5_000 });
+    await page.getByRole("button", { name: /^Agents/ }).click();
+    await rail.waitFor({ timeout: 5_000 });
+
+    const anatomy = await page.evaluate(() => ({
+      h1: [...document.querySelectorAll("h1")].map((h) => [h.textContent, getComputedStyle(h).fontSize]),
+      fonts: [...new Set([...document.querySelectorAll("body *")].map((e) => getComputedStyle(e).fontFamily))],
+      // Type never under 13 px; 12.5 px only in Geist Mono (ids and times).
+      small: [...document.querySelectorAll("main *")]
+        .filter((e) => [...e.childNodes].some((n) => n.nodeType === 3 && n.textContent?.trim()))
+        .map((e) => getComputedStyle(e))
+        .filter(
+          (s) => Number.parseFloat(s.fontSize) < 13 && !(s.fontSize === "12.5px" && /Geist Mono/.test(s.fontFamily)),
+        )
+        .map((s) => `${s.fontSize} ${s.fontFamily}`),
+    }));
+    expect(anatomy.h1).toEqual([["Harbor", "22px"]]);
+    for (const family of anatomy.fonts) expect(family).toMatch(/^"?Geist( Mono)?"?,/);
+    expect(anatomy.small).toEqual([]);
+
+    // A rail row opens its session's page (THE-2028).
+    await rail.locator('[data-rail-row="HAR-15"]').click();
+    await page.getByRole("heading", { level: 1, name: "Price berths by the hour" }).waitFor({ timeout: 5_000 });
+    expect(new URL(page.url()).hash).toBe("#/sessions/HAR-15");
+  }, 30_000);
+
+  test("every row opens its session's page, by a click or the keyboard, and holds from 900 px up", async () => {
+    await page.setViewportSize({ width: 900, height: 800 });
+    // A project's fleet list is on its rules page, beside its room (the hangar is the home since THE-2025).
+    await page.goto(`${daemon.url}#/projects/harbor/rules`);
+    const rows = page.locator("[data-row]");
+    await rows.first().waitFor({ timeout: 5_000 });
+    // Each row's time is whole at the window's narrowest supported width; the title gives way.
+    const clipped = await rows.evaluateAll((els) =>
+      els.flatMap((el) => {
+        const time = el.lastElementChild as HTMLElement;
+        const row = el.getBoundingClientRect();
+        const box = time.getBoundingClientRect();
+        return time.scrollWidth > time.clientWidth || box.right > row.right ? [el.getAttribute("data-row")] : [];
+      }),
+    );
+    expect(clipped).toEqual([]);
+    // The forge reads HAR-15's pull request, with its branch and files.
+    daemon.append({
+      project: "harbor",
+      kind: "pull-request.opened",
+      at: new Date().toISOString(),
+      actor: "github",
+      payload: {
+        number: 41,
+        ticket: "HAR-15",
+        state: "open",
+        ci: "failure",
+        conflicting: false,
+        head: "head-41",
+        repository: "example/harbor",
+        title: "Price berths by the hour",
+        url: "https://example.test/harbor/pull/41",
+        headRef: "feature/har-15-price-berths",
+        draft: false,
+        review: "none",
+        checks: [],
+        checksComplete: true,
+        files: [{ path: "src/berths/price.ts", additions: 42, deletions: 3 }],
+      } as never,
+    });
+    // Opened from a scrolled list, the page starts at its top with the focus on its title.
+    await expect(
+      page.getByRole("main").evaluate((main) => {
+        main.scrollTo(0, 400);
+        return main.scrollTop;
+      }),
+    ).resolves.toBeGreaterThan(0);
+    await page.locator('[data-row="harbor/HAR-15"]').click();
+    await page.getByRole("heading", { level: 1, name: "Price berths by the hour" }).waitFor({ timeout: 5_000 });
+    expect(new URL(page.url()).hash).toBe("#/sessions/HAR-15");
+    await expect(page.getByRole("main").evaluate((main) => main.scrollTop)).resolves.toBe(0);
+    await expect(page.evaluate(() => document.activeElement?.tagName)).resolves.toBe("H1");
+    // The sidebar's Hangar is not the current page on a session's page.
+    await expect(
+      page
+        .getByRole("navigation", { name: "Sections" })
+        .getByRole("link", { name: "Hangar" })
+        .getAttribute("aria-current"),
+    ).resolves.toBeNull();
+    await expect(page.getByRole("region", { name: "State" }).getAttribute("data-state")).resolves.toBe("blocked");
+    await page.getByText("feature/har-15-price-berths").waitFor({ timeout: 5_000 });
+    // A report opens on a click to its whole text.
+    const report = page.locator("[data-entry] details").first();
+    await report.locator("summary").click();
+    await expect(report.getAttribute("open")).resolves.toBe("");
+    await page.getByRole("navigation", { name: "Session" }).getByRole("link", { name: /Files/ }).click();
+    await page.locator('[data-file="src/berths/price.ts"]').waitFor({ timeout: 5_000 });
+    expect(new URL(page.url()).hash).toBe("#/sessions/HAR-15?tab=files");
+    // Back to the project's room, then another project's fleet row by the keyboard.
+    await page.getByRole("link", { name: "← Harbor" }).click();
+    await page.getByRole("heading", { level: 1, name: "Harbor" }).waitFor({ timeout: 5_000 });
+    expect(new URL(page.url()).hash).toBe("#/projects/harbor");
+    await page.evaluate(() => {
+      window.location.hash = "#/projects/lantern/rules";
+    });
+    await page.getByRole("heading", { level: 1, name: "Lantern" }).waitFor({ timeout: 5_000 });
+    await page.locator('[data-row="lantern/LAN-7"]').focus();
+    await page.keyboard.press("Enter");
+    await page.getByRole("heading", { level: 1, name: "Pick the lanterns' colour" }).waitFor({ timeout: 5_000 });
+    await expect(page.getByRole("region", { name: "State" }).getAttribute("data-state")).resolves.toBe("you");
+  }, 15_000);
 });
 
 describe("the Plugins screen in a browser, on a daemon that restarts", () => {
