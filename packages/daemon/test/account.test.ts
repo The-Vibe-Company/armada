@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import fs, { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -18,6 +18,7 @@ import { Account } from "../src/server/account.ts";
 import { startServer } from "../src/server/index.ts";
 import { EventStore } from "../src/store.ts";
 import { FakeKeychain } from "./support/keychain.ts";
+import { nodeExecutable } from "./support/node.ts";
 import { readerRegistry } from "./support/reader-plugins.ts";
 import { issue, page, project } from "./support/reader-recordings.ts";
 
@@ -367,9 +368,8 @@ test("shutdown during the credential commit revokes the new session and leaves n
   if (process.versions.bun) {
     // Node's live builtin export instrumentation is unavailable in Bun. Run
     // this same race against the production Node runtime, without skipping it.
-    const nativeNode = execFileSync("node", ["-p", "process.execPath"], { encoding: "utf8" }).trim();
     const child = spawn(
-      nativeNode,
+      nodeExecutable,
       ["--test", "--test-name-pattern=shutdown during the credential commit", fileURLToPath(import.meta.url)],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
@@ -433,7 +433,7 @@ test("daemon startup serves local clients while its saved account API is unavail
   const entry = fileURLToPath(new URL("../src/server/main.ts", import.meta.url));
   const preload = `globalThis.fetch = async () => { console.log(JSON.stringify({ accountRequestStarted: true })); return new Promise(() => {}); };`;
   const child = spawn(
-    "node",
+    nodeExecutable,
     [
       "--import",
       `data:text/javascript,${encodeURIComponent(preload)}`,

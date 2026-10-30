@@ -1,14 +1,13 @@
 import { z } from "zod";
-import { identifier, versionSchema as version } from "./envelope.js";
+import { identifier, requestSchema, versionSchema as version } from "./envelope.js";
 
 /** First wire minor with the shared Armada web account. */
 export const ACCOUNT_MINOR = 8;
 const request = { version, id: identifier };
 // The app reads account replies; leave request validators out of its bundle.
-const accountRequest = <T extends string>(type: T) => z.object({ ...request, type: z.literal(type) });
-export const accountStatusRequestSchema = /* @__PURE__ */ accountRequest("account.status");
-export const accountLoginRequestSchema = /* @__PURE__ */ accountRequest("account.login");
-export const accountLogoutRequestSchema = /* @__PURE__ */ accountRequest("account.logout");
+export const accountStatusRequestSchema = /* @__PURE__ */ requestSchema("account.status", {});
+export const accountLoginRequestSchema = /* @__PURE__ */ requestSchema("account.login", {});
+export const accountLogoutRequestSchema = /* @__PURE__ */ requestSchema("account.logout", {});
 const signedOut = { signedIn: z.literal(false), apiUrl: identifier };
 const signedIn = {
   signedIn: z.literal(true),

@@ -21,7 +21,7 @@ import {
   ownerAnsweredSchema,
   ownerAnswerRequestSchema,
 } from "./chat.js";
-import { counter, identifier, versionSchema } from "./envelope.js";
+import { counter, identifier, requestSchema, versionSchema } from "./envelope.js";
 import { modelConfigSchema, modelKindEntrySchema, modelKindSchema } from "./models.js";
 import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
 import {
@@ -59,21 +59,17 @@ export const eventSchema = pluginEventSchema;
 export type ProtocolEvent = z.infer<typeof eventSchema>;
 
 const request = { version: versionSchema, id: identifier };
-export const listProjectsRequestSchema = z.object({ ...request, type: z.literal("projects.list") });
-export const subscribeRequestSchema = z.object({
-  ...request,
-  type: z.literal("project.subscribe"),
+export const listProjectsRequestSchema = /* @__PURE__ */ requestSchema("projects.list", {});
+export const subscribeRequestSchema = /* @__PURE__ */ requestSchema("project.subscribe", {
   project: identifier,
   after: counter,
 });
-export const readSessionRequestSchema = z.object({
-  ...request,
-  type: z.literal("session.read"),
+export const readSessionRequestSchema = /* @__PURE__ */ requestSchema("session.read", {
   project: identifier,
   sessionId: identifier,
 });
 export const modelProviderSchema = modelKindSchema;
-export const credentialsStatusRequestSchema = z.object({ ...request, type: z.literal("credentials.status") });
+export const credentialsStatusRequestSchema = /* @__PURE__ */ requestSchema("credentials.status", {});
 function credentialsSetSchema() {
   return z.object({
     ...request,
