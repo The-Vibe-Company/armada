@@ -40,7 +40,7 @@ test("merge pins the requested head and reports only confirmed GitHub merges", a
   assert.equal(calls, 2);
 });
 
-test("the declared token wins and gh auth token is the bounded fallback", async () => {
+test("the declared token wins; missing or locked secrets fall back to gh without leaking errors", async () => {
   const calls: string[] = [];
   const command = async (file: string, args: readonly string[]) => {
     calls.push([file, ...args].join(" "));
@@ -51,6 +51,53 @@ test("the declared token wins and gh auth token is the bounded fallback", async 
     "synthetic-declared-token",
   );
   assert.deepEqual(calls, []);
-  assert.equal(await githubToken({ keychain: { read: async () => null }, command }), "synthetic-gh-token");
-  assert.deepEqual(calls, ["gh auth token"]);
+  const privateValue = "synthetic-private-token";
+  for (const locked of [false, true]) {
+    calls.length = 0;
+    assert.equal(
+      await githubToken({
+        keychain: {
+          read: async () => {
+            if (locked) throw new Error(privateValue);
+            return null;
+          },
+        },
+        command,
+      }),
+      "synthetic-gh-token",
+    );
+    assert.deepEqual(calls, ["gh auth token"]);
+  }
+  await assert.rejects(
+    githubToken({
+      keychain: {
+        read: async () => {
+          throw new Error(privateValue);
+        },
+      },
+      command: async () => {
+        throw new Error(privateValue);
+      },
+    }),
+    (error: Error) => error.message === "GitHub credentials unavailable" && !error.message.includes(privateValue),
+  );
+  const stopped = new AbortController();
+  stopped.abort();
+  calls.length = 0;
+  let secretReads = 0;
+  await assert.rejects(
+    githubToken({
+      signal: stopped.signal,
+      keychain: {
+        read: async () => {
+          secretReads++;
+          return "synthetic-declared-token";
+        },
+      },
+      command,
+    }),
+    /GitHub credentials unavailable/,
+  );
+  assert.equal(secretReads, 0);
+  assert.deepEqual(calls, []);
 });

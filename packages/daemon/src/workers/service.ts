@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { NodeProvider, RuntimeProvider, WorkerObservation, WorkerRef, Workspace } from "@armada/plugin-api";
 import { guarded } from "@armada/plugin-api/guard";
+import { activePhaseSchema } from "@armada/protocol";
 import { z } from "zod";
 import type { EventInput, Json } from "../events.ts";
 import { fold } from "../fold.ts";
@@ -8,7 +9,7 @@ import type { PluginRegistry } from "../plugins/registry.ts";
 import type { EventStore } from "../store.ts";
 import { workerRoute } from "./routing.ts";
 
-export interface WorkerProject {
+interface WorkerProject {
   id: string;
   repository: string;
   checkout: string;
@@ -43,21 +44,12 @@ export const workerToolSchemas = {
   "worker.stop": z.strictObject({ ticket: id, reason: text }),
 };
 export type WorkerTool = keyof typeof workerToolSchemas;
-const phase = z.enum([
-  "planning",
-  "awaiting-approval",
-  "implementing",
-  "shipping",
-  "blocked",
-  "ready-to-merge",
-  "awaiting-validation",
-]);
-export const workerRequestSchema = z.discriminatedUnion("command", [
+const workerRequestSchema = z.discriminatedUnion("command", [
   z.strictObject({ command: z.literal("claim"), ticket: id }),
   z.strictObject({
     command: z.literal("report"),
     ticket: id,
-    phase,
+    phase: activePhaseSchema,
     message: text,
     stage: z.enum(["review", "ci"]).optional(),
     pr: z.number().int().positive().optional(),
@@ -70,7 +62,6 @@ export const workerRequestSchema = z.discriminatedUnion("command", [
   z.strictObject({ command: z.literal("ask"), ticket: id, question: text, key: id }),
   z.strictObject({ command: z.literal("release"), ticket: id, reason: text }),
 ]);
-export type WorkerRequest = z.infer<typeof workerRequestSchema>;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const ended = (phase: string) => phase === "released" || phase === "merged";
 const same = (a: WorkerRef, b: WorkerRef) =>

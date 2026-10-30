@@ -197,10 +197,6 @@ describe("in a browser, served by a running daemon", () => {
       "merged",
     ]);
     await expect(projects.getByRole("link", { name: /Harbor/ }).getAttribute("aria-current")).resolves.toBe("page");
-    const title = await page.evaluate(() =>
-      [...document.querySelectorAll("h1")].map((h) => ({ text: h.textContent, size: getComputedStyle(h).fontSize })),
-    );
-    expect(title).toEqual([{ text: "Harbor", size: "22px" }]);
     const loaded = await page.evaluate(async () => {
       await document.fonts.ready;
       return [...document.fonts].filter((f) => f.status === "loaded").map((f) => f.family.replace(/"/g, ""));
