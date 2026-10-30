@@ -1,14 +1,13 @@
 import { pluginEventSchema } from "@armada/plugin-api";
 import { z } from "zod";
 import {
-  ACCOUNT_MINOR,
   accountDeviceSchema,
   accountLoginRequestSchema,
   accountLogoutRequestSchema,
   accountResultSchema,
   accountStatusRequestSchema,
 } from "./account.js";
-import { AUTH_MINOR, authRequestSchemas, authResultSchemas } from "./auth.js";
+import { authRequestSchemas, authResultSchemas } from "./auth.js";
 import {
   chatDeltaSchema,
   chatReadRequestSchema,
@@ -22,7 +21,7 @@ import {
   ownerAnsweredSchema,
   ownerAnswerRequestSchema,
 } from "./chat.js";
-import { counter, identifier, versionSchema } from "./envelope.js";
+import { counter, identifier, requestSchema, versionSchema } from "./envelope.js";
 import {
   modelConfigSchema,
   modelKindEntrySchema,
@@ -69,34 +68,34 @@ export const eventSchema = pluginEventSchema;
 export type ProtocolEvent = z.infer<typeof eventSchema>;
 
 const request = { version: versionSchema, id: identifier };
-export const listProjectsRequestSchema = z.object({ ...request, type: z.literal("projects.list") });
-export const subscribeRequestSchema = z.object({
-  ...request,
-  type: z.literal("project.subscribe"),
+export const listProjectsRequestSchema = /* @__PURE__ */ requestSchema("projects.list", {});
+export const subscribeRequestSchema = /* @__PURE__ */ requestSchema("project.subscribe", {
   project: identifier,
   after: counter,
 });
-export const readSessionRequestSchema = z.object({
-  ...request,
-  type: z.literal("session.read"),
+export const readSessionRequestSchema = /* @__PURE__ */ requestSchema("session.read", {
   project: identifier,
   sessionId: identifier,
 });
 export const modelProviderSchema = modelKindSchema;
-export const credentialsStatusRequestSchema = z.object({ ...request, type: z.literal("credentials.status") });
-export const credentialsSetRequestSchema = z.object({
-  ...request,
-  type: z.literal("credentials.set"),
-  provider: modelProviderSchema,
-  /** Built-in pi is the modern default; plugin settings/older clients retain their namespace. */
-  target: z.enum(["pi", "plugin"]).optional(),
-  config: modelConfigSchema.optional(),
-  key: z
-    .string()
-    .min(1)
-    .max(8192)
-    .regex(/^[!-~]+$/),
-});
+export const credentialsStatusRequestSchema = /* @__PURE__ */ requestSchema("credentials.status", {});
+function credentialsSetSchema() {
+  return z.object({
+    ...request,
+    type: z.literal("credentials.set"),
+    provider: modelProviderSchema,
+    /** Built-in pi is the modern default; plugins and older clients keep their namespace. */
+    target: z.enum(["pi", "plugin"]).optional(),
+    config: modelConfigSchema.optional(),
+    key: z
+      .string()
+      .min(1)
+      .max(8192)
+      .regex(/^[!-~]+$/),
+  });
+}
+// The app receives replies; request validators are only used by the daemon.
+export const credentialsSetRequestSchema = /* @__PURE__ */ credentialsSetSchema();
 export const credentialsResultSchema = z.object({
   ...request,
   type: z.literal("credentials.result"),
@@ -106,7 +105,7 @@ export const credentialsResultSchema = z.object({
   needsRepair: z.boolean().optional(),
   storage: z.enum(["os-keychain", "file"]),
 });
-export const clientMessageSchema = z.discriminatedUnion("type", [
+export const clientMessageSchema = /* @__PURE__ */ z.discriminatedUnion("type", [
   accountStatusRequestSchema,
   accountLoginRequestSchema,
   accountLogoutRequestSchema,

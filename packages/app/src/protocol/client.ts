@@ -61,7 +61,7 @@ export interface DaemonState {
   catalog: Pick<ModelsCatalog, "providers" | "selected"> | null;
   providers: readonly Provider[] | null;
   providersProblem: string | null;
-  /** The models.login request id, also used by every auth frame and prompt in this flow. */
+  /** The initiating model or provider sign-in request id, also used by every auth frame and prompt. */
   authFlow: string | null;
   /** The daemon's wire minor, once it listed its projects: what it can be asked (the room needs `CHAT_MINOR`). */
   minor: number | null;
@@ -214,19 +214,17 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   let nextId = 0;
   let running = false;
   let accountStatusId: string | null = null;
-  function askAccount(type: "account.login" | "account.logout"): Promise<void> {
-    if (state.status !== "live" || (state.minor ?? 0) < ACCOUNT_MINOR)
-      return Promise.reject(new Error("Update Armada to sign in."));
+  async function askAccount(type: "account.login" | "account.logout"): Promise<void> {
+    if (state.status !== "live" || (state.minor ?? 0) < ACCOUNT_MINOR) throw new Error("Update Armada to sign in.");
     set({ accountProblem: null });
-    return request({ type })
-      .then(
-        () => {},
-        (error: Error) => {
-          set({ accountProblem: error.message });
-          throw error;
-        },
-      )
-      .finally(() => set({ accountDevice: null }));
+    try {
+      await request({ type });
+    } catch (error) {
+      set({ accountProblem: (error as Error).message });
+      throw error;
+    } finally {
+      set({ accountDevice: null });
+    }
   }
   let credentialStatusId: string | null = null;
   let pendingCredential: {
@@ -561,6 +559,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
         return;
       }
       case "error":
+        if (message.id === accountStatusId) return set({ accountProblem: message.message });
         if (message.id !== undefined && pendingProviders.has(message.id)) {
           const waiting = pendingProviders.get(message.id);
           pendingProviders.delete(message.id);
@@ -575,7 +574,6 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
           waiting?.reject(new Error(message.message));
           return;
         }
-        if (message.id === accountStatusId) return set({ accountProblem: message.message });
         if (message.id !== undefined && pending.has(message.id)) {
           const request = pending.get(message.id);
           pending.delete(message.id);
