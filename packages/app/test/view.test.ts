@@ -83,20 +83,24 @@ test("a turn's length reads 12s, 2m 03s, 1h 04m", () => {
   expect(workDuration(Number.NaN)).toBe("1s");
 });
 
-test("a turn's calls are one row where its first came, lines after it, folded once the answer follows", () => {
+test("a turn's calls are one row where its first came, folded above the answer or the line that ends it", () => {
   const items: ChatItem[] = [
     { kind: "owner", id: "o1", at: at(0), body: "Launch THE-12" },
     call("t1", "fleet.status", {}, { at: at(1) }),
-    { kind: "line", id: "l1", at: at(2), body: "THE-9 merged." },
     call("t2", "worker.launch", { ticket: "THE-12" }, { at: at(3) }),
     { kind: "coordinator", id: "c1", at: at(124), body: "Launched." },
     { kind: "owner", id: "o2", at: at(200), body: "Stop" },
     call("t3", "worker.stop", { ticket: "THE-12", reason: "owner" }, { at: at(201) }),
     { kind: "coordinator", id: "c2", at: at(205), body: "", aborted: true },
+    // Two turns the coordinator ran on fleet notices, an hour apart: each line ends its own.
     call("t4", "fleet.status", {}, { at: at(300) }),
-    { kind: "owner", id: "o3", at: at(301), body: "And?" },
-    { kind: "line", id: "l2", at: at(302), body: "THE-12 is red." },
-    call("t5", "inbox.list", {}, { at: at(303) }),
+    { kind: "line", id: "l1", at: at(312), body: "THE-9 merged." },
+    call("t5", "fleet.status", {}, { at: at(3900) }),
+    { kind: "line", id: "l2", at: at(3905), body: "THE-12 is red." },
+    call("t6", "fleet.status", {}, { at: at(4000) }),
+    { kind: "owner", id: "o3", at: at(4001), body: "And?" },
+    { kind: "line", id: "l3", at: at(4002), body: "THE-14 is green." },
+    call("t7", "inbox.list", {}, { at: at(4003) }),
   ];
   const rows = workRows(items).map((r) =>
     r.kind === "said"
@@ -106,16 +110,19 @@ test("a turn's calls are one row where its first came, lines after it, folded on
   expect(rows).toEqual([
     "o1",
     "fold:t1+t2 Worked for 2m 03s",
-    "l1",
     "c1",
     "o2",
     "fold:t3 You stopped this response",
     "c2",
-    // Work an owner message cut off stays open; so does the newest turn's.
-    "work:t4",
-    "o3",
+    "fold:t4 Worked for 12s",
+    "l1",
+    "fold:t5 Worked for 5s",
     "l2",
-    "work:t5",
+    // Work an owner message cut off stays open; so does the newest turn's.
+    "work:t6",
+    "o3",
+    "l3",
+    "work:t7",
   ]);
   // The row keeps its key while its turn grows and folds.
   expect(workRows(items.slice(0, 2))[1]?.id).toBe("work:t1");

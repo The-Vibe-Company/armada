@@ -224,42 +224,36 @@ export type ThreadRow =
   | { kind: "fold"; id: string; work: Work; label: string };
 
 /**
- * The thread's rows (THE-2053). A turn runs between two owner or coordinator
- * messages; its tool calls are one work row where its first call came, its
- * coordinator lines stay outside the work, in order, after it. Once a
- * coordinator answer ends the turn, its work folds: "Worked for <first call to
- * answer>", or "You stopped this response" when the answer was stopped.
+ * The thread's rows (THE-2053). A turn's tool calls are one work row where its
+ * first call came. The turn ends at the next message: the owner's leaves its
+ * work open; the coordinator's answer, or its own line (what it says on its
+ * own, as in a turn it ran on a fleet notice), folds the work above it:
+ * "Worked for <first call to answer>", or "You stopped this response" when
+ * the answer was stopped. A line stays outside the fold, below it.
  */
 export function workRows(items: readonly ChatItem[]): ThreadRow[] {
   const out: ThreadRow[] = [];
-  let turn: { work: Work; lines: Said[] } | null = null;
-  const close = (end: Said | null) => {
-    if (!turn) return;
-    const { work, lines } = turn;
-    const id = `work:${work.id}`;
-    if (end?.kind === "coordinator") {
-      const label = end.aborted
-        ? "You stopped this response"
-        : `Worked for ${workDuration(Date.parse(end.at) - Date.parse(work.at))}`;
-      out.push({ kind: "fold", id, work, label });
-    } else out.push({ kind: "work", id, work });
-    for (const line of lines) out.push({ kind: "said", id: line.id, item: line });
-    turn = null;
-  };
+  let work: Work | null = null;
   for (const item of items) {
     if (item.kind === "tool") {
-      if (turn) turn.work.tools.push(item);
-      else turn = { work: { id: item.id, at: item.at, tools: [item] }, lines: [] };
+      if (work) work.tools.push(item);
+      else work = { id: item.id, at: item.at, tools: [item] };
       continue;
     }
-    if (item.kind === "line" && turn) {
-      turn.lines.push(item);
-      continue;
+    if (work) {
+      const id = `work:${work.id}`;
+      if (item.kind === "owner") out.push({ kind: "work", id, work });
+      else {
+        const label = item.aborted
+          ? "You stopped this response"
+          : `Worked for ${workDuration(Date.parse(item.at) - Date.parse(work.at))}`;
+        out.push({ kind: "fold", id, work, label });
+      }
+      work = null;
     }
-    if (item.kind !== "line") close(item);
     out.push({ kind: "said", id: item.id, item });
   }
-  close(null);
+  if (work) out.push({ kind: "work", id: `work:${work.id}`, work });
   return out;
 }
 

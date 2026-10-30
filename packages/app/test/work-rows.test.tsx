@@ -7,10 +7,11 @@ import type { Group } from "../src/fleet/overview";
 import { Thread } from "../src/room/Thread";
 
 // The coordinator's work as T3 Code's rows (THE-2053), on a synthetic
-// conversation: the owner asks, the coordinator reads the fleet and launches
-// (one launch refused), says a line on its own, then answers 2m 03s after its
-// first call; the owner asks again and one call is still running. The markup
-// first, then the clicks in a browser.
+// conversation: on a fleet notice the coordinator reads the fleet and says a
+// line on its own; the owner asks, the coordinator reads the fleet and
+// launches (one launch refused), then answers 2m 03s after its first call; the
+// owner asks again and one call is still running. The markup first, then the
+// clicks in a browser.
 
 const AT = "2026-03-10T09:00:00.000Z";
 const at = (second: number) => new Date(Date.parse(AT) + second * 1000).toISOString();
@@ -28,15 +29,19 @@ const call = (id: string, second: number, name: string, input: Tool["input"], ex
 });
 const REFUSED = '{"ok":false,"code":"cap","message":"two workers already run","next":"fleet.status"}';
 
+const notice: ChatItem[] = [
+  call("t0", -60, "fleet.status", {}),
+  { kind: "line", id: "l1", at: at(-48), body: "THE-9 merged." },
+];
 const work: ChatItem[] = [
   { kind: "owner", id: "o1", at: at(0), body: "Launch THE-12 and THE-14." },
   call("t1", 5, "fleet.status", {}),
   call("t2", 9, "worker.launch", { ticket: "THE-12" }),
-  { kind: "line", id: "l1", at: at(20), body: "THE-9 merged." },
   call("t3", 30, "fleet.status", {}),
   call("t4", 40, "worker.launch", { ticket: "THE-14" }, { output: REFUSED, failed: true }),
 ];
 const conversation: ChatItem[] = [
+  ...notice,
   ...work,
   { kind: "coordinator", id: "c1", at: at(128), body: "THE-12 is launched; THE-14 waits for a slot." },
   { kind: "owner", id: "o2", at: at(200), body: "Check #34." },
@@ -69,18 +74,20 @@ const text = (html: string) =>
     .trim();
 
 describe("the work's markup", () => {
-  test("a finished turn folds into Worked for 2m 03s above its answer; the line stays outside with its dot", () => {
+  test("a finished turn folds into Worked for 2m 03s above its answer; a line folds its own turn and stays outside with its dot", () => {
     const html = render(conversation);
-    expect(kinds(html)).toEqual(["owner", "fold", "line", "coordinator", "owner", "tool"]);
-    const [, fold = "", line = ""] = rows(html);
+    expect(kinds(html)).toEqual(["fold", "line", "owner", "fold", "coordinator", "owner", "tool"]);
+    const [noticed = "", line = "", , fold = ""] = rows(html);
+    expect(text(noticed)).toBe("Worked for 12s 08:59");
     expect(fold).toMatch(/<div class="[^"]*border-b[^"]*" data-fold/);
     expect(fold).toMatch(/<button[^>]*aria-expanded="false"[^>]*><span>Worked for 2m 03s<\/span><svg/);
     // Closed, the fold holds none of its calls; its time shows on hover.
     expect(fold).not.toContain("data-tool");
     expect(fold).toMatch(/opacity-0[^"]*group-hover\/row:opacity-100[^"]*"><time[^>]*>09:00</);
     expect(line).toContain("data-line");
+    expect(line).not.toContain("data-tool");
     expect(line).toMatch(/data-dot="merged"/);
-    expect(text(line)).toBe("THE-9 merged. 09:00");
+    expect(text(line)).toBe("THE-9 merged. 08:59");
   });
 
   test("a single call is its own row: its icon, its sentence, its name on hover", () => {
@@ -95,7 +102,7 @@ describe("the work's markup", () => {
 
   test("a turn's calls not yet answered are one group: its sentence, a red X and its aria-label for the failure", () => {
     const html = render([...work, { kind: "owner", id: "o2", at: at(200), body: "Wait." }]);
-    expect(kinds(html)).toEqual(["owner", "work", "line", "owner"]);
+    expect(kinds(html)).toEqual(["owner", "work", "owner"]);
     const group = rows(html)[1] ?? "";
     expect(group).toMatch(/data-work="4"/);
     expect(group).toMatch(
