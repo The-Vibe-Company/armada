@@ -127,7 +127,7 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
   const sendAndAnchor = useCallback(
     async (body: string, whenBusy?: WhenBusy) => {
       await (whenBusy ? send(body, whenBusy) : send(body));
-      if (whenBusy !== "queue") thread.current?.anchor();
+      if (whenBusy !== "queue") thread.current?.anchor(body);
     },
     [send],
   );

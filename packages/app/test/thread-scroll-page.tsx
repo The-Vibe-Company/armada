@@ -39,7 +39,7 @@ function mount() {
     items = next;
     flushSync(render);
   },
-  anchor: () => control.current?.anchor(),
+  anchor: (body: string) => control.current?.anchor(body),
   page: (direction: "up" | "down") => control.current?.page(direction),
   unmount() {
     root?.unmount();

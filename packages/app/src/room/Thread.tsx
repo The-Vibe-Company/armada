@@ -60,6 +60,7 @@ import {
   PILL_DELAY,
   type PositionStorage,
   pageStep,
+  REARM_PX,
   type RowBox,
   readPosition,
   transition,
@@ -88,9 +89,9 @@ import {
 
 const ARRIVE = { duration: 0.15, ease: [0.23, 1, 0.32, 1] } as const;
 
-/** What the room asks of its thread: pin the message just sent, or page it from the field. */
+/** What the room asks of its thread: pin the message just sent (by its words), or page it from the field. */
 export interface ThreadControl {
-  anchor(): void;
+  anchor(body: string): void;
   page(direction: "up" | "down"): void;
 }
 
@@ -265,6 +266,9 @@ const browserPositions = (): PositionStorage | null => (typeof sessionStorage ==
 
 const reduced = () => typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+/** How wide a scrollbar drawn over the content (macOS, touch) may be. */
+const SCROLLBAR_PX = 16;
+
 const UP_KEYS = new Set(["PageUp", "Home", "ArrowUp"]);
 const DOWN_KEYS = new Set(["PageDown", "End", "ArrowDown", " "]);
 
@@ -310,6 +314,13 @@ function useFollow({
   const reading = useRef<Anchor | null>(restoring.current);
   const workingNow = useRef(working);
   workingNow.current = working;
+  const itemsNow = useRef(items);
+  itemsNow.current = items;
+  // The words of the message to pin, the owner items already read when it was sent (an earlier message with the
+  // same words is never it), and the reading then: the message is waited for until a later one lands without it.
+  const anchored = useRef<{ body: string; before: ReadonlySet<string>; items: readonly ThreadItem[] } | null>(null);
+  // The first reading is placed at once, never scrolled through.
+  const placed = useRef(false);
   const [pill, setPill] = useState(false);
   const pillTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -394,11 +405,20 @@ function useFollow({
         const shift = correction(held, row.top);
         if (Math.abs(shift) >= 0.5) el.scrollTop += shift;
       }
+      // Content growing below fires no scroll: the end it moved away says so here (only a scroll re-arms).
+      const away = fromEnd({ top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight });
+      if (away > REARM_PX) dispatch({ type: "scrolled", fromEnd: away });
       return;
     }
     if (mode === "anchoring") {
-      const owners = ol.querySelectorAll<HTMLElement>(':scope > [data-item="owner"]');
-      const owner = owners[owners.length - 1];
+      const sent = anchored.current;
+      const said = itemsNow.current.findLast(
+        (i) => i.kind === "owner" && (!sent || (i.body === sent.body && !sent.before.has(i.id))),
+      );
+      const owner = said ? ol.querySelector<HTMLElement>(`:scope > [data-row="${CSS.escape(said.id)}"]`) : null;
+      // The message sent is not drawn yet: the reading that brings it settles again. A reading that lands
+      // without it once no turn runs (a Stop withdrew it) ends the wait: the thread follows its end.
+      if (!owner && sent && (itemsNow.current === sent.items || workingNow.current)) return;
       // Only a box that scrolls holds its height: one that grows with its content would grow with the space too.
       const scrolls = ["auto", "scroll"].includes(getComputedStyle(el).overflowY);
       if (owner && scrolls) {
@@ -419,7 +439,8 @@ function useFollow({
       dispatch({ type: "overflowed" });
     }
     space(0);
-    toBottom(followBehavior(workingNow.current, reduced()));
+    toBottom(placed.current ? followBehavior(workingNow.current, reduced()) : "instant");
+    if (ol.querySelector(":scope > [data-row]")) placed.current = true;
   }, [box, list, rows, dispatch, syncPill, space, toBottom]);
 
   // Each new reading (an item, an answer written further, a call ended) settles the scroll.
@@ -456,9 +477,11 @@ function useFollow({
       navigated(e.deltaY < 0);
     };
     const onTouch = () => navigated(true);
-    // Only a press on the scroller itself is on its scrollbar; a row's press is a click.
+    // A press on the scrollbar (past the content box, or the right edge an overlay scrollbar takes); a press on a
+    // row or the rest of the gutters is a click.
     const onPointer = (e: PointerEvent) => {
-      if (e.target === el) navigated(true);
+      if (e.target === el && el.scrollHeight > el.clientHeight && e.offsetX >= el.clientWidth - SCROLLBAR_PX)
+        navigated(true);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
@@ -501,14 +524,20 @@ function useFollow({
   }, [project, positions]);
 
   const toEnd = useCallback(() => {
+    // The pill leaves with the click: a keyboard's focus goes back to the room's field rather than the page.
+    if (document.activeElement?.closest("[data-scroll-to-end]"))
+      box.current?.closest("[data-room]")?.querySelector("textarea")?.focus({ preventScroll: true });
     dispatch({ type: "toEnd" });
     space(0);
     toBottom(reduced() ? "instant" : "smooth");
-  }, [dispatch, space, toBottom]);
+  }, [box, dispatch, space, toBottom]);
   useImperativeHandle(
     control,
     () => ({
-      anchor() {
+      anchor(body) {
+        const before = new Set<string>();
+        for (const i of itemsNow.current) if (i.kind === "owner" && !i.id.startsWith("sent:")) before.add(i.id);
+        anchored.current = { body, before, items: itemsNow.current };
         dispatch({ type: "sent" });
         settle();
       },

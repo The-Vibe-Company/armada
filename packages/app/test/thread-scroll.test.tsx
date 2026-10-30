@@ -89,7 +89,7 @@ describe("the thread's scroll in a browser", () => {
       (json) => (window as unknown as { thread: { set(i: unknown): void } }).thread.set(JSON.parse(json)),
       JSON.stringify(items),
     );
-  const call = (name: "anchor" | "unmount" | "mount") =>
+  const call = (name: "unmount" | "mount") =>
     page.evaluate((n) => (window as unknown as { thread: Record<string, () => void> }).thread[n]?.(), name);
   /** Waits until the thread is `dy` from its end and still (a wheel's scroll lands over the next frames). */
   const awayBy = (dy: number) =>
@@ -142,9 +142,16 @@ describe("the thread's scroll in a browser", () => {
 
   test("a sent message is pinned about 24 px from the top, with room under it for the answer", async () => {
     const sent: ChatItem = { kind: "owner", id: "sent:1", at: at(40), body: "Merge #41 once it is green." };
-    const items = [...conversation, sent];
+    // The turn before it is taller than the thread: what was last said cannot be what is pinned.
+    const long: ChatItem = { kind: "coordinator", id: "c39", at: at(39), body: Array(12).fill(PARAGRAPH).join("\n\n") };
+    await set([...conversation, long]);
+    const items = [...conversation, long, sent];
+    // As the room does it: the send is admitted (anchor) before its row is drawn.
+    await page.evaluate(
+      (body) => (window as unknown as { thread: { anchor(b: string): void } }).thread.anchor(body),
+      sent.body,
+    );
     await set(items);
-    await call("anchor");
     const owner = page.locator('[data-row="sent:1"]');
     const top = () =>
       owner.evaluate((el: HTMLElement) => {
@@ -156,8 +163,16 @@ describe("the thread's scroll in a browser", () => {
     await page.clock.runFor(200);
     expect(await pill().count()).toBe(0);
     // The answer grows into the room reserved: the message does not move.
-    await set([...items, { kind: "coordinator", id: "c40", at: at(41), body: `Merging. ${PARAGRAPH}` }]);
+    const answer: ChatItem = { kind: "coordinator", id: "c40", at: at(41), body: `Merging. ${PARAGRAPH}` };
+    await set([...items, answer]);
     expect(await top()).toBe(24);
+    // The reading that holds the message replaces its row (same words, the daemon's id): it stays pinned.
+    await set([...conversation, long, { ...sent, id: "e41" }, answer]);
+    expect(
+      await page
+        .locator('[data-row="e41"]')
+        .evaluate((el: HTMLElement) => el.offsetTop - (el.closest("section")?.scrollTop ?? 0)),
+    ).toBe(24);
   });
 
   test("the place is kept when the room closes and restored when it opens again", async () => {
@@ -169,5 +184,40 @@ describe("the thread's scroll in a browser", () => {
     expect(await firstRow()).toEqual(before);
     await page.clock.runFor(200);
     await pill().waitFor({ timeout: 2_000 });
+  });
+
+  test("a little up from the end, an answer growing below shows the pill (it fires no scroll)", async () => {
+    await pill().click();
+    expect(await fromEnd()).toBeLessThanOrEqual(1);
+    await scrollUp(20);
+    await page.clock.runFor(200);
+    expect(await pill().count()).toBe(0);
+    const before = await firstRow();
+    await set([...conversation, said(31), said(33)]);
+    expect(await firstRow()).toEqual(before);
+    await page.clock.runFor(160);
+    await pill().waitFor({ timeout: 2_000 });
+  });
+
+  test("an earlier message with the same words is never the one pinned; one a Stop withdrew is not waited for", async () => {
+    const anchor = (body: string) =>
+      page.evaluate((b) => (window as unknown as { thread: { anchor(b: string): void } }).thread.anchor(b), body);
+    const earlier: ChatItem[] = [
+      { kind: "owner", id: "o50", at: at(50), body: "Go on." },
+      { kind: "coordinator", id: "c51", at: at(51), body: Array(12).fill(PARAGRAPH).join("\n\n") },
+    ];
+    await set([...conversation, ...earlier]);
+    await anchor("Go on.");
+    const again: ChatItem = { kind: "owner", id: "sent:2", at: at(52), body: "Go on." };
+    await set([...conversation, ...earlier, again]);
+    expect(
+      await page
+        .locator('[data-row="sent:2"]')
+        .evaluate((el: HTMLElement) => el.offsetTop - (el.closest("section")?.scrollTop ?? 0)),
+    ).toBe(24);
+    // Withdrawn before it was drawn: the next reading lands without it, no turn runs, the thread follows its end.
+    await anchor("Never placed.");
+    await set([...conversation, ...earlier, again, said(53)]);
+    expect(await fromEnd()).toBeLessThanOrEqual(1);
   });
 });
