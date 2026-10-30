@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { type CoordinatorModel, modelConfigSchema, modelKindSchema } from "@armada/protocol";
@@ -8,7 +7,6 @@ import { macKeychain } from "./secrets/macos.ts";
 
 export type ModelProvider = string;
 export type SecretService = "coordinator" | "linear" | "github" | "plugin";
-export type SecretAccessor = (service: "linear", project: string) => Promise<string | null>;
 export interface CoordinatorCredential {
   provider: ModelProvider;
   key: string;
@@ -127,56 +125,4 @@ export function systemKeychain(): Keychain {
   const configured = process.env.XDG_CONFIG_HOME?.trim();
   const root = configured && isAbsolute(configured) ? configured : join(homedir(), ".config");
   return new Keychain(fileKeychain(join(root, "armada", "desktop", "credentials")));
-}
-
-/** Compatibility with the Linear provider's injected accessor. */
-export async function readLinearKey(access: SecretAccessor | undefined, project: string): Promise<string> {
-  let key: string | null;
-  try {
-    key = access ? await access("linear", project) : await systemKeychain().read("linear", project);
-  } catch {
-    throw new Error("Linear keychain lookup failed");
-  }
-  if (!key) throw new Error("Linear key is missing from the keychain");
-  return key;
-}
-
-export type TokenCommand = (file: string, args: readonly string[], signal?: AbortSignal) => Promise<string>;
-export interface GithubTokenOptions {
-  signal?: AbortSignal;
-  command?: TokenCommand;
-  keychain?: Pick<Keychain, "read">;
-}
-const command: TokenCommand = (file, args, signal) =>
-  new Promise((resolve, reject) => {
-    execFile(file, [...args], { encoding: "utf8", timeout: 5000, maxBuffer: 16 * 1024, signal }, (error, stdout) => {
-      if (error) reject(new Error("GitHub credential command failed"));
-      else resolve(stdout);
-    });
-  });
-
-/** Owner keychain first, then gh's signed-in owner. All credential sources live at this boundary. */
-export async function githubToken(options: GithubTokenOptions = {}): Promise<string> {
-  const usable = (value: string | null) => {
-    const token = value?.trim();
-    return token && !/\s/.test(token) && !options.signal?.aborted ? token : null;
-  };
-  if (!options.signal?.aborted) {
-    try {
-      const chain = options.keychain ?? systemKeychain();
-      const token = usable(await chain.read("github", "github"));
-      if (token) return token;
-    } catch {
-      /* Missing/locked keychain falls through; backend details never escape. */
-    }
-  }
-  if (!options.signal?.aborted) {
-    try {
-      const token = usable(await (options.command ?? command)("gh", ["auth", "token"], options.signal));
-      if (token) return token;
-    } catch {
-      /* gh errors can contain a credential; never propagate them. */
-    }
-  }
-  throw new Error("GitHub credentials unavailable; sign in with gh auth login or save the owner token in the keychain");
 }

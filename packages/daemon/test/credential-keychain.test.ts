@@ -5,7 +5,7 @@ import { chmod, mkdtemp, readdir, readFile, rm, stat, symlink } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Keychain, readLinearKey } from "../src/keychain.ts";
+import { Keychain } from "../src/keychain.ts";
 import { fileKeychain } from "../src/secrets/file.ts";
 import { FakeKeychain } from "./support/keychain.ts";
 
@@ -21,7 +21,7 @@ test("one gateway stores coordinator provider/key atomically and scopes Linear a
   assert.deepEqual(await chain.status(), { provider: "openai-compatible", storage: "os-keychain" });
   await chain.write("linear", "harbor", key);
   await chain.write("github", "github", key);
-  assert.equal(await readLinearKey(chain.read.bind(chain), "harbor"), key);
+  assert.equal(await chain.read("linear", "harbor"), key);
   assert.equal(await chain.read("linear", "other"), null);
   assert.equal(await chain.read("github", "github"), key);
   await assert.rejects(chain.setCoordinator("openai-compatible", `${key}\n`), /Invalid model credential/);
@@ -73,13 +73,13 @@ test("Linux system storage accepts only trimmed absolute XDG roots, otherwise us
         import { existsSync } from "node:fs";
         import { randomBytes } from "node:crypto";
         import { join, isAbsolute } from "node:path";
-        import { systemKeychain, readLinearKey } from ${JSON.stringify(new URL("../src/keychain.ts", import.meta.url).href)};
+        import { systemKeychain } from ${JSON.stringify(new URL("../src/keychain.ts", import.meta.url).href)};
         const keychain = systemKeychain();
         await keychain.setCoordinator("openai-compatible", randomBytes(24).toString("hex"));
         assert.equal((await keychain.coordinator())?.provider, "openai-compatible");
         const linearKey = randomBytes(24).toString("hex");
         await keychain.write("linear", "orchard", linearKey);
-        assert.equal((await readLinearKey(undefined, "orchard")) === linearKey, true);
+        assert.equal((await keychain.read("linear", "orchard")) === linearKey, true);
         const asked = process.env.XDG_CONFIG_HOME.trim();
         const root = isAbsolute(asked) ? asked : join(process.env.HOME, ".config");
         assert.equal(existsSync(join(root, "armada", "desktop", "credentials")), true);
