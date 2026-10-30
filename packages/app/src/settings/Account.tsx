@@ -60,6 +60,11 @@ export function Account() {
     openExternal(accountDevice.verificationUrl);
   }, [accountDevice]);
 
+  // Signed in by any path (this app, `armada login` in a terminal): an earlier sign-in's failure is over.
+  useEffect(() => {
+    if (account?.signedIn && sign.failure) setSign({ failure: null });
+  }, [account?.signedIn]);
+
   async function signIn() {
     const attempt = sign.attempt + 1;
     setSign({ attempt, waiting: true, opened: null, failure: null });

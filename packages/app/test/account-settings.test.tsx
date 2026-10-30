@@ -221,6 +221,18 @@ describe("the Account section in a browser", () => {
     await button("Sign in again").waitFor({ timeout: 2_000 });
     expect(await page.getByRole("alert").textContent()).toBe("The code expired");
   });
+
+  test("a failure ends once the account is signed in by any path", async () => {
+    const login = await startSignIn();
+    await receive({ type: "error", id: login.id, code: "expired", message: "Sign-in code expired" });
+    await button("Sign in again").waitFor({ timeout: 2_000 });
+    // `armada login` in a terminal, then a sign-out: the daemon pushes each change without an id.
+    await receive(SIGNED_IN);
+    await button("Sign out").waitFor({ timeout: 2_000 });
+    await receive({ type: "account.result", signedIn: false, apiUrl: API });
+    await button("Sign in").waitFor({ timeout: 2_000 });
+    expect(await page.getByRole("alert").count()).toBe(0);
+  });
 });
 
 const plugin = (
