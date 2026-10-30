@@ -5,6 +5,8 @@ import { Type } from "typebox";
 /** Spec 2/7's native vocabulary; native.ts supplies admitted project implementations. */
 export const TOOL_NAMES = [
   "fleet.status",
+  "ticket.read",
+  "fleet.history",
   "inbox.list",
   "inbox.answer",
   "worker.launch",
