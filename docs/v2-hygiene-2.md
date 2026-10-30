@@ -170,3 +170,22 @@ recorded in the pull request and ignored
 `plans/ship-pr-dev/runs/20261029-221339-armada/` artifacts. The initial verify
 attempt stopped at formatting of the edited Knip config; the config was formatted
 before functional validation. No baseline failing test was removed.
+
+## THE-2032 addendum — deferred rows resolved
+
+Re-audited after #348, #350, #353 and #352 landed. Linear's former daemon
+files now live in `packages/plugins/linear/src/`.
+
+| Follow-up | Resolution | Commit |
+| --- | --- | --- |
+| One phase/session-state/flow-step vocabulary | Resolved. Protocol exports the schemas and its active-only phase subset. App rows remain tolerant; Linear labels use only active phases and reports accept terminal phases too. One recorded-read test follows the protocol vocabulary through both adapter paths and app admission, including unknown-row rejection. | `2af218f` |
+| Plugin event dates | Resolved. Protocol events and plugin event/input exports derive from one SDK-owned generic envelope; the SDK keeps Zod as its only runtime dependency. ISO dates with offsets, safe cursors and JSON payloads agree; unknown kinds stay extensible. The malformed-date regression failed before the repair and passes after it. | `88475c7` |
+| Sky test seams | Resolved. Removed unused clock forwarding through Hangar/Room/Sky and the reduced-motion override; browser frames and system preference remain. Removed `SkyView.flock` and its unused moving getter. Retained animation cases now observe canvas triangles: bank/foreshortening, movement, settled destinations, regrouping, depth, arrival/departure and stopped frames. Only the duplicate no-h1 fragment was removed; anatomy owns that rule. | `f984ba7` |
+| Concurrent-path Knip exceptions | Resolved. Removed all three exceptions. Retained exports with real callers (including TONE, ProjectLog, FoldedPullRequest and FoldedInboxItem); made local-only symbols private and removed the unused roomHref alias. Added plugin test discovery rather than hiding their real type uses. The pinned scan exits zero with no new exceptions. | This addendum's commit, `refactor: close deferred hygiene exceptions` |
+
+The extra unused exports introduced by the merged room/session/plugin screens
+were re-audited in the same zero-scan pass: only their export modifiers changed.
+No animation algorithm, provider signature, wire version or folded row behavior
+changed. Date admission now enforces the existing protocol contract at the plugin
+boundary. Focused protocol, Linear, app sky/anatomy and plugin admission proofs
+are retained; complete verification and latest-head CI are recorded on the PR.

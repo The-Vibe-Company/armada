@@ -3,7 +3,7 @@
 // routes so one line of App.tsx opens it, whatever router the others share.
 import { useSyncExternalStore } from "react";
 
-export const TABS = ["reports", "files"] as const;
+const TABS = ["reports", "files"] as const;
 export type Tab = (typeof TABS)[number];
 
 export interface SessionRoute {

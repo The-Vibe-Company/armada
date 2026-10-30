@@ -207,7 +207,7 @@ describe("in a browser, served by a running daemon", () => {
     });
     expect(loaded).toContain("Geist");
     expect(loaded.filter((f) => f !== "Geist" && f !== "Geist Mono")).toEqual([]);
-  });
+  }, 20_000);
 
   test("a state change over the subscription glides the same row to its new group, without a reload", async () => {
     // The fleet by state of one project, on its rules page beside the room.

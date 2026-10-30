@@ -17,12 +17,7 @@
     },
     "packages/app": {
       "entry": ["test/**/*.test.{ts,tsx}"],
-      "project": ["src/**/*.{ts,tsx,css}", "scripts/**/*.ts", "test/**/*.{ts,tsx}"],
-      "ignoreIssues": {
-        "src/protocol/client.ts": ["types"],
-        "src/components/fleet/FleetList.tsx": ["exports"],
-        "src/fleet/state.ts": ["types"]
-      }
+      "project": ["src/**/*.{ts,tsx,css}", "scripts/**/*.ts", "test/**/*.{ts,tsx}"]
     },
     "packages/desktop": {
       "entry": ["test/**/*.test.ts"],
@@ -33,6 +28,14 @@
     },
     "packages/plugins/*": {
       "project": ["src/**/*.ts"]
+    },
+    "packages/plugins/linear": {
+      "entry": ["test/**/*.test.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts"]
+    },
+    "packages/plugins/github": {
+      "entry": ["test/**/*.test.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts"]
     }
   },
   "ignoreWorkspaces": ["packages/core", "packages/cli", "packages/dashboard"],

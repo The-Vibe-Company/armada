@@ -291,7 +291,7 @@ function band(projects: readonly SkyProject[], width: number, height: number): S
  * or waiting for the owner flies nearest and largest, one at work further,
  * one with nothing in flight furthest and smallest.
  */
-export const SQUADRON_SCALE: Record<Group | "idle", number> = {
+const SQUADRON_SCALE: Record<Group | "idle", number> = {
   blocked: 1,
   you: 1,
   running: 0.84,
