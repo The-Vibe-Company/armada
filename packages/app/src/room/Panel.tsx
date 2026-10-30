@@ -5,7 +5,7 @@
 // over the conversation, closed by Escape or a press beside it; it never takes
 // the focus when it opens.
 import { AnimatePresence, m } from "motion/react";
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { PANEL_TABS, type PanelTab } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import { clampWidth, PANEL_LABEL, PANEL_WIDTH } from "./panel-rules";
@@ -31,12 +31,14 @@ export function Panel({
   tab: PanelTab;
   width: number;
   onTab: (tab: PanelTab) => void;
-  /** The width while dragged; `done` once the drag ends, to keep it. */
-  onWidth: (width: number, done: boolean) => void;
+  /** The width the owner dragged to, once the drag ends: the panel follows the drag on its own. */
+  onWidth: (width: number) => void;
   onClose: () => void;
   /** The open tab's content. */
   children: ReactNode;
 }) {
+  // While dragged, only the panel follows the pointer; the room hears the width the drag ends on.
+  const [dragged, setDragged] = useState<number | null>(null);
   // Escape closes the sheet, wherever the focus is.
   useEffect(() => {
     if (!sheet || !open) return;
@@ -105,6 +107,8 @@ export function Panel({
             <m.div
               key="scrim"
               aria-hidden
+              // A press beside the sheet keeps the focus where it was, so closing can hand it back.
+              onMouseDown={(e) => e.preventDefault()}
               onClick={onClose}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -134,10 +138,16 @@ export function Panel({
     <aside
       id={PANEL_ID}
       aria-label="Panel"
-      style={{ width }}
+      style={{ width: dragged ?? width }}
       className="relative flex min-w-0 flex-none flex-col bg-card shadow-[-1px_0_0_var(--color-line)]"
     >
-      <Edge width={width} onWidth={onWidth} />
+      <Edge
+        width={dragged ?? width}
+        onWidth={(next, done) => {
+          setDragged(done ? null : next);
+          if (done) onWidth(next);
+        }}
+      />
       {body}
     </aside>
   );

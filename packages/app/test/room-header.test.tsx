@@ -82,4 +82,6 @@ test("the panel's toggle says whether the panel is open", () => {
   expect(toggle(render(counts({})))).toContain('aria-pressed="true"');
   expect(toggle(render(counts({}), { open: false }))).toContain('aria-pressed="false"');
   expect(toggle(render(counts({})))).toContain('aria-controls="room-panel"');
+  // Closed, there is no panel for it to name.
+  expect(toggle(render(counts({}), { open: false }))).not.toContain("aria-controls");
 });

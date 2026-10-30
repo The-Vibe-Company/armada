@@ -9,12 +9,11 @@ import type { ProtocolEvent } from "@armada/protocol";
 import { m } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DaemonProblem } from "@/components/DaemonProblem";
-import { FleetList, groupHeadingId } from "@/components/fleet/FleetList";
+import { FleetList } from "@/components/fleet/FleetList";
 import { Page, PageHeader } from "@/components/page";
 import { dayIn, fleetItems, type Group, groupCounts, headline, rowTime } from "@/fleet/overview";
 import { type Harness, skyProject } from "@/fleet/sky";
 import { type FleetState, fleetOf } from "@/fleet/state";
-import type { PanelTab } from "@/lib/route";
 import { useDaemon } from "@/protocol/store";
 import { Asking } from "@/room/Asking";
 import { Composer } from "@/room/Composer";
@@ -28,8 +27,8 @@ import { ticketPrefix } from "@/room/markdown-rules";
 import { PANEL_ID, Panel } from "@/room/Panel";
 import { Pinned } from "@/room/Pinned";
 import { openPullRequests, PullRequests } from "@/room/PullRequests";
-import { browserPanel, panelKey, readPanel, showTab, usePanelTab, useSheet, writePanel } from "@/room/panel-rules";
 import { Thread, type ThreadControl } from "@/room/Thread";
+import { useRoomPanel } from "@/room/use-panel";
 import { ownerQuestions, starterAsks } from "@/room/view";
 import { ProjectRules } from "@/rules/ProjectRules";
 
@@ -103,13 +102,6 @@ function ProjectRoom(props: RoomProps) {
 
 const NO_EVENTS: readonly ProtocolEvent[] = [];
 
-/** Where the panel goes once it shows Agents: a group's heading, or the question's card. */
-interface Target {
-  to: Group | "question";
-  /** Gives it the focus too; a pill on the sheet leaves the focus where it was. */
-  focus: boolean;
-}
-
 /** The room on a given conversation: what `Room` draws, and what a test renders with a synthetic one. */
 export function RoomView({
   project,
@@ -173,72 +165,9 @@ export function RoomView({
   if (dock.hero !== hero) setDock({ hero, glides: dock.glides + (dock.hero ? 1 : 0) });
   const closed = !live || chat.status !== "ready" || !chat.coordinator;
 
-  // The panel (THE-2085): its tab in the address, its width and whether it is open kept on this machine;
-  // on a narrow window a sheet, closed until asked for. An address naming a tab opens it.
-  const sheet = useSheet();
-  const routed = usePanelTab();
-  const tab: PanelTab = routed ?? "agents";
-  const [store, setStore] = useState(() => {
-    const held = readPanel(browserPanel());
-    return routed ? { ...held, open: true } : held;
-  });
-  const [sheetOpen, setSheetOpen] = useState(false);
-  const open = sheet ? sheetOpen : (store.open ?? true);
-  const panel = useRef<HTMLDivElement>(null);
-  const toggle = useRef<HTMLButtonElement>(null);
-  const setOpen = useCallback(
-    (next: boolean) => {
-      // The panel leaving with the focus in it hands the focus back to its toggle.
-      if (!next && panel.current?.contains(document.activeElement)) toggle.current?.focus();
-      if (sheet) return setSheetOpen(next);
-      setStore((held) => {
-        const kept = { ...held, open: next };
-        writePanel(browserPanel(), kept);
-        return kept;
-      });
-    },
-    [sheet],
-  );
-  const close = useCallback(() => setOpen(false), [setOpen]);
-  const setWidth = useCallback((width: number, done: boolean) => {
-    setStore((held) => {
-      const kept = { ...held, width };
-      if (done) writePanel(browserPanel(), kept);
-      return kept;
-    });
-  }, []);
-  const [target, setTarget] = useState<Target | null>(null);
-  const goTo = (to: Target["to"], focus: boolean) => {
-    showTab(project.id, "agents");
-    setOpen(true);
-    setTarget({ to, focus });
-  };
-  // Once Agents shows, the panel goes to the group's heading (or the question's card), within itself only.
-  useEffect(() => {
-    if (!target || !open || tab !== "agents") return;
-    const root = panel.current;
-    const el =
-      target.to === "question"
-        ? root?.querySelector<HTMLElement>("[data-pinned] button, [data-pinned] input")
-        : root?.querySelector<HTMLElement>(`#${groupHeadingId(target.to)}`);
-    const scroller = root?.querySelector<HTMLElement>('[role="tabpanel"]');
-    if (!el || !scroller) return;
-    scroller.scrollTop = target.to === "question" ? 0 : el.offsetTop;
-    if (target.focus) el.focus({ preventScroll: true });
-    setTarget(null);
-  }, [target, open, tab]);
-  // ⌘. toggles the panel, ⌘1 to ⌘4 pick its tab while it is open.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const key = panelKey(e);
-      if (!key || (key.kind === "tab" && !open)) return;
-      e.preventDefault();
-      if (key.kind === "toggle") setOpen(!open);
-      else showTab(project.id, key.tab);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, setOpen, project.id]);
+  // The panel (THE-2085): its state, its keys and where a pill or Answer takes it.
+  const side = useRoomPanel(project.id);
+  const { sheet, tab, open } = side;
 
   const hint =
     chat.status === "unavailable"
@@ -258,9 +187,9 @@ export function RoomView({
         now={now}
         open={open}
         panel={PANEL_ID}
-        toggle={toggle}
-        onToggle={() => setOpen(!open)}
-        onPill={(group) => goTo(group, !sheet)}
+        toggle={side.toggle}
+        onToggle={() => side.setOpen(!open)}
+        onPill={(group) => side.goTo(group, !sheet)}
       />
       {onReload && <DaemonProblem onReload={onReload} className="mx-4 mt-3 flex-none" />}
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
@@ -299,7 +228,7 @@ export function RoomView({
           <Queued items={chat.queued ?? []} />
           {/* The question's card is in the panel's Agents; while that is not on screen, the field says it waits. */}
           {pinned && !(open && tab === "agents") && (
-            <Asking item={pinned} waiting={questions.length} onAnswer={() => goTo("question", true)} />
+            <Asking item={pinned} waiting={questions.length} onAnswer={() => side.goTo("question", true)} />
           )}
           <m.div layout="position" layoutDependency={dock.glides} transition={DOCK} className="flex-none" data-dock>
             <Composer
@@ -324,15 +253,15 @@ export function RoomView({
             />
           )}
         </div>
-        <div ref={panel} className="contents">
+        <div ref={side.root} className="contents">
           <Panel
             open={open}
             sheet={sheet}
             tab={tab}
-            width={store.width}
-            onTab={(t) => showTab(project.id, t)}
-            onWidth={setWidth}
-            onClose={close}
+            width={side.width}
+            onTab={side.setTab}
+            onWidth={side.setWidth}
+            onClose={() => side.setOpen(false)}
           >
             {tab === "agents" ? (
               <>

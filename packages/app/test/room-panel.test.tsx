@@ -94,9 +94,9 @@ describe("the room's panel in a browser", () => {
     await browser?.close();
   }, 10_000);
 
-  async function open(width = 1280, hash = "#/projects/harbor"): Promise<Page> {
+  async function open(width = 1280, hash = "#/projects/harbor", height = 800): Promise<Page> {
     if (!browser) throw new Error("browser setup did not complete");
-    const context = await browser.newContext({ viewport: { width, height: 800 } });
+    const context = await browser.newContext({ viewport: { width, height } });
     const page = await context.newPage();
     // A step that does not happen fails on its own line, before the test's deadline.
     page.setDefaultTimeout(2_000);
@@ -169,6 +169,13 @@ describe("the room's panel in a browser", () => {
     await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=agents");
     await page.keyboard.press("Meta+.");
     await side.waitFor();
+    // An address naming a tab opens the panel the owner closed (Back, a link, the old rules page).
+    await page.keyboard.press("Meta+.");
+    await side.waitFor({ state: "detached" });
+    await page.evaluate(() => {
+      window.location.hash = "#/projects/harbor?panel=rules";
+    });
+    await side.getByRole("tab", { name: "Rules", selected: true }).waitFor();
     await page.close();
   }, 15_000);
 
@@ -202,7 +209,8 @@ describe("the room's panel in a browser", () => {
   }, 15_000);
 
   test("an agent's row opens its session, its report's #41 its pull request; a pill goes to its group", async () => {
-    const page = await open(1280, "#/projects/harbor?panel=log");
+    // A short window: the agents scroll under the tabs.
+    const page = await open(1280, "#/projects/harbor?panel=log", 520);
     const side = panel(page);
     // A pill of the header opens Agents at its group, its heading focused.
     await page.getByRole("button", { name: "1 blocked" }).click();
@@ -210,6 +218,22 @@ describe("the room's panel in a browser", () => {
     await expect(focused(page)).resolves.toBe("h2#agents-blocked");
     await page.getByRole("button", { name: "1 merged today" }).click();
     await expect(focused(page)).resolves.toBe("h2#agents-merged");
+    // The heading is at the top of the scrolled tab (or the tab is scrolled to its end), never scrolled past.
+    const place = (id: string) =>
+      side.locator(`#${id}`).evaluate((el) => {
+        const tab = el.closest('[role="tabpanel"]') as HTMLElement;
+        const top = el.getBoundingClientRect().top - tab.getBoundingClientRect().top;
+        const end = tab.scrollTop >= tab.scrollHeight - tab.clientHeight - 1;
+        return {
+          top: Math.round(top),
+          shown: top >= 0 && el.getBoundingClientRect().bottom <= tab.getBoundingClientRect().bottom,
+          end,
+        };
+      });
+    await expect(place("agents-merged")).resolves.toMatchObject({ shown: true, end: true });
+    await page.getByRole("button", { name: "1 blocked" }).click();
+    await expect(focused(page)).resolves.toBe("h2#agents-blocked");
+    await expect(place("agents-blocked")).resolves.toEqual({ top: 0, shown: true, end: false });
     const row = side.locator('[data-row="harbor/HAR-15"]');
     await expect(row.locator("a[data-open]").getAttribute("href")).resolves.toBe("#/sessions/HAR-15");
     const pr = row.getByRole("link", { name: "#41" });
@@ -280,6 +304,13 @@ describe("the room's panel in a browser", () => {
     await page.keyboard.press("Escape");
     await sheet.waitFor({ state: "detached" });
     await expect(field.inputValue()).resolves.toBe("Merge HAR-20");
+    // Closed by a press beside it with the focus in it, the sheet hands the focus back to its toggle.
+    const toggle = page.getByRole("button", { name: "Panel", exact: true });
+    await toggle.click();
+    await sheet.getByRole("tab", { name: "Agents" }).focus();
+    await page.mouse.click(40, 400);
+    await sheet.waitFor({ state: "detached" });
+    await expect(page.evaluate(() => document.activeElement?.getAttribute("aria-label"))).resolves.toBe("Panel");
     await page.close();
   }, 15_000);
 });

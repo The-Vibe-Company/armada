@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { eventPayloadSchemas, flowStepSchema, phaseSchema, sessionStateSchema } from "@armada/protocol";
 import { trackerChanges } from "../../plugins/linear/src/changes.ts";
 import { linearTracker } from "../../plugins/linear/src/linear/index.ts";
-import { fleetItems, groupCounts, groupItems, headline, rowTime, subline } from "../src/fleet/overview";
+import { fleetItems, groupCounts, headline, rowTime, subline } from "../src/fleet/overview";
 import { sessionsInFlight } from "../src/fleet/sessions";
 import { readFleetState } from "../src/fleet/state";
 
@@ -91,14 +91,8 @@ test("reads every session of the fold into the five states, with V1's reasons an
     ["EX-10", "merged", "#100 merged", 6],
   ]);
   expect(items[0]?.key).toBe("orchard/EX-1");
-  expect(groupItems(items).map((g) => [g.group, g.items.length])).toEqual([
-    ["blocked", 4],
-    ["you", 2],
-    ["running", 2],
-    ["ready", 2],
-    ["merged", 2],
-  ]);
   const n = groupCounts(items);
+  expect(n).toEqual({ blocked: 4, you: 2, running: 2, ready: 2, merged: 2 });
   expect(headline(n)).toBe("4 agents blocked, 2 waiting for your decision.");
   expect(subline(n, 1)).toEqual([
     "10 agents in flight across 1 project",

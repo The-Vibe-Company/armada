@@ -102,7 +102,7 @@ export function Header({
             type="button"
             onClick={onToggle}
             aria-pressed={open}
-            aria-controls={panel}
+            aria-controls={open ? panel : undefined}
             aria-label="Panel"
             title="Panel (⌘.)"
             className="ml-1 inline-flex size-7 cursor-pointer items-center justify-center rounded-sm text-text-3 transition-colors hover:bg-fill hover:text-text aria-pressed:text-text"
