@@ -46,7 +46,9 @@ export class DaemonProcess {
         options.staticDir,
         ...(options.restartable ? ["--restartable"] : []),
       ],
-      { env: options.env ?? process.env, stdio: ["ignore", "pipe", "ignore"] },
+      // The daemon's stderr reaches the shell's: its warnings (a model request that failed, a
+      // reader that refused) are otherwise lost; nothing on stderr is a secret by the daemon's rules.
+      { env: options.env ?? process.env, stdio: ["ignore", "pipe", "inherit"] },
     );
     // A failed spawn has no PID; errors still reject readiness and settle exited.
     this.pid = this.child.pid ?? 0;
