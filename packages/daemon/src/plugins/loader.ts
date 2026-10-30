@@ -43,7 +43,7 @@ export function validateContribution(schema: JsonSchema, seam: Seam, kind: strin
     throw new Error(`config ${seam}.${kind}: ${ajv.errorsText(check.errors, { dataVar: "config", separator: "; " })}`);
 }
 
-function validateConfig(manifest: PluginManifest, config: PluginConfig): PluginConfig {
+function validateConfig(manifest: PluginManifest, config: PluginConfig, defaults: PluginConfig): PluginConfig {
   const validated: PluginConfig = {};
   for (const seam of SEAMS) {
     for (const kind of Object.keys(config[seam] ?? {}))
@@ -51,7 +51,12 @@ function validateConfig(manifest: PluginManifest, config: PluginConfig): PluginC
         throw new Error(`config for undeclared contribution ${seam}.${kind}`);
     for (const [kind, contribution] of Object.entries(manifest.contributions[seam] ?? {})) {
       const values = config[seam];
-      const value = values && Object.hasOwn(values, kind) ? (values[kind] as Json) : {};
+      const saved = values && Object.hasOwn(values, kind) ? (values[kind] as Json) : {};
+      const base = defaults[seam]?.[kind];
+      const value =
+        base && typeof saved === "object" && saved !== null && !Array.isArray(saved)
+          ? { ...(base as Record<string, Json>), ...saved }
+          : saved;
       validateContribution(contribution.config as JsonSchema, seam, kind, value);
       const target = validated[seam] ?? {};
       target[kind] = structuredClone(value);
@@ -66,6 +71,7 @@ export async function loadPlugins(
   services: PluginServices,
   configPath = appConfigPath(),
   catalog: readonly PluginCatalogEntry[] = BUNDLED_PLUGINS,
+  defaults: PluginConfig = {},
 ): Promise<PluginBoot> {
   const registry = new PluginRegistry();
   const plugins: PluginState[] = [];
@@ -97,7 +103,7 @@ export async function loadPlugins(
       if (!validRange(manifest.pluginApi)) throw new Error(`invalid pluginApi range ${manifest.pluginApi}`);
       if (!satisfies(PLUGIN_API_VERSION, manifest.pluginApi))
         throw new Error(`pluginApi ${manifest.pluginApi} excludes daemon Plugin API ${PLUGIN_API_VERSION}`);
-      const config = validateConfig(manifest, setting?.config ?? {});
+      const config = validateConfig(manifest, setting?.config ?? {}, defaults);
       const declared = new Set(
         SEAMS.flatMap((seam) => Object.values(manifest.contributions[seam] ?? {}).flatMap((c) => c.secrets)),
       );

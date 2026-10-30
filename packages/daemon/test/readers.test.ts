@@ -109,9 +109,18 @@ test("daemon readers commit recorded Linear/GitHub facts to the subscribed store
     log: (line) => assert.fail(line),
   });
   t.after(() => readers.stop());
-  assert.deepEqual(readers.readers, [{ project: "orchard", tracker: true, forge: true }]);
+  assert.deepEqual(readers.readers, [
+    {
+      project: "orchard",
+      tracker: false,
+      forge: false,
+      trackerError: "First read pending",
+      forgeError: "First read pending",
+    },
+  ]);
   await committed;
   await setImmediate(); // drain settled readers and loopback delivery, without a wall-clock wait
+  assert.deepEqual(readers.readers, [{ project: "orchard", tracker: true, forge: true }]);
   const state = fold(store.readSince(0)).projects.orchard;
   assert.equal(state?.sessionsByState["in-progress"][0]?.ticket, "SEED-2");
   assert.equal(state?.pullRequests[0]?.number, 41);
@@ -207,4 +216,44 @@ test("shutdown clears the deadline even when a registry provider ignores cancell
   }
   await setImmediate();
   assert.equal(timer.tasks.size, 0);
+});
+
+test("reader health recovers and untrusted plugin errors cannot inject diagnostic lines", async () => {
+  const { PluginRegistry } = await import("../src/plugins/registry.ts");
+  const registry = new PluginRegistry();
+  const activation = registry.activation({
+    id: "fixture",
+    version: "1.0.0",
+    pluginApi: "^0.2.0",
+    enabledByDefault: true,
+    description: "Reader error boundary",
+    contributions: { tracker: { linear: { config: true, secrets: [] } } },
+  });
+  let failed = true;
+  activation.register.tracker("linear", {
+    read: async () => {
+      if (failed) throw new Error("Linear key missing\nprivate-key");
+    },
+    write: async () => {},
+  });
+  activation.commit();
+  const logs: string[] = [];
+  const readers = await startReaders({
+    registry,
+    projects: [project],
+    schedule: clock().schedule,
+    log: (line) => logs.push(line),
+  });
+  try {
+    await readers.ready;
+    assert.deepEqual(logs, ["armadad: orchard: tracker read failed: Reader failed (details withheld)"]);
+    assert.deepEqual(readers.readers, [
+      { project: "orchard", tracker: false, forge: false, trackerError: "Reader failed (details withheld)" },
+    ]);
+    failed = false;
+    await readers.refresh(project.id);
+    assert.deepEqual(readers.readers, [{ project: "orchard", tracker: true, forge: false }]);
+  } finally {
+    readers.stop();
+  }
 });

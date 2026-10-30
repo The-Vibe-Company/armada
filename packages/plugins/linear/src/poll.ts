@@ -1,5 +1,6 @@
 import type { EventInput, FleetEvent } from "@armada/daemon/events";
 import { trackerChanges } from "./changes.ts";
+import { LinearReadError } from "./linear/index.ts";
 import type { Tracker, TrackerReading } from "./types.ts";
 
 interface PollClock {
@@ -13,7 +14,7 @@ export interface PollStatus {
   lastStartedAt: string | null;
   lastCompletedAt: string | null;
   nextReadAt: string | null;
-  error: "Tracker read failed" | "Tracker read timed out" | null;
+  error: string | null;
 }
 export interface PollOptions {
   project: string;
@@ -132,9 +133,13 @@ export class TrackerPoller {
         if (full) this.#lastFull = Date.parse(startedAt);
         this.#status.lastCompletedAt = clock.now().toISOString();
       })
-      .catch(() => {
-        // Provider, keychain, response bodies and transport errors can contain secrets.
-        this.#status.error = timedOut ? "Tracker read timed out" : "Tracker read failed";
+      .catch((error) => {
+        // Only the adapter's own categorized errors may cross this boundary.
+        this.#status.error = timedOut
+          ? "Tracker read timed out"
+          : error instanceof LinearReadError
+            ? error.message
+            : "Tracker read failed";
       })
       .finally(() => {
         this.#cancelDeadline?.();

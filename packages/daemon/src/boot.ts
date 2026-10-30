@@ -13,6 +13,7 @@ export interface DaemonOptions {
   configPath?: string;
   catalog?: readonly PluginCatalogEntry[];
   secrets: PluginContext["secrets"];
+  projects?: readonly { id: string; repository: string; programRoot?: string; phaseGroup?: string }[];
   log: PluginContext["log"];
 }
 
@@ -35,6 +36,24 @@ export async function bootDaemon(options: DaemonOptions) {
       },
       configPath,
       options.catalog,
+      {
+        tracker: {
+          linear: {
+            projects: Object.fromEntries(
+              (options.projects ?? []).flatMap((p) =>
+                p.programRoot
+                  ? [[p.id, { programRoot: p.programRoot, phaseGroup: p.phaseGroup ?? "Agent phase" }]]
+                  : [],
+              ),
+            ),
+          },
+        },
+        forge: {
+          github: {
+            projects: Object.fromEntries((options.projects ?? []).map((p) => [p.id, { repository: p.repository }])),
+          },
+        },
+      },
     );
     await mkdir(dirname(configPath), { recursive: true });
     const catalog = options.catalog ?? BUNDLED_PLUGINS;

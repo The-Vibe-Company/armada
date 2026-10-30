@@ -37,6 +37,8 @@ interface Options {
   fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 }
 
+class GithubReadError extends Error {}
+
 /** Owner-token GitHub implementation; only observations cross the provider boundary. */
 class GithubForge implements Forge {
   readonly #options: Options;
@@ -48,16 +50,21 @@ class GithubForge implements Forge {
   async read(previousOpen: readonly number[], signal: AbortSignal): Promise<GithubPullRequest[]> {
     try {
       return await this.#read(previousOpen, signal);
-    } catch {
-      // The provider boundary is safe to log, even when fetch or token access throws.
-      throw new Error("GitHub reading failed");
+    } catch (error) {
+      // Raw fetch, body and token errors never cross this boundary.
+      throw error instanceof GithubReadError ? error : new GithubReadError("GitHub reading failed");
     }
   }
 
   async #read(previousOpen: readonly number[], signal: AbortSignal): Promise<GithubPullRequest[]> {
     const options = this.#options;
-    const token = (await (options.token ?? ((signal) => githubToken({ signal })))(signal)).trim();
-    if (!token || /\s/.test(token)) throw new Error("GitHub credentials unavailable");
+    let token: string;
+    try {
+      token = (await (options.token ?? ((signal) => githubToken({ signal })))(signal)).trim();
+    } catch {
+      throw new GithubReadError("GitHub credentials unavailable");
+    }
+    if (!token || /\s/.test(token)) throw new GithubReadError("GitHub credentials unavailable");
     signal.throwIfAborted();
     const [owner, name] = options.repository.split("/");
     const query = async (query: string, variables: object) => {
@@ -68,8 +75,10 @@ class GithubForge implements Forge {
         signal,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ query, variables: { owner, name, ...variables } }),
+      }).catch(() => {
+        throw new GithubReadError("GitHub network request failed");
       });
-      if (!response.ok) throw new Error("GitHub request failed");
+      if (!response.ok) throw new GithubReadError(`GitHub answered ${response.status}`);
       const json = (await response.json()) as {
         data?: {
           repository?: {
@@ -81,7 +90,7 @@ class GithubForge implements Forge {
       };
       signal.throwIfAborted();
       if (!json || json.errors?.length || !json.data?.repository)
-        throw new Error("GitHub returned an incomplete reading");
+        throw new GithubReadError("GitHub returned an incomplete reading");
       return json.data.repository;
     };
     const pulls = new Map<number, GithubPullRequest>();
@@ -92,22 +101,24 @@ class GithubForge implements Forge {
     for (;;) {
       const { open } = await query(OPEN, { after });
       if (!open || !Array.isArray(open.nodes) || typeof open.pageInfo?.hasNextPage !== "boolean")
-        throw new Error("GitHub returned an incomplete open list");
+        throw new GithubReadError("GitHub returned an incomplete open list");
       for (const raw of open.nodes) {
         const pr = normalize(raw, options.repository, tickets, token);
-        if (pr.state !== "open") throw new Error("GitHub open list contains a closed pull request");
+        if (pr.state !== "open") throw new GithubReadError("GitHub open list contains a closed pull request");
         pulls.set(pr.number, pr);
       }
       if (!open.pageInfo.hasNextPage) break;
       after = open.pageInfo.endCursor;
-      if (!after || cursors.has(after) || cursors.size >= 100) throw new Error("GitHub pagination did not complete");
+      if (!after || cursors.has(after) || cursors.size >= 100)
+        throw new GithubReadError("GitHub pagination did not complete");
       cursors.add(after);
     }
     // Looking up disappeared open PRs avoids a lossy 'last 30 closed' window.
     for (const number of previousOpen) {
       if (pulls.has(number)) continue;
       const { pullRequest } = await query(ONE, { number });
-      if (!pullRequest || pullRequest.number !== number) throw new Error("GitHub lost a previously open pull request");
+      if (!pullRequest || pullRequest.number !== number)
+        throw new GithubReadError("GitHub lost a previously open pull request");
       pulls.set(number, normalize(pullRequest as RawPull, options.repository, tickets, token));
     }
     signal.throwIfAborted();
@@ -256,15 +267,17 @@ export class GithubReader {
         changed++;
       }
       return { ok: true, changed };
-    } catch {
-      // Never expose fetch/GraphQL/child-process messages, bodies or raw credentials.
+    } catch (error) {
+      // Only categorized adapter errors survive; store and arbitrary provider errors stay private.
       return {
         ok: false,
         error: timedOut
           ? "GitHub reading timed out"
           : controller.signal.aborted
             ? "GitHub reading stopped"
-            : "GitHub reading failed",
+            : error instanceof GithubReadError
+              ? error.message
+              : "GitHub reading failed",
       };
     } finally {
       cancelDeadline();

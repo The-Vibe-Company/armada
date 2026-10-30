@@ -47,6 +47,7 @@ try {
     const modelAccess = await modelEnvironment(process.env, keychain);
     const daemon = await bootDaemon({
       databasePath: values.database,
+      projects,
       secrets: modelAccess.secrets,
       log: { info: (line) => console.error(line), error: (line) => console.error(line) },
     });
@@ -108,6 +109,15 @@ try {
           store: daemon.store,
           projects,
           signal: controller.signal,
+        });
+        // First reads get a bounded opportunity to settle before announcing health.
+        // Slow initial reads continue in the background; readiness must not cancel them.
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 3000);
+          void readers?.ready.then(() => {
+            clearTimeout(timer);
+            resolve();
+          });
         });
         server = await startServer({
           store: daemon.store,
