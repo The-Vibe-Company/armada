@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,8 +8,6 @@ import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { EventStore } from "../src/store.ts";
 import { project } from "./support/reader-recordings.ts";
-
-const node = execFileSync("node", ["-p", "process.execPath"], { encoding: "utf8" }).trim();
 
 // Exercise the actual source entry point, loader, bundled plugins and SQLite store.
 // Only the remote services are replaced; no token or plugin config is saved.
@@ -39,7 +37,7 @@ for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] a
       };
     `;
     const child = spawn(
-      node,
+      process.execPath,
       [
         "--import",
         `data:text/javascript,${encodeURIComponent(preload)}`,

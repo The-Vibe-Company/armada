@@ -42,7 +42,7 @@ for (const interruption of ["after-result", "tool"]) {
     const launch = async (mode: string, until: string) => {
       // Use Node's executable protocol directly: no inherited Bun execArgv or cross-runtime IPC framing.
       const child = spawn(
-        "node",
+        process.execPath,
         [fileURLToPath(new URL("./coordinator-process.ts", import.meta.url)), file, mode, interruption],
         {
           stdio: ["ignore", "pipe", "pipe"],

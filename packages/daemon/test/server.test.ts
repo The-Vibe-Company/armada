@@ -85,13 +85,15 @@ async function connect(url: string) {
   };
 }
 
-test("armadad starts beside a crashed socket, announces its address and quits cleanly on SIGTERM", async (t) => {
+test("armadad starts beside a crashed socket, announces its address and quits cleanly on SIGTERM", {
+  timeout: 10000,
+}, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "armada-process-"));
   const catalog = join(dir, "projects.json");
   mkdirSync(join(dir, "data"));
   const stalePath = join(dir, "data", "worker.sock");
   const stale = spawn(
-    "node",
+    process.execPath,
     [
       "--input-type=module",
       "-e",
@@ -139,7 +141,7 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
     });
   };`;
   const child = spawn(
-    "node",
+    process.execPath,
     [
       "--import",
       `data:text/javascript,${encodeURIComponent(preload)}`,

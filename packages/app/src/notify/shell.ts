@@ -3,7 +3,7 @@
 // count of notifications not yet read. In a browser, the window's own focus
 // and the Badging API where there is one.
 
-export interface ArmadaShell {
+interface ArmadaShell {
   /** Shows, restores and focuses the app's window. */
   reveal(): void;
   /** The dock's badge count; 0 clears it. */

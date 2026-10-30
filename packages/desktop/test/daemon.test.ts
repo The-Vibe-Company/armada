@@ -17,7 +17,7 @@ function fixture() {
   return {
     dir,
     options: {
-      executable: "node",
+      executable: process.execPath,
       entry: fileURLToPath(new URL("../../daemon/src/server/main.ts", import.meta.url)),
       database: join(dir, "fleet.sqlite"),
       projects,
