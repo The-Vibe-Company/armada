@@ -283,11 +283,32 @@ describe("in a browser, served by a running daemon", () => {
 
     // A message sent through the protocol: the coordinator's checkpoint brings it back with the answer.
     const field = page.getByLabel("Message", { exact: true });
+    const send = page.getByRole("button", { name: "Send", exact: true });
+    await expect(send.isDisabled()).resolves.toBe(true);
+    // Shift+Enter breaks the line and the field grows with it, up to 208 px (`max-h-52`), then scrolls (THE-2051).
+    const box = () => field.evaluate((el) => ({ height: el.clientHeight, scrolls: el.scrollHeight > el.clientHeight }));
+    const resting = await box();
+    await field.click();
+    await page.keyboard.type("one");
+    for (const line of ["two", "three"]) {
+      await page.keyboard.press("Shift+Enter");
+      await page.keyboard.type(line);
+    }
+    await expect(field.inputValue()).resolves.toBe("one\ntwo\nthree");
+    const grown = await box();
+    expect(grown.height).toBeGreaterThan(resting.height);
+    expect(grown.scrolls).toBe(false);
+    await field.fill(Array.from({ length: 20 }, (_, k) => `line ${k}`).join("\n"));
+    await expect(box()).resolves.toEqual({ height: 208, scrolls: true });
+    // Enter sends.
     await field.fill("Merge HAR-20 first.");
-    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.waitForFunction(() => localStorage.getItem("armada:composer-drafts:v1")?.includes("HAR-20"));
+    await field.press("Enter");
     const answer = page.locator('[data-item="coordinator"]').filter({ hasText: "Noted: “Merge HAR-20 first.”" });
     await answer.waitFor({ timeout: 10_000 });
     await expect(field.inputValue()).resolves.toBe("");
+    // The draft typed before it is forgotten once it is sent.
+    await page.waitForFunction(() => !localStorage.getItem("armada:composer-drafts:v1")?.includes("HAR-20"));
     await page.locator('[data-item="owner"]').filter({ hasText: "Merge HAR-20 first." }).waitFor();
     // Its tool call is one quiet line, closed until a click opens it.
     const call = page.locator('details[data-tool="fleet.status"]').first();
@@ -296,10 +317,20 @@ describe("in a browser, served by a running daemon", () => {
     await expect(call.evaluate((el) => (el as HTMLDetailsElement).open)).resolves.toBe(true);
     await call.getByText("Result").waitFor();
 
-    // Closed and opened again: the same conversation, read from the log.
+    // A draft is kept for the project (THE-2051).
+    await field.fill("Then look at #41.");
+    await page.waitForFunction(() => localStorage.getItem("armada:composer-drafts:v1")?.includes("#41"));
+
+    // Closed and opened again: the same conversation, read from the log, and the draft.
     await page.reload();
     await answer.waitFor({ timeout: 10_000 });
     await page.locator('[data-item="owner"]').filter({ hasText: "Merge HAR-20 first." }).waitFor();
+    await expect(field.inputValue()).resolves.toBe("Then look at #41.");
+    // ↑ recalls the last message sent, ↓ brings the draft back.
+    await field.press("ArrowUp");
+    await expect(field.inputValue()).resolves.toBe("Merge HAR-20 first.");
+    await field.press("ArrowDown");
+    await expect(field.inputValue()).resolves.toBe("Then look at #41.");
 
     // The owner answers the pinned question: the card leaves, the answer joins the conversation.
     await card.getByRole("button", { name: /Fix the wait/ }).click();

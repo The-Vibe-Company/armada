@@ -92,6 +92,9 @@
   --text-body--line-height: 1.5;
   --text-sub: 13.5px;
   --text-sub--line-height: 1.5;
+  /* The owner's field in the room (T3 Code's composer). */
+  --text-compose: 14px;
+  --text-compose--line-height: 1.5;
   /* A full-bleed page's title on its one-line header (the hangar). */
   --text-bar: 15px;
   --text-bar--line-height: 1.4;

@@ -159,13 +159,13 @@ test("the agents' rail groups the project's agents by state, one row per agent o
 test("the owner's field is labelled and sends; without a coordinator it says why", () => {
   const html = render();
   const form = block(html, /<form[^>]*aria-label="Message the coordinator"/, /<\/form>/);
-  const field = form.match(/<label for="([^"]+)"[^>]*>Message<\/label><input id="([^"]+)"/);
+  const field = form.match(/<label for="([^"]+)"[^>]*>Message<\/label><textarea id="([^"]+)"/);
   expect(field?.[1]).toBe(field?.[2]);
-  expect(text(form)).toContain("Send");
+  expect(form).toMatch(/<button type="submit" aria-label="Send"/);
   const alone = render({ coordinator: false, items: [] });
   expect(text(alone)).toContain("No coordinator runs for this project yet");
   expect(text(alone)).toContain("Nothing said yet.");
-  expect(alone).toMatch(/<input id="[^"]+" type="text"[^>]*disabled=""/);
+  expect(alone).toMatch(/<textarea id="[^"]+"[^>]*disabled=""/);
 });
 
 test("the room's rules: its address, a question's choices, ids in a message, a tool's quiet line", () => {
