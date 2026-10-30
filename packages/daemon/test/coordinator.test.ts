@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { SYSTEM_PROMPT, TOOL_NAMES } from "../coordinator/index.ts";
 import { EventStore } from "../src/store.ts";
+import { nodeExecutable } from "./support/node.ts";
 
 test("the native coordinator prompt describes each offered tool exactly once", () => {
   for (const name of TOOL_NAMES) assert.equal(SYSTEM_PROMPT.split(`\`${name}\``).length - 1, 1, name);
@@ -42,7 +43,7 @@ for (const interruption of ["after-result", "tool"]) {
     const launch = async (mode: string, until: string) => {
       // Use Node's executable protocol directly: no inherited Bun execArgv or cross-runtime IPC framing.
       const child = spawn(
-        process.execPath,
+        nodeExecutable,
         [fileURLToPath(new URL("./coordinator-process.ts", import.meta.url)), file, mode, interruption],
         {
           stdio: ["ignore", "pipe", "pipe"],

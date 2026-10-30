@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { EventStore } from "../src/store.ts";
+import { nodeExecutable } from "./support/node.ts";
 import { project } from "./support/reader-recordings.ts";
 
 // Exercise the actual source entry point, loader, bundled plugins and SQLite store.
@@ -37,7 +38,7 @@ for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] a
       };
     `;
     const child = spawn(
-      process.execPath,
+      nodeExecutable,
       [
         "--import",
         `data:text/javascript,${encodeURIComponent(preload)}`,

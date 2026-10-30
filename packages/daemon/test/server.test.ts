@@ -24,6 +24,7 @@ import { Keychain } from "../src/keychain.ts";
 import { startServer } from "../src/server/index.ts";
 import { EventStore } from "../src/store.ts";
 import { FakeKeychain } from "./support/keychain.ts";
+import { nodeExecutable } from "./support/node.ts";
 
 const projects = [
   { id: "orchard", name: "Orchard", repository: "example/orchard" },
@@ -93,7 +94,7 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
   mkdirSync(join(dir, "data"));
   const stalePath = join(dir, "data", "worker.sock");
   const stale = spawn(
-    process.execPath,
+    nodeExecutable,
     [
       "--input-type=module",
       "-e",
@@ -141,7 +142,7 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
     });
   };`;
   const child = spawn(
-    process.execPath,
+    nodeExecutable,
     [
       "--import",
       `data:text/javascript,${encodeURIComponent(preload)}`,

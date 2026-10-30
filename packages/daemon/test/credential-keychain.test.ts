@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { Keychain } from "../src/keychain.ts";
 import { fileKeychain } from "../src/secrets/file.ts";
 import { FakeKeychain } from "./support/keychain.ts";
+import { nodeExecutable } from "./support/node.ts";
 
 test("one gateway stores coordinator provider/key atomically and scopes Linear and GitHub entries", async () => {
   const backend = new FakeKeychain();
@@ -86,7 +87,7 @@ test("Linux system storage accepts only trimmed absolute XDG roots, otherwise us
         assert.equal(existsSync(join(process.cwd(), "relative")), false);
         assert.equal(existsSync(join(process.cwd(), "armada")), false);
       `;
-      const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      const result = spawnSync(nodeExecutable, ["--input-type=module", "-e", script], {
         cwd: directory,
         env: { ...process.env, HOME: home, XDG_CONFIG_HOME: xdg },
         encoding: "utf8",
