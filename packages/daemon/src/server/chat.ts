@@ -5,28 +5,33 @@
 // pinned in the room. Each request answers one message; nothing here writes
 // but `chat.send` (the coordinator's checkpoint) and `owner.answer`.
 import {
+  CHAT_LIVE_MINOR,
   type ChatItem,
   type ChatReadRequest,
   type ChatSendRequest,
+  type ChatStopRequest,
   type OwnerAnswerRequest,
   type ServerMessage,
   PROTOCOL_VERSION as version,
 } from "@armada/protocol";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import type { EntryRecord, SubmissionDraft } from "@earendil-works/pi-durable";
+import type { ConversationView, EntryRecord, LiveState, SubmissionDraft } from "@earendil-works/pi-durable";
 import type { ProjectCoordinator } from "../../coordinator/index.ts";
 import type { Json } from "../events.ts";
 import { fold } from "../fold.ts";
 import type { EventStore } from "../store.ts";
 import type { Workers } from "../workers/service.ts";
+import type { ChatLive } from "./chat-live.ts";
 import { answerWorker, NOTE, OWNER_ANSWER_ENTRY } from "./session.ts";
 
 /** At most this many items of a long conversation: its latest. */
 const CHAT_LIMIT = 200;
 /** A tool's result past this many characters is cut: the room shows a reading, not a dump. */
 const OUTPUT_LIMIT = 8 * 1024;
+export const cutOutput = (output: string): string =>
+  output.length > OUTPUT_LIMIT ? `${output.slice(0, OUTPUT_LIMIT)}…` : output;
 
-export type ChatRequest = ChatReadRequest | ChatSendRequest | OwnerAnswerRequest;
+export type ChatRequest = ChatReadRequest | ChatSendRequest | ChatStopRequest | OwnerAnswerRequest;
 export interface ChatOptions {
   store: EventStore;
   /** The project's coordinator, when one runs. */
@@ -34,6 +39,7 @@ export interface ChatOptions {
   /** Delivers the owner's answer to a worker's question (THE-2045). */
   workers?: Workers;
   now?: () => number;
+  live: ChatLive;
 }
 
 const NO_COORDINATOR = "No coordinator runs for this project: save its model key, then restart the daemon";
@@ -52,8 +58,24 @@ export async function dispatchChat(request: ChatRequest, options: ChatOptions): 
     switch (request.type) {
       case "chat.read": {
         const seq = options.store.sequence;
-        const items = await readChat(options.store, project, options.coordinator);
-        return { type: "chat.result", version, id, project, seq, coordinator: !!options.coordinator, items };
+        const current = await options.live.read(project, options.coordinator?.conversation);
+        const modern = request.version.minor >= CHAT_LIVE_MINOR;
+        const items = readChat(options.store, project, current.value, modern);
+        return {
+          type: "chat.result",
+          version,
+          id,
+          project,
+          seq,
+          coordinator: !!options.coordinator,
+          items,
+          ...(modern ? { turn: current.turn } : {}),
+        };
+      }
+      case "chat.stop": {
+        if (!options.coordinator) return error("not-found", NO_COORDINATOR);
+        await options.coordinator.conversation.abort(context);
+        return { type: "chat.stopped", version, id, project };
       }
       case "chat.send": {
         if (!options.coordinator) return error("not-found", NO_COORDINATOR);
@@ -90,7 +112,14 @@ export async function dispatchChat(request: ChatRequest, options: ChatOptions): 
       }
     }
   } catch {
-    return error("internal", request.type === "chat.read" ? "Could not read the conversation" : "Could not send it");
+    return error(
+      "internal",
+      request.type === "chat.read"
+        ? "Could not read the conversation"
+        : request.type === "chat.stop"
+          ? "Could not stop the coordinator"
+          : "Could not send it",
+    );
   }
 }
 
@@ -145,7 +174,7 @@ type Message = {
   stopReason?: string;
 };
 
-const textOf = (content: unknown): string =>
+export const textOf = (content: unknown): string =>
   typeof content === "string"
     ? content
     : Array.isArray(content)
@@ -156,7 +185,7 @@ const textOf = (content: unknown): string =>
       : "";
 
 /** The facts' own word: a tool that answered `ok: false` refused. */
-function refused(output: string): boolean {
+export function refused(output: string): boolean {
   try {
     const facts = JSON.parse(output) as unknown;
     return typeof facts === "object" && facts !== null && (facts as { ok?: unknown }).ok === false;
@@ -172,11 +201,7 @@ function refused(output: string): boolean {
  * `coordinator.message` events. Other entries (system, compaction, resets) and
  * inputs that are not the owner's are not shown.
  */
-async function readChat(
-  store: EventStore,
-  project: string,
-  coordinator: ProjectCoordinator | undefined,
-): Promise<ChatItem[]> {
+function readChat(store: EventStore, project: string, view: ConversationView | undefined, modern: boolean): ChatItem[] {
   const items: ChatItem[] = [];
   for (const event of store.readSince(0, project))
     if (event.kind === "coordinator.message")
@@ -186,20 +211,18 @@ async function readChat(
         at: event.at,
         body: event.payload.body,
       });
-  if (coordinator) {
-    const page = await coordinator.conversation.entries({ order: "descending" }, CHAT_LIMIT, undefined, context);
-    items.push(...chatOf([...page.items].reverse()));
-  }
+  if (view) items.push(...viewChat(view, modern));
   // A stable sort: same-time items keep the conversation's order.
   return items.sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).slice(-CHAT_LIMIT);
 }
 
 /** pi entries, oldest first, as the room's items. */
-function chatOf(entries: readonly EntryRecord[]): ChatItem[] {
+export function chatOf(entries: readonly EntryRecord[], modern = true): ChatItem[] {
   const items: ChatItem[] = [];
   const calls = new Map<string, Extract<ChatItem, { kind: "tool" }>>();
   let owner = true;
   let last = 0;
+  const assistants = new Map<number, number>();
   const at = (message: Message | undefined) => {
     const time = message?.timestamp;
     if (typeof time === "number" && Number.isFinite(time)) last = time;
@@ -222,16 +245,32 @@ function chatOf(entries: readonly EntryRecord[]): ChatItem[] {
       at(message);
     } else if (entry.kind === "pi.assistant" && message?.role === "assistant") {
       const time = at(message);
+      const ordinal = (assistants.get(entry.byTaskId ?? -1) ?? 0) + 1;
+      assistants.set(entry.byTaskId ?? -1, ordinal);
+      // The task identity is committed before its partial; pi allocates the entry id only on completion.
+      const assistantId = modern && entry.byTaskId !== undefined ? `g${entry.byTaskId}:${ordinal}` : id;
       const body = textOf(message.content);
-      if (body.trim()) items.push({ kind: owner ? "coordinator" : "line", id, at: time, body });
+      const reasoning = reasoningOf(message.content);
+      const metadata = modern
+        ? {
+            ...(reasoning ? { reasoning } : {}),
+            ...(message.stopReason === "aborted" ? { aborted: true as const } : {}),
+          }
+        : {};
+      if (
+        body.trim() ||
+        (modern && ((reasoning && message.stopReason !== "error") || message.stopReason === "aborted"))
+      )
+        items.push({ kind: owner ? "coordinator" : "line", id: assistantId, at: time, body, ...metadata });
       else if (message.stopReason === "error")
         // A turn the model failed says so, rather than leaving the owner to silence.
         items.push({
           kind: "line",
-          id,
+          id: assistantId,
           at: time,
           // A fixed line: a provider's error text could echo what it was sent.
           body: "The coordinator's model failed on this turn.",
+          ...metadata,
         });
       for (const block of Array.isArray(message.content) ? message.content : [])
         if (block?.type === "toolCall" && typeof block.id === "string" && typeof block.name === "string") {
@@ -251,9 +290,47 @@ function chatOf(entries: readonly EntryRecord[]): ChatItem[] {
       const call = calls.get(message.toolCallId);
       if (!call) continue;
       const output = textOf(message.content);
-      call.output = output.length > OUTPUT_LIMIT ? `${output.slice(0, OUTPUT_LIMIT)}…` : output;
+      call.output = cutOutput(output);
       call.failed = message.isError === true || refused(output);
     }
+  }
+  return items;
+}
+
+/** Provider thinking is display metadata only; never append it back as model input. */
+export const reasoningOf = (content: unknown): string =>
+  Array.isArray(content)
+    ? content
+        .filter(
+          (c): c is { type: "thinking"; thinking: string } => c?.type === "thinking" && typeof c.thinking === "string",
+        )
+        .map((c) => c.thinking)
+        .join("\n")
+    : "";
+
+/** Overlay the committed running output on its own call, shared by read and live frames. */
+export function viewChat(view: ConversationView, modern = true): ChatItem[] {
+  const items = chatOf(view.entries, modern);
+  if (modern) {
+    const live = view.docs["pi.live"] as LiveState | undefined;
+    const active = new Set<string>();
+    for (const slot of live?.tools ?? []) {
+      const call = items.findLast((i) => i.kind === "tool" && i.id.endsWith(`:${slot.callId}`));
+      if (call?.kind !== "tool") continue;
+      active.add(call.id);
+      if (slot.output !== undefined && slot.status !== "done") call.output = cutOutput(slot.output);
+      if (slot.status === "done" && !slot.entry) {
+        call.output = "The tool did not complete.";
+        call.failed = true;
+      }
+    }
+    // pi faults/aborts can end a call without a result entry. Once its atomic round
+    // is gone it cannot still be running; keep that fact on fresh views/restarts too.
+    for (const call of items)
+      if (call.kind === "tool" && call.output === null && !active.has(call.id)) {
+        call.output = "The tool did not complete.";
+        call.failed = true;
+      }
   }
   return items;
 }
