@@ -4,7 +4,7 @@
 // desktop shell's bridge recording each address it is asked to open.
 import { PROTOCOL_VERSION } from "@armada/protocol";
 import { flushSync } from "react-dom";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import { createDaemonClient, type SocketLike } from "../src/protocol/client";
 import { DaemonProvider } from "../src/protocol/store";
 import { Account } from "../src/settings/Account";
@@ -34,17 +34,28 @@ const client = createDaemonClient({
   sent,
   opened,
   open: () => flushSync(() => socket?.onopen?.()),
+  remount: mount,
   /** One frame from the daemon, drawn before it returns. */
   receive(message: Record<string, unknown>) {
     flushSync(() => socket?.onmessage?.({ data: JSON.stringify({ version: PROTOCOL_VERSION, ...message }) }));
   },
 };
 
-client.start();
-const root = document.getElementById("root");
-if (root)
-  createRoot(root).render(
-    <DaemonProvider client={client}>
-      <Account />
-    </DaemonProvider>,
+let root: Root | null = null;
+/** The section on the page; drawn again from scratch as when the owner comes back to it from another section. */
+function mount() {
+  root?.unmount();
+  const box = document.getElementById("root");
+  if (!box) return;
+  root = createRoot(box);
+  flushSync(() =>
+    root?.render(
+      <DaemonProvider client={client}>
+        <Account />
+      </DaemonProvider>,
+    ),
   );
+}
+
+client.start();
+mount();

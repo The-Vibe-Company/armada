@@ -140,9 +140,12 @@ describe("the Account section in a browser", () => {
     await noToken();
   });
 
-  test("Sign out sends account.logout and comes back to Sign in", async () => {
+  test("Sign out asks first, saying the CLI's sign-in goes too, then sends account.logout", async () => {
     const login = await startSignIn();
     await receive({ ...SIGNED_IN, id: login.id });
+    await button("Sign out").click();
+    expect(await page.locator("[data-confirm]").textContent()).toBe("This signs out the CLI on this device too.");
+    expect((await sent()).some((m) => m.type === "account.logout")).toBe(false);
     await button("Sign out").click();
     const logout = await last("account.logout");
     await receive({ type: "account.result", id: logout.id, signedIn: false, apiUrl: API });
@@ -163,16 +166,49 @@ describe("the Account section in a browser", () => {
     expect(await page.getByRole("alert").count()).toBe(0);
   });
 
-  test("Cancel aborts the sign-in through account.logout, without a problem shown", async () => {
+  test("Cancel stops waiting and sends nothing: never account.logout, which would clear the CLI's sign-in", async () => {
     const login = await startSignIn();
+    await page.locator("[data-code]").waitFor({ timeout: 2_000 });
     await button("Cancel").click();
-    const logout = await last("account.logout");
-    // The daemon aborts the pending login (its error), then answers the logout.
-    await receive({ type: "error", id: login.id, code: "offline", message: "Could not reach Armada" });
-    await receive({ type: "account.result", id: logout.id, signedIn: false, apiUrl: API });
     await button("Sign in").waitFor({ timeout: 2_000 });
-    expect(await page.getByRole("alert").count()).toBe(0);
     expect(await page.locator("[data-code]").count()).toBe(0);
+    expect((await sent()).filter((m) => m.type.startsWith("account.")).map((m) => m.type)).toEqual([
+      "account.status",
+      "account.login",
+    ]);
+    // The cancelled login's late end says nothing.
+    await receive({ type: "error", id: login.id, code: "expired", message: "Sign-in code expired" });
+    expect(await page.getByRole("alert").count()).toBe(0);
+    // Signing in again opens the page again.
+    await startSignIn();
+    await page.locator("[data-code]").waitFor({ timeout: 2_000 });
+    expect(await opened()).toEqual([DEVICE_URL, DEVICE_URL]);
+  });
+
+  test("a code arriving after Cancel neither shows nor opens its page", async () => {
+    await button("Sign in").click();
+    await page.getByText("Asking Armada for a code…").waitFor({ timeout: 2_000 });
+    await button("Cancel").click();
+    const login = await last("account.login");
+    await receive({
+      type: "account.device",
+      id: login.id,
+      code: "ABCD-EFGH",
+      verificationUrl: DEVICE_URL,
+      expiresAt: "2026-03-10T09:15:00.000Z",
+    });
+    expect(await button("Sign in").count()).toBe(1);
+    expect(await page.locator("[data-code]").count()).toBe(0);
+    expect(await opened()).toEqual([]);
+  });
+
+  test("coming back to the section mid-way shows the code again without opening its page twice", async () => {
+    await startSignIn();
+    await page.locator("[data-code]").waitFor({ timeout: 2_000 });
+    await page.evaluate(() => (window as unknown as { fake: { remount(): void } }).fake.remount());
+    expect(await page.locator("[data-code]").textContent()).toBe("ABCD-EFGH");
+    expect(await button("Cancel").count()).toBe(1);
+    expect(await opened()).toEqual([DEVICE_URL]);
   });
 });
 
