@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, ipcMain, nativeImage, shell } from "electron";
-import { BADGE_CHANNEL, badgeCount, fromApp, REVEAL_CHANNEL } from "./bridge.ts";
+import { BADGE_CHANNEL, badgeCount, externalUrl, fromApp, OPEN_EXTERNAL_CHANNEL, REVEAL_CHANNEL } from "./bridge.ts";
 import { type DaemonAddress, DaemonProcess, RESTART_EXIT_CODE, restartDaemon } from "./daemon.ts";
 
 app.setName("Armada");
@@ -100,6 +100,11 @@ void app.whenReady().then(async () => {
     });
     ipcMain.on(BADGE_CHANNEL, (event, count: unknown) => {
       if (own(event)) app.setBadgeCount(badgeCount(count));
+    });
+    // Armada's device page (THE-2071), in the system browser: http or https, never the app's own pages.
+    ipcMain.on(OPEN_EXTERNAL_CHANNEL, (event, value: unknown) => {
+      const url = own(event) ? externalUrl(value, address.url) : null;
+      if (url) void shell.openExternal(url).catch(() => {});
     });
     window.on("focus", () => app.setBadgeCount(0));
     // No window of its own: a link a message opens apart (the room's markdown, THE-2050) goes to the system

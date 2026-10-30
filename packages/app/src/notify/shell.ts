@@ -8,6 +8,8 @@ interface ArmadaShell {
   reveal(): void;
   /** The dock's badge count; 0 clears it. */
   setBadge(count: number): void;
+  /** Opens an http or https address in the system browser (THE-2071); absent from an older shell. */
+  openExternal?(url: string): void;
 }
 
 declare global {

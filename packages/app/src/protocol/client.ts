@@ -577,7 +577,8 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
         if (message.id !== undefined && pending.has(message.id)) {
           const request = pending.get(message.id);
           pending.delete(message.id);
-          request?.reject(new Error(message.message));
+          // The code goes with the line: Settings tells an expired sign-in code from a refusal (THE-2071).
+          request?.reject(Object.assign(new Error(message.message), { code: message.code }));
           return;
         }
         if (pendingCredential && message.id === pendingCredential.id) {

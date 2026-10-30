@@ -715,7 +715,7 @@ describe("the Plugins screen in a browser, on a daemon that restarts", () => {
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("Enter");
     await page.waitForURL(/#\/settings\/account$/, { timeout: 5_000 });
-    await page.getByText("Coming with THE-2071").waitFor({ timeout: 5_000 });
+    await page.getByText("Workers in Conductor and the organization's keys need it.").waitFor({ timeout: 5_000 });
     await page.keyboard.press("End");
     await page.keyboard.press("Enter");
     await page.waitForURL(/#\/settings\/about$/, { timeout: 5_000 });

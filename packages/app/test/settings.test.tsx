@@ -192,7 +192,7 @@ test("the nav lists every section and marks the one shown, beside its content, u
     expect(html.match(/<h1\b[^>]*>(.*?)<\/h1>/g)).toEqual([expect.stringContaining(">Settings</h1>")]);
   }
   expect(render("account")).toMatch(
-    /Sign in to Armada.*Coming with THE-2071.*<button[^>]*disabled=""[^>]*>Sign in<\/button>/,
+    /Account.*Reading the sign-in….*<button[^>]*disabled=""[^>]*>Sign in<\/button>/,
   );
   const about = render("about");
   expect(about).toContain("ws://127.0.0.1:4824/");
