@@ -6,6 +6,44 @@ import { dispatchCredentials } from "../src/credentials.ts";
 import { Keychain } from "../src/keychain.ts";
 import { FakeKeychain } from "./support/keychain.ts";
 
+test("plugin key rotation after pi selection retains the saved endpoint and required configuration", async () => {
+  const chain = new Keychain(new FakeKeychain());
+  const key = randomBytes(24).toString("hex");
+  await chain.setCoordinator("openai-compatible", key, {
+    model: "old",
+    baseURL: "https://example.test/v1",
+    apiKeySecret: "CUSTOM_KEY",
+  });
+  await chain.selectCoordinator({ provider: "openai", model: "example" });
+  const replacement = randomBytes(24).toString("hex");
+  const result = await dispatchCredentials(
+    {
+      type: "credentials.set",
+      version: PROTOCOL_VERSION,
+      id: "rotate",
+      provider: "openai-compatible",
+      target: "plugin",
+      key: replacement,
+      config: { model: "new" },
+    },
+    chain,
+    [
+      {
+        kind: "openai-compatible",
+        description: "Endpoint",
+        config: { type: "object", required: ["baseURL", "model"] },
+      },
+    ],
+  );
+  assert.equal(result.type, "credentials.result");
+  assert.deepEqual((await chain.coordinator())?.config, {
+    model: "new",
+    baseURL: "https://example.test/v1",
+    apiKeySecret: "CUSTOM_KEY",
+  });
+  assert.equal((await chain.pluginCoordinator())?.key === replacement, true);
+});
+
 test("admitted credential writes return status only; backend failures and malformed keys never echo credentials", async (t) => {
   const key = randomBytes(24).toString("hex");
   const output: unknown[] = [];
