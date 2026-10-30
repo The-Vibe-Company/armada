@@ -536,11 +536,19 @@ export class LocalNode implements NodeProvider {
       const latest = this.#worker(worker);
       if (latest !== record || latest.closedValue || latest.pid < 1 || latest.child.pid !== latest.pid) return;
       latest.stopping = true;
+      if (process.platform !== "win32") {
+        try {
+          process.kill(-latest.pid, signal);
+          return;
+        } catch (error) {
+          // An exited group leader can yield EPERM on macOS before close arrives.
+          if (!isErrno(error, "ESRCH") && !isErrno(error, "EPERM")) throw error;
+        }
+      }
       try {
-        if (process.platform !== "win32") process.kill(-latest.pid, signal);
-        else latest.child.kill(signal);
+        latest.child.kill(signal);
       } catch (error) {
-        if (!isErrno(error, "ESRCH")) throw error;
+        if (!isErrno(error, "ESRCH") && !isErrno(error, "EPERM")) throw error;
       }
     });
   }
