@@ -3,6 +3,7 @@ import { coordinatorModelSchema } from "@armada/protocol";
 import {
   type AssistantMessage,
   type AssistantMessageEventStream,
+  type Context,
   type Credential,
   type CredentialStore,
   createAssistantMessageEventStream,
@@ -126,9 +127,14 @@ export class ModelRegistry {
     const stream = this.models.stream.bind(this.models);
     const streamSimple = this.models.streamSimple.bind(this.models);
     this.models.stream = (model, context, request) =>
-      safeStream(() => stream(model, context, request), model, request?.signal);
+      safeStream(() => stream(model, wireContext(context), request), model, request?.signal, harnessNames(context));
     this.models.streamSimple = (model, context, request) =>
-      safeStream(() => streamSimple(model, context, request), model, request?.signal);
+      safeStream(
+        () => streamSimple(model, wireContext(context), request),
+        model,
+        request?.signal,
+        harnessNames(context),
+      );
   }
 
   async selection(): Promise<CoordinatorModel | null> {
@@ -191,23 +197,75 @@ export class ModelRegistry {
   }
 }
 
+/** OpenAI's APIs accept tool names matching `^[a-zA-Z0-9_-]+$` only (THE-2090); the
+ * coordinator's are dotted (`fleet.status`). The wire sees `fleet__status`; the harness
+ * and the checkpoints only ever see the dotted name. */
+const WIRE_DOT = "__";
+export const wireToolName = (name: string) => name.replaceAll(".", WIRE_DOT);
+
+/** The context as the provider receives it: every tool name, past call and result aliased. */
+export function wireContext(context: Context): Context {
+  return {
+    ...context,
+    ...(context.tools ? { tools: context.tools.map((tool) => ({ ...tool, name: wireToolName(tool.name) })) } : {}),
+    messages: context.messages.map((message) => {
+      if (message.role === "assistant")
+        return {
+          ...message,
+          content: message.content.map((part) =>
+            part.type === "toolCall" ? { ...part, name: wireToolName(part.name) } : part,
+          ),
+        };
+      if (message.role === "toolResult") return { ...message, toolName: wireToolName(message.toolName) };
+      return message;
+    }),
+  };
+}
+
+/** Wire name back to the harness's, by the context's tools first, else by the alias rule. */
+function harnessNames(context: Context): ReadonlyMap<string, string> {
+  return new Map((context.tools ?? []).map((tool) => [wireToolName(tool.name), tool.name]));
+}
+
+function harnessMessage(message: AssistantMessage, names: ReadonlyMap<string, string>): AssistantMessage {
+  if (!message.content.some((part) => part.type === "toolCall")) return message;
+  return {
+    ...message,
+    content: message.content.map((part) =>
+      part.type === "toolCall" ? { ...part, name: names.get(part.name) ?? part.name.replaceAll(WIRE_DOT, ".") } : part,
+    ),
+  };
+}
+
+/** The first line of a provider error, with nothing that looks like a token, a header or a body. */
+function errorLine(message: AssistantMessage): string {
+  const first = (message.errorMessage ?? "").split("\n")[0] ?? "";
+  return first
+    .split("{")[0]
+    ?.replace(/(Bearer|eyJ|sk-)[A-Za-z0-9._-]{8,}/g, "[redacted]")
+    .slice(0, 200) as string;
+}
+
 /** Provider errors can contain request headers or response bodies. pi persists
  * terminal messages, so sanitize before they cross into the durable harness. */
 function safeStream(
   run: () => AssistantMessageEventStream,
   model: Model<string>,
   signal?: AbortSignal,
+  names: ReadonlyMap<string, string> = new Map(),
 ): AssistantMessageEventStream {
   const result = createAssistantMessageEventStream();
   const safe = (message: AssistantMessage): AssistantMessage => {
     const { diagnostics: _diagnostics, ...clean } = message;
+    if (message.stopReason === "error")
+      console.warn(`armada: model request failed (${model.provider}/${model.id}): ${errorLine(message)}`);
     return message.stopReason === "error" || message.stopReason === "aborted"
       ? {
           ...clean,
-          content: message.stopReason === "aborted" ? message.content : [],
+          content: message.stopReason === "aborted" ? harnessMessage(message, names).content : [],
           errorMessage: message.stopReason === "aborted" ? "Model request cancelled" : "Model request failed",
         }
-      : clean;
+      : harnessMessage(clean, names);
   };
   void (async () => {
     try {
