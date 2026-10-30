@@ -76,7 +76,13 @@ void app.whenReady().then(async () => {
       title: "Armada",
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
     });
-    window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    // No window of its own: a link a message opens apart (the room's markdown, THE-2050) goes to the system
+    // browser or mail app; never the app's own pages, which only this window shows.
+    window.webContents.setWindowOpenHandler(({ url }) => {
+      const external = /^(https?|mailto):/i.test(url) && !url.startsWith(`${address.url}/`) && url !== address.url;
+      if (external) void shell.openExternal(url).catch(() => {});
+      return { action: "deny" };
+    });
     window.webContents.on("will-navigate", (event, url) => {
       const target = new URL(url);
       if (target.origin !== address.url) event.preventDefault();

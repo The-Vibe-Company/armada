@@ -17,6 +17,7 @@ import { useDaemon } from "@/protocol/store";
 import { Composer } from "@/room/Composer";
 import { type Chat, NO_CHAT, useChat } from "@/room/chat";
 import { coordinatorModel, ownerHistory } from "@/room/compose";
+import { ticketPrefix } from "@/room/markdown-rules";
 import { Pinned } from "@/room/Pinned";
 import { RAIL_ID, Rail } from "@/room/Rail";
 import { Thread } from "@/room/Thread";
@@ -96,6 +97,14 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
     };
   }, [project, state, today, zone]);
   const groups = useMemo(() => new Map(items.map((i) => [i.ticket, i.group])), [items]);
+  // The teams the project's tickets belong to: an id under one of them links in the conversation.
+  const prefixes = useMemo(
+    () =>
+      [...new Set([...state.tickets.map((t) => t.id), ...state.sessions.map((s) => s.ticket)].map(ticketPrefix))]
+        .sort()
+        .join(" "),
+    [state],
+  );
   const groupOf = (ticket: string): Group | null => groups.get(ticket) ?? null;
   const harnessOf = (ticket: string) => harness.get(ticket) ?? null;
   const counts = groupCounts(items);
@@ -194,6 +203,8 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
           )}
           <Thread
             items={chat.items}
+            repository={project.repository}
+            prefixes={prefixes}
             groupOf={groupOf}
             now={now}
             zone={zone}
@@ -205,7 +216,10 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
             }
           />
           {chat.problem && chat.items.length > 0 && (
-            <p role="alert" className="m-0 flex-none px-7 pb-2 text-body text-amber">
+            <p
+              role="alert"
+              className="m-0 mx-auto w-full max-w-[calc(var(--chat-content-max-width)+1.5rem)] flex-none px-3 pb-2 text-body text-amber sm:max-w-[calc(var(--chat-content-max-width)+6rem)] sm:px-12"
+            >
               {chat.problem}
             </p>
           )}

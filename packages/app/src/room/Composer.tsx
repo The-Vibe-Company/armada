@@ -1,5 +1,5 @@
 // The owner's field, docked at the bottom of the room (THE-1996), shaped like
-// T3 Code's composer (THE-2051): a glass card in the thread's lane, a textarea
+// T3 Code's composer (THE-2051): a glass card in the thread's lane (THE-2050), a textarea
 // that grows from two lines to `max-h-52`, Enter sends and Shift+Enter breaks
 // the line, ↑ and ↓ walk the owner's earlier messages, the draft kept per
 // project, the coordinator's model on the left and a round Send on the right.
@@ -177,9 +177,9 @@ export function Composer({
         void submit();
       }}
       aria-label="Message the coordinator"
-      className="flex-none bg-bg px-7 pt-2 pb-4"
+      className="flex-none bg-bg px-3 pt-2 pb-4 sm:px-12"
     >
-      <div className="mx-auto w-full max-w-[var(--chat-content-max-width,46rem)]">
+      <div className="mx-auto w-full max-w-(--chat-content-max-width)">
         <div
           data-composer
           className="rounded-deck bg-card/85 shadow-control outline-blue/60 backdrop-blur-md transition-shadow focus-within:shadow-control-hover focus-within:outline-1"

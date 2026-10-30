@@ -69,7 +69,7 @@ function coordinator(responses: Parameters<ReturnType<typeof fauxProvider>["setR
       models,
       model: { provider: faux.getModel().provider, modelId: faux.getModel().id },
       now: () => clock,
-      setTimer: () => () => {},
+      setTimer: (_callback: () => void, _delay: number) => () => {},
     },
   };
 }
@@ -236,4 +236,104 @@ test("without a coordinator the room reads the log's lines and refuses to send",
   const unknown = await client.ask({ type: "chat.read", project: "nowhere" });
   assert.equal(unknown.type === "error" && unknown.code, "not-found");
   client.ws.close();
+});
+
+test("Stop preserves pi's committed partial and reasoning with the live id after restart", {
+  timeout: 5000,
+}, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "armada-room-stop-"));
+  const file = join(dir, "fleet.sqlite");
+  let store = new EventStore(file);
+  let server: Awaited<ReturnType<typeof startServer>> | undefined;
+  let client: Awaited<ReturnType<typeof connect>> | undefined;
+  t.after(async () => {
+    client?.ws.terminate();
+    await server?.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const { AssistantMessageEventStream } = await import("@earendil-works/pi-ai/utils/event-stream");
+  const { faux, config } = coordinator([]);
+  let providerAborts = 0;
+  config.models.setProvider({
+    ...faux.provider,
+    streamSimple(_model, _transcript, options) {
+      const stream = new AssistantMessageEventStream();
+      const message = fauxAssistantMessage(
+        [
+          { type: "text", text: "Checking one tree" },
+          { type: "thinking", thinking: "Count the rows" },
+        ],
+        { timestamp: NOW },
+      );
+      stream.push({ type: "start", partial: message });
+      options?.signal?.addEventListener(
+        "abort",
+        () => {
+          providerAborts++;
+          stream.push({ type: "error", reason: "aborted", error: { ...message, stopReason: "aborted" } });
+        },
+        { once: true },
+      );
+      return stream;
+    },
+  });
+  // Flush pi's progress commit on an injected microtask, with no real-time sleep.
+  config.setTimer = (callback: () => void, delay: number) => {
+    let cancelled = false;
+    if (delay === 100)
+      queueMicrotask(() => {
+        if (!cancelled) callback();
+      });
+    return () => {
+      cancelled = true;
+    };
+  };
+  server = await startServer({
+    store,
+    projects,
+    coordinators: [config],
+    chatClock: {
+      now: () => NOW,
+      setTimer(callback) {
+        queueMicrotask(callback);
+        return () => {};
+      },
+    },
+  });
+  client = await connect(server.wsUrl);
+  const live: ServerMessage[] = [];
+  let sawPartial!: () => void;
+  const partial = new Promise<void>((resolve) => {
+    sawPartial = resolve;
+  });
+  client.ws.on("message", (data) => {
+    const frame = serverMessageSchema.parse(JSON.parse(String(data)));
+    live.push(frame);
+    if (frame.type === "chat.delta" && frame.kind === "text") sawPartial();
+  });
+  await client.ask({ type: "project.subscribe", project: "orchard", after: 0 });
+  await client.ask({ type: "chat.send", project: "orchard", requestId: "stop-message", body: "Check the trees" });
+  await partial;
+  const delta = live.find((f) => f.type === "chat.delta" && f.kind === "text");
+  assert.ok(delta?.type === "chat.delta");
+  const stopped = await client.ask({ type: "chat.stop", project: "orchard" });
+  assert.equal(stopped.type, "chat.stopped");
+  assert.equal(providerAborts, 1);
+  const read = await client.ask({ type: "chat.read", project: "orchard" });
+  assert.ok(read.type === "chat.result");
+  const answer = read.items.find((i) => i.kind === "coordinator");
+  assert.ok(answer?.kind === "coordinator");
+  assert.equal(answer.id, delta.id);
+  assert.equal(answer.body, "Checking one tree");
+  assert.equal(answer.reasoning, "Count the rows");
+  assert.equal(answer.aborted, true);
+  client.ws.close();
+  await server.close();
+  store.close();
+  store = new EventStore(file);
+  server = await startServer({ store, projects, coordinators: [coordinator([]).config] });
+  client = await connect(server.wsUrl);
+  const restored = await client.ask({ type: "chat.read", project: "orchard" });
+  assert.deepEqual(restored.type === "chat.result" && restored.items, read.items);
 });

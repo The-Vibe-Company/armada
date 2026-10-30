@@ -120,8 +120,9 @@ test("the conversation shows who said what, each tool call as one quiet closed l
   const thread = block(html, /<ol[^>]*data-thread/, /<\/ol>/);
   const items = [...thread.matchAll(/data-item="([a-z]+)"/g)].map((m) => m[1]);
   expect(items).toEqual(["owner", "tool", "tool", "coordinator", "line"]);
-  expect(text(thread)).toContain("You Merge HAR-20 first, then look at #41 . 09:01");
-  expect(text(thread)).toContain("Coordinator Merging #44 now; HAR-15 after its checks. 09:03");
+  // Who said it is for screen readers; the time follows each message (THE-2050: the thread's own test is thread.test.tsx).
+  expect(text(thread)).toContain("You: Merge HAR-20 first, then look at #41 . 09:01");
+  expect(text(thread)).toContain("Coordinator: Merging #44 now; HAR-15 after its checks. 09:03");
   const tools = [...thread.matchAll(/<details([^>]*)>([\s\S]*?)<\/details>/g)];
   expect(tools.map((m) => /\bopen\b/.test(m[1] ?? ""))).toEqual([false, false]);
   expect(tools.map((m) => text((m[2] ?? "").match(/<summary[^>]*>([\s\S]*?)<\/summary>/)?.[1] ?? ""))).toEqual([

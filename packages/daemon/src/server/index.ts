@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import {
   admitRequest,
+  CHAT_LIVE_MINOR,
   eventSchema,
   type ModelKindEntry,
   type Project,
@@ -24,6 +25,7 @@ import { type Keychain, systemKeychain } from "../keychain.ts";
 import type { EventStore } from "../store.ts";
 import type { Workers } from "../workers/service.ts";
 import { dispatchChat } from "./chat.ts";
+import { type ChatClock, ChatLive } from "./chat-live.ts";
 import { dispatchPlugins, isPluginsRequest, type PluginHost } from "./plugins.ts";
 import { dispatchSession } from "./session.ts";
 import { serveStatic } from "./static.ts";
@@ -34,6 +36,8 @@ export type { Workers } from "../workers/service.ts";
 export interface ServerOptions {
   store: EventStore;
   workers?: Workers;
+  /** Clock and scheduling for coalescing committed chat partials. */
+  chatClock?: ChatClock;
   /** Caller-injected model access; omitted until model configuration is available. */
   coordinators?: readonly CoordinatorOptions[];
   projects: readonly Project[];
@@ -65,6 +69,7 @@ interface Subscription {
   minor: number;
   id: string;
   after: number;
+  chat?: () => void;
 }
 const emptyProject = (): ProjectTables => ({
   rules: { revision: 0, value: {} },
@@ -116,6 +121,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   });
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
   const connections = new Map<WebSocket, Map<string, Subscription>>();
+  const chat = new ChatLive(options.chatClock);
 
   function send(ws: WebSocket, message: ServerMessage): void {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -225,7 +231,14 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     connections.set(ws, subscriptions);
     let refused = false;
     ws.on("error", () => ws.terminate());
-    ws.on("close", () => connections.delete(ws));
+    const clearSubscriptions = () => {
+      for (const subscription of subscriptions.values()) subscription.chat?.();
+      subscriptions.clear();
+    };
+    ws.on("close", () => {
+      clearSubscriptions();
+      connections.delete(ws);
+    });
     ws.on("message", (data, binary) => {
       if (closing || refused) return;
       let input: unknown = null;
@@ -241,7 +254,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         send(ws, admitted.error);
         if (admitted.close) {
           refused = true;
-          subscriptions.clear();
+          clearSubscriptions();
           ws.close(1008);
         }
         return;
@@ -297,11 +310,19 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           return;
         }
         if (!known.has(request.project)) return error(ws, request.id, "not-found", "No such project");
-        if (request.type === "chat.read" || request.type === "chat.send" || request.type === "owner.answer") {
+        if (
+          request.type === "chat.read" ||
+          request.type === "chat.send" ||
+          request.type === "chat.stop" ||
+          request.type === "owner.answer"
+        ) {
           // The room's requests (THE-1996, server/chat.ts): each answers once, its failure as one line.
-          void dispatchChat(request, { store, workers, coordinator: coordinators.get(request.project) }).then((reply) =>
-            send(ws, reply),
-          );
+          void dispatchChat(request, {
+            store,
+            workers,
+            live: chat,
+            coordinator: coordinators.get(request.project),
+          }).then((reply) => send(ws, reply));
           return;
         }
         if (request.type === "session.release" || request.type === "session.output") {
@@ -313,7 +334,10 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           const seq = store.sequence;
           if (request.after > seq)
             return error(ws, request.id, "invalid-message", "Replay cursor is ahead of the daemon log");
-          const subscription = { id: randomUUID(), after: request.after, minor: request.version.minor };
+          const previous = subscriptions.get(request.project);
+          const subscription: Subscription = { id: randomUUID(), after: request.after, minor: request.version.minor };
+          if (subscription.minor >= CHAT_LIVE_MINOR) subscription.chat = previous?.chat;
+          else previous?.chat?.();
           const snapshot =
             request.after === 0 ? snapshotFor(snapshotOf(request.project), request.version.minor) : undefined;
           subscriptions.set(request.project, subscription);
@@ -326,6 +350,9 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           });
           // The acknowledgment already holds the folded state of the history that follows.
           batch(ws, request.project, subscription, snapshot ? null : new Map());
+          const coordinator = coordinators.get(request.project);
+          if (coordinator && subscription.minor >= CHAT_LIVE_MINOR && !subscription.chat)
+            subscription.chat = chat.subscribe(request.project, coordinator.conversation, (frame) => send(ws, frame));
           return;
         }
         const seq = store.sequence;
@@ -382,6 +409,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         server.close((error) => (error ? reject(error) : resolve()));
         server.closeAllConnections();
       });
+      await chat.close();
       const results = await Promise.allSettled([transport, credentialQueue, pluginQueue, coordinatorManager?.close()]);
       const failed = results.find((result) => result.status === "rejected");
       if (failed?.status === "rejected") throw failed.reason;
