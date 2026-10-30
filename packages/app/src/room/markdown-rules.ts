@@ -92,7 +92,7 @@ export function remarkFenceMeta() {
   return (tree: MdNode) => visit(tree);
 }
 
-export const ALERTS = ["note", "tip", "important", "warning", "caution"] as const;
+const ALERTS = ["note", "tip", "important", "warning", "caution"] as const;
 export type Alert = (typeof ALERTS)[number];
 const ALERT_MARKER = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:\r?\n|$)/i;
 
@@ -156,8 +156,8 @@ export function fenceLanguage(className: unknown): string | null {
 }
 
 /** The owner's messages fold past this many characters or lines (T3 Code's rule). */
-export const FOLD_CHARS = 600;
-export const FOLD_LINES = 8;
+const FOLD_CHARS = 600;
+const FOLD_LINES = 8;
 export const folds = (text: string) => text.length > FOLD_CHARS || text.split("\n").length > FOLD_LINES;
 
 /** A link that leaves the app: anything but the app's own hash addresses. */

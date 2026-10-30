@@ -44,14 +44,9 @@ test("a tool call's sentence comes from its name and input", () => {
   expect(
     ["fleet.status", "inbox.list", "ticket.read", "worker.launch", "worker.relaunch", "worker.message"].map(workIcon),
   ).toEqual(["eye", "eye", "file", "rocket", "rocket", "message"]);
-  expect(["worker.stop", "merge.run", "owner.ask", "rules.set", "hold.add", "inbox.answer"].map(workIcon)).toEqual([
-    "square",
-    "merge",
-    "help",
-    "sliders",
-    "wrench",
-    "wrench",
-  ]);
+  expect(
+    ["worker.stop", "merge.check", "merge.run", "owner.ask", "rules.set", "hold.add", "inbox.answer"].map(workIcon),
+  ).toEqual(["square", "merge", "merge", "help", "sliders", "wrench", "wrench"]);
 });
 
 test("a group's sentence names at most two kinds, changes first, in the order they came, and counts the rest", () => {

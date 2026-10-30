@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { bootDaemon } from "../src/boot.ts";
+import { nodeExecutable } from "./support/node.ts";
 
 async function fixture(run: (dir: string) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), "armada-plugins-"));
@@ -383,13 +384,13 @@ test("the build catalog discovers all packages, prefers standalone manifests and
     }
   }));
 
-test("armadad loads the bundled catalog before announcing server readiness", async () =>
+test("armadad loads the bundled catalog before announcing server readiness", { timeout: 10000 }, async () =>
   fixture(async (dir) => {
     const configPath = join(dir, "config.json");
     const projects = join(dir, "projects.json");
     await writeFile(projects, JSON.stringify([{ id: "orchard", name: "Orchard", repository: "example/orchard" }]));
     const child = spawn(
-      "node",
+      nodeExecutable,
       [
         "--import",
         `data:text/javascript,${encodeURIComponent('globalThis.fetch = async () => { throw new Error("offline fixture"); };')}`,
@@ -432,4 +433,5 @@ test("armadad loads the bundled catalog before announcing server readiness", asy
       child.kill("SIGTERM");
       await exited;
     }
-  }));
+  }),
+);
