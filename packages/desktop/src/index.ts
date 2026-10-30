@@ -76,7 +76,11 @@ void app.whenReady().then(async () => {
       title: "Armada",
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
     });
-    window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    // No window of its own: a link a message opens apart (the room's markdown, THE-2050) goes to the system browser.
+    window.webContents.setWindowOpenHandler(({ url }) => {
+      if (/^https?:\/\//i.test(url)) void shell.openExternal(url).catch(() => {});
+      return { action: "deny" };
+    });
     window.webContents.on("will-navigate", (event, url) => {
       const target = new URL(url);
       if (target.origin !== address.url) event.preventDefault();

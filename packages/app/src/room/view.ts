@@ -112,3 +112,14 @@ export function pretty(value: unknown): string {
   }
   return JSON.stringify(value, null, 2) ?? "";
 }
+
+/** A message's full date for its time's tooltip, in the viewer's zone: "Tuesday, 10 March 2026 at 09:01". */
+export function fullTime(at: string, zone: string): string {
+  const time = Date.parse(at);
+  if (Number.isNaN(time)) return "";
+  try {
+    return new Intl.DateTimeFormat("en-GB", { dateStyle: "full", timeStyle: "short", timeZone: zone }).format(time);
+  } catch {
+    return new Date(time).toISOString();
+  }
+}

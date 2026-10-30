@@ -189,6 +189,7 @@ export function RoomView({ project, snapshot, live, now, zone, chat }: RoomProps
           )}
           <Thread
             items={chat.items}
+            repository={project.repository}
             groupOf={groupOf}
             now={now}
             zone={zone}
@@ -200,7 +201,10 @@ export function RoomView({ project, snapshot, live, now, zone, chat }: RoomProps
             }
           />
           {chat.problem && chat.items.length > 0 && (
-            <p role="alert" className="m-0 flex-none px-7 pb-2 text-body text-amber">
+            <p
+              role="alert"
+              className="m-0 mx-auto box-content max-w-(--chat-content-max-width) flex-none px-3 pb-2 text-body text-amber sm:px-12"
+            >
               {chat.problem}
             </p>
           )}
