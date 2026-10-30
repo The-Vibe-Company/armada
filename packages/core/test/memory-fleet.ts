@@ -28,6 +28,7 @@ import type {
   PendingDelivery,
   PendingLaunch,
   ProjectRecord,
+  ReleaseGuard,
   Reservation,
   RuntimeHandle,
   SessionRecord,
@@ -89,6 +90,18 @@ export function memoryFleet(): FleetStore & {
   const events: EventRow[] = [];
   const handles = new Map<string, HandleRow>();
   const paths = new Map<string, string[]>();
+  const reportGuardMatches = (project: string, ticket: string, guard?: ReleaseGuard) => {
+    if (!guard) return true;
+    const held = handles.get(key(project, ticket));
+    if (guard.absent) return !held;
+    return (
+      !!held &&
+      !held.releasedAt &&
+      (!guard.handle || held.handle === guard.handle) &&
+      (!guard.claimedAt || held.claimedAt === new Date(guard.claimedAt).toISOString()) &&
+      (!guard.workerSessionId || held.workerSessionId === guard.workerSessionId)
+    );
+  };
   const notices = new Map<string, { delivered: boolean; tickets: Set<string> }>();
   const profiles = new Map<string, WorkerProfile>();
   const items: ItemRow[] = [];
@@ -938,7 +951,8 @@ export function memoryFleet(): FleetStore & {
       return [...projects.values()].sort((a, b) => a.slug.localeCompare(b.slug));
     },
 
-    async saveTicketPaths(project, ticket, declared) {
+    async saveTicketPaths(project, ticket, declared, _at, guard) {
+      if (!reportGuardMatches(project, ticket, guard)) return;
       paths.set(key(project, ticket), [...declared]);
     },
     async ticketPaths(project) {
@@ -960,9 +974,9 @@ export function memoryFleet(): FleetStore & {
         return;
       paths.delete(key(project, ticket));
     },
-    async recordEvent(e) {
+    async recordEvent(e, guard) {
       events.push({ ...e, id: events.length + 1, at: e.at.toISOString() });
-      if (e.kind === "report") {
+      if (e.kind === "report" && reportGuardMatches(e.project, e.ticket, guard)) {
         const session = sessions.find(
           (session) => session.project === e.project && session.ticket === e.ticket && !session.releasedAt,
         );
@@ -1565,11 +1579,13 @@ export function memoryFleet(): FleetStore & {
           }
     },
     async putPlan(i) {
+      if (!reportGuardMatches(i.project, i.ticket, i.guard)) return;
       const was = open(i.project, i.ticket, "plan");
       if (was) Object.assign(was, { body: i.body, author: i.author, createdAt: i.at.toISOString() });
       else await this.addInboxItem({ ...i, kind: "plan", recipient: "coordinator" });
     },
     async putHandBack(i) {
+      if (!reportGuardMatches(i.project, i.ticket, i.guard)) return;
       const was = open(i.project, i.ticket, "hand-back");
       if (was) Object.assign(was, { body: i.body, author: i.author, createdAt: i.at.toISOString() });
       else await this.addInboxItem({ ...i, kind: "hand-back", recipient: "coordinator" });
@@ -1696,6 +1712,7 @@ export function memoryFleet(): FleetStore & {
       );
     },
     async resolvePlans(q) {
+      if (!reportGuardMatches(q.project, q.ticket, q.guard)) return 0;
       const plans = items.filter(
         (i) => i.project === q.project && i.ticket === q.ticket && i.kind === "plan" && !i.resolvedAt,
       );

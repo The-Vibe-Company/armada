@@ -187,6 +187,10 @@ function writeRequests(options: SeamCheckOptions, start: number, seam: string): 
 async function workerChecks(options: SeamCheckOptions, seam: "runtime" | "node", kind: string): Promise<void> {
   const name = `${seam}.${kind}`;
   let provider = options.registry.get(seam, kind);
+  if (seam === "runtime" && provider && "needsLaunchToken" in provider && provider.needsLaunchToken) {
+    await hostedWorkerChecks(options, provider, name);
+    return;
+  }
   let hostNode: Providers["node"] | undefined;
   if (seam === "runtime" && provider && "withNode" in provider && provider.withNode) {
     const { fixtureNode } = await import(pathToFileURL(join(options.fixtureRoot, "node", "host.mjs")).href);
@@ -396,4 +400,86 @@ async function poll(
     await delay(25, undefined, { signal });
   }
   throw new Error(`worker observation did not reach the expected state (last state: ${state})`);
+}
+
+/** Hosted runtimes own remote workspaces; the plugin's test fixture config supplies an isolated binary. */
+async function hostedWorkerChecks(options: SeamCheckOptions, provider: Providers["runtime"], name: string) {
+  const worker = { project, ticket, session: randomUUID(), generation: 1 };
+  let ref: WorkerRef | undefined;
+  await options.check(`${name}.hosted-lifecycle`, async () => {
+    const workspace = await provider.prepare({
+      project,
+      ticket,
+      repository: "example/conformance",
+      branch: "worker/check-1",
+    });
+    assert(workspace.id && workspace.node, "prepare returned an incomplete remote workspace");
+    ref = await guarded(
+      worker,
+      () => {},
+      () =>
+        provider.launch({
+          workspace,
+          worker,
+          command: "",
+          args: [],
+          env: {},
+          brief: `armada login --launch-token armada_launch_${randomUUID()} --api-url https://example.invalid`,
+        }),
+    );
+    assert.equal(ref.session, worker.session);
+    assert.equal(ref.generation, worker.generation);
+    assert.equal((await provider.observe(ref)).state, "running");
+    const current = ref;
+    const key = randomUUID();
+    await guarded(
+      current,
+      () => {},
+      () => provider.deliver(current, "Continue fixture", key),
+    );
+    await guarded(
+      current,
+      () => {},
+      () => provider.deliver(current, "Continue fixture", key),
+    );
+    await assert.rejects(
+      guarded(
+        current,
+        () => {
+          throw new Error("Generation replaced");
+        },
+        () => provider.stop(current),
+      ),
+      /Generation replaced/,
+    );
+    await guarded(
+      current,
+      () => {},
+      () => provider.stop(current),
+    );
+    const stopped = await provider.observe(current);
+    assert(
+      stopped.state === "stopped" || (stopped.state === "running" && stopped.activity === "idle"),
+      "cancel did not stop the remote turn",
+    );
+    if (provider.archive) {
+      await guarded(
+        current,
+        () => {},
+        () => provider.archive!(current),
+      );
+      assert.equal((await provider.observe(current)).state, "stopped");
+    }
+    ref = undefined;
+  });
+  if (ref) {
+    const current = ref;
+    await options.check(`${name}.cleanup`, () =>
+      guarded(
+        current,
+        () => {},
+        () => provider.stop(current),
+      ),
+    );
+  }
 }

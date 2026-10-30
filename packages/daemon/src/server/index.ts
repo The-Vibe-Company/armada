@@ -5,6 +5,7 @@ import {
   ACCOUNT_MINOR,
   admitRequest,
   CHAT_LIVE_MINOR,
+  CONDUCTOR_MINOR,
   eventSchema,
   MODELS_MINOR,
   type ModelKindEntry,
@@ -238,13 +239,17 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
 
   /** Older same-major clients use a strict policy reader; preserve their existing Rules view. */
   function snapshotFor(snapshot: Snapshot, minor: number): Snapshot {
-    if (minor >= RULES_SCHEMA_MINOR) return snapshot;
+    if (minor >= CONDUCTOR_MINOR) return snapshot;
     const state = snapshot.state as unknown as ProjectTables;
     const rules = state.rules;
     if (!rules) return snapshot;
     const value = { ...rules.value };
-    delete value.gates;
-    if (value.policy) {
+    if (minor < CONDUCTOR_MINOR) {
+      value.routing = value.routing?.filter((route) => route.cli !== "conductor");
+      if (value.defaultRoute?.cli === "conductor") value.defaultRoute = null;
+    }
+    if (minor < RULES_SCHEMA_MINOR) delete value.gates;
+    if (minor < RULES_SCHEMA_MINOR && value.policy) {
       const policy = { ...value.policy };
       delete policy.plans;
       delete policy.approvalLabel;

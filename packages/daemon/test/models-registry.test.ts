@@ -7,10 +7,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { type ServerMessage, serverMessageSchema, PROTOCOL_VERSION as version } from "@armada/protocol";
 import type { AuthEvent, Credential, Provider } from "@earendil-works/pi-ai";
-import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
+import { Type } from "typebox";
 import { WebSocket } from "ws";
 import { Keychain } from "../src/keychain.ts";
-import { ModelRegistry } from "../src/models/registry.ts";
+import { ModelRegistry, wireContext } from "../src/models/registry.ts";
 import { fileKeychain } from "../src/secrets/file.ts";
 import { startServer } from "../src/server/index.ts";
 import { modelEnvironment } from "../src/server/models.ts";
@@ -291,4 +293,79 @@ test("pi login, refresh and logout persist in the keychain; selection requires c
   await registry.models.logout("orchard");
   assert.equal(await chain.read("pi", "orchard"), null);
   assert.equal((await registry.catalog()).providers[0]?.status, "unconfigured");
+});
+
+test("dotted tool names travel aliased on the wire and come back dotted to the harness (THE-2090)", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "armada-pi-tools-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const faux = fauxProvider({ provider: "orchard", models: [{ id: "small" }] });
+  const seen: { calls: string[]; results: string[] }[] = [];
+  faux.setResponses([
+    (context) => {
+      seen.push({
+        calls: context.messages.flatMap((m) =>
+          m.role === "assistant" ? m.content.flatMap((p) => (p.type === "toolCall" ? [p.name] : [])) : [],
+        ),
+        results: context.messages.flatMap((m) => (m.role === "toolResult" ? [m.toolName] : [])),
+      });
+      return fauxAssistantMessage(fauxToolCall("fleet__status", {}, { id: "call-1" }), { stopReason: "toolUse" });
+    },
+  ]);
+  const registry = new ModelRegistry({
+    keychain: new Keychain(fileKeychain(join(dir, "credentials"))),
+    providers: [faux.provider],
+    env: {},
+  });
+  const model = registry.models.getModel("orchard", "small");
+  assert.ok(model);
+  const tools = [{ name: "fleet.status", description: "Read the fleet", parameters: Type.Object({}) }];
+  assert.deepEqual(
+    wireContext({ messages: [], tools }).tools?.map((tool) => tool.name),
+    ["fleet__status"],
+  );
+  // The harness hands a normalized transcript: the tools live in its first system message.
+  const transcript = wireContext(normalizeContext({ systemPrompt: "Coordinate.", messages: [], tools }));
+  const first = transcript.messages[0];
+  assert.ok(first && first.role === "system");
+  assert.deepEqual(
+    first.toolsAdded?.map((tool) => tool.name),
+    ["fleet__status"],
+  );
+  const reply = await registry.models.complete(model, {
+    tools,
+    messages: [
+      { role: "user", content: "status?", timestamp: 1 },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-0", name: "fleet.status", arguments: {} }],
+        api: "faux",
+        provider: "orchard",
+        model: "small",
+        timestamp: 2,
+        stopReason: "toolUse",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call-0",
+        toolName: "fleet.status",
+        content: [{ type: "text", text: "{}" }],
+        isError: false,
+        timestamp: 3,
+      },
+    ],
+  });
+  assert.deepEqual(seen, [{ calls: ["fleet__status"], results: ["fleet__status"] }]);
+  assert.equal(reply.stopReason, "toolUse");
+  assert.deepEqual(
+    reply.content.flatMap((p) => (p.type === "toolCall" ? [p.name] : [])),
+    ["fleet.status"],
+  );
 });

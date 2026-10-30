@@ -211,6 +211,7 @@ async function answer(
     await options.workers.answer(
       {
         key: `owner-answer:${item}`,
+        item,
         session: { ticket: session.ticket, session: session.session },
         answer: text,
         beforeWrite: unchanged,
