@@ -500,7 +500,8 @@ test("runtime project management validates its distinct correlation/project ids 
     admitRequest({ type: "projects.remove", version: v, id: "request-remove", project: "new-project" }).ok,
     true,
   );
-  assert.equal(admitRequest({ ...add, repository: "malformed" }).ok, false);
+  for (const repository of ["malformed", "./project", "example/.."])
+    assert.equal(admitRequest({ ...add, repository }).ok, false);
   assert.equal(admitRequest({ ...add, projectId: "" }).ok, false);
   assert.equal(admitRequest({ ...add, version: { major: 1, minor: 11 } }).ok, false);
   assert.equal(admitRequest(add, { major: 1, minor: 11 }).ok, false);

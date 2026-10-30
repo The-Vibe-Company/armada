@@ -10,6 +10,7 @@ import { daemonProjectSchema } from "./server/readers.ts";
 
 export type DaemonProject = z.infer<typeof daemonProjectSchema>;
 export class ProjectRefusal extends Error {}
+export class ProjectRecoveryError extends ProjectRefusal {}
 const execute = promisify(execFile);
 const git = async (path: string, ...args: string[]) =>
   (
@@ -39,6 +40,7 @@ async function tomlAt(path: string, problems: string[]): Promise<ProjectInspecti
     return {
       programRoot: config.tracker.programRoot,
       phaseGroup: config.tracker.labels.phaseGroup,
+      runtimeGroup: config.tracker.labels.runtimeGroup,
       readyLabel: config.tracker.readyLabel,
       repository: config.github.repository,
     };
@@ -110,6 +112,7 @@ export class Projects {
   #list: DaemonProject[];
   #queue: Promise<unknown> = Promise.resolve();
   #closing = false;
+  #recovery: ProjectRecoveryError | undefined;
   readonly #listeners = new Set<() => void>();
   private constructor(path: string, list: DaemonProject[], lifecycle: ProjectLifecycle) {
     this.#path = path;
@@ -157,9 +160,20 @@ export class Projects {
   }
   #serial<T>(action: () => Promise<T>): Promise<T> {
     if (this.#closing) return Promise.reject(new ProjectRefusal("Project registry is stopping"));
-    const next = this.#queue.catch(() => {}).then(action);
+    const next = this.#queue
+      .catch(() => {})
+      .then(() => {
+        if (this.#recovery) throw this.#recovery;
+        return action();
+      });
     this.#queue = next;
     return next;
+  }
+  #unavailable(): ProjectRecoveryError {
+    this.#recovery ??= new ProjectRecoveryError(
+      "The projects file is unchanged, but project services could not be restored. Project changes are paused; restart the daemon to recover.",
+    );
+    return this.#recovery;
   }
   async #save(list: DaemonProject[]) {
     await fs.mkdir(dirname(this.#path), { recursive: true });
@@ -168,7 +182,7 @@ export class Projects {
       await fs.writeFile(temp, `${JSON.stringify(list, null, 2)}\n`, { mode: 0o600 });
       await fs.rename(temp, this.#path);
     } finally {
-      await fs.rm(temp, { force: true });
+      await fs.rm(temp, { force: true }).catch(() => {});
     }
   }
   add(input: AddProjectInput): Promise<readonly DaemonProject[]> {
@@ -187,19 +201,27 @@ export class Projects {
       }
       if (this.#list.some((p) => p.root === root)) throw new ProjectRefusal("Project root is already registered");
       const toml = await tomlAt(root, []);
+      const programRoot = data.programRoot ?? toml?.programRoot;
       const project = daemonProjectSchema.parse({
-        ...data,
+        id: data.id,
+        name: data.name,
+        repository: data.repository,
         root,
         checkout: root,
-        programRoot: data.programRoot ?? toml?.programRoot,
-        phaseGroup: data.phaseGroup ?? toml?.phaseGroup,
-        readyLabel: toml?.readyLabel,
+        ...(programRoot === undefined ? {} : { programRoot }),
+        phaseGroup: data.phaseGroup ?? toml?.phaseGroup ?? "Agent phase",
+        ...(toml?.readyLabel === undefined ? {} : { readyLabel: toml.readyLabel }),
+        ...(toml?.runtimeGroup === undefined ? {} : { runtimeGroup: toml.runtimeGroup }),
       });
       try {
         await this.#lifecycle.start(project);
         await this.#save([...this.#list, project]);
       } catch (error) {
-        await this.#lifecycle.stop(project);
+        try {
+          await this.#lifecycle.stop(project);
+        } catch {
+          throw this.#unavailable();
+        }
         throw error;
       }
       this.#list = [...this.#list, project];
@@ -212,12 +234,18 @@ export class Projects {
       const project = this.#list.find((p) => p.id === id);
       if (!project) throw new ProjectRefusal("No such project");
       const action = async () => {
-        await this.#lifecycle.stop(project);
         const next = this.#list.filter((p) => p.id !== id);
         try {
+          await this.#lifecycle.stop(project);
           await this.#save(next);
         } catch (error) {
-          await this.#lifecycle.start(project);
+          try {
+            await this.#lifecycle.start(project);
+          } catch {
+            // A failed restart may have partially opened readers or a coordinator.
+            await this.#lifecycle.stop(project).catch(() => {});
+            throw this.#unavailable();
+          }
           throw error;
         }
         this.#list = next;

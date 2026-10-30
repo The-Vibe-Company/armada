@@ -12,7 +12,9 @@ function addProjectInput() {
     path: text,
     id: identifier.regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
     name: text,
-    repository: text.regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+    repository: text
+      .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)
+      .refine((value) => value.split("/").every((part) => part !== "." && part !== "..")),
     programRoot: identifier.optional(),
     phaseGroup: identifier.optional(),
   });
@@ -37,6 +39,7 @@ export const projectInspectionSchema = z.object({
     .object({
       programRoot: text.optional(),
       phaseGroup: text.optional(),
+      runtimeGroup: text.optional(),
       readyLabel: text.optional(),
       repository: text.optional(),
     })

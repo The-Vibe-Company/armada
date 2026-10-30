@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, execFile as execFileCallback, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -232,6 +232,27 @@ async function git(
 // Linked checkouts share Git's info/exclude. Serialize its append across local
 // providers so parallel project launches cannot duplicate or overwrite rules.
 const excludeWrites = new Map<string, Promise<void>>();
+
+async function projectWorktreeRoot(projectRoot: string, path: string, signal?: AbortSignal): Promise<void> {
+  for (const directory of [join(projectRoot, ".armada"), join(projectRoot, ".armada", "worktrees")]) {
+    signal?.throwIfAborted();
+    // Create one level at a time: recursive mkdir follows pre-existing symlinks.
+    try {
+      await mkdir(directory);
+    } catch (error) {
+      if (!isErrno(error, "EEXIST")) throw error;
+    }
+    const entry = await lstat(directory);
+    if (entry.isSymbolicLink()) throw invalidInput("project worktree parents must not be symbolic links");
+    if (!entry.isDirectory()) throw invalidInput("project worktree parents must be directories");
+  }
+  try {
+    if ((await lstat(path)).isSymbolicLink()) throw invalidInput("project worktree must not be a symbolic link");
+  } catch (error) {
+    if (!isErrno(error, "ENOENT")) throw error;
+  }
+}
+
 async function excludeWorktrees(source: string, workspaceRoot: string, signal?: AbortSignal): Promise<void> {
   const exclude = resolve(
     source,
@@ -306,10 +327,6 @@ export class LocalNode implements NodeProvider {
       signal: request.signal,
     });
 
-    if (projectRoot) await excludeWorktrees(source, workspaceRoot, request.signal);
-    await mkdir(workspaceRoot, { recursive: true });
-
-    const base = (await git(["rev-parse", "HEAD"], { cwd: source, signal: request.signal })).stdout.trim();
     const id = randomUUID();
     const path = join(
       workspaceRoot,
@@ -317,6 +334,12 @@ export class LocalNode implements NodeProvider {
         ? safePart(request.ticket, "ticket")
         : `${safePart(request.project, "project")}-${safePart(request.ticket, "ticket")}-${id}`,
     );
+    if (projectRoot) {
+      await projectWorktreeRoot(projectRoot, path, request.signal);
+      await excludeWorktrees(source, workspaceRoot, request.signal);
+    } else await mkdir(workspaceRoot, { recursive: true });
+
+    const base = (await git(["rev-parse", "HEAD"], { cwd: source, signal: request.signal })).stdout.trim();
     let worktreeAdded = false;
     try {
       let exists = false;

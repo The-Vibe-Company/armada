@@ -1,4 +1,4 @@
-import { type ProjectRequest, type ServerMessage, PROTOCOL_VERSION as version } from "@armada/protocol";
+import { type ProjectRequest, projectSchema, type ServerMessage, PROTOCOL_VERSION as version } from "@armada/protocol";
 import { inspectProject, ProjectRefusal, type Projects } from "../projects.ts";
 import { WorkerRefusal } from "../workers/service.ts";
 
@@ -13,7 +13,7 @@ export async function dispatchProjects(request: ProjectRequest, registry?: Proje
       request.type === "projects.add"
         ? await registry.add({ ...request, id: request.projectId })
         : await registry.remove(request.project);
-    return { ...base, type: "projects.result", projects: [...projects] };
+    return { ...base, type: "projects.result", projects: projects.map((project) => projectSchema.parse(project)) };
   } catch (error) {
     const refusal = error instanceof ProjectRefusal || error instanceof WorkerRefusal;
     return {

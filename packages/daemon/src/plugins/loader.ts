@@ -58,12 +58,10 @@ function validateConfig(manifest: PluginManifest, config: PluginConfig, defaults
           ? {
               ...(base as Record<string, Json>),
               ...saved,
-              // Host-owned project metadata wins, while all saved provider options survive.
+              // The registry owns the complete project scope, including an empty scope.
+              // Provider options such as endpoint still come from saved settings.
               ...((base as Record<string, Json>).projects && {
-                projects: {
-                  ...(typeof saved.projects === "object" && saved.projects !== null ? saved.projects : {}),
-                  ...((base as Record<string, Json>).projects as Record<string, Json>),
-                },
+                projects: (base as Record<string, Json>).projects,
               }),
             }
           : saved;

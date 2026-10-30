@@ -260,13 +260,14 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   }
   async function closeProject(project: string): Promise<void> {
     closingProjects.add(project);
+    // Closing rejects idle waiters; a pending model switch may be waiting on one.
+    await coordinatorManager.remove(project);
     await opening.get(project)?.catch(() => {});
     for (const subscriptions of connections.values()) {
       const subscription = subscriptions.get(project);
       subscription?.chat?.();
       if (subscription) subscription.chat = undefined;
     }
-    await coordinatorManager.remove(project);
     coordinators.delete(project);
     sources.delete(project);
   }

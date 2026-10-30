@@ -14,6 +14,7 @@ import { WebSocket } from "ws";
 import { bootDaemon } from "../src/boot.ts";
 import { type DaemonProject, inspectProject, Projects } from "../src/projects.ts";
 import { startServer } from "../src/server/index.ts";
+import { dispatchProjects } from "../src/server/projects.ts";
 import { startReaders } from "../src/server/readers.ts";
 import { Workers } from "../src/workers/service.ts";
 
@@ -46,7 +47,7 @@ async function repo(dir: string, name: string, remote: string) {
   );
   return path;
 }
-const toml = `[project]\nname="Example"\nslug="example"\n[tracker]\nprogram_root="EX-1"\nready_label="launchable"\n[tracker.labels]\nphase_group="Work phase"\n[github]\nrepository="example/configured"\n`;
+const toml = `[project]\nname="Example"\nslug="example"\n[tracker]\nprogram_root="EX-1"\nready_label="launchable"\n[tracker.labels]\nphase_group="Work phase"\nruntime_group="Worker runtime"\n[github]\nrepository="example/configured"\n`;
 
 test("inspection reads Git SSH/HTTPS and TOML without changing the folder", async (t) => {
   const dir = await fixture(t);
@@ -67,6 +68,7 @@ test("inspection reads Git SSH/HTTPS and TOML without changing the folder", asyn
     assert.deepEqual(configured.toml, {
       programRoot: "EX-1",
       phaseGroup: "Work phase",
+      runtimeGroup: "Worker runtime",
       readyLabel: "launchable",
       repository: "example/configured",
     });
@@ -154,6 +156,11 @@ test("a failure before atomic rename keeps the old file and rolls back started s
   assert.deepEqual(registry.list, []);
   const reopened = await Projects.open(file, { start: async () => {}, stop: async () => {} });
   assert.deepEqual(reopened.list, []);
+  await registry.add({ path, id: "source", name: "Source", repository: "example/source" });
+  const committed = JSON.parse(await fs.readFile(file, "utf8"));
+  assert.deepEqual(committed, registry.list, "minimal projects survive JSON persistence without undefined fields");
+  const restored = await Projects.open(file, { start: async () => {}, stop: async () => {} });
+  assert.deepEqual(restored.list, registry.list);
 });
 
 // Exercise project mutations over the transport and the real plugin/reader/coordinator services.
@@ -271,7 +278,9 @@ test("live add opens configured readers and coordinator; removal refuses active 
   const messages: ServerMessage[] = [];
   let wake: (() => void) | undefined;
   ws.on("message", (data) => {
-    messages.push(serverMessageSchema.parse(JSON.parse(String(data))));
+    const message: ServerMessage = JSON.parse(String(data));
+    serverMessageSchema.parse(message);
+    messages.push(message);
     wake?.();
   });
   t.after(async () => {
@@ -303,11 +312,24 @@ test("live add opens configured readers and coordinator; removal refuses active 
     programRoot: "EX-1",
   });
   assert.equal(added.type, "projects.result");
+  if (added.type === "projects.result")
+    assert.deepEqual(
+      Object.keys(added.projects[0] ?? {}).sort(),
+      ["id", "name", "repository", "root"],
+      "mutation replies expose the same public fields as projects.list",
+    );
   assert.ok(messages.some((m) => m.type === "projects.result" && m.id === "projects-changed"));
   assert.deepEqual(reads.sort(), ["forge:source", "tracker:source"]);
   assert.equal(timers.size, 2);
   assert.deepEqual(configurations.at(-1)?.tracker?.linear, {
-    projects: { source: { programRoot: "EX-1", phaseGroup: "Work phase", readyLabel: "launchable" } },
+    projects: {
+      source: {
+        programRoot: "EX-1",
+        phaseGroup: "Work phase",
+        runtimeGroup: "Worker runtime",
+        readyLabel: "launchable",
+      },
+    },
   });
   assert.deepEqual(configurations.at(-1)?.forge?.github, { projects: { source: { repository: "example/source" } } });
   assert.deepEqual(configurations.at(-1)?.node?.local, { projects: { source: { root: path } } });
@@ -352,4 +374,137 @@ test("live add opens configured readers and coordinator; removal refuses active 
   const historical = await ask({ type: "session.read", project: "source", sessionId: "worker-1" });
   assert.equal(historical.type, "session.result");
   assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), []);
+});
+
+test("host project scope clears stale saved roots while keeping provider options", async (t) => {
+  const dir = await fixture(t);
+  const configPath = join(dir, "config.json");
+  await fs.writeFile(
+    configPath,
+    JSON.stringify({
+      plugins: [
+        {
+          id: "scoped-tracker",
+          config: {
+            tracker: {
+              linear: {
+                endpoint: "https://linear.example.invalid",
+                projects: { source: { programRoot: "OLD-1", runtimeGroup: "Old runtime" } },
+              },
+            },
+          },
+        },
+      ],
+    }),
+  );
+  const configs: unknown[] = [];
+  const daemon = await bootDaemon({
+    databasePath: join(dir, "store.sqlite"),
+    configPath,
+    projects: [],
+    secrets: { get: async () => null },
+    log: {
+      info() {},
+      error(line) {
+        throw new Error(line);
+      },
+    },
+    catalog: [
+      {
+        id: "scoped-tracker",
+        manifest: {
+          id: "scoped-tracker",
+          version: "1.0.0",
+          pluginApi: "^0.2.0",
+          description: "Synthetic scoped tracker",
+          enabledByDefault: true,
+          contributions: { tracker: { linear: { config: { type: "object" }, secrets: [] } } },
+        },
+        load: async () => ({
+          activate(ctx) {
+            configs.push(ctx.config.tracker?.linear);
+            ctx.register.tracker("linear", { read: async () => {}, write: async () => {} });
+          },
+        }),
+      },
+    ],
+  });
+  t.after(() => daemon.close());
+  await daemon.addProject({
+    id: "source",
+    name: "Source",
+    repository: "example/source",
+    root: dir,
+    phaseGroup: "Agent phase",
+    tracker: "linear",
+    forge: "github",
+  });
+  assert.deepEqual(configs.at(-1), { endpoint: "https://linear.example.invalid", projects: {} });
+  assert.deepEqual(configs[0], configs.at(-1));
+});
+
+test("failed removal recovery preserves the committed registry and blocks queued mutations with an actionable error", async (t) => {
+  const dir = await fixture(t);
+  const first = join(dir, "first");
+  const second = join(dir, "second");
+  await fs.mkdir(first);
+  await fs.mkdir(second);
+  const file = join(dir, "projects.json");
+  const live = new Set<string>();
+  let failRecovery = false;
+  const registry = await Projects.open(file, {
+    async start(p) {
+      live.add(p.id);
+      if (failRecovery) throw new Error("synthetic private provider failure");
+    },
+    async stop(p) {
+      live.delete(p.id);
+    },
+  });
+  const input = { id: "first", name: "First", path: first, repository: "example/first" };
+  await registry.add(input);
+  assert.equal(live.size, 1);
+  const before = await fs.readFile(file, "utf8");
+  let notifications = 0;
+  registry.subscribe(() => {
+    notifications++;
+  });
+  failRecovery = true;
+  const rename = t.mock.method(fs, "rename", async () => {
+    throw new Error("simulated rename refusal");
+  });
+  const removal = registry.remove("first");
+  const queued = registry.add({ id: "second", name: "Second", path: second, repository: "example/second" });
+  await assert.rejects(removal, /restart the daemon/i);
+  await assert.rejects(queued, /restart the daemon/i);
+  rename.mock.restore();
+  assert.equal(await fs.readFile(file, "utf8"), before);
+  assert.equal(registry.list[0]?.id, "first");
+  assert.equal(notifications, 0);
+  assert.equal(live.size, 0);
+  const reply = await dispatchProjects({ type: "projects.remove", version, id: "retry", project: "first" }, registry);
+  assert.equal(reply.type, "error");
+  if (reply.type === "error") {
+    assert.match(reply.message, /restart the daemon/i);
+    assert.doesNotMatch(reply.message, /private provider/);
+  }
+});
+
+test("failed add compensation leaves the file unchanged and latches recovery instead of admitting another mutation", async (t) => {
+  const dir = await fixture(t);
+  const file = join(dir, "projects.json");
+  await fs.writeFile(file, "[]\n");
+  const registry = await Projects.open(file, {
+    async start() {
+      throw new Error("partial provider startup");
+    },
+    async stop() {
+      throw new Error("cleanup refused");
+    },
+  });
+  const input = { id: "new", name: "New", path: dir, repository: "example/new" };
+  await assert.rejects(registry.add(input), /restart the daemon/i);
+  await assert.rejects(registry.add(input), /restart the daemon/i);
+  assert.equal(await fs.readFile(file, "utf8"), "[]\n");
+  assert.deepEqual(registry.list, []);
 });

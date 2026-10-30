@@ -9,6 +9,7 @@ export const daemonProjectSchema = projectSchema.extend({
   coordinatorModel: z.unknown().optional(),
   checkout: projectSchema.shape.name.optional(),
   readyLabel: projectSchema.shape.name.optional(),
+  runtimeGroup: projectSchema.shape.name.optional(),
   programRoot: projectSchema.shape.id.optional(),
   phaseGroup: projectSchema.shape.name.default("Agent phase"),
   tracker: projectSchema.shape.id.default("linear"),

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { ChildProcess, execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -149,6 +149,35 @@ for (const linked of [false, true]) {
         await node.dispose(workspace);
         await assert.rejects(stat(workspace.path), /ENOENT/);
       }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const parent of [".armada", ".armada/worktrees", ".armada/worktrees/CHECK-1"]) {
+  test(`project-root preparation rejects a symlink at ${parent} before changing Git or the target`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "armada-node-symlink-"));
+    try {
+      const source = await repository(root);
+      const outside = join(root, "outside");
+      await mkdir(outside);
+      await mkdir(dirname(join(source, parent)), { recursive: true });
+      await symlink(outside, join(source, parent), "dir");
+      const before = (await execute("git", ["-C", source, "worktree", "list", "--porcelain"])).stdout;
+      const exclude = resolve(
+        source,
+        (await execute("git", ["-C", source, "rev-parse", "--git-path", "info/exclude"])).stdout.trim(),
+      );
+      const rules = await readFile(exclude, "utf8");
+      const node = createLocalNode({ projects: { orchard: { root: source } }, transport: "pipe" });
+      await assert.rejects(
+        node.prepare({ project: "orchard", ticket: "CHECK-1", repository: source, branch: "escaped-worker" }),
+        /symbolic link/,
+      );
+      assert.deepEqual(await readdir(outside), []);
+      assert.equal((await execute("git", ["-C", source, "worktree", "list", "--porcelain"])).stdout, before);
+      assert.equal(await readFile(exclude, "utf8"), rules);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

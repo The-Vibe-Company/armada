@@ -39,6 +39,7 @@ function projectConfig(projects: readonly ProjectSettings[]): PluginConfig {
                       programRoot: p.programRoot,
                       phaseGroup: p.phaseGroup ?? "Agent phase",
                       ...(p.readyLabel ? { readyLabel: p.readyLabel } : {}),
+                      ...(p.runtimeGroup ? { runtimeGroup: p.runtimeGroup } : {}),
                     },
                   ],
                 ]
