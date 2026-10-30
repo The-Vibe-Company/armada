@@ -25,6 +25,10 @@ is `fleet.sqlite` under Electron's `app.getPath("userData")` for Armada
 exist; project onboarding belongs to the app. An empty array opens an empty
 fleet. The shell does not seed synthetic data or poll external services.
 
+The app's icon is `resources/icon.svg`, the mark on its tile, rendered as
+`icon.png` (1024 px, set on the dock and the window at launch) and `icon.icns`
+for a packaged build; `test/icon.test.ts` holds the three together.
+
 `bun run desktop` builds the existing app, bundles the main process and daemon,
 then launches Electron. Run it again after source edits. `bun run build:desktop`
 builds without opening a window. This is a source checkout launcher, not an
@@ -54,8 +58,8 @@ for the daemon to close its sockets and SQLite, then escalates to SIGKILL after
 five seconds if needed. An unexpected daemon exit closes the shell with a
 failure code. A hard OS kill cannot run quit handlers.
 
-The shell starts armadad with `--restartable`. The app's Restart (on the Plugins
-screen) makes the daemon close and exit with code 75 (`RESTART_EXIT_CODE`), and
+The shell starts armadad with `--restartable`. The app's Restart (in Settings >
+Providers) makes the daemon close and exit with code 75 (`RESTART_EXIT_CODE`), and
 the shell starts it again on the same port, so the app's socket reconnects and
 resumes as after any drop. If that port was taken in the meantime, the daemon
 starts on a new one and the window reopens at its address (`restartDaemon`).

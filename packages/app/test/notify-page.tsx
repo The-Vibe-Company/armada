@@ -20,15 +20,6 @@ const frames = new Set<(frame: ChatFrame) => void>();
 const state: DaemonState = { ...initialState, status: "live", projects: PROJECTS, minor: 7 };
 let reading: ChatItem[] = [];
 let reads = 0;
-/** The toasts' clock, turned by the test: `daemon.elapse(ms)`. */
-let now = 0;
-const due = new Map<number, { at: number; run: () => void }>();
-let next = 0;
-const schedule = (run: () => void, ms: number) => {
-  const id = ++next;
-  due.set(id, { at: now + ms, run });
-  return () => void due.delete(id);
-};
 
 const client: DaemonClient = {
   getState: () => state,
@@ -75,21 +66,6 @@ const client: DaemonClient = {
   get reads() {
     return reads;
   },
-  /** The toasts' timers waiting to run. */
-  get pending() {
-    return due.size;
-  },
-  /** The toasts' time moves on by `ms`; what falls due runs, drawn before it returns. */
-  elapse(ms: number) {
-    now += ms;
-    flushSync(() => {
-      for (const [id, timer] of [...due]) {
-        if (timer.at > now) continue;
-        due.delete(id);
-        timer.run();
-      }
-    });
-  },
   /** One live frame, as the daemon sends it to a subscriber of CHAT_LIVE_MINOR. */
   emit(frame: Record<string, unknown>) {
     const full = { version: { major: 1, minor: 7 }, ...frame } as ChatFrame;
@@ -106,7 +82,7 @@ if (root)
       <MotionConfig reducedMotion="user">
         <LazyMotion features={features} strict>
           <NotificationSetting />
-          <Notifications schedule={schedule} />
+          <Notifications />
         </LazyMotion>
       </MotionConfig>
     </DaemonProvider>,
