@@ -5,12 +5,15 @@ import { countsOf, type Fact, hangarFacts, inFlight } from "@/fleet/hangar";
 import { dayIn } from "@/fleet/overview";
 import { skyProject } from "@/fleet/sky";
 import { fleetOf } from "@/fleet/state";
-import { projectHref } from "@/lib/route";
+import { roomHref } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import { useDaemon } from "@/protocol/store";
 import { Sky } from "@/sky/Sky";
 
 const viewerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+/** A squadron opens its room on the agents (THE-2085). */
+const agentsOf = (project: string) => roomHref(project, "agents");
 
 const INK: Record<string, string> = { blocked: "text-red", you: "text-amber", ready: "text-green" };
 
@@ -20,7 +23,8 @@ const INK: Record<string, string> = { blocked: "text-red", you: "text-amber", re
  * top, and the whole view is the sky, every project a squadron flying in
  * depth (its coordinator's V, its agents in their harness colours, an arc in
  * its most urgent state's colour, its name and counts), each one a link into
- * its room. When nothing flies, the sky is empty, with one quiet line.
+ * its room, its panel on the agents (THE-2085: the sky flies here only).
+ * When nothing flies, the sky is empty, with one quiet line.
  * `now` and `zone` decide "merged today"; the viewer's own unless a test gives them.
  */
 export function Hangar({
@@ -86,7 +90,7 @@ export function Hangar({
       />
       <div className="relative flex min-h-0 flex-1">
         {/* Drawn once the fleet is read, so its first paint holds every squadron still in place. */}
-        {read ? <Sky projects={flying ? squadrons : []} size="stage" link={projectHref} /> : <div className="flex-1" />}
+        {read ? <Sky projects={flying ? squadrons : []} size="stage" link={agentsOf} /> : <div className="flex-1" />}
         {quiet && (
           <p className="pointer-events-none absolute inset-x-6 top-1/2 m-0 -translate-y-1/2 text-center text-sub text-text-3">
             {quiet}

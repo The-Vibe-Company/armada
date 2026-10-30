@@ -1,4 +1,5 @@
-// The question waiting for the owner, pinned under the sky (THE-1996): who
+// The question waiting for the owner, the first card of the room's panel's
+// Agents (THE-1996, moved there from above the thread by THE-2085): who
 // asks (the ticket's triangle, id, title, harness), when, the question, its
 // choices as buttons (the recommended one primary) and a labelled note. A
 // choice records the owner's answer; the subscription then takes the card away.
@@ -46,7 +47,7 @@ export function Pinned({
   }
 
   return (
-    <section aria-label="A question waiting for you" className="flex-none border-line border-b px-7 py-3" data-pinned>
+    <section aria-label="A question waiting for you" className="flex-none px-3 pt-3 pb-1" data-pinned>
       <div className="rounded-md bg-card px-3.5 pt-3 pb-3.5 shadow-ring">
         <div className="mb-1.5 flex min-w-0 items-center gap-2 text-body text-text-2">
           <Ship harness={harness} />
@@ -74,14 +75,14 @@ export function Pinned({
           </div>
         )}
         <form
-          className="flex items-center gap-3"
+          className="flex items-center gap-2.5"
           onSubmit={(e) => {
             e.preventDefault();
             // Enter answers a question without choices; with choices, a button does.
             if (!choices.length && note.trim() && !sending) choose(note.trim(), false);
           }}
         >
-          <label htmlFor={`${field}-note`} className="w-11 flex-none text-body text-text-2">
+          <label htmlFor={`${field}-note`} className="flex-none text-body text-text-2">
             Note
           </label>
           <input

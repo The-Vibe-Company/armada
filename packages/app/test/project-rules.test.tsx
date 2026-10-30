@@ -3,12 +3,12 @@ import { fold } from "@armada/daemon/fold";
 import { PROTOCOL_VERSION } from "@armada/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createDaemonClient, type SocketLike } from "../src/protocol/client";
-import { DaemonProvider } from "../src/protocol/store";
-import { Project } from "../src/screens/Project";
+import { ProjectRules } from "../src/rules/ProjectRules";
 
-// Boundary proof: a real daemon fold -> subscription snapshot -> project's visible rules.
+// Boundary proof: a real daemon fold -> subscription snapshot -> project's visible rules (the room's
+// Rules tab, THE-2085, draws them from the same snapshot; test/room-panel.test.tsx opens it).
 // Catches wrong-project reads, missing rule fields and confusing unset values with an uncapped policy.
-test("the project's page reads its rules from its own folded snapshot", () => {
+test("a project's rules read from its own folded snapshot", () => {
   const tables = fold([
     {
       seq: 1,
@@ -50,13 +50,11 @@ test("the project's page reads its rules from its own folded snapshot", () => {
       { id: "field", name: "Field", repository: "example/field" },
     ],
   });
-  const view = (id: string) =>
-    renderToStaticMarkup(
-      <DaemonProvider client={client}>
-        <Project id={id} onReload={() => {}} />
-      </DaemonProvider>,
-    );
-  expect(view("orchard")).toContain("Reading this project’s log");
+  const view = (id: string) => {
+    const snapshot = client.getState().fleets[id];
+    return snapshot ? renderToStaticMarkup(<ProjectRules state={snapshot.state} />) : "";
+  };
+  expect(view("orchard")).toBe("");
   say({
     type: "project.subscribed",
     id: "read",
@@ -66,7 +64,6 @@ test("the project's page reads its rules from its own folded snapshot", () => {
     snapshot: { seq: 1, state: tables.projects.orchard },
   });
   const html = view("orchard");
-  expect(html).toContain(">Orchard</h1>");
   for (const content of [
     "Revision 1",
     "backend",
@@ -98,7 +95,6 @@ test("the project's page reads its rules from its own folded snapshot", () => {
   expect(empty).toContain("No rules set yet");
   expect(empty).toContain("Not set");
   expect(empty).not.toContain("No cap");
-  expect(empty).toContain("No agent in flight and nothing merged today.");
   say({
     type: "events",
     subscriptionId: "sub",
@@ -111,10 +107,5 @@ test("the project's page reads its rules from its own folded snapshot", () => {
   expect(updated).toContain("Revision 2");
   expect(updated).toContain(">4</dd>");
   expect(updated).not.toContain("oak");
-  say({ type: "events", subscriptionId: "sub", project: "orchard", seq: 1, events: [] });
-  const failed = view("orchard");
-  expect(failed).toContain('role="alert"');
-  expect(failed).toContain("The daemon&#x27;s log is behind");
-  expect(failed).toContain(">Reload</button>");
   client.stop();
 });
