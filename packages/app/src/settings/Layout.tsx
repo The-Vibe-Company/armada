@@ -24,6 +24,8 @@ export interface NavSection {
  */
 export function SettingsNav({ sections, current }: { sections: readonly NavSection[]; current: Section }) {
   function move(event: KeyboardEvent<HTMLElement>) {
+    // Alt+Left, ⌘+Left and the like are the browser's (Back): leave them alone.
+    if (event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
     const links = [...event.currentTarget.querySelectorAll<HTMLAnchorElement>("a[data-section]")];
     const at = links.indexOf(document.activeElement as HTMLAnchorElement);
     const next =
@@ -165,7 +167,16 @@ export function SettingsRow({
 }
 
 /** A row's settings, folded below it until opened. */
-export function SettingsFold({ label, children }: { label: ReactNode; children: ReactNode }) {
+export function SettingsFold({
+  label,
+  name,
+  children,
+}: {
+  label: ReactNode;
+  /** The button's accessible name when the label alone repeats from row to row. */
+  name?: string;
+  children: ReactNode;
+}) {
   const [open, setOpen] = useState(false);
   const panel = useId();
   return (
@@ -174,6 +185,7 @@ export function SettingsFold({ label, children }: { label: ReactNode; children: 
         type="button"
         aria-expanded={open}
         aria-controls={panel}
+        aria-label={name}
         onClick={() => setOpen(!open)}
         className="-mx-1 flex h-7 w-fit cursor-pointer items-center gap-1 rounded-sm px-1 text-small text-text-2 outline-none hover:text-text focus-visible:ring-2 focus-visible:ring-blue"
       >

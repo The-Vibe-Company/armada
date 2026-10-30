@@ -119,7 +119,7 @@ export const NOT_FOLDED = "The daemon does not send its folded state live: updat
 export const LOG_BEHIND = "The daemon's log is behind what this app has read: reload the app";
 const NOT_ANSWERED = "The daemon did not answer: the connection dropped. Try again.";
 export const unusableAddress = (url: string) => `This daemon address is not usable: ${url}`;
-export const NO_PLUGINS = "This daemon has no Plugins screen: update it";
+export const NO_PLUGINS = "This daemon lists no providers: update it";
 export const UNCONFIRMED = "The daemon did not confirm this change. Check the list before trying again.";
 
 export const initialState: DaemonState = {

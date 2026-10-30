@@ -56,13 +56,17 @@ const subscribe = (listener: () => void) => {
 const current = () => window.location.hash;
 const server = () => "#/";
 
+/** The address a route is replaced by, if any. */
+const redirectOf = (route: Route) => (route.kind === "settings" ? route.redirect : undefined);
+
 /** The current route, re-rendered when the hash changes; the hangar on the server. */
 export function useRoute(): Route {
   const route = routeOf(useSyncExternalStore(subscribe, current, server));
-  const redirect = route.kind === "settings" ? route.redirect : undefined;
+  const redirect = redirectOf(route);
   useEffect(() => {
-    // Replaced, not pushed: Back never returns to the old address.
-    if (redirect) window.location.replace(redirect);
+    // Replaced, not pushed: Back never returns to the old address. Every caller
+    // of useRoute sees the redirect: the first replaces it, the others find it done.
+    if (redirect && redirectOf(routeOf(window.location.hash))) window.location.replace(redirect);
   }, [redirect]);
   return route;
 }

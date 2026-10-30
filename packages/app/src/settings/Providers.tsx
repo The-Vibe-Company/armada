@@ -210,7 +210,7 @@ function PluginRow({ plugin, live }: { plugin: Plugin; live: boolean }) {
       }
     >
       {configurable && (
-        <SettingsFold label="Settings">
+        <SettingsFold label="Settings" name={`${plugin.id} settings`}>
           <div className="flex flex-col gap-5">
             {plugin.contributions.map((c) => (
               <Contribution key={`${c.seam}.${c.kind}`} plugin={plugin.id} contribution={c} live={live} />
