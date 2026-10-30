@@ -12,6 +12,7 @@ if (root)
     <Thread
       items={given.items}
       repository="example/harbor"
+      prefixes="THE"
       groupOf={(ticket) => given.groups[ticket] ?? null}
       now={Date.parse("2026-03-10T15:00:00.000Z")}
       zone="UTC"

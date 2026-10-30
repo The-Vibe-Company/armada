@@ -10,31 +10,75 @@ interface MdNode {
   type: string;
   value?: string;
   url?: string;
+  alt?: string | null;
   meta?: string | null;
   children?: MdNode[];
   data?: { hProperties?: Record<string, unknown> };
 }
 
-/** Ticket ids (`THE-12`) link to their session page, `#34` to the pull request on the project's repository. */
-export function remarkIds({ repository }: { repository: string }) {
-  const pullUrl = (n: string) => `https://github.com/${repository}/pull/${n}`;
-  const split = (text: string): MdNode[] =>
+/** The few hast fields `rehypeIds` reads and writes. */
+interface HNode {
+  type: string;
+  tagName?: string;
+  value?: string;
+  properties?: Record<string, unknown>;
+  children?: HNode[];
+}
+/** Where an id is never linked: inside a link already, or code. */
+const AS_IS = new Set(["a", "code", "pre"]);
+
+/** A ticket id's team prefix (`THE` of `THE-12`). */
+export const ticketPrefix = (id: string) => id.replace(/-\d+$/, "");
+
+/**
+ * Ticket ids (`THE-12`) link to their session page, `#34` to the pull request
+ * on the project's repository. Run on the sanitized tree, so raw HTML can
+ * neither fake one nor have one linked inside its own link or code; a ticket
+ * links only under one of the project's prefixes (`prefixes`, space-separated),
+ * so `UTF-8` stays a word.
+ */
+export function rehypeIds({ repository, prefixes }: { repository: string; prefixes: string }) {
+  const teams = new Set(prefixes.split(" ").filter(Boolean));
+  const split = (text: string): HNode[] =>
     segments(text).map((s) => {
-      if (s.kind === "text") return { type: "text", value: s.text };
       const ticket = s.kind === "ticket";
+      if (s.kind === "text" || (ticket && !teams.has(ticketPrefix(s.text)))) return { type: "text", value: s.text };
       return {
-        type: "link",
-        url: ticket ? sessionHref(s.text) : pullUrl(s.text.slice(1)),
+        type: "element",
+        tagName: "a",
+        properties: ticket
+          ? { href: sessionHref(s.text), dataTicket: s.text }
+          : { href: `https://github.com/${repository}/pull/${s.text.slice(1)}`, dataPr: s.text },
         children: [{ type: "text", value: s.text }],
-        data: { hProperties: ticket ? { dataTicket: s.text } : { dataPr: s.text } },
       };
     });
-  const visit = (node: MdNode) => {
-    if (!node.children || node.type === "link" || node.type === "linkReference") return;
+  const visit = (node: HNode) => {
+    if (!node.children || (node.tagName && AS_IS.has(node.tagName))) return;
     node.children = node.children.flatMap((child) => (child.type === "text" ? split(child.value ?? "") : [child]));
     for (const child of node.children) visit(child);
   };
-  return (tree: MdNode) => visit(tree);
+  return (tree: HNode) => visit(tree);
+}
+
+/**
+ * Images become links to them: the room never fetches a picture a message
+ * names (a remote image would load on sight, telling its host the room read it).
+ */
+export function remarkImages() {
+  const visit = (node: MdNode, inLink: boolean) => {
+    if (!node.children) return;
+    const linked = inLink || node.type === "link" || node.type === "linkReference";
+    node.children = node.children.map((child) =>
+      child.type === "imageReference" || (child.type === "image" && linked)
+        ? // Inside a link (a badge), the link stays the one way out: the image is its words.
+          { type: "text", value: child.alt ?? "" }
+        : child.type === "image"
+          ? { type: "link", url: child.url, children: [{ type: "text", value: child.alt || child.url || "image" }] }
+          : child,
+    );
+    for (const child of node.children) visit(child, linked);
+  };
+  return (tree: MdNode) => visit(tree, false);
 }
 
 /** A fence's meta (` ```ts title="a.ts" `) kept on its code, for the block's header. */
@@ -78,14 +122,17 @@ export function remarkAlerts() {
   return (tree: MdNode) => visit(tree);
 }
 
+/** Elements that would fetch on sight: never kept, whoever wrote them. */
+const FETCHING = new Set(["img", "picture", "source", "video", "audio"]);
+
 /** GitHub's own sanitizing, keeping only the marks these plugins add (raw HTML cannot add anything else). */
 export const SANITIZE = {
   ...defaultSchema,
+  tagNames: (defaultSchema.tagNames ?? []).filter((tag) => !FETCHING.has(tag)),
   attributes: {
     ...defaultSchema.attributes,
     code: [["className", /^language-./], "dataMeta"],
     blockquote: [...(defaultSchema.attributes?.blockquote ?? []), ["dataAlert", ...ALERTS]],
-    a: [...(defaultSchema.attributes?.a ?? []), "dataTicket", "dataPr"],
   },
 };
 

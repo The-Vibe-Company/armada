@@ -13,7 +13,7 @@ import { TONE } from "@/components/fleet/FleetList";
 import { type Group, rowTime } from "@/fleet/overview";
 import { cn } from "@/lib/utils";
 import { CopyButton } from "./Copy";
-import { Markdown } from "./Markdown";
+import { Markdown, TicketGroups } from "./Markdown";
 import { folds } from "./markdown-rules";
 import { fullTime, lineGroups, pretty, segments, toolLine } from "./view";
 
@@ -22,6 +22,7 @@ const ARRIVE = { duration: 0.15, ease: [0.23, 1, 0.32, 1] } as const;
 export function Thread({
   items,
   repository,
+  prefixes,
   groupOf,
   now,
   zone,
@@ -30,6 +31,8 @@ export function Thread({
   items: readonly ChatItem[];
   /** The project's repository (`owner/name`): `#34` links to its pull request. */
   repository: string;
+  /** The project's ticket prefixes, space-separated (`THE HAR`): the ids that link in a message. */
+  prefixes: string;
   /** A ticket's group now, for the ids and the lines' dots. */
   groupOf: (ticket: string) => Group | null;
   now: number;
@@ -61,37 +64,40 @@ export function Thread({
       }}
       className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pt-3.5 pb-3 sm:px-12"
     >
-      <ol
-        className="m-0 mx-auto mt-auto flex w-full min-w-0 max-w-(--chat-content-max-width) list-none flex-col gap-3 p-0"
-        aria-live={announce ? "polite" : "off"}
-        aria-relevant="additions"
-        data-thread
-      >
-        {items.length === 0 && <li className="py-6 text-center text-body text-text-3">{empty}</li>}
-        <AnimatePresence initial={false}>
-          {items.map((item) => (
-            <m.li
-              key={item.id}
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={ARRIVE}
-              data-item={item.kind}
-              // A message on its way is announced once, when the conversation holds it.
-              aria-hidden={item.id.startsWith("sent:") || undefined}
-              className="group/row min-w-0"
-            >
-              <Item
-                item={item}
-                dot={dots.get(item.id) ?? null}
-                repository={repository}
-                groupOf={groupOf}
-                time={rowTime(item.at, now, zone)}
-                full={fullTime(item.at, zone)}
-              />
-            </m.li>
-          ))}
-        </AnimatePresence>
-      </ol>
+      <TicketGroups value={groupOf}>
+        <ol
+          className="m-0 mx-auto mt-auto flex w-full min-w-0 max-w-(--chat-content-max-width) list-none flex-col gap-3 p-0"
+          aria-live={announce ? "polite" : "off"}
+          aria-relevant="additions"
+          data-thread
+        >
+          {items.length === 0 && <li className="py-6 text-center text-body text-text-3">{empty}</li>}
+          <AnimatePresence initial={false}>
+            {items.map((item) => (
+              <m.li
+                key={item.id}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={ARRIVE}
+                data-item={item.kind}
+                // A message on its way is announced once, when the conversation holds it; its controls wait for it too.
+                inert={item.id.startsWith("sent:") || undefined}
+                className="group/row min-w-0"
+              >
+                <Item
+                  item={item}
+                  dot={dots.get(item.id) ?? null}
+                  repository={repository}
+                  prefixes={prefixes}
+                  groupOf={groupOf}
+                  time={rowTime(item.at, now, zone)}
+                  full={fullTime(item.at, zone)}
+                />
+              </m.li>
+            ))}
+          </AnimatePresence>
+        </ol>
+      </TicketGroups>
     </section>
   );
 }
@@ -100,6 +106,7 @@ function Item({
   item,
   dot,
   repository,
+  prefixes,
   groupOf,
   time,
   full,
@@ -107,6 +114,7 @@ function Item({
   item: ChatItem;
   dot: Group | null;
   repository: string;
+  prefixes: string;
   groupOf: (ticket: string) => Group | null;
   time: string;
   full: string;
@@ -123,7 +131,7 @@ function Item({
           <div className="min-w-0 max-w-[80%] rounded-deck bg-panel-3 p-3 shadow-ring">
             <span className="sr-only">You: </span>
             <Folded text={item.body}>
-              <Markdown text={item.body} repository={repository} groupOf={groupOf} breaks />
+              <Markdown text={item.body} repository={repository} prefixes={prefixes} breaks />
             </Folded>
           </div>
           <Meta>
@@ -139,7 +147,7 @@ function Item({
           <div className="min-w-0 px-1 py-0.5">
             <span className="sr-only">Coordinator: </span>
             {said ? (
-              <Markdown text={item.body} repository={repository} groupOf={groupOf} />
+              <Markdown text={item.body} repository={repository} prefixes={prefixes} />
             ) : (
               <p className="m-0 text-sub text-text-3">(empty response)</p>
             )}

@@ -18,6 +18,7 @@ import {
 import {
   type ComponentProps,
   createContext,
+  memo,
   use,
   useCallback,
   useEffect,
@@ -40,48 +41,52 @@ import {
   fenceLanguage,
   fenceTitle,
   leaves,
+  rehypeIds,
   remarkAlerts,
   remarkFenceMeta,
-  remarkIds,
+  remarkImages,
   SANITIZE,
   tableCsv,
   tableMarkdown,
 } from "./markdown-rules";
 
-const GroupOf = createContext<(ticket: string) => Group | null>(() => null);
+/** A ticket's group now, for the ids' colours: given once by the thread, read by each link. */
+export const TicketGroups = createContext<(ticket: string) => Group | null>(() => null);
 
-export function Markdown({
+/** Parsed again only when its words or the project change: the thread re-renders with every fleet update. */
+export const Markdown = memo(function Markdown({
   text,
   repository,
-  groupOf,
+  prefixes,
   breaks = false,
   className,
 }: {
   text: string;
   /** The project's repository (`owner/name`), for `#34`. */
   repository: string;
-  groupOf: (ticket: string) => Group | null;
+  /** The project's ticket prefixes, space-separated (`THE HAR`): the ids that link. */
+  prefixes: string;
   /** Keep single line breaks (the owner's text, as typed). */
   breaks?: boolean;
   className?: string;
 }) {
   const remark = useMemo<Options["remarkPlugins"]>(
-    () => [remarkGfm, ...(breaks ? [remarkBreaks] : []), remarkAlerts, remarkFenceMeta, [remarkIds, { repository }]],
-    [breaks, repository],
+    () => [remarkGfm, ...(breaks ? [remarkBreaks] : []), remarkAlerts, remarkFenceMeta, remarkImages],
+    [breaks],
+  );
+  // Raw HTML parsed, then everything sanitized, then the ids linked: raw HTML can add nothing but what GitHub keeps.
+  const rehype = useMemo<Options["rehypePlugins"]>(
+    () => [rehypeRaw, [rehypeSanitize, SANITIZE], [rehypeIds, { repository, prefixes }]],
+    [repository, prefixes],
   );
   return (
-    <GroupOf value={groupOf}>
-      <div className={cn("chat-markdown min-w-0 text-sub text-text/90 leading-relaxed", className)}>
-        <ReactMarkdown remarkPlugins={remark} rehypePlugins={REHYPE} components={COMPONENTS}>
-          {text}
-        </ReactMarkdown>
-      </div>
-    </GroupOf>
+    <div className={cn("chat-markdown min-w-0 text-sub text-text/90 leading-relaxed", className)}>
+      <ReactMarkdown remarkPlugins={remark} rehypePlugins={rehype} components={COMPONENTS}>
+        {text}
+      </ReactMarkdown>
+    </div>
   );
-}
-
-/** Raw HTML parsed, then everything sanitized: the plugins' marks are the only additions it keeps. */
-const REHYPE: Options["rehypePlugins"] = [rehypeRaw, [rehypeSanitize, SANITIZE]];
+});
 
 /** Markdown's headings sit under the page's title (its one h1): `#` renders an h3 at 1.25 rem, down to h6. */
 const heading =
@@ -123,7 +128,7 @@ const COMPONENTS: Components = {
 
 /** A link: a ticket id in its state's colour to its session, the rest in the info colour; one that leaves the app opens outside it. */
 function Link({ node: _, href, children, className, ...props }: ComponentProps<"a"> & { node?: unknown }) {
-  const groupOf = use(GroupOf);
+  const groupOf = use(TicketGroups);
   const marks = props as Record<string, unknown>;
   const ticket = typeof marks["data-ticket"] === "string" ? marks["data-ticket"] : null;
   const group = ticket ? groupOf(ticket) : null;
@@ -137,9 +142,14 @@ function Link({ node: _, href, children, className, ...props }: ComponentProps<"
       {...(outside ? { target: "_blank", rel: "noopener noreferrer" } : {})}
       {...(anchor !== null
         ? {
-            onClick: (e: React.MouseEvent) => {
+            onClick: (e: React.MouseEvent<HTMLAnchorElement>) => {
               e.preventDefault();
-              document.getElementById(anchor)?.scrollIntoView({ block: "nearest" });
+              // Each message numbers its own footnotes: look in this one (the sanitizer prefixes ids once more).
+              const message = e.currentTarget.closest(".chat-markdown");
+              const target = [anchor, `user-content-${anchor}`]
+                .map((id) => message?.querySelector(`[id="${CSS.escape(id)}"]`))
+                .find(Boolean);
+              target?.scrollIntoView({ block: "nearest" });
             },
           }
         : {})}
@@ -258,7 +268,7 @@ function Table({ node: _, children, ...props }: ComponentProps<"table"> & { node
 
 /**
  * A copy button that opens a short menu of formats: arrows move between them,
- * Escape or a click elsewhere closes it and gives the focus back. Hand-made:
+ * Escape closes it and gives the focus back, a press elsewhere or Tab closes it. Hand-made:
  * Base UI's menu would pull its positioning into the app's first-load chunk.
  */
 function CopyMenu({
@@ -273,18 +283,25 @@ function CopyMenu({
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
+  const wrap = useRef<HTMLDivElement>(null);
   const id = useId();
   useEffect(() => {
-    if (open) menu.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
+    if (!open) return;
+    menu.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
+    // A press anywhere else closes it (Safari and Firefox never focus a pressed button, so blur cannot say).
+    const away = (e: PointerEvent) => {
+      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", away);
+    return () => document.removeEventListener("pointerdown", away);
   }, [open]);
   const close = (refocus: boolean) => {
     setOpen(false);
     if (refocus) trigger.current?.focus();
   };
-  // Focus gone outside the button and its menu (a click elsewhere, Tab away): the menu closes.
-  const wrap = useRef<HTMLDivElement>(null);
+  // The focus moved on outside the button and its menu (Tab away): the menu closes.
   const leave = (e: React.FocusEvent) => {
-    if (open && !wrap.current?.contains(e.relatedTarget as Node | null)) close(false);
+    if (open && e.relatedTarget && !wrap.current?.contains(e.relatedTarget as Node)) close(false);
   };
   const move = (step: number) => {
     const items = [...(menu.current?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])];
@@ -334,7 +351,7 @@ function CopyMenu({
                 pick();
                 close(true);
               }}
-              className="cursor-pointer rounded-sm px-2.5 py-1.5 text-left outline-none hover:bg-fill-2 hover:text-text focus-visible:bg-fill-2 focus-visible:text-text"
+              className="cursor-pointer rounded-sm px-2.5 py-1.5 text-left outline-offset-0 hover:bg-fill-3 hover:text-text focus:bg-fill-3 focus:text-text"
             >
               {name}
             </button>

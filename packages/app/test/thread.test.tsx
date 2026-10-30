@@ -36,7 +36,9 @@ const answer = [
   "",
   "<details><summary>Why it waits</summary>The quay closes early.</details>",
   "",
-  'Read [the tide service](https://tides.example.com/today) <script>alert(1)</script> <a href="https://x.example/" onclick="alert(1)">here</a>.',
+  'Read [the tide service](https://tides.example.com/today) <script>alert(1)</script> <a href="https://x.example/" onclick="alert(1)" data-ticket="THE-12">here</a>.',
+  "",
+  'UTF-8 and HAR-9 are not this project\'s tickets. ![the chart](https://img.example/c.png?d=1) <img src="https://img.example/p.png"> [![CI](https://img.example/b.svg)](https://ci.example/run)',
   "",
   "Inline `THE-99` stays code.",
 ].join("\n");
@@ -46,6 +48,9 @@ const conversation: ChatItem[] = [
   { kind: "coordinator", id: "c1", at: at(2), body: answer },
   { kind: "coordinator", id: "c2", at: at(3), body: "" },
   { kind: "owner", id: "o2", at: at(4), body: "Merge THE-12\nthen look at #34" },
+  // Each answer numbers its own footnotes from 1.
+  { kind: "coordinator", id: "c3", at: at(5), body: "North quay[^1].\n\n[^1]: Footnote of the north." },
+  { kind: "coordinator", id: "c4", at: at(6), body: "South quay[^1].\n\n[^1]: Footnote of the south." },
 ];
 
 const render = () =>
@@ -53,6 +58,7 @@ const render = () =>
     <Thread
       items={conversation}
       repository="example/harbor"
+      prefixes="THE"
       groupOf={(ticket) => groups[ticket] ?? null}
       now={Date.parse("2026-03-10T15:00:00.000Z")}
       zone="UTC"
@@ -116,7 +122,27 @@ describe("the thread's markup", () => {
     );
     expect(html).not.toContain("<script");
     expect(html).not.toContain("onclick");
+    // Raw HTML cannot pass for a ticket's link.
+    expect(html).toMatch(
+      /<a href="https:\/\/x\.example\/" target="_blank" rel="noopener noreferrer" class="[^"]*text-blue[^"]*">here<\/a>/,
+    );
     expect(html).toMatch(/<details[^>]*><summary[^>]*><svg[^>]*>[\s\S]*?<span>Why it waits<\/span><\/summary>/);
+  });
+
+  test("images are never fetched: a markdown image becomes a link to it, a raw one is dropped", () => {
+    const html = item(render(), 1);
+    expect(html).not.toMatch(/<img\b/);
+    expect(html).toMatch(/<a href="https:\/\/img\.example\/c\.png\?d=1" target="_blank"[^>]*>the chart<\/a>/);
+    expect(html).not.toContain("p.png");
+    // A linked image (a badge) is its link, worded by its alt text.
+    expect(html).toMatch(/<a href="https:\/\/ci\.example\/run" target="_blank"[^>]*>CI<\/a>/);
+    expect(html).not.toContain("b.svg");
+  });
+
+  test("only the project's own ticket ids link: UTF-8 and another team's id stay words", () => {
+    const words = text(item(render(), 1));
+    expect(words).toContain("UTF-8 and HAR-9 are not this project's tickets.");
+    expect(item(render(), 1)).not.toMatch(/<a[^>]*>(UTF-8|HAR-9)<\/a>/);
   });
 
   test("headings sit under the page's title, alerts have their word, an empty answer says so", () => {
@@ -233,5 +259,19 @@ describe("the thread in a browser", () => {
       "Berth,Hours,Price,Notes\nNorth,2,8,Closed at low tide",
     );
     await expect(page.evaluate(() => document.activeElement?.getAttribute("aria-haspopup"))).resolves.toBe("menu");
+  });
+
+  test("a footnote's link scrolls to the note of its own message, never to another's, and leaves the address", async () => {
+    await page.evaluate(() => {
+      const seen: string[] = [];
+      (window as unknown as { scrolled: string[] }).scrolled = seen;
+      Element.prototype.scrollIntoView = function (this: Element) {
+        seen.push(this.textContent ?? "");
+      };
+    });
+    await page.locator('[data-item="coordinator"]').last().locator("sup a").click();
+    const scrolled = await page.evaluate(() => (window as unknown as { scrolled: string[] }).scrolled);
+    expect(scrolled.join(" ")).toContain("Footnote of the south");
+    expect(page.url()).toBe(`${ORIGIN}/`);
   });
 });
