@@ -5,12 +5,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { SAMPLE_PROJECTS, sampleEvents } from "../scripts/dev-daemon";
 import { routeOf } from "../src/lib/route";
 import { type Chat, lastCoordinatorSeq, withSent } from "../src/room/chat";
-import { parseQuestion, segments, toolLine } from "../src/room/view";
+import { parseQuestion, segments } from "../src/room/view";
 import { RoomView } from "../src/screens/Room";
 
 // A project's room (THE-1996) on the daemon's own fold of a synthetic log and a
 // synthetic conversation: the band, the pinned question, the conversation with
-// its tool calls as quiet lines, and the agents' rail. The live part (a message
+// its tool calls folded above the answer, and the agents' rail. The live part (a message
 // sent, the coordinator's answer, a reload) runs in a browser (test/build.test.ts).
 
 const AT = "2026-03-10T09:00:00.000Z";
@@ -115,22 +115,17 @@ test("the sky flies as a 200 px band, the question waits pinned under it with it
   expect(render({}, { asked: false })).not.toContain("data-pinned");
 });
 
-test("the conversation shows who said what, each tool call as one quiet closed line, the coordinator's line on its state's dot", () => {
+test("the conversation shows who said what, the turn's tool calls folded above the answer, the coordinator's line on its state's dot", () => {
   const html = render();
   const thread = block(html, /<ol[^>]*data-thread/, /<\/ol>/);
   const items = [...thread.matchAll(/data-item="([a-z]+)"/g)].map((m) => m[1]);
-  expect(items).toEqual(["owner", "tool", "tool", "coordinator", "line"]);
+  expect(items).toEqual(["owner", "fold", "coordinator", "line"]);
   // Who said it is for screen readers; the time follows each message (THE-2050: the thread's own test is thread.test.tsx).
   expect(text(thread)).toContain("You: Merge HAR-20 first, then look at #41 . 09:01");
   expect(text(thread)).toContain("Coordinator: Merging #44 now; HAR-15 after its checks. 09:03");
-  const tools = [...thread.matchAll(/<details([^>]*)>([\s\S]*?)<\/details>/g)];
-  expect(tools.map((m) => /\bopen\b/.test(m[1] ?? ""))).toEqual([false, false]);
-  expect(tools.map((m) => text((m[2] ?? "").match(/<summary[^>]*>([\s\S]*?)<\/summary>/)?.[1] ?? ""))).toEqual([
-    "› fleet.status · done 09:02",
-    '› hold.add reason: " " · refused: say why merges wait 09:02',
-  ]);
-  // Opened, a call shows its input and its result.
-  expect(text(tools[1]?.[2] ?? "")).toContain('Result { "ok": false, "code": "empty_reason"');
+  // The work is closed until a click opens it (THE-2053: its rows are work-rows.test.tsx's).
+  expect(text(thread)).toContain("Worked for 1m 00s");
+  expect(thread).not.toContain("data-tool");
   // The ids are set apart; the blocked ticket's line wears its state on its dot and its id.
   expect(thread).toMatch(/data-dot="blocked"/);
   expect(thread).toMatch(/<span class="font-mono text-meta text-red">HAR-15<\/span> is blocked/);
@@ -168,7 +163,7 @@ test("the owner's field is labelled and sends; without a coordinator it says why
   expect(alone).toMatch(/<input id="[^"]+" type="text"[^>]*disabled=""/);
 });
 
-test("the room's rules: its address, a question's choices, ids in a message, a tool's quiet line", () => {
+test("the room's rules: its address, a question's choices, ids in a message", () => {
   expect(routeOf("#/projects/harbor")).toEqual({ kind: "project", id: "harbor" });
   expect(routeOf("#/projects/a%20b")).toEqual({ kind: "project", id: "a b" });
   expect(routeOf("#/projects/harbor/rules")).toEqual({ kind: "rules", id: "harbor" });
@@ -191,17 +186,6 @@ test("the room's rules: its address, a question's choices, ids in a message, a t
     "pr:#41",
     "text:.",
   ]);
-  const running = {
-    kind: "tool",
-    id: "t",
-    at: AT,
-    name: "merge.check",
-    input: { pr: 41 },
-    output: null,
-    failed: false,
-  } as const;
-  expect(toolLine(running)).toEqual({ args: "pr: 41", outcome: "running" });
-  expect(toolLine({ ...running, output: "boom", failed: true })).toEqual({ args: "pr: 41", outcome: "failed" });
 });
 
 test("a sent message stays until a reading holds it, and the room reads again past its last coordinator event", () => {

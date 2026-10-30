@@ -198,6 +198,7 @@ export function RoomView({ project, snapshot, live, now, zone, chat }: RoomProps
           )}
           <Thread
             items={chat.items}
+            project={project.id}
             repository={project.repository}
             prefixes={prefixes}
             groupOf={groupOf}
