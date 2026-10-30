@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import { bootDaemon } from "../boot.ts";
+import { fold } from "../fold.ts";
 import { systemKeychain } from "../keychain.ts";
+import { Merges } from "../merge/service.ts";
 import { Workers } from "../workers/service.ts";
 import { startWorkerSocket } from "../workers/socket.ts";
 import { startServer } from "./index.ts";
@@ -67,6 +69,28 @@ try {
         projects: projects.flatMap((project) => (project.checkout ? [{ ...project, checkout: project.checkout }] : [])),
         socketPath: workerSocket,
       });
+      const merges = new Merges({
+        registry: daemon.registry,
+        projects,
+        stop: async (scope, session, key, signal) =>
+          workers.tool(
+            scope.project,
+            "worker.stop",
+            {
+              ticket: session.ticket,
+              reason: "Pull request merged",
+            },
+            key,
+            () => {
+              signal.throwIfAborted();
+              const current = fold(scope.readEvents()).projects[scope.project]?.sessions.find(
+                (s) => s.ticket === session.ticket,
+              );
+              if (current?.session !== session.session || current.generation !== session.generation)
+                throw new Error("Worker generation changed");
+            },
+          ),
+      });
       let socket: Awaited<ReturnType<typeof startWorkerSocket>>;
       try {
         socket = await startWorkerSocket(workers, workerSocket);
@@ -93,7 +117,7 @@ try {
           keychain,
           coordinators: coordinators.map((config) => ({
             ...config,
-            native: { ...config.native, refresh: () => readers?.refresh(config.project) ?? Promise.resolve() },
+            native: { ...config.native, merges, refresh: () => readers?.refresh(config.project) ?? Promise.resolve() },
           })),
           modelKinds: loadedModelKinds(daemon.registry),
           // The keychain is opened on first use, as the plugins' own secret getter does.

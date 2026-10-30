@@ -95,3 +95,138 @@ test("phase writes resolve applicable labels, preserve other labels, and refuse 
   );
   assert.equal(mutations().length, 1, "failed phase change prevents the comment mutation");
 });
+
+test("a tracker write fence stops a phase mutation after its reads", async (t) => {
+  let provider: TrackerProvider | undefined;
+  activate({
+    config: { tracker: { linear: { projects: { orchard: { programRoot: "SEED-1" } } } } },
+    secrets: { get: async () => "synthetic-key" },
+    register: {
+      tracker: (_kind: string, value: TrackerProvider) => {
+        provider = value;
+      },
+    },
+  } as unknown as PluginContext);
+  assert.ok(provider);
+  const requests: { query: string; variables: Record<string, unknown> }[] = [];
+  const labels = (nodes: unknown[]) => ({ nodes, pageInfo: { hasNextPage: false, endCursor: null } });
+  t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+    const request = JSON.parse(String(init.body)) as { query: string; variables: Record<string, unknown> };
+    requests.push(request);
+    if (request.query.includes("query WriteIssue"))
+      return Response.json({
+        data: {
+          issue: {
+            id: "uuid-seed-2",
+            team: { id: "orchard-team" },
+            labels: labels([{ id: "keep", name: "Urgent", parent: null }]),
+          },
+        },
+      });
+    if (request.query.includes("query PhaseLabels"))
+      return Response.json({
+        data: {
+          issueLabels: labels([{ id: "phase", name: "implementing", parent: { name: "Agent phase" }, team: null }]),
+        },
+      });
+    throw new Error("mutation must be fenced");
+  });
+  await assert.rejects(
+    provider.write({
+      project: "orchard",
+      ticket: "SEED-2",
+      phase: "implementing",
+      beforeWrite: () => {
+        throw new Error("scope closed");
+      },
+    }),
+    /Linear write failed/,
+  );
+  assert.equal(requests.filter((request) => request.query.includes("mutation")).length, 0);
+  assert.equal(requests.length, 2);
+});
+
+test("completed writes move the ticket to Done, remove agent labels, and replay a stable comment once", async (t) => {
+  let provider: TrackerProvider | undefined;
+  activate({
+    config: {
+      tracker: {
+        linear: {
+          projects: {
+            orchard: {
+              programRoot: "SEED-1",
+              phaseGroup: "Agent phase",
+              runtimeGroup: "Agent runtime",
+              readyLabel: "ready-for-agent",
+            },
+          },
+        },
+      },
+    },
+    secrets: { get: async () => "synthetic-key" },
+    register: {
+      tracker: (_kind: string, value: TrackerProvider) => {
+        provider = value;
+      },
+    },
+  } as unknown as PluginContext);
+  assert.ok(provider);
+  const commentId = "00000000-0000-4000-8000-000000000001";
+  const requests: { query: string; variables: Record<string, unknown> }[] = [];
+  let replay = false;
+  const labels = (nodes: unknown[]) => ({ nodes, pageInfo: { hasNextPage: false, endCursor: null } });
+  const issue = () => ({
+    id: "uuid-seed-2",
+    state: { type: replay ? "completed" : "started" },
+    team: {
+      id: "orchard-team",
+      states: {
+        nodes: [
+          { id: "started", name: "In Progress", type: "started", position: 1 },
+          { id: "done", name: "Done", type: "completed", position: 2 },
+        ],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      },
+    },
+    labels: labels(
+      replay
+        ? [{ id: "keep", name: "Urgent", parent: null }]
+        : [
+            { id: "phase", name: "ready-to-merge", parent: { name: "Agent phase" } },
+            { id: "runtime", name: "codex", parent: { name: "Agent runtime" } },
+            { id: "ready", name: "ready-for-agent", parent: null },
+            { id: "keep", name: "Urgent", parent: null },
+          ],
+    ),
+    comments: {
+      nodes: replay ? [{ id: commentId, body: "Agent status: merged — PR #17 squash-merged." }] : [],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+  t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+    const request = JSON.parse(String(init.body)) as { query: string; variables: Record<string, unknown> };
+    requests.push(request);
+    if (request.query.includes("query WriteIssue")) return Response.json({ data: { issue: issue() } });
+    if (request.query.includes("mutation CompleteIssue"))
+      return Response.json({ data: { issueUpdate: { success: true } } });
+    if (request.query.includes("mutation PostComment"))
+      return Response.json({ data: { commentCreate: { success: true, comment: { id: commentId } } } });
+    throw new Error("unexpected Linear request");
+  });
+  const body = "Agent status: merged — PR #17 squash-merged.";
+  await provider.write({ project: "orchard", ticket: "SEED-2", state: "completed", comment: body, commentId });
+  assert.deepEqual(
+    requests.filter((request) => request.query.includes("mutation")).map((request) => request.variables),
+    [
+      { id: "uuid-seed-2", input: { stateId: "done", removedLabelIds: ["phase", "runtime", "ready"] } },
+      { input: { id: commentId, issueId: "uuid-seed-2", body } },
+    ],
+  );
+  replay = true;
+  requests.length = 0;
+  await provider.write({ project: "orchard", ticket: "SEED-2", state: "completed", comment: body, commentId });
+  assert.deepEqual(
+    requests.filter((request) => request.query.includes("mutation")),
+    [],
+  );
+});

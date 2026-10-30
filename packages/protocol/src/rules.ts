@@ -7,6 +7,12 @@ const placement = z.enum(["local", "vm"]);
 const minutes = z.number().positive();
 // V1 policy numbers: positive finite minutes, positive safe worker quota or no cap.
 export const projectRulesSchema = z.strictObject({
+  gates: z
+    .strictObject({
+      requiredChecks: z.array(id).max(100),
+      localCommands: z.array(z.string().min(1).max(4000).regex(/\S/)).max(50),
+    })
+    .optional(),
   coordinatorModel: coordinatorModelSchema.optional(),
   routing: z
     .array(

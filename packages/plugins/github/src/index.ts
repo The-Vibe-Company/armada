@@ -1,6 +1,7 @@
 import type { FleetEvent } from "@armada/daemon/events";
 import type { ForgeProvider, PluginContext } from "@armada/plugin-api";
 import { GithubReader } from "./github.ts";
+import { inspectGithub } from "./inspect.ts";
 import { githubToken } from "./keychain.ts";
 
 interface Config {
@@ -53,16 +54,45 @@ export function activate(ctx: PluginContext): void {
         signal?.removeEventListener("abort", stop);
       }
     },
-    async merge({ project, number, head, signal }) {
+    async inspect({ project, number, signal }) {
+      try {
+        const repository = config.projects?.[project]?.repository;
+        if (!repository || !Number.isSafeInteger(number) || number <= 0) throw new Error();
+        const key = await token(signal);
+        const inspectionSignal = signal ?? new AbortController().signal;
+        return await inspectGithub({
+          endpoint: config.endpoint,
+          repository,
+          number,
+          token: key,
+          signal: inspectionSignal,
+          fetch: (...args) => fetch(...args),
+          now: () => new Date(),
+        });
+      } catch {
+        throw new Error("GitHub inspection failed");
+      }
+    },
+    async merge({ project, number, head, signal, beforeWrite }) {
       try {
         const repository = config.projects?.[project]?.repository;
         if (!repository || !Number.isSafeInteger(number) || number <= 0 || !/^[a-f0-9]{40}$/i.test(head))
           throw new Error();
         const key = await token(signal);
         signal?.throwIfAborted();
-        const endpoint = config.endpoint
-          ? `${config.endpoint}/repos/${repository}/pulls/${number}/merge`
-          : `https://api.github.com/repos/${repository}/pulls/${number}/merge`;
+        beforeWrite?.();
+        let rest = config.endpoint ?? "https://api.github.com";
+        try {
+          const url = new URL(rest);
+          if (url.pathname.replace(/\/+$/, "") === "/graphql")
+            url.pathname = url.pathname.replace(/\/+$/, "").slice(0, -"/graphql".length) || "/";
+          url.search = "";
+          url.hash = "";
+          rest = url.toString().replace(/\/$/, "");
+        } catch {
+          rest = rest.replace(/\/graphql\/?$/, "").replace(/\/$/, "");
+        }
+        const endpoint = `${rest}/repos/${repository}/pulls/${number}/merge`;
         const response = await fetch(endpoint, {
           method: "PUT",
           redirect: "error",
@@ -70,9 +100,17 @@ export function activate(ctx: PluginContext): void {
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
           body: JSON.stringify({ sha: head, merge_method: "squash" }),
         });
-        const body = (await response.json()) as { merged?: boolean };
+        if (!response.ok) {
+          if ([401, 403, 405, 409, 422].includes(response.status)) return { merged: false };
+          throw new Error();
+        }
+        const body = (await response.json()) as { merged?: boolean; sha?: unknown };
+        if (typeof body.merged !== "boolean") throw new Error();
         signal?.throwIfAborted();
-        return { merged: response.ok && body.merged === true };
+        const result: { merged: boolean; mergeCommit?: string } = { merged: response.ok && body.merged === true };
+        if (typeof body.sha === "string" && /^[a-f0-9]{40}$/i.test(body.sha))
+          result.mergeCommit = body.sha.toLowerCase();
+        return result;
       } catch {
         throw new Error("GitHub merge failed");
       }
