@@ -7,12 +7,14 @@ import type { EventInput, Json } from "../events.ts";
 import { fold } from "../fold.ts";
 import type { PluginRegistry } from "../plugins/registry.ts";
 import type { EventStore } from "../store.ts";
+import { workerBrief } from "./brief.ts";
 import { workerRoute } from "./routing.ts";
 
 interface WorkerProject {
   id: string;
   repository: string;
   checkout: string;
+  tracker?: string;
 }
 interface Options {
   store: EventStore;
@@ -20,6 +22,8 @@ interface Options {
   projects: readonly WorkerProject[];
   socketPath: string;
   now?: () => string;
+  /** Host refresh commits a provider checkpoint only on success; actions require that evidence. */
+  refresh?: (project: string) => Promise<void>;
 }
 interface LiveWorker {
   ref: WorkerRef;
@@ -29,19 +33,31 @@ interface LiveWorker {
   tokenHash: string;
   mask: (value: string) => string;
   deliveries: Map<string, string>;
+  branch: string;
+  runtimeKind: string;
 }
-const id = z.string().min(1).max(200);
+const id = z.string().min(1).max(200).regex(/\S/);
+export class WorkerRefusal extends Error {}
+const launchArgs = {
+  ticket: id,
+  branch: id.optional(),
+  /** Additional coordinator notes, never a replacement for the ticket's brief. */
+  brief: z.string().max(16000).optional(),
+  rule: z.number().int().positive().optional(),
+  reason: z.string().min(1).max(16000).optional(),
+};
 const text = z.string().min(1).max(16000);
 export const workerToolSchemas = {
-  "worker.launch": z.strictObject({
+  "worker.launch": z.strictObject(launchArgs),
+  "worker.relaunch": z.strictObject({
     ticket: id,
-    branch: id,
-    brief: text,
+    session: id.optional(),
+    reason: z.string().min(1).max(16000),
     rule: z.number().int().positive().optional(),
-    reason: text.optional(),
+    brief: z.string().max(16000).optional(),
   }),
-  "worker.message": z.strictObject({ ticket: id, message: text }),
-  "worker.stop": z.strictObject({ ticket: id, reason: text }),
+  "worker.message": z.strictObject({ ticket: id, session: id.optional(), message: text }),
+  "worker.stop": z.strictObject({ ticket: id, session: id.optional(), reason: text }),
 };
 export type WorkerTool = keyof typeof workerToolSchemas;
 const workerRequestSchema = z.discriminatedUnion("command", [
@@ -105,12 +121,12 @@ export class Workers {
     beforeWrite();
     const current = this.#tables(ref.project)?.sessions.find((s) => s.ticket === ref.ticket);
     if (!current || (!allowEnded && ended(current.phase)) || !same({ project: ref.project, ...current }, ref))
-      throw new Error("Worker generation changed; runtime untouched");
+      throw new WorkerRefusal("Worker generation changed; runtime untouched");
   }
   #row(project: string, ticket: string, allowEnded = false) {
     const current = this.#tables(project)?.sessions.find((s) => s.ticket === ticket);
     const row = current && this.#live.get(current.session);
-    if (!row) throw new Error("No live worker in this daemon; inspect the session before relaunching");
+    if (!row) throw new WorkerRefusal("No live worker in this daemon; inspect the session before relaunching");
     this.#check(row.ref, () => {}, allowEnded);
     return row;
   }
@@ -146,36 +162,75 @@ export class Workers {
       const completed = previous.find((c) => c.type === "receipt");
       if (completed) return completed.result as Record<string, Json>;
       // A launch that may have taken effect is never repeated after a daemon crash.
-      if (name === "worker.launch" && previous.length)
+      if ((name === "worker.launch" || name === "worker.relaunch") && previous.length)
         throw new Error("Launch outcome unknown; inspect the existing generation, do not retry launch");
+      if ((name === "worker.launch" || name === "worker.relaunch") && this.#options.refresh) {
+        const started = Date.parse(this.#at());
+        const cursor = this.#options.store.sequence;
+        await this.#options.refresh(project).catch(() => {});
+        beforeWrite();
+        const tracker = this.#options.projects.find((p) => p.id === project)?.tracker ?? "linear";
+        const readAt = Date.parse(this.#tables(project)?.readAt?.[tracker] ?? "");
+        const confirmed = this.#options.store.readSince(cursor, project).some((event) => {
+          const checkpoint = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
+          return (
+            checkpoint &&
+            typeof checkpoint === "object" &&
+            !Array.isArray(checkpoint) &&
+            checkpoint.format === "armada.readers" &&
+            checkpoint.version === 1 &&
+            checkpoint.provider === tracker
+          );
+        });
+        if (!confirmed || !Number.isFinite(readAt) || readAt < started)
+          throw new WorkerRefusal("Ticket reading could not be refreshed; nothing was launched");
+      }
       let result: Record<string, Json>;
       if (name === "worker.launch") {
         const launch = workerToolSchemas["worker.launch"].parse(parsed);
         result = await this.#launch(project, launch, key, input, beforeWrite);
       } else {
-        const row = this.#row(project, parsed.ticket, name === "worker.stop");
-        if (name === "worker.message") {
-          const message = workerToolSchemas["worker.message"].parse(parsed).message;
-          await this.#deliver(row, message, key, beforeWrite);
-          result = { ok: true, session: row.ref.session, delivery: "confirmed" };
-        } else {
-          const reason = workerToolSchemas["worker.stop"].parse(parsed).reason;
-          await guarded(
-            row.ref,
-            () => this.#check(row.ref, beforeWrite, true),
-            () => row.runtime.stop(row.ref),
-          );
-          // A confirmed native stop retires authorization even if a subsequent read fails.
-          row.tokenHash = "";
-          const stopped = await row.runtime.observe(row.ref);
-          this.#check(row.ref, beforeWrite, true);
-          this.#record(row.ref, stopped);
-          this.#append({
-            project,
-            kind: "session.released",
-            payload: { ticket: row.ref.ticket, session: row.ref.session, reason },
+        const action = parsed as { ticket: string; session?: string };
+        const row = this.#row(project, action.ticket, name !== "worker.message");
+        if (
+          (action.session && action.session !== row.ref.session) ||
+          previous.some((c) => c.session && c.session !== row.ref.session)
+        )
+          throw new WorkerRefusal(`${action.ticket}'s worker generation changed; nothing was released`);
+        if (name === "worker.relaunch") {
+          const relaunch = workerToolSchemas["worker.relaunch"].parse(parsed);
+          if (!relaunch.reason.trim()) throw new WorkerRefusal('relaunch needs --reason "<why>"');
+          // V1 cli/src/relaunch.ts: complete preflight before ending the old generation.
+          const facts = this.#launchFacts(project, { ...relaunch, branch: row.branch }, row.ref);
+          if (facts.node !== row.node)
+            throw new WorkerRefusal("Replacement placement changed; keep the existing workspace and inspect its node");
+          this.#checkpoint(project, {
+            type: "relaunch-intent",
+            key,
+            input,
+            ticket: row.ref.ticket,
+            session: row.ref.session,
           });
-          result = { ok: true, session: row.ref.session, stopped: true };
+          await this.#stop(row, `relaunch: ${relaunch.reason}`, beforeWrite, false);
+          result = await this.#launch(project, { ...relaunch, branch: row.branch }, key, input, beforeWrite, row);
+        } else {
+          this.#checkpoint(project, {
+            type: "action-intent",
+            key,
+            input,
+            ticket: row.ref.ticket,
+            session: row.ref.session,
+            generation: row.ref.generation,
+          });
+          if (name === "worker.message") {
+            const message = workerToolSchemas["worker.message"].parse(parsed).message;
+            await this.#deliver(row, message, key, beforeWrite);
+            result = { ok: true, session: row.ref.session, delivery: "confirmed" };
+          } else {
+            const reason = workerToolSchemas["worker.stop"].parse(parsed).reason;
+            if (!reason.trim()) throw new WorkerRefusal("Stopping a worker needs a reason");
+            result = await this.#stop(row, reason, beforeWrite, true);
+          }
         }
       }
       this.#checkpoint(project, { type: "receipt", key, input, result });
@@ -183,15 +238,9 @@ export class Workers {
     });
   }
 
-  async #launch(
-    project: string,
-    args: z.infer<(typeof workerToolSchemas)["worker.launch"]>,
-    key: string,
-    input: string,
-    beforeWrite: () => void,
-  ) {
+  #launchFacts(project: string, args: z.infer<(typeof workerToolSchemas)["worker.launch"]>, replacing?: WorkerRef) {
     const config = this.#options.projects.find((p) => p.id === project);
-    if (!config) throw new Error("Unknown worker project");
+    if (!config) throw new WorkerRefusal("Unknown worker project");
     const events = this.#options.store.readSince(0, project);
     const pending = events.flatMap((e) => {
       const c = e.kind === "coordinator.checkpoint" ? e.payload.checkpoint : null;
@@ -205,35 +254,56 @@ export class Workers {
           !pending.some((done) => done.type === "receipt" && done.key === c.key),
       )
     )
-      throw new Error("Ticket has an unresolved launch intent; inspect its process before relaunching");
+      throw new WorkerRefusal("Ticket has an unresolved launch intent; inspect its process before relaunching");
     const tables = this.#tables(project);
-    const ticket = tables?.tickets.find((t) => t.id === args.ticket);
-    if (!ticket || ["completed", "canceled"].includes(ticket.status))
-      throw new Error("Worker ticket is missing or closed");
-    const active = tables?.sessions.filter((s) => !ended(s.phase)) ?? [];
-    if (active.some((s) => s.ticket === args.ticket && s.generation > 0))
-      throw new Error("Ticket already has an active generation");
-    const rules = tables?.rules?.value;
-    const route = workerRoute(rules, ticket, args);
-    const nodeKind = rules?.placement?.workers;
-    if (!nodeKind) throw new Error("Project needs explicit worker placement");
+    if (!tables) throw new WorkerRefusal(`ticket ${args.ticket} not found in Linear`);
+    const ticket = tables.tickets.find((t) => t.id === args.ticket);
+    // Copied from V1 cli/src/launch.ts prepareLaunch and core/src/brief.ts loadBrief.
+    if (!ticket) throw new WorkerRefusal(`ticket ${args.ticket} not found in Linear`);
+    if (["completed", "canceled"].includes(ticket.status))
+      throw new WorkerRefusal(`${ticket.id} is ${ticket.status}; there is nothing to launch`);
+    if (!ticket.labels?.includes("ready-for-agent")) throw new WorkerRefusal(`${ticket.id} lacks ready-for-agent`);
+    if (ticket.labels.includes("parked"))
+      throw new WorkerRefusal(`${ticket.id} is parked; remove the parked label before launching`);
+    if (!ticket.blockers)
+      throw new WorkerRefusal(`${ticket.id} blocker evidence is unavailable; refresh the tracker before launching`);
+    if (ticket.blockers.some((b) => !["completed", "canceled"].includes(b.status)))
+      throw new WorkerRefusal(`${ticket.id} has open blockers; resolve them before launching`);
+    const active = tables.sessions.filter((s) => !ended(s.phase) && s.session !== replacing?.session);
+    if (active.some((s) => s.ticket === args.ticket))
+      throw new WorkerRefusal(`${ticket.id} is already in flight; inspect its worker before launching again`);
+    const rules = tables.rules?.value;
+    let route: ReturnType<typeof workerRoute>;
+    try {
+      route = workerRoute(rules, ticket, args);
+    } catch (error) {
+      throw new WorkerRefusal(error instanceof Error ? error.message : "Routing refused");
+    }
+    // node-local publishes node.local; the app's placement names registry kinds.
+    const nodeKind = rules?.placement?.workers ?? "local";
     const max = rules?.policy?.maxWorkers;
-    if (max != null && active.filter((s) => s.generation > 0).length >= max)
-      throw new Error("Project worker capacity reached");
+    if (max != null && active.length >= max)
+      throw new WorkerRefusal(`worker cap reached: ${active.length} of ${max} workers; nothing was launched`);
     const runtime = this.#options.registry.get("runtime", route.cli);
     const node = this.#options.registry.get("node", nodeKind);
-    if (!runtime || !node) throw new Error("Selected runtime or node provider is unavailable");
-    if (!runtime.withNode) throw new Error("Runtime cannot bind the selected node");
-    const bound = runtime.withNode(node);
+    if (!runtime || !node) throw new WorkerRefusal("Selected runtime or node provider is unavailable");
+    if (!runtime.withNode) throw new WorkerRefusal("Runtime cannot bind the selected node");
+    const branch = args.branch ?? ticket.branchName;
+    if (!branch) throw new WorkerRefusal(`${ticket.id} has no suggested branch in Linear`);
+    return { config, tables, ticket, rules, route, nodeKind, max, bound: runtime.withNode(node), node, branch };
+  }
+
+  async #launch(
+    project: string,
+    args: z.infer<(typeof workerToolSchemas)["worker.launch"]>,
+    key: string,
+    input: string,
+    beforeWrite: () => void,
+    resume?: LiveWorker,
+  ) {
+    const { config, tables, ticket, route, nodeKind, max, bound, node, branch } = this.#launchFacts(project, args);
     const generation =
-      Math.max(
-        0,
-        ...this.#options.store
-          .readSince(0, project)
-          .flatMap((e) =>
-            e.kind === "session.claimed" && e.payload.ticket === args.ticket ? [e.payload.generation] : [],
-          ),
-      ) + 1;
+      Math.max(0, ...tables.sessions.filter((s) => s.ticket === args.ticket).map((s) => s.generation)) + 1;
     const worker = { project, ticket: args.ticket, session: randomUUID(), generation };
     const token = randomBytes(32).toString("base64url");
     beforeWrite();
@@ -244,6 +314,9 @@ export class Workers {
       ticket: args.ticket,
       session: worker.session,
       generation,
+      branch,
+      runtime: route.cli,
+      step: "preparing",
       ...(args.rule ? { rule: args.rule, reason: args.reason ?? "" } : {}),
     });
     const revision = tables?.rules?.revision;
@@ -252,27 +325,52 @@ export class Workers {
       if (this.#closing) throw new Error("Worker service is stopping");
       const fresh = this.#tables(project);
       const current = fresh?.sessions.find((s) => s.ticket === args.ticket);
-      if ((current && current.generation > 0 && !ended(current.phase)) || fresh?.rules?.revision !== revision)
+      if (
+        !current ||
+        current.session !== worker.session ||
+        current.generation !== generation ||
+        ended(current.phase) ||
+        fresh?.rules?.revision !== revision
+      )
         throw new Error("Launch prerequisites changed");
       const freshTicket = fresh?.tickets.find((t) => t.id === args.ticket);
       if (!freshTicket || ["completed", "canceled"].includes(freshTicket.status))
         throw new Error("Ticket closed during preparation");
+      if (args.branch === undefined && freshTicket.branchName !== branch)
+        throw new WorkerRefusal("The ticket branch changed during preparation; nothing was launched");
+      if (
+        !freshTicket.labels?.includes("ready-for-agent") ||
+        freshTicket.labels.includes("parked") ||
+        !freshTicket.blockers ||
+        freshTicket.blockers.some((b) => !["completed", "canceled"].includes(b.status))
+      )
+        throw new WorkerRefusal(`${args.ticket} launch prerequisites changed; nothing was launched`);
       if (JSON.stringify(workerRoute(fresh?.rules?.value, freshTicket, args)) !== JSON.stringify(route))
         throw new Error("Ticket routing changed during preparation");
-      if (max != null && (fresh?.sessions.filter((s) => s.generation > 0 && !ended(s.phase)).length ?? 0) >= max)
+      if (
+        max != null &&
+        (fresh?.sessions.filter((s) => s.session !== worker.session && !ended(s.phase)).length ?? 0) >= max
+      )
         throw new Error("Worker capacity changed during preparation");
     };
     let workspace: Workspace | undefined;
     try {
-      workspace = await bound.prepare({
-        project,
-        ticket: args.ticket,
-        repository: config.checkout,
-        branch: args.branch,
-      });
+      workspace =
+        resume?.workspace ??
+        (await bound.prepare({
+          project,
+          ticket: args.ticket,
+          repository: config.checkout,
+          branch,
+        }));
       checkLaunch();
     } catch {
       if (workspace && node.dispose) await node.dispose(workspace).catch(() => {});
+      this.#append({
+        project,
+        kind: "session.released",
+        payload: { ticket: worker.ticket, session: worker.session, reason: "Workspace preparation failed" },
+      });
       // No CLI launch was attempted: a known workspace refusal must not strand this ticket.
       this.#checkpoint(project, {
         type: "receipt",
@@ -283,6 +381,15 @@ export class Workers {
       throw new Error("Workspace preparation failed before launching a CLI");
     }
     const prepared = workspace;
+    this.#checkpoint(project, {
+      type: "launch",
+      ticket: worker.ticket,
+      session: worker.session,
+      generation,
+      runtime: route.cli,
+      branch,
+      step: "starting",
+    });
     let enteredProvider = false;
     let ref: WorkerRef;
     try {
@@ -292,7 +399,7 @@ export class Workers {
           workspace: prepared,
           worker,
           command: "",
-          args: ["--model", route.model, ...(route.effort ? ["--effort", route.effort] : [])],
+          args: [...(route.model ? ["--model", route.model] : []), ...(route.effort ? ["--effort", route.effort] : [])],
           env: {
             ARMADA_WORKER_SOCKET: this.#options.socketPath,
             ARMADA_WORKER_TOKEN: token,
@@ -303,6 +410,11 @@ export class Workers {
     } catch (error) {
       if (!enteredProvider) {
         if (node.dispose) await node.dispose(prepared).catch(() => {});
+        this.#append({
+          project,
+          kind: "session.released",
+          payload: { ticket: worker.ticket, session: worker.session, reason: "Launch refused" },
+        });
         this.#checkpoint(project, { type: "receipt", key, input, result: { ok: false, code: "launch_refused" } });
       }
       // Once a provider was entered, an error without a handle has an unknown native outcome.
@@ -324,16 +436,45 @@ export class Workers {
       tokenHash: hash(token),
       mask: (value) => value.replaceAll(token, "[redacted]"),
       deliveries: new Map(),
+      branch,
+      runtimeKind: route.cli,
     };
     this.#live.set(ref.session, row);
     try {
       checkLaunch();
       this.#append({
         project,
-        kind: "session.claimed",
-        payload: { ...worker, handle: ref.handle, runtime: route.cli, owner: "coordinator" },
+        kind: "coordinator.checkpoint",
+        payload: {
+          checkpoint: {
+            format: "armada.worker",
+            version: 1,
+            type: "launch",
+            ...worker,
+            handle: ref.handle,
+            runtime: route.cli,
+            branch,
+            step: "launched",
+          },
+        },
       });
-      await this.#deliver(row, args.brief, `brief:${worker.session}`, beforeWrite);
+      await this.#deliver(
+        row,
+        workerBrief({
+          ticket,
+          tables,
+          repository: config.repository,
+          branch,
+          notes: args.brief,
+          ...(resume
+            ? {
+                resume: `Relaunch reason: ${args.reason}. Previous session: ${resume.ref.session}. Continue branch ${branch} in this same worktree.`,
+              }
+            : {}),
+        }),
+        `brief:${worker.session}`,
+        beforeWrite,
+      );
     } catch (error) {
       row.tokenHash = "";
       // A returned handle is owned even if publishing its claim failed. Clean up exactly it.
@@ -362,6 +503,49 @@ export class Workers {
       node: nodeKind,
       handle: ref.handle,
     };
+  }
+
+  /** Shared with merge execution. A caller supplies the exact historical generation, never just a ticket. */
+  async stop(ref: WorkerRef, reason: string, beforeWrite: () => void) {
+    return this.#serial(ref.project, async () => {
+      this.#check(ref, beforeWrite, true);
+      const row = this.#row(ref.project, ref.ticket, true);
+      if (!same(row.ref, ref)) throw new WorkerRefusal("Worker generation changed; runtime untouched");
+      return this.#stop(row, reason, beforeWrite, true);
+    });
+  }
+
+  async #stop(
+    row: LiveWorker,
+    reason: string,
+    beforeWrite: () => void,
+    dispose: boolean,
+  ): Promise<Record<string, Json>> {
+    await guarded(
+      row.ref,
+      () => this.#check(row.ref, beforeWrite, true),
+      () => row.runtime.stop(row.ref),
+    );
+    row.tokenHash = "";
+    const stopped = await row.runtime.observe(row.ref);
+    this.#check(row.ref, beforeWrite, true);
+    this.#record(row.ref, stopped);
+    this.#append({
+      project: row.ref.project,
+      kind: "session.released",
+      payload: { ticket: row.ref.ticket, session: row.ref.session, reason },
+    });
+    let disposed = false;
+    if (dispose && row.node.dispose) {
+      this.#check(row.ref, beforeWrite, true);
+      try {
+        await row.node.dispose(row.workspace);
+        disposed = true;
+      } catch {
+        /* Dirty or unpushed work stays recoverable. */
+      }
+    }
+    return { ok: true, session: row.ref.session, stopped: true, disposed };
   }
 
   async #deliver(row: LiveWorker, message: string, key: string, beforeWrite: () => void) {
@@ -429,8 +613,29 @@ export class Workers {
         throw new Error("Worker capability retired");
       this.#check(row.ref);
       const { project, ticket, session } = row.ref;
-      if (request.command === "claim")
+      if (request.command === "claim") {
+        if (
+          !this.#options.store
+            .readSince(0, project)
+            .some((e) => e.kind === "session.claimed" && e.payload.session === session)
+        )
+          this.#append(
+            {
+              project,
+              kind: "session.claimed",
+              payload: {
+                ticket,
+                session,
+                generation: row.ref.generation,
+                handle: row.ref.handle,
+                runtime: row.runtimeKind,
+                owner: "coordinator",
+              },
+            },
+            `worker:${session}`,
+          );
         return { ok: true, ticket, session, generation: row.ref.generation, handle: row.ref.handle };
+      }
       if (request.command === "heartbeat")
         this.#append({ project, kind: "session.heartbeat", payload: { ticket, session } });
       else if (request.command === "report") {

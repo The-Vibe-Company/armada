@@ -4,7 +4,7 @@
 // session's history: claims, reports, questions, the forge's moves). The
 // daemon folds; this only reads one ticket's lines out of them. Pure: `now`
 // and the zone are given.
-import type { Project, ProtocolEvent } from "@armada/protocol";
+import { type Project, type ProtocolEvent, workerLaunchCheckpointSchema } from "@armada/protocol";
 import { z } from "zod";
 import { dayIn, GROUP_OF, type Group, sessionReason } from "@/fleet/overview";
 import { HARNESS_LABEL, harnessOf } from "@/fleet/sky";
@@ -183,7 +183,7 @@ function sessionView(
         const h = harnessOf(s.runtime);
         return h ? HARNESS_LABEL[h] : null;
       })(),
-      branch: forge?.headRef ?? null,
+      branch: forge?.headRef ?? own.map(launchOf).findLast((l) => l?.session === s.session)?.branch ?? null,
       pr: prFact,
       claimedAt: claimed?.at ?? null,
       reportedAt: reported?.at ?? null,
@@ -246,6 +246,21 @@ const field = (e: ProtocolEvent, key: string): unknown =>
   e.payload !== null && typeof e.payload === "object" && !Array.isArray(e.payload)
     ? (e.payload as Record<string, unknown>)[key]
     : undefined;
+const launchOf = (e: ProtocolEvent) => {
+  if (e.kind !== "coordinator.checkpoint") return null;
+  const checkpoint = field(e, "checkpoint");
+  if (
+    !checkpoint ||
+    typeof checkpoint !== "object" ||
+    Array.isArray(checkpoint) ||
+    !("format" in checkpoint) ||
+    checkpoint.format !== "armada.worker"
+  )
+    return null;
+  const launch = workerLaunchCheckpointSchema.safeParse(checkpoint);
+  return launch.success ? launch.data : null;
+};
+
 const str = (e: ProtocolEvent, key: string) => {
   const v = field(e, key);
   return typeof v === "string" ? v : "";
@@ -296,6 +311,19 @@ function entries(own: readonly ProtocolEvent[]): Entry[] {
   for (const e of own) {
     const pr = field(e, "pr");
     switch (e.kind) {
+      case "coordinator.checkpoint": {
+        const launch = launchOf(e);
+        if (launch)
+          add(
+            e,
+            {
+              preparing: "Preparing workspace",
+              starting: "Starting worker CLI",
+              launched: `Launched on ${launch.runtime}`,
+            }[launch.step],
+          );
+        break;
+      }
       case "session.claimed":
         add(e, `Claimed on ${str(e, "runtime") || "a runtime"}`);
         break;
@@ -369,7 +397,7 @@ function sessionEvents(events: readonly ProtocolEvent[], ticket: string): Protoc
   const items = new Set<string>();
   const out: ProtocolEvent[] = [];
   for (const e of events) {
-    if (field(e, "ticket") === ticket) {
+    if (field(e, "ticket") === ticket || launchOf(e)?.ticket === ticket) {
       out.push(e);
       const id = str(e, "id");
       if (id && /^(inbox\.opened|validation\.opened|merge\.queued)$/.test(e.kind)) items.add(id);

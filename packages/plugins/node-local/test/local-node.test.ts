@@ -187,7 +187,7 @@ test("a stale or mismatched WorkerRef cannot deliver to the replacement process"
   }
 });
 
-test("dispose keeps dirty worktrees and removes only a clean owned worktree", async () => {
+test("dispose keeps dirty or unpushed worktrees and removes only clean pushed work", async () => {
   const root = await mkdtemp(join(tmpdir(), "armada-node-local-"));
   try {
     const source = await repository(root);
@@ -222,6 +222,29 @@ test("dispose keeps dirty worktrees and removes only a clean owned worktree", as
     await node.dispose(clean);
     await assert.rejects(stat(cleanPath), /ENOENT/);
     assert.equal(await readFile(join(dirty.path, "untracked.txt"), "utf8"), "keep me\n");
+    await execute("git", ["-C", dirty.path, "add", "untracked.txt"]);
+    await execute("git", [
+      "-C",
+      dirty.path,
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--quiet",
+      "-m",
+      "Keep my work",
+    ]);
+    await assert.rejects(node.dispose(dirty), /unpushed/);
+    assert.equal((await stat(dirty.path)).isDirectory(), true);
+    const remote = join(root, "remote.git");
+    await execute("git", ["init", "--bare", "--quiet", remote]);
+    await execute("git", ["-C", source, "remote", "add", "origin", remote]);
+    await execute("git", ["-C", dirty.path, "push", "--quiet", "origin", "HEAD"]);
+    await node.dispose(dirty);
+    await assert.rejects(stat(dirty.path), /ENOENT/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -15,6 +15,12 @@ interface RawIssue {
   id: string;
   identifier: string;
   title: string;
+  description?: string;
+  branchName?: string;
+  inverseRelations?: Connection<{
+    type: string;
+    issue: { identifier: string; state: { type: TrackerTicket["status"] } };
+  }>;
   url: string;
   state: { type: TrackerTicket["status"] };
   assignee: { name: string } | null;
@@ -31,7 +37,8 @@ interface RawComment {
   issue?: { identifier: string };
 }
 const fields = `fragment F on Issue {
-  id identifier title url state { type } assignee { name } parent { identifier }
+  id identifier title description branchName url state { type }
+  inverseRelations(first: 50) { pageInfo { hasNextPage endCursor } nodes { type issue { identifier state { type } } } } assignee { name } parent { identifier }
   labels(first: 25) { pageInfo { hasNextPage endCursor } nodes { name parent { name } } }
   attachments(first: 25) { pageInfo { hasNextPage endCursor } nodes { title url } }
 }`;
@@ -167,6 +174,14 @@ export function linearTracker(options: LinearOptions): Tracker {
           );
         parents = raws.filter((ticket) => !known.has(ticket.id)).map((ticket) => ticket.id);
       }
+      // Launch preflight needs current blocker states. A blocker outside the program can
+      // reopen without changing the blocked ticket's updatedAt, so Changed alone is insufficient.
+      for (const ticket of previous?.tickets ?? []) {
+        if (!ticket.blockers?.length || raws.some((raw) => raw.id === ticket.uuid)) continue;
+        const { issue } = await gql<{ issue: RawIssue | null }>(rootQuery, { id: ticket.id });
+        if (!issue) throw new Error("Linear blocker evidence is unavailable");
+        raws.push(issue);
+      }
       const seen = new Set([...known, ...raws.map((ticket) => ticket.id)]);
       for (let depth = 0; parents.length; depth++) {
         if (depth >= 100) throw new Error("Linear program exceeds the depth limit");
@@ -193,6 +208,20 @@ export function linearTracker(options: LinearOptions): Tracker {
           uuid: raw.id,
           id: raw.identifier,
           title: raw.title,
+          description: raw.description ?? "",
+          branchName: raw.branchName,
+          blockers: raw.inverseRelations
+            ? (
+                await rest(
+                  raw.identifier,
+                  "inverseRelations",
+                  "type issue { identifier state { type } }",
+                  raw.inverseRelations,
+                )
+              )
+                .filter((r) => r.type === "blocks")
+                .map((r) => ({ id: r.issue.identifier, status: r.issue.state.type }))
+            : undefined,
           url: raw.url,
           status: raw.state.type,
           phase,

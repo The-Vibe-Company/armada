@@ -1,7 +1,7 @@
 import type { ProjectRules, Ticket } from "@armada/protocol";
 
 // Copied from V1 core/src/config.ts routingLabelKey and core/src/routing.ts routeProfile.
-const labelKey = (name: string) =>
+export const labelKey = (name: string) =>
   name
     .normalize("NFKC")
     .toLowerCase()
@@ -14,11 +14,14 @@ export function workerRoute(rules: ProjectRules | undefined, ticket: Ticket, arg
     return selected;
   }
   for (const rule of rules?.routing ?? []) {
-    if ("when" in rule) throw new Error("A semantic routing rule needs a rule number and reason");
+    if ("when" in rule) continue;
     if (!ticket.labels) throw new Error("Label routing requires a current tracker label reading");
     const labels = ticket.labels.map(labelKey);
     if (rule.labels.some((label) => labels.includes(labelKey(label)))) return rule;
   }
-  if (!rules?.defaultRoute) throw new Error("Project needs a runtime defaultRoute");
-  return rules.defaultRoute;
+  if (rules?.routing?.some((rule) => "when" in rule))
+    throw new Error("A semantic routing rule needs a rule number and reason");
+  // V2's local Claude default lets an unconfigured project launch. An explicit null refuses.
+  if (rules?.defaultRoute === null) throw new Error("Project needs a runtime defaultRoute");
+  return rules?.defaultRoute ?? { cli: "claude" as const, model: "" };
 }

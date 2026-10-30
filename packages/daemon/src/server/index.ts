@@ -5,6 +5,7 @@ import {
   admitRequest,
   eventSchema,
   type ModelKindEntry,
+  PLAN_POLICY_MINOR,
   type Project,
   type ProjectTables,
   type ProtocolError,
@@ -13,6 +14,7 @@ import {
   type ServerMessage,
   type Snapshot,
   PROTOCOL_VERSION as version,
+  workerLaunchCheckpointSchema,
 } from "@armada/protocol";
 import { WebSocket, WebSocketServer } from "ws";
 import type { CoordinatorOptions, ProjectCoordinator } from "../../coordinator/index.ts";
@@ -56,6 +58,7 @@ export interface DaemonServer {
   close(): Promise<void>;
 }
 interface Subscription {
+  minor: number;
   id: string;
   after: number;
 }
@@ -132,6 +135,23 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     return { seq, state: projectTablesSchema.parse(JSON.parse(JSON.stringify(tables))) };
   }
 
+  /** Older same-major clients use a strict policy reader; preserve their existing Rules view. */
+  function snapshotFor(snapshot: Snapshot, minor: number): Snapshot {
+    if (minor >= PLAN_POLICY_MINOR) return snapshot;
+    const state = snapshot.state as unknown as ProjectTables;
+    const rules = state.rules;
+    if (!rules?.value.policy) return snapshot;
+    const policy = { ...rules.value.policy };
+    delete policy.plans;
+    delete policy.approvalLabel;
+    delete policy.preApprovedLabel;
+    // Detach only the legacy projection; never mutate the full snapshot shared with current clients.
+    return {
+      seq: snapshot.seq,
+      state: JSON.parse(JSON.stringify({ ...state, rules: { ...rules, value: { ...rules.value, policy } } })),
+    };
+  }
+
   /**
    * Sends what the subscription has not seen. A frame with events also carries
    * the project's refolded state (`folded` shares one fold per project between
@@ -158,7 +178,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       subscriptionId: subscription.id,
       seq,
       events,
-      ...(snapshot ? { snapshot } : {}),
+      ...(snapshot ? { snapshot: snapshotFor(snapshot, subscription.minor) } : {}),
     });
     subscription.after = seq;
   }
@@ -282,8 +302,9 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           const seq = store.sequence;
           if (request.after > seq)
             return error(ws, request.id, "invalid-message", "Replay cursor is ahead of the daemon log");
-          const subscription = { id: randomUUID(), after: request.after };
-          const snapshot = request.after === 0 ? snapshotOf(request.project) : undefined;
+          const subscription = { id: randomUUID(), after: request.after, minor: request.version.minor };
+          const snapshot =
+            request.after === 0 ? snapshotFor(snapshotOf(request.project), request.version.minor) : undefined;
           subscriptions.set(request.project, subscription);
           send(ws, {
             ...request,
@@ -299,7 +320,12 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         const seq = store.sequence;
         const events = store
           .readSince(0, request.project)
-          .filter((event) => "session" in event.payload && event.payload.session === request.sessionId)
+          .filter((event) => {
+            if ("session" in event.payload) return event.payload.session === request.sessionId;
+            if (event.kind !== "coordinator.checkpoint") return false;
+            const launch = workerLaunchCheckpointSchema.safeParse(event.payload.checkpoint);
+            return launch.success && launch.data.session === request.sessionId;
+          })
           .map((event) => eventSchema.parse(event));
         if (!events.length) return error(ws, request.id, "not-found", "No such session");
         send(ws, {

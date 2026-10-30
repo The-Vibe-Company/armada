@@ -89,6 +89,7 @@ interface WorkspaceRecord {
   readonly workspace: Workspace;
   readonly repository: string;
   readonly branch: string;
+  readonly base: string;
   lock: Promise<void>;
   removed: boolean;
 }
@@ -257,6 +258,7 @@ export class LocalNode implements NodeProvider {
       signal: request.signal,
     });
 
+    const base = (await git(["rev-parse", "HEAD"], { cwd: source, signal: request.signal })).stdout.trim();
     const id = randomUUID();
     const path = join(
       this.#options.workspaceRoot,
@@ -288,6 +290,7 @@ export class LocalNode implements NodeProvider {
         workspace: { ...workspace },
         repository: source,
         branch: request.branch,
+        base,
         lock: Promise.resolve(),
         removed: false,
       });
@@ -406,6 +409,11 @@ export class LocalNode implements NodeProvider {
       if (this.#activeWorker(record)) throw new Error("workspace has an active worker; kept it");
       const status = await git(["status", "--porcelain", "--untracked-files=all"], { cwd: record.workspace.path });
       if (status.stdout.trim()) throw new Error("workspace is dirty; kept it");
+      // V1 runtime archival keeps clean work that has not been pushed, too.
+      const unpushed = await git(["rev-list", "HEAD", "--not", record.base, "--remotes"], {
+        cwd: record.workspace.path,
+      });
+      if (unpushed.stdout.trim()) throw new Error("workspace has unpushed commits; kept it");
       if (this.#activeWorker(record)) throw new Error("workspace gained an active worker; kept it");
       await this.#removeWorktree(record.repository, record.workspace.path);
       record.removed = true;

@@ -172,7 +172,7 @@ for (const name of ["worker.launch", "worker.relaunch", "worker.message", "worke
         ? { ticket: "SEED-1", branch: "worker/seed", brief: "Plant" }
         : name === "worker.message"
           ? { ticket: "SEED-1", message: "Plant" }
-          : name === "worker.stop"
+          : name === "worker.stop" || name === "worker.relaunch"
             ? { ticket: "SEED-1", reason: "Finished" }
             : { ticket: "SEED-1", session: "one", pr: 7 };
     const result = await run(name, args);
@@ -696,3 +696,48 @@ test("invalid imports and ambiguous patches refuse before writing; placement sta
     "rules_already_set",
   );
 });
+
+for (const plans of ["pre-approved", "unsupported"]) {
+  test(`V1 import preserves and validates the plan policy: ${plans}`, async (t) => {
+    const { run, store } = await fixture(t);
+    const directory = mkdtempSync(join(tmpdir(), "armada-plan-import-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const file = join(directory, "armada.toml");
+    writeFileSync(
+      file,
+      `[policy]\nplans = "${plans}"\napproval_label = "Review Required"\npre_approved_label = "May Proceed"\n`,
+    );
+    const result = await run("rules.set", { expectedRevision: 0, reason: "Import plan rules", importFile: file });
+    if (plans === "unsupported") assert.equal(result.code, "invalid_import");
+    else {
+      assert.equal(result.ok, true);
+      assert.deepEqual(fold(store.readSince(0)).projects.orchard?.rules?.value.policy, {
+        plans: "pre-approved",
+        approvalLabel: "Review Required",
+        preApprovedLabel: "May Proceed",
+        silenceMinutes: 15,
+        quietMinutes: 45,
+        maxWorkers: null,
+      });
+    }
+  });
+}
+
+for (const labels of [
+  'approval_label = "Review Required"\npre_approved_label = "review-required"',
+  'approval_label = "plan approved"',
+]) {
+  test(`V1 import refuses colliding plan labels including defaults: ${labels}`, async (t) => {
+    const { run, store } = await fixture(t);
+    const directory = mkdtempSync(join(tmpdir(), "armada-label-import-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const file = join(directory, "armada.toml");
+    writeFileSync(file, `[policy]\n${labels}\n`);
+    const before = store.sequence;
+    assert.equal(
+      (await run("rules.set", { expectedRevision: 0, reason: "Import labels", importFile: file })).code,
+      "invalid_import",
+    );
+    assert.equal(store.sequence, before);
+  });
+}

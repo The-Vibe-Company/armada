@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { NodeProvider, WorkerObservation, WorkerRef } from "@armada/plugin-api";
+import type { Ticket } from "@armada/protocol";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { activate as activateClaude } from "../../plugins/claude/src/index.ts";
@@ -49,7 +50,12 @@ function socketCall(
     req.end(JSON.stringify(body));
   });
 }
-async function fixture(t: TestContext, wrap?: (node: NodeProvider) => NodeProvider) {
+async function fixture(
+  t: TestContext,
+  wrap?: (node: NodeProvider) => NodeProvider,
+  refresh?: (store: import("../src/store.ts").EventStore) => Promise<void>,
+  now = () => at,
+) {
   const directory = await mkdtemp(join(tmpdir(), "armada-worker-"));
   const repository = join(directory, "repo");
   await mkdir(repository);
@@ -77,6 +83,8 @@ async function fixture(t: TestContext, wrap?: (node: NodeProvider) => NodeProvid
     await readFile(new URL("../../plugins/claude/package.json", import.meta.url), "utf8"),
   ).armada;
   let token = "";
+  let workspacePath = "";
+  const messages: string[] = [];
   let local: NodeProvider;
   let reference: WorkerRef;
   const configPath = join(directory, "config.json");
@@ -119,7 +127,12 @@ async function fixture(t: TestContext, wrap?: (node: NodeProvider) => NodeProvid
             const provider = wrap?.(raw) ?? raw;
             ctx.register.node("local", {
               ...provider,
+              async deliver(ref, message, key) {
+                messages.push(message);
+                return provider.deliver(ref, message, key);
+              },
               async launch(request) {
+                workspacePath = request.workspace.path;
                 token = request.env.ARMADA_WORKER_TOKEN ?? "";
                 reference = await provider.launch(request);
                 return reference;
@@ -136,7 +149,15 @@ async function fixture(t: TestContext, wrap?: (node: NodeProvider) => NodeProvid
     at,
     actor: "tracker",
     kind: "ticket.seen",
-    payload: { id: "SEED-1", title: "Plant", labels: ["Ｂackend Work"], status: "unstarted" },
+    payload: {
+      id: "SEED-1",
+      title: "Plant",
+      labels: ["Ｂackend Work", "ready-for-agent"],
+      status: "unstarted",
+      description: "Plant the orchard safely.",
+      branchName: "worker/seed-1",
+      blockers: [],
+    },
   });
   daemon.store.append({
     project,
@@ -167,7 +188,8 @@ async function fixture(t: TestContext, wrap?: (node: NodeProvider) => NodeProvid
     registry: daemon.registry,
     socketPath,
     projects: [{ id: project, repository: "example/orchard", checkout: repository }],
-    now: () => at,
+    ...(refresh ? { refresh: () => refresh(daemon.store) } : {}),
+    now,
   });
   const socket = await startWorkerSocket(workers, socketPath);
   const scope = openCoordinatorStorage({ store: daemon.store, project, now: () => at });
@@ -180,7 +202,17 @@ async function fixture(t: TestContext, wrap?: (node: NodeProvider) => NodeProvid
     daemon.close();
     await rm(directory, { recursive: true, force: true });
   });
-  return { daemon, workers, socketPath, token: () => token, tools, api, inspect: () => local.observe(reference) };
+  return {
+    daemon,
+    workers,
+    socketPath,
+    token: () => token,
+    workspace: () => workspacePath,
+    messages,
+    tools,
+    api,
+    inspect: () => local.observe(reference),
+  };
 }
 
 test("native tools launch a bound CLI, deliver, observe working/idle, authorize socket commands and stop one generation", {
@@ -278,6 +310,8 @@ test("native tools launch a bound CLI, deliver, observe working/idle, authorize 
     context,
   );
   assert.equal(stopped.isError, false);
+  assert.equal((stopped.details as { disposed: boolean }).disposed, true);
+  await assert.rejects(stat(f.workspace()), { code: "ENOENT" });
   assert.equal((await socketCall(f.socketPath, f.token(), { command: "heartbeat", ticket: "SEED-1" })).status, 403);
   const events = f.daemon.store.readSince(0, project);
   assert.equal(
@@ -381,7 +415,12 @@ test("a generation changed during node provenance cannot receive the pending nat
   );
 });
 
-for (const change of [{ status: "canceled" as const }, { labels: ["frontend"] }]) {
+for (const change of [
+  { status: "canceled" as const },
+  { labels: ["frontend"] },
+  { labels: ["backend-work"] },
+  { blockers: [{ id: "SEED-9", status: "started" as const }] },
+]) {
   test(`launch rechecks fresh ticket facts after preparation: ${JSON.stringify(change)}`, {
     timeout: 15000,
   }, async (t) => {
@@ -501,7 +540,13 @@ test("shutdown revokes every capability and stops later workers after one provid
     at,
     actor: "tracker",
     kind: "ticket.seen",
-    payload: { id: "SEED-2", title: "Second", labels: ["backend-work"], status: "unstarted" },
+    payload: {
+      id: "SEED-2",
+      title: "Second",
+      labels: ["backend-work", "ready-for-agent"],
+      status: "unstarted",
+      blockers: [],
+    },
   });
   assert.equal(
     (
@@ -572,7 +617,7 @@ test("a guard refusal before entering the launch provider cleans up the unused p
                 id: "SEED-1",
                 title: "Completed",
                 status: "completed",
-                labels: ["backend-work"],
+                labels: ["backend-work", "ready-for-agent"],
               },
             });
           }),
@@ -598,7 +643,13 @@ test("a guard refusal before entering the launch provider cleans up the unused p
     at,
     actor: "tracker",
     kind: "ticket.seen",
-    payload: { id: "SEED-1", title: "Reopened", status: "unstarted", labels: ["backend-work"] },
+    payload: {
+      id: "SEED-1",
+      title: "Reopened",
+      status: "unstarted",
+      labels: ["backend-work", "ready-for-agent"],
+      blockers: [],
+    },
   });
   assert.equal(
     (
@@ -641,4 +692,359 @@ test("confirmed stop revokes its socket capability even when the following obser
   );
   assert.equal((await f.inspect()).state, "stopped", "the real process already stopped successfully");
   assert.equal((await socketCall(f.socketPath, f.token(), { command: "heartbeat", ticket: "SEED-1" })).status, 403);
+});
+
+test("launch builds the ticket brief, uses plugin defaults and refuses unsafe fleet facts before spawning", {
+  timeout: 15000,
+}, async (t) => {
+  const f = await fixture(t);
+  const original = fold(f.daemon.store.readSince(0, project)).projects[project]!.tickets[0]!;
+  const run = (id: string) => f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api(id), context);
+  const cases: [Partial<Ticket>, string][] = [
+    [{ status: "completed" }, "SEED-1 is completed; there is nothing to launch"],
+    [{ labels: ["backend"] }, "SEED-1 lacks ready-for-agent"],
+    [{ labels: ["ready-for-agent", "parked"] }, "SEED-1 is parked; remove the parked label before launching"],
+    [{ blockers: [{ id: "SEED-9", status: "started" }] }, "SEED-1 has open blockers; resolve them before launching"],
+  ];
+  for (const [change, message] of cases) {
+    f.daemon.store.append({ project, at, actor: "tracker", kind: "ticket.seen", payload: { ...original, ...change } });
+    const result = await run(message);
+    assert.equal(result.isError, true);
+    assert.equal((result.details as { message: string }).message, message);
+    assert.equal(f.token(), "", "a refused preflight never enters the native launcher");
+  }
+  f.daemon.store.append({ project, at, actor: "tracker", kind: "ticket.seen", payload: original });
+  f.daemon.store.append({
+    project,
+    at,
+    actor: "coordinator",
+    kind: "coordinator.checkpoint",
+    payload: {
+      checkpoint: {
+        format: "armada.tools",
+        version: 1,
+        type: "rules",
+        rules: { revision: 2, value: {} },
+        reason: "Defaults",
+      },
+    },
+  });
+  assert.equal((await run("default-launch")).isError, false);
+  const claimed = f.daemon.store.readSince(0, project).filter((e) => e.kind === "session.claimed");
+  assert.equal(claimed.length, 0, "launch and worker claim are distinct events");
+  const launched = fold(f.daemon.store.readSince(0, project)).projects[project]!.sessions[0]!;
+  assert.equal(launched.reason, "Launched; waiting for worker claim");
+  assert.equal(launched.runtime, "claude");
+  f.daemon.store.append({
+    project,
+    at,
+    actor: "tracker",
+    kind: "ticket.seen",
+    payload: { ...original, id: "SEED-2", branchName: "worker/seed-2" },
+  });
+  f.daemon.store.append({
+    project,
+    at,
+    actor: "coordinator",
+    kind: "coordinator.checkpoint",
+    payload: {
+      checkpoint: {
+        format: "armada.tools",
+        version: 1,
+        type: "rules",
+        rules: { revision: 3, value: { policy: { maxWorkers: 1 } } },
+        reason: "Capacity",
+      },
+    },
+  });
+  const capped = await f.tools["worker.launch"].execute({ ticket: "SEED-2" }, f.api("cap"), context);
+  assert.equal(
+    (capped.details as { message: string }).message,
+    "worker cap reached: 1 of 1 workers; nothing was launched",
+  );
+  assert.equal((await run("duplicate-launch")).isError, true);
+  assert.equal((await socketCall(f.socketPath, f.token(), { command: "claim", ticket: "SEED-1" })).status, 200);
+  assert.equal(f.daemon.store.readSince(0, project).filter((e) => e.kind === "session.claimed").length, 1);
+  const reply = await f.workers.observe(project, "SEED-1");
+  assert.equal(reply.state, "running");
+  assert.match(f.messages[0]!, /Plant the orchard safely/);
+  assert.match(f.messages[0]!, /armada claim SEED-1/);
+  assert.match(f.messages[0]!, /Plans need the coordinator/);
+  assert(!f.messages[0]!.includes(f.token()));
+});
+
+test("relaunch keeps branch/worktree changes, retires old capabilities and refuses stale generation actions", {
+  timeout: 15000,
+}, async (t) => {
+  const f = await fixture(t);
+  assert.equal(
+    (await f.tools["worker.relaunch"].execute({ ticket: "SEED-1", reason: "Missing" }, f.api("missing"), context))
+      .isError,
+    true,
+  );
+  assert.equal((await f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api("launch"), context)).isError, false);
+  const oldToken = f.token();
+  const workspace = f.workspace();
+  await writeFile(join(workspace, "in-progress.txt"), "Keep my work");
+  const old = fold(f.daemon.store.readSince(0, project)).projects[project]!.sessions[0]!;
+  const oldRef = { project, ticket: old.ticket, session: old.session, generation: old.generation, handle: old.handle };
+  assert.equal((await socketCall(f.socketPath, oldToken, { command: "claim", ticket: "SEED-1" })).status, 200);
+  const result = await f.tools["worker.relaunch"].execute(
+    { ticket: "SEED-1", session: old.session, reason: "Recover idle worker" },
+    f.api("replace"),
+    context,
+  );
+  assert.equal(result.isError, false);
+  const current = fold(f.daemon.store.readSince(0, project)).projects[project]!.sessions[0]!;
+  assert.equal(current.generation, old.generation + 1);
+  assert.notEqual(current.session, old.session);
+  assert.equal(f.workspace(), workspace);
+  assert.equal(await readFile(join(workspace, "in-progress.txt"), "utf8"), "Keep my work");
+  assert.equal(
+    execFileSync("git", ["-C", workspace, "branch", "--show-current"], { encoding: "utf8" }).trim(),
+    "worker/seed-1",
+  );
+  assert.equal(
+    (
+      await socketCall(f.socketPath, oldToken, {
+        command: "report",
+        ticket: "SEED-1",
+        phase: "implementing",
+        message: "late",
+      })
+    ).status,
+    403,
+  );
+  await assert.rejects(
+    f.workers.stop(oldRef, "Stale stop", () => {}),
+    /generation/,
+  );
+  assert.equal(
+    (
+      await f.tools["worker.message"].execute(
+        { ticket: "SEED-1", session: old.session, message: "stale" },
+        f.api("stale"),
+        context,
+      )
+    ).isError,
+    true,
+  );
+  assert.equal(
+    (
+      await f.tools["worker.stop"].execute(
+        { ticket: "SEED-1", session: old.session, reason: "stale" },
+        f.api("stale-stop"),
+        context,
+      )
+    ).isError,
+    true,
+  );
+  assert.equal(
+    (
+      await f.tools["worker.relaunch"].execute(
+        { ticket: "SEED-1", session: old.session, reason: "stale" },
+        f.api("stale-replace"),
+        context,
+      )
+    ).isError,
+    true,
+  );
+  const before = f.daemon.store.sequence;
+  assert.equal(
+    (
+      await f.tools["worker.relaunch"].execute(
+        { ticket: "SEED-1", session: old.session, reason: "Recover idle worker" },
+        f.api("replace"),
+        context,
+      )
+    ).isError,
+    false,
+  );
+  assert.equal(f.daemon.store.sequence, before, "replacement replay cannot stop the replacement");
+  assert.equal(
+    (await f.tools["worker.message"].execute({ ticket: "SEED-1", message: "finish" }, f.api("message"), context))
+      .isError,
+    false,
+  );
+  await until(f.workers, (value) => value.reply === "reply:finish");
+  assert.equal(
+    (await f.tools["worker.message"].execute({ ticket: "SEED-1", message: "different" }, f.api("message"), context))
+      .isError,
+    true,
+  );
+  const stopped = await f.tools["worker.stop"].execute({ ticket: "SEED-1", reason: "Done" }, f.api("stop"), context);
+  assert.equal(stopped.isError, false);
+  assert.equal((stopped.details as { disposed: boolean }).disposed, false);
+  assert.equal(await readFile(join(workspace, "in-progress.txt"), "utf8"), "Keep my work");
+  assert.equal((await socketCall(f.socketPath, f.token(), { command: "claim", ticket: "SEED-1" })).status, 403);
+});
+
+test("launch and relaunch require a confirmed fresh tracker read, while completed receipts replay without refreshing", {
+  timeout: 15000,
+}, async (t) => {
+  let reading: string | undefined;
+  let reads = 0;
+  const instant = at;
+  const f = await fixture(
+    t,
+    undefined,
+    async (store) => {
+      reads++;
+      if (reading)
+        store.append({
+          project,
+          kind: "coordinator.checkpoint",
+          at: reading,
+          actor: "reader",
+          payload: { checkpoint: { format: "armada.readers", version: 1, provider: "linear" } },
+        });
+    },
+    () => instant,
+  );
+  const launch = (key: string) => f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api(key), context);
+  assert.equal((await launch("failed-refresh")).isError, true);
+  assert.equal(f.token(), "");
+  reading = "2029-12-31T23:59:00.000Z";
+  assert.equal((await launch("stale-refresh")).isError, true);
+  assert.equal(f.token(), "");
+  reading = at;
+  assert.equal((await launch("fresh-refresh")).isError, false);
+  const token = f.token();
+  reading = undefined;
+  const before = reads;
+  assert.equal((await launch("fresh-refresh")).isError, false);
+  assert.equal(reads, before, "a committed launch receipt does not depend on reader availability");
+  // Even at the same timestamp, a missing new successful checkpoint cannot authorize replacement.
+  assert.equal(
+    (
+      await f.tools["worker.relaunch"].execute(
+        { ticket: "SEED-1", reason: "Refresh unavailable" },
+        f.api("replace"),
+        context,
+      )
+    ).isError,
+    true,
+  );
+  assert.equal(f.token(), token);
+  assert.equal((await socketCall(f.socketPath, token, { command: "claim", ticket: "SEED-1" })).status, 200);
+});
+
+for (const approval of ["needs-plan-approval", "Review Required"]) {
+  test(`${approval} wins over pre-approval in the bootstrapped brief`, { timeout: 15000 }, async (t) => {
+    const f = await fixture(t);
+    const ticket = fold(f.daemon.store.readSince(0, project)).projects[project]?.tickets[0];
+    assert(ticket);
+    f.daemon.store.append({
+      project,
+      at,
+      actor: "tracker",
+      kind: "ticket.seen",
+      payload: { ...ticket, labels: [...(ticket.labels ?? []), "plan-approved", approval] },
+    });
+    f.daemon.store.append({
+      project,
+      at,
+      actor: "coordinator",
+      kind: "coordinator.checkpoint",
+      payload: {
+        checkpoint: {
+          format: "armada.tools",
+          version: 1,
+          type: "rules",
+          reason: "Route backend before semantic choice",
+          rules: {
+            revision: 2,
+            value: {
+              routing: [{ labels: ["backend-work"], cli: "claude", model: "fixture" }],
+              policy: {
+                plans: "pre-approved",
+                ...(approval === "Review Required" ? { approvalLabel: "review-required" } : {}),
+              },
+            },
+          },
+        },
+      },
+    });
+    const result = await f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api("brief"), context);
+    assert.equal(result.isError, false);
+    assert.match(f.messages[0]!, /Plans need the coordinator's approval/);
+    assert.match(f.messages[0]!, /npm install -g @the-vibe-company\/armada@0\.2\.67/);
+    assert.match(f.messages[0]!, /armada skill armada-worker/);
+    assert.match(f.messages[0]!, /npm exec --yes --package=@the-vibe-company\/armada@0\.2\.67 -- armada/);
+    assert.match(f.messages[0]!, /Plans need the coordinator's approval/);
+  });
+}
+
+test("a changed suggested branch refuses implicit launch but an explicit branch remains authoritative", {
+  timeout: 15000,
+}, async (t) => {
+  let change = true;
+  const f = await fixture(t, (node) => ({
+    ...node,
+    async prepare(request) {
+      const workspace = await node.prepare(request);
+      if (change) {
+        change = false;
+        const ticket = fold(f.daemon.store.readSince(0, project)).projects[project]?.tickets[0];
+        assert(ticket);
+        f.daemon.store.append({
+          project,
+          at,
+          actor: "tracker",
+          kind: "ticket.seen",
+          payload: { ...ticket, branchName: "worker/changed-suggestion" },
+        });
+      }
+      return workspace;
+    },
+  }));
+  assert.equal(
+    (await f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api("implicit"), context)).isError,
+    true,
+  );
+  assert.equal(f.token(), "");
+  assert.equal(
+    (
+      await f.tools["worker.launch"].execute(
+        { ticket: "SEED-1", branch: "worker/explicit" },
+        f.api("explicit"),
+        context,
+      )
+    ).isError,
+    false,
+  );
+  assert.equal(
+    execFileSync("git", ["-C", f.workspace(), "branch", "--show-current"], { encoding: "utf8" }).trim(),
+    "worker/explicit",
+  );
+});
+
+test("launch scans label routes before asking for a semantic rule", { timeout: 15000 }, async (t) => {
+  const f = await fixture(t);
+  f.daemon.store.append({
+    project,
+    at,
+    actor: "coordinator",
+    kind: "coordinator.checkpoint",
+    payload: {
+      checkpoint: {
+        format: "armada.tools",
+        version: 1,
+        type: "rules",
+        reason: "Label precedence",
+        rules: {
+          revision: 2,
+          value: {
+            routing: [
+              { when: "other work", cli: "codex", model: "unused" },
+              { labels: ["backend-work"], cli: "claude", model: "fixture" },
+            ],
+          },
+        },
+      },
+    },
+  });
+  const result = await f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api("mixed-routes"), context);
+  assert.equal(result.isError, false);
+  assert.equal((result.details as { runtime: string }).runtime, "claude");
 });

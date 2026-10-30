@@ -10,6 +10,7 @@ import {
 } from "./chat.js";
 import { modelConfigSchema, modelKindEntrySchema, modelKindSchema } from "./models.js";
 import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
+import { PLAN_POLICY_MINOR } from "./rules.js";
 
 export * from "./chat.js";
 export * from "./fleet.js";
@@ -18,7 +19,7 @@ export * from "./plugins.js";
 export * from "./rules.js";
 
 /** Wire version, independent of the daemon/app release versions. */
-export const PROTOCOL_VERSION = { major: 1, minor: 4 } as const;
+export const PROTOCOL_VERSION = { major: 1, minor: PLAN_POLICY_MINOR } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
 

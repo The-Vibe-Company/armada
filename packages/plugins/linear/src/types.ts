@@ -4,6 +4,9 @@ export interface TrackerTicket {
   uuid: string;
   id: string;
   title: string;
+  description?: string;
+  branchName?: string;
+  blockers?: { id: string; status: Ticket["status"] }[];
   status: Ticket["status"];
   phase: Phase | null;
   owner: string | null;

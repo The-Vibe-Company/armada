@@ -5,7 +5,7 @@ import * as Value from "typebox/value";
 import { z } from "zod";
 import type { EventInput, FleetEvent } from "../src/events.ts";
 import { fold, type ProjectTables, type Session } from "../src/fold.ts";
-import { type Workers, type WorkerTool, workerToolSchemas } from "../src/workers/service.ts";
+import { WorkerRefusal, type Workers, type WorkerTool, workerToolSchemas } from "../src/workers/service.ts";
 import { emptyRules, type ProjectRules, type RulesState, rulesSchema } from "./rules.ts";
 import { readV1RulesFile } from "./rules-file.ts";
 import type { CoordinatorStorage } from "./storage.ts";
@@ -80,7 +80,7 @@ const schemas = {
   "inbox.list": object({}),
   "inbox.answer": object({ id, answer: text }),
   "worker.launch": Type.Unsafe(z.toJSONSchema(workerToolSchemas["worker.launch"])),
-  "worker.relaunch": Type.Object({}, { additionalProperties: true }),
+  "worker.relaunch": Type.Unsafe(z.toJSONSchema(workerToolSchemas["worker.relaunch"])),
   "worker.message": Type.Unsafe(z.toJSONSchema(workerToolSchemas["worker.message"])),
   "worker.stop": Type.Unsafe(z.toJSONSchema(workerToolSchemas["worker.stop"])),
   "merge.check": object({ pr: Type.Integer({ minimum: 1 }) }),
@@ -100,8 +100,10 @@ const descriptions: Record<CoordinatorToolName, string> = {
   "inbox.list": "Read open project inbox items in event order without resolving them.",
   "inbox.answer":
     "Deliver and record an answer to a question or plan once. Refuses without a keyed delivery adapter; the worker reports its resumed phase.",
-  "worker.launch": "Launch a ticket through the configured runtime and node plugins, with its branch and brief.",
-  "worker.relaunch": "Replace a worker (not available yet; Spec 3).",
+  "worker.launch":
+    "Launch a ticket through the configured runtime and node plugins, building its brief from the ticket. Branch defaults to the tracker suggestion; brief supplies additional notes.",
+  "worker.relaunch":
+    "Replace one worker generation in its existing branch and worktree. Supply the inspected session and a reason.",
   "worker.message": "Deliver a keyed message to the current worker generation.",
   "worker.stop": "Stop the current worker generation and release its capability.",
   "merge.check":
@@ -468,7 +470,7 @@ export function nativeTools(
                 `call ${name} with its declared parameters`,
               ),
             );
-          if ((name === "fleet.status" || name === "inbox.list") && options.refresh) {
+          if (["fleet.status", "inbox.list"].includes(name) && options.refresh) {
             // The host bounds the refresh; failure leaves the last committed facts and their age.
             await options.refresh().catch(() => {});
             try {
@@ -483,7 +485,7 @@ export function nativeTools(
               );
             }
           }
-          if (["worker.launch", "worker.message", "worker.stop"].includes(name) && options.workers) {
+          if (["worker.launch", "worker.relaunch", "worker.message", "worker.stop"].includes(name) && options.workers) {
             if (!api.callId || !Number.isSafeInteger(api.taskId))
               return output(
                 refuse(
@@ -504,11 +506,13 @@ export function nativeTools(
                   },
                 ),
               );
-            } catch {
+            } catch (error) {
               return output(
                 refuse(
                   "worker_refused",
-                  "worker action could not be confirmed; inspect fleet state before retrying",
+                  error instanceof WorkerRefusal
+                    ? error.message
+                    : "worker action could not be confirmed; inspect fleet state before retrying",
                   "fleet.status",
                 ),
               );
