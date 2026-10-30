@@ -238,6 +238,7 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
             send={chat.send}
             busy={busy}
             primary={busy && stop ? (field) => <TurnActions field={field} stop={stop} /> : undefined}
+            restore={chat.withdrawn ?? null}
             disabled={!live || chat.status !== "ready" || !chat.coordinator}
             hint={hint}
             history={history}

@@ -161,6 +161,12 @@ describe("the room streams the coordinator's turn in a browser", () => {
   /** The field gave its message to the daemon, which admitted it. */
   const emptied = (page: Page) =>
     page.waitForFunction(() => document.querySelector("textarea")?.value === "", undefined, { timeout: 2_000 });
+  /** The next reading, without a checkpoint: what the room reads when it asks (after a Stop). */
+  const reading = (page: Page, items: ChatItem[], idle?: ChatTurn) =>
+    page.evaluate((json) => {
+      const { items, idle } = JSON.parse(json);
+      (window as unknown as { daemon: { reading(i: unknown, t: unknown): void } }).daemon.reading(items, idle);
+    }, JSON.stringify({ items, idle }));
   const requests = (page: Page) =>
     page.evaluate(() => (window as unknown as { daemon: { requests: Record<string, unknown>[] } }).daemon.requests);
   const owner: ChatItem = { kind: "owner", id: "e1", at: T0, body: "Check the berths, then merge #41." };
@@ -231,22 +237,10 @@ describe("the room streams the coordinator's turn in a browser", () => {
     await emit(page, frame(turn("tool", at(15), { tool: { id: tool.id, name: tool.name }, queued: 1 })));
     expect(await working.textContent()).toBe("Working for 15s· 1 queued");
 
-    // An empty field: Stop, which interrupts the turn.
-    const stop = page.getByRole("button", { name: "Stop generation" });
-    expect(await stop.getAttribute("title")).toBe("Interrupt");
-    await stop.click();
-    await page.waitForFunction(
-      () =>
-        (window as unknown as { daemon: { requests: { type: string }[] } }).daemon.requests.filter(
-          (r) => r.type === "chat.stop",
-        ).length === 1,
-      undefined,
-      { timeout: 2_000 },
-    );
-
-    // The checkpoint's reading: the stopped answer under the partial's key, the call's result, the messages.
-    await emit(page, frame(turn("idle", at(20))));
-    await checkpoint(
+    // An empty field: Stop, which interrupts the turn. pi's abort withdraws both messages still waiting: the
+    // reading right after the Stop holds the stopped answer and the call's result, not them, and their words
+    // come back to the field rather than vanish.
+    await reading(
       page,
       [
         owner,
@@ -259,18 +253,28 @@ describe("the room streams the coordinator's turn in a browser", () => {
           aborted: true,
         },
         { kind: "tool", ...tool, output: '{"ok":true}' },
-        { kind: "owner", id: "e2", at: at(21), body: "Merge #44 first." },
-        { kind: "owner", id: "e3", at: at(22), body: "Then look at HAR-15." },
       ],
       turn("idle", at(20)),
     );
+    const stop = page.getByRole("button", { name: "Stop generation" });
+    expect(await stop.getAttribute("title")).toBe("Interrupt");
+    await stop.click();
+    await page.waitForFunction(
+      () => document.querySelector("textarea")?.value === "Merge #44 first.\n\nThen look at HAR-15.",
+      undefined,
+      { timeout: 2_000 },
+    );
+    expect((await requests(page)).map((r) => r.type).slice(-2)).toEqual(["chat.stop", "chat.read"]);
+    await emit(page, frame(turn("idle", at(20))));
     const read = page.locator('[data-mark="partial"]');
     await page.locator('[data-mark="partial"][data-item="coordinator"]').waitFor({ timeout: 2_000 });
     expect(await read.locator("[data-streaming]").count()).toBe(0);
     expect(await read.locator("[data-stopped]").textContent()).toBe("stoppedYou stopped this response");
     expect(await read.locator('[data-thought="done"] [data-preview]').textContent()).toBe("Counting the berths");
     expect(await page.locator("[data-working]").count()).toBe(0);
+    // Neither the queued bubble nor the steered one on its way stays.
     expect(await page.locator("[data-queued]").count()).toBe(0);
+    expect(await page.locator('[data-item="owner"]').count()).toBe(1);
     // The call's row stays where it was, its result read: it no longer shines.
     expect(await call.textContent()).toBe("Read the fleet");
     expect(await call.locator("[data-shine]").count()).toBe(0);

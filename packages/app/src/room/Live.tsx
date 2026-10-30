@@ -230,7 +230,9 @@ export function TurnActions({ field, stop }: { field: ComposerField; stop: () =>
   const queue = useModifier();
   if (!field.text.trim())
     return (
+      // Its own element, never the Steer button reused: a click on Stop cannot submit what comes back to the field.
       <button
+        key="stop"
         type="button"
         aria-label="Stop generation"
         title="Interrupt"
@@ -251,6 +253,7 @@ export function TurnActions({ field, stop }: { field: ComposerField; stop: () =>
     );
   return (
     <button
+      key="steer"
       type="submit"
       aria-label={queue ? "Queue message" : "Steer message"}
       title="Click to steer, ⌘-click to queue"

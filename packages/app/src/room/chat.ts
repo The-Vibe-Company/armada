@@ -32,6 +32,11 @@ export interface Chat {
   stop?(): Promise<void>;
   /** The owner's messages queued for the turn's end, not yet in a reading: shown apart, under the thread. */
   queued?: readonly ChatItem[];
+  /**
+   * The owner's messages a Stop withdrew before the coordinator took them (pi's
+   * abort withdraws every waiting input), given back to the field; a new `key` for each Stop.
+   */
+  withdrawn?: { key: number; bodies: readonly string[] } | null;
 }
 
 export type WhenBusy = "steer" | "queue";
@@ -97,6 +102,8 @@ export function applyFrame(live: Live, frame: ChatFrame): Live {
 export function afterReading(live: Live, items: readonly ChatItem[], turn: ChatTurn | undefined): Live {
   const held = new Map(items.map((i) => [i.id, i]));
   const entries = live.entries.filter((e) => {
+    // Blank words before a call never become an item: nothing waits for them.
+    if (e.kind === "streaming" && blank(e)) return false;
     const item = held.get(e.id);
     if (!item) return true;
     return e.kind === "tool" && item.kind === "tool" && item.output === null;
@@ -108,6 +115,8 @@ export function afterReading(live: Live, items: readonly ChatItem[], turn: ChatT
     entries: entries.length === live.entries.length ? live.entries : entries,
   };
 }
+
+const blank = (e: Streaming) => !e.text.trim() && !e.reasoning.trim();
 
 /** One row of the thread: an item read, or an answer still being written. */
 export type ThreadItem = ChatItem | Streaming;
@@ -125,7 +134,7 @@ export function threadItems(items: readonly ChatItem[], live: Live | null | unde
       const call = i.kind === "tool" ? streamed.get(i.id) : undefined;
       return call?.kind === "tool" ? call : i;
     }),
-    ...live.entries.filter((e) => !read.has(e.id)),
+    ...live.entries.filter((e) => !read.has(e.id) && !(e.kind === "streaming" && blank(e))),
   ];
 }
 
@@ -176,6 +185,17 @@ export function useChat(project: string): Chat {
   const mine = read?.project === project ? read : null;
   const stale = !mine || latest > mine.seq;
   const seq = mine?.seq;
+  const land = useCallback(
+    (r: { seq: number; coordinator: boolean; items: ChatItem[]; turn?: ChatTurn }) => {
+      setRead({ project, seq: r.seq, coordinator: r.coordinator, items: r.items });
+      setTurn((held) => ({
+        project,
+        live: afterReading(held.project === project ? held.live : NO_LIVE, r.items, r.turn),
+      }));
+      setProblem(null);
+    },
+    [project],
+  );
   // Read when the reading is missing or behind the log; a reconnect (`live`) or a newer reading asks again if still behind.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `seq` and `latest` decide `stale`; a new one asks again.
   useEffect(() => {
@@ -184,13 +204,7 @@ export function useChat(project: string): Chat {
     client
       .request({ type: "chat.read", project })
       .then((r) => {
-        if (!current) return;
-        setRead({ project, seq: r.seq, coordinator: r.coordinator, items: r.items });
-        setTurn((held) => ({
-          project,
-          live: afterReading(held.project === project ? held.live : NO_LIVE, r.items, r.turn),
-        }));
-        setProblem(null);
+        if (current) land(r);
       })
       .catch((error: unknown) => {
         if (current) setProblem(error instanceof Error ? error.message : "Could not read the conversation");
@@ -198,11 +212,14 @@ export function useChat(project: string): Chat {
     return () => {
       current = false;
     };
-  }, [client, project, live, able, stale, latest, seq]);
+  }, [client, project, live, able, stale, latest, seq, land]);
 
   const draft = useRef<{ body: string; id: string } | null>(null);
   // Sent and admitted, not yet in a reading (the coordinator places it after its tool round).
   const [sent, setSent] = useState<Sent[]>([]);
+  const sentNow = useRef(sent);
+  sentNow.current = sent;
+  const [withdrawn, setWithdrawn] = useState<{ key: number; bodies: readonly string[] } | null>(null);
   const send = useCallback(
     async (body: string, whenBusy?: WhenBusy) => {
       if (draft.current?.body !== body) draft.current = { body, id: newId() };
@@ -222,9 +239,19 @@ export function useChat(project: string): Chat {
     },
     [client, project],
   );
+  // pi's abort withdraws every input still waiting (queued, or steered and not yet placed): the reading right
+  // after the Stop says which, and their words go back to the owner's field rather than vanish.
   const stop = useCallback(async () => {
+    const asked = Date.now();
     await client.request({ type: "chat.stop", project });
-  }, [client, project]);
+    const r = await client.request({ type: "chat.read", project });
+    land(r);
+    const gone = sentNow.current.filter((m) => m.project === project && m.at <= asked && !holds(r.items, m));
+    if (!gone.length) return;
+    const ids = new Set(gone.map((m) => m.id));
+    setSent((list) => list.filter((m) => !ids.has(m.id)));
+    setWithdrawn((last) => ({ key: (last?.key ?? 0) + 1, bodies: gone.map((m) => m.body) }));
+  }, [client, project, land]);
   const answer = useCallback(
     async (item: string, choice: string, note: string) => {
       const said = note.trim();
@@ -260,10 +287,15 @@ export function useChat(project: string): Chat {
     live: streams ? current : null,
     stop,
     queued,
+    withdrawn,
   };
 }
 
 type Sent = { project: string; id: string; body: string; at: number; queued?: true };
+
+/** Whether a reading holds a message sent: an owner item with the same words, said from a moment before it was sent. */
+const holds = (items: readonly ChatItem[], m: { body: string; at: number }) =>
+  items.some((i) => i.kind === "owner" && i.body === m.body && Date.parse(i.at) >= m.at - 5_000);
 
 /**
  * The reading, then the owner's messages sent since that it does not hold yet
@@ -275,11 +307,7 @@ export function withSent(
   sent: readonly { project: string; id: string; body: string; at: number }[],
   project: string,
 ): readonly ChatItem[] {
-  const waiting = sent.filter(
-    (m) =>
-      m.project === project &&
-      !items.some((i) => i.kind === "owner" && i.body === m.body && Date.parse(i.at) >= m.at - 5_000),
-  );
+  const waiting = sent.filter((m) => m.project === project && !holds(items, m));
   if (!waiting.length) return items;
   return [
     ...items,

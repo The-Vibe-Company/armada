@@ -54,6 +54,7 @@ export function Composer({
   history = [],
   model = null,
   primary,
+  restore = null,
   storage = browserStorage(),
   timers,
 }: {
@@ -70,6 +71,8 @@ export function Composer({
   model?: string | null;
   /** Replaces the round Send (the live turn's Stop, Steer and Queue, THE-2052). */
   primary?: (field: ComposerField) => ReactNode;
+  /** Messages a Stop withdrew (THE-2052): each new `key` puts their words back in the field, after what it holds. */
+  restore?: { key: number; bodies: readonly string[] } | null;
   /** Where drafts are kept (`localStorage`; null keeps none). */
   storage?: DraftStorage | null;
   timers?: Timers;
@@ -86,6 +89,17 @@ export function Composer({
   latest.current = { body, recall };
   // A recalled message puts the caret at its end, where ↓ goes on.
   const toEnd = useRef(false);
+
+  // What a Stop withdrew comes back to the field, kept as the draft.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each Stop's key gives its words back once.
+  useEffect(() => {
+    if (!restore?.bodies.length) return;
+    const back = [latest.current.body.trim(), ...restore.bodies].filter(Boolean).join("\n\n");
+    toEnd.current = true;
+    setBody(back);
+    setRecall(null);
+    keeper?.keep(project, back);
+  }, [restore?.key]);
 
   // A draft still waiting is written when the room closes, or the page.
   useEffect(() => {

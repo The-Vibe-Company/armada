@@ -97,6 +97,16 @@ export function Thread({
   // The call the turn runs now shines (THE-2052).
   const running = working ? (turn?.tool?.id ?? null) : null;
   const list = useRef<HTMLOListElement>(null);
+  // An answer written in place is never an addition the thread's live region hears: once read, it is said whole.
+  const streamed = useRef(new Set<string>());
+  const [finished, setFinished] = useState("");
+  useEffect(() => {
+    for (const item of items) {
+      if (item.kind === "streaming") streamed.current.add(item.id);
+      else if (streamed.current.delete(item.id) && (item.kind === "coordinator" || item.kind === "line"))
+        setFinished(item.body.trim() ? `Coordinator: ${item.body}` : "");
+    }
+  }, [items]);
   // Announced once the first reading is on screen: what arrives after, never the history.
   const [announce, setAnnounce] = useState(false);
   const read = items.length > 0;
@@ -150,6 +160,8 @@ export function Thread({
                 data-item={rowKind(row)}
                 // A message on its way is announced once, when the conversation holds it; its controls wait for it too.
                 inert={row.id.startsWith("sent:") || undefined}
+                // Still written: assistive technology waits for it (the status below says it once read).
+                aria-busy={(row.kind === "said" && row.item.kind === "streaming") || undefined}
                 className="group/row min-w-0"
               >
                 {row.kind === "said" ? (
@@ -185,6 +197,9 @@ export function Thread({
           )}
         </ol>
       </TicketGroups>
+      <p role="status" className="sr-only">
+        {finished}
+      </p>
     </section>
   );
 }

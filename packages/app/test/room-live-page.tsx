@@ -13,10 +13,9 @@ import { useChat } from "../src/room/chat";
 import { RoomView } from "../src/screens/Room";
 
 const PROJECT = { id: "harbor", name: "Harbor", repository: "example/harbor" };
-// The page's time starts where the test puts it (`daemon.setNow`) and flows on from there, as Playwright's waits need.
-const realNow = Date.now.bind(Date);
-let offset = Date.parse("2026-03-10T15:00:00.000Z") - realNow();
-Date.now = () => realNow() + offset;
+// The page's time stands where the test puts it (`daemon.setNow`): the Working row's timer reads it.
+let now = Date.parse("2026-03-10T15:00:00.000Z");
+Date.now = () => now;
 const minor = Number(new URLSearchParams(location.search).get("minor") ?? "7");
 
 const listeners = new Set<() => void>();
@@ -80,7 +79,11 @@ const client: DaemonClient = {
 (window as unknown as { daemon: unknown }).daemon = {
   requests,
   setNow(time: number) {
-    offset = time - realNow();
+    now = time;
+  },
+  /** The next reading, the log unmoved: what the room reads when it asks on its own (after a Stop). */
+  reading(items: ChatItem[], turn?: ChatTurn) {
+    reading = { items, ...(turn ? { turn } : {}) };
   },
   /** One live frame, as the daemon would send it to a subscriber of CHAT_LIVE_MINOR; drawn before it returns. */
   emit(frame: Record<string, unknown>) {
