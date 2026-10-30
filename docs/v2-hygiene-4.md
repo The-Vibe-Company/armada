@@ -82,7 +82,9 @@ bunx knip@6.43.0 --config knip.v2.json
 ```
 
 Register the actual `Bun.build` entrypoints `test/notify-page.tsx`,
-`room-live-page.tsx` and `thread-page.tsx` explicitly in Knip. They were reported
+`room-live-page.tsx` and `thread-page.tsx` explicitly in Knip. After rebasing
+main `ed86473320da5fc3d1ec9a25ad1275dff49c8824` (THE-2054), register its
+`sidebar-page.tsx` and `thread-scroll-page.tsx` entrypoints too. They were reported
 as unused files because their callers use entrypoint strings; all remain live.
 No new blanket suppression or dependency/lockfile change is needed.
 
@@ -96,7 +98,10 @@ No new blanket suppression or dependency/lockfile change is needed.
 
 The remaining scan findings belong to excluded owners: `SETTINGS_SECTIONS`,
 `SettingsNav`, `SettingsGroup`, daemon `cutOutput`, `refused`, `chatOf` and
-GitHub's `GithubFetch` reexport. Record them; do not suppress them to claim a
+GitHub's `GithubFetch` reexport. The post-rebase scan also identifies
+THE-2054's private `AT_END_PX` and `PillLabel` exports; record them with
+the deferred room follow-up rather than editing the inherited scroll owner.
+Record them; do not suppress them to claim a
 zero scan. `ChatResult`, `ChatSent`, `OwnerAnswered` and `ChatStopped` are public
 protocol exports: absence of an in-repository consumer is not dead-code proof.
 `pluginModels` is still used on this baseline; reassess after THE-2073 rather

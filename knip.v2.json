@@ -16,7 +16,14 @@
       "project": ["src/**/*.ts", "coordinator/**/*.ts", "test/**/*.ts"]
     },
     "packages/app": {
-      "entry": ["test/**/*.test.{ts,tsx}", "test/notify-page.tsx", "test/room-live-page.tsx", "test/thread-page.tsx"],
+      "entry": [
+        "test/**/*.test.{ts,tsx}",
+        "test/notify-page.tsx",
+        "test/room-live-page.tsx",
+        "test/thread-page.tsx",
+        "test/sidebar-page.tsx",
+        "test/thread-scroll-page.tsx"
+      ],
       "project": ["src/**/*.{ts,tsx,css}", "scripts/**/*.ts", "test/**/*.{ts,tsx}"]
     },
     "packages/desktop": {
