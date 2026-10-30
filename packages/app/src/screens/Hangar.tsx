@@ -9,7 +9,6 @@ import { projectHref } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import { useDaemon } from "@/protocol/store";
 import { Sky } from "@/sky/Sky";
-import type { SkyClock } from "@/sky/view";
 
 const viewerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -28,12 +27,10 @@ export function Hangar({
   onReload,
   now: givenNow,
   zone: givenZone,
-  clock,
 }: {
   onReload: () => void;
   now?: number;
   zone?: string;
-  clock?: SkyClock;
 }) {
   const { projects, fleets } = useDaemon();
   // Read on each render: each frame re-renders the sky, and nothing on screen ticks between them.
@@ -89,11 +86,7 @@ export function Hangar({
       />
       <div className="relative flex min-h-0 flex-1">
         {/* Drawn once the fleet is read, so its first paint holds every squadron still in place. */}
-        {read ? (
-          <Sky projects={flying ? squadrons : []} size="stage" link={projectHref} clock={clock} />
-        ) : (
-          <div className="flex-1" />
-        )}
+        {read ? <Sky projects={flying ? squadrons : []} size="stage" link={projectHref} /> : <div className="flex-1" />}
         {quiet && (
           <p className="pointer-events-none absolute inset-x-6 top-1/2 m-0 -translate-y-1/2 text-center text-sub text-text-3">
             {quiet}

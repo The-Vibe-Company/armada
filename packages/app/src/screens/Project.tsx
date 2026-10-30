@@ -1,30 +1,13 @@
-import { APP_TOO_OLD, DAEMON_TOO_OLD } from "@armada/protocol";
+import { DaemonProblem } from "@/components/DaemonProblem";
 import { FleetList } from "@/components/fleet/FleetList";
 import { Dot, Page, PageHeader } from "@/components/page";
-import { Button } from "@/components/ui/button";
 import { fleetItems } from "@/fleet/overview";
 import { fleetOf } from "@/fleet/state";
-import { LOG_BEHIND, NOT_FOLDED } from "@/protocol/client";
 import { useDaemon } from "@/protocol/store";
 import { ProjectRules } from "@/rules/ProjectRules";
 
 export function Project({ id, onReload }: { id: string; onReload: () => void }) {
-  const { projects, fleets, problem, status } = useDaemon();
-  const reload =
-    problem === LOG_BEHIND || problem === NOT_FOLDED || problem === APP_TOO_OLD || problem === DAEMON_TOO_OLD;
-  const alert = problem && (
-    <div
-      role="alert"
-      className={`flex items-center gap-3 rounded-card bg-card px-4 py-3 shadow-ring ${status === "refused" ? "text-red" : "text-amber"}`}
-    >
-      <span className="flex-1">{problem}</span>
-      {reload && (
-        <Button variant="soft" onClick={onReload}>
-          Reload
-        </Button>
-      )}
-    </div>
-  );
+  const { projects, fleets, problem } = useDaemon();
   const project = projects?.find((p) => p.id === id);
   const snapshot = fleets[id];
   if (!project)
@@ -40,7 +23,7 @@ export function Project({ id, onReload }: { id: string; onReload: () => void }) 
                 : "This project is not available."
           }
         />
-        {alert}
+        <DaemonProblem onReload={onReload} />
       </Page>
     );
   const now = Date.now();
@@ -59,7 +42,7 @@ export function Project({ id, onReload }: { id: string; onReload: () => void }) 
         }
         quiet="The fleet and its current rules."
       />
-      {alert}
+      <DaemonProblem onReload={onReload} />
       {snapshot ? (
         <ProjectRules state={snapshot.state} />
       ) : !problem ? (

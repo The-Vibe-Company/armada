@@ -3,7 +3,7 @@
 // nothing and nothing loops. The clock is injected: the browser's animation
 // frames in the app, a hand-turned one in tests.
 import { drawSky, type SkyContext } from "./draw";
-import { aim, atRest, createFlock, type Flock, step } from "./flock";
+import { aim, atRest, createFlock, step } from "./flock";
 import type { SkyLayout } from "./layout";
 
 /** Calls `run` once, on the next frame, with the frame's time in milliseconds; returns a cancel. */
@@ -19,7 +19,6 @@ export const animationFrames: SkyClock = {
 };
 
 export interface SkyView {
-  readonly flock: Flock;
   /** The sky's size in CSS pixels and the device's pixel ratio. */
   resize(width: number, height: number, dpr: number): void;
   /**
@@ -27,8 +26,6 @@ export interface SkyView {
    * first paint, a resize, or reduced motion.
    */
   show(layout: SkyLayout, opts?: { still?: boolean }): void;
-  /** Whether it asked its clock for a frame: something is moving. */
-  readonly moving: boolean;
   stop(): void;
 }
 
@@ -53,10 +50,6 @@ export function createSkyView(ctx: SkyContext, clock: SkyClock): SkyView {
   };
 
   return {
-    flock,
-    get moving() {
-      return cancel !== null;
-    },
     resize(width, height, ratio) {
       flock.width = width;
       flock.height = height;

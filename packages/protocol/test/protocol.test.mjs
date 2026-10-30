@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { pluginEventInputSchema, pluginEventSchema } from "@armada/plugin-api";
 import {
   admitRequest,
   clientMessageSchema,
   eventPayloadSchemas,
+  eventSchema,
   PROTOCOL_VERSION,
   projectTablesSchema,
   serverMessageSchema,
@@ -332,4 +334,41 @@ test("folded tables validate known rows while preserving extension fields and se
     false,
   );
   assert.equal(projectTablesSchema.safeParse({ ...tables, extension: { value: undefined } }).success, false);
+});
+
+test("plugin events admit the wire envelope, including offset dates and extension kinds", () => {
+  const event = {
+    seq: 1,
+    project: "orchard",
+    kind: "example.extension",
+    at: "2030-01-01T10:00:00Z",
+    actor: "example",
+    payload: { future: [null, true, 3] },
+  };
+  const cases = [
+    [event, true],
+    [{ ...event, at: "2030-01-01T10:00:00.123+02:30" }, true],
+    [{ ...event, at: "yesterday" }, false],
+    [{ ...event, at: "2030-02-30T10:00:00Z" }, false],
+    [{ ...event, at: "2030-01-01T10:00:00" }, false],
+    [{ ...event, at: "" }, false],
+    [{ ...event, seq: 0 }, false],
+    [{ ...event, seq: Number.MAX_SAFE_INTEGER }, true],
+    [{ ...event, seq: Number.MAX_SAFE_INTEGER + 1 }, false],
+    [{ ...event, project: "" }, false],
+    [{ ...event, kind: "" }, false],
+    [{ ...event, actor: "" }, false],
+    [{ ...event, payload: { invalid: undefined } }, false],
+  ];
+  for (const [input, valid] of cases) {
+    assert.equal(eventSchema.safeParse(input).success, valid);
+    assert.equal(pluginEventSchema.safeParse(input).success, valid);
+    const { seq: _seq, ...append } = input;
+    // Append omits only the cursor; a bad cursor does not affect append admission.
+    assert.equal(
+      pluginEventInputSchema.safeParse(append).success,
+      "seq" in input && input.seq !== event.seq ? true : valid,
+    );
+  }
+  assert.deepEqual(pluginEventSchema.parse(event), event);
 });

@@ -158,7 +158,7 @@ function Row({
 }
 
 /** The six steps: the done ones grey, the one at work in its state's colour, those to come dark. */
-export function StepBar({ step, bg }: { step: number; bg: string }) {
+function StepBar({ step, bg }: { step: number; bg: string }) {
   const label = STEPS[Math.min(step, STEPS.length - 1)];
   return (
     <span role="img" aria-label={`Step: ${label}`} className="flex gap-0.5">

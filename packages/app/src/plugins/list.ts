@@ -1,7 +1,7 @@
 import type { Plugin } from "@armada/protocol";
 
 /** The seams in the plugin API's order (packages/plugin-api), as the screen names its groups. */
-export const SEAM_GROUPS = [
+const SEAM_GROUPS = [
   { seam: "runtime", label: "Runtimes" },
   { seam: "tracker", label: "Trackers" },
   { seam: "forge", label: "Forges" },

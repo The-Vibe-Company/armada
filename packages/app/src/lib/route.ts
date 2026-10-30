@@ -36,7 +36,6 @@ export function routeOf(hash: string): Route {
 
 /** Where a project's squadron and its sidebar line lead: its room. */
 export const projectHref = (id: string) => `#/projects/${encodeURIComponent(id)}`;
-export const roomHref = projectHref;
 export const rulesHref = (project: string) => `${projectHref(project)}/rules`;
 
 const subscribe = (listener: () => void) => {

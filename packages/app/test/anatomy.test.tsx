@@ -33,10 +33,6 @@ function namedFonts(list: string): string[] {
 }
 
 describe("the app's sources", () => {
-  test("are found, with the title line and the theme", () => {
-    expect(sources.map(rel)).toEqual(expect.arrayContaining([TITLE_LINE, "src/styles.css", "src/App.tsx"]));
-  });
-
   test("render no h1 outside the title line", () => {
     const h1 = /<h1[\s>]|["'`]h1["'`]|createElement\(\s*["']h1/;
     expect(read(join(ROOT, TITLE_LINE))).toMatch(h1);

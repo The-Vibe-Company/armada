@@ -48,7 +48,7 @@ export function segments(text: string): Segment[] {
 }
 
 /** The first ticket a message names, if any. */
-export const firstTicket = (text: string) => segments(text).find((s) => s.kind === "ticket")?.text ?? null;
+const firstTicket = (text: string) => segments(text).find((s) => s.kind === "ticket")?.text ?? null;
 
 /**
  * The state each coordinator line shows on its dot: the named ticket's group

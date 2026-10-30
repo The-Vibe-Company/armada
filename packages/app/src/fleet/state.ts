@@ -1,32 +1,19 @@
+import { flowStepSchema, phaseSchema, sessionStateSchema } from "@armada/protocol";
 import { z } from "zod";
 
-// The daemon owns its folded state's shape (packages/daemon/src/fold.ts,
-// `ProjectTables`); the protocol carries it as JSON. The app reads the few
+// The protocol owns the folded state's vocabulary. The app reads the few
 // fields its screens need, item by item: a row of another shape is skipped,
 // never a reason to drop the whole project, and any other field is ignored.
 
 const text = z.string();
-const phase = z.enum([
-  "planning",
-  "awaiting-approval",
-  "implementing",
-  "shipping",
-  "blocked",
-  "ready-to-merge",
-  "awaiting-validation",
-  "released",
-  "merged",
-]);
-export type Phase = z.infer<typeof phase>;
-
 const sessionSchema = z.object({
   ticket: text.min(1),
   session: text.min(1),
   title: text,
-  phase,
-  state: z.enum(["blocked", "waiting-for-owner", "in-progress", "ready-to-merge", "merged", "released"]),
+  phase: phaseSchema,
+  state: sessionStateSchema,
   reason: text,
-  flowStep: z.enum(["plan", "implementing", "review", "ci", "merged"]),
+  flowStep: flowStepSchema,
   at: text,
   /** Where the worker runs: the sky reads its harness from it (src/fleet/sky.ts). */
   runtime: text.optional(),
@@ -59,8 +46,8 @@ const validationSchema = z.object({
 export type FoldedSession = z.infer<typeof sessionSchema>;
 export type FoldedPullRequest = z.infer<typeof pullRequestSchema>;
 export type FoldedInboxItem = z.infer<typeof inboxSchema>;
-export type FoldedQueueEntry = z.infer<typeof queueSchema>;
-export type FoldedValidation = z.infer<typeof validationSchema>;
+type FoldedQueueEntry = z.infer<typeof queueSchema>;
+type FoldedValidation = z.infer<typeof validationSchema>;
 
 /** One project's folded state, as far as the fleet's screens read it. */
 export interface FleetState {

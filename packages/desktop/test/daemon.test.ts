@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { once } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -36,14 +37,16 @@ function gone(pid: number) {
   assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
 }
 
-test("ready daemon serves the app on an allocated port; repeated stop awaits process removal", async () => {
+test("ready daemon serves the app on an allocated port; repeated stop awaits process removal", {
+  timeout: 20000,
+}, async (t) => {
   const f = fixture();
   const daemon = new DaemonProcess(f.options);
   try {
     const address = await daemon.ready;
     assert.ok(Number(new URL(address.url).port) > 0);
     assert.equal(address.wsUrl, `${address.url.replace("http:", "ws:")}/`);
-    assert.equal(await (await fetch(address.url)).text(), "<title>Armada</title>");
+    assert.equal(await (await fetch(address.url, { signal: t.signal })).text(), "<title>Armada</title>");
     assert.doesNotThrow(() => process.kill(daemon.pid, 0));
     await Promise.all([daemon.stop(), daemon.stop()]);
     assert.equal((await daemon.exited).code, 0);
@@ -55,17 +58,22 @@ test("ready daemon serves the app on an allocated port; repeated stop awaits pro
 });
 
 /** Asks the daemon at `wsUrl` to restart, as the app's Restart button does, and reads its answer. */
-async function askRestart(wsUrl: string): Promise<string> {
+async function askRestart(wsUrl: string, signal: AbortSignal): Promise<string> {
   const ws = new WebSocket(wsUrl);
-  await new Promise((resolve) => ws.addEventListener("open", resolve, { once: true }));
-  const answer = new Promise<string>((resolve) =>
-    ws.addEventListener("message", (event) => resolve(JSON.parse(String(event.data)).type), { once: true }),
-  );
-  ws.send(JSON.stringify({ version: { major: 1, minor: 2 }, id: "restart-1", type: "daemon.restart" }));
-  return answer;
+  try {
+    await once(ws, "open", { signal });
+    const answer = once(ws, "message", { signal });
+    ws.send(JSON.stringify({ version: { major: 1, minor: 2 }, id: "restart-1", type: "daemon.restart" }));
+    const [event] = await answer;
+    return JSON.parse(String(event.data)).type;
+  } finally {
+    ws.close();
+  }
 }
 
-test("the app's restart ends a restartable daemon with the restart code; it comes back on its port, else another", async () => {
+test("the app's restart ends a restartable daemon with the restart code; it comes back on its port, else another", {
+  timeout: 60000,
+}, async (t) => {
   const f = fixture();
   const children: DaemonProcess[] = [];
   const start = (port: number) => {
@@ -77,20 +85,20 @@ test("the app's restart ends a restartable daemon with the restart code; it come
   try {
     const first = start(0);
     const address = await first.ready;
-    assert.equal(await askRestart(address.wsUrl), "daemon.restarting");
+    assert.equal(await askRestart(address.wsUrl, t.signal), "daemon.restarting");
     assert.equal((await first.exited).code, RESTART_EXIT_CODE);
     gone(first.pid);
     // Its port is free again: the same address, so the app's socket reconnects on its own.
     const again = await restartDaemon(address, start);
     assert.deepEqual(again, address);
-    assert.equal(await (await fetch(again.url)).text(), "<title>Armada</title>");
-    assert.equal(await askRestart(again.wsUrl), "daemon.restarting");
+    assert.equal(await (await fetch(again.url, { signal: t.signal })).text(), "<title>Armada</title>");
+    assert.equal(await askRestart(again.wsUrl, t.signal), "daemon.restarting");
     assert.equal((await children[1]?.exited)?.code, RESTART_EXIT_CODE);
     // Taken meanwhile: another port.
     await new Promise<void>((resolve) => blocker.listen(Number(new URL(address.url).port), "127.0.0.1", resolve));
     const moved = await restartDaemon(address, start);
     assert.notEqual(moved.url, address.url);
-    assert.equal(await (await fetch(moved.url)).text(), "<title>Armada</title>");
+    assert.equal(await (await fetch(moved.url, { signal: t.signal })).text(), "<title>Armada</title>");
   } finally {
     blocker.close();
     await Promise.all(children.map((child) => child.stop()));
@@ -98,7 +106,7 @@ test("the app's restart ends a restartable daemon with the restart code; it come
   }
 });
 
-test("a quit during a restart's first attempt starts no second daemon", async () => {
+test("a quit during a restart's first attempt starts no second daemon", { timeout: 20000 }, async () => {
   const ports: number[] = [];
   let quitting = false;
   const start = (port: number) => {
@@ -114,7 +122,7 @@ test("a quit during a restart's first attempt starts no second daemon", async ()
   assert.deepEqual(ports, [4999]);
 });
 
-test("startup failure rejects readiness and reaps the failed child", async () => {
+test("startup failure rejects readiness and reaps the failed child", { timeout: 20000 }, async () => {
   const f = fixture();
   writeFileSync(f.options.projects, "invalid");
   const daemon = new DaemonProcess(f.options);
@@ -128,7 +136,7 @@ test("startup failure rejects readiness and reaps the failed child", async () =>
   }
 });
 
-test("stopping during startup rejects readiness and leaves no child", async () => {
+test("stopping during startup rejects readiness and leaves no child", { timeout: 20000 }, async () => {
   const f = fixture();
   const daemon = new DaemonProcess(f.options);
   const readiness = assert.rejects(daemon.ready, /stopped before readiness/);
@@ -142,7 +150,7 @@ test("stopping during startup rejects readiness and leaves no child", async () =
   }
 });
 
-test("startup deadline kills an unresponsive child, including one ignoring SIGTERM", async () => {
+test("startup deadline kills an unresponsive child, including one ignoring SIGTERM", { timeout: 20000 }, async () => {
   const f = fixture();
   const entry = join(f.dir, "stuck.mjs");
   // No sleep: the readiness deadline exercises the production timer and termination escalation.
@@ -159,7 +167,7 @@ test("startup deadline kills an unresponsive child, including one ignoring SIGTE
   }
 });
 
-test("spawn errors reject readiness without hanging shutdown", async () => {
+test("spawn errors reject readiness without hanging shutdown", { timeout: 20000 }, async () => {
   const f = fixture();
   const daemon = new DaemonProcess({ ...f.options, executable: join(f.dir, "missing-node") });
   try {

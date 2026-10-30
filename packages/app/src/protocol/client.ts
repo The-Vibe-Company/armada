@@ -90,9 +90,9 @@ export interface DaemonClient {
 }
 
 /** A room request the screens send and await, without its envelope (`version`, `id`): the client adds it. */
-export type DaemonRequest = Unaddressed<ChatReadRequest | ChatSendRequest | OwnerAnswerRequest>;
+type DaemonRequest = Unaddressed<ChatReadRequest | ChatSendRequest | OwnerAnswerRequest>;
 /** The reply to each of them. */
-export type DaemonReply<R extends DaemonRequest> = Extract<
+type DaemonReply<R extends DaemonRequest> = Extract<
   ServerMessage,
   { type: { "chat.read": "chat.result"; "chat.send": "chat.sent"; "owner.answer": "owner.answered" }[R["type"]] }
 >;
@@ -105,7 +105,7 @@ const BACKOFF = [250, 500, 1000, 2000, 5000];
 export const UNREADABLE = "The daemon sent a message this app cannot read";
 export const NOT_FOLDED = "The daemon does not send its folded state live: update it";
 export const LOG_BEHIND = "The daemon's log is behind what this app has read: reload the app";
-export const NOT_ANSWERED = "The daemon did not answer: the connection dropped. Try again.";
+const NOT_ANSWERED = "The daemon did not answer: the connection dropped. Try again.";
 export const unusableAddress = (url: string) => `This daemon address is not usable: ${url}`;
 export const NO_PLUGINS = "This daemon has no Plugins screen: update it";
 export const UNCONFIRMED = "The daemon did not confirm this change. Check the list before trying again.";
