@@ -1,0 +1,48 @@
+{
+  "name": "@armada/plugin-opencode",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "armada": {
+    "id": "opencode",
+    "version": "0.1.0",
+    "pluginApi": "^0.2.0",
+    "description": "Run the official opencode CLI using host-selected node facilities.",
+    "enabledByDefault": true,
+    "contributions": {
+      "runtime": {
+        "opencode": {
+          "config": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "minLength": 1
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1
+              },
+              "effort": {
+                "type": "string",
+                "minLength": 1
+              },
+              "extraArgs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "secrets": []
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@armada/plugin-api": "workspace:*"
+  }
+}
