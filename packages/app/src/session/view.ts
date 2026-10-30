@@ -9,6 +9,7 @@ import { z } from "zod";
 import { dayIn, GROUP_OF, type Group, sessionReason } from "@/fleet/overview";
 import { HARNESS_LABEL, harnessOf } from "@/fleet/sky";
 import type { FleetState, FoldedPullRequest, FoldedSession } from "@/fleet/state";
+import { type Choice, choiceOf } from "@/room/view";
 
 /** The page's six steps, from the plan to done. */
 export const PAGE_STEPS = ["Plan", "Build", "Ship", "Review & CI", "Merge", "Done"] as const;
@@ -113,10 +114,27 @@ export interface SessionView {
     reportedAt: string | null;
   };
   card: Card;
+  /** What the card's buttons do. */
+  acts: Acts;
   step: number;
   entries: Entry[];
   files: FileChange[];
 }
+
+/**
+ * What the session page's buttons act on (THE-2045), for a session in flight:
+ * the open question the owner answers (a worker's, or one the coordinator
+ * asked the owner), the generation Release names, and what Open the session
+ * opens. A V1 session (the tracker's reading of a worker another runtime holds)
+ * is acted on from its own runtime: only its Conductor link opens here.
+ */
+export interface Acts {
+  answer: { item: string; kind: "question" | "owner-request"; choices: Choice[] } | null;
+  release: { session: string; generation: number } | null;
+  open: { kind: "output"; session: string } | { kind: "link"; href: string } | null;
+  v1: boolean;
+}
+const NO_ACTS: Acts = { answer: null, release: null, open: null, v1: false };
 
 const text = z.string();
 const githubPullRequest = z.object({
@@ -172,6 +190,7 @@ function sessionView(
       (e.kind === "session.reported" && field(e, "session") === s.session) ||
       (e.kind === "ticket.report-posted" && (!claimed || e.seq > claimed.seq)),
   );
+  const card = cardOf(s, group, state, prFact);
   return {
     project,
     ticket: s.ticket,
@@ -188,7 +207,8 @@ function sessionView(
       claimedAt: claimed?.at ?? null,
       reportedAt: reported?.at ?? null,
     },
-    card: cardOf(s, group, state, prFact),
+    card,
+    acts: actsOf(s, card, state),
     step: pageStep(s, pr),
     entries: entries(own),
     files: forge?.files ?? [],
@@ -240,6 +260,44 @@ function cardOf(s: FoldedSession, group: PageState, state: FleetState, pr: PullR
     case "merged":
       return { kind: "merged", reason, pr };
   }
+}
+
+/** A V1 claim comment, as V1 writes it (core/src/worker.ts). */
+const V1_CLAIM = /^Agent claim — runtime: (\S+) · session: (\S+)/;
+
+function actsOf(s: FoldedSession, card: Card, state: FleetState): Acts {
+  if (card.kind === "released" || card.kind === "merged") return NO_ACTS;
+  // The question the card shows: a worker's that blocks it, or the coordinator's question to the owner.
+  const kind: "question" | "owner-request" | null =
+    card.kind === "blocked" && card.question
+      ? "question"
+      : card.kind === "you" && card.ask === "question"
+        ? "owner-request"
+        : null;
+  const asked = kind && state.inbox.find((i) => i.ticket === s.ticket && i.kind === kind);
+  const answer: Acts["answer"] =
+    kind && asked ? { item: asked.id, kind, choices: questionOf(asked.body).choices.map(choiceOf) } : null;
+  if (s.runtime === "tracker") {
+    // The latest claim says where it runs; Conductor opens the workspace of a `<workspace>/<session>` handle.
+    const claim = state.tickets
+      .find((t) => t.id === s.ticket)
+      ?.comments?.map((c) => c.body.match(V1_CLAIM))
+      .findLast((m) => m);
+    const workspace = claim?.[1] === "conductor" ? claim[2]?.split("/")[0] : undefined;
+    return {
+      // The coordinator's question to the owner is the owner's to answer, whichever runtime the worker is on.
+      answer: answer?.kind === "owner-request" ? answer : null,
+      release: null,
+      open: workspace ? { kind: "link", href: `conductor://workspace?id=${encodeURIComponent(workspace)}` } : null,
+      v1: true,
+    };
+  }
+  return {
+    answer,
+    release: s.generation ? { session: s.session, generation: s.generation } : null,
+    open: { kind: "output", session: s.session },
+    v1: false,
+  };
 }
 
 const field = (e: ProtocolEvent, key: string): unknown =>

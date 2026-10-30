@@ -14,6 +14,8 @@ import {
   type ProtocolEvent,
   type ProtocolVersion,
   type ServerMessage,
+  type SessionOutputRequest,
+  type SessionReleaseRequest,
   type Snapshot,
   serverMessageSchema,
   versionSchema,
@@ -81,7 +83,7 @@ export interface DaemonClient {
   /** Asks the daemon to restart (the desktop shell starts it again); the client reconnects as after any drop. */
   restartDaemon(): Promise<void>;
   /**
-   * Sends one of the room's requests on the live connection and resolves with
+   * Sends one of the room's or a session page's requests on the live connection and resolves with
    * its reply; an error reply rejects with its line. A drop rejects it too: it
    * is never replayed, so the screen decides whether to send it again (a chat
    * message keeps its requestId, and the daemon admits it once).
@@ -89,12 +91,22 @@ export interface DaemonClient {
   request<R extends DaemonRequest>(message: R): Promise<DaemonReply<R>>;
 }
 
-/** A room request the screens send and await, without its envelope (`version`, `id`): the client adds it. */
-type DaemonRequest = Unaddressed<ChatReadRequest | ChatSendRequest | OwnerAnswerRequest>;
+/** A room or session request the screens send and await, without its envelope (`version`, `id`): the client adds it. */
+type DaemonRequest = Unaddressed<
+  ChatReadRequest | ChatSendRequest | OwnerAnswerRequest | SessionReleaseRequest | SessionOutputRequest
+>;
 /** The reply to each of them. */
 type DaemonReply<R extends DaemonRequest> = Extract<
   ServerMessage,
-  { type: { "chat.read": "chat.result"; "chat.send": "chat.sent"; "owner.answer": "owner.answered" }[R["type"]] }
+  {
+    type: {
+      "chat.read": "chat.result";
+      "chat.send": "chat.sent";
+      "owner.answer": "owner.answered";
+      "session.release": "session.release.result";
+      "session.output": "session.output.result";
+    }[R["type"]];
+  }
 >;
 
 /** A request before the client gives it its id and version. */
@@ -357,7 +369,9 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
         return;
       case "chat.result":
       case "chat.sent":
-      case "owner.answered": {
+      case "owner.answered":
+      case "session.release.result":
+      case "session.output.result": {
         const request = pending.get(message.id);
         pending.delete(message.id);
         request?.resolve(message);

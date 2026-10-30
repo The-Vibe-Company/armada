@@ -61,6 +61,17 @@ const requests = [
   { type: "chat.send", version, id: "send-a", project: "project-a", requestId: "message-a", body: "Merge #12 first" },
   { type: "owner.answer", version, id: "answer-a", project: "project-a", item: "ask-a", choice: "Fix the wait" },
   { type: "owner.answer", version, id: "answer-b", project: "project-a", item: "ask-a", choice: "Wait", note: "Why?" },
+  {
+    type: "session.release",
+    version,
+    id: "release-a",
+    project: "project-a",
+    ticket: "EX-1",
+    session: "session-a",
+    generation: 2,
+    reason: "Superseded by EX-2",
+  },
+  { type: "session.output", version, id: "output-a", project: "project-a", ticket: "EX-1", session: "session-a" },
 ];
 const plugin = {
   id: "lantern",
@@ -131,6 +142,26 @@ const frames = [
   },
   { type: "chat.sent", version, id: "send-a", project: "project-a", requestId: "message-a" },
   { type: "owner.answered", version, id: "answer-a", project: "project-a", item: "ask-a" },
+  {
+    type: "session.release.result",
+    version,
+    id: "release-a",
+    project: "project-a",
+    ticket: "EX-1",
+    session: "session-a",
+    disposed: false,
+  },
+  {
+    type: "session.output.result",
+    version,
+    id: "output-a",
+    project: "project-a",
+    ticket: "EX-1",
+    session: "session-a",
+    state: "running",
+    activity: "working",
+    lines: ["Reading the tide tables", "2 tests pass"],
+  },
   { type: "error", version, id: "read-a", code: "not-found", message: "Session not found" },
   { type: "error", version, code: "invalid-message", message: "Invalid request" },
   { type: "plugins.result", version, id: "plugins-a", restartable: true, plugins: [plugin] },
@@ -211,6 +242,10 @@ test("invalid requests never become dispatchable and errors retain only a valid 
     { ...requests[10], requestId: "" },
     { ...requests[11], choice: "" },
     { ...requests[11], item: undefined },
+    { ...requests[13], reason: " \n " },
+    { ...requests[13], generation: 0 },
+    { ...requests[13], session: undefined },
+    { ...requests[14], ticket: "" },
   ]) {
     assert.equal(clientMessageSchema.safeParse(request).success, false);
     const result = admitRequest(request);

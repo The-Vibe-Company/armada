@@ -17,6 +17,14 @@ const sessionSchema = z.object({
   at: text,
   /** Where the worker runs: the sky reads its harness from it (src/fleet/sky.ts). */
   runtime: text.optional(),
+  /** The worker generation and its runtime handle: what the session page's actions name (THE-2045). */
+  generation: z.number().int().optional(),
+  handle: text.optional(),
+});
+/** A ticket's comments: where a V1 claim says which runtime session holds it. */
+const ticketSchema = z.object({
+  id: text,
+  comments: z.array(z.object({ body: text, at: text })).optional(),
 });
 const pullRequestSchema = z.object({
   number: z.number().int(),
@@ -44,6 +52,7 @@ const validationSchema = z.object({
 });
 
 export type FoldedSession = z.infer<typeof sessionSchema>;
+export type FoldedTicket = z.infer<typeof ticketSchema>;
 export type FoldedPullRequest = z.infer<typeof pullRequestSchema>;
 export type FoldedInboxItem = z.infer<typeof inboxSchema>;
 type FoldedQueueEntry = z.infer<typeof queueSchema>;
@@ -53,6 +62,7 @@ type FoldedValidation = z.infer<typeof validationSchema>;
 export interface FleetState {
   readAt?: Record<string, string>;
   sessions: FoldedSession[];
+  tickets: FoldedTicket[];
   pullRequests: FoldedPullRequest[];
   inbox: FoldedInboxItem[];
   queue: FoldedQueueEntry[];
@@ -90,6 +100,7 @@ export function readFleetState(state: unknown): FleetState {
   return {
     ...(reading.success ? { readAt: reading.data } : {}),
     sessions: rows(o.sessions, sessionSchema),
+    tickets: rows(o.tickets, ticketSchema),
     pullRequests: rows(o.pullRequests, pullRequestSchema),
     inbox: rows(o.inbox, inboxSchema),
     queue: rows(o.queue, queueSchema),

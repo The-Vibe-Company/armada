@@ -18,6 +18,8 @@ import type { ProjectCoordinator } from "../../coordinator/index.ts";
 import type { Json } from "../events.ts";
 import { fold } from "../fold.ts";
 import type { EventStore } from "../store.ts";
+import type { Workers } from "../workers/service.ts";
+import { answerWorker } from "./session.ts";
 
 /** At most this many items of a long conversation: its latest. */
 const CHAT_LIMIT = 200;
@@ -31,6 +33,8 @@ export interface ChatOptions {
   store: EventStore;
   /** The project's coordinator, when one runs. */
   coordinator: ProjectCoordinator | undefined;
+  /** Delivers the owner's answer to a worker's question (THE-2045). */
+  workers?: Workers;
   now?: () => number;
 }
 
@@ -65,8 +69,15 @@ export async function dispatchChat(request: ChatRequest, options: ChatOptions): 
         return { type: "chat.sent", version, id, project, requestId: request.requestId };
       }
       case "owner.answer": {
-        const answer = recordAnswer(request, options);
+        // A worker's question (THE-2045) is answered to the worker; an owner request, to the coordinator.
+        const worker = options.store
+          .readSince(0, project)
+          .some((e) => e.kind === "inbox.opened" && e.payload.id === request.item && e.payload.kind === "question");
+        const answer = worker
+          ? await answerWorker(request, { ...options, now: options.now ?? Date.now })
+          : recordAnswer(request, options);
         if (answer === "missing") return error("not-found", "No such question waits for you");
+        if (typeof answer === "object" && "refused" in answer) return error("not-found", answer.refused);
         if (answer === "taken") return error("not-found", "This question was already answered");
         if (options.coordinator)
           try {

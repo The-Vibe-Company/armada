@@ -10,6 +10,7 @@ import type { PluginCatalogEntry } from "@armada/daemon/plugins/catalog";
 import { type DaemonServer, startServer } from "@armada/daemon/server";
 import { EventStore } from "@armada/daemon/store";
 import { type Browser, chromium, type Page } from "playwright-core";
+import { fakeWorkers } from "../../daemon/test/support/fake-worker";
 import { FakeKeychain } from "../../daemon/test/support/keychain";
 import { type DevDaemon, SAMPLE_PROJECTS, sampleEvents, startDevDaemon } from "../scripts/dev-daemon";
 
@@ -417,6 +418,116 @@ describe("in a browser, served by a running daemon", () => {
     await page.getByRole("heading", { level: 1, name: "Pick the lanterns' colour" }).waitFor({ timeout: 5_000 });
     await expect(page.getByRole("region", { name: "State" }).getAttribute("data-state")).resolves.toBe("you");
   }, 15_000);
+});
+
+describe("a session's page in a browser: its buttons act on a live worker", () => {
+  // A blocked worker launched by the daemon's own Workers on a fake runtime
+  // (THE-2045): the owner answers its question, opens its output and releases
+  // it, each through the protocol; the fake records what reached the runtime.
+  const quay = { id: "quay", name: "Quay", repository: "example/quay" };
+  let daemon: DevDaemon;
+  let live: ReturnType<typeof fakeWorkers>;
+  let browser: Browser | undefined;
+  let page: Page;
+
+  beforeAll(async () => {
+    daemon = await startDevDaemon({
+      staticDir: out,
+      projects: [quay],
+      coordinators: false,
+      events: [
+        {
+          project: quay.id,
+          kind: "ticket.seen",
+          at: new Date().toISOString(),
+          actor: "tracker",
+          payload: {
+            id: "QUA-1",
+            title: "Paint the bollards",
+            status: "unstarted",
+            labels: ["ready-for-agent"],
+            blockers: [],
+            branchName: "feature/qua-1-paint-the-bollards",
+          },
+        },
+      ],
+      workers: (store) => {
+        live = fakeWorkers(store, [quay]);
+        return live.workers;
+      },
+    });
+    browser = await chromium.launch({ timeout: 15_000 });
+    page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  }, 20_000);
+  afterAll(async () => {
+    await browser?.close();
+    await daemon?.stop();
+  }, 10_000);
+
+  test("answers the question, opens the worker's output, and releases exactly its generation", async () => {
+    const worker = await live.launch(quay.id, "QUA-1");
+    await worker.ask("Red or white bollards?\n\nOptions:\n1. Red (recommended)\n2. White");
+    live.fake.output.set(worker.session, "Reading the bollard list\n\x1b[32m3 tests pass\x1b[0m\n");
+    await page.goto(`${daemon.url}#/sessions/QUA-1`);
+    const state = page.getByRole("region", { name: "State" });
+    await state.getByText("Red or white bollards?").waitFor({ timeout: 5_000 });
+    await expect(state.getAttribute("data-state")).resolves.toBe("blocked");
+
+    // Answer opens the choices and a labelled note; a choice delivers the answer to this worker.
+    expect(await state.getByRole("button", { name: /Red/ }).count()).toBe(0);
+    await state.getByRole("button", { name: "Answer", exact: true }).click();
+    await state.getByLabel("Note", { exact: true }).fill("Match the quay");
+    await state.getByRole("button", { name: /Red/ }).click();
+    await state.getByRole("status").filter({ hasText: "delivered to the worker" }).waitFor({ timeout: 5_000 });
+    expect(live.fake.delivered.filter((d) => d.key.startsWith("owner-answer:"))).toEqual([
+      { session: worker.session, key: expect.stringMatching(/^owner-answer:/), message: "Red\n\nNote: Match the quay" },
+    ]);
+    // Answered: nothing is left to answer; the worker stays blocked until it reports the phase it resumes.
+    await state.getByRole("button", { name: "Answer", exact: true }).waitFor({ state: "detached", timeout: 5_000 });
+
+    // Open the session: its output in a drawer, read again when the subscription says the session moved.
+    await state.getByRole("button", { name: "Open the session" }).click();
+    const drawer = page.getByRole("dialog", { name: "QUA-1's session" });
+    const output = drawer.getByRole("log", { name: "Output" });
+    await output.getByText("3 tests pass").waitFor({ timeout: 5_000 });
+    await expect(output.innerText()).resolves.toBe("Reading the bollard list\n3 tests pass");
+    live.fake.output.set(worker.session, "Reading the bollard list\n3 tests pass\nPushed the branch\n");
+    await live.workers.request(worker.token, { command: "heartbeat", ticket: "QUA-1" });
+    await output.getByText("Pushed the branch").waitFor({ timeout: 5_000 });
+    const anatomy = await page.evaluate(() => ({
+      h1: [...document.querySelectorAll("h1")].map((h) => [h.textContent, getComputedStyle(h).fontSize]),
+      fonts: [...new Set([...document.querySelectorAll("body *")].map((e) => getComputedStyle(e).fontFamily))],
+      // Type never under 13 px; 12.5 px only in Geist Mono (ids and times).
+      small: [...document.querySelectorAll("main *")]
+        .filter((e) => [...e.childNodes].some((n) => n.nodeType === 3 && n.textContent?.trim()))
+        .map((e) => getComputedStyle(e))
+        .filter(
+          (s) => Number.parseFloat(s.fontSize) < 13 && !(s.fontSize === "12.5px" && /Geist Mono/.test(s.fontFamily)),
+        )
+        .map((s) => `${s.fontSize} ${s.fontFamily}`),
+      // Every field of the page is labelled.
+      unlabelled: [...document.querySelectorAll("main input")].filter((i) => !(i as HTMLInputElement).labels?.length)
+        .length,
+    }));
+    expect(anatomy.h1).toEqual([["Paint the bollards", "22px"]]);
+    for (const family of anatomy.fonts) expect(family).toMatch(/^"?Geist( Mono)?"?,/);
+    expect(anatomy.small).toEqual([]);
+    expect(anatomy.unlabelled).toBe(0);
+    await page.keyboard.press("Escape");
+    await drawer.waitFor({ state: "detached", timeout: 5_000 });
+
+    // Release asks first: a confirmation line with a required reason, then stops this generation only.
+    await state.getByRole("button", { name: "Release the ticket" }).click();
+    const confirm = state.getByRole("form", { name: "Release the ticket" });
+    await confirm.getByText("Release QUA-1? Its worker stops now").waitFor({ timeout: 5_000 });
+    expect(live.fake.stopped).toEqual([]);
+    await expect(confirm.getByRole("button", { name: "Release", exact: true }).isDisabled()).resolves.toBe(true);
+    await confirm.getByLabel("Reason", { exact: true }).fill("The bollards wait for the survey");
+    await confirm.getByRole("button", { name: "Release", exact: true }).click();
+    await state.getByText("The bollards wait for the survey").waitFor({ timeout: 5_000 });
+    await expect(state.getAttribute("data-state")).resolves.toBe("released");
+    expect(live.fake.stopped.map((r) => [r.session, r.generation])).toEqual([[worker.session, worker.generation]]);
+  }, 30_000);
 });
 
 describe("the Plugins screen in a browser, on a daemon that restarts", () => {

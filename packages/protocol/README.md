@@ -179,3 +179,24 @@ effect reaches every subscriber as the coordinator's `coordinator.checkpoint`
 events; a client reads the conversation again when one arrives. `owner.answer`
 answers an open `owner-request` of the project's inbox; anything else is
 `not-found`, as is `chat.send` to a project without a coordinator.
+
+### A session's page acts (minor 6)
+
+`src/session.ts` carries the session page's messages (THE-2045). A client sends
+them only to a daemon whose `projects.result` says minor 6 or more
+(`SESSION_MINOR`), which `PROTOCOL_VERSION` now carries.
+
+| Client request | Fields besides `type`, `version`, `id` | Server reply |
+| --- | --- | --- |
+| `session.release` | `project`, `ticket`, `session`, `generation`, `reason` | `session.release.result`: `project`, `ticket`, `session`, `disposed` |
+| `session.output` | `project`, `ticket`, `session` | `session.output.result`: `project`, `ticket`, `session`, `state`, optional `activity`, `lines` |
+
+A release names the exact generation it stops. Another generation, an ended
+session or a V1 session is refused with one line (`not-found`).
+
+`lines` is the worker's output as its runtime observes it: at most 200
+(`OUTPUT_LINES`), oldest first, secrets masked, terminal control sequences
+removed.
+
+From minor 6, `owner.answer` also answers a worker's open `question`. The daemon
+delivers it to that worker before recording it.

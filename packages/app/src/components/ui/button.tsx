@@ -24,4 +24,4 @@ function Button({ className, variant, ...props }: ButtonPrimitive.Props & Varian
   return <ButtonPrimitive data-slot="button" className={cn(buttonVariants({ variant, className }))} {...props} />;
 }
 
-export { Button };
+export { Button, buttonVariants };
