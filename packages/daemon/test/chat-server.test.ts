@@ -13,7 +13,7 @@ import { Type } from "typebox";
 import { WebSocket } from "ws";
 import type { EventInput } from "../src/events.ts";
 import { fold } from "../src/fold.ts";
-import { type ChatOptions, dispatchChat } from "../src/server/chat.ts";
+import { type ChatOptions, dispatchChat, textOf } from "../src/server/chat.ts";
 import { startServer } from "../src/server/index.ts";
 import { EventStore } from "../src/store.ts";
 
@@ -356,8 +356,12 @@ test("a message sent while the coordinator works steers it by default, and waits
   );
 });
 
-for (const ownerSteers of [false, true]) {
-  test(`a worker hand-back wakes merge.check without typing; ${ownerSteers ? "the owner steers its running turn" : "a silent finish leaves only the wake and work"}`, {
+for (const [ownerSteers, speaks] of [
+  [false, false],
+  [true, true],
+  [false, true],
+]) {
+  test(`a worker hand-back wakes merge.check without typing; ${ownerSteers ? "the owner steers its running turn" : speaks ? "a spoken wake retains its work" : "a silent finish leaves only the wake"}`, {
     timeout: 5000,
   }, async (t) => {
     const store = new EventStore(":memory:");
@@ -382,7 +386,11 @@ for (const ownerSteers of [false, true]) {
       (transcript) => {
         if (ownerSteers) assert.match(JSON.stringify(transcript.messages), /Prioritize the north orchard/);
         return fauxAssistantMessage(
-          ownerSteers ? "North orchard first." : [{ type: "thinking", thinking: "Nothing else needs doing." }],
+          ownerSteers
+            ? "North orchard first."
+            : speaks
+              ? "Checked #12."
+              : [{ type: "thinking", thinking: "Nothing else needs doing." }],
           { timestamp: clock },
         );
       },
@@ -490,8 +498,15 @@ for (const ownerSteers of [false, true]) {
     assert.equal(read.items.filter((i) => i.kind === "wake").length, 1);
     assert.deepEqual(
       read.items.filter((i) => i.kind !== "wake" && i.kind !== "tool").map((i) => i.kind),
-      ownerSteers ? ["owner", "coordinator"] : [],
+      ownerSteers ? ["owner", "coordinator"] : speaks ? ["line"] : [],
     );
-    assert.equal(read.items.find((i) => i.kind === "tool")?.output, '{"ok":true}');
+    const transcript = await server.coordinators.get("orchard")!.conversation.context(context);
+    assert.equal(textOf(transcript.messages.find((m) => m.role === "toolResult")?.content), '{"ok":true}');
+    if (speaks) assert.equal(read.items.find((i) => i.kind === "tool")?.output, '{"ok":true}');
+    else
+      assert.deepEqual(
+        read.items.map((i) => i.kind),
+        ["wake"],
+      );
   });
 }

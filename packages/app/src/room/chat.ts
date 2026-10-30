@@ -106,8 +106,8 @@ export function afterReading(live: Live, items: readonly ChatItem[], turn: ChatT
     // Blank words before a call never become an item: nothing waits for them.
     if (e.kind === "streaming" && blank(e)) return false;
     const item = held.get(e.id);
-    // A silent wake turn has no final message: discard its transient reasoning once idle.
-    if (!item && e.kind === "streaming" && turn?.state === "idle") return false;
+    // A silent wake retains only its Woke row: discard transient reasoning and tool rows once idle.
+    if (!item && turn?.state === "idle") return false;
     if (!item) return true;
     return e.kind === "tool" && item.kind === "tool" && item.output === null;
   });

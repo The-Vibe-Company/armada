@@ -228,9 +228,20 @@ function readChat(
 }
 
 /** pi entries, oldest first, as the room's items. */
-export function chatOf(entries: readonly EntryRecord[], modern = true, wakes = true): ChatItem[] {
+export function chatOf(entries: readonly EntryRecord[], modern = true, wakes = true, running = false): ChatItem[] {
   const items: ChatItem[] = [];
   const calls = new Map<string, Extract<ChatItem, { kind: "tool" }>>();
+  type Turn = { wake: boolean; owner: boolean; spoken: boolean };
+  let turn: Turn = { wake: false, owner: false, spoken: false };
+  let ended = true;
+  const callTurns = new Map<string, Turn>();
+  const input = (entry: EntryRecord, wake: boolean, owner: boolean) => {
+    // Host-placed inputs begin a run; steers are placed by its task at a boundary.
+    if (ended || entry.byTaskId === undefined) turn = { wake: false, owner: false, spoken: false };
+    ended = false;
+    turn.wake ||= wake;
+    turn.owner ||= owner;
+  };
   let owner = true;
   let wake = false;
   let last = 0;
@@ -244,12 +255,14 @@ export function chatOf(entries: readonly EntryRecord[], modern = true, wakes = t
     const message = entry.model?.[0] as Message | undefined;
     const id = `e${entry.id}`;
     if (entry.kind === WAKE_ENTRY) {
+      input(entry, true, false);
       owner = false;
       wake = true;
       const time = at(message);
       const data = entry.data as { body?: unknown } | undefined;
-      if (wakes && typeof data?.body === "string") items.push({ kind: "wake", id, at: time, body: data.body });
+      if (typeof data?.body === "string") items.push({ kind: "wake", id, at: time, body: data.body });
     } else if (entry.kind === "pi.user" || entry.kind === OWNER_ANSWER_ENTRY) {
+      input(entry, false, true);
       owner = true;
       wake = false;
       const data = entry.data as { ticket?: string; choice?: string; note?: string | null } | undefined;
@@ -259,6 +272,7 @@ export function chatOf(entries: readonly EntryRecord[], modern = true, wakes = t
           : textOf(message?.content);
       if (body.trim()) items.push({ kind: "owner", id, at: at(message), body });
     } else if (message?.role === "user" && entry.kind !== "pi.compaction" && entry.kind !== "pi.reset") {
+      input(entry, false, false);
       // Another input (a notice of the fleet moving): what the coordinator says to it is its own line.
       owner = false;
       wake = false;
@@ -271,6 +285,12 @@ export function chatOf(entries: readonly EntryRecord[], modern = true, wakes = t
       const assistantId = modern && entry.byTaskId !== undefined ? `g${entry.byTaskId}:${ordinal}` : id;
       const body = textOf(message.content);
       const reasoning = reasoningOf(message.content);
+      turn.wake ||= wake;
+      turn.owner ||= owner;
+      turn.spoken ||= !!body.trim() || message.stopReason === "error";
+      ended =
+        message.stopReason !== "toolUse" &&
+        !(Array.isArray(message.content) && message.content.some((c) => c?.type === "toolCall"));
       const metadata = modern
         ? {
             ...(reasoning ? { reasoning } : {}),
@@ -303,6 +323,7 @@ export function chatOf(entries: readonly EntryRecord[], modern = true, wakes = t
             failed: false,
           };
           calls.set(block.id, call);
+          callTurns.set(call.id, turn);
           items.push(call);
         }
     } else if (entry.kind === "pi.tool-result" && message?.role === "toolResult" && message.toolCallId) {
@@ -313,7 +334,13 @@ export function chatOf(entries: readonly EntryRecord[], modern = true, wakes = t
       call.failed = message.isError === true || refused(output);
     }
   }
-  return items;
+  return items.filter((item) => {
+    if (item.kind === "wake") return wakes;
+    const scope = callTurns.get(item.id);
+    // Progress is visible while running. A completed silent wake leaves only its Woke row;
+    // owner-steered turns and any turn that spoke retain their ordinary tool history.
+    return !scope || !scope.wake || scope.owner || scope.spoken || (running && scope === turn);
+  });
 }
 
 /** Provider thinking is display metadata only; never append it back as model input. */
@@ -329,9 +356,9 @@ export const reasoningOf = (content: unknown): string =>
 
 /** Overlay the committed running output on its own call, shared by read and live frames. */
 export function viewChat(view: ConversationView, modern = true, wakes = true): ChatItem[] {
-  const items = chatOf(view.entries, modern, wakes);
+  const live = view.docs["pi.live"] as LiveState | undefined;
+  const items = chatOf(view.entries, modern, wakes, !!live?.run);
   if (modern) {
-    const live = view.docs["pi.live"] as LiveState | undefined;
     const active = new Set<string>();
     for (const slot of live?.tools ?? []) {
       const call = items.findLast((i) => i.kind === "tool" && i.id.endsWith(`:${slot.callId}`));

@@ -89,7 +89,8 @@ test("the work above an answer being written stays open; its reading folds it in
 
 test("a wake turn that finishes silently drops transient reasoning and keeps its quiet row", () => {
   const wake: ChatItem = { kind: "wake", id: "e1", at: at(0), body: "Woke: question BOAT-1" };
-  const live = applyFrame(applyFrame(NO_LIVE, turn("thinking", at(1))), delta("g4:1", "reasoning", "Already handled."));
+  let live = applyFrame(applyFrame(NO_LIVE, turn("thinking", at(1))), delta("g4:1", "reasoning", "Already handled."));
+  live = applyFrame(live, { ...tool, type: "chat.tool", version, project: "harbor" });
   expect(afterReading(live, [wake], turn("idle", at(2))).entries).toEqual([]);
   expect(threadItems([wake], afterReading(live, [wake], turn("idle", at(2))))).toEqual([wake]);
 });
