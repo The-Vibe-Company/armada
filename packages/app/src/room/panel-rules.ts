@@ -9,7 +9,7 @@ import { PANEL_TABS, type PanelTab, panelOf, roomHref } from "@/lib/route";
 export const PANEL_KEY = "armada.room.panel";
 export const PANEL_WIDTH = { initial: 320, min: 240, max: 480 } as const;
 /** Below this window width the panel is a sheet over the conversation, closed until asked for. */
-export const SHEET_BELOW = 900;
+const SHEET_BELOW = 900;
 
 export const PANEL_LABEL: Record<PanelTab, string> = {
   agents: "Agents",

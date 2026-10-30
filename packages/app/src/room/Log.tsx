@@ -5,9 +5,9 @@ import type { ProtocolEvent } from "@armada/protocol";
 import { rowTime } from "@/fleet/overview";
 import { sessionHref } from "@/session/route";
 
-export const LOG_ROWS = 50;
+const LOG_ROWS = 50;
 
-export interface LogRow {
+interface LogRow {
   seq: number;
   at: string;
   kind: string;
@@ -15,7 +15,7 @@ export interface LogRow {
 }
 
 /** The last `n` events, newest first, with the ticket each one names. */
-export function logRows(events: readonly ProtocolEvent[], n = LOG_ROWS): LogRow[] {
+function logRows(events: readonly ProtocolEvent[], n = LOG_ROWS): LogRow[] {
   return events
     .slice(-n)
     .reverse()

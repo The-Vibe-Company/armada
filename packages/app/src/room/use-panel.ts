@@ -18,7 +18,7 @@ import {
 } from "./panel-rules";
 
 /** Where the panel goes once it shows Agents: a group's heading, or the question's card. */
-export interface Target {
+interface Target {
   to: Group | "question";
   /** Gives it the focus too; a pill on the sheet leaves the focus where it was. */
   focus: boolean;

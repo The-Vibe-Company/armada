@@ -12,7 +12,7 @@ import { PageStrip } from "@/components/page";
 import { GROUPS, type Group } from "@/fleet/overview";
 import { cn } from "@/lib/utils";
 
-export const PILL_WORDS: Record<Group, string> = {
+const PILL_WORDS: Record<Group, string> = {
   blocked: "blocked",
   you: "waiting for you",
   running: "in progress",
