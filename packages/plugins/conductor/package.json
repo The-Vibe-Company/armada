@@ -1,0 +1,98 @@
+{
+  "name": "@armada/plugin-conductor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "armada": {
+    "id": "conductor",
+    "version": "0.1.0",
+    "pluginApi": "^0.2.0",
+    "description": "Run workers in Conductor using the desktop's Armada sign-in.",
+    "enabledByDefault": false,
+    "contributions": {
+      "runtime": {
+        "conductor": {
+          "config": {
+            "type": "object",
+            "properties": {
+              "binary": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Path to the Conductor executable."
+              },
+              "defaultProfile": {
+                "type": "string",
+                "minLength": 1
+              },
+              "profiles": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "agent": {
+                      "enum": [
+                        "claude",
+                        "codex",
+                        "opencode",
+                        "cursor"
+                      ]
+                    },
+                    "model": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "effort": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "agent",
+                    "model",
+                    "effort"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "routing": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "labels": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "profile": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "labels",
+                    "profile"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "secrets": []
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@armada/plugin-api": "workspace:*"
+  },
+  "devDependencies": {
+    "@armada/core": "workspace:*",
+    "@armada/protocol": "workspace:*"
+  }
+}

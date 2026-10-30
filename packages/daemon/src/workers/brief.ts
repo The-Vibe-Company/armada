@@ -2,7 +2,7 @@ import type { ProjectTables, Ticket } from "@armada/protocol";
 import { labelKey } from "./routing.ts";
 
 /** Adapted from V1 packages/core/src/brief.ts renderPrompt and phases.ts planRule.
- * The daemon capability replaces hosted login; no credentials enter the prompt. */
+ * Local workers receive a socket capability; hosted workers receive a one-time login line. */
 export function workerBrief(input: {
   ticket: Ticket;
   tables: ProjectTables;
@@ -10,6 +10,7 @@ export function workerBrief(input: {
   branch: string;
   notes?: string;
   resume?: string;
+  hosted?: { token: string; apiUrl: string; profile: string };
 }) {
   const { ticket: t, tables } = input;
   const parent = tables.tickets.find((p) => p.id === t.parent);
@@ -19,14 +20,21 @@ export function workerBrief(input: {
     !has(policy?.approvalLabel ?? "needs-plan-approval") &&
     (has(policy?.preApprovedLabel ?? "plan-approved") || policy?.plans === "pre-approved");
   return [
+    ...(input.hosted ? [`armada login --launch-token ${input.hosted.token} --api-url ${input.hosted.apiUrl}`] : []),
     `# ${t.id} — ${t.title}`,
     `You are an Armada worker. You own exactly one ticket, ${t.id}${t.url ? ` (${t.url})` : ""}, and turn it into one green pull request on ${input.repository}. Never merge. Follow the repository's AGENTS.md.`,
     "## First: install Armada, read the worker skill and claim",
     // Pin the first released CLI supporting this local socket protocol, rather than a future hosted release.
     "```sh\nnpm install -g @the-vibe-company/armada@0.2.67\narmada skill armada-worker\n```",
-    "If the global install is refused, prefix every Armada command with `npm exec --yes --package=@the-vibe-company/armada@0.2.67 -- armada`. Follow the worker skill’s delivery rules; the local socket instructions here replace its hosted login and runtime claim flags.",
-    `Run \`armada claim ${t.id}\`. Your per-ticket capability is already in the environment; never print it, read credential files or sign in to hosted Armada. If authorization is refused, stop and quote the refusal.`,
-    `Work only in this prepared worktree on branch \`${input.branch}\`. Check git status and the current branch before editing; keep the branch.`,
+    input.hosted
+      ? "If the global install is refused, use the npm exec fallback for every Armada command. The login line above exchanges a one-time token; run it once after installing Armada and before claim."
+      : "If the global install is refused, prefix every Armada command with `npm exec --yes --package=@the-vibe-company/armada@0.2.67 -- armada`. Follow the worker skill’s delivery rules; the local socket instructions here replace its hosted login and runtime claim flags.",
+    input.hosted
+      ? `Run \`armada claim ${t.id} --runtime conductor --handle "\${CONDUCTOR_WORKSPACE_ID}/\${CONDUCTOR_SESSION_ID}" --branch ${input.branch} --profile ${input.hosted.profile}\`. If authorization is refused, stop and quote the refusal.`
+      : `Run \`armada claim ${t.id}\`. Your per-ticket capability is already in the environment; never print it, read credential files or sign in to hosted Armada. If authorization is refused, stop and quote the refusal.`,
+    input.hosted
+      ? `Rename the current branch with \`git branch -m ${input.branch}\` before your first commit, then work only on it. The workspace starts on the repository default branch.`
+      : `Work only in this prepared worktree on branch \`${input.branch}\`. Check git status and the current branch before editing; keep the branch.`,
     input.resume
       ? `## Continuing earlier work\n\n${input.resume}\nPreserve uncommitted and unpushed files. Continue the existing pull request; never open a second one or force-push.`
       : "",

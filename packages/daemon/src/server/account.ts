@@ -17,6 +17,7 @@ import {
   waitForApproval,
 } from "@armada/core/account";
 import type { PluginContext } from "@armada/plugin-api";
+import { RuntimeLaunchRefusal } from "@armada/plugin-api";
 import {
   type AccountDevice,
   type AccountRequest,
@@ -210,6 +211,112 @@ export class Account {
       if (value) return value;
     }
     return readPluginSecret(name, this.options.keychain, this.env);
+  }
+
+  /** Only the host uses this sign-in; neither plugins nor event payloads receive it. */
+  private async workerSignIn() {
+    await this.refresh();
+    if (this.closed || !this.api || !this.token || !this.state.signedIn)
+      throw new Error("Sign in to Armada in Settings to launch in Conductor");
+    return { api: this.api, signIn: { kind: "session" as const, token: this.token } };
+  }
+
+  async assertWorkerSignIn(): Promise<void> {
+    await this.refresh(true);
+    await this.workerSignIn();
+  }
+
+  async launchWorkerToken(project: string, ticket: string) {
+    const { api, signIn } = await this.workerSignIn();
+    try {
+      const launch = await api.launchToken(signIn, { project, ticket });
+      if (
+        launch.worker.project !== project ||
+        launch.worker.ticket !== ticket ||
+        typeof launch.worker.id !== "string" ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(launch.worker.id) ||
+        /^armada_(?:launch|worker|session|key)_/.test(launch.worker.id)
+      )
+        throw new Error("Invalid launch identity");
+      return launch;
+    } catch (error) {
+      if (error instanceof ArmadaApiError && error.signedOut)
+        throw new RuntimeLaunchRefusal("Sign in to Armada in Settings to launch in Conductor");
+      if (error instanceof ArmadaApiError && error.status && error.status >= 400 && error.status < 500)
+        throw new RuntimeLaunchRefusal("Armada could not authorize the Conductor launch");
+      throw new Error("Armada launch authorization outcome unknown; inspect before retrying");
+    }
+  }
+
+  async bindWorkerLaunch(target: { project: string; ticket: string; id: string; handle: string }) {
+    const { api, signIn } = await this.workerSignIn();
+    try {
+      await api.bindLaunch(signIn, { ...target, runtime: "conductor" });
+    } catch {
+      throw new Error("Armada could not bind the Conductor launch");
+    }
+  }
+
+  async revokeWorkerLaunch(target: { project: string; ticket: string; id: string }) {
+    const { api, signIn } = await this.workerSignIn();
+    try {
+      await api.revokePendingLaunch(signIn, target);
+    } catch {
+      throw new Error("Armada could not revoke the Conductor launch");
+    }
+  }
+
+  async releaseHostedWorker(
+    project: { slug: string; name: string; repository: string; programRoot: string },
+    target: { ticket: string; id: string; handle: string; reason: string; terminal?: "released" | "merged" },
+  ) {
+    const { api, signIn } = await this.workerSignIn();
+    try {
+      let value = await api.fleet(signIn, "runtime/handle", { project, input: { ticket: target.ticket } });
+      if (!value) {
+        try {
+          return await api.revokePendingLaunch(signIn, { project: project.slug, ticket: target.ticket, id: target.id });
+        } catch (error) {
+          if (!(error instanceof ArmadaApiError) || error.status !== 409) throw error;
+          value = await api.fleet(signIn, "runtime/handle", { project, input: { ticket: target.ticket } });
+          if (!value) throw new Error("Hosted release identity unavailable");
+        }
+      }
+      const held = value as { handle?: string; workerSessionId?: string; claimedAt?: string };
+      if (held.handle !== target.handle || held.workerSessionId !== target.id || !held.claimedAt)
+        throw new Error("Hosted generation changed");
+      await api.fleet(signIn, "release", {
+        project,
+        input: { ticket: target.ticket, reason: target.reason, handle: target.handle, claimedAt: held.claimedAt },
+      });
+      await api.endWorkers(signIn, {
+        project: project.slug,
+        ticket: target.ticket,
+        reason: target.terminal ?? "released",
+        claimedAt: held.claimedAt,
+      });
+    } catch {
+      throw new Error("Armada could not release the exact Conductor worker");
+    }
+  }
+
+  async workerFleet(
+    project: { slug: string; name: string; repository: string; programRoot: string },
+    op: "inbox" | "events/since" | "runtime/handles" | "runtime/handle" | "answer",
+    input: object,
+  ): Promise<unknown> {
+    const { api, signIn } = await this.workerSignIn();
+    try {
+      return await api.fleet(signIn, op, { project, input });
+    } catch (error) {
+      if (error instanceof ArmadaApiError && error.signedOut) {
+        this.token = null;
+        this.cache.clear();
+        this.publish({ signedIn: false, apiUrl: this.apiUrl });
+        throw new Error("Sign in to Armada in Settings to launch in Conductor");
+      }
+      throw new Error("Armada worker reading unavailable");
+    }
   }
 
   private startLogin(): Login {
