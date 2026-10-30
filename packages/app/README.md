@@ -304,6 +304,23 @@ rules, is at `#/projects/<id>/rules`, linked from the facts line. The sidebar st
   (the newest line about a ticket; older ones a quiet dot); each tool call one
   quiet line (`<details>`) that opens on a click to its input and result.
   Ticket ids and pull requests are set in mono, an id in its ticket's state.
+- **How it scrolls** (THE-2054, rules in `src/room/follow.ts`, after T3 Code's
+  timeline): it follows the end, smoothly while the coordinator works; a
+  message the owner sends is pinned 24 px from the top with room reserved
+  under it for the answer, until the answer outgrows that room; scrolled up,
+  the row the owner reads holds still while items arrive above or below, and
+  "Scroll to end" shows above the field 150 ms after leaving the end (within
+  40 px of it the thread follows again). Each project's place is kept in the
+  tab's `sessionStorage` and restored when its room opens; PageUp and PageDown
+  from the field page the thread.
+- **Unread** (`src/room/unread.ts`, `src/room/activity.ts`): the room keeps, per
+  project in `localStorage`, the latest coordinator item seen with the window
+  focused. The sidebar (`src/components/shell/Activity.tsx`, loaded after the
+  first paint) reads each other project's conversation once per turn's end and
+  counts its coordinator's items past that mark; its line also says Awaiting
+  input (a pinned question), Working (from the live `chat.turn`) or Failed
+  (the model failed the last turn). A project never visited starts with
+  nothing unread.
 - **Type** never under 13 px, 12.5 px only for Geist Mono ids and times; the
   state's colour on a dot or a triangle (an agent is the mark's triangle in its
   harness's colour, as in the sky), never a side border; every field labelled.

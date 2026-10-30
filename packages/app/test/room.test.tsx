@@ -4,7 +4,8 @@ import type { ChatItem } from "@armada/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SAMPLE_PROJECTS, sampleEvents } from "../scripts/dev-daemon";
 import { routeOf } from "../src/lib/route";
-import { type Chat, lastCoordinatorSeq, withSent } from "../src/room/chat";
+import { type Chat, withSent } from "../src/room/chat";
+import { lastCoordinatorSeq } from "../src/room/unread";
 import { parseQuestion, segments } from "../src/room/view";
 import { RoomView } from "../src/screens/Room";
 

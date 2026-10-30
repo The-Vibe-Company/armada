@@ -3,7 +3,6 @@
 // coordinator's work as T3 Code's rows (THE-2053).
 import type { ChatItem } from "@armada/protocol";
 import type { Group } from "@/fleet/overview";
-import type { FleetState, FoldedInboxItem } from "@/fleet/state";
 import type { Streaming, ThreadItem } from "./chat";
 
 export interface Choice {
@@ -29,9 +28,7 @@ export function choiceOf(label: string): Choice {
   return { label: plain, recommended: plain !== label };
 }
 
-/** The questions waiting for the owner, oldest first: the open owner requests of the fold's inbox. */
-export const ownerQuestions = (state: FleetState): FoldedInboxItem[] =>
-  state.inbox.filter((i) => i.kind === "owner-request");
+export { ownerQuestions } from "./unread";
 
 /** A piece of a message and where it starts in it. */
 export type Segment = { text: string; kind: "text" | "ticket" | "pr"; at: number };

@@ -7,12 +7,15 @@
 // icon and sentence, a turn's calls grouped under one sentence, a finished
 // turn folded under "Worked for 2m 03s" above its answer, each opening on a
 // click and remembered for the project's tab. Newest at the bottom; it
-// follows new items while the owner reads the end, and stays put when they
-// scrolled up. On a live daemon (THE-2052) the answer being written shows as
+// scrolls like T3 Code's (THE-2054, `follow.ts`): it follows the end, pins a
+// message just sent near the top with room under it for the answer, holds
+// what the owner reads still when they scrolled up (with "Scroll to end"
+// above the field), and comes back where the owner left it. On a live daemon (THE-2052) the answer being written shows as
 // the coordinator's message, its reasoning as a Thinking row, the running call
 // shines, and the Working row closes the thread while the coordinator works.
 import type { ChatItem, ChatTurn } from "@armada/protocol";
 import {
+  ChevronDown,
   ChevronRight,
   Eye,
   FileText,
@@ -27,15 +30,46 @@ import {
   X,
 } from "lucide-react";
 import { AnimatePresence, m } from "motion/react";
-import { type ReactNode, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type Ref,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useId,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { TONE } from "@/components/fleet/FleetList";
 import { type Group, rowTime } from "@/fleet/overview";
 import { cn } from "@/lib/utils";
 import { CopyButton } from "./Copy";
 import type { ThreadItem } from "./chat";
+import {
+  type Anchor,
+  anchorRow,
+  correction,
+  endSpace,
+  FOLLOWING,
+  type Follow,
+  type FollowEvent,
+  followBehavior,
+  fromEnd,
+  PILL_DELAY,
+  type PositionStorage,
+  pageStep,
+  type RowBox,
+  readPosition,
+  transition,
+  wantsPill,
+  writePosition,
+} from "./follow";
 import { Shine, Stopped, Thought, Working } from "./Live";
 import { Markdown, TicketGroups } from "./Markdown";
 import { folds } from "./markdown-rules";
+import { browserSeen, coordinatorTimes, markSeen } from "./unread";
 import {
   fullTime,
   lineGroups,
@@ -54,6 +88,12 @@ import {
 
 const ARRIVE = { duration: 0.15, ease: [0.23, 1, 0.32, 1] } as const;
 
+/** What the room asks of its thread: pin the message just sent, or page it from the field. */
+export interface ThreadControl {
+  anchor(): void;
+  page(direction: "up" | "down"): void;
+}
+
 export function Thread({
   items,
   project,
@@ -65,6 +105,8 @@ export function Thread({
   empty,
   turn = null,
   started = null,
+  control,
+  positions = browserPositions(),
 }: {
   items: readonly ThreadItem[];
   /** The project's id: the rows the owner opened are kept for it in the tab's `sessionStorage`. */
@@ -83,9 +125,12 @@ export function Thread({
   turn?: ChatTurn | null;
   /** When that turn began, if seen; null for "Working…". */
   started?: string | null;
+  /** The room's hold on the thread's scroll (THE-2054). */
+  control?: Ref<ThreadControl>;
+  /** Where each project's place is kept (the tab's `sessionStorage`; null keeps none). */
+  positions?: PositionStorage | null;
 }) {
-  const box = useRef<HTMLDivElement>(null);
-  const atEnd = useRef(true);
+  const box = useRef<HTMLElement>(null);
   const dots = lineGroups(
     items.filter((i): i is ChatItem => i.kind !== "streaming"),
     groupOf,
@@ -113,95 +158,390 @@ export function Thread({
   useEffect(() => {
     if (read) setAnnounce(true);
   }, [read]);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: each new item scrolls to it, if the owner was at the end.
-  useLayoutEffect(() => {
+  const { pill, toEnd } = useFollow({ box, list, project, working, items, control, positions });
+  useSeen(project, items);
+  return (
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <section
+        ref={box}
+        aria-label="Conversation with the coordinator"
+        // The thread holds the owner's place itself (`follow.ts`): the browser's own anchoring would correct twice.
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pt-3.5 pb-3 [overflow-anchor:none] sm:px-12"
+      >
+        <TicketGroups value={groupOf}>
+          <ol
+            ref={list}
+            className="m-0 mx-auto mt-auto flex w-full min-w-0 max-w-(--chat-content-max-width) list-none flex-col gap-3 p-0"
+            aria-live={announce ? "polite" : "off"}
+            aria-relevant="additions"
+            data-thread
+          >
+            {items.length === 0 && <li className="py-6 text-center text-body text-text-3">{empty}</li>}
+            <AnimatePresence initial={false}>
+              {rows.map((row, k) => (
+                <m.li
+                  key={row.id}
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={ARRIVE}
+                  data-item={rowKind(row)}
+                  data-row={row.id}
+                  // A message on its way is announced once, when the conversation holds it; its controls wait for it too.
+                  inert={row.id.startsWith("sent:") || undefined}
+                  // Still written: assistive technology waits for it (the status below says it once read).
+                  aria-busy={(row.kind === "said" && row.item.kind === "streaming") || undefined}
+                  className="group/row min-w-0"
+                >
+                  {row.kind === "said" ? (
+                    <Item
+                      item={row.item}
+                      dot={dots.get(row.item.id) ?? null}
+                      repository={repository}
+                      prefixes={prefixes}
+                      groupOf={groupOf}
+                      time={rowTime(row.item.at, now, zone)}
+                      full={fullTime(row.item.at, zone)}
+                      thinking={working && turn?.state === "thinking" && row.item === tail}
+                      folded={rows[k - 1]?.kind === "fold"}
+                    />
+                  ) : row.kind === "fold" ? (
+                    <Fold
+                      row={row}
+                      open={open}
+                      groupOf={groupOf}
+                      time={rowTime(row.work.at, now, zone)}
+                      full={fullTime(row.work.at, zone)}
+                    />
+                  ) : (
+                    <WorkBlock work={row.work} open={open} groupOf={groupOf} running={running} />
+                  )}
+                </m.li>
+              ))}
+            </AnimatePresence>
+            {working && (
+              <li className="min-w-0" data-item="working">
+                <Working started={started} queued={turn?.queued ?? 0} />
+              </li>
+            )}
+          </ol>
+        </TicketGroups>
+        {/* The room an anchored message's answer grows into (sized by `useFollow`, never rendered). */}
+        <div aria-hidden className="flex-none" data-end-space />
+        <p role="status" className="sr-only">
+          {finished}
+        </p>
+      </section>
+      {pill && <ScrollToEnd queued={turn?.queued ?? 0} onClick={toEnd} />}
+    </div>
+  );
+}
+
+/** T3 Code's `ScrollToEndButton`: a small glass pill centred just above the field, with what waits at the end. */
+function ScrollToEnd({ queued, onClick }: { queued: number; onClick: () => void }) {
+  return (
+    <div className="pointer-events-none absolute inset-x-0 bottom-2 flex justify-center">
+      <button
+        type="button"
+        // The field keeps the focus.
+        onPointerDown={(event) => event.preventDefault()}
+        onClick={onClick}
+        className="pointer-events-auto inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full bg-card/85 px-3 text-body text-text-2 shadow-control backdrop-blur-md transition-colors hover:text-text"
+        data-scroll-to-end
+      >
+        <ChevronDown aria-hidden strokeWidth={2} className="size-3.5" />
+        Scroll to end
+        {queued > 0 && (
+          <span className="text-text-3">
+            <span aria-hidden>· </span>
+            {queued} queued
+          </span>
+        )}
+      </button>
+    </div>
+  );
+}
+
+const browserPositions = (): PositionStorage | null => (typeof sessionStorage === "undefined" ? null : sessionStorage);
+
+const reduced = () => typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const UP_KEYS = new Set(["PageUp", "Home", "ArrowUp"]);
+const DOWN_KEYS = new Set(["PageDown", "End", "ArrowDown", " "]);
+
+/** Whether a scroller inside the thread (an open group, a code block) takes this move itself. */
+function innerScrolls(target: EventTarget | null, box: HTMLElement, up: boolean): boolean {
+  for (let el = target instanceof Element ? target : null; el && el !== box; el = el.parentElement) {
+    if (el.scrollHeight <= el.clientHeight) continue;
+    const overflow = getComputedStyle(el).overflowY;
+    if (overflow !== "auto" && overflow !== "scroll") continue;
+    if (up ? el.scrollTop > 0 : el.scrollTop + el.clientHeight < el.scrollHeight - 1) return true;
+  }
+  return false;
+}
+
+/**
+ * The thread's scroll as `follow.ts` rules it: the mode lives in a ref (a
+ * scroll never re-renders the thread), the pill in state. Each new reading and
+ * each resize settles the scroll for the mode: the end followed, the anchored
+ * message's end space and place, or the row the owner reads held still.
+ */
+function useFollow({
+  box,
+  list,
+  project,
+  working,
+  items,
+  control,
+  positions,
+}: {
+  box: RefObject<HTMLElement | null>;
+  list: RefObject<HTMLOListElement | null>;
+  project: string | undefined;
+  working: boolean;
+  items: readonly ThreadItem[];
+  control: Ref<ThreadControl> | undefined;
+  positions: PositionStorage | null;
+}) {
+  // Read once: where the owner left this project's thread.
+  const [saved] = useState(() => (project ? readPosition(positions, project) : null));
+  const restoring = useRef(saved && !saved.atEnd ? saved : null);
+  const follow = useRef<Follow>(restoring.current ? { mode: "free", away: true } : FOLLOWING);
+  // The row the owner reads, while free.
+  const reading = useRef<Anchor | null>(restoring.current);
+  const workingNow = useRef(working);
+  workingNow.current = working;
+  const [pill, setPill] = useState(false);
+  const pillTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const syncPill = useCallback((state: Follow) => {
+    if (wantsPill(state)) {
+      pillTimer.current ??= setTimeout(() => {
+        pillTimer.current = undefined;
+        setPill(true);
+      }, PILL_DELAY);
+      return;
+    }
+    clearTimeout(pillTimer.current);
+    pillTimer.current = undefined;
+    setPill(false);
+  }, []);
+  const dispatch = useCallback(
+    (event: FollowEvent) => {
+      const before = follow.current;
+      const after = transition(before, event);
+      if (after !== before) {
+        follow.current = after;
+        syncPill(after);
+      }
+      return { before, after };
+    },
+    [syncPill],
+  );
+
+  const rows = useCallback((): RowBox[] => {
     const el = box.current;
-    if (el && atEnd.current) el.scrollTop = el.scrollHeight;
-  }, [items.length]);
-  // The thread also grows without a new item (an answer being written, its reading in its place), or its box
-  // shrinks (a queued message under it): it keeps the end in view then too.
+    const ol = list.current;
+    if (!el || !ol) return [];
+    // Offsets, not boxes: a row arriving still slides in (a transform), which is not where it stands.
+    const top = el.offsetTop + el.scrollTop;
+    return [...ol.querySelectorAll<HTMLElement>(":scope > [data-row]")].map((row) => ({
+      key: row.dataset.row ?? "",
+      top: row.offsetTop - top,
+      bottom: row.offsetTop + row.offsetHeight - top,
+    }));
+  }, [box, list]);
+  const space = useCallback(
+    (height: number) => {
+      const end = box.current?.querySelector<HTMLElement>(":scope > [data-end-space]");
+      if (end && end.style.height !== `${height}px`) end.style.height = `${height}px`;
+    },
+    [box],
+  );
+  const toBottom = useCallback(
+    (behavior: ScrollBehavior) => {
+      const el = box.current;
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior });
+    },
+    [box],
+  );
+
+  const settle = useCallback(() => {
+    const el = box.current;
+    const ol = list.current;
+    if (!el || !ol) return;
+    const restore = restoring.current;
+    if (restore) {
+      const boxes = rows();
+      if (!boxes.length) return;
+      restoring.current = null;
+      const row = boxes.find((b) => b.key === restore.row);
+      if (row) {
+        el.scrollTop += correction(restore, row.top);
+        reading.current = restore;
+        dispatch({
+          type: "scrolled",
+          fromEnd: fromEnd({ top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight }),
+        });
+        syncPill(follow.current);
+        if (follow.current.mode === "free") return;
+      } else follow.current = FOLLOWING;
+    }
+    const mode = follow.current.mode;
+    if (mode === "free") {
+      const held = reading.current;
+      const row = held && rows().find((b) => b.key === held.row);
+      if (held && row) {
+        const shift = correction(held, row.top);
+        if (Math.abs(shift) >= 0.5) el.scrollTop += shift;
+      }
+      return;
+    }
+    if (mode === "anchoring") {
+      const owners = ol.querySelectorAll<HTMLElement>(':scope > [data-item="owner"]');
+      const owner = owners[owners.length - 1];
+      // Only a box that scrolls holds its height: one that grows with its content would grow with the space too.
+      const scrolls = ["auto", "scroll"].includes(getComputedStyle(el).overflowY);
+      if (owner && scrolls) {
+        // Offsets, not boxes: a row arriving still slides in (a transform) and must not count.
+        const below = ol.offsetTop + ol.offsetHeight - owner.offsetTop;
+        const { space: room, overflows } = endSpace(
+          el.clientHeight,
+          below,
+          Number.parseFloat(getComputedStyle(el).paddingBottom) || 0,
+        );
+        if (!overflows) {
+          space(room);
+          toBottom(reduced() ? "instant" : "smooth");
+          return;
+        }
+      }
+      // The answer outgrew the room under it (or nothing to pin): the thread follows its end.
+      dispatch({ type: "overflowed" });
+    }
+    space(0);
+    toBottom(followBehavior(workingNow.current, reduced()));
+  }, [box, list, rows, dispatch, syncPill, space, toBottom]);
+
+  // Each new reading (an item, an answer written further, a call ended) settles the scroll.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the items are what moved.
+  useLayoutEffect(settle, [items]);
+  // The thread also grows without a new reading (a fold opened, an image), or its box shrinks (a queued message).
   useEffect(() => {
     const el = box.current;
-    const content = list.current;
-    if (!el || !content || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      if (atEnd.current) el.scrollTop = el.scrollHeight;
-    });
-    observer.observe(content);
+    const ol = list.current;
+    if (!el || !ol || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => settle());
+    observer.observe(ol);
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
-  return (
-    <section
-      ref={box}
-      aria-label="Conversation with the coordinator"
-      onScroll={(e) => {
-        const el = e.currentTarget;
-        atEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-      }}
-      className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pt-3.5 pb-3 sm:px-12"
-    >
-      <TicketGroups value={groupOf}>
-        <ol
-          ref={list}
-          className="m-0 mx-auto mt-auto flex w-full min-w-0 max-w-(--chat-content-max-width) list-none flex-col gap-3 p-0"
-          aria-live={announce ? "polite" : "off"}
-          aria-relevant="additions"
-          data-thread
-        >
-          {items.length === 0 && <li className="py-6 text-center text-body text-text-3">{empty}</li>}
-          <AnimatePresence initial={false}>
-            {rows.map((row, k) => (
-              <m.li
-                key={row.id}
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={ARRIVE}
-                data-item={rowKind(row)}
-                // A message on its way is announced once, when the conversation holds it; its controls wait for it too.
-                inert={row.id.startsWith("sent:") || undefined}
-                // Still written: assistive technology waits for it (the status below says it once read).
-                aria-busy={(row.kind === "said" && row.item.kind === "streaming") || undefined}
-                className="group/row min-w-0"
-              >
-                {row.kind === "said" ? (
-                  <Item
-                    item={row.item}
-                    dot={dots.get(row.item.id) ?? null}
-                    repository={repository}
-                    prefixes={prefixes}
-                    groupOf={groupOf}
-                    time={rowTime(row.item.at, now, zone)}
-                    full={fullTime(row.item.at, zone)}
-                    thinking={working && turn?.state === "thinking" && row.item === tail}
-                    folded={rows[k - 1]?.kind === "fold"}
-                  />
-                ) : row.kind === "fold" ? (
-                  <Fold
-                    row={row}
-                    open={open}
-                    groupOf={groupOf}
-                    time={rowTime(row.work.at, now, zone)}
-                    full={fullTime(row.work.at, zone)}
-                  />
-                ) : (
-                  <WorkBlock work={row.work} open={open} groupOf={groupOf} running={running} />
-                )}
-              </m.li>
-            ))}
-          </AnimatePresence>
-          {working && (
-            <li className="min-w-0" data-item="working">
-              <Working started={started} queued={turn?.queued ?? 0} />
-            </li>
-          )}
-        </ol>
-      </TicketGroups>
-      <p role="status" className="sr-only">
-        {finished}
-      </p>
-    </section>
+  }, [box, list, settle]);
+
+  // The owner moved the thread: letting go, a smooth follow still running stops where it is, and the row read is held.
+  const navigated = useCallback(
+    (up: boolean) => {
+      const el = box.current;
+      const { before, after } = dispatch({ type: "navigated", up });
+      if (!el || before.mode === "free" || after.mode !== "free") return;
+      el.scrollTo({ top: el.scrollTop, behavior: "instant" });
+      reading.current = anchorRow(rows());
+    },
+    [box, dispatch, rows],
   );
+  // The owner's moves let go of the end; any scroll may bring the thread back to it.
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.deltaY === 0 || innerScrolls(e.target, el, e.deltaY < 0)) return;
+      navigated(e.deltaY < 0);
+    };
+    const onTouch = () => navigated(true);
+    // Only a press on the scroller itself is on its scrollbar; a row's press is a click.
+    const onPointer = (e: PointerEvent) => {
+      if (e.target === el) navigated(true);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      const up = UP_KEYS.has(e.key) ? true : DOWN_KEYS.has(e.key) ? false : null;
+      if (up !== null && !innerScrolls(e.target, el, up)) navigated(up);
+    };
+    const onScroll = () => {
+      const geometry = { top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight };
+      if (follow.current.mode === "free") reading.current = anchorRow(rows());
+      dispatch({ type: "scrolled", fromEnd: fromEnd(geometry) });
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchmove", onTouch, { passive: true });
+    el.addEventListener("pointerdown", onPointer, { passive: true });
+    el.addEventListener("keydown", onKey);
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchmove", onTouch);
+      el.removeEventListener("pointerdown", onPointer);
+      el.removeEventListener("keydown", onKey);
+      el.removeEventListener("scroll", onScroll);
+    };
+  }, [box, dispatch, rows, navigated]);
+
+  // The owner's place is kept when the room closes (or the page), for the next visit.
+  useEffect(() => {
+    if (!project) return;
+    const keep = () => {
+      const held = reading.current;
+      const free = follow.current.mode === "free";
+      writePosition(positions, project, free && held ? { ...held, atEnd: false } : { row: "", offset: 0, atEnd: true });
+    };
+    window.addEventListener("pagehide", keep);
+    return () => {
+      window.removeEventListener("pagehide", keep);
+      keep();
+      clearTimeout(pillTimer.current);
+    };
+  }, [project, positions]);
+
+  const toEnd = useCallback(() => {
+    dispatch({ type: "toEnd" });
+    space(0);
+    toBottom(reduced() ? "instant" : "smooth");
+  }, [dispatch, space, toBottom]);
+  useImperativeHandle(
+    control,
+    () => ({
+      anchor() {
+        dispatch({ type: "sent" });
+        settle();
+      },
+      page(direction) {
+        const el = box.current;
+        if (!el) return;
+        navigated(direction === "up");
+        el.scrollBy({ top: (direction === "up" ? -1 : 1) * pageStep(el.clientHeight), behavior: "instant" });
+      },
+    }),
+    [box, dispatch, settle, navigated],
+  );
+  return { pill, toEnd };
+}
+
+/** Records the latest coordinator item as seen while the room is open and the window focused (THE-2054). */
+function useSeen(project: string | undefined, items: readonly ThreadItem[]) {
+  useEffect(() => {
+    if (!project) return;
+    const storage = browserSeen();
+    const mark = () => {
+      if (document.visibilityState !== "visible" || !document.hasFocus()) return;
+      const at = coordinatorTimes(items.filter((i): i is ChatItem => i.kind !== "streaming")).at(-1);
+      if (at) markSeen(storage, project, at);
+    };
+    mark();
+    window.addEventListener("focus", mark);
+    document.addEventListener("visibilitychange", mark);
+    return () => {
+      window.removeEventListener("focus", mark);
+      document.removeEventListener("visibilitychange", mark);
+    };
+  }, [project, items]);
 }
 
 const rowKind = (row: ThreadRow) =>

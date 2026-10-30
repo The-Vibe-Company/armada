@@ -26,7 +26,9 @@ export interface KeyPress {
 }
 
 /** What a key does in the field; null leaves it to the textarea (Shift+Enter inserts a line). */
-export type Intent = "send" | "older" | "newer" | "leave";
+export type Intent = "send" | "older" | "newer" | "leave" | "page-up" | "page-down";
+/** The intents that walk the owner's earlier messages. */
+export type Walk = Exclude<Intent, "send" | "page-up" | "page-down">;
 
 /** Where the caret is: on the field's first line, on its last (a selection counts by its ends). */
 export function caretLines(value: string, start: number, end: number): { first: boolean; last: boolean } {
@@ -41,6 +43,9 @@ export function keyIntent(press: KeyPress, where: { first: boolean; last: boolea
   if (press.isComposing || press.keyCode === 229) return null;
   if (press.key === "Enter") return press.shiftKey || press.altKey ? null : "send";
   const plain = !press.shiftKey && !press.metaKey && !press.ctrlKey && !press.altKey;
+  // PageUp and PageDown page the thread above the field (THE-2054).
+  if (press.key === "PageUp" && plain) return "page-up";
+  if (press.key === "PageDown" && plain) return "page-down";
   if (press.key === "ArrowUp" && plain && where.first) return "older";
   if (press.key === "ArrowDown" && plain && where.last && where.browsing) return "newer";
   if (press.key === "Escape" && where.browsing) return "leave";
@@ -79,7 +84,7 @@ export function stepHistory(
   history: readonly string[],
   text: string,
   recall: Recall | null,
-  intent: Exclude<Intent, "send">,
+  intent: Walk,
 ): { text: string; recall: Recall | null } | null {
   const at = recall?.index ?? null;
   if (intent === "leave") return recall ? { text: recall.draft, recall: null } : null;
