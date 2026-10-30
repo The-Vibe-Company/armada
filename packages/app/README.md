@@ -94,7 +94,8 @@ word on its dot.
 
 The sections:
 
-- **Coordinator** (`src/settings/Coordinator.tsx`): the coordinator's model, the key form unchanged.
+- **Coordinator** (`src/settings/Coordinator.tsx`): the coordinator's model, the key form unchanged, then the
+  OS notifications' switch (`src/notify/NotificationSetting.tsx`, a `SettingsRow`, THE-2055).
 - **Providers**: the plugins (below).
 - **Account** (`src/settings/Account.tsx`): a disabled "Sign in to Armada" row until THE-2071.
 - **About** (`src/settings/About.tsx`):
@@ -102,6 +103,38 @@ The sections:
   - the app's version (`__ARMADA_APP_VERSION__`, from `package.json` by `vite.config.ts`)
   - the protocol version the app speaks and the minor the daemon answers with
   - the daemon's version and its data folder, which read "Not reported by this daemon" until the protocol carries them
+
+## Notifications
+
+`src/notify/` (THE-2055), after T3 Code's `ThreadNotificationCoordinator.tsx`,
+mounted once beside every screen and loaded after the first paint. It hears
+every project's live turn (the client subscribes every project, so the daemon
+streams each one's `chat.turn` and `chat.delta`) and each folded inbox. A turn
+seen to work, then back to idle, is read once (`chat.read`, never for the room
+on screen): when the reading holds an answer or a line written since the turn
+began (not a stopped one), it is "Coordinator answered" (a fast turn may never
+stream its words; a failed reading falls back on what streamed); an
+`owner-request` that was not open at the project's first reading is "Question
+for you". Each says the project's name and the first line said (markdown's
+marks left out, 120 characters at most). The rules are `rules.ts`, pure over an
+injected world (the platform's `Notification`, the focus, the room on screen,
+the switch, the toasts and the badge):
+
+- **The room on screen** (its route in a visible window) hears nothing.
+- **A focused window** shows a toast at the bottom right with "Open the room",
+  gone after six seconds unless hovered or focused.
+- **A window in the background** gets an OS notification (silent, one per
+  project and kind, a newer one replacing the older) and the badge counts those
+  not yet read; a click brings the window forward and opens the room, the
+  window's focus clears the badge. In the desktop shell both go through its
+  preload (`window.armadaShell`, `src/notify/shell.ts`); in a browser, the
+  window's own focus and the Badging API where there is one.
+- **The switch** in Settings turns the OS notifications and the badge off
+  (`localStorage`, on by default, this device only); turning it on in a browser
+  not yet asked asks for the permission. Nothing makes a sound.
+
+`test/notify.test.tsx` holds the rules on a fake `Notification`, a fake focus
+and a fake room on screen.
 
 ## A project's fleet by state
 
@@ -329,6 +362,19 @@ rules, is at `#/projects/<id>/rules`, linked from the facts line. The sidebar st
 - **Type** never under 13 px, 12.5 px only for Geist Mono ids and times; the
   state's colour on a dot or a triangle (an agent is the mark's triangle in its
   harness's colour, as in the sky), never a side border; every field labelled.
+- **The empty room** (THE-2055, after T3 Code's draft hero, `src/room/Hero.tsx`):
+  with the conversation read and nothing said, the thread's place holds "What
+  should we work on?" (24 px, 30 px from `sm`: the theme's `text-hero` and
+  `text-hero-lg`) with the owner's field centred under it, then the starter
+  asks the fleet's facts justify (`starterAsks` in `src/room/view.ts`): "What is
+  blocked?" when a session is blocked, "Launch what is ready" when a ticket is
+  ready (not started, no phase, its blockers done, held by nobody, no open pull
+  request, not a parent), "Merge what is green" when an open pull request is
+  green and clean, "Sum up today" always. A chip sends its words as the field
+  would. The field stays the same element in both layouts: on the first Send it
+  glides down to its dock (Motion's layout animation, 250 ms, only on leaving
+  the hero; none under reduced motion). `test/hero.test.tsx` holds the asks,
+  the hero's markup, and in Chromium a chip's message and the glide.
 - **Movement**: the rail slides on the owner's toggle; a new message fades in.
 - `scripts/dev-daemon.ts` gives every project a coordinator on pi-ai's faux
   model (it reads the fleet with one tool call, then answers in one line), and

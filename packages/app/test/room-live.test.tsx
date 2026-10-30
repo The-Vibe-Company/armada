@@ -140,7 +140,8 @@ describe("the room streams the coordinator's turn in a browser", () => {
       return route.abort();
     });
     await page.goto(`${ORIGIN}/?minor=${minor}`);
-    await page.locator("[data-thread]").waitFor({ timeout: 5_000 });
+    // An empty conversation opens on the hero (THE-2055); the first checkpoint brings the thread.
+    await page.locator("[data-hero]").waitFor({ timeout: 5_000 });
     return page;
   }
 

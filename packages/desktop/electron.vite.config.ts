@@ -22,4 +22,13 @@ export default defineConfig({
       },
     },
   },
+  // The window's preload: CommonJS, as a sandboxed renderer requires (THE-2055).
+  preload: {
+    build: {
+      rollupOptions: {
+        input: { preload: fileURLToPath(new URL("./src/preload.ts", import.meta.url)) },
+        output: { format: "cjs", entryFileNames: "[name].cjs" },
+      },
+    },
+  },
 });

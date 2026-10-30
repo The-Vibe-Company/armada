@@ -159,7 +159,8 @@ test("the owner's field is labelled and sends; without a coordinator it says why
   expect(form).toMatch(/<button type="submit" aria-label="Send"/);
   const alone = render({ coordinator: false, items: [] });
   expect(text(alone)).toContain("No coordinator runs for this project yet");
-  expect(text(alone)).toContain("Nothing said yet.");
+  // Nothing said yet: the empty room's hero (THE-2055).
+  expect(text(alone)).toContain("What should we work on?");
   expect(alone).toMatch(/<textarea id="[^"]+"[^>]*disabled=""/);
 });
 
