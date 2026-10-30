@@ -10,6 +10,9 @@ import { cn } from "@/lib/utils";
 import { type CatalogProvider, modelKey, modelLabel, pickerGroups } from "./models";
 import { ProviderMark } from "./ProviderMark";
 
+/** The popover's width, as its class says (360 px). */
+const POPOVER_WIDTH = 360;
+
 export function ModelPicker({
   providers,
   selected,
@@ -28,6 +31,8 @@ export function ModelPicker({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState<string | null>(null);
+  /** The popover's edge: under the trigger's right edge, or its left one when the row leaves no room to its left. */
+  const [align, setAlign] = useState<"left" | "right">("right");
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const list = useId();
@@ -48,9 +53,22 @@ export function ModelPicker({
     return () => document.removeEventListener("pointerdown", away);
   }, [open]);
 
+  const optionId = (key: string) => `${list}-${key.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  // The highlighted model stays in sight as the arrow keys move it (not as the pointer does).
+  const reveal = useRef(false);
+  useEffect(() => {
+    if (!open || !current || !reveal.current) return;
+    reveal.current = false;
+    document.getElementById(optionId(current))?.scrollIntoView({ block: "nearest" });
+  });
+
   function show() {
+    const button = trigger.current?.getBoundingClientRect();
+    const card = trigger.current?.closest("[data-settings-group]")?.getBoundingClientRect();
+    setAlign(button && card && button.right - card.left < POPOVER_WIDTH ? "left" : "right");
     setQuery("");
     setActive(chosen);
+    reveal.current = true;
     setOpen(true);
   }
   function choose(key: string) {
@@ -65,6 +83,7 @@ export function ModelPicker({
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       if (choices.length === 0) return;
+      reveal.current = true;
       const next = event.key === "ArrowDown" ? (at + 1) % choices.length : (at - 1 + choices.length) % choices.length;
       setActive(choices[next] ?? null);
     } else if (event.key === "Enter") {
@@ -76,8 +95,6 @@ export function ModelPicker({
       trigger.current?.focus();
     }
   }
-  const optionId = (key: string) => `${list}-${key.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-
   return (
     <div ref={root} className="relative min-w-0">
       <button
@@ -99,7 +116,11 @@ export function ModelPicker({
         <div
           role="dialog"
           aria-label="Choose the coordinator's model"
-          className="absolute top-full right-0 z-20 mt-1.5 flex w-[min(360px,80vw)] flex-col overflow-hidden rounded-card bg-panel-3 shadow-pop"
+          data-align={align}
+          className={cn(
+            "absolute top-full z-20 mt-1.5 flex w-[min(360px,80vw)] flex-col overflow-hidden rounded-card bg-panel-3 shadow-pop",
+            align === "right" ? "right-0" : "left-0",
+          )}
         >
           <div className="flex items-center gap-2 border-line-soft border-b px-3">
             <Search aria-hidden className="size-3.5 flex-none text-text-3" />

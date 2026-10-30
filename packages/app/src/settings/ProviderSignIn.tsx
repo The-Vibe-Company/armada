@@ -8,10 +8,10 @@ import { Check, Copy, ExternalLink, LoaderCircle } from "lucide-react";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { Input, Select } from "@/components/page";
 import { Button } from "@/components/ui/button";
-import { useDaemonClient } from "@/protocol/store";
+import { useDaemon, useDaemonClient } from "@/protocol/store";
 import { type AuthPrompt, applyAuthFrame, type SignInView, startSignIn } from "./models";
 
-const CANCELLED = "Sign-in cancelled";
+const NOT_SENT = "The answer was not sent: the daemon is not connected.";
 
 /** Opens a page in the system browser: the desktop shell hands every `window.open` to it. */
 function openExternal(url: string) {
@@ -20,6 +20,8 @@ function openExternal(url: string) {
 
 export interface SignIn {
   view: SignInView | null;
+  /** A sign-in is shown, or the daemon has not ended the last one yet (a cancel it has not confirmed). */
+  busy: boolean;
   start(provider: string): void;
   cancel(): void;
   close(): void;
@@ -29,13 +31,14 @@ export interface SignIn {
 /**
  * The one sign-in of the Coordinator section: its view from the daemon's
  * frames, the browser opened once per page it names, and the flow cancelled
- * when the section leaves the screen.
+ * when the section leaves the screen. Each start is a generation: the end of
+ * an earlier one (its late refusal after a cancel) never reaches a later one.
  */
 export function useSignIn(): SignIn {
   const client = useDaemonClient();
+  const { authFlow } = useDaemon();
   const [view, setView] = useState<SignInView | null>(null);
-  /** The flow the owner cancelled: its refusal is not a failure to show. */
-  const cancelled = useRef(false);
+  const generation = useRef(0);
   const opened = useRef<string | null>(null);
   const active = useRef(false);
   useEffect(() => {
@@ -54,26 +57,29 @@ export function useSignIn(): SignIn {
   }, [url]);
   return {
     view,
+    busy: view !== null || authFlow !== null,
     start(provider) {
-      cancelled.current = false;
+      const mine = ++generation.current;
       opened.current = null;
       active.current = true;
       setView(startSignIn(provider));
       client.login(provider, "oauth").then(
         () => {
+          if (generation.current !== mine) return;
           active.current = false;
           setView(null);
         },
         (error: unknown) => {
+          if (generation.current !== mine) return;
           active.current = false;
-          if (cancelled.current) return setView(null);
           const message = error instanceof Error && error.message ? error.message : "Sign-in failed. Try again.";
           setView((current) => current && { ...current, prompt: null, error: message });
         },
       );
     },
     cancel() {
-      cancelled.current = true;
+      // The owner's cancel: whatever the daemon says of this flow from now on is not shown.
+      generation.current++;
       active.current = false;
       void client.cancel().catch(() => {});
       setView(null);
@@ -88,7 +94,7 @@ export function useSignIn(): SignIn {
         client.answer(flow, prompt.id, value);
         setView((current) => current && { ...current, prompt: null });
       } catch (error) {
-        setView((current) => current && { ...current, error: error instanceof Error ? error.message : CANCELLED });
+        setView((current) => current && { ...current, error: error instanceof Error ? error.message : NOT_SENT });
       }
     },
   };

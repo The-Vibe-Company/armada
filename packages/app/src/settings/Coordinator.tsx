@@ -67,6 +67,9 @@ function Connect({ providers }: { providers: readonly CatalogProvider[] }) {
   });
   const signingIn = signIn.view ? providers.find((p) => p.id === signIn.view?.provider) : undefined;
   const fromStarter = connected.length === 0 && starters.some((p) => p.id === signingIn?.id);
+  // A sign-in started from the list keeps the list open: its panel (and Cancel) is in its row.
+  const fromList = signingIn !== undefined && !fromStarter && others.some((p) => p.id === signingIn.id);
+  const shown = listed || fromList;
   return (
     <>
       <SettingsSection
@@ -74,8 +77,8 @@ function Connect({ providers }: { providers: readonly CatalogProvider[] }) {
         end={
           connected.length > 0 &&
           others.length > 0 && (
-            <Button variant="ghost" aria-expanded={listed} onClick={() => setListed(!listed)}>
-              {listed ? "Hide providers" : "Add another"}
+            <Button variant="ghost" aria-expanded={shown} disabled={fromList} onClick={() => setListed(!listed)}>
+              {shown ? "Hide providers" : "Add another"}
             </Button>
           )
         }
@@ -92,7 +95,7 @@ function Connect({ providers }: { providers: readonly CatalogProvider[] }) {
                     key={provider.id}
                     type="button"
                     data-continue={provider.id}
-                    disabled={signIn.view !== null}
+                    disabled={signIn.busy}
                     onClick={() => signIn.start(provider.id)}
                     className="flex h-12 cursor-pointer items-center justify-center gap-2.5 rounded-control bg-card px-4 font-medium text-sub text-text shadow-control outline-none transition-[background-color,box-shadow,scale] ease-out hover:not-disabled:bg-panel-3 hover:not-disabled:shadow-control-hover focus-visible:ring-2 focus-visible:ring-blue disabled:cursor-default disabled:opacity-50 motion-safe:active:not-disabled:scale-98"
                   >
@@ -106,13 +109,14 @@ function Connect({ providers }: { providers: readonly CatalogProvider[] }) {
             {others.length > 0 && (
               <button
                 type="button"
-                aria-expanded={listed}
+                aria-expanded={shown}
+                disabled={fromList}
                 onClick={() => setListed(!listed)}
-                className="-mx-1 flex h-7 w-fit cursor-pointer items-center gap-1 rounded-sm px-1 text-small text-text-2 outline-none hover:text-text focus-visible:ring-2 focus-visible:ring-blue"
+                className="-mx-1 flex h-7 w-fit cursor-pointer items-center gap-1 rounded-sm px-1 text-small text-text-2 outline-none hover:not-disabled:text-text focus-visible:ring-2 focus-visible:ring-blue disabled:cursor-default"
               >
                 <ChevronRight
                   aria-hidden
-                  className={cn("size-3.5 transition-transform motion-reduce:transition-none", listed && "rotate-90")}
+                  className={cn("size-3.5 transition-transform motion-reduce:transition-none", shown && "rotate-90")}
                 />
                 Or use an API key
               </button>
@@ -122,7 +126,7 @@ function Connect({ providers }: { providers: readonly CatalogProvider[] }) {
           connected.map((provider) => <ConnectedRow key={provider.id} provider={provider} />)
         )}
       </SettingsSection>
-      {listed && others.length > 0 && (
+      {shown && others.length > 0 && (
         <SettingsSection title="Providers" count={others.length}>
           {others.map((provider) => (
             <ProviderRow key={provider.id} provider={provider} signIn={signIn} panel={!fromStarter} />
@@ -254,7 +258,7 @@ function ProviderRow({ provider, signIn, panel }: { provider: CatalogProvider; s
             {provider.auth.oauth && (
               <Button
                 variant="soft"
-                disabled={signIn.view !== null || status !== "live"}
+                disabled={signIn.busy || status !== "live"}
                 onClick={() => signIn.start(provider.id)}
               >
                 Sign in

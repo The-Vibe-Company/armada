@@ -230,9 +230,11 @@ describe("Settings › Coordinator in a browser", () => {
     await page.getByRole("button", { name: "Cancel" }).click();
     const cancel = await last(page, "auth.cancel");
     expect(cancel).toMatchObject({ flow: again.id });
+    expect(await page.locator("[data-sign-in]").count()).toBe(0);
+    // Until the daemon ends the cancelled flow, no other sign-in starts (it would be refused).
+    expect(await page.getByRole("button", { name: "Continue with Claude" }).isEnabled()).toBe(false);
     await receive(page, { type: "error", id: again.id, code: "invalid-message", message: "Sign-in cancelled" });
     await catalog(page, cancel.id, NOTHING);
-    expect(await page.locator("[data-sign-in]").count()).toBe(0);
     expect(await page.getByRole("alert").count()).toBe(0);
     expect(await page.getByRole("button", { name: "Continue with Claude" }).isEnabled()).toBe(true);
     await page.context().close();
@@ -271,6 +273,46 @@ describe("Settings › Coordinator in a browser", () => {
     expect(await page.locator('[role="option"][aria-selected="true"]').getAttribute("data-model")).toBe(
       "openai-codex/codex-mini",
     );
+    await page.context().close();
+  });
+
+  test("the keys move through the models it can choose, keep the highlight in sight, and Enter chooses", async () => {
+    const many: Provider = {
+      ...codex("signed-in"),
+      models: Array.from({ length: 30 }, (_, i) => model(`codex-${i}`, `Codex ${i}`, false, 128_000)),
+    };
+    const page = await open([many, claude("unconfigured")], { provider: "openai-codex", model: "codex-0" });
+    await page.getByRole("button", { name: "Model: Codex 0" }).click();
+    const search = page.getByRole("combobox", { name: "Search models" });
+    const active = () => page.locator("[role=option][data-active]").getAttribute("data-model");
+    expect(await active()).toBe("openai-codex/codex-0");
+    await search.press("ArrowDown");
+    expect(await active()).toBe("openai-codex/codex-1");
+    // Up from the first wraps to the last model it can choose, past the dimmed ones, scrolled into the list's view.
+    await search.press("ArrowUp");
+    await search.press("ArrowUp");
+    expect(await active()).toBe("openai-codex/codex-29");
+    const list = await page.getByRole("listbox").boundingBox();
+    const row = await page.locator('[data-model="openai-codex/codex-29"]').boundingBox();
+    if (!list || !row) throw new Error("the list is not on screen");
+    expect(row.y).toBeGreaterThanOrEqual(list.y);
+    expect(row.y + row.height).toBeLessThanOrEqual(list.y + list.height + 1);
+    await search.press("Enter");
+    expect(await last(page, "models.select")).toMatchObject({ provider: "openai-codex", model: "codex-29" });
+    await page.context().close();
+  });
+
+  test("in a narrow window the picker opens toward the room it has, inside its card", async () => {
+    const page = await open([codex("signed-in"), claude("unconfigured")]);
+    await page.setViewportSize({ width: 600, height: 800 });
+    await page.getByRole("button", { name: "Model: Choose a model" }).click();
+    // The row is narrow: its control sits under its text, on the left, so the popover opens rightward.
+    expect(await page.getByRole("dialog").getAttribute("data-align")).toBe("left");
+    const dialog = await page.getByRole("dialog").boundingBox();
+    const card = await page.locator('[data-setting="model"]').boundingBox();
+    if (!dialog || !card) throw new Error("the picker is not on screen");
+    expect(dialog.x).toBeGreaterThanOrEqual(card.x);
+    expect(dialog.x + dialog.width).toBeLessThanOrEqual(page.viewportSize()?.width ?? 0);
     await page.context().close();
   });
 
