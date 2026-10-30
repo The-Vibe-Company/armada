@@ -16,6 +16,7 @@
     "@base-ui/react": "1.9.0",
     "class-variance-authority": "0.7.1",
     "cn": "0.5.0",
+    "lucide-react": "1.65.0",
     "motion": "14.7.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",

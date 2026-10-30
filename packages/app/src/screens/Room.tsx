@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { useDaemon } from "@/protocol/store";
 import { Composer } from "@/room/Composer";
 import { type Chat, NO_CHAT, useChat } from "@/room/chat";
+import { coordinatorModel, ownerHistory } from "@/room/compose";
 import { Pinned } from "@/room/Pinned";
 import { RAIL_ID, Rail } from "@/room/Rail";
 import { Thread } from "@/room/Thread";
@@ -36,7 +37,7 @@ export function Room({
   now?: number;
   zone?: string;
 }) {
-  const { projects, fleets, status } = useDaemon();
+  const { projects, fleets, status, credentials } = useDaemon();
   const [clock, setClock] = useState(Date.now);
   useEffect(() => {
     const timer = setInterval(() => setClock(Date.now()), 30_000);
@@ -59,6 +60,7 @@ export function Room({
       project={project}
       snapshot={fleets[project.id]}
       live={status === "live"}
+      model={coordinatorModel(credentials)}
       now={givenNow ?? clock}
       zone={givenZone ?? viewerZone()}
     />
@@ -71,6 +73,8 @@ interface RoomProps {
   live: boolean;
   now: number;
   zone: string;
+  /** The coordinator's model, when the daemon says it. */
+  model?: string | null;
 }
 
 function ProjectRoom(props: RoomProps) {
@@ -78,7 +82,7 @@ function ProjectRoom(props: RoomProps) {
 }
 
 /** The room on a given conversation: what `Room` draws, and what a test renders with a synthetic one. */
-export function RoomView({ project, snapshot, live, now, zone, chat }: RoomProps & { chat: Chat }) {
+export function RoomView({ project, snapshot, live, now, zone, model = null, chat }: RoomProps & { chat: Chat }) {
   const state = snapshot ? fleetOf(snapshot) : EMPTY_STATE;
   const today = dayIn(now, zone);
   // The fleet and the sky change with the fold and with the viewer's day, not with each millisecond.
@@ -101,6 +105,7 @@ export function RoomView({ project, snapshot, live, now, zone, chat }: RoomProps
   const toggle = useRef<HTMLButtonElement>(null);
   const questions = ownerQuestions(state);
   const pinned = questions[0];
+  const history = useMemo(() => ownerHistory(chat.items), [chat.items]);
 
   const hint =
     chat.status === "unavailable"
@@ -204,7 +209,14 @@ export function RoomView({ project, snapshot, live, now, zone, chat }: RoomProps
               {chat.problem}
             </p>
           )}
-          <Composer send={chat.send} disabled={!live || chat.status !== "ready" || !chat.coordinator} hint={hint} />
+          <Composer
+            project={project.id}
+            send={chat.send}
+            disabled={!live || chat.status !== "ready" || !chat.coordinator}
+            hint={hint}
+            history={history}
+            model={model}
+          />
         </div>
         <AnimatePresence initial={false}>
           {open && (
