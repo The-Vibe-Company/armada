@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -10,13 +10,14 @@ import { systemKeychain } from "../keychain.ts";
 import { Merges } from "../merge/service.ts";
 import { ModelRegistry } from "../models/registry.ts";
 import { connectionSecrets } from "../plugins/connection-secrets.ts";
+import { type DaemonProject, Projects } from "../projects.ts";
 import { Workers } from "../workers/service.ts";
 import { startWorkerSocket } from "../workers/socket.ts";
 import { Account } from "./account.ts";
 import { startServer } from "./index.ts";
 import { coordinatorModels, loadedModelKinds, modelEnvironment } from "./models.ts";
 import { Providers } from "./providers.ts";
-import { daemonProjectSchema, startReaders } from "./readers.ts";
+import { startReaders } from "./readers.ts";
 
 /** The exit code that asks the desktop shell to start the daemon again (packages/desktop/src/daemon.ts). */
 const RESTART_EXIT_CODE = 75;
@@ -40,13 +41,13 @@ try {
     if (!values.database || !values.projects) throw new Error("--database and --projects are required");
     const port = values.port === undefined ? 0 : Number(values.port);
     if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("--port must be between 0 and 65535");
-    const catalog = JSON.parse(readFileSync(values.projects, "utf8"));
-    if (!Array.isArray(catalog)) throw new Error("--projects must name a JSON array of projects");
-    const projects = catalog.map((project) => ({
-      ...daemonProjectSchema.parse(project),
-      ...(typeof project.checkout === "string" ? { checkout: project.checkout } : {}),
-    }));
-    mkdirSync(dirname(values.database), { recursive: true });
+    let daemon: Awaited<ReturnType<typeof bootDaemon>>;
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
+    let workers: Workers;
+    let merges: Merges;
+    const readerGroups = new Map<string, Awaited<ReturnType<typeof startReaders>>>();
+    const controller = new AbortController();
+    const refresh = (project: string) => readerGroups.get(project)?.refresh(project) ?? Promise.resolve();
     const keychain = systemKeychain();
     const account = new Account({ keychain, log: (line) => console.error(line) });
     void account.refresh();
@@ -62,13 +63,50 @@ try {
         keychain,
         secrets,
       });
-    const daemon = await bootDaemon({
+    async function startProject(project: DaemonProject, configure = true) {
+      if (configure) await daemon.addProject(project);
+      const readers = await startReaders({
+        registry: daemon.registry,
+        store: daemon.store,
+        projects: [project],
+        signal: controller.signal,
+      });
+      readerGroups.set(project.id, readers);
+      if (server) {
+        const configs = coordinatorModels({
+          projects: [project],
+          store: daemon.store,
+          registry: daemon.registry,
+          selected: (await modelRegistry.selection()) ?? undefined,
+          pluginSelected: modelAccess.pluginSelected,
+          pi: modelRegistry,
+        });
+        for (const config of configs)
+          await server.openProject({
+            ...config,
+            native: { ...config.native, merges, refresh: () => refresh(project.id) },
+          });
+      }
+    }
+    async function stopProject(project: DaemonProject) {
+      readerGroups.get(project.id)?.stop();
+      readerGroups.delete(project.id);
+      await server?.closeProject(project.id);
+      daemon.removeProject(project.id);
+    }
+    const registry = await Projects.open(values.projects, {
+      start: startProject,
+      stop: stopProject,
+      removing: (project, action) => workers.removingProject(project, action),
+    });
+    const projects = registry.list;
+    mkdirSync(dirname(values.database), { recursive: true });
+    daemon = await bootDaemon({
       databasePath: values.database,
       projects,
       secrets,
       log: { info: (line) => console.error(line), error: (line) => console.error(line) },
     });
-    let readers: Awaited<ReturnType<typeof startReaders>> | undefined;
     try {
       const coordinators = coordinatorModels({
         projects,
@@ -83,16 +121,20 @@ try {
       // Private instance directory avoids stale/active socket unlink races after a crash.
       const workerDirectory = await mkdtemp(join(tmpdir(), "armada-worker-"));
       const workerSocket = join(workerDirectory, "socket");
-      const workers = new Workers({
+      workers = new Workers({
         store: daemon.store,
         registry: daemon.registry,
-        projects: projects.flatMap((project) => (project.checkout ? [{ ...project, checkout: project.checkout }] : [])),
+        get projects() {
+          return registry.list.flatMap((p) => (p.checkout ? [{ ...p, checkout: p.checkout }] : []));
+        },
         socketPath: workerSocket,
-        refresh: (project) => readers?.refresh(project) ?? Promise.resolve(),
+        refresh,
       });
-      const merges = new Merges({
+      merges = new Merges({
         registry: daemon.registry,
-        projects,
+        get projects() {
+          return registry.list;
+        },
         stop: async (scope, session, key, signal) =>
           workers.tool(
             scope.project,
@@ -120,20 +162,13 @@ try {
         throw error;
       }
       let stopping = false;
-      let server: Awaited<ReturnType<typeof startServer>>;
-      const controller = new AbortController();
       try {
-        readers = await startReaders({
-          registry: daemon.registry,
-          store: daemon.store,
-          projects,
-          signal: controller.signal,
-        });
+        for (const project of projects) await startProject(project, false);
         // First reads get a bounded opportunity to settle before announcing health.
         // Slow initial reads continue in the background; readiness must not cancel them.
         await new Promise<void>((resolve) => {
           const timer = setTimeout(resolve, 3000);
-          void readers?.ready.then(() => {
+          void Promise.all([...readerGroups.values()].map((r) => r.ready)).then(() => {
             clearTimeout(timer);
             resolve();
           });
@@ -141,15 +176,17 @@ try {
         server = await startServer({
           store: daemon.store,
           projects,
+          projectRegistry: registry,
           port,
           staticDir: values["static-dir"],
           workers,
           account,
           keychain,
           modelRegistry,
+          providers: providersFor(daemon),
           resolveCoordinator: async (project) => {
             const config = coordinatorModels({
-              projects: projects.filter((p) => p.id === project),
+              projects: registry.list.filter((p) => p.id === project),
               store: daemon.store,
               registry: daemon.registry,
               pi: modelRegistry,
@@ -157,22 +194,14 @@ try {
               pluginSelected: modelAccess.pluginSelected,
             })[0];
             return config
-              ? {
-                  ...config,
-                  native: {
-                    ...config.native,
-                    merges,
-                    refresh: () => readers?.refresh(config.project) ?? Promise.resolve(),
-                  },
-                }
+              ? { ...config, native: { ...config.native, merges, refresh: () => refresh(project) } }
               : undefined;
           },
           coordinators: coordinators.map((config) => ({
             ...config,
-            native: { ...config.native, merges, refresh: () => readers?.refresh(config.project) ?? Promise.resolve() },
+            native: { ...config.native, merges, refresh: () => refresh(config.project) },
           })),
           modelKinds: loadedModelKinds(daemon.registry),
-          providers: providersFor(daemon),
           // The keychain is opened on first use, as the plugins' own secret getter does.
           plugins: {
             configPath: daemon.configPath,
@@ -192,7 +221,7 @@ try {
         });
       } catch (error) {
         controller.abort();
-        readers?.stop();
+        for (const readers of readerGroups.values()) readers.stop();
         await socket.close();
         await rm(workerDirectory, { recursive: true, force: true });
         throw error;
@@ -205,16 +234,16 @@ try {
         if (stopping) return;
         stopping = true;
         controller.abort();
-        readers?.stop();
+        for (const readers of readerGroups.values()) readers.stop();
         clearInterval(workerPoll);
         try {
-          await server.close();
+          await registry.close();
+          await server?.close();
           const results = await Promise.allSettled([workers.close(), socket.close()]);
           const failed = results.find((result) => result.status === "rejected");
           if (failed?.status === "rejected") throw failed.reason;
         } finally {
           await rm(workerDirectory, { recursive: true, force: true });
-          await account.close();
           daemon.close();
         }
       };
@@ -225,13 +254,18 @@ try {
         void stop();
       });
       if (stopping) {
-        readers.stop();
+        for (const readers of readerGroups.values()) readers.stop();
       } else {
         // One readiness line for the Electron parent, emitted only after binding.
-        console.log(JSON.stringify({ url: server.url, wsUrl: server.wsUrl, readers: readers.readers }));
+        console.log(
+          JSON.stringify({
+            url: server.url,
+            wsUrl: server.wsUrl,
+            readers: [...readerGroups.values()].flatMap((r) => r.readers),
+          }),
+        );
       }
     } catch (error) {
-      await account.close();
       daemon.close();
       throw error;
     }

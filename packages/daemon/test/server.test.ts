@@ -613,7 +613,7 @@ test("credential socket writes never expose the key to replies, events or logs",
 // the recorded envelope to minor 5 for per-client plan-policy snapshot projection,
 // THE-2045 to minor 6 for the session page, THE-2049 to minor 7 for live chat,
 // THE-2073 to reserved minor 9 for shared auth and the pi model catalog
-// (the recorded frames have no coordinator attached and are otherwise unchanged).
+// THE-2080 advances to minor 12; the recorded frames are otherwise unchanged.
 test("subscription bytes stay compatible with the recorded daemon vocabulary and folded tables", async (t) => {
   const fixture = new URL("./support/protocol-subscription.json", import.meta.url);
   const inputs = JSON.parse(readFileSync(fixture, "utf8")) as { history: EventInput[]; live: EventInput[] };

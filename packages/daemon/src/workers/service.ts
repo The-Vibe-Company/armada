@@ -94,6 +94,7 @@ export class Workers {
   readonly #observations = new Map<string, string>();
   readonly #queues = new Map<string, Promise<unknown>>();
   #closing = false;
+  readonly #removing = new Set<string>();
   constructor(options: Options) {
     this.#options = options;
   }
@@ -138,6 +139,30 @@ export class Workers {
     });
   }
 
+  /** Hold the same queue as launch until the project has been unregistered. */
+  async removingProject<T>(project: string, action: () => Promise<T>): Promise<T> {
+    this.#removing.add(project);
+    try {
+      return await this.#serial(project, async () => {
+        if (this.#tables(project)?.sessions.some((s) => !ended(s.phase)))
+          throw new WorkerRefusal("Project has a worker in flight");
+        const checkpoints = this.#options.store.readSince(0, project).flatMap((e) => {
+          const c = e.kind === "coordinator.checkpoint" ? e.payload.checkpoint : null;
+          return c && typeof c === "object" && !Array.isArray(c) && c.format === "armada.worker" ? [c] : [];
+        });
+        if (
+          checkpoints.some(
+            (c) => c.type === "launch-intent" && !checkpoints.some((r) => r.type === "receipt" && r.key === c.key),
+          )
+        )
+          throw new WorkerRefusal("Project has an unresolved worker launch; inspect it before removing the project");
+        return action();
+      });
+    } finally {
+      this.#removing.delete(project);
+    }
+  }
+
   async tool(
     project: string,
     name: WorkerTool,
@@ -146,6 +171,7 @@ export class Workers {
     beforeWrite: () => void,
   ): Promise<Record<string, Json>> {
     const parsed = workerToolSchemas[name].parse(args);
+    if (this.#removing.has(project)) throw new WorkerRefusal("Project is being removed");
     return this.#serial(project, async () => {
       beforeWrite();
       if (this.#closing) throw new Error("Worker service is stopping");
@@ -284,8 +310,8 @@ export class Workers {
     const max = rules?.policy?.maxWorkers;
     if (max != null && active.length >= max)
       throw new WorkerRefusal(`worker cap reached: ${active.length} of ${max} workers; nothing was launched`);
-    const runtime = this.#options.registry.get("runtime", route.cli);
-    const node = this.#options.registry.get("node", nodeKind);
+    const runtime = this.#options.registry.get("runtime", route.cli, project);
+    const node = this.#options.registry.get("node", nodeKind, project);
     if (!runtime || !node) throw new WorkerRefusal("Selected runtime or node provider is unavailable");
     if (!runtime.withNode) throw new WorkerRefusal("Runtime cannot bind the selected node");
     const branch = args.branch ?? ticket.branchName;

@@ -55,7 +55,17 @@ function validateConfig(manifest: PluginManifest, config: PluginConfig, defaults
       const base = defaults[seam]?.[kind];
       const value =
         base && typeof saved === "object" && saved !== null && !Array.isArray(saved)
-          ? { ...(base as Record<string, Json>), ...saved }
+          ? {
+              ...(base as Record<string, Json>),
+              ...saved,
+              // Host-owned project metadata wins, while all saved provider options survive.
+              ...((base as Record<string, Json>).projects && {
+                projects: {
+                  ...(typeof saved.projects === "object" && saved.projects !== null ? saved.projects : {}),
+                  ...((base as Record<string, Json>).projects as Record<string, Json>),
+                },
+              }),
+            }
           : saved;
       validateContribution(contribution.config as JsonSchema, seam, kind, value);
       const target = validated[seam] ?? {};
@@ -66,7 +76,7 @@ function validateConfig(manifest: PluginManifest, config: PluginConfig, defaults
   return validated;
 }
 
-/** One call per daemon boot. No watching, unloading or network resolution. */
+/** Load a provider registry at boot or for one newly registered project. No network resolution. */
 export async function loadPlugins(
   services: PluginServices,
   configPath = appConfigPath(),

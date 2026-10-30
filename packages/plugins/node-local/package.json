@@ -20,6 +20,22 @@
                 "type": "string",
                 "minLength": 1
               },
+              "projects": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "required": [
+                    "root"
+                  ],
+                  "properties": {
+                    "root": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
               "transport": {
                 "enum": [
                   "auto",

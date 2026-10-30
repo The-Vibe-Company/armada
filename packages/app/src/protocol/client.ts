@@ -3,6 +3,7 @@ import {
   type AccountDevice,
   type AccountRequest,
   type AccountState,
+  type AddProjectInput,
   APP_TOO_OLD,
   type AuthFrame,
   type ChatDelta,
@@ -20,9 +21,13 @@ import {
   type OwnerAnswerRequest,
   type PluginRequest,
   type PluginsResult,
+  PROJECTS_MINOR,
   PROTOCOL_VERSION,
   PROVIDERS_MINOR,
   type Project,
+  type ProjectRequest,
+  type ProjectsInspection,
+  type ProjectsResult,
   type ProtocolEvent,
   type ProtocolVersion,
   type Provider,
@@ -103,6 +108,9 @@ export interface DaemonClient {
   saveCredentials(provider: string, key: string, config?: ModelConfig): Promise<void>;
   login(): Promise<void>;
   login(provider: string, authType: "oauth" | "api_key"): Promise<void>;
+  inspectProject(path: string): Promise<ProjectsInspection>;
+  addProject(input: AddProjectInput): Promise<ProjectsResult>;
+  removeProject(id: string): Promise<ProjectsResult>;
   answer(flow: string, id: string, value: string): void;
   cancel(flow?: string): Promise<void>;
   logout(): Promise<void>;
@@ -139,6 +147,7 @@ type DaemonRequest = Unaddressed<
   | OwnerAnswerRequest
   | SessionReleaseRequest
   | SessionOutputRequest
+  | ProjectRequest
   | Exclude<AccountRequest, { type: "account.status" }>
 >;
 /** The reply to each of them. */
@@ -148,6 +157,9 @@ type DaemonReply<R extends DaemonRequest> = Extract<
     type: {
       "account.login": "account.result";
       "account.logout": "account.result";
+      "projects.inspect": "projects.inspection";
+      "projects.add": "projects.result";
+      "projects.remove": "projects.result";
       "chat.read": "chat.result";
       "chat.send": "chat.sent";
       "chat.stop": "chat.stopped";
@@ -336,6 +348,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   let lastDrop: "close" | "unreadable" = "close";
   /** Per connection: the subscription each project's frames arrive under. */
   let subscriptions = new Map<string, string>();
+  let requestedSubscriptions = new Set<string>();
 
   const set = (next: Partial<DaemonState>) => {
     state = { ...state, ...next };
@@ -347,6 +360,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   function connect() {
     cancelRetry = null;
     subscriptions = new Map();
+    requestedSubscriptions = new Set();
     let current: SocketLike;
     try {
       current = options.open(options.url);
@@ -423,30 +437,42 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
     switch (message.type) {
       case "projects.result": {
         if (lastDrop === "close") attempt = 0;
+        const firstList = state.status !== "live";
         set({ status: "live", problem: null, projects: message.projects, minor: message.version.minor });
-        if (message.version.minor >= ACCOUNT_MINOR) {
+        const request = pending.get(message.id);
+        pending.delete(message.id);
+        request?.resolve(message);
+        const ids = new Set(message.projects.map((p) => p.id));
+        for (const project of requestedSubscriptions)
+          if (!ids.has(project)) {
+            requestedSubscriptions.delete(project);
+            subscriptions.delete(project);
+          }
+        if (firstList && message.version.minor >= ACCOUNT_MINOR) {
           accountStatusId = id();
           send({ type: "account.status", version, id: accountStatusId });
-        } else set({ account: null, accountProblem: "Update Armada to sign in." });
-        if (message.version.minor >= 1) {
+        } else if (firstList) set({ account: null, accountProblem: "Update Armada to sign in." });
+        if (firstList && message.version.minor >= 1) {
           credentialStatusId = id();
           send({ type: "credentials.status", version, id: credentialStatusId });
         }
         // Listed again on every connection: a restarted daemon says what it loaded.
-        if (message.version.minor >= 2) {
+        if (firstList && message.version.minor >= 2) {
           pluginListId = id();
           pluginIds.add(pluginListId);
           send({ type: "plugins.list", version, id: pluginListId });
-        } else set({ plugins: null, pluginsProblem: NO_PLUGINS, restarting: false });
-        if (message.version.minor >= MODELS_MINOR) {
+        } else if (firstList) set({ plugins: null, pluginsProblem: NO_PLUGINS, restarting: false });
+        if (firstList && message.version.minor >= MODELS_MINOR) {
           void askModels({ type: "models.providers" }).catch(() => {});
-        } else set({ catalog: null });
-        if (message.version.minor >= PROVIDERS_MINOR) {
+        } else if (firstList) set({ catalog: null });
+        if (firstList && message.version.minor >= PROVIDERS_MINOR) {
           void askProviders({ type: "providers.list" }).catch((error: Error) =>
             set({ providersProblem: error.message }),
           );
-        } else set({ providers: null, providersProblem: "Update Armada to connect providers." });
+        } else if (firstList) set({ providers: null, providersProblem: "Update Armada to connect providers." });
         for (const project of message.projects) {
+          if (requestedSubscriptions.has(project.id)) continue;
+          requestedSubscriptions.add(project.id);
           send({ type: "project.subscribe", version, id: id(), project: project.id, after: cursor(project.id) });
         }
         return;
@@ -547,6 +573,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       case "chat.tool":
         for (const listener of chatListeners) listener(message);
         return;
+      case "projects.inspection":
       case "chat.result":
       case "chat.sent":
       case "chat.stopped":
@@ -622,7 +649,17 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
     });
   }
 
+  function projectRequest<
+    R extends Extract<DaemonRequest, { type: "projects.inspect" | "projects.add" | "projects.remove" }>,
+  >(message: R) {
+    if ((state.minor ?? 0) < PROJECTS_MINOR) return Promise.reject(new Error("Update the daemon to manage projects"));
+    return request(message);
+  }
+
   return {
+    inspectProject: (path) => projectRequest({ type: "projects.inspect", path }),
+    addProject: ({ id, ...input }) => projectRequest({ type: "projects.add", ...input, projectId: id }),
+    removeProject: (project) => projectRequest({ type: "projects.remove", project }),
     login: (provider?: string, authType?: "oauth" | "api_key") =>
       provider === undefined
         ? askAccount("account.login")

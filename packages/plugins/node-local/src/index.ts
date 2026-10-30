@@ -1,8 +1,8 @@
 import { type ChildProcessWithoutNullStreams, execFile as execFileCallback, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import type {
   ArmadaPlugin,
@@ -69,6 +69,8 @@ type LocalTransport = "auto" | "pipe" | "pty";
 export interface LocalNodeOptions {
   /** Workspace directories are created below this path. */
   workspaceRoot?: string;
+  /** A registered project's chosen checkout wins over the request's repository URL. */
+  projects?: Record<string, { root: string }>;
   /** `auto` uses a PTY only when this process has a usable terminal. */
   transport?: LocalTransport;
   /** Maximum number of UTF-16 code units retained for each worker transcript. */
@@ -81,6 +83,7 @@ export interface LocalNodeOptions {
 
 interface NormalizedOptions {
   workspaceRoot: string;
+  projects: ReadonlyMap<string, string>;
   transport: LocalTransport;
   outputTail: number;
   stopTimeoutMs: number;
@@ -89,6 +92,7 @@ interface NormalizedOptions {
 
 interface WorkspaceRecord {
   readonly workspace: Workspace;
+  readonly workspaceRoot: string;
   readonly repository: string;
   readonly branch: string;
   readonly base: string;
@@ -138,6 +142,12 @@ function normalizeOptions(options: LocalNodeOptions): NormalizedOptions {
   const workspaceRoot = resolve(options.workspaceRoot?.trim() || appDataWorkspaceRoot());
   return {
     workspaceRoot,
+    projects: new Map(
+      Object.entries(options.projects ?? {}).map(([project, config]) => {
+        if (!config.root?.trim()) throw new Error(`local project ${project} root must be a nonempty path`);
+        return [project, resolve(config.root)];
+      }),
+    ),
     transport,
     outputTail: positiveInteger(options.outputTail, DEFAULT_OUTPUT_TAIL, "outputTail"),
     stopTimeoutMs: positiveInteger(options.stopTimeoutMs, DEFAULT_STOP_TIMEOUT_MS, "stopTimeoutMs"),
@@ -219,6 +229,41 @@ async function git(
   return { stdout: textOf(result.stdout), stderr: textOf(result.stderr) };
 }
 
+// Linked checkouts share Git's info/exclude. Serialize its append across local
+// providers so parallel project launches cannot duplicate or overwrite rules.
+const excludeWrites = new Map<string, Promise<void>>();
+async function excludeWorktrees(source: string, workspaceRoot: string, signal?: AbortSignal): Promise<void> {
+  const exclude = resolve(
+    source,
+    (await git(["rev-parse", "--git-path", "info/exclude"], { cwd: source, signal })).stdout.trim(),
+  );
+  const pattern = `/${relative(source, workspaceRoot)
+    .replaceAll("\\", "/")
+    .replace(/[[\]*?]/g, "\\$&")}/`;
+  const previous = excludeWrites.get(exclude) ?? Promise.resolve();
+  const operation = previous
+    .catch(() => {})
+    .then(async () => {
+      signal?.throwIfAborted();
+      let body = "";
+      try {
+        body = await readFile(exclude, "utf8");
+      } catch (error) {
+        if (!isErrno(error, "ENOENT")) throw error;
+      }
+      if (body.split(/\r?\n/).includes(pattern)) return;
+      await mkdir(dirname(exclude), { recursive: true });
+      signal?.throwIfAborted();
+      await appendFile(exclude, `${body && !body.endsWith("\n") ? "\n" : ""}${pattern}\n`);
+    });
+  excludeWrites.set(exclude, operation);
+  try {
+    await operation;
+  } finally {
+    if (excludeWrites.get(exclude) === operation) excludeWrites.delete(exclude);
+  }
+}
+
 async function commandAvailable(command: string): Promise<boolean> {
   try {
     await execute("which", [command], { encoding: "utf8", maxBuffer: 16 * 1024 });
@@ -249,8 +294,9 @@ export class LocalNode implements NodeProvider {
     if (!request.branch.trim()) throw invalidInput("branch is empty");
     if (request.branch.includes("\0")) throw invalidInput("branch contains NUL");
 
-    await mkdir(this.#options.workspaceRoot, { recursive: true });
-    const repository = resolve(request.repository);
+    const projectRoot = this.#options.projects.get(request.project);
+    const workspaceRoot = projectRoot ? join(projectRoot, ".armada", "worktrees") : this.#options.workspaceRoot;
+    const repository = projectRoot ?? resolve(request.repository);
     const source = textOf(
       (await git(["rev-parse", "--show-toplevel"], { cwd: repository, signal: request.signal })).stdout,
     ).trim();
@@ -260,11 +306,16 @@ export class LocalNode implements NodeProvider {
       signal: request.signal,
     });
 
+    if (projectRoot) await excludeWorktrees(source, workspaceRoot, request.signal);
+    await mkdir(workspaceRoot, { recursive: true });
+
     const base = (await git(["rev-parse", "HEAD"], { cwd: source, signal: request.signal })).stdout.trim();
     const id = randomUUID();
     const path = join(
-      this.#options.workspaceRoot,
-      `${safePart(request.project, "project")}-${safePart(request.ticket, "ticket")}-${id}`,
+      workspaceRoot,
+      projectRoot
+        ? safePart(request.ticket, "ticket")
+        : `${safePart(request.project, "project")}-${safePart(request.ticket, "ticket")}-${id}`,
     );
     let worktreeAdded = false;
     try {
@@ -290,6 +341,7 @@ export class LocalNode implements NodeProvider {
       const workspace: Workspace = { id, path, node: "local" };
       this.#workspaces.set(id, {
         workspace: { ...workspace },
+        workspaceRoot,
         repository: source,
         branch: request.branch,
         base,
@@ -429,7 +481,7 @@ export class LocalNode implements NodeProvider {
       !record ||
       record.workspace.node !== workspace.node ||
       record.workspace.path !== workspace.path ||
-      !inside(this.#options.workspaceRoot, workspace.path)
+      !inside(record.workspaceRoot, workspace.path)
     )
       throw new Error("workspace is not owned by this local node");
     return record;

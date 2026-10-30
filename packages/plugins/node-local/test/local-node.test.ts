@@ -3,7 +3,7 @@ import { ChildProcess, execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -85,6 +85,74 @@ async function launch(
         env: environment,
       }),
   );
+}
+
+for (const linked of [false, true]) {
+  test(`project-root worktrees stay in the chosen ${linked ? "linked " : ""}checkout and are excluded once`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "armada-node-root-"));
+    try {
+      const main = await repository(root);
+      const ignore = "# Repository-owned ignore rules\nnode_modules/\n";
+      await writeFile(join(main, ".gitignore"), ignore);
+      await execute("git", ["-C", main, "add", ".gitignore"]);
+      await execute("git", [
+        "-C",
+        main,
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "-m",
+        "Repository ignore rules",
+      ]);
+      const source = linked ? join(root, "chosen-checkout") : main;
+      if (linked) await execute("git", ["-C", main, "worktree", "add", "--quiet", "-b", "chosen", source]);
+      const node = createLocalNode({
+        projects: { orchard: { root: source } },
+        workspaceRoot: join(root, "legacy-workspaces"),
+        transport: "pipe",
+      });
+      const workspaces = [];
+      for (const ticket of ["CHECK-1", "CHECK-2"]) {
+        const workspace = await node.prepare({
+          project: "orchard",
+          ticket,
+          repository: main,
+          branch: `worker-${ticket}`,
+        });
+        workspaces.push(workspace);
+        assert.equal(workspace.path, join(source, ".armada", "worktrees", ticket));
+        assert.equal(
+          (await execute("git", ["-C", workspace.path, "branch", "--show-current"])).stdout.trim(),
+          `worker-${ticket}`,
+        );
+        assert.equal(
+          (await execute("git", ["-C", source, "check-ignore", `.armada/worktrees/${ticket}`])).stdout.trim(),
+          `.armada/worktrees/${ticket}`,
+        );
+      }
+      const exclude = resolve(
+        source,
+        (await execute("git", ["-C", source, "rev-parse", "--git-path", "info/exclude"])).stdout.trim(),
+      );
+      assert.equal(
+        (await readFile(exclude, "utf8")).split("\n").filter((line) => line === "/.armada/worktrees/").length,
+        1,
+      );
+      assert.equal(await readFile(join(source, ".gitignore"), "utf8"), ignore);
+      assert(node.dispose);
+      for (const workspace of workspaces) {
+        await node.dispose(workspace);
+        await assert.rejects(stat(workspace.path), /ENOENT/);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 }
 
 test("prepares a checked-out worktree and delivers keyed messages to a headless process", async () => {
