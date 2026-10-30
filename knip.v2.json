@@ -36,6 +36,10 @@
     "packages/plugins/github": {
       "entry": ["test/**/*.test.ts"],
       "project": ["src/**/*.ts", "test/**/*.ts"]
+    },
+    "packages/plugins/node-local": {
+      "entry": ["test/**/*.test.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts"]
     }
   },
   "ignoreWorkspaces": ["packages/core", "packages/cli", "packages/dashboard"],
