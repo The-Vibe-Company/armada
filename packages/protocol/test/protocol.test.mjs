@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { pluginEventInputSchema, pluginEventSchema } from "@armada/plugin-api";
 import {
   admitRequest,
+  CHAT_LIVE_MINOR,
   clientMessageSchema,
   eventPayloadSchemas,
   eventSchema,
@@ -72,6 +73,7 @@ const requests = [
     reason: "Superseded by EX-2",
   },
   { type: "session.output", version, id: "output-a", project: "project-a", ticket: "EX-1", session: "session-a" },
+  { type: "chat.stop", version, id: "stop-a", project: "project-a" },
 ];
 const plugin = {
   id: "lantern",
@@ -141,6 +143,61 @@ const frames = [
     ],
   },
   { type: "chat.sent", version, id: "send-a", project: "project-a", requestId: "message-a" },
+  { type: "chat.stopped", version, id: "stop-a", project: "project-a" },
+  ...["idle", "thinking", "writing", "tool"].map((state) => ({
+    type: "chat.turn",
+    version,
+    project: "project-a",
+    state,
+    since: "2026-01-01T00:00:00.000Z",
+    queued: 2,
+    ...(state === "tool" ? { tool: { id: "call-a", name: "fleet.status" } } : {}),
+  })),
+  ...["text", "reasoning"].map((kind) => ({
+    type: "chat.delta",
+    version,
+    project: "project-a",
+    id: "answer-a",
+    kind,
+    text: "The whole partial so far",
+  })),
+  ...[null, "All clear"].map((output) => ({
+    type: "chat.tool",
+    version,
+    project: "project-a",
+    id: "call-a",
+    name: "fleet.status",
+    input: {},
+    output,
+    failed: false,
+    at: "2026-01-01T00:00:00.000Z",
+  })),
+  {
+    type: "chat.result",
+    version,
+    id: "read-live",
+    project: "project-a",
+    seq: 10,
+    coordinator: true,
+    turn: {
+      type: "chat.turn",
+      version,
+      project: "project-a",
+      state: "writing",
+      since: "2026-01-01T00:00:00.000Z",
+      queued: 0,
+    },
+    items: [
+      {
+        kind: "coordinator",
+        id: "answer-a",
+        at: "2026-01-01T00:00:00.000Z",
+        body: "Partial",
+        reasoning: "Checking the fleet",
+        aborted: true,
+      },
+    ],
+  },
   { type: "owner.answered", version, id: "answer-a", project: "project-a", item: "ask-a" },
   {
     type: "session.release.result",
@@ -406,4 +463,19 @@ test("plugin events admit the wire envelope, including offset dates and extensio
     );
   }
   assert.deepEqual(pluginEventSchema.parse(event), event);
+});
+
+test("live chat validates its bounded state and keeps older chat results readable", () => {
+  assert.equal(CHAT_LIVE_MINOR, 7);
+  assert.ok(PROTOCOL_VERSION.minor >= CHAT_LIVE_MINOR);
+  const turn = frames.find((f) => f.type === "chat.turn");
+  assert.ok(serverMessageSchema.safeParse(turn).success);
+  for (const changes of [{ state: "busy" }, { queued: -1 }, { since: "yesterday" }, { tool: { name: "read" } }]) {
+    assert.equal(serverMessageSchema.safeParse({ ...turn, ...changes }).success, false);
+  }
+  const delta = frames.find((f) => f.type === "chat.delta");
+  assert.ok(serverMessageSchema.safeParse(delta).success);
+  assert.equal(serverMessageSchema.safeParse({ ...delta, kind: "tokens" }).success, false);
+  const old = frames.find((f) => f.type === "chat.result");
+  assert.equal(serverMessageSchema.parse(old).turn, undefined);
 });
