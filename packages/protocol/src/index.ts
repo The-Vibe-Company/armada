@@ -30,7 +30,9 @@ import {
   modelsRequestSchemas,
 } from "./models.js";
 import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
-import { PROVIDERS_MINOR, providerRequestSchemas, providersCatalogSchema } from "./providers.js";
+import { providerRequestSchemas, providersCatalogSchema } from "./providers.js";
+
+import { CONDUCTOR_MINOR } from "./rules.js";
 import {
   sessionOutputRequestSchema,
   sessionOutputResultSchema,
@@ -49,7 +51,7 @@ export * from "./rules.js";
 export * from "./session.js";
 
 /** Wire version, independent of the daemon/app release versions. */
-export const PROTOCOL_VERSION = { major: 1, minor: PROVIDERS_MINOR } as const;
+export const PROTOCOL_VERSION = { major: 1, minor: CONDUCTOR_MINOR } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
 
