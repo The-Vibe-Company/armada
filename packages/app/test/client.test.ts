@@ -439,3 +439,40 @@ test("a screen's request gets its own reply, its error's line, or a refusal when
   socket().drop();
   await expect(dropped).rejects.toThrow(/connection dropped/);
 });
+
+test("the live turn's frames reach the room's listeners, and Stop resolves on chat.stopped", async () => {
+  const { client, socket } = setup();
+  socket().receive({ type: "projects.result", version: V, id: "r1", projects: [] });
+  const heard: string[] = [];
+  let changes = 0;
+  client.subscribe(() => changes++);
+  const leave = client.chat((frame) => heard.push(`${frame.type} ${frame.project}`));
+  socket().receive({
+    type: "chat.turn",
+    version: V,
+    project: "p",
+    state: "thinking",
+    since: "2026-03-10T09:00:00.000Z",
+    queued: 0,
+  });
+  socket().receive({ type: "chat.delta", version: V, project: "p", id: "g1:1", kind: "text", text: "On it" });
+  expect(heard).toEqual(["chat.turn p", "chat.delta p"]);
+  // A live frame is not the fleet's state: the screens reading it are not told of a change.
+  expect(changes).toBe(0);
+  leave();
+  socket().receive({
+    type: "chat.turn",
+    version: V,
+    project: "p",
+    state: "idle",
+    since: "2026-03-10T09:00:00.000Z",
+    queued: 0,
+  });
+  expect(heard).toHaveLength(2);
+  const stop = client.request({ type: "chat.stop", project: "p" });
+  const asked = socket().sent.at(-1) as ClientMessage & { id: string };
+  expect(asked).toEqual({ type: "chat.stop", project: "p", version: V, id: asked.id });
+  socket().receive({ type: "chat.stopped", version: V, id: asked.id, project: "p" });
+  expect((await stop).type).toBe("chat.stopped");
+  client.stop();
+});

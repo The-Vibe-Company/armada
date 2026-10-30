@@ -4,6 +4,7 @@
 import type { ChatItem } from "@armada/protocol";
 import type { Group } from "@/fleet/overview";
 import type { FleetState, FoldedInboxItem } from "@/fleet/state";
+import type { Streaming, ThreadItem } from "./chat";
 
 export interface Choice {
   label: string;
@@ -210,7 +211,8 @@ export function workDuration(ms: number): string {
   return `${Math.floor(total / 3600)}h ${pad(Math.floor((total % 3600) / 60))}m`;
 }
 
-type Said = Exclude<ChatItem, { kind: "tool" }>;
+/** A message, a coordinator's line, or its answer still being written (THE-2052). */
+export type Said = Exclude<ChatItem, { kind: "tool" }> | Streaming;
 /** A turn's tool calls, at the place of its first: one row alone, or a group. */
 export type Work = { id: string; at: string; tools: Tool[] };
 /**
@@ -231,7 +233,7 @@ export type ThreadRow =
  * "Worked for <first call to answer>", or "You stopped this response" when
  * the answer was stopped. A line stays outside the fold, below it.
  */
-export function workRows(items: readonly ChatItem[]): ThreadRow[] {
+export function workRows(items: readonly ThreadItem[]): ThreadRow[] {
   const out: ThreadRow[] = [];
   let work: Work | null = null;
   for (const item of items) {
@@ -242,7 +244,8 @@ export function workRows(items: readonly ChatItem[]): ThreadRow[] {
     }
     if (work) {
       const id = `work:${work.id}`;
-      if (item.kind === "owner") out.push({ kind: "work", id, work });
+      // The answer still being written (THE-2052) leaves it open too: its reading folds it, same row.
+      if (item.kind === "owner" || item.kind === "streaming") out.push({ kind: "work", id, work });
       else {
         const label = item.aborted
           ? "You stopped this response"
