@@ -21,8 +21,8 @@ const Activity = lazy(() => import("./Activity"));
  * project with its coordinator's state as T3 Code's pills (Working, Awaiting
  * input, Failed), what it said since the owner last read its room (THE-2054)
  * and its sessions in flight (once its folded state arrived, so nothing counts
- * up on the first paint), the app's own settings (Plugins, Settings) and the
- * live reading of the daemon.
+ * up on the first paint), the app's own settings (plugins inside) and the live
+ * reading of the daemon.
  */
 export function Sidebar() {
   const { projects, fleets, status } = useDaemon();
@@ -77,22 +77,38 @@ export function Sidebar() {
       <span className="flex-1" />
       <nav aria-label="Armada" className="flex flex-col gap-0.5">
         <a
-          href="#/plugins"
-          className={`${item} ${current}`}
-          aria-current={route.kind === "plugins" ? "page" : undefined}
-        >
-          <span className="min-w-0 flex-1 truncate">Plugins</span>
-        </a>
-        <a
           href="#/settings"
           className={`${item} ${current}`}
           aria-current={route.kind === "settings" ? "page" : undefined}
         >
+          <Gear />
           <span className="min-w-0 flex-1 truncate">Settings</span>
         </a>
       </nav>
       <Live status={status} />
     </aside>
+  );
+}
+
+/**
+ * Lucide's gear (`settings`, ISC), drawn here: lucide's runtime would add
+ * itself to the first load (perf-budget.json) for one icon.
+ */
+function Gear() {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="size-4 flex-none"
+    >
+      <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
   );
 }
 

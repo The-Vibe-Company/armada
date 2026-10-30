@@ -2,8 +2,12 @@ import { type FormEvent, useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useDaemon, useDaemonClient } from "@/protocol/store";
 
-/** A key lives only in the password field until one explicit submit. Never in app state/storage. */
-export function CoordinatorKey() {
+/**
+ * Settings' Coordinator: the model every coordinator thinks with, as the key
+ * form of THE-1995 (THE-2070 makes it a picker). A key lives only in the
+ * password field until one explicit submit. Never in app state/storage.
+ */
+export function Coordinator() {
   const { credentials, status, plugins } = useDaemon();
   const client = useDaemonClient();
   const field = useId();
