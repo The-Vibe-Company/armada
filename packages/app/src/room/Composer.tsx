@@ -20,6 +20,7 @@ import {
 } from "react";
 import { cn } from "@/lib/utils";
 import {
+  afterSend,
   browserStorage,
   caretLines,
   type DraftStorage,
@@ -73,28 +74,47 @@ export function Composer({
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const area = useRef<HTMLTextAreaElement>(null);
-  const latest = useRef(body);
-  latest.current = body;
+  // What the field holds now, for a send that resolves after the owner went on typing or walking.
+  const latest = useRef({ body, recall });
+  latest.current = { body, recall };
   // A recalled message puts the caret at its end, where ↓ goes on.
   const toEnd = useRef(false);
 
-  // A draft still waiting is written when the room closes.
-  useEffect(() => () => keeper?.flush(), [keeper]);
+  // A draft still waiting is written when the room closes, or the page.
+  useEffect(() => {
+    if (!keeper) return;
+    const flush = () => keeper.flush();
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, [keeper]);
 
-  // The field grows with its lines, from two (`rows`) to FIELD_MAX, then scrolls.
+  // The field grows with its lines, from two (`rows`) to FIELD_MAX, then scrolls;
+  // its lines wrap again when its width changes (the rail, the window).
   // biome-ignore lint/correctness/useExhaustiveDependencies: the height follows the text.
   useLayoutEffect(() => {
     const el = area.current;
     if (!el) return;
-    el.style.height = "auto";
-    const { height, scrolls } = fieldHeight(el.scrollHeight);
-    el.style.height = `${height}px`;
-    el.style.overflowY = scrolls ? "auto" : "hidden";
+    fit(el);
     if (toEnd.current) {
       toEnd.current = false;
       el.setSelectionRange(el.value.length, el.value.length);
     }
   }, [body]);
+  useEffect(() => {
+    const el = area.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let width = el.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (el.clientWidth === width) return;
+      width = el.clientWidth;
+      fit(el);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const blank = !body.trim();
   async function submit() {
@@ -104,10 +124,13 @@ export function Composer({
     setProblem(null);
     try {
       await send(text);
-      if (latest.current.trim() === text) {
-        setBody("");
+      // The field empties, or gives back the draft set aside to send an earlier message.
+      const next = afterSend(text, latest.current.body, latest.current.recall);
+      if (next !== null) {
+        setBody(next);
         setRecall(null);
-        keeper?.drop(project);
+        if (next.trim()) keeper?.keep(project, next);
+        else keeper?.drop(project);
       }
     } catch (error) {
       setProblem(error instanceof Error ? error.message : "The message was not sent. Try again.");
@@ -126,6 +149,7 @@ export function Composer({
         ctrlKey: event.ctrlKey,
         altKey: event.altKey,
         isComposing: event.nativeEvent.isComposing,
+        keyCode: event.nativeEvent.keyCode,
       },
       { ...caretLines(el.value, el.selectionStart, el.selectionEnd), browsing: recall !== null },
     );
@@ -158,7 +182,7 @@ export function Composer({
       <div className="mx-auto w-full max-w-[var(--chat-content-max-width,46rem)]">
         <div
           data-composer
-          className="rounded-deck bg-card/85 shadow-control backdrop-blur-md transition-shadow focus-within:shadow-control-hover"
+          className="rounded-deck bg-card/85 shadow-control outline-blue/60 backdrop-blur-md transition-shadow focus-within:shadow-control-hover focus-within:outline-1"
         >
           <label htmlFor={`${field}-message`} className="sr-only">
             Message
@@ -170,8 +194,9 @@ export function Composer({
             value={body}
             onChange={(event) => {
               setBody(event.target.value);
-              setRecall(null);
-              keeper?.keep(project, event.target.value);
+              // Editing a recalled message stops the walk; the draft stays aside (and kept) until it is sent.
+              if (recall) setRecall({ ...recall, index: null });
+              else keeper?.keep(project, event.target.value);
             }}
             onKeyDown={onKeyDown}
             maxLength={16 * 1024}
@@ -188,11 +213,10 @@ export function Composer({
               </span>
             )}
             <span className="ml-auto flex flex-none items-center gap-2.5">
-              {sending && (
-                <span role="status" className="text-body text-text-3">
-                  Sending…
-                </span>
-              )}
+              {/* Present before it speaks, so a screen reader announces "Sending…". */}
+              <span role="status" className="text-body text-text-3">
+                {sending ? "Sending…" : ""}
+              </span>
               {primary ? (
                 primary(fieldState)
               ) : (
@@ -224,4 +248,12 @@ export function Composer({
       </div>
     </form>
   );
+}
+
+/** Sizes the field to its content: two lines at least, FIELD_MAX at most, scrolling past it. */
+function fit(el: HTMLTextAreaElement) {
+  el.style.height = "auto";
+  const { height, scrolls } = fieldHeight(el.scrollHeight);
+  el.style.height = `${height}px`;
+  el.style.overflowY = scrolls ? "auto" : "hidden";
 }

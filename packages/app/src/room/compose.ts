@@ -21,6 +21,8 @@ export interface KeyPress {
   altKey: boolean;
   /** An input method is composing: its Enter picks a character, it sends nothing. */
   isComposing?: boolean;
+  /** 229 while an input method holds the key (Safari ends a composition with an Enter whose `isComposing` is false). */
+  keyCode?: number;
 }
 
 /** What a key does in the field; null leaves it to the textarea (Shift+Enter inserts a line). */
@@ -36,7 +38,7 @@ export function caretLines(value: string, start: number, end: number): { first: 
  * ↓ on the last line to a newer one while the owner walks them; Esc leaves.
  */
 export function keyIntent(press: KeyPress, where: { first: boolean; last: boolean; browsing: boolean }): Intent | null {
-  if (press.isComposing) return null;
+  if (press.isComposing || press.keyCode === 229) return null;
   if (press.key === "Enter") return press.shiftKey || press.altKey ? null : "send";
   const plain = !press.shiftKey && !press.metaKey && !press.ctrlKey && !press.altKey;
   if (press.key === "ArrowUp" && plain && where.first) return "older";
@@ -56,16 +58,22 @@ export function ownerHistory(items: readonly ChatItem[]): string[] {
   return said.reverse();
 }
 
-/** The message recalled (its place in the history, 0 the newest) and the draft set aside meanwhile. */
+/**
+ * The draft set aside while the owner walks their earlier messages, and the
+ * message recalled (its place in the history, 0 the newest). `index` is null
+ * once the owner edits a recalled message: the arrows move the caret again
+ * (the edit is never replaced), the draft is still aside, and it comes back
+ * once that message is sent, or on Esc.
+ */
 export interface Recall {
-  index: number;
+  index: number | null;
   draft: string;
 }
 
 /**
  * One step through the history: the field's new text and where the owner is,
- * or null when there is nowhere to go. Past the newest, or on Esc, the draft
- * set aside comes back.
+ * or null when there is nowhere to go (the key is the textarea's again). Past
+ * the newest, or on Esc, the draft set aside comes back.
  */
 export function stepHistory(
   history: readonly string[],
@@ -73,17 +81,28 @@ export function stepHistory(
   recall: Recall | null,
   intent: Exclude<Intent, "send">,
 ): { text: string; recall: Recall | null } | null {
+  const at = recall?.index ?? null;
+  if (intent === "leave") return recall ? { text: recall.draft, recall: null } : null;
+  if (recall && at === null) return null;
   if (intent === "older") {
-    const index = recall ? recall.index + 1 : 0;
+    const index = at === null ? 0 : at + 1;
     const older = history[index];
     if (older === undefined) return null;
     return { text: older, recall: { index, draft: recall ? recall.draft : text } };
   }
-  if (!recall) return null;
-  const newer = intent === "newer" ? history[recall.index - 1] : undefined;
+  if (!recall || at === null) return null;
+  const newer = history[at - 1];
   return newer === undefined
     ? { text: recall.draft, recall: null }
-    : { text: newer, recall: { ...recall, index: recall.index - 1 } };
+    : { text: newer, recall: { ...recall, index: at - 1 } };
+}
+
+/**
+ * Once the daemon admitted `sent`: the field's next text (the draft set aside,
+ * else nothing), or null when the owner already wrote something else meanwhile.
+ */
+export function afterSend(sent: string, current: string, recall: Recall | null): string | null {
+  return current.trim() === sent ? (recall?.draft ?? "") : null;
 }
 
 /** The field's height for its content (its `scrollHeight` at `height: auto`, two lines at least): up to `FIELD_MAX`, then it scrolls. */

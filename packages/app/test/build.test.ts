@@ -302,10 +302,13 @@ describe("in a browser, served by a running daemon", () => {
     await expect(box()).resolves.toEqual({ height: 208, scrolls: true });
     // Enter sends.
     await field.fill("Merge HAR-20 first.");
+    await page.waitForFunction(() => localStorage.getItem("armada:composer-drafts:v1")?.includes("HAR-20"));
     await field.press("Enter");
     const answer = page.locator('[data-item="coordinator"]').filter({ hasText: "Noted: “Merge HAR-20 first.”" });
     await answer.waitFor({ timeout: 10_000 });
     await expect(field.inputValue()).resolves.toBe("");
+    // The draft typed before it is forgotten once it is sent.
+    await page.waitForFunction(() => !localStorage.getItem("armada:composer-drafts:v1")?.includes("HAR-20"));
     await page.locator('[data-item="owner"]').filter({ hasText: "Merge HAR-20 first." }).waitFor();
     // Its tool call is one quiet line, closed until a click opens it.
     const call = page.locator('details[data-tool="fleet.status"]').first();

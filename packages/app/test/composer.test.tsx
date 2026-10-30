@@ -3,6 +3,7 @@ import type { ChatItem } from "@armada/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Composer } from "../src/room/Composer";
 import {
+  afterSend,
   caretLines,
   coordinatorModel,
   DRAFT_WAIT,
@@ -70,6 +71,7 @@ test("Enter and ⌘Enter send; Shift+Enter is left to the textarea, which insert
   expect(keyIntent(press("Enter", { shiftKey: true }), anywhere)).toBeNull();
   // An input method's Enter picks a character.
   expect(keyIntent(press("Enter", { isComposing: true }), anywhere)).toBeNull();
+  expect(keyIntent(press("Enter", { keyCode: 229 }), anywhere)).toBeNull();
   expect(keyIntent(press("a"), anywhere)).toBeNull();
   // The field is a textarea: a key left to it writes a new line.
   expect(render()).toMatch(/<textarea id="[^"]+" rows="2"/);
@@ -148,6 +150,17 @@ test("↑ on the first line recalls the last message sent, ↓ on the last bring
     recall: null,
   });
   expect(stepHistory([], "", null, "older")).toBeNull();
+
+  // Sent as recalled, the draft comes back. Edited, the arrows are the caret's again and Esc gives the draft back.
+  expect(afterSend("Then look at #41.", "Then look at #41.", up?.recall ?? null)).toBe("a draft");
+  const edited = { index: null, draft: "a draft" };
+  expect(stepHistory(history, "Then look at #42.", edited, "older")).toBeNull();
+  expect(stepHistory(history, "Then look at #42.", edited, "newer")).toBeNull();
+  expect(stepHistory(history, "Then look at #42.", edited, "leave")).toEqual({ text: "a draft", recall: null });
+  expect(afterSend("Then look at #42.", "Then look at #42.", edited)).toBe("a draft");
+  // A plain message empties the field; one the owner went on writing during the send is left alone.
+  expect(afterSend("Merge.", " Merge. ", null)).toBe("");
+  expect(afterSend("Merge.", "Merge. Then", null)).toBeNull();
 });
 
 test("Send is round, labelled, and off while the field is blank", () => {
@@ -155,9 +168,9 @@ test("Send is round, labelled, and off while the field is blank", () => {
   expect(blank).toMatch(/<button type="submit" aria-label="Send" disabled=""[^>]*rounded-full/);
   expect(blank).toContain('placeholder="Tell the coordinator what to do."');
   // The live turn's ticket puts its own buttons in Send's place.
-  expect(render({ primary: (f) => <button type="button">Stop {f.text.length}</button> })).not.toContain(
-    'aria-label="Send"',
-  );
+  const live = render({ primary: (f) => <button type="button">Stop {f.text.length}</button> });
+  expect(live).toContain('<button type="button">Stop 0</button>');
+  expect(live).not.toContain('aria-label="Send"');
 });
 
 test("the footer names the coordinator's model when the daemon says it, else nothing", () => {
