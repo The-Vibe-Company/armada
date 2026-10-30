@@ -5,13 +5,13 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
-import { setImmediate } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { NodeProvider, WorkerObservation, WorkerRef } from "@armada/plugin-api";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { activate as activateClaude } from "../../plugins/claude/src/index.ts";
 import { createLocalNode } from "../../plugins/node-local/src/index.ts";
+import { eventually } from "../../plugins/node-local/test/support.ts";
 import { nativeTools } from "../coordinator/native.ts";
 import { openCoordinatorStorage } from "../coordinator/storage.ts";
 import { bootDaemon } from "../src/boot.ts";
@@ -22,11 +22,12 @@ import { startWorkerSocket } from "../src/workers/socket.ts";
 const at = "2030-01-01T00:00:00.000Z";
 const project = "orchard";
 async function until(workers: Workers, expected: (value: WorkerObservation) => boolean) {
-  while (true) {
-    const observation = await workers.observe(project, "SEED-1");
-    if (expected(observation)) return observation;
-    await setImmediate(); // Yield to actual process I/O; no wall-clock sleep or time-based assertion.
-  }
+  let observation!: WorkerObservation;
+  await eventually(async () => {
+    observation = await workers.observe(project, "SEED-1");
+    return expected(observation);
+  });
+  return observation;
 }
 function socketCall(
   path: string,

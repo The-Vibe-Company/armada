@@ -5,10 +5,10 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { setImmediate } from "node:timers/promises";
 import { promisify } from "node:util";
 import { guarded } from "@armada/plugin-api/guard";
 import { createLocalNode } from "../src/index.ts";
+import { eventually } from "./support.ts";
 
 const execute = promisify(execFile);
 
@@ -35,13 +35,35 @@ async function repository(root: string): Promise<string> {
   return path;
 }
 
-async function eventually(action: () => Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 10_000; attempt++) {
-    if (await action()) return;
-    await setImmediate();
+test("eventually rejects at its clock deadline, including late observations", async () => {
+  for (const scenario of ["unsettled", "late poll", "late result"]) {
+    let now = 100;
+    const waits: number[] = [];
+    await assert.rejects(
+      eventually(
+        async () => {
+          if (scenario === "late result") {
+            now = 161;
+            return true;
+          }
+          return scenario === "late poll" && now >= 161;
+        },
+        {
+          timeoutMs: 61,
+          now: () => now,
+          sleep: async (ms) => {
+            waits.push(ms);
+            now += ms;
+          },
+        },
+      ),
+      /condition did not settle/,
+      scenario,
+    );
+    assert.equal(now, 161);
+    assert.deepEqual(waits, scenario === "late result" ? [] : [25, 25, 11]);
   }
-  throw new Error("condition did not settle");
-}
+});
 
 async function launch(
   node: ReturnType<typeof createLocalNode>,
