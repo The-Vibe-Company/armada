@@ -1,8 +1,10 @@
 import type { NodeProvider, PluginContext, RuntimeProvider, WorkerRef } from "@armada/plugin-api";
 import { DRIVER } from "./driver.ts";
+import { codexConnection } from "./status.ts";
 
 interface Options {
   command?: string;
+  binary?: string;
   model?: string;
   effort?: string;
   extraArgs?: string[];
@@ -57,6 +59,7 @@ export function codexRuntime(options: Options = {}, node?: NodeProvider): Runtim
     }
   };
   return {
+    ...codexConnection(options.binary ?? options.command ?? "codex"),
     withNode: (selected) => codexRuntime(options, selected),
     prepare: (request) => facilities().prepare(request),
     async launch(request) {
@@ -85,7 +88,7 @@ export function codexRuntime(options: Options = {}, node?: NodeProvider): Runtim
                 "--input-type=module",
                 "-e",
                 DRIVER,
-                JSON.stringify({ command: options.command ?? "codex", model, effort, extraArgs }),
+                JSON.stringify({ command: options.binary ?? options.command ?? "codex", model, effort, extraArgs }),
               ],
             }
           : request,

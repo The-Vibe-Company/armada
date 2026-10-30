@@ -3,6 +3,7 @@ import type { ForgeProvider, PluginContext } from "@armada/plugin-api";
 import { GithubReader } from "./github.ts";
 import { inspectGithub } from "./inspect.ts";
 import { githubToken } from "./keychain.ts";
+import { githubConnection } from "./status.ts";
 
 interface Config {
   endpoint?: string;
@@ -18,6 +19,7 @@ export function activate(ctx: PluginContext): void {
       keychain: { read: async () => ctx.secrets.get("GITHUB_TOKEN", project) },
     });
   const provider: ForgeProvider = {
+    ...githubConnection(ctx.secrets, config.endpoint),
     async read({ project, signal }) {
       signal?.throwIfAborted();
       const settings = config.projects?.[project];
