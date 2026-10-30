@@ -1,5 +1,6 @@
 import {
   APP_TOO_OLD,
+  type AuthFrame,
   type ChatDelta,
   type ChatReadRequest,
   type ChatSendRequest,
@@ -7,9 +8,11 @@ import {
   type ChatTool,
   type ChatTurn,
   type ClientMessage,
-  type CoordinatorModel,
   type CredentialsResult,
   DAEMON_TOO_OLD,
+  MODELS_MINOR,
+  type ModelConfig,
+  type ModelsCatalog,
   type OwnerAnswerRequest,
   type PluginRequest,
   type PluginsResult,
@@ -45,6 +48,9 @@ export interface DaemonState {
   /** Each project's folded state, the latest the daemon sent; its shape is the daemon's (src/fleet/state.ts reads it). */
   fleets: Readonly<Record<string, Snapshot>>;
   credentials: Omit<CredentialsResult, "id" | "type" | "version"> | null;
+  catalog: Pick<ModelsCatalog, "providers" | "selected"> | null;
+  /** The models.login request id, also used by every auth frame and prompt in this flow. */
+  authFlow: string | null;
   /** The daemon's wire minor, once it listed its projects: what it can be asked (the room needs `CHAT_MINOR`). */
   minor: number | null;
   /** The bundled plugins as the daemon last listed them; null until it did (kept across reconnects). */
@@ -82,7 +88,13 @@ export interface DaemonClient {
   subscribe(listener: () => void): () => void;
   start(): void;
   stop(): void;
-  saveCredentials(provider: string, key: string, config?: CoordinatorModel["config"]): Promise<void>;
+  saveCredentials(provider: string, key: string, config?: ModelConfig): Promise<void>;
+  login(provider: string, authType: "oauth" | "api_key"): Promise<void>;
+  answer(flow: string, id: string, value: string): void;
+  cancel(flow?: string): Promise<void>;
+  logout(provider: string): Promise<void>;
+  select(provider: string, model: string): Promise<void>;
+  auth(listener: (frame: AuthFrame) => void): () => void;
   /** Each resolves once the daemon saved the change and listed the plugins again; none is replayed after a drop. */
   setPluginEnabled(plugin: string, enabled: boolean): Promise<void>;
   configurePlugin(plugin: string, seam: string, kind: string, config: Json): Promise<void>;
@@ -144,6 +156,8 @@ export const initialState: DaemonState = {
   logs: {},
   fleets: {},
   credentials: null,
+  catalog: null,
+  authFlow: null,
   minor: null,
   plugins: null,
   pluginsProblem: null,
@@ -163,6 +177,8 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   const backoff = options.backoff ?? BACKOFF;
   const listeners = new Set<() => void>();
   const chatListeners = new Set<(frame: ChatFrame) => void>();
+  const authListeners = new Set<(frame: AuthFrame) => void>();
+  const pendingModels = new Map<string, { resolve(): void; reject(error: Error): void }>();
   let state = initialState;
   let socket: SocketLike | null = null;
   let cancelRetry: (() => void) | null = null;
@@ -202,6 +218,33 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
     const waiting = [...pending.values()];
     pending.clear();
     for (const request of waiting) request.reject(new Error(NOT_ANSWERED));
+    for (const request of pendingModels.values()) request.reject(new Error(NOT_ANSWERED));
+    pendingModels.clear();
+    set({ authFlow: null });
+  }
+  type ModelRequest = Unaddressed<
+    Extract<
+      ClientMessage,
+      { type: "models.providers" | "models.login" | "models.logout" | "models.select" | "auth.cancel" }
+    >
+  >;
+  function askModels(message: ModelRequest): Promise<void> {
+    if (!running || !socket || state.status !== "live" || (state.minor ?? 0) < MODELS_MINOR)
+      return Promise.reject(new Error("Connect to a daemon with model sign-in support."));
+    if (message.type === "models.login" && state.authFlow)
+      return Promise.reject(new Error("Another sign-in is in progress"));
+    return new Promise<void>((resolve, reject) => {
+      const requestId = id();
+      pendingModels.set(requestId, { resolve, reject });
+      if (message.type === "models.login") set({ authFlow: requestId });
+      try {
+        send({ ...message, version, id: requestId });
+      } catch {
+        pendingModels.delete(requestId);
+        if (state.authFlow === requestId) set({ authFlow: null });
+        reject(new Error(NOT_ANSWERED));
+      }
+    });
   }
   function failPlugins() {
     for (const requestId of [...pendingPlugins.keys()]) settlePlugin(requestId, new Error(UNCONFIRMED));
@@ -326,6 +369,9 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
           pluginIds.add(pluginListId);
           send({ type: "plugins.list", version, id: pluginListId });
         } else set({ plugins: null, pluginsProblem: NO_PLUGINS, restarting: false });
+        if (message.version.minor >= MODELS_MINOR) {
+          void askModels({ type: "models.providers" }).catch(() => {});
+        } else set({ catalog: null });
         for (const project of message.projects) {
           send({ type: "project.subscribe", version, id: id(), project: project.id, after: cursor(project.id) });
         }
@@ -383,6 +429,20 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       case "daemon.restarting":
         if (settlePlugin(message.id)) set({ restarting: true });
         return;
+      case "models.catalog": {
+        set({
+          catalog: { providers: message.providers, selected: message.selected },
+          ...(state.authFlow === message.id ? { authFlow: null } : {}),
+        });
+        const waiting = pendingModels.get(message.id);
+        pendingModels.delete(message.id);
+        waiting?.resolve();
+        return;
+      }
+      case "auth.event":
+      case "auth.prompt":
+        if (message.flow === state.authFlow) for (const listener of authListeners) listener(message);
+        return;
       case "chat.turn":
       case "chat.delta":
       case "chat.tool":
@@ -400,6 +460,13 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
         return;
       }
       case "error":
+        if (message.id !== undefined && pendingModels.has(message.id)) {
+          const waiting = pendingModels.get(message.id);
+          pendingModels.delete(message.id);
+          if (state.authFlow === message.id) set({ authFlow: null });
+          waiting?.reject(new Error(message.message));
+          return;
+        }
         if (message.id !== undefined && pending.has(message.id)) {
           const request = pending.get(message.id);
           pending.delete(message.id);
@@ -434,6 +501,23 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   const cursor = (project: string) => state.logs[project]?.seq ?? 0;
 
   return {
+    login: (provider, authType) => askModels({ type: "models.login", provider, authType }),
+    answer(flow, promptId, value) {
+      if (state.status !== "live" || !socket) throw new Error(NOT_ANSWERED);
+      send({ type: "auth.answer", version, flow, id: promptId, value });
+    },
+    cancel: (flow) => {
+      const active = flow ?? state.authFlow;
+      return active
+        ? askModels({ type: "auth.cancel", flow: active })
+        : Promise.reject(new Error("No sign-in is in progress"));
+    },
+    logout: (provider) => askModels({ type: "models.logout", provider }),
+    select: (provider, model) => askModels({ type: "models.select", provider, model }),
+    auth(listener) {
+      authListeners.add(listener);
+      return () => authListeners.delete(listener);
+    },
     saveCredentials(provider, key, config) {
       let local = false;
       try {

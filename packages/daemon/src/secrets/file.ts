@@ -2,10 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { type FileHandle, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
+import { lock as acquireLock } from "proper-lockfile";
 import type { KeychainBackend } from "./backend.ts";
 
 /** Explicit Linux/CI fallback. One private file per entry; atomic replacement avoids partial writes. */
-export function fileKeychain(directory: string): KeychainBackend {
+export function fileKeychain(directory: string): KeychainBackend & Required<Pick<KeychainBackend, "lock" | "delete">> {
   const path = (service: string, account: string) =>
     join(
       directory,
@@ -21,6 +22,21 @@ export function fileKeychain(directory: string): KeychainBackend {
   }
   return {
     storage: "file",
+    async lock(service, account) {
+      await prepare();
+      return acquireLock(path(service, account), {
+        realpath: false,
+        retries: { retries: 120, minTimeout: 20, maxTimeout: 200 },
+      });
+    },
+    async delete(service, account) {
+      await prepare();
+      try {
+        await unlink(path(service, account));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    },
     async read(service, account) {
       await prepare();
       let file: FileHandle;

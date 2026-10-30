@@ -10,4 +10,7 @@ export class FakeKeychain implements KeychainBackend {
   async write(service: string, account: string, value: string) {
     this.entries.set(JSON.stringify([service, account]), value);
   }
+  async delete(service: string, account: string) {
+    this.entries.delete(JSON.stringify([service, account]));
+  }
 }

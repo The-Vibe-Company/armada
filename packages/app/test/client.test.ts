@@ -476,3 +476,61 @@ test("the live turn's frames reach the room's listeners, and Stop resolves on ch
   expect((await stop).type).toBe("chat.stopped");
   client.stop();
 });
+
+test("model sign-in delivers generic auth prompts, settles on catalog, and never replays answers across a drop", async () => {
+  const { client, socket, timers } = setup();
+  listAndSubscribe(socket());
+  const catalog = { providers: [], selected: null };
+  const list = socket().sent.find((m) => m.type === "models.providers");
+  socket().receive({ type: "models.catalog", version: V, id: list?.id, ...catalog });
+  expect(client.getState().catalog).toEqual(catalog);
+  const frames: unknown[] = [];
+  client.auth((frame) => frames.push(frame));
+  const login = client.login("openai-codex", "oauth");
+  const flow = client.getState().authFlow;
+  expect(typeof flow).toBe("string");
+  socket().receive({
+    type: "auth.event",
+    version: V,
+    flow,
+    event: { type: "auth_url", url: "https://example.test/sign-in" },
+  });
+  socket().receive({
+    type: "auth.prompt",
+    version: V,
+    flow,
+    id: "prompt-1",
+    promptType: "manual_code",
+    message: "Paste code",
+  });
+  expect(frames).toHaveLength(2);
+  const answer = randomBytes(24).toString("hex");
+  client.answer(flow as string, "prompt-1", answer);
+  expect(socket().sent.at(-1)?.type).toBe("auth.answer");
+  socket().receive({ type: "models.catalog", version: V, id: flow, ...catalog });
+  await login;
+  expect(client.getState().authFlow).toBeNull();
+  const selection = client.select("openai-codex", "small");
+  const request = socket().sent.at(-1);
+  expect(request?.type).toBe("models.select");
+  // An unrelated broadcast must update state without completing this request.
+  socket().receive({ type: "models.catalog", version: V, id: "push:other", ...catalog });
+  socket().receive({ type: "error", version: V, id: request?.id, code: "invalid-message", message: "Connect first" });
+  await expect(selection).rejects.toThrow("Connect first");
+  const pending = client.login("openai-codex", "oauth");
+  socket().drop();
+  await expect(pending).rejects.toThrow("connection dropped");
+  expect(client.getState().authFlow).toBeNull();
+  timers.findLast((timer) => !timer.canceled)?.run();
+  socket().onopen?.();
+  listAndSubscribe(socket());
+  expect(socket().sent.some((m) => m.type === "auth.answer" || m.type === "models.login")).toBe(false);
+  client.stop();
+  for (const request of [
+    client.login("openai", "api_key"),
+    client.logout("openai"),
+    client.select("openai", "small"),
+    client.cancel("old-flow"),
+  ])
+    await expect(request).rejects.toThrow("Connect to a daemon");
+});

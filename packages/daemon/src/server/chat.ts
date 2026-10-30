@@ -42,7 +42,7 @@ export interface ChatOptions {
   live: ChatLive;
 }
 
-const NO_COORDINATOR = "No coordinator runs for this project: save its model key, then restart the daemon";
+const NO_COORDINATOR = "No coordinator runs for this project: connect a provider and select its model in Settings";
 
 /** Answers one of the room's requests; a failure is one line, never the backend's. */
 export async function dispatchChat(request: ChatRequest, options: ChatOptions): Promise<ServerMessage> {
