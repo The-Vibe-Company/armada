@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import {
+  ACCOUNT_MINOR,
   admitRequest,
   CHAT_LIVE_MINOR,
   CHAT_WAKE_MINOR,
@@ -28,6 +29,7 @@ import { type Keychain, systemKeychain } from "../keychain.ts";
 import type { ModelRegistry } from "../models/registry.ts";
 import type { EventStore } from "../store.ts";
 import type { Workers } from "../workers/service.ts";
+import type { Account } from "./account.ts";
 import { AuthFlows } from "./auth.ts";
 import { dispatchChat } from "./chat.ts";
 import { type ChatClock, ChatLive } from "./chat-live.ts";
@@ -54,6 +56,7 @@ export interface ServerOptions {
   allowedOrigins?: readonly string[];
   /** Host-owned gateway. Tests inject a fake; only this daemon can persist app credentials. */
   keychain?: Keychain;
+  account?: Account;
   modelKinds?: readonly ModelKindEntry[];
   modelRegistry?: ModelRegistry;
   /** Resolve current global/project selection at the next turn, including first configuration. */
@@ -135,6 +138,10 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   const minors = new Map<WebSocket, number>();
   const auth = new AuthFlows();
   const chat = new ChatLive(options.chatClock);
+  const unsubscribeAccount = options.account?.subscribe((state) => {
+    for (const [ws, minor] of minors)
+      if (minor >= ACCOUNT_MINOR) send(ws, { type: "account.result", version, ...state });
+  });
 
   function send(ws: WebSocket, message: ServerMessage): void {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -229,27 +236,35 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     return { seq, state: projectTablesSchema.parse(JSON.parse(JSON.stringify(tables))) };
   }
 
-  /** Older same-major clients use a strict policy reader; preserve their existing Rules view. */
+  /** Older same-major clients validate inbox kinds and policy fields strictly. */
   function snapshotFor(snapshot: Snapshot, minor: number): Snapshot {
     if (minor >= CHAT_WAKE_MINOR) return snapshot;
     const state = snapshot.state as unknown as ProjectTables;
+    const legacy = {
+      ...state,
+      inbox: state.inbox.filter((item) =>
+        ["question", "plan", "hand-back", "owner-request", "launch"].includes(item.kind),
+      ),
+    };
     const rules = state.rules;
-    if (!rules) return snapshot;
-    const value = { ...rules.value };
-    if (minor < RULES_SCHEMA_MINOR) delete value.gates;
-    if (value.policy) {
-      const policy = { ...value.policy };
-      delete policy.coordinatorMinutes;
-      delete policy.notStartedMinutes;
-      if (minor < RULES_SCHEMA_MINOR) {
-        delete policy.plans;
-        delete policy.approvalLabel;
-        delete policy.preApprovedLabel;
+    if (rules) {
+      const value = { ...rules.value };
+      if (minor < RULES_SCHEMA_MINOR) delete value.gates;
+      if (value.policy) {
+        const policy = { ...value.policy };
+        delete policy.coordinatorMinutes;
+        delete policy.notStartedMinutes;
+        if (minor < RULES_SCHEMA_MINOR) {
+          delete policy.plans;
+          delete policy.approvalLabel;
+          delete policy.preApprovedLabel;
+        }
+        value.policy = policy;
       }
-      value.policy = policy;
+      legacy.rules = { ...rules, value };
     }
     // Detach only the legacy projection; never mutate the full snapshot shared with current clients.
-    return { seq: snapshot.seq, state: JSON.parse(JSON.stringify({ ...state, rules: { ...rules, value } })) };
+    return { seq: snapshot.seq, state: JSON.parse(JSON.stringify(legacy)) };
   }
 
   /**
@@ -352,6 +367,15 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       const request = admitted.request;
       minors.set(ws, request.version.minor);
       try {
+        if (
+          request.type === "account.status" ||
+          request.type === "account.login" ||
+          request.type === "account.logout"
+        ) {
+          if (!options.account) return error(ws, request.id, "offline", "Armada account is unavailable");
+          void options.account.dispatch(request, (reply) => send(ws, reply));
+          return;
+        }
         if (request.type === "auth.answer") {
           if (!auth.answer(ws, request.flow, request.id, request.value))
             error(ws, request.id, "invalid-message", "No such sign-in prompt");
@@ -577,6 +601,8 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   const close = () => {
     closed ??= (async () => {
       closing = true;
+      unsubscribeAccount?.();
+      const accountClosed = options.account?.close();
       const authClosing = auth.close();
       unsubscribe();
       for (const ws of sockets.clients) ws.terminate();
@@ -591,8 +617,9 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         transport,
         credentialQueue,
         pluginQueue,
-        authClosing,
         coordinatorManager?.close(),
+        accountClosed,
+        authClosing,
       ]);
       const failed = results.find((result) => result.status === "rejected");
       if (failed?.status === "rejected") throw failed.reason;

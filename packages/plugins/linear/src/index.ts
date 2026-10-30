@@ -62,7 +62,7 @@ export function activate(ctx: PluginContext): void {
             rootId: settings.programRoot,
             phaseGroup: settings.phaseGroup ?? "Agent phase",
             endpoint: config.endpoint,
-            secrets: async () => ctx.secrets.get("LINEAR_API_KEY"),
+            secrets: async () => ctx.secrets.get("LINEAR_API_KEY", project),
             fetch: (...args) => fetch(...args),
             now: () => new Date(),
           }),
@@ -95,7 +95,7 @@ export function activate(ctx: PluginContext): void {
         const settings = config.projects?.[project];
         if (!settings || (state !== undefined && state !== "completed")) throw new Error();
         if (commentId !== undefined && (!comment || !commentId.trim() || /\s/.test(commentId))) throw new Error();
-        const key = await ctx.secrets.get("LINEAR_API_KEY");
+        const key = await ctx.secrets.get("LINEAR_API_KEY", project);
         if (!key) throw new Error();
         const gql = async (query: string, variables: object): Promise<WriteData> => {
           signal?.throwIfAborted();

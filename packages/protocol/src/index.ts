@@ -1,5 +1,12 @@
 import { pluginEventSchema } from "@armada/plugin-api";
 import { z } from "zod";
+import {
+  accountDeviceSchema,
+  accountLoginRequestSchema,
+  accountLogoutRequestSchema,
+  accountResultSchema,
+  accountStatusRequestSchema,
+} from "./account.js";
 import { authRequestSchemas, authResultSchemas } from "./auth.js";
 import {
   CHAT_WAKE_MINOR,
@@ -15,6 +22,7 @@ import {
   ownerAnsweredSchema,
   ownerAnswerRequestSchema,
 } from "./chat.js";
+import { counter, identifier, requestSchema, versionSchema } from "./envelope.js";
 import {
   modelConfigSchema,
   modelKindEntrySchema,
@@ -30,6 +38,7 @@ import {
   sessionReleaseResultSchema,
 } from "./session.js";
 
+export * from "./account.js";
 export * from "./auth.js";
 export * from "./chat.js";
 export * from "./fleet.js";
@@ -43,9 +52,7 @@ export const PROTOCOL_VERSION = { major: 1, minor: CHAT_WAKE_MINOR } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
 
-const counter = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
-const identifier = z.string().min(1);
-export const versionSchema = z.object({ major: counter, minor: counter });
+export { versionSchema } from "./envelope.js";
 export type ProtocolVersion = z.infer<typeof versionSchema>;
 
 export const projectSchema = z.object({
@@ -60,34 +67,34 @@ export const eventSchema = pluginEventSchema;
 export type ProtocolEvent = z.infer<typeof eventSchema>;
 
 const request = { version: versionSchema, id: identifier };
-export const listProjectsRequestSchema = z.object({ ...request, type: z.literal("projects.list") });
-export const subscribeRequestSchema = z.object({
-  ...request,
-  type: z.literal("project.subscribe"),
+export const listProjectsRequestSchema = /* @__PURE__ */ requestSchema("projects.list", {});
+export const subscribeRequestSchema = /* @__PURE__ */ requestSchema("project.subscribe", {
   project: identifier,
   after: counter,
 });
-export const readSessionRequestSchema = z.object({
-  ...request,
-  type: z.literal("session.read"),
+export const readSessionRequestSchema = /* @__PURE__ */ requestSchema("session.read", {
   project: identifier,
   sessionId: identifier,
 });
 export const modelProviderSchema = modelKindSchema;
-export const credentialsStatusRequestSchema = z.object({ ...request, type: z.literal("credentials.status") });
-export const credentialsSetRequestSchema = z.object({
-  ...request,
-  type: z.literal("credentials.set"),
-  provider: modelProviderSchema,
-  /** Built-in pi is the modern default; plugin settings/older clients retain their namespace. */
-  target: z.enum(["pi", "plugin"]).optional(),
-  config: modelConfigSchema.optional(),
-  key: z
-    .string()
-    .min(1)
-    .max(8192)
-    .regex(/^[!-~]+$/),
-});
+export const credentialsStatusRequestSchema = /* @__PURE__ */ requestSchema("credentials.status", {});
+function credentialsSetSchema() {
+  return z.object({
+    ...request,
+    type: z.literal("credentials.set"),
+    provider: modelProviderSchema,
+    /** Built-in pi is the modern default; plugins and older clients keep their namespace. */
+    target: z.enum(["pi", "plugin"]).optional(),
+    config: modelConfigSchema.optional(),
+    key: z
+      .string()
+      .min(1)
+      .max(8192)
+      .regex(/^[!-~]+$/),
+  });
+}
+// The app receives replies; request validators are only used by the daemon.
+export const credentialsSetRequestSchema = /* @__PURE__ */ credentialsSetSchema();
 export const credentialsResultSchema = z.object({
   ...request,
   type: z.literal("credentials.result"),
@@ -97,7 +104,10 @@ export const credentialsResultSchema = z.object({
   needsRepair: z.boolean().optional(),
   storage: z.enum(["os-keychain", "file"]),
 });
-export const clientMessageSchema = z.discriminatedUnion("type", [
+export const clientMessageSchema = /* @__PURE__ */ z.discriminatedUnion("type", [
+  accountStatusRequestSchema,
+  accountLoginRequestSchema,
+  accountLogoutRequestSchema,
   credentialsStatusRequestSchema,
   credentialsSetRequestSchema,
   listProjectsRequestSchema,
@@ -175,10 +185,21 @@ export const errorSchema = z.object({
   version: versionSchema,
   type: z.literal("error"),
   id: identifier.optional(),
-  code: z.enum(["invalid-message", "app-too-old", "daemon-too-old", "not-found", "internal"]),
+  code: z.enum([
+    "invalid-message",
+    "app-too-old",
+    "daemon-too-old",
+    "not-found",
+    "internal",
+    "expired",
+    "denied",
+    "offline",
+  ]),
   message: identifier,
 });
 export const serverMessageSchema = z.discriminatedUnion("type", [
+  accountResultSchema,
+  accountDeviceSchema,
   credentialsResultSchema,
   projectsResultSchema,
   subscribedSchema,

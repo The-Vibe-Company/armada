@@ -28,8 +28,8 @@ import type {
 } from "../src/linear-write.ts";
 import type { Fleet, FleetStore, ProjectInput } from "../src/live.ts";
 import { type Comment, type Issue, LABEL_PHASES } from "../src/types.ts";
-import githubPulls from "./fixtures/github-pulls.json";
-import linearProgram from "./fixtures/linear-program.json";
+import githubPulls from "./fixtures/github-pulls.json" with { type: "json" };
+import linearProgram from "./fixtures/linear-program.json" with { type: "json" };
 import { memoryFleet } from "./memory-fleet.ts";
 
 export const NOW = new Date("2026-03-04T10:00:00.000Z");
@@ -570,6 +570,7 @@ export interface ArmadaCall {
  */
 export interface FakeVault {
   off?: boolean;
+  github?: string;
   linear: { apiKey: string; scope: "own" | "organization" } | null;
   /** The projects that keep their own Linear key (THE-859), by slug. */
   projects?: Record<string, string>;
@@ -925,6 +926,9 @@ export function fakeArmada(
         schemaVersion: 1,
         organization: { id: "org-1", name: "Acme", slug: "acme" },
         linear: own ? { apiKey: own, scope: "project" } : v.linear,
+        ...(body.github === true && !worker && bearer && sessions.has(bearer)
+          ? { github: v.github ? { token: v.github } : null }
+          : {}),
         warnings: v.warnings ?? [],
       });
     }

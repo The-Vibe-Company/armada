@@ -317,7 +317,9 @@ async function credentials(
     // The project's own Linear key, among the organization's rows only.
     if (purpose.project) holder.project = purpose.project;
   }
-  const answer = await releaseCredentials({ client: a.client, vault, now: () => now }, holder);
+  const answer = await releaseCredentials({ client: a.client, vault, now: () => now }, holder, {
+    github: body.github === true && identity.via === "session",
+  });
   if (!answer.ok) return refuse(429, "too many requests for keys in a minute", "the same command again in a minute");
   const r = answer.release;
   // Names what went out, never a value.

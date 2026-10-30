@@ -40,6 +40,8 @@ export interface Holder {
 
 /** The body of `POST /api/cli/credentials`. */
 export interface Release {
+  /** Only present when a signed-in person explicitly requests it. */
+  github?: { token: string } | null;
   schemaVersion: 1;
   organization: { id: string; name: string; slug: string };
   linear: { apiKey: string; scope: "project" | "own" | "organization" } | null;
@@ -52,7 +54,11 @@ export interface Release {
 export type BrokerAnswer = { ok: true; release: Release } | { ok: false; limited: true };
 
 /** Releases the caller's keys, records the release, and refuses beyond the rate limit. */
-export async function releaseCredentials(deps: BrokerDeps, holder: Holder): Promise<BrokerAnswer> {
+export async function releaseCredentials(
+  deps: BrokerDeps,
+  holder: Holder,
+  options: { github?: boolean } = {},
+): Promise<BrokerAnswer> {
   const now = deps.now?.() ?? new Date();
   if (await limited(deps, holder.actor, now)) return { ok: false, limited: true };
 
@@ -83,6 +89,12 @@ export async function releaseCredentials(deps: BrokerDeps, holder: Holder): Prom
     );
   } else details.push("nothing to release: no Linear key is set for this organization");
 
+  const github = options.github && holder.actor.kind === "session" ? (values["github-token"] ?? null) : null;
+  if (github) {
+    keys.push("github-token");
+    details.push("GitHub token (the organization’s)");
+  }
+
   await recordEvent(deps.client, holder.organization.id, {
     at: now.toISOString(),
     action: "release",
@@ -93,7 +105,16 @@ export async function releaseCredentials(deps: BrokerDeps, holder: Holder): Prom
       "; ",
     ),
   });
-  return { ok: true, release: { schemaVersion: 1, organization: holder.organization, linear, warnings } };
+  return {
+    ok: true,
+    release: {
+      schemaVersion: 1,
+      organization: holder.organization,
+      linear,
+      ...(options.github && holder.actor.kind === "session" ? { github: github ? { token: github } : null } : {}),
+      warnings,
+    },
+  };
 }
 
 /** Whether `actor` had its share of releases this minute: shared by every server instance. */

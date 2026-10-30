@@ -1,11 +1,9 @@
 import { z } from "zod";
+import { identifier, versionSchema as version } from "./envelope.js";
 
 // The Plugins screen's messages (minor 2, THE-2019). Kept apart from the fleet's
-// vocabulary; index.ts adds them to its unions. The version shape is index.ts's
-// `versionSchema`, repeated here because index.ts imports this file.
-const counter = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
-const identifier = z.string().min(1);
-const request = { version: z.object({ major: counter, minor: counter }), id: identifier };
+// vocabulary; index.ts adds them to its unions. Envelope primitives live apart to avoid cycles.
+const request = { version, id: identifier };
 
 /** A declared secret: its name and whether the daemon's keychain holds it. Never its value. */
 export const pluginSecretSchema = z.object({ name: identifier, set: z.boolean() });

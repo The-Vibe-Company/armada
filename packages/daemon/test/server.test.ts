@@ -17,7 +17,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
-import { type ServerMessage, serverMessageSchema, PROTOCOL_VERSION as version } from "@armada/protocol";
+import {
+  type InboxRequest,
+  type ProjectTables,
+  type ServerMessage,
+  serverMessageSchema,
+  PROTOCOL_VERSION as version,
+} from "@armada/protocol";
 import { WebSocket } from "ws";
 import type { EventInput, FleetEvent } from "../src/events.ts";
 import { Keychain } from "../src/keychain.ts";
@@ -693,4 +699,52 @@ test("minor-4 clients retain readable legacy Rules in initial and live snapshots
   rules(3, 3, false);
   assert.deepEqual(rulesValue(await modern.next()), { gates });
   assert.deepEqual(rulesValue(await legacy.next()), {});
+});
+
+test("pre-wake clients keep their inbox vocabulary in initial and shared live snapshots", async (t) => {
+  const store = new EventStore(":memory:");
+  const open = (id: string, kind: InboxRequest["kind"]) =>
+    store.append({
+      project: "orchard",
+      kind: "inbox.opened",
+      at: hold().at,
+      actor: "daemon",
+      payload: { id, ticket: "ORC-1", kind, body: "Fleet notice" },
+    });
+  const notices = [
+    "stopped",
+    "silent",
+    "not-started",
+    "deploy",
+    "job",
+    "job-silent",
+    "job-stalled",
+    "version",
+  ] as const;
+  open("old", "hand-back");
+  for (const kind of notices) open(kind, kind);
+  const server = await startServer({ store, projects });
+  // Legacy first also exercises the live batch's shared fold cache.
+  const legacy = await connect(server.wsUrl);
+  const modern = await connect(server.wsUrl);
+  t.after(async () => {
+    legacy.ws.terminate();
+    modern.ws.terminate();
+    await server.close();
+    store.close();
+  });
+  const inbox = (frame: ServerMessage) => {
+    assert.ok(frame.type === "project.subscribed" || frame.type === "events");
+    assert.ok(frame.snapshot);
+    return (frame.snapshot.state as unknown as ProjectTables).inbox.map((item) => item.id);
+  };
+  legacy.send({ type: "project.subscribe", version: { major: 1, minor: 10 }, project: "orchard", after: 0 });
+  assert.deepEqual(inbox(await legacy.next()), ["old"]);
+  await legacy.next();
+  modern.send({ type: "project.subscribe", project: "orchard", after: 0 });
+  assert.deepEqual(inbox(await modern.next()), ["old", ...notices]);
+  await modern.next();
+  open("later", "silent");
+  assert.deepEqual(inbox(await legacy.next()), ["old"]);
+  assert.deepEqual(inbox(await modern.next()), ["old", ...notices, "later"]);
 });
