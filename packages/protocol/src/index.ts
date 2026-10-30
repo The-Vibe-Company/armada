@@ -74,17 +74,21 @@ export const readSessionRequestSchema = z.object({
 });
 export const modelProviderSchema = modelKindSchema;
 export const credentialsStatusRequestSchema = z.object({ ...request, type: z.literal("credentials.status") });
-export const credentialsSetRequestSchema = z.object({
-  ...request,
-  type: z.literal("credentials.set"),
-  provider: modelProviderSchema,
-  config: modelConfigSchema.optional(),
-  key: z
-    .string()
-    .min(1)
-    .max(8192)
-    .regex(/^[!-~]+$/),
-});
+function credentialsSetSchema() {
+  return z.object({
+    ...request,
+    type: z.literal("credentials.set"),
+    provider: modelProviderSchema,
+    config: modelConfigSchema.optional(),
+    key: z
+      .string()
+      .min(1)
+      .max(8192)
+      .regex(/^[!-~]+$/),
+  });
+}
+// The app receives replies; request validators are only used by the daemon.
+export const credentialsSetRequestSchema = /* @__PURE__ */ credentialsSetSchema();
 export const credentialsResultSchema = z.object({
   ...request,
   type: z.literal("credentials.result"),
@@ -94,7 +98,7 @@ export const credentialsResultSchema = z.object({
   needsRepair: z.boolean().optional(),
   storage: z.enum(["os-keychain", "file"]),
 });
-export const clientMessageSchema = z.discriminatedUnion("type", [
+export const clientMessageSchema = /* @__PURE__ */ z.discriminatedUnion("type", [
   accountStatusRequestSchema,
   accountLoginRequestSchema,
   accountLogoutRequestSchema,

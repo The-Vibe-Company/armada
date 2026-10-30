@@ -37,6 +37,12 @@ const client: DaemonClient = {
   },
   start() {},
   stop() {},
+  login: async () => {
+    throw new Error("Account is unavailable on this test page");
+  },
+  logout: async () => {
+    throw new Error("Account is unavailable on this test page");
+  },
   saveCredentials: async () => {},
   setPluginEnabled: async () => {},
   configurePlugin: async () => {},

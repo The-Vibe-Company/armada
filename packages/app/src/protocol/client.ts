@@ -185,19 +185,17 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   let nextId = 0;
   let running = false;
   let accountStatusId: string | null = null;
-  function askAccount(type: "account.login" | "account.logout"): Promise<void> {
-    if (state.status !== "live" || (state.minor ?? 0) < ACCOUNT_MINOR)
-      return Promise.reject(new Error("Update Armada to sign in."));
+  async function askAccount(type: "account.login" | "account.logout"): Promise<void> {
+    if (state.status !== "live" || (state.minor ?? 0) < ACCOUNT_MINOR) throw new Error("Update Armada to sign in.");
     set({ accountProblem: null });
-    return request({ type })
-      .then(
-        () => {},
-        (error: Error) => {
-          set({ accountProblem: error.message });
-          throw error;
-        },
-      )
-      .finally(() => set({ accountDevice: null }));
+    try {
+      await request({ type });
+    } catch (error) {
+      set({ accountProblem: (error as Error).message });
+      throw error;
+    } finally {
+      set({ accountDevice: null });
+    }
   }
   let credentialStatusId: string | null = null;
   let pendingCredential: {
