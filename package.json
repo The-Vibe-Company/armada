@@ -13,7 +13,7 @@
     "armada": "bun run skills:bundle && bun packages/cli/src/main.ts",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "typecheck": "bun run plugins:catalog && bun run --cwd packages/plugin-api build && bun run skills:bundle && tsc --noEmit && tsc --noEmit -p packages/dashboard && tsc --noEmit -p packages/app && bun run --cwd packages/protocol build && tsc --noEmit -p packages/plugins/model-anthropic && tsc --noEmit -p packages/plugins/model-openai-compatible && tsc --noEmit -p packages/plugins/linear && tsc --noEmit -p packages/plugins/github && tsc --noEmit -p packages/plugins/hello && bun run --cwd packages/desktop typecheck",
+    "typecheck": "bun run plugins:catalog && bun run --cwd packages/plugin-api build && bun run skills:bundle && tsc --noEmit && tsc --noEmit -p packages/dashboard && tsc --noEmit -p packages/app && bun run --cwd packages/protocol build && tsc --noEmit -p packages/plugins/model-anthropic && tsc --noEmit -p packages/plugins/model-openai-compatible && tsc --noEmit -p packages/plugins/linear && tsc --noEmit -p packages/plugins/github && tsc --noEmit -p packages/plugins/hello && tsc --noEmit -p packages/plugins/node-local && tsc --noEmit -p packages/plugins/claude && bun run --cwd packages/desktop typecheck",
     "test": "bun run plugins:catalog && bun run --cwd packages/protocol test && bun test && bun run test:plugins",
     "test:plugins": "bun scripts/test-plugins.ts",
     "verify": "bun run lint && bun run typecheck && bun run test && bun run test:daemon",

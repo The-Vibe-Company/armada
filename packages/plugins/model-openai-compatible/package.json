@@ -7,7 +7,7 @@
   "armada": {
     "id": "model-openai-compatible",
     "version": "0.1.0",
-    "pluginApi": "^0.1.0",
+    "pluginApi": "^0.2.0",
     "enabledByDefault": true,
     "description": "OpenAI-compatible endpoints models for the coordinator.",
     "contributions": {

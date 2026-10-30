@@ -22,6 +22,7 @@ export type Json = z.infer<ReturnType<typeof z.json>>;
 const ticketSchema = z.object({
   id: text,
   title: text,
+  labels: z.array(text).optional(),
   status: z.enum(["triage", "backlog", "unstarted", "started", "completed", "canceled"]),
   phase: phaseSchema.nullable().optional(),
   reason: text.optional(),
@@ -80,6 +81,11 @@ export const eventPayloadSchemas = {
     stage: shippingStageSchema.optional(),
   }),
   "session.heartbeat": sessionRefSchema,
+  "session.runtime-observed": sessionRefSchema.extend({
+    generation: integer.min(1),
+    state: z.enum(["starting", "running", "stopped", "failed", "unknown"]),
+    activity: z.enum(["working", "idle"]).optional(),
+  }),
   "session.released": sessionRefSchema.extend({ reason: text }),
   "inbox.opened": inboxRequestSchema,
   "inbox.answered": idSchema.extend({ answer: text }),

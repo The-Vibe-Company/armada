@@ -35,7 +35,7 @@ test("daemon refuses invalid coordinator configuration, releases failed startup 
         [
           fauxToolCall("fleet.status", {}),
           fauxToolCall("hold.add", { reason: "Main red" }),
-          fauxToolCall("worker.launch", {}),
+          fauxToolCall("worker.launch", { ticket: "SEED-1", branch: "worker/seed", brief: "Plant" }),
         ],
         { stopReason: "toolUse", timestamp: 0 },
       ),

@@ -16,7 +16,7 @@ async function fixture(run: (dir: string) => Promise<void>) {
     await rm(dir, { recursive: true, force: true });
   }
 }
-const manifest = (id: string, pluginApi = "^0.1.0") => ({
+const manifest = (id: string, pluginApi = "^0.2.0") => ({
   id,
   version: "1.2.3",
   pluginApi,
@@ -111,7 +111,7 @@ test("daemon boot loads a temporary catalog once, exposes providers/events and r
           ["future", "1.2.3", false],
         ],
       );
-      assert.match(lines.join("\n"), /future.*>=2\.0\.0.*0\.1\.0/);
+      assert.match(lines.join("\n"), /future.*>=2\.0\.0.*0\.2\.0/);
       assert.equal(lines.length, 1);
       const provider = daemon.registry.get("tracker", "tickets");
       assert.ok(provider);
@@ -189,6 +189,7 @@ test("missing app config boots default reader providers without reader credentia
       },
     });
     try {
+      assert.equal(daemon.plugins.find((p) => p.id === "hello")?.loaded, true);
       assert.deepEqual(
         daemon.plugins.filter((p) => p.enabled && !p.loaded),
         [],
@@ -301,7 +302,7 @@ test("catalog providers isolate schema ids and close registration after boot", a
       {
         id: "lifecycle",
         version: "1.2.3",
-        pluginApi: "^0.1.0",
+        pluginApi: "^0.2.0",
         enabledByDefault: true,
         description: "Provider lifecycle",
         contributions: { model: { first: contribution, second: contribution } },

@@ -52,3 +52,19 @@ and a handle returned late is stopped before it can be used. Cleanup gets a
 bounded grace period before the sandbox is removed. As with daemon activation,
 a trusted provider that never returns a handle or never completes `stop` cannot
 be forcibly cleaned up through this in-process API.
+
+Plugin API **0.2.0** adds host composition: the daemon and conformance host call
+`runtime.withNode(node)` when provided, then use that bound runtime for the
+whole worker generation. A plugin never looks up another plugin. `node.dispose(workspace)`
+is optional and must refuse teardown of an active or dirty workspace. Process
+`WorkerObservation.state` stays unchanged; optional `activity: "working" | "idle"`
+describes a CLI turn independently of whether its process is running. The conformance
+host binds a headless real-process fixture node to runtimes that accept one.
+
+Worker providers import `guarded` / `checkedMutation` from the Node-only
+`@armada/plugin-api/guard` subpath. The host opens a generation scope backed by
+a fresh ownership check; the node calls `checkedMutation` immediately before
+spawn, stdin writes and each stop signal, after any asynchronous provenance work.
+Unscoped writes refuse. `LaunchRequest.command: ""` selects a runtime's official
+CLI; an explicit command lets the conformance host run its fixture. Briefs and
+messages are delivered on stdin, never process arguments.

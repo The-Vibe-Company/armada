@@ -283,6 +283,55 @@ checked independently. The adapter's own test covers disk replay, project isolat
 durable ID allocation and failed-write atomicity. Storage compatibility findings are
 recorded on THE-1984 before loop implementation.
 
+## Local worker plugins
+
+The bundled `node-local` (`node.local`) and `claude` (`runtime.claude`) providers
+run the official worker CLI. Add an absolute `checkout` path to each local
+project catalog entry; `repository` remains its GitHub identity. The app's
+plugin configuration may set `node.local.workspaceRoot` (defaults to Armada's
+OS app-data directory), `transport: "auto" | "pipe" | "pty"`, and Claude's
+`command` / `args`. Auto/PTY use the host's `script` facility when a terminal
+exists and fall back to pipes when headless. Claude uses `--print` with streaming
+JSON stdin/stdout so later messages stay in one CLI process. Armada never reads
+the CLI's subscription credentials.
+
+`worker.launch({ticket, branch, brief})` selects the first matching label route
+or `defaultRoute`, and `placement.workers` selects the node kind from the same
+boot registry. Natural-language `when` routes require their one-based `rule`
+number and a `reason`. Missing providers, missing label evidence, closed tickets,
+active generations and the configured worker cap refuse before launching.
+`worker.message({ticket, message})` and `worker.stop({ticket, reason})` pin the
+current generation; stopped or released worktrees are retained. The optional
+node `dispose` operation refuses active or dirty workspaces.
+
+The daemon binds a mode-0600 socket in a fresh private temporary directory for each instance and issues each
+launch an in-memory, per-ticket/generation token. The CLI receives only
+`ARMADA_WORKER_SOCKET`, `ARMADA_WORKER_TOKEN` and `ARMADA_TICKET` in its environment.
+Only explicitly supplied launch variables are overlaid on a non-secret OS/runtime environment allowlist; daemon keys are not inherited. Its claim/report/heartbeat/ask/release commands use HTTP over that Unix socket,
+before V1 config or credentials are discovered. The token fixes project/session
+ownership; an invalid, cross-ticket or retired capability refuses without a V1
+fallback. Worker release revokes the capability; coordinator stop also waits for
+the process to exit. Token values and message bodies never enter launch/delivery
+receipts; known capability values are masked in reports and observations.
+
+Launch intents and keyed tool receipts live in the shared event log under the
+reserved `armada.worker` checkpoint format. `session.runtime-observed` records
+process state and optional working/idle activity only when either changes. A
+one-second daemon poll feeds these observations; fleet reads stay read-only.
+After a daemon crash, sessions and intents remain, but processes and capabilities
+are not reattached: uncertain launches refuse a duplicate and require inspection.
+No unknown-outcome native launch is retried automatically. Shutdown stops only
+processes this daemon owns, with a fresh generation check at each native write. Confirmed stops record their runtime state and release only the exact
+still-current active generation; failed stops retain active records for inspection.
+
+`test/workers.test.ts` owns real-worktree/process lifecycle and socket admission;
+`armada plugin test packages/plugins/node-local` and `.../claude` exercise both
+providers against the public fake CLI. The real Claude Code 2.1.310 was also tried through the bound providers during
+THE-2015. It launched and stopped cleanly with pipe transport; the final trial
+under the filtered environment returned an authentication error. The owner must
+sign in through the CLI itself; Armada does not forward daemon credentials to
+make that trial pass. CLI error results surface as failed observations.
+
 ## Coordinator model plugins
 
 `armadad` resolves the coordinator model from the loaded `model` registry. Both

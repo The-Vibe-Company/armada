@@ -429,7 +429,7 @@ describe("the Plugins screen in a browser, on a daemon that restarts", () => {
   const manifest = (id: string, enabledByDefault: boolean) => ({
     id,
     version: "1.0.0",
-    pluginApi: "^0.1.0",
+    pluginApi: "^0.2.0",
     enabledByDefault,
     description: `The ${id} provider`,
     contributions: {

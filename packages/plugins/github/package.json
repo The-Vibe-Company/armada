@@ -7,7 +7,7 @@
   "armada": {
     "id": "github",
     "version": "0.1.0",
-    "pluginApi": "^0.1.0",
+    "pluginApi": "^0.2.0",
     "enabledByDefault": true,
     "description": "Read Github observations into the fleet event log.",
     "contributions": {

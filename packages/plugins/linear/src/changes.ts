@@ -65,6 +65,7 @@ export function trackerChanges(project: string, history: readonly FleetEvent[], 
     const ticket: Ticket = {
       id: source.id,
       title: source.title,
+      labels: source.labels,
       status: source.status,
       phase,
       reason: last?.phase === phase ? last.summary : (phase ?? ""),

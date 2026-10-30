@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 import { mkdirSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import { bootDaemon } from "../boot.ts";
 import { systemKeychain } from "../keychain.ts";
+import { Workers } from "../workers/service.ts";
+import { startWorkerSocket } from "../workers/socket.ts";
 import { startServer } from "./index.ts";
 import { coordinatorModels, loadedModelKinds, modelEnvironment } from "./models.ts";
 import { daemonProjectSchema, startReaders } from "./readers.ts";
@@ -32,7 +36,10 @@ try {
     if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("--port must be between 0 and 65535");
     const catalog = JSON.parse(readFileSync(values.projects, "utf8"));
     if (!Array.isArray(catalog)) throw new Error("--projects must name a JSON array of projects");
-    const projects = catalog.map((project) => daemonProjectSchema.parse(project));
+    const projects = catalog.map((project) => ({
+      ...daemonProjectSchema.parse(project),
+      ...(typeof project.checkout === "string" ? { checkout: project.checkout } : {}),
+    }));
     mkdirSync(dirname(values.database), { recursive: true });
     const keychain = systemKeychain();
     const modelAccess = await modelEnvironment(process.env, keychain);
@@ -50,32 +57,60 @@ try {
         onSkipped: (project) =>
           console.error(`Coordinator for ${project} not started: check model plugin configuration and credentials`),
       });
-      let stopping = false;
-      const server = await startServer({
+      // Private instance directory avoids stale/active socket unlink races after a crash.
+      const workerDirectory = await mkdtemp(join(tmpdir(), "armada-worker-"));
+      const workerSocket = join(workerDirectory, "socket");
+      const workers = new Workers({
         store: daemon.store,
-        projects,
-        port,
-        staticDir: values["static-dir"],
-        keychain,
-        coordinators,
-        modelKinds: loadedModelKinds(daemon.registry),
-        // The keychain is opened on first use, as the plugins' own secret getter does.
-        plugins: {
-          configPath: daemon.configPath,
-          catalog: daemon.catalog,
-          boot: daemon,
-          keychain: {
-            read: (service, account) => keychain.read(service, account),
-            write: (service, account, value) => keychain.write(service, account, value),
-          },
-        },
-        // --restartable: the shell starts a daemon that exits with RESTART_EXIT_CODE again.
-        restart: values.restartable
-          ? () => {
-              void stop().finally(() => process.exit(RESTART_EXIT_CODE));
-            }
-          : undefined,
+        registry: daemon.registry,
+        projects: projects.flatMap((project) => (project.checkout ? [{ ...project, checkout: project.checkout }] : [])),
+        socketPath: workerSocket,
       });
+      let socket: Awaited<ReturnType<typeof startWorkerSocket>>;
+      try {
+        socket = await startWorkerSocket(workers, workerSocket);
+      } catch (error) {
+        await rm(workerDirectory, { recursive: true, force: true });
+        throw error;
+      }
+      let stopping = false;
+      let server: Awaited<ReturnType<typeof startServer>>;
+      try {
+        server = await startServer({
+          store: daemon.store,
+          projects,
+          port,
+          staticDir: values["static-dir"],
+          workers,
+          keychain,
+          coordinators,
+          modelKinds: loadedModelKinds(daemon.registry),
+          // The keychain is opened on first use, as the plugins' own secret getter does.
+          plugins: {
+            configPath: daemon.configPath,
+            catalog: daemon.catalog,
+            boot: daemon,
+            keychain: {
+              read: (service, account) => keychain.read(service, account),
+              write: (service, account, value) => keychain.write(service, account, value),
+            },
+          },
+          // --restartable: the shell starts a daemon that exits with RESTART_EXIT_CODE again.
+          restart: values.restartable
+            ? () => {
+                void stop().finally(() => process.exit(RESTART_EXIT_CODE));
+              }
+            : undefined,
+        });
+      } catch (error) {
+        await socket.close();
+        await rm(workerDirectory, { recursive: true, force: true });
+        throw error;
+      }
+      const workerPoll = setInterval(() => {
+        void workers.observeAll();
+      }, 1000);
+      workerPoll.unref();
       let readers: Awaited<ReturnType<typeof startReaders>> | undefined;
       const controller = new AbortController();
       const stop = async () => {
@@ -83,8 +118,16 @@ try {
         stopping = true;
         controller.abort();
         readers?.stop();
-        await server.close();
-        daemon.close();
+        clearInterval(workerPoll);
+        try {
+          await server.close();
+          const results = await Promise.allSettled([workers.close(), socket.close()]);
+          const failed = results.find((result) => result.status === "rejected");
+          if (failed?.status === "rejected") throw failed.reason;
+        } finally {
+          await rm(workerDirectory, { recursive: true, force: true });
+          daemon.close();
+        }
       };
       process.once("SIGINT", () => {
         void stop();

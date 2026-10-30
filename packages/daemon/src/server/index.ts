@@ -20,12 +20,14 @@ import { dispatchCredentials } from "../credentials.ts";
 import { fold } from "../fold.ts";
 import { type Keychain, systemKeychain } from "../keychain.ts";
 import type { EventStore } from "../store.ts";
+import type { Workers } from "../workers/service.ts";
 import { dispatchChat } from "./chat.ts";
 import { dispatchPlugins, isPluginsRequest, type PluginHost } from "./plugins.ts";
 import { serveStatic } from "./static.ts";
 
 export interface ServerOptions {
   store: EventStore;
+  workers?: Workers;
   /** Caller-injected model access; omitted until model configuration is available. */
   coordinators?: readonly CoordinatorOptions[];
   projects: readonly Project[];
@@ -78,7 +80,7 @@ const emptyProject = (): ProjectTables => ({
 
 /** Node-only transport adapter. One daemon owns all appends through this EventStore. */
 export async function startServer(options: ServerOptions): Promise<DaemonServer> {
-  const { store } = options;
+  const { store, workers } = options;
   const projects = options.projects.map((p) => projectSchema.parse(p));
   if (new Set(projects.map((p) => p.id)).size !== projects.length) throw new Error("Duplicate project id");
   const known = new Set(projects.map((p) => p.id));
@@ -351,7 +353,22 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   };
   try {
     if (coordinatorManager)
-      for (const config of configured) coordinators.set(config.project, await coordinatorManager.open(config));
+      for (const config of configured)
+        coordinators.set(
+          config.project,
+          await coordinatorManager.open({
+            ...config,
+            native: {
+              ...config.native,
+              ...(workers
+                ? {
+                    workers,
+                    deliverAnswerOnce: (input) => workers.answer(input, config.project),
+                  }
+                : {}),
+            },
+          }),
+        );
   } catch (error) {
     await close();
     throw error;

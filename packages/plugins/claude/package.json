@@ -1,0 +1,40 @@
+{
+  "name": "@armada/plugin-claude",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "armada": {
+    "id": "claude",
+    "version": "0.1.0",
+    "pluginApi": "^0.2.0",
+    "description": "Run the official Claude CLI using host-selected node facilities.",
+    "enabledByDefault": true,
+    "contributions": {
+      "runtime": {
+        "claude": {
+          "config": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "minLength": 1
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "secrets": []
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "@armada/plugin-api": "workspace:*"
+  }
+}

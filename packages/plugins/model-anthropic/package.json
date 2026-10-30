@@ -7,7 +7,7 @@
   "armada": {
     "id": "model-anthropic",
     "version": "0.1.0",
-    "pluginApi": "^0.1.0",
+    "pluginApi": "^0.2.0",
     "enabledByDefault": true,
     "description": "Anthropic models for the coordinator.",
     "contributions": {

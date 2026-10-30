@@ -171,7 +171,7 @@ test("shutdown clears the deadline even when a registry provider ignores cancell
   const activation = registry.activation({
     id: "fixture",
     version: "1.0.0",
-    pluginApi: "^0.1.0",
+    pluginApi: "^0.2.0",
     enabledByDefault: true,
     description: "Uncooperative fixture",
     contributions: { tracker: { linear: { config: true, secrets: [] } } },

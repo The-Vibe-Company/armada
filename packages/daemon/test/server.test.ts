@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,9 +85,26 @@ async function connect(url: string) {
   };
 }
 
-test("armadad announces its address, serves without an app build and quits cleanly on SIGTERM", async (t) => {
+test("armadad starts beside a crashed socket, announces its address and quits cleanly on SIGTERM", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "armada-process-"));
   const catalog = join(dir, "projects.json");
+  mkdirSync(join(dir, "data"));
+  const stalePath = join(dir, "data", "worker.sock");
+  const stale = spawn(
+    "node",
+    [
+      "--input-type=module",
+      "-e",
+      "import { createServer } from 'node:net'; createServer().listen(process.argv[1], () => console.log('bound'));",
+      stalePath,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  await once(stale.stdout, "data");
+  const crashed = once(stale, "exit");
+  stale.kill("SIGKILL");
+  await crashed;
+  assert.equal(lstatSync(stalePath).isSocket(), true);
   writeFileSync(catalog, JSON.stringify(projects.map((project) => ({ ...project, programRoot: "SEED-1" }))));
   writeFileSync(
     join(dir, "config.json"),
@@ -151,9 +177,15 @@ test("armadad announces its address, serves without an app build and quits clean
     rmSync(dir, { recursive: true, force: true });
   });
   const lines = createInterface({ input: child.stdout });
-  const [ready] = await once(lines, "line");
+  const [ready] = await Promise.race([
+    once(lines, "line"),
+    exited.then(() => {
+      throw new Error("daemon exited before readiness");
+    }),
+  ]);
   lines.close();
   const address = JSON.parse(ready);
+  assert.equal(lstatSync(stalePath).isSocket(), true, "startup never deletes another instance socket");
   assert.deepEqual(
     address.readers,
     projects.map((project) => ({ project: project.id, tracker: true, forge: true })),

@@ -19,7 +19,7 @@ import { FakeKeychain } from "./support/keychain.ts";
 const lamps = {
   id: "lamps",
   version: "1.0.0",
-  pluginApi: "^0.1.0",
+  pluginApi: "^0.2.0",
   enabledByDefault: true,
   description: "Reads the harbour's lamps",
   contributions: {
