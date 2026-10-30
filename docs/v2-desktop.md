@@ -464,3 +464,11 @@ existing session events. Answers are delivered through Conductor and recorded
 in the hosted inbox. Polls are single-flight and stop during daemon shutdown.
 Conductor workspaces are archived after the daemon's explicit stop; in-place
 relaunch and Cloud-specific behavior are outside this provider's first version.
+
+The Armada web producer must be deployed before enabling hosted report polling:
+`recordReport` fills the existing runtime/handle fields from the claim captured
+before asynchronous work. Report path, inbox and session-summary writes recheck that captured claim
+inside the existing project transaction. This is additive metadata on the existing event API,
+with no schema migration or new route. Legacy report rows without that identity
+are not attributed to a current worker; its generation-bound inbox and heartbeat
+remain readable. A delayed report from an older claim cannot change its replacement.

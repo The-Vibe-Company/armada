@@ -475,7 +475,7 @@ export class Workers {
       repository: config.repository,
       branch,
       notes: args.brief,
-      ...(hosted ? { hosted: { token, apiUrl: account!.apiUrl, profile: route.model } } : {}),
+      ...(hosted ? { hosted: { token, apiUrl: account!.apiUrl, profile: route.model, project } } : {}),
       ...(resume
         ? {
             resume: `Relaunch reason: ${args.reason}. Previous session: ${resume.ref.session}. Continue branch ${branch} in this same worktree.`,

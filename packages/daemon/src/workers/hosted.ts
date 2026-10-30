@@ -368,6 +368,24 @@ export class HostedReader {
                 continue;
               }
               if (event.kind === "report") {
+                // Legacy identity-less rows cannot prove a generation after a delayed commit; fail closed.
+                if (!event.handle) {
+                  markSeen(event);
+                  continue;
+                }
+                // The inbox snapshot can precede a delayed older report in this feed's lookback.
+                if (
+                  items.some(
+                    (item) =>
+                      item.ticket === launch.ticket &&
+                      (item.author === launch.handle || item.author === launch.launchId) &&
+                      (item.kind === "plan" || item.kind === "hand-back") &&
+                      item.createdAt > event.at,
+                  )
+                ) {
+                  markSeen(event);
+                  continue;
+                }
                 const phase = activePhaseSchema.safeParse(event.phase);
                 const newer = this.#options.store
                   .readSince(0, project.id)
@@ -423,10 +441,16 @@ export class HostedReader {
                 }
                 let merged = false;
                 if (event.kind === "merge" && event.prUrl && event.headSha && /^[0-9a-f]{40}$/.test(event.headSha)) {
-                  const url = new URL(event.prUrl);
-                  const [owner, repository, pull, number] = url.pathname.split("/").filter(Boolean);
+                  let url: URL | undefined;
+                  try {
+                    url = new URL(event.prUrl);
+                  } catch {
+                    /* Invalid metadata still ends this owned generation below. */
+                  }
+                  const [owner, repository, pull, number] = url?.pathname.split("/").filter(Boolean) ?? [];
                   const pr = Number(number);
                   if (
+                    url?.protocol === "https:" &&
                     url.hostname === "github.com" &&
                     `${owner}/${repository}`.toLowerCase() === project.repository.toLowerCase() &&
                     pull === "pull" &&
@@ -542,7 +566,8 @@ export class HostedReader {
                 (event) =>
                   event.kind === "session.reported" &&
                   event.payload.session === launch.session &&
-                  event.actor.startsWith("armada:event:"),
+                  event.actor.startsWith("armada:event:") &&
+                  event.at > item.createdAt,
               );
           if (!already && !newer)
             append(

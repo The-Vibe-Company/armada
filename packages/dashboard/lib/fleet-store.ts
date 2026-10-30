@@ -295,8 +295,9 @@ export async function assignUnownedProjects(db: Queryable, organization: string,
 
 // ------------------------------------------------------------------ events
 
-export async function recordEvent(db: Queryable, e: EventInput): Promise<void> {
-  if (e.kind === "report")
+export async function recordEvent(db: Database | Queryable, e: EventInput, guard?: ReleaseGuard): Promise<void> {
+  if (guard && "connect" in db) return transaction(db, (tx) => recordEvent(tx, e, guard));
+  if (e.kind === "report" && (await reportGuardMatches(db, e.project, e.ticket, guard)))
     await db.query(
       `UPDATE fleet_sessions SET report_at = $3, report_message = $4, report_phase = $5, report_shipping_stage = $6
        WHERE project = $1 AND ticket = $2 AND released_at IS NULL AND claimed_at <= $3
@@ -909,6 +910,28 @@ function releaseGuardMatches(held: Record<string, unknown> | undefined, guard?: 
   );
 }
 
+/** Report side effects must still belong to the captured claim when the write commits. */
+async function reportGuardMatches(
+  tx: Queryable,
+  project: string,
+  ticket: string,
+  guard?: ReleaseGuard,
+): Promise<boolean> {
+  if (!guard) return true;
+  await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [project]);
+  const held = (
+    await tx.query(
+      "SELECT handle, claimed_at, worker_session_id, released_at FROM runtime_handles WHERE project = $1 AND ticket = $2 FOR UPDATE",
+      [project, ticket],
+    )
+  ).rows[0];
+  return (
+    releaseGuardMatches(held, guard) &&
+    (!held || !held.released_at) &&
+    (!guard.workerSessionId || held?.worker_session_id === guard.workerSessionId)
+  );
+}
+
 const HANDLE_SELECT = `SELECT h.project, h.ticket, h.runtime, h.handle, h.branch, h.claimed_at, h.released_at, h.heartbeat_at, h.worker_session_id, h.coordinator, h.runtime_state, h.runtime_observed_at, h.runtime_changed_at, h.runtime_state_sequence, p.profile
   FROM runtime_handles h LEFT JOIN worker_profiles p ON p.project = h.project AND p.ticket = h.ticket`;
 
@@ -1282,27 +1305,29 @@ export async function closeDeferredLaunches(
 }
 
 /** Adds or refreshes the ticket's open plan for the coordinator. */
-export async function putPlan(
-  db: Queryable,
-  item: { project: string; ticket: string; author: string | null; body: string; coordinator?: string | null; at: Date },
-): Promise<void> {
-  await db.query(
-    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, coordinator)
+export async function putPlan(db: Database | Queryable, item: Parameters<FleetStore["putPlan"]>[0]): Promise<void> {
+  const run = async (tx: Queryable) => {
+    if (!(await reportGuardMatches(tx, item.project, item.ticket, item.guard))) return;
+    await tx.query(
+      `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, coordinator)
      VALUES ($1, $2, 'plan', 'coordinator', $3, $4, $5, $6)
      ON CONFLICT (project, ticket, kind) WHERE resolved_at IS NULL AND kind IN ('plan', 'hand-back', 'launch-request')
      DO UPDATE SET body = excluded.body, author = excluded.author, created_at = excluded.created_at, coordinator = excluded.coordinator
      WHERE inbox_items.created_at <= excluded.created_at`,
-    [item.project, item.ticket, item.author, item.body, item.at, item.coordinator ?? null],
-  );
+      [item.project, item.ticket, item.author, item.body, item.at, item.coordinator ?? null],
+    );
+  };
+  return "connect" in db ? transaction(db, run) : run(db);
 }
 
 /** Adds the coordinator's hand-back item for a ticket, or refreshes the unresolved one. */
 export async function putHandBack(
   db: Database | Queryable,
-  item: { project: string; ticket: string; author: string | null; body: string; coordinator?: string | null; at: Date },
+  item: Parameters<FleetStore["putHandBack"]>[0],
 ): Promise<void> {
   const run = async (tx: Queryable) => {
     await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [item.project]);
+    if (!(await reportGuardMatches(tx, item.project, item.ticket, item.guard))) return;
     if (item.author) {
       const held = (
         await tx.query(
@@ -1520,9 +1545,10 @@ export async function resolveAnswerRequests(
 /** Resolves a ticket's open plan and the answer-requests waiting on it; returns how many plans. */
 export async function resolvePlans(
   db: Database | Queryable,
-  input: { project: string; ticket: string; resolution: string; at: Date },
+  input: Parameters<FleetStore["resolvePlans"]>[0],
 ): Promise<number> {
   const run = async (tx: Queryable) => {
+    if (!(await reportGuardMatches(tx, input.project, input.ticket, input.guard))) return 0;
     await tx.query(
       `UPDATE inbox_items SET resolved_at = $1, resolution = $2
        WHERE project = $3 AND kind = 'answer-request' AND resolved_at IS NULL
@@ -2628,9 +2654,10 @@ export const fleetStore = (db: Database): FleetStore => ({
   ensureProject: (p, at) => ensureProject(db, p, at),
   upsertProject: (p, at) => upsertProject(db, p, at),
   listProjects: () => listProjects(db),
-  saveTicketPaths: async (project, ticket, paths, at) => {
+  saveTicketPaths: async (project, ticket, paths, at, guard) => {
     await transaction(db, async (tx) => {
       await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [project]);
+      if (!(await reportGuardMatches(tx, project, ticket, guard))) return;
       await tx.query(
         `INSERT INTO ticket_paths (project, ticket, paths, declared_at) VALUES ($1, $2, $3, $4)
         ON CONFLICT (project, ticket) DO UPDATE SET paths = EXCLUDED.paths, declared_at = EXCLUDED.declared_at`,
@@ -2660,7 +2687,7 @@ export const fleetStore = (db: Database): FleetStore => ({
       await tx.query("DELETE FROM ticket_paths WHERE project = $1 AND ticket = $2", [project, ticket]);
     });
   },
-  recordEvent: (e) => recordEvent(db, e),
+  recordEvent: (e, guard) => recordEvent(db, e, guard),
   recordHeartbeat: (input) => recordHeartbeat(db, input),
   heartbeatTimes: (project) => heartbeatTimes(db, project),
   lastEventTimes: (project) => lastEventTimes(db, project),

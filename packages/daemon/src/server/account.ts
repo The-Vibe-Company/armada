@@ -285,16 +285,25 @@ export class Account {
       const held = value as { handle?: string; workerSessionId?: string; claimedAt?: string };
       if (held.handle !== target.handle || held.workerSessionId !== target.id || !held.claimedAt)
         throw new Error("Hosted generation changed");
+      // release ends an active worker as released in the dashboard transaction. Preserve merge attribution first.
+      if (target.terminal === "merged")
+        await api.endWorkers(signIn, {
+          project: project.slug,
+          ticket: target.ticket,
+          reason: "merged",
+          claimedAt: held.claimedAt,
+        });
       await api.fleet(signIn, "release", {
         project,
         input: { ticket: target.ticket, reason: target.reason, handle: target.handle, claimedAt: held.claimedAt },
       });
-      await api.endWorkers(signIn, {
-        project: project.slug,
-        ticket: target.ticket,
-        reason: target.terminal ?? "released",
-        claimedAt: held.claimedAt,
-      });
+      if (target.terminal !== "merged")
+        await api.endWorkers(signIn, {
+          project: project.slug,
+          ticket: target.ticket,
+          reason: "released",
+          claimedAt: held.claimedAt,
+        });
     } catch {
       throw new Error("Armada could not release the exact Conductor worker");
     }

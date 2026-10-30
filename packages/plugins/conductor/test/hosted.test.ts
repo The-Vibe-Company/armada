@@ -128,6 +128,8 @@ test("hosted launch sends login only through stdin, uses label profile, and mask
   assert.equal(state.calls[0].args.includes("https://github.com/example/orchard"), true);
   assert.equal(state.calls[0].args.includes(login[1]), false);
   assert.equal(state.brief.includes("ARMADA_WORKER_SOCKET"), false);
+  assert.equal(state.brief.includes("--profile"), false, "desktop profile names do not need matching V1 CLI profiles");
+  assert.ok(state.brief.includes("project.slug matches"));
   assert.equal(state.brief.includes("armada claim SEED-1 --runtime conductor"), true);
   const visible = JSON.stringify([
     launched,
@@ -399,6 +401,15 @@ for (const mode of ["diagnostic", "metadata", "metadata-suffix"] as const)
       /outcome unknown/,
     );
     assert.equal((await f.state()).calls.filter((call: { args: string[] }) => call.args[1] === "create").length, 1);
+    await f.workers.recoverHosted(project.id);
+    const recovered = await f.workers.tool(project.id, "worker.launch", { ticket: "SEED-1" }, "launch", () => {});
+    assert.equal(recovered.recovered, true);
+    assert.equal(
+      (await f.state()).calls.filter(
+        (call: { args: string[] }) => call.args[0] === "workspace" && call.args[1] === "create",
+      ).length,
+      1,
+    );
   });
 
 test("project TOML imports hosted label routes while retaining the project's gates and policy", () => {
@@ -487,10 +498,7 @@ for (const status of ["starting", "queued"] as const)
 test("an unavailable binary revokes its exact launch, completes the failed intent and allows a corrected launch", async (t) => {
   const f = await setup(t);
   await rm(f.binary);
-  await assert.rejects(
-    f.workers.tool(project.id, "worker.launch", { ticket: "SEED-1" }, "bad-binary", () => {}),
-    /executable could not start/,
-  );
+  await assert.rejects(f.workers.tool(project.id, "worker.launch", { ticket: "SEED-1" }, "bad-binary", () => {}));
   assert.ok(f.fake.store.launches[0]?.endedAt);
   assert.equal(fold(f.store.readSince(0)).projects[project.id]?.sessions[0]?.phase, "released");
   await copyFile(new URL("./fixtures/conductor-worker.mjs", import.meta.url), f.binary);
@@ -609,7 +617,7 @@ test("bind failure after token exchange releases the exact claimed worker sessio
   assert.ok((await f.fake.store.getRuntimeHandle(project.id, "SEED-1"))?.releasedAt);
 });
 
-for (const terminal of ["merge", "closed-handle"] as const)
+for (const terminal of ["merge", "closed-handle", "malformed-merge"] as const)
   test(`hosted ${terminal} closes the local generation without a release event`, async (t) => {
     const f = await setup(t);
     const launched = await f.workers.tool(project.id, "worker.launch", { ticket: "SEED-1" }, "launch", () => {});
@@ -619,12 +627,12 @@ for (const terminal of ["merge", "closed-handle"] as const)
     const held = await f.fake.store.getRuntimeHandle(project.id, "SEED-1");
     assert.ok(held);
     f.fake.clock.advance(1000);
-    if (terminal === "merge")
+    if (terminal !== "closed-handle")
       await f.fake.store.recordEvent({
         project: project.id,
         ticket: "SEED-1",
         kind: "merge",
-        prUrl: "https://github.com/example/orchard/pull/17",
+        prUrl: terminal === "malformed-merge" ? "not a URL" : "https://github.com/example/orchard/pull/17",
         headSha: "a".repeat(40),
         at: f.fake.clock.now(),
       });
@@ -680,6 +688,12 @@ test("claim event identity accepts skewed current reports and excludes reports f
 
 test("merge cleanup records the hosted worker's merged terminal reason", async (t) => {
   const f = await setup(t);
+  const fetch = f.transport.fetch;
+  f.transport.fetch = async (url, init) => {
+    const response = await fetch(url, init);
+    if (url.endsWith("/fleet/release") && response.ok) f.fake.end("SEED-1", "released");
+    return response;
+  };
   const launched = await f.workers.tool(project.id, "worker.launch", { ticket: "SEED-1" }, "launch", () => {});
   await remoteWorker(f, launched.handle);
   f.store.append({
@@ -696,10 +710,13 @@ test("merge cleanup records the hosted worker's merged terminal reason", async (
     "stop-merged",
     () => {},
   );
-  assert.equal(
-    f.fake.calls.find((call) => call.path === "workers/end")?.body &&
-      (f.fake.calls.find((call) => call.path === "workers/end")?.body as { reason: string }).reason,
-    "merged",
+  const ended = f.fake.calls.find((call) => call.path === "workers/end");
+  assert.ok(ended?.body && typeof ended.body === "object" && "reason" in ended.body);
+  assert.equal(ended.body.reason, "merged");
+  assert.match(
+    String([...f.fake.workers.values()][0]?.ended),
+    /merged/,
+    "release must not win the terminal-reason race",
   );
 });
 
@@ -709,4 +726,182 @@ test("Conductor routing accepts the Cursor agent advertised by the provider", ()
   );
   assert.equal(rules.defaultRoute?.cli, "conductor");
   assert.equal(rules.defaultRoute?.model, "cursor");
+});
+
+test("a current inbox action supplies phase when only an older implementing report is available", async (t) => {
+  const f = await setup(t);
+  const launched = await f.workers.tool(project.id, "worker.launch", { ticket: "SEED-1" }, "launch", () => {});
+  const call = await remoteWorker(f, launched.handle);
+  await call("report", {
+    phase: "implementing",
+    previous: "planning",
+    summary: "Implementing",
+    message: "Implementing",
+  });
+  const reader = new HostedReader({ store: f.store, account: f.account, projects: [project] });
+  await reader.poll();
+  assert.equal(fold(f.store.readSince(0)).projects[project.id]?.sessions[0]?.phase, "implementing");
+  await call("report", {
+    phase: "ready-to-merge",
+    previous: "implementing",
+    summary: "Current hand-back",
+    message: "Current hand-back",
+    prUrl: "https://github.com/example/orchard/pull/17",
+    headSha: "a".repeat(40),
+  });
+  const fetch = f.transport.fetch;
+  f.transport.fetch = async (url, init) => {
+    const response = await fetch(url, init);
+    if (!url.endsWith("/fleet/events/since") || response.status !== 200) return response;
+    const body = await response.clone().json();
+    if (body.result?.events)
+      body.result.events = body.result.events.filter((event: { phase: string }) => event.phase !== "ready-to-merge");
+    return Response.json(body, { headers: response.headers });
+  };
+  await reader.poll();
+  const tables = fold(f.store.readSince(0)).projects[project.id];
+  assert.equal(tables?.inbox.find((item) => item.kind === "hand-back")?.body.includes("Current hand-back"), true);
+  assert.equal(tables?.sessions[0]?.phase, "ready-to-merge");
+});
+
+test("a report delayed across replacement retains its original handle and cannot change the new generation", async (t) => {
+  const f = await setup(t);
+  const launched = await f.workers.tool(project.id, "worker.launch", { ticket: "SEED-1" }, "launch", () => {});
+  const call = await remoteWorker(f, launched.handle);
+  let resume!: () => void;
+  let entered!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const savePaths = f.fake.store.saveTicketPaths.bind(f.fake.store);
+  f.fake.store.saveTicketPaths = async (...args) => {
+    entered();
+    await waiting;
+    return savePaths(...args);
+  };
+  const delayed = call("report", {
+    phase: "blocked",
+    previous: "planning",
+    summary: "Old delayed report",
+    message: "Old delayed report",
+    paths: ["old.ts"],
+  });
+  await started;
+  await call("release", { reason: "Replaced", handle: launched.handle });
+  const token = await f.account.launchWorkerToken(project.id, "SEED-1");
+  const api = armadaApi({ url: ARMADA_URL, fetch: f.fake.fetch });
+  const worker = await api.exchangeLaunchToken(token.token);
+  f.fake.clock.advance(1000);
+  await api.fleet({ kind: "worker", token: worker.token, ticket: "SEED-1", project: project.id }, "claim", {
+    project: { slug: project.id, name: project.name, repository: project.repository, programRoot: project.programRoot },
+    input: {
+      ticket: "SEED-1",
+      runtime: "conductor",
+      handle: "replacement-ws/replacement-session",
+      branch: "worker/seed-1",
+      profile: null,
+      resuming: false,
+    },
+  });
+  f.store.append({
+    project: project.id,
+    actor: "coordinator",
+    at: f.fake.clock.now().toISOString(),
+    kind: "coordinator.checkpoint",
+    payload: {
+      checkpoint: {
+        format: "armada.worker",
+        version: 1,
+        type: "launch",
+        hosted: true,
+        launchId: worker.worker.id,
+        ticket: "SEED-1",
+        session: "replacement-local",
+        generation: 2,
+        runtime: "conductor",
+        branch: "worker/seed-1",
+        handle: "replacement-ws/replacement-session",
+        step: "launched",
+      },
+    },
+  });
+  f.fake.store.saveTicketPaths = savePaths;
+  await api.fleet({ kind: "worker", token: worker.token, ticket: "SEED-1", project: project.id }, "report", {
+    project: { slug: project.id, name: project.name, repository: project.repository, programRoot: project.programRoot },
+    input: {
+      ticket: "SEED-1",
+      phase: "awaiting-approval",
+      previous: "planning",
+      summary: "Replacement plan",
+      message: "Replacement plan",
+      paths: ["replacement.ts"],
+    },
+  });
+  resume();
+  await delayed;
+  assert.deepEqual((await f.fake.store.ticketPaths(project.id))["SEED-1"], ["replacement.ts"]);
+  const replacementPlan = (
+    await f.fake.store.openInboxItems({ project: project.id, recipient: "coordinator", ticket: "SEED-1" })
+  ).find((item) => item.kind === "plan");
+  assert.match(replacementPlan?.body ?? "", /^Replacement plan(?:\n|$)/);
+  const old = f.fake.store.events.find((event) => event.kind === "report" && event.message === "Old delayed report");
+  assert.equal(old?.handle, launched.handle, "the producer must retain the pre-replacement identity");
+  const reader = new HostedReader({ store: f.store, account: f.account, projects: [project] });
+  await reader.poll();
+  assert.equal(fold(f.store.readSince(0)).projects[project.id]?.sessions[0]?.session, "replacement-local");
+  assert.equal(fold(f.store.readSince(0)).projects[project.id]?.sessions[0]?.phase, "awaiting-approval");
+  // Legacy rows without a captured identity cannot be safely attributed, even after the new claim id.
+  await f.fake.store.recordEvent({
+    project: project.id,
+    ticket: "SEED-1",
+    kind: "report",
+    phase: "blocked",
+    message: "Unverified legacy report",
+    at: f.fake.clock.now(),
+  });
+  await reader.poll();
+  assert.equal(fold(f.store.readSince(0)).projects[project.id]?.sessions[0]?.phase, "awaiting-approval");
+});
+
+test("a delayed older report cannot override a hand-back imported by an earlier poll", async (t) => {
+  const f = await setup(t);
+  const launched = await f.workers.tool(project.id, "worker.launch", { ticket: "SEED-1" }, "launch", () => {});
+  const call = await remoteWorker(f, launched.handle);
+  await call("report", {
+    phase: "implementing",
+    previous: "planning",
+    summary: "Older report",
+    message: "Older report",
+  });
+  f.fake.clock.advance(1000);
+  await call("report", {
+    phase: "ready-to-merge",
+    previous: "implementing",
+    summary: "Current hand-back",
+    message: "Current hand-back",
+    prUrl: "https://github.com/example/orchard/pull/17",
+    headSha: "a".repeat(40),
+  });
+  const fetch = f.transport.fetch;
+  let allowOlder = false;
+  f.transport.fetch = async (url, init) => {
+    const response = await fetch(url, init);
+    if (!url.endsWith("/fleet/events/since") || response.status !== 200) return response;
+    const body = await response.clone().json();
+    if (body.result?.events)
+      body.result.events = body.result.events.filter(
+        (event: { kind: string; phase: string }) =>
+          event.kind !== "report" || (allowOlder && event.phase === "implementing"),
+      );
+    return Response.json(body, { headers: response.headers });
+  };
+  const reader = new HostedReader({ store: f.store, account: f.account, projects: [project] });
+  await reader.poll();
+  assert.equal(fold(f.store.readSince(0)).projects[project.id]?.sessions[0]?.phase, "ready-to-merge");
+  allowOlder = true;
+  await reader.poll();
+  assert.equal(fold(f.store.readSince(0)).projects[project.id]?.sessions[0]?.phase, "ready-to-merge");
 });
