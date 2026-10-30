@@ -5,7 +5,6 @@ import type { DaemonClient } from "@/protocol/client";
 import { DaemonProvider } from "@/protocol/store";
 import { Hangar } from "@/screens/Hangar";
 import { Project } from "@/screens/Project";
-import { Settings } from "@/screens/Settings";
 import { useSessionRoute } from "@/session/route";
 
 // The sky's story page (`?story=sky`), loaded only behind its flag: never in the first load.
@@ -14,8 +13,11 @@ const SkyStory = lazy(() => import("@/screens/SkyStory").then((m) => ({ default:
 const Room = lazy(() => import("@/screens/Room").then((m) => ({ default: m.Room })));
 // A session's page, fetched when a row opens it: off the first-load budget.
 const Session = lazy(() => import("@/screens/Session").then((m) => ({ default: m.Session })));
-// A screen of the app's own settings: off the first load (perf-budget.json), fetched when opened.
+// The notifications (THE-2055): every screen hears them, off the first load, once the shell is drawn.
+const Notifications = lazy(() => import("@/notify/Notifications").then((m) => ({ default: m.Notifications })));
+// The screens of the app's own settings: off the first load (perf-budget.json), fetched when opened.
 const Plugins = lazy(() => import("@/screens/Plugins").then((m) => ({ default: m.Plugins })));
+const Settings = lazy(() => import("@/screens/Settings").then((m) => ({ default: m.Settings })));
 
 export function App({
   client,
@@ -53,10 +55,16 @@ export function App({
         ) : route.kind === "rules" ? (
           <Project id={route.id} onReload={onReload} />
         ) : route.kind === "settings" ? (
-          <Settings address={address} onReload={onReload} />
+          <Suspense fallback={null}>
+            <Settings address={address} onReload={onReload} />
+          </Suspense>
         ) : (
           <Hangar onReload={onReload} />
         )}
+        {/* A coordinator's answer or a question for the owner, from a room not on screen (THE-2055). */}
+        <Suspense fallback={null}>
+          <Notifications />
+        </Suspense>
       </Shell>
     </DaemonProvider>
   );

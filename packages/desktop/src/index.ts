@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { BADGE_CHANNEL, badgeCount, REVEAL_CHANNEL } from "./bridge.ts";
 import { type DaemonAddress, DaemonProcess, RESTART_EXIT_CODE, restartDaemon } from "./daemon.ts";
 
 app.setName("Armada");
@@ -74,8 +75,26 @@ void app.whenReady().then(async () => {
       minHeight: 560,
       show: false,
       title: "Armada",
-      webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        preload: fileURLToPath(new URL("../preload/preload.cjs", import.meta.url)),
+      },
     });
+    // The app's notifications (THE-2055): a click brings the window forward, the dock counts those not yet read.
+    const own = (sender: Electron.WebContents) => window !== undefined && sender === window.webContents;
+    ipcMain.on(REVEAL_CHANNEL, (event) => {
+      if (!window || !own(event.sender)) return;
+      if (window.isMinimized()) window.restore();
+      window.show();
+      if (process.platform === "darwin") app.focus({ steal: true });
+      window.focus();
+    });
+    ipcMain.on(BADGE_CHANNEL, (event, count: unknown) => {
+      if (own(event.sender)) app.setBadgeCount(badgeCount(count));
+    });
+    window.on("focus", () => app.setBadgeCount(0));
     // No window of its own: a link a message opens apart (the room's markdown, THE-2050) goes to the system
     // browser or mail app; never the app's own pages, which only this window shows.
     window.webContents.setWindowOpenHandler(({ url }) => {
@@ -90,7 +109,10 @@ void app.whenReady().then(async () => {
       // is the one link the window hands to another app.
       if (target.protocol === "conductor:") void shell.openExternal(url).catch(() => {});
     });
-    window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+    // Notifications only (THE-2055): the app shows them when its window is in the background, silent.
+    window.webContents.session.setPermissionRequestHandler((_contents, permission, callback) =>
+      callback(permission === "notifications"),
+    );
     window.once("ready-to-show", () => window?.show());
     await window.loadURL(appUrl(address));
   } catch {

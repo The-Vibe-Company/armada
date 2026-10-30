@@ -36,8 +36,14 @@ Node installation. It passes `--port 0`: the OS chooses a free loopback port,
 without a reserve/release race. The daemon's one readiness JSON line supplies
 both addresses. Only then does one sandboxed, isolated window open on the
 built app served by that daemon, with `?daemon=ws://127.0.0.1:<allocated-port>/`.
-There is no preload or IPC bridge. New windows and cross-origin navigation
-are refused; the renderer has no Node access. The one exception is a
+The renderer has no Node access. Its one preload (`src/preload.ts`, built as
+CommonJS for the sandbox) exposes two calls as `window.armadaShell`, for the
+app's notifications (THE-2055): `reveal()` shows, restores and focuses the
+window when the owner clicks a notification, and `setBadge(count)` sets the
+dock's badge (`app.setBadgeCount`, 99 at most, cleared when the window takes
+the focus). The main process answers them only from the app's own window
+(`src/bridge.ts`). The window's one allowed permission is notifications. New
+windows and cross-origin navigation are refused. The one exception is a
 `conductor://` link (a V1 session's workspace, from the session page's Open the
 session). It is handed to the OS to open in Conductor and never loads in the window.
 

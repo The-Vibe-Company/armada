@@ -5,7 +5,7 @@
 // owner pinned under it, then the conversation with the project's coordinator
 // taking the width, the owner's field fixed at the bottom. The agents' rail
 // slides in from the right at a third of the width. The sidebar stays.
-import { AnimatePresence } from "motion/react";
+import { AnimatePresence, m } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Dot, Page, PageHeader } from "@/components/page";
 import { dayIn, fleetItems, type Group, groupCounts, headline, rowTime } from "@/fleet/overview";
@@ -17,18 +17,21 @@ import { useDaemon } from "@/protocol/store";
 import { Composer } from "@/room/Composer";
 import { type Chat, NO_CHAT, threadItems, useChat } from "@/room/chat";
 import { coordinatorModel, ownerHistory } from "@/room/compose";
+import { HeroHeadline, StarterAsks } from "@/room/Hero";
 import { Queued, TurnActions } from "@/room/Live";
 import { ticketPrefix } from "@/room/markdown-rules";
 import { Pinned } from "@/room/Pinned";
 import { RAIL_ID, Rail } from "@/room/Rail";
 import { Thread } from "@/room/Thread";
-import { ownerQuestions } from "@/room/view";
+import { ownerQuestions, starterAsks } from "@/room/view";
 import { Sky } from "@/sky/Sky";
 
 /** Below this window width the rail starts closed: a third of it would leave the conversation too narrow. */
 const RAIL_MIN_WINDOW = 1100;
 const viewerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 const EMPTY_STATE: FleetState = { sessions: [], tickets: [], pullRequests: [], inbox: [], queue: [], validations: [] };
+/** The field's glide from the hero to its dock (THE-2055); the shell's reduced motion turns it off. */
+const DOCK = { duration: 0.25, ease: [0.23, 1, 0.32, 1] } as const;
 
 export function Room({
   project: id,
@@ -121,6 +124,13 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
   const busy = turn !== null && turn.state !== "idle";
   const shown = useMemo(() => threadItems(chat.items, chat.live), [chat.items, chat.live]);
   const stop = chat.stop;
+  // Nothing said yet (THE-2055): the hero holds the thread's place, the field centred under it.
+  const hero = chat.status === "ready" && shown.length === 0 && !busy && !chat.queued?.length && !chat.problem;
+  const asks = useMemo(() => starterAsks(state), [state]);
+  // Only leaving the hero glides the field (its first Send); the hero arriving with the first reading does not.
+  const [dock, setDock] = useState({ hero, glides: 0 });
+  if (dock.hero !== hero) setDock({ hero, glides: dock.glides + (dock.hero ? 1 : 0) });
+  const closed = !live || chat.status !== "ready" || !chat.coordinator;
 
   const hint =
     chat.status === "unavailable"
@@ -207,23 +217,28 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
               answer={chat.answer}
             />
           )}
-          <Thread
-            items={shown}
-            turn={turn}
-            started={chat.live?.started ?? null}
-            project={project.id}
-            repository={project.repository}
-            prefixes={prefixes}
-            groupOf={groupOf}
-            now={now}
-            zone={zone}
-            empty={
-              chat.problem ??
-              (chat.status === "reading" && live
-                ? "Reading the conversation."
-                : "Nothing said yet. Tell the coordinator what to do.")
-            }
-          />
+          {/* The same places in both layouts: the field stays the same element, and glides to its dock. */}
+          {hero ? (
+            <HeroHeadline />
+          ) : (
+            <Thread
+              items={shown}
+              turn={turn}
+              started={chat.live?.started ?? null}
+              project={project.id}
+              repository={project.repository}
+              prefixes={prefixes}
+              groupOf={groupOf}
+              now={now}
+              zone={zone}
+              empty={
+                chat.problem ??
+                (chat.status === "reading" && live
+                  ? "Reading the conversation."
+                  : "Nothing said yet. Tell the coordinator what to do.")
+              }
+            />
+          )}
           {chat.problem && chat.items.length > 0 && (
             <p
               role="alert"
@@ -233,17 +248,20 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
             </p>
           )}
           <Queued items={chat.queued ?? []} />
-          <Composer
-            project={project.id}
-            send={chat.send}
-            busy={busy}
-            primary={busy && stop ? (field) => <TurnActions field={field} stop={stop} /> : undefined}
-            restore={chat.withdrawn ?? null}
-            disabled={!live || chat.status !== "ready" || !chat.coordinator}
-            hint={hint}
-            history={history}
-            model={model}
-          />
+          <m.div layout="position" layoutDependency={dock.glides} transition={DOCK} className="flex-none" data-dock>
+            <Composer
+              project={project.id}
+              send={chat.send}
+              busy={busy}
+              primary={busy && stop ? (field) => <TurnActions field={field} stop={stop} /> : undefined}
+              restore={chat.withdrawn ?? null}
+              disabled={closed}
+              hint={hint}
+              history={history}
+              model={model}
+            />
+          </m.div>
+          {hero && <StarterAsks asks={asks} send={chat.send} disabled={closed} />}
         </div>
         <AnimatePresence initial={false}>
           {open && (
