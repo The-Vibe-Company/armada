@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { coordinatorModelSchema } from "./models.js";
 
+// THE-2043 reserved protocol minor 5 for the extended Rules snapshot vocabulary.
+export const RULES_SCHEMA_MINOR = 5;
+
 const id = z.string().min(1).max(200).regex(/\S/);
 const target = { cli: z.enum(["claude", "codex", "opencode"]), model: id, effort: id.optional() };
 const placement = z.enum(["local", "vm"]);
@@ -27,6 +30,9 @@ export const projectRulesSchema = z.strictObject({
   placement: z.strictObject({ workers: placement, coordinator: placement }).optional(),
   policy: z
     .strictObject({
+      plans: z.enum(["approve", "pre-approved"]).optional(),
+      approvalLabel: id.optional(),
+      preApprovedLabel: id.optional(),
       silenceMinutes: minutes.optional(),
       quietMinutes: minutes.optional(),
       maxWorkers: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).nullable().optional(),

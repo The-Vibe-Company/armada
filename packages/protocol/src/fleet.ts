@@ -25,6 +25,16 @@ const ticketSchema = z.object({
   id: text,
   title: text,
   labels: z.array(text).optional(),
+  description: text.optional(),
+  url: text.optional(),
+  branchName: text.optional(),
+  parent: text.nullable().optional(),
+  blockers: z
+    .array(
+      z.object({ id: text, status: z.enum(["triage", "backlog", "unstarted", "started", "completed", "canceled"]) }),
+    )
+    .optional(),
+  comments: z.array(z.object({ body: text, author: text, at: text })).optional(),
   status: z.enum(["triage", "backlog", "unstarted", "started", "completed", "canceled"]),
   phase: phaseSchema.nullable().optional(),
   reason: text.optional(),
@@ -58,6 +68,18 @@ const sessionRefSchema = z.object({
   session: text,
 });
 export type SessionRef = z.infer<typeof sessionRefSchema>;
+/** Host-owned launch progress, separate from a worker's actual claim. */
+export const workerLaunchCheckpointSchema = sessionRefSchema.extend({
+  format: z.literal("armada.worker"),
+  version: z.literal(1),
+  type: z.enum(["launch-intent", "launch"]),
+  generation: integer.min(1),
+  runtime: text,
+  handle: text.optional(),
+  branch: text.optional(),
+  step: z.enum(["preparing", "starting", "launched"]),
+});
+
 const inboxRequestSchema = z.object({
   id: text,
   ticket: text,

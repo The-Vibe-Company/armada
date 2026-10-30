@@ -1,5 +1,6 @@
 import { parse } from "smol-toml";
 import * as Value from "typebox/value";
+import { labelKey } from "../src/workers/routing.ts";
 import { type ProjectRules, rulesSchema } from "./rules.ts";
 
 const table = (value: unknown): Record<string, unknown> => {
@@ -77,11 +78,20 @@ export function importV1Rules(body: string): ProjectRules {
     routing,
     ...(conductor.default_profile === undefined ? {} : { defaultRoute: profile(conductor.default_profile) }),
     policy: {
+      ...(policy.plans === undefined ? {} : { plans: policy.plans as "approve" | "pre-approved" }),
+      ...(policy.approval_label === undefined ? {} : { approvalLabel: text(policy.approval_label) }),
+      ...(policy.pre_approved_label === undefined ? {} : { preApprovedLabel: text(policy.pre_approved_label) }),
       silenceMinutes: (policy.silence_minutes ?? policy.silent_after_minutes ?? 15) as number,
       quietMinutes: (policy.quiet_minutes ?? 45) as number,
       maxWorkers: policy.max_workers === undefined ? null : (policy.max_workers as number),
     },
   };
   if (!Value.Check(rulesSchema, result)) throw new Error("Invalid imported rules");
+  // V1 core/config.ts rejects normalized collisions, including a collision with an omitted default.
+  if (
+    labelKey(result.policy?.approvalLabel ?? "needs-plan-approval") ===
+    labelKey(result.policy?.preApprovedLabel ?? "plan-approved")
+  )
+    throw new Error("Plan labels must name different labels");
   return result;
 }

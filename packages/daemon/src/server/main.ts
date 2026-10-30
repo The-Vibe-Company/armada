@@ -68,6 +68,7 @@ try {
         registry: daemon.registry,
         projects: projects.flatMap((project) => (project.checkout ? [{ ...project, checkout: project.checkout }] : [])),
         socketPath: workerSocket,
+        refresh: (project) => readers?.refresh(project) ?? Promise.resolve(),
       });
       const merges = new Merges({
         registry: daemon.registry,

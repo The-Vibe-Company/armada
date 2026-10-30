@@ -295,14 +295,21 @@ exists and fall back to pipes when headless. Claude uses `--print` with streamin
 JSON stdin/stdout so later messages stay in one CLI process. Armada never reads
 the CLI's subscription credentials.
 
-`worker.launch({ticket, branch, brief})` selects the first matching label route
+`worker.launch({ticket, branch?, brief?})` selects the first matching label route
 or `defaultRoute`, and `placement.workers` selects the node kind from the same
 boot registry. Natural-language `when` routes require their one-based `rule`
 number and a `reason`. Missing providers, missing label evidence, closed tickets,
-active generations and the configured worker cap refuse before launching.
-`worker.message({ticket, message})` and `worker.stop({ticket, reason})` pin the
-current generation; stopped or released worktrees are retained. The optional
-node `dispose` operation refuses active or dirty workspaces.
+active generations, missing ready labels, parked tickets, open blockers and the configured worker cap refuse before launching. Unconfigured projects use `node.local` (the `node-local` plugin) and `runtime.claude` with the CLI’s default model; explicit unavailable providers and a null default route refuse. The tracker supplies the suggested branch and full ticket/parent/comment/blocker evidence for the host-built brief; optional `brief` adds coordinator notes. Plans require approval unless `policy.plans` or the ticket’s plan-approved label permits them; needs-plan-approval wins (or the configured `approvalLabel`).
+`worker.message({ticket, session?, message})`, `worker.relaunch({ticket, session?, reason})`
+and `worker.stop({ticket, session?, reason})` pin the current generation when admitted;
+include the inspected `session` to refuse a target changed since inspection. Relaunch
+preflights before stopping, releases only that old generation, and reuses its branch
+and workspace (including uncommitted files and the existing PR). Native message/stop
+intents also retain their admitted generation, so a retry cannot act on a replacement.
+Stop waits for the CLI to exit and asks the node to dispose; dirty or unpushed work
+is retained, reported as `disposed: false`. The public `Workers.stop(ref, reason,
+beforeWrite)` supplies the same path to merge execution with a full `WorkerRef`;
+a merged ticket remains merged after cleanup.
 
 The daemon binds a mode-0600 socket in a fresh private temporary directory for each instance and issues each
 launch an in-memory, per-ticket/generation token. The CLI receives only
@@ -314,8 +321,18 @@ fallback. Worker release revokes the capability; coordinator stop also waits for
 the process to exit. Token values and message bodies never enter launch/delivery
 receipts; known capability values are masked in reports and observations.
 
-Launch intents and keyed tool receipts live in the shared event log under the
-reserved `armada.worker` checkpoint format. `session.runtime-observed` records
+Production launch/relaunch requires a new successful tracker checkpoint from the host's
+bounded refresh before evaluating preflight; a timeout or failure refuses, including
+when an older timestamp happens to equal this call's clock. Committed action receipts
+replay before refreshing. Embedders supply the same bounded `Workers` refresh hook;
+synthetic/offline hosts can intentionally omit it.
+
+Launch intents, progress, and keyed tool receipts live in the shared event log under
+the reserved `armada.worker` checkpoint format. `launch-intent` (preparing) and
+`launch` (starting/launched) records fold into the same sessions the room rail and
+session page read; their reasons name the launch step. A launch reserves its generation
+and capacity before preparing. `session.claimed` is appended separately, once the
+worker actually claims over its socket. Old claims cannot resurrect a released launch. `session.runtime-observed` records
 process state and optional working/idle activity only when either changes. A
 one-second daemon poll feeds these observations; fleet reads stay read-only.
 After a daemon crash, sessions and intents remain, but processes and capabilities
@@ -378,6 +395,13 @@ fields/defaults, and credential writes validate it before saving a key. Legacy
 `gpt-4.1-mini` unless configured otherwise; older apps retain their `openai` wire
 identity while key rotation preserves the saved endpoint/model.
 
+Protocol minor 5 (THE-2043) carries `plans`, `approvalLabel` and `preApprovedLabel`
+in folded policy. Older same-major clients keep the earlier policy shape in both
+initial and live subscription snapshots, so their strict Rules view stays readable;
+the daemon and current clients retain the full policy. The shared per-project fold
+is never altered by a legacy client's projection. V1 import rejects approval and
+pre-approval labels that normalize alike, including collisions with omitted defaults.
+
 ### Coordinator merges (THE-2044)
 
 `merge.check {pr}` reads fresh inspection from the configured forge plugin and
@@ -401,6 +425,5 @@ The shared worker.stop dispatch handles stop/disposal. A missing stop adapter
 leaves an explicit cleanup-pending result. A replacement generation fences old
 cleanup. No merge effects run from a reader or a background timer.
 
-The pre-existing worker service stops and releases but does not yet dispose the
-worktree; THE-2043 owns adding disposal there. Until it lands, a merge result's
-`cleanup` records the actual worker.stop result without claiming disposal.
+The shared worker service now stops and disposes clean workspaces, retaining dirty
+or unpushed work. A merge result’s `cleanup.disposed` says whether disposal happened.

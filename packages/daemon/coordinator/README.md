@@ -50,7 +50,8 @@ checklist again under its merge lease, against fresh base/head evidence.
 `{labels, cli: claude|codex|opencode, model, effort?}` or `{when, cli, model, effort?}`,
 where `when` describes a kind of work for the coordinator to judge. `defaultRoute`
 is an optional CLI/model/effort fallback (null clears it). Placement selects `local`
-or `vm` separately for workers and coordinator. Policy uses `silenceMinutes`,
+or `vm` separately for workers and coordinator. Policy uses `plans` (`approve` or `pre-approved`), optional `approvalLabel` and
+`preApprovedLabel` (defaults `needs-plan-approval` and `plan-approved`), `silenceMinutes`,
 `quietMinutes` (finite positive numbers) and nullable `maxWorkers` (a positive
 safe integer or no cap); policy patches retain omitted numbers. A reason is mandatory.
 
@@ -60,7 +61,7 @@ The protocol owns the rule schemas; the native tool derives its JSON Schema
 from that definition and the app reads it directly. The shared fold projects
 them into `ProjectTables.rules`, sent live with each
 project's snapshot. Revision 0 and an empty value mean no rules have been set;
-unset policy numbers and placement do not imply operational defaults. Existing
+unset policy numbers leave worker capacity uncapped; worker execution defaults to local placement and Claude when no defaultRoute is set. A null defaultRoute refuses launch. Existing
 v1 checkpoints replay unchanged. Pi storage ignores this format. The event log,
 owned by the app's daemon independently of repository files, is the only authority;
 plugin switches continue to use the separate app configuration file.
@@ -73,7 +74,7 @@ only its reference and normalized rules enter the durable conversation and log.
 Do not paste file contents into chat. The import reads `conductor.routing` in file
 order, profile `when` descriptions after label routes, the default profile, and
 `policy.silence_minutes` (or its old `silent_after_minutes` alias), `quiet_minutes`
-and `max_workers`, including V1 defaults (15, 45, no cap). Only those fields are
+and `max_workers`, as well as explicit `plans`, `approval_label` and `pre_approved_label`, including V1 defaults (15, 45, no cap). Only those fields are
 read; tracker/forge/secrets and other V1 tables are not imported.
 Malformed input, unknown profiles, unsupported CLI agents, fast mode, or herdr
 routing refuse atomically instead of losing intent. Runtime wrappers such as
@@ -88,6 +89,9 @@ coordinator new intent through its chat; the app never reads armada.toml directl
 Model catalog validation and placement execution belong to the launch implementation;
 storing intent does not claim a provider or VM is available.
 
-All four `worker.*` actions and `merge.run` return `not_available_yet` with the
-message `not available yet`, naming Spec 3 or 4 as the next step. They write
-nothing. No native tool shells out or imports V1 core.
+With the host’s `Workers` service, all four `worker.*` actions use the loaded node
+and runtime registry; see the daemon README’s Local worker plugins contract.
+Launch/relaunch requires a successful new tracker reading before preflight and builds
+a ticket-derived brief with pinned CLI install/exec fallback and the worker skill. Worker refusals expose safe rule messages; arbitrary provider errors remain
+fixed credential-free diagnostics. Missing worker or merge services return `not_available_yet`, naming the missing capability;
+configured merge tools use the shared worker stop/disposal path after confirmation. No native tool imports V1 core.

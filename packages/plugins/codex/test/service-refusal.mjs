@@ -74,7 +74,7 @@ const store = new EventStore(":memory:");
 const at = "2030-01-01T00:00:00.000Z";
 const project = "sample";
 const append = (kind, payload) => store.append({ project, kind, payload, at, actor: "coordinator" });
-append("ticket.seen", { id: "EX-1", title: "Example", labels: [], status: "unstarted" });
+append("ticket.seen", { id: "EX-1", title: "Example", labels: ["ready-for-agent"], blockers: [], status: "unstarted" });
 append("coordinator.checkpoint", {
   checkpoint: {
     format: "armada.tools",

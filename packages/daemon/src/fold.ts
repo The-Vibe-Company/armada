@@ -13,6 +13,7 @@ import type {
   Ticket,
   Validation,
 } from "@armada/protocol";
+import { workerLaunchCheckpointSchema } from "@armada/protocol";
 import { z } from "zod";
 import { checkpointRules, emptyRules, type RulesState } from "../coordinator/rules.ts";
 import { flowStep, pipelineStep } from "./rules.ts";
@@ -39,6 +40,7 @@ interface Draft extends SessionRef {
   heartbeat: string | null;
   earlier: Phase[];
   claimSeq?: number;
+  launchSeq?: number;
   stage?: ShippingStage;
 }
 const readerCheckpoint = z.object({
@@ -140,7 +142,10 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
         // Caller-assigned generations fence even previously unseen delayed claims.
         if (
           !p.claims.has(e.payload.session) &&
-          e.payload.generation > (p.sessions.get(e.payload.ticket)?.generation ?? 0)
+          (e.payload.generation > (p.sessions.get(e.payload.ticket)?.generation ?? 0) ||
+            (p.sessions.get(e.payload.ticket)?.session === e.payload.session &&
+              p.sessions.get(e.payload.ticket)?.claimSeq === undefined &&
+              !["released", "merged"].includes(p.sessions.get(e.payload.ticket)?.phase ?? "released")))
         )
           p.sessions.set(e.payload.ticket, {
             ...e.payload,
@@ -236,6 +241,43 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
         break;
       }
       case "coordinator.checkpoint": {
+        // THE-2043: launch and claim are distinct; launch progress uses the existing worker checkpoint format.
+        const checkpoint = e.payload.checkpoint;
+        const launch =
+          checkpoint &&
+          typeof checkpoint === "object" &&
+          !Array.isArray(checkpoint) &&
+          checkpoint.format === "armada.worker"
+            ? workerLaunchCheckpointSchema.safeParse(checkpoint)
+            : null;
+        if (launch?.success) {
+          const l = launch.data;
+          const current = p.sessions.get(l.ticket);
+          if (
+            (!current ||
+              l.generation > current.generation ||
+              (current.session === l.session && !["released", "merged"].includes(current.phase))) &&
+            !p.claims.has(l.session)
+          )
+            p.sessions.set(l.ticket, {
+              ticket: l.ticket,
+              launchSeq: current?.session === l.session ? current.launchSeq : e.seq,
+              session: l.session,
+              generation: l.generation,
+              runtime: l.runtime,
+              handle: l.handle ?? "",
+              owner: e.actor,
+              phase: "planning",
+              at: e.at,
+              heartbeat: null,
+              earlier: [],
+              reason: {
+                preparing: "Preparing workspace",
+                starting: "Starting worker CLI",
+                launched: "Launched; waiting for worker claim",
+              }[l.step],
+            });
+        }
         const reading = readerCheckpoint.safeParse(e.payload.checkpoint);
         if (reading.success && Number.isFinite(Date.parse(e.at))) p.readAt[reading.data.provider] = e.at;
         const rules = checkpointRules(e.payload.checkpoint);
@@ -254,7 +296,11 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
           pr.ticket === s.ticket &&
           pr.state !== "closed" &&
           // Re-observing an old merge cannot end a later worker generation.
-          !(pr.state === "merged" && s.claimSeq !== undefined && (p.mergedAt.get(pr.number)?.seq ?? 0) < s.claimSeq),
+          !(
+            pr.state === "merged" &&
+            (s.claimSeq ?? s.launchSeq) !== undefined &&
+            (p.mergedAt.get(pr.number)?.seq ?? 0) < (s.claimSeq ?? s.launchSeq ?? 0)
+          ),
       );
       const validation = [...p.validations.values()].find(
         (v) => v.ticket === s.ticket && v.session === s.session && !v.decision,

@@ -168,7 +168,7 @@ for (const [kind, create] of [
         const observed = JSON.parse(result.stdout);
         expect(observed.remaining).toEqual([]);
         expect(observed.receipts).toMatchObject([{ key: "refused", result: { ok: false, code: "launch_failed" } }]);
-        expect(observed.released).toBe(mode === "ordinary");
+        expect(observed.released).toBe(true); // Even a refused startup now has a separately recorded launch generation.
         expect(observed.active).toBe(0);
         expect(observed.retry).toBe(true);
       }, 15_000);

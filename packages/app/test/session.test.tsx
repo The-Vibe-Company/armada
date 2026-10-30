@@ -94,8 +94,8 @@ function log(): EventInput[] {
   ];
 }
 
-function render(ticket: string, tab: "reports" | "files" = "reports") {
-  const events = log().map((e, i) => ({ ...e, seq: i + 1 }));
+function render(ticket: string, tab: "reports" | "files" = "reports", inputs: EventInput[] = log()) {
+  const events = inputs.map((e, i) => ({ ...e, seq: i + 1 }));
   const tables = fold(events);
   let socket: SocketLike | null = null;
   const client = createDaemonClient({
@@ -274,4 +274,50 @@ test("the session's address: its ticket, and the files tab in the query", () => 
   expect(parseSessionRoute("#/sessions/%E0")).toBeNull();
   expect(parseSessionRoute("#/projects/harbor")).toBeNull();
   expect(parseSessionRoute("")).toBeNull();
+});
+
+test("the session retains launch steps and branch after the worker claims", () => {
+  const inputs: EventInput[] = [
+    {
+      project: "harbor",
+      kind: "ticket.seen",
+      at: AT,
+      actor: "tracker",
+      payload: { id: "HAR-99", title: "Launch the pilot", status: "unstarted" },
+    },
+  ];
+  for (const step of ["preparing", "starting", "launched"] as const)
+    inputs.push({
+      project: "harbor",
+      kind: "coordinator.checkpoint",
+      at: AT,
+      actor: "coordinator",
+      payload: {
+        checkpoint: {
+          format: "armada.worker",
+          version: 1,
+          type: step === "preparing" ? "launch-intent" : "launch",
+          ticket: "HAR-99",
+          session: "new",
+          generation: 1,
+          runtime: "claude",
+          branch: "worker/har-99",
+          step,
+        },
+      },
+    });
+  expect(words(card(render("HAR-99", "reports", inputs)))).toContain("Launched; waiting for worker claim");
+  inputs.push({
+    project: "harbor",
+    kind: "session.claimed",
+    at: LATER,
+    actor: "worker",
+    payload: { ticket: "HAR-99", session: "new", generation: 1, owner: "default", runtime: "claude", handle: "cli" },
+  });
+  const page = words(render("HAR-99", "reports", inputs));
+  expect(page).toContain("Preparing workspace");
+  expect(page).toContain("Starting worker CLI");
+  expect(page).toContain("Launched on claude");
+  expect(page).toContain("worker/har-99");
+  expect(page).toContain("Claimed on claude");
 });

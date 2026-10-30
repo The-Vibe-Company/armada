@@ -371,6 +371,24 @@ test("session history includes only the requested session and not-found does not
   assert.equal(event.kind, "session.claimed");
   if (event.kind !== "session.claimed") throw new Error("Expected claim");
   store.append({ ...event, payload: { ...event.payload, session: "s2", generation: 2 } });
+  const launched = store.append({
+    project: "orchard",
+    kind: "coordinator.checkpoint",
+    at: event.at,
+    actor: "coordinator",
+    payload: {
+      checkpoint: {
+        format: "armada.worker",
+        version: 1,
+        type: "launch",
+        ticket: "ORC-1",
+        session: "s1",
+        generation: 1,
+        runtime: "codex",
+        step: "launched",
+      },
+    },
+  });
   const server = await startServer({ store, projects });
   t.after(async () => {
     await server.close();
@@ -384,8 +402,8 @@ test("session history includes only the requested session and not-found does not
     id: "r1",
     project: "orchard",
     sessionId: "s1",
-    seq: 2,
-    events: [event],
+    seq: 3,
+    events: [event, launched],
   });
   for (const request of [
     { type: "session.read", project: "orchard", sessionId: "missing" },
@@ -582,8 +600,8 @@ test("credential socket writes never expose the key to replies, events or logs",
 });
 
 // Recorded before the vocabulary migration; the rules slice is an intentional additive extension.
-// Only the random subscription UUID is normalized; the frames' wire version moved from 1.1 to 1.2
-// with THE-2019's additive plugin messages.
+// Only the random subscription UUID is normalized; THE-2043 intentionally advances
+// the recorded envelope to minor 5 for per-client plan-policy snapshot projection.
 test("subscription bytes stay compatible with the recorded daemon vocabulary and folded tables", async (t) => {
   const fixture = new URL("./support/protocol-subscription.json", import.meta.url);
   const inputs = JSON.parse(readFileSync(fixture, "utf8")) as { history: EventInput[]; live: EventInput[] };
@@ -612,4 +630,54 @@ test("subscription bytes stay compatible with the recorded daemon vocabulary and
   frames.push((await client.nextRaw()).replaceAll(replayId, "<subscription>"));
   const recording = new URL("./support/protocol-subscription.ndjson", import.meta.url);
   assert.equal(`${frames.join("\n")}\n`, readFileSync(recording, "utf8"));
+});
+
+test("minor-4 clients retain readable legacy Rules in initial and live snapshots beside current clients", async (t) => {
+  const store = new EventStore(":memory:");
+  const gates = { requiredChecks: ["test"], localCommands: [] };
+  const policy = { maxWorkers: 2, plans: "pre-approved", approvalLabel: "Review", preApprovedLabel: "Proceed" };
+  const rules = (revision: number, maxWorkers = 2, withPolicy = true) =>
+    store.append({
+      project: "orchard",
+      at: hold().at,
+      actor: "coordinator",
+      kind: "coordinator.checkpoint",
+      payload: {
+        checkpoint: {
+          format: "armada.tools",
+          version: 1,
+          type: "rules",
+          reason: "Plan rules",
+          rules: { revision, value: { gates, ...(withPolicy ? { policy: { ...policy, maxWorkers } } : {}) } },
+        },
+      },
+    });
+  rules(1);
+  const server = await startServer({ store, projects });
+  // Legacy first exercises the shared fold cache before the current client's frame.
+  const legacy = await connect(server.wsUrl);
+  const modern = await connect(server.wsUrl);
+  t.after(async () => {
+    modern.ws.terminate();
+    legacy.ws.terminate();
+    await server.close();
+    store.close();
+  });
+  const rulesValue = (frame: ServerMessage) => {
+    assert(frame.type === "project.subscribed" || frame.type === "events");
+    assert(frame.snapshot);
+    return (frame.snapshot.state as unknown as { rules: { value: Record<string, unknown> } }).rules.value;
+  };
+  modern.send({ type: "project.subscribe", project: "orchard", after: 0 });
+  assert.deepEqual(rulesValue(await modern.next()), { gates, policy });
+  await modern.next();
+  legacy.send({ type: "project.subscribe", version: { major: version.major, minor: 4 }, project: "orchard", after: 0 });
+  assert.deepEqual(rulesValue(await legacy.next()), { policy: { maxWorkers: 2 } });
+  await legacy.next();
+  rules(2, 3);
+  assert.deepEqual(rulesValue(await modern.next()), { gates, policy: { ...policy, maxWorkers: 3 } });
+  assert.deepEqual(rulesValue(await legacy.next()), { policy: { maxWorkers: 3 } });
+  rules(3, 3, false);
+  assert.deepEqual(rulesValue(await modern.next()), { gates });
+  assert.deepEqual(rulesValue(await legacy.next()), {});
 });

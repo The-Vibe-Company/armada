@@ -55,6 +55,15 @@ export function trackerChanges(project: string, history: readonly FleetEvent[], 
     const ticket: Ticket = {
       id: source.id,
       title: source.title,
+      description: source.description ?? "",
+      url: source.url,
+      ...(typeof source.branchName === "string" ? { branchName: source.branchName } : {}),
+      parent: source.parent,
+      ...(source.blockers ? { blockers: source.blockers } : {}),
+      comments: comments
+        .slice(-12)
+        .reverse()
+        .map((c) => ({ body: c.body, author: c.author, at: c.updatedAt })),
       labels: source.labels,
       status: source.status,
       phase,

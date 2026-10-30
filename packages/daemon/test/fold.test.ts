@@ -194,7 +194,7 @@ test("a late old claim cannot replace a higher generation even when it was never
   );
 });
 
-test("a merged PR completes its session, but cannot complete a later claim of the same ticket", () => {
+test("a merged PR completes its session, but cannot complete a later launch or claim of the same ticket", () => {
   const events: EventInput[] = [
     {
       project: "orchard",
@@ -227,6 +227,26 @@ test("a merged PR completes its session, but cannot complete a later claim of th
   ];
   const reading = () => fold(events.map((e, i) => ({ ...e, seq: i + 1 }))).projects.orchard;
   assert.equal(reading()?.sessions[0]?.state, "merged");
+  events.push({
+    project: "orchard",
+    kind: "coordinator.checkpoint",
+    at,
+    actor: "coordinator",
+    payload: {
+      checkpoint: {
+        format: "armada.worker",
+        version: 1,
+        type: "launch-intent",
+        ticket: "SEED-1",
+        session: "new",
+        generation: 2,
+        runtime: "codex",
+        step: "preparing",
+      },
+    },
+  });
+  assert.equal(reading()?.sessions[0]?.state, "in-progress");
+  assert.equal(reading()?.sessions[0]?.reason, "Preparing workspace");
   events.push({
     project: "orchard",
     kind: "session.claimed",

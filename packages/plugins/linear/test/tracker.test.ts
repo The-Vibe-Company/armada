@@ -16,6 +16,9 @@ const issue = (id: string, phase: string | null = null) => ({
   id: `uuid-${id}`,
   identifier: id,
   title: `Grow ${id}`,
+  description: `Full requirements for ${id}`,
+  branchName: `worker/${id.toLowerCase()}`,
+  inverseRelations: page<{ type: string; issue: { identifier: string; state: { type: string } } }>([]),
   url: `https://linear.example/issue/${id}`,
   updatedAt: t0,
   state: { type: phase ? "started" : "backlog" },
@@ -231,17 +234,41 @@ test("full and incremental reads paginate nested connections and discover a new 
     ...issue("SEED-2"),
     labels: page([{ name: "API", parent: null }], "labels-1"),
     attachments: page([{ title: "Sketch", url: "https://example.test/sketch" }], "attachments-1"),
+    inverseRelations: page(
+      [{ type: "blocks", issue: { identifier: "SEED-8", state: { type: "started" } } }],
+      "relations-1",
+    ),
   };
   const newIssue = { ...issue("SEED-3", "planning"), parent: { identifier: "SEED-2" } };
   const descendant = { ...issue("SEED-4"), parent: { identifier: "SEED-3" } };
   const source = recorded({
-    Root: [{ issue: issue("SEED-1") }],
+    Root: [
+      { issue: issue("SEED-1") },
+      {
+        issue: {
+          ...child,
+          inverseRelations: page([
+            { type: "blocks", issue: { identifier: "SEED-8", state: { type: "started" } } },
+            { type: "blocks", issue: { identifier: "SEED-9", state: { type: "completed" } } },
+          ]),
+          labels: page([]),
+          attachments: page([]),
+        },
+      },
+    ],
     Children: [
       { issues: page([], "child-page") },
       { issues: page([child]) },
       { issues: page([]) },
       { issues: page([descendant]) },
       { issues: page([]) },
+    ],
+    MoreinverseRelations: [
+      {
+        issue: {
+          inverseRelations: page([{ type: "blocks", issue: { identifier: "SEED-9", state: { type: "completed" } } }]),
+        },
+      },
     ],
     Morelabels: [{ issue: { labels: page([{ name: "Shipping", parent: { name: "Fleet phase" } }]) } }],
     Moreattachments: [{ issue: { attachments: page([{ title: "Design", url: "https://example.test/design" }]) } }],
@@ -281,6 +308,28 @@ test("full and incremental reads paginate nested connections and discover a new 
   const previous = await tracker.read({ signal: new AbortController().signal });
   assert.equal(previous.tickets[1]?.phase, "shipping");
   assert.equal(previous.tickets[1]?.attachments.length, 2);
+  const store = new EventStore(":memory:");
+  const poller = new TrackerPoller({
+    project: "orchard",
+    store,
+    tracker: { read: async () => previous },
+    clock: clock(),
+  });
+  try {
+    await poller.readNow();
+    const child = fold(store.readSince(0)).projects.orchard!.tickets.find((t) => t.id === "SEED-2")!;
+    assert.equal(child.description, "Full requirements for SEED-2");
+    assert.equal(child.branchName, "worker/seed-2");
+    assert.equal(child.parent, "SEED-1");
+    assert.deepEqual(child.blockers, [
+      { id: "SEED-8", status: "started" },
+      { id: "SEED-9", status: "completed" },
+    ]);
+    assert.equal(child.comments?.[0]?.body, "A plain comment");
+  } finally {
+    poller.stop();
+    store.close();
+  }
   assert.deepEqual(
     previous.comments.map((comment) => comment.id),
     ["a", "b"],
@@ -483,4 +532,30 @@ test("periodic full reads retire tickets that left scope without changing local 
     poller.stop();
     store.close();
   }
+});
+
+test("an incremental read refreshes blocker-bearing tickets even when only an external blocker's status changed", async () => {
+  const relation = (status: string) =>
+    page([{ type: "blocks", issue: { identifier: "OUT-1", state: { type: status } } }]);
+  const child = { ...issue("SEED-2"), inverseRelations: relation("completed") };
+  const responses = initial();
+  responses.Children[0] = { issues: page([child]) };
+  const source = recorded({
+    ...responses,
+    Root: [{ issue: issue("SEED-1") }, { issue: { ...child, inverseRelations: relation("started") } }],
+    Changed: [{ issues: page([]) }],
+    ChangedComments: [{ comments: page([]) }],
+  });
+  const tracker = linearTracker({
+    project: "orchard",
+    rootId: "SEED-1",
+    phaseGroup: "Fleet phase",
+    secrets: async () => "fake-key",
+    fetch: source.fetch,
+    now: () => new Date(t0),
+  });
+  const previous = await tracker.read({ signal: new AbortController().signal });
+  assert.deepEqual(previous.tickets[1]?.blockers, [{ id: "OUT-1", status: "completed" }]);
+  const next = await tracker.read({ previous, signal: new AbortController().signal });
+  assert.deepEqual(next.tickets[1]?.blockers, [{ id: "OUT-1", status: "started" }]);
 });

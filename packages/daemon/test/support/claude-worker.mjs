@@ -11,7 +11,8 @@ input.on("line", (line) => {
     held = false;
   }
   emit({ type: "assistant", message: { content: [{ type: "text", text: "working" }] } });
-  if (content === "hold") held = true;
+  const hold = content === "hold" || content.startsWith("# SEED-");
+  if (hold) held = true;
   if (content === "auth-error") emit({ type: "result", is_error: true, errors: ["Authentication unavailable"] });
-  else if (content !== "hold") emit({ type: "result", result: `reply:${content}` });
+  else if (!hold) emit({ type: "result", result: `reply:${content}` });
 });
