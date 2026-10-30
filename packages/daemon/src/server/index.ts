@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import {
   admitRequest,
   CHAT_LIVE_MINOR,
+  CHAT_WAKE_MINOR,
   eventSchema,
   type ModelKindEntry,
   type Project,
@@ -147,17 +148,21 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
 
   /** Older same-major clients use a strict policy reader; preserve their existing Rules view. */
   function snapshotFor(snapshot: Snapshot, minor: number): Snapshot {
-    if (minor >= RULES_SCHEMA_MINOR) return snapshot;
+    if (minor >= CHAT_WAKE_MINOR) return snapshot;
     const state = snapshot.state as unknown as ProjectTables;
     const rules = state.rules;
     if (!rules) return snapshot;
     const value = { ...rules.value };
-    delete value.gates;
+    if (minor < RULES_SCHEMA_MINOR) delete value.gates;
     if (value.policy) {
       const policy = { ...value.policy };
-      delete policy.plans;
-      delete policy.approvalLabel;
-      delete policy.preApprovedLabel;
+      delete policy.coordinatorMinutes;
+      delete policy.notStartedMinutes;
+      if (minor < RULES_SCHEMA_MINOR) {
+        delete policy.plans;
+        delete policy.approvalLabel;
+        delete policy.preApprovedLabel;
+      }
       value.policy = policy;
     }
     // Detach only the legacy projection; never mutate the full snapshot shared with current clients.
@@ -336,7 +341,8 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
             return error(ws, request.id, "invalid-message", "Replay cursor is ahead of the daemon log");
           const previous = subscriptions.get(request.project);
           const subscription: Subscription = { id: randomUUID(), after: request.after, minor: request.version.minor };
-          if (subscription.minor >= CHAT_LIVE_MINOR) subscription.chat = previous?.chat;
+          if (subscription.minor >= CHAT_LIVE_MINOR && previous?.minor === subscription.minor)
+            subscription.chat = previous.chat;
           else previous?.chat?.();
           const snapshot =
             request.after === 0 ? snapshotFor(snapshotOf(request.project), request.version.minor) : undefined;
@@ -352,7 +358,12 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           batch(ws, request.project, subscription, snapshot ? null : new Map());
           const coordinator = coordinators.get(request.project);
           if (coordinator && subscription.minor >= CHAT_LIVE_MINOR && !subscription.chat)
-            subscription.chat = chat.subscribe(request.project, coordinator.conversation, (frame) => send(ws, frame));
+            subscription.chat = chat.subscribe(request.project, coordinator.conversation, (frame) => {
+              if (subscription.minor < CHAT_WAKE_MINOR && frame.type === "chat.tool") {
+                const { progress: _, ...legacy } = frame;
+                send(ws, legacy);
+              } else send(ws, frame);
+            });
           return;
         }
         const seq = store.sequence;

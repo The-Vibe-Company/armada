@@ -8,6 +8,8 @@ import { type ChatItem, type ServerMessage, serverMessageSchema, PROTOCOL_VERSIO
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { defineTool } from "@earendil-works/pi-durable";
+import { Type } from "typebox";
 import { WebSocket } from "ws";
 import type { EventInput } from "../src/events.ts";
 import { fold } from "../src/fold.ts";
@@ -353,3 +355,143 @@ test("a message sent while the coordinator works steers it by default, and waits
     ["steer", "followUp"],
   );
 });
+
+for (const ownerSteers of [false, true]) {
+  test(`a worker hand-back wakes merge.check without typing; ${ownerSteers ? "the owner steers its running turn" : "a silent finish leaves only the wake and work"}`, {
+    timeout: 5000,
+  }, async (t) => {
+    const store = new EventStore(":memory:");
+    clock = NOW;
+    let fireBatch: (() => void) | undefined;
+    let toolStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      toolStarted = resolve;
+    });
+    let finishTool!: () => void;
+    const finish = new Promise<void>((resolve) => {
+      finishTool = resolve;
+    });
+    const { config } = coordinator([
+      (transcript) => {
+        assert.match(JSON.stringify(transcript.messages), /Fleet wake-up:.*|hand-back ORC-1 #12/s);
+        return fauxAssistantMessage([fauxToolCall("merge.check", { pr: 12 }, { id: "check-12" })], {
+          stopReason: "toolUse",
+          timestamp: clock,
+        });
+      },
+      (transcript) => {
+        if (ownerSteers) assert.match(JSON.stringify(transcript.messages), /Prioritize the north orchard/);
+        return fauxAssistantMessage(
+          ownerSteers ? "North orchard first." : [{ type: "thinking", thinking: "Nothing else needs doing." }],
+          { timestamp: clock },
+        );
+      },
+    ]);
+    const server = await startServer({
+      store,
+      projects,
+      coordinators: [
+        {
+          ...config,
+          wakeClock: {
+            now: () => clock,
+            setTimer(callback, delay) {
+              if (delay === 10_000) fireBatch = callback;
+              return () => {
+                if (fireBatch === callback) fireBatch = undefined;
+              };
+            },
+          },
+          tools: {
+            "merge.check": defineTool({
+              name: "merge.check",
+              description: "Check one synthetic hand-back",
+              parameters: Type.Object({ pr: Type.Number() }),
+              replay: "safe",
+              async execute(args, api) {
+                assert.equal(args.pr, 12);
+                await api.details({ step: "checking" }, context);
+                toolStarted();
+                await finish;
+                return { output: [{ type: "text", text: '{"ok":true}' }] };
+              },
+            }),
+          },
+        },
+      ],
+    });
+    const client = await connect(server.wsUrl);
+    t.after(async () => {
+      finishTool();
+      client.ws.terminate();
+      await server.close();
+      store.close();
+    });
+    const head = "a".repeat(40);
+    store.append(
+      seed("session.claimed", {
+        ticket: "ORC-1",
+        session: "s1",
+        generation: 1,
+        owner: "coordinator",
+        runtime: "codex",
+        handle: "h",
+      }),
+    );
+    store.append(
+      seed("pull-request.seen", {
+        number: 12,
+        ticket: "ORC-1",
+        head,
+        state: "open",
+        ci: "success",
+        conflicting: false,
+      }),
+    );
+    store.append(
+      seed("inbox.opened", {
+        id: "worker-back",
+        ticket: "ORC-1",
+        kind: "hand-back",
+        body: `Agent status: ready-to-merge — PR #12, head ${head}`,
+      }),
+    );
+    assert.ok(fireBatch);
+    clock += 10_000;
+    fireBatch();
+    await started;
+    const running = await client.ask({ type: "chat.read", project: "orchard" });
+    assert.ok(running.type === "chat.result");
+    assert.match(running.items.find((i) => i.kind === "wake")?.body ?? "", /Woke:.*hand-back ORC-1 #12 at aaaaaaaa/);
+    assert.equal(running.items.find((i) => i.kind === "tool")?.progress, "checking");
+    assert.equal(
+      running.items.some((i) => i.kind === "owner"),
+      false,
+    );
+    const legacy = await client.ask({ type: "chat.read", project: "orchard", version: { major: 1, minor: 10 } });
+    assert.ok(legacy.type === "chat.result");
+    assert.equal(
+      legacy.items.some((i) => i.kind === "wake" || (i.kind === "tool" && i.progress)),
+      false,
+    );
+    if (ownerSteers) {
+      const sent = await client.ask({
+        type: "chat.send",
+        project: "orchard",
+        requestId: "owner-priority",
+        body: "Prioritize the north orchard",
+      });
+      assert.equal(sent.type, "chat.sent");
+    }
+    finishTool();
+    await server.coordinators.get("orchard")!.harness.waitForIdle(context);
+    const read = await client.ask({ type: "chat.read", project: "orchard" });
+    assert.ok(read.type === "chat.result");
+    assert.equal(read.items.filter((i) => i.kind === "wake").length, 1);
+    assert.deepEqual(
+      read.items.filter((i) => i.kind !== "wake" && i.kind !== "tool").map((i) => i.kind),
+      ownerSteers ? ["owner", "coordinator"] : [],
+    );
+    assert.equal(read.items.find((i) => i.kind === "tool")?.output, '{"ok":true}');
+  });
+}

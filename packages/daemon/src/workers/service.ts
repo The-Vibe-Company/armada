@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { NodeProvider, RuntimeProvider, WorkerObservation, WorkerRef, Workspace } from "@armada/plugin-api";
 import { guarded } from "@armada/plugin-api/guard";
-import { activePhaseSchema } from "@armada/protocol";
+import { activePhaseSchema, type ToolProgress } from "@armada/protocol";
 import { z } from "zod";
 import type { EventInput, Json } from "../events.ts";
 import { fold } from "../fold.ts";
@@ -144,6 +144,7 @@ export class Workers {
     args: unknown,
     key: string,
     beforeWrite: () => void,
+    progress: (step: ToolProgress) => Promise<void> = async () => {},
   ): Promise<Record<string, Json>> {
     const parsed = workerToolSchemas[name].parse(args);
     return this.#serial(project, async () => {
@@ -188,7 +189,7 @@ export class Workers {
       let result: Record<string, Json>;
       if (name === "worker.launch") {
         const launch = workerToolSchemas["worker.launch"].parse(parsed);
-        result = await this.#launch(project, launch, key, input, beforeWrite);
+        result = await this.#launch(project, launch, key, input, beforeWrite, undefined, progress);
       } else {
         const action = parsed as { ticket: string; session?: string };
         const row = this.#row(project, action.ticket, name !== "worker.message");
@@ -300,7 +301,9 @@ export class Workers {
     input: string,
     beforeWrite: () => void,
     resume?: LiveWorker,
+    progress: (step: ToolProgress) => Promise<void> = async () => {},
   ) {
+    await progress("preparing");
     const { config, tables, ticket, route, nodeKind, max, bound, node, branch } = this.#launchFacts(project, args);
     const generation =
       Math.max(0, ...tables.sessions.filter((s) => s.ticket === args.ticket).map((s) => s.generation)) + 1;
@@ -391,6 +394,7 @@ export class Workers {
       step: "starting",
     });
     let enteredProvider = false;
+    await progress("starting");
     let ref: WorkerRef;
     try {
       ref = await guarded(worker, checkLaunch, () => {
@@ -458,6 +462,7 @@ export class Workers {
           },
         },
       });
+      await progress("briefing");
       await this.#deliver(
         row,
         workerBrief({
@@ -494,6 +499,7 @@ export class Workers {
       this.#checkpoint(project, { type: "receipt", key, input, result: { ok: false, code: "launch_failed" } });
       throw error;
     }
+    await progress("launched");
     return {
       ok: true,
       ticket: args.ticket,

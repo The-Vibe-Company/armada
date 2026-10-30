@@ -241,6 +241,7 @@ test("what a turn wrote: the newest answer or line said since it began, never a 
     "HAR-15 is blocked: #41 is red.",
   );
   expect(answerOf([], at(0))).toBeNull();
+  expect(answerOf([{ kind: "wake", id: "wake-1", at: at(12), body: "Woke: question HAR-15" }], at(11))).toBeNull();
 });
 
 test("the first line: markdown's marks left out, cut at 120 characters", () => {

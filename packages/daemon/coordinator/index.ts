@@ -13,6 +13,7 @@ import type { EventStore } from "../src/store.ts";
 import { type NativeToolOptions, nativeTools } from "./native.ts";
 import { openCoordinatorStorage } from "./storage.ts";
 import { type CoordinatorTools, coordinatorTools } from "./tools.ts";
+import { type WakeClock, Waker } from "./wake.ts";
 
 export { type MergeEvidence, type NativeToolOptions, nativeTools } from "./native.ts";
 export { openCoordinatorStorage } from "./storage.ts";
@@ -36,10 +37,12 @@ export interface CoordinatorOptions {
   now?: () => number;
   setTimer?: HarnessOptions["setTimer"];
   onReport?: HarnessOptions["onReport"];
+  wakeClock?: WakeClock;
 }
 export interface ProjectCoordinator {
   harness: Harness;
   conversation: Conversation;
+  waker: Waker;
 }
 
 /** Daemon-owned lifetime: one durable root conversation and scheduler per project. */
@@ -101,7 +104,14 @@ export class Coordinators {
       if (current?.provider !== options.model.provider || current?.modelId !== options.model.modelId)
         await conversation.configure({ model: options.model }, BACKGROUND_CONTEXT);
       harness.resume();
-      return { harness, conversation };
+      const waker = new Waker({
+        store: this.#store,
+        project: options.project,
+        conversation,
+        clock: options.wakeClock,
+        now,
+      });
+      return { harness, conversation, waker };
     } catch (error) {
       if (harness) await harness.close(BACKGROUND_CONTEXT);
       else await storage.close(BACKGROUND_CONTEXT);
@@ -115,6 +125,7 @@ export class Coordinators {
     const results = await Promise.allSettled(
       [...this.#projects.values()].map(async (pending) => {
         const coordinator = await pending;
+        await coordinator.waker.close();
         await coordinator.harness.close(BACKGROUND_CONTEXT);
       }),
     );

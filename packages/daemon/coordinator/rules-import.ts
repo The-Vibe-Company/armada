@@ -83,6 +83,8 @@ export function importV1Rules(body: string): ProjectRules {
       ...(policy.pre_approved_label === undefined ? {} : { preApprovedLabel: text(policy.pre_approved_label) }),
       silenceMinutes: (policy.silence_minutes ?? policy.silent_after_minutes ?? 15) as number,
       quietMinutes: (policy.quiet_minutes ?? 45) as number,
+      ...(policy.coordinator_minutes === undefined ? {} : { coordinatorMinutes: policy.coordinator_minutes as number }),
+      ...(policy.not_started_minutes === undefined ? {} : { notStartedMinutes: policy.not_started_minutes as number }),
       maxWorkers: policy.max_workers === undefined ? null : (policy.max_workers as number),
     },
   };

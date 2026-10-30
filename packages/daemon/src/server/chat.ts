@@ -6,6 +6,7 @@
 // but `chat.send` (the coordinator's checkpoint) and `owner.answer`.
 import {
   CHAT_LIVE_MINOR,
+  CHAT_WAKE_MINOR,
   type ChatItem,
   type ChatReadRequest,
   type ChatSendRequest,
@@ -17,6 +18,7 @@ import {
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ConversationView, EntryRecord, LiveState, SubmissionDraft } from "@earendil-works/pi-durable";
 import type { ProjectCoordinator } from "../../coordinator/index.ts";
+import { WAKE_ENTRY } from "../../coordinator/wake.ts";
 import type { Json } from "../events.ts";
 import { fold } from "../fold.ts";
 import type { EventStore } from "../store.ts";
@@ -60,7 +62,7 @@ export async function dispatchChat(request: ChatRequest, options: ChatOptions): 
         const seq = options.store.sequence;
         const current = await options.live.read(project, options.coordinator?.conversation);
         const modern = request.version.minor >= CHAT_LIVE_MINOR;
-        const items = readChat(options.store, project, current.value, modern);
+        const items = readChat(options.store, project, current.value, modern, request.version.minor >= CHAT_WAKE_MINOR);
         return {
           type: "chat.result",
           version,
@@ -203,7 +205,13 @@ export function refused(output: string): boolean {
  * `coordinator.message` events. Other entries (system, compaction, resets) and
  * inputs that are not the owner's are not shown.
  */
-function readChat(store: EventStore, project: string, view: ConversationView | undefined, modern: boolean): ChatItem[] {
+function readChat(
+  store: EventStore,
+  project: string,
+  view: ConversationView | undefined,
+  modern: boolean,
+  wakes: boolean,
+): ChatItem[] {
   const items: ChatItem[] = [];
   for (const event of store.readSince(0, project))
     if (event.kind === "coordinator.message")
@@ -213,16 +221,17 @@ function readChat(store: EventStore, project: string, view: ConversationView | u
         at: event.at,
         body: event.payload.body,
       });
-  if (view) items.push(...viewChat(view, modern));
+  if (view) items.push(...viewChat(view, modern, wakes));
   // A stable sort: same-time items keep the conversation's order.
   return items.sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).slice(-CHAT_LIMIT);
 }
 
 /** pi entries, oldest first, as the room's items. */
-export function chatOf(entries: readonly EntryRecord[], modern = true): ChatItem[] {
+export function chatOf(entries: readonly EntryRecord[], modern = true, wakes = true): ChatItem[] {
   const items: ChatItem[] = [];
   const calls = new Map<string, Extract<ChatItem, { kind: "tool" }>>();
   let owner = true;
+  let wake = false;
   let last = 0;
   const assistants = new Map<number, number>();
   const at = (message: Message | undefined) => {
@@ -233,8 +242,15 @@ export function chatOf(entries: readonly EntryRecord[], modern = true): ChatItem
   for (const entry of entries) {
     const message = entry.model?.[0] as Message | undefined;
     const id = `e${entry.id}`;
-    if (entry.kind === "pi.user" || entry.kind === OWNER_ANSWER_ENTRY) {
+    if (entry.kind === WAKE_ENTRY) {
+      owner = false;
+      wake = true;
+      const time = at(message);
+      const data = entry.data as { body?: unknown } | undefined;
+      if (wakes && typeof data?.body === "string") items.push({ kind: "wake", id, at: time, body: data.body });
+    } else if (entry.kind === "pi.user" || entry.kind === OWNER_ANSWER_ENTRY) {
       owner = true;
+      wake = false;
       const data = entry.data as { ticket?: string; choice?: string; note?: string | null } | undefined;
       const body =
         entry.kind === OWNER_ANSWER_ENTRY && data?.ticket && data.choice
@@ -244,6 +260,7 @@ export function chatOf(entries: readonly EntryRecord[], modern = true): ChatItem
     } else if (message?.role === "user" && entry.kind !== "pi.compaction" && entry.kind !== "pi.reset") {
       // Another input (a notice of the fleet moving): what the coordinator says to it is its own line.
       owner = false;
+      wake = false;
       at(message);
     } else if (entry.kind === "pi.assistant" && message?.role === "assistant") {
       const time = at(message);
@@ -261,7 +278,7 @@ export function chatOf(entries: readonly EntryRecord[], modern = true): ChatItem
         : {};
       if (
         body.trim() ||
-        (modern && ((reasoning && message.stopReason !== "error") || message.stopReason === "aborted"))
+        (!wake && modern && ((reasoning && message.stopReason !== "error") || message.stopReason === "aborted"))
       )
         items.push({ kind: owner ? "coordinator" : "line", id: assistantId, at: time, body, ...metadata });
       else if (message.stopReason === "error")
@@ -311,8 +328,8 @@ export const reasoningOf = (content: unknown): string =>
     : "";
 
 /** Overlay the committed running output on its own call, shared by read and live frames. */
-export function viewChat(view: ConversationView, modern = true): ChatItem[] {
-  const items = chatOf(view.entries, modern);
+export function viewChat(view: ConversationView, modern = true, wakes = true): ChatItem[] {
+  const items = chatOf(view.entries, modern, wakes);
   if (modern) {
     const live = view.docs["pi.live"] as LiveState | undefined;
     const active = new Set<string>();
@@ -320,6 +337,15 @@ export function viewChat(view: ConversationView, modern = true): ChatItem[] {
       const call = items.findLast((i) => i.kind === "tool" && i.id.endsWith(`:${slot.callId}`));
       if (call?.kind !== "tool") continue;
       active.add(call.id);
+      const details = slot.details;
+      const step = details && typeof details === "object" && !Array.isArray(details) ? details.step : undefined;
+      if (
+        wakes &&
+        slot.status !== "done" &&
+        typeof step === "string" &&
+        ["checking", "retesting", "merging", "merged", "preparing", "starting", "briefing", "launched"].includes(step)
+      )
+        call.progress = step as NonNullable<typeof call.progress>;
       if (slot.output !== undefined && slot.status !== "done") call.output = cutOutput(slot.output);
       if (slot.status === "done" && !slot.entry) {
         call.output = "The tool did not complete.";

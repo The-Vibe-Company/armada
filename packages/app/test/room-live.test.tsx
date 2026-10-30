@@ -87,6 +87,13 @@ test("the work above an answer being written stays open; its reading folds it in
   ]);
 });
 
+test("a wake turn that finishes silently drops transient reasoning and keeps its quiet row", () => {
+  const wake: ChatItem = { kind: "wake", id: "e1", at: at(0), body: "Woke: question BOAT-1" };
+  const live = applyFrame(applyFrame(NO_LIVE, turn("thinking", at(1))), delta("g4:1", "reasoning", "Already handled."));
+  expect(afterReading(live, [wake], turn("idle", at(2))).entries).toEqual([]);
+  expect(threadItems([wake], afterReading(live, [wake], turn("idle", at(2))))).toEqual([wake]);
+});
+
 test("a thought's closed line is its first bold heading, else its first sentence", () => {
   expect(liveThoughtLine("**Counting the berths**\nThe north quay has four.")).toBe("Counting the berths");
   expect(liveThoughtLine("The `north` quay has [four](https://example.com). Then the south.")).toBe(

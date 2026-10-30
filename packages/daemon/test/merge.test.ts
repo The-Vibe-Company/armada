@@ -136,8 +136,19 @@ async function fixture(t: TestContext, priorHandBack = false) {
   };
   let service = new Merges(options);
   let tools = nativeTools(scope, { now: () => at, merges: service });
+  const progress: { callId: string; step: string }[] = [];
   const run = async (name: "merge.check" | "merge.run", pr = 7, callId = "merge") => {
-    const result = await tools[name].execute({ pr }, { taskId: 1, callId } as ToolExecutionApi, context);
+    const result = await tools[name].execute(
+      { pr },
+      {
+        taskId: 1,
+        callId,
+        details: async (value: { step: string }) => {
+          progress.push({ callId, step: value.step });
+        },
+      } as unknown as ToolExecutionApi,
+      context,
+    );
     return result.details as { ok: boolean; code?: string; problems?: string[]; cleanup?: { disposed?: boolean } };
   };
   t.after(async () => {
@@ -151,6 +162,7 @@ async function fixture(t: TestContext, priorHandBack = false) {
     append,
     handBack,
     run,
+    progress,
     forge,
     tracker,
     node,
@@ -175,6 +187,10 @@ test("native merge tools check read-only, pin squash merge, confirm before Done/
   assert.equal(f.store.sequence, before);
   const result = await f.run("merge.run");
   assert.equal(result.ok, true);
+  assert.deepEqual(
+    f.progress.map((p) => p.step),
+    ["checking", "checking", "merging", "merged"],
+  );
   assert.equal(result.cleanup?.disposed, true);
   assert.deepEqual(f.counts(), { mergeCalls: 1, stopCalls: 1 });
   assert.equal(f.writes[0]?.state, "completed");

@@ -135,6 +135,19 @@ function field(item: Tool, key: string): string | null {
 export function workLabel(item: Tool): string {
   const ticket = field(item, "ticket");
   const pr = field(item, "pr");
+  if (item.progress && item.output === null) {
+    const verbs = {
+      checking: "Checking",
+      retesting: "Retesting",
+      merging: "Merging",
+      merged: "Merged",
+      preparing: "Preparing",
+      starting: "Starting",
+      briefing: "Briefing",
+      launched: "Launched",
+    };
+    return `${verbs[item.progress]}${pr ? ` #${pr}` : ticket ? ` ${ticket}` : ""}…`;
+  }
   const on = (verb: string, fallback: string) => (ticket ? `${verb} ${ticket}` : fallback);
   switch (item.name) {
     case "fleet.status":
@@ -289,7 +302,8 @@ export function workRows(items: readonly ThreadItem[]): ThreadRow[] {
     if (work) {
       const id = `work:${work.id}`;
       // The answer still being written (THE-2052) leaves it open too: its reading folds it, same row.
-      if (item.kind === "owner" || item.kind === "streaming") out.push({ kind: "work", id, work });
+      if (item.kind === "owner" || item.kind === "wake" || item.kind === "streaming")
+        out.push({ kind: "work", id, work });
       else {
         const label = item.aborted
           ? "You stopped this response"

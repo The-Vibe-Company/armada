@@ -1,7 +1,7 @@
 import { pluginEventSchema } from "@armada/plugin-api";
 import { z } from "zod";
 import {
-  CHAT_LIVE_MINOR,
+  CHAT_WAKE_MINOR,
   chatDeltaSchema,
   chatReadRequestSchema,
   chatResultSchema,
@@ -31,7 +31,7 @@ export * from "./rules.js";
 export * from "./session.js";
 
 /** Wire version, independent of the daemon/app release versions. */
-export const PROTOCOL_VERSION = { major: 1, minor: CHAT_LIVE_MINOR } as const;
+export const PROTOCOL_VERSION = { major: 1, minor: CHAT_WAKE_MINOR } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
 

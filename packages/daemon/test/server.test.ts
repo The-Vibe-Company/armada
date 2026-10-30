@@ -609,7 +609,8 @@ test("credential socket writes never expose the key to replies, events or logs",
 // Only the random subscription UUID is normalized; THE-2043 intentionally advances
 // the recorded envelope to minor 5 for per-client plan-policy snapshot projection,
 // THE-2045 to minor 6 for the session page, THE-2049 to minor 7 for live chat
-// (the recorded frames have no coordinator attached and are otherwise unchanged).
+// and THE-2079 to minor 11 for fleet wake rows (the recorded frames have no
+// coordinator attached and are otherwise unchanged).
 test("subscription bytes stay compatible with the recorded daemon vocabulary and folded tables", async (t) => {
   const fixture = new URL("./support/protocol-subscription.json", import.meta.url);
   const inputs = JSON.parse(readFileSync(fixture, "utf8")) as { history: EventInput[]; live: EventInput[] };

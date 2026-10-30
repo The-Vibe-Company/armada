@@ -236,6 +236,18 @@ function Item({
     </Time>
   );
   switch (item.kind) {
+    case "wake":
+      return (
+        <div className="flex min-h-6 min-w-0 items-baseline px-0.5 py-0.5 text-body text-text-3" data-wake>
+          <Markdown
+            text={item.body}
+            repository={repository}
+            prefixes={prefixes}
+            className="text-body text-text-3 [&_p]:m-0"
+          />
+          {when}
+        </div>
+      );
     case "owner":
       return (
         <div className="flex flex-col items-end gap-1">

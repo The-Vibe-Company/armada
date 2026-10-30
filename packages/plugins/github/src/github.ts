@@ -1,4 +1,4 @@
-import type { EventInput, EventKind, GithubPullRequest } from "@armada/daemon/events";
+import type { EventInput, EventKind, EventPayloads, GithubPullRequest } from "@armada/daemon/events";
 import { githubToken } from "./keychain.ts";
 import { normalize, type RawPull } from "./normalize.ts";
 import { type Forge, type ForgeEvents, type ForgeRefresh, type Schedule, schedule } from "./types.ts";
@@ -20,6 +20,7 @@ const FIELDS = `fragment P on PullRequest {
 const OPEN = `${FIELDS}
 query Pulls($owner: String!, $name: String!, $after: String) {
   repository(owner: $owner, name: $name) {
+    defaultBranchRef { name target { ... on Commit { oid statusCheckRollup { state } } } }
     open: pullRequests(states: OPEN, first: 100, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor } nodes { ...P }
     }
@@ -42,6 +43,7 @@ class GithubReadError extends Error {}
 /** Owner-token GitHub implementation; only observations cross the provider boundary. */
 class GithubForge implements Forge {
   readonly #options: Options;
+  defaultBranch?: EventPayloads["default-branch.seen"];
   constructor(options: Options) {
     if (!/^[\w.-]+\/[\w.-]+$/.test(options.repository)) throw new Error("GitHub repository must be owner/name");
     this.#options = options;
@@ -84,6 +86,10 @@ class GithubForge implements Forge {
           repository?: {
             open?: { nodes: RawPull[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
             pullRequest?: RawPull | null;
+            defaultBranchRef?: {
+              name: string;
+              target: { oid: string; statusCheckRollup: { state: string } | null };
+            } | null;
           } | null;
         };
         errors?: unknown[];
@@ -97,9 +103,33 @@ class GithubForge implements Forge {
     const cursors = new Set<string>();
     const tickets = await options.tickets();
     let after: string | null = null;
+    let health: EventPayloads["default-branch.seen"] | undefined;
     // Whole open-list reads are necessary: check runs do not reliably change PR updatedAt.
     for (;;) {
-      const { open } = await query(OPEN, { after });
+      const { open, defaultBranchRef: branch } = await query(OPEN, { after });
+      if (branch) {
+        const head = branch.target?.oid;
+        const state = branch.target?.statusCheckRollup?.state ?? "NONE";
+        if (
+          !/^[\w./-]{1,200}$/.test(branch.name) ||
+          !/^[0-9a-f]{40}$/i.test(head ?? "") ||
+          branch.name.includes(token) ||
+          !["NONE", "SUCCESS", "FAILURE", "ERROR", "PENDING", "EXPECTED"].includes(state)
+        )
+          throw new GithubReadError("GitHub returned an incomplete reading");
+        health = {
+          branch: branch.name,
+          head: head.toLowerCase(),
+          ci:
+            state === "SUCCESS"
+              ? "success"
+              : ["FAILURE", "ERROR"].includes(state)
+                ? "failure"
+                : state === "NONE"
+                  ? "none"
+                  : "pending",
+        };
+      }
       if (!open || !Array.isArray(open.nodes) || typeof open.pageInfo?.hasNextPage !== "boolean")
         throw new GithubReadError("GitHub returned an incomplete open list");
       for (const raw of open.nodes) {
@@ -122,6 +152,7 @@ class GithubForge implements Forge {
       pulls.set(number, normalize(pullRequest as RawPull, options.repository, tickets, token));
     }
     signal.throwIfAborted();
+    this.defaultBranch = health;
     return [...pulls.values()].sort((a, b) => a.number - b.number);
   }
 }
@@ -264,6 +295,20 @@ export class GithubReader {
         });
         for (const kind of transitions(before, pr))
           await append({ project: options.project, actor: options.actor, at, kind, payload: pr });
+        changed++;
+      }
+      const health = this.#forge.defaultBranch;
+      const recordedHealth = (await options.store.readSince(0, options.project)).findLast(
+        (e) => e.kind === "default-branch.seen",
+      );
+      if (health && JSON.stringify(recordedHealth?.payload) !== JSON.stringify(health)) {
+        await append({
+          project: options.project,
+          actor: options.actor,
+          at,
+          kind: "default-branch.seen",
+          payload: health,
+        });
         changed++;
       }
       return { ok: true, changed };

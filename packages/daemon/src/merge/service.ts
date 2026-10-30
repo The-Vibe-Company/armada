@@ -6,6 +6,7 @@ import {
   type Json,
   type TrackerProvider,
 } from "@armada/plugin-api";
+import type { ToolProgress } from "@armada/protocol";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { z } from "zod";
 import type { CoordinatorStorage } from "../../coordinator/storage.ts";
@@ -187,7 +188,13 @@ export class Merges {
     };
     return checkMerge(facts, pull.number, scope.project, this.#evidence(pull, tables, passed)).result;
   }
-  async #check(scope: CoordinatorStorage, forge: ForgeProvider, number: number) {
+  async #check(
+    scope: CoordinatorStorage,
+    forge: ForgeProvider,
+    number: number,
+    progress: (step: ToolProgress) => Promise<void>,
+  ) {
+    await progress("checking");
     const pull = await this.#inspect(scope, forge, number);
     const tables = this.#facts(scope);
     const row = tables?.pullRequests.find((p) => p.number === number);
@@ -225,6 +232,7 @@ export class Merges {
         else {
           const testMerge = node.testMerge.bind(node);
           const signal = AbortSignal.timeout(15 * 60_000);
+          await progress("retesting");
           const test = await bounded(signal, () =>
             testMerge({
               signal,
@@ -264,6 +272,34 @@ export class Merges {
     name: "merge.check" | "merge.run",
     pr: number,
     key: string,
+    progress: (step: ToolProgress) => Promise<void> = async () => {},
+  ): Promise<JsonObject> {
+    const result = await this.#run(scope, name, pr, key, progress);
+    if (name === "merge.run" && result.ok === false) {
+      try {
+        const id = `merge-refused:${hash(key)}`;
+        if (!scope.readEvents().some((e) => e.kind === "merge.refused" && e.payload.id === id)) {
+          const pull = this.#facts(scope)?.pullRequests.find((p) => p.number === pr);
+          this.#append(scope, "merge.refused", {
+            id,
+            pr,
+            ...(pull ? { ticket: pull.ticket, head: pull.head } : {}),
+            reason: "Merge run refused; read the tool result and refresh merge.check",
+          });
+        }
+      } catch {
+        // Losing the writer scope cannot change the tool's original refusal.
+      }
+    }
+    return result;
+  }
+
+  async #run(
+    scope: CoordinatorStorage,
+    name: "merge.check" | "merge.run",
+    pr: number,
+    key: string,
+    report: (step: ToolProgress) => Promise<void>,
   ): Promise<JsonObject> {
     const held = locks.get(this.#options.registry) ?? new Set<string>();
     locks.set(this.#options.registry, held);
@@ -289,11 +325,11 @@ export class Merges {
         return refuse("merge_pending", `PR #${pending.pr} has an unfinished merge`, `merge.run for PR #${pending.pr}`);
       const { forge, tracker } = this.#providers(scope.project);
       if (name === "merge.run" && pending) {
-        const result = await this.#recover(scope, forge, tracker, pending);
+        const result = await this.#recover(scope, forge, tracker, pending, report);
         if (result.ok && pending.key !== key) this.#save(scope, { ...pending, key, stage: "finished", result });
         return result;
       }
-      const checked = await this.#check(scope, forge, pr);
+      const checked = await this.#check(scope, forge, pr, report);
       if (!checked.result.ok || name === "merge.check") return checked.result;
       if (!checked.session) return refuse("no_worker", "the runtime worker has ended");
       const { pull, session } = checked;
@@ -331,6 +367,7 @@ export class Merges {
       this.#guard(scope, progress);
       let writeStarted = false;
       const writeSignal = AbortSignal.timeout(30_000);
+      await report("merging");
       try {
         const outcome = await forge.merge({
           signal: writeSignal,
@@ -370,7 +407,7 @@ export class Merges {
           "inspect the pull request, then retry merge.run",
         );
       }
-      return await this.#confirmed(scope, tracker, progress);
+      return await this.#confirmed(scope, tracker, progress, report);
     } catch {
       return refuse(
         "merge_unavailable",
@@ -382,7 +419,13 @@ export class Merges {
     }
   }
 
-  async #recover(scope: CoordinatorStorage, forge: ForgeProvider, tracker: TrackerProvider, progress: Progress) {
+  async #recover(
+    scope: CoordinatorStorage,
+    forge: ForgeProvider,
+    tracker: TrackerProvider,
+    progress: Progress,
+    report: (step: ToolProgress) => Promise<void>,
+  ) {
     if (progress.stage === "intent") {
       const pull = await this.#inspect(scope, forge, progress.pr);
       if (pull.state !== "merged" || pull.head !== progress.head || pull.baseRef !== progress.baseRef)
@@ -392,11 +435,16 @@ export class Merges {
           "inspect the pull request before continuing",
         );
       progress = { ...progress, mergeCommit: pull.mergeCommit };
-      return this.#confirmed(scope, tracker, progress);
+      return this.#confirmed(scope, tracker, progress, report);
     }
     return this.#cleanup(scope, tracker, progress);
   }
-  async #confirmed(scope: CoordinatorStorage, tracker: TrackerProvider, progress: Progress) {
+  async #confirmed(
+    scope: CoordinatorStorage,
+    tracker: TrackerProvider,
+    progress: Progress,
+    report: (step: ToolProgress) => Promise<void>,
+  ) {
     scope.readEvents();
     const id = `merge:${hash(progress.key)}`;
     const recorded = scope.readEvents().some((e) => e.kind === "merge.confirmed" && e.payload.id === id);
@@ -410,6 +458,7 @@ export class Merges {
       });
     const confirmed: Progress = { ...progress, stage: "confirmed" };
     this.#save(scope, confirmed);
+    await report("merged");
     return this.#cleanup(scope, tracker, confirmed);
   }
   async #cleanup(scope: CoordinatorStorage, tracker: TrackerProvider, progress: Progress): Promise<JsonObject> {
