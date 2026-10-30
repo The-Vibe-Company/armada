@@ -37,3 +37,6 @@ packages/daemon/src/plugins/catalog.generated.ts
 .e2e/logs/
 .e2e/videos/
 .aeom/runs/
+
+# Node-compatible shared account adapters
+packages/core/dist/

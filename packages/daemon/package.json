@@ -22,7 +22,7 @@
     "./plugins/config": "./src/plugins/config.ts"
   },
   "scripts": {
-    "test": "node --test test/*.test.ts ../plugins/linear/test/*.test.ts ../plugins/github/test/*.test.ts",
+    "test": "node --experimental-transform-types --test test/*.test.ts ../plugins/linear/test/*.test.ts ../plugins/github/test/*.test.ts",
     "start": "node src/server/main.ts"
   },
   "dependencies": {
@@ -39,7 +39,8 @@
     "proper-lockfile": "4.1.2",
     "ai": "7.0.156",
     "zod": "4.6.5",
-    "smol-toml": "1.9.0"
+    "smol-toml": "1.9.0",
+    "@armada/core": "workspace:*"
   },
   "devDependencies": {
     "@types/ws": "8.18.1",

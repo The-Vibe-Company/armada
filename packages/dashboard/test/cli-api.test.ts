@@ -397,6 +397,24 @@ describe("the organization's keys, handed to a signed-in terminal", () => {
     expect(own).toEqual({ linearApiKey: ORG_LINEAR, githubToken: "synthetic-github-token-0006", warnings: [] });
   });
 
+  test("GitHub credentials require explicit opt-in by a person and their release is audited without values", async () => {
+    now = at(9 * 60);
+    const github = "synthetic-github-optin-001";
+    await set("github-token", github);
+    expect((await keys({ token: ownerToken })).body.github).toBeUndefined();
+    const response = await cli("POST", "credentials", { token: ownerToken, body: { github: true } }, deps);
+    expect(response.status).toBe(200);
+    expect((await response.json()).github).toEqual({ token: github });
+    const apiKeyResponse = await cli("POST", "credentials", { key: apiKey, body: { github: true } }, deps);
+    expect(apiKeyResponse.status).toBe(200);
+    expect((await apiKeyResponse.json()).github).toBeUndefined();
+    const anonymous = await cli("POST", "credentials", { body: { github: true } }, deps);
+    expect(anonymous.status).toBe(401);
+    const releases = (await listEvents(client, orgId, 200)).filter((event) => event.action === "release");
+    expect(releases.some((event) => event.keys.includes("github-token"))).toBe(true);
+    expect(JSON.stringify([releases, logged])).not.toContain(github);
+  });
+
   test("only the first organization, and the shared-password gate, fall back to the deployment's keys", () => {
     const env = { linearApiKey: "env-linear", githubToken: "env-github" };
     const none = { linearApiKey: null, githubToken: null, warnings: [] };

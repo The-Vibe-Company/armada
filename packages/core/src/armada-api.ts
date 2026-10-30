@@ -90,6 +90,8 @@ export interface DeviceCode {
  * is reached through the API (`fleet`).
  */
 export interface ArmadaKeysAnswer {
+  /** Explicitly requested by a person; absent on older dashboards. */
+  github?: { token: string } | null;
   schemaVersion: 1;
   organization: { id: string; name: string; slug: string };
   linear: { apiKey: string; scope: "project" | "own" | "organization" } | null;
@@ -399,10 +401,14 @@ export function armadaApi(opts: ArmadaApiOptions) {
     },
 
     /** The organization's keys for `signIn`. Answers 503 when that Armada keeps no keys. */
-    async credentials(signIn: ArmadaSignIn, purpose: KeysPurpose | null = null): Promise<ArmadaKeysAnswer> {
+    async credentials(
+      signIn: ArmadaSignIn,
+      purpose: KeysPurpose | null = null,
+      options: { github?: boolean } = {},
+    ): Promise<ArmadaKeysAnswer> {
       const { status, body } = await call("POST", "credentials", {
         signIn,
-        body: purpose ? { purpose } : {},
+        body: { ...(purpose ? { purpose } : {}), ...(options.github ? { github: true } : {}) },
         // This reads a reusable key; each physical attempt remains audited and rate-limited.
         retry: true,
       });
@@ -420,6 +426,13 @@ export function armadaApi(opts: ArmadaApiOptions) {
         schemaVersion: 1,
         organization: org as ArmadaKeysAnswer["organization"],
         linear: linear ? { apiKey: linear.apiKey, scope } : null,
+        ...(options.github
+          ? {
+              github: str((body.github as { token?: string } | null)?.token)
+                ? { token: (body.github as { token: string }).token }
+                : null,
+            }
+          : {}),
         warnings,
       };
     },

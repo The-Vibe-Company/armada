@@ -1,13 +1,11 @@
 import { z } from "zod";
+import { counter, identifier, versionSchema as version } from "./envelope.js";
 
 // A project's room (THE-1996): the owner's conversation with the project's
 // coordinator, and the owner's answer to a question pinned in it. Wire minor 4.
 // index.ts adds these to the message unions; this file imports nothing from it
-// (its primitives are restated) so the two modules never wait on each other.
+// so the two modules never wait on each other; envelope.ts holds their shared primitives.
 
-const counter = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
-const identifier = z.string().min(1);
-const version = z.object({ major: counter, minor: counter });
 const at = z.iso.datetime({ offset: true });
 const request = { version, id: identifier };
 /** What the owner writes: one message, at most 16 KiB, never blank. */

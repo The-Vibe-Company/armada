@@ -1,7 +1,14 @@
 import { pluginEventSchema } from "@armada/plugin-api";
 import { z } from "zod";
 import {
-  CHAT_LIVE_MINOR,
+  ACCOUNT_MINOR,
+  accountDeviceSchema,
+  accountLoginRequestSchema,
+  accountLogoutRequestSchema,
+  accountResultSchema,
+  accountStatusRequestSchema,
+} from "./account.js";
+import {
   chatDeltaSchema,
   chatReadRequestSchema,
   chatResultSchema,
@@ -14,6 +21,7 @@ import {
   ownerAnsweredSchema,
   ownerAnswerRequestSchema,
 } from "./chat.js";
+import { counter, identifier, versionSchema } from "./envelope.js";
 import { modelConfigSchema, modelKindEntrySchema, modelKindSchema } from "./models.js";
 import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
 import {
@@ -23,6 +31,7 @@ import {
   sessionReleaseResultSchema,
 } from "./session.js";
 
+export * from "./account.js";
 export * from "./chat.js";
 export * from "./fleet.js";
 export * from "./models.js";
@@ -31,13 +40,11 @@ export * from "./rules.js";
 export * from "./session.js";
 
 /** Wire version, independent of the daemon/app release versions. */
-export const PROTOCOL_VERSION = { major: 1, minor: CHAT_LIVE_MINOR } as const;
+export const PROTOCOL_VERSION = { major: 1, minor: ACCOUNT_MINOR } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
 
-const counter = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
-const identifier = z.string().min(1);
-export const versionSchema = z.object({ major: counter, minor: counter });
+export { versionSchema } from "./envelope.js";
 export type ProtocolVersion = z.infer<typeof versionSchema>;
 
 export const projectSchema = z.object({
@@ -88,6 +95,9 @@ export const credentialsResultSchema = z.object({
   storage: z.enum(["os-keychain", "file"]),
 });
 export const clientMessageSchema = z.discriminatedUnion("type", [
+  accountStatusRequestSchema,
+  accountLoginRequestSchema,
+  accountLogoutRequestSchema,
   credentialsStatusRequestSchema,
   credentialsSetRequestSchema,
   listProjectsRequestSchema,
@@ -163,10 +173,21 @@ export const errorSchema = z.object({
   version: versionSchema,
   type: z.literal("error"),
   id: identifier.optional(),
-  code: z.enum(["invalid-message", "app-too-old", "daemon-too-old", "not-found", "internal"]),
+  code: z.enum([
+    "invalid-message",
+    "app-too-old",
+    "daemon-too-old",
+    "not-found",
+    "internal",
+    "expired",
+    "denied",
+    "offline",
+  ]),
   message: identifier,
 });
 export const serverMessageSchema = z.discriminatedUnion("type", [
+  accountResultSchema,
+  accountDeviceSchema,
   credentialsResultSchema,
   projectsResultSchema,
   subscribedSchema,

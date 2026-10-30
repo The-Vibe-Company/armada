@@ -1,4 +1,8 @@
 import {
+  ACCOUNT_MINOR,
+  type AccountDevice,
+  type AccountRequest,
+  type AccountState,
   APP_TOO_OLD,
   type ChatReadRequest,
   type ChatSendRequest,
@@ -40,6 +44,9 @@ export interface DaemonState {
   logs: Readonly<Record<string, ProjectLog>>;
   /** Each project's folded state, the latest the daemon sent; its shape is the daemon's (src/fleet/state.ts reads it). */
   fleets: Readonly<Record<string, Snapshot>>;
+  account: AccountState | null;
+  accountDevice: AccountDevice | null;
+  accountProblem: string | null;
   credentials: Omit<CredentialsResult, "id" | "type" | "version"> | null;
   /** The daemon's wire minor, once it listed its projects: what it can be asked (the room needs `CHAT_MINOR`). */
   minor: number | null;
@@ -75,6 +82,8 @@ export interface DaemonClient {
   subscribe(listener: () => void): () => void;
   start(): void;
   stop(): void;
+  login(): Promise<void>;
+  logout(): Promise<void>;
   saveCredentials(provider: string, key: string, config?: CoordinatorModel["config"]): Promise<void>;
   /** Each resolves once the daemon saved the change and listed the plugins again; none is replayed after a drop. */
   setPluginEnabled(plugin: string, enabled: boolean): Promise<void>;
@@ -93,13 +102,20 @@ export interface DaemonClient {
 
 /** A room or session request the screens send and await, without its envelope (`version`, `id`): the client adds it. */
 type DaemonRequest = Unaddressed<
-  ChatReadRequest | ChatSendRequest | OwnerAnswerRequest | SessionReleaseRequest | SessionOutputRequest
+  | ChatReadRequest
+  | ChatSendRequest
+  | OwnerAnswerRequest
+  | SessionReleaseRequest
+  | SessionOutputRequest
+  | Exclude<AccountRequest, { type: "account.status" }>
 >;
 /** The reply to each of them. */
 type DaemonReply<R extends DaemonRequest> = Extract<
   ServerMessage,
   {
     type: {
+      "account.login": "account.result";
+      "account.logout": "account.result";
       "chat.read": "chat.result";
       "chat.send": "chat.sent";
       "owner.answer": "owner.answered";
@@ -128,6 +144,9 @@ export const initialState: DaemonState = {
   projects: null,
   logs: {},
   fleets: {},
+  account: null,
+  accountDevice: null,
+  accountProblem: null,
   credentials: null,
   minor: null,
   plugins: null,
@@ -153,6 +172,21 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   let attempt = 0;
   let nextId = 0;
   let running = false;
+  let accountStatusId: string | null = null;
+  function askAccount(type: "account.login" | "account.logout"): Promise<void> {
+    if (state.status !== "live" || (state.minor ?? 0) < ACCOUNT_MINOR)
+      return Promise.reject(new Error("Update Armada to sign in."));
+    set({ accountProblem: null });
+    return request({ type })
+      .then(
+        () => {},
+        (error: Error) => {
+          set({ accountProblem: error.message });
+          throw error;
+        },
+      )
+      .finally(() => set({ accountDevice: null }));
+  }
   let credentialStatusId: string | null = null;
   let pendingCredential: {
     id: string;
@@ -300,6 +334,10 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       case "projects.result": {
         if (lastDrop === "close") attempt = 0;
         set({ status: "live", problem: null, projects: message.projects, minor: message.version.minor });
+        if (message.version.minor >= ACCOUNT_MINOR) {
+          accountStatusId = id();
+          send({ type: "account.status", version, id: accountStatusId });
+        } else set({ account: null, accountProblem: "Update Armada to sign in." });
         if (message.version.minor >= 1) {
           credentialStatusId = id();
           send({ type: "credentials.status", version, id: credentialStatusId });
@@ -332,6 +370,18 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
           fleets: folded(message.project, message.snapshot),
           ...(stale ? { problem: NOT_FOLDED } : {}),
         });
+        return;
+      }
+      case "account.device":
+        if (pending.has(message.id)) set({ accountDevice: message });
+        return;
+      case "account.result": {
+        const { type: _type, version: _version, id: _id, ...account } = message;
+        set({ account, accountProblem: null });
+        if (message.id) {
+          pending.get(message.id)?.resolve(message);
+          pending.delete(message.id);
+        }
         return;
       }
       case "credentials.result": {
@@ -378,6 +428,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
         return;
       }
       case "error":
+        if (message.id === accountStatusId) return set({ accountProblem: message.message });
         if (message.id !== undefined && pending.has(message.id)) {
           const request = pending.get(message.id);
           pending.delete(message.id);
@@ -411,7 +462,24 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
 
   const cursor = (project: string) => state.logs[project]?.seq ?? 0;
 
+  function request<R extends DaemonRequest>(message: R): Promise<DaemonReply<R>> {
+    if (state.status !== "live" || !socket)
+      return Promise.reject(new Error("The daemon is not connected: wait for it, then try again."));
+    return new Promise((resolve, reject) => {
+      const requestId = id();
+      pending.set(requestId, { resolve: resolve as (reply: ServerMessage) => void, reject });
+      try {
+        send({ ...message, version, id: requestId } as ClientMessage);
+      } catch {
+        pending.delete(requestId);
+        reject(new Error(NOT_ANSWERED));
+      }
+    });
+  }
+
   return {
+    login: () => askAccount("account.login"),
+    logout: () => askAccount("account.logout"),
     saveCredentials(provider, key, config) {
       let local = false;
       try {
@@ -438,20 +506,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       askPlugins({ type: "plugins.configure", plugin, seam, kind, config }),
     setPluginSecret: (plugin, name, value) => askPlugins({ type: "plugins.secret", plugin, name, value }),
     restartDaemon: () => askPlugins({ type: "daemon.restart" }),
-    request(message) {
-      if (state.status !== "live" || !socket)
-        return Promise.reject(new Error("The daemon is not connected: wait for it, then try again."));
-      return new Promise((resolve, reject) => {
-        const requestId = id();
-        pending.set(requestId, { resolve: resolve as (reply: ServerMessage) => void, reject });
-        try {
-          send({ ...message, version, id: requestId } as ClientMessage);
-        } catch {
-          pending.delete(requestId);
-          reject(new Error(NOT_ANSWERED));
-        }
-      });
-    },
+    request,
     getState: () => state,
     subscribe(listener) {
       listeners.add(listener);
