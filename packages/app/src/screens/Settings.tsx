@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { DaemonProblem } from "@/components/DaemonProblem";
 import { Dot, Page, PageHeader } from "@/components/page";
 import type { SettingsSection } from "@/lib/route";
+import { NotificationSetting } from "@/notify/NotificationSetting";
 import { About } from "@/settings/About";
 import { Account } from "@/settings/Account";
 import { Coordinator } from "@/settings/Coordinator";
@@ -17,7 +18,8 @@ const SECTIONS: readonly NavSection[] = [
 ];
 
 const QUIET: Record<Exclude<SettingsSection, "providers">, string> = {
-  coordinator: "The model your coordinators think with. Its key stays on this device.",
+  coordinator:
+    "The model your coordinators think with, and how Armada tells you a room needs you. Both stay on this device.",
   account: "Your sign-in to Armada, shared by this app and the CLI on this device.",
   about: "This app, and the daemon it speaks to.",
 };
@@ -53,7 +55,11 @@ export function Settings({
       <DaemonProblem onReload={onReload} />
       <SettingsFrame sections={SECTIONS} current={section}>
         {section === "coordinator" ? (
-          <Coordinator />
+          <>
+            <Coordinator />
+            {/* THE-2055: the OS notifications' switch. */}
+            <NotificationSetting />
+          </>
         ) : section === "providers" ? (
           <Providers />
         ) : section === "account" ? (
