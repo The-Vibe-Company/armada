@@ -80,10 +80,12 @@ export async function dispatchChat(request: ChatRequest, options: ChatOptions): 
       case "chat.send": {
         if (!options.coordinator) return error("not-found", NO_COORDINATOR);
         // The same requestId again (a retry after a drop) is the same input: pi admits it once.
-        // Mid-run, the owner steers: the message joins the running work after its tool round,
-        // and shows in the conversation then, rather than waiting for the whole run to end.
+        // Mid-run, the owner steers by default: the message joins the running work after its tool round,
+        // and shows in the conversation then, rather than waiting for the whole run to end. A queued one
+        // waits for the run to end (pi's follow-up).
+        const whenBusy = request.whenBusy === "queue" ? "followUp" : "steer";
         await options.coordinator.conversation.submit(
-          { type: "input", content: request.body, requestId: request.requestId, whenBusy: "steer" },
+          { type: "input", content: request.body, requestId: request.requestId, whenBusy },
           context,
         );
         return { type: "chat.sent", version, id, project, requestId: request.requestId };

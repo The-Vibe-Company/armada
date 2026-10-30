@@ -5,14 +5,18 @@
 // hover; the coordinator's own lines quiet with the state they name on a dot,
 // each tool call one quiet line that opens on a click. Newest at the bottom; it
 // follows new items while the owner reads the end, and stays put when they
-// scrolled up.
-import type { ChatItem } from "@armada/protocol";
+// scrolled up. On a live daemon (THE-2052) the answer being written shows as
+// the coordinator's message, its reasoning as a Thinking row, and the Working
+// row closes the thread while the coordinator works.
+import type { ChatItem, ChatTurn } from "@armada/protocol";
 import { AnimatePresence, m } from "motion/react";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { TONE } from "@/components/fleet/FleetList";
 import { type Group, rowTime } from "@/fleet/overview";
 import { cn } from "@/lib/utils";
 import { CopyButton } from "./Copy";
+import type { ThreadItem } from "./chat";
+import { Shine, Stopped, Thought, Working } from "./Live";
 import { Markdown, TicketGroups } from "./Markdown";
 import { folds } from "./markdown-rules";
 import { fullTime, lineGroups, pretty, segments, toolLine } from "./view";
@@ -27,8 +31,10 @@ export function Thread({
   now,
   zone,
   empty,
+  turn = null,
+  started = null,
 }: {
-  items: readonly ChatItem[];
+  items: readonly ThreadItem[];
   /** The project's repository (`owner/name`): `#34` links to its pull request. */
   repository: string;
   /** The project's ticket prefixes, space-separated (`THE HAR`): the ids that link in a message. */
@@ -39,10 +45,20 @@ export function Thread({
   zone: string;
   /** Said when there is nothing yet. */
   empty: ReactNode;
+  /** The coordinator's turn (THE-2052): the Working row while it is not idle. */
+  turn?: ChatTurn | null;
+  /** When that turn began, if seen; null for "Working…". */
+  started?: string | null;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const atEnd = useRef(true);
-  const dots = lineGroups(items, groupOf);
+  const dots = lineGroups(
+    items.filter((i): i is ChatItem => i.kind !== "streaming"),
+    groupOf,
+  );
+  const working = turn !== null && turn.state !== "idle";
+  const tail = items.at(-1);
+  const list = useRef<HTMLOListElement>(null);
   // Announced once the first reading is on screen: what arrives after, never the history.
   const [announce, setAnnounce] = useState(false);
   const read = items.length > 0;
@@ -54,6 +70,17 @@ export function Thread({
     const el = box.current;
     if (el && atEnd.current) el.scrollTop = el.scrollHeight;
   }, [items.length]);
+  // The thread also grows without a new item (an answer being written, its reading in its place): it follows that too.
+  useEffect(() => {
+    const el = box.current;
+    const content = list.current;
+    if (!el || !content || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (atEnd.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, []);
   return (
     <section
       ref={box}
@@ -66,6 +93,7 @@ export function Thread({
     >
       <TicketGroups value={groupOf}>
         <ol
+          ref={list}
           className="m-0 mx-auto mt-auto flex w-full min-w-0 max-w-(--chat-content-max-width) list-none flex-col gap-3 p-0"
           aria-live={announce ? "polite" : "off"}
           aria-relevant="additions"
@@ -92,10 +120,17 @@ export function Thread({
                   groupOf={groupOf}
                   time={rowTime(item.at, now, zone)}
                   full={fullTime(item.at, zone)}
+                  thinking={working && turn?.state === "thinking" && item === tail}
+                  running={working && turn?.tool?.id === item.id}
                 />
               </m.li>
             ))}
           </AnimatePresence>
+          {working && (
+            <li className="min-w-0" data-item="working">
+              <Working started={started} queued={turn?.queued ?? 0} />
+            </li>
+          )}
         </ol>
       </TicketGroups>
     </section>
@@ -110,14 +145,20 @@ function Item({
   groupOf,
   time,
   full,
+  thinking,
+  running,
 }: {
-  item: ChatItem;
+  item: ThreadItem;
   dot: Group | null;
   repository: string;
   prefixes: string;
   groupOf: (ticket: string) => Group | null;
   time: string;
   full: string;
+  /** The answer being written is still thinking: its Thinking row shimmers. */
+  thinking: boolean;
+  /** This call is the one the coordinator's turn runs now: its name shines. */
+  running: boolean;
 }) {
   const when = (
     <Time at={item.at} full={full}>
@@ -140,18 +181,39 @@ function Item({
           </Meta>
         </div>
       );
+    case "streaming":
+      // The answer as it is written: no time and no Copy until it is read.
+      return (
+        <div className="flex min-w-0 flex-col gap-1" data-streaming-item>
+          {item.reasoning && (
+            <Thought reasoning={item.reasoning} active={thinking} repository={repository} prefixes={prefixes} />
+          )}
+          {item.text.trim() && (
+            <div className="min-w-0 px-1 py-0.5">
+              <span className="sr-only">Coordinator: </span>
+              <Markdown text={item.text} repository={repository} prefixes={prefixes} streaming />
+            </div>
+          )}
+        </div>
+      );
     case "coordinator": {
       const said = item.body.trim();
       return (
         <div className="flex min-w-0 flex-col gap-1">
-          <div className="min-w-0 px-1 py-0.5">
-            <span className="sr-only">Coordinator: </span>
-            {said ? (
-              <Markdown text={item.body} repository={repository} prefixes={prefixes} />
-            ) : (
-              <p className="m-0 text-sub text-text-3">(empty response)</p>
-            )}
-          </div>
+          {item.reasoning && (
+            <Thought reasoning={item.reasoning} active={false} repository={repository} prefixes={prefixes} />
+          )}
+          {(said || !item.aborted) && (
+            <div className="min-w-0 px-1 py-0.5">
+              <span className="sr-only">Coordinator: </span>
+              {said ? (
+                <Markdown text={item.body} repository={repository} prefixes={prefixes} />
+              ) : (
+                <p className="m-0 text-sub text-text-3">(empty response)</p>
+              )}
+            </div>
+          )}
+          {item.aborted && <Stopped />}
           <Meta>
             {said && <CopyButton text={item.body} label="Copy message" />}
             {when}
@@ -169,6 +231,7 @@ function Item({
           />
           <Text text={item.body} groupOf={groupOf} />
           {when}
+          {item.aborted && <Stopped />}
         </div>
       );
     case "tool": {
@@ -179,7 +242,9 @@ function Item({
             <span aria-hidden className="inline-block w-2 flex-none transition-transform group-open:rotate-90">
               ›
             </span>
-            <span className="flex-none font-mono">{item.name}</span>
+            <span className="flex-none font-mono">
+              <Shine active={running && item.output === null}>{item.name}</Shine>
+            </span>
             {args && <span className="min-w-0 truncate">{args}</span>}
             <span className="flex-none">· {outcome}</span>
             {when}

@@ -1,7 +1,11 @@
 import {
   APP_TOO_OLD,
+  type ChatDelta,
   type ChatReadRequest,
   type ChatSendRequest,
+  type ChatStopRequest,
+  type ChatTool,
+  type ChatTurn,
   type ClientMessage,
   type CoordinatorModel,
   type CredentialsResult,
@@ -51,6 +55,9 @@ export interface DaemonState {
   restarting: boolean;
 }
 
+/** A project's live turn as the daemon streams it (CHAT_LIVE_MINOR): its state, a partial answer, a tool call. */
+export type ChatFrame = ChatTurn | ChatDelta | ChatTool;
+
 /** The part of a browser WebSocket the client uses, so tests hand it a fake. */
 export interface SocketLike {
   send(data: string): void;
@@ -89,11 +96,18 @@ export interface DaemonClient {
    * message keeps its requestId, and the daemon admits it once).
    */
   request<R extends DaemonRequest>(message: R): Promise<DaemonReply<R>>;
+  /** Hears every project's live turn frames (the room filters its own); returns its unsubscribe. */
+  chat(listener: (frame: ChatFrame) => void): () => void;
 }
 
 /** A room or session request the screens send and await, without its envelope (`version`, `id`): the client adds it. */
 type DaemonRequest = Unaddressed<
-  ChatReadRequest | ChatSendRequest | OwnerAnswerRequest | SessionReleaseRequest | SessionOutputRequest
+  | ChatReadRequest
+  | ChatSendRequest
+  | ChatStopRequest
+  | OwnerAnswerRequest
+  | SessionReleaseRequest
+  | SessionOutputRequest
 >;
 /** The reply to each of them. */
 type DaemonReply<R extends DaemonRequest> = Extract<
@@ -102,6 +116,7 @@ type DaemonReply<R extends DaemonRequest> = Extract<
     type: {
       "chat.read": "chat.result";
       "chat.send": "chat.sent";
+      "chat.stop": "chat.stopped";
       "owner.answer": "owner.answered";
       "session.release": "session.release.result";
       "session.output": "session.output.result";
@@ -147,6 +162,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   const version = options.version ?? PROTOCOL_VERSION;
   const backoff = options.backoff ?? BACKOFF;
   const listeners = new Set<() => void>();
+  const chatListeners = new Set<(frame: ChatFrame) => void>();
   let state = initialState;
   let socket: SocketLike | null = null;
   let cancelRetry: (() => void) | null = null;
@@ -367,8 +383,14 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       case "daemon.restarting":
         if (settlePlugin(message.id)) set({ restarting: true });
         return;
+      case "chat.turn":
+      case "chat.delta":
+      case "chat.tool":
+        for (const listener of chatListeners) listener(message);
+        return;
       case "chat.result":
       case "chat.sent":
+      case "chat.stopped":
       case "owner.answered":
       case "session.release.result":
       case "session.output.result": {
@@ -451,6 +473,10 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
           reject(new Error(NOT_ANSWERED));
         }
       });
+    },
+    chat(listener) {
+      chatListeners.add(listener);
+      return () => chatListeners.delete(listener);
     },
     getState: () => state,
     subscribe(listener) {

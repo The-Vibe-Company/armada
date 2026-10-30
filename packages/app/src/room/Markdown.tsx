@@ -59,6 +59,7 @@ export const Markdown = memo(function Markdown({
   repository,
   prefixes,
   breaks = false,
+  streaming = false,
   className,
 }: {
   text: string;
@@ -68,6 +69,8 @@ export const Markdown = memo(function Markdown({
   prefixes: string;
   /** Keep single line breaks (the owner's text, as typed). */
   breaks?: boolean;
+  /** Still being written (THE-2052): each new block fades in. */
+  streaming?: boolean;
   className?: string;
 }) {
   const remark = useMemo<Options["remarkPlugins"]>(
@@ -80,7 +83,10 @@ export const Markdown = memo(function Markdown({
     [repository, prefixes],
   );
   return (
-    <div className={cn("chat-markdown min-w-0 text-sub text-text/90 leading-relaxed", className)}>
+    <div
+      className={cn("chat-markdown min-w-0 text-sub text-text/90 leading-relaxed", className)}
+      data-streaming={streaming || undefined}
+    >
       <ReactMarkdown remarkPlugins={remark} rehypePlugins={rehype} components={COMPONENTS}>
         {text}
       </ReactMarkdown>

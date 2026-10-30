@@ -11,6 +11,7 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import { WebSocket } from "ws";
 import type { EventInput } from "../src/events.ts";
 import { fold } from "../src/fold.ts";
+import { type ChatOptions, dispatchChat } from "../src/server/chat.ts";
 import { startServer } from "../src/server/index.ts";
 import { EventStore } from "../src/store.ts";
 
@@ -336,4 +337,19 @@ test("Stop preserves pi's committed partial and reasoning with the live id after
   client = await connect(server.wsUrl);
   const restored = await client.ask({ type: "chat.read", project: "orchard" });
   assert.deepEqual(restored.type === "chat.result" && restored.items, read.items);
+});
+
+test("a message sent while the coordinator works steers it by default, and waits for the run's end when queued", async () => {
+  const drafts: unknown[] = [];
+  const coordinator = { conversation: { submit: async (draft: unknown) => void drafts.push(draft) } };
+  const options = { coordinator, store: undefined, live: undefined } as unknown as ChatOptions;
+  const send = { version, type: "chat.send", project: "orchard", body: "Merge #12 first." } as const;
+  const steered = await dispatchChat({ ...send, id: "r1", requestId: "m1" }, options);
+  assert.equal(steered.type, "chat.sent");
+  const queued = await dispatchChat({ ...send, id: "r2", requestId: "m2", whenBusy: "queue" }, options);
+  assert.equal(queued.type, "chat.sent");
+  assert.deepEqual(
+    drafts.map((d) => (d as { requestId: string; whenBusy: string }).whenBusy),
+    ["steer", "followUp"],
+  );
 });

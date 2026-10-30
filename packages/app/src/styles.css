@@ -268,3 +268,49 @@
     border-bottom: 1px solid var(--color-line);
   }
 }
+
+/* The coordinator's turn as it happens (THE-2052, T3 Code's `live-tool-shine`):
+   a light sweeps the words in 30 steps every 2.2 s, paused off screen
+   (`--visible-animation-state`, src/room/Live.tsx), never under reduced motion. */
+@keyframes live-shine {
+  from {
+    background-position:
+      -4.5rem 0,
+      0 0;
+  }
+  to {
+    background-position:
+      calc(100% + 4.5rem) 0,
+      0 0;
+  }
+}
+@utility live-shine {
+  @media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+    color: transparent;
+    background-image:
+      linear-gradient(to right, transparent, var(--color-text), transparent),
+      linear-gradient(var(--color-text-3), var(--color-text-3));
+    background-size:
+      4.5rem 100%,
+      100% 100%;
+    background-repeat: no-repeat;
+    background-clip: text;
+    -webkit-background-clip: text;
+    animation: live-shine 2.2s steps(30) infinite;
+    animation-play-state: var(--visible-animation-state, paused);
+  }
+}
+
+/* An answer arrives block by block while it is written: each new block fades
+   in once. `@starting-style` applies only when a block is first inserted, and
+   only under `data-streaming`, so a finished answer never replays it. */
+@media (prefers-reduced-motion: no-preference) {
+  .chat-markdown[data-streaming] > * {
+    transition: opacity 600ms ease-out;
+  }
+  @starting-style {
+    .chat-markdown[data-streaming] > * {
+      opacity: 0;
+    }
+  }
+}

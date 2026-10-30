@@ -19,6 +19,7 @@ import {
   useState,
 } from "react";
 import { cn } from "@/lib/utils";
+import type { WhenBusy } from "@/room/chat";
 import {
   afterSend,
   browserStorage,
@@ -33,18 +34,22 @@ import {
   type Timers,
 } from "@/room/compose";
 
-/** What the primary slot is handed: the field's text, whether it is on its way, and Send itself. */
+/** What the primary slot is handed: the field's text, whether it is on its way, Send itself and the field's problem line. */
 export interface ComposerField {
   text: string;
   sending: boolean;
   disabled: boolean;
-  submit: () => void;
+  /** Sends the field; `queue` waits for the coordinator's turn to end. */
+  submit: (whenBusy?: WhenBusy) => void;
+  /** Says why an action failed, under the field. */
+  fail: (problem: string) => void;
 }
 
 export function Composer({
   project,
   send,
   disabled,
+  busy = false,
   hint,
   history = [],
   model = null,
@@ -53,9 +58,11 @@ export function Composer({
   timers,
 }: {
   project: string;
-  send: (body: string) => Promise<void>;
+  send: (body: string, whenBusy?: WhenBusy) => Promise<void>;
   /** No coordinator, or no connection: the field says why below and sends nothing. */
   disabled: boolean;
+  /** The coordinator is working (THE-2052): ⌘Enter queues the message for its turn's end. */
+  busy?: boolean;
   hint: string | null;
   /** The owner's earlier messages of this project, newest first (↑ and ↓). */
   history?: readonly string[];
@@ -117,13 +124,13 @@ export function Composer({
   }, []);
 
   const blank = !body.trim();
-  async function submit() {
+  async function submit(whenBusy?: WhenBusy) {
     const text = body.trim();
     if (!text || sending || disabled) return;
     setSending(true);
     setProblem(null);
     try {
-      await send(text);
+      await (whenBusy ? send(text, whenBusy) : send(text));
       // The field empties, or gives back the draft set aside to send an earlier message.
       const next = afterSend(text, latest.current.body, latest.current.recall);
       if (next !== null) {
@@ -156,7 +163,7 @@ export function Composer({
     if (!intent) return;
     if (intent === "send") {
       event.preventDefault();
-      void submit();
+      void submit(busy && (event.metaKey || event.ctrlKey) ? "queue" : undefined);
       return;
     }
     const step = stepHistory(history, body, recall, intent);
@@ -168,7 +175,13 @@ export function Composer({
   }
 
   const described = [hint && `${field}-hint`, problem && `${field}-problem`].filter(Boolean).join(" ");
-  const fieldState: ComposerField = { text: body, sending, disabled, submit: () => void submit() };
+  const fieldState: ComposerField = {
+    text: body,
+    sending,
+    disabled,
+    submit: (whenBusy) => void submit(whenBusy),
+    fail: setProblem,
+  };
 
   return (
     <form
