@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { nodeExecutable } from "../../daemon/test/support/node.ts";
 import { DaemonProcess, RESTART_EXIT_CODE, restartDaemon } from "../src/daemon.ts";
 
 function fixture() {
@@ -17,7 +18,7 @@ function fixture() {
   return {
     dir,
     options: {
-      executable: "node",
+      executable: nodeExecutable,
       entry: fileURLToPath(new URL("../../daemon/src/server/main.ts", import.meta.url)),
       database: join(dir, "fleet.sqlite"),
       projects,

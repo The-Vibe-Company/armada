@@ -187,7 +187,6 @@ export function draftKeeper(storage: DraftStorage, timers: Timers = realTimers) 
     },
   };
 }
-export type DraftKeeper = ReturnType<typeof draftKeeper>;
 
 /** The coordinator's model, when the daemon says it: the saved one, else its provider's default. */
 export function coordinatorModel(credentials: DaemonState["credentials"]): string | null {

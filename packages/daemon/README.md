@@ -88,7 +88,7 @@ server serializes credential reads/writes across connections (at most 32 pending
 and drains accepted operations on shutdown. Embedders can inject `keychain` into
 `startServer`; the production default is `systemKeychain()`.
 
-The app's Plugins screen (THE-2019) goes through `dispatchPlugins`
+The app's Providers section in Settings (THE-2019, moved by THE-2069) goes through `dispatchPlugins`
 (`src/server/plugins.ts`), also after admission and serialized the same way, given
 a `PluginHost` by `startServer`'s `plugins` option: the boot's catalog, what it
 loaded and the settings it read (`loadPlugins` returns them), the app

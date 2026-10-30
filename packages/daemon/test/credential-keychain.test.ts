@@ -9,6 +9,7 @@ import { Keychain } from "../src/keychain.ts";
 import { fileKeychain } from "../src/secrets/file.ts";
 import { macKeychain } from "../src/secrets/macos.ts";
 import { FakeKeychain } from "./support/keychain.ts";
+import { nodeExecutable } from "./support/node.ts";
 
 test("native Keychain instances serialize shared mutations without storing a credential on disk", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "armada-native-lock-"));
@@ -113,7 +114,7 @@ test("Linux system storage accepts only trimmed absolute XDG roots, otherwise us
         assert.equal(existsSync(join(process.cwd(), "relative")), false);
         assert.equal(existsSync(join(process.cwd(), "armada")), false);
       `;
-      const result = spawnSync("node", ["--input-type=module", "-e", script], {
+      const result = spawnSync(nodeExecutable, ["--input-type=module", "-e", script], {
         cwd: directory,
         env: { ...process.env, HOME: home, XDG_CONFIG_HOME: xdg },
         encoding: "utf8",
