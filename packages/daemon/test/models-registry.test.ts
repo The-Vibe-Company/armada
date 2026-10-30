@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { type ServerMessage, serverMessageSchema, PROTOCOL_VERSION as version } from "@armada/protocol";
 import type { AuthEvent, Credential, Provider } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 import { Type } from "typebox";
 import { WebSocket } from "ws";
 import { Keychain } from "../src/keychain.ts";
@@ -320,6 +321,14 @@ test("dotted tool names travel aliased on the wire and come back dotted to the h
   const tools = [{ name: "fleet.status", description: "Read the fleet", parameters: Type.Object({}) }];
   assert.deepEqual(
     wireContext({ messages: [], tools }).tools?.map((tool) => tool.name),
+    ["fleet__status"],
+  );
+  // The harness hands a normalized transcript: the tools live in its first system message.
+  const transcript = wireContext(normalizeContext({ systemPrompt: "Coordinate.", messages: [], tools }));
+  const first = transcript.messages[0];
+  assert.ok(first && first.role === "system");
+  assert.deepEqual(
+    first.toolsAdded?.map((tool) => tool.name),
     ["fleet__status"],
   );
   const reply = await registry.models.complete(model, {
