@@ -5,12 +5,12 @@ import {
   admitRequest,
   eventSchema,
   type ModelKindEntry,
-  PLAN_POLICY_MINOR,
   type Project,
   type ProjectTables,
   type ProtocolError,
   projectSchema,
   projectTablesSchema,
+  RULES_SCHEMA_MINOR,
   type ServerMessage,
   type Snapshot,
   PROTOCOL_VERSION as version,
@@ -137,19 +137,21 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
 
   /** Older same-major clients use a strict policy reader; preserve their existing Rules view. */
   function snapshotFor(snapshot: Snapshot, minor: number): Snapshot {
-    if (minor >= PLAN_POLICY_MINOR) return snapshot;
+    if (minor >= RULES_SCHEMA_MINOR) return snapshot;
     const state = snapshot.state as unknown as ProjectTables;
     const rules = state.rules;
-    if (!rules?.value.policy) return snapshot;
-    const policy = { ...rules.value.policy };
-    delete policy.plans;
-    delete policy.approvalLabel;
-    delete policy.preApprovedLabel;
+    if (!rules) return snapshot;
+    const value = { ...rules.value };
+    delete value.gates;
+    if (value.policy) {
+      const policy = { ...value.policy };
+      delete policy.plans;
+      delete policy.approvalLabel;
+      delete policy.preApprovedLabel;
+      value.policy = policy;
+    }
     // Detach only the legacy projection; never mutate the full snapshot shared with current clients.
-    return {
-      seq: snapshot.seq,
-      state: JSON.parse(JSON.stringify({ ...state, rules: { ...rules, value: { ...rules.value, policy } } })),
-    };
+    return { seq: snapshot.seq, state: JSON.parse(JSON.stringify({ ...state, rules: { ...rules, value } })) };
   }
 
   /**

@@ -174,7 +174,9 @@ for (const name of ["worker.launch", "worker.relaunch", "worker.message", "worke
           ? { ticket: "SEED-1", message: "Plant" }
           : name === "worker.stop" || name === "worker.relaunch"
             ? { ticket: "SEED-1", reason: "Finished" }
-            : { ticket: "SEED-1", session: "one", pr: 7 };
+            : name === "merge.run"
+              ? { pr: 7 }
+              : { ticket: "SEED-1", session: "one", pr: 7 };
     const result = await run(name, args);
     assert.equal(result.code, "not_available_yet");
     assert.equal(result.message, "not available yet");

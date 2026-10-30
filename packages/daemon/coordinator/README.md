@@ -93,5 +93,5 @@ With the host’s `Workers` service, all four `worker.*` actions use the loaded 
 and runtime registry; see the daemon README’s Local worker plugins contract.
 Launch/relaunch requires a successful new tracker reading before preflight and builds
 a ticket-derived brief with pinned CLI install/exec fallback and the worker skill. Worker refusals expose safe rule messages; arbitrary provider errors remain
-fixed credential-free diagnostics. Missing worker service and `merge.run` still
-return `not_available_yet`, naming the missing capability. No native tool imports V1 core.
+fixed credential-free diagnostics. Missing worker or merge services return `not_available_yet`, naming the missing capability;
+configured merge tools use the shared worker stop/disposal path after confirmation. No native tool imports V1 core.

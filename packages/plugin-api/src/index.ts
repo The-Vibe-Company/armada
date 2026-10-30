@@ -1,3 +1,13 @@
+import type { ForgeInspection, TrackerWriteRequest } from "./merge.js";
+
+export {
+  type ForgeInspection,
+  forgeInspectionSchema,
+  type TestMergeRequest,
+  type TestMergeResult,
+  type TrackerWriteRequest,
+} from "./merge.js";
+
 import type { NodeProvider, RuntimeProvider } from "./runtime.js";
 
 export type {
@@ -73,11 +83,15 @@ export interface ProjectRequest {
 /** Readers append observations through ctx.events; daemon owns polling/checkpoints. */
 export interface TrackerProvider {
   read(request: ProjectRequest): Promise<void>;
-  write(request: ProjectRequest & { ticket: string; phase?: string; comment?: string }): Promise<void>;
+  write(request: TrackerWriteRequest): Promise<void>;
 }
 export interface ForgeProvider {
   read(request: ProjectRequest): Promise<void>;
-  merge(request: ProjectRequest & { number: number; head: string }): Promise<{ merged: boolean }>;
+  /** Complete fresh facts for the merge checklist. Absence refuses merge tools. */
+  inspect?(request: ProjectRequest & { number: number }): Promise<ForgeInspection>;
+  merge(
+    request: ProjectRequest & { number: number; head: string; beforeWrite?: () => void },
+  ): Promise<{ merged: boolean; mergeCommit?: string }>;
 }
 /** Model is the consumer's AI SDK model type; the API has no SDK runtime dependency. */
 export interface ModelProvider<Model = unknown> {

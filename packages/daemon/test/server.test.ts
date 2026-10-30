@@ -632,10 +632,11 @@ test("subscription bytes stay compatible with the recorded daemon vocabulary and
   assert.equal(`${frames.join("\n")}\n`, readFileSync(recording, "utf8"));
 });
 
-test("minor-4 clients retain readable legacy plan policy in initial and live snapshots beside current clients", async (t) => {
+test("minor-4 clients retain readable legacy Rules in initial and live snapshots beside current clients", async (t) => {
   const store = new EventStore(":memory:");
+  const gates = { requiredChecks: ["test"], localCommands: [] };
   const policy = { maxWorkers: 2, plans: "pre-approved", approvalLabel: "Review", preApprovedLabel: "Proceed" };
-  const rules = (revision: number, maxWorkers = 2) =>
+  const rules = (revision: number, maxWorkers = 2, withPolicy = true) =>
     store.append({
       project: "orchard",
       at: hold().at,
@@ -647,7 +648,7 @@ test("minor-4 clients retain readable legacy plan policy in initial and live sna
           version: 1,
           type: "rules",
           reason: "Plan rules",
-          rules: { revision, value: { policy: { ...policy, maxWorkers } } },
+          rules: { revision, value: { gates, ...(withPolicy ? { policy: { ...policy, maxWorkers } } : {}) } },
         },
       },
     });
@@ -662,19 +663,21 @@ test("minor-4 clients retain readable legacy plan policy in initial and live sna
     await server.close();
     store.close();
   });
-  const policyOf = (frame: ServerMessage) => {
+  const rulesValue = (frame: ServerMessage) => {
     assert(frame.type === "project.subscribed" || frame.type === "events");
     assert(frame.snapshot);
-    return (frame.snapshot.state as unknown as { rules: { value: { policy: Record<string, unknown> } } }).rules.value
-      .policy;
+    return (frame.snapshot.state as unknown as { rules: { value: Record<string, unknown> } }).rules.value;
   };
   modern.send({ type: "project.subscribe", project: "orchard", after: 0 });
-  assert.deepEqual(policyOf(await modern.next()), policy);
+  assert.deepEqual(rulesValue(await modern.next()), { gates, policy });
   await modern.next();
   legacy.send({ type: "project.subscribe", version: { major: version.major, minor: 4 }, project: "orchard", after: 0 });
-  assert.deepEqual(policyOf(await legacy.next()), { maxWorkers: 2 });
+  assert.deepEqual(rulesValue(await legacy.next()), { policy: { maxWorkers: 2 } });
   await legacy.next();
   rules(2, 3);
-  assert.deepEqual(policyOf(await modern.next()), { ...policy, maxWorkers: 3 });
-  assert.deepEqual(policyOf(await legacy.next()), { maxWorkers: 3 });
+  assert.deepEqual(rulesValue(await modern.next()), { gates, policy: { ...policy, maxWorkers: 3 } });
+  assert.deepEqual(rulesValue(await legacy.next()), { policy: { maxWorkers: 3 } });
+  rules(3, 3, false);
+  assert.deepEqual(rulesValue(await modern.next()), { gates });
+  assert.deepEqual(rulesValue(await legacy.next()), {});
 });

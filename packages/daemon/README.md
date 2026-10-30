@@ -401,3 +401,29 @@ initial and live subscription snapshots, so their strict Rules view stays readab
 the daemon and current clients retain the full policy. The shared per-project fold
 is never altered by a legacy client's projection. V1 import rejects approval and
 pre-approval labels that normalize alike, including collisions with omitted defaults.
+
+### Coordinator merges (THE-2044)
+
+`merge.check {pr}` reads fresh inspection from the configured forge plugin and
+checks the worker's full-SHA hand-back, current phase, GitHub mergeability,
+checks, review threads, holds and owner validations. `rules.set` can set
+`gates: {requiredChecks: [...], localCommands: [...]}`; the V1 file import carries
+`[gates] required_checks/local_commands`. If main is ahead, a declared local
+command suite must pass on the exact base/head merge through `node.testMerge`.
+GitHub's BEHIND/blocked states still refuse as in V1; the coordinator can have
+the worker update its branch.
+
+`merge.run {pr}` runs that checklist, checks the fresh base/head again, and
+squash-merges at the exact handed-back head. Merge inspection and each external write have a 30-second cancellation deadline.
+The daemon holds one merge lease per project for the full operation; it never expires an in-flight forge write. Local gates have a 15-minute overall deadline; worker cleanup has 30 seconds and keeps its generation fence on late native writes. An unfinished cleanup remains explicit in the journal.
+`armada.merge` version-1 checkpoints record intent, confirmation and cleanup.
+An interrupted intent is never submitted again: a fresh forge read must prove
+that exact head merged. `merge.confirmed` is appended before tracker/worker
+cleanup. Retrying `merge.run` resumes failed Done/comment/stop cleanup without
+merging again; the stable merged-comment UUID prevents duplicate Linear writes.
+The shared worker.stop dispatch handles stop/disposal. A missing stop adapter
+leaves an explicit cleanup-pending result. A replacement generation fences old
+cleanup. No merge effects run from a reader or a background timer.
+
+The shared worker service now stops and disposes clean workspaces, retaining dirty
+or unpushed work. A merge result’s `cleanup.disposed` says whether disposal happened.

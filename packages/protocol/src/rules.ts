@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { coordinatorModelSchema } from "./models.js";
 
-// THE-2043 reserved protocol minor 5 for the extended plan-policy vocabulary.
-export const PLAN_POLICY_MINOR = 5;
+// THE-2043 reserved protocol minor 5 for the extended Rules snapshot vocabulary.
+export const RULES_SCHEMA_MINOR = 5;
 
 const id = z.string().min(1).max(200).regex(/\S/);
 const target = { cli: z.enum(["claude", "codex", "opencode"]), model: id, effort: id.optional() };
@@ -10,6 +10,12 @@ const placement = z.enum(["local", "vm"]);
 const minutes = z.number().positive();
 // V1 policy numbers: positive finite minutes, positive safe worker quota or no cap.
 export const projectRulesSchema = z.strictObject({
+  gates: z
+    .strictObject({
+      requiredChecks: z.array(id).max(100),
+      localCommands: z.array(z.string().min(1).max(4000).regex(/\S/)).max(50),
+    })
+    .optional(),
   coordinatorModel: coordinatorModelSchema.optional(),
   routing: z
     .array(

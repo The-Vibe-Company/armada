@@ -68,3 +68,20 @@ spawn, stdin writes and each stop signal, after any asynchronous provenance work
 Unscoped writes refuse. `LaunchRequest.command: ""` selects a runtime's official
 CLI; an explicit command lets the conformance host run its fixture. Briefs and
 messages are delivered on stdin, never process arguments.
+
+Merge-capable forges may implement `inspect({project, number, signal})`, returning
+`ForgeInspection`: fresh full head/base SHAs, base ancestry, checks and their
+complete-enumeration flag, required checks, and review-thread counts. Missing or
+truncated evidence refuses the merge tools. `merge` remains a head-pinned squash
+write and may return `mergeCommit`. A supplied `beforeWrite` callback must run
+immediately before its external mutation, after any asynchronous credential read.
+
+Tracker `write` accepts `state: "completed"` and a stable UUID `commentId` for
+retrying a merged comment. It calls `beforeWrite` immediately before each external
+mutation. The Linear provider resolves a completed state on the ticket's team,
+removes only its agent/runtime/ready labels, and deduplicates the comment.
+
+Nodes may implement `testMerge`: merge the exact head into the exact base in a
+private detached worktree, run `commands` in order, and remove that worktree even
+on failure or cancellation. It must leave the worker's and owner's checkouts
+untouched. A node without this capability cannot authorize a behind-head merge.

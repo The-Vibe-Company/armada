@@ -5,7 +5,7 @@ import { TrackerPoller } from "./poll.ts";
 
 interface Config {
   endpoint?: string;
-  projects?: Record<string, { programRoot: string; phaseGroup?: string }>;
+  projects?: Record<string, { programRoot: string; phaseGroup?: string; runtimeGroup?: string; readyLabel?: string }>;
 }
 
 interface Label {
@@ -18,11 +18,31 @@ interface Labels {
   nodes: Label[];
   pageInfo: { hasNextPage: boolean; endCursor?: string | null };
 }
+interface WorkflowState {
+  id: string;
+  name?: string;
+  type: string;
+  position?: number;
+}
+interface States {
+  nodes: WorkflowState[];
+  pageInfo: { hasNextPage: boolean; endCursor?: string | null };
+}
+interface Comments {
+  nodes: { id: string; body?: string | null }[];
+  pageInfo: { hasNextPage: boolean; endCursor?: string | null };
+}
 interface WriteData {
-  issue?: { id: string; team: { id: string }; labels: Labels } | null;
+  issue?: {
+    id: string;
+    state?: { type: string } | null;
+    team: { id: string; states?: States };
+    labels: Labels;
+    comments?: Comments;
+  } | null;
   issueLabels?: Labels;
   issueUpdate?: { success: boolean };
-  commentCreate?: { success: boolean };
+  commentCreate?: { success: boolean; comment?: { id: string } | null };
 }
 
 export function activate(ctx: PluginContext): void {
@@ -70,9 +90,11 @@ export function activate(ctx: PluginContext): void {
         signal?.removeEventListener("abort", stop);
       }
     },
-    async write({ project, ticket, phase, comment, signal }) {
+    async write({ project, ticket, phase, state, comment, commentId, signal, beforeWrite }) {
       try {
-        if (!config.projects?.[project]) throw new Error();
+        const settings = config.projects?.[project];
+        if (!settings || (state !== undefined && state !== "completed")) throw new Error();
+        if (commentId !== undefined && (!comment || !commentId.trim() || /\s/.test(commentId))) throw new Error();
         const key = await ctx.secrets.get("LINEAR_API_KEY");
         if (!key) throw new Error();
         const gql = async (query: string, variables: object): Promise<WriteData> => {
@@ -92,15 +114,65 @@ export function activate(ctx: PluginContext): void {
         // Keep every non-phase label, replacing only this project's phase group.
         const data = await gql(
           `query WriteIssue($id: String!) {
-          issue(id: $id) { id team { id }
-            labels(first: 250) { nodes { id name parent { name } } pageInfo { hasNextPage } } }
+          issue(id: $id) {
+            id state { type }
+            team { id states(first: 100) { nodes { id name type position } pageInfo { hasNextPage endCursor } } }
+            labels(first: 250) { nodes { id name parent { name } } pageInfo { hasNextPage endCursor } }
+            comments(first: 100) { nodes { id body } pageInfo { hasNextPage endCursor } }
+          }
         }`,
           { id: ticket },
         );
         const issue = data.issue;
-        if (!issue?.id || issue.labels.pageInfo.hasNextPage) throw new Error();
+        if (
+          !issue?.id ||
+          !issue.labels ||
+          typeof issue.labels.pageInfo?.hasNextPage !== "boolean" ||
+          issue.labels.pageInfo.hasNextPage ||
+          !Array.isArray(issue.labels.nodes)
+        )
+          throw new Error();
+        let existingComment: { id: string; body?: string | null } | undefined;
+        if (commentId !== undefined) {
+          if (
+            !issue.comments ||
+            typeof issue.comments.pageInfo?.hasNextPage !== "boolean" ||
+            !Array.isArray(issue.comments.nodes)
+          )
+            throw new Error();
+          const comments = [...issue.comments.nodes];
+          const cursors = new Set<string>();
+          let after = issue.comments.pageInfo.endCursor ?? null;
+          for (let count = 0; issue.comments.pageInfo.hasNextPage; count++) {
+            if (!after || cursors.has(after) || count >= 100) throw new Error();
+            cursors.add(after);
+            const more = await gql(
+              `query MoreWriteComments($id: String!, $after: String) {
+              issue(id: $id) { comments(first: 100, after: $after) {
+                nodes { id body } pageInfo { hasNextPage endCursor }
+              } }
+            }`,
+              { id: issue.id, after },
+            );
+            if (
+              !more.issue?.comments ||
+              typeof more.issue.comments.pageInfo?.hasNextPage !== "boolean" ||
+              !Array.isArray(more.issue.comments.nodes)
+            )
+              throw new Error();
+            comments.push(...more.issue.comments.nodes);
+            if (!more.issue.comments.pageInfo.hasNextPage) {
+              after = null;
+              break;
+            }
+            after = more.issue.comments.pageInfo.endCursor ?? null;
+          }
+          existingComment = comments.find((candidate) => candidate.id === commentId);
+          if (existingComment?.body !== undefined && existingComment.body !== null && existingComment.body !== comment)
+            throw new Error();
+        }
         if (phase !== undefined) {
-          const group = config.projects[project]?.phaseGroup ?? "Agent phase";
+          const group = settings.phaseGroup ?? "Agent phase";
           const candidates: Label[] = [];
           const cursors = new Set<string>();
           let after: string | null = null;
@@ -128,6 +200,7 @@ export function activate(ctx: PluginContext): void {
             applicable.find((label) => label.team?.id === issue.team.id) ?? applicable.find((label) => !label.team);
           if (!label) throw new Error();
           const labelIds = issue.labels.nodes.filter((label) => label.parent?.name !== group).map((label) => label.id);
+          beforeWrite?.();
           const changed = await gql(
             `mutation UpdatePhase($id: String!, $input: IssueUpdateInput!) {
             issueUpdate(id: $id, input: $input) { success }
@@ -136,12 +209,56 @@ export function activate(ctx: PluginContext): void {
           );
           if (!changed.issueUpdate?.success) throw new Error();
         }
-        if (comment !== undefined) {
+        if (state === "completed") {
+          const states = issue.team.states;
+          if (
+            !states ||
+            typeof states.pageInfo?.hasNextPage !== "boolean" ||
+            states.pageInfo.hasNextPage ||
+            !Array.isArray(states.nodes)
+          )
+            throw new Error();
+          const done = [...states.nodes]
+            .filter(
+              (candidate) =>
+                candidate &&
+                typeof candidate.id === "string" &&
+                candidate.id &&
+                typeof candidate.type === "string" &&
+                candidate.type.toLowerCase() === "completed",
+            )
+            .sort((a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER))[0];
+          if (!done) throw new Error();
+          const phaseGroup = settings.phaseGroup ?? "Agent phase";
+          const runtimeGroup = settings.runtimeGroup ?? "Agent runtime";
+          const readyLabel = settings.readyLabel ?? "ready-for-agent";
+          const removeLabelIds = issue.labels.nodes
+            .filter(
+              (label) =>
+                label.parent?.name === phaseGroup || label.parent?.name === runtimeGroup || label.name === readyLabel,
+            )
+            .map((label) => label.id);
+          const input: Record<string, unknown> = {};
+          if (issue.state?.type?.toLowerCase() !== "completed") input.stateId = done.id;
+          if (removeLabelIds.length) input.removedLabelIds = removeLabelIds;
+          if (Object.keys(input).length) {
+            beforeWrite?.();
+            const changed = await gql(
+              `mutation CompleteIssue($id: String!, $input: IssueUpdateInput!) {
+              issueUpdate(id: $id, input: $input) { success }
+            }`,
+              { id: issue.id, input },
+            );
+            if (!changed.issueUpdate?.success) throw new Error();
+          }
+        }
+        if (comment !== undefined && !existingComment) {
+          beforeWrite?.();
           const changed = await gql(
             `mutation PostComment($input: CommentCreateInput!) {
             commentCreate(input: $input) { success }
           }`,
-            { input: { issueId: issue.id, body: comment } },
+            { input: { ...(commentId !== undefined ? { id: commentId } : {}), issueId: issue.id, body: comment } },
           );
           if (!changed.commentCreate?.success) throw new Error();
         }

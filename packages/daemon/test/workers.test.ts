@@ -1048,3 +1048,35 @@ test("launch scans label routes before asking for a semantic rule", { timeout: 1
   assert.equal(result.isError, false);
   assert.equal((result.details as { runtime: string }).runtime, "claude");
 });
+
+test("confirmed merge cleanup stops and disposes the worker while retaining merged state", {
+  timeout: 15000,
+}, async (t) => {
+  const f = await fixture(t);
+  assert.equal(
+    (await f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api("merge-launch"), context)).isError,
+    false,
+  );
+  const token = f.token();
+  assert.equal((await socketCall(f.socketPath, token, { command: "claim", ticket: "SEED-1" })).status, 200);
+  const session = fold(f.daemon.store.readSince(0, project)).projects[project]?.sessions[0];
+  assert(session);
+  f.daemon.store.append({
+    project,
+    at,
+    actor: "coordinator",
+    kind: "merge.confirmed",
+    payload: { id: "confirmed", ticket: "SEED-1", session: session.session, pr: 7, head: "a".repeat(40) },
+  });
+  assert.equal(fold(f.daemon.store.readSince(0, project)).projects[project]?.sessions[0]?.phase, "merged");
+  const stopped = await f.tools["worker.stop"].execute(
+    { ticket: "SEED-1", session: session.session, reason: "Pull request merged" },
+    f.api("merge-stop"),
+    context,
+  );
+  assert.equal(stopped.isError, false);
+  assert.equal((stopped.details as { disposed: boolean }).disposed, true);
+  assert.equal(fold(f.daemon.store.readSince(0, project)).projects[project]?.sessions[0]?.phase, "merged");
+  await assert.rejects(stat(f.workspace()), { code: "ENOENT" });
+  assert.equal((await socketCall(f.socketPath, token, { command: "heartbeat", ticket: "SEED-1" })).status, 403);
+});

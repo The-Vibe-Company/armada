@@ -16,6 +16,8 @@ import type {
 } from "@armada/plugin-api";
 import { checkedMutation } from "@armada/plugin-api/guard";
 
+import { testMerge } from "./test-merge.ts";
+
 const execute = promisify(execFileCallback);
 const DEFAULT_OUTPUT_TAIL = 64 * 1024;
 const DEFAULT_STOP_TIMEOUT_MS = 1_000;
@@ -601,6 +603,7 @@ export function createLocalNode(options: LocalNodeOptions = {}): NodeProvider {
   // Providers are often wrapped with object spread by hosts while installing
   // generation guards. Keep the public methods as own, bound properties.
   return {
+    testMerge,
     prepare: node.prepare.bind(node),
     launch: node.launch.bind(node),
     deliver: node.deliver.bind(node),
