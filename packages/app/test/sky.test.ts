@@ -7,7 +7,7 @@ import type { Group } from "../src/fleet/overview";
 import { type Harness, type SkyAgent, type SkyProject, skyProject } from "../src/fleet/sky";
 import { readFleetState } from "../src/fleet/state";
 import type { SkyContext } from "../src/sky/draw";
-import { BLOCKED_BANK, BONE, LIME } from "../src/sky/flock";
+import { BONE, LIME } from "../src/sky/flock";
 import { HARNESS_COLOR, layoutSky, type SkySize, STATE_COLOR } from "../src/sky/layout";
 import { Sky } from "../src/sky/Sky";
 import { createSkyView, type SkyClock } from "../src/sky/view";
@@ -20,10 +20,35 @@ const budget = JSON.parse(readFileSync(join(resolve(import.meta.dir, ".."), "per
 };
 
 /** A 2D context that keeps the last frame's fills (colour, opacity, triangles) and strokes, and counts every call and write. */
+type Point = { x: number; y: number };
+type Triangle = { points: [Point, Point, Point]; color: string; alpha: number };
+function required<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error("Expected drawing geometry");
+  return value;
+}
+const center = (t: Triangle): Point => ({
+  x: t.points.reduce((n, p) => n + p.x, 0) / 3,
+  y: t.points.reduce((n, p) => n + p.y, 0) / 3,
+});
+const heading = (t: Triangle) => Math.atan2(t.points[0].y - center(t).y, t.points[0].x - center(t).x);
+const proportions = (t: Triangle) => {
+  const [a, b, c] = t.points;
+  return area(t) / ((a.x - (b.x + c.x) / 2) ** 2 + (a.y - (b.y + c.y) / 2) ** 2);
+};
+const area = (t: Triangle) => {
+  const [a, b, c] = t.points as [Point, Point, Point];
+  return Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) / 2;
+};
+
 function fakeContext() {
   let calls = 0;
   let moves = 0;
-  const frame = { fills: [] as { color: string; alpha: number; triangles: number }[], strokes: [] as string[] };
+  let points: Point[] = [];
+  const frame = {
+    fills: [] as { color: string; alpha: number; triangles: number }[],
+    strokes: [] as string[],
+    shapes: [] as Triangle[],
+  };
   const target = {
     fillStyle: "",
     strokeStyle: "",
@@ -34,17 +59,28 @@ function fakeContext() {
     clearRect() {
       frame.fills = [];
       frame.strokes = [];
+      frame.shapes = [];
     },
     beginPath() {
       moves = 0;
+      points = [];
     },
-    moveTo() {
+    moveTo(x: number, y: number) {
       moves++;
+      points.push({ x, y });
     },
-    lineTo() {},
+    lineTo(x: number, y: number) {
+      points.push({ x, y });
+    },
     closePath() {},
     quadraticCurveTo() {},
     fill() {
+      for (let i = 0; i < points.length; i += 3)
+        frame.shapes.push({
+          points: points.slice(i, i + 3) as [Point, Point, Point],
+          color: String(target.fillStyle),
+          alpha: target.globalAlpha,
+        });
       frame.fills.push({ color: String(target.fillStyle), alpha: target.globalAlpha, triangles: moves });
     },
     stroke() {
@@ -73,6 +109,11 @@ function fakeContext() {
       const out: Record<string, number> = {};
       for (const f of frame.fills) out[f.color] = (out[f.color] ?? 0) + f.triangles;
       return out;
+    },
+    ship(color: string) {
+      const found = frame.shapes.filter((t) => t.color === color);
+      expect(found).toHaveLength(1);
+      return required(found[0]);
     },
     takeCalls() {
       const n = calls;
@@ -151,7 +192,7 @@ function sky(size: SkySize, fleet: SkyProject[] = [FLEET]) {
 
 describe.each(["band", "stage"] as const)("the %s", (size) => {
   test("draws the coordinator's V, one triangle per agent in its harness's colour, and the day's merges", () => {
-    const { fake, clock, view } = sky(size);
+    const { fake, clock } = sky(size);
     // The first paint is still: drawn once, no frame asked for.
     expect(clock.waiting).toBe(0);
     expect(fake.triangles()).toEqual({
@@ -162,15 +203,25 @@ describe.each(["band", "stage"] as const)("the %s", (size) => {
       [HARNESS_COLOR.codex]: 2,
       [HARNESS_COLOR.opencode]: 1,
     });
-    // Three depths: the merges far and faint, ready to merge in the middle, the rest near.
-    const ship = (ticket: string) => view.flock.ships.get(`harbor/${ticket}`);
-    expect([ship("HAR-7")?.depth, ship("HAR-5")?.depth, ship("HAR-1")?.depth]).toEqual([0, 1, 2]);
-    const merges = fake.frame.fills.filter((f) => f.color === BONE && f.triangles === 3);
-    expect(merges).toHaveLength(1);
-    expect(merges[0]?.alpha).toBeLessThan(0.4);
-    // The blocked one banks away; no other does.
-    expect(ship("HAR-3")?.bank).toBe(BLOCKED_BANK);
-    expect([...view.flock.ships.values()].filter((s) => s.bank !== 0).map((s) => s.key)).toEqual(["harbor/HAR-3"]);
+    // Far merges are smaller and fainter than ready ships; active ships are nearest.
+    const merged = fake.frame.shapes.filter((t) => t.color === BONE && t.alpha < 0.4);
+    expect(merged).toHaveLength(3);
+    const ready = required(fake.frame.shapes.find((t) => t.color === HARNESS_COLOR.codex && t.alpha < 1));
+    const running = required(fake.frame.shapes.find((t) => t.color === HARNESS_COLOR.claude));
+    expect(required(merged[0]).alpha).toBeLessThan(ready.alpha);
+    expect(ready.alpha).toBeLessThan(running.alpha);
+    expect(area(required(merged[0]))).toBeLessThan(area(ready));
+    expect(area(ready)).toBeLessThan(area(running));
+    // Only the blocked ship visibly leans away from its formation's heading.
+    const [w, h] = SIZES[size];
+    const targets = layoutSky([FLEET], size, w, h).targets;
+    const banked = fake.frame.shapes.filter((t) => {
+      const c = center(t);
+      const target = required(targets.find((p) => Math.hypot(p.x - c.x, p.y - c.y) < 0.1));
+      return Math.abs(heading(t) - target.angle) > 0.1;
+    });
+    expect(banked).toHaveLength(1);
+    expect(required(banked[0]).color).toBe(HARNESS_COLOR.codex);
     // An arc in each state's colour under its agents: one per state on the band, the most urgent on the stage.
     expect(fake.frame.strokes).toEqual(
       size === "band"
@@ -181,65 +232,80 @@ describe.each(["band", "stage"] as const)("the %s", (size) => {
 
   test("a ship banks and flies to its new group when its session changes state, then the sky stops", () => {
     const fleet = project([agent("HAR-1", "running", "claude"), agent("HAR-2", "running", "codex")]);
-    const { clock, view, show } = sky(size, [fleet]);
-    const ship = () => view.flock.ships.get("harbor/HAR-2");
-    const before = { x: ship()?.x ?? 0, y: ship()?.y ?? 0 };
-    expect(ship()?.bank).toBe(0);
+    const { fake, clock, show } = sky(size, [fleet]);
+    const before = fake.ship(HARNESS_COLOR.codex);
+    const coordinator = fake.frame.shapes.filter((t) => t.color === LIME || t.color === BONE);
     expect(clock.waiting).toBe(0);
-
-    // The second one is blocked: it leaves its group for the blocked one, first of the sky.
-    show([project([agent("HAR-1", "running", "claude"), agent("HAR-2", "blocked", "codex")])]);
+    const changed = [project([agent("HAR-1", "running", "claude"), agent("HAR-2", "blocked", "codex")])];
+    show(changed);
     expect(clock.waiting).toBe(1);
     clock.tick();
-    // It rolls at once, before it has gone far, and keeps its harness's colour.
-    expect(Math.abs(ship()?.bank ?? 0)).toBeGreaterThan(0.05);
-    expect(ship()?.color).toBe(HARNESS_COLOR.codex);
-    // The coordinator's ships did not change state: they do not bank.
-    expect(view.flock.ships.get("harbor/coordinator/0")?.bank).toBe(0);
-
+    const turning = fake.ship(HARNESS_COLOR.codex);
+    expect(Math.abs(heading(turning) - heading(before))).toBeGreaterThan(0.01);
+    const wings = fake.frame.shapes.filter((t) => t.color === LIME || t.color === BONE);
+    for (const [i, wing] of wings.entries()) {
+      // Unchanged groups can reposition, but their triangles do not roll/foreshorten.
+      expect(proportions(wing)).toBeCloseTo(proportions(required(coordinator[i])), 8);
+    }
     const frames = clock.settle();
     expect(frames).toBeGreaterThan(30);
     expect(frames).toBeLessThan(400);
     expect(clock.waiting).toBe(0);
-    const target = ship()?.target;
-    expect(ship()).toMatchObject({ x: target?.x, y: target?.y, bank: BLOCKED_BANK, bankV: 0 });
-    expect(Math.hypot((ship()?.x ?? 0) - before.x, (ship()?.y ?? 0) - before.y)).toBeGreaterThan(5);
+    const after = fake.ship(HARNESS_COLOR.codex);
+    expect(Math.hypot(center(after).x - center(before).x, center(after).y - center(before).y)).toBeGreaterThan(5);
+    // A flight ends at exactly the geometry a still first paint draws.
+    const destination = sky(size, changed).fake.ship(HARNESS_COLOR.codex);
+    expect(after).toEqual(destination);
+    fake.takeCalls();
+    clock.tick();
+    expect(fake.takeCalls()).toBe(0);
   });
 
   test("a merge flies the ship to the merged V and its squadron regroups", () => {
     const three = [agent("HAR-1", "running", "claude"), agent("HAR-2", "running", "codex")];
-    const { fake, clock, view, show } = sky(size, [project([...three, agent("HAR-3", "running", "opencode")])]);
-    const at = (ticket: string) => ({ ...view.flock.ships.get(`harbor/${ticket}`)?.target });
-    const before = { one: at("HAR-1"), two: at("HAR-2") };
-
-    show([project([...three, agent("HAR-3", "merged", "opencode")])]);
-    clock.settle();
-    const merged = view.flock.ships.get("harbor/HAR-3");
-    expect(merged).toMatchObject({ color: BONE, depth: 0 });
-    // The two left in progress closed ranks: each has a new place.
-    expect(at("HAR-1")).not.toEqual(before.one);
-    expect(at("HAR-2")).not.toEqual(before.two);
+    const { fake, clock, show } = sky(size, [project([...three, agent("HAR-3", "running", "opencode")])]);
+    const before = [center(fake.ship(HARNESS_COLOR.claude)), center(fake.ship(HARNESS_COLOR.codex))];
+    const changed = [project([...three, agent("HAR-3", "merged", "opencode")])];
+    show(changed);
+    expect(clock.waiting).toBe(1);
+    clock.tick();
     expect(fake.triangles()[HARNESS_COLOR.opencode]).toBeUndefined();
+    clock.settle();
+    expect(clock.waiting).toBe(0);
+    const merged = fake.frame.shapes.filter((t) => t.color === BONE && t.alpha < 0.4);
+    expect(merged).toHaveLength(1);
+    expect(center(fake.ship(HARNESS_COLOR.claude))).not.toEqual(before[0]);
+    expect(center(fake.ship(HARNESS_COLOR.codex))).not.toEqual(before[1]);
+    expect(fake.frame.shapes).toEqual(sky(size, changed).fake.frame.shapes);
   });
 
   test("a session that starts flies in, one that ends flies out and is dropped", () => {
-    const { clock, view, show } = sky(size, [project([agent("HAR-1", "running", "claude")])]);
-    show([project([agent("HAR-2", "running", "codex")])]);
-    clock.tick();
-    const arriving = view.flock.ships.get("harbor/HAR-2");
-    // From below the sky, rising.
-    expect(arriving?.y ?? 0).toBeGreaterThan(SIZES[size][1] - 10);
-    expect(view.flock.ships.get("harbor/HAR-1")?.leaving).toBe(true);
+    const { fake, clock, show } = sky(size, [project([agent("HAR-1", "running", "claude")])]);
+    const departed = center(fake.ship(HARNESS_COLOR.claude));
+    const changed = [project([agent("HAR-2", "running", "codex")])];
+    show(changed);
+    // A just-launched ship fades in; turn enough frames for it to be visible.
+    for (let n = 0; n < 4; n++) clock.tick();
+    const arriving = fake.ship(HARNESS_COLOR.codex);
+    expect(center(arriving).y).toBeGreaterThan(SIZES[size][1] - 10);
+    const leaving = fake.ship(HARNESS_COLOR.claude);
+    expect(center(leaving).y).toBeLessThan(departed.y);
+    expect(leaving.alpha).toBeLessThan(1);
     clock.settle();
-    expect(view.flock.ships.has("harbor/HAR-1")).toBe(false);
-    expect(view.flock.ships.get("harbor/HAR-2")).toMatchObject({ y: arriving?.target.y, tone: 1 });
+    expect(clock.waiting).toBe(0);
+    expect(fake.triangles()[HARNESS_COLOR.claude]).toBeUndefined();
+    expect(fake.ship(HARNESS_COLOR.codex)).toEqual(sky(size, changed).fake.ship(HARNESS_COLOR.codex));
   });
 
   test("with reduced motion, a change is drawn at once and nothing flies", () => {
-    const { fake, clock, view, show } = sky(size, [project([agent("HAR-1", "running", "claude")])]);
-    show([project([agent("HAR-1", "blocked", "claude"), agent("HAR-2", "running", "codex")])], { still: true });
+    const { fake, clock, show } = sky(size, [project([agent("HAR-1", "running", "claude")])]);
+    // Reduced motion cancels an already-running flight as well as placing newcomers.
+    show([project([agent("HAR-1", "blocked", "claude")])]);
+    expect(clock.waiting).toBe(1);
+    const changed = [project([agent("HAR-1", "blocked", "claude"), agent("HAR-2", "running", "codex")])];
+    show(changed, { still: true });
     expect(clock.waiting).toBe(0);
-    expect(view.flock.ships.get("harbor/HAR-1")).toMatchObject({ bank: BLOCKED_BANK, bankV: 0 });
+    expect(fake.frame.shapes).toEqual(sky(size, changed).fake.frame.shapes);
     expect(fake.triangles()[HARNESS_COLOR.codex]).toBe(1);
   });
 
@@ -302,11 +368,10 @@ describe.each(["band", "stage"] as const)("the %s", (size) => {
     expect(fake.triangles()[HARNESS_COLOR.claude]).toBeUndefined();
   });
 
-  test("renders a canvas and a quiet legend, and no h1", () => {
+  test("renders a canvas and a quiet legend", () => {
     const html = renderToStaticMarkup(createElement(Sky, { projects: [FLEET], size }));
     expect(html).toContain(`data-sky="${size}"`);
     expect(html).toContain("<canvas");
-    expect(html).not.toMatch(/<h1[\s>]/);
     const legend = [...html.matchAll(/<li[^>]*>(.*?)<\/li>/g)].map((m) => (m[1] ?? "").replace(/<[^>]+>/g, " ").trim());
     expect(legend.map((l) => l.replace(/\s+/g, " "))).toEqual([
       "Blocked 1",

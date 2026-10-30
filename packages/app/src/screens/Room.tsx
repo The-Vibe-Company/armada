@@ -21,7 +21,6 @@ import { RAIL_ID, Rail } from "@/room/Rail";
 import { Thread } from "@/room/Thread";
 import { ownerQuestions } from "@/room/view";
 import { Sky } from "@/sky/Sky";
-import type { SkyClock } from "@/sky/view";
 
 /** Below this window width the rail starts closed: a third of it would leave the conversation too narrow. */
 const RAIL_MIN_WINDOW = 1100;
@@ -32,13 +31,10 @@ export function Room({
   project: id,
   now: givenNow,
   zone: givenZone,
-  clock,
 }: {
   project: string;
   now?: number;
   zone?: string;
-  /** The sky's frames; a test turns its own. */
-  clock?: SkyClock;
 }) {
   const { projects, fleets, status } = useDaemon();
   const project = projects?.find((p) => p.id === id);
@@ -60,7 +56,6 @@ export function Room({
       live={status === "live"}
       now={givenNow ?? Date.now()}
       zone={givenZone ?? viewerZone()}
-      clock={clock}
     />
   );
 }
@@ -71,7 +66,6 @@ interface RoomProps {
   live: boolean;
   now: number;
   zone: string;
-  clock?: SkyClock;
 }
 
 function ProjectRoom(props: RoomProps) {
@@ -79,7 +73,7 @@ function ProjectRoom(props: RoomProps) {
 }
 
 /** The room on a given conversation: what `Room` draws, and what a test renders with a synthetic one. */
-export function RoomView({ project, snapshot, live, now, zone, clock, chat }: RoomProps & { chat: Chat }) {
+export function RoomView({ project, snapshot, live, now, zone, chat }: RoomProps & { chat: Chat }) {
   const state = snapshot ? fleetOf(snapshot) : EMPTY_STATE;
   const today = dayIn(now, zone);
   // The fleet and the sky change with the fold and with the viewer's day, not with each millisecond.
@@ -163,7 +157,7 @@ export function RoomView({ project, snapshot, live, now, zone, clock, chat }: Ro
       </div>
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <div className={cn("flex min-w-0 flex-1 flex-col", open && "mr-[33.333%]")}>
-          <Sky projects={[sky]} size="band" clock={clock} className="border-line border-b" />
+          <Sky projects={[sky]} size="band" className="border-line border-b" />
           {pinned && (
             <Pinned
               key={pinned.id}
