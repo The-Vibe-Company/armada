@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
@@ -151,6 +151,8 @@ export async function testPlugin(io: Io, path: string, reportPath?: string, json
         JSON.stringify(key === "endpoint" ? endpoint : sandbox).slice(1, -1),
       ),
     ) as PluginConfig;
+    const fixtureFiles = join(directory, "test", "fixtures");
+    if (existsSync(fixtureFiles)) await cp(fixtureFiles, sandbox, { recursive: true });
     const configPath = join(sandbox, "config.json");
     await writeFile(configPath, JSON.stringify({ plugins: [{ id: entry.id, enabled: true, config }] }));
     const events: PluginEvent[] = [];

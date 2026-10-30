@@ -23,6 +23,7 @@ export type {
   WorkerRef,
   Workspace,
 } from "./runtime.js";
+export { isRuntimeLaunchRefusal, RuntimeLaunchRefusal } from "./runtime.js";
 
 import { z } from "zod";
 

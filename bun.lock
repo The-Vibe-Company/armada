@@ -170,6 +170,17 @@
         "@armada/plugin-api": "workspace:*",
       },
     },
+    "packages/plugins/conductor": {
+      "name": "@armada/plugin-conductor",
+      "version": "0.1.0",
+      "dependencies": {
+        "@armada/plugin-api": "workspace:*",
+      },
+      "devDependencies": {
+        "@armada/core": "workspace:*",
+        "@armada/protocol": "workspace:*",
+      },
+    },
     "packages/plugins/github": {
       "name": "@armada/plugin-github",
       "version": "0.1.0",
@@ -270,6 +281,8 @@
     "@armada/plugin-claude": ["@armada/plugin-claude@workspace:packages/plugins/claude"],
 
     "@armada/plugin-codex": ["@armada/plugin-codex@workspace:packages/plugins/codex"],
+
+    "@armada/plugin-conductor": ["@armada/plugin-conductor@workspace:packages/plugins/conductor"],
 
     "@armada/plugin-github": ["@armada/plugin-github@workspace:packages/plugins/github"],
 
