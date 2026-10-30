@@ -9,7 +9,9 @@ import { opencodeRuntime } from "../src/index.ts";
 test("OpenCode's auth list determines connection and piped login forwards input and output safely", async () => {
   const dir = await mkdtemp(join(tmpdir(), "opencode-status-"));
   try {
-    assert.equal((await opencodeRuntime({ binary: join(dir, "absent") }).status!()).state, "missing");
+    const missing = opencodeRuntime({ binary: join(dir, "absent") });
+    assert.ok(missing.status);
+    assert.equal((await missing.status()).state, "missing");
     const binary = join(dir, "opencode");
     const marker = join(dir, "auth");
     await writeFile(
@@ -18,10 +20,12 @@ test("OpenCode's auth list determines connection and piped login forwards input 
     );
     await chmod(binary, 0o700);
     const runtime = opencodeRuntime({ binary });
-    assert.deepEqual(await runtime.status!(), { installed: true, version: "1.4.0", state: "disconnected" });
+    assert.ok(runtime.status);
+    assert.ok(runtime.connect);
+    assert.deepEqual(await runtime.status(), { installed: true, version: "1.4.0", state: "disconnected" });
     const events: AuthEvent[] = [];
     const token = `private-${crypto.randomUUID()}`;
-    await runtime.connect!({
+    await runtime.connect({
       notify: (event) => events.push(event),
       prompt: async (prompt) => {
         assert.equal(prompt.type, "secret");
@@ -31,7 +35,7 @@ test("OpenCode's auth list determines connection and piped login forwards input 
     assert.ok(events.some((event) => event.type === "terminal" && event.output.includes("[redacted]")));
     assert.ok(!JSON.stringify(events).includes(token));
     assert.ok(!JSON.stringify(events).includes("mira@example.test"));
-    assert.equal((await runtime.status!()).state, "connected");
+    assert.equal((await runtime.status()).state, "connected");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -45,9 +49,10 @@ test("native OpenCode selection frames become app choices and password prompts u
     const { fileURLToPath } = await import("node:url");
     const { readFile } = await import("node:fs/promises");
     const runtime = opencodeRuntime({ binary: fileURLToPath(new URL("./select-login.mjs", import.meta.url)) });
+    assert.ok(runtime.connect);
     const token = crypto.randomUUID();
     const prompts: string[] = [];
-    await runtime.connect!({
+    await runtime.connect({
       signal: t.signal,
       notify() {},
       prompt: async (prompt) => {

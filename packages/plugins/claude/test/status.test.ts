@@ -11,7 +11,9 @@ test("Claude uses its configured binary and auth commands and reports the subscr
   const prior = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = dir;
   try {
-    assert.equal((await claudeRuntime({ binary: join(dir, "absent") }).status!()).state, "missing");
+    const missing = claudeRuntime({ binary: join(dir, "absent") });
+    assert.ok(missing.status);
+    assert.equal((await missing.status()).state, "missing");
     const binary = join(dir, "claude");
     await writeFile(
       binary,
@@ -19,13 +21,16 @@ test("Claude uses its configured binary and auth commands and reports the subscr
     );
     await chmod(binary, 0o700);
     const runtime = claudeRuntime({ binary });
-    assert.deepEqual(await runtime.status!(), { installed: true, version: "2.1.0", state: "disconnected" });
+    assert.ok(runtime.status);
+    assert.ok(runtime.connect);
+    assert.ok(runtime.disconnect);
+    assert.deepEqual(await runtime.status(), { installed: true, version: "2.1.0", state: "disconnected" });
     const events: AuthEvent[] = [];
-    await runtime.connect!({ notify: (event) => events.push(event), prompt: async () => "unused" });
+    await runtime.connect({ notify: (event) => events.push(event), prompt: async () => "unused" });
     assert.ok(events.some((event) => event.type === "terminal"));
-    assert.deepEqual((await runtime.status!()).account, { label: "mira@example.test", plan: "Claude Max 20x" });
-    await runtime.disconnect!();
-    assert.equal((await runtime.status!()).state, "disconnected");
+    assert.deepEqual((await runtime.status()).account, { label: "mira@example.test", plan: "Claude Max 20x" });
+    await runtime.disconnect();
+    assert.equal((await runtime.status()).state, "disconnected");
   } finally {
     if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = prior;

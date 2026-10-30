@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -13,7 +13,8 @@ test("Codex reports missing/install/auth plan and connects through its configure
   process.env.CODEX_HOME = home;
   try {
     const missing = codexRuntime({ binary: join(home, "absent") });
-    assert.equal((await missing.status!()).state, "missing");
+    assert.ok(missing.status);
+    assert.equal((await missing.status()).state, "missing");
     const binary = join(home, "codex");
     const authorizationCode = randomBytes(24).toString("hex");
     const urlKey = randomBytes(24).toString("hex");
@@ -26,9 +27,12 @@ test("Codex reports missing/install/auth plan and connects through its configure
     );
     await chmod(binary, 0o700);
     const runtime = codexRuntime({ binary });
-    assert.deepEqual(await runtime.status!(), { installed: true, version: "0.99.0", state: "disconnected" });
+    assert.ok(runtime.status);
+    assert.ok(runtime.connect);
+    assert.ok(runtime.disconnect);
+    assert.deepEqual(await runtime.status(), { installed: true, version: "0.99.0", state: "disconnected" });
     const events: AuthEvent[] = [];
-    await runtime.connect!({ notify: (event) => events.push(event), prompt: async () => "unused" });
+    await runtime.connect({ notify: (event) => events.push(event), prompt: async () => "unused" });
     assert.ok(events.some((event) => event.type === "terminal" && event.output.includes("Open")));
     const authUrl = events.find((event) => event.type === "auth_url");
     assert.ok(authUrl?.type === "auth_url");
@@ -37,11 +41,11 @@ test("Codex reports missing/install/auth plan and connects through its configure
     assert.equal(url.searchParams.get("nonce"), "nonce-marker");
     assert.ok(!JSON.stringify(events).includes(authorizationCode));
     assert.ok(!JSON.stringify(events).includes(urlKey));
-    const status = await runtime.status!();
+    const status = await runtime.status();
     assert.equal(status.state, "connected");
     assert.deepEqual(status.account, { label: "mira@example.test", plan: "ChatGPT Pro" });
-    await runtime.disconnect!();
-    assert.equal((await runtime.status!()).state, "disconnected");
+    await runtime.disconnect();
+    assert.equal((await runtime.status()).state, "disconnected");
   } finally {
     if (prior === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prior;
@@ -60,8 +64,9 @@ test("cancelling a piped Codex login stops its child and reports no credential-b
     await chmod(binary, 0o700);
     const controller = new AbortController();
     const runtime = codexRuntime({ binary });
+    assert.ok(runtime.connect);
     await assert.rejects(
-      runtime.connect!({ signal: controller.signal, notify: () => controller.abort(), prompt: async () => "unused" }),
+      runtime.connect({ signal: controller.signal, notify: () => controller.abort(), prompt: async () => "unused" }),
       /Provider sign-in did not complete/,
     );
     assert.equal(controller.signal.aborted, true);

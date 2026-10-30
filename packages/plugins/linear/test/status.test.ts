@@ -30,8 +30,11 @@ test("Linear validates a secret prompt, stores it in the host keychain and retur
         });
       },
     );
-    assert.equal((await connection.status!()).state, "disconnected");
-    await connection.connect!({
+    assert.ok(connection.status);
+    assert.ok(connection.connect);
+    assert.ok(connection.disconnect);
+    assert.equal((await connection.status()).state, "disconnected");
+    await connection.connect({
       notify() {},
       prompt: async (prompt) => {
         assert.equal(prompt.type, "secret");
@@ -40,7 +43,7 @@ test("Linear validates a secret prompt, stores it in the host keychain and retur
       },
     });
     assert.equal(await keychain.read("plugin", "LINEAR_API_KEY"), key);
-    const status = await connection.status!();
+    const status = await connection.status();
     assert.deepEqual(status, {
       installed: true,
       state: "connected",
@@ -49,8 +52,8 @@ test("Linear validates a secret prompt, stores it in the host keychain and retur
     });
     assert.equal(calls, 2);
     assert.ok(!JSON.stringify(status).includes(key));
-    await connection.disconnect!();
-    assert.equal((await connection.status!()).state, "disconnected");
+    await connection.disconnect();
+    assert.equal((await connection.status()).state, "disconnected");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -65,7 +68,9 @@ test("Linear reuses the Armada key and sanitizes failed verification", async () 
       throw new Error("injected mira@example.test");
     },
   );
-  await connection.connect!({
+  assert.ok(connection.status);
+  assert.ok(connection.connect);
+  await connection.connect({
     notify() {},
     prompt: async () => {
       prompted = true;
@@ -73,7 +78,7 @@ test("Linear reuses the Armada key and sanitizes failed verification", async () 
     },
   });
   assert.equal(prompted, false);
-  assert.deepEqual(await connection.status!(), {
+  assert.deepEqual(await connection.status(), {
     installed: true,
     state: "disconnected",
     detail: "Linear connection could not be verified",

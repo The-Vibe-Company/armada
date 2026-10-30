@@ -29,8 +29,11 @@ test("GitHub falls back to a secret prompt without gh, persists it and reports t
         return Response.json({ login: "MiraOrchard", email: "mira@example.test", token });
       },
     );
-    assert.equal((await connection.status!()).state, "disconnected");
-    await connection.connect!({
+    assert.ok(connection.status);
+    assert.ok(connection.connect);
+    assert.ok(connection.disconnect);
+    assert.equal((await connection.status()).state, "disconnected");
+    await connection.connect({
       notify() {},
       prompt: async (prompt) => {
         assert.equal(prompt.type, "secret");
@@ -38,13 +41,13 @@ test("GitHub falls back to a secret prompt without gh, persists it and reports t
       },
     });
     assert.equal(await keychain.read("plugin", "GITHUB_TOKEN"), token);
-    assert.deepEqual(await connection.status!(), {
+    assert.deepEqual(await connection.status(), {
       installed: true,
       state: "connected",
       account: { label: "MiraOrchard (Saved key)" },
     });
-    await connection.disconnect!();
-    assert.equal((await connection.status!()).state, "disconnected");
+    await connection.disconnect();
+    assert.equal((await connection.status()).state, "disconnected");
   } finally {
     process.env.PATH = path;
     await rm(dir, { recursive: true, force: true });
