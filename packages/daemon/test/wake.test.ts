@@ -167,6 +167,9 @@ test("the durable outbox coalesces 10 seconds, steers, retries the same admissio
     await waker.close();
     store.close();
   });
+  await clock.advance(60_000);
+  assert.equal(store.sequence, 0, "idle startup never appends a fleet event");
+  assert.equal(drafts.length, 0, "idle startup never submits a coordinator turn");
   const open = (id: string) =>
     store.append({
       project,

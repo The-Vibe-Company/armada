@@ -114,7 +114,20 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
   stale.kill("SIGKILL");
   await crashed;
   assert.equal(lstatSync(stalePath).isSocket(), true);
-  writeFileSync(catalog, JSON.stringify(projects.map((project) => ({ ...project, programRoot: "SEED-1" }))));
+  // Boot the same durable conversations regardless of the parent terminal's model settings.
+  writeFileSync(
+    catalog,
+    JSON.stringify(
+      projects.map((project) => ({
+        ...project,
+        programRoot: "SEED-1",
+        coordinatorModel: {
+          kind: "openai-compatible",
+          config: { model: "offline-startup", baseURL: "http://fixture.invalid/v1", apiKeySecret: null },
+        },
+      })),
+    ),
+  );
   writeFileSync(
     join(dir, "config.json"),
     JSON.stringify({
@@ -215,8 +228,21 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
   assert.deepEqual(await exited, [0, null]);
   await closed;
   const reopened = new EventStore(join(dir, "data", "fleet.sqlite"));
-  assert.deepEqual(reopened.readSince(0), []);
-  reopened.close();
+  try {
+    const events = reopened.readSince(0);
+    // Configured coordinators persist pi's initial conversation documents at boot.
+    // Blocked provider reads supply no fleet changes: no wake or model turn is warranted.
+    assert.deepEqual([...new Set(events.map((event) => event.project))].sort(), projects.map((p) => p.id).sort());
+    assert.ok(
+      events.every(
+        (event) =>
+          event.kind === "coordinator.checkpoint" &&
+          (event.payload.checkpoint as { format?: unknown }).format === "armada.pi",
+      ),
+    );
+  } finally {
+    reopened.close();
+  }
 });
 
 // Each transport scenario owns a real SQLite store and an OS-assigned loopback port.
