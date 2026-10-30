@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { ChildProcess, execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { setImmediate } from "node:timers/promises";
 import { promisify } from "node:util";
 import { guarded } from "@armada/plugin-api/guard";
 import { createLocalNode } from "../src/index.ts";
@@ -329,6 +330,79 @@ test("stop and kill deadlines reject zero", () => {
   assert.throws(() => createLocalNode({ stopTimeoutMs: 0 }), /stopTimeoutMs.*positive integer/);
   assert.throws(() => createLocalNode({ killTimeoutMs: 0 }), /killTimeoutMs.*positive integer/);
 });
+
+for (const childError of [undefined, "ESRCH", "EPERM"]) {
+  test(`stop waits for child closure after group EPERM and child ${childError ?? "success"}`, {
+    skip: process.platform === "win32",
+  }, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), "armada-node-local-"));
+    const kill = process.kill.bind(process);
+    let groupPid: number | undefined;
+    try {
+      const source = await repository(root);
+      const node = createLocalNode({ workspaceRoot: join(root, "workspaces"), transport: "pipe" });
+      const workspace = await node.prepare({
+        project: "local-test",
+        ticket: "CHECK-1",
+        repository: source,
+        branch: "closing-worker-branch",
+      });
+      const script = join(workspace.path, "worker.mjs");
+      await writeFile(script, "process.stdin.resume(); process.stdin.on('end', () => process.exit(1));\n");
+      const worker = await launch(node, workspace, "session-closing");
+      assert.equal((await node.observe(worker)).state, "running");
+
+      let signalChild!: (child: ChildProcess) => void;
+      const signaled = new Promise<ChildProcess>((resolve) => {
+        signalChild = resolve;
+      });
+      t.mock.method(process, "kill", (pid: number) => {
+        assert(pid < 0, "stop must attempt the process group");
+        groupPid = pid;
+        throw Object.assign(new Error("process group already exited"), { code: "EPERM" });
+      });
+      t.mock.method(ChildProcess.prototype, "kill", function (this: ChildProcess) {
+        signalChild(this);
+        if (childError) throw Object.assign(new Error("child already exited"), { code: childError });
+        return true;
+      });
+
+      let settled = false;
+      const stopped = guarded(
+        worker,
+        () => {},
+        () => node.stop(worker),
+      ).finally(() => {
+        settled = true;
+      });
+      const child = await Promise.race([
+        signaled,
+        stopped.then(() => {
+          throw new Error("stop resolved before signaling the child");
+        }),
+      ]);
+      await setImmediate(); // drain promise adoption without waiting on a clock
+      assert.equal(settled, false, "a tolerated signal error must still wait for close");
+      child.stdin?.end();
+      await stopped;
+      assert.equal((await node.observe(worker)).state, "stopped");
+      await rm(script);
+      assert(node.dispose);
+      await node.dispose(workspace);
+      await assert.rejects(stat(workspace.path), /ENOENT/);
+    } finally {
+      t.mock.restoreAll();
+      if (groupPid !== undefined) {
+        try {
+          kill(groupPid, "SIGKILL");
+        } catch (error) {
+          assert.equal((error as NodeJS.ErrnoException).code, "ESRCH");
+        }
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("a missing executable returns a failed handle that can still be observed and stopped", async () => {
   const root = await mkdtemp(join(tmpdir(), "armada-node-local-"));
