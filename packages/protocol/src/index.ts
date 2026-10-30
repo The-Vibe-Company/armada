@@ -31,6 +31,7 @@ import {
   modelsRequestSchemas,
 } from "./models.js";
 import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
+import { providerRequestSchemas, providersCatalogSchema } from "./providers.js";
 import {
   sessionOutputRequestSchema,
   sessionOutputResultSchema,
@@ -44,6 +45,7 @@ export * from "./chat.js";
 export * from "./fleet.js";
 export * from "./models.js";
 export * from "./plugins.js";
+export * from "./providers.js";
 export * from "./rules.js";
 export * from "./session.js";
 
@@ -122,6 +124,7 @@ export const clientMessageSchema = /* @__PURE__ */ z.discriminatedUnion("type", 
   ...pluginRequestSchemas,
   ...authRequestSchemas,
   ...modelsRequestSchemas,
+  ...providerRequestSchemas,
 ]);
 export type CredentialsResult = z.infer<typeof credentialsResultSchema>;
 export type ListProjectsRequest = z.infer<typeof listProjectsRequestSchema>;
@@ -218,6 +221,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   ...pluginResultSchemas,
   ...authResultSchemas,
   modelsCatalogSchema,
+  providersCatalogSchema,
 ]);
 export type ProjectsResult = z.infer<typeof projectsResultSchema>;
 export type Subscribed = z.infer<typeof subscribedSchema>;

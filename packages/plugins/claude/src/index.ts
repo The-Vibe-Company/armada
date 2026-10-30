@@ -1,7 +1,9 @@
 import type { NodeProvider, PluginContext, RuntimeProvider, WorkerRef } from "@armada/plugin-api";
+import { claudeConnection } from "./status.ts";
 
 interface ClaudeOptions {
   command?: string;
+  binary?: string;
   args?: string[];
 }
 const same = (a: WorkerRef, b: WorkerRef) =>
@@ -72,6 +74,7 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
     return value.reply;
   };
   return {
+    ...claudeConnection(options.binary ?? options.command ?? "claude"),
     withNode: (selected) => claudeRuntime(options, selected),
     prepare: (request) => facilities().prepare(request),
     async launch(request) {
@@ -79,7 +82,7 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
       const stream = !request.command;
       const ref = await facilities().launch({
         ...request,
-        command: request.command || options.command || "claude",
+        command: request.command || options.binary || options.command || "claude",
         args: stream
           ? [
               ...(options.args ?? []),

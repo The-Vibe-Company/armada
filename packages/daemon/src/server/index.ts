@@ -9,6 +9,7 @@ import {
   eventSchema,
   MODELS_MINOR,
   type ModelKindEntry,
+  PROVIDERS_MINOR,
   type Project,
   type ProjectTables,
   type ProtocolError,
@@ -34,6 +35,7 @@ import { AuthFlows } from "./auth.ts";
 import { dispatchChat } from "./chat.ts";
 import { type ChatClock, ChatLive } from "./chat-live.ts";
 import { dispatchPlugins, isPluginsRequest, type PluginHost } from "./plugins.ts";
+import type { Providers } from "./providers.ts";
 import { dispatchSession } from "./session.ts";
 import { serveStatic } from "./static.ts";
 
@@ -63,6 +65,7 @@ export interface ServerOptions {
   resolveCoordinator?: (project: string) => Promise<CoordinatorOptions | undefined>;
   /** The app's Plugins screen; without it, plugin requests answer `not-found`. */
   plugins?: PluginHost;
+  providers?: Providers;
   /**
    * Asked by `daemon.restart` once the answer is sent: the host closes and exits
    * for its supervisor to start it again. Without it the app says to quit and reopen.
@@ -138,7 +141,14 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   const minors = new Map<WebSocket, number>();
   const auth = new AuthFlows();
   const chat = new ChatLive(options.chatClock);
+  const providerFlows = new Map<WebSocket, Set<string>>();
+  const stopProviders = options.providers?.subscribe((providers) => {
+    for (const [ws, minor] of minors)
+      if (minor >= PROVIDERS_MINOR)
+        send(ws, { type: "providers.catalog", version, id: `push:${randomUUID()}`, providers });
+  });
   const unsubscribeAccount = options.account?.subscribe((state) => {
+    void options.providers?.refresh(true).catch(() => {});
     for (const [ws, minor] of minors)
       if (minor >= ACCOUNT_MINOR) send(ws, { type: "account.result", version, ...state });
   });
@@ -343,6 +353,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       connections.delete(ws);
       minors.delete(ws);
       void auth.cancel(ws);
+      providerFlows.delete(ws);
     });
     ws.on("message", (data, binary) => {
       if (closing || refused) return;
@@ -367,13 +378,66 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       const request = admitted.request;
       minors.set(ws, request.version.minor);
       try {
+        if (request.type === "providers.connect") {
+          const providers = options.providers;
+          if (!providers) return error(ws, request.id, "not-found", "This daemon has no provider catalog");
+          const provider = request.provider ?? request.id;
+          const flows = providerFlows.get(ws) ?? new Set<string>();
+          providerFlows.set(ws, flows);
+          flows.add(request.id);
+          auth.start(
+            ws,
+            request.id,
+            (frame) => {
+              if (frame.type === "error") flows.delete(request.id);
+              send(ws, frame);
+            },
+            async (interaction) => {
+              try {
+                await providers.connect(provider, interaction);
+                interaction.signal?.throwIfAborted();
+                const catalog = await providers.refresh(true);
+                interaction.signal?.throwIfAborted();
+                send(ws, { type: "providers.catalog", version, id: request.id, providers: catalog });
+              } finally {
+                flows.delete(request.id);
+              }
+            },
+            `plugin:${provider}`,
+          );
+          return;
+        }
+        if (request.type === "providers.answer") {
+          const flow = request.flow ?? providerFlows.get(ws)?.values().next().value;
+          if (
+            !flow ||
+            !providerFlows.get(ws)?.has(flow) ||
+            !auth.answer(ws, flow, request.promptId ?? request.id, request.value)
+          )
+            error(ws, request.id, "invalid-message", "No such sign-in prompt");
+          return;
+        }
         if (
-          request.type === "account.status" ||
-          request.type === "account.login" ||
-          request.type === "account.logout"
+          request.type === "providers.list" ||
+          request.type === "providers.disconnect" ||
+          request.type === "providers.cancel"
         ) {
-          if (!options.account) return error(ws, request.id, "offline", "Armada account is unavailable");
-          void options.account.dispatch(request, (reply) => send(ws, reply));
+          const providers = options.providers;
+          if (!providers) return error(ws, request.id, "not-found", "This daemon has no provider catalog");
+          void (async () => {
+            if (request.type === "providers.cancel") {
+              const flow = request.flow ?? providerFlows.get(ws)?.values().next().value;
+              if (!flow || !providerFlows.get(ws)?.has(flow) || !(await auth.cancel(ws, flow)))
+                return error(ws, request.id, "invalid-message", "No such provider sign-in flow");
+            } else if (request.type === "providers.disconnect") {
+              const provider = request.provider ?? request.id;
+              await auth.cancelScope(`plugin:${provider}`);
+              await providers.disconnect(provider);
+            }
+            send(ws, { type: "providers.catalog", version, id: request.id, providers: await providers.refresh() });
+          })().catch(() =>
+            error(ws, request.id, "internal", "Provider connection did not complete. Check its status and try again."),
+          );
           return;
         }
         if (request.type === "auth.answer") {
@@ -383,9 +447,17 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         }
         if (request.type === "auth.cancel") {
           void (async () => {
+            const providerFlow = providerFlows.get(ws)?.has(request.flow) ?? false;
             if (!(await auth.cancel(ws, request.flow)))
               return error(ws, request.id, "invalid-message", "No such sign-in flow");
-            await catalog(ws, request.id, false, request.version.minor);
+            if (providerFlow && options.providers)
+              send(ws, {
+                type: "providers.catalog",
+                version,
+                id: request.id,
+                providers: await options.providers.refresh(true),
+              });
+            else await catalog(ws, request.id, false, request.version.minor);
           })().catch(() => error(ws, request.id, "internal", "Could not read model catalog"));
           return;
         }
@@ -447,6 +519,15 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           });
           return;
         }
+        if (
+          request.type === "account.status" ||
+          request.type === "account.login" ||
+          request.type === "account.logout"
+        ) {
+          if (!options.account) return error(ws, request.id, "offline", "Armada account is unavailable");
+          void options.account.dispatch(request, (reply) => send(ws, reply));
+          return;
+        }
         if (request.type === "credentials.set" || request.type === "credentials.status") {
           if (pendingCredentials >= 32)
             return error(ws, request.id, "invalid-message", "Too many pending credential requests");
@@ -490,7 +571,10 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
                 if (!closing) options.restart?.();
                 return;
               }
-              send(ws, await dispatchPlugins(request, host, !!options.restart));
+              const result = await dispatchPlugins(request, host, !!options.restart);
+              send(ws, result);
+              if (result.type === "plugins.result" && request.type !== "plugins.list")
+                await options.providers?.refresh(true);
             } catch {
               error(ws, request.id, "internal", "The daemon could not read its plugins");
             } finally {
@@ -590,6 +674,10 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       });
     });
   } catch (error) {
+    stopProviders?.();
+    options.providers?.close();
+    unsubscribeAccount?.();
+    await auth.close();
     unsubscribe();
     sockets.close();
     throw error;
@@ -601,9 +689,12 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   const close = () => {
     closed ??= (async () => {
       closing = true;
+      const authClosing = auth.close();
+      stopProviders?.();
+      options.providers?.close();
+      providerFlows.clear();
       unsubscribeAccount?.();
       const accountClosed = options.account?.close();
-      const authClosing = auth.close();
       unsubscribe();
       for (const ws of sockets.clients) ws.terminate();
       connections.clear();
@@ -617,9 +708,9 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         transport,
         credentialQueue,
         pluginQueue,
+        authClosing,
         coordinatorManager?.close(),
         accountClosed,
-        authClosing,
       ]);
       const failed = results.find((result) => result.status === "rejected");
       if (failed?.status === "rejected") throw failed.reason;

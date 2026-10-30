@@ -1,8 +1,10 @@
 import type { NodeProvider, PluginContext, RuntimeProvider, WorkerRef } from "@armada/plugin-api";
 import { DRIVER } from "./driver.ts";
+import { opencodeConnection } from "./status.ts";
 
 interface Options {
   command?: string;
+  binary?: string;
   model?: string;
   effort?: string;
   extraArgs?: string[];
@@ -57,6 +59,7 @@ export function opencodeRuntime(options: Options = {}, node?: NodeProvider): Run
     }
   };
   return {
+    ...opencodeConnection(options.binary ?? options.command ?? "opencode"),
     withNode: (selected) => opencodeRuntime(options, selected),
     prepare: (request) => facilities().prepare(request),
     async launch(request) {
@@ -85,7 +88,7 @@ export function opencodeRuntime(options: Options = {}, node?: NodeProvider): Run
                 "--input-type=module",
                 "-e",
                 DRIVER,
-                JSON.stringify({ command: options.command ?? "opencode", model, effort, extraArgs }),
+                JSON.stringify({ command: options.binary ?? options.command ?? "opencode", model, effort, extraArgs }),
               ],
             }
           : request,

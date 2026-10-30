@@ -397,3 +397,42 @@ custom endpoint settings remain supported. The pinned pi 1.4.0 package does not
 export its `findEnvKeys` helper as a package subpath, so the registry imports
 that module beside the daemon dependency; the desktop build bundles it and
 pi's statically registered OAuth flows.
+
+
+### Provider connections (protocol minor 10)
+
+`providers.list` returns `providers.catalog { providers }`, ordered agents, trackers,
+forges, models, then nodes. Each entry has `id`, `seam`, `name`, `mark`, optional CLI
+`version`, connection `state` (`connected`, `disconnected`, `missing`), optional
+`account { label, plan? }` and `detail`, the saved `enabled` switch, safe
+`config { binary?, routing? }`, and `restartRequired`. Connection state is independent
+of the switch. Bundled providers default to enabled; the sample `hello` does not.
+A changed status or saved switch broadcasts the catalog to clients at minor 10 or
+newer. Listing and completing a connection refresh status; the daemon also refreshes
+every five minutes. No credential or raw CLI auth metadata is part of this catalog.
+
+`providers.connect { id: requestId, provider: providerId }` starts the generic
+`auth.event` / `auth.prompt` flow from minor 9; its `flow` is the initiating request
+id. A bare `{ type: "providers.connect", id: "codex" }` is also supported. Generic
+`auth.answer { flow, id: promptId, value }` and `auth.cancel { id, flow }` work for
+both model and provider sign-in. Provider convenience aliases are
+`providers.answer { id: promptId, value }` and `providers.cancel { id }`.
+Aliases may supply `flow` explicitly; `promptId` can disambiguate the prompt from
+an envelope correlation id. Omitted flow binds only to the initiating socket's
+current provider sign-in. The client's `answerProvider(promptId, value)` also
+accepts the explicit `(flow, promptId, value)` form.
+Answers are ephemeral and never echoed. The initiating connection alone may answer
+or cancel; dropping it aborts the child process and pending prompt. Completion
+returns the refreshed `providers.catalog`; failure returns a sanitized `error`.
+`providers.disconnect { id: requestId, provider: providerId }` signs out and refreshes.
+
+Runtime configuration accepts `binary` (an executable path, without shell syntax),
+with the former `command` as fallback. Read it from the catalog; edit it with the
+existing `plugins.configure` request (`seam: "runtime"`, `kind: providerId`), retaining
+other configuration fields. A binary/configuration change applies after restarting
+Armada and is marked `restartRequired`. Status probes and connection subprocesses
+use the same binary as worker launches. A CLI login streams sanitized terminal
+output and URLs; the app owns opening the browser. Linear or GitHub token prompts
+write only a declared secret through the daemon's credential store. Disconnect
+clears a pasted key; a key supplied by the environment or Armada remains controlled
+by that source.

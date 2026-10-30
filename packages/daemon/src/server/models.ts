@@ -106,8 +106,10 @@ export async function modelEnvironment(
       async get(name: string, project?: string) {
         if (env[name]) return env[name] ?? null;
         if (name === "ARMADA_MODEL_API_KEY")
-          return generic.key ?? (savedSecret === name ? ((await keychain.pluginCoordinator())?.key ?? null) : null);
-        if (name === savedSecret) return (await keychain.pluginCoordinator())?.key ?? null;
+          return (
+            (await value(name)) ?? (savedSecret === name ? ((await keychain.pluginCoordinator())?.key ?? null) : null)
+          );
+        if (name === savedSecret) return (await value(name)) ?? (await keychain.pluginCoordinator())?.key ?? null;
         return accountSecrets ? accountSecrets.get(name, project) : readPluginSecret(name, keychain, env);
       },
     } satisfies PluginContext["secrets"],
