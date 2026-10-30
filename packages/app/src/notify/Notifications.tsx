@@ -5,7 +5,7 @@
 // after a few seconds; "Open the room" opens it.
 import { CircleCheck, MessageCircleQuestionMark, X } from "lucide-react";
 import { AnimatePresence, m } from "motion/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { fleetOf } from "@/fleet/state";
 import { projectHref, routeOf } from "@/lib/route";
@@ -29,7 +29,14 @@ const openRoom = (project: string) => {
   window.location.hash = projectHref(project);
 };
 
-export function Notifications() {
+/** Runs `run` after `ms`; returns its cancel. A test's page hands its own clock. */
+export type Schedule = (run: () => void, ms: number) => () => void;
+const windowSchedule: Schedule = (run, ms) => {
+  const timer = window.setTimeout(run, ms);
+  return () => window.clearTimeout(timer);
+};
+
+export function Notifications({ schedule = windowSchedule }: { schedule?: Schedule }) {
   const client = useDaemonClient();
   const { projects, fleets } = useDaemon();
   const names = useRef(new Map<string, string>());
@@ -70,7 +77,7 @@ export function Notifications() {
     return () => window.removeEventListener("hashchange", change);
   }, []);
   const close = (tag: string) => setToasts((list) => list.filter((t) => t.tag !== tag));
-  return <Toasts toasts={toasts} close={close} open={openRoom} />;
+  return <Toasts toasts={toasts} close={close} open={openRoom} schedule={schedule} />;
 }
 
 /** The toasts, newest at the bottom; each closes itself after TOAST_MS unless hovered or focused. */
@@ -78,14 +85,19 @@ export function Toasts({
   toasts,
   close,
   open,
+  schedule = windowSchedule,
 }: {
   toasts: readonly Notice[];
   close: (tag: string) => void;
   open: (project: string) => void;
+  schedule?: Schedule;
 }) {
   return (
-    <section
-      aria-label="Notifications"
+    // One live region, always there, so each toast that arrives in it is announced; not a landmark of its own.
+    <div
+      aria-live="polite"
+      aria-relevant="additions"
+      data-toasts
       className="pointer-events-none fixed right-4 bottom-4 z-50 flex w-[min(360px,calc(100vw-2rem))] flex-col gap-2"
     >
       <AnimatePresence initial={false}>
@@ -99,6 +111,7 @@ export function Toasts({
           >
             <Toast
               notice={notice}
+              schedule={schedule}
               close={() => close(notice.tag)}
               open={() => {
                 close(notice.tag);
@@ -108,23 +121,33 @@ export function Toasts({
           </m.div>
         ))}
       </AnimatePresence>
-    </section>
+    </div>
   );
 }
 
-function Toast({ notice, close, open }: { notice: Notice; close: () => void; open: () => void }) {
+function Toast({
+  notice,
+  schedule,
+  close,
+  open,
+}: {
+  notice: Notice;
+  schedule: Schedule;
+  close: () => void;
+  open: () => void;
+}) {
   const [held, setHeld] = useState(false);
   const shut = useRef(close);
   shut.current = close;
   useEffect(() => {
     if (held) return;
-    const timer = window.setTimeout(() => shut.current(), TOAST_MS);
-    return () => window.clearTimeout(timer);
-  }, [held]);
+    return schedule(() => shut.current(), TOAST_MS);
+  }, [held, schedule]);
+  const id = useId();
   const Icon = notice.kind === "answered" ? CircleCheck : MessageCircleQuestionMark;
   return (
-    <div
-      role="status"
+    <article
+      aria-labelledby={`${id}-title`}
       data-toast={notice.kind}
       onPointerEnter={() => setHeld(true)}
       onPointerLeave={() => setHeld(false)}
@@ -138,7 +161,9 @@ function Toast({ notice, close, open }: { notice: Notice; close: () => void; ope
         className={notice.kind === "answered" ? "mt-0.5 flex-none text-green" : "mt-0.5 flex-none text-amber"}
       />
       <div className="min-w-0 flex-1">
-        <p className="m-0 font-medium text-body text-text">{NOTICE_TITLE[notice.kind]}</p>
+        <p id={`${id}-title`} className="m-0 font-medium text-body text-text">
+          {NOTICE_TITLE[notice.kind]}
+        </p>
         <p className="m-0 text-body text-text-2">
           <span className="text-text-soft">{notice.name}</span>
           {notice.line && <span className="block truncate">{notice.line}</span>}
@@ -155,6 +180,6 @@ function Toast({ notice, close, open }: { notice: Notice; close: () => void; ope
       >
         <X aria-hidden size={14} />
       </button>
-    </div>
+    </article>
   );
 }

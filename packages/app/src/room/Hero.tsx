@@ -23,9 +23,12 @@ export function StarterAsks({
   asks,
   send,
   disabled,
+  sent,
 }: {
   asks: readonly StarterAsk[];
   send: (body: string) => Promise<void>;
+  /** Sent: the chips leave with the hero, so the focus goes on to the owner's field. */
+  sent?: () => void;
   /** The field is disabled (no coordinator, no connection): so are the chips. */
   disabled: boolean;
 }) {
@@ -37,6 +40,7 @@ export function StarterAsks({
     setProblem(null);
     try {
       await send(text);
+      sent?.();
     } catch (error) {
       setProblem(error instanceof Error ? error.message : "The message was not sent. Try again.");
     } finally {

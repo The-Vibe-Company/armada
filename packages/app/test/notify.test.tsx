@@ -1,8 +1,10 @@
-import { expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { resolve } from "node:path";
 import type { ChatItem, ChatTurn } from "@armada/protocol";
+import { type Browser, chromium, type Page } from "playwright-core";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { FoldedInboxItem } from "../src/fleet/state";
-import { roomOnScreen, Toasts } from "../src/notify/Notifications";
+import { roomOnScreen, TOAST_MS, Toasts } from "../src/notify/Notifications";
 import {
   answerOf,
   createNotifier,
@@ -20,6 +22,7 @@ import { OS_NOTIFICATIONS_KEY, osNotificationsOn } from "../src/notify/settings"
 // screen. On a fake `Notification`, a fake focus
 // and a fake room on screen: a toast when focused, an OS notification and the
 // badge when not, nothing for the room on screen, nothing when the switch is off.
+// Then in Chromium (test/notify-page.tsx): the toast's life and the switch.
 
 const version = { major: 1, minor: 7 };
 const T0 = "2026-03-10T15:00:00.000Z";
@@ -275,7 +278,7 @@ test("a toast says what happened, in which project, its first line, and opens th
       open={() => {}}
     />,
   );
-  expect(html).toContain('aria-label="Notifications"');
+  expect(html).toContain('aria-live="polite"');
   expect(html).toContain('data-toast="question"');
   const words = html
     .replace(/<[^>]+>/g, " ")
@@ -283,4 +286,160 @@ test("a toast says what happened, in which project, its first line, and opens th
     .trim();
   expect(words).toBe("Question for you Harbor Ship HAR-15? Open the room");
   expect(html).toContain('aria-label="Dismiss"');
+});
+
+const ORIGIN = "http://notify.test";
+
+describe("the notifications in a browser", () => {
+  let browser: Browser | undefined;
+  let bundle = "";
+
+  // The page's bundle and the headless shell (installed before the suite) are setup, not behaviour deadlines.
+  beforeAll(async () => {
+    const built = await Bun.build({
+      entrypoints: [resolve(import.meta.dir, "notify-page.tsx")],
+      target: "browser",
+      define: { "process.env.NODE_ENV": '"production"' },
+    });
+    if (!built.success) throw new Error(built.logs.join("\n"));
+    bundle = (await built.outputs[0]?.text()) ?? "";
+    browser = await chromium.launch({ timeout: 15_000 });
+  }, 30_000);
+  afterAll(async () => {
+    await browser?.close();
+  }, 10_000);
+
+  async function open(): Promise<Page> {
+    if (!browser) throw new Error("browser setup did not complete");
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    // No network: the page and its script are served here, anything else is refused.
+    await context.route("**/*", (route) => {
+      const url = new URL(route.request().url());
+      if (url.origin === ORIGIN && url.pathname === "/")
+        return route.fulfill({
+          contentType: "text/html",
+          body: '<!doctype html><div id="root"></div><script type="module" src="/notify.js"></script>',
+        });
+      if (url.href === `${ORIGIN}/notify.js`) return route.fulfill({ contentType: "text/javascript", body: bundle });
+      return route.abort();
+    });
+    await page.goto(`${ORIGIN}/#/projects/harbor`);
+    await page.locator("[data-toasts]").waitFor({ state: "attached", timeout: 5_000 });
+    return page;
+  }
+
+  const elapse = (page: Page, ms: number) =>
+    page.evaluate((n) => (window as unknown as { daemon: { elapse(ms: number): void } }).daemon.elapse(n), ms);
+  const readCount = (page: Page) =>
+    page.evaluate(() => (window as unknown as { daemon: { reads: number } }).daemon.reads);
+
+  /** Lantern's coordinator answers: a turn from 0:11 to 0:16 whose reading holds what it wrote. */
+  // Handed over as JSON: Playwright's argument types do not unwind a tool's JSON input.
+  const answer = (page: Page) =>
+    page.evaluate((json) => {
+      const daemon = (window as unknown as { daemon: { reading(i: unknown): void; emit(f: unknown): void } }).daemon;
+      daemon.reading(JSON.parse(json));
+      daemon.emit({
+        type: "chat.turn",
+        project: "lantern",
+        state: "idle",
+        since: "2026-03-10T15:00:00.000Z",
+        queued: 0,
+      });
+      daemon.emit({
+        type: "chat.turn",
+        project: "lantern",
+        state: "thinking",
+        since: "2026-03-10T15:00:11.000Z",
+        queued: 0,
+      });
+      daemon.emit({
+        type: "chat.turn",
+        project: "lantern",
+        state: "idle",
+        since: "2026-03-10T15:00:16.000Z",
+        queued: 0,
+      });
+    }, JSON.stringify(ANSWERED));
+
+  test("a toast in the live region, held while hovered, gone on its own after its time; Open the room opens it", async () => {
+    const page = await open();
+    expect(await page.evaluate(() => document.hasFocus())).toBe(true);
+    await answer(page);
+    const toast = page.locator('[aria-live="polite"] [data-toast="answered"]');
+    await toast.waitFor({ timeout: 2_000 });
+    expect(await toast.locator("p").allTextContents()).toEqual(["Coordinator answered", "LanternBerths"]);
+    expect(await toast.locator("p span").allTextContents()).toEqual(["Lantern", "Berths"]);
+    // Held while the pointer is on it, however long: its timer is cancelled.
+    await toast.hover();
+    await page.waitForFunction(
+      () => (window as unknown as { daemon: { pending: number } }).daemon.pending === 0,
+      undefined,
+      {
+        timeout: 2_000,
+      },
+    );
+    await elapse(page, 60_000);
+    expect(await toast.count()).toBe(1);
+    // Left alone, it goes.
+    const box = await toast.boundingBox();
+    await page.mouse.move(10, (box?.y ?? 0) + (box?.height ?? 0) + 200);
+    // Released: its time starts again once its timer is set.
+    await page.waitForFunction(
+      () => (window as unknown as { daemon: { pending: number } }).daemon.pending === 1,
+      undefined,
+      {
+        timeout: 2_000,
+      },
+    );
+    await elapse(page, TOAST_MS - 1);
+    expect(await toast.count()).toBe(1);
+    await elapse(page, 1);
+    await toast.waitFor({ state: "detached", timeout: 2_000 });
+
+    // Another answer; its button opens Lantern's room and closes it.
+    await answer(page);
+    await toast.waitFor({ timeout: 2_000 });
+    await toast.getByRole("button", { name: "Open the room" }).click();
+    expect(await page.evaluate(() => location.hash)).toBe("#/projects/lantern");
+    await toast.waitFor({ state: "detached", timeout: 2_000 });
+    // In Lantern's room now: its next answer tells nothing, its conversation not even read.
+    const reads = await readCount(page);
+    await answer(page);
+    expect(await readCount(page)).toBe(reads);
+    expect(await toast.count()).toBe(0);
+    await page.context().close();
+  }, 20_000);
+
+  test("opening the room another way clears its toast; Dismiss closes one", async () => {
+    const page = await open();
+    const toast = page.locator('[data-toast="answered"]');
+    await answer(page);
+    await toast.waitFor({ timeout: 2_000 });
+    await page.evaluate(() => {
+      location.hash = "#/projects/lantern";
+    });
+    await toast.waitFor({ state: "detached", timeout: 2_000 });
+    await page.evaluate(() => {
+      location.hash = "#/settings";
+    });
+    await answer(page);
+    await toast.getByRole("button", { name: "Dismiss" }).click();
+    await toast.waitFor({ state: "detached", timeout: 2_000 });
+    await page.context().close();
+  }, 20_000);
+
+  test("the Settings switch is on by default and keeps off on this device", async () => {
+    const page = await open();
+    const toggle = page.getByRole("switch", { name: "OS notifications" });
+    expect(await toggle.getAttribute("aria-checked")).toBe("true");
+    // No stylesheet here gives the switch a size: it is pressed as a click would.
+    await toggle.dispatchEvent("click");
+    expect(await toggle.getAttribute("aria-checked")).toBe("false");
+    expect(await page.evaluate((key) => localStorage.getItem(key), OS_NOTIFICATIONS_KEY)).toBe("off");
+    await page.reload();
+    expect(await page.getByRole("switch", { name: "OS notifications" }).getAttribute("aria-checked")).toBe("false");
+    await page.context().close();
+  }, 20_000);
 });

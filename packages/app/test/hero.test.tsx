@@ -279,6 +279,8 @@ describe("the hero in a browser", () => {
     expect(await early(page)).toBeGreaterThan(20);
     await page.locator('[data-item="owner"]').getByText("Sum up today").waitFor({ timeout: 2_000 });
     await docked(page);
+    // The chips left with the hero: the focus went on to the field, for what follows.
+    expect(await page.evaluate(() => document.activeElement?.tagName)).toBe("TEXTAREA");
     await page.context().close();
   }, 20_000);
 

@@ -13,3 +13,13 @@ export const BADGE_MAX = 99;
 export function badgeCount(value: unknown): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? Math.min(value, BADGE_MAX) : 0;
 }
+
+/** Whether `url` is a page of the app's own origin (the daemon serving it): only it reaches the bridge. */
+export function fromApp(url: string | undefined, origin: string): boolean {
+  if (!url) return false;
+  try {
+    return new URL(url).origin === new URL(origin).origin;
+  } catch {
+    return false;
+  }
+}

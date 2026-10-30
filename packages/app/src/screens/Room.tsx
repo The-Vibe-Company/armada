@@ -116,6 +116,7 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
   // Open by default (the direction), unless the window is too narrow to keep the conversation readable beside it.
   const [open, setOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= RAIL_MIN_WINDOW);
   const toggle = useRef<HTMLButtonElement>(null);
+  const column = useRef<HTMLDivElement>(null);
   const questions = ownerQuestions(state);
   const pinned = questions[0];
   const history = useMemo(() => ownerHistory(chat.items), [chat.items]);
@@ -204,7 +205,7 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
         />
       </div>
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
-        <div className={cn("flex min-w-0 flex-1 flex-col", open && "mr-[33.333%]")}>
+        <div ref={column} className={cn("flex min-w-0 flex-1 flex-col", open && "mr-[33.333%]")}>
           <Sky projects={[sky]} size="band" className="border-line border-b" />
           {pinned && (
             <Pinned
@@ -261,7 +262,14 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
               model={model}
             />
           </m.div>
-          {hero && <StarterAsks asks={asks} send={chat.send} disabled={closed} />}
+          {hero && (
+            <StarterAsks
+              asks={asks}
+              send={chat.send}
+              disabled={closed}
+              sent={() => column.current?.querySelector<HTMLTextAreaElement>("[data-composer] textarea")?.focus()}
+            />
+          )}
         </div>
         <AnimatePresence initial={false}>
           {open && (
