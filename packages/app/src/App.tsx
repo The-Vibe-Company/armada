@@ -15,8 +15,7 @@ const Room = lazy(() => import("@/screens/Room").then((m) => ({ default: m.Room 
 const Session = lazy(() => import("@/screens/Session").then((m) => ({ default: m.Session })));
 // The notifications (THE-2055): every screen hears them, off the first load, once the shell is drawn.
 const Notifications = lazy(() => import("@/notify/Notifications").then((m) => ({ default: m.Notifications })));
-// The screens of the app's own settings: off the first load (perf-budget.json), fetched when opened.
-const Plugins = lazy(() => import("@/screens/Plugins").then((m) => ({ default: m.Plugins })));
+// The app's own settings: off the first load (perf-budget.json), fetched when opened.
 const Settings = lazy(() => import("@/screens/Settings").then((m) => ({ default: m.Settings })));
 
 export function App({
@@ -43,10 +42,10 @@ export function App({
           <Suspense fallback={null}>
             <Session key={session.ticket} ticket={session.ticket} tab={session.tab} />
           </Suspense>
-        ) : route.kind === "plugins" ? (
+        ) : route.kind === "settings" ? (
           // The shell stays while the screen's code arrives.
           <Suspense fallback={null}>
-            <Plugins />
+            <Settings section={route.section} address={address} onReload={onReload} />
           </Suspense>
         ) : route.kind === "project" ? (
           <Suspense>
@@ -54,10 +53,6 @@ export function App({
           </Suspense>
         ) : route.kind === "rules" ? (
           <Project id={route.id} onReload={onReload} />
-        ) : route.kind === "settings" ? (
-          <Suspense fallback={null}>
-            <Settings address={address} onReload={onReload} />
-          </Suspense>
         ) : (
           <Hangar onReload={onReload} />
         )}

@@ -1,14 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { type ClientMessage, type Plugin, PROTOCOL_VERSION } from "@armada/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
+import { routeOf, type SettingsSection } from "../src/lib/route";
 import { configFields, configValue } from "../src/plugins/schema";
 import { createDaemonClient, NO_PLUGINS, type SocketLike, UNCONFIRMED } from "../src/protocol/client";
 import { DaemonProvider } from "../src/protocol/store";
-import { Plugins } from "../src/screens/Plugins";
+import { Settings } from "../src/screens/Settings";
 
-// The Plugins screen (THE-2019) on a synthetic catalog, as the daemon lists it
-// over a fake socket: the groups, the switches, the config forms, a switch's
-// message, the restart notice, and the list after a fake restart.
+// The Settings page (THE-2069) on a synthetic catalog, as the daemon lists it
+// over a fake socket: its route table and nav, then Providers (the Plugins
+// screen of THE-2019 moved in): the groups, the switches, the folded config
+// forms, a switch's message, the restart notice, and the list after a fake restart.
 
 const V = PROTOCOL_VERSION;
 
@@ -87,7 +89,20 @@ const hello: Plugin = {
   restartRequired: false,
   contributions: [],
 };
-const catalog = [hello, node, tracker, runtime];
+const model: Plugin = {
+  id: "oracle",
+  version: "2.0.0",
+  description: "Thinks with the oracle's models",
+  enabled: true,
+  loaded: true,
+  restartRequired: false,
+  // A plugin is listed once, under the first group it provides to.
+  contributions: [
+    { seam: "runtime", kind: "oracle-cli", schema: true, config: {}, secrets: [] },
+    { seam: "model", kind: "oracle", schema: true, config: {}, secrets: [] },
+  ],
+};
+const catalog = [hello, node, tracker, runtime, model];
 
 function setup(minor: number = V.minor) {
   const sockets: FakeSocket[] = [];
@@ -111,16 +126,16 @@ function setup(minor: number = V.minor) {
     socket().receive({ type: "projects.result", version: { ...V, minor }, id: "r1", projects: [] });
   };
   connect();
-  const render = () =>
+  const render = (section: SettingsSection = "providers") =>
     renderToStaticMarkup(
       <DaemonProvider client={client}>
-        <Plugins />
+        <Settings section={section} address="ws://127.0.0.1:4824/" onReload={() => {}} />
       </DaemonProvider>,
     );
   return { client, socket, connect, timers, render };
 }
 
-/** The list as it reads: each group's header, then each row's plugin, state and switch. */
+/** The list as it reads: each group's header, then each row's plugin, state on its dot and switch. */
 function rows(html: string) {
   return html
     .split(/(?=<h2\b|<div data-plugin=)/)
@@ -131,13 +146,60 @@ function rows(html: string) {
         return `${label} (${count})`;
       }
       const id = block.match(/data-plugin="([^"]+)"/)?.[1];
-      const state = block.match(/data-state="true" class="[^"]* (text-[a-z0-9-]+)"[^>]*>([^<]*)</);
+      const state = block.match(
+        /data-state="true"(?: title="[^"]*")? class="[^"]* (text-[a-z0-9-]+)"><span aria-hidden="true" class="[^"]* (bg-[a-z0-9-]+)"><\/span><span>([^<]*)</,
+      );
       const on = block.match(/role="switch"[^>]*aria-checked="(true|false)"/)?.[1];
-      return `  ${id} | ${state?.[2]} ${state?.[1]} | ${on === "true" ? "on" : "off"}`;
+      return `  ${id} | ${state?.[3]} ${state?.[1]} ${state?.[2]} | ${on === "true" ? "on" : "off"}`;
     });
 }
 
-test("lists the catalog by seam, with each plugin's switch, state and config form", () => {
+/** The nav's links: each section's address, and whether it is the current one. */
+const nav = (html: string) =>
+  [...(html.match(/<nav aria-label="Settings sections".*?<\/nav>/)?.[0] ?? "").matchAll(/<a\b[^>]*>/g)].map((a) => {
+    const href = a[0].match(/href="([^"]+)"/)?.[1];
+    return `${href}${a[0].includes('aria-current="page"') ? " (current)" : ""}`;
+  });
+
+test("the address names a section of the settings; the Plugins screen's old one lands on Providers", () => {
+  expect(routeOf("#/settings")).toEqual({ kind: "settings", section: "coordinator" });
+  expect(routeOf("#/settings/")).toEqual({ kind: "settings", section: "coordinator" });
+  for (const section of ["coordinator", "providers", "account", "about"] as const)
+    expect(routeOf(`#/settings/${section}`)).toEqual({ kind: "settings", section });
+  expect(routeOf("#/settings/elsewhere")).toEqual({ kind: "settings", section: "coordinator" });
+  expect(routeOf("#/settings/providers/more")).toEqual({ kind: "home" });
+  // One `location.replace` (useRoute) to the providers' address; providers until it lands.
+  expect(routeOf("#/plugins")).toEqual({ kind: "settings", section: "providers", redirect: "#/settings/providers" });
+});
+
+test("the nav lists every section and marks the one shown, beside its content, under one title", () => {
+  const { socket, render } = setup();
+  socket().receive({
+    type: "plugins.result",
+    id: socket().last("plugins.list").id,
+    plugins: catalog,
+    restartable: true,
+  });
+  for (const section of ["coordinator", "providers", "account", "about"] as const) {
+    const html = render(section);
+    expect(nav(html)).toEqual(
+      ["coordinator", "providers", "account", "about"].map(
+        (s) => `#/settings/${s}${s === section ? " (current)" : ""}`,
+      ),
+    );
+    // Only the current section is a tab stop: the arrow keys move between the others.
+    expect(html.match(/<a\b[^>]*tabindex="0"[^>]*>/g)).toHaveLength(1);
+    expect(html.match(/<h1\b[^>]*>(.*?)<\/h1>/g)).toEqual([expect.stringContaining(">Settings</h1>")]);
+  }
+  expect(render("account")).toMatch(
+    /Sign in to Armada.*Coming with THE-2071.*<button[^>]*disabled=""[^>]*>Sign in<\/button>/,
+  );
+  const about = render("about");
+  expect(about).toContain("ws://127.0.0.1:4824/");
+  expect(about).toMatch(/data-protocol[^>]*>.*>1\.\d+<.*daemon.*>1\.\d+</);
+});
+
+test("Providers lists the catalog by seam, with each plugin's switch, state on a dot and folded settings", () => {
   const { socket, render } = setup();
   expect(socket().last("plugins.list")).toBeDefined();
   socket().receive({
@@ -148,24 +210,28 @@ test("lists the catalog by seam, with each plugin's switch, state and config for
   });
   const html = render();
   expect(rows(html)).toEqual([
+    "Models (1)",
+    "  oracle | Loaded text-green bg-green | on",
     "Runtimes (1)",
-    "  skiff | Loaded text-green | on",
+    "  skiff | Loaded text-green bg-green | on",
     "Trackers (1)",
-    "  ledger | Refused text-red | on",
+    "  ledger | Refused text-red bg-red | on",
     "Nodes (1)",
-    "  dinghy | Off text-text-3 | off",
+    "  dinghy | Off text-text-3 bg-text-3 | off",
     "Other (1)",
-    "  hello | Loaded text-green | on",
+    "  hello | Loaded text-green bg-green | on",
   ]);
-  expect(html).toContain("4 plugins");
+  expect(html).toContain("5 plugins");
   expect(html).toContain("1 refused");
   expect(html).toContain("pluginApi ^9.0.0 excludes daemon Plugin API 0.1.0");
   // The anatomy: one h1, the title, under the facts line.
   expect(html.match(/<h1\b/g)).toHaveLength(1);
-  expect(html).toMatch(/<header[^>]*>(?:(?!<\/header>).)*4 plugins(?:(?!<\/header>).)*<h1[^>]*>Plugins<\/h1>/);
-  // Skiff's form, from its schema: each field labelled, typed and filled with the saved value or the default.
+  expect(html).toMatch(/<header[^>]*>(?:(?!<\/header>).)*5 plugins(?:(?!<\/header>).)*<h1[^>]*>Settings<\/h1>/);
+  // Skiff's form, from its schema, folded below its row until opened: each field labelled, typed and filled with the saved value or the default.
   const skiff = html.split('data-plugin="skiff"')[1]?.split("data-plugin=")[0] ?? "";
-  expect(skiff).toContain("Configure");
+  expect(skiff).toMatch(
+    /<button type="button" aria-expanded="false" aria-controls="([^"]+)"[^>]*>.*Settings<\/button><div id="\1" hidden=""/,
+  );
   const labels = [...skiff.matchAll(/<label [^>]*>(.*?)<\/label>/g)].map((m) => m[1]?.replace(/<[^>]+>/g, ""));
   expect(labels).toEqual(["Binary", "model (optional)", "turns (optional)", "verbose (optional)"]);
   const input = (name: string) => skiff.match(new RegExp(`<input[^>]*name="config:${name}"[^>]*>`))?.[0] ?? "";
@@ -179,11 +245,11 @@ test("lists the catalog by seam, with each plugin's switch, state and config for
   // Its declared secret: missing, with the way to set it. Ledger's is set; dinghy takes nothing.
   expect(skiff).toMatch(/SKIFF_TOKEN<\/span><span class="[^"]*text-amber">Missing<\/span>.*>Set<\/button>/);
   expect(html).toMatch(/LEDGER_KEY<\/span><span class="[^"]*text-green">Set<\/span>.*>Replace<\/button>/);
-  expect(html.split('data-plugin="dinghy"')[1]?.split("data-plugin=")[0]).not.toContain("Configure");
+  expect(html.split('data-plugin="dinghy"')[1]?.split("data-plugin=")[0]).not.toContain("aria-expanded");
   expect(html).not.toContain("data-restart-notice");
 });
 
-test("a switch sends its message and says to restart; after the restart the row reads loaded", async () => {
+test("a switch sends its message and says to restart; a setting is saved; after the restart the row reads loaded", async () => {
   const { client, socket, connect, timers, render } = setup();
   socket().receive({
     type: "plugins.result",
@@ -199,7 +265,7 @@ test("a switch sends its message and says to restart; after the restart the row 
   socket().receive({ type: "plugins.result", id: asked.id, plugins: changed, restartable: true });
   await switched;
   let html = render();
-  expect(rows(html)).toContain("  dinghy | Restart to apply text-amber | on");
+  expect(rows(html)).toContain("  dinghy | Restart to apply text-amber bg-amber | on");
   expect(html).toMatch(/data-restart-notice[^>]*>.*Restart to apply\..*One plugin changed since the daemon started\./);
   expect(html).toMatch(/data-restart-notice.*>Restart<\/button>/);
 
@@ -248,7 +314,7 @@ test("a switch sends its message and says to restart; after the restart the row 
     restartable: true,
   });
   html = render();
-  expect(rows(html)).toContain("  dinghy | Loaded text-green | on");
+  expect(rows(html)).toContain("  dinghy | Loaded text-green bg-green | on");
   expect(html).not.toContain("data-restart-notice");
 });
 
