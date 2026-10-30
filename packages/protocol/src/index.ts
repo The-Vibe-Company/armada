@@ -31,7 +31,7 @@ import {
 } from "./models.js";
 import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
 import { PROJECTS_MINOR, projectRequestSchemas, projectSchema, projectsInspectionSchema } from "./projects.js";
-import { PROVIDERS_MINOR, providerRequestSchemas, providersCatalogSchema } from "./providers.js";
+import { providerRequestSchemas, providersCatalogSchema } from "./providers.js";
 import {
   sessionOutputRequestSchema,
   sessionOutputResultSchema,
