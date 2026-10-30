@@ -4,6 +4,7 @@ import type { ChatItem, ChatTurn } from "@armada/protocol";
 import { type Browser, chromium, type Page } from "playwright-core";
 import { afterReading, applyFrame, type Live, NO_LIVE, threadItems } from "../src/room/chat";
 import { liveThoughtLine, workingTimer } from "../src/room/Live";
+import { workRows } from "../src/room/view";
 
 // The coordinator's turn live in the room (THE-2052): the rules that keep it
 // beside the reading on synthetic frames, then the room itself in Chromium on
@@ -67,6 +68,23 @@ test("deltas carry the whole text so far, by id; a reading that holds the id tak
   expect(afterReading(live, final, turn("idle", at(7))).entries).toEqual([]);
   // A reading's turn seeds a room that heard none.
   expect(afterReading(NO_LIVE, [], turn("tool", at(2))).turn?.state).toBe("tool");
+});
+
+test("the work above an answer being written stays open; its reading folds it in the same row", () => {
+  const call = { kind: "tool" as const, ...tool, id: "t8:call-0", at: at(2), output: "{}" };
+  const writing = workRows([
+    call,
+    { kind: "streaming", id: "g4:2", at: at(3), text: "Merging #41.", reasoning: "" },
+  ]).map((r) => [r.kind, r.id]);
+  expect(writing).toEqual([
+    ["work", "work:t8:call-0"],
+    ["said", "g4:2"],
+  ]);
+  const read = workRows([call, { kind: "coordinator", id: "g4:2", at: at(9), body: "Merging #41." }]);
+  expect(read.map((r) => [r.kind, r.id])).toEqual([
+    ["fold", "work:t8:call-0"],
+    ["said", "g4:2"],
+  ]);
 });
 
 test("a thought's closed line is its first bold heading, else its first sentence", () => {
@@ -188,12 +206,11 @@ describe("the room streams the coordinator's turn in a browser", () => {
     expect(await answer.locator("[data-meta]").count()).toBe(0);
     expect(await page.locator('[data-thought="live"] [data-shine]').count()).toBe(0);
 
-    // The newest call runs, its name shining.
+    // The newest call runs, its row (THE-2053's) shining.
     await emit(page, { ...tool, type: "chat.tool" });
     await emit(page, frame(turn("tool", at(15), { tool: { id: tool.id, name: tool.name }, queued: 0 })));
     const call = page.locator('[data-tool="fleet.status"]');
-    expect(await call.locator("[data-shine]").textContent()).toBe("fleet.status");
-    expect(await call.textContent()).toContain("· running");
+    expect(await call.locator("[data-shine]").textContent()).toBe("Read the fleet");
 
     // With text, the round button steers; ⌘Enter queues instead.
     const field = page.getByRole("textbox", { name: "Message" });
@@ -254,7 +271,9 @@ describe("the room streams the coordinator's turn in a browser", () => {
     expect(await read.locator('[data-thought="done"] [data-preview]').textContent()).toBe("Counting the berths");
     expect(await page.locator("[data-working]").count()).toBe(0);
     expect(await page.locator("[data-queued]").count()).toBe(0);
-    expect(await call.textContent()).toContain("· done");
+    // The call's row stays where it was, its result read: it no longer shines.
+    expect(await call.textContent()).toBe("Read the fleet");
+    expect(await call.locator("[data-shine]").count()).toBe(0);
     await page.getByRole("button", { name: "Send" }).waitFor({ timeout: 2_000 });
     await page.context().close();
   }, 20_000);

@@ -76,8 +76,9 @@ function useVisibleAnimation<T extends HTMLElement>(active: boolean) {
 /** Words that shimmer while `active` (T3 Code's `live-tool-shine`), plain otherwise. */
 export function Shine({ active, children }: { active: boolean; children: ReactNode }) {
   const ref = useVisibleAnimation<HTMLSpanElement>(active);
+  if (!active) return children;
   return (
-    <span ref={ref} className={cn(active && "live-shine")} data-shine={active || undefined}>
+    <span ref={ref} className="live-shine" data-shine>
       {children}
     </span>
   );
@@ -165,12 +166,15 @@ export function Thought({
   );
 }
 
-/** Under an answer the owner interrupted, as T3 Code says it. */
-export function Stopped() {
+/**
+ * Under an answer the owner interrupted: a "stopped" pill, and T3 Code's
+ * sentence unless the fold of its work above already says it (`said`).
+ */
+export function Stopped({ said }: { said: boolean }) {
   return (
     <p className="m-0 flex items-center gap-2 px-1 text-body text-text-3" data-stopped>
       <span className="rounded-xs bg-fill-2 px-1.5 font-mono text-meta text-text-2">stopped</span>
-      You stopped this response
+      {said && "You stopped this response"}
     </p>
   );
 }

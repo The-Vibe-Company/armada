@@ -310,11 +310,12 @@ describe("in a browser, served by a running daemon", () => {
     // The draft typed before it is forgotten once it is sent.
     await page.waitForFunction(() => !localStorage.getItem("armada:composer-drafts:v1")?.includes("HAR-20"));
     await page.locator('[data-item="owner"]').filter({ hasText: "Merge HAR-20 first." }).waitFor();
-    // Its tool call is one quiet line, closed until a click opens it.
-    const call = page.locator('details[data-tool="fleet.status"]').first();
-    await expect(call.evaluate((el) => (el as HTMLDetailsElement).open)).resolves.toBe(false);
-    await call.locator("summary").click();
-    await expect(call.evaluate((el) => (el as HTMLDetailsElement).open)).resolves.toBe(true);
+    // Its tool call folds above the answer (THE-2053): the fold opens into the call's row, the row into its details.
+    const fold = page.getByRole("button", { name: /^Worked for / }).last();
+    expect(await fold.getAttribute("aria-expanded")).toBe("false");
+    await fold.click();
+    const call = page.locator('[data-tool="fleet.status"]').last();
+    await call.getByRole("button", { name: "Read the fleet" }).click();
     await call.getByText("Result").waitFor();
 
     // A draft is kept for the project (THE-2051).

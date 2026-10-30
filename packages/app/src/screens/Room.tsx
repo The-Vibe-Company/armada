@@ -211,6 +211,7 @@ export function RoomView({ project, snapshot, live, now, zone, model = null, cha
             items={shown}
             turn={turn}
             started={chat.live?.started ?? null}
+            project={project.id}
             repository={project.repository}
             prefixes={prefixes}
             groupOf={groupOf}
