@@ -266,10 +266,11 @@ required. Status describes the last boot, independently of process liveness.
 
 `armada plugin enable|disable <id>` changes that switch under a shared process-safe read/modify/write lock, preserves
 other app/provider settings, and says to restart the daemon to apply it.
-`setPluginEnabled` and `updateAppConfig` are shared with the app's Plugins screen
-(THE-2019, `#/plugins`, in the sidebar). The screen lists the catalog grouped by
-seam. Each plugin shows its version, contributions, state (loaded, off, refused,
-restart to apply) and a switch, plus a "Configure" disclosure: each contribution's
+`setPluginEnabled` and `updateAppConfig` are shared with the app's Providers section
+of Settings (THE-2019, moved there by THE-2069: `#/settings/providers`, the old
+`#/plugins` lands there). It lists the catalog in grouped cards by seam. Each plugin
+shows its version, contributions, state on a dot (loaded, off, refused, restart to
+apply) and a switch, plus a "Settings" fold: each contribution's
 config form, generated from its JSON Schema, and each declared secret as set or
 missing, with a password field. It speaks protocol minor 2 (`plugins.list`,
 `enable`, `disable`, `configure`, `secret`, `daemon.restart`). The daemon saves

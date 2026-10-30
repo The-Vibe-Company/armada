@@ -102,6 +102,13 @@
   --text-title--line-height: 1.3;
   --text-title--letter-spacing: -0.01em;
   --text-title--font-weight: 600;
+  /* The empty room's headline (THE-2055): T3 Code's text-2xl, then text-3xl from `sm`. */
+  --text-hero: 24px;
+  --text-hero--line-height: 1.25;
+  --text-hero--letter-spacing: -0.015em;
+  --text-hero-lg: 30px;
+  --text-hero-lg--line-height: 1.2;
+  --text-hero-lg--letter-spacing: -0.015em;
 
   /* Space: Tailwind's 4 px step (`gap-2` is 8 px, `p-1.5` 6 px), and the
      shell's named lengths. */

@@ -21,10 +21,21 @@ const sessionSchema = z.object({
   generation: z.number().int().optional(),
   handle: text.optional(),
 });
-/** A ticket's comments: where a V1 claim says which runtime session holds it. */
+const ticketStatusSchema = z.enum(["triage", "backlog", "unstarted", "started", "completed", "canceled"]);
+/**
+ * A ticket's comments (where a V1 claim says which runtime session holds it),
+ * and what tells whether it is ready to launch (the room's starter asks).
+ */
 const ticketSchema = z.object({
   id: text,
   comments: z.array(z.object({ body: text, at: text })).optional(),
+  status: ticketStatusSchema.optional().catch(undefined),
+  phase: phaseSchema.nullable().optional().catch(undefined),
+  parent: text.nullable().optional().catch(undefined),
+  blockers: z
+    .array(z.object({ id: text, status: ticketStatusSchema }))
+    .optional()
+    .catch(undefined),
 });
 const pullRequestSchema = z.object({
   number: z.number().int(),

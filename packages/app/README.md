@@ -46,8 +46,9 @@ serves the build.
 ## The routes
 
 The address's hash names the screen (`src/lib/route.ts`, `routeOf` and
-`useRoute`): `#/` the hangar, `#/projects/<id>` a project, `#/plugins` the
-Plugins screen, `#/settings` the settings; anything else is the hangar. The
+`useRoute`): `#/` the hangar, `#/projects/<id>` a project, `#/settings/<section>`
+a section of the settings (`#/settings` the coordinator's; the old `#/plugins`
+is replaced by `#/settings/providers`, once); anything else is the hangar. The
 daemon serves one page and the desktop shell opens it from a file, so the path
 never moves. A screen is one line there and one in `src/App.tsx`; the sidebar
 marks the current one (`aria-current`).
@@ -77,9 +78,63 @@ the empty sky's quiet line.
 
 ## Settings
 
-`src/screens/Settings.tsx` at `#/settings`, reached from the sidebar's bottom:
-the daemon's address on the facts line, then the coordinator's model
-(`src/components/CoordinatorKey.tsx`, the key form, unchanged).
+`src/screens/Settings.tsx` at `#/settings/<section>` (THE-2069), reached from the
+sidebar's one Settings entry (a gear, at its bottom) and loaded on demand, off the
+first load. It has the anatomy of T3 Code's settings (`pingdotgg/t3code`,
+`apps/web/src/components/settings`) on the v7 title line. `src/settings/Layout.tsx`
+holds its parts. `SettingsNav` is the nav of sections: Coordinator, Providers,
+Account, About, each with its lucide icon. The current one is `aria-current`
+and is the nav's one tab stop, and the arrow keys, Home and End move between
+them. Below 720 px of the settings' own width it becomes an icon rail with a
+tooltip per icon. `SettingsSection` is a heading over a `SettingsGroup`, the
+grouped card whose rows are divided by a hairline. `SettingsRow` takes a
+`title`, a `description`, a `status` and one `control` on the right, and
+`SettingsFold` holds a row's settings folded below it. `StateDot` puts a state
+word on its dot.
+
+The sections:
+
+- **Coordinator** (`src/settings/Coordinator.tsx`): the coordinator's model, the key form unchanged, then the
+  OS notifications' switch (`src/notify/NotificationSetting.tsx`, a `SettingsRow`, THE-2055).
+- **Providers**: the plugins (below).
+- **Account** (`src/settings/Account.tsx`): a disabled "Sign in to Armada" row until THE-2071.
+- **About** (`src/settings/About.tsx`):
+  - the daemon's address
+  - the app's version (`__ARMADA_APP_VERSION__`, from `package.json` by `vite.config.ts`)
+  - the protocol version the app speaks and the minor the daemon answers with
+  - the daemon's version and its data folder, which read "Not reported by this daemon" until the protocol carries them
+
+## Notifications
+
+`src/notify/` (THE-2055), after T3 Code's `ThreadNotificationCoordinator.tsx`,
+mounted once beside every screen and loaded after the first paint. It hears
+every project's live turn (the client subscribes every project, so the daemon
+streams each one's `chat.turn` and `chat.delta`) and each folded inbox. A turn
+seen to work, then back to idle, is read once (`chat.read`, never for the room
+on screen): when the reading holds an answer or a line written since the turn
+began (not a stopped one), it is "Coordinator answered" (a fast turn may never
+stream its words; a failed reading falls back on what streamed); an
+`owner-request` that was not open at the project's first reading is "Question
+for you". Each says the project's name and the first line said (markdown's
+marks left out, 120 characters at most). The rules are `rules.ts`, pure over an
+injected world (the platform's `Notification`, the focus, the room on screen,
+the switch, the toasts and the badge):
+
+- **The room on screen** (its route in a visible window) hears nothing.
+- **A focused window** shows a toast at the bottom right with "Open the room",
+  gone after six seconds unless hovered or focused.
+- **A window in the background** gets an OS notification (silent, one per
+  project and kind, a newer one replacing the older) and the badge counts those
+  not yet read; a click brings the window forward and opens the room, the
+  window's focus clears the badge. In the desktop shell both go through its
+  preload (`window.armadaShell`, `src/notify/shell.ts`); in a browser, the
+  window's own focus and the Badging API where there is one.
+- **The switch** in Settings turns the OS notifications and the badge off
+  (`localStorage`, on by default, this device only); turning it on in a browser
+  not yet asked asks for the permission. Nothing makes a sound.
+
+`test/notify.test.tsx` holds the rules on a fake `Notification`, a fake focus
+and a fake room on screen.
 
 ## A project's fleet by state
 
@@ -162,16 +217,15 @@ daemon's fold and checks the card, the steps and both tabs; `test/build.test.ts`
 opens a row by a click and by the keyboard in Chromium, and holds every row's
 time whole at 900 px.
 
-## The Plugins screen
+## Providers: the plugins
 
-`src/screens/Plugins.tsx` at `#/plugins` (`src/lib/route.ts`; the sidebar's
-Plugins entry) is loaded on demand, off the first load. It follows the same
-anatomy: the catalog's numbers on the facts line (plugins, on, loaded, refused),
-the title and a quiet line, then every bundled plugin in one list grouped by seam
-(`src/plugins/list.ts`: Runtimes, Trackers, Forges, Nodes, Models, then Other).
-Each row has its name, version, description and contributions, its state in a
-word and colour (loaded, off, refused, restart to apply) and a switch
-(`src/components/ui/switch.tsx`, lime when on). A "Configure" disclosure holds
+`src/settings/Providers.tsx` at `#/settings/providers` (the Plugins screen of
+THE-2019 before THE-2069) shows the catalog's numbers on the facts line (plugins,
+on, loaded, refused). Below them, every bundled plugin is listed in grouped cards
+by what it provides (`src/plugins/list.ts`: Models, Runtimes, Trackers, Forges,
+Nodes, then Other). Each row has its name, version, description and
+contributions, its state word on a dot (loaded, off, refused, restart to apply)
+and a switch (`src/components/ui/switch.tsx`, lime when on). Its "Settings" fold holds
 each contribution's form, generated from its JSON Schema by `src/plugins/schema.ts`
 with the page kit's `Form`, `Field`, `Input` and `Select`, and each declared
 secret as set or missing with a password field. The secret follows the coordinator
@@ -183,8 +237,9 @@ The client (`setPluginEnabled`, `configurePlugin`, `setPluginSecret`,
 list. A change then shows "Restart to apply" and a notice with Restart. Restart
 asks the daemon to restart (the desktop shell starts it again); the client
 reconnects as after any drop and lists the plugins again. A daemon the shell does
-not supervise says to quit and reopen instead. `test/plugins.test.tsx` renders a
-synthetic catalog over a fake socket. `test/build.test.ts` flips a switch in
+not supervise says to quit and reopen instead. `test/settings.test.tsx` renders
+the route table, the nav and a synthetic catalog over a fake socket.
+`test/build.test.ts` opens `#/plugins` and lands on Providers, flips a switch in
 Chromium, saves a setting and a secret, and presses Restart on a daemon the test
 restarts on the same port, until the row reads Loaded.
 
@@ -304,9 +359,39 @@ rules, is at `#/projects/<id>/rules`, linked from the facts line. The sidebar st
   (the newest line about a ticket; older ones a quiet dot); each tool call one
   quiet line (`<details>`) that opens on a click to its input and result.
   Ticket ids and pull requests are set in mono, an id in its ticket's state.
+- **How it scrolls** (THE-2054, rules in `src/room/follow.ts`, after T3 Code's
+  timeline): it follows the end, smoothly while the coordinator works; a
+  message the owner sends is pinned 24 px from the top with room reserved
+  under it for the answer, until the answer outgrows that room; scrolled up,
+  the row the owner reads holds still while items arrive above or below, and
+  "Scroll to end" shows above the field 150 ms after leaving the end (within
+  40 px of it the thread follows again). Each project's place is kept in the
+  tab's `sessionStorage` and restored when its room opens; PageUp and PageDown
+  from the field page the thread.
+- **Unread** (`src/room/unread.ts`, `src/room/activity.ts`): the room keeps, per
+  project in `localStorage`, the latest coordinator item seen with the window
+  focused. The sidebar (`src/components/shell/Activity.tsx`, loaded after the
+  first paint) reads each other project's conversation once per turn's end and
+  counts its coordinator's items past that mark; its line also says Awaiting
+  input (a pinned question), Working (from the live `chat.turn`) or Failed
+  (the model failed the last turn). A project never visited starts with
+  nothing unread.
 - **Type** never under 13 px, 12.5 px only for Geist Mono ids and times; the
   state's colour on a dot or a triangle (an agent is the mark's triangle in its
   harness's colour, as in the sky), never a side border; every field labelled.
+- **The empty room** (THE-2055, after T3 Code's draft hero, `src/room/Hero.tsx`):
+  with the conversation read and nothing said, the thread's place holds "What
+  should we work on?" (24 px, 30 px from `sm`: the theme's `text-hero` and
+  `text-hero-lg`) with the owner's field centred under it, then the starter
+  asks the fleet's facts justify (`starterAsks` in `src/room/view.ts`): "What is
+  blocked?" when a session is blocked, "Launch what is ready" when a ticket is
+  ready (not started, no phase, its blockers done, held by nobody, no open pull
+  request, not a parent), "Merge what is green" when an open pull request is
+  green and clean, "Sum up today" always. A chip sends its words as the field
+  would. The field stays the same element in both layouts: on the first Send it
+  glides down to its dock (Motion's layout animation, 250 ms, only on leaving
+  the hero; none under reduced motion). `test/hero.test.tsx` holds the asks,
+  the hero's markup, and in Chromium a chip's message and the glide.
 - **Movement**: the rail slides on the owner's toggle; a new message fades in.
 - `scripts/dev-daemon.ts` gives every project a coordinator on pi-ai's faux
   model (it reads the fleet with one tool call, then answers in one line), and

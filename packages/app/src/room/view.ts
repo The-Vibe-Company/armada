@@ -1,9 +1,9 @@
 // The room's view rules (THE-1996), pure: the question pinned for the owner,
-// the ids in a message, the state a coordinator's line names, and the
+// the empty room's starter asks (THE-2055), the ids in a message, the state a coordinator's line names, and the
 // coordinator's work as T3 Code's rows (THE-2053).
 import type { ChatItem } from "@armada/protocol";
-import type { Group } from "@/fleet/overview";
-import type { FleetState, FoldedInboxItem } from "@/fleet/state";
+import { GROUP_OF, type Group } from "@/fleet/overview";
+import type { FleetState, FoldedTicket } from "@/fleet/state";
 import type { Streaming, ThreadItem } from "./chat";
 
 export interface Choice {
@@ -29,9 +29,51 @@ export function choiceOf(label: string): Choice {
   return { label: plain, recommended: plain !== label };
 }
 
-/** The questions waiting for the owner, oldest first: the open owner requests of the fold's inbox. */
-export const ownerQuestions = (state: FleetState): FoldedInboxItem[] =>
-  state.inbox.filter((i) => i.kind === "owner-request");
+export { ownerQuestions } from "./unread";
+
+/** What the empty room offers to ask (THE-2055), each only when the fleet's facts justify it. */
+export const STARTER_ASKS = {
+  blocked: "What is blocked?",
+  launch: "Launch what is ready",
+  merge: "Merge what is green",
+  today: "Sum up today",
+} as const;
+export type StarterAsk = (typeof STARTER_ASKS)[keyof typeof STARTER_ASKS];
+
+const DONE = new Set(["completed", "canceled"]);
+
+/**
+ * A ticket ready to launch, as far as the fold says (core's `available`): a
+ * leaf not started, with no phase, every blocker done, no session in flight
+ * and no open pull request.
+ */
+function ready(ticket: FoldedTicket, state: FleetState, parents: ReadonlySet<string>): boolean {
+  return (
+    (ticket.status === "unstarted" || ticket.status === "backlog") &&
+    !ticket.phase &&
+    !parents.has(ticket.id) &&
+    (ticket.blockers ?? []).every((b) => DONE.has(b.status)) &&
+    !state.sessions.some((s) => s.ticket === ticket.id && GROUP_OF[s.state] !== null && s.state !== "merged") &&
+    !state.pullRequests.some((p) => p.ticket === ticket.id && p.state === "open")
+  );
+}
+
+/**
+ * The starter asks under the empty room's hero: "What is blocked?" when a
+ * session is blocked, "Launch what is ready" when a ticket is ready, "Merge
+ * what is green" when an open pull request is green and clean, "Sum up today"
+ * always.
+ */
+export function starterAsks(state: FleetState): StarterAsk[] {
+  const parents = new Set(state.tickets.flatMap((t) => (t.parent ? [t.parent] : [])));
+  const asks: StarterAsk[] = [];
+  if (state.sessions.some((s) => GROUP_OF[s.state] === "blocked")) asks.push(STARTER_ASKS.blocked);
+  if (state.tickets.some((t) => ready(t, state, parents))) asks.push(STARTER_ASKS.launch);
+  if (state.pullRequests.some((p) => p.state === "open" && p.ci === "success" && !p.conflicting))
+    asks.push(STARTER_ASKS.merge);
+  asks.push(STARTER_ASKS.today);
+  return asks;
+}
 
 /** A piece of a message and where it starts in it. */
 export type Segment = { text: string; kind: "text" | "ticket" | "pr"; at: number };

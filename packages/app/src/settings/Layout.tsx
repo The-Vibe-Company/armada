@@ -1,0 +1,214 @@
+// The settings' anatomy, after T3 Code's (pingdotgg/t3code,
+// apps/web/src/components/settings: settingsLayout.tsx, SettingsGroup.tsx,
+// SettingsSidebarNav.tsx, FoldedSettingsSection.tsx) without its scopes,
+// search and environments (Armada has one daemon): a nav of sections, then
+// the section's groups, each a card of rows divided by a hairline, each row a
+// title, a description and one control on the right.
+import { ChevronRight, type LucideIcon } from "lucide-react";
+import { type KeyboardEvent, type ReactNode, useId, useState } from "react";
+import { type SettingsSection as Section, settingsHref } from "@/lib/route";
+import { cn } from "@/lib/utils";
+
+export interface NavSection {
+  section: Section;
+  label: string;
+  icon: LucideIcon;
+}
+
+/**
+ * One link per section, the current one filled and `aria-current`. The arrow
+ * keys move between them (one tab stop, on the current one). When the
+ * settings are narrower than 720 px (the shell keeps the window at 720 px or
+ * more, so the settings' own width decides) the labels leave and the nav is
+ * an icon rail, each icon telling its label in a tooltip on hover or focus.
+ */
+export function SettingsNav({ sections, current }: { sections: readonly NavSection[]; current: Section }) {
+  function move(event: KeyboardEvent<HTMLElement>) {
+    // Alt+Left, ⌘+Left and the like are the browser's (Back): leave them alone.
+    if (event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
+    const links = [...event.currentTarget.querySelectorAll<HTMLAnchorElement>("a[data-section]")];
+    const at = links.indexOf(document.activeElement as HTMLAnchorElement);
+    const next =
+      event.key === "ArrowDown" || event.key === "ArrowRight"
+        ? (at + 1) % links.length
+        : event.key === "ArrowUp" || event.key === "ArrowLeft"
+          ? (at - 1 + links.length) % links.length
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? links.length - 1
+              : null;
+    if (next === null || at === -1) return;
+    event.preventDefault();
+    links[next]?.focus();
+  }
+  return (
+    <nav
+      aria-label="Settings sections"
+      onKeyDown={move}
+      className="flex w-50 flex-none flex-col gap-0.5 @max-[720px]/settings:w-9"
+    >
+      {sections.map(({ section, label, icon: Icon }) => (
+        <a
+          key={section}
+          href={settingsHref(section)}
+          data-section={section}
+          aria-current={section === current ? "page" : undefined}
+          tabIndex={section === current ? 0 : -1}
+          className="group relative flex h-item items-center gap-2 whitespace-nowrap rounded-sm px-2 text-text-2 outline-none transition-colors hover:bg-item-hover hover:text-text focus-visible:ring-2 focus-visible:ring-blue aria-[current=page]:bg-item-current aria-[current=page]:text-text @max-[720px]/settings:justify-center @max-[720px]/settings:px-0"
+        >
+          <Icon aria-hidden className="size-4 flex-none" strokeWidth={1.75} />
+          <span className="min-w-0 truncate @max-[720px]/settings:sr-only">{label}</span>
+          {/* The rail's tooltip: the label is already the link's name, so it is only seen. */}
+          <span
+            aria-hidden
+            data-rail-tooltip
+            className="pointer-events-none absolute top-1/2 left-full z-10 ml-2 hidden -translate-y-1/2 rounded-sm bg-overlay px-2 py-1 text-small text-text shadow-pop @max-[720px]/settings:group-hover:block @max-[720px]/settings:group-focus-visible:block"
+          >
+            {label}
+          </span>
+        </a>
+      ))}
+    </nav>
+  );
+}
+
+/** The nav and the chosen section side by side; the container the rail's width is read from. */
+export function SettingsFrame({
+  sections,
+  current,
+  children,
+}: {
+  sections: readonly NavSection[];
+  current: Section;
+  children: ReactNode;
+}) {
+  return (
+    <div className="@container/settings">
+      <div className="flex min-w-0 items-start gap-8 @max-[720px]/settings:gap-4">
+        <SettingsNav sections={sections} current={current} />
+        <div className="flex min-w-0 flex-1 flex-col gap-7">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/** A section's group under its heading. */
+export function SettingsSection({
+  title,
+  count,
+  end,
+  children,
+}: {
+  title: ReactNode;
+  count?: number;
+  end?: ReactNode;
+  children: ReactNode;
+}) {
+  const id = useId();
+  return (
+    <section aria-labelledby={id} className="flex min-w-0 flex-col gap-2.5">
+      <div className="flex min-h-7 items-center justify-between gap-4 px-1">
+        <h2 id={id} className="m-0 flex items-center gap-2 font-semibold text-sub">
+          <span>{title}</span>
+          {count !== undefined && <span className="font-mono font-normal text-heading text-text-3 tnum">{count}</span>}
+        </h2>
+        {end}
+      </div>
+      <SettingsGroup>{children}</SettingsGroup>
+    </section>
+  );
+}
+
+/** The grouped card: its rows divided by a hairline. */
+export function SettingsGroup({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <div
+      data-settings-group
+      className={cn("min-w-0 rounded-card bg-card shadow-ring [&>*+*]:border-line-soft [&>*+*]:border-t", className)}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * One setting: its title, a description and a status under it, its one
+ * control on the right (under the text when the row is narrow), and what
+ * folds below it (`children`).
+ */
+export function SettingsRow({
+  title,
+  description,
+  status,
+  control,
+  children,
+  ...rest
+}: {
+  title: ReactNode;
+  description?: ReactNode;
+  status?: ReactNode;
+  control?: ReactNode;
+  children?: ReactNode;
+} & { [data: `data-${string}`]: string | undefined }) {
+  return (
+    <div {...rest} data-settings-row className={cn("@container/row min-w-0 px-4", children ? "pt-3 pb-1" : "py-3")}>
+      <div className="flex flex-col gap-3 @min-[32rem]/row:grid @min-[32rem]/row:grid-cols-[minmax(0,1fr)_auto] @min-[32rem]/row:items-center @min-[32rem]/row:gap-8">
+        <div className="flex min-w-0 flex-col gap-1">
+          <h3 className="m-0 flex min-h-5 min-w-0 items-baseline gap-2 font-medium text-body">{title}</h3>
+          {description && <div className="max-w-2xl text-pretty text-small text-text-2">{description}</div>}
+          {status && <div className="pt-0.5 text-small">{status}</div>}
+        </div>
+        {control && <div className="flex min-w-0 items-center gap-2 @min-[32rem]/row:justify-end">{control}</div>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** A row's settings, folded below it until opened. */
+export function SettingsFold({
+  label,
+  name,
+  children,
+}: {
+  label: ReactNode;
+  /** The button's accessible name when the label alone repeats from row to row. */
+  name?: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const panel = useId();
+  return (
+    <div className="flex flex-col">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={panel}
+        aria-label={name}
+        onClick={() => setOpen(!open)}
+        className="-mx-1 flex h-7 w-fit cursor-pointer items-center gap-1 rounded-sm px-1 text-small text-text-2 outline-none hover:text-text focus-visible:ring-2 focus-visible:ring-blue"
+      >
+        <ChevronRight
+          aria-hidden
+          className={cn("size-3.5 transition-transform motion-reduce:transition-none", open && "rotate-90")}
+        />
+        {label}
+      </button>
+      {/* Kept in the page while folded: a form's typing survives closing it. */}
+      <div id={panel} hidden={!open} className="-mx-4 mt-1 border-line-soft border-t px-4 pt-3.5 pb-3">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** A state word on its dot (the direction: the state on a dot, never a coloured border). */
+export function StateDot({ word, dot, ink, title }: { word: string; dot: string; ink: string; title?: string }) {
+  return (
+    <span data-state title={title} className={cn("inline-flex items-center gap-1.5", ink)}>
+      <span aria-hidden className={cn("size-1.5 flex-none rounded-full", dot)} />
+      <span>{word}</span>
+    </span>
+  );
+}

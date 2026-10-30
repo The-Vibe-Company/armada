@@ -144,12 +144,12 @@ describe("in a browser, served by a running daemon", () => {
     await page.goto(daemon.url);
     const sidebar = page.getByRole("complementary", { name: "Sidebar" });
     const projects = sidebar.getByRole("navigation", { name: "Projects" });
-    // A project's count shows once its folded state arrived.
-    for (const name of [/Harbor 4 sessions/, /Lantern 2 sessions/, /Tidewater 0 sessions/])
+    // A project's count shows once its folded state arrived; Harbor's pinned question says Awaiting input (THE-2054).
+    for (const name of [/Harbor Awaiting input 4 sessions/, /Lantern 2 sessions/, /Tidewater 0 sessions/])
       await projects.getByRole("link", { name }).waitFor({ timeout: 5_000 });
     const rows = await projects.getByRole("link").allInnerTexts();
     expect(rows.map((r) => r.replace(/\s+/g, " ").trim())).toEqual([
-      "Harbor 4 sessions in flight",
+      "Harbor Awaiting input 4 sessions in flight",
       "Lantern 2 sessions in flight",
       "Tidewater 0 sessions in flight",
     ]);
@@ -654,11 +654,16 @@ describe("the Plugins screen in a browser, on a daemon that restarts", () => {
   }, 10_000);
 
   test("a switch is saved, says to restart, and reads loaded once Restart brought the daemon back", async () => {
-    await page.goto(running?.server.url ?? "");
-    await page.getByRole("complementary", { name: "Sidebar" }).getByRole("link", { name: "Plugins" }).click();
+    // The Plugins screen's old address lands on Settings' Providers, replaced in the history.
+    await page.goto(`${running?.server.url ?? ""}#/plugins`);
+    await page.waitForURL(/#\/settings\/providers$/, { timeout: 5_000 });
     const buoys = page.locator('[data-plugin="buoys"]');
     await buoys.locator("[data-state]").filter({ hasText: "Off" }).waitFor({ timeout: 5_000 });
-    expect(page.url()).toEndWith("#/plugins");
+    const sidebar = page.getByRole("complementary", { name: "Sidebar" });
+    expect(await sidebar.getByRole("link", { name: "Plugins" }).count()).toBe(0);
+    await expect(sidebar.getByRole("link", { name: "Settings" }).getAttribute("aria-current")).resolves.toBe("page");
+    const sections = page.getByRole("navigation", { name: "Settings sections" });
+    await expect(sections.getByRole("link", { name: "Providers" }).getAttribute("aria-current")).resolves.toBe("page");
     await expect(page.locator('[data-plugin="lamps"] [data-state]').innerText()).resolves.toBe("Loaded");
 
     await page.getByRole("switch", { name: "buoys" }).click();
@@ -669,7 +674,7 @@ describe("the Plugins screen in a browser, on a daemon that restarts", () => {
     await expect(notice.innerText()).resolves.toContain("One plugin changed since the daemon started.");
 
     // A setting from the contribution's form, and a secret that never comes back.
-    await page.locator('[data-plugin="lamps"] summary').click();
+    await page.locator('[data-plugin="lamps"]').getByRole("button", { name: "Settings" }).click();
     await page.getByLabel("team").first().fill("harbour");
     await page.locator('[data-plugin="lamps"]').getByRole("button", { name: "Save", exact: true }).click();
     await notice.filter({ hasText: "2 plugins changed" }).waitFor({ timeout: 5_000 });
@@ -686,7 +691,7 @@ describe("the Plugins screen in a browser, on a daemon that restarts", () => {
       h1: [...document.querySelectorAll("h1")].map((h) => [h.textContent, getComputedStyle(h).fontSize]),
       fonts: [...new Set([...document.querySelectorAll("body *")].map((e) => getComputedStyle(e).fontFamily))],
     }));
-    expect(anatomy.h1).toEqual([["Plugins", "22px"]]);
+    expect(anatomy.h1).toEqual([["Settings", "22px"]]);
     for (const family of anatomy.fonts) expect(family).toMatch(/^"?Geist( Mono)?"?,/);
 
     await notice.getByRole("button", { name: "Restart" }).click();
@@ -695,5 +700,35 @@ describe("the Plugins screen in a browser, on a daemon that restarts", () => {
     await notice.waitFor({ state: "detached", timeout: 5_000 });
     await expect(page.locator('[data-plugin="lamps"] [data-state]').innerText()).resolves.toBe("Loaded");
     await page.getByRole("status").filter({ hasText: "Live" }).waitFor({ timeout: 5_000 });
+  }, 20_000);
+
+  test("the settings' nav moves with the arrow keys, and becomes an icon rail with tooltips when narrow", async () => {
+    await page.goto(`${running?.server.url ?? ""}#/settings`);
+    const sections = page.getByRole("navigation", { name: "Settings sections" });
+    const coordinator = sections.getByRole("link", { name: "Coordinator" });
+    await expect(coordinator.getAttribute("aria-current")).resolves.toBe("page");
+    await coordinator.focus();
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
+    await page.waitForURL(/#\/settings\/account$/, { timeout: 5_000 });
+    await page.getByText("Coming with THE-2071").waitFor({ timeout: 5_000 });
+    await page.keyboard.press("End");
+    await page.keyboard.press("Enter");
+    await page.waitForURL(/#\/settings\/about$/, { timeout: 5_000 });
+    await page.getByText("Not reported by this daemon").first().waitFor({ timeout: 5_000 });
+
+    // At the shell's narrowest window, the labels leave and each icon tells its label in a tooltip.
+    await page.setViewportSize({ width: 720, height: 900 });
+    try {
+      const about = sections.getByRole("link", { name: "About" });
+      await expect(about.evaluate((a) => Math.round(a.getBoundingClientRect().width))).resolves.toBeLessThan(48);
+      const providers = sections.getByRole("link", { name: "Providers" });
+      await providers.locator("[data-rail-tooltip]").waitFor({ state: "hidden" });
+      await providers.hover();
+      await providers.locator("[data-rail-tooltip]").filter({ hasText: "Providers" }).waitFor({ timeout: 5_000 });
+    } finally {
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
   }, 20_000);
 });

@@ -18,6 +18,8 @@ const message = z
 export const CHAT_MINOR = 4;
 /** The first wire minor with committed live turns, partials, tools and Stop. */
 export const CHAT_LIVE_MINOR = 7;
+/** The coordinator's line for a turn its model failed: fixed, since a provider's error text could echo what it was sent. */
+export const CHAT_MODEL_FAILED = "The coordinator's model failed on this turn.";
 
 const assistant = { reasoning: z.string().optional(), aborted: z.literal(true).optional() };
 const tool = {
