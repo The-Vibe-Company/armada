@@ -1,3 +1,4 @@
+import { pluginEventSchema } from "@armada/plugin-api";
 import { z } from "zod";
 import {
   chatReadRequestSchema,
@@ -34,14 +35,7 @@ export const projectSchema = z.object({
 export type Project = z.infer<typeof projectSchema>;
 
 /** Forward-compatible envelope: known kinds and payloads are defined in fleet.ts. */
-export const eventSchema = z.object({
-  seq: counter.min(1),
-  project: identifier,
-  kind: identifier,
-  at: z.iso.datetime({ offset: true }),
-  actor: identifier,
-  payload: z.json(),
-});
+export const eventSchema = pluginEventSchema;
 export type ProtocolEvent = z.infer<typeof eventSchema>;
 
 const request = { version: versionSchema, id: identifier };

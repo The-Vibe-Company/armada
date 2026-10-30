@@ -31,11 +31,12 @@ export const pluginSettingSchema = z.strictObject({
 export type PluginSetting = z.infer<typeof pluginSettingSchema>;
 export type PluginConfig = Partial<Record<Seam, Record<string, Json>>>;
 
+/** The extensible event envelope shared with the wire protocol. No known-kind restriction. */
 export const pluginEventSchema = z.object({
-  seq: z.number().int().positive(),
+  seq: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
   project: z.string().min(1),
   kind: z.string().min(1),
-  at: z.string().min(1),
+  at: z.iso.datetime({ offset: true }),
   actor: z.string().min(1),
   payload: z.json(),
 });

@@ -18,7 +18,7 @@
     "test:plugins": "bun scripts/test-plugins.ts",
     "verify": "bun run lint && bun run typecheck && bun run test && bun run test:daemon",
     "test:browser:install": "bun run --cwd packages/dashboard test:browser:install",
-    "postinstall": "bun run plugins:catalog && bun run skills:bundle && bun run --cwd packages/protocol build && bun run --cwd packages/plugin-api build",
+    "postinstall": "bun run plugins:catalog && bun run skills:bundle && bun run --cwd packages/plugin-api build && bun run --cwd packages/protocol build",
     "build": "bun run --cwd packages/cli build && bun run --cwd packages/dashboard build",
     "test:daemon": "bun run plugins:catalog && bun run --cwd packages/daemon test && bun run test:desktop",
     "desktop": "bun run --cwd packages/desktop dev",
