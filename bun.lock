@@ -156,6 +156,13 @@
         "@armada/plugin-api": "workspace:*",
       },
     },
+    "packages/plugins/codex": {
+      "name": "@armada/plugin-codex",
+      "version": "0.1.0",
+      "dependencies": {
+        "@armada/plugin-api": "workspace:*",
+      },
+    },
     "packages/plugins/github": {
       "name": "@armada/plugin-github",
       "version": "0.1.0",
@@ -208,6 +215,13 @@
         "@armada/plugin-api": "workspace:*",
       },
     },
+    "packages/plugins/opencode": {
+      "name": "@armada/plugin-opencode",
+      "version": "0.1.0",
+      "dependencies": {
+        "@armada/plugin-api": "workspace:*",
+      },
+    },
     "packages/protocol": {
       "name": "@armada/protocol",
       "version": "1.0.0",
@@ -246,6 +260,8 @@
 
     "@armada/plugin-claude": ["@armada/plugin-claude@workspace:packages/plugins/claude"],
 
+    "@armada/plugin-codex": ["@armada/plugin-codex@workspace:packages/plugins/codex"],
+
     "@armada/plugin-github": ["@armada/plugin-github@workspace:packages/plugins/github"],
 
     "@armada/plugin-hello": ["@armada/plugin-hello@workspace:packages/plugins/hello"],
@@ -257,6 +273,8 @@
     "@armada/plugin-model-openai-compatible": ["@armada/plugin-model-openai-compatible@workspace:packages/plugins/model-openai-compatible"],
 
     "@armada/plugin-node-local": ["@armada/plugin-node-local@workspace:packages/plugins/node-local"],
+
+    "@armada/plugin-opencode": ["@armada/plugin-opencode@workspace:packages/plugins/opencode"],
 
     "@armada/protocol": ["@armada/protocol@workspace:packages/protocol"],
 
