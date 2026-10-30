@@ -1,7 +1,8 @@
 # @armada/protocol
 
-The V2 daemon/app wire contract. ESM, Node 22 or a browser; Zod is the only
-runtime dependency. No V1 API, daemon imports, transport or I/O.
+The V2 daemon/app wire contract. ESM, Node 22 or a browser; runtime dependencies
+are Zod and the plugin API, which supplies the shared generic event envelope.
+No V1 API, daemon imports, transport or I/O.
 
 `bun run build` emits JavaScript and declarations in `dist/`. Consumers import
 `@armada/protocol`; types are inferred from the exported runtime schemas.

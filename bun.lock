@@ -178,6 +178,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@armada/plugin-api": "workspace:*",
+        "@armada/protocol": "workspace:*",
       },
       "devDependencies": {
         "@armada/daemon": "workspace:*",
@@ -212,6 +213,7 @@
       "name": "@armada/protocol",
       "version": "1.0.0",
       "dependencies": {
+        "@armada/plugin-api": "workspace:*",
         "zod": "4.6.5",
       },
     },

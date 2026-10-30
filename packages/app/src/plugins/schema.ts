@@ -8,7 +8,7 @@
  * saves it: this only shapes the form.
  */
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-export type FieldKind = "text" | "number" | "integer" | "boolean" | "choice" | "json";
+type FieldKind = "text" | "number" | "integer" | "boolean" | "choice" | "json";
 export interface ConfigField {
   /** The property's name; "" for a whole config that is not an object of properties. */
   name: string;

@@ -20,11 +20,11 @@ import { fold } from "../fold.ts";
 import type { EventStore } from "../store.ts";
 
 /** At most this many items of a long conversation: its latest. */
-export const CHAT_LIMIT = 200;
+const CHAT_LIMIT = 200;
 /** A tool's result past this many characters is cut: the room shows a reading, not a dump. */
 const OUTPUT_LIMIT = 8 * 1024;
 /** The input entry the owner's answer to a pinned question is placed as (reserved: entry-kind). */
-export const OWNER_ANSWER_ENTRY = "armada.owner-answer";
+const OWNER_ANSWER_ENTRY = "armada.owner-answer";
 
 export type ChatRequest = ChatReadRequest | ChatSendRequest | OwnerAnswerRequest;
 export interface ChatOptions {
@@ -165,7 +165,7 @@ function refused(output: string): boolean {
  * `coordinator.message` events. Other entries (system, compaction, resets) and
  * inputs that are not the owner's are not shown.
  */
-export async function readChat(
+async function readChat(
   store: EventStore,
   project: string,
   coordinator: ProjectCoordinator | undefined,
@@ -188,7 +188,7 @@ export async function readChat(
 }
 
 /** pi entries, oldest first, as the room's items. */
-export function chatOf(entries: readonly EntryRecord[]): ChatItem[] {
+function chatOf(entries: readonly EntryRecord[]): ChatItem[] {
   const items: ChatItem[] = [];
   const calls = new Map<string, Extract<ChatItem, { kind: "tool" }>>();
   let owner = true;

@@ -1,3 +1,5 @@
+import { activePhaseSchema } from "@armada/protocol";
+
 // Queries adapted from packages/core/src/linear.ts (V1 Root, Children, Comments,
 // Changed, ChangedComments and connection pagination). No V1 runtime imports.
 // Provider wire adapter; scheduling/persistence live outside it.
@@ -53,15 +55,6 @@ const changedCommentsQuery = `query ChangedComments($filter: CommentFilter, $aft
     pageInfo { hasNextPage endCursor } nodes { ${commentFields} issue { identifier } }
   }
 }`;
-const phases: NonNullable<TrackerTicket["phase"]>[] = [
-  "planning",
-  "awaiting-approval",
-  "implementing",
-  "shipping",
-  "blocked",
-  "ready-to-merge",
-  "awaiting-validation",
-];
 const name = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
 const chunks = <T>(values: T[], size: number): T[][] =>
   Array.from({ length: Math.ceil(values.length / size) }, (_, i) => values.slice(i * size, (i + 1) * size));
@@ -194,7 +187,7 @@ export function linearTracker(options: LinearOptions): Tracker {
         const phase =
           labels
             .filter((label) => label.parent?.name === options.phaseGroup)
-            .map((label) => phases.find((phase) => name(phase) === name(label.name)))
+            .map((label) => activePhaseSchema.options.find((phase) => name(phase) === name(label.name)))
             .find(Boolean) ?? null;
         tickets.set(raw.id, {
           uuid: raw.id,

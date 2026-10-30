@@ -34,7 +34,7 @@ const CHECKS_WORD: Record<FoldedPullRequest["ci"], string> = {
 };
 
 /** Where the session is on the page's six steps (0 to 5); done once merged. */
-export function pageStep(s: Pick<FoldedSession, "phase" | "flowStep">, pr: FoldedPullRequest | undefined): number {
+function pageStep(s: Pick<FoldedSession, "phase" | "flowStep">, pr: FoldedPullRequest | undefined): number {
   if (s.phase === "merged" || s.flowStep === "merged") return 5;
   if (s.phase === "ready-to-merge") return 4;
   switch (s.flowStep) {
@@ -49,7 +49,7 @@ export function pageStep(s: Pick<FoldedSession, "phase" | "flowStep">, pr: Folde
 }
 
 /** A question as V1 writes it: its text, then its numbered or dashed choices after "Options:". */
-export function questionOf(body: string): { question: string; choices: string[] } {
+function questionOf(body: string): { question: string; choices: string[] } {
   const [question = "", options = ""] = body.split(/\n\s*Options:\s*\n/);
   const choices = options
     .split("\n")
@@ -144,7 +144,7 @@ export function findSession(
 }
 
 /** One session's page from its project's folded state and events. */
-export function sessionView(
+function sessionView(
   project: Project,
   s: FoldedSession,
   state: FleetState,
@@ -365,7 +365,7 @@ function entries(own: readonly ProtocolEvent[]): Entry[] {
 }
 
 /** The ticket's events, then those that only name one of its items, in log order. */
-export function sessionEvents(events: readonly ProtocolEvent[], ticket: string): ProtocolEvent[] {
+function sessionEvents(events: readonly ProtocolEvent[], ticket: string): ProtocolEvent[] {
   const items = new Set<string>();
   const out: ProtocolEvent[] = [];
   for (const e of events) {

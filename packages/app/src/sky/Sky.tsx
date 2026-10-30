@@ -15,17 +15,13 @@ import { GROUPS, type Group } from "@/fleet/overview";
 import { HARNESS_LABEL, HARNESSES, type SkyProject } from "@/fleet/sky";
 import { cn } from "@/lib/utils";
 import { HARNESS_COLOR, layoutSky, SKY_GROUP_LABEL, type SkyLabel, type SkySize, STATE_COLOR } from "./layout";
-import { animationFrames, createSkyView, type SkyClock, type SkyView } from "./view";
+import { animationFrames, createSkyView, type SkyView } from "./view";
 
 export interface SkyProps {
   /** The projects it draws: one for the band (a project's room), any number on the stage (the hangar). */
   projects: readonly SkyProject[];
   /** `band`: about 200 px tall, full width; `stage`: fills its container. */
   size: SkySize;
-  /** The frames it steps on; the browser's animation frames unless a test turns its own. */
-  clock?: SkyClock;
-  /** Overrides the system's reduced-motion setting: with it, the sky changes without flying. */
-  reducedMotion?: boolean;
   /** The stage: where each squadron leads (the hangar's `#/projects/<id>`); the whole squadron is the link. */
   link?: (project: string) => string;
   className?: string;
@@ -39,17 +35,17 @@ const LABEL_COLOR: Record<Group, string> = {
   merged: "text-text-3",
 };
 
-function useReducedMotion(given: boolean | undefined): boolean {
+function useReducedMotion(): boolean {
   const [system, setSystem] = useState(false);
   useEffect(() => {
-    if (given !== undefined || typeof window === "undefined" || !window.matchMedia) return;
+    if (typeof window === "undefined" || !window.matchMedia) return;
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
     setSystem(query.matches);
     const change = () => setSystem(query.matches);
     query.addEventListener("change", change);
     return () => query.removeEventListener("change", change);
-  }, [given]);
-  return given ?? system;
+  }, []);
+  return system;
 }
 
 /** Device pixels per CSS pixel, two at most: sharper costs frames. */
@@ -76,13 +72,13 @@ function useDevicePixels(): number {
   return dpr;
 }
 
-export function Sky({ projects, size, clock = animationFrames, reducedMotion, link, className }: SkyProps) {
+export function Sky({ projects, size, link, className }: SkyProps) {
   const box = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const drawn = useRef({ width: 0, height: 0, dpr: 0 });
   const [area, setArea] = useState({ width: 0, height: 0 });
   const [view, setView] = useState<SkyView | null>(null);
-  const still = useReducedMotion(reducedMotion);
+  const still = useReducedMotion();
   const dpr = useDevicePixels();
   const layout = useMemo(() => layoutSky(projects, size, area.width, area.height), [projects, size, area]);
 
@@ -90,7 +86,7 @@ export function Sky({ projects, size, clock = animationFrames, reducedMotion, li
     const el = box.current;
     const ctx = canvas.current?.getContext("2d");
     if (!el || !ctx) return;
-    const made = createSkyView(ctx, clock);
+    const made = createSkyView(ctx, animationFrames);
     // A new view has drawn nothing yet: the effect below sizes it and shows the fleet.
     drawn.current = { width: 0, height: 0, dpr: 0 };
     setView(made);
@@ -106,7 +102,7 @@ export function Sky({ projects, size, clock = animationFrames, reducedMotion, li
       made.stop();
       setView(null);
     };
-  }, [clock]);
+  }, []);
 
   useEffect(() => {
     const c = canvas.current;
