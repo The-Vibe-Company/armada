@@ -6,6 +6,7 @@ import {
   admitRequest,
   CHAT_LIVE_MINOR,
   eventSchema,
+  MODELS_MINOR,
   type ModelKindEntry,
   type Project,
   type ProjectTables,
@@ -18,14 +19,17 @@ import {
   PROTOCOL_VERSION as version,
   workerLaunchCheckpointSchema,
 } from "@armada/protocol";
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { WebSocket, WebSocketServer } from "ws";
 import type { CoordinatorOptions, ProjectCoordinator } from "../../coordinator/index.ts";
 import { dispatchCredentials } from "../credentials.ts";
 import { fold } from "../fold.ts";
 import { type Keychain, systemKeychain } from "../keychain.ts";
+import type { ModelRegistry } from "../models/registry.ts";
 import type { EventStore } from "../store.ts";
 import type { Workers } from "../workers/service.ts";
 import type { Account } from "./account.ts";
+import { AuthFlows } from "./auth.ts";
 import { dispatchChat } from "./chat.ts";
 import { type ChatClock, ChatLive } from "./chat-live.ts";
 import { dispatchPlugins, isPluginsRequest, type PluginHost } from "./plugins.ts";
@@ -53,6 +57,9 @@ export interface ServerOptions {
   keychain?: Keychain;
   account?: Account;
   modelKinds?: readonly ModelKindEntry[];
+  modelRegistry?: ModelRegistry;
+  /** Resolve current global/project selection at the next turn, including first configuration. */
+  resolveCoordinator?: (project: string) => Promise<CoordinatorOptions | undefined>;
   /** The app's Plugins screen; without it, plugin requests answer `not-found`. */
   plugins?: PluginHost;
   /**
@@ -103,10 +110,13 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   if (new Set(configured.map((entry) => entry.project)).size !== configured.length)
     throw new Error("Duplicate coordinator project");
   if (configured.some((entry) => !known.has(entry.project))) throw new Error("Unknown coordinator project");
-  const coordinatorManager = configured.length
-    ? new (await import("../../coordinator/index.ts")).Coordinators(store)
-    : undefined;
+  const coordinatorManager =
+    configured.length || options.resolveCoordinator
+      ? new (await import("../../coordinator/index.ts")).Coordinators(store)
+      : undefined;
   const coordinators = new Map<string, ProjectCoordinator>();
+  const sources = new Map(configured.map((config) => [config.project, config]));
+  const opening = new Map<string, Promise<ProjectCoordinator | undefined>>();
   const staticDir = options.staticDir ?? fileURLToPath(new URL("../../../app/dist/", import.meta.url));
   let authority = "";
   let closing = false;
@@ -124,10 +134,11 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   });
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
   const connections = new Map<WebSocket, Map<string, Subscription>>();
+  const minors = new Map<WebSocket, number>();
+  const auth = new AuthFlows();
   const chat = new ChatLive(options.chatClock);
-  const clientMinors = new Map<WebSocket, number>();
   const unsubscribeAccount = options.account?.subscribe((state) => {
-    for (const [ws, minor] of clientMinors)
+    for (const [ws, minor] of minors)
       if (minor >= ACCOUNT_MINOR) send(ws, { type: "account.result", version, ...state });
   });
 
@@ -144,6 +155,68 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   }
   const error = (ws: WebSocket, id: string | undefined, code: ProtocolError["code"], message: string) =>
     send(ws, { type: "error", version, ...(id ? { id } : {}), code, message });
+
+  async function catalog(ws: WebSocket, id: string, broadcast: boolean, minor: number) {
+    if (!options.modelRegistry) return error(ws, id, "not-found", "This daemon has no model registry");
+    const reading = await options.modelRegistry.catalog();
+    if (minor >= MODELS_MINOR) send(ws, { type: "models.catalog", version, id, ...reading });
+    if (broadcast)
+      for (const client of connections.keys())
+        if (client !== ws && (minors.get(client) ?? 0) >= MODELS_MINOR)
+          send(client, { type: "models.catalog", version, id: `push:${randomUUID()}`, ...reading });
+  }
+
+  async function ensureCoordinator(project: string): Promise<ProjectCoordinator | undefined> {
+    if (!options.resolveCoordinator || !coordinatorManager) return coordinators.get(project);
+    const pending = opening.get(project);
+    if (pending) return pending;
+    const next = (async () => {
+      const config = await options.resolveCoordinator?.(project);
+      if (!config || closing) return undefined;
+      const current = coordinators.get(project);
+      if (current) {
+        const agent = await current.conversation.agent(context);
+        const previous = sources.get(project);
+        if (
+          agent.model?.provider !== config.model.provider ||
+          agent.model.modelId !== config.model.modelId ||
+          JSON.stringify(previous?.selection) !== JSON.stringify(config.selection)
+        ) {
+          // An in-flight request keeps its model. The newly selected model starts with the next turn.
+          await current.harness.waitForIdle(context);
+          if (closing) return undefined;
+          sources.set(project, config);
+          await current.conversation.configure({ model: config.model }, context);
+        }
+        return current;
+      }
+      sources.set(project, config);
+      const coordinator = await coordinatorManager.open({
+        ...config,
+        models: () => {
+          const models = sources.get(project)?.models ?? config.models;
+          return typeof models === "function" ? models() : models;
+        },
+        native: {
+          ...config.native,
+          ...(workers ? { workers, deliverAnswerOnce: (input) => workers.answer(input, project) } : {}),
+        },
+      });
+      coordinators.set(project, coordinator);
+      for (const [ws, subscriptions] of connections) {
+        const subscription = subscriptions.get(project);
+        if (subscription && subscription.minor >= CHAT_LIVE_MINOR && !subscription.chat)
+          subscription.chat = chat.subscribe(project, coordinator.conversation, (frame) => send(ws, frame));
+      }
+      return coordinator;
+    })();
+    opening.set(project, next);
+    try {
+      return await next;
+    } finally {
+      if (opening.get(project) === next) opening.delete(project);
+    }
+  }
 
   /** A project's folded tables at the store's cursor, as the protocol's JSON value. */
   function snapshotOf(project: string): Snapshot {
@@ -246,7 +319,8 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     ws.on("close", () => {
       clearSubscriptions();
       connections.delete(ws);
-      clientMinors.delete(ws);
+      minors.delete(ws);
+      void auth.cancel(ws);
     });
     ws.on("message", (data, binary) => {
       if (closing || refused) return;
@@ -269,7 +343,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         return;
       }
       const request = admitted.request;
-      clientMinors.set(ws, request.version.minor);
+      minors.set(ws, request.version.minor);
       try {
         if (
           request.type === "account.status" ||
@@ -280,6 +354,77 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           void options.account.dispatch(request, (reply) => send(ws, reply));
           return;
         }
+        if (request.type === "auth.answer") {
+          if (!auth.answer(ws, request.flow, request.id, request.value))
+            error(ws, request.id, "invalid-message", "No such sign-in prompt");
+          return;
+        }
+        if (request.type === "auth.cancel") {
+          void (async () => {
+            if (!(await auth.cancel(ws, request.flow)))
+              return error(ws, request.id, "invalid-message", "No such sign-in flow");
+            await catalog(ws, request.id, false, request.version.minor);
+          })().catch(() => error(ws, request.id, "internal", "Could not read model catalog"));
+          return;
+        }
+        if (request.type === "models.login") {
+          const registry = options.modelRegistry;
+          if (!registry) return error(ws, request.id, "not-found", "This daemon has no model registry");
+          auth.start(
+            ws,
+            request.id,
+            (frame) => send(ws, frame),
+            async (interaction) => {
+              await registry.models.login(request.provider, request.authType, interaction);
+              await catalog(ws, request.id, true, request.version.minor);
+            },
+            `model:${request.provider}`,
+          );
+          return;
+        }
+        if (
+          request.type === "models.providers" ||
+          request.type === "models.select" ||
+          request.type === "models.logout"
+        ) {
+          const registry = options.modelRegistry;
+          if (!registry) return error(ws, request.id, "not-found", "This daemon has no model registry");
+          if (pendingCredentials >= 32)
+            return error(ws, request.id, "invalid-message", "Too many pending model requests");
+          pendingCredentials++;
+          credentialQueue = credentialQueue.then(async () => {
+            try {
+              if (request.type === "models.select") await registry.select(request);
+              if (request.type === "models.logout") {
+                if (!registry.models.getProvider(request.provider)) throw new Error();
+                await auth.cancelScope(`model:${request.provider}`);
+                await registry.models.logout(request.provider);
+              }
+              await catalog(ws, request.id, request.type !== "models.providers", request.version.minor);
+              if (request.type === "models.select") {
+                // Apply while idle too: scheduled coordinator work must see the selection
+                // without waiting for the owner to send another chat message.
+                for (const project of known)
+                  void (async () => {
+                    await opening.get(project);
+                    if (!closing) await ensureCoordinator(project);
+                  })().catch(() => {});
+              }
+            } catch {
+              error(
+                ws,
+                request.id,
+                "invalid-message",
+                request.type === "models.select"
+                  ? "Choose an available model from a configured provider"
+                  : "Could not access model credentials",
+              );
+            } finally {
+              pendingCredentials--;
+            }
+          });
+          return;
+        }
         if (request.type === "credentials.set" || request.type === "credentials.status") {
           if (pendingCredentials >= 32)
             return error(ws, request.id, "invalid-message", "Too many pending credential requests");
@@ -287,7 +432,15 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           // Serialize status with writes across connections. Never append/log the request or echo its body.
           credentialQueue = credentialQueue.then(async () => {
             try {
-              send(ws, await dispatchCredentials(request, options.keychain ?? systemKeychain(), options.modelKinds));
+              const result = await dispatchCredentials(
+                request,
+                options.keychain ?? systemKeychain(),
+                options.modelKinds,
+                options.modelRegistry,
+              );
+              send(ws, result);
+              if (request.type === "credentials.set" && result.type !== "error" && options.modelRegistry)
+                await catalog(ws, request.id, true, request.version.minor);
             } catch {
               error(ws, request.id, "internal", "Could not access credential storage");
             } finally {
@@ -336,12 +489,15 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           request.type === "owner.answer"
         ) {
           // The room's requests (THE-1996, server/chat.ts): each answers once, its failure as one line.
-          void dispatchChat(request, {
-            store,
-            workers,
-            live: chat,
-            coordinator: coordinators.get(request.project),
-          }).then((reply) => send(ws, reply));
+          void (async () => {
+            const coordinator =
+              request.type === "chat.send" || request.type === "owner.answer"
+                ? await ensureCoordinator(request.project)
+                : coordinators.get(request.project);
+            return dispatchChat(request, { store, workers, live: chat, coordinator });
+          })()
+            .then((reply) => send(ws, reply))
+            .catch(() => error(ws, request.id, "internal", "Could not configure coordinator model"));
           return;
         }
         if (request.type === "session.release" || request.type === "session.output") {
@@ -422,6 +578,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       closing = true;
       unsubscribeAccount?.();
       const accountClosed = options.account?.close();
+      const authClosing = auth.close();
       unsubscribe();
       for (const ws of sockets.clients) ws.terminate();
       connections.clear();
@@ -437,6 +594,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         pluginQueue,
         coordinatorManager?.close(),
         accountClosed,
+        authClosing,
       ]);
       const failed = results.find((result) => result.status === "rejected");
       if (failed?.status === "rejected") throw failed.reason;
@@ -450,6 +608,10 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           config.project,
           await coordinatorManager.open({
             ...config,
+            models: () => {
+              const models = sources.get(config.project)?.models ?? config.models;
+              return typeof models === "function" ? models() : models;
+            },
             native: {
               ...config.native,
               ...(workers

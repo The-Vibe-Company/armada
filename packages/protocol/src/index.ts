@@ -1,13 +1,13 @@
 import { pluginEventSchema } from "@armada/plugin-api";
 import { z } from "zod";
 import {
-  ACCOUNT_MINOR,
   accountDeviceSchema,
   accountLoginRequestSchema,
   accountLogoutRequestSchema,
   accountResultSchema,
   accountStatusRequestSchema,
 } from "./account.js";
+import { AUTH_MINOR, authRequestSchemas, authResultSchemas } from "./auth.js";
 import {
   chatDeltaSchema,
   chatReadRequestSchema,
@@ -22,7 +22,13 @@ import {
   ownerAnswerRequestSchema,
 } from "./chat.js";
 import { counter, identifier, requestSchema, versionSchema } from "./envelope.js";
-import { modelConfigSchema, modelKindEntrySchema, modelKindSchema } from "./models.js";
+import {
+  modelConfigSchema,
+  modelKindEntrySchema,
+  modelKindSchema,
+  modelsCatalogSchema,
+  modelsRequestSchemas,
+} from "./models.js";
 import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
 import {
   sessionOutputRequestSchema,
@@ -32,6 +38,7 @@ import {
 } from "./session.js";
 
 export * from "./account.js";
+export * from "./auth.js";
 export * from "./chat.js";
 export * from "./fleet.js";
 export * from "./models.js";
@@ -40,7 +47,7 @@ export * from "./rules.js";
 export * from "./session.js";
 
 /** Wire version, independent of the daemon/app release versions. */
-export const PROTOCOL_VERSION = { major: 1, minor: ACCOUNT_MINOR } as const;
+export const PROTOCOL_VERSION = { major: 1, minor: AUTH_MINOR } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
 
@@ -75,6 +82,8 @@ function credentialsSetSchema() {
     ...request,
     type: z.literal("credentials.set"),
     provider: modelProviderSchema,
+    /** Built-in pi is the modern default; plugins and older clients keep their namespace. */
+    target: z.enum(["pi", "plugin"]).optional(),
     config: modelConfigSchema.optional(),
     key: z
       .string()
@@ -110,6 +119,8 @@ export const clientMessageSchema = /* @__PURE__ */ z.discriminatedUnion("type", 
   sessionReleaseRequestSchema,
   sessionOutputRequestSchema,
   ...pluginRequestSchemas,
+  ...authRequestSchemas,
+  ...modelsRequestSchemas,
 ]);
 export type CredentialsResult = z.infer<typeof credentialsResultSchema>;
 export type ListProjectsRequest = z.infer<typeof listProjectsRequestSchema>;
@@ -204,6 +215,8 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   sessionReleaseResultSchema,
   sessionOutputResultSchema,
   ...pluginResultSchemas,
+  ...authResultSchemas,
+  modelsCatalogSchema,
 ]);
 export type ProjectsResult = z.infer<typeof projectsResultSchema>;
 export type Subscribed = z.infer<typeof subscribedSchema>;

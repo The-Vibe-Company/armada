@@ -4,13 +4,14 @@ import { useRoute } from "@/lib/route";
 import type { DaemonClient } from "@/protocol/client";
 import { DaemonProvider } from "@/protocol/store";
 import { Hangar } from "@/screens/Hangar";
-import { Project } from "@/screens/Project";
 import { useSessionRoute } from "@/session/route";
 
 // The sky's story page (`?story=sky`), loaded only behind its flag: never in the first load.
 const SkyStory = lazy(() => import("@/screens/SkyStory").then((m) => ({ default: m.SkyStory })));
 // A project's room (`#/projects/<id>`), loaded when opened.
 const Room = lazy(() => import("@/screens/Room").then((m) => ({ default: m.Room })));
+// Project rules are fetched when opened, alongside the other project screens.
+const Project = lazy(() => import("@/screens/Project").then((m) => ({ default: m.Project })));
 // A session's page, fetched when a row opens it: off the first-load budget.
 const Session = lazy(() => import("@/screens/Session").then((m) => ({ default: m.Session })));
 // The notifications (THE-2055): every screen hears them, off the first load, once the shell is drawn.
@@ -52,7 +53,9 @@ export function App({
             <Room project={route.id} />
           </Suspense>
         ) : route.kind === "rules" ? (
-          <Project id={route.id} onReload={onReload} />
+          <Suspense>
+            <Project id={route.id} onReload={onReload} />
+          </Suspense>
         ) : (
           <Hangar onReload={onReload} />
         )}

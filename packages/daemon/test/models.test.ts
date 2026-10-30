@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
-import { PROTOCOL_VERSION } from "@armada/protocol";
+import { type CoordinatorModel, PROTOCOL_VERSION } from "@armada/protocol";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { generateText, jsonSchema, type LanguageModel, Output } from "ai";
 import { z } from "zod";
@@ -16,6 +16,11 @@ import { startServer } from "../src/server/index.ts";
 import { coordinatorModels, loadedModelKinds, modelEnvironment } from "../src/server/models.ts";
 import { daemonProjectSchema } from "../src/server/readers.ts";
 import { FakeKeychain } from "./support/keychain.ts";
+
+function pluginConfig(selection: CoordinatorModel | undefined) {
+  assert.ok(selection && "kind" in selection);
+  return selection.config;
+}
 
 interface FixtureBody {
   model?: string;
@@ -133,7 +138,7 @@ for (const kind of ["anthropic", "openai-compatible"]) {
     );
     const provider = daemon.registry.get("model", kind);
     assert.ok(provider);
-    const sdk = provider.create("conformance-model", access.selected?.config) as LanguageModel;
+    const sdk = provider.create("conformance-model", pluginConfig(access.selected)) as LanguageModel;
     const result = await generateText({
       model: sdk,
       prompt: "Call conformance_echo",
@@ -199,7 +204,7 @@ for (const kind of ["anthropic", "openai-compatible"]) {
       projects: [{ id: "p" }],
       store: daemon.store,
       registry: daemon.registry,
-      selected: { kind, config: { ...access.selected?.config, model: "replacement-model" } },
+      selected: { kind, config: { ...pluginConfig(access.selected), model: "replacement-model" } },
     });
     server = await startServer({
       store: daemon.store,
@@ -252,12 +257,12 @@ test("model boot honors project rules over env, recognizes z.ai/Azure and saved 
   const key = randomBytes(24).toString("hex");
   await chain.setCoordinator("openai-compatible", key, { baseURL: "http://localhost/v1", model: "saved-model" });
   const saved = await modelEnvironment({}, chain);
-  assert.equal(saved.selected?.config.model, "saved-model");
+  assert.equal(pluginConfig(saved.selected).model, "saved-model");
   assert.equal((await saved.secrets.get("ARMADA_MODEL_API_KEY")) === key, true);
   const custom = new Keychain(new FakeKeychain());
   await custom.setCoordinator("custom", key, { model: "custom", apiKeySecret: "CUSTOM_API_KEY" });
   const customAccess = await modelEnvironment({}, custom);
-  assert.equal(customAccess.selected?.config.apiKeySecret, "CUSTOM_API_KEY");
+  assert.equal(pluginConfig(customAccess.selected).apiKeySecret, "CUSTOM_API_KEY");
   assert.equal((await customAccess.secrets.get("CUSTOM_API_KEY")) === key, true);
   assert.equal(await customAccess.secrets.get("ARMADA_MODEL_API_KEY"), null);
   await chain.write("github", "github", key);
@@ -266,12 +271,12 @@ test("model boot honors project rules over env, recognizes z.ai/Azure and saved 
     { ZAI_BASE_URL: "https://api.z.ai/api/coding/paas/v4", ZAI_MODEL: "glm-5.3-flash", ZAI_API_KEY: key },
     chain,
   );
-  assert.equal(zai.selected?.config.apiKeySecret, "ZAI_API_KEY");
+  assert.equal(pluginConfig(zai.selected).apiKeySecret, "ZAI_API_KEY");
   const azure = await modelEnvironment(
     { AZURE_AI_ENDPOINT: "https://example.invalid/models", AZURE_AI_MODEL: "DeepSeek", AZURE_AI_API_KEY: key },
     chain,
   );
-  assert.equal(azure.selected?.config.model, "DeepSeek");
+  assert.equal(pluginConfig(azure.selected).model, "DeepSeek");
   const named = new Keychain(new FakeKeychain());
   for (const [name, value] of Object.entries({
     ARMADA_MODEL_KIND: "openai-compatible",
@@ -281,7 +286,7 @@ test("model boot honors project rules over env, recognizes z.ai/Azure and saved 
   }))
     await named.write("plugin", name, value);
   const generic = await modelEnvironment({}, named);
-  assert.equal(generic.selected?.config.model, "keychain-model");
+  assert.equal(pluginConfig(generic.selected).model, "keychain-model");
   assert.equal((await generic.secrets.get("ARMADA_MODEL_API_KEY")) === key, true);
   await named.write("coordinator", "coordinator", JSON.stringify({ provider: "openai", key }));
   const legacy = await named.coordinator();
@@ -347,7 +352,7 @@ test("model boot honors project rules over env, recognizes z.ai/Azure and saved 
     model: "DeepSeek-next",
     apiKeySecret: "OPENAI_API_KEY",
   });
-  await chain.setCoordinator("openai-compatible", key, saved.selected?.config);
+  await chain.setCoordinator("openai-compatible", key, pluginConfig(saved.selected));
 
   const skipped: string[] = [];
   assert.equal(
@@ -400,7 +405,10 @@ test("model boot honors project rules over env, recognizes z.ai/Azure and saved 
         rules: {
           revision: 1,
           value: {
-            coordinatorModel: { kind: "openai-compatible", config: { ...saved.selected?.config, model: "rule-model" } },
+            coordinatorModel: {
+              kind: "openai-compatible",
+              config: { ...pluginConfig(saved.selected), model: "rule-model" },
+            },
           },
         },
       },

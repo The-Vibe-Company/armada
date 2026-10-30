@@ -1,25 +1,27 @@
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { type CoordinatorModel, modelConfigSchema, modelKindSchema } from "@armada/protocol";
+import { type ModelConfig, modelConfigSchema, modelKindSchema, piCoordinatorModelSchema } from "@armada/protocol";
 import type { KeychainBackend } from "./secrets/backend.ts";
 import { fileKeychain } from "./secrets/file.ts";
 import { macKeychain } from "./secrets/macos.ts";
 
 export type ModelProvider = string;
-export type SecretService = "coordinator" | "linear" | "github" | "plugin";
-export interface CoordinatorCredential {
+export type SecretService = "coordinator" | "linear" | "github" | "plugin" | "pi";
+export interface PluginCredential {
   provider: ModelProvider;
   key: string;
-  config?: CoordinatorModel["config"];
+  config?: ModelConfig;
+  model?: never;
 }
+export type CoordinatorCredential = PluginCredential | { provider: string; model: string; key?: never; config?: never };
 export interface CredentialStatus {
   provider: ModelProvider | null;
   storage: KeychainBackend["storage"];
   needsRepair?: boolean;
-  config?: CoordinatorModel["config"];
+  config?: ModelConfig;
 }
 /** Migrate the pre-plugin OpenAI identity without persisting or exposing its key. */
-export function coordinatorModelConfig(provider: string, config?: CoordinatorModel["config"]) {
+export function coordinatorModelConfig(provider: string, config?: ModelConfig) {
   return provider === "openai"
     ? {
         provider: "openai-compatible",
@@ -34,6 +36,7 @@ const services = {
   linear: "armada.linear",
   github: "armada.github",
   plugin: "armada.plugins",
+  pi: "armada.pi",
 } as const;
 const validKey = (key: string) => key.length > 0 && key.length <= 8192 && /^[!-~]+$/.test(key);
 
@@ -64,26 +67,79 @@ export class Keychain {
     }
   }
 
-  async setCoordinator(provider: ModelProvider, key: string, config?: CoordinatorModel["config"]): Promise<void> {
+  async remove(service: SecretService, account: string): Promise<void> {
+    try {
+      if (!account || !Object.hasOwn(services, service) || !this.#backend.delete) throw new Error();
+      await this.#backend.delete(services[service], account);
+    } catch {
+      throw new Error("Credential could not be removed");
+    }
+  }
+
+  async lock(service: SecretService, account: string): Promise<() => Promise<void>> {
+    try {
+      if (!account || !Object.hasOwn(services, service)) throw new Error();
+      const release = await this.#backend.lock?.(services[service], account);
+      return async () => {
+        try {
+          await release?.();
+        } catch {
+          throw new Error("Credential lock could not be released");
+        }
+      };
+    } catch {
+      throw new Error("Credential storage is busy");
+    }
+  }
+
+  async selectCoordinator(selection: { provider: string; model: string }): Promise<void> {
+    const value = piCoordinatorModelSchema.parse(selection);
+    const release = await this.lock("coordinator", "coordinator");
+    try {
+      const previous = await this.coordinator();
+      if (previous?.key) await this.write("coordinator", "plugin", JSON.stringify(previous));
+      await this.write("coordinator", "coordinator", JSON.stringify(value));
+    } finally {
+      await release();
+    }
+  }
+
+  async setCoordinator(provider: ModelProvider, key: string, config?: ModelConfig): Promise<void> {
     if (
       !modelKindSchema.safeParse(provider).success ||
       !validKey(key) ||
       (config && !modelConfigSchema.safeParse(config).success)
     )
       throw new Error("Invalid model credential");
-    // One entry atomically replaces both the provider and its key.
-    await this.write(
-      "coordinator",
-      "coordinator",
-      JSON.stringify({ ...coordinatorModelConfig(provider, config), key }),
-    );
+    const value = JSON.stringify({ ...coordinatorModelConfig(provider, config), key });
+    const release = await this.lock("coordinator", "coordinator").catch(() => {
+      throw new Error("Credential could not be saved");
+    });
+    try {
+      await this.write("coordinator", "coordinator", value);
+    } finally {
+      await release();
+    }
   }
 
   async coordinator(): Promise<CoordinatorCredential | null> {
     const value = await this.read("coordinator", "coordinator");
     if (value === null) return null;
+    return this.#parseCoordinator(value);
+  }
+
+  async pluginCoordinator(): Promise<PluginCredential | null> {
+    const active = await this.coordinator();
+    if (active?.key) return active as PluginCredential;
+    const backup = await this.read("coordinator", "plugin");
+    const saved = backup === null ? null : this.#parseCoordinator(backup);
+    return saved?.key ? (saved as PluginCredential) : null;
+  }
+
+  #parseCoordinator(value: string): CoordinatorCredential {
     try {
       const parsed = JSON.parse(value);
+      if (typeof parsed.model === "string") return piCoordinatorModelSchema.parse(parsed);
       if (
         !modelKindSchema.safeParse(parsed.provider).success ||
         typeof parsed.key !== "string" ||
