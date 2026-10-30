@@ -436,3 +436,41 @@ output and URLs; the app owns opening the browser. Linear or GitHub token prompt
 write only a declared secret through the daemon's credential store. Disconnect
 clears a pasted key; a key supplied by the environment or Armada remains controlled
 by that source.
+
+Conductor workers (THE-2072, protocol minor 13) run through the optional
+`conductor` runtime provider. Enable it in Settings > Providers, configure its
+`runtime.conductor` contribution with `binary` (the executable path),
+`defaultProfile`, `profiles` (agent, model and effort) and `routing` (labels and
+profile, first match). The binary path is an ordinary plugin setting, editable
+by Providers. The corresponding `[plugins.conductor]` table in a project's TOML
+supplies the same configuration; importing that file's rules selects
+`cli = "conductor"` with the profile name as `model`. Install that table's values
+as the provider contribution settings too. `armada.v2.toml` declares this
+repository's web/opus and api/codex choices. Existing local runtime routing and
+socket capabilities remain available.
+
+Sign in to Armada in Settings > Account before launching. The daemon uses that
+shared CLI sign-in to mint a one-use, one-hour launch token. Only the brief's
+first line contains it: `armada login --launch-token … --api-url …`; the worker
+installs Armada, runs that line once, then claims with its Conductor handle.
+Creation and later messages use stdin. The daemon stores the launch identity
+and runtime handle, never the token or brief. Unknown creation outcomes require
+inspection rather than a second create. Signed-out launches refuse before a
+workspace is created with “Sign in to Armada in Settings to launch in Conductor”.
+
+While hosted workers are in flight, the daemon polls Armada's inbox and worker
+event feed every 15 seconds. Remote claim identities fence each generation;
+individual item/event identities deduplicate the local log across restarts.
+Questions and hand-backs use the room's existing inbox, and reports use its
+existing session events. Answers are delivered through Conductor and recorded
+in the hosted inbox. Polls are single-flight and stop during daemon shutdown.
+Conductor workspaces are archived after the daemon's explicit stop; in-place
+relaunch and Cloud-specific behavior are outside this provider's first version.
+
+The Armada web producer must be deployed before enabling hosted report polling:
+`recordReport` fills the existing runtime/handle fields from the claim captured
+before asynchronous work. Report path, inbox and session-summary writes recheck that captured claim
+inside the existing project transaction. This is additive metadata on the existing event API,
+with no schema migration or new route. Legacy report rows without that identity
+are not attributed to a current worker; its generation-bound inbox and heartbeat
+remain readable. A delayed report from an older claim cannot change its replacement.

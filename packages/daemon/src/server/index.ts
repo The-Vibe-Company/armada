@@ -6,6 +6,7 @@ import {
   admitRequest,
   CHAT_LIVE_MINOR,
   CHAT_WAKE_MINOR,
+  CONDUCTOR_MINOR,
   eventSchema,
   MODELS_MINOR,
   type ModelKindEntry,
@@ -246,24 +247,33 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     return { seq, state: projectTablesSchema.parse(JSON.parse(JSON.stringify(tables))) };
   }
 
-  /** Older same-major clients validate inbox kinds and policy fields strictly. */
+  /** Older same-major clients validate inbox kinds, routing and policy fields strictly. */
   function snapshotFor(snapshot: Snapshot, minor: number): Snapshot {
-    if (minor >= CHAT_WAKE_MINOR) return snapshot;
+    if (minor >= CHAT_WAKE_MINOR && minor >= CONDUCTOR_MINOR) return snapshot;
     const state = snapshot.state as unknown as ProjectTables;
     const legacy = {
       ...state,
-      inbox: state.inbox.filter((item) =>
-        ["question", "plan", "hand-back", "owner-request", "launch"].includes(item.kind),
-      ),
+      inbox:
+        minor >= CHAT_WAKE_MINOR
+          ? state.inbox
+          : state.inbox.filter((item) =>
+              ["question", "plan", "hand-back", "owner-request", "launch"].includes(item.kind),
+            ),
     };
     const rules = state.rules;
     if (rules) {
       const value = { ...rules.value };
+      if (minor < CONDUCTOR_MINOR) {
+        value.routing = value.routing?.filter((route) => route.cli !== "conductor");
+        if (value.defaultRoute?.cli === "conductor") value.defaultRoute = null;
+      }
       if (minor < RULES_SCHEMA_MINOR) delete value.gates;
       if (value.policy) {
         const policy = { ...value.policy };
-        delete policy.coordinatorMinutes;
-        delete policy.notStartedMinutes;
+        if (minor < CHAT_WAKE_MINOR) {
+          delete policy.coordinatorMinutes;
+          delete policy.notStartedMinutes;
+        }
         if (minor < RULES_SCHEMA_MINOR) {
           delete policy.plans;
           delete policy.approvalLabel;

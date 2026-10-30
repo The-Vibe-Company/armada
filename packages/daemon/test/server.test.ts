@@ -645,8 +645,8 @@ test("credential socket writes never expose the key to replies, events or logs",
 // the recorded envelope to minor 5 for per-client plan-policy snapshot projection,
 // THE-2045 to minor 6 for the session page, THE-2049 to minor 7 for live chat,
 // THE-2073 to reserved minor 9 for shared auth and the pi model catalog,
-// and THE-2079 to minor 11 for fleet wake rows (the recorded frames have no
-// coordinator attached and are otherwise unchanged).
+// THE-2079 to minor 11 for fleet wake rows and THE-2072 to minor 13 for
+// hosted Conductor routing (the recorded frames have no coordinator attached).
 test("subscription bytes stay compatible with the recorded daemon vocabulary and folded tables", async (t) => {
   const fixture = new URL("./support/protocol-subscription.json", import.meta.url);
   const inputs = JSON.parse(readFileSync(fixture, "utf8")) as { history: EventInput[]; live: EventInput[] };
@@ -750,12 +750,12 @@ test("pre-wake clients keep their inbox vocabulary in initial and shared live sn
   open("old", "hand-back");
   for (const kind of notices) open(kind, kind);
   const server = await startServer({ store, projects });
-  // Legacy first also exercises the live batch's shared fold cache.
-  const legacy = await connect(server.wsUrl);
-  const modern = await connect(server.wsUrl);
+  // Legacy first also exercises the live batch's shared fold cache. Wake-capable
+  // clients 11/12 retain their notices even below Conductor's newer minor.
+  const clients: { minor: number; client: Awaited<ReturnType<typeof connect>> }[] = [];
+  for (const minor of [10, 11, 12, version.minor]) clients.push({ minor, client: await connect(server.wsUrl) });
   t.after(async () => {
-    legacy.ws.terminate();
-    modern.ws.terminate();
+    for (const { client } of clients) client.ws.terminate();
     await server.close();
     store.close();
   });
@@ -764,13 +764,56 @@ test("pre-wake clients keep their inbox vocabulary in initial and shared live sn
     assert.ok(frame.snapshot);
     return (frame.snapshot.state as unknown as ProjectTables).inbox.map((item) => item.id);
   };
-  legacy.send({ type: "project.subscribe", version: { major: 1, minor: 10 }, project: "orchard", after: 0 });
-  assert.deepEqual(inbox(await legacy.next()), ["old"]);
-  await legacy.next();
-  modern.send({ type: "project.subscribe", project: "orchard", after: 0 });
-  assert.deepEqual(inbox(await modern.next()), ["old", ...notices]);
-  await modern.next();
+  for (const { minor, client } of clients) {
+    client.send({ type: "project.subscribe", version: { major: 1, minor }, project: "orchard", after: 0 });
+    assert.deepEqual(inbox(await client.next()), minor < 11 ? ["old"] : ["old", ...notices]);
+    await client.next();
+  }
   open("later", "silent");
-  assert.deepEqual(inbox(await legacy.next()), ["old"]);
-  assert.deepEqual(inbox(await modern.next()), ["old", ...notices, "later"]);
+  for (const { minor, client } of clients)
+    assert.deepEqual(inbox(await client.next()), minor < 11 ? ["old"] : ["old", ...notices, "later"]);
+});
+
+test("pre-Conductor clients receive compatible routing in initial and live snapshots", async (t) => {
+  const store = new EventStore(":memory:");
+  const server = await startServer({ store, projects });
+  const legacy = await connect(server.wsUrl);
+  const modern = await connect(server.wsUrl);
+  t.after(async () => {
+    legacy.ws.terminate();
+    modern.ws.terminate();
+    await server.close();
+    store.close();
+  });
+  const route = { cli: "conductor" as const, model: "web" };
+  const rules = (revision: number) =>
+    store.append({
+      project: "orchard",
+      actor: "coordinator",
+      at: hold().at,
+      kind: "coordinator.checkpoint",
+      payload: {
+        checkpoint: {
+          format: "armada.tools",
+          version: 1,
+          type: "rules",
+          rules: { revision, value: { routing: [{ labels: ["web"], ...route }], defaultRoute: route } },
+        },
+      },
+    });
+  const value = (frame: ServerMessage) => {
+    assert(frame.type === "project.subscribed" || frame.type === "events");
+    assert(frame.snapshot);
+    return (frame.snapshot.state as unknown as { rules: { value: unknown } }).rules.value;
+  };
+  rules(1);
+  legacy.send({ type: "project.subscribe", project: "orchard", after: 0, version: { major: 1, minor: 12 } });
+  modern.send({ type: "project.subscribe", project: "orchard", after: 0 });
+  assert.deepEqual(value(await legacy.next()), { routing: [], defaultRoute: null });
+  assert.deepEqual(value(await modern.next()), { routing: [{ labels: ["web"], ...route }], defaultRoute: route });
+  await legacy.next();
+  await modern.next();
+  rules(2);
+  assert.deepEqual(value(await legacy.next()), { routing: [], defaultRoute: null });
+  assert.deepEqual(value(await modern.next()), { routing: [{ labels: ["web"], ...route }], defaultRoute: route });
 });

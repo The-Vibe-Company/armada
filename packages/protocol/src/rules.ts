@@ -3,9 +3,10 @@ import { coordinatorModelSchema } from "./models.js";
 
 // THE-2043 reserved protocol minor 5 for the extended Rules snapshot vocabulary.
 export const RULES_SCHEMA_MINOR = 5;
+export const CONDUCTOR_MINOR = 13;
 
 const id = z.string().min(1).max(200).regex(/\S/);
-const target = { cli: z.enum(["claude", "codex", "opencode"]), model: id, effort: id.optional() };
+const target = { cli: z.enum(["claude", "codex", "opencode", "conductor"]), model: id, effort: id.optional() };
 const placement = z.enum(["local", "vm"]);
 const minutes = z.number().positive();
 // V1 policy numbers: positive finite minutes, positive safe worker quota or no cap.
