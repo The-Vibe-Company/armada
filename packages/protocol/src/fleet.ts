@@ -3,7 +3,7 @@ import { rulesStateSchema } from "./rules.js";
 
 const text = z.string();
 const integer = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
-const phaseSchema = z.enum([
+export const phaseSchema = z.enum([
   "planning",
   "awaiting-approval",
   "implementing",
@@ -14,6 +14,8 @@ const phaseSchema = z.enum([
   "released",
   "merged",
 ]);
+/** Worker reports and tracker labels exclude terminal phases. */
+export const activePhaseSchema = phaseSchema.exclude(["released", "merged"]);
 export type Phase = z.infer<typeof phaseSchema>;
 const shippingStageSchema = z.enum(["review", "ci"]);
 export type ShippingStage = z.infer<typeof shippingStageSchema>;
@@ -75,7 +77,7 @@ export const eventPayloadSchemas = {
   "pull-request.seen": pullRequestSchema,
   "session.claimed": sessionRefSchema.extend({ generation: integer.min(1), owner: text, runtime: text, handle: text }),
   "session.reported": sessionRefSchema.extend({
-    phase: phaseSchema.exclude(["released", "merged"]),
+    phase: activePhaseSchema,
     reason: text,
     stage: shippingStageSchema.optional(),
   }),
@@ -118,7 +120,7 @@ export type EventInput = {
 }[EventKind];
 export type FleetEvent = EventInput & { seq: number };
 
-const sessionStateSchema = z.enum([
+export const sessionStateSchema = z.enum([
   "blocked",
   "waiting-for-owner",
   "in-progress",
@@ -127,6 +129,7 @@ const sessionStateSchema = z.enum([
   "released",
 ]);
 export type SessionState = z.infer<typeof sessionStateSchema>;
+export const flowStepSchema = z.enum(["plan", "implementing", "review", "ci", "merged"]);
 const sessionSchema = sessionRefSchema.extend({
   generation: integer,
   owner: text,
@@ -137,7 +140,7 @@ const sessionSchema = sessionRefSchema.extend({
   state: sessionStateSchema,
   reason: text,
   step: integer,
-  flowStep: z.enum(["plan", "implementing", "review", "ci", "merged"]),
+  flowStep: flowStepSchema,
   at: text,
   heartbeat: text.nullable(),
 });

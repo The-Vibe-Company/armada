@@ -50,7 +50,8 @@
     }
   },
   "dependencies": {
-    "@armada/plugin-api": "workspace:*"
+    "@armada/plugin-api": "workspace:*",
+    "@armada/protocol": "workspace:*"
   },
   "devDependencies": {
     "@armada/daemon": "workspace:*"

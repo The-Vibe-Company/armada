@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { eventPayloadSchemas, flowStepSchema, phaseSchema, sessionStateSchema } from "@armada/protocol";
+import { trackerChanges } from "../../plugins/linear/src/changes.ts";
+import { linearTracker } from "../../plugins/linear/src/linear/index.ts";
 import { fleetItems, groupCounts, groupItems, headline, rowTime, subline } from "../src/fleet/overview";
 import { sessionsInFlight } from "../src/fleet/sessions";
 import { readFleetState } from "../src/fleet/state";
@@ -127,4 +130,72 @@ test("the headline says nothing blocked, and when nothing waits", () => {
 
 test("a state of another shape reads as an empty fleet", () => {
   for (const shape of [null, [], "text", { sessions: "none" }]) expect(readFleetState(shape).sessions).toEqual([]);
+});
+
+test("protocol vocabulary survives Linear labels, worker reports and tolerant app rows", async () => {
+  const page = <T>(nodes: T[]) => ({ nodes, pageInfo: { hasNextPage: false, endCursor: null } });
+  for (const phase of [...phaseSchema.options, "future-phase"]) {
+    const raw = {
+      id: "uuid-EX-1",
+      identifier: "EX-1",
+      title: "Plant trees",
+      url: "https://linear.example/EX-1",
+      state: { type: "started" },
+      assignee: null,
+      parent: null,
+      labels: page([{ name: phase, parent: { name: "Agent phase" } }]),
+      attachments: page([]),
+    };
+    const tracker = linearTracker({
+      project: "orchard",
+      rootId: "EX-1",
+      phaseGroup: "Agent phase",
+      secrets: async () => "synthetic-key",
+      now: () => new Date(NOW),
+      fetch: async (_url, init) => {
+        const { query } = JSON.parse(String(init.body));
+        return Response.json({
+          data: query.includes("query Root")
+            ? { issue: raw }
+            : query.includes("query Children")
+              ? { issues: page([]) }
+              : {
+                  issues: {
+                    nodes: [
+                      {
+                        identifier: "EX-1",
+                        comments: page([
+                          {
+                            id: "report",
+                            body: `Agent status: ${phase} — Planting`,
+                            createdAt: new Date(NOW).toISOString(),
+                            updatedAt: new Date(NOW).toISOString(),
+                            user: { name: "Mira" },
+                          },
+                        ]),
+                      },
+                    ],
+                  },
+                },
+        });
+      },
+    });
+    const reading = await tracker.read({ signal: new AbortController().signal });
+    // Terminal values are read from reports/status, never from active phase labels.
+    const active = phase !== "released" && phase !== "merged" && phase !== "future-phase";
+    expect(reading.tickets[0]?.phase as string | null | undefined).toBe(active ? phase : null);
+    const report = trackerChanges("orchard", [], reading).find((event) => event.kind === "ticket.report-posted");
+    expect(report?.payload.phase as string | undefined).toBe(phase === "future-phase" ? undefined : phase);
+    if (report) expect(eventPayloadSchemas[report.kind].safeParse(report.payload).success).toBe(true);
+    for (const state of [...sessionStateSchema.options, "future-state"]) {
+      for (const flowStep of [...flowStepSchema.options, "future-step"]) {
+        const valid = phase !== "future-phase" && state !== "future-state" && flowStep !== "future-step";
+        const rows = readFleetState({
+          sessions: [session("EX-1", state, phase, { flowStep }), { ticket: "incomplete" }],
+        });
+        expect(rows.sessions.length).toBe(valid ? 1 : 0);
+        if (valid) expect(rows.sessions[0]).toMatchObject({ phase, state, flowStep });
+      }
+    }
+  }
 });

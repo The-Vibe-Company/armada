@@ -1,27 +1,17 @@
-import type { EventInput, FleetEvent, Phase, Ticket } from "@armada/daemon/events";
+import type { EventInput, FleetEvent, Ticket } from "@armada/daemon/events";
+import { phaseSchema } from "@armada/protocol";
 import type { TrackerComment, TrackerReading } from "./types.ts";
 
-const phases: Phase[] = [
-  "planning",
-  "awaiting-approval",
-  "implementing",
-  "shipping",
-  "blocked",
-  "ready-to-merge",
-  "awaiting-validation",
-  "released",
-  "merged",
-];
 // Adapted from V1 linear.ts parseStatusLine: coordinator notes/answers are not worker reports.
 function status(body: string) {
   const first = (body.split("\n").find((line) => line.trim()) ?? "").replace(/[*_`]/g, "");
   const match = /^\s*Agent status\s*:\s*([a-z-]+)\s*(?:[—–-]+\s*(.*))?$/i.exec(first);
   if (!match?.[1]) return null;
   const raw = match[1].toLowerCase();
-  const phase = ({ "handed-back": "ready-to-merge", "ci-fixing": "shipping" }[raw] ?? raw) as Phase;
+  const parsed = phaseSchema.safeParse({ "handed-back": "ready-to-merge", "ci-fixing": "shipping" }[raw] ?? raw);
   const summary = match[2]?.trim() ?? "";
-  if (!phases.includes(phase)) return null;
-  return { phase, summary, coordinator: /^(answer|note)\s*:/i.test(summary) };
+  if (!parsed.success) return null;
+  return { phase: parsed.data, summary, coordinator: /^(answer|note)\s*:/i.test(summary) };
 }
 const equal = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
 
