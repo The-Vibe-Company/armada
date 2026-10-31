@@ -218,9 +218,9 @@ function decide(
         return no(
           closed ? "item_closed" : "no_item",
           closed
-            ? `inbox item #${args.id} was already resolved`
+            ? `inbox item #${args.id} is already answered, use worker.message for a follow-up`
             : `inbox item #${args.id} does not exist in project ${project}`,
-          "inbox.list",
+          closed ? "worker.message" : "inbox.list",
         );
       }
       // Hand-backs require merge.run, launches worker.launch, and owner requests an owner's decision.
@@ -421,7 +421,16 @@ export function nativeTools(
                 "invoke through the coordinator harness",
               ),
             );
-          const key = JSON.stringify([scope.project, api.taskId, api.callId]);
+          // pi assigns a new call identity to a model retry. Answers must keep the
+          // same delivery and receipt identity even if the first outcome was unknown.
+          const answerArgs =
+            name === "inbox.answer"
+              ? { id: (args as JsonObject).id, answer: ((args as JsonObject).answer as string).trim() }
+              : undefined;
+          if (answerArgs) args = answerArgs;
+          const key = answerArgs
+            ? JSON.stringify([scope.project, name, answerArgs.id, digest(answerArgs.answer)])
+            : JSON.stringify([scope.project, api.taskId, api.callId]);
           const input = canonical({ name, args });
           for (const event of events) {
             const receipt = (event.payload as typeof event.payload & { receipt?: Receipt }).receipt;
@@ -598,7 +607,7 @@ export function nativeTools(
                   refuse(
                     "delivery_unconfirmed",
                     "answer delivery is unconfirmed; the inbox item stays open",
-                    "inspect delivery, then retry the same call identity",
+                    "inspect delivery, then retry inbox.answer with the same item id and answer text",
                   ),
                 );
               beforeWrite();
@@ -607,7 +616,7 @@ export function nativeTools(
                 refuse(
                   "delivery_unconfirmed",
                   "answer delivery or its target could not be confirmed; the inbox item stays open",
-                  "inspect delivery, then retry the same call identity",
+                  "inspect delivery, then retry inbox.answer with the same item id and answer text",
                 ),
               );
             }
@@ -621,7 +630,13 @@ export function nativeTools(
               scope.appendEvent(event);
             } catch {
               return output(
-                refuse("write_failed", "the decision was not recorded", `retry ${name} with the same call identity`),
+                refuse(
+                  "write_failed",
+                  "the decision was not recorded",
+                  name === "inbox.answer"
+                    ? "retry inbox.answer with the same item id and answer text"
+                    : `retry ${name} with the same call identity`,
+                ),
               );
             }
           }

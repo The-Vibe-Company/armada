@@ -157,8 +157,11 @@ test("inbox.answer resolves a question once, preserves phase and refuses missing
   const seq = store.sequence;
   assert.deepEqual(await run("inbox.answer", args, "answer"), result);
   assert.equal(store.sequence, seq);
-  assert.equal((await run("inbox.answer", { ...args, answer: "Pine" }, "answer")).code, "call_conflict");
-  assert.equal((await run("inbox.answer", args)).code, "item_closed");
+  const different = await run("inbox.answer", { ...args, answer: "Pine" }, "new-answer");
+  assert.equal(different.code, "item_closed");
+  assert.match(different.message, /already answered, use worker\.message for a follow-up/);
+  assert.deepEqual(await run("inbox.answer", args, "new-call"), result);
+  assert.equal(store.sequence, seq);
   assert.equal(fold(store.readSince(0)).projects.orchard?.sessions[0]?.phase, "ready-to-merge");
   assert.ok(fold(store.readSince(0)).projects.other?.inbox.some((i) => i.id === "q"));
 });
@@ -411,6 +414,76 @@ test("answer delivery keeps an unconfirmed item open and fences a replacement be
   assert.equal((await replaced["inbox.answer"].execute(args, api, context)).isError, true);
   assert.equal(delivered, false);
   assert.ok(fold(store.readSince(0)).projects.orchard?.inbox.some((i) => i.id === "q"));
+});
+
+test("answer retries reuse delivery identity across calls and replay the committed receipt after restart", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "armada-native-"));
+  const file = join(directory, "fleet.sqlite");
+  let store = new EventStore(file);
+  seed(store);
+  let scope = openCoordinatorStorage({ store, project: "orchard", now: () => at });
+  const args = { id: "q", answer: "Oak" };
+  const keys: string[] = [];
+  const delivered = new Set<string>();
+  let confirmed = false;
+  let deliveries = 0;
+  const deliverAnswerOnce: NonNullable<Parameters<typeof nativeTools>[1]["deliverAnswerOnce"]> = async ({
+    key,
+    beforeWrite,
+  }) => {
+    beforeWrite();
+    keys.push(key);
+    if (!delivered.has(key)) {
+      delivered.add(key);
+      deliveries++;
+    }
+    return confirmed;
+  };
+  try {
+    let tools = nativeTools(scope, { now: () => at, deliverAnswerOnce });
+    const first = await tools["inbox.answer"].execute(
+      args,
+      { taskId: 1, callId: "first" } as ToolExecutionApi,
+      context,
+    );
+    assert.equal((first.details as unknown as TestFacts).code, "delivery_unconfirmed");
+    assert.ok(fold(store.readSince(0)).projects.orchard?.inbox.some((i) => i.id === "q"));
+    confirmed = true;
+    const receipt = await tools["inbox.answer"].execute(
+      args,
+      { taskId: 2, callId: "retry" } as ToolExecutionApi,
+      context,
+    );
+    assert.equal(receipt.isError, false);
+    assert.equal(keys.length, 2);
+    assert.equal(keys[1], keys[0]);
+    assert.equal(deliveries, 1);
+    const seq = store.sequence;
+    assert.deepEqual(
+      await tools["inbox.answer"].execute(args, { taskId: 3, callId: "again" } as ToolExecutionApi, context),
+      receipt,
+    );
+    await scope.close(context);
+    store.close();
+    store = new EventStore(file);
+    scope = openCoordinatorStorage({ store, project: "orchard", now: () => at });
+    tools = nativeTools(scope, { now: () => at, deliverAnswerOnce });
+    assert.deepEqual(
+      await tools["inbox.answer"].execute(
+        { ...args, answer: " Oak " },
+        { taskId: 4, callId: "after-restart" } as ToolExecutionApi,
+        context,
+      ),
+      receipt,
+    );
+    assert.equal(keys.length, 2);
+    assert.equal(deliveries, 1);
+    assert.equal(store.sequence, seq);
+  } finally {
+    await scope.close(context);
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("merge.check re-reads after an adapter yields and refuses changed evidence or a closed owner", async (t) => {
