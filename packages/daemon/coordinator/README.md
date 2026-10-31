@@ -44,8 +44,10 @@ status, ticket detail, history and inbox read only the admitted project's events
 The shared fold/UI snapshots and existing durable conversation entries remain
 unchanged; every new status read uses the compact projection.
 
-The five mutations (`inbox.answer`, `hold.add`, `hold.clear`, `owner.ask`,
-`rules.set`) use pi's durable `(project, taskId, callId)` as their operation identity.
+The mutations `hold.add`, `hold.clear`, `owner.ask` and `rules.set` use pi's durable
+`(project, taskId, callId)` as their operation identity. `inbox.answer` instead
+uses `(project, "inbox.answer", item id, sha256(trimmed answer))` so a model retry
+with a fresh tool call id reuses the same delivery and receipt identity.
 An effect and its `payload.receipt` commit in one EventStore append. Replay
 returns the committed result, even if the item's current state has changed;
 reusing the identity with different arguments refuses. Generated item IDs are
@@ -57,7 +59,10 @@ no success receipt. No external effect is inferred from a local checkpoint.
 worker's phase. Inject `native.deliverAnswerOnce` to deliver with a stable key;
 the adapter must deduplicate that key across restarts and invoke `beforeWrite`
 immediately before each runtime write. Missing/unconfirmed delivery leaves the
-item open. A replacement or ended session is fenced before delivery and again
+item open. Retry with the same item id and answer text after inspecting delivery.
+A committed answer replays its receipt across calls and restarts; different text
+on an answered item refuses and directs follow-ups to `worker.message`.
+A replacement or ended session is fenced before delivery and again
 before recording. Do not adapt an unkeyed send API by retrying it. This ticket
 supplies the orchestration contract; Spec 3 supplies runtime adapters. Owner
 requests and hand-backs cannot be dismissed with `inbox.answer`.
