@@ -19,6 +19,7 @@ export function Panel({
   open,
   sheet,
   tab,
+  counts,
   width,
   onTab,
   onWidth,
@@ -29,6 +30,8 @@ export function Panel({
   /** A sheet over the conversation (a narrow window), not a column beside it. */
   sheet: boolean;
   tab: PanelTab;
+  /** A number beside a tab's name: "Pull requests 3" (THE-2086). */
+  counts?: Partial<Record<PanelTab, number>>;
   width: number;
   onTab: (tab: PanelTab) => void;
   /** The width the owner dragged to, once the drag ends: the panel follows the drag on its own. */
@@ -75,6 +78,11 @@ export function Panel({
               className="h-7 cursor-pointer whitespace-nowrap rounded-sm px-2 text-body text-text-3 transition-colors hover:text-text aria-selected:bg-fill aria-selected:text-text"
             >
               {PANEL_LABEL[t]}
+              {counts?.[t] ? (
+                <span className="ml-1.5 font-mono text-meta text-text-3 tnum" data-tab-count>
+                  {counts[t]}
+                </span>
+              ) : null}
             </button>
           ))}
         </div>

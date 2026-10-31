@@ -3,12 +3,13 @@
 // halves: `Room` reading the folded state and the log the test seeds
 // (`window.seed`, set before the page loads), the client answering the room's
 // requests and recording them in `window.daemon.requests`; `window.daemon.show`
-// hands it a later fold, as the subscription would.
+// hands it a later fold, as the subscription would, and `window.daemon.frame`
+// a frame of the coordinator's turn (THE-2086's Merge waits on it).
 import type { ProtocolEvent, ServerMessage, Snapshot } from "@armada/protocol";
 import { LazyMotion, MotionConfig } from "motion/react";
 import { createRoot } from "react-dom/client";
 import features from "../src/components/shell/motion-features";
-import { type DaemonClient, type DaemonState, initialState } from "../src/protocol/client";
+import { type ChatFrame, type DaemonClient, type DaemonState, initialState } from "../src/protocol/client";
 import { DaemonProvider } from "../src/protocol/store";
 import { Room } from "../src/screens/Room";
 
@@ -27,6 +28,7 @@ let state: DaemonState = {
 };
 const requests: Record<string, unknown>[] = [];
 const listeners = new Set<() => void>();
+const chats = new Set<(frame: ChatFrame) => void>();
 
 const client: DaemonClient = {
   getState: () => state,
@@ -60,7 +62,10 @@ const client: DaemonClient = {
   configurePlugin: async () => {},
   setPluginSecret: async () => {},
   restartDaemon: async () => {},
-  chat: () => () => {},
+  chat: (listener) => {
+    chats.add(listener);
+    return () => chats.delete(listener);
+  },
   // biome-ignore lint/suspicious/noExplicitAny: the fake answers each request with its own reply type.
   async request(message): Promise<any> {
     requests.push({ ...message });
@@ -68,6 +73,8 @@ const client: DaemonClient = {
     switch (message.type) {
       case "chat.read":
         return { ...envelope, type: "chat.result", seq, coordinator: true, items: [] } satisfies ServerMessage;
+      case "chat.send":
+        return { ...envelope, type: "chat.sent", requestId: message.requestId } satisfies ServerMessage;
       case "owner.answer":
         return { ...envelope, type: "owner.answered", item: message.item } satisfies ServerMessage;
       default:
@@ -85,6 +92,13 @@ const client: DaemonClient = {
       fleets: { harbor: { seq: at, state: next.state } },
       logs: { harbor: { seq: at, events: next.events } },
     };
+    for (const listener of listeners) listener();
+  },
+  frame(frame: ChatFrame) {
+    for (const listener of chats) listener(frame);
+  },
+  providers(providers: DaemonState["providers"]) {
+    state = { ...state, providers };
     for (const listener of listeners) listener();
   },
 };
