@@ -3,9 +3,16 @@ import { test } from "node:test";
 import type { PluginContext, TrackerProvider } from "@armada/plugin-api";
 import { activate } from "../src/index.ts";
 
+const noEvents = async () => assert.fail("Tracker writes must not access host events");
+const services = {
+  events: { append: noEvents, read: noEvents, fold: noEvents },
+  log: { info() {}, error() {} },
+};
+
 test("phase writes resolve applicable labels, preserve other labels, and refuse incomplete or failed writes", async (t) => {
   let provider: TrackerProvider | undefined;
   activate({
+    ...services,
     config: { tracker: { linear: { projects: { orchard: { programRoot: "SEED-1" } } } } },
     secrets: { get: async () => "synthetic-key" },
     register: {
@@ -99,6 +106,7 @@ test("phase writes resolve applicable labels, preserve other labels, and refuse 
 test("a tracker write fence stops a phase mutation after its reads", async (t) => {
   let provider: TrackerProvider | undefined;
   activate({
+    ...services,
     config: { tracker: { linear: { projects: { orchard: { programRoot: "SEED-1" } } } } },
     secrets: { get: async () => "synthetic-key" },
     register: {
@@ -149,6 +157,7 @@ test("a tracker write fence stops a phase mutation after its reads", async (t) =
 test("completed writes move the ticket to Done, remove agent labels, and replay a stable comment once", async (t) => {
   let provider: TrackerProvider | undefined;
   activate({
+    ...services,
     config: {
       tracker: {
         linear: {
