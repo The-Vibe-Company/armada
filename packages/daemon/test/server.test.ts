@@ -160,6 +160,8 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
         ...process.env,
         ARMADA_APP_CONFIG: join(dir, "config.json"),
         XDG_CONFIG_HOME: dir,
+
+        ARMADA_KEYCHAIN: "file",
         LINEAR_API_KEY: randomBytes(24).toString("hex"),
         GITHUB_TOKEN: randomBytes(24).toString("hex"),
       },

@@ -174,10 +174,13 @@ export class Keychain {
   }
 }
 
-/** macOS never silently falls back to a file if the Keychain is locked/unavailable. */
+/** macOS never silently falls back to a file if the Keychain is locked/unavailable.
+ * `ARMADA_KEYCHAIN=file` picks the file under `XDG_CONFIG_HOME` on every platform: for
+ * the tests that start a real daemon, so none of them reaches the owner's Keychain. */
 export function systemKeychain(): Keychain {
-  if (process.platform === "darwin") return new Keychain(macKeychain());
-  if (process.platform !== "linux") throw new Error("Credential storage is unsupported on this platform");
+  const file = process.env.ARMADA_KEYCHAIN?.trim() === "file";
+  if (!file && process.platform === "darwin") return new Keychain(macKeychain());
+  if (!file && process.platform !== "linux") throw new Error("Credential storage is unsupported on this platform");
   const configured = process.env.XDG_CONFIG_HOME?.trim();
   const root = configured && isAbsolute(configured) ? configured : join(homedir(), ".config");
   return new Keychain(fileKeychain(join(root, "armada", "desktop", "credentials")));

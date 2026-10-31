@@ -1,7 +1,9 @@
 // A project's room alone in a page on a fake daemon client (THE-2085), for
-// test/room-panel.test.tsx's browser half: `Room` reading the folded state and
-// the log the test seeds (`window.seed`, set before the page loads), the client
-// answering the room's requests and recording them in `window.daemon.requests`.
+// test/room-panel.test.tsx's and test/room-agent-lane.test.tsx's browser
+// halves: `Room` reading the folded state and the log the test seeds
+// (`window.seed`, set before the page loads), the client answering the room's
+// requests and recording them in `window.daemon.requests`; `window.daemon.show`
+// hands it a later fold, as the subscription would.
 import type { ProtocolEvent, ServerMessage, Snapshot } from "@armada/protocol";
 import { LazyMotion, MotionConfig } from "motion/react";
 import { createRoot } from "react-dom/client";
@@ -15,7 +17,7 @@ const NOW = Date.parse("2026-03-10T15:00:00.000Z");
 const seed = (window as unknown as { seed: { state: Snapshot["state"]; events: ProtocolEvent[] } }).seed;
 const seq = seed.events.at(-1)?.seq ?? 0;
 
-const state: DaemonState = {
+let state: DaemonState = {
   ...initialState,
   status: "live",
   projects: [PROJECT],
@@ -24,10 +26,14 @@ const state: DaemonState = {
   logs: { harbor: { seq, events: seed.events } },
 };
 const requests: Record<string, unknown>[] = [];
+const listeners = new Set<() => void>();
 
 const client: DaemonClient = {
   getState: () => state,
-  subscribe: () => () => {},
+  subscribe: (listener) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  },
   start() {},
   stop() {},
   login: async () => {},
@@ -70,7 +76,18 @@ const client: DaemonClient = {
   },
 };
 
-(window as unknown as { daemon: unknown }).daemon = { requests };
+(window as unknown as { daemon: unknown }).daemon = {
+  requests,
+  show(next: { state: Snapshot["state"]; events: ProtocolEvent[] }) {
+    const at = next.events.at(-1)?.seq ?? seq;
+    state = {
+      ...state,
+      fleets: { harbor: { seq: at, state: next.state } },
+      logs: { harbor: { seq: at, events: next.events } },
+    };
+    for (const listener of listeners) listener();
+  },
+};
 
 const root = document.getElementById("root");
 if (root)
