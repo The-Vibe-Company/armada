@@ -3,12 +3,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
+import type { FleetEvent, ProjectTables, Session, Ticket } from "@armada/protocol";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { type MergeEvidence, nativeTools } from "../coordinator/native.ts";
 import { openCoordinatorStorage } from "../coordinator/storage.ts";
 import type { CoordinatorToolName } from "../coordinator/tools.ts";
-import { fold, type InboxItem, type ProjectTables } from "../src/fold.ts";
+import { fold, type InboxItem } from "../src/fold.ts";
 import { EventStore } from "../src/store.ts";
 
 interface TestFacts {
@@ -19,7 +20,28 @@ interface TestFacts {
   id: string;
   next: string;
   delivery: string;
-  tables: ProjectTables;
+  sessions: {
+    ticket: string;
+    title: string;
+    phase: string;
+    step: number;
+    runtime: string;
+    head: string | null;
+    checks: string | null;
+    lastReport: string | null;
+    ageSeconds: number | null;
+  }[];
+  inbox: { total: number; byKind: Record<string, number> };
+  frontier: { id: string; title: string; blockers: { id: string; status: string }[] }[];
+  pullRequests: { number: number; ticket: string; head: string; checks: string; mergeable: boolean }[];
+  holds: { id: string; reason: string }[];
+  ticket: Omit<Ticket, "parent"> & { parent: { id: string; title: string | null } | null };
+  session: Session | null;
+  reports: { at: string; phase: string; body: string }[];
+  events: FleetEvent[];
+  more: boolean;
+  defaultBranch?: ProjectTables["defaultBranch"];
+  unavailable: string[];
   items: InboxItem[];
   problems: string[];
   rules: { value: { policy: { maxWorkers: number }; coordinatorModel?: { kind: string } } };
@@ -126,12 +148,284 @@ test("fleet.status returns detached project facts and refuses an inactive coordi
   const facts = await run("fleet.status");
   assert.equal(facts.ok, true);
   assert.equal(facts.project, "orchard");
-  assert.equal(facts.tables.sessions.length, 1);
-  facts.tables.sessions.length = 0;
-  assert.equal((await run("fleet.status")).tables.sessions.length, 1);
+  assert.equal(facts.sessions.length, 1);
+  facts.sessions.length = 0;
+  assert.equal((await run("fleet.status")).sessions.length, 1);
   assert.equal(store.readSince(0, "other").length, 6);
+  assert.ok(facts.unavailable.includes("default-branch-health"));
+  const health = { branch: "trunk", head: "e".repeat(40), ci: "failure" as const };
+  store.append({ project: "orchard", at, actor: "github", kind: "default-branch.seen", payload: health });
+  store.append({
+    project: "other",
+    at,
+    actor: "github",
+    kind: "default-branch.seen",
+    payload: { branch: "other-main", head: "f".repeat(40), ci: "success" },
+  });
+  const current = await run("fleet.status");
+  assert.deepEqual(current.defaultBranch, health);
+  assert.equal(current.unavailable.includes("default-branch-health"), false);
+
   await scope.close(context);
   assert.equal((await run("fleet.status")).code, "coordinator_inactive");
+});
+
+test("fleet.status keeps ten active sessions before compact fleet facts and below both tool byte limits", async (t) => {
+  const { store, run } = await fixture(t);
+  for (let i = 2; i <= 40; i++) {
+    store.append({
+      project: "orchard",
+      at,
+      actor: "reader",
+      kind: "ticket.seen",
+      payload: {
+        id: `SEED-${i}`,
+        title: `Plant orchard row ${i}`,
+        status: i <= 10 ? "started" : "unstarted",
+        labels: i === 14 ? [] : i === 15 ? ["ready-for-agent", "parked"] : ["ready-for-agent"],
+        ...(i === 13 ? {} : { blockers: i === 12 ? [{ id: "SEED-1", status: "started" as const }] : [] }),
+        ...(i === 18 ? { parent: "SEED-17" } : {}),
+        description: "Full spec and details. ".repeat(1000),
+        comments: [{ author: "Mira", at, body: "Long discussion. ".repeat(1000) }],
+        ...(i <= 10
+          ? { phase: "implementing" as const, reason: `Working on row ${i}\n${"details".repeat(1000)}` }
+          : {}),
+      },
+    });
+  }
+  for (let i = 2; i <= 10; i++)
+    store.append({
+      project: "orchard",
+      at,
+      actor: "reader",
+      kind: "pull-request.seen",
+      payload: {
+        number: i + 6,
+        ticket: `SEED-${i}`,
+        head,
+        state: "open",
+        ci: "pending",
+        conflicting: false,
+      },
+    });
+  await run("rules.set", {
+    expectedRevision: 0,
+    reason: "Owner routing",
+    rules: {
+      routing: [
+        { labels: ["api"], cli: "codex", model: "gpt-6.1-sol", effort: "high" },
+        { when: "Frontend work", cli: "claude", model: "sonnet" },
+      ],
+      defaultRoute: { cli: "codex", model: "gpt-6.1-sol" },
+      policy: { plans: "approve", maxWorkers: 10 },
+      gates: { requiredChecks: ["verify"], localCommands: ["bun run verify"] },
+      coordinatorModel: { provider: "openai", model: "gpt-6.1-sol" },
+    },
+  });
+  for (const [id, phase] of [
+    ["OLD-1", "merged"],
+    ["OLD-2", "released"],
+  ] as const) {
+    store.append({
+      project: "orchard",
+      at: "2029-12-31T00:00:00.000Z",
+      actor: "reader",
+      kind: "ticket.seen",
+      payload: { id, title: "Old work", status: "completed", phase },
+    });
+  }
+  await run("hold.add", { reason: "Main is red" });
+  const facts = await run("fleet.status");
+  const serialized = JSON.stringify(facts);
+  const bytes = Buffer.byteLength(serialized);
+  t.diagnostic(`forty tickets, ten sessions/open PRs: status ${bytes} bytes`);
+  assert.ok(bytes < 8 * 1024, `status is ${bytes} bytes`);
+  assert.ok(bytes < 50 * 1024, "pi-durable must receive the entire JSON text block");
+  assert.deepEqual(Object.keys(facts).slice(0, 4), ["at", "readAt", "sessions", "inbox"]);
+  assert.deepEqual(
+    facts.sessions.map((s) => s.ticket),
+    Array.from({ length: 10 }, (_, i) => `SEED-${i + 1}`),
+  );
+  assert.deepEqual(facts.inbox, { total: 2, byKind: { question: 1, "hand-back": 1 } });
+  assert.deepEqual(
+    facts.frontier.find((row) => row.id === "SEED-11"),
+    { id: "SEED-11", title: "Plant orchard row 11", blockers: [] },
+  );
+  for (const id of ["SEED-12", "SEED-13", "SEED-14", "SEED-15", "SEED-17"])
+    assert.equal(
+      facts.frontier.some((row) => row.id === id),
+      false,
+      id,
+    );
+  assert.ok(facts.unavailable.includes("frontier-blockers"));
+  assert.equal(facts.pullRequests.length, 10);
+  assert.deepEqual(facts.pullRequests[0], { number: 7, ticket: "SEED-1", head, checks: "success", mergeable: true });
+  assert.equal(facts.holds[0]?.reason, "Main is red");
+  assert.equal(facts.sessions[0]?.lastReport, "Green");
+  assert.equal(facts.sessions[0]?.head, head);
+  assert.equal(facts.sessions[0]?.checks, "success");
+  assert.equal(facts.sessions[0]?.ageSeconds, 0);
+  assert.equal(facts.sessions[1]?.lastReport, "Working on row 2");
+  assert.equal(Object.hasOwn(facts, "tables"), false);
+  assert.doesNotMatch(serialized, /Full spec|Long discussion|OLD-1|OLD-2|sessionsByState/);
+  store.append({
+    project: "orchard",
+    at,
+    actor: "reader",
+    kind: "pull-request.seen",
+    payload: {
+      number: 41,
+      ticket: "SEED-1",
+      head: "b".repeat(40),
+      state: "open",
+      ci: "failure",
+      conflicting: false,
+    },
+  });
+  const refreshed = await run("fleet.status");
+  assert.equal(refreshed.sessions[0]?.head, "b".repeat(40), "the latest PR supplies the session evidence");
+  assert.equal(refreshed.sessions[0]?.checks, "failure");
+});
+
+test("ticket.read returns full ticket, parent, latest twelve comments and reports within its project", async (t) => {
+  const { store, run, scope } = await fixture(t);
+  const description = "A complete ticket description. ".repeat(1000);
+  store.append({
+    project: "orchard",
+    at,
+    actor: "reader",
+    kind: "ticket.seen",
+    payload: {
+      id: "SPEC-1",
+      title: "The orchard spec",
+      status: "started",
+      description: "Parent specification",
+    },
+  });
+  store.append({
+    project: "orchard",
+    at,
+    actor: "reader",
+    kind: "ticket.seen",
+    payload: {
+      id: "SEED-1",
+      title: "Plant",
+      status: "started",
+      parent: "SPEC-1",
+      description,
+      labels: ["api"],
+      blockers: [{ id: "SEED-9", status: "completed" }],
+      comments: Array.from({ length: 15 }, (_, i) => ({
+        author: "Mira",
+        at: `2029-12-${String(i + 1).padStart(2, "0")}T00:00:00.000Z`,
+        body: `Comment ${i}`,
+      })).reverse(),
+    },
+  });
+  const facts = await run("ticket.read", { id: "SEED-1" });
+  assert.equal(facts.ticket.description, description);
+  assert.deepEqual(facts.ticket.parent, { id: "SPEC-1", title: "The orchard spec" });
+  assert.deepEqual(facts.ticket.labels, ["api"]);
+  assert.deepEqual(facts.ticket.blockers, [{ id: "SEED-9", status: "completed" }]);
+  assert.deepEqual(
+    facts.ticket.comments?.map((c) => c.body),
+    Array.from({ length: 12 }, (_, i) => `Comment ${14 - i}`),
+  );
+  assert.equal(facts.session?.session, "one");
+  assert.deepEqual(
+    facts.reports.map((r) => [r.phase, r.body]),
+    [["ready-to-merge", "Green"]],
+  );
+  assert.equal((await run("ticket.read", { id: "SPEC-1" })).ticket.description, "Parent specification");
+  assert.equal((await run("ticket.read", { id: "missing" })).code, "no_ticket");
+  assert.equal((await run("ticket.read", { id: "SEED-1", extra: true })).code, "invalid_arguments");
+  store.append({
+    project: "other",
+    at,
+    actor: "reader",
+    kind: "ticket.seen",
+    payload: { id: "PRIVATE-1", title: "Private", status: "started" },
+  });
+  assert.equal((await run("ticket.read", { id: "PRIVATE-1" })).code, "no_ticket");
+  store.append({
+    project: "orchard",
+    at,
+    actor: "worker",
+    kind: "session.claimed",
+    payload: {
+      ticket: "SEED-1",
+      session: "two",
+      generation: 2,
+      owner: "Mira",
+      runtime: "codex",
+      handle: "local/two",
+    },
+  });
+  store.append({
+    project: "orchard",
+    at,
+    actor: "worker",
+    kind: "session.reported",
+    payload: {
+      ticket: "SEED-1",
+      session: "two",
+      phase: "implementing",
+      reason: "New roots",
+    },
+  });
+  const replacement = await run("ticket.read", { id: "SEED-1" });
+  assert.equal(replacement.session?.session, "two");
+  assert.deepEqual(
+    replacement.reports.map((r) => r.body),
+    ["New roots"],
+    "superseded generation reports belong in history",
+  );
+  await scope.close(context);
+  assert.equal((await run("ticket.read", { id: "SEED-1" })).code, "coordinator_inactive");
+});
+
+test("fleet.history filters ticket and time, limits the newest events and omits durable internals", async (t) => {
+  const { run, store } = await fixture(t);
+  await run("inbox.answer", { id: "q", answer: "Oak" });
+  await run("hold.add", { reason: "Pause" });
+  store.append({
+    project: "orchard",
+    at,
+    actor: "reader",
+    kind: "coordinator.checkpoint",
+    payload: { checkpoint: { format: "internal", data: "PRIVATE CHECKPOINT" } },
+  });
+  const result = await run("fleet.history", { ticket: "SEED-1", limit: 2 });
+  assert.deepEqual(
+    result.events.map((e) => e.kind),
+    ["inbox.opened", "inbox.answered"],
+  );
+  assert.equal(result.more, true);
+  assert.doesNotMatch(JSON.stringify(result), /receipt|PRIVATE CHECKPOINT|other/);
+  assert.deepEqual(
+    (await run("fleet.history", { limit: 1 })).events.map((e) => e.kind),
+    ["hold.opened"],
+  );
+  assert.deepEqual((await run("fleet.history", { since: at, limit: 5 })).events, []);
+  store.append({
+    project: "orchard",
+    at: "2030-01-01T00:01:00.000Z",
+    actor: "worker",
+    kind: "session.heartbeat",
+    payload: { ticket: "SEED-1", session: "one" },
+  });
+  assert.deepEqual(
+    (await run("fleet.history", { since: at, limit: 5 })).events.map((e) => e.kind),
+    ["session.heartbeat"],
+  );
+  assert.equal((await run("fleet.history", { ticket: "PRIVATE-1", limit: 5 })).events.length, 0);
+  for (const args of [
+    { limit: 0 },
+    { limit: 101 },
+    { since: "yesterday", limit: 1 },
+    { since: "2030-99-01T00:00:00Z", limit: 1 },
+  ])
+    assert.equal((await run("fleet.history", args)).code, "invalid_arguments");
 });
 
 test("inbox.list reads open items oldest first without resolving them", async (t) => {
@@ -231,7 +525,7 @@ test("hold.add opens a visible merge pause and refuses an empty reason", async (
   assert.equal(opened.ok, true);
   assert.equal(fold(store.readSince(0)).projects.orchard?.holds[0]?.id, opened.id);
   const facts = await run("fleet.status");
-  assert.equal(Object.hasOwn(facts.tables.holds[0] ?? {}, "receipt"), false);
+  assert.equal(Object.hasOwn(facts.holds[0] ?? {}, "receipt"), false);
 });
 
 test("hold.clear requires a known pause and recovery reason", async (t) => {

@@ -12,6 +12,7 @@ export type { MergeEvidence } from "../src/merge/checklist.ts";
 import type { EventInput, FleetEvent } from "../src/events.ts";
 import { fold, type ProjectTables, type Session } from "../src/fold.ts";
 import { WorkerRefusal, type Workers, type WorkerTool, workerToolSchemas } from "../src/workers/service.ts";
+import { fleetHistory, fleetStatus, ticketRead } from "./read.ts";
 import { emptyRules, type ProjectRules, type RulesState, rulesSchema } from "./rules.ts";
 import { readV1RulesFile } from "./rules-file.ts";
 import type { CoordinatorStorage } from "./storage.ts";
@@ -44,6 +45,12 @@ const object = <T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
 
 const schemas = {
   "fleet.status": object({}),
+  "ticket.read": object({ id }),
+  "fleet.history": object({
+    ticket: Type.Optional(id),
+    since: Type.Optional(Type.String({ maxLength: 40 })),
+    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
+  }),
   "inbox.list": object({}),
   "inbox.answer": object({ id, answer: text }),
   "worker.launch": Type.Unsafe(z.toJSONSchema(workerToolSchemas["worker.launch"])),
@@ -63,7 +70,12 @@ const schemas = {
   }),
 };
 const descriptions: Record<CoordinatorToolName, string> = {
-  "fleet.status": "Read the project's folded fleet and current rules. Missing evidence is listed explicitly.",
+  "fleet.status":
+    "Read a compact fleet summary: active sessions first, inbox counts, ready frontier, open PRs, holds and rules summary. No ticket descriptions or comments; unavailable evidence is explicit.",
+  "ticket.read":
+    "Read one full ticket, parent id/title, blockers, labels, latest twelve comments, session and reports. Read the ticket and its parent before launching.",
+  "fleet.history":
+    "Read the newest project fleet events in log order, optionally filtered by ticket and exclusive ISO since time. limit defaults to 20, maximum 100. Excludes internal checkpoints, receipts and ticket snapshot descriptions/comments.",
   "inbox.list": "Read open project inbox items in event order without resolving them.",
   "inbox.answer":
     "Deliver and record an answer to a question or plan once. Refuses without a keyed delivery adapter; the worker reports its resumed phase.",
@@ -182,22 +194,51 @@ function decide(
   switch (name) {
     case "fleet.status":
       return {
-        result: {
-          ok: true,
-          project,
-          seq: events.at(-1)?.seq ?? 0,
-          at,
-          readAt: JSON.parse(JSON.stringify(tables.readAt ?? {})),
-          tables: JSON.parse(JSON.stringify(tables)),
-          rules: JSON.parse(JSON.stringify(rules)),
-          unavailable: [
-            "frontier-blockers",
-            "runtime-observations",
-            "jobs",
-            ...(tables.defaultBranch ? [] : ["default-branch-health"]),
-            "launch-capacity",
-          ],
-        },
+        result: JSON.parse(
+          JSON.stringify({
+            ...fleetStatus(tables, events, at),
+            ok: true,
+            project,
+            seq: events.at(-1)?.seq ?? 0,
+          }),
+        ),
+      };
+    case "ticket.read": {
+      const ticket = tables.tickets.find((t) => t.id === args.id);
+      if (!ticket) return no("no_ticket", `ticket ${args.id} not found`, "ticket.read with a known ticket id");
+      return {
+        result: JSON.parse(
+          JSON.stringify({
+            at,
+            readAt: tables.readAt ?? {},
+            ...ticketRead(tables, events, ticket),
+            ok: true,
+            project,
+          }),
+        ),
+      };
+    }
+    case "fleet.history":
+      if (args.since !== undefined && !z.iso.datetime({ offset: true }).safeParse(args.since).success)
+        return no(
+          "invalid_arguments",
+          "since must be an ISO timestamp with a timezone",
+          "fleet.history with a valid since timestamp",
+        );
+      return {
+        result: JSON.parse(
+          JSON.stringify({
+            at,
+            ...fleetHistory(
+              events,
+              args.ticket as string | undefined,
+              args.since as string | undefined,
+              (args.limit as number | undefined) ?? 20,
+            ),
+            ok: true,
+            project,
+          }),
+        ),
       };
     case "inbox.list":
       return {
@@ -347,7 +388,7 @@ export function nativeTools(
                 `call ${name} with its declared parameters`,
               ),
             );
-          if (["fleet.status", "inbox.list"].includes(name) && options.refresh) {
+          if (["fleet.status", "ticket.read", "inbox.list"].includes(name) && options.refresh) {
             // The host bounds the refresh; failure leaves the last committed facts and their age.
             await options.refresh().catch(() => {});
             try {
