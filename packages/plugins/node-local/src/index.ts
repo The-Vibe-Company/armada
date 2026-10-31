@@ -1,8 +1,8 @@
 import { type ChildProcessWithoutNullStreams, execFile as execFileCallback, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFile, lstat, mkdir, readFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import type {
   ArmadaPlugin,
@@ -253,12 +253,24 @@ async function projectWorktreeRoot(projectRoot: string, path: string, signal?: A
   }
 }
 
+// The real path of `path`, or of its nearest existing ancestor joined with the rest,
+// so a root reached through a symlink (macOS's /var → /private/var) compares with
+// Git's own toplevel, which is always real.
+async function realPathOf(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch (error) {
+    if (!isErrno(error, "ENOENT") || dirname(path) === path) throw error;
+    return join(await realPathOf(dirname(path)), basename(path));
+  }
+}
+
 async function excludeWorktrees(source: string, workspaceRoot: string, signal?: AbortSignal): Promise<void> {
   const exclude = resolve(
     source,
     (await git(["rev-parse", "--git-path", "info/exclude"], { cwd: source, signal })).stdout.trim(),
   );
-  const pattern = `/${relative(source, workspaceRoot)
+  const pattern = `/${relative(await realPathOf(source), await realPathOf(workspaceRoot))
     .replaceAll("\\", "/")
     .replace(/[[\]*?]/g, "\\$&")}/`;
   const previous = excludeWrites.get(exclude) ?? Promise.resolve();
