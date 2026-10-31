@@ -2,6 +2,7 @@
 // browser tests (THE-2085's panel, THE-2089's agent lane): the page's bundle
 // and the app's own Tailwind build of the classes it names, served on a fake
 // origin with no network, a seed handed to the page before it loads.
+import { expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { type Browser, chromium, type Page } from "playwright-core";
@@ -21,6 +22,22 @@ async function stylesFor(bundle: string): Promise<string> {
     },
   });
   return compiler.build([...new Set(bundle.match(/[^\s"'`\\<>{};,]+/g) ?? [])]);
+}
+
+/**
+ * A reading of the page after an action, as Playwright's own waits take it:
+ * read again until it equals what is expected, `within` at most, then asserted.
+ * (Bun's `expect(promise).resolves` waits up to a second on a promise settled
+ * by I/O; a step that relied on that wait raced the page.)
+ */
+export async function settled<T>(read: () => Promise<T>, expected: T, within = 2_000): Promise<void> {
+  const until = performance.now() + within;
+  let value = await read();
+  while (!Bun.deepEquals(value, expected) && performance.now() < until) {
+    await Bun.sleep(20);
+    value = await read();
+  }
+  expect(value as unknown).toEqual(expected);
 }
 
 export interface RoomBrowser {

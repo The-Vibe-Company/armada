@@ -3,7 +3,7 @@ import { fold } from "@armada/daemon/fold";
 import type { Page } from "playwright-core";
 import { SAMPLE_PROJECTS, sampleEvents } from "../scripts/dev-daemon";
 import { clampWidth, PANEL_KEY, panelKey, readPanel } from "../src/room/panel-rules";
-import { type RoomBrowser, roomBrowser } from "./room-browser";
+import { type RoomBrowser, roomBrowser, settled } from "./room-browser";
 
 // The room's panel (THE-2085), after T3 Code's right panel: its rules on
 // synthetic input, then the room in Chromium on a fake daemon client
@@ -84,39 +84,38 @@ describe("the room's panel in a browser", () => {
     const side = panel(page);
     // Open on the agents, 320 px wide.
     await side.getByRole("tab", { name: "Agents", selected: true }).waitFor();
-    await expect(side.evaluate((el) => el.getBoundingClientRect().width)).resolves.toBe(320);
+    await settled(() => side.evaluate((el) => el.getBoundingClientRect().width), 320);
     // Pull requests: the open ones of the tickets in flight, with their checks.
     await side.getByRole("tab", { name: "Pull requests" }).click();
-    await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=prs");
+    await settled(() => hash(page), "#/projects/harbor?panel=prs");
+    await side.locator("[data-pr-row]").first().waitFor();
     const prs = await side.locator("[data-pr-row]").allInnerTexts();
     expect(prs.map((t) => t.replace(/\s+/g, " ").trim())).toContain(
       "#41 HAR-15 Price berths by the hour Checks failing",
     );
     // ⌘3: the rules form; ⌘4: the log, newest first, 50 rows.
     await page.keyboard.press("Meta+3");
-    await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=rules");
+    await settled(() => hash(page), "#/projects/harbor?panel=rules");
     await side.getByRole("heading", { level: 2, name: "Rules" }).waitFor();
     await page.keyboard.press("Meta+4");
-    await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=log");
+    await settled(() => hash(page), "#/projects/harbor?panel=log");
     const rows = side.locator("[data-event]");
-    await expect(rows.count()).resolves.toBe(50);
+    await settled(() => rows.count(), 50);
     expect((await rows.first().innerText()).replace(/\s+/g, " ")).toBe("10:59 · session.heartbeat · HAR-12");
-    await expect(rows.first().getByRole("link", { name: "HAR-12" }).getAttribute("href")).resolves.toBe(
-      "#/sessions/HAR-12",
-    );
+    await settled(() => rows.first().getByRole("link", { name: "HAR-12" }).getAttribute("href"), "#/sessions/HAR-12");
     await page.keyboard.press("Meta+1");
     await side.getByRole("tab", { name: "Agents", selected: true }).waitFor();
     // ⌘. hides it, its toggle says so, and the conversation takes the room's width.
     const beside = await columnWidth(page);
     const toggle = page.getByRole("button", { name: "Panel", exact: true });
-    await expect(toggle.getAttribute("aria-pressed")).resolves.toBe("true");
+    await settled(() => toggle.getAttribute("aria-pressed"), "true");
     await page.keyboard.press("Meta+.");
     await side.waitFor({ state: "detached" });
-    await expect(toggle.getAttribute("aria-pressed")).resolves.toBe("false");
-    await expect(columnWidth(page)).resolves.toBe(beside + 320);
+    await settled(() => toggle.getAttribute("aria-pressed"), "false");
+    await settled(() => columnWidth(page), beside + 320);
     // ⌘1 picks nothing while it is closed; ⌘. brings it back.
     await page.keyboard.press("Meta+2");
-    await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=agents");
+    await settled(() => hash(page), "#/projects/harbor?panel=agents");
     await page.keyboard.press("Meta+.");
     await side.waitFor();
     // An address naming a tab opens the panel the owner closed (Back, a link, the old rules page).
@@ -143,18 +142,16 @@ describe("the room's panel in a browser", () => {
       await page.mouse.up();
     };
     await drag(-100);
-    await expect(side.evaluate((el) => el.getBoundingClientRect().width)).resolves.toBe(420);
-    await expect(page.evaluate((key) => localStorage.getItem(key), PANEL_KEY)).resolves.toBe(
-      '{"width":420,"open":null}',
-    );
+    await settled(() => side.evaluate((el) => el.getBoundingClientRect().width), 420);
+    await settled(() => page.evaluate((key) => localStorage.getItem(key), PANEL_KEY), '{"width":420,"open":null}');
     await drag(-300);
-    await expect(side.evaluate((el) => el.getBoundingClientRect().width)).resolves.toBe(480);
+    await settled(() => side.evaluate((el) => el.getBoundingClientRect().width), 480);
     await page.reload();
-    await expect(panel(page).evaluate((el) => el.getBoundingClientRect().width)).resolves.toBe(480);
+    await settled(() => panel(page).evaluate((el) => el.getBoundingClientRect().width), 480);
     // The arrow keys move it too.
     await panel(page).locator("[data-panel-edge]").focus();
     await page.keyboard.press("ArrowRight");
-    await expect(panel(page).evaluate((el) => el.getBoundingClientRect().width)).resolves.toBe(464);
+    await settled(() => panel(page).evaluate((el) => el.getBoundingClientRect().width), 464);
     await page.close();
   }, 15_000);
 
@@ -164,10 +161,10 @@ describe("the room's panel in a browser", () => {
     const side = panel(page);
     // A pill of the header opens Agents at its group, its heading focused.
     await page.getByRole("button", { name: "1 blocked" }).click();
-    await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=agents");
-    await expect(focused(page)).resolves.toBe("h2#agents-blocked");
+    await settled(() => hash(page), "#/projects/harbor?panel=agents");
+    await settled(() => focused(page), "h2#agents-blocked");
     await page.getByRole("button", { name: "1 merged today" }).click();
-    await expect(focused(page)).resolves.toBe("h2#agents-merged");
+    await settled(() => focused(page), "h2#agents-merged");
     // The heading is at the top of the scrolled tab (or the tab is scrolled to its end), never scrolled past.
     const place = (id: string) =>
       side.locator(`#${id}`).evaluate((el) => {
@@ -180,21 +177,22 @@ describe("the room's panel in a browser", () => {
           end,
         };
       });
-    await expect(place("agents-merged")).resolves.toMatchObject({ shown: true, end: true });
+    expect(await place("agents-merged")).toMatchObject({ shown: true, end: true });
     await page.getByRole("button", { name: "1 blocked" }).click();
-    await expect(focused(page)).resolves.toBe("h2#agents-blocked");
-    await expect(place("agents-blocked")).resolves.toEqual({ top: 0, shown: true, end: false });
+    await settled(() => focused(page), "h2#agents-blocked");
+    await settled(() => place("agents-blocked"), { top: 0, shown: true, end: false });
     const row = side.locator('[data-row="harbor/HAR-15"]');
-    await expect(row.locator("a[data-open]").getAttribute("href")).resolves.toBe(
+    await settled(
+      () => row.locator("a[data-open]").getAttribute("href"),
       "#/projects/harbor?panel=agents&agent=HAR-15",
     );
     const pr = row.getByRole("link", { name: "#41" });
-    await expect(pr.getAttribute("href")).resolves.toBe("https://github.com/example/harbor/pull/41");
+    await settled(() => pr.getAttribute("href"), "https://github.com/example/harbor/pull/41");
     // The report's link sits above the row's: a click on #41 reaches it, not the session.
     const box = await pr.boundingBox();
     if (!box) throw new Error("no link");
-    await expect(
-      page.evaluate(
+    expect(
+      await page.evaluate(
         ([x, y]) =>
           document
             .elementFromPoint(x ?? 0, y ?? 0)
@@ -202,9 +200,9 @@ describe("the room's panel in a browser", () => {
             ?.getAttribute("href"),
         [box.x + box.width / 2, box.y + box.height / 2],
       ),
-    ).resolves.toBe("https://github.com/example/harbor/pull/41");
+    ).toBe("https://github.com/example/harbor/pull/41");
     await row.locator("a[data-open]").click();
-    await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=agents&agent=HAR-15");
+    await settled(() => hash(page), "#/projects/harbor?panel=agents&agent=HAR-15");
     await page.close();
   }, 15_000);
 
@@ -213,14 +211,14 @@ describe("the room's panel in a browser", () => {
     const card = panel(page).getByRole("region", { name: "A question waiting for you" });
     await card.getByText("Two berth tests time out under the full suite.").waitFor();
     // With its card on screen the field says nothing; with the panel closed it does.
-    await expect(page.locator("[data-asking]").count()).resolves.toBe(0);
+    await settled(() => page.locator("[data-asking]").count(), 0);
     await page.keyboard.press("Meta+.");
     const line = page.getByRole("region", { name: "Waiting for your answer" });
-    await expect(line.innerText()).resolves.toMatch(/^HAR-15\s+Two berth tests time out/);
+    expect(await line.innerText()).toMatch(/^HAR-15\s+Two berth tests time out/);
     // Answer opens the card, its first choice focused.
     await line.getByRole("button", { name: "Answer" }).click();
     await card.waitFor();
-    await expect(page.evaluate(() => document.activeElement?.textContent)).resolves.toBe("Fix the wait· recommended");
+    await settled(() => page.evaluate(() => document.activeElement?.textContent), "Fix the wait· recommended");
     await card.getByRole("button", { name: /Raise the timeout/ }).click();
     await page.waitForFunction(() =>
       (window as unknown as { daemon: { requests: { type: string }[] } }).daemon.requests.some(
@@ -240,29 +238,29 @@ describe("the room's panel in a browser", () => {
 
   test("below 900 px the panel is a sheet: closed at first, opened by a pill without taking the field's focus, closed by Escape", async () => {
     const page = await open(820);
-    await expect(page.locator("[data-sheet]").count()).resolves.toBe(0);
+    await settled(() => page.locator("[data-sheet]").count(), 0);
     // The header keeps each pill's dot and number; its words are for screen readers.
     const words = page.locator('[data-pill="blocked"] span').last();
-    await expect(words.evaluate((el) => getComputedStyle(el).position)).resolves.toBe("absolute");
-    await expect(page.getByRole("button", { name: "1 blocked" }).count()).resolves.toBe(1);
+    await settled(() => words.evaluate((el) => getComputedStyle(el).position), "absolute");
+    await settled(() => page.getByRole("button", { name: "1 blocked" }).count(), 1);
     const field = page.getByLabel("Message", { exact: true });
     await field.click();
     await field.fill("Merge HAR-20");
     await page.getByRole("button", { name: "1 blocked" }).click();
     const sheet = page.locator("[data-sheet]");
     await sheet.waitFor();
-    await expect(sheet.locator('[data-group-heading="blocked"]').isVisible()).resolves.toBe(true);
-    await expect(focused(page)).resolves.toBe(`textarea#${await field.getAttribute("id")}`);
+    await settled(() => sheet.locator('[data-group-heading="blocked"]').isVisible(), true);
+    await settled(() => focused(page), `textarea#${await field.getAttribute("id")}`);
     await page.keyboard.press("Escape");
     await sheet.waitFor({ state: "detached" });
-    await expect(field.inputValue()).resolves.toBe("Merge HAR-20");
+    await settled(() => field.inputValue(), "Merge HAR-20");
     // Closed by a press beside it with the focus in it, the sheet hands the focus back to its toggle.
     const toggle = page.getByRole("button", { name: "Panel", exact: true });
     await toggle.click();
     await sheet.getByRole("tab", { name: "Agents" }).focus();
     await page.mouse.click(40, 400);
     await sheet.waitFor({ state: "detached" });
-    await expect(page.evaluate(() => document.activeElement?.getAttribute("aria-label"))).resolves.toBe("Panel");
+    await settled(() => page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Panel");
     await page.close();
   }, 15_000);
 });

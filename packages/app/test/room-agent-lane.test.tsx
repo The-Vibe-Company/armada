@@ -4,7 +4,7 @@ import type { EventInput } from "@armada/protocol";
 import type { Page } from "playwright-core";
 import { sampleEvents } from "../scripts/dev-daemon";
 import { agentKey, agentStep } from "../src/room/panel-rules";
-import { type RoomBrowser, roomBrowser } from "./room-browser";
+import { type RoomBrowser, roomBrowser, settled } from "./room-browser";
 
 // An agent's page in the room's lane (THE-2089), after T3 Code's thread view
 // swapping under a sidebar that keeps its place: the hop's rules on synthetic
@@ -99,71 +99,72 @@ describe("an agent's page in the room's lane, in a browser", () => {
     const field = page.getByLabel("Message", { exact: true });
     await field.fill("Merge HAR-20 once green");
     // The chat is the Coordinator's row, current.
-    await expect(current(page)).resolves.toEqual([null]);
+    await settled(() => current(page), [null]);
 
     const row = side.locator('[data-row="harbor/HAR-15"] a[data-open]');
     await row.click();
-    await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=agents&agent=HAR-15");
-    await expect(lane(page).locator("header").innerText()).resolves.toMatch(
+    await settled(() => hash(page), "#/projects/harbor?panel=agents&agent=HAR-15");
+    expect(await lane(page).locator("header").innerText()).toMatch(
       /^← Coordinator\s*·\s*HAR-15\s*·\s*Price berths by the hour$/,
     );
-    await expect(lane(page).getByRole("region", { name: "State" }).getAttribute("data-state")).resolves.toBe("blocked");
-    await expect(lane(page).locator('[aria-current="step"]').innerText()).resolves.toBe("Review & CI");
+    await settled(() => lane(page).getByRole("region", { name: "State" }).getAttribute("data-state"), "blocked");
+    await settled(() => lane(page).locator('[aria-current="step"]').innerText(), "Review & CI");
     // The chat is kept under the lane, out of reach; the panel stays open on the agent's row.
-    await expect(field.isVisible()).resolves.toBe(false);
-    await expect(side.isVisible()).resolves.toBe(true);
-    await expect(current(page)).resolves.toEqual(["harbor/HAR-15"]);
+    await settled(() => field.isVisible(), false);
+    await settled(() => side.isVisible(), true);
+    await settled(() => current(page), ["harbor/HAR-15"]);
 
     // ↓ from the row: the next agent takes the lane, the focus on its row; the address is replaced, Back is not filled.
     const length = await page.evaluate(() => history.length);
     await page.keyboard.press("ArrowDown");
     await lane(page).getByRole("heading", { level: 2, name: "Let skippers book a berth from the quay" }).waitFor();
-    await expect(current(page)).resolves.toEqual(["harbor/HAR-18"]);
-    await expect(
-      page.evaluate(() => document.activeElement?.closest("[data-row]")?.getAttribute("data-row")),
-    ).resolves.toBe("harbor/HAR-18");
-    await expect(page.evaluate(() => history.length)).resolves.toBe(length);
+    await settled(() => current(page), ["harbor/HAR-18"]);
+    await settled(
+      () => page.evaluate(() => document.activeElement?.closest("[data-row]")?.getAttribute("data-row")),
+      "harbor/HAR-18",
+    );
+    await settled(() => page.evaluate(() => history.length), length);
     // J and K too, from the lane; ↑ past the first agent is the chat.
     await lane(page).click({ position: { x: 600, y: 400 } });
     await page.keyboard.press("k");
-    await expect(current(page)).resolves.toEqual(["harbor/HAR-15"]);
+    await settled(() => current(page), ["harbor/HAR-15"]);
     await page.keyboard.press("k");
-    await expect(current(page)).resolves.toEqual(["harbor/HAR-12"]);
+    await settled(() => current(page), ["harbor/HAR-12"]);
     await page.keyboard.press("ArrowUp");
     await lane(page).waitFor({ state: "detached" });
-    await expect(field.inputValue()).resolves.toBe("Merge HAR-20 once green");
+    await settled(() => field.inputValue(), "Merge HAR-20 once green");
 
     // The Coordinator's row and Escape bring the chat back with its draft.
     await side.locator('[data-row="harbor/HAR-20"] a[data-open]').click();
     await lane(page).getByRole("heading", { level: 2, name: "Show the pilot's schedule" }).waitFor();
     await side.locator("[data-coordinator] a").click();
     await lane(page).waitFor({ state: "detached" });
-    await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=agents");
-    await expect(field.isVisible()).resolves.toBe(true);
-    await expect(field.inputValue()).resolves.toBe("Merge HAR-20 once green");
+    await settled(() => hash(page), "#/projects/harbor?panel=agents");
+    await settled(() => field.isVisible(), true);
+    await settled(() => field.inputValue(), "Merge HAR-20 once green");
     await side.locator('[data-row="harbor/HAR-9"] a[data-open]').click();
     await lane(page).waitFor();
     await page.keyboard.press("Escape");
     await lane(page).waitFor({ state: "detached" });
-    await expect(current(page)).resolves.toEqual([null]);
+    await settled(() => current(page), [null]);
     // The project's name in the header is the way back too.
     await side.locator('[data-row="harbor/HAR-9"] a[data-open]').click();
     await page.getByRole("heading", { level: 1 }).getByRole("button", { name: "Harbor" }).click();
     await lane(page).waitFor({ state: "detached" });
-    await expect(field.inputValue()).resolves.toBe("Merge HAR-20 once green");
+    await settled(() => field.inputValue(), "Merge HAR-20 once green");
     await page.close();
   }, 20_000);
 
   test("the lane's Answer sends owner.answer; the drawer keeps its keys; ← Coordinator and Open full page lead away; a pill keeps the lane", async () => {
     const page = await open(1280, "#/projects/harbor?panel=log&agent=HAR-12");
     // An address naming an agent shows it, the panel on the tab it names.
-    await expect(panel(page).getByRole("tab", { name: "Log" }).getAttribute("aria-selected")).resolves.toBe("true");
+    await settled(() => panel(page).getByRole("tab", { name: "Log" }).getAttribute("aria-selected"), "true");
     const card = lane(page).getByRole("region", { name: "State" });
     await card.getByText("Which tide table, the port's or the navy's?").waitFor();
     // A pill opens Agents at its group and leaves the lane as it is.
     await page.getByRole("button", { name: "2 blocked" }).click();
-    await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=agents&agent=HAR-12");
-    await expect(lane(page).getAttribute("data-agent-lane")).resolves.toBe("HAR-12");
+    await settled(() => hash(page), "#/projects/harbor?panel=agents&agent=HAR-12");
+    await settled(() => lane(page).getAttribute("data-agent-lane"), "HAR-12");
     await card.getByRole("button", { name: "Answer" }).click();
     await card.getByRole("button", { name: "the navy's" }).click();
     await card.getByRole("status").getByText("Your answer is delivered to the worker.").waitFor();
@@ -177,31 +178,31 @@ describe("an agent's page in the room's lane, in a browser", () => {
     const drawer = page.getByRole("dialog", { name: "HAR-12's session" });
     await drawer.waitFor();
     await page.keyboard.press("ArrowDown");
-    await expect(lane(page).getAttribute("data-agent-lane")).resolves.toBe("HAR-12");
+    await settled(() => lane(page).getAttribute("data-agent-lane"), "HAR-12");
     await page.keyboard.press("Escape");
     await drawer.waitFor({ state: "detached" });
-    await expect(lane(page).getAttribute("data-agent-lane")).resolves.toBe("HAR-12");
+    await settled(() => lane(page).getAttribute("data-agent-lane"), "HAR-12");
     await page.keyboard.press("Escape");
     await lane(page).waitFor({ state: "detached" });
     // The focus that was in the lane goes to the Coordinator's row: the keys still hop.
-    await expect(page.evaluate(() => !!document.activeElement?.closest("[data-coordinator]"))).resolves.toBe(true);
+    await settled(() => page.evaluate(() => !!document.activeElement?.closest("[data-coordinator]")), true);
     await page.keyboard.press("j");
-    await expect(lane(page).getAttribute("data-agent-lane")).resolves.toBe("HAR-12");
+    await settled(() => lane(page).getAttribute("data-agent-lane"), "HAR-12");
 
     // ← Coordinator is the lane's way back to the chat; Open full page, to the session's own page.
     await lane(page).getByRole("link", { name: "← Coordinator" }).click();
     await lane(page).waitFor({ state: "detached" });
-    await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=agents");
+    await settled(() => hash(page), "#/projects/harbor?panel=agents");
     await panel(page).locator('[data-row="harbor/HAR-12"] a[data-open]').click();
     await lane(page).getByRole("link", { name: "Open full page →" }).click();
-    await expect(hash(page)).resolves.toBe("#/sessions/HAR-12");
+    await settled(() => hash(page), "#/sessions/HAR-12");
     await page.close();
   }, 15_000);
 
   test("an agent that hands back or is released stays in the lane, in its new state", async () => {
     const page = await open(1280, "#/projects/harbor?panel=agents&agent=HAR-18");
     const state = () => lane(page).getByRole("region", { name: "State" }).getAttribute("data-state");
-    await expect(state()).resolves.toBe("you");
+    await settled(() => state(), "you");
     const later = "2026-03-10T10:00:00.000Z";
     const handedBack: EventInput = {
       project: "harbor",
@@ -222,18 +223,16 @@ describe("an agent's page in the room's lane, in a browser", () => {
         (window as unknown as { daemon: { show(r: unknown): void } }).daemon.show(JSON.parse(json));
       }, JSON.stringify(next));
     await show(reading([...LOG, handedBack]));
-    await expect(state()).resolves.toBe("ready");
+    await settled(() => state(), "ready");
     await show(reading([...LOG, handedBack, released]));
-    await expect(state()).resolves.toBe("released");
-    await expect(lane(page).getByRole("region", { name: "State" }).innerText()).resolves.toMatch(
-      /^Released\s+superseded$/,
-    );
-    await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=agents&agent=HAR-18");
+    await settled(() => state(), "released");
+    expect(await lane(page).getByRole("region", { name: "State" }).innerText()).toMatch(/^Released\s+superseded$/);
+    await settled(() => hash(page), "#/projects/harbor?panel=agents&agent=HAR-18");
     // Gone from the list, it marks no row; ↓ from it starts at the first agent.
-    await expect(current(page)).resolves.toEqual([]);
+    await settled(() => current(page), []);
     await lane(page).focus();
     await page.keyboard.press("ArrowDown");
-    await expect(lane(page).getAttribute("data-agent-lane")).resolves.toBe("HAR-12");
+    await settled(() => lane(page).getAttribute("data-agent-lane"), "HAR-12");
     await page.close();
   }, 15_000);
 
@@ -244,14 +243,14 @@ describe("an agent's page in the room's lane, in a browser", () => {
     await sheet.waitFor();
     await sheet.locator('[data-row="harbor/HAR-20"] a[data-open]').click();
     await sheet.waitFor({ state: "detached" });
-    await expect(lane(page).getByRole("region", { name: "State" }).getAttribute("data-state")).resolves.toBe("ready");
-    await expect(hash(page)).resolves.toBe("#/projects/harbor?panel=agents&agent=HAR-20");
+    await settled(() => lane(page).getByRole("region", { name: "State" }).getAttribute("data-state"), "ready");
+    await settled(() => hash(page), "#/projects/harbor?panel=agents&agent=HAR-20");
     // Escape closes the sheet first, the lane next.
     await page.getByRole("button", { name: "Panel", exact: true }).click();
     await sheet.waitFor();
     await page.keyboard.press("Escape");
     await sheet.waitFor({ state: "detached" });
-    await expect(lane(page).getAttribute("data-agent-lane")).resolves.toBe("HAR-20");
+    await settled(() => lane(page).getAttribute("data-agent-lane"), "HAR-20");
     await page.keyboard.press("Escape");
     await lane(page).waitFor({ state: "detached" });
     await page.close();
