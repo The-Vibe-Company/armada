@@ -302,12 +302,14 @@ export function workRows(items: readonly ThreadItem[]): ThreadRow[] {
   return out;
 }
 
-/** A refused call's message, from the facts' JSON it answered (`{"ok":false,"message":…}`). */
+/** Actionable refusal text, with the message fallback for older daemon results. */
 export function refusal(item: Tool): string | null {
   if (!item.failed || item.output === null) return null;
   try {
-    const facts = JSON.parse(item.output) as { message?: unknown };
-    return typeof facts.message === "string" && facts.message ? facts.message : null;
+    const facts = JSON.parse(item.output) as { reason?: unknown; message?: unknown; next?: unknown };
+    const reason = typeof facts.reason === "string" && facts.reason ? facts.reason : facts.message;
+    if (typeof reason !== "string" || !reason) return null;
+    return typeof facts.next === "string" && facts.next ? `${reason} → ${facts.next}` : reason;
   } catch {
     return null;
   }

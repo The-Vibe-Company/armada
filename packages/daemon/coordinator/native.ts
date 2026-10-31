@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import * as Value from "typebox/value";
 import { z } from "zod";
 import { checkMerge, type MergeEvidence, mergeEvidenceSchema } from "../src/merge/checklist.ts";
+import { refusalLine, refuse } from "../src/merge/refusal.ts";
 import type { Merges } from "../src/merge/service.ts";
 
 export type { MergeEvidence } from "../src/merge/checklist.ts";
@@ -93,13 +94,6 @@ const descriptions: Record<CoordinatorToolName, string> = {
   "rules.set":
     "Patch project routing (ordered labels or when descriptions), defaultRoute, placement, policy and gates (requiredChecks/localCommands) with the revision from fleet.status. Alternatively importFile (absolute local file path) imports V1 routing/profiles/policy once into an unconfigured project; never pass file contents in chat. Placement must be chosen explicitly. A reason is required.",
 };
-const refuse = (code: string, message: string, next: string, extra: JsonObject = {}): JsonObject => ({
-  ok: false,
-  code,
-  message,
-  next,
-  ...extra,
-});
 const output = (details: JsonObject) => ({
   output: [{ type: "text" as const, text: JSON.stringify(details) }],
   details,
@@ -532,11 +526,11 @@ export function nativeTools(
           if (name === "merge.check" && options.mergeEvidence) {
             try {
               evidence = await options.mergeEvidence((args as JsonObject).pr as number);
-            } catch {
+            } catch (error) {
               return output(
                 refuse(
-                  "evidence_unavailable",
-                  "merge evidence could not be read",
+                  "forge_unreachable",
+                  refusalLine(error, "merge evidence could not be read"),
                   "retry merge.check after the reader recovers",
                 ),
               );
@@ -550,7 +544,7 @@ export function nativeTools(
             )
               return output(
                 refuse(
-                  "evidence_unavailable",
+                  "forge_unreachable",
                   "merge evidence is malformed, stale or incomplete",
                   "refresh all merge evidence, then merge.check",
                 ),
