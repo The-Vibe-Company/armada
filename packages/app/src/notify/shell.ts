@@ -10,6 +10,8 @@ interface ArmadaShell {
   setBadge(count: number): void;
   /** Opens an http or https address in the system browser (THE-2071); absent from an older shell. */
   openExternal?(url: string): void;
+  /** The system's folder dialog (THE-2081): the chosen folder's path, null when cancelled; absent from an older shell. */
+  pickFolder?(): Promise<string | null>;
 }
 
 declare global {
