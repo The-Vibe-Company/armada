@@ -1,21 +1,190 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { once } from "node:events";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { type TestContext, test } from "node:test";
 import { type CoordinatorModel, PROTOCOL_VERSION } from "@armada/protocol";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { generateText, jsonSchema, type LanguageModel, Output } from "ai";
 import { z } from "zod";
 import { bootDaemon } from "../src/boot.ts";
 import { dispatchCredentials } from "../src/credentials.ts";
 import { Keychain } from "../src/keychain.ts";
+import { ModelRegistry } from "../src/models/registry.ts";
+import { fileKeychain } from "../src/secrets/file.ts";
 import { startServer } from "../src/server/index.ts";
 import { coordinatorModels, loadedModelKinds, modelEnvironment } from "../src/server/models.ts";
 import { daemonProjectSchema } from "../src/server/readers.ts";
 import { FakeKeychain } from "./support/keychain.ts";
+import { nodeExecutable } from "./support/node.ts";
+
+for (const problem of ["malformed", "unavailable"]) {
+  test(`armadad remains available to repair ${problem} model credentials`, { timeout: 15000 }, async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), "armada-model-repair-"));
+    const credentials = join(dir, "armada", "desktop", "credentials");
+    if (problem === "malformed") await new Keychain(fileKeychain(credentials)).write("coordinator", "coordinator", "{");
+    else {
+      await mkdir(join(dir, "armada", "desktop"), { recursive: true });
+      await writeFile(credentials, "not a credential directory");
+    }
+    const projects = join(dir, "projects.json");
+    await writeFile(projects, "[]");
+    const child = spawn(
+      nodeExecutable,
+      [
+        "--import",
+        `data:text/javascript,${encodeURIComponent('globalThis.fetch = async () => { throw new Error("offline fixture"); };')}`,
+        new URL("../src/server/main.ts", import.meta.url).pathname,
+        "--database",
+        join(dir, "fleet.sqlite"),
+        "--projects",
+        projects,
+      ],
+      {
+        // A minimal environment keeps ambient model overrides out of this repair case.
+        env: { ARMADA_KEYCHAIN: "file", XDG_CONFIG_HOME: dir, ARMADA_APP_CONFIG: join(dir, "config.json") },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    const exited = once(child, "exit");
+    child.stderr.resume();
+    const lines = createInterface({ input: child.stdout });
+    t.after(async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+      await exited;
+      lines.close();
+      await rm(dir, { recursive: true, force: true });
+    });
+    const [line] = await Promise.race([
+      once(lines, "line"),
+      exited.then(() => {
+        throw new Error("daemon exited before readiness");
+      }),
+    ]);
+    const ready = JSON.parse(line);
+    assert.match(ready.wsUrl, /^ws:\/\/127\.0\.0\.1:/);
+  });
+}
+
+test("boot selection preserves saved choices unless the generic environment is explicitly forced, and catalog agrees", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "armada-model-precedence-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const key = randomBytes(24).toString("hex");
+  const daemon = await bootDaemon({
+    databasePath: ":memory:",
+    configPath: join(dir, "config.json"),
+    secrets: { get: async () => key },
+    log: { info() {}, error() {} },
+  });
+  t.after(() => daemon.close());
+  const savedPi = { provider: "orchard", model: "saved" };
+  const savedPlugin = {
+    kind: "openai-compatible",
+    config: { baseURL: "https://saved.example.test/v1", model: "custom", apiKeySecret: "ARMADA_MODEL_API_KEY" },
+  };
+  const zaiEnv = { ZAI_BASE_URL: "https://zai.example.test/v1", ZAI_MODEL: "fallback", ZAI_API_KEY: key };
+  const zai = {
+    kind: "openai-compatible",
+    config: { baseURL: zaiEnv.ZAI_BASE_URL, model: "fallback", apiKeySecret: "ZAI_API_KEY" },
+  };
+  const azureEnv = {
+    AZURE_AI_ENDPOINT: "https://azure.example.test/models",
+    AZURE_AI_MODEL: "azure",
+    AZURE_AI_API_KEY: key,
+  };
+  const azure = {
+    kind: "openai-compatible",
+    config: {
+      baseURL: azureEnv.AZURE_AI_ENDPOINT,
+      model: "azure",
+      apiKeySecret: "AZURE_AI_API_KEY",
+      apiKeyHeader: "api-key" as const,
+    },
+  };
+  const genericEnv = { ARMADA_MODEL_PROVIDER: "orchard", ARMADA_MODEL_NAME: "override" };
+  const generic = { provider: "orchard", model: "override" };
+  const pluginEnv = {
+    ARMADA_MODEL_KIND: "openai-compatible",
+    ARMADA_MODEL_NAME: "override",
+    ARMADA_MODEL_BASE_URL: "https://override.example.test/v1",
+  };
+  const plugin = {
+    kind: "openai-compatible",
+    config: { model: "override", baseURL: pluginEnv.ARMADA_MODEL_BASE_URL, apiKeySecret: "ARMADA_MODEL_API_KEY" },
+  };
+  const cases: { name: string; saved?: CoordinatorModel; env: Record<string, string>; expected: CoordinatorModel }[] = [
+    { name: "saved pi over ZAI", saved: savedPi, env: zaiEnv, expected: savedPi },
+    { name: "saved pi over Azure", saved: savedPi, env: azureEnv, expected: savedPi },
+    { name: "saved pi over generic pi", saved: savedPi, env: genericEnv, expected: savedPi },
+    { name: "saved pi over generic plugin", saved: savedPi, env: pluginEnv, expected: savedPi },
+    { name: "saved plugin over ZAI", saved: savedPlugin, env: zaiEnv, expected: savedPlugin },
+    { name: "saved plugin over generic", saved: savedPlugin, env: pluginEnv, expected: savedPlugin },
+    { name: "no saved choice uses ZAI", env: zaiEnv, expected: zai },
+    { name: "no saved choice uses Azure", env: azureEnv, expected: azure },
+    { name: "no saved choice uses generic pi", env: genericEnv, expected: generic },
+    { name: "no saved choice uses generic plugin", env: pluginEnv, expected: plugin },
+    { name: "force pi override", saved: savedPi, env: { ...genericEnv, ARMADA_MODEL_FORCE: "1" }, expected: generic },
+    { name: "force plugin override", saved: savedPi, env: { ...pluginEnv, ARMADA_MODEL_FORCE: "1" }, expected: plugin },
+    {
+      name: "force does not promote ZAI",
+      saved: savedPi,
+      env: { ...zaiEnv, ARMADA_MODEL_FORCE: "1" },
+      expected: savedPi,
+    },
+    {
+      name: "an incomplete forced provider does not promote ZAI",
+      saved: savedPi,
+      env: { ...zaiEnv, ARMADA_MODEL_FORCE: "1", ARMADA_MODEL_PROVIDER: "orchard" },
+      expected: savedPi,
+    },
+    { name: "zero is not force", saved: savedPi, env: { ...genericEnv, ARMADA_MODEL_FORCE: "0" }, expected: savedPi },
+    {
+      name: "true is not force",
+      saved: savedPi,
+      env: { ...genericEnv, ARMADA_MODEL_FORCE: "true" },
+      expected: savedPi,
+    },
+  ];
+  const faux = fauxProvider({ provider: "orchard", models: [{ id: "saved" }, { id: "override" }] });
+  for (const entry of cases)
+    await t.test(entry.name, async () => {
+      const chain = new Keychain(new FakeKeychain());
+      if (entry.saved) {
+        if ("provider" in entry.saved) await chain.selectCoordinator(entry.saved);
+        else await chain.setCoordinator(entry.saved.kind, key, entry.saved.config);
+      }
+      const access = await modelEnvironment(entry.env, chain);
+      assert.deepEqual(access.selected, entry.expected);
+      const pi = new ModelRegistry({
+        keychain: chain,
+        env: entry.env,
+        providers: [faux.provider],
+        selected: access.selected,
+      });
+      const config = coordinatorModels({
+        projects: [{ id: "p" }],
+        store: daemon.store,
+        registry: daemon.registry,
+        pi,
+        selected: (await pi.selection()) ?? undefined,
+        pluginSelected: access.pluginSelected,
+      })[0];
+      assert.ok(config);
+      assert.deepEqual(config.selection, entry.expected);
+      assert.deepEqual((await pi.catalog()).selected, entry.expected);
+      assert.equal(config.model.provider, "provider" in entry.expected ? entry.expected.provider : entry.expected.kind);
+      assert.equal(
+        config.model.modelId,
+        "model" in entry.expected ? entry.expected.model : entry.expected.config.model,
+      );
+    });
+});
 
 function pluginConfig(selection: CoordinatorModel | undefined) {
   assert.ok(selection && "kind" in selection);
@@ -269,12 +438,12 @@ test("model boot honors project rules over env, recognizes z.ai/Azure and saved 
   assert.equal((await saved.secrets.get("GITHUB_TOKEN")) === key, true);
   const zai = await modelEnvironment(
     { ZAI_BASE_URL: "https://api.z.ai/api/coding/paas/v4", ZAI_MODEL: "glm-5.3-flash", ZAI_API_KEY: key },
-    chain,
+    new Keychain(new FakeKeychain()),
   );
   assert.equal(pluginConfig(zai.selected).apiKeySecret, "ZAI_API_KEY");
   const azure = await modelEnvironment(
     { AZURE_AI_ENDPOINT: "https://example.invalid/models", AZURE_AI_MODEL: "DeepSeek", AZURE_AI_API_KEY: key },
-    chain,
+    new Keychain(new FakeKeychain()),
   );
   assert.equal(pluginConfig(azure.selected).model, "DeepSeek");
   const named = new Keychain(new FakeKeychain());
@@ -366,7 +535,10 @@ test("model boot honors project rules over env, recognizes z.ai/Azure and saved 
     0,
   );
   assert.deepEqual(skipped, ["p"]);
-  const invalid = await modelEnvironment({ ARMADA_MODEL_KIND: "bad kind", ARMADA_MODEL_BASE_URL: "invalid" }, chain);
+  const invalid = await modelEnvironment(
+    { ARMADA_MODEL_KIND: "bad kind", ARMADA_MODEL_BASE_URL: "invalid", ARMADA_MODEL_FORCE: "1" },
+    chain,
+  );
   const malformed = daemonProjectSchema.parse({
     id: "bad",
     name: "Bad",

@@ -49,6 +49,7 @@ export interface ProjectCoordinator {
 export class Coordinators {
   readonly #store: EventStore;
   readonly #projects = new Map<string, Promise<ProjectCoordinator>>();
+  readonly #announced = new Set<string>();
   #closed = false;
 
   constructor(store: EventStore) {
@@ -103,6 +104,19 @@ export class Coordinators {
       const current = (await conversation.agent(BACKGROUND_CONTEXT)).model;
       if (current?.provider !== options.model.provider || current?.modelId !== options.model.modelId)
         await conversation.configure({ model: options.model }, BACKGROUND_CONTEXT);
+      if (!this.#announced.has(options.project)) {
+        this.#store.append({
+          project: options.project,
+          kind: "coordinator.message",
+          actor: "coordinator",
+          at: new Date(now()).toISOString(),
+          payload: {
+            role: "coordinator",
+            body: `Coordinator uses ${options.model.provider}/${options.model.modelId}.`,
+          },
+        });
+        this.#announced.add(options.project);
+      }
       harness.resume();
       return { harness, conversation };
     } catch (error) {
