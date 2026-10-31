@@ -19,7 +19,8 @@ import { startReaders } from "../src/server/readers.ts";
 import { Workers } from "../src/workers/service.ts";
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
-  const dir = await fs.mkdtemp(join(tmpdir(), "armada-projects-"));
+  // The daemon resolves roots through realpath; macOS's tmpdir is a symlink.
+  const dir = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "armada-projects-")));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   return dir;
 }
