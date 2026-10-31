@@ -180,7 +180,14 @@ export function RoomView({
   if (dock.hero !== hero) setDock({ hero, glides: dock.glides + (dock.hero ? 1 : 0) });
   const closed = !live || chat.status !== "ready" || !chat.coordinator;
   // The panel's Merge (THE-2086): a message to the coordinator, held as "Merging…" until it is answered.
-  const merging = useMerging({ prs, send: sendAndAnchor, turn, items: chat.items, connected: live });
+  const merging = useMerging({
+    prs,
+    send: sendAndAnchor,
+    turn,
+    turns: chat.live != null,
+    items: chat.items,
+    connected: live,
+  });
   const { stopped } = merging;
   const stopTurn = useMemo(
     () =>

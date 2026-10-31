@@ -67,19 +67,23 @@ export interface Merging {
  * from the message until the pull request leaves the open ones, the
  * coordinator answered it and its turn is over, or the owner stopped the
  * coordinator (a Stop may withdraw the message itself). While the room is
- * not connected, the hold waits: no turn then does not mean the turn is over.
+ * not connected, or a daemon that says its turns has not said one since it
+ * reconnected, the hold waits: no turn then does not mean the turn is over.
  */
 export function useMerging({
   prs,
   send,
   turn,
+  turns,
   items,
   connected,
 }: {
   prs: readonly OpenPullRequest[];
   send: (body: string) => Promise<void>;
-  /** The coordinator's turn; null on a daemon without a live turn. */
+  /** The coordinator's turn; null on a daemon without a live turn, or before it said one. */
   turn: ChatTurn | null;
+  /** Whether the daemon says its turns: then no turn yet (a reconnection) is not a turn over. */
+  turns: boolean;
   items: readonly ChatItem[];
   /** Whether the room hears the daemon now. */
   connected: boolean;
@@ -91,12 +95,14 @@ export function useMerging({
   // A released hold is dropped: a later turn of the coordinator does not hold the row again.
   useEffect(() => {
     if (!connected) return;
-    const sight = { open, items, turn: state === null ? null : { state } };
+    // Not said yet since a reconnection: as if it ran, so only a merge seen in the fold releases the hold.
+    const known = state ?? (turns ? "thinking" : null);
+    const sight = { open, items, turn: known === null ? null : { state: known } };
     setHolds((held) => {
       const next = held.flatMap((h) => stepHold(h, sight) ?? []);
       return next.length === held.length ? held : next;
     });
-  }, [open, items, state, connected]);
+  }, [open, items, state, turns, connected]);
   const merge = useCallback(
     (pr: number) => {
       const hold: MergeHold = { pr, earlier: mergeAsks(items, pr) };
