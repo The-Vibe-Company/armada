@@ -5,6 +5,7 @@ import {
   ACCOUNT_MINOR,
   admitRequest,
   CHAT_LIVE_MINOR,
+  CHAT_WAKE_MINOR,
   CONDUCTOR_MINOR,
   eventSchema,
   MODELS_MINOR,
@@ -170,6 +171,13 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   const error = (ws: WebSocket, id: string | undefined, code: ProtocolError["code"], message: string) =>
     send(ws, { type: "error", version, ...(id ? { id } : {}), code, message });
 
+  function sendChat(ws: WebSocket, minor: number, frame: ServerMessage): void {
+    if (minor < CHAT_WAKE_MINOR && frame.type === "chat.tool") {
+      const { progress: _, ...legacy } = frame;
+      send(ws, legacy);
+    } else send(ws, frame);
+  }
+
   async function catalog(ws: WebSocket, id: string, broadcast: boolean, minor: number) {
     if (!options.modelRegistry) return error(ws, id, "not-found", "This daemon has no model registry");
     const reading = await options.modelRegistry.catalog();
@@ -221,7 +229,9 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       for (const [ws, subscriptions] of connections) {
         const subscription = subscriptions.get(project);
         if (subscription && subscription.minor >= CHAT_LIVE_MINOR && !subscription.chat)
-          subscription.chat = chat.subscribe(project, coordinator.conversation, (frame) => send(ws, frame));
+          subscription.chat = chat.subscribe(project, coordinator.conversation, (frame) =>
+            sendChat(ws, subscription.minor, frame),
+          );
       }
       return coordinator;
     })();
@@ -281,27 +291,44 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     return { seq, state: projectTablesSchema.parse(JSON.parse(JSON.stringify(tables))) };
   }
 
-  /** Older same-major clients use a strict policy reader; preserve their existing Rules view. */
+  /** Older same-major clients validate inbox kinds, routing and policy fields strictly. */
   function snapshotFor(snapshot: Snapshot, minor: number): Snapshot {
-    if (minor >= CONDUCTOR_MINOR) return snapshot;
+    if (minor >= CHAT_WAKE_MINOR && minor >= CONDUCTOR_MINOR) return snapshot;
     const state = snapshot.state as unknown as ProjectTables;
+    const legacy = {
+      ...state,
+      inbox:
+        minor >= CHAT_WAKE_MINOR
+          ? state.inbox
+          : state.inbox.filter((item) =>
+              ["question", "plan", "hand-back", "owner-request", "launch"].includes(item.kind),
+            ),
+    };
     const rules = state.rules;
-    if (!rules) return snapshot;
-    const value = { ...rules.value };
-    if (minor < CONDUCTOR_MINOR) {
-      value.routing = value.routing?.filter((route) => route.cli !== "conductor");
-      if (value.defaultRoute?.cli === "conductor") value.defaultRoute = null;
-    }
-    if (minor < RULES_SCHEMA_MINOR) delete value.gates;
-    if (minor < RULES_SCHEMA_MINOR && value.policy) {
-      const policy = { ...value.policy };
-      delete policy.plans;
-      delete policy.approvalLabel;
-      delete policy.preApprovedLabel;
-      value.policy = policy;
+    if (rules) {
+      const value = { ...rules.value };
+      if (minor < CONDUCTOR_MINOR) {
+        value.routing = value.routing?.filter((route) => route.cli !== "conductor");
+        if (value.defaultRoute?.cli === "conductor") value.defaultRoute = null;
+      }
+      if (minor < RULES_SCHEMA_MINOR) delete value.gates;
+      if (value.policy) {
+        const policy = { ...value.policy };
+        if (minor < CHAT_WAKE_MINOR) {
+          delete policy.coordinatorMinutes;
+          delete policy.notStartedMinutes;
+        }
+        if (minor < RULES_SCHEMA_MINOR) {
+          delete policy.plans;
+          delete policy.approvalLabel;
+          delete policy.preApprovedLabel;
+        }
+        value.policy = policy;
+      }
+      legacy.rules = { ...rules, value };
     }
     // Detach only the legacy projection; never mutate the full snapshot shared with current clients.
-    return { seq: snapshot.seq, state: JSON.parse(JSON.stringify({ ...state, rules: { ...rules, value } })) };
+    return { seq: snapshot.seq, state: JSON.parse(JSON.stringify(legacy)) };
   }
 
   /**
@@ -655,7 +682,8 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
             return error(ws, request.id, "invalid-message", "Replay cursor is ahead of the daemon log");
           const previous = subscriptions.get(request.project);
           const subscription: Subscription = { id: randomUUID(), after: request.after, minor: request.version.minor };
-          if (subscription.minor >= CHAT_LIVE_MINOR) subscription.chat = previous?.chat;
+          if (subscription.minor >= CHAT_LIVE_MINOR && previous?.minor === subscription.minor)
+            subscription.chat = previous.chat;
           else previous?.chat?.();
           const snapshot =
             request.after === 0 ? snapshotFor(snapshotOf(request.project), request.version.minor) : undefined;
@@ -671,7 +699,9 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           batch(ws, request.project, subscription, snapshot ? null : new Map());
           const coordinator = coordinators.get(request.project);
           if (coordinator && subscription.minor >= CHAT_LIVE_MINOR && !subscription.chat)
-            subscription.chat = chat.subscribe(request.project, coordinator.conversation, (frame) => send(ws, frame));
+            subscription.chat = chat.subscribe(request.project, coordinator.conversation, (frame) =>
+              sendChat(ws, subscription.minor, frame),
+            );
           return;
         }
         const seq = store.sequence;

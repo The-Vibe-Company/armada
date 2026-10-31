@@ -136,8 +136,19 @@ async function fixture(t: TestContext, priorHandBack = false) {
   };
   let service = new Merges(options);
   let tools = nativeTools(scope, { now: () => at, merges: service });
+  const progress: { callId: string; step: string }[] = [];
   const run = async (name: "merge.check" | "merge.run", pr = 7, callId = "merge") => {
-    const result = await tools[name].execute({ pr }, { taskId: 1, callId } as ToolExecutionApi, context);
+    const result = await tools[name].execute(
+      { pr },
+      {
+        taskId: 1,
+        callId,
+        details: async (value: { step: string }) => {
+          progress.push({ callId, step: value.step });
+        },
+      } as unknown as ToolExecutionApi,
+      context,
+    );
     return result.details as { ok: boolean; code?: string; problems?: string[]; cleanup?: { disposed?: boolean } };
   };
   t.after(async () => {
@@ -151,6 +162,7 @@ async function fixture(t: TestContext, priorHandBack = false) {
     append,
     handBack,
     run,
+    progress,
     forge,
     tracker,
     node,
@@ -175,6 +187,10 @@ test("native merge tools check read-only, pin squash merge, confirm before Done/
   assert.equal(f.store.sequence, before);
   const result = await f.run("merge.run");
   assert.equal(result.ok, true);
+  assert.deepEqual(
+    f.progress.map((p) => p.step),
+    ["checking", "checking", "merging", "merged"],
+  );
   assert.equal(result.cleanup?.disposed, true);
   assert.deepEqual(f.counts(), { mergeCalls: 1, stopCalls: 1 });
   assert.equal(f.writes[0]?.state, "completed");
@@ -471,6 +487,10 @@ test("failed local gate and moving final base refuse the pinned merge", async (t
   f.setFacts({ behindBy: 1 });
   f.node.testMerge = async () => ({ ok: false, step: "bun run verify", output: "failed" });
   assert.match(JSON.stringify(await f.run("merge.run")), /test merge into main failed/);
+  assert.ok(
+    f.store.readSince(0).some((e) => e.kind === "merge.refused" && e.payload.pr === 7),
+    "a refusal before the merge still wakes the coordinator",
+  );
   f.node.testMerge = async () => {
     f.setFacts({ base: "d".repeat(40) });
     return { ok: true };
@@ -532,6 +552,11 @@ test("tracker failure retains confirmed merge and resumes tracker/stop without m
   };
   assert.equal((await f.run("merge.run")).ok, false);
   assert.equal(f.store.readSince(0).filter((e) => e.kind === "merge.confirmed").length, 1);
+  assert.equal(
+    f.store.readSince(0).filter((e) => e.kind === "merge.refused").length,
+    0,
+    "cleanup failure must not report that an already confirmed merge was refused",
+  );
   f.tracker.write = write;
   f.restart();
   assert.equal((await f.run("merge.run")).ok, true);

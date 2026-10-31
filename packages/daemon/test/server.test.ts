@@ -17,7 +17,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
-import { type ServerMessage, serverMessageSchema, PROTOCOL_VERSION as version } from "@armada/protocol";
+import {
+  type InboxRequest,
+  type ProjectTables,
+  type ServerMessage,
+  serverMessageSchema,
+  PROTOCOL_VERSION as version,
+} from "@armada/protocol";
 import { WebSocket } from "ws";
 import type { EventInput, FleetEvent } from "../src/events.ts";
 import { Keychain } from "../src/keychain.ts";
@@ -108,7 +114,20 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
   stale.kill("SIGKILL");
   await crashed;
   assert.equal(lstatSync(stalePath).isSocket(), true);
-  writeFileSync(catalog, JSON.stringify(projects.map((project) => ({ ...project, programRoot: "SEED-1" }))));
+  // Boot the same durable conversations regardless of the parent terminal's model settings.
+  writeFileSync(
+    catalog,
+    JSON.stringify(
+      projects.map((project) => ({
+        ...project,
+        programRoot: "SEED-1",
+        coordinatorModel: {
+          kind: "openai-compatible",
+          config: { model: "offline-startup", baseURL: "http://fixture.invalid/v1", apiKeySecret: null },
+        },
+      })),
+    ),
+  );
   writeFileSync(
     join(dir, "config.json"),
     JSON.stringify({
@@ -211,8 +230,21 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
   assert.deepEqual(await exited, [0, null]);
   await closed;
   const reopened = new EventStore(join(dir, "data", "fleet.sqlite"));
-  assert.deepEqual(reopened.readSince(0), []);
-  reopened.close();
+  try {
+    const events = reopened.readSince(0);
+    // Configured coordinators persist pi's initial conversation documents at boot.
+    // Blocked provider reads supply no fleet changes: no wake or model turn is warranted.
+    assert.deepEqual([...new Set(events.map((event) => event.project))].sort(), projects.map((p) => p.id).sort());
+    assert.ok(
+      events.every(
+        (event) =>
+          event.kind === "coordinator.checkpoint" &&
+          (event.payload.checkpoint as { format?: unknown }).format === "armada.pi",
+      ),
+    );
+  } finally {
+    reopened.close();
+  }
 });
 
 // Each transport scenario owns a real SQLite store and an OS-assigned loopback port.
@@ -614,8 +646,9 @@ test("credential socket writes never expose the key to replies, events or logs",
 // Only the random subscription UUID is normalized; THE-2043 intentionally advances
 // the recorded envelope to minor 5 for per-client plan-policy snapshot projection,
 // THE-2045 to minor 6 for the session page, THE-2049 to minor 7 for live chat,
-// THE-2080 adds runtime projects at minor 12;
-// THE-2072 to reserved minor 13 for hosted Conductor routing
+// THE-2073 to minor 9 for shared auth and the pi model catalog,
+// THE-2079 to minor 11 for fleet wake rows, THE-2080 to minor 12 for runtime projects,
+// and THE-2072 to minor 13 for hosted Conductor routing
 // (the recorded frames have no coordinator attached and are otherwise unchanged).
 test("subscription bytes stay compatible with the recorded daemon vocabulary and folded tables", async (t) => {
   const fixture = new URL("./support/protocol-subscription.json", import.meta.url);
@@ -695,6 +728,53 @@ test("minor-4 clients retain readable legacy Rules in initial and live snapshots
   rules(3, 3, false);
   assert.deepEqual(rulesValue(await modern.next()), { gates });
   assert.deepEqual(rulesValue(await legacy.next()), {});
+});
+
+test("pre-wake clients keep their inbox vocabulary in initial and shared live snapshots", async (t) => {
+  const store = new EventStore(":memory:");
+  const open = (id: string, kind: InboxRequest["kind"]) =>
+    store.append({
+      project: "orchard",
+      kind: "inbox.opened",
+      at: hold().at,
+      actor: "daemon",
+      payload: { id, ticket: "ORC-1", kind, body: "Fleet notice" },
+    });
+  const notices = [
+    "stopped",
+    "silent",
+    "not-started",
+    "deploy",
+    "job",
+    "job-silent",
+    "job-stalled",
+    "version",
+  ] as const;
+  open("old", "hand-back");
+  for (const kind of notices) open(kind, kind);
+  const server = await startServer({ store, projects });
+  // Legacy first also exercises the live batch's shared fold cache. Wake-capable
+  // clients 11/12 retain their notices even below Conductor's newer minor.
+  const clients: { minor: number; client: Awaited<ReturnType<typeof connect>> }[] = [];
+  for (const minor of [10, 11, 12, version.minor]) clients.push({ minor, client: await connect(server.wsUrl) });
+  t.after(async () => {
+    for (const { client } of clients) client.ws.terminate();
+    await server.close();
+    store.close();
+  });
+  const inbox = (frame: ServerMessage) => {
+    assert.ok(frame.type === "project.subscribed" || frame.type === "events");
+    assert.ok(frame.snapshot);
+    return (frame.snapshot.state as unknown as ProjectTables).inbox.map((item) => item.id);
+  };
+  for (const { minor, client } of clients) {
+    client.send({ type: "project.subscribe", version: { major: 1, minor }, project: "orchard", after: 0 });
+    assert.deepEqual(inbox(await client.next()), minor < 11 ? ["old"] : ["old", ...notices]);
+    await client.next();
+  }
+  open("later", "silent");
+  for (const { minor, client } of clients)
+    assert.deepEqual(inbox(await client.next()), minor < 11 ? ["old"] : ["old", ...notices, "later"]);
 });
 
 test("pre-Conductor clients receive compatible routing in initial and live snapshots", async (t) => {

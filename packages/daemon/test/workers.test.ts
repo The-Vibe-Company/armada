@@ -194,7 +194,15 @@ async function fixture(
   const socket = await startWorkerSocket(workers, socketPath);
   const scope = openCoordinatorStorage({ store: daemon.store, project, now: () => at });
   const tools = nativeTools(scope, { now: () => at, workers });
-  const api = (callId: string) => ({ callId, taskId: 1 }) as ToolExecutionApi;
+  const progress: { callId: string; step: string }[] = [];
+  const api = (callId: string) =>
+    ({
+      callId,
+      taskId: 1,
+      details: async (value: { step: string }) => {
+        progress.push({ callId, step: value.step });
+      },
+    }) as unknown as ToolExecutionApi;
   t.after(async () => {
     await scope.close(context);
     await workers.close();
@@ -211,6 +219,7 @@ async function fixture(
     messages,
     tools,
     api,
+    progress,
     inspect: () => local.observe(reference),
   };
 }
@@ -236,6 +245,10 @@ test("native tools launch a bound CLI, deliver, observe working/idle, authorize 
     context,
   );
   assert.equal(launched.isError, false);
+  assert.deepEqual(
+    f.progress.filter((p) => p.callId === "launch").map((p) => p.step),
+    ["preparing", "starting", "briefing", "launched"],
+  );
   await until(f.workers, (value) => value.activity === "working");
   const claimed = await socketCall(f.socketPath, f.token(), { command: "claim", ticket: "SEED-1" });
   assert.equal(claimed.status, 200);

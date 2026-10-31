@@ -18,10 +18,23 @@ const message = z
 export const CHAT_MINOR = 4;
 /** The first wire minor with committed live turns, partials, tools and Stop. */
 export const CHAT_LIVE_MINOR = 7;
+/** Fleet wake inputs are quiet room rows, never owner messages. */
+export const CHAT_WAKE_MINOR = 11;
 /** The coordinator's line for a turn its model failed: fixed, since a provider's error text could echo what it was sent. */
 export const CHAT_MODEL_FAILED = "The coordinator's model failed on this turn.";
 
 const assistant = { reasoning: z.string().optional(), aborted: z.literal(true).optional() };
+export const toolProgressSchema = z.enum([
+  "checking",
+  "retesting",
+  "merging",
+  "merged",
+  "preparing",
+  "starting",
+  "briefing",
+  "launched",
+]);
+export type ToolProgress = z.infer<typeof toolProgressSchema>;
 const tool = {
   id: identifier,
   at,
@@ -29,6 +42,7 @@ const tool = {
   input: z.json(),
   output: z.string().nullable(),
   failed: z.boolean(),
+  progress: toolProgressSchema.optional(),
 };
 /** Unsolicited frames are project-scoped; `id` on a delta/tool is the chat item's identity. */
 const frame = { version, project: identifier };
@@ -56,6 +70,7 @@ export const chatToolSchema = z.object({ ...frame, ...tool, type: z.literal("cha
  * result (`output` is null while it runs).
  */
 export const chatItemSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("wake"), id: identifier, at, body: z.string() }),
   z.object({ kind: z.literal("owner"), id: identifier, at, body: z.string() }),
   z.object({ kind: z.literal("coordinator"), id: identifier, at, body: z.string(), ...assistant }),
   z.object({ kind: z.literal("line"), id: identifier, at, body: z.string(), ...assistant }),

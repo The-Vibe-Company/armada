@@ -174,6 +174,7 @@ test("live add opens configured readers and coordinator; removal refuses active 
   const configurations: PluginContext["config"][] = [];
   const reads: string[] = [];
   const timers = new Set<() => void>();
+  const wakeTimers = new Map<() => void, number>();
   const contributions = Object.fromEntries(
     ["tracker", "forge", "node"].map((seam) => [
       seam,
@@ -255,6 +256,15 @@ test("live add opens configured readers and coordinator; removal refuses active 
         models,
         model: { provider: faux.getModel().provider, modelId: faux.getModel().id },
         setTimer: () => () => {},
+        wakeClock: {
+          now: () => Date.parse("2030-01-01T00:00:00.000Z"),
+          setTimer(callback, delay) {
+            wakeTimers.set(callback, delay);
+            return () => {
+              wakeTimers.delete(callback);
+            };
+          },
+        },
       });
     },
     async stop(p) {
@@ -364,12 +374,25 @@ test("live add opens configured readers and coordinator; removal refuses active 
     kind: "session.released",
     payload: { ticket: "EX-2", session: "worker-1", reason: "Complete" },
   });
+  // Removing a project cancels its pending wake and future wake timers as well as readers.
+  daemon.store.append({
+    project: "source",
+    at,
+    actor: "worker",
+    kind: "inbox.opened",
+    payload: { id: "pending-handback", ticket: "EX-2", kind: "hand-back", body: "Ready for review" },
+  });
+  assert.ok([...wakeTimers.values()].includes(10_000), "hand-back is awaiting its coalescing window");
   const history = daemon.store.readSince(0, "source");
   const removed = await ask({ type: "projects.remove", project: "source" });
   assert.equal(removed.type, "projects.result");
   assert.deepEqual(registry.list, []);
   assert.equal(server.coordinators.size, 0);
   assert.equal(timers.size, 0);
+  for (const [callback, delay] of [...wakeTimers]) if (delay <= 10_000) callback();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(daemon.store.readSince(0, "source").filter((e) => e.kind === "coordinator.wakeup").length, 0);
+  assert.equal(wakeTimers.size, 0, "removed projects retain no wake timers");
   assert.deepEqual(daemon.store.readSince(0, "source").slice(0, history.length), history);
   const historical = await ask({ type: "session.read", project: "source", sessionId: "worker-1" });
   assert.equal(historical.type, "session.result");

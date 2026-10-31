@@ -83,7 +83,21 @@ export const workerLaunchCheckpointSchema = sessionRefSchema.extend({
 const inboxRequestSchema = z.object({
   id: text,
   ticket: text,
-  kind: z.enum(["question", "plan", "hand-back", "owner-request", "launch"]),
+  kind: z.enum([
+    "question",
+    "plan",
+    "hand-back",
+    "owner-request",
+    "launch",
+    "stopped",
+    "silent",
+    "not-started",
+    "deploy",
+    "job",
+    "job-silent",
+    "job-stalled",
+    "version",
+  ]),
   body: text,
 });
 export type InboxRequest = z.infer<typeof inboxRequestSchema>;
@@ -93,6 +107,21 @@ const queuedSchema = sessionRefSchema.extend({ id: text, pr: integer, head: text
 const idSchema = z.object({ id: text });
 const reasonSchema = idSchema.extend({ reason: text });
 const decisionSchema = z.object({ decision: z.enum(["approved", "changes-requested"]), note: text });
+export const wakeCandidateSchema = z.object({
+  key: text,
+  summary: text,
+  facts: z.object({
+    ticket: text.optional(),
+    pr: integer.optional(),
+    head: text.optional(),
+    state: text.optional(),
+    item: text.optional(),
+    hold: text.optional(),
+    branch: text.optional(),
+  }),
+});
+export type WakeCandidate = z.infer<typeof wakeCandidateSchema>;
+const branchHealthSchema = z.object({ branch: text, head: text, ci: ciSchema });
 
 /** The single vocabulary for events appended by daemon adapters and folded offline. */
 export const eventPayloadSchemas = {
@@ -115,7 +144,7 @@ export const eventPayloadSchemas = {
   "inbox.answered": idSchema.extend({ answer: text }),
   "merge.queued": queuedSchema,
   "merge.started": idSchema,
-  "merge.refused": reasonSchema,
+  "merge.refused": reasonSchema.extend({ ticket: text.optional(), pr: integer.optional(), head: text.optional() }),
   "merge.canceled": reasonSchema,
   "merge.confirmed": queuedSchema,
   "hold.opened": reasonSchema,
@@ -124,6 +153,14 @@ export const eventPayloadSchemas = {
   "validation.decided": idSchema.extend(decisionSchema.shape),
   "coordinator.message": z.object({ role: z.enum(["owner", "coordinator"]), body: text }),
   "coordinator.checkpoint": z.object({ checkpoint: z.json() }),
+  "coordinator.wakeup": z.object({
+    id: text,
+    candidates: z.array(wakeCandidateSchema),
+    keys: z.array(text),
+    reminder: z.boolean().optional(),
+  }),
+  "coordinator.wakeup-delivered": idSchema,
+  "default-branch.seen": branchHealthSchema,
   "ticket.phase-changed": z.object({ ticket: text, from: phaseSchema.nullable(), to: phaseSchema.nullable() }),
   "ticket.report-posted": z.object({
     ticket: text,
@@ -186,6 +223,7 @@ const validationSchema = validationRequestSchema.extend({
 });
 export type Validation = z.infer<typeof validationSchema>;
 const tablesSchema = z.object({
+  defaultBranch: branchHealthSchema.optional(),
   // Absent on older snapshots; current daemon folds always supply this slice.
   rules: rulesStateSchema.optional(),
   /** Successful provider reads, even when no facts changed; absent on older snapshots. */

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { once } from "node:events";
+import { on, once } from "node:events";
 import fs, { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -10,7 +10,10 @@ import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { machinePaths, readCredentialStore, resolveCredentials, updateCredentialStore } from "@armada/core/account";
-import { PROTOCOL_VERSION, type ServerMessage } from "@armada/protocol";
+import { PROTOCOL_VERSION, type ServerMessage, serverMessageSchema } from "@armada/protocol";
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { WebSocket } from "ws";
 import { ARMADA_URL, fakeArmada } from "../../core/test/support.node.js";
 import { Keychain } from "../src/keychain.ts";
@@ -217,52 +220,148 @@ test("an unreachable Armada uses keychain fallback, logs no server text, and off
     assert.equal(JSON.stringify([s.log, s.output]).includes(secret), false);
 });
 
-test("account changes reach every compatible socket and never append secrets to the event store", {
+test("account changes reach every compatible socket beside fleet wakes and never append secrets to the event store", {
   timeout: 5000,
 }, async (t) => {
   const s = await setup(t);
   const store = new EventStore(join(s.directory, "fleet.sqlite"));
-  const server = await startServer({ store, projects: [], account: s.account });
+  const faux = fauxProvider({ models: [{ id: "room" }] });
+  const models = createModels();
+  models.setProvider(faux.provider);
+  let started!: () => void;
+  const wakeStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let finishWake!: () => void;
+  const finish = new Promise<void>((resolve) => {
+    finishWake = resolve;
+  });
+  faux.setResponses([
+    async () => {
+      started();
+      await finish;
+      return fauxAssistantMessage("");
+    },
+  ]);
+  let fireWake: (() => void) | undefined;
+  const server = await startServer({
+    store,
+    projects: [{ id: "orchard", name: "Orchard", repository: "example/orchard" }],
+    account: s.account,
+    coordinators: [
+      {
+        project: "orchard",
+        models,
+        model: { provider: faux.getModel().provider, modelId: faux.getModel().id },
+        wakeClock: {
+          now: Date.now,
+          setTimer(callback, delay) {
+            if (delay === 10000) fireWake = callback;
+            return () => {
+              if (fireWake === callback) fireWake = undefined;
+            };
+          },
+        },
+      },
+    ],
+  });
   const clients = [new WebSocket(server.wsUrl), new WebSocket(server.wsUrl), new WebSocket(server.wsUrl)];
   const frames: ServerMessage[][] = [[], [], []];
   for (const [i, ws] of clients.entries()) ws.on("message", (data) => frames[i]?.push(JSON.parse(String(data))));
   t.after(async () => {
+    finishWake();
     for (const ws of clients) ws.terminate();
     await server.close();
     store.close();
   });
+  // TCP delivery has no fixed event-loop-tick bound. Observe the matching frame,
+  // allowing account pushes, replay batches and chat frames to arrive together.
+  const until = (ws: WebSocket, accept: (frame: ServerMessage) => boolean) => {
+    const messages = on(ws, "message", { signal: t.signal, close: ["close"] });
+    return (async () => {
+      for await (const [data] of messages) {
+        const frame = serverMessageSchema.parse(JSON.parse(String(data)));
+        if (accept(frame)) return frame;
+      }
+      throw new Error("Socket closed before the expected frame");
+    })();
+  };
+  const minors = [8, 11, 7];
   await Promise.all(clients.map((ws) => once(ws, "open")));
   await Promise.all(
     clients.map(async (ws, i) => {
-      const answered = once(ws, "message");
+      const id = `subscribe-${i}`;
+      const subscribed = until(ws, (m) => m.type === "project.subscribed" && m.id === id);
       ws.send(
-        JSON.stringify({ type: "projects.list", id: `list-${i}`, version: { major: 1, minor: i === 2 ? 7 : 8 } }),
+        JSON.stringify({
+          type: "project.subscribe",
+          project: "orchard",
+          after: 0,
+          id,
+          version: { major: 1, minor: minors[i] },
+        }),
       );
-      await answered;
+      await subscribed;
     }),
   );
+  store.append({
+    project: "orchard",
+    kind: "inbox.opened",
+    at: new Date().toISOString(),
+    actor: "worker",
+    payload: { id: "hand-back", ticket: "ORC-1", kind: "hand-back", body: "Ready for review" },
+  });
+  assert.ok(fireWake);
+  fireWake();
+  await wakeStarted;
+  const signedIn = Promise.all(
+    clients.slice(0, 2).map((ws) => until(ws, (m) => m.type === "account.result" && m.signedIn)),
+  );
+  // A slow compatible recipient must eventually get the broadcast as well.
+  clients[1]?.pause();
   const login = s.request("account.login");
   await s.approve();
   await login;
-  await s.tick();
+  clients[1]?.resume();
+  await signedIn;
   for (const messages of frames.slice(0, 2)) assert.ok(messages.some((m) => m.type === "account.result" && m.signedIn));
+  const readRooms = () =>
+    Promise.all(
+      clients.map(async (ws, i) => {
+        const id = `read-${i}`;
+        const reading = until(ws, (m) => m.type === "chat.result" && m.id === id);
+        ws.send(JSON.stringify({ type: "chat.read", project: "orchard", id, version: { major: 1, minor: minors[i] } }));
+        const reply = await reading;
+        assert.ok(reply.type === "chat.result");
+        assert.equal(
+          reply.items.some((item) => item.kind === "wake"),
+          i === 1,
+        );
+      }),
+    );
+  // These replies also fence the older socket's stream after the broadcast.
+  await readRooms();
   assert.equal(
     frames[2]?.some((m) => m.type === "account.result"),
     false,
   );
   const ws = clients[0];
   assert.ok(ws);
-  const loggedOut = new Promise<void>((resolve) =>
-    ws.on("message", (data) => {
-      const reply = JSON.parse(String(data));
-      if (reply.type === "account.result" && reply.id === "logout") resolve();
-    }),
+  const signedOut = Promise.all(
+    clients.slice(0, 2).map((client) => until(client, (m) => m.type === "account.result" && !m.signedIn)),
   );
-  ws.send(JSON.stringify({ type: "account.logout", id: "logout", version: PROTOCOL_VERSION }));
-  await loggedOut;
-  await s.tick();
+  const loggedOut = until(ws, (m) => m.type === "account.result" && m.id === "logout");
+  ws.send(JSON.stringify({ type: "account.logout", id: "logout", version: { major: 1, minor: 8 } }));
+  await Promise.all([loggedOut, signedOut]);
   assert.ok(frames[1]?.some((m) => m.type === "account.result" && !m.signedIn));
-  assert.equal(store.sequence, 0);
+  await readRooms();
+  assert.equal(
+    frames[2]?.some((m) => m.type === "account.result"),
+    false,
+  );
+  finishWake();
+  await server.coordinators.get("orchard")?.harness.waitForIdle(context);
+  assert.ok(store.readSince(0).some((event) => event.kind === "coordinator.wakeup"));
   for (const secret of [s.token, s.linear, s.github])
     assert.equal(JSON.stringify([frames, s.log, store.readSince(0)]).includes(secret), false);
 });

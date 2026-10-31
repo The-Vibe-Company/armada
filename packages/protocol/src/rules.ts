@@ -36,6 +36,8 @@ export const projectRulesSchema = z.strictObject({
       preApprovedLabel: id.optional(),
       silenceMinutes: minutes.optional(),
       quietMinutes: minutes.optional(),
+      coordinatorMinutes: z.number().nonnegative().optional(),
+      notStartedMinutes: minutes.optional(),
       maxWorkers: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).nullable().optional(),
     })
     .optional(),

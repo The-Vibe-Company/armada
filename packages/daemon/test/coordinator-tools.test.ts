@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
-import type { FleetEvent, Session, Ticket } from "@armada/protocol";
+import type { FleetEvent, ProjectTables, Session, Ticket } from "@armada/protocol";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { type MergeEvidence, nativeTools } from "../coordinator/native.ts";
@@ -40,6 +40,7 @@ interface TestFacts {
   reports: { at: string; phase: string; body: string }[];
   events: FleetEvent[];
   more: boolean;
+  defaultBranch?: ProjectTables["defaultBranch"];
   unavailable: string[];
   items: InboxItem[];
   problems: string[];
@@ -151,6 +152,20 @@ test("fleet.status returns detached project facts and refuses an inactive coordi
   facts.sessions.length = 0;
   assert.equal((await run("fleet.status")).sessions.length, 1);
   assert.equal(store.readSince(0, "other").length, 6);
+  assert.ok(facts.unavailable.includes("default-branch-health"));
+  const health = { branch: "trunk", head: "e".repeat(40), ci: "failure" as const };
+  store.append({ project: "orchard", at, actor: "github", kind: "default-branch.seen", payload: health });
+  store.append({
+    project: "other",
+    at,
+    actor: "github",
+    kind: "default-branch.seen",
+    payload: { branch: "other-main", head: "f".repeat(40), ci: "success" },
+  });
+  const current = await run("fleet.status");
+  assert.deepEqual(current.defaultBranch, health);
+  assert.equal(current.unavailable.includes("default-branch-health"), false);
+
   await scope.close(context);
   assert.equal((await run("fleet.status")).code, "coordinator_inactive");
 });
