@@ -155,7 +155,14 @@ test("runtime-added projects share the host's Linear cooldown while another daem
   assert.ok(first);
   const pause = await first.read({ project: project.id });
   assert.ok(pause?.pausedUntil);
-  await daemon.addProject({ ...project, id: "garden", root: dir });
+  await daemon.addProject({
+    ...project,
+    id: "garden",
+    root: dir,
+    phaseGroup: "Agent phase",
+    tracker: "linear",
+    forge: "github",
+  });
   const added = daemon.registry.get("tracker", "linear", "garden");
   assert.ok(added);
   assert.equal((await added.read({ project: "garden" }))?.pausedUntil, pause.pausedUntil);
