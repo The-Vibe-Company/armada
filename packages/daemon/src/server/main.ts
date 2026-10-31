@@ -53,7 +53,7 @@ try {
     const account = new Account({ keychain, log: (line) => console.error(line) });
     void account.refresh();
     const modelAccess = await modelEnvironment(process.env, keychain, account.secrets);
-    const modelRegistry = new ModelRegistry({ keychain, selected: modelAccess.selected });
+    const modelRegistry = new ModelRegistry({ keychain, selected: modelAccess.selected ?? null });
     const secrets = connectionSecrets(modelAccess.secrets, keychain);
     const providersFor = (daemon: Awaited<ReturnType<typeof bootDaemon>>) =>
       new Providers({
@@ -72,16 +72,19 @@ try {
     });
     let readers: Awaited<ReturnType<typeof startReaders>> | undefined;
     try {
-      const coordinators = coordinatorModels({
-        projects,
-        store: daemon.store,
-        registry: daemon.registry,
-        selected: modelAccess.selected,
-        pluginSelected: modelAccess.pluginSelected,
-        pi: modelRegistry,
-        onSkipped: (project) =>
-          console.error(`Coordinator for ${project} not started: check model plugin configuration and credentials`),
-      });
+      // Both boot and subsequent turns use the registry's catalog selection.
+      const modelsFor = async (entries: typeof projects) =>
+        coordinatorModels({
+          projects: entries,
+          store: daemon.store,
+          registry: daemon.registry,
+          selected: (await modelRegistry.selection()) ?? undefined,
+          pluginSelected: modelAccess.pluginSelected,
+          pi: modelRegistry,
+          onSkipped: (project) =>
+            console.error(`Coordinator for ${project} not started: check model plugin configuration and credentials`),
+        });
+      const coordinators = await modelsFor(projects);
       // Private instance directory avoids stale/active socket unlink races after a crash.
       const workerDirectory = await mkdtemp(join(tmpdir(), "armada-worker-"));
       const workerSocket = join(workerDirectory, "socket");
@@ -151,14 +154,7 @@ try {
           keychain,
           modelRegistry,
           resolveCoordinator: async (project) => {
-            const config = coordinatorModels({
-              projects: projects.filter((p) => p.id === project),
-              store: daemon.store,
-              registry: daemon.registry,
-              pi: modelRegistry,
-              selected: (await modelRegistry.selection()) ?? undefined,
-              pluginSelected: modelAccess.pluginSelected,
-            })[0];
+            const config = (await modelsFor(projects.filter((p) => p.id === project)))[0];
             return config
               ? {
                   ...config,

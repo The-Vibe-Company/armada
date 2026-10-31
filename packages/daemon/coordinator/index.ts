@@ -103,6 +103,13 @@ export class Coordinators {
       const current = (await conversation.agent(BACKGROUND_CONTEXT)).model;
       if (current?.provider !== options.model.provider || current?.modelId !== options.model.modelId)
         await conversation.configure({ model: options.model }, BACKGROUND_CONTEXT);
+      this.#store.append({
+        project: options.project,
+        kind: "coordinator.message",
+        actor: "coordinator",
+        at: new Date(now()).toISOString(),
+        payload: { role: "coordinator", body: `Coordinator uses ${options.model.provider}/${options.model.modelId}.` },
+      });
       harness.resume();
       return { harness, conversation };
     } catch (error) {
