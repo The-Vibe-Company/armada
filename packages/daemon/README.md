@@ -369,7 +369,15 @@ make that trial pass. CLI error results surface as failed observations.
 
 ## Coordinator model plugins
 
-`armadad` resolves the coordinator model from the loaded `model` registry. Both
+The coordinator's built-in providers and their models come from pi's catalog.
+Settings > Coordinator offers provider sign-in and model selection, including
+ChatGPT through OpenAI Codex. API keys and OAuth credentials stay in the daemon's
+keychain; pi refreshes OAuth credentials through the same store. See
+[Coordinator model connections](../../docs/v2-desktop.md#coordinator-model-connections)
+for the catalog and authentication contract.
+
+Custom endpoints and existing plugin selections still use the loaded `model`
+registry described below. Both
 bundled plugins are enabled by default; neither contacts a service at activation.
 `model-anthropic` returns an `@ai-sdk/anthropic` model; `model-openai-compatible`
 returns an `@ai-sdk/openai-compatible` chat model. The daemon adapts that SDK
@@ -382,9 +390,9 @@ and `ARMADA_MODEL_API_KEY`. A complete `ZAI_BASE_URL`, `ZAI_MODEL`, `ZAI_API_KEY
 triple selects the compatible plugin automatically, before a complete
 `AZURE_AI_ENDPOINT` (or `AZURE_AI_BASE_URL`), `AZURE_AI_MODEL`, `AZURE_AI_API_KEY` triple. These named
 settings can also live under the plugin keychain service. Otherwise the
-coordinator keychain entry supplies its kind, public config and key. The app's
-key form lists loaded model contributions and saves that entry atomically;
-restart to apply it. Disabled providers never appear in that form.
+coordinator keychain entry supplies its kind, public config and key. Custom
+plugin credentials remain separate from pi provider credentials; disabled
+plugins are unavailable to this compatibility path.
 
 Each project catalog entry may set `coordinatorModel: {kind, config}`. A saved
 `rules.set` rule of the same name wins over that entry, then the boot default.

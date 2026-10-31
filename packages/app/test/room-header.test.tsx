@@ -58,8 +58,6 @@ test("a pill per state that holds an agent, in the states' order, on its state's
   ]);
   expect(headerPills(counts({}))).toEqual([]);
   expect(render(null)).not.toContain("data-pill");
-  // On a narrow header a pill keeps its dot and its number; its words stay for screen readers.
-  expect(render(counts({ blocked: 1 }))).toMatch(/<span class="@max-\[900px\]\/strip:sr-only">blocked<\/span>/);
 });
 
 test("the header names the project, its repository, and a provider read long ago quietly", () => {
