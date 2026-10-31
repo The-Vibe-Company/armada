@@ -47,7 +47,6 @@ test("Electron's bundled daemon starts a configured coordinator and reads creden
       GITHUB_TOKEN: randomBytes(24).toString("hex"),
       NODE_OPTIONS: `--require=${JSON.stringify(preload)}`,
       XDG_CONFIG_HOME: dir,
-      ARMADA_KEYCHAIN: "file",
       ARMADA_APP_CONFIG: join(dir, "config.json"),
     },
   });
