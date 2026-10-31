@@ -116,7 +116,7 @@ test("Linux system storage accepts only trimmed absolute XDG roots, otherwise us
       `;
       const result = spawnSync(nodeExecutable, ["--input-type=module", "-e", script], {
         cwd: directory,
-        env: { ...process.env, HOME: home, XDG_CONFIG_HOME: xdg },
+        env: { ...process.env, HOME: home, XDG_CONFIG_HOME: xdg, ARMADA_KEYCHAIN: "file" },
         encoding: "utf8",
         timeout: 10000,
       });

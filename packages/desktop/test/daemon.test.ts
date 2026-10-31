@@ -26,6 +26,8 @@ function fixture() {
       env: {
         ...process.env,
         XDG_CONFIG_HOME: dir,
+
+        ARMADA_KEYCHAIN: "file",
         ARMADA_APP_CONFIG: join(dir, "config.json"),
         GITHUB_TOKEN: randomBytes(24).toString("hex"),
         NODE_OPTIONS: `--import=data:text/javascript,${encodeURIComponent('globalThis.fetch = async () => { throw new Error("offline fixture"); };')}`,
