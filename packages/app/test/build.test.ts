@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 import { bootDaemon } from "@armada/daemon";
 import { Keychain } from "@armada/daemon/keychain";
@@ -206,6 +206,38 @@ describe("in a browser, served by a running daemon", () => {
     });
     expect(loaded).toContain("Geist");
     expect(loaded.filter((f) => f !== "Geist" && f !== "Geist Mono")).toEqual([]);
+  }, 20_000);
+
+  test("Add project opens from the hangar and reads a folder through the daemon", async () => {
+    // A synthetic checkout: a Git repository whose origin is on GitHub, no armada.toml.
+    const folder = mkdtempSync(join(tmpdir(), "armada-add-"));
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+    try {
+      for (const args of [
+        ["init", "-q"],
+        ["remote", "add", "origin", "https://github.com/example/kestrel.git"],
+      ])
+        expect(Bun.spawnSync(["git", "-C", folder, ...args], { env }).exitCode).toBe(0);
+      await page.goto(daemon.url);
+      await page.getByRole("complementary", { name: "Sidebar" }).getByRole("status").getByText("Live").waitFor();
+      await page.getByRole("main").locator("header").getByRole("button", { name: "Add project" }).click();
+      const dialog = page.getByRole("dialog", { name: "Add a project" });
+      await dialog.waitFor({ timeout: 5_000 });
+      // A browser has no folder picker: the folder is a field, Enter has the daemon read it.
+      await dialog.getByLabel("Folder", { exact: true }).fill(folder);
+      await dialog.getByLabel("Folder", { exact: true }).press("Enter");
+      await dialog.getByLabel("Repository", { exact: true }).waitFor({ timeout: 5_000 });
+      expect(await dialog.getByLabel("Repository", { exact: true }).inputValue()).toBe("example/kestrel");
+      expect(await dialog.getByLabel("Name", { exact: true }).inputValue()).toBe(basename(folder).replace(/^a/, "A"));
+      expect(await dialog.getByLabel("Linear program", { exact: true }).inputValue()).toBe("");
+      // This daemon keeps no registry of its own: its refusal shows under the form.
+      await dialog.getByRole("button", { name: "Add", exact: true }).click();
+      await dialog.getByRole("alert").getByText("This daemon has no writable project registry").waitFor();
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
   }, 20_000);
 
   test("a state change over the subscription glides the same row to its new group, without a reload", async () => {

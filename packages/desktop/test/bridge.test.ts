@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BADGE_MAX, badgeCount, externalUrl, fromApp } from "../src/bridge.ts";
+import { BADGE_MAX, badgeCount, externalUrl, fromApp, pickedFolder } from "../src/bridge.ts";
 
 test("the dock's badge takes a whole count up to its cap; anything else clears it", () => {
   assert.equal(badgeCount(3), 3);
@@ -40,4 +40,11 @@ test("the system browser opens http and https addresses off the app's own origin
     undefined,
   ])
     assert.equal(externalUrl(value, app), null);
+});
+
+test("the folder picker answers its one chosen folder, or nothing", () => {
+  assert.equal(pickedFolder({ canceled: false, filePaths: ["/Users/owner/Dev/kestrel"] }), "/Users/owner/Dev/kestrel");
+  assert.equal(pickedFolder({ canceled: true, filePaths: ["/Users/owner/Dev/kestrel"] }), null);
+  assert.equal(pickedFolder({ canceled: false, filePaths: [] }), null);
+  assert.equal(pickedFolder({ canceled: false, filePaths: ["/a", "/b"] }), null);
 });

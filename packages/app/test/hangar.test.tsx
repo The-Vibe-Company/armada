@@ -260,7 +260,7 @@ test("the hangar's facts line counts the whole fleet, and its sky holds every sq
   const html = render(STATES);
   expect(html.match(/<h1\b[^>]*>(.*?)<\/h1>/)?.[1]).toBe("Hangar");
   expect(factsLine(html)).toBe(
-    "Hangar 7 agents in flight 5 moving on their own 1 ready to merge 2 merged today 1 blocked 2 projects",
+    "Hangar 7 agents in flight 5 moving on their own 1 ready to merge 2 merged today 1 blocked 2 projects Add project",
   );
   expect(html).toMatch(/<b class="[^"]*text-red[^"]*">1<\/b>blocked/);
   expect(html).toContain('data-sky="stage"');
@@ -270,7 +270,7 @@ test("the hangar's facts line counts the whole fleet, and its sky holds every sq
 test("an empty fleet leaves the sky empty, with one quiet line", () => {
   const html = render({ kestrel: { sessions: [] }, osprey: { sessions: [session("OSP-9", "merged", "claude")] } });
   expect(factsLine(html)).toBe(
-    "Hangar 0 agents in flight 0 moving on their own 0 ready to merge 1 merged today 2 projects",
+    "Hangar 0 agents in flight 0 moving on their own 0 ready to merge 1 merged today 2 projects Add project",
   );
   expect(html).toContain("Nothing in flight. A squadron takes off here when its coordinator launches an agent.");
   // No squadron and no legend: the sky is empty.

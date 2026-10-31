@@ -21,6 +21,7 @@ import { type Harness, skyProject } from "@/fleet/sky";
 import { type FleetState, fleetOf } from "@/fleet/state";
 import { roomHref } from "@/lib/route";
 import { cn } from "@/lib/utils";
+import { RemoveProject } from "@/projects/RemoveProject";
 import { useDaemon } from "@/protocol/store";
 import { AgentLane } from "@/room/AgentLane";
 import { Asking } from "@/room/Asking";
@@ -363,13 +364,19 @@ export function RoomView({
                 <Reading />
               )
             ) : tab === "rules" ? (
-              snapshot ? (
-                <div className="px-4 py-3">
-                  <ProjectRules state={snapshot.state} />
+              <>
+                {snapshot ? (
+                  <div className="px-4 py-3">
+                    <ProjectRules state={snapshot.state} />
+                  </div>
+                ) : (
+                  <Reading />
+                )}
+                {/* THE-2081: the project leaves the daemon from the bottom of its rules. */}
+                <div className="px-4 pb-4">
+                  <RemoveProject project={project} />
                 </div>
-              ) : (
-                <Reading />
-              )
+              </>
             ) : (
               <Log events={events} now={now} zone={zone} />
             )}
