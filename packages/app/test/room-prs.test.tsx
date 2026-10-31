@@ -136,20 +136,27 @@ test("a check opens its Actions run, its attempt past the first; without a run, 
   );
 });
 
-test("Merge holds until the turn that took it ends, or the pull request leaves; on an older daemon, until a reply", () => {
+test("Merge holds until the coordinator answered its message and its turn is over, or the pull request leaves", () => {
   const open = new Set([374]);
-  const hold: MergeHold = { pr: 374, seen: false, lines: 2 };
-  // Sent while idle: the turn starts, then ends with the pull request still open (refused).
-  const running = stepHold(hold, { open, turn: { state: "tool" }, lines: 2 });
-  expect(running).toEqual({ ...hold, seen: true });
-  expect(stepHold(hold, { open, turn: { state: "idle" }, lines: 2 })).toBe(hold);
-  if (!running) throw new Error("released early");
-  expect(stepHold(running, { open, turn: { state: "idle" }, lines: 3 })).toBeNull();
-  // Merged: the fold no longer lists it open, whatever the turn.
-  expect(stepHold(running, { open: new Set(), turn: { state: "writing" }, lines: 2 })).toBeNull();
-  // No live turn: the coordinator's next line answers it.
-  expect(stepHold(hold, { open, turn: null, lines: 2 })).toBe(hold);
-  expect(stepHold(hold, { open, turn: null, lines: 3 })).toBeNull();
+  const owner = (id: string, body: string) => ({ kind: "owner" as const, id, body });
+  const line = (id: string) => ({ kind: "coordinator" as const, id, body: "…" });
+  // An earlier Merge #374, answered: the new hold is not about it.
+  const before = [owner("o1", "Merge #374"), line("c1")];
+  const hold: MergeHold = { pr: 374, earlier: new Set(["o1"]) };
+  const idle = { state: "idle" as const };
+  // The message is not in the conversation yet: an idle turn (the last one's end) does not release it.
+  expect(stepHold(hold, { open, items: before, turn: idle })).toBe(hold);
+  // It is: the turn calls a tool after it, still running, then the coordinator's answer and its turn ends.
+  const asked = [...before, owner("o2", "Merge #374")];
+  expect(stepHold(hold, { open, items: asked, turn: idle })).toBe(hold);
+  expect(stepHold(hold, { open, items: [...asked, line("t1")], turn: { state: "tool" } })).toBe(hold);
+  expect(stepHold(hold, { open, items: [...asked, line("t1"), line("c2")], turn: idle })).toBeNull();
+  // A missed frame: the answer is read while the turn shows idle all along. An older daemon without a live turn too.
+  expect(stepHold(hold, { open, items: [...asked, line("c2")], turn: null })).toBeNull();
+  // Older lines rolling out of the conversation's window change nothing.
+  expect(stepHold(hold, { open, items: [owner("o2", "Merge #374")], turn: idle })).toBe(hold);
+  // Merged: the fold no longer lists it open, whatever the conversation says.
+  expect(stepHold(hold, { open: new Set(), items: before, turn: { state: "writing" } })).toBeNull();
 });
 
 test("pull requests read while a forge is connected, or before the daemon lists its providers", () => {
@@ -170,7 +177,7 @@ const render = (prs: readonly OpenPullRequest[], more: { reads?: boolean; mergin
     <PullRequests
       prs={prs}
       repository="example/harbor"
-      ticketHref={(t) => `#/projects/harbor?panel=agents&agent=${t}`}
+      ticketHref={(t) => `#/projects/harbor?panel=prs&agent=${t}`}
       merging={more.merging ?? { held: new Set(), problem: null, merge() {} }}
       {...(more.reads === undefined ? {} : { reads: more.reads })}
     />,
@@ -219,7 +226,7 @@ test("a row: its number, title, ticket, short head, checks as dots that open the
   ]);
   // The row opens the pull request; the ticket its agent's page.
   expect(ready?.html).toContain('href="https://github.com/example/harbor/pull/374"');
-  expect(ready?.html).toContain('href="#/projects/harbor?panel=agents&amp;agent=HAR-31"');
+  expect(ready?.html).toContain('href="#/projects/harbor?panel=prs&amp;agent=HAR-31"');
   // Merge is on the Ready row only.
   expect(rows.filter((r) => r.html.includes("data-merge")).map((r) => r.pr)).toEqual(["374"]);
 });
@@ -257,7 +264,7 @@ describe("the panel's Pull requests in a browser", () => {
         .filter((r) => r.type === "chat.send")
         .map((r) => r.body),
     );
-  const turn = (page: Page, state: "idle" | "tool") =>
+  const turn = (page: Page, state: "idle" | "thinking" | "tool") =>
     page.evaluate(
       (s) =>
         (window as unknown as { daemon: { frame(f: unknown): void } }).daemon.frame({
@@ -271,26 +278,52 @@ describe("the panel's Pull requests in a browser", () => {
       state,
     );
 
+  const say = (page: Page, items: unknown[]) =>
+    page.evaluate(
+      (json) => (window as unknown as { daemon: { say(i: unknown): void } }).daemon.say(JSON.parse(json)),
+      JSON.stringify(items),
+    );
+  // Said now: the room matches a message it sent with the reading's by its words and its time, from the page's clock.
+  const said = (id: string, second: number, body: string, kind: "owner" | "coordinator" = "owner") => ({
+    kind,
+    id,
+    at: new Date(Date.now() + second * 1000).toISOString(),
+    body,
+  });
+
   test("the ready pill opens Pull requests, its count in the tab; Merge asks the coordinator and holds until it answers or merges", async () => {
     const page = await open();
     const side = panel(page);
-    // The tab says how many are open; the header's ready to merge opens it.
-    await settled(() => side.getByRole("tab", { name: "Pull requests" }).innerText(), "Pull requests5");
+    // The tab says how many are open, two words for a screen reader; the header's ready to merge opens it.
+    await settled(() => side.getByRole("tab", { name: "Pull requests 5" }).count(), 1);
     await page.locator('[data-pill="ready"]').click();
     await settled(() => hash(page), "#/projects/harbor?panel=prs");
     const merge = side.locator("[data-merge]");
     await settled(() => merge.count(), 1);
 
-    // Merge: "Merge #374" in the chat, then Merging… until the coordinator's turn ends.
+    // Merge while the coordinator's last turn is ending: "Merge #374" in the chat, then Merging….
+    await turn(page, "tool");
     await merge.click();
     await settled(() => sent(page), ["Merge #374"]);
     await settled(() => merge.innerText(), "Merging…");
     expect(await merge.isDisabled()).toBe(true);
+    // That turn's end is not the answer: nothing after the message yet.
+    await turn(page, "idle");
     await turn(page, "tool");
+    await say(page, [said("o1", 1, "Merge #374")]);
     await settled(() => merge.innerText(), "Merging…");
-    // The coordinator refused (its answer is in the thread): the pull request is still open, Merge comes back.
+    // The coordinator refused (its answer is in the thread) and its turn ended: the pull request is still open, Merge comes back.
+    await say(page, [
+      said("o1", 1, "Merge #374"),
+      said("c1", 2, "#374 has 2 unresolved review threads.", "coordinator"),
+    ]);
+    await settled(() => merge.innerText(), "Merging…");
     await turn(page, "idle");
     await settled(() => merge.innerText(), "Merge");
+    // A later turn of the coordinator does not hold the row again.
+    await turn(page, "thinking");
+    await settled(() => merge.innerText(), "Merge");
+    await turn(page, "idle");
 
     // Again, and this time the fold sees it merged: the row leaves, the count follows.
     await merge.click();
@@ -303,8 +336,27 @@ describe("the panel's Pull requests in a browser", () => {
       merged,
     );
     await settled(() => side.locator('[data-pr-row="374"]').count(), 0);
-    await settled(() => side.getByRole("tab", { name: "Pull requests" }).innerText(), "Pull requests4");
+    await settled(() => side.getByRole("tab", { name: "Pull requests 4" }).count(), 1);
     await settled(() => sent(page), ["Merge #374", "Merge #374"]);
+  });
+
+  test("a Merge the daemon refuses gives the button back, with its line under the row; a ticket keeps the tab", async () => {
+    const page = await open("#/projects/harbor?panel=prs");
+    const side = panel(page);
+    const merge = side.locator("[data-merge]");
+    await settled(() => merge.innerText(), "Merge");
+    await page.evaluate(() =>
+      (window as unknown as { daemon: { refuse(l: string): void } }).daemon.refuse("The coordinator is restarting"),
+    );
+    await merge.click();
+    await settled(() => merge.innerText(), "Merge");
+    await settled(
+      () => side.locator('[data-pr-row="374"] [role="alert"]').innerText(),
+      "The coordinator is restarting",
+    );
+    // The ticket's id shows its agent, the panel kept on Pull requests.
+    await side.locator('[data-pr-row="374"]').getByRole("link", { name: "HAR-31" }).click();
+    await settled(() => hash(page), "#/projects/harbor?panel=prs&agent=HAR-31");
   });
 
   test("a disconnected forge points to Settings above the list", async () => {

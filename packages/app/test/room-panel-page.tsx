@@ -3,9 +3,11 @@
 // halves: `Room` reading the folded state and the log the test seeds
 // (`window.seed`, set before the page loads), the client answering the room's
 // requests and recording them in `window.daemon.requests`; `window.daemon.show`
-// hands it a later fold, as the subscription would, and `window.daemon.frame`
-// a frame of the coordinator's turn (THE-2086's Merge waits on it).
-import type { ProtocolEvent, ServerMessage, Snapshot } from "@armada/protocol";
+// hands it a later fold, as the subscription would; `window.daemon.frame` a
+// frame of the coordinator's turn, `window.daemon.say` a conversation the
+// room reads again, and `window.daemon.refuse` the line a send is refused
+// with (THE-2086's Merge waits on them).
+import type { ChatItem, ProtocolEvent, ServerMessage, Snapshot } from "@armada/protocol";
 import { LazyMotion, MotionConfig } from "motion/react";
 import { createRoot } from "react-dom/client";
 import features from "../src/components/shell/motion-features";
@@ -29,6 +31,8 @@ let state: DaemonState = {
 const requests: Record<string, unknown>[] = [];
 const listeners = new Set<() => void>();
 const chats = new Set<(frame: ChatFrame) => void>();
+let conversation: { seq: number; items: ChatItem[] } = { seq, items: [] };
+let refusal: string | null = null;
 
 const client: DaemonClient = {
   getState: () => state,
@@ -72,8 +76,15 @@ const client: DaemonClient = {
     const envelope = { version: { major: 1, minor: 7 }, id: `r${requests.length}`, project: PROJECT.id };
     switch (message.type) {
       case "chat.read":
-        return { ...envelope, type: "chat.result", seq, coordinator: true, items: [] } satisfies ServerMessage;
+        return {
+          ...envelope,
+          type: "chat.result",
+          seq: conversation.seq,
+          coordinator: true,
+          items: conversation.items,
+        } satisfies ServerMessage;
       case "chat.send":
+        if (refusal) throw new Error(refusal);
         return { ...envelope, type: "chat.sent", requestId: message.requestId } satisfies ServerMessage;
       case "owner.answer":
         return { ...envelope, type: "owner.answered", item: message.item } satisfies ServerMessage;
@@ -96,6 +107,25 @@ const client: DaemonClient = {
   },
   frame(frame: ChatFrame) {
     for (const listener of chats) listener(frame);
+  },
+  /** The coordinator's checkpoint: a conversation the room reads again, as a later `coordinator.*` event makes it. */
+  say(items: ChatItem[]) {
+    const log = state.logs.harbor ?? { seq, events: [] };
+    const at = log.seq + 1;
+    const event = {
+      seq: at,
+      project: PROJECT.id,
+      kind: "coordinator.turn",
+      at: items.at(-1)?.at ?? "",
+      actor: "coordinator",
+      payload: {},
+    };
+    conversation = { seq: at, items };
+    state = { ...state, logs: { harbor: { seq: at, events: [...log.events, event as unknown as ProtocolEvent] } } };
+    for (const listener of listeners) listener();
+  },
+  refuse(line: string | null) {
+    refusal = line;
   },
   providers(providers: DaemonState["providers"]) {
     state = { ...state, providers };

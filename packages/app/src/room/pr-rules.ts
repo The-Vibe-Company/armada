@@ -74,37 +74,45 @@ export function checkHref(check: FoldedCheck, pr: Pick<FoldedPullRequest, "numbe
 /** The head as the row shows it. */
 export const shortSha = (head: string | undefined) => (head ? head.slice(0, 7) : "");
 
-/** The coordinator's lines in the conversation: a new one answers a message, on a daemon without a live turn. */
-export const coordinatorLines = (items: readonly ChatItem[]) => items.filter((i) => i.kind !== "owner").length;
-
 /** A Merge asked of the coordinator, held as "Merging…" until it is answered. */
 export interface MergeHold {
   pr: number;
-  /** The coordinator's turn ran since the message was sent. */
-  seen: boolean;
-  /** The coordinator's lines when it was sent. */
-  lines: number;
+  /** The conversation's "Merge #N" messages when it was sent: the one it sends is the next. */
+  earlier: ReadonlySet<string>;
 }
+
+/** A line of the conversation, as far as Merge reads it. */
+type ChatLine = Pick<ChatItem, "kind" | "id"> & { body?: string };
 
 /** What the room sees after a Merge was sent. */
 export interface MergeSight {
   open: ReadonlySet<number>;
+  /** The conversation as the room shows it: a message sent is in it from its Send, before the coordinator places it. */
+  items: readonly ChatLine[];
   /** The coordinator's turn; null on a daemon without a live turn. */
   turn: Pick<ChatTurn, "state"> | null;
-  lines: number;
 }
+
+/** The ids of the conversation's messages asking to merge `pr`. */
+export const mergeAsks = (items: MergeSight["items"], pr: number) =>
+  new Set(items.flatMap((i) => (i.kind === "owner" && i.body === mergeMessage(pr) ? [i.id] : [])));
 
 /**
  * The hold after what the room sees: gone once the pull request is no longer
- * open (merged), or once the turn that took the message ended (the coordinator
- * answered: refused, or merged before the fold reads it); on a daemon without
- * a live turn, once the coordinator says anything.
+ * open (merged); else once the coordinator answered the message it sent (a
+ * line or a call after it) and its turn is over (refused, or merged before the
+ * fold reads it). Held while the message is not in the conversation yet. Tied
+ * to the message, not to a turn's frames: a frame missed or a turn ending
+ * before it does not release it, nor keep it.
  */
 export function stepHold(hold: MergeHold, sight: MergeSight): MergeHold | null {
   if (!sight.open.has(hold.pr)) return null;
-  if (sight.turn === null) return sight.lines > hold.lines ? null : hold;
-  if (sight.turn.state !== "idle") return hold.seen ? hold : { ...hold, seen: true };
-  return hold.seen ? null : hold;
+  const ask = sight.items.findLastIndex(
+    (i) => i.kind === "owner" && i.body === mergeMessage(hold.pr) && !hold.earlier.has(i.id),
+  );
+  if (ask < 0) return hold;
+  const answered = sight.items.slice(ask + 1).some((i) => i.kind !== "owner");
+  return answered && (sight.turn === null || sight.turn.state === "idle") ? null : hold;
 }
 
 /** The message Merge sends: the coordinator's prompt knows to check, then merge. */

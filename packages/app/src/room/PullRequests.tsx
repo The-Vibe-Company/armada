@@ -17,8 +17,8 @@ import { settingsHref } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import {
   checkHref,
-  coordinatorLines,
   type MergeHold,
+  mergeAsks,
   mergeMessage,
   type OpenPullRequest,
   type PullRequestWord,
@@ -63,7 +63,7 @@ export interface Merging {
 /**
  * Merge's hold, kept by the room so it survives a change of tab: "Merging…"
  * from the message until the pull request leaves the open ones, or the
- * coordinator's turn that took it ends.
+ * coordinator answered it and its turn is over.
  */
 export function useMerging({
   prs,
@@ -80,19 +80,18 @@ export function useMerging({
   const [holds, setHolds] = useState<readonly MergeHold[]>([]);
   const [problem, setProblem] = useState<Merging["problem"]>(null);
   const open = useMemo(() => new Set(prs.map((p) => p.number)), [prs]);
-  const lines = coordinatorLines(items);
   const state = turn?.state ?? null;
+  // A released hold is dropped: a later turn of the coordinator does not hold the row again.
   useEffect(() => {
-    const sight = { open, turn: state === null ? null : { state }, lines };
+    const sight = { open, items, turn: state === null ? null : { state } };
     setHolds((held) => {
       const next = held.flatMap((h) => stepHold(h, sight) ?? []);
-      return next.length === held.length && next.every((h, k) => h === held[k]) ? held : next;
+      return next.length === held.length ? held : next;
     });
-  }, [open, state, lines]);
+  }, [open, items, state]);
   const merge = useCallback(
     (pr: number) => {
-      // A turn already running takes the message as it goes: its end answers it.
-      const hold: MergeHold = { pr, seen: state !== null && state !== "idle", lines };
+      const hold: MergeHold = { pr, earlier: mergeAsks(items, pr) };
       setProblem(null);
       setHolds((held) => [...held.filter((h) => h.pr !== pr), hold]);
       send(mergeMessage(pr)).catch((error: unknown) => {
@@ -100,7 +99,7 @@ export function useMerging({
         setProblem({ pr, text: error instanceof Error ? error.message : "Could not ask the coordinator" });
       });
     },
-    [send, state, lines],
+    [send, items],
   );
   const held = useMemo(() => new Set(holds.map((h) => h.pr)), [holds]);
   return { held, problem, merge };
@@ -113,6 +112,7 @@ export function PullRequests({
   merging,
   canMerge = true,
   ticketHref,
+  onOpen,
 }: {
   prs: readonly OpenPullRequest[];
   repository: string;
@@ -123,6 +123,8 @@ export function PullRequests({
   canMerge?: boolean;
   /** Where a ticket's id leads: its agent's page. */
   ticketHref: (ticket: string) => string;
+  /** A ticket's id followed: the sheet closes over its agent's page. */
+  onOpen?: () => void;
 }) {
   const connect = !reads && (
     <p className="m-0 border-line border-b px-4 py-3 text-body text-text-2" data-forge="disconnected">
@@ -143,6 +145,7 @@ export function PullRequests({
             pr={p}
             repository={repository}
             ticketHref={ticketHref}
+            onOpen={onOpen}
             merging={merging}
             canMerge={canMerge}
           />
@@ -156,12 +159,14 @@ function Row({
   pr: p,
   repository,
   ticketHref,
+  onOpen,
   merging,
   canMerge,
 }: {
   pr: OpenPullRequest;
   repository: string;
   ticketHref: (ticket: string) => string;
+  onOpen?: () => void;
   merging?: Merging;
   canMerge: boolean;
 }) {
@@ -209,6 +214,7 @@ function Row({
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-body text-text-2">
         <a
           href={ticketHref(p.ticket)}
+          onClick={onOpen}
           className="relative z-10 flex-none font-mono text-meta text-text-2 hover:text-text"
         >
           {p.ticket}

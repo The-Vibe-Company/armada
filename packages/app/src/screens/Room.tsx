@@ -370,7 +370,8 @@ export function RoomView({
                   reads={reads}
                   merging={merging}
                   canMerge={!closed}
-                  ticketHref={(ticket) => agentHref(project.id, ticket)}
+                  ticketHref={(ticket) => roomHref(project.id, "prs", ticket)}
+                  onOpen={opened}
                 />
               ) : (
                 <Reading />

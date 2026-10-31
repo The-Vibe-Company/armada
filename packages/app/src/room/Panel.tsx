@@ -79,7 +79,9 @@ export function Panel({
             >
               {PANEL_LABEL[t]}
               {counts?.[t] ? (
-                <span className="ml-1.5 font-mono text-meta text-text-3 tnum" data-tab-count>
+                // The space keeps the name and its number two words for a screen reader: "Pull requests 3".
+                <span className="ml-1 font-mono text-meta text-text-3 tnum" data-tab-count>
+                  {" "}
                   {counts[t]}
                 </span>
               ) : null}
