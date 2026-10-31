@@ -40,6 +40,8 @@ import { Thread, type ThreadControl } from "@/room/Thread";
 import { useRoomPanel } from "@/room/use-panel";
 import { ownerQuestions, starterAsks } from "@/room/view";
 import { ProjectRules } from "@/rules/ProjectRules";
+import { NeedsArmada } from "@/settings/NeedsArmada";
+import { linearNeedsSignIn } from "@/settings/needs-armada";
 
 const viewerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 const EMPTY_STATE: FleetState = { sessions: [], tickets: [], pullRequests: [], inbox: [], queue: [], validations: [] };
@@ -124,6 +126,8 @@ export function RoomView({
   chat,
 }: RoomProps & { chat: Chat }) {
   const state = snapshot ? fleetOf(snapshot) : EMPTY_STATE;
+  // THE-2071: signed out, a Linear project without a key of its own waits for the organization's.
+  const needsSignIn = linearNeedsSignIn(useDaemon(), project.id, state.readAt);
   const today = dayIn(now, zone);
   // The fleet changes with the fold and with the viewer's day, not with each millisecond.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `now` only decides the day, which `today` stands for.
@@ -224,6 +228,11 @@ export function RoomView({
         onPill={(group) => side.goTo(group, !sheet)}
         onChat={agent === null ? undefined : () => window.location.assign(chatHref)}
       />
+      {needsSignIn && (
+        <div className="flex-none px-7 pt-2">
+          <NeedsArmada why="Linear has no key for this project." />
+        </div>
+      )}
       {onReload && <DaemonProblem onReload={onReload} className="mx-4 mt-3 flex-none" />}
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <div className="relative flex min-w-0 flex-1 flex-col">
