@@ -278,7 +278,12 @@ export class Merges {
     if (name === "merge.run" && result.ok === false) {
       try {
         const id = `merge-refused:${hash(key)}`;
-        if (!scope.readEvents().some((e) => e.kind === "merge.refused" && e.payload.id === id)) {
+        const events = scope.readEvents();
+        // A confirmed merge may still return a cleanup failure; it was not refused.
+        if (
+          !events.some((e) => e.kind === "merge.confirmed" && e.payload.pr === pr) &&
+          !events.some((e) => e.kind === "merge.refused" && e.payload.id === id)
+        ) {
           const pull = this.#facts(scope)?.pullRequests.find((p) => p.number === pr);
           this.#append(scope, "merge.refused", {
             id,

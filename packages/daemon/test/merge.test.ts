@@ -487,6 +487,10 @@ test("failed local gate and moving final base refuse the pinned merge", async (t
   f.setFacts({ behindBy: 1 });
   f.node.testMerge = async () => ({ ok: false, step: "bun run verify", output: "failed" });
   assert.match(JSON.stringify(await f.run("merge.run")), /test merge into main failed/);
+  assert.ok(
+    f.store.readSince(0).some((e) => e.kind === "merge.refused" && e.payload.pr === 7),
+    "a refusal before the merge still wakes the coordinator",
+  );
   f.node.testMerge = async () => {
     f.setFacts({ base: "d".repeat(40) });
     return { ok: true };
@@ -548,6 +552,11 @@ test("tracker failure retains confirmed merge and resumes tracker/stop without m
   };
   assert.equal((await f.run("merge.run")).ok, false);
   assert.equal(f.store.readSince(0).filter((e) => e.kind === "merge.confirmed").length, 1);
+  assert.equal(
+    f.store.readSince(0).filter((e) => e.kind === "merge.refused").length,
+    0,
+    "cleanup failure must not report that an already confirmed merge was refused",
+  );
   f.tracker.write = write;
   f.restart();
   assert.equal((await f.run("merge.run")).ok, true);
