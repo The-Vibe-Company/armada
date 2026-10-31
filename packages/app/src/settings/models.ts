@@ -151,9 +151,14 @@ export interface SignInView {
   /** The question awaiting the owner's answer; it leaves once answered. */
   prompt: AuthPrompt | null;
   error: string | null;
+  /**
+   * A CLI login's terminal (THE-2075, provider sign-ins only: the daemon
+   * removes what the owner typed from it); absent where it is not shown.
+   */
+  terminal?: string;
 }
 
-export const startSignIn = (provider: string): SignInView => ({
+export const startSignIn = (provider: string, options: { terminal?: boolean } = {}): SignInView => ({
   provider,
   url: null,
   instructions: null,
@@ -162,9 +167,25 @@ export const startSignIn = (provider: string): SignInView => ({
   links: [],
   prompt: null,
   error: null,
+  ...(options.terminal ? { terminal: "" } : {}),
 });
 
-/** The sign-in after one more frame. Terminal output is not shown: it may carry what the owner typed. */
+/** How much of a terminal stays: its last characters. */
+const TERMINAL_KEPT = 16_000;
+// Colours, cursor moves and titles: the pane shows the text only.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: escape sequences are what it removes.
+const ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]|\r(?!\n)/g;
+
+/** A terminal's output as text: escape sequences removed, the last part kept. */
+export function terminalText(current: string, output: string): string {
+  const next = current + output.replace(ESCAPES, "");
+  return next.length > TERMINAL_KEPT ? next.slice(-TERMINAL_KEPT) : next;
+}
+
+/**
+ * The sign-in after one more frame. Terminal output is shown only where the
+ * sign-in asked for it (a provider's): a model's may carry what the owner typed.
+ */
 export function applyAuthFrame(view: SignInView, frame: AuthFrame): SignInView {
   if (frame.type === "auth.prompt") return { ...view, prompt: frame };
   const event = frame.event;
@@ -181,6 +202,8 @@ export function applyAuthFrame(view: SignInView, frame: AuthFrame): SignInView {
         lines: [...view.lines, event.message],
         links: [...view.links, ...(event.links ?? []).map((l) => ({ url: l.url, label: l.label ?? l.url }))],
       };
+    case "terminal":
+      return view.terminal === undefined ? view : { ...view, terminal: terminalText(view.terminal, event.output) };
     default:
       return view;
   }

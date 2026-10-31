@@ -1,8 +1,12 @@
 // armadad's own WebSocket server (packages/daemon) over an in-memory event
 // log seeded with a synthetic fleet, for development and this package's
 // browser test: no Linear, no GitHub, no file, no keychain. Bun runs it; the app never
-// imports it (the app only speaks the protocol).
+// imports it (the app only speaks the protocol). Run alone, it also serves
+// synthetic providers (scripts/dev-providers.ts) for Settings.
 
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { CoordinatorOptions } from "@armada/daemon/coordinator";
 import type { EventInput, FleetEvent } from "@armada/daemon/events";
 import { Keychain } from "@armada/daemon/keychain";
@@ -12,6 +16,7 @@ import { EventStore } from "@armada/daemon/store";
 import type { Project } from "@armada/protocol";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { bootDevProviders } from "./dev-providers";
 
 export interface DevDaemon {
   /** The daemon's page address: it serves `staticDir` there, the app it was given. */
@@ -210,6 +215,7 @@ export async function startDevDaemon({
   allowedOrigins,
   coordinators = true,
   workers: makeWorkers,
+  providers: providersConfig,
 }: {
   port?: number;
   projects?: Project[];
@@ -220,6 +226,8 @@ export async function startDevDaemon({
   coordinators?: boolean;
   /** The workers the session page's buttons act on, over this daemon's log (a test's fake runtime). */
   workers?: (store: EventStore) => Workers;
+  /** Where the synthetic providers' settings are saved (scripts/dev-providers.ts); none without it. */
+  providers?: string;
 } = {}): Promise<DevDaemon> {
   const store = new EventStore(":memory:");
   for (const event of events) store.append(event);
@@ -235,9 +243,11 @@ export async function startDevDaemon({
       entries.set(`${service}/${account}`, value);
     },
   });
+  const catalog = providersConfig ? await bootDevProviders(providersConfig) : undefined;
   const server = await startServer({
     store,
     ...(workers ? { workers } : {}),
+    ...(catalog ? { plugins: catalog.plugins, providers: catalog.providers } : {}),
     projects,
     port,
     staticDir,
@@ -263,6 +273,7 @@ export async function startDevDaemon({
     async stop() {
       await server.close();
       await workers?.close();
+      catalog?.close();
       store.close();
     },
   };
@@ -274,6 +285,7 @@ if (import.meta.main) {
   const daemon = await startDevDaemon({
     port,
     allowedOrigins: ["http://localhost:4823", "http://127.0.0.1:4823"],
+    providers: join(mkdtempSync(join(tmpdir(), "armada-dev-")), "config.json"),
   });
   console.log(`Dev daemon on ${daemon.wsUrl}: ${SAMPLE_PROJECTS.length} projects. Ctrl-C stops it.`);
   // Every few seconds Tidewater's TID-7 takes its next step, so a row glides from group to group.

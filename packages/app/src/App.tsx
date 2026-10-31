@@ -44,7 +44,7 @@ export function App({
         ) : route.kind === "settings" ? (
           // The shell stays while the screen's code arrives.
           <Suspense fallback={null}>
-            <Settings section={route.section} address={address} onReload={onReload} />
+            <Settings section={route.section} detail={route.detail} address={address} onReload={onReload} />
           </Suspense>
         ) : route.kind === "project" || route.kind === "rules" ? (
           // The old rules page is the room's Rules tab: its address is replaced on the way.
