@@ -29,7 +29,11 @@ async function setup(t: import("node:test").TestContext, polls = ["approve"]) {
   const linear = randomBytes(24).toString("hex");
   const github = randomBytes(24).toString("hex");
   let time = new Date("2026-10-01T12:00:00Z");
-  const env: Record<string, string | undefined> = { XDG_CONFIG_HOME: directory, ARMADA_API_URL: ARMADA_URL };
+  const env: Record<string, string | undefined> = {
+    XDG_CONFIG_HOME: directory,
+    ARMADA_KEYCHAIN: "file",
+    ARMADA_API_URL: ARMADA_URL,
+  };
   const vault = {
     linear: { apiKey: linear, scope: "organization" as const },
     github,

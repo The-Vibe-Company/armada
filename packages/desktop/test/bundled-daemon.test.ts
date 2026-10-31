@@ -52,6 +52,7 @@ test("Electron's bundled daemon starts a configured coordinator and reads creden
       GITHUB_TOKEN: randomBytes(24).toString("hex"),
       NODE_OPTIONS: `--require=${JSON.stringify(preload)}`,
       XDG_CONFIG_HOME: dir,
+      ARMADA_KEYCHAIN: undefined, // The preload owns this fake-native boundary, even under a file-only parent.
       ARMADA_APP_CONFIG: join(dir, "config.json"),
     },
   });
