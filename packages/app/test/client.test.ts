@@ -666,3 +666,50 @@ test("provider connection uses shared auth, only its catalog settles it, and a d
   client.stop();
   await expect(client.connectProvider("codex")).rejects.toThrow("Connect to a daemon");
 });
+
+test("project methods correlate inspection and mutations, update subscriptions, and never replay a dropped add", async () => {
+  const { client, socket, timers } = setup();
+  listAndSubscribe(socket());
+  const inspection = client.inspectProject("/dev/new");
+  const inspectRequest = socket().sent.at(-1);
+  if (!inspectRequest) throw new Error("No project request was sent");
+  expect(inspectRequest.type).toBe("projects.inspect");
+  socket().receive({
+    type: "projects.inspection",
+    version: V,
+    id: inspectRequest.id,
+    path: "/dev/new",
+    git: null,
+    toml: null,
+    suggested: { id: "new", name: "New" },
+    problems: [],
+  });
+  expect((await inspection).suggested.id).toBe("new");
+  const input = { id: "new", name: "New", path: "/dev/new", repository: "example/new" };
+  const added = client.addProject(input);
+  const addRequest = socket().sent.at(-1);
+  if (!addRequest) throw new Error("No project request was sent");
+  expect(addRequest).toMatchObject({ type: "projects.add", projectId: "new", path: input.path });
+  const current = [...projects, { id: "new", name: "New", root: input.path, repository: input.repository }];
+  socket().receive({ type: "projects.result", version: V, id: addRequest.id, projects: current });
+  await added;
+  expect(client.getState().projects?.at(-1)?.root).toBe(input.path);
+  expect(socket().sent.filter((m) => m.type === "project.subscribe" && m.project === "new")).toHaveLength(1);
+  const removed = client.removeProject("new");
+  const removeRequest = socket().sent.at(-1);
+  if (!removeRequest) throw new Error("No project request was sent");
+  expect(removeRequest).toMatchObject({ type: "projects.remove", project: "new" });
+  socket().receive({ type: "projects.result", version: V, id: removeRequest.id, projects });
+  await removed;
+  expect(client.getState().projects).toEqual(projects);
+  const interrupted = client.addProject(input);
+  socket().drop();
+  await expect(interrupted).rejects.toThrow(/connection dropped/i);
+  timers
+    .filter((timer) => !timer.canceled)
+    .at(-1)
+    ?.run();
+  socket().onopen?.();
+  expect(socket().sent.some((m) => m.type === "projects.add")).toBe(false);
+  client.stop();
+});
