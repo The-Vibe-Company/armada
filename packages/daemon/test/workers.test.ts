@@ -204,6 +204,7 @@ async function fixture(
   });
   return {
     daemon,
+    repository,
     workers,
     socketPath,
     token: () => token,
@@ -698,9 +699,16 @@ test("launch builds the ticket brief, uses plugin defaults and refuses unsafe fl
   timeout: 15000,
 }, async (t) => {
   const f = await fixture(t);
+  await writeFile(join(f.repository, "AGENTS.md"), "Always preserve the orchard rows.");
+  await writeFile(join(f.repository, "armada.toml"), '[brief]\nextra = "conventions.md"\n');
+  await writeFile(join(f.repository, "conventions.md"), "Use only local seeds.");
   const original = fold(f.daemon.store.readSince(0, project)).projects[project]!.tickets[0]!;
   const run = (id: string) => f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api(id), context);
   const cases: [Partial<Ticket>, string][] = [
+    [
+      { description: "protected ticket".repeat(5000) },
+      "The ticket and worker protocol cannot fit under 48 KiB; shorten the ticket before launching",
+    ],
     [{ status: "completed" }, "SEED-1 is completed; there is nothing to launch"],
     [{ labels: ["backend"] }, "SEED-1 lacks ready-for-agent"],
     [{ labels: ["ready-for-agent", "parked"] }, "SEED-1 is parked; remove the parked label before launching"],
@@ -724,7 +732,10 @@ test("launch builds the ticket brief, uses plugin defaults and refuses unsafe fl
         format: "armada.tools",
         version: 1,
         type: "rules",
-        rules: { revision: 2, value: {} },
+        rules: {
+          revision: 2,
+          value: { defaultRoute: { cli: "claude", model: "fixture", instructions: "Check the irrigation." } },
+        },
         reason: "Defaults",
       },
     },
@@ -768,6 +779,10 @@ test("launch builds the ticket brief, uses plugin defaults and refuses unsafe fl
   const reply = await f.workers.observe(project, "SEED-1");
   assert.equal(reply.state, "running");
   assert.match(f.messages[0]!, /Plant the orchard safely/);
+  assert.match(f.messages[0]!, /Always preserve the orchard rows/);
+  assert.match(f.messages[0]!, /Use only local seeds/);
+  assert.match(f.messages[0]!, /Check the irrigation/);
+  assert.match(f.messages[0]!, /## Worker protocol/);
   assert.match(f.messages[0]!, /armada claim SEED-1/);
   assert.match(f.messages[0]!, /Plans need the coordinator/);
   assert(!f.messages[0]!.includes(f.token()));

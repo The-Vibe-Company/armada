@@ -412,7 +412,7 @@ test("folded tables validate known rows while preserving extension fields and se
   const rules = {
     revision: 1,
     value: {
-      routing: [{ when: "Backend work", cli: "claude", model: "oak" }],
+      routing: [{ when: "Backend work", cli: "claude", model: "oak", instructions: "Check irrigation." }],
       placement: { workers: "vm", coordinator: "local" },
       policy: { maxWorkers: null },
     },

@@ -128,7 +128,11 @@ test("hosted launch sends login only through stdin, uses label profile, and mask
   assert.equal(state.calls[0].args.includes("https://github.com/example/orchard"), true);
   assert.equal(state.calls[0].args.includes(login[1]), false);
   assert.equal(state.brief.includes("ARMADA_WORKER_SOCKET"), false);
-  assert.equal(state.brief.includes("--profile"), false, "desktop profile names do not need matching V1 CLI profiles");
+  assert.equal(
+    state.brief.split("## Launch instructions")[1]!.includes("--profile"),
+    false,
+    "desktop profile names do not need matching V1 CLI profiles",
+  );
   assert.ok(state.brief.includes("project.slug matches"));
   assert.equal(state.brief.includes("armada claim SEED-1 --runtime conductor"), true);
   const visible = JSON.stringify([
@@ -429,6 +433,7 @@ agent = "claude"
 model = "fixture-opus"
 effort = "high"
 [plugins.conductor.profiles.api]
+instructions = "Check irrigation."
 agent = "codex"
 model = "fixture-codex"
 effort = "high"
@@ -441,9 +446,14 @@ profile = "api"
 `);
   assert.deepEqual(rules.routing, [
     { labels: ["web"], cli: "conductor", model: "web", effort: "high" },
-    { labels: ["api"], cli: "conductor", model: "api", effort: "high" },
+    { labels: ["api"], cli: "conductor", model: "api", effort: "high", instructions: "Check irrigation." },
   ]);
-  assert.deepEqual(rules.defaultRoute, { cli: "conductor", model: "api", effort: "high" });
+  assert.deepEqual(rules.defaultRoute, {
+    cli: "conductor",
+    model: "api",
+    effort: "high",
+    instructions: "Check irrigation.",
+  });
   assert.deepEqual(rules.gates?.requiredChecks, ["test"]);
   assert.equal(rules.policy?.plans, "approve");
   assert.equal(rules.policy?.maxWorkers, 2);
