@@ -58,24 +58,31 @@ export interface Merging {
   /** Why a Merge could not be sent. */
   problem: { pr: number; text: string } | null;
   merge(pr: number): void;
+  /** The owner stopped the coordinator: nothing it was asked to merge is running any more. */
+  stopped(): void;
 }
 
 /**
  * Merge's hold, kept by the room so it survives a change of tab: "Merging…"
- * from the message until the pull request leaves the open ones, or the
- * coordinator answered it and its turn is over.
+ * from the message until the pull request leaves the open ones, the
+ * coordinator answered it and its turn is over, or the owner stopped the
+ * coordinator (a Stop may withdraw the message itself). While the room is
+ * not connected, the hold waits: no turn then does not mean the turn is over.
  */
 export function useMerging({
   prs,
   send,
   turn,
   items,
+  connected,
 }: {
   prs: readonly OpenPullRequest[];
   send: (body: string) => Promise<void>;
   /** The coordinator's turn; null on a daemon without a live turn. */
   turn: ChatTurn | null;
   items: readonly ChatItem[];
+  /** Whether the room hears the daemon now. */
+  connected: boolean;
 }): Merging {
   const [holds, setHolds] = useState<readonly MergeHold[]>([]);
   const [problem, setProblem] = useState<Merging["problem"]>(null);
@@ -83,12 +90,13 @@ export function useMerging({
   const state = turn?.state ?? null;
   // A released hold is dropped: a later turn of the coordinator does not hold the row again.
   useEffect(() => {
+    if (!connected) return;
     const sight = { open, items, turn: state === null ? null : { state } };
     setHolds((held) => {
       const next = held.flatMap((h) => stepHold(h, sight) ?? []);
       return next.length === held.length ? held : next;
     });
-  }, [open, items, state]);
+  }, [open, items, state, connected]);
   const merge = useCallback(
     (pr: number) => {
       const hold: MergeHold = { pr, earlier: mergeAsks(items, pr) };
@@ -101,8 +109,9 @@ export function useMerging({
     },
     [send, items],
   );
+  const stopped = useCallback(() => setHolds([]), []);
   const held = useMemo(() => new Set(holds.map((h) => h.pr)), [holds]);
-  return { held, problem, merge };
+  return { held, problem, merge, stopped };
 }
 
 export function PullRequests({

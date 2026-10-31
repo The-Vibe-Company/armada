@@ -180,7 +180,17 @@ export function RoomView({
   if (dock.hero !== hero) setDock({ hero, glides: dock.glides + (dock.hero ? 1 : 0) });
   const closed = !live || chat.status !== "ready" || !chat.coordinator;
   // The panel's Merge (THE-2086): a message to the coordinator, held as "Merging…" until it is answered.
-  const merging = useMerging({ prs, send: sendAndAnchor, turn, items: chat.items });
+  const merging = useMerging({ prs, send: sendAndAnchor, turn, items: chat.items, connected: live });
+  const { stopped } = merging;
+  const stopTurn = useMemo(
+    () =>
+      stop &&
+      (async () => {
+        await stop();
+        stopped();
+      }),
+    [stop, stopped],
+  );
   const reads = forgeReads(daemon.providers);
 
   // The panel (THE-2085): its state, its keys and where a pill or Answer takes it.
@@ -290,7 +300,7 @@ export function RoomView({
                 send={sendAndAnchor}
                 onPage={(direction) => thread.current?.page(direction)}
                 busy={busy}
-                primary={busy && stop ? (field) => <TurnActions field={field} stop={stop} /> : undefined}
+                primary={busy && stopTurn ? (field) => <TurnActions field={field} stop={stopTurn} /> : undefined}
                 restore={chat.withdrawn ?? null}
                 disabled={closed}
                 hint={hint}

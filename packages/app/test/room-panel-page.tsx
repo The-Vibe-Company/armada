@@ -83,6 +83,8 @@ const client: DaemonClient = {
           coordinator: true,
           items: conversation.items,
         } satisfies ServerMessage;
+      case "chat.stop":
+        return { ...envelope, type: "chat.stopped" } satisfies ServerMessage;
       case "chat.send":
         if (refusal) throw new Error(refusal);
         return { ...envelope, type: "chat.sent", requestId: message.requestId } satisfies ServerMessage;

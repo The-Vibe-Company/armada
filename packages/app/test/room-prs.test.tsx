@@ -178,7 +178,7 @@ const render = (prs: readonly OpenPullRequest[], more: { reads?: boolean; mergin
       prs={prs}
       repository="example/harbor"
       ticketHref={(t) => `#/projects/harbor?panel=prs&agent=${t}`}
-      merging={more.merging ?? { held: new Set(), problem: null, merge() {} }}
+      merging={more.merging ?? { held: new Set(), problem: null, merge() {}, stopped() {} }}
       {...(more.reads === undefined ? {} : { reads: more.reads })}
     />,
   );
@@ -232,7 +232,7 @@ test("a row: its number, title, ticket, short head, checks as dots that open the
 });
 
 test("Merge held says Merging…; nothing open says so; a disconnected forge points to Settings", () => {
-  const held = render(prsOf(LOG), { merging: { held: new Set([374]), problem: null, merge() {} } });
+  const held = render(prsOf(LOG), { merging: { held: new Set([374]), problem: null, merge() {}, stopped() {} } });
   expect(rowsOf(held)[0]?.words).toContain("Merging…");
   expect(text(render([]))).toBe("No open pull request");
   const off = render([], { reads: false });
@@ -340,7 +340,7 @@ describe("the panel's Pull requests in a browser", () => {
     await settled(() => sent(page), ["Merge #374", "Merge #374"]);
   });
 
-  test("a Merge the daemon refuses gives the button back, with its line under the row; a ticket keeps the tab", async () => {
+  test("a Merge the daemon refuses, or a Stop, gives the button back; a ticket keeps the tab", async () => {
     const page = await open("#/projects/harbor?panel=prs");
     const side = panel(page);
     const merge = side.locator("[data-merge]");
@@ -354,6 +354,15 @@ describe("the panel's Pull requests in a browser", () => {
       () => side.locator('[data-pr-row="374"] [role="alert"]').innerText(),
       "The coordinator is restarting",
     );
+    // Merge during a turn, then Stop: what was asked is not running any more, Merge comes back.
+    await page.evaluate(() =>
+      (window as unknown as { daemon: { refuse(l: string | null): void } }).daemon.refuse(null),
+    );
+    await turn(page, "tool");
+    await merge.click();
+    await settled(() => merge.innerText(), "Merging…");
+    await page.getByRole("button", { name: "Stop generation" }).click();
+    await settled(() => merge.innerText(), "Merge");
     // The ticket's id shows its agent, the panel kept on Pull requests.
     await side.locator('[data-pr-row="374"]').getByRole("link", { name: "HAR-31" }).click();
     await settled(() => hash(page), "#/projects/harbor?panel=prs&agent=HAR-31");
