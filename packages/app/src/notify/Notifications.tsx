@@ -18,10 +18,14 @@ import { reveal, setBadge } from "./shell";
 export const TOAST_MS = 6_000;
 const FADE = { duration: 0.15, ease: [0.23, 1, 0.32, 1] } as const;
 
-/** The project whose room the window shows, if it is visible: the hash names it, a session's page does not. */
+/**
+ * The project whose chat the window shows, if it is visible: the hash names
+ * its room, a session's page does not, nor its room with an agent's page in
+ * place of the chat (THE-2089).
+ */
 export function roomOnScreen(hash: string, visible: boolean): string | null {
   const route = routeOf(hash);
-  return visible && route.kind === "project" ? route.id : null;
+  return visible && route.kind === "project" && !route.agent ? route.id : null;
 }
 
 const openRoom = (project: string) => {

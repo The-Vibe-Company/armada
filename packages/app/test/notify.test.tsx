@@ -257,6 +257,8 @@ test("the room on screen: a project's room in a visible window, never its rules,
   expect(roomOnScreen("#/projects/harbor", false)).toBeNull();
   expect(roomOnScreen("#/projects/harbor/rules", true)).toBeNull();
   expect(roomOnScreen("#/sessions/HAR-15", true)).toBeNull();
+  // An agent's page holds the room's lane (THE-2089): the chat is not on screen.
+  expect(roomOnScreen("#/projects/harbor?panel=agents&agent=HAR-15", true)).toBeNull();
   expect(roomOnScreen("#/settings", true)).toBeNull();
 });
 

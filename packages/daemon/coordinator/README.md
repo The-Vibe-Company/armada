@@ -10,9 +10,39 @@ leases inside this capability in Specs 3/4, rather than introduce another writer
 
 Every call returns JSON facts in both `details` and a JSON text block. Refusals
 have `ok: false`, `code`, `message` and `next`. Writes run sequentially. Fleet
-status and inbox read only the admitted project's folded events; status lists
-facts the current fold cannot supply under `unavailable`, rather than inventing
-a frontier, runtime observation or launch capacity.
+status, ticket detail, history and inbox read only the admitted project's events.
+
+- `fleet.status {}` returns `at`, provider-keyed `readAt`, then sessions in flight
+  (ticket/title, phase/step, runtime, head/check state, last report line and
+  `ageSeconds` since the last session update or heartbeat), inbox total/counts by
+  kind, ready frontier (id/title/blockers), open PRs, holds, rules revision and
+  routing/policy summary, and `unavailable`. The target is **under 8 KiB for ten
+  sessions**, safely below pi-durable's 50 KiB result cut. No descriptions,
+  comments, ended sessions or duplicated tables enter this reading. Missing
+  blocker evidence excludes a candidate from the frontier and is explicit in
+  `unavailable`. Readiness also requires a ready-for-agent leaf, no parked label,
+  no active phase/session, no open PR, and all blockers closed. Rules retain
+  routing order, targets, placement and policy; long `when` descriptions are
+  summarized, local commands become `localCommandCount`, and the coordinator
+  model exposes its provider/model selection or legacy kind only. Ticket titles, report lines and hold reasons are
+  bounded to 160 characters. Missing runtime observations, jobs, default-branch
+  health and launch capacity remain explicitly unavailable.
+- `ticket.read { id }` returns the full ticket description, parent id/title
+  (title null if unknown), blockers, labels, newest twelve comments in descending
+  time order, full session and its reports. Native reports are scoped to that
+  session and name its id; tracker reports are ticket-scoped (`session: null`).
+  Older native generations remain in history. It requests the same bounded refresh
+  as status/inbox and includes `at`/`readAt`. Read both ticket and parent before
+  launching; missing tickets refuse rather than fabricate detail.
+- `fleet.history { ticket?, since?, limit? }` returns the latest fleet events in
+  log order, filtered by ticket and/or an exclusive ISO timestamp. Default limit
+  is 20, maximum 100; `more` says older matching events exist. Answers, validation
+  decisions and queue progress retain their opening ticket's association.
+  Internal checkpoints/receipts and ticket snapshot descriptions/comments are
+  excluded. This is the occasional log read, not the routine fleet reading.
+
+The shared fold/UI snapshots and existing durable conversation entries remain
+unchanged; every new status read uses the compact projection.
 
 The mutations `hold.add`, `hold.clear`, `owner.ask` and `rules.set` use pi's durable
 `(project, taskId, callId)` as their operation identity. `inbox.answer` instead
