@@ -450,7 +450,7 @@ If persistence fails, the registry restores its prior services and keeps the com
 Conductor workers (THE-2072, protocol minor 13) run through the optional
 `conductor` runtime provider. Enable it in Settings > Providers, configure its
 `runtime.conductor` contribution with `binary` (the executable path),
-`defaultProfile`, `profiles` (agent, model and effort) and `routing` (labels and
+`defaultProfile`, `profiles` (agent, model, effort and optional instructions) and `routing` (labels and
 profile, first match). The binary path is an ordinary plugin setting, editable
 by Providers. The corresponding `[plugins.conductor]` table in a project's TOML
 supplies the same configuration; importing that file's rules selects
@@ -484,3 +484,29 @@ inside the existing project transaction. This is additive metadata on the existi
 with no schema migration or new route. Legacy report rows without that identity
 are not attributed to a current worker; its generation-bound inbox and heartbeat
 remain readable. A delayed report from an older claim cannot change its replacement.
+
+
+Worker briefs (THE-2096, protocol minor 16) include the ticket, the parent
+specification's title and description (up to 4 KiB), repository instructions
+(`AGENTS.md`, falling back to `CLAUDE.md`, up to 8 KiB), the project's `[brief] extra`
+file, coordinator notes, the complete bundled `armada-worker` protocol, and the
+selected routing profile's instructions, in that order. Repository files come
+from the registered project root (the configured checkout for older projects).
+`brief.extra` must resolve inside that root; a configured missing or unreadable
+file refuses launch. Missing repository instructions are optional. Context reads are
+bounded before decoding, special files are refused, and `armada.toml` is limited
+to 256 KiB.
+
+Every brief is strictly below 48 KiB in UTF-8. The largest optional sections
+are shortened with a visible `[truncated: ...]` marker; the ticket and worker
+protocol are never cut. Protected content that cannot fit refuses before a token
+is minted or a runtime is launched. The protocol travels in the daemon bundle,
+so the worker can read it without npm or a network connection. The pinned CLI
+installation is only a fallback when `armada` is missing; the worker must report
+an installation failure in its first report/reply.
+
+Routes and `defaultRoute` accept optional `instructions` (up to 16,000 characters).
+TOML rule import preserves each profile's `instructions` for label, semantic and
+default routes, including `[plugins.conductor.profiles.<name>]`. Launch context
+uses the selected route without changing selection precedence. Snapshots omit
+this field for clients before minor 16; older rule checkpoints remain valid.

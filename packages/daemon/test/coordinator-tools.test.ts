@@ -577,14 +577,17 @@ max_workers = 3
 [conductor]
 default_profile = "general"
 [conductor.profiles.general]
+instructions = "Check the seeds."
 agent = "codex"
 model = "garden"
 effort = "medium"
 [conductor.profiles.api]
+instructions = "Check irrigation."
 agent = "claude"
 model = "oak"
 effort = "high"
 [conductor.profiles.ui]
+instructions = "Check the paths."
 agent = "codex"
 model = "sun"
 effort = "high"
@@ -595,10 +598,10 @@ profile = "api"
 `;
 const importedValue = {
   routing: [
-    { labels: ["backend", "api"], cli: "claude", model: "oak", effort: "high" },
-    { when: "Frontend work", cli: "codex", model: "sun", effort: "high" },
+    { labels: ["backend", "api"], cli: "claude", model: "oak", effort: "high", instructions: "Check irrigation." },
+    { when: "Frontend work", cli: "codex", model: "sun", effort: "high", instructions: "Check the paths." },
   ],
-  defaultRoute: { cli: "codex", model: "garden", effort: "medium" },
+  defaultRoute: { cli: "codex", model: "garden", effort: "medium", instructions: "Check the seeds." },
   policy: { silenceMinutes: 12, quietMinutes: 40, maxWorkers: 3 },
 };
 

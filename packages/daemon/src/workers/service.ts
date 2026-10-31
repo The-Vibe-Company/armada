@@ -2,14 +2,15 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { NodeProvider, RuntimeProvider, WorkerObservation, WorkerRef, Workspace } from "@armada/plugin-api";
 import { isRuntimeLaunchRefusal } from "@armada/plugin-api";
 import { guarded } from "@armada/plugin-api/guard";
-import { activePhaseSchema } from "@armada/protocol";
+import { activePhaseSchema, type ProjectTables, type Ticket } from "@armada/protocol";
 import { z } from "zod";
 import type { EventInput, Json } from "../events.ts";
 import { fold } from "../fold.ts";
 import type { PluginRegistry } from "../plugins/registry.ts";
 import type { Account } from "../server/account.ts";
 import type { EventStore } from "../store.ts";
-import { workerBrief } from "./brief.ts";
+import { BriefRefusal, workerBrief } from "./brief.ts";
+import { loadBriefContext } from "./brief-context.ts";
 import { maskHostedText } from "./hosted.ts";
 import { workerRoute } from "./routing.ts";
 
@@ -17,6 +18,7 @@ interface WorkerProject {
   id: string;
   repository: string;
   checkout?: string;
+  root?: string;
   tracker?: string;
   name?: string;
   programRoot?: string;
@@ -309,6 +311,8 @@ export class Workers {
             throw new WorkerRefusal("Conductor relaunch in place is not supported; stop and launch a fresh worker");
           if (facts.node !== row.node)
             throw new WorkerRefusal("Replacement placement changed; keep the existing workspace and inspect its node");
+          await this.#prepareBrief(facts, relaunch, row);
+          this.#check(row.ref, beforeWrite);
           this.#checkpoint(project, {
             type: "relaunch-intent",
             key,
@@ -415,6 +419,57 @@ export class Workers {
     };
   }
 
+  async #prepareBrief(
+    facts: {
+      config: WorkerProject;
+      tables: ProjectTables;
+      ticket: Ticket;
+      route: ReturnType<typeof workerRoute>;
+      bound: RuntimeProvider;
+      branch: string;
+    },
+    args: z.infer<(typeof workerToolSchemas)["worker.launch"]>,
+    resume?: LiveWorker,
+  ) {
+    const { config, tables, ticket, route, bound, branch } = facts;
+    const hosted = bound.needsLaunchToken;
+    let context: Awaited<ReturnType<typeof loadBriefContext>>;
+    try {
+      context = await loadBriefContext(config.root ?? config.checkout);
+    } catch {
+      throw new WorkerRefusal(
+        "Cannot read repository brief context; check AGENTS.md, CLAUDE.md and [brief] extra in the project root",
+      );
+    }
+    const makeBrief = (token: string) => {
+      try {
+        return workerBrief({
+          ticket,
+          tables,
+          repository: config.repository,
+          branch,
+          ...context,
+          notes: args.brief,
+          profileInstructions: route.instructions,
+          ...(hosted
+            ? { hosted: { token, apiUrl: this.#options.account!.apiUrl, profile: route.model, project: config.id } }
+            : {}),
+          ...(resume
+            ? {
+                resume: `Relaunch reason: ${args.reason}. Previous session: ${resume.ref.session}. Continue branch ${branch} in this same worktree.`,
+              }
+            : {}),
+        });
+      } catch (error) {
+        if (error instanceof BriefRefusal) throw new WorkerRefusal(error.message);
+        throw error;
+      }
+    };
+    // Validate protected content before minting a token or ending the old generation.
+    makeBrief("pending-launch-token");
+    return makeBrief;
+  }
+
   async #launch(
     project: string,
     args: z.infer<(typeof workerToolSchemas)["worker.launch"]>,
@@ -433,6 +488,7 @@ export class Workers {
       if (!account) throw new WorkerRefusal("Sign in to Armada in Settings to launch in Conductor");
       throw new WorkerRefusal("Configure the project program root before launching in Conductor");
     }
+    const makeBrief = await this.#prepareBrief({ config, tables, ticket, route, bound, branch }, args, resume);
     beforeWrite();
     this.#checkpoint(project, {
       type: "launch-intent",
@@ -495,19 +551,14 @@ export class Workers {
     const revoke = async () => {
       if (launchTarget) await account!.revokeWorkerLaunch(launchTarget).catch(() => {});
     };
-    const brief = workerBrief({
-      ticket,
-      tables,
-      repository: config.repository,
-      branch,
-      notes: args.brief,
-      ...(hosted ? { hosted: { token, apiUrl: account!.apiUrl, profile: route.model, project } } : {}),
-      ...(resume
-        ? {
-            resume: `Relaunch reason: ${args.reason}. Previous session: ${resume.ref.session}. Continue branch ${branch} in this same worktree.`,
-          }
-        : {}),
-    });
+    let brief: string;
+    try {
+      brief = makeBrief(token);
+    } catch (error) {
+      await revoke();
+      this.#checkpoint(project, { type: "receipt", key, input, result: { ok: false, code: "brief_refused" } });
+      throw error;
+    }
     if (launch)
       this.#checkpoint(project, {
         type: "launch-intent",
