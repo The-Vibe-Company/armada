@@ -112,6 +112,15 @@ export class Coordinators {
     }
   }
 
+  /** Stop one project without closing the daemon's shared event store. */
+  async remove(project: string): Promise<void> {
+    const pending = this.#projects.get(project);
+    if (!pending) return;
+    const coordinator = await pending;
+    await coordinator.harness.close(BACKGROUND_CONTEXT);
+    this.#projects.delete(project);
+  }
+
   /** Stop schedulers before the daemon closes its shared store. Pending work remains resumable. */
   async close(): Promise<void> {
     this.#closed = true;

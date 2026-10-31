@@ -183,11 +183,17 @@ async function fixture(
     },
   });
   const socketPath = join(directory, "worker.sock");
+  const projectConfig = {
+    id: project,
+    repository: "example/orchard",
+    checkout: repository,
+    root: undefined as string | undefined,
+  };
   const workers = new Workers({
     store: daemon.store,
     registry: daemon.registry,
     socketPath,
-    projects: [{ id: project, repository: "example/orchard", checkout: repository }],
+    projects: [projectConfig],
     ...(refresh ? { refresh: () => refresh(daemon.store) } : {}),
     now,
   });
@@ -205,6 +211,7 @@ async function fixture(
   return {
     daemon,
     repository,
+    projectConfig,
     workers,
     socketPath,
     token: () => token,
@@ -699,9 +706,13 @@ test("launch builds the ticket brief, uses plugin defaults and refuses unsafe fl
   timeout: 15000,
 }, async (t) => {
   const f = await fixture(t);
-  await writeFile(join(f.repository, "AGENTS.md"), "Always preserve the orchard rows.");
-  await writeFile(join(f.repository, "armada.toml"), '[brief]\nextra = "conventions.md"\n');
-  await writeFile(join(f.repository, "conventions.md"), "Use only local seeds.");
+  const root = join(f.repository, "registered-root");
+  await mkdir(root);
+  f.projectConfig.root = root;
+  await writeFile(join(f.repository, "AGENTS.md"), "Old checkout instructions that must not be used.");
+  await writeFile(join(root, "AGENTS.md"), "Always preserve the orchard rows.");
+  await writeFile(join(root, "armada.toml"), '[brief]\nextra = "conventions.md"\n');
+  await writeFile(join(root, "conventions.md"), "Use only local seeds.");
   const original = fold(f.daemon.store.readSince(0, project)).projects[project]!.tickets[0]!;
   const run = (id: string) => f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api(id), context);
   const cases: [Partial<Ticket>, string][] = [
@@ -780,6 +791,7 @@ test("launch builds the ticket brief, uses plugin defaults and refuses unsafe fl
   assert.equal(reply.state, "running");
   assert.match(f.messages[0]!, /Plant the orchard safely/);
   assert.match(f.messages[0]!, /Always preserve the orchard rows/);
+  assert(!f.messages[0]!.includes("Old checkout instructions"));
   assert.match(f.messages[0]!, /Use only local seeds/);
   assert.match(f.messages[0]!, /Check the irrigation/);
   assert.match(f.messages[0]!, /## Worker protocol/);
@@ -1094,4 +1106,44 @@ test("confirmed merge cleanup stops and disposes the worker while retaining merg
   assert.equal(fold(f.daemon.store.readSince(0, project)).projects[project]?.sessions[0]?.phase, "merged");
   await assert.rejects(stat(f.workspace()), { code: "ENOENT" });
   assert.equal((await socketCall(f.socketPath, token, { command: "heartbeat", ticket: "SEED-1" })).status, 403);
+});
+
+test("project removal waits for a pending launch and then refuses its active worker", { timeout: 15000 }, async (t) => {
+  let entered!: () => void;
+  let finish!: () => void;
+  const preparing = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const f = await fixture(t, (node) => ({
+    ...node,
+    async prepare(request) {
+      entered();
+      await gate;
+      return node.prepare(request);
+    },
+  }));
+  const launch = f.workers.tool(
+    project,
+    "worker.launch",
+    { ticket: "SEED-1", branch: "worker/seed-1", brief: "hold" },
+    "pending-launch",
+    () => {},
+  );
+  await preparing;
+  let removed = false;
+  const removal = f.workers.removingProject(project, async () => {
+    removed = true;
+  });
+  await assert.rejects(
+    f.workers.tool(project, "worker.launch", { ticket: "SEED-1" }, "late-launch", () => {}),
+    /being removed/,
+  );
+  finish();
+  const launched = await launch;
+  assert.equal(launched.ok, true);
+  await assert.rejects(removal, /worker in flight/);
+  assert.equal(removed, false);
 });

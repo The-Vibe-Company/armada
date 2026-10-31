@@ -106,11 +106,12 @@ export class Workers {
   #observing: Promise<void> | undefined;
   readonly #queues = new Map<string, Promise<unknown>>();
   #closing = false;
+  readonly #removing = new Set<string>();
   constructor(options: Options) {
     this.#options = options;
     for (const project of options.projects) {
       for (const session of this.#tables(project.id)?.sessions ?? []) {
-        if (!ended(session.phase) && options.registry.get("runtime", session.runtime)?.needsLaunchToken)
+        if (!ended(session.phase) && options.registry.get("runtime", session.runtime, project.id)?.needsLaunchToken)
           try {
             this.#row(project.id, session.ticket);
           } catch {
@@ -149,7 +150,7 @@ export class Workers {
     const current = this.#tables(project)?.sessions.find((s) => s.ticket === ticket);
     let row = current && this.#live.get(current.session);
     if (current && !row) {
-      const runtime = this.#options.registry.get("runtime", current.runtime);
+      const runtime = this.#options.registry.get("runtime", current.runtime, project);
       const launch = this.#options.store.readSince(0, project).findLast((event) => {
         const c = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
         return (
@@ -197,6 +198,30 @@ export class Workers {
     });
   }
 
+  /** Hold the same queue as launch until the project has been unregistered. */
+  async removingProject<T>(project: string, action: () => Promise<T>): Promise<T> {
+    this.#removing.add(project);
+    try {
+      return await this.#serial(project, async () => {
+        if (this.#tables(project)?.sessions.some((s) => !ended(s.phase)))
+          throw new WorkerRefusal("Project has a worker in flight");
+        const checkpoints = this.#options.store.readSince(0, project).flatMap((e) => {
+          const c = e.kind === "coordinator.checkpoint" ? e.payload.checkpoint : null;
+          return c && typeof c === "object" && !Array.isArray(c) && c.format === "armada.worker" ? [c] : [];
+        });
+        if (
+          checkpoints.some(
+            (c) => c.type === "launch-intent" && !checkpoints.some((r) => r.type === "receipt" && r.key === c.key),
+          )
+        )
+          throw new WorkerRefusal("Project has an unresolved worker launch; inspect it before removing the project");
+        return action();
+      });
+    } finally {
+      this.#removing.delete(project);
+    }
+  }
+
   async tool(
     project: string,
     name: WorkerTool,
@@ -205,6 +230,7 @@ export class Workers {
     beforeWrite: () => void,
   ): Promise<Record<string, Json>> {
     const parsed = workerToolSchemas[name].parse(args);
+    if (this.#removing.has(project)) throw new WorkerRefusal("Project is being removed");
     return this.#serial(project, async () => {
       beforeWrite();
       if (this.#closing) throw new Error("Worker service is stopping");
@@ -233,7 +259,7 @@ export class Workers {
         } catch {
           /* Fresh launch facts own route refusals. */
         }
-        if (route && this.#options.registry.get("runtime", route.cli)?.needsLaunchToken) {
+        if (route && this.#options.registry.get("runtime", route.cli, project)?.needsLaunchToken) {
           if (!this.#options.account) throw new WorkerRefusal("Sign in to Armada in Settings to launch in Conductor");
           try {
             await this.#options.account.assertWorkerSignIn();
@@ -367,8 +393,8 @@ export class Workers {
     const max = rules?.policy?.maxWorkers;
     if (max != null && active.length >= max)
       throw new WorkerRefusal(`worker cap reached: ${active.length} of ${max} workers; nothing was launched`);
-    const runtime = this.#options.registry.get("runtime", route.cli);
-    const node = this.#options.registry.get("node", nodeKind);
+    const runtime = this.#options.registry.get("runtime", route.cli, project);
+    const node = this.#options.registry.get("node", nodeKind, project);
     if (!runtime || (!runtime.needsLaunchToken && !node))
       throw new WorkerRefusal("Selected runtime or node provider is unavailable");
     let bound = runtime;
@@ -911,7 +937,7 @@ export class Workers {
           ended(current.phase)
         )
           continue;
-        const runtime = this.#options.registry.get("runtime", intent.runtime);
+        const runtime = this.#options.registry.get("runtime", intent.runtime, project);
         if (!runtime?.recover || !runtime.needsLaunchToken) continue;
         const worker = { project, ticket: intent.ticket, session: intent.session, generation: intent.generation };
         const ref = await runtime.recover({
