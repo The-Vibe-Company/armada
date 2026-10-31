@@ -37,12 +37,31 @@ const ticketSchema = z.object({
     .optional()
     .catch(undefined),
 });
+const ciSchema = z.enum(["none", "pending", "success", "failure"]);
+const checkSchema = z.object({
+  name: text,
+  state: ciSchema,
+  runId: z.number().int().optional().catch(undefined),
+  runAttempt: z.number().int().optional().catch(undefined),
+});
+/**
+ * What the forge said of a pull request; the panel's Pull requests reads
+ * GitHub's own facts (THE-2086) where the fold kept them, nothing on a tracker's.
+ */
 const pullRequestSchema = z.object({
   number: z.number().int(),
   ticket: text,
   state: z.enum(["open", "closed", "merged"]),
-  ci: z.enum(["none", "pending", "success", "failure"]),
+  ci: ciSchema,
   conflicting: z.boolean(),
+  head: text.optional().catch(undefined),
+  title: text.optional().catch(undefined),
+  url: text.optional().catch(undefined),
+  draft: z.boolean().optional().catch(undefined),
+  review: text.optional().catch(undefined),
+  checks: z.array(checkSchema).optional().catch(undefined),
+  /** Not in today's fold: read if a later one counts the open review threads. */
+  reviewThreads: z.object({ unresolved: z.number().int().nonnegative() }).optional().catch(undefined),
 });
 /** `at`: when it was asked (the room's pinned question shows it). */
 const inboxSchema = z.object({ id: text, ticket: text, kind: text, body: text, at: text.optional() });
@@ -65,6 +84,7 @@ const validationSchema = z.object({
 export type FoldedSession = z.infer<typeof sessionSchema>;
 export type FoldedTicket = z.infer<typeof ticketSchema>;
 export type FoldedPullRequest = z.infer<typeof pullRequestSchema>;
+export type FoldedCheck = z.infer<typeof checkSchema>;
 export type FoldedInboxItem = z.infer<typeof inboxSchema>;
 type FoldedQueueEntry = z.infer<typeof queueSchema>;
 type FoldedValidation = z.infer<typeof validationSchema>;

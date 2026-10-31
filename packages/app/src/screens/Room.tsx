@@ -34,8 +34,9 @@ import { Log } from "@/room/Log";
 import { ticketPrefix } from "@/room/markdown-rules";
 import { PANEL_ID, Panel } from "@/room/Panel";
 import { Pinned } from "@/room/Pinned";
-import { openPullRequests, PullRequests } from "@/room/PullRequests";
+import { PullRequests, useMerging } from "@/room/PullRequests";
 import { agentHref, agentKey, agentStep, showAgent, useRoomAgent } from "@/room/panel-rules";
+import { forgeReads, openPullRequests } from "@/room/pr-rules";
 import { Thread, type ThreadControl } from "@/room/Thread";
 import { useRoomPanel } from "@/room/use-panel";
 import { ownerQuestions, starterAsks } from "@/room/view";
@@ -127,7 +128,8 @@ export function RoomView({
 }: RoomProps & { chat: Chat }) {
   const state = snapshot ? fleetOf(snapshot) : EMPTY_STATE;
   // THE-2071: signed out, a Linear project without a key of its own waits for the organization's.
-  const needsSignIn = linearNeedsSignIn(useDaemon(), project.id, state.readAt);
+  const daemon = useDaemon();
+  const needsSignIn = linearNeedsSignIn(daemon, project.id, state.readAt);
   const today = dayIn(now, zone);
   // The fleet changes with the fold and with the viewer's day, not with each millisecond.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `now` only decides the day, which `today` stands for.
@@ -177,6 +179,26 @@ export function RoomView({
   const [dock, setDock] = useState({ hero, glides: 0 });
   if (dock.hero !== hero) setDock({ hero, glides: dock.glides + (dock.hero ? 1 : 0) });
   const closed = !live || chat.status !== "ready" || !chat.coordinator;
+  // The panel's Merge (THE-2086): a message to the coordinator, held as "Merging…" until it is answered.
+  const merging = useMerging({
+    prs,
+    send: sendAndAnchor,
+    turn,
+    turns: chat.live != null,
+    items: chat.items,
+    connected: live,
+  });
+  const { stopped } = merging;
+  const stopTurn = useMemo(
+    () =>
+      stop &&
+      (async () => {
+        await stop();
+        stopped();
+      }),
+    [stop, stopped],
+  );
+  const reads = forgeReads(daemon.providers);
 
   // The panel (THE-2085): its state, its keys and where a pill or Answer takes it.
   const side = useRoomPanel(project.id);
@@ -225,7 +247,7 @@ export function RoomView({
         panel={PANEL_ID}
         toggle={side.toggle}
         onToggle={() => side.setOpen(!open)}
-        onPill={(group) => side.goTo(group, !sheet)}
+        onPill={(group) => (group === "ready" ? side.show("prs") : side.goTo(group, !sheet))}
         onChat={agent === null ? undefined : () => window.location.assign(chatHref)}
       />
       {needsSignIn && (
@@ -285,7 +307,7 @@ export function RoomView({
                 send={sendAndAnchor}
                 onPage={(direction) => thread.current?.page(direction)}
                 busy={busy}
-                primary={busy && stop ? (field) => <TurnActions field={field} stop={stop} /> : undefined}
+                primary={busy && stopTurn ? (field) => <TurnActions field={field} stop={stopTurn} /> : undefined}
                 restore={chat.withdrawn ?? null}
                 disabled={closed}
                 hint={hint}
@@ -321,6 +343,7 @@ export function RoomView({
             open={open}
             sheet={sheet}
             tab={tab}
+            counts={snapshot ? { prs: prs.length } : undefined}
             width={side.width}
             onTab={side.setTab}
             onWidth={side.setWidth}
@@ -358,7 +381,15 @@ export function RoomView({
               </>
             ) : tab === "prs" ? (
               snapshot ? (
-                <PullRequests prs={prs} repository={project.repository} />
+                <PullRequests
+                  prs={prs}
+                  repository={project.repository}
+                  reads={reads}
+                  merging={merging}
+                  canMerge={!closed}
+                  ticketHref={(ticket) => roomHref(project.id, "prs", ticket)}
+                  onOpen={opened}
+                />
               ) : (
                 <Reading />
               )
