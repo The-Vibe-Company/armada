@@ -1,50 +1,19 @@
 import assert from "node:assert/strict";
-import { ChildProcess, execFile } from "node:child_process";
+import { ChildProcess, execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { setImmediate } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { guarded } from "@armada/plugin-api/guard";
 import { createLocalNode } from "../src/index.ts";
-import { eventually } from "./support.ts";
+import { eventually, repository } from "./support.ts";
 
 const execute = promisify(execFile);
-
-async function repository(root: string): Promise<string> {
-  const path = join(root, "repository");
-  await mkdir(path, { recursive: true });
-  // Neither the fixture branch nor hooks/ignore rules come from the developer's HOME.
-  await execute("git", ["init", "--quiet", "--initial-branch=fixture-base", "--template=", path]);
-  const hooks = join(root, "empty-hooks");
-  const excludes = join(root, "empty-excludes");
-  await mkdir(hooks, { recursive: true });
-  await writeFile(excludes, "");
-  await execute("git", ["-C", path, "config", "--local", "core.hooksPath", hooks]);
-  await execute("git", ["-C", path, "config", "--local", "core.excludesFile", excludes]);
-  await execute("git", ["-C", path, "config", "--local", "core.autocrlf", "false"]);
-  await mkdir(join(path, ".git", "info"), { recursive: true });
-  await writeFile(join(path, ".git", "info", "exclude"), "# Fixture-local excludes\n");
-  await writeFile(join(path, "README.md"), "local node fixture\n");
-  await execute("git", ["-C", path, "add", "README.md"]);
-  await execute("git", [
-    "-C",
-    path,
-    "-c",
-    "user.name=Local node test",
-    "-c",
-    "user.email=local-node@example.invalid",
-    "-c",
-    "commit.gpgsign=false",
-    "commit",
-    "--quiet",
-    "-m",
-    "fixture",
-  ]);
-  return path;
-}
 
 test("eventually rejects at its clock deadline, including late observations", async () => {
   for (const scenario of ["unsettled", "late poll", "late result"]) {
@@ -101,64 +70,39 @@ for (const linked of [false, true]) {
   test(`project-root worktrees stay in the chosen ${linked ? "linked " : ""}checkout and are excluded once`, async () => {
     const root = await mkdtemp(join(tmpdir(), "armada-node-root-"));
     try {
-      const main = await repository(root);
-      const ignore = "# Repository-owned ignore rules\nnode_modules/\n";
-      await writeFile(join(main, ".gitignore"), ignore);
-      await execute("git", ["-C", main, "add", ".gitignore"]);
-      await execute("git", [
-        "-C",
-        main,
-        "-c",
-        "user.name=Fixture",
-        "-c",
-        "user.email=fixture@example.invalid",
-        "-c",
-        "commit.gpgsign=false",
-        "commit",
-        "--quiet",
-        "-m",
-        "Repository ignore rules",
-      ]);
-      const source = linked ? join(root, "chosen-checkout") : main;
-      if (linked) await execute("git", ["-C", main, "worktree", "add", "--quiet", "-b", "chosen", source]);
-      const node = createLocalNode({
-        projects: { orchard: { root: source } },
-        workspaceRoot: join(root, "legacy-workspaces"),
-        transport: "pipe",
+      const home = join(root, "home");
+      const config = join(root, "xdg");
+      await mkdir(home);
+      await mkdir(config);
+      // Use a child so parallel tests cannot change this fixture's process environment.
+      const child = spawn(
+        process.execPath,
+        [fileURLToPath(new URL("./project-root-worktrees.ts", import.meta.url)), root, linked ? "linked" : "main"],
+        {
+          env: {
+            PATH: process.env.PATH,
+            HOME: home,
+            XDG_CONFIG_HOME: config,
+            GIT_CONFIG_GLOBAL: "/dev/null",
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_AUTHOR_NAME: "Local node test",
+            GIT_AUTHOR_EMAIL: "local-node@example.invalid",
+            GIT_COMMITTER_NAME: "Local node test",
+            GIT_COMMITTER_EMAIL: "local-node@example.invalid",
+            LANG: "C",
+            LC_ALL: "C",
+          },
+          stdio: ["ignore", "ignore", "pipe"],
+        },
+      );
+      const exited = once(child, "close");
+      let stderr = "";
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
       });
-      const workspaces = [];
-      for (const ticket of ["CHECK-1", "CHECK-2"]) {
-        const workspace = await node.prepare({
-          project: "orchard",
-          ticket,
-          repository: main,
-          branch: `worker-${ticket}`,
-        });
-        workspaces.push(workspace);
-        assert.equal(workspace.path, join(source, ".armada", "worktrees", ticket));
-        assert.equal(
-          (await execute("git", ["-C", workspace.path, "branch", "--show-current"])).stdout.trim(),
-          `worker-${ticket}`,
-        );
-        assert.equal(
-          (await execute("git", ["-C", source, "check-ignore", `.armada/worktrees/${ticket}`])).stdout.trim(),
-          `.armada/worktrees/${ticket}`,
-        );
-      }
-      const exclude = resolve(
-        source,
-        (await execute("git", ["-C", source, "rev-parse", "--git-path", "info/exclude"])).stdout.trim(),
-      );
-      assert.equal(
-        (await readFile(exclude, "utf8")).split("\n").filter((line) => line === "/.armada/worktrees/").length,
-        1,
-      );
-      assert.equal(await readFile(join(source, ".gitignore"), "utf8"), ignore);
-      assert(node.dispose);
-      for (const workspace of workspaces) {
-        await node.dispose(workspace);
-        await assert.rejects(stat(workspace.path), /ENOENT/);
-      }
+      const [code, signal] = await exited;
+      assert.equal(code, 0, `Worktree fixture failed (signal: ${signal ?? "none"}). Child stderr:\n${stderr}`);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
