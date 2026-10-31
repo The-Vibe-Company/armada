@@ -6,21 +6,31 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { PROTOCOL_VERSION, serverMessageSchema } from "@armada/protocol";
 import { EventStore } from "../../daemon/src/store.ts";
 import { DaemonProcess } from "../src/daemon.ts";
 
-test("Electron's bundled daemon starts a configured coordinator and reads credentials through native keyring", {
-  timeout: 60000,
-}, async (t) => {
-  // Keep the single test's build under its explicit deadline in both Node and Bun.
+const buildBundle = () => {
   execFileSync("bun", ["run", "build"], {
     cwd: fileURLToPath(new URL("..", import.meta.url)),
     timeout: 60000,
     stdio: "pipe",
   });
+};
+// Bun's node:test bridge ignores before()'s timeout and defaults to five seconds.
+// Keep the existing one-minute setup budget in both runners; behavior deadlines stay separate.
+if (process.versions.bun) {
+  const { beforeAll } = createRequire(import.meta.url)("bun:test");
+  beforeAll(buildBundle, 60000);
+} else {
+  before(buildBundle, { timeout: 60000 });
+}
+
+test("Electron's bundled daemon starts a configured coordinator and reads credentials through native keyring", {
+  timeout: 20000,
+}, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "armada-desktop-bundle-"));
   const projects = join(dir, "projects.json");
   writeFileSync(projects, JSON.stringify([{ id: "bundle", name: "Bundle", repository: "example/bundle" }]));

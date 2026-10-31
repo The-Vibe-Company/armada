@@ -4,7 +4,8 @@
 // its number, its words), most urgent first, each opening the panel's Agents
 // at its group; a provider read long ago, quietly; the panel's toggle. On a
 // narrow header the pills keep their dot and number, their words for screen
-// readers only.
+// readers only. While an agent's page holds the lane (THE-2089), the
+// project's name is a button back to the chat.
 import { PanelRight } from "lucide-react";
 import type { Ref } from "react";
 import { TONE } from "@/components/fleet/FleetList";
@@ -47,6 +48,7 @@ export function Header({
   toggle,
   onToggle,
   onPill,
+  onChat,
 }: {
   project: { name: string; repository: string };
   /** The folded counts; none while the project's log is read. */
@@ -60,11 +62,26 @@ export function Header({
   toggle?: Ref<HTMLButtonElement>;
   onToggle: () => void;
   onPill: (group: Group) => void;
+  /** Back to the chat, while an agent's page holds the lane. */
+  onChat?: () => void;
 }) {
   const pills = counts ? headerPills(counts) : [];
   return (
     <PageStrip
-      title={project.name}
+      title={
+        onChat ? (
+          <button
+            type="button"
+            onClick={onChat}
+            title="Back to the coordinator's chat"
+            className="cursor-pointer rounded-sm hover:text-text-soft hover:underline hover:decoration-current/40 hover:underline-offset-2"
+          >
+            {project.name}
+          </button>
+        ) : (
+          project.name
+        )
+      }
       end={
         <>
           {pills.length > 0 && (

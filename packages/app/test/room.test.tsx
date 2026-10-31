@@ -169,6 +169,13 @@ test("the room's rules: its address, a question's choices, ids in a message", ()
   // The panel's tab is in the address; the old rules page is replaced by the Rules tab.
   expect(routeOf("#/projects/harbor?panel=prs")).toEqual({ kind: "project", id: "harbor", panel: "prs" });
   expect(routeOf("#/projects/harbor?panel=elsewhere")).toEqual({ kind: "project", id: "harbor" });
+  // An agent's page in the room's lane (THE-2089).
+  expect(routeOf("#/projects/harbor?panel=agents&agent=HAR-15")).toEqual({
+    kind: "project",
+    id: "harbor",
+    panel: "agents",
+    agent: "HAR-15",
+  });
   expect(routeOf("#/projects/harbor/rules")).toEqual({
     kind: "rules",
     id: "harbor",

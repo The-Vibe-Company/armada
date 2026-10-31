@@ -1093,3 +1093,43 @@ test("confirmed merge cleanup stops and disposes the worker while retaining merg
   await assert.rejects(stat(f.workspace()), { code: "ENOENT" });
   assert.equal((await socketCall(f.socketPath, token, { command: "heartbeat", ticket: "SEED-1" })).status, 403);
 });
+
+test("project removal waits for a pending launch and then refuses its active worker", { timeout: 15000 }, async (t) => {
+  let entered!: () => void;
+  let finish!: () => void;
+  const preparing = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const f = await fixture(t, (node) => ({
+    ...node,
+    async prepare(request) {
+      entered();
+      await gate;
+      return node.prepare(request);
+    },
+  }));
+  const launch = f.workers.tool(
+    project,
+    "worker.launch",
+    { ticket: "SEED-1", branch: "worker/seed-1", brief: "hold" },
+    "pending-launch",
+    () => {},
+  );
+  await preparing;
+  let removed = false;
+  const removal = f.workers.removingProject(project, async () => {
+    removed = true;
+  });
+  await assert.rejects(
+    f.workers.tool(project, "worker.launch", { ticket: "SEED-1" }, "late-launch", () => {}),
+    /being removed/,
+  );
+  finish();
+  const launched = await launch;
+  assert.equal(launched.ok, true);
+  await assert.rejects(removal, /worker in flight/);
+  assert.equal(removed, false);
+});

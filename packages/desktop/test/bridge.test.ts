@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BADGE_MAX, badgeCount, fromApp } from "../src/bridge.ts";
+import { BADGE_MAX, badgeCount, externalUrl, fromApp } from "../src/bridge.ts";
 
 test("the dock's badge takes a whole count up to its cap; anything else clears it", () => {
   assert.equal(badgeCount(3), 3);
@@ -21,4 +21,23 @@ test("only a page of the app's own origin reaches the bridge", () => {
     undefined,
   ])
     assert.equal(fromApp(url, app), false);
+});
+
+test("the system browser opens http and https addresses off the app's own origin, nothing else", () => {
+  const app = "http://127.0.0.1:4831";
+  assert.equal(
+    externalUrl("https://armada.example/device?code=ABCDEFGH", app),
+    "https://armada.example/device?code=ABCDEFGH",
+  );
+  assert.equal(externalUrl("http://localhost:4822/device", app), "http://localhost:4822/device");
+  for (const value of [
+    `${app}/#/settings`,
+    "file:///etc/hosts",
+    "javascript:alert(1)",
+    "conductor://workspace/1",
+    "not a url",
+    42,
+    undefined,
+  ])
+    assert.equal(externalUrl(value, app), null);
 });

@@ -366,13 +366,16 @@ describe("in a browser, served by a running daemon", () => {
     for (const family of anatomy.fonts) expect(family).toMatch(/^"?Geist( Mono)?"?,/);
     expect(anatomy.small).toEqual([]);
 
-    // An agent's row opens its session's page (THE-2028).
+    // An agent's row shows its page in the room's lane (THE-2089), its full page one link away (THE-2028).
     await panel.locator('[data-row="harbor/HAR-15"] a[data-open]').click();
+    await page.getByRole("heading", { level: 2, name: "Price berths by the hour" }).waitFor({ timeout: 5_000 });
+    expect(new URL(page.url()).hash).toBe("#/projects/harbor?panel=agents&agent=HAR-15");
+    await page.getByRole("link", { name: "Open full page →" }).click();
     await page.getByRole("heading", { level: 1, name: "Price berths by the hour" }).waitFor({ timeout: 5_000 });
     expect(new URL(page.url()).hash).toBe("#/sessions/HAR-15");
   }, 30_000);
 
-  test("every row opens its session's page, by a click or the keyboard, and holds from 900 px up", async () => {
+  test("every row opens its agent, by a click or the keyboard, and holds from 900 px up", async () => {
     await page.setViewportSize({ width: 900, height: 800 });
     // The old rules page is the room's Rules tab (THE-2085): its address is replaced.
     await page.goto(`${daemon.url}#/projects/harbor/rules`);
@@ -419,8 +422,9 @@ describe("in a browser, served by a running daemon", () => {
         files: [{ path: "src/berths/price.ts", additions: 42, deletions: 3 }],
       } as never,
     });
-    // Opened from the panel, the page has the focus on its title.
+    // Opened from the agent's lane, the page has the focus on its title.
     await page.locator('[data-row="harbor/HAR-15"] a[data-open]').click();
+    await page.getByRole("link", { name: "Open full page →" }).click();
     await page.getByRole("heading", { level: 1, name: "Price berths by the hour" }).waitFor({ timeout: 5_000 });
     expect(new URL(page.url()).hash).toBe("#/sessions/HAR-15");
     await expect(page.evaluate(() => document.activeElement?.tagName)).resolves.toBe("H1");
@@ -450,7 +454,7 @@ describe("in a browser, served by a running daemon", () => {
     await page.getByRole("heading", { level: 1, name: "Lantern" }).waitFor({ timeout: 5_000 });
     await page.locator('[data-row="lantern/LAN-7"] a[data-open]').focus();
     await page.keyboard.press("Enter");
-    await page.getByRole("heading", { level: 1, name: "Pick the lanterns' colour" }).waitFor({ timeout: 5_000 });
+    await page.getByRole("heading", { level: 2, name: "Pick the lanterns' colour" }).waitFor({ timeout: 5_000 });
     await expect(page.getByRole("region", { name: "State" }).getAttribute("data-state")).resolves.toBe("you");
   }, 15_000);
 });
@@ -715,7 +719,7 @@ describe("the Plugins screen in a browser, on a daemon that restarts", () => {
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("Enter");
     await page.waitForURL(/#\/settings\/account$/, { timeout: 5_000 });
-    await page.getByText("Coming with THE-2071").waitFor({ timeout: 5_000 });
+    await page.getByText("Workers in Conductor and the organization's keys need it.").waitFor({ timeout: 5_000 });
     await page.keyboard.press("End");
     await page.keyboard.press("Enter");
     await page.waitForURL(/#\/settings\/about$/, { timeout: 5_000 });

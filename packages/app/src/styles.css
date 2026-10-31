@@ -321,3 +321,16 @@
     }
   }
 }
+
+/* A wait on someone else (THE-2071: Armada's approval of a device code): the
+   dot breathes, never under reduced motion. */
+@keyframes waiting-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+@utility waiting-pulse {
+  @media (prefers-reduced-motion: no-preference) {
+    animation: waiting-pulse 1.4s ease-in-out infinite;
+  }
+}

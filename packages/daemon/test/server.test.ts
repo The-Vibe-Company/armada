@@ -179,6 +179,8 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
         ...process.env,
         ARMADA_APP_CONFIG: join(dir, "config.json"),
         XDG_CONFIG_HOME: dir,
+
+        ARMADA_KEYCHAIN: "file",
         LINEAR_API_KEY: randomBytes(24).toString("hex"),
         GITHUB_TOKEN: randomBytes(24).toString("hex"),
       },
@@ -644,9 +646,10 @@ test("credential socket writes never expose the key to replies, events or logs",
 // Only the random subscription UUID is normalized; THE-2043 intentionally advances
 // the recorded envelope to minor 5 for per-client plan-policy snapshot projection,
 // THE-2045 to minor 6 for the session page, THE-2049 to minor 7 for live chat,
-// THE-2073 to reserved minor 9 for shared auth and the pi model catalog,
-// THE-2079 to minor 11 for fleet wake rows and THE-2072 to minor 13 for
-// hosted Conductor routing (the recorded frames have no coordinator attached).
+// THE-2073 to minor 9 for shared auth and the pi model catalog,
+// THE-2079 to minor 11 for fleet wake rows, THE-2080 to minor 12 for runtime projects,
+// and THE-2072 to minor 13 for hosted Conductor routing
+// (the recorded frames have no coordinator attached and are otherwise unchanged).
 test("subscription bytes stay compatible with the recorded daemon vocabulary and folded tables", async (t) => {
   const fixture = new URL("./support/protocol-subscription.json", import.meta.url);
   const inputs = JSON.parse(readFileSync(fixture, "utf8")) as { history: EventInput[]; live: EventInput[] };
