@@ -27,6 +27,7 @@ import {
   type ProtocolVersion,
   type Provider,
   type ProvidersRequest,
+  READER_MINOR,
   type ServerMessage,
   type SessionOutputRequest,
   type SessionReleaseRequest,
@@ -100,6 +101,8 @@ export interface DaemonClient {
   subscribe(listener: () => void): () => void;
   start(): void;
   stop(): void;
+  /** An optional hint: the one room visible on this connection, or none. */
+  setRoomPresence?(project: string | null): void;
   /** `target` names where the key goes: pi's provider (`pi`) or the coordinator model plugin's (`plugin`). */
   saveCredentials(provider: string, key: string, config?: ModelConfig, target?: "pi" | "plugin"): Promise<void>;
   login(): Promise<void>;
@@ -214,6 +217,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   let attempt = 0;
   let nextId = 0;
   let running = false;
+  let visibleRoom: string | null = null;
   let accountStatusId: string | null = null;
   async function askAccount(type: "account.login" | "account.logout"): Promise<void> {
     if (state.status !== "live" || (state.minor ?? 0) < ACCOUNT_MINOR) throw new Error("Update Armada to sign in.");
@@ -403,6 +407,11 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
     closing?.close();
   }
 
+  function sendRoomPresence() {
+    if (state.status === "live" && (state.minor ?? 0) >= READER_MINOR)
+      send({ type: "room.presence", version, id: id(), project: visibleRoom });
+  }
+
   function receive(data: unknown) {
     let input: unknown;
     try {
@@ -447,6 +456,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
             set({ providersProblem: error.message }),
           );
         } else set({ providers: null, providersProblem: "Update Armada to connect providers." });
+        if (visibleRoom !== null) sendRoomPresence();
         for (const project of message.projects) {
           send({ type: "project.subscribe", version, id: id(), project: project.id, after: cursor(project.id) });
         }
@@ -701,6 +711,11 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
     chat(listener) {
       chatListeners.add(listener);
       return () => chatListeners.delete(listener);
+    },
+    setRoomPresence(project) {
+      if (visibleRoom === project) return;
+      visibleRoom = project;
+      sendRoomPresence();
     },
     getState: () => state,
     subscribe(listener) {

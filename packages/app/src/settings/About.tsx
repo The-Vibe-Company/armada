@@ -1,5 +1,6 @@
 import { PROTOCOL_VERSION } from "@armada/protocol";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
+import { fleetOf } from "@/fleet/state";
 import { useDaemon } from "@/protocol/store";
 import { SettingsRow, SettingsSection } from "./Layout";
 
@@ -12,7 +13,18 @@ const APP_VERSION = typeof __ARMADA_APP_VERSION__ === "string" ? __ARMADA_APP_VE
  * folder say so until the protocol carries them.
  */
 export function About({ address }: { address: string }) {
-  const { minor } = useDaemon();
+  const { minor, fleets } = useDaemon();
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+  const hour = new Date(Math.floor(now / 3_600_000) * 3_600_000).toISOString();
+  const usages = Object.values(fleets).flatMap((snapshot) => {
+    const usage = fleetOf(snapshot).readers?.linear;
+    return usage ? [usage] : [];
+  });
+  const requests = usages.reduce((total, usage) => total + (usage.hour === hour ? usage.requests : 0), 0);
   const app = `${PROTOCOL_VERSION.major}.${PROTOCOL_VERSION.minor}`;
   return (
     <>
@@ -21,6 +33,11 @@ export function About({ address }: { address: string }) {
           title="Address"
           description="Where this app reaches the daemon."
           control={<Value>{address}</Value>}
+        />
+        <SettingsRow
+          title="Linear"
+          description="The daemon's Linear API use across projects."
+          control={usages.length ? <Value>Linear: {requests} requests this hour</Value> : <Unreported />}
         />
         <SettingsRow title="Version" description="The daemon's own version." control={<Unreported />} />
         <SettingsRow

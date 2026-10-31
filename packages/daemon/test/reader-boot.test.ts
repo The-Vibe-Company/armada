@@ -99,7 +99,14 @@ for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] a
           { project: project.id, tracker: false, forge: false, trackerError: reason[0], forgeError: reason[1] },
         ]);
         for (const message of reason) assert.ok(errors.includes(message), `log explains ${message}`);
-        assert.deepEqual(kinds, []);
+        assert.deepEqual(
+          kinds.filter((kind) => kind !== "coordinator.checkpoint"),
+          [],
+        );
+        const checkpoints = store.readSince(0).filter((event) => event.kind === "coordinator.checkpoint");
+        if (mode === "missing") assert.equal(checkpoints.length, 0);
+        else assert.equal(checkpoints.length, 1, "failed requests retain usage without declaring a successful read");
+        assert.equal((await import("../src/fold.ts")).fold(store.readSince(0)).projects[project.id]?.readAt, undefined);
       }
       assert.doesNotMatch(
         errors + line + JSON.stringify(store.readSince(0)),

@@ -123,7 +123,7 @@ try {
         throw error;
       }
       let stopping = false;
-      let server: Awaited<ReturnType<typeof startServer>>;
+      let server: Awaited<ReturnType<typeof startServer>> | undefined;
       const controller = new AbortController();
       try {
         readers = await startReaders({
@@ -131,6 +131,7 @@ try {
           store: daemon.store,
           projects,
           signal: controller.signal,
+          isRoomVisible: (project) => server?.isRoomVisible(project) ?? false,
         });
         // First reads get a bounded opportunity to settle before announcing health.
         // Slow initial reads continue in the background; readiness must not cancel them.
@@ -142,6 +143,7 @@ try {
           });
         });
         server = await startServer({
+          onRoomPresence: (project) => readers?.activityChanged(project),
           store: daemon.store,
           projects,
           port,
@@ -217,7 +219,7 @@ try {
         readers?.stop();
         clearInterval(workerPoll);
         try {
-          await server.close();
+          await server?.close();
           await hostedReader.stop();
           const results = await Promise.allSettled([workers.close(), socket.close()]);
           const failed = results.find((result) => result.status === "rejected");

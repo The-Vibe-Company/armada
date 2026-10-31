@@ -666,3 +666,36 @@ test("provider connection uses shared auth, only its catalog settles it, and a d
   client.stop();
   await expect(client.connectProvider("codex")).rejects.toThrow("Connect to a daemon");
 });
+
+test("room presence is optional, follows the visible room and is replayed after reconnect", () => {
+  const { client, socket, timers } = setup();
+  client.setRoomPresence?.("alpha");
+  expect(socket().sent.filter((m) => m.type === "room.presence")).toEqual([]);
+  listAndSubscribe(socket());
+  expect(socket().sent.filter((m) => m.type === "room.presence")).toEqual([
+    expect.objectContaining({ project: "alpha" }),
+  ]);
+  client.setRoomPresence?.("beta");
+  client.setRoomPresence?.(null);
+  expect(
+    socket()
+      .sent.filter((m) => m.type === "room.presence")
+      .at(-1),
+  ).toMatchObject({ project: null });
+  client.setRoomPresence?.("alpha");
+  socket().drop();
+  timers.findLast((timer) => !timer.canceled && timer.ms === 100)?.run();
+  socket().onopen?.();
+  listAndSubscribe(socket());
+  expect(socket().sent.filter((m) => m.type === "room.presence")).toEqual([
+    expect.objectContaining({ project: "alpha" }),
+  ]);
+  client.stop();
+
+  const older = setup();
+  older.socket().receive({ type: "projects.result", version: { ...V, minor: 13 }, id: "list", projects });
+  expect(older.client.getState().status).toBe("live");
+  older.client.setRoomPresence?.("alpha");
+  expect(older.socket().sent.filter((m) => m.type === "room.presence")).toEqual([]);
+  older.client.stop();
+});

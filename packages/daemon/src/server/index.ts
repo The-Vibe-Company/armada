@@ -15,6 +15,7 @@ import {
   type ProtocolError,
   projectSchema,
   projectTablesSchema,
+  READER_MINOR,
   RULES_SCHEMA_MINOR,
   type ServerMessage,
   type Snapshot,
@@ -66,6 +67,8 @@ export interface ServerOptions {
   /** The app's Plugins screen; without it, plugin requests answer `not-found`. */
   plugins?: PluginHost;
   providers?: Providers;
+  /** A visible room changed; subscriptions alone do not count as owner presence. */
+  onRoomPresence?: (project: string) => void;
   /**
    * Asked by `daemon.restart` once the answer is sent: the host closes and exits
    * for its supervisor to start it again. Without it the app says to quit and reopen.
@@ -76,6 +79,7 @@ export interface DaemonServer {
   url: string;
   wsUrl: string;
   coordinators: ReadonlyMap<string, ProjectCoordinator>;
+  isRoomVisible(project: string): boolean;
   /** Closes connections/listeners; the caller still owns and closes the store. Idempotent. */
   close(): Promise<void>;
 }
@@ -139,6 +143,18 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
   const connections = new Map<WebSocket, Map<string, Subscription>>();
   const minors = new Map<WebSocket, number>();
+  const visibleRooms = new Map<WebSocket, string>();
+  const isRoomVisible = (project: string) => [...visibleRooms.values()].includes(project);
+  const setRoomPresence = (ws: WebSocket, project: string | null) => {
+    const previous = visibleRooms.get(ws);
+    if (previous === project || (previous === undefined && project === null)) return;
+    const before = new Map(
+      [previous, project].filter((p): p is string => p !== undefined && p !== null).map((p) => [p, isRoomVisible(p)]),
+    );
+    if (project === null) visibleRooms.delete(ws);
+    else visibleRooms.set(ws, project);
+    for (const [id, wasVisible] of before) if (wasVisible !== isRoomVisible(id)) options.onRoomPresence?.(id);
+  };
   const auth = new AuthFlows();
   const chat = new ChatLive(options.chatClock);
   const providerFlows = new Map<WebSocket, Set<string>>();
@@ -333,6 +349,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     };
     ws.on("close", () => {
       clearSubscriptions();
+      setRoomPresence(ws, null);
       connections.delete(ws);
       minors.delete(ws);
       void auth.cancel(ws);
@@ -354,6 +371,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         if (admitted.close) {
           refused = true;
           clearSubscriptions();
+          setRoomPresence(ws, null);
           ws.close(1008);
         }
         return;
@@ -570,6 +588,14 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           send(ws, { type: "projects.result", version, id: request.id, projects });
           return;
         }
+        if (request.type === "room.presence") {
+          if (request.version.minor < READER_MINOR)
+            return error(ws, request.id, "invalid-message", "Room presence requires protocol minor 14");
+          if (request.project !== null && !known.has(request.project))
+            return error(ws, request.id, "not-found", "No such project");
+          setRoomPresence(ws, request.project);
+          return;
+        }
         if (!known.has(request.project)) return error(ws, request.id, "not-found", "No such project");
         if (
           request.type === "chat.read" ||
@@ -676,7 +702,10 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       unsubscribeAccount?.();
       const accountClosed = options.account?.close();
       unsubscribe();
-      for (const ws of sockets.clients) ws.terminate();
+      for (const ws of sockets.clients) {
+        setRoomPresence(ws, null);
+        ws.terminate();
+      }
       connections.clear();
       sockets.close();
       const transport = new Promise<void>((resolve, reject) => {
@@ -727,6 +756,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     url: `http://${authority}`,
     wsUrl: `ws://${authority}/`,
     coordinators,
+    isRoomVisible,
     close,
   };
 }

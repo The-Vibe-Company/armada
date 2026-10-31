@@ -395,3 +395,25 @@ describe("a contribution's config form from its JSON Schema", () => {
     });
   });
 });
+
+test("About adds this hour's Linear requests across projects and ignores an older hour", () => {
+  const { client, socket, render } = setup();
+  const instant = new Date();
+  instant.setUTCMinutes(0, 0, 0);
+  const hour = instant.toISOString();
+  for (const [project, requests, at] of [
+    ["alpha", 17, hour],
+    ["beta", 8, hour],
+    ["old", 99, new Date(instant.getTime() - 3_600_000).toISOString()],
+  ] as const)
+    socket().receive({
+      type: "project.subscribed",
+      id: `subscribe-${project}`,
+      subscriptionId: `sub-${project}`,
+      project,
+      after: 0,
+      snapshot: { seq: 0, state: { readers: { linear: { hour: at, requests, pausedUntil: null } } } },
+    });
+  expect(render("about")).toContain("Linear: 25 requests this hour");
+  client.stop();
+});
