@@ -1,7 +1,10 @@
 import { PROTOCOL_VERSION } from "@armada/protocol";
 import type { ReactNode } from "react";
+import { pluginCounts } from "@/plugins/list";
 import { useDaemon } from "@/protocol/store";
-import { SettingsRow, SettingsSection } from "./Layout";
+import { FoldedSection, SettingsRow, SettingsSection, StateDot } from "./Layout";
+import { PluginList } from "./Plugins";
+import { Restart } from "./RestartNotice";
 
 /** The app's version, from its package.json (vite.config.ts); a test's static render has none. */
 const APP_VERSION = typeof __ARMADA_APP_VERSION__ === "string" ? __ARMADA_APP_VERSION__ : null;
@@ -9,7 +12,8 @@ const APP_VERSION = typeof __ARMADA_APP_VERSION__ === "string" ? __ARMADA_APP_VE
 /**
  * Settings' About: where the daemon is and which versions speak. The daemon
  * reports only its protocol's minor today; its own version and its data
- * folder say so until the protocol carries them.
+ * folder say so until the protocol carries them. Advanced, folded (THE-2075):
+ * the nodes and the raw plugin list, the only place the word appears.
  */
 export function About({ address }: { address: string }) {
   const { minor } = useDaemon();
@@ -47,6 +51,48 @@ export function About({ address }: { address: string }) {
           }
         />
       </SettingsSection>
+      <FoldedSection title="Advanced">
+        <Advanced />
+      </FoldedSection>
+    </>
+  );
+}
+
+/** The node providers (where sessions run) and every bundled plugin with its switch and settings. */
+function Advanced() {
+  const { providers, plugins } = useDaemon();
+  const nodes = (providers ?? []).filter((p) => p.seam === "node");
+  return (
+    <>
+      <Restart pending={plugins ? pluginCounts(plugins.plugins).pending : 0} />
+      {nodes.length > 0 && (
+        <SettingsSection title="Nodes" count={nodes.length}>
+          {nodes.map((node) => (
+            <SettingsRow
+              key={node.id}
+              data-node={node.id}
+              title={node.name}
+              description={node.detail}
+              control={
+                <StateDot
+                  {...(node.state === "connected"
+                    ? {
+                        word: node.enabled ? "Ready" : "Off",
+                        dot: node.enabled ? "bg-green" : "bg-text-3",
+                        ink: "text-text-2",
+                      }
+                    : {
+                        word: node.state === "missing" ? "Not installed" : "Not ready",
+                        dot: "bg-amber",
+                        ink: "text-amber",
+                      })}
+                />
+              }
+            />
+          ))}
+        </SettingsSection>
+      )}
+      <PluginList />
     </>
   );
 }

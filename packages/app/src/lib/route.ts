@@ -4,14 +4,20 @@
 // rules page, `#/projects/<id>/rules`, is replaced by its Rules tab), `&agent=<ticket>`
 // the agent whose page takes the chat's place in the room (THE-2089), `#/settings/<section>`
 // a section of the settings (THE-2069: `#/settings` opens the coordinator's,
-// the old `#/plugins` is replaced by the providers'); anything else, and off a
+// the old `#/plugins` is replaced by the providers'), `#/settings/<section>/<card>`
+// one card's detail open (THE-2075: an agent under providers, linear, github
+// or armada under connections; the old `#/settings/account` is replaced by
+// the Armada card's); anything else, and off a
 // browser (a test's static render), the hangar (the home, THE-2025). A
 // session's page, `#/sessions/<ticket>`, has its own route (src/session/route.ts).
 import { useEffect, useSyncExternalStore } from "react";
 
 /** The settings' sections, in the nav's order; the first is `#/settings`. */
-export const SETTINGS_SECTIONS = ["coordinator", "providers", "account", "about"] as const;
+export const SETTINGS_SECTIONS = ["coordinator", "providers", "connections", "about"] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
+/** The cards of Settings › Connections (THE-2075), in the nav's order. */
+export const CONNECTIONS = ["linear", "github", "armada"] as const;
+export type Connection = (typeof CONNECTIONS)[number];
 
 /** The room's panel's tabs (THE-2085), in their order: `⌘1` to `⌘4`. */
 export const PANEL_TABS = ["agents", "prs", "rules", "log"] as const;
@@ -21,10 +27,11 @@ export type Route =
   | { kind: "home" }
   | { kind: "project"; id: string; panel?: PanelTab; agent?: string }
   | { kind: "rules"; id: string; redirect: string }
-  | { kind: "settings"; section: SettingsSection; redirect?: string };
+  | { kind: "settings"; section: SettingsSection; detail?: string; redirect?: string };
 
-/** Where a section of the settings is. */
-export const settingsHref = (section: SettingsSection) => `#/settings/${section}`;
+/** Where a section of the settings is, with one card's detail open. */
+export const settingsHref = (section: SettingsSection, detail?: string) =>
+  `#/settings/${section}${detail ? `/${encodeURIComponent(detail)}` : ""}`;
 
 const decode = (part: string) => {
   try {
@@ -41,9 +48,21 @@ export function routeOf(hash: string): Route {
   const [kind, id, more, ...rest] = path.split("/");
   // The Plugins screen became the providers' section: its old address is replaced, once.
   if (kind === "plugins" && !id) return { kind: "settings", section: "providers", redirect: settingsHref("providers") };
-  if (kind === "settings" && more === undefined) {
+  // Settings' Account became the Armada card of Connections: its old address is replaced, once.
+  if (kind === "settings" && id === "account" && more === undefined)
+    return {
+      kind: "settings",
+      section: "connections",
+      detail: "armada",
+      redirect: settingsHref("connections", "armada"),
+    };
+  if (kind === "settings" && !rest.length) {
     const section = SETTINGS_SECTIONS.find((s) => s === id) ?? "coordinator";
-    return { kind: "settings", section };
+    const detail = more && (section === "providers" || section === "connections") ? decode(more) : null;
+    if (more !== undefined && more !== "" && !detail) return { kind: "home" };
+    if (!detail) return { kind: "settings", section };
+    if (section === "connections" && !CONNECTIONS.some((c) => c === detail)) return { kind: "settings", section };
+    return { kind: "settings", section, detail };
   }
   const value = id && !rest.length ? decode(id) : null;
   if (!value) return { kind: "home" };
@@ -89,10 +108,18 @@ const server = () => "#/";
 /** The address a route is replaced by, if any. */
 const redirectOf = (route: Route) => (route.kind === "settings" || route.kind === "rules" ? route.redirect : undefined);
 
+/** The last address outside the settings: where their close button returns (THE-2075). */
+let outside = "#/";
+export const settingsReturn = () => outside;
+
 /** The current route, re-rendered when the hash changes; the hangar on the server. */
 export function useRoute(): Route {
-  const route = routeOf(useSyncExternalStore(subscribe, current, server));
+  const hash = useSyncExternalStore(subscribe, current, server);
+  const route = routeOf(hash);
   const redirect = redirectOf(route);
+  useEffect(() => {
+    if (route.kind !== "settings") outside = hash || "#/";
+  }, [route.kind, hash]);
   useEffect(() => {
     // Replaced, not pushed: Back never returns to the old address. Every caller
     // of useRoute sees the redirect: the first replaces it, the others find it done.

@@ -7,8 +7,8 @@
 import { Check, ChevronDown, Search } from "lucide-react";
 import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { ProviderMark } from "./marks";
 import { type CatalogProvider, modelKey, modelLabel, pickerGroups } from "./models";
-import { ProviderMark } from "./ProviderMark";
 
 /** The popover's width, as its class says (360 px). */
 const POPOVER_WIDTH = 360;

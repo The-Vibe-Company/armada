@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { useDaemon, useDaemonClient } from "@/protocol/store";
 import { SettingsFold, SettingsRow, SettingsSection, StateDot } from "./Layout";
 import { ModelPicker } from "./ModelPicker";
+import { ProviderMark } from "./marks";
 import {
   type CatalogProvider,
   isConnected,
@@ -17,7 +18,6 @@ import {
   providerState,
   selectionLabel,
 } from "./models";
-import { ProviderMark } from "./ProviderMark";
 import { type SignIn, SignInPanel, useSignIn } from "./ProviderSignIn";
 
 /** The two sign-ins the section opens on, after T3 Code's Codex setup. */
