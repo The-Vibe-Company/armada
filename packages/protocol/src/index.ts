@@ -32,6 +32,7 @@ import {
 import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
 import { PROJECTS_MINOR, projectRequestSchemas, projectSchema, projectsInspectionSchema } from "./projects.js";
 import { providerRequestSchemas, providersCatalogSchema } from "./providers.js";
+import { READER_MINOR, roomPresenceRequestSchema } from "./readers.js";
 import { CONDUCTOR_MINOR } from "./rules.js";
 import {
   sessionOutputRequestSchema,
@@ -48,11 +49,12 @@ export * from "./models.js";
 export * from "./plugins.js";
 export * from "./projects.js";
 export * from "./providers.js";
+export * from "./readers.js";
 export * from "./rules.js";
 export * from "./session.js";
 
 /** Wire version, independent of the daemon/app release versions. */
-export const PROTOCOL_VERSION = { major: 1, minor: CONDUCTOR_MINOR } as const;
+export const PROTOCOL_VERSION = { major: 1, minor: Math.max(READER_MINOR, PROJECTS_MINOR, CONDUCTOR_MINOR) } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
 
@@ -109,6 +111,7 @@ export const clientMessageSchema = /* @__PURE__ */ z.discriminatedUnion("type", 
   credentialsSetRequestSchema,
   listProjectsRequestSchema,
   subscribeRequestSchema,
+  roomPresenceRequestSchema,
   readSessionRequestSchema,
   chatReadRequestSchema,
   chatSendRequestSchema,

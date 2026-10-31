@@ -41,7 +41,14 @@ function recorded(responses: Record<string, unknown[]>) {
     const { query, variables } = JSON.parse(String(init?.body));
     const operation = /query\s+(\w+)/.exec(query)?.[1] ?? "?";
     calls.push({ operation, variables });
-    const data = responses[operation]?.shift();
+    let data = operation === "Changed" && !variables.readIssues ? {} : responses[operation]?.shift();
+    if (operation === "Changed") {
+      if (!variables.readIssues) data = {};
+      assert.ok(data, `unexpected ${operation}`);
+      const comments = variables.readComments ? responses.ChangedComments?.shift() : undefined;
+      assert.ok(!variables.readComments || comments, "unexpected changed-comments page");
+      data = { ...(data as object), ...(comments as object | undefined) };
+    }
     assert.ok(data, `unexpected ${operation}`);
     return Response.json({ data });
   };
@@ -117,7 +124,10 @@ test("two recorded readings append only changed tickets, phase, report and quest
     c.advance(t1);
     await poller.readNow();
     assert.deepEqual(
-      store.readSince(cursor).map((e) => e.kind),
+      store
+        .readSince(cursor)
+        .filter((e) => e.kind !== "coordinator.checkpoint")
+        .map((e) => e.kind),
       ["ticket.phase-changed", "ticket.report-posted", "inbox.opened", "ticket.seen"],
     );
     const state = fold(store.readSince(0)).projects.orchard;
@@ -134,11 +144,10 @@ test("two recorded readings append only changed tickets, phase, report and quest
       actor: "Mira",
       payload: { id: state?.inbox[0]?.id ?? "", answer: "Add shade" },
     });
-    const restartResponses = initial([
-      comment("report-a", "Agent status: implementing — Planting"),
-      comment("question-a", "Agent status: blocked — question: Add shade?", t1),
-    ]);
-    restartResponses.Children[0] = { issues: page([issue("SEED-2", "blocked")]) };
+    const restartResponses = {
+      Changed: [{ issues: page([]) }],
+      ChangedComments: [{ comments: page([]) }],
+    };
     const restart = new TrackerPoller({
       project: "orchard",
       store,
@@ -154,7 +163,7 @@ test("two recorded readings append only changed tickets, phase, report and quest
     });
     const before = store.readSince(0).length;
     await restart.readNow();
-    assert.equal(store.readSince(0).length, before);
+    assert.equal(store.readSince(before).filter((e) => e.kind !== "coordinator.checkpoint").length, 0);
     assert.deepEqual(fold(store.readSince(0)).projects.orchard?.inbox, []);
     restart.stop();
   } finally {
@@ -242,20 +251,11 @@ test("full and incremental reads paginate nested connections and discover a new 
   const newIssue = { ...issue("SEED-3", "planning"), parent: { identifier: "SEED-2" } };
   const descendant = { ...issue("SEED-4"), parent: { identifier: "SEED-3" } };
   const source = recorded({
-    Root: [
-      { issue: issue("SEED-1") },
-      {
-        issue: {
-          ...child,
-          inverseRelations: page([
-            { type: "blocks", issue: { identifier: "SEED-8", state: { type: "started" } } },
-            { type: "blocks", issue: { identifier: "SEED-9", state: { type: "completed" } } },
-          ]),
-          labels: page([]),
-          attachments: page([]),
-        },
-      },
-    ],
+    Root: [{ issue: issue("SEED-1") }],
+    Blockers: Array.from({ length: 2 }, () => ({
+      b0: { identifier: "SEED-8", state: { type: "started" } },
+      b1: { identifier: "SEED-9", state: { type: "completed" } },
+    })),
     Children: [
       { issues: page([], "child-page") },
       { issues: page([child]) },
@@ -377,7 +377,10 @@ test("failed and non-advancing pages append nothing and retry from the last comp
     await poller.readNow();
     assert.equal(poller.status.error, "Linear pagination did not advance");
     assert.equal(poller.status.lastCompletedAt, t0);
-    assert.deepEqual(store.readSince(0), before);
+    assert.deepEqual(
+      store.readSince(0).filter((e) => e.kind !== "coordinator.checkpoint"),
+      before.filter((e) => e.kind !== "coordinator.checkpoint"),
+    );
     await poller.readNow();
     assert.equal(poller.status.error, null);
     assert.equal(fold(store.readSince(0)).projects.orchard?.sessions[0]?.phase, "shipping");
@@ -448,7 +451,7 @@ test("timer exposes its schedule and gates retries until an abort-ignoring provi
     poller.start();
     const first = poller.readNow();
     assert.equal(first, poller.readNow());
-    await Promise.resolve();
+    await setImmediate();
     assert.equal(calls, 1);
     assert.equal(poller.status.reading, true);
     c.fire(); // deadline, no real wall-clock wait
@@ -520,7 +523,7 @@ test("periodic full reads retire tickets that left scope without changing local 
         handle: "pane",
       },
     });
-    c.advance("2030-01-01T10:31:00.000Z");
+    c.advance("2030-01-01T16:01:00.000Z");
     await poller.readNow();
     assert.equal(source.calls.filter((call) => call.operation === "Root").length, 2);
     const result = fold(store.readSince(0)).projects.orchard;
@@ -534,7 +537,7 @@ test("periodic full reads retire tickets that left scope without changing local 
   }
 });
 
-test("an incremental read refreshes blocker-bearing tickets even when only an external blocker's status changed", async () => {
+test("an incremental read refreshes external blocker states without re-reading unchanged issue details", async () => {
   const relation = (status: string) =>
     page([{ type: "blocks", issue: { identifier: "OUT-1", state: { type: status } } }]);
   const child = { ...issue("SEED-2"), inverseRelations: relation("completed") };
@@ -542,7 +545,11 @@ test("an incremental read refreshes blocker-bearing tickets even when only an ex
   responses.Children[0] = { issues: page([child]) };
   const source = recorded({
     ...responses,
-    Root: [{ issue: issue("SEED-1") }, { issue: { ...child, inverseRelations: relation("started") } }],
+    Root: [{ issue: issue("SEED-1") }],
+    Blockers: [
+      { b0: { identifier: "OUT-1", state: { type: "completed" } } },
+      { b0: { identifier: "OUT-1", state: { type: "started" } } },
+    ],
     Changed: [{ issues: page([]) }],
     ChangedComments: [{ comments: page([]) }],
   });
@@ -558,4 +565,7 @@ test("an incremental read refreshes blocker-bearing tickets even when only an ex
   assert.deepEqual(previous.tickets[1]?.blockers, [{ id: "OUT-1", status: "completed" }]);
   const next = await tracker.read({ previous, signal: new AbortController().signal });
   assert.deepEqual(next.tickets[1]?.blockers, [{ id: "OUT-1", status: "started" }]);
+  assert.equal(next.tickets[1]?.description, child.description);
+  assert.equal(source.calls.filter((c) => c.operation === "Root").length, 1);
+  assert.equal(source.calls.filter((c) => c.operation === "Changed").length, 1);
 });

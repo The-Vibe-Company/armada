@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { readerUsageSchema } from "./readers.js";
 import { rulesStateSchema } from "./rules.js";
 
 const text = z.string();
@@ -190,6 +191,8 @@ const tablesSchema = z.object({
   rules: rulesStateSchema.optional(),
   /** Successful provider reads, even when no facts changed; absent on older snapshots. */
   readAt: z.record(z.string(), z.iso.datetime()).optional(),
+  /** Safe usage and rate-limit pauses; older daemons omit this slice. */
+  readers: z.record(z.string(), readerUsageSchema).optional(),
   tickets: z.array(ticketSchema),
   pullRequests: z.array(pullRequestSchema),
   sessions: z.array(sessionSchema),

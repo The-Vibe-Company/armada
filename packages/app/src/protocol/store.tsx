@@ -1,4 +1,4 @@
-import { createContext, type ReactNode, useContext, useSyncExternalStore } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useSyncExternalStore } from "react";
 import { type DaemonClient, type DaemonState, initialState } from "./client";
 
 const DaemonContext = createContext<DaemonClient | null>(null);
@@ -22,4 +22,19 @@ export function useDaemonClient(): DaemonClient {
   const client = useContext(DaemonContext);
   if (!client) throw new Error("DaemonProvider is missing");
   return client;
+}
+
+/** Only an open, visible room requests active polling; reconnects replay the client's hint. */
+export function useRoomPresence(project: string | null): void {
+  const client = useContext(DaemonContext);
+  useEffect(() => {
+    if (!client?.setRoomPresence) return;
+    const update = () => client.setRoomPresence?.(document.visibilityState === "visible" ? project : null);
+    update();
+    document.addEventListener("visibilitychange", update);
+    return () => {
+      document.removeEventListener("visibilitychange", update);
+      client.setRoomPresence?.(null);
+    };
+  }, [client, project]);
 }

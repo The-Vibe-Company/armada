@@ -484,3 +484,30 @@ inside the existing project transaction. This is additive metadata on the existi
 with no schema migration or new route. Legacy report rows without that identity
 are not attributed to a current worker; its generation-bound inbox and heartbeat
 remain readable. A delayed report from an older claim cannot change its replacement.
+
+
+### Linear reader budget (THE-2099, protocol minor 14)
+
+The local Linear reader keeps its completed cursor and prior state in
+`armada.linear-reader` event-log checkpoints. Restarting resumes incrementally;
+only an absent/expired cursor or the six-hour full-read deadline re-reads the root.
+Checkpoints store changes rather than repeating the full program every poll.
+Issue/comment deltas share each request, with small paginated nested connections
+only on changed issues; external blocker states use a separate lightweight batch.
+
+HTTP 429, Retry-After and GraphQL RATELIMITED pause projects sharing a credential and endpoint,
+persist the pause, and prevent manual/coordinator refreshes from bypassing
+it. The announced delay is capped at one hour, using reset headers or a one-hour
+fallback when absent. The room's header names the pause and its resume time.
+Old facts remain readable, and failed or paused reads do not become fresh.
+
+Trackers poll every three minutes when idle and every 30 seconds while a worker is
+in flight or the owner is looking at the room. Minor 14 adds optional
+`room.presence { project: string | null }`: one visible room per connection, cleared
+when hidden, left or disconnected, replayed on reconnect. All-project subscriptions
+are not presence. Third-party tracker readers returning void continue to work;
+they may optionally return `{ pausedUntil }` to the host scheduler. Forge scheduling
+is unchanged. Optional snapshot `readers.linear` carries UTC-hour request count,
+last numeric complexity/rate-limit headers and pause-until; older clients ignore it.
+About displays the sum of current-hour tracker read requests across projects,
+including failed requests and pagination (connection probes and writes are excluded).

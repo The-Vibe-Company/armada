@@ -85,3 +85,25 @@ test("the panel's toggle says whether the panel is open", () => {
   // Closed, there is no panel for it to name.
   expect(toggle(render(counts({}), { open: false }))).not.toContain("aria-controls");
 });
+
+test("the room explains a Linear rate-limit pause without repeating its stale age", () => {
+  const html = renderToStaticMarkup(
+    <Header
+      project={{ name: "Harbor", repository: "example/harbor" }}
+      counts={counts({})}
+      readAt={{ linear: new Date(NOW - 25 * 60_000).toISOString() }}
+      readers={{ linear: { hour: "2026-03-10T15:00:00.000Z", requests: 17, pausedUntil: "2026-03-10T15:02:00.000Z" } }}
+      now={NOW}
+      open={false}
+      panel="room-panel"
+      onToggle={() => {}}
+      onPill={() => {}}
+    />,
+  );
+  expect(html).toMatch(
+    /role="status" aria-label="Linear paused by its rate limit until ([0-9:]+)" title="Linear paused by its rate limit until \1"/,
+  );
+  expect(html).toContain("<span>Linear paused</span>");
+  expect(html).toMatch(/<span class="font-mono tnum">[0-9:]+<\/span>/);
+  expect(html).not.toContain("Linear 25 min ago");
+});

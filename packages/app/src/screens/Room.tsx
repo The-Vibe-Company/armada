@@ -21,7 +21,7 @@ import { type Harness, skyProject } from "@/fleet/sky";
 import { type FleetState, fleetOf } from "@/fleet/state";
 import { roomHref } from "@/lib/route";
 import { cn } from "@/lib/utils";
-import { useDaemon } from "@/protocol/store";
+import { useDaemon, useRoomPresence } from "@/protocol/store";
 import { AgentLane } from "@/room/AgentLane";
 import { Asking } from "@/room/Asking";
 import { Composer } from "@/room/Composer";
@@ -67,6 +67,7 @@ export function Room({
     return () => clearInterval(timer);
   }, []);
   const project = projects?.find((p) => p.id === id);
+  useRoomPresence(project?.id ?? null);
   if (!project)
     return (
       <Page>
@@ -220,6 +221,7 @@ export function RoomView({
         project={project}
         counts={snapshot ? counts : null}
         readAt={state.readAt}
+        readers={state.readers}
         now={now}
         open={open}
         panel={PANEL_ID}
