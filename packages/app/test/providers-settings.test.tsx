@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { resolve } from "node:path";
 import type { Plugin, Provider } from "@armada/protocol";
 import { type Browser, chromium, type Page } from "playwright-core";
+import { terminalText } from "../src/settings/models";
 import {
   agentStatus,
   binaryConfig,
@@ -337,6 +338,16 @@ describe("the Providers and Connections sections in a browser", () => {
     expect(await page.getByRole("button", { name: "Try again" }).count()).toBe(1);
   });
 
+  test("closing a detail, or opening another card, cancels the sign-in in it", async () => {
+    await page.goto(`${ORIGIN}/#/settings/providers/conductor`);
+    await detail("conductor").getByRole("button", { name: "Sign in" }).click();
+    const connect = await last("providers.connect");
+    await page.locator('[data-sign-in="conductor"]').waitFor({ timeout: 2_000 });
+    await page.keyboard.press("Escape");
+    expect(await last("providers.cancel")).toMatchObject({ flow: connect.id });
+    await page.waitForURL(/#\/settings\/providers$/, { timeout: 2_000 });
+  });
+
   test("Sign out sends providers.disconnect; the binary path saves with plugins.configure, keeping the rest", async () => {
     await page.goto(`${ORIGIN}/#/settings/providers/codex`);
     const codex = detail("codex");
@@ -348,7 +359,8 @@ describe("the Providers and Connections sections in a browser", () => {
       plugin: "codex",
       seam: "runtime",
       kind: "codex",
-      config: { command: "codex", model: "o-7", binary: "/usr/local/bin/codex-next" },
+      // The older `command` alias gives way to the field.
+      config: { model: "o-7", binary: "/usr/local/bin/codex-next" },
     });
   });
 
@@ -372,6 +384,9 @@ describe("the Providers and Connections sections in a browser", () => {
   test("Connections: Linear connects in one click through its key prompt, GitHub shows its account and disconnects", async () => {
     await open("#/settings/connections");
     await card("linear").waitFor({ timeout: 2_000 });
+    // The list with no card open marks its first row in the nav: the nav keeps one current row.
+    const nav = page.getByRole("navigation", { name: "Settings sections" });
+    expect(await nav.locator('a[aria-current="page"]').allTextContents()).toEqual([expect.stringContaining("Linear")]);
     expect(
       await page
         .locator("[data-card]")
@@ -473,11 +488,16 @@ describe("the cards' rules", () => {
     ]).toEqual(["v0.166.0", "codex-cli 0.1", null, null]);
   });
 
+  test("a terminal's output loses its escape sequences, even split across two chunks", () => {
+    const first = terminalText("", "\u001b[1mBold\u001b[");
+    expect(terminalText(first, "0m and plain\r\n")).toBe("Bold and plain\r\n");
+  });
+
   test("the binary path keeps the saved config, and an empty one returns to the agent's own command", () => {
     const codex = PLUGINS.find((p) => p.id === "codex") as Plugin;
     expect(runtimeOf(PROVIDERS[1] as Provider, PLUGINS)).toEqual({ plugin: "codex", kind: "codex" });
     expect(runtimeOf({ ...(PROVIDERS[1] as Provider), mark: "elsewhere" }, PLUGINS)).toBeNull();
-    expect(binaryConfig(codex, "codex", "  ")).toEqual({ command: "codex", model: "o-7" });
+    expect(binaryConfig(codex, "codex", "  ")).toEqual({ model: "o-7" });
   });
 
   test("the routes to an agent: its project's labels and conditions in order, then the default route", () => {

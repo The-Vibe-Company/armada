@@ -106,6 +106,23 @@ export function useSignIn(kind: "model" | "provider" = "model"): SignIn {
   };
 }
 
+/**
+ * A provider's sign-in lives in its card's detail (THE-2075): closing the
+ * detail, or opening another card's, cancels it, as leaving the section does.
+ */
+export function useSignInFollows(signIn: SignIn, shown: string | undefined) {
+  const provider = signIn.view?.provider;
+  const cancel = useRef(signIn.cancel);
+  cancel.current = signIn.cancel;
+  const before = useRef(shown);
+  // Only a detail that leaves: a card's Connect starts the sign-in, then opens its detail.
+  useEffect(() => {
+    const left = before.current;
+    before.current = shown;
+    if (provider !== undefined && left === provider && shown !== provider) cancel.current();
+  }, [provider, shown]);
+}
+
 /** The sign-in in place, under the button that started it. */
 export function SignInPanel({ signIn, name }: { signIn: SignIn; name: string }) {
   const view = signIn.view;
@@ -223,7 +240,9 @@ function Terminal({ output }: { output: string }) {
       data-auth-terminal
       role="log"
       aria-label="Terminal"
-      className="m-0 max-h-56 min-w-0 select-text overflow-auto whitespace-pre-wrap break-all rounded-control bg-bg p-3 font-mono text-small text-text-soft shadow-ring"
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling pane is scrolled from the keyboard once focused.
+      tabIndex={0}
+      className="m-0 max-h-56 min-w-0 select-text overflow-auto whitespace-pre-wrap break-all rounded-control bg-bg p-3 font-mono text-small text-text-soft shadow-ring outline-none focus-visible:ring-2 focus-visible:ring-blue"
     >
       {output}
     </pre>

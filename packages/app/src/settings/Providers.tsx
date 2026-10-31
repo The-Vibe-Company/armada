@@ -10,7 +10,7 @@ import { Card, go, useEscapeCloses } from "./Card";
 import { useDisplayName } from "./display-names";
 import { SettingsRow, SettingsSection } from "./Layout";
 import { focusSignInOf, ProviderDetail } from "./ProviderDetail";
-import { useSignIn } from "./ProviderSignIn";
+import { useSignIn, useSignInFollows } from "./ProviderSignIn";
 import { agentCards, agentStatus, versionLabel } from "./provider-view";
 import { Restart } from "./RestartNotice";
 
@@ -29,6 +29,7 @@ export function Providers({ detail }: { detail?: string }) {
   const agents = agentCards(providers ?? []);
   const open = agents.find((a) => a.id === detail);
   useEscapeCloses(open?.id, () => go(settingsHref("providers")));
+  useSignInFollows(signIn, open?.id);
   const pending = plugins
     ? pluginCounts(plugins.plugins).pending
     : (providers ?? []).filter((p) => p.restartRequired).length;

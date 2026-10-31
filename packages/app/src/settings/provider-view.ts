@@ -80,12 +80,16 @@ export function runtimeOf(provider: Provider, plugins: readonly Plugin[]): { plu
 /**
  * The config `plugins.configure` saves for a new binary path: the saved
  * config kept, `binary` set, or left out when the field is empty (the
- * agent's own command again).
+ * agent's own command again). The older `command` key says the same (the
+ * agents read `binary ?? command`): it gives way to the field.
  */
 export function binaryConfig(plugin: Plugin, kind: string, binary: string): { [key: string]: Json } {
   const saved = plugin.contributions.find((c) => c.seam === "runtime" && c.kind === kind)?.config;
-  const { binary: _old, ...rest }: { [key: string]: Json } =
-    saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+  const {
+    binary: _old,
+    command: _alias,
+    ...rest
+  }: { [key: string]: Json } = saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
   const value = binary.trim();
   return value ? { ...rest, binary: value } : rest;
 }

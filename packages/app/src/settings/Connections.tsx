@@ -7,7 +7,7 @@ import { Account, beginSignIn } from "./Account";
 import { Card, detailId, go, useEscapeCloses } from "./Card";
 import { SettingsRow, SettingsSection, StateDot } from "./Layout";
 import { Mark } from "./marks";
-import { type SignIn, SignInPanel, useSignIn } from "./ProviderSignIn";
+import { type SignIn, SignInPanel, useSignIn, useSignInFollows } from "./ProviderSignIn";
 import { connectionStatus, type StatusLine, sourceLabel } from "./provider-view";
 
 const NAMES: Record<Connection, string> = { linear: "Linear", github: "GitHub", armada: "Armada" };
@@ -31,6 +31,10 @@ export function Connections({ detail }: { detail?: Connection }) {
   const client = useDaemonClient();
   const signIn = useSignIn("provider");
   useEscapeCloses(detail, () => go(settingsHref("connections")));
+  useSignInFollows(
+    signIn,
+    detail === "linear" || detail === "github" ? connectionOf(providers, detail)?.id : undefined,
+  );
   const live = status === "live";
   const toggle = (card: Connection) => go(settingsHref("connections", card === detail ? undefined : card));
   const armadaKey = account?.signedIn === true && account.keys.linear;

@@ -20,9 +20,16 @@ export interface NavGroup {
   rows: readonly NavRow[];
 }
 
-/** Whether a row is the one shown: its section, and its card when it names one. */
-const isCurrent = (row: NavRow, section: SettingsSection, detail: string | undefined) =>
-  row.section === section && (row.detail === undefined || row.detail === detail);
+/**
+ * Whether a row is the one shown: its section, and its card when it names
+ * one. A section shown with no card open (Connections' list) marks its first row.
+ */
+const isCurrent = (rows: readonly NavRow[], row: NavRow, section: SettingsSection, detail: string | undefined) => {
+  if (row.section !== section) return false;
+  if (row.detail === undefined || row.detail === detail) return true;
+  const own = rows.filter((r) => r.section === section);
+  return !own.some((r) => r.detail === detail) && own[0] === row;
+};
 
 /**
  * One link per row, the current one filled and `aria-current`. The arrow keys
@@ -60,7 +67,7 @@ export function SettingsNav({
     links[next]?.focus();
   }
   const rows = groups.flatMap((g) => g.rows);
-  const stop = rows.find((row) => isCurrent(row, section, detail)) ?? rows[0];
+  const stop = rows.find((row) => isCurrent(rows, row, section, detail)) ?? rows[0];
   return (
     <nav
       aria-label="Settings sections"
@@ -85,7 +92,7 @@ export function SettingsNav({
                 key={`${s}/${d ?? ""}`}
                 href={settingsHref(s, d)}
                 data-section={d ? `${s}/${d}` : s}
-                aria-current={isCurrent(row, section, detail) ? "page" : undefined}
+                aria-current={isCurrent(rows, row, section, detail) ? "page" : undefined}
                 tabIndex={row === stop ? 0 : -1}
                 className="group relative flex h-item items-center gap-2 whitespace-nowrap rounded-sm px-2 text-text-2 outline-none transition-colors hover:bg-item-hover hover:text-text focus-visible:ring-2 focus-visible:ring-blue aria-[current=page]:bg-item-current aria-[current=page]:text-text @max-[720px]/settings:justify-center @max-[720px]/settings:px-0"
               >

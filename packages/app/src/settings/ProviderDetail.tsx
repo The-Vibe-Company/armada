@@ -89,7 +89,9 @@ function Status({ provider, name, signIn, live }: { provider: Provider; name: st
             ? provider.detail
             : !provider.enabled
               ? `Turn ${name} on to sign in.`
-              : undefined
+              : provider.restartRequired
+                ? `${name} changed since the daemon started: if signing in is refused, restart it first.`
+                : undefined
       }
       status={
         <>
@@ -151,8 +153,6 @@ function DisplayName({ provider }: { provider: Provider }) {
           }}
         >
           <Input
-            // A name saved elsewhere (another window) remounts the field on it.
-            key={name}
             id={id}
             name="name"
             defaultValue={name}

@@ -176,9 +176,12 @@ const TERMINAL_KEPT = 16_000;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: escape sequences are what it removes.
 const ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]|\r(?!\n)/g;
 
-/** A terminal's output as text: escape sequences removed, the last part kept. */
+/**
+ * A terminal's output as text: escape sequences removed (over what is kept,
+ * so one split across two chunks goes once whole), the last part kept.
+ */
 export function terminalText(current: string, output: string): string {
-  const next = current + output.replace(ESCAPES, "");
+  const next = (current + output).replace(ESCAPES, "");
   return next.length > TERMINAL_KEPT ? next.slice(-TERMINAL_KEPT) : next;
 }
 
