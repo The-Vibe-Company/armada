@@ -27,6 +27,13 @@ const call = (id: string, second: number, name: string, input: Tool["input"], ex
   failed: false,
   ...extra,
 });
+const MERGE_REFUSED = JSON.stringify({
+  ok: false,
+  code: "checks_red",
+  message: "legacy message",
+  reason: "Red: Lint, typecheck and test on 9c46a81",
+  next: "ask the worker (worker.message) to fix and hand back",
+});
 const REFUSED = '{"ok":false,"code":"cap","message":"two workers already run","next":"fleet.status"}';
 
 const notice: ChatItem[] = [
@@ -133,10 +140,10 @@ describe("the work in a browser", () => {
     // No network: the page and its script are served here, anything else is refused.
     await context.route("**/*", (route) => {
       const url = route.request().url();
-      if (url === `${ORIGIN}/`)
+      if (url === `${ORIGIN}/` || url === `${ORIGIN}/?merge`)
         return route.fulfill({
           contentType: "text/html",
-          body: `<!doctype html><div id="root"></div><script>window.THREAD=${JSON.stringify({ items: conversation, groups, project: "harbor" }).replace(/</g, "\\u003c")}</script><script type="module" src="/thread.js"></script>`,
+          body: `<!doctype html><div id="root"></div><script>window.THREAD=${JSON.stringify({ items: url.endsWith("?merge") ? [call("red", 1, "merge.run", { pr: 34 }, { failed: true, output: MERGE_REFUSED })] : conversation, groups, project: "harbor" }).replace(/</g, "\\u003c")}</script><script type="module" src="/thread.js"></script>`,
         });
       if (url === `${ORIGIN}/thread.js`) return route.fulfill({ contentType: "text/javascript", body: bundle });
       return route.abort();
@@ -168,7 +175,7 @@ describe("the work in a browser", () => {
     const failed = page.getByRole("button", { name: "Launched THE-14, tool call failed" });
     expect(await failed.locator("[data-failed]").count()).toBe(1);
     await failed.click();
-    const refusal = page.getByText("Refused: two workers already run");
+    const refusal = page.getByText("Refused: two workers already run → fleet.status");
     await refusal.waitFor();
     expect(await refusal.evaluate((el) => el.className)).toContain("text-amber");
     await page.getByText('"code": "cap"').waitFor();
@@ -179,10 +186,25 @@ describe("the work in a browser", () => {
 
     // The project's open rows are kept for the tab.
     await page.reload();
-    await page.getByText("Refused: two workers already run").waitFor({ timeout: 5_000 });
+    await page.getByText("Refused: two workers already run → fleet.status").waitFor({ timeout: 5_000 });
     // Folded again, the work leaves; the answer stays below.
     await page.getByRole("button", { name: "Worked for 2m 03s" }).click();
     expect(await page.locator("[data-tool]").count()).toBe(1);
     await page.getByText("THE-12 is launched; THE-14 waits for a slot.").waitFor();
+  });
+  test("a refused merge shows its reason and next tool below the row before opening raw details", async () => {
+    await page.goto(`${ORIGIN}/?merge`);
+    const row = page.locator('[data-tool="merge.run"]');
+    await row
+      .getByText(
+        "Refused: Red: Lint, typecheck and test on 9c46a81 → ask the worker (worker.message) to fix and hand back",
+      )
+      .waitFor({ timeout: 2_000 });
+    expect(await row.getByRole("button").getAttribute("aria-expanded")).toBe("false");
+    expect(await row.getByText("legacy message", { exact: true }).count()).toBe(0);
+    await row.getByRole("button").click();
+    await row.getByText("Input", { exact: true }).waitFor();
+    await row.getByText("Result", { exact: true }).waitFor();
+    expect(await row.getByText("Refused:", { exact: false }).count()).toBe(1);
   });
 });

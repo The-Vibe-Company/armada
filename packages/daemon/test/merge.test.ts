@@ -125,7 +125,7 @@ async function fixture(t: TestContext, priorHandBack = false) {
   register(registry, forge, tracker, node);
   const options = {
     registry,
-    projects: [{ id: "orchard", checkout: "/checkout" }],
+    projects: [{ id: "orchard", checkout: "/checkout", forge: "github", tracker: "linear" }],
     now: () => at,
     stop: async () => {
       stopCalls++;
@@ -138,7 +138,14 @@ async function fixture(t: TestContext, priorHandBack = false) {
   let tools = nativeTools(scope, { now: () => at, merges: service });
   const run = async (name: "merge.check" | "merge.run", pr = 7, callId = "merge") => {
     const result = await tools[name].execute({ pr }, { taskId: 1, callId } as ToolExecutionApi, context);
-    return result.details as { ok: boolean; code?: string; problems?: string[]; cleanup?: { disposed?: boolean } };
+    return result.details as {
+      ok: boolean;
+      code?: string;
+      reason?: string;
+      next?: string;
+      problems?: string[];
+      cleanup?: { disposed?: boolean };
+    };
   };
   t.after(async () => {
     await scope.close(context);
@@ -360,7 +367,7 @@ for (const [name, change, expected] of [
     (r) => {
       r.behind = 2;
     },
-    "declare [gates] local_commands",
+    "rules.set gates",
   ],
 ] as [string, (recording: Recording) => void, string][]) {
   test(`merge.check refuses recorded GitHub ${name} before any write`, async (t) => {
@@ -384,8 +391,22 @@ for (const [name, change, expected] of [
       });
     const result = await f.run("merge.run");
     assert.equal(result.ok, false);
+    const codes: Record<string, string> = {
+      "moved head": "head_moved",
+      "duplicate check red": "checks_red",
+      "check pending": "checks_pending",
+      "required check missing": "checks_pending",
+      "no checks": "checks_pending",
+      "truncated checks": "checks_pending",
+      "truncated threads": "review_threads_open",
+      "unresolved thread": "review_threads_open",
+    };
+    if (codes[name]) assert.equal(result.code, codes[name]);
+    assert.ok(result.reason, "a refusal explains its cause");
+    assert.match(result.next ?? "", /merge\.|worker\.message|rules\.set/);
+    assert.doesNotMatch(JSON.stringify(result), /armada |armada\.toml/);
     assert.ok(
-      result.problems?.some((p) => p.includes(expected)),
+      [result.reason, ...(result.problems ?? [])].some((p) => p?.includes(expected)),
       JSON.stringify(result),
     );
     assert.deepEqual(f.counts(), { mergeCalls: 0, stopCalls: 0 });
@@ -414,7 +435,10 @@ test("merge.check refuses invalid hand-backs, unready phase, holds and owner val
   assert.equal((await f.run("merge.check")).ok, false);
   f.append("session.reported", { ticket: "SEED-1", session: "one", phase: "ready-to-merge", reason: "Green" });
   f.append("hold.opened", { id: "hold", reason: "Deploy failed" });
-  assert.equal((await f.run("merge.run")).ok, false);
+  const held = await f.run("merge.run");
+  assert.equal(held.code, "hold_open");
+  assert.match(held.reason ?? "", /hold.*Deploy failed/);
+  assert.match(held.next ?? "", /hold.clear.*hold/);
   f.append("hold.cleared", { id: "hold", reason: "Healthy" });
   f.append("validation.opened", {
     id: "check",
@@ -469,13 +493,20 @@ test("failed local gate and moving final base refuse the pinned merge", async (t
   const f = await fixture(t);
   gates(f);
   f.setFacts({ behindBy: 1 });
-  f.node.testMerge = async () => ({ ok: false, step: "bun run verify", output: "failed" });
-  assert.match(JSON.stringify(await f.run("merge.run")), /test merge into main failed/);
+  f.node.testMerge = async () => ({
+    ok: false,
+    step: "bun run verify",
+    output: "failed first line\nprivate subprocess body",
+  });
+  const failed = await f.run("merge.run");
+  assert.equal(failed.code, "local_gate_failed");
+  assert.match(failed.reason ?? "", /bun run verify.*failed first line/);
+  assert.doesNotMatch(JSON.stringify(failed), /private subprocess body/);
   f.node.testMerge = async () => {
     f.setFacts({ base: "d".repeat(40) });
     return { ok: true };
   };
-  assert.equal((await f.run("merge.run")).code, "head_or_base_moved");
+  assert.equal((await f.run("merge.run")).code, "head_moved");
   assert.equal(f.counts().mergeCalls, 0);
 });
 
@@ -492,7 +523,7 @@ test("daemon lease refuses concurrent merges and releases after failure", async 
   // Wait on a real adapter boundary, never a wall clock.
   while (!release) await new Promise<void>((resolve) => setImmediate(resolve));
   f.restart(); // A second service object still shares the daemon's project lease.
-  assert.equal((await f.run("merge.run", 7, "second")).code, "merge_locked");
+  assert.equal((await f.run("merge.run", 7, "second")).code, "lease_held");
   release();
   assert.equal((await first).ok, false);
   assert.equal((await f.run("merge.check")).ok, true);
@@ -530,7 +561,10 @@ test("tracker failure retains confirmed merge and resumes tracker/stop without m
   f.tracker.write = async () => {
     throw new Error("Linear offline");
   };
-  assert.equal((await f.run("merge.run")).ok, false);
+  const failed = await f.run("merge.run");
+  assert.equal(failed.code, "tracker_write_failed");
+  assert.match(failed.reason ?? "", /Linear offline/);
+  assert.match(failed.next ?? "", /merge.run/);
   assert.equal(f.store.readSince(0).filter((e) => e.kind === "merge.confirmed").length, 1);
   f.tracker.write = write;
   f.restart();
@@ -647,7 +681,10 @@ for (const boundary of ["final inspection", "provider credentials"] as const) {
         return { merged: true };
       };
     }
-    assert.equal((await f.run("merge.run")).ok, false);
+    const result = await f.run("merge.run");
+    assert.equal(result.code, "rules_changed");
+    assert.match(result.reason ?? "", /rules changed|Local gates changed/);
+    assert.match(result.next ?? "", /merge.check/);
     assert.equal(f.counts().mergeCalls, 0);
     assert.equal(externalWrites, 0);
   });
@@ -738,3 +775,68 @@ for (const [otherPr, otherHead] of [
     );
   });
 }
+
+for (const name of ["merge.check", "merge.run"] as const) {
+  test(`${name} retains a sanitized forge failure and never writes`, async (t) => {
+    const f = await fixture(t);
+    assert.equal((await f.run("merge.check")).ok, true);
+    f.forge.inspect = async () => {
+      throw new Error(
+        "Forge timed out eyJhbGciOiJub25lIn0.eyJzdWIiOiJzeW50aGV0aWMifQ.signature Authorization: Bearer secret-test-token\nresponse body: private details",
+      );
+    };
+    const result = await f.run(name);
+    assert.equal(result.code, "forge_unreachable");
+    assert.match(result.reason ?? "", /Forge timed out/);
+    assert.doesNotMatch(JSON.stringify(result), /eyJ|secret-test-token|private details|response body/);
+    assert.match(result.next ?? "", /merge\.(check|run)/);
+    assert.deepEqual(f.counts(), { mergeCalls: 0, stopCalls: 0 });
+  });
+}
+
+test("red check refusal names every failing check and the head with worker guidance", async (t) => {
+  const f = await fixture(t);
+  assert.equal((await f.run("merge.check")).ok, true);
+  f.setFacts({
+    checks: [
+      { name: "Lint, typecheck and test", state: "failure" },
+      { name: "Build", state: "failure" },
+    ],
+  });
+  const result = await f.run("merge.run");
+  assert.equal(result.code, "checks_red");
+  assert.equal(result.reason, "Red: Lint, typecheck and test, Build on aaaaaaa");
+  assert.match(result.next ?? "", /worker.message.*fix and hand back/);
+  assert.equal(f.counts().mergeCalls, 0);
+});
+
+for (const provider of ["forge", "tracker"] as const) {
+  test(`missing ${provider} provider names the unavailable dependency`, async (t) => {
+    const f = await fixture(t);
+    assert.equal((await f.run("merge.check")).ok, true);
+    const project = f.options.projects[0];
+    assert.ok(project);
+    project[provider] = "uninstalled";
+    f.restart();
+    const result = await f.run("merge.run");
+    assert.equal(result.code, provider === "forge" ? "forge_unreachable" : "tracker_write_failed");
+    assert.match(result.reason ?? "", /provider unavailable/);
+    assert.match(result.next ?? "", /merge\.(check|run)/);
+    assert.equal(f.counts().mergeCalls, 0);
+  });
+}
+
+test("hold opened at the forge write guard retains its ids and clear guidance", async (t) => {
+  const f = await fixture(t);
+  assert.equal((await f.run("merge.check")).ok, true);
+  const merge = f.forge.merge;
+  f.forge.merge = async (request) => {
+    f.append("hold.opened", { id: "deploy-7", reason: "Health check failed" });
+    return merge(request);
+  };
+  const result = await f.run("merge.run");
+  assert.equal(result.code, "hold_open");
+  assert.match(result.reason ?? "", /deploy-7.*Health check failed/);
+  assert.match(result.next ?? "", /hold.clear deploy-7/);
+  assert.equal(f.counts().mergeCalls, 0);
+});

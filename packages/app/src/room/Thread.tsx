@@ -896,6 +896,7 @@ function ToolRow({
   const label = workLabel(item);
   const Icon = ICONS[workIcon(item.name)];
   const refused = refusal(item);
+  const mergeRefused = refused && item.name.startsWith("merge.");
   return (
     <div className="min-w-0" data-tool={item.name}>
       <button
@@ -923,11 +924,12 @@ function ToolRow({
           }
         />
       </button>
+      {mergeRefused && <p className="m-0 mb-1 ml-7 text-body text-amber">Refused: {refused}</p>}
       {shown && (
         <div id={body} className="mb-1 ml-7 flex min-w-0 flex-col gap-2 py-1">
           <Field label="Input" value={pretty(item.input)} />
           <div className="flex min-w-0 flex-col gap-1">
-            {refused && <p className="m-0 text-body text-amber">Refused: {refused}</p>}
+            {refused && !mergeRefused && <p className="m-0 text-body text-amber">Refused: {refused}</p>}
             <Field
               label="Result"
               value={item.output === null ? "Still running" : pretty(item.output)}
