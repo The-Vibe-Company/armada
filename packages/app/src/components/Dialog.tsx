@@ -31,6 +31,8 @@ export function Dialog({
     const inside = () => [...(box.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])];
     (box.current?.querySelector<HTMLElement>("[data-autofocus]") ?? inside()[0] ?? box.current)?.focus();
     const onKey = (e: KeyboardEvent) => {
+      // Modal: the screen's own shortcuts, heard on the window, wait until it closes.
+      e.stopPropagation();
       if (e.defaultPrevented) return;
       if (e.key === "Escape") {
         // Handled here: the room's lane, listening on the window, does not also leave the agent.

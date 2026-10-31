@@ -2,7 +2,7 @@
 // button, then a dialog that says what removing does and sends
 // `projects.remove`. The daemon refuses while a worker is in flight; its line
 // stays in the dialog. Removed, the app goes back to the hangar.
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Dialog } from "@/components/Dialog";
 import { Button } from "@/components/ui/button";
 import { useDaemonClient } from "@/protocol/store";
@@ -12,17 +12,23 @@ export function RemoveProject({ project }: { project: { id: string; name: string
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  // The dialog this answer is for: a refusal arriving after it closed is not shown the next time.
+  const shown = useRef(0);
   const close = () => {
+    shown.current++;
     setOpen(false);
+    setBusy(false);
     setProblem(null);
   };
   async function remove() {
+    const asked = shown.current;
     setBusy(true);
     setProblem(null);
     try {
       await client.removeProject(project.id);
       window.location.assign("#/");
     } catch (error) {
+      if (asked !== shown.current) return;
       setProblem((error instanceof Error && error.message) || "The daemon could not remove this project.");
       setBusy(false);
     }

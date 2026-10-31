@@ -16,7 +16,7 @@ export function slugOf(name: string): string {
   return name
     .toLowerCase()
     .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
     .slice(0, 200)
     .replace(/^-|-$/g, "");
@@ -42,6 +42,13 @@ export function fieldsOf(inspection: ProjectInspection): ProjectFields {
   };
 }
 
+/** The program the daemon adds the project under when the field is empty: armada.toml's, if it names one. */
+export const tomlProgram = (inspection: ProjectInspection) => inspection.toml?.programRoot;
+
+/** Whether the folder can be added at all: the daemon refuses a path it cannot open. */
+export const readable = (inspection: ProjectInspection) => !inspection.problems.includes(NOT_A_FOLDER);
+
+const NOT_A_FOLDER = "Path is not an accessible folder";
 const NO_REMOTE = "Git repository has no readable origin remote";
 const NOT_GITHUB = "Git origin is not a supported GitHub repository URL";
 

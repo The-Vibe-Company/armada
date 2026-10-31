@@ -96,7 +96,8 @@ describe("Add project in a browser", () => {
     const inspect = await last("projects.inspect");
     expect(inspect.path).toBe((read as { path: string }).path);
     await receive({ type: "projects.inspection", id: inspect.id, ...read });
-    await field("Name").waitFor();
+    // The form, or the problem that leaves none.
+    await field("Name").or(dialog().locator("[data-problems]")).first().waitFor();
   }
 
   test("the empty hangar invites to add the first project, and its button opens the dialog", async () => {
@@ -119,6 +120,8 @@ describe("Add project in a browser", () => {
     expect(await field("Repository").inputValue()).toBe("The-Vibe-Company/armada");
     expect(await field("Name").inputValue()).toBe("Armada");
     expect(await field("Linear program").inputValue()).toBe("THE-1982");
+    // Left empty, the daemon still takes armada.toml's program: the hint says so.
+    expect(await dialog().getByText("Empty, armada.toml's THE-1982.", { exact: false }).count()).toBe(1);
     expect(await dialog().locator("[data-problems]").count()).toBe(0);
     await button("Add").click();
     const add = await last("projects.add");
@@ -160,6 +163,20 @@ describe("Add project in a browser", () => {
     const add = await last("projects.add");
     expect(add).toMatchObject({ projectId: "osprey", name: "Osprey", repository: "example/osprey" });
     expect(add.programRoot).toBeUndefined();
+  });
+
+  test("a path the daemon cannot open says so, and leaves nothing to add", async () => {
+    await open([KESTREL]);
+    await inspected({
+      path: "/Users/owner/Dev/missing",
+      git: null,
+      toml: null,
+      suggested: { id: "missing", name: "missing" },
+      problems: ["Path is not an accessible folder"],
+    });
+    expect(await dialog().locator("[data-problems]").innerText()).toBe("Path is not an accessible folder");
+    expect(await field("Repository").count()).toBe(0);
+    expect(await button("Add").isDisabled()).toBe(true);
   });
 
   test("the daemon's refusal stays under the form, and Escape closes it with the focus back", async () => {

@@ -13,7 +13,7 @@ import { Dialog } from "@/components/Dialog";
 import { Field, Form, Input } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { useDaemonClient } from "@/protocol/store";
-import { fieldsOf, idOf, isRepository, type ProjectFields, problemsOf, ready } from "./form";
+import { fieldsOf, idOf, isRepository, type ProjectFields, problemsOf, readable, ready, tomlProgram } from "./form";
 
 const problemOf = (error: unknown, fallback: string) => (error instanceof Error && error.message) || fallback;
 
@@ -36,11 +36,11 @@ export default function AddProject({ onClose }: { onClose: () => void }) {
     setBusy("inspecting");
     setProblem(null);
     try {
-      const read = await client.inspectProject(target);
+      const answer = await client.inspectProject(target);
       if (asked.current !== target) return;
-      setInspection(read);
-      setFolder(read.path);
-      setFields(fieldsOf(read));
+      setInspection(answer);
+      setFolder(answer.path);
+      setFields(fieldsOf(answer));
     } catch (error) {
       if (asked.current === target) setProblem(problemOf(error, "The daemon could not read this folder."));
     } finally {
@@ -87,8 +87,12 @@ export default function AddProject({ onClose }: { onClose: () => void }) {
 
   const set = (key: keyof ProjectFields) => (event: { currentTarget: HTMLInputElement }) =>
     setFields({ ...fields, [key]: event.currentTarget.value });
-  const shown = inspection && folder.trim() === inspection.path ? inspection : null;
-  const problems = shown ? problemsOf(shown) : [];
+  const read = inspection && folder.trim() === inspection.path ? inspection : null;
+  // A path the daemon cannot open shows its problem, and no form: the daemon would refuse it.
+  const shown = read && readable(read) ? read : null;
+  // armada.toml's program: the daemon adds the project under it when the field is left empty.
+  const fromToml = shown ? tomlProgram(shown) : undefined;
+  const problems = read ? problemsOf(read) : [];
   const repository = fields.repository.trim();
   const badRepository = repository !== "" && !isRepository(repository);
   return (
@@ -140,15 +144,15 @@ export default function AddProject({ onClose }: { onClose: () => void }) {
           </div>
         </Field>
         {busy === "inspecting" && <p className="m-0 text-body text-text-3">Reading the folder…</p>}
+        {problems.length > 0 && (
+          <ul data-problems className="m-0 flex list-none flex-col gap-1 p-0 text-body text-amber">
+            {problems.map((p) => (
+              <li key={p}>{p}</li>
+            ))}
+          </ul>
+        )}
         {shown && (
           <>
-            {problems.length > 0 && (
-              <ul data-problems className="m-0 flex list-none flex-col gap-1 p-0 text-body text-amber">
-                {problems.map((p) => (
-                  <li key={p}>{p}</li>
-                ))}
-              </ul>
-            )}
             <Field
               label="Repository"
               htmlFor={`${ids}-repository`}
@@ -172,13 +176,17 @@ export default function AddProject({ onClose }: { onClose: () => void }) {
             <Field
               label="Linear program"
               htmlFor={`${ids}-program`}
-              hint="Optional: the issue at the root of the project's plan. Empty, the project runs without Linear."
+              hint={
+                fromToml
+                  ? `Optional: the issue at the root of the project's plan. Empty, armada.toml's ${fromToml}.`
+                  : "Optional: the issue at the root of the project's plan. Empty, the project runs without Linear."
+              }
             >
               <Input
                 id={`${ids}-program`}
                 value={fields.program}
                 onChange={set("program")}
-                placeholder="Without Linear"
+                placeholder={fromToml ?? "Without Linear"}
                 className="font-mono"
                 spellCheck={false}
                 autoComplete="off"
