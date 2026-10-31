@@ -436,3 +436,40 @@ test("a faulted tool remains failed when pi clears the round, including a fresh 
   const restored = await (await connect()).read();
   assert.deepEqual(restored.type === "chat.result" && restored.items, after.items);
 });
+
+for (const [label, content, stopReason] of [
+  ["empty", [], "stop"],
+  ["whitespace", [{ type: "text", text: "  \n " }], "stop"],
+  ["thinking only", [{ type: "thinking", thinking: "Checking the rows" }], "stop"],
+  ["output limit", [], "length"],
+  ["toolUse without calls", [], "toolUse"],
+] as const) {
+  test(`a completed turn without text stays visible (${label})`, { timeout: 5000 }, async (t) => {
+    const { fake, connect } = await setup(t);
+    const run = { taskId: 7, inputs: [] } as unknown as NonNullable<LiveState["run"]>;
+    const call = { type: "toolCall", id: "status-1", name: "fleet.status", arguments: {} };
+    const entries = [...initial, entry(2, "pi.assistant", assistant([call], "toolUse"))];
+    fake.set({ run, tools: [{ callId: "status-1", name: "fleet.status", status: "running" }] }, entries);
+    const c = await connect();
+    const during = await c.read();
+    assert.ok(during.type === "chat.result");
+    assert.deepEqual(
+      during.items.map((i) => i.kind),
+      ["owner", "tool"],
+      "a tool round is not a silent completion",
+    );
+    fake.set({}, [...entries, entry(3, "pi.assistant", assistant([...content], stopReason))]);
+    const after = await c.read();
+    assert.ok(after.type === "chat.result");
+    const last = after.items.at(-1);
+    assert.ok(last?.kind === "line");
+    assert.equal(last.body, "The coordinator ended its turn without a word");
+    assert.equal(last.id, "g7:2");
+    const again = await c.read();
+    assert.deepEqual(
+      again.type === "chat.result" && again.items,
+      after.items,
+      "projection is stable on repeated reads",
+    );
+  });
+}
