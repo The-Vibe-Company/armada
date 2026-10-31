@@ -64,5 +64,9 @@ test("room presence follows visible rooms across connections and clears on disco
   await send(first, { type: "projects.list" });
   assert.equal(server.isRoomVisible("orchard"), false);
   assert.deepEqual(changes, ["orchard", "garden", "garden", "orchard"]);
+  await send(first, { type: "room.presence", project: "garden" });
+  assert.equal(server.isRoomVisible("garden"), true);
+  await server.closeProject("garden");
+  assert.equal(server.isRoomVisible("garden"), false, "removing a project clears its visible-room hint");
   assert.equal(store.sequence, 0, "room visibility never grows the durable log");
 });

@@ -48,10 +48,25 @@ interface WriteData {
   commentCreate?: { success: boolean; comment?: { id: string } | null };
 }
 
+// Scoped project activations share a quota only within the same host event gateway.
+// A WeakMap keeps separate daemons/tests isolated and releases retired host state.
+const readerPools = new WeakMap<
+  PluginContext["events"],
+  {
+    budgets: Map<string, LinearBudget>;
+    pending: Set<Promise<void>>;
+  }
+>();
+
 export function activate(ctx: PluginContext): void {
   const config = ctx.config.tracker?.linear as Config;
   const readers = new Map<string, TrackerPoller>();
-  const budgets = new Map<string, LinearBudget>();
+  let pool = readerPools.get(ctx.events);
+  if (!pool) {
+    pool = { budgets: new Map(), pending: new Set() };
+    readerPools.set(ctx.events, pool);
+  }
+  const { budgets, pending } = pool;
   const trackers = new Map<string, ReturnType<typeof linearTracker>>();
   const trackerFor = (project: string) => {
     let tracker = trackers.get(project);
@@ -94,9 +109,14 @@ export function activate(ctx: PluginContext): void {
       }),
     ).then(() => {});
     restoredBudget = attempt;
-    void attempt.catch(() => {
-      if (restoredBudget === attempt) restoredBudget = undefined;
-    });
+    pending.add(attempt);
+    void attempt.then(
+      () => pending.delete(attempt),
+      () => {
+        pending.delete(attempt);
+        if (restoredBudget === attempt) restoredBudget = undefined;
+      },
+    );
     return attempt;
   };
   const waitForRestore = async (signal?: AbortSignal) => {
@@ -111,7 +131,7 @@ export function activate(ctx: PluginContext): void {
     try {
       // The shared restoration remains single-flight even when a caller cancels.
       // A later caller can join it; no timed-out generation continues into HTTP.
-      await Promise.race([restoreBudget(), canceled]);
+      await Promise.race([Promise.all([restoreBudget(), ...pending]), canceled]);
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", stop);

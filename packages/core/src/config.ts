@@ -282,12 +282,13 @@ export const CONFIG_DEFAULTS = {
 } as const;
 
 export class ConfigError extends Error {
-  constructor(
-    readonly source: string,
-    readonly problems: string[],
-  ) {
+  readonly source: string;
+  readonly problems: string[];
+  constructor(source: string, problems: string[]) {
     super(`${source} is invalid:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
     this.name = "ConfigError";
+    this.source = source;
+    this.problems = problems;
   }
 }
 

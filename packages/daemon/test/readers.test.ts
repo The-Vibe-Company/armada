@@ -355,21 +355,25 @@ test("reader activity ignores checkpoints and heartbeats and reads only the chan
   activation.commit();
   const store = new EventStore(":memory:");
   const reads: (string | undefined)[] = [];
-  const readers = await startReaders({
-    registry,
-    projects: [project, { ...project, id: "garden" }],
-    store: {
-      append: (event) => store.append(event),
-      subscribe: (listener) => store.subscribe(listener),
-      readSince: (seq, p) => {
-        if (seq === 0) reads.push(p);
-        return store.readSince(seq, p);
-      },
-    },
-    schedule: () => () => {},
-  });
+  const readers = await Promise.all(
+    [project, { ...project, id: "garden" }].map((p) =>
+      startReaders({
+        registry,
+        projects: [p],
+        store: {
+          append: (event) => store.append(event),
+          subscribe: (listener) => store.subscribe(listener),
+          readSince: (seq, p) => {
+            if (seq === 0) reads.push(p);
+            return store.readSince(seq, p);
+          },
+        },
+        schedule: () => () => {},
+      }),
+    ),
+  );
   try {
-    await readers.ready;
+    await Promise.all(readers.map((reader) => reader.ready));
     reads.length = 0;
     store.append({
       project: project.id,
@@ -396,7 +400,7 @@ test("reader activity ignores checkpoints and heartbeats and reads only the chan
     });
     assert.deepEqual(reads, [], "ordinary append traffic does not refold history to reschedule readers");
   } finally {
-    readers.stop();
+    for (const reader of readers) reader.stop();
     store.close();
   }
 });

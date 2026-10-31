@@ -30,9 +30,10 @@ import {
   modelsRequestSchemas,
 } from "./models.js";
 import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
+import { PROJECTS_MINOR, projectRequestSchemas, projectSchema, projectsInspectionSchema } from "./projects.js";
 import { providerRequestSchemas, providersCatalogSchema } from "./providers.js";
-
 import { READER_MINOR, roomPresenceRequestSchema } from "./readers.js";
+import { CONDUCTOR_MINOR } from "./rules.js";
 import {
   sessionOutputRequestSchema,
   sessionOutputResultSchema,
@@ -46,25 +47,19 @@ export * from "./chat.js";
 export * from "./fleet.js";
 export * from "./models.js";
 export * from "./plugins.js";
+export * from "./projects.js";
 export * from "./providers.js";
 export * from "./readers.js";
 export * from "./rules.js";
 export * from "./session.js";
 
 /** Wire version, independent of the daemon/app release versions. */
-export const PROTOCOL_VERSION = { major: 1, minor: READER_MINOR } as const;
+export const PROTOCOL_VERSION = { major: 1, minor: Math.max(READER_MINOR, PROJECTS_MINOR, CONDUCTOR_MINOR) } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
 
 export { versionSchema } from "./envelope.js";
 export type ProtocolVersion = z.infer<typeof versionSchema>;
-
-export const projectSchema = z.object({
-  id: identifier,
-  name: identifier,
-  repository: identifier,
-});
-export type Project = z.infer<typeof projectSchema>;
 
 /** Forward-compatible envelope: known kinds and payloads are defined in fleet.ts. */
 export const eventSchema = pluginEventSchema;
@@ -125,6 +120,7 @@ export const clientMessageSchema = /* @__PURE__ */ z.discriminatedUnion("type", 
   sessionReleaseRequestSchema,
   sessionOutputRequestSchema,
   ...pluginRequestSchemas,
+  ...projectRequestSchemas,
   ...authRequestSchemas,
   ...modelsRequestSchemas,
   ...providerRequestSchemas,
@@ -222,6 +218,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   sessionReleaseResultSchema,
   sessionOutputResultSchema,
   ...pluginResultSchemas,
+  projectsInspectionSchema,
   ...authResultSchemas,
   modelsCatalogSchema,
   providersCatalogSchema,
@@ -270,6 +267,16 @@ export function admitRequest(input: unknown, daemonVersion: ProtocolVersion = PR
       ok: false,
       close: false,
       error: { ...base, code: "invalid-message", message: "Invalid Armada protocol request" },
+    };
+  }
+  if (
+    ["projects.inspect", "projects.add", "projects.remove"].includes(parsed.data.type) &&
+    (version.minor < PROJECTS_MINOR || parsed.data.version.minor < PROJECTS_MINOR)
+  ) {
+    return {
+      ok: false,
+      close: false,
+      error: { ...base, code: "invalid-message", message: "Project management requires protocol minor 12" },
     };
   }
   return { ok: true, request: parsed.data };

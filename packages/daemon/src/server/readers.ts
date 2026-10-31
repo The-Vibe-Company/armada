@@ -8,6 +8,9 @@ import type { EventStore } from "../store.ts";
 export const daemonProjectSchema = projectSchema.extend({
   // Model validation belongs to coordinator boot, so readers survive a bad selection.
   coordinatorModel: z.unknown().optional(),
+  checkout: projectSchema.shape.name.optional(),
+  readyLabel: projectSchema.shape.name.optional(),
+  runtimeGroup: projectSchema.shape.name.optional(),
   programRoot: projectSchema.shape.id.optional(),
   phaseGroup: projectSchema.shape.name.default("Agent phase"),
   tracker: projectSchema.shape.id.default("linear"),
@@ -61,7 +64,8 @@ export async function startReaders(options: ReaderOptions): Promise<{
   const refreshers = new Map<string, { read(): Promise<void>; abort(): void }[]>();
   const activityListeners = new Map<string, (() => void)[]>();
   const now = () => Date.parse((options.now ?? (() => new Date().toISOString()))());
-  const history = options.store?.readSince?.(0) ?? [];
+  const projectIds = new Set(projects.map((project) => project.id));
+  const history = options.store?.readSince?.(0, projects.length === 1 ? projects[0]?.id : undefined) ?? [];
   const initial = fold(history);
   let observed = history.at(-1)?.seq ?? 0;
   const activeProjects = new Map(
@@ -81,7 +85,8 @@ export async function startReaders(options: ReaderOptions): Promise<{
       changes
         .filter(
           (event) =>
-            [
+            projectIds.has(event.project) &&
+            ([
               "session.claimed",
               "session.released",
               "session.reported",
@@ -90,11 +95,11 @@ export async function startReaders(options: ReaderOptions): Promise<{
               "pull-request.merged",
               "pull-request.seen",
             ].includes(event.kind) ||
-            (event.kind === "coordinator.checkpoint" &&
-              typeof event.payload.checkpoint === "object" &&
-              event.payload.checkpoint !== null &&
-              !Array.isArray(event.payload.checkpoint) &&
-              event.payload.checkpoint.format === "armada.worker"),
+              (event.kind === "coordinator.checkpoint" &&
+                typeof event.payload.checkpoint === "object" &&
+                event.payload.checkpoint !== null &&
+                !Array.isArray(event.payload.checkpoint) &&
+                event.payload.checkpoint.format === "armada.worker")),
         )
         .map((event) => event.project),
     );
@@ -126,7 +131,7 @@ export async function startReaders(options: ReaderOptions): Promise<{
     refreshers.set(project.id, sources);
     if (stopped) continue;
     for (const seam of ["tracker", "forge"] as const) {
-      const provider = options.registry.get(seam, project[seam]);
+      const provider = options.registry.get(seam, project[seam], project.id);
       if (!provider) continue;
       const errorKey = `${seam}Error` as const;
       state[errorKey] = "First read pending";

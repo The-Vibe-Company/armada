@@ -117,3 +117,56 @@ for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] a
     }
   });
 }
+
+test("runtime-added projects share the host's Linear cooldown while another daemon stays isolated", async (t) => {
+  const { bootDaemon } = await import("../src/boot.ts");
+  const { BUNDLED_PLUGINS } = await import("../src/plugins/catalog.ts");
+  const { issue, page } = await import("./support/reader-recordings.ts");
+  const dir = mkdtempSync(join(tmpdir(), "armada-reader-quota-"));
+  let daemon: Awaited<ReturnType<typeof bootDaemon>> | undefined;
+  let other: Awaited<ReturnType<typeof bootDaemon>> | undefined;
+  t.after(() => {
+    daemon?.close();
+    other?.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
+    requests++;
+    if (requests === 1) return new Response("withheld", { status: 429, headers: { "Retry-After": "120" } });
+    const operation = /query\s+(\w+)/.exec(JSON.parse(String(init?.body)).query)?.[1];
+    return Response.json({
+      data:
+        operation === "Root"
+          ? { issue: issue("SEED-1") }
+          : operation === "Comments"
+            ? { issues: { nodes: [{ identifier: "SEED-1", comments: page([]) }] } }
+            : { issues: page([]), comments: page([]) },
+    });
+  });
+  const options = {
+    databasePath: ":memory:",
+    catalog: BUNDLED_PLUGINS.filter((p) => p.id === "linear"),
+    secrets: { get: async () => "synthetic-key" },
+    log: { info() {}, error() {} },
+  };
+  daemon = await bootDaemon({ ...options, configPath: join(dir, "first.json"), projects: [project] });
+  const first = daemon.registry.get("tracker", "linear", project.id);
+  assert.ok(first);
+  const pause = await first.read({ project: project.id });
+  assert.ok(pause?.pausedUntil);
+  await daemon.addProject({ ...project, id: "garden", root: dir });
+  const added = daemon.registry.get("tracker", "linear", "garden");
+  assert.ok(added);
+  assert.equal((await added.read({ project: "garden" }))?.pausedUntil, pause.pausedUntil);
+  assert.equal(requests, 1, "adding a scoped provider does not bypass the same credential's pause");
+  other = await bootDaemon({
+    ...options,
+    configPath: join(dir, "other.json"),
+    projects: [{ ...project, id: "other" }],
+  });
+  const isolated = other.registry.get("tracker", "linear", "other");
+  assert.ok(isolated);
+  await isolated.read({ project: "other" });
+  assert.equal(requests, 4, "another daemon reads its independent store instead of inheriting process-global state");
+});

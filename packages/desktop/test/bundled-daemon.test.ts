@@ -1,4 +1,3 @@
-/// <reference types="bun" />
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -13,20 +12,20 @@ import { PROTOCOL_VERSION, serverMessageSchema } from "@armada/protocol";
 import { EventStore } from "../../daemon/src/store.ts";
 import { DaemonProcess } from "../src/daemon.ts";
 
-const build = () => {
+const buildBundle = () => {
   execFileSync("bun", ["run", "build"], {
     cwd: fileURLToPath(new URL("..", import.meta.url)),
     timeout: 60000,
     stdio: "pipe",
   });
 };
-// Bun's node:test compatibility ignores before()'s timeout; use its native setup
-// hook so both runners retain the same existing 60s build bound, apart from the test.
+// Bun's node:test bridge ignores before()'s timeout and defaults to five seconds.
+// Keep the existing one-minute setup budget in both runners; behavior deadlines stay separate.
 if (process.versions.bun) {
-  const { beforeAll } = await import("bun:test");
-  beforeAll(build, 60000);
+  const { beforeAll } = createRequire(import.meta.url)("bun:test");
+  beforeAll(buildBundle, 60000);
 } else {
-  before(build, { timeout: 60000 });
+  before(buildBundle, { timeout: 60000 });
 }
 
 test("Electron's bundled daemon starts a configured coordinator and reads credentials through native keyring", {
