@@ -177,11 +177,14 @@ describe("an agent's page in the room's lane, in a browser", () => {
     await card.getByRole("button", { name: "Open the session" }).click();
     const drawer = page.getByRole("dialog", { name: "HAR-12's session" });
     await drawer.waitFor();
+    // A key the room heard would change the address at once: it stays on HAR-12.
     await page.keyboard.press("ArrowDown");
-    await settled(() => lane(page).getAttribute("data-agent-lane"), "HAR-12");
+    expect(await hash(page)).toBe("#/projects/harbor?panel=agents&agent=HAR-12");
+    expect(await lane(page).getAttribute("data-agent-lane")).toBe("HAR-12");
     await page.keyboard.press("Escape");
     await drawer.waitFor({ state: "detached" });
-    await settled(() => lane(page).getAttribute("data-agent-lane"), "HAR-12");
+    expect(await hash(page)).toBe("#/projects/harbor?panel=agents&agent=HAR-12");
+    expect(await lane(page).getAttribute("data-agent-lane")).toBe("HAR-12");
     await page.keyboard.press("Escape");
     await lane(page).waitFor({ state: "detached" });
     // The focus that was in the lane goes to the Coordinator's row: the keys still hop.
@@ -250,7 +253,8 @@ describe("an agent's page in the room's lane, in a browser", () => {
     await sheet.waitFor();
     await page.keyboard.press("Escape");
     await sheet.waitFor({ state: "detached" });
-    await settled(() => lane(page).getAttribute("data-agent-lane"), "HAR-20");
+    expect(await hash(page)).toBe("#/projects/harbor?panel=agents&agent=HAR-20");
+    expect(await lane(page).getAttribute("data-agent-lane")).toBe("HAR-20");
     await page.keyboard.press("Escape");
     await lane(page).waitFor({ state: "detached" });
     await page.close();
