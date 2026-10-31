@@ -209,6 +209,17 @@ export function wireContext(context: Context): Context {
     ...context,
     ...(context.tools ? { tools: context.tools.map((tool) => ({ ...tool, name: wireToolName(tool.name) })) } : {}),
     messages: context.messages.map((message) => {
+      // A normalized transcript carries the tools in its system messages, not in `tools`.
+      if (message.role === "system" && (message.toolsAdded || message.toolsRemoved))
+        return {
+          ...message,
+          ...(message.toolsAdded
+            ? { toolsAdded: message.toolsAdded.map((tool) => ({ ...tool, name: wireToolName(tool.name) })) }
+            : {}),
+          ...(message.toolsRemoved
+            ? { toolsRemoved: message.toolsRemoved.map((tool) => ({ ...tool, name: wireToolName(tool.name) })) }
+            : {}),
+        };
       if (message.role === "assistant")
         return {
           ...message,
@@ -224,7 +235,10 @@ export function wireContext(context: Context): Context {
 
 /** Wire name back to the harness's, by the context's tools first, else by the alias rule. */
 function harnessNames(context: Context): ReadonlyMap<string, string> {
-  return new Map((context.tools ?? []).map((tool) => [wireToolName(tool.name), tool.name]));
+  const names = (context.tools ?? []).map((tool) => tool.name);
+  for (const message of context.messages)
+    if (message.role === "system") for (const tool of message.toolsAdded ?? []) names.push(tool.name);
+  return new Map(names.map((name) => [wireToolName(name), name]));
 }
 
 function harnessMessage(message: AssistantMessage, names: ReadonlyMap<string, string>): AssistantMessage {

@@ -5,6 +5,7 @@ import { projectHref, useRoute } from "@/lib/route";
 import type { ConnectionStatus } from "@/protocol/client";
 import { useDaemon } from "@/protocol/store";
 import { useSessionRoute } from "@/session/route";
+import { conductorNeedsSignIn } from "@/settings/needs-armada";
 import type { Badges } from "./Activity";
 import { Count } from "./Count";
 import { Logo } from "./Logo";
@@ -25,7 +26,8 @@ const Activity = lazy(() => import("./Activity"));
  * reading of the daemon.
  */
 export function Sidebar() {
-  const { projects, fleets, status } = useDaemon();
+  const daemon = useDaemon();
+  const { projects, fleets, status } = daemon;
   const route = useRoute();
   // A session's page is none of the sections: the hangar is not the current page there.
   const session = useSessionRoute();
@@ -83,6 +85,13 @@ export function Sidebar() {
         >
           <Gear />
           <span className="min-w-0 flex-1 truncate">Settings</span>
+          {/* THE-2071: signed out with a Conductor runtime on, the fleet cannot launch there. */}
+          {conductorNeedsSignIn(daemon) && (
+            <span data-sign-in-dot title="Sign in to Armada in Settings" className="flex flex-none items-center">
+              <span aria-hidden className="size-1.5 rounded-full bg-amber" />
+              <span className="sr-only">Sign in to Armada in Settings</span>
+            </span>
+          )}
         </a>
       </nav>
       <Live status={status} />
