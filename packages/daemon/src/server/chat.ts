@@ -252,7 +252,15 @@ export function chatOf(entries: readonly EntryRecord[], modern = true): ChatItem
       assistants.set(entry.byTaskId ?? -1, ordinal);
       // The task identity is committed before its partial; pi allocates the entry id only on completion.
       const assistantId = modern && entry.byTaskId !== undefined ? `g${entry.byTaskId}:${ordinal}` : id;
-      const body = textOf(message.content);
+      const text = textOf(message.content);
+      // Tool-use messages are intermediate. A final empty/thinking-only response
+      // still needs a visible outcome, including when read after a restart.
+      const toolRound =
+        message.stopReason === "toolUse" &&
+        Array.isArray(message.content) &&
+        message.content.some((block) => block?.type === "toolCall");
+      const silent = !text.trim() && !toolRound && !["error", "aborted"].includes(message.stopReason ?? "");
+      const body = silent ? "The coordinator ended its turn without a word" : text;
       const reasoning = reasoningOf(message.content);
       const metadata = modern
         ? {
@@ -264,7 +272,7 @@ export function chatOf(entries: readonly EntryRecord[], modern = true): ChatItem
         body.trim() ||
         (modern && ((reasoning && message.stopReason !== "error") || message.stopReason === "aborted"))
       )
-        items.push({ kind: owner ? "coordinator" : "line", id: assistantId, at: time, body, ...metadata });
+        items.push({ kind: silent || !owner ? "line" : "coordinator", id: assistantId, at: time, body, ...metadata });
       else if (message.stopReason === "error")
         // A turn the model failed says so, rather than leaving the owner to silence.
         items.push({
