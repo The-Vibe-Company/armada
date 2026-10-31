@@ -614,6 +614,7 @@ test("credential socket writes never expose the key to replies, events or logs",
 // Only the random subscription UUID is normalized; THE-2043 intentionally advances
 // the recorded envelope to minor 5 for per-client plan-policy snapshot projection,
 // THE-2045 to minor 6 for the session page, THE-2049 to minor 7 for live chat,
+// THE-2080 adds runtime projects at minor 12;
 // THE-2072 to reserved minor 13 for hosted Conductor routing
 // (the recorded frames have no coordinator attached and are otherwise unchanged).
 test("subscription bytes stay compatible with the recorded daemon vocabulary and folded tables", async (t) => {

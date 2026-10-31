@@ -55,7 +55,15 @@ function validateConfig(manifest: PluginManifest, config: PluginConfig, defaults
       const base = defaults[seam]?.[kind];
       const value =
         base && typeof saved === "object" && saved !== null && !Array.isArray(saved)
-          ? { ...(base as Record<string, Json>), ...saved }
+          ? {
+              ...(base as Record<string, Json>),
+              ...saved,
+              // The registry owns the complete project scope, including an empty scope.
+              // Provider options such as endpoint still come from saved settings.
+              ...((base as Record<string, Json>).projects && {
+                projects: (base as Record<string, Json>).projects,
+              }),
+            }
           : saved;
       validateContribution(contribution.config as JsonSchema, seam, kind, value);
       const target = validated[seam] ?? {};
@@ -66,7 +74,7 @@ function validateConfig(manifest: PluginManifest, config: PluginConfig, defaults
   return validated;
 }
 
-/** One call per daemon boot. No watching, unloading or network resolution. */
+/** Load a provider registry at boot or for one newly registered project. No network resolution. */
 export async function loadPlugins(
   services: PluginServices,
   configPath = appConfigPath(),

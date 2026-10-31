@@ -1,7 +1,8 @@
 // Where the app is: the address's hash, because the daemon serves one
 // index.html at its root. `#/projects/<id>` is a project's room (THE-1996),
 // `?panel=agents|prs|rules|log` the tab its panel shows (THE-2085; the old
-// rules page, `#/projects/<id>/rules`, is replaced by its Rules tab), `#/settings/<section>`
+// rules page, `#/projects/<id>/rules`, is replaced by its Rules tab), `&agent=<ticket>`
+// the agent whose page takes the chat's place in the room (THE-2089), `#/settings/<section>`
 // a section of the settings (THE-2069: `#/settings` opens the coordinator's,
 // the old `#/plugins` is replaced by the providers'); anything else, and off a
 // browser (a test's static render), the hangar (the home, THE-2025). A
@@ -18,7 +19,7 @@ export type PanelTab = (typeof PANEL_TABS)[number];
 
 export type Route =
   | { kind: "home" }
-  | { kind: "project"; id: string; panel?: PanelTab }
+  | { kind: "project"; id: string; panel?: PanelTab; agent?: string }
   | { kind: "rules"; id: string; redirect: string }
   | { kind: "settings"; section: SettingsSection; redirect?: string };
 
@@ -48,7 +49,8 @@ export function routeOf(hash: string): Route {
   if (!value) return { kind: "home" };
   if (kind === "projects" && more === undefined) {
     const panel = panelOf(query);
-    return panel ? { kind: "project", id: value, panel } : { kind: "project", id: value };
+    const agent = agentOf(query);
+    return { kind: "project", id: value, ...(panel ? { panel } : {}), ...(agent ? { agent } : {}) };
   }
   // The rules page became the room's Rules tab: its old address is replaced, once.
   if (kind === "projects" && more === "rules") return { kind: "rules", id: value, redirect: roomHref(value, "rules") };
@@ -61,10 +63,21 @@ export function panelOf(query: string): PanelTab | undefined {
   return PANEL_TABS.find((t) => t === tab);
 }
 
+/** The agent a hash's query shows in the room's lane, if it names one. */
+export function agentOf(query: string): string | undefined {
+  return new URLSearchParams(query).get("agent")?.trim() || undefined;
+}
+
 /** Where a project's sidebar line leads: its room. */
 export const projectHref = (id: string) => `#/projects/${encodeURIComponent(id)}`;
-/** A project's room with its panel on a tab: the hangar's squadrons open it on Agents. */
-export const roomHref = (id: string, panel?: PanelTab) => `${projectHref(id)}${panel ? `?panel=${panel}` : ""}`;
+/**
+ * A project's room with its panel on a tab (the hangar's squadrons open it on
+ * Agents), and an agent's page in its lane in place of the chat.
+ */
+export const roomHref = (id: string, panel?: PanelTab, agent?: string) => {
+  const query = new URLSearchParams({ ...(panel ? { panel } : {}), ...(agent ? { agent } : {}) }).toString();
+  return `${projectHref(id)}${query ? `?${query}` : ""}`;
+};
 
 const subscribe = (listener: () => void) => {
   window.addEventListener("hashchange", listener);

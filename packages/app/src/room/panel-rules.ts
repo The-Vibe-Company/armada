@@ -1,10 +1,12 @@
 // The room's panel's rules (THE-2085), after T3 Code's right panel
 // (`RightPanelTabs.tsx`, `ChatRightPanel.tsx`, `RightPanelSheet.tsx`): its
 // width, dragged between two bounds and kept with whether it is open; its tab
-// in the address (`?panel=`); the keys that toggle it and pick a tab; and the
-// window width under which it is a sheet over the conversation.
+// in the address (`?panel=`); the keys that toggle it and pick a tab; the
+// window width under which it is a sheet over the conversation; and the agent
+// whose page takes the chat's place (`&agent=`, THE-2089), with the keys that
+// hop from one agent to the next.
 import { useSyncExternalStore } from "react";
-import { PANEL_TABS, type PanelTab, panelOf, roomHref } from "@/lib/route";
+import { agentOf, PANEL_TABS, type PanelTab, panelOf, roomHref } from "@/lib/route";
 
 export const PANEL_KEY = "armada.room.panel";
 export const PANEL_WIDTH = { initial: 320, min: 240, max: 480 } as const;
@@ -83,10 +85,57 @@ export function usePanelTab(): PanelTab | null {
   return panelOf(hash.split("?")[1] ?? "") ?? null;
 }
 
-/** Puts a tab in the address, replacing it: switching tabs adds nothing to Back. */
+/** The agent the address shows in the lane, followed as it changes; none (the chat) off a browser. */
+export function useRoomAgent(): string | null {
+  const hash = useSyncExternalStore(
+    onHash,
+    () => window.location.hash,
+    () => "",
+  );
+  return agentOf(hash.split("?")[1] ?? "") ?? null;
+}
+
+const shownAgent = () => agentOf(window.location.hash.split("?")[1] ?? "");
+
+/** Puts a tab in the address, replacing it: switching tabs adds nothing to Back, and keeps the lane as it is. */
 export function showTab(project: string, tab: PanelTab): void {
-  const next = roomHref(project, tab);
+  const next = roomHref(project, tab, shownAgent());
   if (window.location.hash !== next) window.location.replace(next);
+}
+
+/** Where a row of the panel's Agents leads: the agent in the lane, the panel kept on Agents; null is the chat. */
+export const agentHref = (project: string, agent: string | null) => roomHref(project, "agents", agent ?? undefined);
+
+/** Shows an agent in the lane (null: the chat) by a key, the panel's tab kept, replacing the address: hopping adds nothing to Back. */
+export function showAgent(project: string, agent: string | null): void {
+  const tab = panelOf(window.location.hash.split("?")[1] ?? "") ?? "agents";
+  const next = roomHref(project, tab, agent ?? undefined);
+  if (window.location.hash !== next) window.location.replace(next);
+}
+
+/** What a key press asks of the lane: the previous or next agent (`↑` `↓`, `K` `J`), or the chat (Escape). */
+export type AgentKey = { kind: "step"; by: -1 | 1 } | { kind: "chat" };
+
+export function agentKey(
+  e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
+): AgentKey | null {
+  if (e.metaKey || e.ctrlKey || e.altKey) return null;
+  if (e.key === "Escape") return { kind: "chat" };
+  if (e.shiftKey) return null;
+  if (e.key === "ArrowUp" || e.key === "k" || e.key === "K") return { kind: "step", by: -1 };
+  if (e.key === "ArrowDown" || e.key === "j" || e.key === "J") return { kind: "step", by: 1 };
+  return null;
+}
+
+/**
+ * The agent a step lands on, in the list's order with the chat (null, the
+ * Coordinator row) first; the ends hold, nothing wraps. An agent no longer in
+ * the list steps from the chat.
+ */
+export function agentStep(order: readonly string[], current: string | null, by: -1 | 1): string | null {
+  const at = current === null ? -1 : order.indexOf(current);
+  const next = Math.min(order.length - 1, Math.max(-1, at + by));
+  return next < 0 ? null : (order[next] ?? null);
 }
 
 const NARROW = `(max-width: ${SHEET_BELOW - 0.02}px)`;

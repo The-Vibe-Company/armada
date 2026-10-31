@@ -840,3 +840,26 @@ test("hold opened at the forge write guard retains its ids and clear guidance", 
   assert.match(result.next ?? "", /hold.clear deploy-7/);
   assert.equal(f.counts().mergeCalls, 0);
 });
+
+// The merged project registry must select the project's current providers, not the daemon's boot defaults.
+test("merge uses project-scoped forge, tracker and local gates instead of boot providers", async (t) => {
+  const f = await fixture(t);
+  assert.equal((await f.run("merge.check")).ok, true);
+  gates(f);
+  f.setFacts({ behindBy: 1 });
+  const scoped = new PluginRegistry();
+  register(scoped, { ...f.forge }, { ...f.tracker }, { ...f.node });
+  f.registry.setProject("orchard", scoped);
+  f.forge.inspect = async () => {
+    throw new Error("Boot forge must not be used");
+  };
+  f.tracker.write = async () => {
+    throw new Error("Boot tracker must not be used");
+  };
+  f.node.testMerge = async () => {
+    throw new Error("Boot local gates must not be used");
+  };
+  assert.equal((await f.run("merge.run")).ok, true);
+  assert.deepEqual(f.counts(), { mergeCalls: 1, stopCalls: 1 });
+  assert.equal(f.writes.length, 1);
+});

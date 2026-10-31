@@ -94,8 +94,8 @@ export class Merges {
   }
   #providers(project: string) {
     const settings = this.#options.projects.find((p) => p.id === project);
-    const forge = this.#options.registry.get("forge", settings?.forge ?? "github");
-    const tracker = this.#options.registry.get("tracker", settings?.tracker ?? "linear");
+    const forge = this.#options.registry.get("forge", settings?.forge ?? "github", project);
+    const tracker = this.#options.registry.get("tracker", settings?.tracker ?? "linear", project);
     if (!forge?.inspect)
       throw new MergeFailure(
         "forge_unreachable",
@@ -232,7 +232,7 @@ export class Merges {
           `worker.message to bring ${pull.baseRef} in and hand back, or rules.set gates localCommands, then merge.check`,
         );
       else {
-        const node = this.#options.registry.get("node", "local");
+        const node = this.#options.registry.get("node", "local", scope.project);
         const checkout = this.#options.projects.find((p) => p.id === scope.project)?.checkout;
         if (!node?.testMerge || !checkout)
           result = refuse(

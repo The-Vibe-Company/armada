@@ -108,6 +108,7 @@ export function Thread({
   started = null,
   control,
   positions = browserPositions(),
+  away = false,
 }: {
   items: readonly ThreadItem[];
   /** The project's id: the rows the owner opened are kept for it in the tab's `sessionStorage`. */
@@ -130,6 +131,8 @@ export function Thread({
   control?: Ref<ThreadControl>;
   /** Where each project's place is kept (the tab's `sessionStorage`; null keeps none). */
   positions?: PositionStorage | null;
+  /** Kept out of sight under an agent's page (THE-2089): nothing it shows is marked seen. */
+  away?: boolean;
 }) {
   const box = useRef<HTMLElement>(null);
   const dots = lineGroups(
@@ -160,7 +163,7 @@ export function Thread({
     if (read) setAnnounce(true);
   }, [read]);
   const { pill, toEnd } = useFollow({ box, list, project, working, items, control, positions });
-  useSeen(project, items);
+  useSeen(away ? undefined : project, items);
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <section

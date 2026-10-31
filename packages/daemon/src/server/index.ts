@@ -28,6 +28,7 @@ import { dispatchCredentials } from "../credentials.ts";
 import { fold } from "../fold.ts";
 import { type Keychain, systemKeychain } from "../keychain.ts";
 import type { ModelRegistry } from "../models/registry.ts";
+import type { Projects } from "../projects.ts";
 import type { EventStore } from "../store.ts";
 import type { Workers } from "../workers/service.ts";
 import type { Account } from "./account.ts";
@@ -35,6 +36,7 @@ import { AuthFlows } from "./auth.ts";
 import { dispatchChat } from "./chat.ts";
 import { type ChatClock, ChatLive } from "./chat-live.ts";
 import { dispatchPlugins, isPluginsRequest, type PluginHost } from "./plugins.ts";
+import { dispatchProjects } from "./projects.ts";
 import type { Providers } from "./providers.ts";
 import { dispatchSession } from "./session.ts";
 import { serveStatic } from "./static.ts";
@@ -50,6 +52,7 @@ export interface ServerOptions {
   /** Caller-injected model access; omitted until model configuration is available. */
   coordinators?: readonly CoordinatorOptions[];
   projects: readonly Project[];
+  projectRegistry?: Projects;
   /** 0 asks the OS for a free port. Always bound to IPv4 loopback. */
   port?: number;
   /** Defaults to packages/app/dist, built by Vite. Missing builds return 404. */
@@ -77,6 +80,8 @@ export interface DaemonServer {
   wsUrl: string;
   coordinators: ReadonlyMap<string, ProjectCoordinator>;
   /** Closes connections/listeners; the caller still owns and closes the store. Idempotent. */
+  openProject(config: CoordinatorOptions): Promise<void>;
+  closeProject(project: string): Promise<void>;
   close(): Promise<void>;
 }
 interface Subscription {
@@ -107,20 +112,18 @@ const emptyProject = (): ProjectTables => ({
 /** Node-only transport adapter. One daemon owns all appends through this EventStore. */
 export async function startServer(options: ServerOptions): Promise<DaemonServer> {
   const { store, workers } = options;
-  const projects = options.projects.map((p) => projectSchema.parse(p));
+  let projects = options.projects.map((p) => projectSchema.parse(p));
   if (new Set(projects.map((p) => p.id)).size !== projects.length) throw new Error("Duplicate project id");
   const known = new Set(projects.map((p) => p.id));
   const configured = options.coordinators ?? [];
   if (new Set(configured.map((entry) => entry.project)).size !== configured.length)
     throw new Error("Duplicate coordinator project");
   if (configured.some((entry) => !known.has(entry.project))) throw new Error("Unknown coordinator project");
-  const coordinatorManager =
-    configured.length || options.resolveCoordinator
-      ? new (await import("../../coordinator/index.ts")).Coordinators(store)
-      : undefined;
+  const coordinatorManager = new (await import("../../coordinator/index.ts")).Coordinators(store);
   const coordinators = new Map<string, ProjectCoordinator>();
   const sources = new Map(configured.map((config) => [config.project, config]));
   const opening = new Map<string, Promise<ProjectCoordinator | undefined>>();
+  const closingProjects = new Set<string>();
   const staticDir = options.staticDir ?? fileURLToPath(new URL("../../../app/dist/", import.meta.url));
   let authority = "";
   let closing = false;
@@ -178,12 +181,13 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   }
 
   async function ensureCoordinator(project: string): Promise<ProjectCoordinator | undefined> {
+    if (closing || closingProjects.has(project) || !known.has(project)) return undefined;
     if (!options.resolveCoordinator || !coordinatorManager) return coordinators.get(project);
     const pending = opening.get(project);
     if (pending) return pending;
     const next = (async () => {
       const config = await options.resolveCoordinator?.(project);
-      if (!config || closing) return undefined;
+      if (!config || closing || closingProjects.has(project)) return undefined;
       const current = coordinators.get(project);
       if (current) {
         const agent = await current.conversation.agent(context);
@@ -195,7 +199,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         ) {
           // An in-flight request keeps its model. The newly selected model starts with the next turn.
           await current.harness.waitForIdle(context);
-          if (closing) return undefined;
+          if (closing || closingProjects.has(project)) return undefined;
           sources.set(project, config);
           await current.conversation.configure({ model: config.model }, context);
         }
@@ -227,6 +231,46 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     } finally {
       if (opening.get(project) === next) opening.delete(project);
     }
+  }
+
+  const stopProjectLists = options.projectRegistry?.subscribe(() => {
+    if (!options.projectRegistry) return;
+    projects = options.projectRegistry.list.map((p) => projectSchema.parse(p));
+    for (const project of projects) if (!known.has(project.id)) closingProjects.delete(project.id);
+    known.clear();
+    for (const project of projects) known.add(project.id);
+    for (const ws of connections.keys())
+      send(ws, { type: "projects.result", version, id: "projects-changed", projects });
+  });
+
+  async function openProject(config: CoordinatorOptions): Promise<void> {
+    closingProjects.delete(config.project);
+    sources.set(config.project, config);
+    const coordinator = await coordinatorManager.open({
+      ...config,
+      models: () => {
+        const models = sources.get(config.project)?.models ?? config.models;
+        return typeof models === "function" ? models() : models;
+      },
+      native: {
+        ...config.native,
+        ...(workers ? { workers, deliverAnswerOnce: (input) => workers.answer(input, config.project) } : {}),
+      },
+    });
+    coordinators.set(config.project, coordinator);
+  }
+  async function closeProject(project: string): Promise<void> {
+    closingProjects.add(project);
+    // Closing rejects idle waiters; a pending model switch may be waiting on one.
+    await coordinatorManager.remove(project);
+    await opening.get(project)?.catch(() => {});
+    for (const subscriptions of connections.values()) {
+      const subscription = subscriptions.get(project);
+      subscription?.chat?.();
+      if (subscription) subscription.chat = undefined;
+    }
+    coordinators.delete(project);
+    sources.delete(project);
   }
 
   /** A project's folded tables at the store's cursor, as the protocol's JSON value. */
@@ -566,11 +610,22 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           });
           return;
         }
+        if (
+          request.type === "projects.inspect" ||
+          request.type === "projects.add" ||
+          request.type === "projects.remove"
+        ) {
+          void dispatchProjects(request, options.projectRegistry).then((reply) => send(ws, reply));
+          return;
+        }
         if (request.type === "projects.list") {
           send(ws, { type: "projects.result", version, id: request.id, projects });
           return;
         }
-        if (!known.has(request.project)) return error(ws, request.id, "not-found", "No such project");
+        const historical =
+          (request.type === "project.subscribe" || request.type === "session.read") &&
+          store.readSince(0, request.project).length > 0;
+        if (!known.has(request.project) && !historical) return error(ws, request.id, "not-found", "No such project");
         if (
           request.type === "chat.read" ||
           request.type === "chat.send" ||
@@ -658,6 +713,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     options.providers?.close();
     unsubscribeAccount?.();
     await auth.close();
+    stopProjectLists?.();
     unsubscribe();
     sockets.close();
     throw error;
@@ -675,6 +731,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       providerFlows.clear();
       unsubscribeAccount?.();
       const accountClosed = options.account?.close();
+      stopProjectLists?.();
       unsubscribe();
       for (const ws of sockets.clients) ws.terminate();
       connections.clear();
@@ -698,27 +755,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     return closed;
   };
   try {
-    if (coordinatorManager)
-      for (const config of configured)
-        coordinators.set(
-          config.project,
-          await coordinatorManager.open({
-            ...config,
-            models: () => {
-              const models = sources.get(config.project)?.models ?? config.models;
-              return typeof models === "function" ? models() : models;
-            },
-            native: {
-              ...config.native,
-              ...(workers
-                ? {
-                    workers,
-                    deliverAnswerOnce: (input) => workers.answer(input, config.project),
-                  }
-                : {}),
-            },
-          }),
-        );
+    for (const config of configured) await openProject(config);
   } catch (error) {
     await close();
     throw error;
@@ -727,6 +764,8 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     url: `http://${authority}`,
     wsUrl: `ws://${authority}/`,
     coordinators,
+    openProject,
+    closeProject,
     close,
   };
 }

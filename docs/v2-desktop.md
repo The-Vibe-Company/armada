@@ -434,6 +434,18 @@ output and URLs; the app owns opening the browser. Linear or GitHub token prompt
 write only a declared secret through the daemon's credential store. Disconnect
 clears a pasted key; a key supplied by the environment or Armada remains controlled
 by that source.
+### Runtime projects (THE-2080, protocol minor 12)
+
+`armadad --projects <projects.json>` owns that file as a serialized project registry. A missing file starts with an empty list. Existing entries without a root remain readable; a legacy `checkout` becomes the canonical `root`. New registrations store the real local folder as both `root` and the worker checkout, alongside `id`, `name`, `repository` and the confirmed tracker settings. Add/remove use a temporary file and atomic rename; no restart is required.
+
+The app client exposes `inspectProject(path)`, `addProject({ path, id, name, repository, programRoot?, phaseGroup? })`, and `removeProject(id)`. Inspection is read-only: Git origin (SSH or HTTPS), branch and cleanliness, TOML program root and labels, suggestions from the folder name, and actionable problems for incomplete folders. The Git remote is the preferred repository suggestion. Adding uses confirmed values and reads the folder's TOML phase, runtime and ready labels. The registry owns provider project maps, so removed/re-added ids cannot inherit stale saved tracker roots. A project without a selected coordinator model retains the daemon's existing unavailable-coordinator behavior; configuring a model is still required for a responding room.
+
+Every wire request keeps its existing correlation `id` and `version`. To avoid overloading that `id`, `projects.add` carries the confirmed project identifier in `projectId`, and `projects.remove` carries it in `project`. Their responses are `projects.result` with the current list; `projects.inspect { path }` responds with `projects.inspection`. New operations require minor 12. Connected clients receive a `projects.result` notification after registration/removal, subscribe only to newly listed projects, and retain prior event logs. A disconnected mutation is never replayed automatically: inspect the list before retrying an unconfirmed add/remove.
+
+Each project's readers and coordinator have independent lifetimes. Removal shares the worker launch queue and refuses active workers or an unresolved launch, including a launch whose workspace is still being prepared. It closes the project's coordinator and readers and retains all events; historical session reads and project subscriptions remain available. Local node configuration uses `node.local.projects[id].root`: worktrees go under `<root>/.armada/worktrees/<ticket>`, with one `/.armada/worktrees/` rule in Git's `info/exclude` (resolved for linked checkouts too). Repository `.gitignore` files are untouched.
+
+If persistence fails, the registry restores its prior services and keeps the committed file/list. If compensation itself fails, it cleans partial recovery, returns an actionable recovery error and pauses all queued/new registry mutations until the daemon restarts. It never announces that failure as a successful add/remove.
+
 
 Conductor workers (THE-2072, protocol minor 13) run through the optional
 `conductor` runtime provider. Enable it in Settings > Providers, configure its
