@@ -1,40 +1,19 @@
 import assert from "node:assert/strict";
-import { ChildProcess, execFile } from "node:child_process";
+import { ChildProcess, execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { once } from "node:events";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { setImmediate } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { guarded } from "@armada/plugin-api/guard";
 import { createLocalNode } from "../src/index.ts";
-import { eventually } from "./support.ts";
+import { eventually, repository } from "./support.ts";
 
 const execute = promisify(execFile);
-
-async function repository(root: string): Promise<string> {
-  const path = join(root, "repository");
-  await mkdir(path, { recursive: true });
-  await execute("git", ["init", "--quiet", path]);
-  await writeFile(join(path, "README.md"), "local node fixture\n");
-  await execute("git", ["-C", path, "add", "README.md"]);
-  await execute("git", [
-    "-C",
-    path,
-    "-c",
-    "user.name=Local node test",
-    "-c",
-    "user.email=local-node@example.invalid",
-    "-c",
-    "commit.gpgsign=false",
-    "commit",
-    "--quiet",
-    "-m",
-    "fixture",
-  ]);
-  return path;
-}
 
 test("eventually rejects at its clock deadline, including late observations", async () => {
   for (const scenario of ["unsettled", "late poll", "late result"]) {
@@ -85,6 +64,78 @@ async function launch(
         env: environment,
       }),
   );
+}
+
+for (const linked of [false, true]) {
+  test(`project-root worktrees stay in the chosen ${linked ? "linked " : ""}checkout and are excluded once`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "armada-node-root-"));
+    try {
+      const home = join(root, "home");
+      const config = join(root, "xdg");
+      await mkdir(home);
+      await mkdir(config);
+      // Use a child so parallel tests cannot change this fixture's process environment.
+      const child = spawn(
+        process.execPath,
+        [fileURLToPath(new URL("./project-root-worktrees.ts", import.meta.url)), root, linked ? "linked" : "main"],
+        {
+          env: {
+            PATH: process.env.PATH,
+            HOME: home,
+            XDG_CONFIG_HOME: config,
+            GIT_CONFIG_GLOBAL: "/dev/null",
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_AUTHOR_NAME: "Local node test",
+            GIT_AUTHOR_EMAIL: "local-node@example.invalid",
+            GIT_COMMITTER_NAME: "Local node test",
+            GIT_COMMITTER_EMAIL: "local-node@example.invalid",
+            LANG: "C",
+            LC_ALL: "C",
+          },
+          stdio: ["ignore", "ignore", "pipe"],
+        },
+      );
+      const exited = once(child, "close");
+      let stderr = "";
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      const [code, signal] = await exited;
+      assert.equal(code, 0, `Worktree fixture failed (signal: ${signal ?? "none"}). Child stderr:\n${stderr}`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const parent of [".armada", ".armada/worktrees", ".armada/worktrees/CHECK-1"]) {
+  test(`project-root preparation rejects a symlink at ${parent} before changing Git or the target`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "armada-node-symlink-"));
+    try {
+      const source = await repository(root);
+      const outside = join(root, "outside");
+      await mkdir(outside);
+      await mkdir(dirname(join(source, parent)), { recursive: true });
+      await symlink(outside, join(source, parent), "dir");
+      const before = (await execute("git", ["-C", source, "worktree", "list", "--porcelain"])).stdout;
+      const exclude = resolve(
+        source,
+        (await execute("git", ["-C", source, "rev-parse", "--git-path", "info/exclude"])).stdout.trim(),
+      );
+      const rules = await readFile(exclude, "utf8");
+      const node = createLocalNode({ projects: { orchard: { root: source } }, transport: "pipe" });
+      await assert.rejects(
+        node.prepare({ project: "orchard", ticket: "CHECK-1", repository: source, branch: "escaped-worker" }),
+        /symbolic link/,
+      );
+      assert.deepEqual(await readdir(outside), []);
+      assert.equal((await execute("git", ["-C", source, "worktree", "list", "--porcelain"])).stdout, before);
+      assert.equal(await readFile(exclude, "utf8"), rules);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 }
 
 test("prepares a checked-out worktree and delivers keyed messages to a headless process", async () => {

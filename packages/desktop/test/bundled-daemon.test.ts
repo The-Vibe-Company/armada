@@ -12,16 +12,21 @@ import { PROTOCOL_VERSION, serverMessageSchema } from "@armada/protocol";
 import { EventStore } from "../../daemon/src/store.ts";
 import { DaemonProcess } from "../src/daemon.ts";
 
-before(
-  () => {
-    execFileSync("bun", ["run", "build"], {
-      cwd: fileURLToPath(new URL("..", import.meta.url)),
-      timeout: 60000,
-      stdio: "pipe",
-    });
-  },
-  { timeout: 60000 },
-);
+const buildBundle = () => {
+  execFileSync("bun", ["run", "build"], {
+    cwd: fileURLToPath(new URL("..", import.meta.url)),
+    timeout: 60000,
+    stdio: "pipe",
+  });
+};
+// Bun's node:test bridge ignores before()'s timeout and defaults to five seconds.
+// Keep the existing one-minute setup budget in both runners; behavior deadlines stay separate.
+if (process.versions.bun) {
+  const { beforeAll } = createRequire(import.meta.url)("bun:test");
+  beforeAll(buildBundle, 60000);
+} else {
+  before(buildBundle, { timeout: 60000 });
+}
 
 test("Electron's bundled daemon starts a configured coordinator and reads credentials through native keyring", {
   timeout: 20000,
