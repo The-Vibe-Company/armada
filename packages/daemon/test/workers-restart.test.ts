@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { RuntimeProvider, WorkerRef } from "@armada/plugin-api";
-import { evaluateBudget } from "../src/budget.ts";
 import { queueDelivery } from "../src/deliveries.ts";
 import { fold } from "../src/fold.ts";
 import { PluginRegistry } from "../src/plugins/registry.ts";
@@ -441,6 +440,31 @@ for (const scenario of [
     observeGate = new Promise<void>((resolve) => {
       ready = resolve;
     });
+    if (scenario === "interrupted launch") {
+      const rules = fold(store.readSince(0)).projects[project]!.rules!;
+      store.append({
+        project,
+        at,
+        actor: "coordinator",
+        kind: "coordinator.checkpoint",
+        payload: {
+          checkpoint: {
+            format: "armada.tools",
+            version: 1,
+            type: "rules",
+            rules: {
+              revision: rules.revision + 1,
+              value: {
+                ...rules.value,
+                policy: { ...rules.value.policy, budget: { workerLaunchesPerNight: total, zone: "UTC" } },
+              },
+            },
+          },
+        },
+      });
+      assert.equal(fold(store.readSince(0)).projects[project]!.holds.length, 0);
+      assert.equal(fold(store.readSince(0)).projects[project]!.usage?.days[0]?.workerLaunches, total - 1);
+    }
     const recovering = workers.recover();
     if (scenario === "queued input waits for worker re-adoption") {
       const messages = () =>
@@ -526,32 +550,9 @@ for (const scenario of [
       "adoption confirms interrupted launches but never charges another launch for a known generation",
     );
     if (scenario === "interrupted launch") {
-      const rules = fold(store.readSince(0)).projects[project]!.rules!;
-      store.append({
-        project,
-        at,
-        actor: "coordinator",
-        kind: "coordinator.checkpoint",
-        payload: {
-          checkpoint: {
-            format: "armada.tools",
-            version: 1,
-            type: "rules",
-            rules: {
-              revision: rules.revision + 1,
-              value: {
-                ...rules.value,
-                policy: { ...rules.value.policy, budget: { workerLaunchesPerNight: total, zone: "UTC" } },
-              },
-            },
-          },
-        },
-      });
-      assert.deepEqual(
-        evaluateBudget({ project, events: store.readSince(0), now: at }).map((event) => event.kind),
-        ["hold.opened", "inbox.opened"],
-        "the recovered launch consumes its night budget slot",
-      );
+      const tables = fold(store.readSince(0)).projects[project]!;
+      assert.equal(tables.holds.length, 1, "recovery enforces the night cap even without a coordinator model");
+      assert.equal(tables.inbox.filter((item) => item.kind === "owner-request").length, 1);
     }
     const identity = (sessions: typeof before) =>
       sessions.map(({ ticket, session, generation, handle, phase }) => ({

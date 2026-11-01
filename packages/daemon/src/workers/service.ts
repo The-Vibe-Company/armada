@@ -1521,6 +1521,13 @@ export class Workers {
             }
           }
         });
+        if (!this.#closing)
+          for (const event of evaluateBudget({
+            project: project.id,
+            events: this.#options.store.readSince(0, project.id),
+            now: this.#at(),
+          }))
+            this.#options.store.append(event);
       }
       return summary;
     })();
