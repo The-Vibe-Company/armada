@@ -19,7 +19,9 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
     string,
     {
       ref: WorkerRef;
+      delivering?: Promise<void>;
       stream: boolean;
+      accepted?: number;
       activity: "working" | "idle";
       seen: string;
       pending: string;
@@ -77,6 +79,25 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
     ...claudeConnection(options.binary ?? options.command ?? "claude"),
     withNode: (selected) => claudeRuntime(options, selected),
     prepare: (request) => facilities().prepare(request),
+    checkpoint: (ref) => ({ stream: record(ref).stream }),
+    async adopt(ref, workspace, recovery) {
+      const node = facilities();
+      if (!node.adopt) throw new Error("Selected node cannot reattach workers");
+      const { deliveries } = await node.adopt(ref, workspace, { starting: recovery?.starting });
+      const value: ReturnType<typeof record> = {
+        ref: { ...ref },
+        stream: recovery?.stream ?? true,
+        accepted: deliveries,
+        activity: deliveries ? "working" : "idle",
+        seen: "",
+        pending: "",
+        turns: deliveries,
+        deliveries: new Map(),
+      };
+      workers.set(ref.handle, value);
+      consume(value, (await node.observe(ref)).reply ?? "");
+      return { deliveries };
+    },
     async launch(request) {
       // The conformance host supplies an explicit command. Production uses the CLI's streaming protocol.
       const stream = !request.command;
@@ -109,23 +130,36 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
     },
     async deliver(ref, message, key) {
       const value = record(ref);
-      const prior = value.deliveries.get(key);
-      if (prior !== undefined) {
-        if (prior !== message) throw new Error("Delivery key already used with another message");
-        return;
-      }
-      const input = value.stream
-        ? JSON.stringify({ type: "user", message: { role: "user", content: message } })
-        : message;
-      // The selected node checks ownership again at the actual native write.
-      const before = await facilities().observe(ref);
-      consume(value, before.reply ?? "");
-      await facilities().deliver(ref, input, key);
-      value.deliveries.set(key, message);
-      value.reply = undefined;
-      value.failure = undefined;
-      value.turns++;
-      value.activity = "working";
+      // Observe crosses a socket after reattachment. Queue before that first await so
+      // simultaneous callers retain their order all the way to the CLI's input.
+      const delivery = (value.delivering ?? Promise.resolve())
+        .catch(() => {})
+        .then(async () => {
+          const prior = value.deliveries.get(key);
+          if (prior !== undefined) {
+            if (prior !== message) throw new Error("Delivery key already used with another message");
+            return;
+          }
+          const input = value.stream
+            ? JSON.stringify({ type: "user", message: { role: "user", content: message } })
+            : message;
+          // The selected node checks ownership again at the actual native write.
+          const before = await facilities().observe(ref);
+          consume(value, before.reply ?? "");
+          await facilities().deliver(ref, input, key);
+          value.deliveries.set(key, message);
+          if (value.accepted !== undefined) {
+            const accepted = (await facilities().observe(ref)).acceptedDeliveries ?? value.accepted + 1;
+            if (accepted === value.accepted) return;
+            value.turns += Math.max(0, accepted - value.accepted);
+            value.accepted = accepted;
+          } else value.turns++;
+          value.reply = undefined;
+          value.failure = undefined;
+          value.activity = "working";
+        });
+      value.delivering = delivery;
+      return delivery;
     },
     async observe(ref) {
       const value = record(ref);

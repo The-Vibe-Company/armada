@@ -53,6 +53,7 @@ export * from "./session.js";
 
 /** Wire version, independent of the daemon/app release versions. */
 export const PROTOCOL_VERSION = { major: 1, minor: BRIEF_INSTRUCTIONS_MINOR } as const;
+export const WORKER_RECOVERY_MINOR = 15;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
 
@@ -101,7 +102,20 @@ export const credentialsResultSchema = z.object({
   needsRepair: z.boolean().optional(),
   storage: z.enum(["os-keychain", "file"]),
 });
+export const fleetShutdownRequestSchema = requestSchema("fleet.shutdown", {
+  project: identifier,
+  reason: z.string().trim().min(1).max(4000),
+});
+export const fleetShutdownResultSchema = z.object({
+  ...request,
+  type: z.literal("fleet.shutdown.result"),
+  project: identifier,
+  ok: z.boolean(),
+  released: z.array(identifier),
+  failed: z.array(identifier),
+});
 export const clientMessageSchema = /* @__PURE__ */ z.discriminatedUnion("type", [
+  fleetShutdownRequestSchema,
   accountStatusRequestSchema,
   accountLoginRequestSchema,
   accountLogoutRequestSchema,
@@ -197,6 +211,7 @@ export const errorSchema = z.object({
   message: identifier,
 });
 export const serverMessageSchema = z.discriminatedUnion("type", [
+  fleetShutdownResultSchema,
   accountResultSchema,
   accountDeviceSchema,
   credentialsResultSchema,
@@ -276,5 +291,7 @@ export function admitRequest(input: unknown, daemonVersion: ProtocolVersion = PR
       error: { ...base, code: "invalid-message", message: "Project management requires protocol minor 12" },
     };
   }
+  if (parsed.data.type === "fleet.shutdown" && parsed.data.version.minor < WORKER_RECOVERY_MINOR)
+    return { ok: false, close: false, error: { ...base, code: "app-too-old", message: APP_TOO_OLD } };
   return { ok: true, request: parsed.data };
 }

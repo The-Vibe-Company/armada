@@ -341,7 +341,8 @@ async function workerChecks(options: SeamCheckOptions, seam: "runtime" | "node",
       signal.throwIfAborted();
       await provider.deliver(worker, "exit", randomUUID());
       await poll(provider, worker, (observation) => observation.state === "stopped", deadline, signal);
-      worker = undefined;
+      // A natural CLI exit may leave its supervisor/group pin alive. Retain the
+      // owned reference for the explicit cleanup below before disposing the worktree.
     });
   } finally {
     if (worker && provider) await options.check(`${name}.cleanup`, () => provider.stop(worker as WorkerRef));

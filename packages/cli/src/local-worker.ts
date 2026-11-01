@@ -4,6 +4,8 @@ import { secretNameRefusal } from "@armada/core";
 import type { Io } from "./io.ts";
 import { UsageError } from "./io.ts";
 
+class TransportUnavailable extends Error {}
+class BeforeConnect extends TransportUnavailable {}
 const commands = new Set(["claim", "report", "heartbeat", "ask", "release"]);
 interface Args {
   command: string;
@@ -23,8 +25,18 @@ export async function localWorker(io: Io, args: Args): Promise<number | null> {
   if (!socketPath || !token) throw new UsageError("local worker requires its issued socket and token");
   const ticket = args.options.ticket ?? (args.command === "claim" ? args.rest[0] : undefined) ?? io.env.ARMADA_TICKET;
   if (!ticket) throw new UsageError("local worker needs its ticket");
-  const call = async (body: Record<string, unknown>) => {
-    return new Promise<Record<string, unknown>>((resolve, reject) => {
+  const now = () => (io.now?.() ?? new Date()).getTime();
+  const once = async (body: Record<string, unknown>, timeoutMs: number) => {
+    return new Promise<Record<string, unknown>>((resolvePromise, rejectPromise) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const resolve = (value: Record<string, unknown>) => {
+        clearTimeout(timer);
+        resolvePromise(value);
+      };
+      const reject = (error: Error) => {
+        clearTimeout(timer);
+        rejectPromise(error);
+      };
       const req = request(
         {
           socketPath,
@@ -36,6 +48,12 @@ export async function localWorker(io: Io, args: Args): Promise<number | null> {
           },
         },
         (res) => {
+          if (res.statusCode !== 200) {
+            reject(new Error("Local worker authorization refused or generation ended"));
+            res.on("error", () => {});
+            res.destroy();
+            return;
+          }
           let output = "";
           res.on("data", (chunk) => {
             output += chunk;
@@ -50,13 +68,50 @@ export async function localWorker(io: Io, args: Args): Promise<number | null> {
               reject(new Error("Invalid local worker response"));
             }
           });
-          res.on("error", () => reject(new Error("Local worker response unavailable")));
+          res.on("error", () => reject(new TransportUnavailable("Local worker response unavailable")));
         },
       );
-      req.setTimeout(10000, () => req.destroy(new Error("Local worker request timed out")));
-      req.on("error", () => reject(new Error("Local worker socket unavailable; no V1 request was made")));
+      let connected = false;
+      req.on("socket", (socket) => {
+        if (!socket.connecting) connected = true;
+        socket.once("connect", () => {
+          connected = true;
+        });
+      });
+      timer = setTimeout(
+        () => req.destroy(Object.assign(new Error("Local worker request timed out"), { code: "ETIMEDOUT" })),
+        timeoutMs,
+      );
+      req.on("error", (error: NodeJS.ErrnoException) => {
+        const message = "Local worker socket unavailable; no V1 request was made";
+        reject(
+          !connected && ["ENOENT", "ECONNREFUSED"].includes(error.code ?? "")
+            ? new BeforeConnect(message)
+            : ["ECONNRESET", "EPIPE", "ETIMEDOUT"].includes(error.code ?? "")
+              ? new TransportUnavailable(message)
+              : new Error(message),
+        );
+      });
       req.end(JSON.stringify({ ...body, ticket }));
     });
+  };
+  const call = async (body: Record<string, unknown>) => {
+    // Only retry a connection that never reached a daemon. A refused capability or an unknown
+    // write outcome must not be replayed. Heartbeats are idempotent and may reconnect after
+    // a dropped response. The body (including an ask's identity) stays unchanged.
+    const deadline = now() + 30_000;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await once(body, Math.max(1, Math.min(10_000, deadline - now())));
+      } catch (error) {
+        const retryable =
+          error instanceof BeforeConnect || (args.command === "heartbeat" && error instanceof TransportUnavailable);
+        const remaining = deadline - now();
+        if (!retryable || remaining <= 0 || attempt >= 60 || io.stopped?.()) throw error;
+        await (io.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(Math.min(500, remaining));
+        if (now() >= deadline) throw error;
+      }
+    }
   };
   const readText = async (path: string) => {
     const content = path === "-" ? await io.readStdin?.() : await io.readFile(path);

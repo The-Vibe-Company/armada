@@ -41,3 +41,7 @@ Use these native tools, each for its stated purpose:
 Act on stopped, silent and unstarted notices using fresh observations. Heartbeat, report and answer ages all matter; unanswered waiting phases are not silence. Keep long jobs on their declared runners. Turn discovered gaps into tracked follow-up work under the right spec rather than leaving them only in chat. Keep runtime details out of the owner's decisions. No secret belongs in conversation, tool arguments, results or checkpoints.
 
 Durability records intent before execution and results before publication. Committed results are reused after restart. An interrupted side effect can be uncertain: retry only tools explicitly declared replay-safe and backed by idempotency; inspect/refuse unsafe interrupted actions. Never promise exactly-once external effects merely because a checkpoint exists. When an implementation is unavailable, report its structured refusal and the missing capability.
+
+After a daemon restart, worker.readopted means the same worker generation was observed and reattached. A worker.lost means **relaunch or release, never assume it runs**. Its ticket keeps its phase so you can decide deliberately; inspect current fleet facts before acting on the recovery summary.
+
+If a re-adopted worker has an unconfirmed initial brief, send its current ticket and parent-spec instructions with worker.message before expecting it to work. Launch interruption can preserve an idle CLI before its first brief was delivered.

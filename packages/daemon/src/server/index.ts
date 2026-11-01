@@ -442,6 +442,21 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       const request = admitted.request;
       minors.set(ws, request.version.minor);
       try {
+        if (request.type === "fleet.shutdown") {
+          // Owner loopback WebSocket admission only; deliberately absent from coordinator/worker tools.
+          if (!projects.some((project) => project.id === request.project))
+            return error(ws, request.id, "not-found", "Unknown fleet project");
+          if (!workers) return error(ws, request.id, "not-found", "Worker runtime unavailable");
+          void workers
+            .shutdown(request.project, request.reason, () => {
+              if (closing || ws.readyState !== WebSocket.OPEN) throw new Error("Owner connection closed");
+            })
+            .then((result) =>
+              send(ws, { type: "fleet.shutdown.result", version, id: request.id, project: request.project, ...result }),
+            )
+            .catch(() => error(ws, request.id, "internal", "Fleet shutdown failed; inspect the remaining workers"));
+          return;
+        }
         if (request.type === "providers.connect") {
           const providers = options.providers;
           if (!providers) return error(ws, request.id, "not-found", "This daemon has no provider catalog");

@@ -29,11 +29,13 @@ export const sessionReleaseRequestSchema = z.object({
 /** The worker's last output, as its runtime observes it now. */
 export const sessionOutputRequestSchema = z.object({ ...request, ...generation, type: z.literal("session.output") });
 
-/** Released: the worker is stopped; `disposed` says whether its clean workspace was removed too. */
+/** Released: the ticket is retired; stopped:false explicitly marks an unreachable lost runtime. */
 export const sessionReleaseResultSchema = z.object({
   ...request,
   ...generation,
   type: z.literal("session.release.result"),
+  /** Absent on older peers; false only for a deliberate release of a lost worker without stop proof. */
+  stopped: z.boolean().optional(),
   disposed: z.boolean(),
 });
 export const sessionOutputResultSchema = z.object({

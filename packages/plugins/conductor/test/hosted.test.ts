@@ -13,6 +13,7 @@ import { fold } from "../../../daemon/src/fold.ts";
 import { PluginRegistry } from "../../../daemon/src/plugins/registry.ts";
 import { Account } from "../../../daemon/src/server/account.ts";
 import { EventStore } from "../../../daemon/src/store.ts";
+import { workerBrief } from "../../../daemon/src/workers/brief.ts";
 import { HostedReader, startHostedReader } from "../../../daemon/src/workers/hosted.ts";
 import { WorkerRefusal, Workers } from "../../../daemon/src/workers/service.ts";
 import { conductorRuntime } from "../src/index.ts";
@@ -297,6 +298,7 @@ test("hosted polls fold reports, questions and hand-back once across restart, fe
   await f.workers.close();
   assert.equal((await f.state()).archived, undefined, "closing the daemon preserves a hosted workspace");
   const resumed = f.makeWorkers();
+  await resumed.recover();
   assert.equal((await resumed.observe(project.id, "SEED-1")).state, "running");
   const reopened = new EventStore(join(f.directory, "events.sqlite"));
   t.after(() => reopened.close());
@@ -914,4 +916,50 @@ test("a delayed older report cannot override a hand-back imported by an earlier 
   allowOlder = true;
   await reader.poll();
   assert.equal(fold(f.store.readSince(0)).projects[project.id]?.sessions[0]?.phase, "ready-to-merge");
+});
+
+test("hosted brief token headroom refuses before minting or recording a phantom generation", async (t) => {
+  const f = await setup(t);
+  const tables = fold(f.store.readSince(0)).projects[project.id]!;
+  const ticket = tables.tickets[0]!;
+  const fits = (length: number, token: string) => {
+    try {
+      workerBrief({
+        ticket: { ...ticket, description: "x".repeat(length) },
+        tables,
+        repository: project.repository,
+        branch: ticket.branchName!,
+        hosted: { token, apiUrl: ARMADA_URL, profile: "opus", project: project.id },
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  let low = 0;
+  let high = 48 * 1024;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (fits(mid, "pending-launch-token")) low = mid;
+    else high = mid - 1;
+  }
+  assert(fits(low, "pending-launch-token"));
+  assert(!fits(low, "armada_launch_" + "x".repeat(43)), "the issued-token size must exceed the old preflight boundary");
+  f.store.append({
+    project: project.id,
+    at,
+    actor: "tracker",
+    kind: "ticket.seen",
+    payload: { ...ticket, description: "x".repeat(low) },
+  });
+  await assert.rejects(
+    f.workers.tool(project.id, "worker.launch", { ticket: ticket.id }, "token-headroom", () => {}),
+    /48 KiB/,
+  );
+  assert.equal(
+    f.fake.calls.some((call) => call.path === "launch-tokens"),
+    false,
+  );
+  assert.equal((await f.state()).calls.length, 0);
+  assert.equal(fold(f.store.readSince(0)).projects[project.id]!.sessions.length, 0);
 });

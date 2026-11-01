@@ -474,3 +474,127 @@ for (const phase of ["blocked", "awaiting-approval", "awaiting-validation"] as c
     assert.match(JSON.stringify(drafts.at(-1)), /silent ORC-1/);
   });
 }
+
+const oldBoot = "00000000-0000-4000-8000-000000000001";
+const newBoot = "00000000-0000-4000-8000-000000000002";
+for (const lost of [false, true])
+  test(`first wake coalesces restart recovery and never replays an older boot: lost=${lost}`, async (t) => {
+    const store = new EventStore(":memory:");
+    const clock = new Clock();
+    const append = (kind: FleetEvent["kind"], payload: unknown) => store.append(event(kind, payload, 1, "daemon"));
+    const marker = (boot: string) =>
+      append("coordinator.checkpoint", { checkpoint: { format: "armada.worker", version: 1, type: "recovery", boot } });
+    const tickets = lost ? ["ORC-1", "ORC-2", "ORC-3"] : ["ORC-1", "ORC-2"];
+    for (const [index, ticket] of tickets.entries())
+      append("session.claimed", {
+        ticket,
+        session: `s${index}`,
+        generation: 1,
+        owner: "coordinator",
+        runtime: "codex",
+        handle: `h${index}`,
+      });
+    marker(oldBoot);
+    append("worker.lost", {
+      ticket: "ORC-1",
+      session: "s0",
+      generation: 1,
+      handle: "h0",
+      boot: oldBoot,
+      reason: "Bearer synthetic-private-value",
+    });
+    marker(newBoot);
+    for (const [index, ticket] of ["ORC-1", "ORC-2"].entries())
+      append("worker.readopted", {
+        ticket,
+        session: `s${index}`,
+        generation: 1,
+        handle: `h${index}`,
+        boot: newBoot,
+        ...(index === 0 ? { briefPending: true } : {}),
+      });
+    if (lost)
+      append("worker.lost", {
+        ticket: "ORC-3",
+        session: "s2",
+        generation: 1,
+        handle: "h2",
+        boot: newBoot,
+        reason: "Bearer synthetic-private-value",
+      });
+    const sent: SubmissionDraft[] = [];
+    const conversation = fake(async (draft) => {
+      sent.push(draft);
+    });
+    let waker = new Waker({ store, project, clock, conversation });
+    t.after(async () => {
+      await waker.close();
+      store.close();
+    });
+    await clock.advance(10_000);
+    assert.equal(sent.length, 1);
+    const content = JSON.stringify(sent[0]);
+    assert.match(content, /2 workers re-adopted/);
+    assert.match(content, /ORC-1/);
+    assert.match(content, /ORC-2/);
+    assert.match(content, /needs initial brief/);
+    assert.match(content, lost ? /1 worker lost/ : /0 workers lost/);
+    if (lost) assert.match(content, /ORC-3/);
+    assert.doesNotMatch(content, /Bearer|synthetic-private-value/);
+    assert.equal(store.readSince(0).filter((e) => e.kind === "coordinator.wakeup").length, 1);
+    await waker.close();
+    waker = new Waker({ store, project, clock, conversation });
+    await clock.advance(10_000);
+    assert.equal(sent.length, 1, "the same boot is not delivered twice");
+    await waker.close();
+    for (const [index, ticket] of tickets.entries())
+      append("session.released", { ticket, session: `s${index}`, reason: "Finished" });
+    marker("00000000-0000-4000-8000-000000000003");
+    waker = new Waker({ store, project, clock, conversation });
+    await clock.advance(10_000);
+    assert.equal(sent.length, 1, "an empty new boot suppresses older recovery history");
+  });
+
+test("this boot's recovery wake precedes an older undelivered outbox without changing its identity", async (t) => {
+  const store = new EventStore(":memory:");
+  const clock = new Clock();
+  const append = (kind: FleetEvent["kind"], payload: unknown) => store.append(event(kind, payload, 1, "daemon"));
+  append("coordinator.wakeup", {
+    id: "old-wake",
+    keys: ["old-key"],
+    candidates: [{ key: "old-key", summary: "old hand-back", facts: { state: "hand-back" } }],
+  });
+  for (const [index, ticket] of ["ORC-1", "ORC-2"].entries())
+    append("session.claimed", {
+      ticket,
+      session: `s${index}`,
+      generation: 1,
+      owner: "coordinator",
+      runtime: "codex",
+      handle: `h${index}`,
+    });
+  append("coordinator.checkpoint", {
+    checkpoint: { format: "armada.worker", version: 1, type: "recovery", boot: newBoot },
+  });
+  for (const [index, ticket] of ["ORC-1", "ORC-2"].entries())
+    append("worker.readopted", { ticket, session: `s${index}`, generation: 1, handle: `h${index}`, boot: newBoot });
+  const sent: SubmissionDraft[] = [];
+  const waker = new Waker({
+    store,
+    project,
+    clock,
+    conversation: fake(async (draft) => {
+      sent.push(draft);
+    }),
+  });
+  t.after(async () => {
+    await waker.close();
+    store.close();
+  });
+  await clock.advance(10_000);
+  assert.equal(sent.length, 2);
+  assert.match(JSON.stringify(sent[0]), /2 workers re-adopted/);
+  assert.equal(sent[1]!.requestId, "old-wake");
+  assert.match(JSON.stringify(sent[1]), /old hand-back/);
+  assert.equal(store.readSince(0).filter((e) => e.kind === "coordinator.wakeup").length, 2);
+});
