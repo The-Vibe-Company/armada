@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { readerUsageSchema } from "./readers.js";
 import { rulesStateSchema } from "./rules.js";
 import { reportedUsageSchema } from "./tokens.js";
 import type { ProjectUsage } from "./usage.js";
@@ -241,28 +242,34 @@ const validationSchema = validationRequestSchema.extend({
   decision: decisionSchema.extend({ at: text, actor: text }).nullable(),
 });
 export type Validation = z.infer<typeof validationSchema>;
-const tablesSchema = z.object({
-  defaultBranch: branchHealthSchema.optional(),
-  // Absent on older snapshots; current daemon folds always supply this slice.
-  rules: rulesStateSchema.optional(),
-  /** Successful provider reads, even when no facts changed; absent on older snapshots. */
-  readAt: z.record(z.string(), z.iso.datetime()).optional(),
-  tickets: z.array(ticketSchema),
-  pullRequests: z.array(pullRequestSchema),
-  sessions: z.array(sessionSchema),
-  sessionsByState: z.object({
-    blocked: z.array(sessionSchema),
-    "waiting-for-owner": z.array(sessionSchema),
-    "in-progress": z.array(sessionSchema),
-    "ready-to-merge": z.array(sessionSchema),
-    merged: z.array(sessionSchema),
-    released: z.array(sessionSchema),
-  }),
-  inbox: z.array(inboxItemSchema),
-  queue: z.array(queueEntrySchema),
-  holds: z.array(holdSchema),
-  validations: z.array(validationSchema),
-});
+// Browser snapshots carry JSON and screens read their own slices. Keep the full
+// table validator removable for clients that only import wire envelopes.
+const tablesSchema = /* @__PURE__ */ (() =>
+  z.object({
+    defaultBranch: branchHealthSchema.optional(),
+    // Absent on older snapshots; current daemon folds always supply this slice.
+    rules: rulesStateSchema.optional(),
+    /** Successful provider reads, even when no facts changed; absent on older snapshots. */
+    readAt: z.record(z.string(), z.iso.datetime()).optional(),
+    /** Safe usage and rate-limit pauses; older daemons omit this slice. */
+    readers: z.record(z.string(), readerUsageSchema).optional(),
+    tickets: z.array(ticketSchema),
+    pullRequests: z.array(pullRequestSchema),
+    sessions: z.array(sessionSchema),
+    sessionsByState: z.object({
+      blocked: z.array(sessionSchema),
+      "waiting-for-owner": z.array(sessionSchema),
+      "in-progress": z.array(sessionSchema),
+      "ready-to-merge": z.array(sessionSchema),
+      merged: z.array(sessionSchema),
+      released: z.array(sessionSchema),
+    }),
+    inbox: z.array(inboxItemSchema),
+    queue: z.array(queueEntrySchema),
+    holds: z.array(holdSchema),
+    validations: z.array(validationSchema),
+  }))();
+
 // Usage is an additive JSON extension, validated by its producer and the usage view.
 // General fleet readers need not load its detailed schema before the room opens.
 export type ProjectTables = z.infer<typeof tablesSchema> & { usage?: ProjectUsage };
@@ -274,10 +281,11 @@ export interface FleetTables {
 /** Validate the known tables without stripping extension fields or reordering JSON keys.
  * Wire consumers can keep ignoring rows and event kinds they do not use.
  */
-export const projectTablesSchema = z
-  .json()
-  .superRefine((value, ctx) => {
-    const result = tablesSchema.safeParse(value);
-    if (!result.success) for (const issue of result.error.issues) ctx.addIssue({ ...issue });
-  })
-  .transform((value) => value as ProjectTables);
+export const projectTablesSchema = /* @__PURE__ */ (() =>
+  z
+    .json()
+    .superRefine((value, ctx) => {
+      const result = tablesSchema.safeParse(value);
+      if (!result.success) for (const issue of result.error.issues) ctx.addIssue({ ...issue });
+    })
+    .transform((value) => value as ProjectTables))();

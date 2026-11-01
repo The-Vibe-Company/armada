@@ -6,6 +6,7 @@
 // narrow header the pills keep their dot and number, their words for screen
 // readers only. While an agent's page holds the lane (THE-2089), the
 // project's name is a button back to the chat.
+import type { ReaderUsage } from "@armada/protocol";
 import { PanelRight } from "lucide-react";
 import type { Ref } from "react";
 import { TONE } from "@/components/fleet/FleetList";
@@ -45,6 +46,7 @@ export function Header({
   counts,
   readAt,
   usage,
+  readers,
   now,
   open,
   panel,
@@ -58,6 +60,7 @@ export function Header({
   counts: Record<Group, number> | null;
   readAt: Readonly<Record<string, string>> | undefined;
   usage?: unknown;
+  readers?: Readonly<Record<string, ReaderUsage>>;
   now: number;
   open: boolean;
   /** The panel's id, which the toggle controls. */
@@ -70,6 +73,12 @@ export function Header({
   onChat?: () => void;
 }) {
   const pills = counts ? headerPills(counts) : [];
+  const pausedUntil = readers?.linear?.pausedUntil;
+  const linearPaused = pausedUntil && Date.parse(pausedUntil) > now ? pausedUntil : null;
+  const resumeTime = linearPaused
+    ? new Date(linearPaused).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })
+    : null;
+  const pauseExplanation = `Linear paused by its rate limit until ${resumeTime}`;
   return (
     <PageStrip
       title={
@@ -108,16 +117,35 @@ export function Header({
               ))}
             </ul>
           )}
-          {staleReadings(readAt, now).map((r) => (
+          {linearPaused && (
             <span
-              key={r.provider}
-              title={`${PROVIDER[r.provider] ?? r.provider} last read at ${r.at}`}
-              className="ml-1.5 text-body text-text-3 @max-[640px]/strip:hidden"
-              data-reading={r.provider}
+              role="status"
+              aria-label={pauseExplanation}
+              title={pauseExplanation}
+              className="ml-1.5 text-body text-amber @max-[900px]/strip:w-22 @max-[900px]/strip:flex-none"
+              data-reading="linear-paused"
             >
-              {r.text}
+              <span aria-hidden className="@max-[900px]/strip:hidden">
+                {pauseExplanation}
+              </span>
+              <span aria-hidden className="hidden flex-col text-meta leading-tight @max-[900px]/strip:inline-flex">
+                <span>Linear paused</span>
+                <span className="font-mono tnum">{resumeTime}</span>
+              </span>
             </span>
-          ))}
+          )}
+          {staleReadings(readAt, now)
+            .filter((r) => r.provider !== "linear" || !linearPaused)
+            .map((r) => (
+              <span
+                key={r.provider}
+                title={`${PROVIDER[r.provider] ?? r.provider} last read at ${r.at}`}
+                className="ml-1.5 text-body text-text-3 @max-[640px]/strip:hidden"
+                data-reading={r.provider}
+              >
+                {r.text}
+              </span>
+            ))}
           {usage && <UsagePill usage={usage} now={now} />}
           <button
             ref={toggle}

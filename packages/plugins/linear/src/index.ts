@@ -1,5 +1,7 @@
 import type { FleetEvent } from "@armada/daemon/events";
 import type { PluginContext, TrackerProvider } from "@armada/plugin-api";
+import { linearReaderCheckpointSchema } from "./checkpoint.ts";
+import type { LinearBudget } from "./linear/budget.ts";
 import { linearTracker } from "./linear/index.ts";
 import { TrackerPoller } from "./poll.ts";
 import { linearConnection } from "./status.ts";
@@ -46,28 +48,106 @@ interface WriteData {
   commentCreate?: { success: boolean; comment?: { id: string } | null };
 }
 
+// Scoped project activations share a quota only within the same host event gateway.
+// A WeakMap keeps separate daemons/tests isolated and releases retired host state.
+const readerPools = new WeakMap<
+  PluginContext["events"],
+  {
+    budgets: Map<string, LinearBudget>;
+    pending: Set<Promise<void>>;
+  }
+>();
+
 export function activate(ctx: PluginContext): void {
   const config = ctx.config.tracker?.linear as Config;
   const readers = new Map<string, TrackerPoller>();
+  let pool = readerPools.get(ctx.events);
+  if (!pool) {
+    pool = { budgets: new Map(), pending: new Set() };
+    readerPools.set(ctx.events, pool);
+  }
+  const { budgets, pending } = pool;
+  const trackers = new Map<string, ReturnType<typeof linearTracker>>();
+  const trackerFor = (project: string) => {
+    let tracker = trackers.get(project);
+    if (tracker) return tracker;
+    const settings = config.projects?.[project];
+    if (!settings) throw new Error("Linear project is not configured");
+    tracker = linearTracker({
+      project,
+      budgets,
+      rootId: settings.programRoot,
+      phaseGroup: settings.phaseGroup ?? "Agent phase",
+      endpoint: config.endpoint,
+      secrets: async () => ctx.secrets.get("LINEAR_API_KEY", project),
+      fetch: (...args) => fetch(...args),
+      now: () => new Date(),
+      log: (line) => ctx.log.info(line),
+    });
+    trackers.set(project, tracker);
+    return tracker;
+  };
+  let restoredBudget: Promise<void> | undefined;
+  // Restore only current reader/credential observations. Projects with the same key share
+  // a quota, while a missing/unrelated project's key must not block another project's boot.
+  const restoreBudget = () => {
+    if (restoredBudget) return restoredBudget;
+    const attempt = Promise.all(
+      Object.keys(config.projects ?? {}).map(async (project) => {
+        const tracker = trackerFor(project);
+        try {
+          await tracker.prepare?.();
+        } catch {
+          return;
+        }
+        for (const event of await ctx.events.read(project, 0)) {
+          if (event.kind !== "coordinator.checkpoint") continue;
+          const parsed = linearReaderCheckpointSchema.safeParse((event.payload as { checkpoint?: unknown }).checkpoint);
+          if (parsed.success && parsed.data.quota === tracker.quota && parsed.data.usage)
+            tracker.budget?.restore(project, parsed.data.usage);
+        }
+      }),
+    ).then(() => {});
+    restoredBudget = attempt;
+    pending.add(attempt);
+    void attempt.then(
+      () => pending.delete(attempt),
+      () => {
+        pending.delete(attempt);
+        if (restoredBudget === attempt) restoredBudget = undefined;
+      },
+    );
+    return attempt;
+  };
+  const waitForRestore = async (signal?: AbortSignal) => {
+    signal?.throwIfAborted();
+    const controller = new AbortController();
+    const stop = () => controller.abort();
+    signal?.addEventListener("abort", stop, { once: true });
+    const timer = setTimeout(stop, 30_000);
+    const canceled = new Promise<never>((_, reject) => {
+      controller.signal.addEventListener("abort", () => reject(new Error("Tracker read timed out")), { once: true });
+    });
+    try {
+      // The shared restoration remains single-flight even when a caller cancels.
+      // A later caller can join it; no timed-out generation continues into HTTP.
+      await Promise.race([Promise.all([restoreBudget(), ...pending]), canceled]);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", stop);
+    }
+  };
   const provider: TrackerProvider = {
     ...linearConnection(ctx.secrets, config.endpoint),
     async read({ project, signal }) {
       signal?.throwIfAborted();
-      const settings = config.projects?.[project];
-      if (!settings) throw new Error("Linear project is not configured");
+      await waitForRestore(signal);
+      signal?.throwIfAborted();
       let reader = readers.get(project);
       if (!reader) {
         reader = new TrackerPoller({
           project,
-          tracker: linearTracker({
-            project,
-            rootId: settings.programRoot,
-            phaseGroup: settings.phaseGroup ?? "Agent phase",
-            endpoint: config.endpoint,
-            secrets: async () => ctx.secrets.get("LINEAR_API_KEY", project),
-            fetch: (...args) => fetch(...args),
-            now: () => new Date(),
-          }),
+          tracker: trackerFor(project),
           store: {
             append: async (event) => (await ctx.events.append(event)) as FleetEvent,
             readSince: async (after) => (await ctx.events.read(project, after)) as FleetEvent[],
@@ -87,7 +167,9 @@ export function activate(ctx: PluginContext): void {
       try {
         await reader.readNow();
         signal?.throwIfAborted();
-        if (reader.status.error) throw new Error(reader.status.error);
+        const status = reader.status;
+        if (status.pausedUntil) return { pausedUntil: status.pausedUntil };
+        if (status.error) throw new Error(status.error);
       } finally {
         signal?.removeEventListener("abort", stop);
       }

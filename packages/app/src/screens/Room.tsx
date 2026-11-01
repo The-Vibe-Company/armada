@@ -17,12 +17,13 @@ import { DaemonProblem } from "@/components/DaemonProblem";
 import { FleetList } from "@/components/fleet/FleetList";
 import { Page, PageHeader } from "@/components/page";
 import { dayIn, fleetItems, GROUPS, type Group, groupCounts, headline, rowTime } from "@/fleet/overview";
+import { readersOf } from "@/fleet/readers";
 import { type Harness, skyProject } from "@/fleet/sky";
 import { type FleetState, fleetOf } from "@/fleet/state";
 import { roomHref } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import { RemoveProject } from "@/projects/RemoveProject";
-import { useDaemon } from "@/protocol/store";
+import { useDaemon, useDaemonClient } from "@/protocol/store";
 import { AgentLane } from "@/room/AgentLane";
 import { Asking } from "@/room/Asking";
 import { Composer } from "@/room/Composer";
@@ -52,6 +53,21 @@ const EMPTY_STATE: FleetState = { sessions: [], tickets: [], pullRequests: [], i
 /** The field's glide from the hero to its dock (THE-2055); the shell's reduced motion turns it off. */
 const DOCK = { duration: 0.25, ease: [0.23, 1, 0.32, 1] } as const;
 
+/** Only an open, visible room requests active polling; reconnects replay the client's hint. */
+function useRoomPresence(project: string | null): void {
+  const client = useDaemonClient();
+  useEffect(() => {
+    if (!client.setRoomPresence) return;
+    const update = () => client.setRoomPresence?.(document.visibilityState === "visible" ? project : null);
+    update();
+    document.addEventListener("visibilitychange", update);
+    return () => {
+      document.removeEventListener("visibilitychange", update);
+      client.setRoomPresence?.(null);
+    };
+  }, [client, project]);
+}
+
 export function Room({
   project: id,
   onReload,
@@ -71,6 +87,7 @@ export function Room({
     return () => clearInterval(timer);
   }, []);
   const project = projects?.find((p) => p.id === id);
+  useRoomPresence(project?.id ?? null);
   if (!project)
     return (
       <Page>
@@ -246,6 +263,7 @@ export function RoomView({
         counts={snapshot ? counts : null}
         readAt={state.readAt}
         usage={state.usage}
+        readers={snapshot ? readersOf(snapshot) : undefined}
         now={now}
         open={open}
         panel={PANEL_ID}
