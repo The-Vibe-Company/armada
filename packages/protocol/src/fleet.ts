@@ -77,7 +77,21 @@ export const workerLaunchCheckpointSchema = sessionRefSchema.extend({
 const inboxRequestSchema = z.object({
   id: text,
   ticket: text,
-  kind: z.enum(["question", "plan", "hand-back", "owner-request", "launch"]),
+  kind: z.enum([
+    "question",
+    "plan",
+    "hand-back",
+    "owner-request",
+    "launch",
+    "stopped",
+    "silent",
+    "not-started",
+    "deploy",
+    "job",
+    "job-silent",
+    "job-stalled",
+    "version",
+  ]),
   body: text,
 });
 export type InboxRequest = z.infer<typeof inboxRequestSchema>;
@@ -87,6 +101,26 @@ const queuedSchema = sessionRefSchema.extend({ id: text, pr: integer, head: text
 const idSchema = z.object({ id: text });
 const reasonSchema = idSchema.extend({ reason: text });
 const decisionSchema = z.object({ decision: z.enum(["approved", "changes-requested"]), note: text });
+// The app accepts opaque fleet events; construct wake validators only in consumers that use them.
+export const wakeCandidateSchema = /* @__PURE__ */ wakeCandidate();
+function wakeCandidate() {
+  return z.object({
+    key: text,
+    summary: text,
+    facts: z.object({
+      ticket: text.optional(),
+      pr: integer.optional(),
+      head: text.optional(),
+      state: text.optional(),
+      item: text.optional(),
+      hold: text.optional(),
+      branch: text.optional(),
+    }),
+  });
+}
+export type WakeCandidate = z.infer<typeof wakeCandidateSchema>;
+const branchHealthSchema = z.object({ branch: text, head: text, ci: ciSchema });
+
 /** The single vocabulary for events appended by daemon adapters and folded offline.
  * A pure factory lets the app omit payload validators it never reads. */
 export const eventPayloadSchemas = /* @__PURE__ */ payloadSchemas();
@@ -150,7 +184,7 @@ function payloadSchemas() {
     "inbox.answered": idSchema.extend({ answer: text }),
     "merge.queued": queuedSchema,
     "merge.started": idSchema,
-    "merge.refused": reasonSchema,
+    "merge.refused": reasonSchema.extend({ ticket: text.optional(), pr: integer.optional(), head: text.optional() }),
     "merge.canceled": reasonSchema,
     "merge.confirmed": queuedSchema,
     "hold.opened": reasonSchema,
@@ -159,6 +193,14 @@ function payloadSchemas() {
     "validation.decided": idSchema.extend(decisionSchema.shape),
     "coordinator.message": z.object({ role: z.enum(["owner", "coordinator"]), body: text }),
     "coordinator.checkpoint": z.object({ checkpoint: z.json() }),
+    "coordinator.wakeup": z.object({
+      id: text,
+      candidates: z.array(wakeCandidateSchema),
+      keys: z.array(text),
+      reminder: z.boolean().optional(),
+    }),
+    "coordinator.wakeup-delivered": idSchema,
+    "default-branch.seen": branchHealthSchema,
     "ticket.phase-changed": z.object({ ticket: text, from: phaseSchema.nullable(), to: phaseSchema.nullable() }),
     "ticket.report-posted": z.object({
       ticket: text,
@@ -227,28 +269,31 @@ const validationSchema = validationRequestSchema.extend({
   decision: decisionSchema.extend({ at: text, actor: text }).nullable(),
 });
 export type Validation = z.infer<typeof validationSchema>;
-const tablesSchema = z.object({
-  // Absent on older snapshots; current daemon folds always supply this slice.
-  rules: rulesStateSchema.optional(),
-  /** Successful provider reads, even when no facts changed; absent on older snapshots. */
-  readAt: z.record(z.string(), z.iso.datetime()).optional(),
-  tickets: z.array(ticketSchema),
-  pullRequests: z.array(pullRequestSchema),
-  sessions: z.array(sessionSchema),
-  sessionsByState: z.object({
-    blocked: z.array(sessionSchema),
-    "waiting-for-owner": z.array(sessionSchema),
-    "in-progress": z.array(sessionSchema),
-    "ready-to-merge": z.array(sessionSchema),
-    merged: z.array(sessionSchema),
-    released: z.array(sessionSchema),
-  }),
-  inbox: z.array(inboxItemSchema),
-  queue: z.array(queueEntrySchema),
-  holds: z.array(holdSchema),
-  validations: z.array(validationSchema),
-});
-export type ProjectTables = z.infer<typeof tablesSchema>;
+function makeTablesSchema() {
+  return z.object({
+    defaultBranch: branchHealthSchema.optional(),
+    // Absent on older snapshots; current daemon folds always supply this slice.
+    rules: rulesStateSchema.optional(),
+    /** Successful provider reads, even when no facts changed; absent on older snapshots. */
+    readAt: z.record(z.string(), z.iso.datetime()).optional(),
+    tickets: z.array(ticketSchema),
+    pullRequests: z.array(pullRequestSchema),
+    sessions: z.array(sessionSchema),
+    sessionsByState: z.object({
+      blocked: z.array(sessionSchema),
+      "waiting-for-owner": z.array(sessionSchema),
+      "in-progress": z.array(sessionSchema),
+      "ready-to-merge": z.array(sessionSchema),
+      merged: z.array(sessionSchema),
+      released: z.array(sessionSchema),
+    }),
+    inbox: z.array(inboxItemSchema),
+    queue: z.array(queueEntrySchema),
+    holds: z.array(holdSchema),
+    validations: z.array(validationSchema),
+  });
+}
+export type ProjectTables = z.infer<ReturnType<typeof makeTablesSchema>>;
 export interface FleetTables {
   seq: number;
   projects: Record<string, ProjectTables>;
@@ -257,10 +302,14 @@ export interface FleetTables {
 /** Validate the known tables without stripping extension fields or reordering JSON keys.
  * Wire consumers can keep ignoring rows and event kinds they do not use.
  */
-export const projectTablesSchema = z
-  .json()
-  .superRefine((value, ctx) => {
-    const result = tablesSchema.safeParse(value);
-    if (!result.success) for (const issue of result.error.issues) ctx.addIssue({ ...issue });
-  })
-  .transform((value) => value as ProjectTables);
+export const projectTablesSchema = /* @__PURE__ */ makeProjectTablesSchema();
+function makeProjectTablesSchema() {
+  const tablesSchema = makeTablesSchema();
+  return z
+    .json()
+    .superRefine((value, ctx) => {
+      const result = tablesSchema.safeParse(value);
+      if (!result.success) for (const issue of result.error.issues) ctx.addIssue({ ...issue });
+    })
+    .transform((value) => value as ProjectTables);
+}

@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { forgeWakeups } from "../coordinator/forge-wake.ts";
 import { fleetStatus } from "../coordinator/read.ts";
+import { wakeups } from "../coordinator/wake.ts";
 import { fold } from "../src/fold.ts";
 import { EventStore } from "../src/store.ts";
 
 test("conflict and behind facts become ticket wake candidates and fleet head state; comments do not", () => {
   const store = new EventStore(":memory:");
   const common = { project: "boats", actor: "github", at: "2030-01-01T12:00:00Z" };
-  const reading = () => fold(store.readSince(0)).projects.boats;
+  const reading = () => ({ tables: fold(store.readSince(0)).projects.boats, events: store.readSince(0) });
   try {
     store.append({
       ...common,
@@ -39,15 +39,15 @@ test("conflict and behind facts become ticket wake candidates and fleet head sta
       },
     });
     const after = reading();
-    const candidates = forgeWakeups(before, after);
+    const candidates = wakeups(before, after);
     assert.deepEqual(
       candidates.map((c) => c.facts.state),
       ["conflicting", "behind"],
     );
     assert.ok(candidates.every((c) => c.facts.ticket === "BOAT-7" && c.facts.pr === 41));
-    assert.deepEqual(forgeWakeups(after, after), []);
-    assert.ok(after);
-    const status = fleetStatus(after, store.readSince(0), common.at);
+    assert.deepEqual(wakeups(after, after), []);
+    assert.ok(after.tables);
+    const status = fleetStatus(after.tables, store.readSince(0), common.at);
     assert.equal(status.sessions[0]?.conflicting, true);
     assert.equal(status.sessions[0]?.behind, true);
     assert.equal(status.sessions[0]?.unresolvedThreads, 2);
@@ -67,7 +67,7 @@ test("conflict and behind facts become ticket wake candidates and fleet head sta
         comment: "1",
       },
     });
-    assert.deepEqual(forgeWakeups(after, reading()), []);
+    assert.deepEqual(wakeups(after, reading()), []);
   } finally {
     store.close();
   }

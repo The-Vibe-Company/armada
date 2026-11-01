@@ -1,6 +1,6 @@
 import type { ProjectTables } from "@armada/protocol";
 
-/** Small candidate seam shared with the Waker; comments deliberately never enter it. */
+/** Ticket candidates consumed by the Waker; comments deliberately never enter it. */
 export function forgeWakeups(before: ProjectTables | undefined, after: ProjectTables | undefined) {
   const candidates: {
     key: string;

@@ -49,8 +49,8 @@ a newly active session re-arms the idle timer. GitHub's `X-Poll-Interval`,
 manual refreshes too. Readiness includes `forgeBackoffMs` and `forgeAbandoned`
 when applicable. External comments go to the PR's current worker generation
 through keyed `worker.message`; the PR author's own account is suppressed.
-Conflict/behind candidates are exposed by `coordinator/forge-wake.ts` for the
-Waker; comment/thread inputs do not create coordinator candidates.
+The Waker consumes conflict/behind candidates from `coordinator/forge-wake.ts`;
+comment/thread inputs do not create coordinator candidates.
 
 Each PR has its own five-second deadline; requests that ignore cancellation
 remain single-flight for that PR while healthy peers keep advancing. Current

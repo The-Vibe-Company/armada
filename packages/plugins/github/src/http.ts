@@ -18,6 +18,7 @@ interface Connection<T> {
   pageInfo: { hasNextPage: boolean; endCursor: string | null };
 }
 interface Repository {
+  defaultBranchRef?: { name: string; target: { oid: string; statusCheckRollup: { state: string } | null } } | null;
   open?: Connection<RawPull>;
   pullRequest?: (RawPull & { reviewThreads?: Connection<RawThread> }) | null;
 }

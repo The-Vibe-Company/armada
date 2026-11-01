@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { type TestContext, test } from "node:test";
 import {
   CHAT_LIVE_MINOR,
+  CHAT_WAKE_MINOR,
   type ServerMessage,
   serverMessageSchema,
   PROTOCOL_VERSION as version,
@@ -333,6 +334,40 @@ test("subscribers share a project view, late rooms read current state, and legac
   await legacy.ask({ type: "projects.list" });
   assert.equal(fake.disposed, 1);
   assert.equal(time.pending, 0);
+});
+
+test("live tool progress follows the new negotiated minor when a socket resubscribes", { timeout: 5000 }, async (t) => {
+  const { fake, connect } = await setup(t);
+  const toolEntries = [
+    ...initial,
+    entry(
+      2,
+      "pi.assistant",
+      assistant([{ type: "toolCall", id: "merge-1", name: "merge.run", arguments: { pr: 12 } }]),
+    ),
+  ];
+  const progress = (step: string) =>
+    fake.set(
+      {
+        run: { taskId: 7, inputs: [] },
+        tools: [{ callId: "merge-1", name: "merge.run", status: "running", details: { step } }],
+      } as unknown as LiveState,
+      toolEntries,
+    );
+  progress("checking");
+  const c = await connect(CHAT_WAKE_MINOR);
+  await c.subscribe();
+  await c.read();
+  assert.equal(c.frames.findLast((f) => f.type === "chat.tool")?.progress, "checking");
+  for (const minor of [CHAT_LIVE_MINOR, CHAT_WAKE_MINOR]) {
+    const offset = c.frames.length;
+    await c.ask({ type: "project.subscribe", project: "orchard", after: 0, version: { ...version, minor } });
+    progress("merging");
+    await c.read();
+    const frame = c.frames.slice(offset).findLast((f) => f.type === "chat.tool");
+    assert.ok(frame?.type === "chat.tool");
+    assert.equal(frame.progress, minor >= CHAT_WAKE_MINOR ? "merging" : undefined);
+  }
 });
 
 test("a view that attaches after the last subscriber disconnects is disposed", { timeout: 5000 }, async (t) => {
