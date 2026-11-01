@@ -232,14 +232,18 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
   const reopened = new EventStore(join(dir, "data", "fleet.sqlite"));
   try {
     const events = reopened.readSince(0);
-    // Configured coordinators persist pi's initial conversation documents at boot.
+    // Configured coordinators persist pi's initial documents and may announce their model at boot.
     // Blocked provider reads supply no fleet changes: no wake or model turn is warranted.
     assert.deepEqual([...new Set(events.map((event) => event.project))].sort(), projects.map((p) => p.id).sort());
     assert.ok(
       events.every(
         (event) =>
-          event.kind === "coordinator.checkpoint" &&
-          (event.payload.checkpoint as { format?: unknown }).format === "armada.pi",
+          (event.kind === "coordinator.checkpoint" &&
+            (event.payload.checkpoint as { format?: unknown }).format === "armada.pi") ||
+          (event.kind === "coordinator.message" &&
+            event.actor === "coordinator" &&
+            event.payload.role === "coordinator" &&
+            event.payload.body === "Coordinator uses openai-compatible/offline-startup."),
       ),
     );
   } finally {

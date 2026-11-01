@@ -467,6 +467,7 @@ for (const [ownerSteers, speaks] of [
     timeout: 5000,
   }, async (t) => {
     const store = new EventStore(":memory:");
+    store.append(seed("coordinator.message", { role: "coordinator", body: "Earlier fleet pass." }, -1, "coordinator"));
     clock = NOW;
     let fireBatch: (() => void) | undefined;
     let toolStarted!: () => void;
@@ -537,6 +538,10 @@ for (const [ownerSteers, speaks] of [
       await server.close();
       store.close();
     });
+    const before = await client.ask({ type: "chat.read", project: "orchard" });
+    assert.ok(before.type === "chat.result");
+    assert.ok(before.items.some((i) => i.kind === "line" && i.body === "Earlier fleet pass."));
+    const previousIds = new Set(before.items.map((i) => i.id));
     const head = "a".repeat(40);
     store.append(
       seed("session.claimed", {
@@ -597,9 +602,15 @@ for (const [ownerSteers, speaks] of [
     await server.coordinators.get("orchard")!.harness.waitForIdle(context);
     const read = await client.ask({ type: "chat.read", project: "orchard" });
     assert.ok(read.type === "chat.result");
-    assert.equal(read.items.filter((i) => i.kind === "wake").length, 1);
     assert.deepEqual(
-      read.items.filter((i) => i.kind !== "wake" && i.kind !== "tool").map((i) => i.kind),
+      read.items.filter((i) => previousIds.has(i.id)),
+      before.items,
+      "prior room history is retained",
+    );
+    const additions = read.items.filter((i) => !previousIds.has(i.id));
+    assert.equal(additions.filter((i) => i.kind === "wake").length, 1);
+    assert.deepEqual(
+      additions.filter((i) => i.kind !== "wake" && i.kind !== "tool").map((i) => i.kind),
       ownerSteers ? ["owner", "coordinator"] : speaks ? ["line"] : [],
     );
     const transcript = await server.coordinators.get("orchard")!.conversation.context(context);
@@ -607,7 +618,7 @@ for (const [ownerSteers, speaks] of [
     if (speaks) assert.equal(read.items.find((i) => i.kind === "tool")?.output, '{"ok":true}');
     else
       assert.deepEqual(
-        read.items.map((i) => i.kind),
+        additions.map((i) => i.kind),
         ["wake"],
       );
   });
