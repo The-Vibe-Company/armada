@@ -5,9 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setImmediate } from "node:timers/promises";
+import type { ForgeReadResult } from "@armada/plugin-api";
 import { serverMessageSchema, PROTOCOL_VERSION as version } from "@armada/protocol";
 import { WebSocket } from "ws";
 import { fold } from "../src/fold.ts";
+import { PluginRegistry } from "../src/plugins/registry.ts";
 import { startServer } from "../src/server/index.ts";
 import { daemonProjectSchema, startReaders } from "../src/server/readers.ts";
 import { EventStore } from "../src/store.ts";
@@ -35,6 +37,75 @@ function clock() {
     },
   };
 }
+
+test("forge cadence follows active sessions and exposes/enforces a provider backoff on manual reads", async () => {
+  const store = new EventStore(":memory:");
+  const registry = new PluginRegistry();
+  const timer = clock();
+  let at = "2030-01-01T12:00:00Z";
+  let calls = 0;
+  let result: ForgeReadResult = {};
+  const activation = registry.activation({
+    id: "github",
+    description: "Fixture forge",
+    version: "0.1.0",
+    pluginApi: "^0.2.0",
+    enabledByDefault: true,
+    contributions: { forge: { github: { config: true, secrets: [] } } },
+  });
+  activation.register.forge("github", {
+    read: async () => {
+      calls++;
+      return result;
+    },
+    merge: async () => ({ merged: false }),
+  });
+  activation.commit();
+  const readers = await startReaders({ registry, projects: [project], store, now: () => at, schedule: timer.schedule });
+  try {
+    await readers.ready;
+    assert.deepEqual([...timer.tasks.values()], [300_000]);
+    store.append({
+      project: project.id,
+      at,
+      actor: "worker",
+      kind: "session.claimed",
+      payload: {
+        ticket: "SEED-1",
+        session: "session",
+        generation: 1,
+        owner: "worker",
+        runtime: "codex",
+        handle: "handle",
+      },
+    });
+    assert.deepEqual([...timer.tasks.values()], [30_000], "a new session re-arms the idle timer");
+    await readers.refresh(project.id);
+    assert.deepEqual([...timer.tasks.values()], [30_000]);
+    result = {
+      pausedUntil: "2030-01-01T12:02:00Z",
+      backoffMs: 120_000,
+      abandoned: [41],
+      failures: [{ pr: 42, failures: 2, since: "2030-01-01T12:00:00Z", error: "GitHub answered 404" }],
+    };
+    await readers.refresh(project.id);
+    assert.deepEqual([...timer.tasks.values()], [120_000]);
+    assert.equal(readers.readers[0]?.forgeBackoffMs, 120_000);
+    assert.deepEqual(readers.readers[0]?.forgeAbandoned, [41]);
+    assert.deepEqual(readers.readers[0]?.forgeFailures, result.failures);
+    const before = calls;
+    await readers.refresh(project.id);
+    assert.equal(calls, before);
+    at = "2030-01-01T12:02:00Z";
+    result = {};
+    await readers.refresh(project.id);
+    assert.equal(calls, before + 1);
+    assert.deepEqual([...timer.tasks.values()], [30_000]);
+  } finally {
+    readers.stop();
+    store.close();
+  }
+});
 
 test("daemon readers commit recorded Linear/GitHub facts to the subscribed store and stop active reads", {
   timeout: 5000,

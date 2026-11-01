@@ -91,12 +91,21 @@ export interface TrackerProvider extends ProviderConnection {
   write(request: TrackerWriteRequest): Promise<void>;
 }
 export interface ForgeProvider extends ProviderConnection {
-  read(request: ProjectRequest): Promise<void>;
+  // biome-ignore lint/suspicious/noConfusingVoidType: Existing plugins return void.
+  read(request: ProjectRequest): Promise<void | ForgeReadResult>;
   /** Complete fresh facts for the merge checklist. Absence refuses merge tools. */
   inspect?(request: ProjectRequest & { number: number }): Promise<ForgeInspection>;
   merge(
     request: ProjectRequest & { number: number; head: string; beforeWrite?: () => void },
   ): Promise<{ merged: boolean; mergeCommit?: string }>;
+}
+export interface ForgeReadResult {
+  pausedUntil?: string;
+  pollMs?: number;
+  backoffMs?: number;
+  abandoned?: number[];
+  failures?: { pr: number; failures: number; since: string; error: string }[];
+  error?: string;
 }
 /** Model is the consumer's AI SDK model type; the API has no SDK runtime dependency. */
 export interface ModelProvider<Model = unknown> extends ProviderConnection {

@@ -1,8 +1,10 @@
 import type { EventInput, FleetEvent, GithubPullRequest } from "@armada/daemon/events";
+import type { GithubCheckpoint } from "./checkpoint.ts";
+import type { ReviewFact } from "./reviews.ts";
 
 /** In-process provider boundary. Loaded once at boot; no lifecycle/hot-reload machinery. */
 export interface Forge {
-  read(previousOpen: readonly number[], signal: AbortSignal): Promise<GithubPullRequest[]>;
+  read(previousOpen: readonly number[], signal: AbortSignal, context?: ForgeReadContext): Promise<GithubPullRequest[]>;
 }
 
 /** Injected event sink; providers never import a daemon store/server implementation. */
@@ -16,3 +18,10 @@ export const schedule: Schedule = (callback, milliseconds) => {
   return () => clearTimeout(timer);
 };
 export type ForgeRefresh = { ok: true; changed: number } | { ok: false; error: string };
+
+export interface ForgeReadContext {
+  onDetails?: () => void;
+  checkpoint: GithubCheckpoint;
+  at: string;
+  events: ReviewFact[];
+}

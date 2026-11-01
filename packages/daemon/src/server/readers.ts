@@ -1,5 +1,7 @@
+import type { ForgeReadResult } from "@armada/plugin-api";
 import { projectSchema } from "@armada/protocol";
 import { z } from "zod";
+import { fold } from "../fold.ts";
 import type { PluginRegistry } from "../plugins/registry.ts";
 import type { EventStore } from "../store.ts";
 
@@ -28,7 +30,7 @@ type Schedule = (callback: () => void, milliseconds: number) => () => void;
 interface ReaderOptions {
   registry: Pick<PluginRegistry, "get">;
   projects: readonly ReaderProject[];
-  store?: Pick<EventStore, "append">;
+  store?: Pick<EventStore, "append"> & Partial<Pick<EventStore, "readSince" | "subscribe">>;
   now?: () => string;
   schedule?: Schedule;
   log?: (line: string) => void;
@@ -40,6 +42,9 @@ export interface ReaderState {
   forge: boolean;
   trackerError?: string;
   forgeError?: string;
+  forgeBackoffMs?: number;
+  forgeAbandoned?: number[];
+  forgeFailures?: { pr: number; failures: number; since: string; error: string }[];
 }
 const schedule: Schedule = (callback, delay) => {
   const timer = setTimeout(callback, delay);
@@ -88,9 +93,28 @@ export async function startReaders(
         active?.abort();
       });
       let pending: Promise<void> | undefined;
+      let forgeState: ForgeReadResult = {};
+      const now = () => Date.parse((options.now ?? (() => new Date().toISOString()))());
+      const hasActive = () => {
+        const events = options.store?.readSince?.(0, project.id);
+        return events
+          ? !!fold(events).projects[project.id]?.sessions.some((s) => !["released", "merged"].includes(s.phase))
+          : true;
+      };
+      const forgeDelay = () => {
+        const active = hasActive();
+        return Math.max(
+          active ? 30_000 : 300_000,
+          forgeState.pollMs ?? 0,
+          forgeState.backoffMs ?? 0,
+          forgeState.pausedUntil ? Date.parse(forgeState.pausedUntil) - now() : 0,
+        );
+      };
       const tick = (): Promise<void> => {
         if (pending) return pending;
         if (!running) return Promise.resolve();
+        if (seam === "forge" && forgeState.pausedUntil && Date.parse(forgeState.pausedUntil) > now())
+          return Promise.resolve();
         cancelNext?.();
         cancelNext = undefined;
         const controller = new AbortController();
@@ -100,7 +124,42 @@ export async function startReaders(
         pending = Promise.resolve().then(async () => {
           try {
             // Await settlement even after abort: an uncooperative plugin must not accumulate reads.
-            await provider.read({ project: project.id, signal: controller.signal });
+            const result = await provider.read({ project: project.id, signal: controller.signal });
+            if (seam === "forge" && result) {
+              const parsed = z
+                .object({
+                  pausedUntil: z.iso.datetime().optional(),
+                  pollMs: z.number().nonnegative().max(86400000).optional(),
+                  backoffMs: z.number().nonnegative().max(86400000).optional(),
+                  abandoned: z.array(z.number().int().positive()).optional(),
+                  failures: z
+                    .array(
+                      z.object({
+                        pr: z.number().int().positive(),
+                        failures: z.number().int().positive(),
+                        since: z.iso.datetime(),
+                        error: z
+                          .string()
+                          .regex(
+                            /^GitHub (?:answered [1-5]\d{2}|reading (?:failed|timed out|still pending)|comments reading is incomplete|returned an incomplete reading|pagination did not complete|lost a previously open pull request|network request failed)$/,
+                          ),
+                      }),
+                    )
+                    .optional(),
+                  error: z.string().optional(),
+                })
+                .safeParse(result);
+              if (parsed.success) {
+                forgeState = parsed.data;
+                if (forgeState.backoffMs) state.forgeBackoffMs = forgeState.backoffMs;
+                else delete state.forgeBackoffMs;
+                if (forgeState.abandoned?.length) state.forgeAbandoned = forgeState.abandoned;
+                else delete state.forgeAbandoned;
+                if (forgeState.failures?.length) state.forgeFailures = forgeState.failures;
+                else delete state.forgeFailures;
+                if (forgeState.error) throw new Error(forgeState.error);
+              }
+            }
             if (running && !controller.signal.aborted) {
               options.store?.append({
                 project: project.id,
@@ -140,13 +199,31 @@ export async function startReaders(
             active = undefined;
             pending = undefined;
             if (running)
-              cancelNext = set(() => {
-                void tick();
-              }, 30_000);
+              cancelNext = set(
+                () => {
+                  void tick();
+                },
+                seam === "forge" ? forgeDelay() : 30_000,
+              );
           }
         });
         return pending;
       };
+      if (seam === "forge" && options.store?.subscribe) {
+        let inFlight = hasActive();
+        stops.push(
+          options.store.subscribe(() => {
+            const current = hasActive();
+            if (current === inFlight) return;
+            inFlight = current;
+            if (!running || pending) return;
+            cancelNext?.();
+            cancelNext = set(() => {
+              void tick();
+            }, forgeDelay());
+          }),
+        );
+      }
       sources.push({ read: tick, abort: () => active?.abort() });
       // Start independently of boot readiness and of the other seam.
       firstReads.push(Promise.resolve().then(tick));

@@ -499,3 +499,14 @@ inside the existing project transaction. This is additive metadata on the existi
 with no schema migration or new route. Legacy report rows without that identity
 are not attributed to a current worker; its generation-bound inbox and heartbeat
 remain readable. A delayed report from an older claim cannot change its replacement.
+
+GitHub overnight reading (THE-2111): active-ticket pull requests ingest review
+and PR discussion comments, unresolved/resolved threads, merge conflicts and
+pinned behind-base comparisons. Per-PR `armada.github-reader` v1 checkpoints
+retain cursors, conditional reads and independent failure windows. 404 retries;
+410 drops immediately; 24 hours of continuous failures abandons and names a PR.
+Forge polling follows session activity (30 seconds, otherwise five minutes),
+with GitHub cooldowns and durable doubling backoff shown in readiness. External
+comments reach the current worker through keyed delivery, suppressing its own
+PR-author account; conflict/behind candidates belong to the coordinator Waker.
+Protocol minor 18 adds these events and optional PR unresolved/behind facts.

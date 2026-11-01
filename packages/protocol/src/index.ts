@@ -22,6 +22,7 @@ import {
   ownerAnswerRequestSchema,
 } from "./chat.js";
 import { counter, identifier, requestSchema, versionSchema } from "./envelope.js";
+import { GITHUB_READER_MINOR } from "./fleet.js";
 import {
   modelConfigSchema,
   modelKindEntrySchema,
@@ -52,7 +53,7 @@ export * from "./rules.js";
 export * from "./session.js";
 
 /** Wire version, independent of the daemon/app release versions. */
-export const PROTOCOL_VERSION = { major: 1, minor: CONDUCTOR_MINOR } as const;
+export const PROTOCOL_VERSION = { major: 1, minor: Math.max(CONDUCTOR_MINOR, GITHUB_READER_MINOR) } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
 

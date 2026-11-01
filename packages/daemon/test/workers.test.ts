@@ -215,6 +215,72 @@ async function fixture(
   };
 }
 
+test("forge comments reach the current worker once, suppress its own account and deduplicate thread openings", {
+  timeout: 15000,
+}, async (t) => {
+  const f = await fixture(t);
+  const launched = await f.tools["worker.launch"].execute(
+    { ticket: "SEED-1", branch: "worker/seed-1", brief: "hold" },
+    f.api("launch-review"),
+    context,
+  );
+  assert.equal(launched.isError, false);
+  await until(f.workers, (value) => value.activity === "working");
+  assert.equal((await socketCall(f.socketPath, f.token(), { command: "claim", ticket: "SEED-1" })).status, 200);
+  const initialMessages = f.messages.length;
+  const payload = {
+    key: "comment:1",
+    repository: "example/orchard",
+    ticket: "SEED-1",
+    pr: 41,
+    head: "aaa",
+    author: "owner",
+    worker: "worker",
+    body: "Please fix the edge case",
+    url: "https://github.com/example/orchard/pull/41#discussion_r1",
+    at,
+    comment: "1",
+  };
+  f.daemon.store.append({ project, at, actor: "github", kind: "pull-request.commented", payload });
+  await eventually(async () => f.messages.length === initialMessages + 1);
+  assert.match(f.messages[initialMessages]!, /Please fix the edge case/);
+  assert.ok(f.messages[initialMessages]!.includes(payload.url));
+  f.daemon.store.append({ project, at, actor: "github", kind: "pull-request.commented", payload });
+  f.daemon.store.append({
+    project,
+    at,
+    actor: "github",
+    kind: "review-thread.opened",
+    payload: { ...payload, key: "thread:1", thread: "thread-1", path: "boat.ts", line: 12, unresolvedThreads: 1 },
+  });
+  f.daemon.store.append({
+    project,
+    at,
+    actor: "github",
+    kind: "pull-request.commented",
+    payload: { ...payload, key: "comment:2", comment: "2", author: "WORKER" },
+  });
+  f.daemon.store.append({
+    project,
+    at,
+    actor: "github",
+    kind: "pull-request.commented",
+    payload: { ...payload, key: "comment:1:edit", version: "2030-01-01T12:01:00Z", body: "Edited review text" },
+  });
+  // A subsequent external input is a delivery barrier for the suppressed/replayed inputs.
+  f.daemon.store.append({
+    project,
+    at,
+    actor: "github",
+    kind: "pull-request.commented",
+    payload: { ...payload, key: "comment:3", comment: "3", body: "Second external comment" },
+  });
+  await eventually(async () => f.messages.length >= initialMessages + 3);
+  assert.equal(f.messages.length, initialMessages + 3);
+  assert.match(f.messages[initialMessages + 1]!, /Edited review text/);
+  assert.match(f.messages[initialMessages + 2]!, /Second external comment/);
+});
+
 test("native tools launch a bound CLI, deliver, observe working/idle, authorize socket commands and stop one generation", {
   timeout: 15000,
 }, async (t) => {

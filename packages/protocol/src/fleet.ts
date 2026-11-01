@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { rulesStateSchema } from "./rules.js";
 
+export const GITHUB_READER_MINOR = 18;
 const text = z.string();
 const integer = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 export const phaseSchema = z.enum([
@@ -49,6 +50,9 @@ const pullRequestSchema = z.object({
   ci: ciSchema,
   conflicting: z.boolean(),
   head: text,
+  base: text.optional(),
+  behind: z.boolean().optional(),
+  unresolvedThreads: integer.optional(),
 });
 export type PullRequest = z.infer<typeof pullRequestSchema>;
 const githubPullRequestSchema = pullRequestSchema.extend({
@@ -60,6 +64,8 @@ const githubPullRequestSchema = pullRequestSchema.extend({
   review: z.enum(["none", "approved", "changes_requested", "review_required"]),
   checks: z.array(z.object({ name: text, state: ciSchema, runId: integer.optional(), runAttempt: integer.optional() })),
   checksComplete: z.boolean(),
+  author: text.optional(),
+  failingChecks: z.array(text).optional(),
 });
 export type GithubPullRequest = z.infer<typeof githubPullRequestSchema>;
 const sessionRefSchema = z.object({
@@ -93,6 +99,26 @@ const queuedSchema = sessionRefSchema.extend({ id: text, pr: integer, head: text
 const idSchema = z.object({ id: text });
 const reasonSchema = idSchema.extend({ reason: text });
 const decisionSchema = z.object({ decision: z.enum(["approved", "changes-requested"]), note: text });
+const forgeCommentSchema = z.object({
+  key: text,
+  repository: text,
+  ticket: text,
+  pr: integer,
+  head: text,
+  author: text,
+  body: z.string().max(600),
+  url: text,
+  at: text,
+  comment: text,
+  version: text.optional(),
+  worker: text.optional(),
+});
+const reviewThreadSchema = forgeCommentSchema.extend({
+  thread: text,
+  path: text,
+  line: integer.nullable(),
+  unresolvedThreads: integer,
+});
 
 /** The single vocabulary for events appended by daemon adapters and folded offline. */
 export const eventPayloadSchemas = {
@@ -128,6 +154,7 @@ export const eventPayloadSchemas = {
   "ticket.report-posted": z.object({
     ticket: text,
     comment: text,
+    version: text.optional(),
     updatedAt: text,
     phase: phaseSchema,
     summary: text,
@@ -140,6 +167,11 @@ export const eventPayloadSchemas = {
   "pull-request.review-changed": githubPullRequestSchema,
   "pull-request.closed": githubPullRequestSchema,
   "pull-request.merged": githubPullRequestSchema,
+  "pull-request.commented": forgeCommentSchema,
+  "review-thread.opened": reviewThreadSchema,
+  "review-thread.resolved": reviewThreadSchema,
+  "pull-request.conflicting": githubPullRequestSchema.extend({ pr: integer, key: text }),
+  "pull-request.behind": githubPullRequestSchema.extend({ pr: integer, key: text }),
 } as const;
 export type EventKind = keyof typeof eventPayloadSchemas;
 export type EventPayloads = { [K in EventKind]: z.infer<(typeof eventPayloadSchemas)[K]> };
