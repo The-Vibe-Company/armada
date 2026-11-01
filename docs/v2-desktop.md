@@ -389,9 +389,24 @@ resolves the current selection (project/checkpoint rules still win), configures
 the durable coordinator and streams directly through pi. A room can be
 configured for the first time without restarting the daemon. An active turn
 finishes on its model before a newly selected model starts a turn. The daemon
-honors pi's environment sources and `ARMADA_MODEL_PROVIDER`,
-`ARMADA_MODEL_NAME`, `ARMADA_MODEL_API_KEY`; the legacy `ARMADA_MODEL_KIND` and
-custom endpoint settings remain supported. The pinned pi 1.4.0 package does not
+uses the choice saved in Settings first, including custom endpoints. Only when
+no choice is saved does it fall back to `ARMADA_MODEL_PROVIDER` and
+`ARMADA_MODEL_NAME` (or the legacy `ARMADA_MODEL_KIND` and custom endpoint
+settings), then `ZAI_*`, then `AZURE_AI_*`. For a deliberate boot override, set
+`ARMADA_MODEL_FORCE=1` with `ARMADA_MODEL_PROVIDER` and `ARMADA_MODEL_NAME`, or
+`ARMADA_MODEL_KIND`, `ARMADA_MODEL_NAME` and `ARMADA_MODEL_BASE_URL` for a custom
+endpoint. For example, `ARMADA_MODEL_FORCE=1 ARMADA_MODEL_PROVIDER=openai
+ARMADA_MODEL_NAME=gpt-4.1-mini` overrides the saved default for that daemon
+lifetime. Other flag values do not force a selection, and the flag does not
+promote ZAI/Azure fallback settings over a saved choice. The override does not
+rewrite the saved choice; removing it restores that choice on the next restart.
+Project/checkpoint rules still win over the default. Boot, subsequent turns and
+the catalog read the same registry selection, so Settings shows the effective
+default, including an explicit override. Provider credentials still honor pi's
+environment sources and `ARMADA_MODEL_API_KEY`. Each project's room gets one
+quiet `Coordinator uses provider/model.` line when its coordinator opens in a
+daemon lifetime, after its actual model is configured and before work resumes.
+The pinned pi 1.4.0 package does not
 export its `findEnvKeys` helper as a package subpath, so the registry imports
 that module beside the daemon dependency; the desktop build bundles it and
 pi's statically registered OAuth flows.
