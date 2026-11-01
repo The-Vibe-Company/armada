@@ -98,7 +98,13 @@ export function Header({
       end={
         <>
           {pills.length > 0 && (
-            <ul aria-label="The project's agents" className="m-0 flex list-none items-center gap-1.5 p-0">
+            <ul
+              aria-label="The project's agents"
+              className={cn(
+                "m-0 flex list-none items-center gap-1.5 p-0",
+                usage && linearPaused && "@max-[640px]/strip:max-w-20 @max-[640px]/strip:overflow-x-auto",
+              )}
+            >
               {pills.map(({ group, n }) => (
                 <li key={group}>
                   <button
