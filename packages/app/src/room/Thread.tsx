@@ -29,8 +29,9 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { AnimatePresence, m } from "motion/react";
+import { m } from "motion/react";
 import {
+  Component,
   type ReactNode,
   type Ref,
   type RefObject,
@@ -140,6 +141,11 @@ export function Thread({
     groupOf,
   );
   const rows = workRows(items);
+  // History mounts in place; only rows arriving after the first commit slide in.
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+  }, []);
   const open = useOpen(project);
   const working = turn !== null && turn.state !== "idle";
   const tail = items.at(-1);
@@ -162,7 +168,7 @@ export function Thread({
   useEffect(() => {
     if (read) setAnnounce(true);
   }, [read]);
-  const { pill, toEnd } = useFollow({ box, list, project, working, items, control, positions });
+  const { pill, toEnd, capture, settle } = useFollow({ box, list, project, working, items, control, positions });
   useSeen(away ? undefined : project, items);
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -173,61 +179,53 @@ export function Thread({
         className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pt-3.5 pb-3 [overflow-anchor:none] sm:px-12"
       >
         <TicketGroups value={groupOf}>
-          <ol
-            ref={list}
-            className="m-0 mx-auto mt-auto flex w-full min-w-0 max-w-(--chat-content-max-width) list-none flex-col gap-3 p-0"
-            aria-live={announce ? "polite" : "off"}
-            aria-relevant="additions"
-            data-thread
-          >
+          <ScrollList element={list} capture={capture} settle={settle} announce={announce}>
             {items.length === 0 && <li className="py-6 text-center text-body text-text-3">{empty}</li>}
-            <AnimatePresence initial={false}>
-              {rows.map((row, k) => (
-                <m.li
-                  key={row.id}
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={ARRIVE}
-                  data-item={rowKind(row)}
-                  data-row={row.id}
-                  // A message on its way is announced once, when the conversation holds it; its controls wait for it too.
-                  inert={row.id.startsWith("sent:") || undefined}
-                  // Still written: assistive technology waits for it (the status below says it once read).
-                  aria-busy={(row.kind === "said" && row.item.kind === "streaming") || undefined}
-                  className="group/row min-w-0"
-                >
-                  {row.kind === "said" ? (
-                    <Item
-                      item={row.item}
-                      dot={dots.get(row.item.id) ?? null}
-                      repository={repository}
-                      prefixes={prefixes}
-                      groupOf={groupOf}
-                      time={rowTime(row.item.at, now, zone)}
-                      full={fullTime(row.item.at, zone)}
-                      thinking={working && turn?.state === "thinking" && row.item === tail}
-                      folded={rows[k - 1]?.kind === "fold"}
-                    />
-                  ) : row.kind === "fold" ? (
-                    <Fold
-                      row={row}
-                      open={open}
-                      groupOf={groupOf}
-                      time={rowTime(row.work.at, now, zone)}
-                      full={fullTime(row.work.at, zone)}
-                    />
-                  ) : (
-                    <WorkBlock work={row.work} open={open} groupOf={groupOf} running={running} />
-                  )}
-                </m.li>
-              ))}
-            </AnimatePresence>
+            {rows.map((row, k) => (
+              <m.li
+                key={row.id}
+                initial={mounted.current ? { opacity: 0, y: 6 } : false}
+                animate={{ opacity: 1, y: 0 }}
+                transition={ARRIVE}
+                data-item={rowKind(row)}
+                data-row={row.id}
+                // A message on its way is announced once, when the conversation holds it; its controls wait for it too.
+                inert={row.id.startsWith("sent:") || undefined}
+                // Still written: assistive technology waits for it (the status below says it once read).
+                aria-busy={(row.kind === "said" && row.item.kind === "streaming") || undefined}
+                className="group/row min-w-0"
+              >
+                {row.kind === "said" ? (
+                  <Item
+                    item={row.item}
+                    dot={dots.get(row.item.id) ?? null}
+                    repository={repository}
+                    prefixes={prefixes}
+                    groupOf={groupOf}
+                    time={rowTime(row.item.at, now, zone)}
+                    full={fullTime(row.item.at, zone)}
+                    thinking={working && turn?.state === "thinking" && row.item === tail}
+                    folded={rows[k - 1]?.kind === "fold"}
+                  />
+                ) : row.kind === "fold" ? (
+                  <Fold
+                    row={row}
+                    open={open}
+                    groupOf={groupOf}
+                    time={rowTime(row.work.at, now, zone)}
+                    full={fullTime(row.work.at, zone)}
+                  />
+                ) : (
+                  <WorkBlock work={row.work} open={open} groupOf={groupOf} running={running} />
+                )}
+              </m.li>
+            ))}
             {working && (
               <li className="min-w-0" data-item="working">
                 <Working started={started} queued={turn?.queued ?? 0} />
               </li>
             )}
-          </ol>
+          </ScrollList>
         </TicketGroups>
         {/* The room an anchored message's answer grows into (sized by `useFollow`, never rendered). */}
         <div aria-hidden className="flex-none" data-end-space />
@@ -238,6 +236,37 @@ export function Thread({
       {pill && <ScrollToEnd queued={turn?.queued ?? 0} onClick={toEnd} />}
     </div>
   );
+}
+
+type ScrollListProps = {
+  element: RefObject<HTMLOListElement | null>;
+  announce: boolean;
+  children: ReactNode;
+  capture(): Anchor | null;
+  settle(anchor?: Anchor | null): void;
+};
+
+/** Read the viewport before React mutates rows, including a move whose scroll event is still pending. */
+class ScrollList extends Component<ScrollListProps> {
+  override getSnapshotBeforeUpdate(): Anchor | null {
+    return this.props.capture();
+  }
+  override componentDidUpdate(_props: ScrollListProps, _state: unknown, anchor: Anchor | null) {
+    this.props.settle(anchor);
+  }
+  override render() {
+    return (
+      <ol
+        ref={this.props.element}
+        className="m-0 mx-auto mt-auto flex w-full min-w-0 max-w-(--chat-content-max-width) list-none flex-col gap-3 p-0"
+        aria-live={this.props.announce ? "polite" : "off"}
+        aria-relevant="additions"
+        data-thread
+      >
+        {this.props.children}
+      </ol>
+    );
+  }
 }
 
 /** T3 Code's `ScrollToEndButton`: a small glass pill centred just above the field, with what waits at the end. */
@@ -379,76 +408,83 @@ function useFollow({
     [box],
   );
 
-  const settle = useCallback(() => {
-    const el = box.current;
-    const ol = list.current;
-    if (!el || !ol) return;
-    const restore = restoring.current;
-    if (restore) {
-      const boxes = rows();
-      if (!boxes.length) return;
-      restoring.current = null;
-      const row = boxes.find((b) => b.key === restore.row);
-      if (row) {
-        el.scrollTop += correction(restore, row.top);
-        reading.current = restore;
-        dispatch({
-          type: "scrolled",
-          fromEnd: fromEnd({ top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight }),
-        });
-        syncPill(follow.current);
-        if (follow.current.mode === "free") return;
-      } else follow.current = FOLLOWING;
-    }
-    const mode = follow.current.mode;
-    if (mode === "free") {
-      const held = reading.current;
-      const row = held && rows().find((b) => b.key === held.row);
-      if (held && row) {
-        const shift = correction(held, row.top);
-        if (Math.abs(shift) >= 0.5) el.scrollTop += shift;
+  const capture = useCallback(
+    () => (follow.current.mode === "free" && !restoring.current ? anchorRow(rows()) : null),
+    [rows],
+  );
+  const settle = useCallback(
+    (anchor?: Anchor | null) => {
+      const el = box.current;
+      const ol = list.current;
+      if (!el || !ol) return;
+      const restore = restoring.current;
+      if (restore) {
+        const boxes = rows();
+        if (!boxes.length) return;
+        restoring.current = null;
+        const row = boxes.find((b) => b.key === restore.row);
+        if (row) {
+          el.scrollTop += correction(restore, row.top);
+          reading.current = restore;
+          dispatch({
+            type: "scrolled",
+            fromEnd: fromEnd({ top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight }),
+          });
+          syncPill(follow.current);
+          if (follow.current.mode === "free") return;
+        } else follow.current = FOLLOWING;
       }
-      // Content growing below fires no scroll: the end it moved away says so here (only a scroll re-arms).
-      const away = fromEnd({ top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight });
-      if (away > REARM_PX) dispatch({ type: "scrolled", fromEnd: away });
-      return;
-    }
-    if (mode === "anchoring") {
-      const sent = anchored.current;
-      const said = itemsNow.current.findLast(
-        (i) => i.kind === "owner" && (!sent || (i.body === sent.body && !sent.before.has(i.id))),
-      );
-      const owner = said ? ol.querySelector<HTMLElement>(`:scope > [data-row="${CSS.escape(said.id)}"]`) : null;
-      // The message sent is not drawn yet: the reading that brings it settles again. A reading that lands
-      // without it once no turn runs (a Stop withdrew it) ends the wait: the thread follows its end.
-      if (!owner && sent && (itemsNow.current === sent.items || workingNow.current)) return;
-      // Only a box that scrolls holds its height: one that grows with its content would grow with the space too.
-      const scrolls = ["auto", "scroll"].includes(getComputedStyle(el).overflowY);
-      if (owner && scrolls) {
-        // Offsets, not boxes: a row arriving still slides in (a transform) and must not count.
-        const below = ol.offsetTop + ol.offsetHeight - owner.offsetTop;
-        const { space: room, overflows } = endSpace(
-          el.clientHeight,
-          below,
-          Number.parseFloat(getComputedStyle(el).paddingBottom) || 0,
-        );
-        if (!overflows) {
-          space(room);
-          toBottom(reduced() ? "instant" : "smooth");
-          return;
+      const mode = follow.current.mode;
+      if (mode === "free") {
+        const held = anchor ?? reading.current;
+        if (anchor) reading.current = anchor;
+        const row = held && rows().find((b) => b.key === held.row);
+        if (held && row) {
+          const shift = correction(held, row.top);
+          if (Math.abs(shift) >= 0.5) el.scrollTop += shift;
         }
+        // Content growing below fires no scroll: the end it moved away says so here (only a scroll re-arms).
+        const away = fromEnd({ top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight });
+        if (away > REARM_PX) dispatch({ type: "scrolled", fromEnd: away });
+        return;
       }
-      // The answer outgrew the room under it (or nothing to pin): the thread follows its end.
-      dispatch({ type: "overflowed" });
-    }
-    space(0);
-    toBottom(placed.current ? followBehavior(workingNow.current, reduced()) : "instant");
-    if (ol.querySelector(":scope > [data-row]")) placed.current = true;
-  }, [box, list, rows, dispatch, syncPill, space, toBottom]);
+      if (mode === "anchoring") {
+        const sent = anchored.current;
+        const said = itemsNow.current.findLast(
+          (i) => i.kind === "owner" && (!sent || (i.body === sent.body && !sent.before.has(i.id))),
+        );
+        const owner = said ? ol.querySelector<HTMLElement>(`:scope > [data-row="${CSS.escape(said.id)}"]`) : null;
+        // The message sent is not drawn yet: the reading that brings it settles again. A reading that lands
+        // without it once no turn runs (a Stop withdrew it) ends the wait: the thread follows its end.
+        if (!owner && sent && (itemsNow.current === sent.items || workingNow.current)) return;
+        // Only a box that scrolls holds its height: one that grows with its content would grow with the space too.
+        const scrolls = ["auto", "scroll"].includes(getComputedStyle(el).overflowY);
+        if (owner && scrolls) {
+          // Offsets, not boxes: a row arriving still slides in (a transform) and must not count.
+          const below = ol.offsetTop + ol.offsetHeight - owner.offsetTop;
+          const { space: room, overflows } = endSpace(
+            el.clientHeight,
+            below,
+            Number.parseFloat(getComputedStyle(el).paddingBottom) || 0,
+          );
+          if (!overflows) {
+            space(room);
+            toBottom(reduced() ? "instant" : "smooth");
+            return;
+          }
+        }
+        // The answer outgrew the room under it (or nothing to pin): the thread follows its end.
+        dispatch({ type: "overflowed" });
+      }
+      space(0);
+      toBottom(placed.current ? followBehavior(workingNow.current, reduced()) : "instant");
+      if (ol.querySelector(":scope > [data-row]")) placed.current = true;
+    },
+    [box, list, rows, dispatch, syncPill, space, toBottom],
+  );
 
-  // Each new reading (an item, an answer written further, a call ended) settles the scroll.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the items are what moved.
-  useLayoutEffect(settle, [items]);
+  // The parent scroller's ref is attached after the child list mounts.
+  useLayoutEffect(settle, [settle]);
   // The thread also grows without a new reading (a fold opened, an image), or its box shrinks (a queued message).
   useEffect(() => {
     const el = box.current;
@@ -553,7 +589,7 @@ function useFollow({
     }),
     [box, dispatch, settle, navigated],
   );
-  return { pill, toEnd };
+  return { pill, toEnd, capture, settle };
 }
 
 /** Records the latest coordinator item as seen while the room is open and the window focused (THE-2054). */
@@ -608,6 +644,18 @@ function Item({
     </Time>
   );
   switch (item.kind) {
+    case "wake":
+      return (
+        <div className="flex min-h-6 min-w-0 items-baseline px-0.5 py-0.5 text-body text-text-3" data-wake>
+          <Markdown
+            text={item.body}
+            repository={repository}
+            prefixes={prefixes}
+            className="text-body text-text-3 [&_p]:m-0"
+          />
+          {when}
+        </div>
+      );
     case "owner":
       return (
         <div className="flex flex-col items-end gap-1">
