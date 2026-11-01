@@ -482,8 +482,8 @@ export class Workers {
       throw new WorkerRefusal("Ticket has an unresolved launch intent; inspect its process before relaunching");
     for (const event of evaluateBudget({ project, events, now: this.#at() })) this.#options.store.append(event);
     const tables = this.#tables(project);
-    if (tables?.holds.length)
-      throw new WorkerRefusal(`Project paused: ${tables.holds.map((h) => h.reason).join("; ")}`);
+    const budgetHolds = tables?.holds.filter((hold) => hold.reason.startsWith("budget:")) ?? [];
+    if (budgetHolds.length) throw new WorkerRefusal(`Project paused: ${budgetHolds.map((h) => h.reason).join("; ")}`);
     if (!tables) throw new WorkerRefusal(`ticket ${args.ticket} not found in Linear`);
     const ticket = tables.tickets.find((t) => t.id === args.ticket);
     // Copied from V1 cli/src/launch.ts prepareLaunch and core/src/brief.ts loadBrief.
@@ -707,8 +707,8 @@ export class Workers {
       }))
         this.#options.store.append(event);
       const fresh = this.#tables(project);
-      if (fresh?.holds.length)
-        throw new WorkerRefusal(`Project paused: ${fresh.holds.map((h) => h.reason).join("; ")}`);
+      const budgetHolds = fresh?.holds.filter((hold) => hold.reason.startsWith("budget:")) ?? [];
+      if (budgetHolds.length) throw new WorkerRefusal(`Project paused: ${budgetHolds.map((h) => h.reason).join("; ")}`);
       const current = fresh?.sessions.find((s) => s.ticket === args.ticket);
       if (
         !current ||
@@ -1351,9 +1351,6 @@ export class Workers {
         }
         return { ok: true, id: item };
       } else if (request.command === "release") {
-        const observation = await row.runtime.observe(row.ref);
-        this.#check(row.ref);
-        this.#record(row.ref, observation);
         // A release retires authorization; it does not send a signal to a still-running CLI.
         row.tokenHash = "";
         this.#append({
@@ -1361,6 +1358,12 @@ export class Workers {
           kind: "session.released",
           payload: { ticket, session, reason: row.mask(request.reason) },
         });
+        // Final counters are unverified: retain their known floor without waiting on a runtime read.
+        try {
+          this.#usage(row.ref, { state: "unknown", usage: "unknown" });
+        } catch {
+          console.warn("armada: worker released; final usage checkpoint unavailable");
+        }
       }
       return { ok: true, ticket, session };
     });
