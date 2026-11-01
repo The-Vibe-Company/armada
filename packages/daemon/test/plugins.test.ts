@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { bootDaemon } from "../src/boot.ts";
-import { nodeExecutable } from "./support/node.ts";
+import { daemonReady, nodeExecutable } from "./support/node.ts";
 
 async function fixture(run: (dir: string) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), "armada-plugins-"));
@@ -412,18 +412,10 @@ test("armadad loads the bundled catalog before announcing server readiness", { t
       },
     );
     const exited = new Promise((resolve) => child.once("exit", resolve));
-    let output = "";
     child.stderr.resume();
     try {
-      await new Promise<void>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("exit", () => reject(new Error("armadad exited before readiness")));
-        child.stdout.on("data", (chunk) => {
-          output += chunk;
-          if (output.includes("\n")) resolve();
-        });
-      });
-      assert.match(JSON.parse(output.trim()).wsUrl, /^ws:\/\/127\.0\.0\.1:/);
+      const ready = await daemonReady(child);
+      assert.match(ready.wsUrl, /^ws:\/\/127\.0\.0\.1:/);
       const status = JSON.parse(await readFile(`${configPath}.plugins.json`, "utf8"));
       assert.equal(status.plugins.find((p: { id: string }) => p.id === "hello")?.loaded, false);
       assert.deepEqual(

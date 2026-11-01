@@ -6,9 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
+import { PROTOCOL_VERSION } from "@armada/protocol";
+import { WebSocket } from "ws";
 import { fold } from "../src/fold.ts";
 import { EventStore } from "../src/store.ts";
-import { daemonEnv, nodeExecutable } from "./support/node.ts";
+import { daemonEnv, daemonReady, nodeExecutable } from "./support/node.ts";
 import { project } from "./support/reader-recordings.ts";
 
 // Exercise the actual source entry point, loader, bundled plugins and SQLite store.
@@ -23,6 +25,15 @@ for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] a
     writeFileSync(projects, JSON.stringify([project]));
     if (mode === "gh")
       writeFileSync(join(dir, "gh"), "#!/bin/sh\nprintf synthetic-github-environment-secret", { mode: 0o700 });
+    const initial = new EventStore(database);
+    initial.append({
+      project: project.id,
+      kind: "coordinator.message",
+      at: "2030-01-01T00:00:00Z",
+      actor: "owner",
+      payload: { role: "owner", body: "Synthetic history" },
+    });
+    initial.close();
     const preload = `
       import { github, issue, page } from ${JSON.stringify(new URL("./support/reader-recordings.ts", import.meta.url).href)};
       globalThis.fetch = async (url, init) => {
@@ -74,20 +85,39 @@ for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] a
       lines.close();
       rmSync(dir, { recursive: true, force: true });
     });
-    const [line] = await Promise.race([
-      once(lines, "line"),
-      exited.then(() => {
-        throw new Error(`daemon exited before readiness: ${errors}`);
+    const ready = await daemonReady(child);
+    assert.deepEqual(ready.readers, [], "network reads are background work");
+    const ws = new WebSocket(ready.wsUrl);
+    t.after(() => ws.terminate());
+    const settled = new Promise<void>((resolve, reject) => {
+      const readers = new Set<string>();
+      ws.on("error", reject);
+      ws.on("message", (data) => {
+        const frame = JSON.parse(String(data));
+        for (const event of frame.events ?? []) if (event.actor === "reader") readers.add(String(event.seq));
+        if (readers.size >= 2) resolve();
+      });
+    });
+    await once(ws, "open");
+    ws.send(
+      JSON.stringify({
+        version: PROTOCOL_VERSION,
+        id: "boot",
+        type: "project.subscribe",
+        project: project.id,
+        after: 1,
       }),
-    ]);
-    const ready = JSON.parse(line);
+    );
+    await settled;
+    ws.close();
     child.kill("SIGTERM");
     assert.deepEqual(await exited, [0, null]);
     const store = new EventStore(database);
     try {
-      const kinds = store.readSince(0).map((event) => event.kind);
+      const kinds = store.readSince(1).map((event) => event.kind);
       if (mode === "environment" || mode === "gh") {
-        assert.deepEqual(ready.readers, [{ project: project.id, tracker: true, forge: true }]);
+        assert.ok(fold(store.readSince(0)).projects[project.id]?.readAt?.linear);
+        assert.ok(fold(store.readSince(0)).projects[project.id]?.readAt?.github);
         assert.ok(kinds.includes("ticket.seen"), "environment token ingests Linear facts");
         assert.ok(kinds.includes("pull-request.opened"), "environment token ingests GitHub facts");
       } else {
@@ -97,9 +127,6 @@ for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] a
             : mode === "unauthorized"
               ? ["Linear answered 401", "GitHub answered 401"]
               : ["Linear network request failed", "GitHub network request failed"];
-        assert.deepEqual(ready.readers, [
-          { project: project.id, tracker: false, forge: false, trackerError: reason[0], forgeError: reason[1] },
-        ]);
         for (const message of reason) assert.ok(errors.includes(message), `log explains ${message}`);
         assert.ok(
           kinds.every((kind) => kind === "coordinator.checkpoint"),
@@ -112,7 +139,7 @@ for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] a
         );
       }
       assert.doesNotMatch(
-        errors + line + JSON.stringify(store.readSince(0)),
+        errors + JSON.stringify(ready) + JSON.stringify(store.readSince(0)),
         /synthetic-(?:linear|github)-environment-secret|private transport detail|forged log line/,
       );
     } finally {

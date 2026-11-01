@@ -261,8 +261,13 @@ in-process modules. Secret names use the existing owner secret flow.
 
 The shell calls `bootDaemon` with the event database, keychain secret getter and
 logger and retains its registry. The `armadad` entry does this before starting
-its WebSocket server; plugin logs go to stderr so stdout keeps its one JSON
-readiness line. Its secret getter uses the shared credential gateway with service
+its WebSocket server. Plugin logs go to stderr; stdout first announces
+`{"starting":true}`, then progress with the stored event count, then the JSON
+readiness line with the bound addresses and boot-stage timings (THE-2117).
+Initial readers start after readiness, so that line does not promise reader
+health; failures reach stderr and the durable log. The desktop opens a local
+startup page immediately and waits without a readiness deadline once the daemon
+announces it is starting. Its secret getter uses the shared credential gateway with service
 `armada.plugins` and the declared secret name as the account; missing/locked
 entries return null. The gateway owns OS storage and the explicit Linux file
 fallback. Embedded hosts can supply their own keychain getter. It also atomically saves the boot catalog and
@@ -319,8 +324,7 @@ the openai-compatible model plugin, with pi-durable checkpoints in the log.
   plugin loader) to THE-2047, `ctx.secrets.get` read the plugin keychain only,
   so a daemon launched with keys in its environment never read Linear or
   GitHub and the room's facts froze while the UI said "live". THE-2047 reads
-  env, then the keychain, then `gh` for GitHub, and the readiness line names a
-  reader that failed and why. Verified on the owner's machine: ticket and
+  env, then the keychain, then `gh` for GitHub, and stderr names a reader that failed and why. Verified on the owner's machine: ticket and
   pull-request events resume within a minute of a restart.
 - **Cost is not metered yet.** The coordinator's tokens are not counted in the
   log; a later ticket adds usage to the checkpoint event.
@@ -516,7 +520,8 @@ pinned behind-base comparisons. Per-PR `armada.github-reader` v1 checkpoints
 retain cursors, conditional reads and independent failure windows. 404 retries;
 410 drops immediately; 24 hours of continuous failures abandons and names a PR.
 Forge polling follows session activity (30 seconds, otherwise five minutes),
-with GitHub cooldowns and durable doubling backoff shown in readiness. External
+with GitHub cooldowns and doubling backoff retained in its durable checkpoint.
+Reader failures are logged on stderr after readiness. External
 comments reach the current worker through keyed delivery, suppressing its own
 PR-author account; conflict/behind candidates belong to the coordinator Waker.
 Protocol minor 18 adds these events and optional PR unresolved/behind facts.

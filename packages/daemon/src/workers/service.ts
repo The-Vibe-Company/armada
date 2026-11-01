@@ -210,7 +210,7 @@ export class Workers {
     return this.#options.now?.() ?? new Date().toISOString();
   }
   #tables(project: string) {
-    return fold(this.#options.store.readSince(0, project)).projects[project];
+    return this.#options.store.fold(project).projects[project];
   }
   #append(event: { project: string; kind: EventInput["kind"]; payload: Json }, actor = "coordinator") {
     return this.#options.store.append({ ...event, at: this.#at(), actor } as EventInput);

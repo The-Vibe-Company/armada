@@ -291,7 +291,9 @@ export class Waker {
       for (const e of this.#store.readSince(this.#cursor, this.#project)) {
         this.#cursor = e.seq;
         this.#record(e);
-        if (e.kind.startsWith("coordinator.wakeup")) continue;
+        // Chat bodies cannot change fleet state or wake evidence. Replaying them
+        // through every growing prefix makes a chat-heavy boot quadratic.
+        if (e.kind === "coordinator.message" || e.kind.startsWith("coordinator.wakeup")) continue;
         if (e.kind === "coordinator.checkpoint") {
           const c = e.payload.checkpoint;
           if (

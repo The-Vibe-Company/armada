@@ -1,10 +1,12 @@
 import { DatabaseSync } from "node:sqlite";
 import type { EventInput, FleetEvent } from "./events.ts";
+import { type FleetTables, fold } from "./fold.ts";
 
 /** The only durable store: callers supply time and identity; SQLite supplies order. */
 export class EventStore {
   readonly #db: DatabaseSync;
   readonly #listeners = new Set<() => void>();
+  readonly #folds = new Map<string, { seq: number; tables: FleetTables }>();
 
   constructor(path: string) {
     this.#db = new DatabaseSync(path);
@@ -57,6 +59,8 @@ export class EventStore {
       this.#db.exec("ROLLBACK");
       throw error;
     }
+    // Publish cache invalidation with the commit, before any observer reads it.
+    if (stored.length) this.#folds.clear();
     for (const listener of [...this.#listeners]) {
       try {
         listener();
@@ -93,6 +97,23 @@ export class EventStore {
     return rows.map((row) => ({ ...row, payload: JSON.parse(row.payload as string) }) as FleetEvent);
   }
 
+  /** One replay per project at a committed cursor. Callers own detached results.
+   * This is a memo of the pure fold, never an incremental or durable projection.
+   */
+  fold(project: string): FleetTables {
+    const seq = this.sequence;
+    let cached = this.#folds.get(project);
+    if (!cached || cached.seq !== seq) {
+      cached = { seq, tables: fold(this.readSince(0, project)) };
+      this.#folds.set(project, cached);
+    }
+    return structuredClone(cached.tables);
+  }
+
+  get count(): number {
+    return Number(this.#db.prepare("SELECT COUNT(*) AS count FROM events").get()?.count);
+  }
+
   /** Bounded history: SQL owns filtering, correlation, ordering and the exclusive cursor. */
   history(project: string, ticket?: string, cursor = this.sequence + 1, limit = 50): FleetEvent[] {
     const rows = this.#db
@@ -127,6 +148,7 @@ export class EventStore {
   }
 
   close(): void {
+    this.#folds.clear();
     this.#listeners.clear();
     this.#db.close();
   }

@@ -86,3 +86,42 @@ test("the database refuses rewriting or deleting history, including SQL replacem
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("project folds reuse a committed cursor, stay detached, and refresh before append observers", (t) => {
+  const store = new EventStore(":memory:");
+  const event = {
+    project: "orchard",
+    kind: "hold.opened",
+    at: "2030-01-01T10:00:00Z",
+    actor: "Mira",
+    payload: { id: "rain", reason: "Wait for CI" },
+  } as const;
+  try {
+    store.append(event);
+    const read = t.mock.method(store, "readSince");
+    const first = store.fold("orchard");
+    assert.equal(first.projects.orchard?.holds[0]?.reason, "Wait for CI");
+    first.projects.orchard!.holds[0]!.reason = "Caller mutation";
+    assert.equal(store.fold("orchard").projects.orchard?.holds[0]?.reason, "Wait for CI");
+    assert.equal(read.mock.callCount(), 1, "one replay per project at the committed cursor");
+    assert.deepEqual(store.fold("harbor").projects, {});
+    assert.equal(read.mock.callCount(), 2, "projects have distinct cache entries");
+    assert.throws(() => store.appendMany([event, { ...event, project: "" }]));
+    assert.equal(store.fold("orchard").seq, 1);
+    assert.equal(read.mock.callCount(), 2, "rollback preserves the committed cache");
+    let observed = "";
+    store.subscribe(() => {
+      observed = store.fold("orchard").projects.orchard?.holds[0]?.reason ?? "";
+    });
+    store.appendMany([
+      { ...event, kind: "hold.cleared", payload: { id: "rain", reason: "CI recovered" } },
+      { ...event, payload: { id: "sun", reason: "Wait for deploy" } },
+    ]);
+    assert.equal(observed, "Wait for deploy", "commit invalidates before observers run");
+    assert.equal(store.fold("orchard").seq, 3);
+    assert.equal(store.fold("harbor").projects.harbor, undefined);
+    assert.equal(read.mock.callCount(), 4);
+  } finally {
+    store.close();
+  }
+});

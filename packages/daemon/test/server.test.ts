@@ -32,7 +32,7 @@ import { startServer } from "../src/server/index.ts";
 import { Replay } from "../src/server/replay.ts";
 import { EventStore } from "../src/store.ts";
 import { FakeKeychain } from "./support/keychain.ts";
-import { nodeExecutable } from "./support/node.ts";
+import { daemonReady, nodeExecutable } from "./support/node.ts";
 
 const projects = [
   { id: "orchard", name: "Orchard", repository: "example/orchard" },
@@ -202,26 +202,9 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
     errors.close();
     rmSync(dir, { recursive: true, force: true });
   });
-  const lines = createInterface({ input: child.stdout });
-  const [ready] = await Promise.race([
-    once(lines, "line"),
-    exited.then(() => {
-      throw new Error("daemon exited before readiness");
-    }),
-  ]);
-  lines.close();
-  const address = JSON.parse(ready);
+  const address = await daemonReady(child);
   assert.equal(lstatSync(stalePath).isSocket(), true, "startup never deletes another instance socket");
-  assert.deepEqual(
-    address.readers,
-    projects.map((project) => ({
-      project: project.id,
-      tracker: false,
-      forge: false,
-      trackerError: "First read pending",
-      forgeError: "First read pending",
-    })),
-  );
+  assert.deepEqual(address.readers, [], "readers start after readiness");
   await readersActive;
   assert.equal((await fetch(address.url)).status, 404);
   const client = await connect(address.wsUrl);

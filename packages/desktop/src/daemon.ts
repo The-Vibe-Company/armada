@@ -16,7 +16,9 @@ type Options = {
   /** Lets the app restart the daemon: armadad exits with RESTART_EXIT_CODE for the shell to start it again. */
   restartable?: boolean;
   env?: NodeJS.ProcessEnv;
+  /** Deadline for the first starting/readiness message, not completion of boot. */
   startupMs?: number;
+  onStarting?: (events?: number) => void;
   shutdownMs?: number;
 };
 
@@ -56,13 +58,27 @@ export class DaemonProcess {
       this.child.once("close", (code, signal) => resolve({ code, signal }));
     });
     const lines = createInterface({ input: this.child.stdout });
+    const startupMs = options.startupMs ?? 15000;
+    const timeout = setTimeout(
+      () => this.rejectReady(new Error(`armadad readiness timed out after ${startupMs / 1000} s`)),
+      startupMs,
+    );
     this.ready = new Promise((resolve, reject) => {
       this.rejectReady = reject;
-      this.child.once("error", () => reject(new Error("Could not start armadad")));
-      void this.exited.then(() => reject(new Error("armadad exited before readiness")));
+      this.child.once("error", (error) => reject(new Error(`Could not start armadad: ${error.message}`)));
+      void this.exited.then(({ code, signal }) =>
+        reject(new Error(`armadad exited before readiness (${signal ? `signal ${signal}` : `code ${code}`})`)),
+      );
       lines.on("line", (line) => {
         try {
           const value = JSON.parse(line);
+          if (value.starting === true) {
+            if (value.events !== undefined && (!Number.isSafeInteger(value.events) || value.events < 0))
+              throw new Error("Invalid startup count");
+            clearTimeout(timeout);
+            options.onStarting?.(value.events);
+            return;
+          }
           const url = new URL(value.url);
           if (
             url.protocol !== "http:" ||
@@ -82,10 +98,6 @@ export class DaemonProcess {
         }
       });
     });
-    const timeout = setTimeout(
-      () => this.rejectReady(new Error("armadad readiness timed out")),
-      options.startupMs ?? 15000,
-    );
     // Attach rejection handling immediately, including quit-before-ready and spawn failures.
     void this.ready.then(
       () => {
