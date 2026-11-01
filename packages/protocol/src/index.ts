@@ -21,6 +21,7 @@ import {
   ownerAnsweredSchema,
   ownerAnswerRequestSchema,
 } from "./chat.js";
+import { DELIVERIES_MINOR } from "./deliveries.js";
 import { counter, identifier, requestSchema, versionSchema } from "./envelope.js";
 import { GITHUB_READER_MINOR } from "./fleet.js";
 import {
@@ -57,7 +58,14 @@ export * from "./session.js";
 /** Wire version, independent of the daemon/app release versions. */
 export const PROTOCOL_VERSION = {
   major: 1,
-  minor: Math.max(READER_MINOR, PROJECTS_MINOR, BRIEF_INSTRUCTIONS_MINOR, GITHUB_READER_MINOR, WATCHDOG_MINOR),
+  minor: Math.max(
+    READER_MINOR,
+    PROJECTS_MINOR,
+    BRIEF_INSTRUCTIONS_MINOR,
+    GITHUB_READER_MINOR,
+    DELIVERIES_MINOR,
+    WATCHDOG_MINOR,
+  ),
 } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
@@ -285,3 +293,6 @@ export function admitRequest(input: unknown, daemonVersion: ProtocolVersion = PR
   }
   return { ok: true, request: parsed.data };
 }
+
+// Durable worker input deliveries (THE-2108).
+export { DELIVERIES_MINOR, type Delivery } from "./deliveries.js";

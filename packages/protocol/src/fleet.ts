@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { deliveryPayloadSchemas, deliveryStateSchema } from "./deliveries.js";
 import { readerUsageSchema } from "./readers.js";
 import { rulesStateSchema } from "./rules.js";
 
@@ -44,17 +45,20 @@ const ticketSchema = z.object({
 });
 export type Ticket = z.infer<typeof ticketSchema>;
 const ciSchema = z.enum(["none", "pending", "success", "failure"]);
-const pullRequestSchema = z.object({
-  number: integer,
-  ticket: text,
-  state: z.enum(["open", "closed", "merged"]),
-  ci: ciSchema,
-  conflicting: z.boolean(),
-  head: text,
-  base: text.optional(),
-  behind: z.boolean().optional(),
-  unresolvedThreads: integer.optional(),
-});
+const pullRequestSchema = /* @__PURE__ */ makePullRequestSchema();
+function makePullRequestSchema() {
+  return z.object({
+    number: integer,
+    ticket: text,
+    state: z.enum(["open", "closed", "merged"]),
+    ci: ciSchema,
+    conflicting: z.boolean(),
+    head: text,
+    base: text.optional(),
+    behind: z.boolean().optional(),
+    unresolvedThreads: integer.optional(),
+  });
+}
 export type PullRequest = z.infer<typeof pullRequestSchema>;
 export type GithubPullRequest = EventPayloads["pull-request.opened"];
 const sessionRefSchema = z.object({
@@ -75,27 +79,31 @@ export const workerLaunchCheckpointSchema = sessionRefSchema.extend({
   step: z.enum(["preparing", "starting", "launched"]),
 });
 
-const inboxRequestSchema = z.object({
-  id: text,
-  ticket: text,
-  kind: z.enum([
-    "question",
-    "plan",
-    "hand-back",
-    "owner-request",
-    "launch",
-    "stopped",
-    "silent",
-    "not-started",
-    "liveness",
-    "deploy",
-    "job",
-    "job-silent",
-    "job-stalled",
-    "version",
-  ]),
-  body: text,
-});
+const inboxRequestSchema = /* @__PURE__ */ makeInboxRequestSchema();
+function makeInboxRequestSchema() {
+  return z.object({
+    id: text,
+    ticket: text,
+    kind: z.enum([
+      "question",
+      "plan",
+      "hand-back",
+      "owner-request",
+      "launch",
+      "delivery-failed",
+      "stopped",
+      "silent",
+      "not-started",
+      "liveness",
+      "deploy",
+      "job",
+      "job-silent",
+      "job-stalled",
+      "version",
+    ]),
+    body: text,
+  });
+}
 export type InboxRequest = z.infer<typeof inboxRequestSchema>;
 const validationRequestSchema = sessionRefSchema.extend({ id: text, question: text, checks: z.array(text) });
 export type ValidationRequest = z.infer<typeof validationRequestSchema>;
@@ -234,6 +242,9 @@ function payloadSchemas() {
     "review-thread.resolved": reviewThreadSchema,
     "pull-request.conflicting": githubPullRequestSchema.extend({ pr: integer, key: text }),
     "pull-request.behind": githubPullRequestSchema.extend({ pr: integer, key: text }),
+
+    // Durable worker input deliveries (THE-2108).
+    ...deliveryPayloadSchemas,
   } as const;
 }
 export type EventKind = keyof typeof eventPayloadSchemas;
@@ -268,7 +279,7 @@ const sessionSchema = sessionRefSchema.extend({
   heartbeat: text.nullable(),
 });
 export type Session = z.infer<typeof sessionSchema>;
-const inboxItemSchema = inboxRequestSchema.extend({ at: text, actor: text, seq: integer });
+const inboxItemSchema = /* @__PURE__ */ (() => inboxRequestSchema.extend({ at: text, actor: text, seq: integer }))();
 export type InboxItem = z.infer<typeof inboxItemSchema>;
 const queueEntrySchema = queuedSchema.extend({ at: text, seq: integer, state: z.enum(["queued", "running"]) });
 export type QueueEntry = z.infer<typeof queueEntrySchema>;
@@ -304,6 +315,7 @@ function makeTablesSchema() {
     queue: z.array(queueEntrySchema),
     holds: z.array(holdSchema),
     validations: z.array(validationSchema),
+    deliveries: z.array(deliveryStateSchema).optional(),
   });
 }
 export type ProjectTables = z.infer<ReturnType<typeof makeTablesSchema>>;

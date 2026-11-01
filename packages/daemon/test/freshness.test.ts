@@ -5,6 +5,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { nativeTools } from "../coordinator/native.ts";
 import { openCoordinatorStorage } from "../coordinator/storage.ts";
+import { fold } from "../src/fold.ts";
 import { PluginRegistry } from "../src/plugins/registry.ts";
 import { startReaders } from "../src/server/readers.ts";
 import { EventStore } from "../src/store.ts";
@@ -272,7 +273,10 @@ test("only configured built-in providers publish successful read times", async (
       ["github", "linear"],
     );
     await readers.refresh("other");
-    assert.deepEqual(store.readSince(0, "other"), [], "unconfigured sources cannot claim freshness without reading");
+    const other = fold(store.readSince(0, "other")).projects.other;
+    assert.deepEqual({ ...other?.readAt }, {}, "unconfigured sources cannot claim freshness without reading");
+    assert.deepEqual(other?.tickets, []);
+    assert.deepEqual(other?.pullRequests, []);
   } finally {
     readers.stop();
     store.close();

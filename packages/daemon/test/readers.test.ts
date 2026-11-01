@@ -8,6 +8,7 @@ import { setImmediate } from "node:timers/promises";
 import type { ForgeReadResult } from "@armada/plugin-api";
 import { serverMessageSchema, PROTOCOL_VERSION as version } from "@armada/protocol";
 import { WebSocket } from "ws";
+import { fleetStatus } from "../coordinator/read.ts";
 import { fold } from "../src/fold.ts";
 import { PluginRegistry } from "../src/plugins/registry.ts";
 import { startServer } from "../src/server/index.ts";
@@ -399,16 +400,22 @@ test("reader health recovers and untrusted plugin errors cannot inject diagnosti
     contributions: { tracker: { linear: { config: true, secrets: [] } } },
   });
   let failed = true;
+  let paused = false;
   activation.register.tracker("linear", {
     read: async () => {
+      if (paused) return { pausedUntil: "2030-01-01T00:02:00.000Z" };
       if (failed) throw new Error("Linear key missing\nprivate-key");
     },
     write: async () => {},
   });
   activation.commit();
   const logs: string[] = [];
-  const readers = await startReaders({
+  const store = new EventStore(":memory:");
+  let at = "2030-01-01T00:00:00.000Z";
+  let readers = await startReaders({
     registry,
+    store,
+    now: () => at,
     projects: [project],
     schedule: clock().schedule,
     log: (line) => logs.push(line),
@@ -419,11 +426,48 @@ test("reader health recovers and untrusted plugin errors cannot inject diagnosti
     assert.deepEqual(readers.readers, [
       { project: "orchard", tracker: false, forge: false, trackerError: "Reader failed (details withheld)" },
     ]);
+    await readers.refresh(project.id);
+    const status = () => fleetStatus(fold(store.readSince(0)).projects.orchard!, store.readSince(0), at);
+    assert.deepEqual(status().problems.readers, []);
+    await readers.refresh(project.id);
+    assert.deepEqual(status().problems.readers, [
+      { provider: "linear", failures: 3, error: "Reader failed (details withheld)" },
+    ]);
+    assert.deepEqual(status().readAt, {});
+    readers.stop();
+    readers = await startReaders({
+      registry,
+      store,
+      projects: [project],
+      now: () => at,
+      schedule: clock().schedule,
+      log: (line) => logs.push(line),
+    });
+    await readers.ready;
+    assert.deepEqual(
+      status().problems.readers,
+      [{ provider: "linear", failures: 4, error: "Reader failed (details withheld)" }],
+      "restart preserves consecutive failure evidence until a successful read",
+    );
+    paused = true;
+    const beforePause = store.readSince(0).length;
+    await readers.refresh(project.id);
+    assert.match(readers.readers[0]?.trackerError ?? "", /paused by its rate limit/);
+    assert.equal(status().problems.readers[0]?.failures, 4, "a rate-limit pause preserves failure evidence");
+    assert.equal(store.readSince(0).length, beforePause, "a pause records neither failure nor successful freshness");
+    assert.deepEqual(status().readAt, {});
+    paused = false;
     failed = false;
     await readers.refresh(project.id);
+    assert.equal(store.readSince(0).length, beforePause, "refresh cannot clear a failure streak during a pause");
+    at = "2030-01-01T00:02:00.000Z";
+    await readers.refresh(project.id);
     assert.deepEqual(readers.readers, [{ project: "orchard", tracker: true, forge: false }]);
+    assert.deepEqual(status().problems.readers, []);
+    assert.deepEqual({ ...status().readAt }, { linear: at });
   } finally {
     readers.stop();
+    store.close();
   }
 });
 

@@ -81,6 +81,17 @@ const validationSchema = z.object({
   decision: z.object({ decision: text }).nullable(),
 });
 
+const deliverySchema = z.object({
+  id: text,
+  ticket: text,
+  session: text,
+  generation: z.number().int(),
+  source: z.enum(["owner-answer", "coordinator-message", "note"]),
+  attempt: z.number().int(),
+  nextAt: text.nullable(),
+});
+export type FoldedDelivery = z.infer<typeof deliverySchema>;
+
 export type FoldedSession = z.infer<typeof sessionSchema>;
 export type FoldedTicket = z.infer<typeof ticketSchema>;
 export type FoldedPullRequest = z.infer<typeof pullRequestSchema>;
@@ -91,6 +102,7 @@ type FoldedValidation = z.infer<typeof validationSchema>;
 
 /** One project's folded state, as far as the fleet's screens read it. */
 export interface FleetState {
+  deliveries?: FoldedDelivery[];
   readAt?: Record<string, string>;
   sessions: FoldedSession[];
   tickets: FoldedTicket[];
@@ -130,6 +142,7 @@ export function readFleetState(state: unknown): FleetState {
   const reading = z.record(text, z.iso.datetime()).safeParse(o.readAt);
   return {
     ...(reading.success ? { readAt: reading.data } : {}),
+    ...(Array.isArray(o.deliveries) ? { deliveries: rows(o.deliveries, deliverySchema) } : {}),
     sessions: rows(o.sessions, sessionSchema),
     tickets: rows(o.tickets, ticketSchema),
     pullRequests: rows(o.pullRequests, pullRequestSchema),
