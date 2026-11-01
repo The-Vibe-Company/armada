@@ -39,6 +39,7 @@ import {
   useEffect,
   useId,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -249,9 +250,6 @@ type ScrollListProps = {
 class ScrollList extends Component<ScrollListProps> {
   override getSnapshotBeforeUpdate(): Anchor | null {
     return this.props.capture();
-  }
-  override componentDidMount() {
-    this.props.settle();
   }
   override componentDidUpdate(_props: ScrollListProps, _state: unknown, anchor: Anchor | null) {
     this.props.settle(anchor);
@@ -485,6 +483,8 @@ function useFollow({
     [box, list, rows, dispatch, syncPill, space, toBottom],
   );
 
+  // The parent scroller's ref is attached after the child list mounts.
+  useLayoutEffect(settle, [settle]);
   // The thread also grows without a new reading (a fold opened, an image), or its box shrinks (a queued message).
   useEffect(() => {
     const el = box.current;
