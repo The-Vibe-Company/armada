@@ -231,8 +231,10 @@ test("reader health recovers and untrusted plugin errors cannot inject diagnosti
     contributions: { tracker: { linear: { config: true, secrets: [] } } },
   });
   let failed = true;
+  let paused = false;
   activation.register.tracker("linear", {
     read: async () => {
+      if (paused) return { pausedUntil: "2030-01-01T00:02:00.000Z" };
       if (failed) throw new Error("Linear key missing\nprivate-key");
     },
     write: async () => {},
@@ -240,7 +242,7 @@ test("reader health recovers and untrusted plugin errors cannot inject diagnosti
   activation.commit();
   const logs: string[] = [];
   const store = new EventStore(":memory:");
-  const at = "2030-01-01T00:00:00.000Z";
+  let at = "2030-01-01T00:00:00.000Z";
   let readers = await startReaders({
     registry,
     store,
@@ -278,13 +280,171 @@ test("reader health recovers and untrusted plugin errors cannot inject diagnosti
       [{ provider: "linear", failures: 4, error: "Reader failed (details withheld)" }],
       "restart preserves consecutive failure evidence until a successful read",
     );
+    paused = true;
+    const beforePause = store.readSince(0).length;
+    await readers.refresh(project.id);
+    assert.match(readers.readers[0]?.trackerError ?? "", /paused by its rate limit/);
+    assert.equal(status().problems.readers[0]?.failures, 4, "a rate-limit pause preserves failure evidence");
+    assert.equal(store.readSince(0).length, beforePause, "a pause records neither failure nor successful freshness");
+    assert.deepEqual(status().readAt, {});
+    paused = false;
     failed = false;
+    await readers.refresh(project.id);
+    assert.equal(store.readSince(0).length, beforePause, "refresh cannot clear a failure streak during a pause");
+    at = "2030-01-01T00:02:00.000Z";
     await readers.refresh(project.id);
     assert.deepEqual(readers.readers, [{ project: "orchard", tracker: true, forge: false }]);
     assert.deepEqual(status().problems.readers, []);
     assert.deepEqual({ ...status().readAt }, { linear: at });
   } finally {
     readers.stop();
+    store.close();
+  }
+});
+
+test("idle trackers wait three minutes, room/worker activity shortens cadence, and refresh cannot bypass a pause", async () => {
+  const { PluginRegistry } = await import("../src/plugins/registry.ts");
+  const registry = new PluginRegistry();
+  const activation = registry.activation({
+    id: "fixture",
+    version: "1.0.0",
+    pluginApi: "^0.2.0",
+    enabledByDefault: true,
+    description: "Activity-aware reader",
+    contributions: { tracker: { linear: { config: true, secrets: [] } } },
+  });
+  let now = Date.parse("2030-01-01T10:00:00Z");
+  let visible = false;
+  let calls = 0;
+  let pause = false;
+  activation.register.tracker("linear", {
+    read: async () => {
+      calls++;
+      if (pause) return { pausedUntil: new Date(now + 120_000).toISOString() };
+    },
+    write: async () => {},
+  });
+  activation.commit();
+  const store = new EventStore(":memory:");
+  const timers = new Map<() => void, number>();
+  const readers = await startReaders({
+    registry,
+    projects: [project],
+    store,
+    now: () => new Date(now).toISOString(),
+    isRoomVisible: () => visible,
+    schedule: (fn, ms) => {
+      timers.set(fn, ms);
+      return () => {
+        timers.delete(fn);
+      };
+    },
+    log: () => {},
+  });
+  try {
+    await readers.ready;
+    assert.equal(calls, 1);
+    assert.deepEqual([...timers.values()], [180_000]);
+    visible = true;
+    readers.activityChanged(project.id);
+    assert.deepEqual([...timers.values()], [30_000]);
+    visible = false;
+    readers.activityChanged(project.id);
+    assert.deepEqual([...timers.values()], [180_000]);
+    store.append({
+      project: project.id,
+      kind: "session.claimed",
+      actor: "worker",
+      at: new Date(now).toISOString(),
+      payload: { ticket: "GROW-2", session: "claim", generation: 1, owner: "Mira", runtime: "codex", handle: "pane" },
+    });
+    assert.deepEqual([...timers.values()], [30_000], "a claim also wakes the idle schedule");
+    pause = true;
+    await readers.refresh(project.id);
+    assert.equal(calls, 2);
+    assert.deepEqual([...timers.values()], [120_000]);
+    assert.match(readers.readers[0]?.trackerError ?? "", /paused by its rate limit/);
+    await readers.refresh(project.id);
+    readers.activityChanged(project.id);
+    assert.equal(calls, 2);
+    assert.deepEqual([...timers.values()], [120_000]);
+    now += 120_000;
+    pause = false;
+    const tick = timers.keys().next().value;
+    assert.ok(tick);
+    timers.delete(tick);
+    tick();
+    await setImmediate();
+    assert.equal(calls, 3);
+    assert.equal(readers.readers[0]?.tracker, true);
+    assert.deepEqual([...timers.values()], [30_000]);
+  } finally {
+    readers.stop();
+    store.close();
+  }
+});
+
+test("reader activity ignores checkpoints and heartbeats and reads only the changed project's history", async () => {
+  const { PluginRegistry } = await import("../src/plugins/registry.ts");
+  const registry = new PluginRegistry();
+  const activation = registry.activation({
+    id: "fixture",
+    version: "1.0.0",
+    pluginApi: "^0.2.0",
+    enabledByDefault: true,
+    description: "Activity read budget",
+    contributions: { tracker: { linear: { config: true, secrets: [] } } },
+  });
+  activation.register.tracker("linear", { read: async () => {}, write: async () => {} });
+  activation.commit();
+  const store = new EventStore(":memory:");
+  const reads: (string | undefined)[] = [];
+  const readers = await Promise.all(
+    [project, { ...project, id: "garden" }].map((p) =>
+      startReaders({
+        registry,
+        projects: [p],
+        store: {
+          append: (event) => store.append(event),
+          subscribe: (listener) => store.subscribe(listener),
+          readSince: (seq, p) => {
+            if (seq === 0) reads.push(p);
+            return store.readSince(seq, p);
+          },
+        },
+        schedule: () => () => {},
+      }),
+    ),
+  );
+  try {
+    await Promise.all(readers.map((reader) => reader.ready));
+    reads.length = 0;
+    store.append({
+      project: project.id,
+      kind: "session.claimed",
+      actor: "worker",
+      at: "2030-01-01T10:00:00Z",
+      payload: { ticket: "GROW-2", session: "claim", generation: 1, owner: "Mira", runtime: "codex", handle: "pane" },
+    });
+    assert.deepEqual(reads, [project.id], "only the project's lifecycle event reads its history");
+    reads.length = 0;
+    store.append({
+      project: project.id,
+      kind: "session.heartbeat",
+      actor: "worker",
+      at: "2030-01-01T10:00:01Z",
+      payload: { ticket: "GROW-2", session: "claim" },
+    });
+    store.append({
+      project: "garden",
+      kind: "coordinator.checkpoint",
+      actor: "reader",
+      at: "2030-01-01T10:00:01Z",
+      payload: { checkpoint: { format: "armada.readers", version: 1, provider: "linear" } },
+    });
+    assert.deepEqual(reads, [], "ordinary append traffic does not refold history to reschedule readers");
+  } finally {
+    for (const reader of readers) reader.stop();
     store.close();
   }
 });

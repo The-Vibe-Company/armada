@@ -8,11 +8,13 @@ import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { fold } from "../src/fold.ts";
 import { EventStore } from "../src/store.ts";
-import { nodeExecutable } from "./support/node.ts";
+import { daemonEnv, nodeExecutable } from "./support/node.ts";
 import { project } from "./support/reader-recordings.ts";
 
 // Exercise the actual source entry point, loader, bundled plugins and SQLite store.
 // Only the remote services are replaced; no token or plugin config is saved.
+// File-only test credentials keep this valid even when the owner has a real
+// coordinator credential in macOS Keychain: boot must not start that coordinator.
 for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] as const) {
   test(`daemon reader boot: ${mode}`, { timeout: 10_000 }, async (t) => {
     const dir = mkdtempSync(join(tmpdir(), "armada-reader-boot-"));
@@ -52,10 +54,8 @@ for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] a
       {
         stdio: ["ignore", "pipe", "pipe"],
         env: {
-          ...process.env,
+          ...daemonEnv(dir),
           ARMADA_APP_CONFIG: join(dir, "config.json"),
-          XDG_CONFIG_HOME: dir,
-          ARMADA_KEYCHAIN: "file",
           PATH: dir, // No owner gh session in missing-credential coverage.
           LINEAR_API_KEY: mode === "missing" ? "" : "synthetic-linear-environment-secret",
           GITHUB_TOKEN: mode === "missing" || mode === "gh" ? "" : "synthetic-github-environment-secret",
@@ -120,3 +120,63 @@ for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] a
     }
   });
 }
+
+test("runtime-added projects share the host's Linear cooldown while another daemon stays isolated", async (t) => {
+  const { bootDaemon } = await import("../src/boot.ts");
+  const { BUNDLED_PLUGINS } = await import("../src/plugins/catalog.ts");
+  const { issue, page } = await import("./support/reader-recordings.ts");
+  const dir = mkdtempSync(join(tmpdir(), "armada-reader-quota-"));
+  let daemon: Awaited<ReturnType<typeof bootDaemon>> | undefined;
+  let other: Awaited<ReturnType<typeof bootDaemon>> | undefined;
+  t.after(() => {
+    daemon?.close();
+    other?.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
+    requests++;
+    if (requests === 1) return new Response("withheld", { status: 429, headers: { "Retry-After": "120" } });
+    const operation = /query\s+(\w+)/.exec(JSON.parse(String(init?.body)).query)?.[1];
+    return Response.json({
+      data:
+        operation === "Root"
+          ? { issue: issue("SEED-1") }
+          : operation === "Comments"
+            ? { issues: { nodes: [{ identifier: "SEED-1", comments: page([]) }] } }
+            : { issues: page([]), comments: page([]) },
+    });
+  });
+  const options = {
+    databasePath: ":memory:",
+    catalog: BUNDLED_PLUGINS.filter((p) => p.id === "linear"),
+    secrets: { get: async () => "synthetic-key" },
+    log: { info() {}, error() {} },
+  };
+  daemon = await bootDaemon({ ...options, configPath: join(dir, "first.json"), projects: [project] });
+  const first = daemon.registry.get("tracker", "linear", project.id);
+  assert.ok(first);
+  const pause = await first.read({ project: project.id });
+  assert.ok(pause?.pausedUntil);
+  await daemon.addProject({
+    ...project,
+    id: "garden",
+    root: dir,
+    phaseGroup: "Agent phase",
+    tracker: "linear",
+    forge: "github",
+  });
+  const added = daemon.registry.get("tracker", "linear", "garden");
+  assert.ok(added);
+  assert.equal((await added.read({ project: "garden" }))?.pausedUntil, pause.pausedUntil);
+  assert.equal(requests, 1, "adding a scoped provider does not bypass the same credential's pause");
+  other = await bootDaemon({
+    ...options,
+    configPath: join(dir, "other.json"),
+    projects: [{ ...project, id: "other" }],
+  });
+  const isolated = other.registry.get("tracker", "linear", "other");
+  assert.ok(isolated);
+  await isolated.read({ project: "other" });
+  assert.equal(requests, 4, "another daemon reads its independent store instead of inheriting process-global state");
+});

@@ -1,3 +1,9 @@
+import { LinearBudget } from "./budget.ts";
+import { LinearReadError } from "./errors.ts";
+
+export { LinearRateLimitError, LinearReadError } from "./errors.ts";
+
+import { createHash } from "node:crypto";
 import { activePhaseSchema } from "@armada/protocol";
 
 // Queries adapted from packages/core/src/linear.ts (V1 Root, Children, Comments,
@@ -14,6 +20,7 @@ interface Connection<T> {
 interface RawIssue {
   id: string;
   identifier: string;
+  updatedAt?: string;
   title: string;
   description?: string;
   branchName?: string;
@@ -37,10 +44,10 @@ interface RawComment {
   issue?: { identifier: string };
 }
 const fields = `fragment F on Issue {
-  id identifier title description branchName url state { type }
-  inverseRelations(first: 50) { pageInfo { hasNextPage endCursor } nodes { type issue { identifier state { type } } } } assignee { name } parent { identifier }
-  labels(first: 25) { pageInfo { hasNextPage endCursor } nodes { name parent { name } } }
-  attachments(first: 25) { pageInfo { hasNextPage endCursor } nodes { title url } }
+  id identifier updatedAt title description branchName url state { type }
+  inverseRelations(first: 5) { pageInfo { hasNextPage endCursor } nodes { type issue { identifier state { type } } } } assignee { name } parent { identifier }
+  labels(first: 10) { pageInfo { hasNextPage endCursor } nodes { name parent { name } } }
+  attachments(first: 5) { pageInfo { hasNextPage endCursor } nodes { title url } }
 }`;
 const commentFields = "id createdAt updatedAt body user { name }";
 const rootQuery = `${fields} query Root($id: String!) { issue(id: $id) { ...F } }`;
@@ -49,17 +56,19 @@ const childrenQuery = `${fields} query Children($parents: [ID!], $after: String)
     pageInfo { hasNextPage endCursor } nodes { ...F }
   }
 }`;
-const changedQuery = `${fields} query Changed($filter: IssueFilter, $after: String) {
-  issues(first: 50, after: $after, filter: $filter) { pageInfo { hasNextPage endCursor } nodes { ...F } }
-}`;
-const commentsQuery = `query Comments($ids: [ID!]) {
-  issues(first: 50, filter: { id: { in: $ids } }) {
-    nodes { identifier comments(first: 100) { pageInfo { hasNextPage endCursor } nodes { ${commentFields} } } }
+// Issue/comment deltas share one request; each exhausted connection is omitted on later pages.
+const changedQuery = `${fields} query Changed($filter: IssueFilter, $commentFilter: CommentFilter,
+  $after: String, $commentsAfter: String, $readIssues: Boolean!, $readComments: Boolean!) {
+  issues(first: 25, after: $after, filter: $filter) @include(if: $readIssues) {
+    pageInfo { hasNextPage endCursor } nodes { ...F }
+  }
+  comments(first: 50, after: $commentsAfter, filter: $commentFilter) @include(if: $readComments) {
+    pageInfo { hasNextPage endCursor } nodes { ${commentFields} issue { identifier } }
   }
 }`;
-const changedCommentsQuery = `query ChangedComments($filter: CommentFilter, $after: String) {
-  comments(first: 100, after: $after, filter: $filter) {
-    pageInfo { hasNextPage endCursor } nodes { ${commentFields} issue { identifier } }
+const commentsQuery = `query Comments($ids: [ID!], $first: Int!) {
+  issues(first: $first, filter: { id: { in: $ids } }) {
+    nodes { identifier comments(first: 25) { pageInfo { hasNextPage endCursor } nodes { ${commentFields} } } }
   }
 }`;
 const name = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -77,45 +86,83 @@ export interface LinearOptions {
   secrets: SecretAccessor;
   fetch: LinearFetch;
   now: () => Date;
+  budget?: LinearBudget;
+  budgets?: Map<string, LinearBudget>;
+  log?: (line: string) => void;
 }
 
-export class LinearReadError extends Error {}
-
-/** Each read owns its key only until the promises settle; errors never quote server bodies or causes. */
+/** Credentials stay inside this adapter; errors never quote server bodies or causes. */
 export function linearTracker(options: LinearOptions): Tracker {
+  let budget = options.budget ?? new LinearBudget(options.now, options.log);
+  let key: string | undefined;
+  let quota: string | undefined;
+  async function prepare(): Promise<void> {
+    let apiKey: string | null;
+    try {
+      apiKey = await options.secrets("linear", options.project);
+    } catch {
+      throw new LinearReadError("Linear credential lookup failed");
+    }
+    if (!apiKey) throw new LinearReadError("Linear key missing");
+    key = apiKey;
+    // High-entropy keys are identified one-way, never persisted or logged. Include the endpoint
+    // because a private service's budget is unrelated to Linear's hosted quota.
+    quota = createHash("sha256")
+      .update(JSON.stringify([options.endpoint ?? "https://api.linear.app/graphql", key]))
+      .digest("hex");
+    if (options.budgets) {
+      budget = options.budgets.get(quota) ?? new LinearBudget(options.now, options.log);
+      options.budgets.set(quota, budget);
+    }
+  }
   return {
+    identity: JSON.stringify([
+      options.endpoint ?? "https://api.linear.app/graphql",
+      options.rootId,
+      options.phaseGroup,
+    ]),
+    get quota() {
+      return quota;
+    },
+    get budget() {
+      return budget;
+    },
+    prepare,
     async read({ previous, signal }) {
+      if (!key) await prepare();
       const startedAt = options.now().toISOString();
-      let apiKey: string | null;
-      try {
-        apiKey = await options.secrets("linear", options.project);
-      } catch {
-        throw new LinearReadError("Linear credential lookup failed");
-      }
-      if (!apiKey) throw new LinearReadError("Linear key missing");
-      const key = apiKey;
       async function gql<T>(query: string, variables: object): Promise<T> {
         signal.throwIfAborted();
+        budget.beforeRequest(options.project);
         let response: Response;
         try {
           response = await options.fetch(options.endpoint ?? "https://api.linear.app/graphql", {
             method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: key },
+            headers: { "Content-Type": "application/json", Authorization: key as string },
             body: JSON.stringify({ query, variables }),
             signal,
           });
         } catch {
+          budget.response(options.project);
           throw new LinearReadError("Linear network request failed");
         }
-        if (!response.ok) throw new LinearReadError(`Linear answered ${response.status}`);
+        budget.response(options.project, response.headers);
+        if (response.status === 429 || response.headers.has("retry-after")) throw budget.pause(response.headers);
+        let body: { data?: T; errors?: { extensions?: { code?: string } }[] };
         try {
-          const body = (await response.json()) as { data?: T; errors?: unknown[] };
-          if (!body.data || body.errors?.length) throw new LinearReadError();
-          return body.data;
+          body = (await response.json()) as typeof body;
         } catch {
+          if (!response.ok) throw new LinearReadError(`Linear answered ${response.status}`);
           throw new LinearReadError("Linear returned an invalid or incomplete response");
         }
+        if (body.errors?.some((error) => error?.extensions?.code === "RATELIMITED"))
+          throw budget.pause(response.headers);
+        if (!response.ok) throw new LinearReadError(`Linear answered ${response.status}`);
+        if (!body.data || body.errors?.length)
+          throw new LinearReadError("Linear returned an invalid or incomplete response");
+        return body.data;
       }
+
       async function pages<T>(query: string, field: "issues" | "comments", variables: object): Promise<T[]> {
         const result: T[] = [];
         const cursors = new Set<string>();
@@ -145,7 +192,7 @@ export function linearTracker(options: LinearOptions): Tracker {
           cursors.add(after);
           const data = await gql<{ issue: Record<string, Connection<T>> | null }>(
             `query More${field}($id: String!, $after: String) { issue(id: $id) {
-              ${field}(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { ${selection} } }
+              ${field}(first: 50, after: $after) { pageInfo { hasNextPage endCursor } nodes { ${selection} } }
             } }`,
             { id, after },
           );
@@ -158,6 +205,42 @@ export function linearTracker(options: LinearOptions): Tracker {
         return nodes;
       }
       const raws: RawIssue[] = [];
+      const changedComments: RawComment[] = [];
+      async function delta(ids: string[], since: string): Promise<void> {
+        const cursors = { issues: new Set<string>(), comments: new Set<string>() };
+        let issues = true;
+        let comments = true;
+        let after: string | null = null;
+        let commentsAfter: string | null = null;
+        for (let count = 0; count < 100 && (issues || comments); count++) {
+          const data: { issues?: Connection<RawIssue>; comments?: Connection<RawComment> } = await gql(changedQuery, {
+            filter: { updatedAt: { gt: since }, or: [{ id: { in: ids } }, { parent: { id: { in: ids } } }] },
+            commentFilter: { updatedAt: { gt: since }, issue: { id: { in: ids } } },
+            after,
+            commentsAfter,
+            readIssues: issues,
+            readComments: comments,
+          });
+          const next = <T>(connection: Connection<T> | undefined, field: "issues" | "comments", target: T[]) => {
+            if (!connection?.nodes || !connection.pageInfo) throw new LinearReadError("Linear page is incomplete");
+            target.push(...connection.nodes);
+            if (!connection.pageInfo.hasNextPage) return null;
+            const cursor = connection.pageInfo.endCursor;
+            if (!cursor || cursors[field].has(cursor)) throw new LinearReadError("Linear pagination did not advance");
+            cursors[field].add(cursor);
+            return cursor;
+          };
+          if (issues) {
+            after = next(data.issues, "issues", raws);
+            issues = after !== null;
+          }
+          if (comments) {
+            commentsAfter = next(data.comments, "comments", changedComments);
+            comments = commentsAfter !== null;
+          }
+        }
+        if (issues || comments) throw new LinearReadError("Linear reading exceeds the page limit");
+      }
       const known = new Set(previous?.tickets.map((ticket) => ticket.uuid));
       let parents: string[];
       if (!previous) {
@@ -168,21 +251,8 @@ export function linearTracker(options: LinearOptions): Tracker {
       } else {
         // Read-start watermark + overlap: a change arriving during the preceding read is not lost.
         const since = new Date(Date.parse(previous.startedAt) - 1000).toISOString();
-        for (const ids of chunks([...known], 200))
-          raws.push(
-            ...(await pages<RawIssue>(changedQuery, "issues", {
-              filter: { updatedAt: { gt: since }, or: [{ id: { in: ids } }, { parent: { id: { in: ids } } }] },
-            })),
-          );
+        for (const ids of chunks([...known], 200)) await delta(ids, since);
         parents = raws.filter((ticket) => !known.has(ticket.id)).map((ticket) => ticket.id);
-      }
-      // Launch preflight needs current blocker states. A blocker outside the program can
-      // reopen without changing the blocked ticket's updatedAt, so Changed alone is insufficient.
-      for (const ticket of previous?.tickets ?? []) {
-        if (!ticket.blockers?.length || raws.some((raw) => raw.id === ticket.uuid)) continue;
-        const { issue } = await gql<{ issue: RawIssue | null }>(rootQuery, { id: ticket.id });
-        if (!issue) throw new LinearReadError("Linear blocker evidence is unavailable");
-        raws.push(issue);
       }
       const seen = new Set([...known, ...raws.map((ticket) => ticket.id)]);
       for (let depth = 0; parents.length; depth++) {
@@ -233,6 +303,36 @@ export function linearTracker(options: LinearOptions): Tracker {
           attachments: await rest(raw.identifier, "attachments", "title url", raw.attachments),
         });
       }
+      // Internal blocker state arrives through Changed; only external blockers need a small
+      // targeted read. Batch aliases once per unique blocker, without issue detail connections.
+      const states = new Map([...tickets.values()].map((ticket) => [ticket.id, ticket.status]));
+      const external = [...new Set([...tickets.values()].flatMap((t) => t.blockers?.map((b) => b.id) ?? []))].filter(
+        (id) => !states.has(id),
+      );
+      for (const ids of chunks(external, 50)) {
+        const declaration = ids.map((_, i) => `$id${i}: String!`).join(", ");
+        const selection = ids.map((_, i) => `b${i}: issue(id: $id${i}) { identifier state { type } }`).join("\n");
+        const data = await gql<Record<string, { identifier: string; state: { type: TrackerTicket["status"] } } | null>>(
+          `query Blockers(${declaration}) { ${selection} }`,
+          Object.fromEntries(ids.map((id, i) => [`id${i}`, id])),
+        );
+        for (let i = 0; i < ids.length; i++) {
+          const blocker = data[`b${i}`];
+          if (
+            !blocker ||
+            blocker.identifier !== ids[i] ||
+            !["triage", "backlog", "unstarted", "started", "completed", "canceled"].includes(blocker.state?.type)
+          )
+            throw new LinearReadError("Linear blocker evidence is unavailable");
+          states.set(blocker.identifier, blocker.state.type);
+        }
+      }
+      for (const [uuid, ticket] of tickets)
+        if (ticket.blockers?.length)
+          tickets.set(uuid, {
+            ...ticket,
+            blockers: ticket.blockers.map((b) => ({ ...b, status: states.get(b.id) ?? b.status })),
+          });
       // A moved-out ticket and its descendants leave scope even in an incremental reading.
       const scoped = new Set(
         [...tickets.values()].filter((ticket) => ticket.id === options.rootId).map((ticket) => ticket.id),
@@ -257,20 +357,9 @@ export function linearTracker(options: LinearOptions): Tracker {
             updatedAt: raw.updatedAt,
           });
       }
-      if (previous) {
-        for (const ids of chunks(
-          kept.filter((ticket) => known.has(ticket.uuid)).map((ticket) => ticket.uuid),
-          200,
-        ))
-          for (const comment of await pages<RawComment>(changedCommentsQuery, "comments", {
-            filter: {
-              updatedAt: { gt: new Date(Date.parse(previous.startedAt) - 1000).toISOString() },
-              issue: { id: { in: ids } },
-            },
-          })) {
-            if (!comment.issue) throw new LinearReadError("Linear comment has no ticket");
-            add(comment, comment.issue.identifier);
-          }
+      for (const comment of changedComments) {
+        if (!comment.issue) throw new LinearReadError("Linear comment has no ticket");
+        add(comment, comment.issue.identifier);
       }
       for (const ids of chunks(
         kept.filter((ticket) => !known.has(ticket.uuid)).map((ticket) => ticket.uuid),
@@ -278,7 +367,7 @@ export function linearTracker(options: LinearOptions): Tracker {
       )) {
         const data = await gql<{ issues: { nodes: { identifier: string; comments: Connection<RawComment> }[] } }>(
           commentsQuery,
-          { ids },
+          { ids, first: ids.length },
         );
         if (data.issues.nodes.length !== ids.length) throw new LinearReadError("Linear comments reading is incomplete");
         for (const node of data.issues.nodes)
@@ -286,7 +375,20 @@ export function linearTracker(options: LinearOptions): Tracker {
             add(comment, node.identifier);
       }
       signal.throwIfAborted();
-      return { startedAt, tickets: kept, comments: [...comments.values()] } satisfies TrackerReading;
+      const updatedAt = [
+        ...raws.map((raw) => raw.updatedAt),
+        ...[...comments.values()].map((c) => c.updatedAt),
+        previous?.updatedAt,
+      ]
+        .filter((at): at is string => typeof at === "string" && Number.isFinite(Date.parse(at)))
+        .sort()
+        .at(-1);
+      return {
+        startedAt,
+        ...(updatedAt ? { updatedAt } : {}),
+        tickets: kept,
+        comments: [...comments.values()],
+      } satisfies TrackerReading;
     },
   };
 }

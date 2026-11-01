@@ -63,6 +63,7 @@ Run `bun run test:daemon` from the repository root for Node's test runner. The
 same tests run in the Bun suite; `bun run verify` and CI also exercise native
 Node SQLite explicitly. Store tests use disposable database files; fold tests
 use invented tickets and people without I/O.
+Tests never read the OS keychain; `ARMADA_KEYCHAIN=file` is set by the test preload.
 
 ## Credential boundary
 

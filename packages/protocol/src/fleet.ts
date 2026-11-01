@@ -1,9 +1,10 @@
 import { z } from "zod";
+import { deliveryPayloadSchemas, deliveryStateSchema } from "./deliveries.js";
+import { readerUsageSchema } from "./readers.js";
 import { rulesStateSchema } from "./rules.js";
 
 const text = z.string();
 const integer = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
-export const DELIVERIES_MINOR = 17;
 export const phaseSchema = z.enum([
   "planning",
   "awaiting-approval",
@@ -109,30 +110,6 @@ const queuedSchema = sessionRefSchema.extend({ id: text, pr: integer, head: text
 const idSchema = z.object({ id: text });
 const reasonSchema = idSchema.extend({ reason: text });
 const decisionSchema = z.object({ decision: z.enum(["approved", "changes-requested"]), note: text });
-const deliverySchema = /* @__PURE__ */ (() =>
-  sessionRefSchema.extend({
-    id: text,
-    generation: integer.min(1),
-    source: z.enum(["owner-answer", "coordinator-message", "note"]),
-    text,
-    key: text,
-    /** Original inbox identity, needed by hosted runtime bookkeeping. */
-    item: text.optional(),
-  }))();
-const deliveryStateSchema = /* @__PURE__ */ (() =>
-  deliverySchema.extend({
-    seq: integer,
-    at: text,
-    actor: text,
-    attempt: integer,
-    error: text.optional(),
-    nextAt: text.nullable(),
-    sentAt: text.optional(),
-    failedAt: text.optional(),
-    failureSeq: integer.optional(),
-  }))();
-export type Delivery = z.infer<typeof deliveryStateSchema>;
-
 // The app accepts opaque fleet events; construct wake validators only in consumers that use them.
 export const wakeCandidateSchema = /* @__PURE__ */ wakeCandidate();
 function wakeCandidate() {
@@ -157,9 +134,6 @@ const branchHealthSchema = z.object({ branch: text, head: text, ci: ciSchema });
 export const eventPayloadSchemas = /* @__PURE__ */ payloadSchemas();
 function payloadSchemas() {
   return {
-    "delivery.queued": deliverySchema,
-    "delivery.sent": idSchema.extend({ at: text }),
-    "delivery.failed": idSchema.extend({ attempt: integer.min(1), error: text, nextAt: text.nullable() }),
     "ticket.seen": ticketSchema,
     "pull-request.seen": pullRequestSchema,
     "session.claimed": sessionRefSchema.extend({
@@ -217,6 +191,9 @@ function payloadSchemas() {
     "pull-request.review-changed": githubPullRequestSchema,
     "pull-request.closed": githubPullRequestSchema,
     "pull-request.merged": githubPullRequestSchema,
+
+    // Durable worker input deliveries (THE-2108).
+    ...deliveryPayloadSchemas,
   } as const;
 }
 export type EventKind = keyof typeof eventPayloadSchemas;
@@ -270,6 +247,8 @@ function makeTablesSchema() {
     rules: rulesStateSchema.optional(),
     /** Successful provider reads, even when no facts changed; absent on older snapshots. */
     readAt: z.record(z.string(), z.iso.datetime()).optional(),
+    /** Safe usage and rate-limit pauses; older daemons omit this slice. */
+    readers: z.record(z.string(), readerUsageSchema).optional(),
     tickets: z.array(ticketSchema),
     pullRequests: z.array(pullRequestSchema),
     sessions: z.array(sessionSchema),
