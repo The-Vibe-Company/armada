@@ -2,6 +2,8 @@ import { z } from "zod";
 import { deliveryPayloadSchemas, deliveryStateSchema } from "./deliveries.js";
 import { readerUsageSchema } from "./readers.js";
 import { rulesStateSchema } from "./rules.js";
+import { reportedUsageSchema } from "./tokens.js";
+import type { ProjectUsage } from "./usage.js";
 
 export const GITHUB_READER_MINOR = 18;
 const text = z.string();
@@ -192,6 +194,7 @@ function payloadSchemas() {
       state: z.enum(["starting", "running", "stopped", "failed", "unknown"]),
       activity: z.enum(["working", "idle"]).optional(),
     }),
+    "session.usage": sessionRefSchema.extend({ generation: integer.min(1), usage: reportedUsageSchema }),
     "worker.readopted": sessionRefSchema.extend({
       generation: integer.min(1),
       handle: text,
@@ -221,7 +224,11 @@ function payloadSchemas() {
     "validation.opened": validationRequestSchema,
     "validation.decided": idSchema.extend(decisionSchema.shape),
     "coordinator.message": z.object({ role: z.enum(["owner", "coordinator"]), body: text }),
-    "coordinator.checkpoint": z.object({ checkpoint: z.json() }),
+    "coordinator.checkpoint": z.object({
+      checkpoint: z.json(),
+      turn: z.object({ id: text, session: text }).optional(),
+      usage: reportedUsageSchema.optional(),
+    }),
     "coordinator.wakeup": z.object({
       id: text,
       candidates: z.array(wakeCandidateSchema),
@@ -331,7 +338,9 @@ function makeTablesSchema() {
     deliveries: z.array(deliveryStateSchema).optional(),
   });
 }
-export type ProjectTables = z.infer<ReturnType<typeof makeTablesSchema>>;
+// Usage is an additive JSON extension, validated by its producer and the usage view.
+// General fleet readers need not load its detailed schema before the room opens.
+export type ProjectTables = z.infer<ReturnType<typeof makeTablesSchema>> & { usage?: ProjectUsage };
 export interface FleetTables {
   seq: number;
   projects: Record<string, ProjectTables>;

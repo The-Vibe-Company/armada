@@ -1069,3 +1069,64 @@ for (const labels of [
     assert.equal(store.sequence, before);
   });
 }
+
+test("rules.set rejects negative budgets and invalid civil windows without recording a rules change", async (t) => {
+  const { run, store } = await fixture(t);
+  const valid = await run("rules.set", {
+    expectedRevision: 0,
+    rules: { policy: { budget: { coordinatorTokensPerDay: 100, zone: "UTC" } } },
+    reason: "Owner's night ceiling",
+  });
+  assert.equal(valid.ok, true);
+  for (const budget of [
+    { coordinatorTokensPerDay: -1, zone: "UTC" },
+    { coordinatorTokensPerDay: Number.MAX_SAFE_INTEGER + 1, zone: "UTC" },
+    { workerLaunchesPerNight: -1, zone: "UTC" },
+    { workerLaunchesPerNight: 1, nightStart: "25:00", zone: "UTC" },
+    { coordinatorTokensPerDay: 100, zone: "Not/A_Zone" },
+  ]) {
+    const before = store.sequence;
+    const result = await run("rules.set", {
+      expectedRevision: 1,
+      rules: { policy: { budget } },
+      reason: "Invalid change",
+    });
+    assert.equal(result.ok, false);
+    assert.equal(store.sequence, before);
+  }
+});
+
+test("raising one budget preserves the other ceiling and the configured night window", async (t) => {
+  const { run } = await fixture(t);
+  assert.equal(
+    (
+      await run("rules.set", {
+        expectedRevision: 0,
+        rules: {
+          policy: {
+            budget: { coordinatorTokensPerDay: 100, workerLaunchesPerNight: 3, nightStart: "21:00", zone: "UTC" },
+          },
+        },
+        reason: "Owner's ceilings",
+      })
+    ).ok,
+    true,
+  );
+  assert.equal(
+    (
+      await run("rules.set", {
+        expectedRevision: 1,
+        rules: { policy: { budget: { coordinatorTokensPerDay: 200, zone: "UTC" } } },
+        reason: "Owner raises tokens",
+      })
+    ).ok,
+    true,
+  );
+  const facts = await run("fleet.status");
+  assert.deepEqual((facts.rules.value.policy as unknown as { budget: object }).budget, {
+    coordinatorTokensPerDay: 200,
+    workerLaunchesPerNight: 3,
+    nightStart: "21:00",
+    zone: "UTC",
+  });
+});

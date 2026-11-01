@@ -440,6 +440,31 @@ for (const scenario of [
     observeGate = new Promise<void>((resolve) => {
       ready = resolve;
     });
+    if (scenario === "interrupted launch") {
+      const rules = fold(store.readSince(0)).projects[project]!.rules!;
+      store.append({
+        project,
+        at,
+        actor: "coordinator",
+        kind: "coordinator.checkpoint",
+        payload: {
+          checkpoint: {
+            format: "armada.tools",
+            version: 1,
+            type: "rules",
+            rules: {
+              revision: rules.revision + 1,
+              value: {
+                ...rules.value,
+                policy: { ...rules.value.policy, budget: { workerLaunchesPerNight: total, zone: "UTC" } },
+              },
+            },
+          },
+        },
+      });
+      assert.equal(fold(store.readSince(0)).projects[project]!.holds.length, 0);
+      assert.equal(fold(store.readSince(0)).projects[project]!.usage?.days[0]?.workerLaunches, total - 1);
+    }
     const recovering = workers.recover();
     if (scenario === "queued input waits for worker re-adoption") {
       const messages = () =>
@@ -455,6 +480,11 @@ for (const scenario of [
       store = new EventStore(join(directory, "fleet.sqlite"));
       workers = make();
       assert.equal((await workers.recover()).readopted.length, 2);
+      assert.equal(
+        fold(store.readSince(0)).projects[project]?.usage?.days[0]?.workerLaunches,
+        2,
+        "another daemon boot does not consume another launch slot for either recovered generation",
+      );
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.equal(messages().length, 1, "confirmed queued input is not repeated on another boot");
       const adopted = store
@@ -513,6 +543,17 @@ for (const scenario of [
     await duringBoot;
     assert.equal(recovery.readopted.length, total - (lost ? 1 : 0));
     assert.equal(recovery.lost.length, lost ? 1 : 0);
+    const usage = fold(store.readSince(0)).projects[project]!.usage;
+    assert.equal(
+      usage?.days[0]?.workerLaunches,
+      total,
+      "adoption confirms interrupted launches but never charges another launch for a known generation",
+    );
+    if (scenario === "interrupted launch") {
+      const tables = fold(store.readSince(0)).projects[project]!;
+      assert.equal(tables.holds.length, 1, "recovery enforces the night cap even without a coordinator model");
+      assert.equal(tables.inbox.filter((item) => item.kind === "owner-request").length, 1);
+    }
     const identity = (sessions: typeof before) =>
       sessions.map(({ ticket, session, generation, handle, phase }) => ({
         ticket,

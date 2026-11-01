@@ -15,6 +15,29 @@ const target = {
   instructions: z.string().max(16000).optional(),
 };
 const placement = z.enum(["local", "vm"]);
+const budget = z.strictObject({
+  coordinatorTokensPerDay: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+  workerLaunchesPerNight: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+  nightStart: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+    .optional(),
+  nightEnd: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+    .optional(),
+  zone: z
+    .string()
+    .min(1)
+    .refine((zone) => {
+      try {
+        new Intl.DateTimeFormat("en", { timeZone: zone });
+        return true;
+      } catch {
+        return false;
+      }
+    }, "Invalid IANA time zone"),
+});
 const minutes = z.number().positive();
 // V1 policy numbers: positive finite minutes, positive safe worker quota or no cap.
 export const projectRulesSchema = z.strictObject({
@@ -38,6 +61,7 @@ export const projectRulesSchema = z.strictObject({
   placement: z.strictObject({ workers: placement, coordinator: placement }).optional(),
   policy: z
     .strictObject({
+      budget: budget.optional(),
       plans: z.enum(["approve", "pre-approved"]).optional(),
       approvalLabel: id.optional(),
       preApprovedLabel: id.optional(),

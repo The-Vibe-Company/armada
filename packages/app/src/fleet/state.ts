@@ -104,6 +104,7 @@ type FoldedValidation = z.infer<typeof validationSchema>;
 export interface FleetState {
   deliveries?: FoldedDelivery[];
   readAt?: Record<string, string>;
+  usage?: unknown;
   sessions: FoldedSession[];
   tickets: FoldedTicket[];
   pullRequests: FoldedPullRequest[];
@@ -141,6 +142,7 @@ export function readFleetState(state: unknown): FleetState {
     state !== null && typeof state === "object" && !Array.isArray(state) ? (state as Record<string, unknown>) : {};
   const reading = z.record(text, z.iso.datetime()).safeParse(o.readAt);
   return {
+    ...(o.usage ? { usage: o.usage } : {}),
     ...(reading.success ? { readAt: reading.data } : {}),
     ...(Array.isArray(o.deliveries) ? { deliveries: rows(o.deliveries, deliverySchema) } : {}),
     sessions: rows(o.sessions, sessionSchema),

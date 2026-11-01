@@ -24,6 +24,7 @@ import {
   type ServerMessage,
   type Snapshot,
   type Subscribed,
+  USAGE_MINOR,
   PROTOCOL_VERSION as version,
   WATCHDOG_MINOR,
   workerLaunchCheckpointSchema,
@@ -310,7 +311,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
 
   /** Older same-major clients validate inbox kinds, routing and policy fields strictly. */
   function snapshotFor(snapshot: Snapshot, minor: number): Snapshot {
-    if (minor >= WATCHDOG_MINOR) return snapshot;
+    if (minor >= Math.max(WATCHDOG_MINOR, USAGE_MINOR, DELIVERIES_MINOR)) return snapshot;
     const state = { ...(snapshot.state as unknown as ProjectTables) };
     if (minor < DELIVERIES_MINOR) {
       delete state.deliveries;
@@ -344,6 +345,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       if (minor < RULES_SCHEMA_MINOR) delete value.gates;
       if (value.policy) {
         const policy = { ...value.policy };
+        if (minor < USAGE_MINOR) delete policy.budget;
         if (minor < WATCHDOG_MINOR) delete policy.watchdogModel;
         if (minor < CHAT_WAKE_MINOR) {
           delete policy.coordinatorMinutes;

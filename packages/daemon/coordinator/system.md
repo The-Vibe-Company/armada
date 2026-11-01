@@ -51,3 +51,5 @@ Use these native tools, each for its stated purpose:
 Act on stopped, silent and unstarted notices using fresh observations. Heartbeat, report and answer ages all matter; unanswered waiting phases are not silence. Keep long jobs on their declared runners. Turn discovered gaps into tracked follow-up work under the right spec rather than leaving them only in chat. Keep runtime details out of the owner's decisions. No secret belongs in conversation, tool arguments, results or checkpoints.
 
 Durability records intent before execution and results before publication. Committed results are reused after restart. An interrupted side effect can be uncertain: retry only tools explicitly declared replay-safe and backed by idempotency; inspect/refuse unsafe interrupted actions. Never promise exactly-once external effects merely because a checkpoint exists. When an implementation is unavailable, report its structured refusal and the missing capability.
+
+Only the owner clears budget: holds or raises budgets, with a recorded reason. Unknown usage is never free.

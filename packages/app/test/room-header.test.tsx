@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Group } from "../src/fleet/overview";
 import { Header, headerPills, staleReadings } from "../src/room/Header";
+import UsagePill from "../src/room/UsagePill";
 
 // The room's header (THE-2085) on synthetic counts: one pill per state that
 // holds an agent, in the states' order, on its state's dot; a provider read
@@ -82,6 +83,35 @@ test("the panel's toggle says whether the panel is open", () => {
   expect(toggle(render(counts({})))).toContain('aria-controls="room-panel"');
   // Closed, there is no panel for it to name.
   expect(toggle(render(counts({}), { open: false }))).not.toContain("aria-controls");
+});
+
+test("the header shows one daily usage pill, marks partial usage, and supports older snapshots", () => {
+  const usage = {
+    zone: "UTC",
+    days: [
+      {
+        day: "2026-03-10",
+        coordinator: {
+          input: 1200000,
+          output: 40000,
+          cacheRead: 0,
+          cacheWrite: null,
+          reported: 1,
+          unknown: 1,
+          models: ["oak"],
+        },
+        workers: { input: null, output: null, cacheRead: null, cacheWrite: null, reported: 0, unknown: 0, models: [] },
+        workerLaunches: 3,
+        workersReported: 2,
+      },
+    ],
+    sessions: [],
+  };
+  const html = renderToStaticMarkup(<UsagePill usage={usage} now={NOW} />);
+  expect(html.match(/data-usage="today"/g)?.length).toBe(1);
+  expect(html).toContain("1.2M in / 40k out + unknown");
+  expect(html).toContain("workers 3 launched, 2 reported usage");
+  expect(render(counts({}))).not.toContain("data-usage");
 });
 
 test("the room explains a Linear rate-limit pause without repeating its stale age", () => {

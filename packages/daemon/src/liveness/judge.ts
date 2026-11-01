@@ -28,6 +28,8 @@ export type ProgressJudge = (
 export function judgeProgress(
   models: Models | (() => Models),
   defaultModel: ModelRef | (() => Promise<ModelRef>),
+  /** Host-owned usage identity; no conversation or tool capability is attached. */
+  sessionId?: string,
 ): ProgressJudge {
   return async (signals, tail, lastReports, selection, signal) => {
     const ref = selection ?? (typeof defaultModel === "function" ? await defaultModel() : defaultModel);
@@ -54,7 +56,7 @@ export function judgeProgress(
             },
           ],
         },
-        { maxTokens: 512, reasoning: "minimal", signal },
+        { maxTokens: 512, reasoning: "minimal", signal, ...(sessionId ? { sessionId } : {}) },
       )
       .result();
     if (message.stopReason !== "stop" || message.content.some((p) => p.type === "toolCall"))

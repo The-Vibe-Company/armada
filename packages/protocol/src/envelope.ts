@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+/** Usage tables and budget policy first appeared at this wire minor. */
+export const USAGE_MINOR = 19;
+
 export const counter = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 export const identifier = z.string().min(1);
 export const versionSchema = z.object({ major: counter, minor: counter });
