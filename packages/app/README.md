@@ -48,7 +48,9 @@ serves the build.
 The address's hash names the screen (`src/lib/route.ts`, `routeOf` and
 `useRoute`): `#/` the hangar, `#/projects/<id>` a project, `#/settings/<section>`
 a section of the settings (`#/settings` the coordinator's; the old `#/plugins`
-is replaced by `#/settings/providers`, once); anything else is the hangar. The
+is replaced by `#/settings/providers`, once), `#/settings/providers/<id>` and
+`#/settings/connections/linear|github|armada` one card's detail open (the old
+`#/settings/account` is replaced by the Armada card's, once); anything else is the hangar. The
 daemon serves one page and the desktop shell opens it from a file, so the path
 never moves. A screen is one line there and one in `src/App.tsx`; the sidebar
 marks the current one (`aria-current`).
@@ -81,28 +83,31 @@ the empty sky's quiet line.
 `src/screens/Settings.tsx` at `#/settings/<section>` (THE-2069), reached from the
 sidebar's one Settings entry (a gear, at its bottom) and loaded on demand, off the
 first load. It has the anatomy of T3 Code's settings (`pingdotgg/t3code`,
-`apps/web/src/components/settings`) on the v7 title line. `src/settings/Layout.tsx`
-holds its parts. `SettingsNav` is the nav of sections: Coordinator, Providers,
-Account, About, each with its lucide icon. The current one is `aria-current`
-and is the nav's one tab stop, and the arrow keys, Home and End move between
-them. Below 720 px of the settings' own width it becomes an icon rail with a
-tooltip per icon. `SettingsSection` is a heading over a `SettingsGroup`, the
+`apps/web/src/components/settings`) on the v7 title line. `src/settings/Nav.tsx`
+(THE-2075) is the nav, grouped as T3 Code's: Coordinator; Agents › Providers;
+Connections › Linear, GitHub, Armada; About, each row with its icon (a lucide
+one, or the connection's mark). The current row is `aria-current` and is the
+nav's one tab stop, and the arrow keys, Home and End move between them. Below
+720 px of the settings' own width it becomes an icon rail with a tooltip per
+icon. Above the section, the breadcrumb "Settings / Providers" and a close
+button back to the screen the settings were opened from (`settingsReturn`).
+`src/settings/Layout.tsx` holds the rows' parts: `SettingsSection` is a heading over a `SettingsGroup`, the
 grouped card whose rows are divided by a hairline. `SettingsRow` takes a
 `title`, a `description`, a `status` and one `control` on the right, and
-`SettingsFold` holds a row's settings folded below it. `StateDot` puts a state
-word on its dot.
+`SettingsFold` holds a row's settings folded below it, `FoldedSection` a whole
+section (About's Advanced). `StateDot` puts a state word on its dot.
 
 The sections:
 
 - **Coordinator** (`src/settings/Coordinator.tsx`): the coordinator's model, the key form unchanged, then the
   OS notifications' switch (`src/notify/NotificationSetting.tsx`, a `SettingsRow`, THE-2055).
-- **Providers**: the plugins (below).
-- **Account** (`src/settings/Account.tsx`): a disabled "Sign in to Armada" row until THE-2071.
+- **Providers** and **Connections**: cards (below).
 - **About** (`src/settings/About.tsx`):
   - the daemon's address
   - the app's version (`__ARMADA_APP_VERSION__`, from `package.json` by `vite.config.ts`)
   - the protocol version the app speaks and the minor the daemon answers with
   - the daemon's version and its data folder, which read "Not reported by this daemon" until the protocol carries them
+  - Advanced, folded: the node providers and the raw plugin list (below), the only place the word plugin appears
 
 ## Notifications
 
@@ -216,11 +221,38 @@ daemon's fold and checks the card, the steps and both tabs; `test/build.test.ts`
 opens a row by a click and by the keyboard in Chromium, and holds every row's
 time whole at 900 px.
 
-## Providers: the plugins
+## Providers and Connections: cards
 
-`src/settings/Providers.tsx` at `#/settings/providers` (the Plugins screen of
-THE-2019 before THE-2069) shows the catalog's numbers on the facts line (plugins,
-on, loaded, refused). Below them, every bundled plugin is listed in grouped cards
+`src/settings/Providers.tsx` at `#/settings/providers` (THE-2075, after T3 Code's
+`ProviderSettingsPanel`) lists the agents of the daemon's provider catalog
+(`providers.catalog`, `seam: "agent"`, in its order) as cards (`src/settings/Card.tsx`):
+the mark (`src/settings/marks.tsx`), the name (or the display name set here,
+`src/settings/display-names.ts`, kept in `localStorage` and shown by the room's
+`HarnessName`), the CLI's version in mono, one status line on a dot
+(`src/settings/provider-view.ts`: "Authenticated · ChatGPT Pro", "Authenticated as …",
+"Not signed in", "Not installed" with its install hint) and a switch
+(`plugins.enable` / `plugins.disable`; turning on a signed-out agent opens it on
+Sign in). "Add provider" ends the list, disabled while every bundled agent is
+listed. A click or Enter opens a card's detail below the list
+(`src/settings/ProviderDetail.tsx`; Escape closes it): Status with Sign in or Sign
+out (`providers.connect` / `providers.disconnect`) and the sign-in in place
+(`src/settings/ProviderSignIn.tsx`, shared with the Coordinator: the page with
+Copy, the device code, the CLI login's terminal, the prompt answered with
+`providers.answer`, Cancel, the error line), Display name, Binary path (saved
+into the agent's runtime config with `plugins.configure`) and Routing (the
+projects' rules that send it work, read-only, linked to their Rules tab).
+`src/settings/Connections.tsx` at `#/settings/connections` shows Linear, GitHub
+and Armada as the same cards: Linear and GitHub connect in one click (Linear's
+key prompt, or "Use Armada's key" when the Armada account provides one; GitHub's
+`gh auth login` terminal or a token) and disconnect; Armada's detail is
+`src/settings/Account.tsx` (THE-2071). `test/providers-settings.test.tsx` drives
+both on the app's client over a fake daemon in Chromium; `scripts/dev-providers.ts`
+gives the dev daemon synthetic agents and connections.
+
+## About › Advanced: the plugins
+
+`src/settings/Plugins.tsx`, folded under About › Advanced (the Plugins screen of
+THE-2019, Settings' Providers from THE-2069 to THE-2075), lists every bundled plugin in grouped cards
 by what it provides (`src/plugins/list.ts`: Models, Runtimes, Trackers, Forges,
 Nodes, then Other). Each row has its name, version, description and
 contributions, its state word on a dot (loaded, off, refused, restart to apply)
@@ -238,7 +270,7 @@ asks the daemon to restart (the desktop shell starts it again); the client
 reconnects as after any drop and lists the plugins again. A daemon the shell does
 not supervise says to quit and reopen instead. `test/settings.test.tsx` renders
 the route table, the nav and a synthetic catalog over a fake socket.
-`test/build.test.ts` opens `#/plugins` and lands on Providers, flips a switch in
+`test/build.test.ts` opens `#/plugins`, lands on Providers, opens About › Advanced, flips a switch in
 Chromium, saves a setting and a secret, and presses Restart on a daemon the test
 restarts on the same port, until the row reads Loaded.
 

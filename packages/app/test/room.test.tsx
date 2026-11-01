@@ -109,10 +109,11 @@ test("the room is its chat: one header line, no sky, the conversation, then the 
 test("the panel opens on the agents, the question waiting first with its choices and a labelled note", () => {
   const html = render();
   const panel = block(html, /<aside[^>]*id="room-panel"/, /<\/aside>/);
-  const tabs = [...panel.matchAll(/<button[^>]*role="tab"[^>]*aria-selected="(true|false)"[^>]*>([^<]+)<\/button>/g)];
-  expect(tabs.map((m) => `${m[2]}${m[1] === "true" ? " (open)" : ""}`)).toEqual([
+  const tabs = [...panel.matchAll(/<button[^>]*role="tab"[^>]*aria-selected="(true|false)"[^>]*>(.*?)<\/button>/g)];
+  expect(tabs.map((m) => `${text(m[2] ?? "")}${m[1] === "true" ? " (open)" : ""}`)).toEqual([
     "Agents (open)",
-    "Pull requests",
+    // Its count beside it (THE-2086): HAR-15's #41 and HAR-20's #44.
+    "Pull requests 2",
     "Rules",
     "Log",
   ]);
