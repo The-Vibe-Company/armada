@@ -197,7 +197,9 @@ for (const signIn of ["absent", "expired"] as const)
     );
   });
 
-test("runtime rechecks generation and session provenance before delivery, cancellation and archive", async (t) => {
+test("runtime rechecks generation and session provenance before delivery, cancellation and archive", {
+  timeout: 10000,
+}, async (t) => {
   const f = await setup(t);
   await f.workers.tool(project.id, "worker.launch", { ticket: "SEED-1" }, "launch", () => {});
   const row = fold(f.store.readSince(0)).projects[project.id]!.sessions[0]!;
@@ -208,7 +210,28 @@ test("runtime rechecks generation and session provenance before delivery, cancel
     generation: row.generation,
     handle: row.handle,
   };
-  await f.workers.tool(project.id, "worker.message", { ticket: "SEED-1", message: "Continue" }, "message", () => {});
+  const message = await f.workers.tool(
+    project.id,
+    "worker.message",
+    { ticket: "SEED-1", message: "Continue" },
+    "message",
+    () => {},
+  );
+  assert.equal(typeof message.queued, "string");
+  // Queue acknowledgement precedes the child process write. Do not edit its shared
+  // fixture state until that write committed, or it can overwrite the provenance change.
+  await new Promise<void>((resolve) => {
+    const sent = () =>
+      f.store.readSince(0, project.id).some((e) => e.kind === "delivery.sent" && e.payload.id === message.queued);
+    if (sent()) return resolve();
+    const unsubscribe = f.store.subscribe(() => {
+      if (sent()) {
+        unsubscribe();
+        resolve();
+      }
+    });
+    t.after(unsubscribe);
+  });
   await assert.rejects(f.runtime.deliver(ref, "unguarded", "forbidden"), /guard/);
   const state = await f.state();
   state.mismatch = true;
