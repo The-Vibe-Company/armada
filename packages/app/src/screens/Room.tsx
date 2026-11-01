@@ -21,7 +21,7 @@ import { type Harness, skyProject } from "@/fleet/sky";
 import { type FleetState, fleetOf } from "@/fleet/state";
 import { roomHref } from "@/lib/route";
 import { cn } from "@/lib/utils";
-import { useDaemon, useRoomPresence } from "@/protocol/store";
+import { useDaemon, useDaemonClient } from "@/protocol/store";
 import { AgentLane } from "@/room/AgentLane";
 import { Asking } from "@/room/Asking";
 import { Composer } from "@/room/Composer";
@@ -47,6 +47,21 @@ const viewerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UT
 const EMPTY_STATE: FleetState = { sessions: [], tickets: [], pullRequests: [], inbox: [], queue: [], validations: [] };
 /** The field's glide from the hero to its dock (THE-2055); the shell's reduced motion turns it off. */
 const DOCK = { duration: 0.25, ease: [0.23, 1, 0.32, 1] } as const;
+
+/** Only an open, visible room requests active polling; reconnects replay the client's hint. */
+function useRoomPresence(project: string | null): void {
+  const client = useDaemonClient();
+  useEffect(() => {
+    if (!client.setRoomPresence) return;
+    const update = () => client.setRoomPresence?.(document.visibilityState === "visible" ? project : null);
+    update();
+    document.addEventListener("visibilitychange", update);
+    return () => {
+      document.removeEventListener("visibilitychange", update);
+      client.setRoomPresence?.(null);
+    };
+  }, [client, project]);
+}
 
 export function Room({
   project: id,
