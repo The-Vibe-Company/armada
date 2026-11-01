@@ -1106,6 +1106,7 @@ test("rules.set rejects negative budgets and invalid civil windows without recor
   assert.equal(valid.ok, true);
   for (const budget of [
     { coordinatorTokensPerDay: -1, zone: "UTC" },
+    { coordinatorTokensPerDay: Number.MAX_SAFE_INTEGER + 1, zone: "UTC" },
     { workerLaunchesPerNight: -1, zone: "UTC" },
     { workerLaunchesPerNight: 1, nightStart: "25:00", zone: "UTC" },
     { coordinatorTokensPerDay: 100, zone: "Not/A_Zone" },

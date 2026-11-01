@@ -1,4 +1,4 @@
-import type { NodeProvider, PluginContext, RuntimeProvider, WorkerRef } from "@armada/plugin-api";
+import type { NodeProvider, PluginContext, RuntimeProvider, WorkerObservation, WorkerRef } from "@armada/plugin-api";
 import { claudeConnection } from "./status.ts";
 
 interface ClaudeOptions {
@@ -27,8 +27,11 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
       deliveries: Map<string, string>;
       reply?: string;
       failure?: string;
-      usage: NonNullable<import("@armada/plugin-api").WorkerObservation["usage"]>;
+      usage: NonNullable<WorkerObservation["usage"]>;
       usageResults: Set<string>;
+      usageSession?: string;
+      usageResetPending?: boolean;
+      usageOffset?: NonNullable<WorkerObservation["usage"]>;
     }
   >();
   const facilities = () => {
@@ -56,8 +59,15 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
     for (const line of lines) {
       try {
         const event = JSON.parse(line);
-        if (event.type === "result") {
-          // Result usage is authoritative for a whole CLI turn; assistant frames can repeat it.
+        if (event.type === "conversation_reset") {
+          const identity = `reset:${event.uuid ?? event.new_conversation_id}`;
+          if (!value.usageResults.has(identity)) {
+            value.usageResults.add(identity);
+            value.usageOffset = value.usage === "unknown" ? "unknown" : { ...value.usage };
+            value.usageResetPending = true;
+          }
+        } else if (event.type === "result") {
+          // Result frames alone settle usage; assistant frames can repeat counters.
           const identity = typeof event.uuid === "string" ? event.uuid : `result:${value.usageResults.size}`;
           if (!value.usageResults.has(identity)) {
             value.usageResults.add(identity);
@@ -67,20 +77,71 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
               Number.isSafeInteger(raw[key]) && raw[key] >= 0 ? (previous ?? 0) + raw[key] : (previous ?? null);
             const models =
               event.modelUsage && typeof event.modelUsage === "object" ? Object.keys(event.modelUsage) : [];
-            value.usage = {
+            const perTurn = () => ({
               input: count("input_tokens", before?.input),
               output: count("output_tokens", before?.output),
               cacheRead: count("cache_read_input_tokens", before?.cacheRead),
               cacheWrite: count("cache_creation_input_tokens", before?.cacheWrite),
               model: models.length ? models.join(", ") : (before?.model ?? null),
               provider: "anthropic",
-              ...(before?.incomplete ||
-              ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].some(
-                (k) => !Number.isSafeInteger(raw[k]) || raw[k] < 0,
-              )
-                ? { incomplete: true }
-                : {}),
-            };
+              incomplete: true,
+            });
+            // modelUsage covers the whole tree, cumulatively across streaming turns. A clear resets it.
+            // https://code.claude.com/docs/en/agent-sdk/cost-tracking
+            const resetCommand = ["clear", "reset", "new"].includes(event.local_command);
+            const session = typeof event.session_id === "string" ? event.session_id : undefined;
+            const changedSession = session && value.usageSession && session !== value.usageSession;
+            if (!value.usageResetPending && (resetCommand || changedSession)) {
+              value.usageOffset = before ? { ...before } : "unknown";
+            }
+            value.usageResetPending = false;
+            if (session) value.usageSession = session;
+            const fields = {
+              input: "inputTokens",
+              output: "outputTokens",
+              cacheRead: "cacheReadInputTokens",
+              cacheWrite: "cacheCreationInputTokens",
+            } as const;
+            const rows = models.map((name) => event.modelUsage[name]);
+            const valid = (n: unknown): n is number => Number.isSafeInteger(n) && Number(n) >= 0;
+            const cumulative = rows.some((row) => row && Object.values(fields).some((field) => valid(row[field])));
+            const zeroedError =
+              event.is_error === true &&
+              !rows.some((row) => row && Object.values(fields).some((field) => valid(row[field]) && row[field] > 0));
+            if (zeroedError) {
+              // The CLI can zero its final crash result. That is missing metadata, not free work.
+              const rawPositive = [
+                "input_tokens",
+                "output_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+              ].some((field) => valid(raw[field]) && raw[field] > 0);
+              value.usage = rawPositive ? perTurn() : before ? { ...before, incomplete: true } : "unknown";
+            } else if (cumulative) {
+              const offset = value.usageOffset === "unknown" ? undefined : value.usageOffset;
+              const snapshot = { input: null, output: null, cacheRead: null, cacheWrite: null } as {
+                -readonly [K in keyof typeof fields]: number | null;
+              };
+              let incomplete = value.usageOffset === "unknown" || offset?.incomplete === true;
+              for (const field of Object.keys(fields) as (keyof typeof fields)[]) {
+                const complete = rows.every((row) => row && valid(row[fields[field]]));
+                const sum = complete
+                  ? (offset?.[field] ?? 0) + rows.reduce((n, row) => n + row[fields[field]], 0)
+                  : null;
+                // A partial or regressing snapshot cannot erase the known generation floor.
+                snapshot[field] = sum === null ? (before?.[field] ?? null) : Math.max(sum, before?.[field] ?? 0);
+                if (!complete || (sum !== null && sum < (before?.[field] ?? 0))) incomplete = true;
+              }
+              value.usage = {
+                ...snapshot,
+                model: models.join(", "),
+                provider: "anthropic",
+                ...(incomplete ? { incomplete: true } : {}),
+              };
+            } else if (!resetCommand) {
+              // Older CLIs expose only the main loop for this turn, omitting subagents and compaction.
+              value.usage = perTurn();
+            }
           }
           value.turns = Math.max(0, value.turns - 1);
           value.activity = value.turns ? "working" : "idle";
