@@ -18,9 +18,11 @@ import {
   projectSchema,
   projectTablesSchema,
   READER_MINOR,
+  REPLAY_MINOR,
   RULES_SCHEMA_MINOR,
   type ServerMessage,
   type Snapshot,
+  type Subscribed,
   PROTOCOL_VERSION as version,
   workerLaunchCheckpointSchema,
 } from "@armada/protocol";
@@ -41,6 +43,7 @@ import { type ChatClock, ChatLive } from "./chat-live.ts";
 import { dispatchPlugins, isPluginsRequest, type PluginHost } from "./plugins.ts";
 import { dispatchProjects } from "./projects.ts";
 import type { Providers } from "./providers.ts";
+import { jsonBytes, PAGE_BYTES, REPLAY_WINDOW, Replay, replayFrames } from "./replay.ts";
 import { dispatchSession } from "./session.ts";
 import { serveStatic } from "./static.ts";
 
@@ -95,6 +98,8 @@ interface Subscription {
   id: string;
   after: number;
   chat?: () => void;
+  cancel?: () => void;
+  pending?: boolean;
 }
 const emptyProject = (): ProjectTables => ({
   rules: { revision: 0, value: {} },
@@ -147,6 +152,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   });
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
   const connections = new Map<WebSocket, Map<string, Subscription>>();
+  const transfers = new Map<WebSocket, Replay>();
   const minors = new Map<WebSocket, number>();
   const visibleRooms = new Map<WebSocket, string>();
   const isRoomVisible = (project: string) => [...visibleRooms.values()].includes(project);
@@ -174,16 +180,8 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       if (minor >= ACCOUNT_MINOR) send(ws, { type: "account.result", version, ...state });
   });
 
-  function send(ws: WebSocket, message: ServerMessage): void {
-    if (ws.readyState !== WebSocket.OPEN) return;
-    // A slow client resumes from its last applied cursor instead of growing memory without limit.
-    if (ws.bufferedAmount > 8 * 1024 * 1024) {
-      ws.terminate();
-      return;
-    }
-    ws.send(JSON.stringify(message), (error) => {
-      if (error) ws.terminate();
-    });
+  function send(ws: WebSocket, message: ServerMessage, done?: () => void): void {
+    transfers.get(ws)?.send(message, done);
   }
   const error = (ws: WebSocket, id: string | undefined, code: ProtocolError["code"], message: string) =>
     send(ws, { type: "error", version, ...(id ? { id } : {}), code, message });
@@ -358,35 +356,50 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     return { seq: snapshot.seq, state: JSON.parse(JSON.stringify(legacy)) };
   }
 
-  /**
-   * Sends what the subscription has not seen. A frame with events also carries
-   * the project's refolded state (`folded` shares one fold per project between
-   * sockets); `folded: null` leaves it out right after a subscription's own.
-   */
+  /** Capture a cursor and fold together; later commits wait until these pages drain. */
   function batch(
     ws: WebSocket,
     project: string,
     subscription: Subscription,
-    folded: Map<string, Snapshot> | null = new Map(),
+    folded: Map<string, Snapshot> = new Map(),
+    acknowledgment?: Subscribed,
   ): void {
-    // Synchronous store reads and registration cannot interleave with an append in this process.
+    if (subscription.pending) return;
     const seq = store.sequence;
-    const events = store.readSince(subscription.after, project).map((event) => eventSchema.parse(event));
+    const rows = store.readSince(subscription.after, project, REPLAY_WINDOW + 1);
+    let events = rows
+      // The room watches checkpoint cursors to refresh chat.read; never ship durable document bodies.
+      .map((event) => (event.kind === "coordinator.checkpoint" ? { ...event, payload: { checkpoint: null } } : event))
+      .map((event) => eventSchema.parse(event));
+    const base = { type: "events" as const, version, project, subscriptionId: subscription.id, seq };
+    const overhead = jsonBytes({ ...base, events: [], more: true });
+    const reset =
+      (acknowledgment && subscription.after === 0) ||
+      rows.length > REPLAY_WINDOW ||
+      events.some((event) => jsonBytes(event) + overhead > PAGE_BYTES);
     let snapshot: Snapshot | undefined;
-    if (events.length && folded) {
+    if (acknowledgment || rows.length) {
       snapshot = folded.get(project) ?? snapshotOf(project);
       folded.set(project, snapshot);
+      snapshot = snapshotFor(snapshot, subscription.minor);
     }
-    send(ws, {
-      type: "events",
-      version,
-      project,
-      subscriptionId: subscription.id,
-      seq,
-      events,
-      ...(snapshot ? { snapshot: snapshotFor(snapshot, subscription.minor) } : {}),
-    });
+    // Older apps do not understand partial replay. Large updates can still use their snapshot contract.
+    if (reset || (subscription.minor < REPLAY_MINOR && jsonBytes({ ...base, events, snapshot }) > PAGE_BYTES))
+      events = [];
+    const ack = acknowledgment ? { ...acknowledgment, ...(reset ? { snapshot } : {}) } : undefined;
+    // Every reset carries state, either on the acknowledgment or on this frame.
+    const frame = { ...base, events, ...(snapshot && !ack?.snapshot ? { snapshot } : {}) };
     subscription.after = seq;
+    subscription.pending = true;
+    function* frames() {
+      if (ack) yield ack;
+      yield* replayFrames(frame);
+    }
+    subscription.cancel = transfers.get(ws)?.replay(frames(), () => {
+      subscription.pending = false;
+      if (connections.get(ws)?.get(project) === subscription && store.sequence > subscription.after)
+        batch(ws, project, subscription);
+    });
   }
   // Commit notices coalesce to one flush per microtask: a burst of appends in one
   // task (a tracker's read) sends each subscription one frame and folds each
@@ -423,13 +436,19 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   sockets.on("connection", (ws) => {
     const subscriptions = new Map<string, Subscription>();
     connections.set(ws, subscriptions);
+    transfers.set(ws, new Replay(ws));
     let refused = false;
     ws.on("error", () => ws.terminate());
     const clearSubscriptions = () => {
-      for (const subscription of subscriptions.values()) subscription.chat?.();
+      for (const subscription of subscriptions.values()) {
+        subscription.chat?.();
+        subscription.cancel?.();
+      }
       subscriptions.clear();
     };
     ws.on("close", () => {
+      transfers.get(ws)?.close();
+      transfers.delete(ws);
       clearSubscriptions();
       setRoomPresence(ws, null);
       connections.delete(ws);
@@ -646,11 +665,16 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           pluginQueue = pluginQueue.then(async () => {
             try {
               if (request.type === "daemon.restart") {
-                await new Promise<void>((resolve) =>
-                  ws.readyState === WebSocket.OPEN
-                    ? ws.send(JSON.stringify({ type: "daemon.restarting", version, id: request.id }), () => resolve())
-                    : resolve(),
-                );
+                await new Promise<void>((resolve) => {
+                  const done = () => {
+                    ws.off("close", done);
+                    resolve();
+                  };
+                  ws.once("close", done);
+                  if (ws.readyState === WebSocket.OPEN)
+                    send(ws, { type: "daemon.restarting", version, id: request.id }, done);
+                  else done();
+                });
                 if (!closing) options.restart?.();
                 return;
               }
@@ -687,8 +711,10 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           return;
         }
         const historical =
-          (request.type === "project.subscribe" || request.type === "session.read") &&
-          store.readSince(0, request.project).length > 0;
+          (request.type === "project.subscribe" ||
+            request.type === "session.read" ||
+            request.type === "fleet.history") &&
+          store.readSince(0, request.project, 1).length > 0;
         if (!known.has(request.project) && !historical) return error(ws, request.id, "not-found", "No such project");
 
         if (
@@ -709,6 +735,49 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
             .catch(() => error(ws, request.id, "internal", "Could not configure coordinator model"));
           return;
         }
+        if (request.type === "fleet.history") {
+          if (request.version.minor < REPLAY_MINOR)
+            return error(ws, request.id, "invalid-message", "History reads require protocol minor 21");
+          const limit = request.limit ?? 50;
+          const rows = store.history(request.project, request.ticket, request.cursor, limit + 1);
+          const events: ReturnType<typeof eventSchema.parse>[] = [];
+          let bytes = 256 + jsonBytes(request.project) + jsonBytes(request.id);
+          for (const row of rows.slice(0, limit)) {
+            let payload: unknown = row.payload;
+            if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+              const publicPayload = { ...payload } as Record<string, unknown>;
+              delete publicPayload.receipt;
+              if (row.kind === "ticket.seen") {
+                delete publicPayload.description;
+                delete publicPayload.comments;
+              }
+              if (row.kind === "coordinator.checkpoint") {
+                const launch = workerLaunchCheckpointSchema.safeParse(publicPayload.checkpoint);
+                publicPayload.checkpoint = launch.success ? launch.data : null;
+              }
+              // Correlated replies still identify their ticket when their opening row is on an earlier page.
+              if (request.ticket) publicPayload.ticket = request.ticket;
+              payload = publicPayload;
+            }
+            const event = eventSchema.parse({ ...row, payload });
+            if (bytes + jsonBytes(event) + 1 > PAGE_BYTES) {
+              if (!events.length)
+                return error(ws, request.id, "invalid-message", "History event exceeds the 1 MiB page limit");
+              break;
+            }
+            bytes += jsonBytes(event) + 1;
+            events.push(event);
+          }
+          send(ws, {
+            type: "fleet.history.result",
+            version,
+            id: request.id,
+            project: request.project,
+            events,
+            cursor: rows.length > events.length ? (events.at(-1)?.seq ?? null) : null,
+          });
+          return;
+        }
         if (request.type === "session.release" || request.type === "session.output") {
           // The session page's actions (THE-2045, server/session.ts), through the coordinator's own Workers.
           void dispatchSession(request, { store, workers }).then((reply) => send(ws, reply));
@@ -719,22 +788,18 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           if (request.after > seq)
             return error(ws, request.id, "invalid-message", "Replay cursor is ahead of the daemon log");
           const previous = subscriptions.get(request.project);
+          previous?.cancel?.();
           const subscription: Subscription = { id: randomUUID(), after: request.after, minor: request.version.minor };
           if (subscription.minor >= CHAT_LIVE_MINOR && previous?.minor === subscription.minor)
             subscription.chat = previous.chat;
           else previous?.chat?.();
-          const snapshot =
-            request.after === 0 ? snapshotFor(snapshotOf(request.project), request.version.minor) : undefined;
           subscriptions.set(request.project, subscription);
-          send(ws, {
+          batch(ws, request.project, subscription, new Map(), {
             ...request,
             type: "project.subscribed",
             version,
             subscriptionId: subscription.id,
-            ...(snapshot ? { snapshot } : {}),
           });
-          // The acknowledgment already holds the folded state of the history that follows.
-          batch(ws, request.project, subscription, snapshot ? null : new Map());
           const coordinator = coordinators.get(request.project);
           if (coordinator && subscription.minor >= CHAT_LIVE_MINOR && !subscription.chat)
             subscription.chat = chat.subscribe(request.project, coordinator.conversation, (frame) =>
@@ -802,10 +867,12 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       stopProjectLists?.();
       unsubscribe();
       for (const ws of sockets.clients) {
+        transfers.get(ws)?.close();
         setRoomPresence(ws, null);
         ws.terminate();
       }
       connections.clear();
+      transfers.clear();
       sockets.close();
       const transport = new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));

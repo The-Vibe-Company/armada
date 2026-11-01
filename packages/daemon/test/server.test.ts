@@ -26,8 +26,10 @@ import {
 } from "@armada/protocol";
 import { WebSocket } from "ws";
 import type { EventInput, FleetEvent } from "../src/events.ts";
+import { fold } from "../src/fold.ts";
 import { Keychain } from "../src/keychain.ts";
 import { startServer } from "../src/server/index.ts";
+import { Replay } from "../src/server/replay.ts";
 import { EventStore } from "../src/store.ts";
 import { FakeKeychain } from "./support/keychain.ts";
 import { nodeExecutable } from "./support/node.ts";
@@ -251,7 +253,366 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
   }
 });
 
+test("initial replay waits for its own buffer to drain, preserving replies and cancellation", (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const sent: ServerMessage[] = [];
+  const closes: [number, string][] = [];
+  const socket = {
+    readyState: 1,
+    bufferedAmount: 0,
+    send(data: string, callback: (error?: Error) => void) {
+      sent.push(JSON.parse(data));
+      if (sent.length === 1) this.bufferedAmount = 9 * 1024 * 1024;
+      callback();
+    },
+    close(code: number, reason: string) {
+      closes.push([code, reason]);
+    },
+  };
+  const replay = new Replay(socket);
+  t.after(() => replay.close());
+  const frame = (id: string): ServerMessage => ({ type: "projects.result", version, id, projects });
+  let completed = false;
+  replay.replay([frame("first"), frame("second")], () => {
+    completed = true;
+  });
+  replay.send(frame("reply"));
+  assert.deepEqual(
+    sent.map((frame) => "id" in frame && frame.id),
+    ["first"],
+  );
+  t.mock.timers.tick(1000);
+  assert.deepEqual(closes, []);
+  assert.equal(completed, false);
+  socket.bufferedAmount = 0;
+  t.mock.timers.tick(25);
+  assert.deepEqual(
+    sent.map((frame) => "id" in frame && frame.id),
+    ["first", "second", "reply"],
+  );
+  assert.equal(completed, true);
+
+  socket.bufferedAmount = 9 * 1024 * 1024;
+  const cancel = replay.replay([frame("obsolete")], () => assert.fail("cancelled replay completed"));
+  cancel();
+  replay.replay([frame("replacement")], () => {});
+  socket.bufferedAmount = 0;
+  t.mock.timers.tick(25);
+  const last = sent.at(-1);
+  assert(last && "id" in last);
+  assert.equal(last.id, "replacement");
+  assert(!sent.some((frame) => "id" in frame && frame.id === "obsolete"));
+  assert.deepEqual(closes, []);
+  socket.bufferedAmount = 512 * 1024;
+  let acknowledged = false;
+  replay.send(frame("restart-ack"), () => {
+    acknowledged = true;
+  });
+  t.mock.timers.tick(1000);
+  assert.equal(acknowledged, false, "ordinary replies also wait below low water");
+  assert(!sent.some((frame) => "id" in frame && frame.id === "restart-ack"));
+  socket.bufferedAmount = 0;
+  t.mock.timers.tick(25);
+  assert.equal(acknowledged, true, "restart may proceed only after its FIFO acknowledgment drains");
+  assert.deepEqual(closes, []);
+});
+
+test("a replay drain deadline and a steady slow client close with a code and reason", (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const closes: [number, string][] = [];
+  const socket = {
+    readyState: 1,
+    bufferedAmount: 9 * 1024 * 1024,
+    send() {
+      assert.fail("must wait for drain");
+    },
+    close(code: number, reason: string) {
+      closes.push([code, reason]);
+    },
+  };
+  const replay = new Replay(socket);
+  t.after(() => replay.close());
+  const frame: ServerMessage = { type: "projects.result", version, id: "reply", projects };
+  replay.replay([frame], () => assert.fail("undrained replay completed"));
+  replay.send(frame);
+  assert.deepEqual(closes, []);
+  t.mock.timers.tick(10000);
+  assert.deepEqual(closes, [[4008, "Replay drain timed out"]]);
+  // The ordinary 8 MiB guard still applies without an initial transfer.
+  const steady = new Replay(socket);
+  steady.send(frame);
+  assert.deepEqual(closes.at(-1), [4008, "Client could not drain daemon updates"]);
+});
+
+test("a large log starts from its snapshot and recent replay pages omit checkpoint bodies", {
+  timeout: 15000,
+}, async (t) => {
+  const store = new EventStore(":memory:");
+  t.after(() => store.close());
+  const inputs = JSON.parse(readFileSync(new URL("./support/protocol-subscription.json", import.meta.url), "utf8")) as {
+    history: EventInput[];
+  };
+  const checkpoint = inputs.history.find((event) => event.kind === "coordinator.checkpoint");
+  const ticket = inputs.history.find((event) => event.kind === "ticket.seen");
+  const pr = inputs.history.find((event) => event.kind === "pull-request.seen");
+  assert(checkpoint && ticket && pr);
+  const log: FleetEvent[] = [];
+  for (let i = 0; i < 5200; i++) {
+    const input =
+      i % 5 < 3
+        ? { ...checkpoint, payload: { checkpoint: { format: "synthetic", body: "c".repeat(2300) } } }
+        : i % 5 === 3
+          ? { ...ticket, payload: { ...ticket.payload, title: "Tree 🌳".repeat(400) } }
+          : { ...pr, payload: { ...pr.payload, title: "Branches 🌳".repeat(300) } };
+    log.push(store.append(input as EventInput));
+  }
+  assert(Buffer.byteLength(JSON.stringify(log)) >= 12 * 1024 * 1024);
+  const expected = JSON.parse(JSON.stringify(fold(log).projects.orchard));
+  const server = await startServer({ store, projects });
+  t.after(() => server.close());
+  const fresh = await connect(server.wsUrl);
+  fresh.send({ type: "project.subscribe", project: "orchard", after: 0 });
+  const initial = await fresh.next();
+  assert.equal(initial.type, "project.subscribed");
+  assert("snapshot" in initial && initial.snapshot);
+  assert.deepEqual(initial.snapshot.state, expected);
+  const empty = await fresh.next();
+  assert.equal(empty.type, "events");
+  assert("events" in empty);
+  assert.equal(empty.events.length, 0, "fresh clients must not replay history");
+  assert.equal(empty.seq, store.sequence);
+  fresh.send({ type: "projects.list", id: "still-live" });
+  assert.equal((await fresh.next()).type, "projects.result");
+
+  const stale = await connect(server.wsUrl);
+  stale.send({ type: "project.subscribe", project: "orchard", after: 1 });
+  const reset = await stale.next();
+  assert("snapshot" in reset && reset.snapshot);
+  assert.deepEqual(reset.snapshot.state, expected);
+  const resetBatch = await stale.next();
+  assert("events" in resetBatch);
+  assert.deepEqual(resetBatch.events, []);
+
+  const recent = await connect(server.wsUrl);
+  const after = (log[4199] as FleetEvent).seq;
+  const replayEnd = store.sequence;
+  let concurrent: FleetEvent | undefined;
+  recent.send({ type: "project.subscribe", project: "orchard", after });
+  assert.equal((await recent.next()).type, "project.subscribed");
+  let cursor = after;
+  let pages = 0;
+  const replay: FleetEvent[] = [];
+  for (;;) {
+    const raw = await recent.nextRaw();
+    assert(Buffer.byteLength(raw) <= 1024 * 1024);
+    const frame = serverMessageSchema.parse(JSON.parse(raw));
+    assert.equal(frame.type, "events");
+    if (frame.type !== "events") throw new Error("Expected replay");
+    pages++;
+    if (pages === 1) concurrent = store.append(hold("orchard", "during-replay"));
+    assert(frame.seq >= cursor);
+    for (const event of frame.events) {
+      assert(event.seq > cursor);
+      if (event.kind === "coordinator.checkpoint") assert.deepEqual(event.payload, { checkpoint: null });
+      cursor = event.seq;
+      replay.push(event as FleetEvent);
+    }
+    cursor = frame.seq;
+    if (!JSON.parse(raw).more) {
+      assert.deepEqual(frame.snapshot?.state, expected);
+      break;
+    }
+  }
+  assert(pages > 1);
+  assert.equal(cursor, replayEnd);
+  assert.deepEqual(
+    replay,
+    log
+      .filter((event) => event.seq > after)
+      .map((event) => (event.kind === "coordinator.checkpoint" ? { ...event, payload: { checkpoint: null } } : event)),
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(fold([...log.filter((event) => event.seq <= after), ...replay]).projects.orchard)),
+    expected,
+  );
+  const committed = await recent.next();
+  assert(committed.type === "events");
+  assert.deepEqual(committed.events, [concurrent]);
+  assert.deepEqual(committed.snapshot?.state, JSON.parse(JSON.stringify(fold(store.readSince(0)).projects.orchard)));
+  recent.send({ type: "projects.list", id: "replay-live" });
+  assert.equal((await recent.next()).type, "projects.result");
+});
+
 // Each transport scenario owns a real SQLite store and an OS-assigned loopback port.
+test("an oversized live event resets to an authoritative snapshot without dropping state", {
+  timeout: 10000,
+}, async (t) => {
+  const store = new EventStore(":memory:");
+  store.append({
+    project: "orchard",
+    kind: "session.claimed",
+    at: "2030-01-01T10:00:00Z",
+    actor: "Mira",
+    payload: { ticket: "ORC-1", session: "s1", generation: 1, owner: "Mira", runtime: "codex", handle: "local" },
+  });
+  const server = await startServer({ store, projects });
+  t.after(async () => {
+    await server.close();
+    store.close();
+  });
+  const client = await connect(server.wsUrl);
+  client.send({ type: "project.subscribe", project: "orchard", after: 0 });
+  assert.equal((await client.next()).type, "project.subscribed");
+  assert.equal((await client.next()).type, "events");
+  const reason = "x".repeat(1_100_000);
+  const posted = store.append({
+    project: "orchard",
+    kind: "session.reported",
+    at: "2030-01-01T10:00:00Z",
+    actor: "Mira",
+    payload: { ticket: "ORC-1", session: "s1", phase: "implementing", reason },
+  });
+  const frame = await client.next();
+  assert(frame.type === "events");
+  assert.equal(frame.seq, posted.seq);
+  assert.equal(frame.events.length, 0);
+  assert(frame.snapshot);
+  assert.equal((frame.snapshot.state as unknown as ProjectTables).sessions[0]?.reason, reason);
+  client.send({ type: "projects.list" });
+  assert.equal((await client.next()).type, "projects.result");
+});
+
+test("history reads are bounded newest-first SQL pages isolated by project and ticket", async (t) => {
+  const store = new EventStore(":memory:");
+  const expected: FleetEvent[] = [];
+  for (let i = 0; i < 260; i++) {
+    const row = store.append({
+      project: i < 240 ? "orchard" : "harbor",
+      kind: "ticket.report-posted",
+      at: "2030-01-01T10:00:00Z",
+      actor: "Mira",
+      payload: {
+        ticket: i < 225 ? "ORC-1" : "ORC-2",
+        comment: `report-${i}`,
+        updatedAt: "2030-01-01T10:00:00Z",
+        phase: "implementing",
+        summary: `Report ${i}`,
+        body: `Saved report ${i}`,
+        receipt: "internal",
+      },
+    } as EventInput);
+    if (i < 225) expected.push(row);
+  }
+  store.append({
+    project: "orchard",
+    kind: "coordinator.checkpoint",
+    at: "2030-01-01T10:00:00Z",
+    actor: "coordinator",
+    payload: { checkpoint: { format: "armada.pi", private: "document body" } },
+  });
+  const opened = store.append({
+    project: "orchard",
+    kind: "inbox.opened",
+    at: "2030-01-01T10:00:00Z",
+    actor: "Mira",
+    payload: { id: "same-id", ticket: "ORC-1", kind: "question", body: "Which tree?" },
+  });
+  expected.push(opened);
+  const answered = store.append({
+    project: "orchard",
+    kind: "inbox.answered",
+    at: "2030-01-01T10:00:00Z",
+    actor: "Mira",
+    payload: { id: "same-id", answer: "Apple" },
+  });
+  expected.push(answered);
+  store.append({
+    project: "orchard",
+    kind: "merge.queued",
+    at: "2030-01-01T10:00:00Z",
+    actor: "Mira",
+    payload: { id: "same-id", ticket: "ORC-2", session: "other", pr: 9, head: "head" },
+  });
+  store.append({
+    project: "orchard",
+    kind: "merge.started",
+    at: "2030-01-01T10:00:00Z",
+    actor: "Mira",
+    payload: { id: "same-id" },
+  });
+  const genericPayloads = [null, ["leaf", 7], 42, true, "note"];
+  for (const payload of genericPayloads)
+    store.append({
+      project: "orchard",
+      kind: "plugin.fixture",
+      at: "2030-01-01T10:00:00Z",
+      actor: "plugin",
+      payload,
+    } as unknown as EventInput);
+  const server = await startServer({ store, projects });
+  t.after(async () => {
+    await server.close();
+    store.close();
+  });
+  const client = await connect(server.wsUrl);
+  client.send({ type: "fleet.history", project: "orchard" });
+  const initial = await client.next();
+  assert(initial.type === "fleet.history.result");
+  assert.equal(initial.events.length, 50);
+  assert(initial.cursor !== null);
+  assert(
+    initial.events.every((e, i, rows) => e.project === "orchard" && (!i || e.seq < (rows[i - 1] as FleetEvent).seq)),
+  );
+  assert(!JSON.stringify(initial).includes("document body"));
+  assert(initial.events.every((e) => !e.payload || typeof e.payload !== "object" || !("receipt" in e.payload)));
+  assert.deepEqual(
+    initial.events.filter((e) => e.kind === "plugin.fixture").map((e) => e.payload),
+    genericPayloads.toReversed(),
+  );
+  client.send({ type: "fleet.history", project: "orchard", ticket: "ORC-1", limit: 200 });
+  const first = await client.next();
+  assert(first.type === "fleet.history.result");
+  assert.equal(first.events.length, 200);
+  assert(first.cursor !== null);
+  assert(first.events.some((e) => e.seq === answered.seq && (e.payload as { ticket: string }).ticket === "ORC-1"));
+  client.send({ type: "fleet.history", project: "orchard", ticket: "ORC-1", cursor: first.cursor, limit: 200 });
+  const second = await client.next();
+  assert(second.type === "fleet.history.result");
+  assert.equal(second.cursor, null);
+  assert.deepEqual(
+    [...first.events, ...second.events].map((e) => e.seq),
+    expected.reverse().map((e) => e.seq),
+  );
+  client.send({ type: "fleet.history", project: "orchard", limit: 201 });
+  const refused = await client.next();
+  assert(refused.type === "error" && refused.code === "invalid-message");
+  // Wide payloads lower the row count rather than produce an unbounded history frame.
+  for (let i = 0; i < 2; i++)
+    store.append({
+      project: "orchard",
+      kind: "ticket.report-posted",
+      at: "2030-01-01T10:00:00Z",
+      actor: "Mira",
+      payload: {
+        ticket: "ORC-1",
+        comment: `wide-${i}`,
+        updatedAt: "2030-01-01T10:00:00Z",
+        phase: "implementing",
+        summary: "Wide report",
+        body: "x".repeat(700_000),
+      },
+    });
+  client.send({ type: "fleet.history", project: "orchard" });
+  const raw = await client.nextRaw();
+  assert(Buffer.byteLength(raw) <= 1024 * 1024);
+  const wide = serverMessageSchema.parse(JSON.parse(raw));
+  assert(wide.type === "fleet.history.result");
+  assert.equal(wide.events.length, 1);
+  assert(wide.cursor !== null);
+  client.send({ type: "projects.list" });
+  assert.equal((await client.next()).type, "projects.result");
+});
+
 test("subscription returns folded state then committed batches, isolated and replaced by project", async (t) => {
   const store = new EventStore(":memory:");
   const first = store.append(hold());
@@ -268,14 +629,14 @@ test("subscription returns folded state then committed batches, isolated and rep
   assert.equal(subscribed.type, "project.subscribed");
   if (subscribed.type !== "project.subscribed") throw new Error("Expected subscription");
   assert.deepEqual(subscribed.snapshot, { seq: first.seq, state: holding(first) });
-  // The history right after carries no second snapshot: the acknowledgment holds its fold.
+  // A fresh subscription starts at its snapshot cursor without replaying the log.
   assert.deepEqual(await client.next(), {
     type: "events",
     version,
     subscriptionId: subscribed.subscriptionId,
     project: "orchard",
     seq: first.seq,
-    events: [first],
+    events: [],
   });
   const foreign = store.append(hold("harbor"));
   assert.deepEqual(await client.next(), {
@@ -302,7 +663,10 @@ test("subscription returns folded state then committed batches, isolated and rep
   if (replacement.type !== "project.subscribed") throw new Error("Expected subscription");
   assert.notEqual(replacement.subscriptionId, subscribed.subscriptionId);
   assert.equal(replacement.snapshot, undefined);
-  assert.equal((await client.next()).type, "events");
+  const caughtUp = await client.next();
+  assert(caughtUp.type === "events");
+  // An interrupted replay may have applied its last event page but missed the final snapshot.
+  assert.deepEqual(caughtUp.snapshot, { seq: later.seq, state: holding(first, later) });
   const newest = store.append(hold("orchard", "snow"));
   assert.deepEqual(await client.next(), {
     type: "events",
@@ -653,7 +1017,7 @@ test("credential socket writes never expose the key to replies, events or logs",
 // THE-2073 to minor 9 for shared auth and the pi model catalog,
 // THE-2079 to minor 11 for fleet wake rows, THE-2080 to minor 12 for runtime projects,
 // THE-2072 to minor 13 for hosted Conductor routing, and THE-2096 to minor 16 for routing instructions.
-// (the recorded frames have no coordinator attached and are otherwise unchanged).
+// THE-2116 advances it to minor 21, starts fresh subscriptions at their snapshot, and redacts checkpoint bodies.
 test("subscription bytes stay compatible with the recorded daemon vocabulary and folded tables", async (t) => {
   const fixture = new URL("./support/protocol-subscription.json", import.meta.url);
   const inputs = JSON.parse(readFileSync(fixture, "utf8")) as { history: EventInput[]; live: EventInput[] };

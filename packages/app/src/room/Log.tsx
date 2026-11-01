@@ -1,8 +1,10 @@
 // The panel's Log (THE-2085): the project's last fleet events, newest first,
 // each as its time, its kind and the ticket it concerns, read from the
-// subscription the room already holds (the client's log of the project).
+// bounded history pages and the room's newer live events.
 import type { ProtocolEvent } from "@armada/protocol";
 import { rowTime } from "@/fleet/overview";
+import type { DaemonClient } from "@/protocol/client";
+import { HistoryControls, mergeHistory, useHistory } from "@/protocol/history";
 import { sessionHref } from "@/session/route";
 
 const LOG_ROWS = 50;
@@ -28,36 +30,62 @@ function logRows(events: readonly ProtocolEvent[], n = LOG_ROWS): LogRow[] {
     });
 }
 
-export function Log({ events, now, zone }: { events: readonly ProtocolEvent[]; now: number; zone: string }) {
-  const rows = logRows(events);
-  if (!rows.length) return <p className="m-0 px-4 py-3 text-body text-text-3">Nothing recorded yet.</p>;
+export function Log({
+  events,
+  now,
+  zone,
+  project,
+  client,
+}: {
+  events: readonly ProtocolEvent[];
+  now: number;
+  zone: string;
+  project?: string;
+  client?: DaemonClient;
+}) {
+  const history = useHistory(client, project);
+  const merged = mergeHistory(events, history.events).filter(
+    (event) =>
+      event.kind !== "coordinator.checkpoint" || (event.payload as { checkpoint?: unknown } | null)?.checkpoint != null,
+  );
+  const newest = history.events.at(-1)?.seq ?? Number.MAX_SAFE_INTEGER;
+  const rows = logRows(
+    merged,
+    Math.max(LOG_ROWS, history.events.length + merged.filter((event) => event.seq > newest).length),
+  );
   return (
-    <ol aria-label="The project's last events" className="m-0 list-none p-0 pb-2">
-      {rows.map((r) => (
-        <li
-          key={r.seq}
-          data-event={r.seq}
-          className="flex min-w-0 items-baseline gap-1.5 whitespace-nowrap border-line border-b px-4 py-1.5 text-body text-text-2"
-        >
-          <time dateTime={r.at} title={r.at} className="flex-none font-mono text-meta text-text-3 tnum">
-            {rowTime(r.at, now, zone)}
-          </time>
-          <span aria-hidden className="text-text-3">
-            ·
-          </span>
-          <span className="min-w-0 truncate font-mono text-meta text-text">{r.kind}</span>
-          {r.ticket && (
-            <>
-              <span aria-hidden className="text-text-3">
-                ·
-              </span>
-              <a href={sessionHref(r.ticket)} className="flex-none font-mono text-meta text-text-2 hover:text-text">
-                {r.ticket}
-              </a>
-            </>
-          )}
-        </li>
-      ))}
-    </ol>
+    <>
+      {!rows.length && !history.loading && !history.error && (
+        <p className="m-0 px-4 py-3 text-body text-text-3">Nothing recorded yet.</p>
+      )}
+      <ol aria-label="The project's last events" className="m-0 list-none p-0 pb-2">
+        {rows.map((r) => (
+          <li
+            key={r.seq}
+            data-event={r.seq}
+            className="flex min-w-0 items-baseline gap-1.5 whitespace-nowrap border-line border-b px-4 py-1.5 text-body text-text-2"
+          >
+            <time dateTime={r.at} title={r.at} className="flex-none font-mono text-meta text-text-3 tnum">
+              {rowTime(r.at, now, zone)}
+            </time>
+            <span aria-hidden className="text-text-3">
+              ·
+            </span>
+            <span className="min-w-0 truncate font-mono text-meta text-text">{r.kind}</span>
+            {r.ticket && (
+              <>
+                <span aria-hidden className="text-text-3">
+                  ·
+                </span>
+                <a href={sessionHref(r.ticket)} className="flex-none font-mono text-meta text-text-2 hover:text-text">
+                  {r.ticket}
+                </a>
+              </>
+            )}
+          </li>
+        ))}
+      </ol>
+      <HistoryControls history={history} />
+    </>
   );
 }

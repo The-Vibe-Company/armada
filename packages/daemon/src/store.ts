@@ -69,14 +69,47 @@ export class EventStore {
   }
 
   /** Exclusive global cursor; a project filter never renumbers the log. */
-  readSince(sequence: number, project?: string): FleetEvent[] {
+  readSince(sequence: number, project?: string, limit = -1): FleetEvent[] {
     if (!Number.isSafeInteger(sequence) || sequence < 0)
       throw new Error("sequence must be a non-negative safe integer");
     const columns = "SELECT seq, project, kind, at, actor, payload FROM events WHERE seq > ?";
     const rows =
       project === undefined
-        ? this.#db.prepare(`${columns} ORDER BY seq`).all(sequence)
-        : this.#db.prepare(`${columns} AND project = ? ORDER BY seq`).all(sequence, project);
+        ? this.#db.prepare(`${columns} ORDER BY seq LIMIT ?`).all(sequence, limit)
+        : this.#db.prepare(`${columns} AND project = ? ORDER BY seq LIMIT ?`).all(sequence, project, limit);
+    return rows.map((row) => ({ ...row, payload: JSON.parse(row.payload as string) }) as FleetEvent);
+  }
+
+  /** Bounded history: SQL owns filtering, correlation, ordering and the exclusive cursor. */
+  history(project: string, ticket?: string, cursor = this.sequence + 1, limit = 50): FleetEvent[] {
+    const rows = this.#db
+      .prepare(`
+      SELECT e.seq, e.project, e.kind, e.at, e.actor, e.payload FROM events e
+      WHERE project = ? AND seq < ?
+        AND (kind != 'coordinator.checkpoint' OR json_extract(payload, '$.checkpoint.format') = 'armada.worker')
+        AND (? IS NULL OR json_extract(payload, '$.ticket') = ?
+          OR (kind = 'ticket.seen' AND json_extract(payload, '$.id') = ?)
+          OR (kind = 'coordinator.checkpoint' AND json_extract(payload, '$.checkpoint.ticket') = ?)
+          OR (kind IN ('inbox.answered', 'validation.decided', 'merge.started', 'merge.refused', 'merge.canceled')
+            AND json_extract(payload, '$.id') IN (
+              SELECT json_extract(payload, '$.id') FROM events
+              WHERE project = ? AND kind IN ('inbox.opened', 'validation.opened', 'merge.queued')
+                AND json_extract(payload, '$.ticket') = ?
+                AND kind = CASE WHEN e.kind = 'inbox.answered' THEN 'inbox.opened'
+                  WHEN e.kind = 'validation.decided' THEN 'validation.opened' ELSE 'merge.queued' END)))
+      ORDER BY seq DESC LIMIT ?
+    `)
+      .all(
+        project,
+        cursor,
+        ticket ?? null,
+        ticket ?? null,
+        ticket ?? null,
+        ticket ?? null,
+        project,
+        ticket ?? null,
+        limit,
+      );
     return rows.map((row) => ({ ...row, payload: JSON.parse(row.payload as string) }) as FleetEvent);
   }
 

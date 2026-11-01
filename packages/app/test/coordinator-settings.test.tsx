@@ -108,18 +108,6 @@ describe("Settings › Coordinator in a browser", () => {
     await page.waitForFunction(() => "daemon" in window, undefined, { timeout: 5_000 });
     await page.evaluate(() => (window as unknown as { daemon: { open(): void } }).daemon.open());
     await receive(page, { type: "projects.result", id: (await last(page, "projects.list")).id, projects: PROJECTS });
-    await receive(page, {
-      type: "credentials.result",
-      id: (await last(page, "credentials.status")).id,
-      provider: null,
-      storage: "os-keychain",
-    });
-    await receive(page, {
-      type: "plugins.result",
-      id: (await last(page, "plugins.list")).id,
-      plugins: [],
-      restartable: false,
-    });
     for (const subscribe of await all(page, "project.subscribe")) {
       const rules =
         subscribe.project === "harbor"
@@ -133,7 +121,26 @@ describe("Settings › Coordinator in a browser", () => {
         after: 0,
         snapshot: { seq: 0, state: { rules } },
       });
+      await receive(page, {
+        type: "events",
+        project: subscribe.project,
+        subscriptionId: `s-${subscribe.project}`,
+        seq: 0,
+        events: [],
+      });
     }
+    await receive(page, {
+      type: "credentials.result",
+      id: (await last(page, "credentials.status")).id,
+      provider: null,
+      storage: "os-keychain",
+    });
+    await receive(page, {
+      type: "plugins.result",
+      id: (await last(page, "plugins.list")).id,
+      plugins: [],
+      restartable: false,
+    });
     await catalog(page, (await last(page, "models.providers")).id, providers, selected);
     return page;
   }
