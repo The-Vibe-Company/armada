@@ -91,6 +91,10 @@ const active = (p: Projection, ref: SessionRef) => {
     : undefined;
 };
 
+const clearProgressNotices = (p: Projection, ticket: string) => {
+  for (const [id, item] of p.inbox) if (item.kind === "liveness" && item.ticket === ticket) p.inbox.delete(id);
+};
+
 /** Replay a complete, ascending log (or a project-filtered log with sequence gaps).
  * No database, clock or V1 imports. All returned data is detached from the input.
  */
@@ -141,12 +145,17 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
       case "pull-request.review-changed":
       case "pull-request.closed":
       case "pull-request.merged":
-      case "pull-request.seen":
+      case "pull-request.seen": {
+        const priorHead =
+          p.prs.get(e.payload.number)?.head ??
+          [...p.prs.values()].findLast((pr) => pr.ticket === e.payload.ticket)?.head;
+        if (priorHead !== e.payload.head) clearProgressNotices(p, e.payload.ticket);
         if (e.payload.state === "merged" && p.prs.get(e.payload.number)?.state !== "merged")
           p.mergedAt.set(e.payload.number, { at: e.at, seq: e.seq });
         p.prs.delete(e.payload.number);
         p.prs.set(e.payload.number, { ...e.payload, conflicting: e.payload.state === "open" && e.payload.conflicting });
         break;
+      }
       case "review-thread.opened":
       case "review-thread.resolved": {
         const pr = p.prs.get(e.payload.pr);
@@ -173,16 +182,39 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
             heartbeat: null,
             earlier: [],
           });
+        if (!p.claims.has(e.payload.session) && p.sessions.get(e.payload.ticket)?.session === e.payload.session)
+          clearProgressNotices(p, e.payload.ticket);
         p.claims.add(e.payload.session);
         break;
       case "session.reported": {
         const s = active(p, e.payload);
         if (s) {
+          if (s.phase !== e.payload.phase || s.reason.trim() !== e.payload.reason.trim())
+            clearProgressNotices(p, e.payload.ticket);
           s.earlier.push(s.phase);
           s.phase = e.payload.phase;
           s.reason = e.payload.reason;
           s.at = e.at;
           if (e.payload.stage !== undefined) s.stage = e.payload.stage;
+        }
+        break;
+      }
+      case "session.liveness": {
+        const s = active(p, e.payload);
+        if (
+          s &&
+          s.generation === e.payload.generation &&
+          !["blocked", "awaiting-approval", "awaiting-validation", "ready-to-merge"].includes(s.phase)
+        ) {
+          p.inbox.set(e.payload.id, {
+            id: e.payload.id,
+            ticket: s.ticket,
+            kind: "liveness",
+            actor: e.actor,
+            at: e.at,
+            seq: e.seq,
+            body: `${s.ticket} ${e.payload.verdict}: ${e.payload.summary}; evidence: ${JSON.stringify(e.payload.evidence)}`,
+          });
         }
         break;
       }
@@ -195,6 +227,7 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
         const s = active(p, e.payload);
         if (s) {
           s.earlier.push(s.phase);
+          clearProgressNotices(p, e.payload.ticket);
           s.phase = "released";
           s.reason = e.payload.reason;
           s.at = e.at;
@@ -235,6 +268,7 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
         const s = active(p, e.payload);
         if (s) {
           s.earlier.push(s.phase);
+          clearProgressNotices(p, e.payload.ticket);
           s.phase = "merged";
           s.reason = `Merged #${e.payload.pr}`;
           s.at = e.at;
