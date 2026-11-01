@@ -29,7 +29,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { AnimatePresence, m } from "motion/react";
+import { m } from "motion/react";
 import {
   Component,
   type ReactNode,
@@ -140,6 +140,11 @@ export function Thread({
     groupOf,
   );
   const rows = workRows(items);
+  // History mounts in place; only rows arriving after the first commit slide in.
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+  }, []);
   const open = useOpen(project);
   const working = turn !== null && turn.state !== "idle";
   const tail = items.at(-1);
@@ -175,47 +180,45 @@ export function Thread({
         <TicketGroups value={groupOf}>
           <ScrollList element={list} capture={capture} settle={settle} announce={announce}>
             {items.length === 0 && <li className="py-6 text-center text-body text-text-3">{empty}</li>}
-            <AnimatePresence initial={false} onExitComplete={settle}>
-              {rows.map((row, k) => (
-                <m.li
-                  key={row.id}
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={ARRIVE}
-                  data-item={rowKind(row)}
-                  data-row={row.id}
-                  // A message on its way is announced once, when the conversation holds it; its controls wait for it too.
-                  inert={row.id.startsWith("sent:") || undefined}
-                  // Still written: assistive technology waits for it (the status below says it once read).
-                  aria-busy={(row.kind === "said" && row.item.kind === "streaming") || undefined}
-                  className="group/row min-w-0"
-                >
-                  {row.kind === "said" ? (
-                    <Item
-                      item={row.item}
-                      dot={dots.get(row.item.id) ?? null}
-                      repository={repository}
-                      prefixes={prefixes}
-                      groupOf={groupOf}
-                      time={rowTime(row.item.at, now, zone)}
-                      full={fullTime(row.item.at, zone)}
-                      thinking={working && turn?.state === "thinking" && row.item === tail}
-                      folded={rows[k - 1]?.kind === "fold"}
-                    />
-                  ) : row.kind === "fold" ? (
-                    <Fold
-                      row={row}
-                      open={open}
-                      groupOf={groupOf}
-                      time={rowTime(row.work.at, now, zone)}
-                      full={fullTime(row.work.at, zone)}
-                    />
-                  ) : (
-                    <WorkBlock work={row.work} open={open} groupOf={groupOf} running={running} />
-                  )}
-                </m.li>
-              ))}
-            </AnimatePresence>
+            {rows.map((row, k) => (
+              <m.li
+                key={row.id}
+                initial={mounted.current ? { opacity: 0, y: 6 } : false}
+                animate={{ opacity: 1, y: 0 }}
+                transition={ARRIVE}
+                data-item={rowKind(row)}
+                data-row={row.id}
+                // A message on its way is announced once, when the conversation holds it; its controls wait for it too.
+                inert={row.id.startsWith("sent:") || undefined}
+                // Still written: assistive technology waits for it (the status below says it once read).
+                aria-busy={(row.kind === "said" && row.item.kind === "streaming") || undefined}
+                className="group/row min-w-0"
+              >
+                {row.kind === "said" ? (
+                  <Item
+                    item={row.item}
+                    dot={dots.get(row.item.id) ?? null}
+                    repository={repository}
+                    prefixes={prefixes}
+                    groupOf={groupOf}
+                    time={rowTime(row.item.at, now, zone)}
+                    full={fullTime(row.item.at, zone)}
+                    thinking={working && turn?.state === "thinking" && row.item === tail}
+                    folded={rows[k - 1]?.kind === "fold"}
+                  />
+                ) : row.kind === "fold" ? (
+                  <Fold
+                    row={row}
+                    open={open}
+                    groupOf={groupOf}
+                    time={rowTime(row.work.at, now, zone)}
+                    full={fullTime(row.work.at, zone)}
+                  />
+                ) : (
+                  <WorkBlock work={row.work} open={open} groupOf={groupOf} running={running} />
+                )}
+              </m.li>
+            ))}
             {working && (
               <li className="min-w-0" data-item="working">
                 <Working started={started} queued={turn?.queued ?? 0} />
@@ -244,16 +247,16 @@ type ScrollListProps = {
 
 /** Read the viewport before React mutates rows, including a move whose scroll event is still pending. */
 class ScrollList extends Component<ScrollListProps> {
-  getSnapshotBeforeUpdate(): Anchor | null {
+  override getSnapshotBeforeUpdate(): Anchor | null {
     return this.props.capture();
   }
-  componentDidMount() {
+  override componentDidMount() {
     this.props.settle();
   }
-  componentDidUpdate(_props: ScrollListProps, _state: unknown, anchor: Anchor | null) {
+  override componentDidUpdate(_props: ScrollListProps, _state: unknown, anchor: Anchor | null) {
     this.props.settle(anchor);
   }
-  render() {
+  override render() {
     return (
       <ol
         ref={this.props.element}
