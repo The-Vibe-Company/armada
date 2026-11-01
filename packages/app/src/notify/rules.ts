@@ -92,7 +92,7 @@ export function answerOf(items: readonly ChatItem[], since: string): string | nu
   const from = Date.parse(since) - 1_000;
   for (let k = items.length - 1; k >= 0; k--) {
     const item = items[k];
-    if (!item || item.kind === "tool" || item.kind === "owner") continue;
+    if (!item || item.kind === "tool" || item.kind === "owner" || item.kind === "wake") continue;
     if (!(Date.parse(item.at) >= from)) return null;
     if (item.aborted || !item.body.trim()) continue;
     return firstLine(item.body);

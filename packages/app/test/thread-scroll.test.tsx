@@ -138,6 +138,26 @@ describe("the thread's scroll in a browser", () => {
     expect(await firstRow()).toEqual(before);
     await page.clock.runFor(200);
     await pill().waitFor({ timeout: 2_000 });
+    // PageUp and a fleet reading can share a frame, before the browser dispatches scroll.
+    // Capture what the owner now reads, then let a Woke row arrive as the window advances.
+    const wake: ChatItem = { kind: "wake", id: "wake:1", at: at(34), body: "Woke: hand-back ORC-1 #41" };
+    const paged = await page.evaluate(
+      (json) => {
+        const api = (window as unknown as { thread: { page(d: "up"): void; set(i: unknown): void } }).thread;
+        const el = document.querySelector<HTMLElement>("section");
+        if (!el) throw new Error("No conversation");
+        api.page("up");
+        const rows = [...el.querySelectorAll<HTMLElement>("[data-row]")];
+        const row = rows.find((r) => r.offsetTop - el.offsetTop - el.scrollTop + r.offsetHeight > 0);
+        const reading = row ? { key: row.dataset.row, top: row.offsetTop - el.offsetTop - el.scrollTop } : null;
+        api.set(JSON.parse(json));
+        return reading;
+      },
+      JSON.stringify([...conversation.slice(6), said(30), said(31), said(32), said(33), wake]),
+    );
+    expect(paged).not.toBeNull();
+    expect(await firstRow()).toEqual(paged);
+    expect(await page.locator("[data-wake]").count()).toBe(1);
   });
 
   test("a sent message is pinned about 24 px from the top, with room under it for the answer", async () => {

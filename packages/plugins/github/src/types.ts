@@ -1,7 +1,8 @@
-import type { EventInput, FleetEvent, GithubPullRequest } from "@armada/daemon/events";
+import type { EventInput, EventPayloads, FleetEvent, GithubPullRequest } from "@armada/daemon/events";
 
 /** In-process provider boundary. Loaded once at boot; no lifecycle/hot-reload machinery. */
 export interface Forge {
+  readonly defaultBranch?: EventPayloads["default-branch.seen"];
   read(previousOpen: readonly number[], signal: AbortSignal): Promise<GithubPullRequest[]>;
 }
 
