@@ -1,6 +1,7 @@
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import type { ProjectTables } from "../fold.ts";
+import { type MergeFailureCode, refusalLine, refuse } from "./refusal.ts";
 
 const id = Type.String({ minLength: 1 });
 const object = <T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
@@ -53,13 +54,6 @@ export function checkMerge(
   project: string,
   evidence: MergeEvidence | null,
 ): { result: JsonObject } {
-  const refuse = (code: string, message: string, next: string, extra: JsonObject = {}): JsonObject => ({
-    ok: false,
-    code,
-    message,
-    next,
-    ...extra,
-  });
   const no = (code: string, message: string, next: string) => ({ result: refuse(code, message, next) });
   const pr = tables.pullRequests.find((p) => p.number === number);
   if (!pr) return no("no_pr", `PR #${number} is not open in ${project}`, "fleet.status");
@@ -74,6 +68,9 @@ export function checkMerge(
         i.actor !== "coordinator",
     );
   const problems: string[] = [];
+  const causes: { code: MergeFailureCode; reason: string; next: string }[] = [];
+  const cause = (code: MergeFailureCode, reason: string, next: string) => causes.push({ code, reason, next });
+  const worker = "ask the worker (worker.message) to fix and hand back";
   // Copied from core/src/merge.ts assess / mergeProblems. Unknown evidence always refuses.
   if (session?.phase !== "ready-to-merge")
     problems.push(
@@ -98,19 +95,49 @@ export function checkMerge(
   if (pr.state !== "open") problems.push(`#${pr.number} is ${pr.state}, not open`);
   if (pr.conflicting) problems.push(`#${pr.number} conflicts with its base; ask the worker to merge it in or rebase`);
 
-  for (const hold of tables.holds) problems.push(`merge hold ${hold.id}: ${hold.reason}`);
+  for (const hold of tables.holds) problems.push(`merge hold ${hold.id}: ${refusalLine(hold.reason)}`);
+  if (tables.holds.length)
+    cause(
+      "hold_open",
+      `Merge holds: ${tables.holds.map((h) => `${h.id}: ${refusalLine(h.reason)}`).join("; ")}`,
+      `hold.clear ${tables.holds.map((h) => h.id).join(", ")} with recovery evidence, then merge.run`,
+    );
+  if (pr.conflicting || evidence?.mergeState === "DIRTY")
+    cause("base_conflict", `#${pr.number} conflicts with its base`, worker);
   // Copied from core/src/validations.ts lastValidation: a newer submission replaces the earlier decision.
   const validation = tables.validations.filter((v) => v.ticket === pr.ticket && v.session === session?.session).at(-1);
   if (validation && validation.decision?.decision !== "approved")
     problems.push("owner validation is pending or changes were requested");
   if (!evidence) problems.push("merge review, acceptance, approval and base-test evidence is unavailable");
   else {
-    if (evidence.head !== pr.head) problems.push("merge evidence is for a different head");
+    if (evidence.head !== pr.head) {
+      problems.push("merge evidence is for a different head");
+      cause("head_moved", `Head moved from ${pr.head.slice(0, 7)} to ${evidence.head.slice(0, 7)}`, worker);
+    }
+    const handedHead = handBack?.body.match(/\bhead ([0-9a-f]{40})\b/i)?.[1]?.toLowerCase();
+    if (handedHead && handedHead !== pr.head)
+      cause("head_moved", `The hand-back no longer matches head ${pr.head.slice(0, 7)}`, worker);
     if (evidence.draft) problems.push(`#${pr.number} is a draft`);
     if (!/^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([\w./,-]+\))?!?: \S/.test(evidence.title))
       problems.push(`the title "${evidence.title}" is not in Commitizen format, e.g. "feat(cli): add a command"`);
     if (!["CLEAN", "HAS_HOOKS"].includes(evidence.mergeState))
       problems.push(`GitHub reports #${pr.number} as ${evidence.mergeState}, not CLEAN`);
+    const red = [...new Set(evidence.checks.filter((c) => c.state === "failure").map((c) => c.name))];
+    if (red.length) cause("checks_red", `Red: ${red.join(", ")} on ${evidence.head.slice(0, 7)}`, worker);
+    const pending = [
+      ...new Set([
+        ...evidence.requiredChecks.filter((name) => !evidence.checks.some((c) => c.name === name)),
+        ...evidence.checks.filter((c) => c.state === "pending" || c.state === "none").map((c) => c.name),
+      ]),
+    ];
+    if (pending.length || !evidence.checks.length || !evidence.checksComplete)
+      cause(
+        "checks_pending",
+        `Checks pending on ${evidence.head.slice(0, 7)}: ${pending.join(", ") || "complete CI evidence"}`,
+        !evidence.checks.length
+          ? "rules.set gates requiredChecks if required checks are missing; merge.run again after checks report green"
+          : "merge.run again after all checks report green",
+      );
     const on = `on head ${evidence.head.slice(0, 7)}: `;
     for (const name of evidence.requiredChecks) {
       const runs = evidence.checks.filter((c) => c.name === name);
@@ -120,7 +147,9 @@ export function checkMerge(
           if (check.state !== "success") problems.push(`${on}required check "${name}" is ${check.state}`);
     }
     if (!evidence.checks.length)
-      problems.push(`${on}no CI check has reported on the head yet (or set [gates] required_checks in armada.toml)`);
+      problems.push(
+        `${on}no CI check has reported on the head yet (configure missing check names with rules.set gates requiredChecks)`,
+      );
     for (const check of evidence.checks)
       if (!evidence.requiredChecks.includes(check.name) && check.state !== "success")
         problems.push(`${on}check "${check.name}" is ${check.state}`);
@@ -128,6 +157,12 @@ export function checkMerge(
     const { total, read, unresolved, complete } = evidence.reviewThreads;
     if (!complete || total !== read || unresolved > read)
       problems.push("review-thread evidence is incomplete or inconsistent");
+    if (!complete || total !== read || unresolved > 0)
+      cause(
+        "review_threads_open",
+        `#${pr.number}: ${unresolved} unresolved review threads; read ${read} of ${total}${complete ? "" : " (incomplete)"}`,
+        "worker.message to resolve and confirm all review threads, then merge.run",
+      );
     if (unresolved)
       problems.push(`#${pr.number} has ${unresolved} unresolved review thread${unresolved > 1 ? "s" : ""}`);
     else if (total > read)
@@ -145,11 +180,19 @@ export function checkMerge(
     )
       problems.push("acceptance, approval or base-test evidence is for an earlier head/base");
   }
+  // Prefer the actionable safety gate; keep every prerequisite in problems.
+  const primary = causes[0];
+  const cleanProblems = problems.map((p) => refusalLine(p));
   return {
     result: problems.length
-      ? refuse("merge_refused", `#${pr.number} cannot be merged`, "fix the listed prerequisites, then merge.check", {
-          problems,
-        })
+      ? refuse(
+          primary?.code ?? "merge_refused",
+          primary?.reason ?? cleanProblems.join("; "),
+          primary?.next ?? "worker.message to fix the listed prerequisites and hand back, then merge.check",
+          {
+            problems: cleanProblems,
+          },
+        )
       : { ok: true, pr: pr.number, head: pr.head, ticket: pr.ticket },
   };
 }
