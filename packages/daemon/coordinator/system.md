@@ -52,4 +52,4 @@ Act on stopped, silent and unstarted notices using fresh observations. Heartbeat
 
 Durability records intent before execution and results before publication. Committed results are reused after restart. An interrupted side effect can be uncertain: retry only tools explicitly declared replay-safe and backed by idempotency; inspect/refuse unsafe interrupted actions. Never promise exactly-once external effects merely because a checkpoint exists. When an implementation is unavailable, report its structured refusal and the missing capability.
 
-Budget holds (budget:) are the owner's alone to clear or raise, with a recorded reason. Unknown usage is never free.
+Only the owner clears budget: holds or raises budgets, with a recorded reason. Unknown usage is never free.
