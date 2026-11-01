@@ -20,6 +20,7 @@ import { z } from "zod";
 import { checkpointRules, emptyRules, type RulesState } from "../coordinator/rules.ts";
 import { applyDelivery } from "./delivery-state.ts";
 import { flowStep, pipelineStep } from "./rules.ts";
+import { projectUsage } from "./usage.ts";
 
 export type {
   FleetTables,
@@ -415,6 +416,10 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
       released: [],
     };
     for (const s of sessions) sessionsByState[s.state].push(s);
+    const usage = projectUsage(
+      events.filter((e) => e.project === project),
+      p.rules.value.policy?.budget?.zone ?? "UTC",
+    );
     const deliveries = [...p.deliveries.values()].filter(
       (d) =>
         !d.sentAt &&
@@ -447,6 +452,7 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
     tables.projects[project] = {
       ...(p.defaultBranch ? { defaultBranch: p.defaultBranch } : {}),
       rules: p.rules,
+      ...(usage.days.length ? { usage } : {}),
       ...(Object.keys(p.readers).length ? { readers: p.readers } : {}),
       ...(Object.keys(p.readAt).length ? { readAt: p.readAt } : {}),
       tickets: [...p.tickets.values()],

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { fold } from "@armada/daemon/fold";
+import type { EventInput } from "@armada/protocol";
 import type { Page } from "playwright-core";
 import { SAMPLE_PROJECTS, sampleEvents } from "../scripts/dev-daemon";
 import { clampWidth, PANEL_KEY, panelKey, readPanel } from "../src/room/panel-rules";
@@ -261,6 +262,54 @@ describe("the room's panel in a browser", () => {
     await page.mouse.click(40, 400);
     await sheet.waitFor({ state: "detached" });
     await settled(() => page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Panel");
+    // The reader pause and daily token pill leave the panel control on screen,
+    // even with all five agent states at phone width.
+    const at = "2026-03-10T15:00:00.000Z";
+    const readings: EventInput[] = [
+      ...sampleEvents(at),
+      {
+        project: "harbor",
+        at,
+        actor: "coordinator",
+        kind: "coordinator.checkpoint",
+        payload: {
+          checkpoint: {},
+          turn: { id: "phone-usage", session: "coordinator" },
+          usage: { input: 1200000, output: 40000, cacheRead: 0, cacheWrite: 0, model: "oak", provider: "fixture" },
+        },
+      },
+      {
+        project: "harbor",
+        at,
+        actor: "linear",
+        kind: "coordinator.checkpoint",
+        payload: {
+          checkpoint: {
+            format: "armada.linear-reader",
+            version: 1,
+            usage: { hour: at, requests: 17, pausedUntil: "2026-03-10T15:02:00.000Z" },
+          },
+        },
+      },
+    ];
+    const events = readings.map((event, i) => ({ ...event, seq: i + 1 }));
+    await page.evaluate(
+      (next) => {
+        (window as unknown as { daemon: { show(value: unknown): void } }).daemon.show(JSON.parse(next));
+      },
+      JSON.stringify({ state: fold(events).projects.harbor, events }),
+    );
+    await page.setViewportSize({ width: 375, height: 800 });
+    await page.locator('[data-usage="today"]').waitFor();
+    await page.locator('[data-reading="linear-paused"]').waitFor();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
+    for (const control of [page.locator('[data-usage="today"]'), toggle]) {
+      const box = await control.boundingBox();
+      expect(box).not.toBeNull();
+      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(375);
+    }
+    await toggle.click();
+    await sheet.getByRole("tab", { name: "Agents" }).waitFor();
     await page.close();
   }, 15_000);
 });

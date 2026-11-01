@@ -22,7 +22,7 @@ import {
   ownerAnswerRequestSchema,
 } from "./chat.js";
 import { DELIVERIES_MINOR } from "./deliveries.js";
-import { counter, identifier, requestSchema, versionSchema } from "./envelope.js";
+import { counter, identifier, requestSchema, USAGE_MINOR, versionSchema } from "./envelope.js";
 import { GITHUB_READER_MINOR } from "./fleet.js";
 import {
   modelConfigSchema,
@@ -70,6 +70,7 @@ export const PROTOCOL_VERSION = {
     GITHUB_READER_MINOR,
     DELIVERIES_MINOR,
     WATCHDOG_MINOR,
+    USAGE_MINOR,
     REPLAY_MINOR,
   ),
 } as const;
@@ -342,3 +343,6 @@ export function admitRequest(input: unknown, daemonVersion: ProtocolVersion = PR
 
 // Durable worker input deliveries (THE-2108).
 export { DELIVERIES_MINOR, type Delivery } from "./deliveries.js";
+
+// Token metering and budget usage (THE-2109). Keep additive exports separate.
+export * from "./usage.js";

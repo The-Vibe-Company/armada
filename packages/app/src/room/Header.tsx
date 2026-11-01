@@ -14,6 +14,8 @@ import { PageStrip } from "@/components/page";
 import { GROUPS, type Group } from "@/fleet/overview";
 import { cn } from "@/lib/utils";
 
+import UsagePill from "./UsagePill";
+
 const PILL_WORDS: Record<Group, string> = {
   blocked: "blocked",
   you: "waiting for you",
@@ -43,6 +45,7 @@ export function Header({
   project,
   counts,
   readAt,
+  usage,
   readers,
   now,
   open,
@@ -56,6 +59,7 @@ export function Header({
   /** The folded counts; none while the project's log is read. */
   counts: Record<Group, number> | null;
   readAt: Readonly<Record<string, string>> | undefined;
+  usage?: unknown;
   readers?: Readonly<Record<string, ReaderUsage>>;
   now: number;
   open: boolean;
@@ -94,7 +98,13 @@ export function Header({
       end={
         <>
           {pills.length > 0 && (
-            <ul aria-label="The project's agents" className="m-0 flex list-none items-center gap-1.5 p-0">
+            <ul
+              aria-label="The project's agents"
+              className={cn(
+                "m-0 flex list-none items-center gap-1.5 p-0",
+                Boolean(usage) && linearPaused && "@max-[640px]/strip:max-w-20 @max-[640px]/strip:overflow-x-auto",
+              )}
+            >
               {pills.map(({ group, n }) => (
                 <li key={group}>
                   <button
@@ -142,6 +152,7 @@ export function Header({
                 {r.text}
               </span>
             ))}
+          {usage && <UsagePill usage={usage} now={now} />}
           <button
             ref={toggle}
             type="button"

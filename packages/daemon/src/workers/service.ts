@@ -2,8 +2,16 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { NodeProvider, RuntimeProvider, WorkerObservation, WorkerRef, Workspace } from "@armada/plugin-api";
 import { isRuntimeLaunchRefusal } from "@armada/plugin-api";
 import { guarded } from "@armada/plugin-api/guard";
-import { activePhaseSchema, type ProjectTables, type Ticket, type ToolProgress } from "@armada/protocol";
+import {
+  activePhaseSchema,
+  type ProjectTables,
+  reportedUsageSchema,
+  type Ticket,
+  type ToolProgress,
+} from "@armada/protocol";
+import { usageTime } from "@armada/protocol/usage";
 import { z } from "zod";
+import { evaluateBudget } from "../budget.ts";
 import { Deliveries, queueDelivery } from "../deliveries.ts";
 import type { EventInput, Json } from "../events.ts";
 import { fold } from "../fold.ts";
@@ -578,7 +586,10 @@ export class Workers {
       )
     )
       throw new WorkerRefusal("Ticket has an unresolved launch intent; inspect its process before relaunching");
+    for (const event of evaluateBudget({ project, events, now: this.#at() })) this.#options.store.append(event);
     const tables = this.#tables(project);
+    const budgetHolds = tables?.holds.filter((hold) => hold.reason.startsWith("budget:")) ?? [];
+    if (budgetHolds.length) throw new WorkerRefusal(`Project paused: ${budgetHolds.map((h) => h.reason).join("; ")}`);
     if (!tables) throw new WorkerRefusal(`ticket ${args.ticket} not found in Linear`);
     const ticket = tables.tickets.find((t) => t.id === args.ticket);
     // Copied from V1 cli/src/launch.ts prepareLaunch and core/src/brief.ts loadBrief.
@@ -859,7 +870,15 @@ export class Workers {
     const checkLaunch = () => {
       beforeWrite();
       if (this.#closing) throw new Error("Worker service is stopping");
+      for (const event of evaluateBudget({
+        project,
+        events: this.#options.store.readSince(0, project),
+        now: this.#at(),
+      }))
+        this.#options.store.append(event);
       const fresh = this.#tables(project);
+      const budgetHolds = fresh?.holds.filter((hold) => hold.reason.startsWith("budget:")) ?? [];
+      if (budgetHolds.length) throw new WorkerRefusal(`Project paused: ${budgetHolds.map((h) => h.reason).join("; ")}`);
       const current = fresh?.sessions.find((s) => s.ticket === args.ticket);
       if (
         !current ||
@@ -927,7 +946,7 @@ export class Workers {
           branch,
         }));
       checkLaunch();
-    } catch {
+    } catch (error) {
       if (this.#closing) {
         await retainNotStarted();
         throw new WorkerRefusal("Daemon stopped before native launch; ticket retained for recovery");
@@ -937,19 +956,27 @@ export class Workers {
       this.#append({
         project,
         kind: "session.released",
-        payload: { ticket: worker.ticket, session: worker.session, reason: "Workspace preparation failed" },
+        payload: {
+          ticket: worker.ticket,
+          session: worker.session,
+          reason: error instanceof WorkerRefusal ? error.message : "Workspace preparation failed",
+        },
       });
       // No CLI launch was attempted: a known workspace refusal must not strand this ticket.
       this.#checkpoint(project, {
         type: "receipt",
         key,
         input,
-        result: refuse(
-          "workspace_prepare_failed",
-          "Workspace preparation failed before launch",
-          "worker.launch again after the workspace provider recovers",
-        ),
+        result:
+          error instanceof WorkerRefusal
+            ? refuse("worker_refused", error.message, "fleet.status")
+            : refuse(
+                "workspace_prepare_failed",
+                "Workspace preparation failed before launch",
+                "worker.launch again after the workspace provider recovers",
+              ),
       });
+      if (error instanceof WorkerRefusal) throw error;
       throw new Error("Workspace preparation failed before launching a CLI");
     }
     const prepared = workspace;
@@ -1110,6 +1137,9 @@ export class Workers {
       });
       throw error;
     }
+    this.#usage(ref, { state: "starting", usage: "unknown" });
+    for (const event of evaluateBudget({ project, events: this.#options.store.readSince(0, project), now: this.#at() }))
+      this.#options.store.append(event);
     await progress("launched");
     return {
       ok: true,
@@ -1491,6 +1521,13 @@ export class Workers {
             }
           }
         });
+        if (!this.#closing)
+          for (const event of evaluateBudget({
+            project: project.id,
+            events: this.#options.store.readSince(0, project.id),
+            now: this.#at(),
+          }))
+            this.#options.store.append(event);
       }
       return summary;
     })();
@@ -1676,7 +1713,30 @@ export class Workers {
     this.#reads.set(row.ref.session, reading);
     return reading;
   }
+  #usage(ref: WorkerRef, observation: WorkerObservation) {
+    const parsed = reportedUsageSchema.safeParse(observation.usage ?? "unknown");
+    const usage = parsed.success ? parsed.data : "unknown";
+    const prior = this.#options.store
+      .readSince(0, ref.project)
+      .findLast((e) => e.kind === "session.usage" && e.payload.session === ref.session);
+    const zone = this.#tables(ref.project)?.rules?.value.policy?.budget?.zone ?? "UTC";
+    if (
+      prior?.kind === "session.usage" &&
+      usageTime(prior.at, zone).day === usageTime(this.#at(), zone).day &&
+      JSON.stringify(prior.payload.usage) === JSON.stringify(usage)
+    )
+      return;
+    this.#append(
+      {
+        project: ref.project,
+        kind: "session.usage",
+        payload: { ticket: ref.ticket, session: ref.session, generation: ref.generation, usage },
+      },
+      "daemon",
+    );
+  }
   #record(ref: WorkerRef, observation: WorkerObservation) {
+    this.#usage(ref, observation);
     const value = JSON.stringify({ state: observation.state, activity: observation.activity });
     if (this.#observations.get(ref.session) === value) return;
     this.#append({
@@ -1809,6 +1869,12 @@ export class Workers {
           kind: "session.released",
           payload: { ticket, session, reason: mask(request.reason) },
         });
+        // Final counters are unverified: retain their known floor without waiting on a runtime read.
+        try {
+          this.#usage(row.ref, { state: "unknown", usage: "unknown" });
+        } catch {
+          console.warn("armada: worker released; final usage checkpoint unavailable");
+        }
       }
       return { ok: true, ticket, session };
     });

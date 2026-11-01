@@ -1277,6 +1277,127 @@ test("project removal waits for a pending launch and then refuses its active wor
   assert.equal(removed, false);
 });
 
+test("a daemon budget hold refuses launch with its reason, and a reasoned clear permits the next launch", {
+  timeout: 15000,
+}, async (t) => {
+  const f = await fixture(t);
+  const budget = await f.tools["rules.set"].execute(
+    {
+      expectedRevision: 1,
+      rules: { policy: { budget: { coordinatorTokensPerDay: 0, zone: "UTC" } } },
+      reason: "Owner sets a ceiling",
+    },
+    f.api("budget"),
+    context,
+  );
+  assert.equal((budget.details as { ok: boolean }).ok, true);
+  const hold = fold(f.daemon.store.readSince(0)).projects[project]?.holds[0];
+  assert.ok(hold);
+  const refused = await f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api("paused-launch"), context);
+  assert.equal(refused.isError, true);
+  assert.match(JSON.stringify(refused.details), /budget:/);
+  assert.equal(f.messages.length, 0, "no native delivery occurred");
+  const cleared = await f.tools["hold.clear"].execute(
+    { id: hold.id, reason: "Owner allows another batch" },
+    f.api("owner-clear"),
+    context,
+  );
+  assert.equal((cleared.details as { ok: boolean }).ok, true);
+  const launched = await f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api("allowed-launch"), context);
+  assert.equal((launched.details as { ok: boolean }).ok, true);
+  const usage = f.daemon.store.readSince(0).filter((e) => e.kind === "session.usage");
+  assert.equal(usage.length, 1);
+  assert.equal(usage[0]?.payload.usage, "unknown");
+});
+
+test("a budget crossed while workspace preparation awaits I/O refuses before native creation", {
+  timeout: 15000,
+}, async (t) => {
+  let entered!: () => void;
+  const preparing = new Promise<void>((r) => {
+    entered = r;
+  });
+  let proceed!: () => void;
+  const prepared = new Promise<void>((r) => {
+    proceed = r;
+  });
+  const f = await fixture(t, (node) => ({
+    ...node,
+    async prepare(request) {
+      const workspace = await node.prepare(request);
+      entered();
+      await prepared;
+      return workspace;
+    },
+  }));
+  await f.tools["rules.set"].execute(
+    {
+      expectedRevision: 1,
+      rules: { policy: { budget: { coordinatorTokensPerDay: 10, zone: "UTC" } } },
+      reason: "Owner's limit",
+    },
+    f.api("cap"),
+    context,
+  );
+  const launch = f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api("race"), context);
+  await preparing;
+  f.daemon.store.append({
+    project,
+    at,
+    actor: "coordinator",
+    kind: "coordinator.checkpoint",
+    payload: {
+      checkpoint: {},
+      turn: { id: "crossed", session: "root" },
+      usage: { input: 10, output: 1, cacheRead: 0, cacheWrite: 0, model: "oak", provider: "fixture" },
+    },
+  });
+  proceed();
+  const result = await launch;
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result.details), /budget:/);
+  assert.equal(f.token(), "", "runtime creation was never entered");
+  const replay = await f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api("race"), context);
+  assert.equal(replay.isError, true);
+  assert.match(JSON.stringify(replay.details), /budget:/);
+  assert.equal(fold(f.daemon.store.readSince(0)).projects[project]?.holds.length, 1);
+});
+
+test("an unchanged usage observation after midnight reports today's coverage without charging tokens again", {
+  timeout: 15000,
+}, async (t) => {
+  let clock = "2030-01-01T23:59:00.000Z";
+  const frame =
+    JSON.stringify({
+      type: "result",
+      uuid: "metered",
+      usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    }) + "\n";
+  const f = await fixture(
+    t,
+    (node) => ({
+      ...node,
+      async observe(ref) {
+        const observed = await node.observe(ref);
+        return { ...observed, reply: (observed.reply ?? "") + "\n" + frame };
+      },
+    }),
+    undefined,
+    () => clock,
+  );
+  const launched = await f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api("metered-launch"), context);
+  assert.equal((launched.details as { ok: boolean }).ok, true);
+  await f.workers.observe(project, "SEED-1");
+  const count = f.daemon.store.readSince(0).filter((e) => e.kind === "session.usage").length;
+  await f.workers.observe(project, "SEED-1");
+  assert.equal(f.daemon.store.readSince(0).filter((e) => e.kind === "session.usage").length, count);
+  clock = "2030-01-02T00:01:00.000Z";
+  await f.workers.observe(project, "SEED-1");
+  const day = fold(f.daemon.store.readSince(0)).projects[project]?.usage?.days.find((d) => d.day === "2030-01-02");
+  assert.equal(day?.workersReported, 1);
+  assert.equal(day?.workers.input, 0);
+});
+
 test("transcript reads mask and bound one generation without writes, and unsupported runtimes return empty", async (t) => {
   let reads = 0;
   const f = await fixture(t, (node) => ({
@@ -1317,4 +1438,88 @@ test("transcript reads mask and bound one generation without writes, and unsuppo
   const unsupported = fold(missing.daemon.store.readSince(0)).projects[project]?.sessions[0];
   assert(unsupported);
   assert.equal(await missing.workers.transcript(project, unsupported), "");
+});
+
+test("worker release retires its capability without waiting on optional metering, retaining the known floor", {
+  timeout: 15000,
+}, async (t) => {
+  let blocked = false;
+  let entered!: () => void;
+  const observing = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let unblock!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    unblock = resolve;
+  });
+  t.after(() => unblock());
+  const frame = `${JSON.stringify({
+    type: "result",
+    uuid: "release-meter",
+    modelUsage: {
+      oak: { inputTokens: 100, outputTokens: 20, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+    },
+  })}\n`;
+  const f = await fixture(t, (node) => ({
+    ...node,
+    async observe(ref) {
+      if (blocked) {
+        entered();
+        await pending;
+      }
+      const observation = await node.observe(ref);
+      return { ...observation, reply: `${observation.reply ?? ""}\n${frame}` };
+    },
+  }));
+  const launched = await f.tools["worker.launch"].execute(
+    { ticket: "SEED-1", brief: "hold" },
+    f.api("release-meter"),
+    context,
+  );
+  assert.equal(launched.isError, false);
+  assert.equal((await socketCall(f.socketPath, f.token(), { command: "claim", ticket: "SEED-1" })).status, 200);
+  await f.workers.observe(project, "SEED-1");
+  const prior = fold(f.daemon.store.readSince(0)).projects[project]?.usage?.sessions.find((s) => s.kind === "worker");
+  assert.equal(prior?.totals.input, 100);
+  assert.equal(prior?.totals.unknown, 0);
+  blocked = true;
+  const releasing = socketCall(f.socketPath, f.token(), {
+    command: "release",
+    ticket: "SEED-1",
+    reason: "Worker finished",
+  });
+  const first = await Promise.race([releasing, observing.then(() => null)]);
+  blocked = false;
+  unblock();
+  const response = await releasing;
+  assert.notEqual(first, null, "release must complete without awaiting a runtime observation");
+  assert.equal(response.status, 200);
+  assert.equal((await socketCall(f.socketPath, f.token(), { command: "heartbeat", ticket: "SEED-1" })).status, 403);
+  const tables = fold(f.daemon.store.readSince(0)).projects[project];
+  assert.equal(tables?.sessions[0]?.phase, "released");
+  const usage = tables?.usage?.sessions.find((s) => s.kind === "worker");
+  assert.equal(usage?.totals.input, 100, "the unverified final reading does not erase prior tokens");
+  assert.equal(usage?.totals.unknown, 1);
+});
+
+test("an operational merge hold still allows launching a recovery worker", { timeout: 15000 }, async (t) => {
+  const f = await fixture(t);
+  const held = await f.tools["hold.add"].execute(
+    { reason: "Main is red; launch recovery work" },
+    f.api("merge-hold"),
+    context,
+  );
+  assert.equal(held.isError, false);
+  assert.equal(fold(f.daemon.store.readSince(0)).projects[project]?.holds.length, 1);
+  const launched = await f.tools["worker.launch"].execute(
+    { ticket: "SEED-1", brief: "hold" },
+    f.api("recovery"),
+    context,
+  );
+  assert.equal(launched.isError, false);
+  assert.equal(
+    fold(f.daemon.store.readSince(0)).projects[project]?.holds.length,
+    1,
+    "launch does not clear the merge pause",
+  );
 });

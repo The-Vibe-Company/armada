@@ -22,6 +22,7 @@ export type {
   RuntimeRecovery,
   WorkerObservation,
   WorkerRef,
+  WorkerUsage,
   Workspace,
 } from "./runtime.js";
 export { isRuntimeLaunchRefusal, RuntimeLaunchRefusal } from "./runtime.js";
