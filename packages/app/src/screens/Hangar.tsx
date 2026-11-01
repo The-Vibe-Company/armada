@@ -1,6 +1,7 @@
-import { useMemo } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { DaemonProblem } from "@/components/DaemonProblem";
 import { PageBar } from "@/components/page";
+import { Button } from "@/components/ui/button";
 import { countsOf, type Fact, hangarFacts, inFlight } from "@/fleet/hangar";
 import { dayIn } from "@/fleet/overview";
 import { skyProject } from "@/fleet/sky";
@@ -9,6 +10,9 @@ import { roomHref } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import { useDaemon } from "@/protocol/store";
 import { Sky } from "@/sky/Sky";
+
+// Add project's dialog (THE-2081): fetched when opened, off the first load.
+const AddProject = lazy(() => import("@/projects/AddProject"));
 
 const viewerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -24,7 +28,8 @@ const INK: Record<string, string> = { blocked: "text-red", you: "text-amber", re
  * depth (its coordinator's V, its agents in their harness colours, an arc in
  * its most urgent state's colour, its name and counts), each one a link into
  * its room, its panel on the agents (THE-2085: the sky flies here only).
- * When nothing flies, the sky is empty, with one quiet line.
+ * When nothing flies, the sky is empty, with one quiet line. Add project
+ * (THE-2081), in the bar and in the empty hangar's hero, opens its dialog.
  * `now` and `zone` decide "merged today"; the viewer's own unless a test gives them.
  */
 export function Hangar({
@@ -36,7 +41,8 @@ export function Hangar({
   now?: number;
   zone?: string;
 }) {
-  const { projects, fleets } = useDaemon();
+  const { projects, fleets, status } = useDaemon();
+  const [adding, setAdding] = useState(false);
   // Read on each render: each frame re-renders the sky, and nothing on screen ticks between them.
   const now = givenNow ?? Date.now();
   const zone = givenZone ?? viewerZone();
@@ -60,11 +66,10 @@ export function Hangar({
       ? "Waiting for the daemon to list its projects."
       : !read
         ? null
-        : projects.length === 0
-          ? "No project yet. Each project's squadron flies here once the daemon reads it."
-          : flying
-            ? null
-            : "Nothing in flight. A squadron takes off here when its coordinator launches an agent.";
+        : // No project yet: the hero below says it, with its button.
+          projects.length === 0 || flying
+          ? null
+          : "Nothing in flight. A squadron takes off here when its coordinator launches an agent.";
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageBar
@@ -86,7 +91,14 @@ export function Hangar({
             </>
           )
         }
-        end={projects && <span>{projects.length === 1 ? "1 project" : `${projects.length} projects`}</span>}
+        end={
+          <>
+            {projects && <span>{projects.length === 1 ? "1 project" : `${projects.length} projects`}</span>}
+            <Button variant="soft" onClick={() => setAdding(true)} disabled={status !== "live"}>
+              Add project
+            </Button>
+          </>
+        }
       />
       <div className="relative flex min-h-0 flex-1">
         {/* Drawn once the fleet is read, so its first paint holds every squadron still in place. */}
@@ -96,8 +108,24 @@ export function Hangar({
             {quiet}
           </p>
         )}
+        {projects?.length === 0 && (
+          <div
+            data-hero
+            className="absolute inset-x-6 top-1/2 flex -translate-y-1/2 flex-col items-center gap-4 text-center"
+          >
+            <p className="m-0 text-hero text-text">No project yet. Add the folder of one.</p>
+            <Button variant="primary" onClick={() => setAdding(true)} disabled={status !== "live"}>
+              Add project
+            </Button>
+          </div>
+        )}
         <DaemonProblem onReload={onReload} className="absolute inset-x-4 top-4" />
       </div>
+      {adding && (
+        <Suspense fallback={null}>
+          <AddProject onClose={() => setAdding(false)} />
+        </Suspense>
+      )}
     </div>
   );
 }
