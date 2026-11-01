@@ -104,7 +104,9 @@ test("project folds reuse a committed cursor, stay detached, and refresh before 
     first.projects.orchard!.holds[0]!.reason = "Caller mutation";
     assert.equal(store.fold("orchard").projects.orchard?.holds[0]?.reason, "Wait for CI");
     assert.equal(read.mock.callCount(), 1, "one replay per project at the committed cursor");
-    assert.deepEqual(store.fold("harbor").projects, {});
+    const empty = store.fold("constructor");
+    assert.deepEqual(Object.keys(empty.projects), []);
+    assert.equal(empty.projects.constructor, undefined, "missing project names never resolve through Object.prototype");
     assert.equal(read.mock.callCount(), 2, "projects have distinct cache entries");
     assert.throws(() => store.appendMany([event, { ...event, project: "" }]));
     assert.equal(store.fold("orchard").seq, 1);
@@ -119,7 +121,7 @@ test("project folds reuse a committed cursor, stay detached, and refresh before 
     ]);
     assert.equal(observed, "Wait for deploy", "commit invalidates before observers run");
     assert.equal(store.fold("orchard").seq, 3);
-    assert.equal(store.fold("harbor").projects.harbor, undefined);
+    assert.equal(store.fold("constructor").projects.constructor, undefined);
     assert.equal(read.mock.callCount(), 4);
   } finally {
     store.close();

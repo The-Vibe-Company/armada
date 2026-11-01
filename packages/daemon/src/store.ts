@@ -107,7 +107,15 @@ export class EventStore {
       cached = { seq, tables: fold(this.readSince(0, project)) };
       this.#folds.set(project, cached);
     }
-    return structuredClone(cached.tables);
+    const tables = structuredClone(cached.tables);
+    // structuredClone drops null prototypes. Keep dictionary lookups identical to
+    // the pure fold, including a missing project/provider named "constructor".
+    Object.setPrototypeOf(tables.projects, null);
+    for (const state of Object.values(tables.projects)) {
+      if (state.readers) Object.setPrototypeOf(state.readers, null);
+      if (state.readAt) Object.setPrototypeOf(state.readAt, null);
+    }
+    return tables;
   }
 
   get count(): number {
