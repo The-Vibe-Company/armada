@@ -19,7 +19,7 @@ interface TestFacts {
   project: string;
   id: string;
   next: string;
-  delivery: string;
+  queued: string;
   sessions: {
     ticket: string;
     title: string;
@@ -123,10 +123,6 @@ async function fixture(t: TestContext) {
   const tools = nativeTools(scope, {
     now: () => at,
     mergeEvidence: async () => evidence,
-    deliverAnswerOnce: async ({ beforeWrite }) => {
-      beforeWrite();
-      return true;
-    },
   });
   t.after(async () => {
     await scope.close(context);
@@ -406,7 +402,7 @@ test("fleet.history filters ticket and time, limits the newest events and omits 
   const result = await run("fleet.history", { ticket: "SEED-1", limit: 2 });
   assert.deepEqual(
     result.events.map((e) => e.kind),
-    ["inbox.opened", "inbox.answered"],
+    ["inbox.answered", "delivery.queued"],
   );
   assert.equal(result.more, true);
   assert.doesNotMatch(JSON.stringify(result), /receipt|PRIVATE CHECKPOINT|other/);
@@ -455,7 +451,8 @@ test("inbox.answer resolves a question once, preserves phase and refuses missing
   const args = { id: "q", answer: "Oak" };
   const result = await run("inbox.answer", args, "answer");
   assert.equal(result.ok, true);
-  assert.equal(result.delivery, "confirmed");
+  assert.equal(typeof result.queued, "string");
+  assert.equal(store.readSince(0, "orchard").filter((e) => e.kind === "delivery.queued").length, 1);
   const seq = store.sequence;
   assert.deepEqual(await run("inbox.answer", args, "answer"), result);
   assert.equal(store.sequence, seq);
@@ -680,107 +677,69 @@ test("only one coordinator owns project writes; disk replay preserves receipts a
   }
 });
 
-test("answer delivery keeps an unconfirmed item open and fences a replacement before a runtime write", async (t) => {
+test("queueing an answer and its receipt is atomic when the store refuses the queue event", async (t) => {
   const { store, scope } = await fixture(t);
-  const api = { taskId: 20, callId: "deliver" } as ToolExecutionApi;
+  const original = store.appendMany.bind(store);
+  store.appendMany = (events) =>
+    original([
+      ...events,
+      { project: "", at, actor: "coordinator", kind: "inbox.answered", payload: { id: "bad", answer: "bad" } },
+    ]);
+  const tools = nativeTools(scope, { now: () => at });
   const args = { id: "q", answer: "Oak" };
-  const absent = nativeTools(scope, { now: () => at });
-  assert.equal((await absent["inbox.answer"].execute(args, api, context)).isError, true);
-  const unconfirmed = nativeTools(scope, { now: () => at, deliverAnswerOnce: async () => false });
-  const result = await unconfirmed["inbox.answer"].execute(args, api, context);
-  assert.equal((result.details as unknown as TestFacts).code, "delivery_unconfirmed");
+  const api = { taskId: 20, callId: "answer" } as ToolExecutionApi;
+  const before = store.sequence;
+  const result = await tools["inbox.answer"].execute(args, api, context);
+  assert.equal((result.details as unknown as TestFacts).code, "write_failed");
+  assert.equal(store.sequence, before);
   assert.ok(fold(store.readSince(0)).projects.orchard?.inbox.some((i) => i.id === "q"));
-  let delivered = false;
-  const replaced = nativeTools(scope, {
-    now: () => at,
-    deliverAnswerOnce: async ({ beforeWrite }) => {
-      store.append({
-        project: "orchard",
-        at,
-        actor: "launcher",
-        kind: "session.claimed",
-        payload: {
-          ticket: "SEED-1",
-          session: "replacement",
-          generation: 2,
-          owner: "Mira",
-          runtime: "codex",
-          handle: "local/two",
-        },
-      });
-      beforeWrite();
-      delivered = true;
-      return true;
-    },
-  });
-  assert.equal((await replaced["inbox.answer"].execute(args, api, context)).isError, true);
-  assert.equal(delivered, false);
-  assert.ok(fold(store.readSince(0)).projects.orchard?.inbox.some((i) => i.id === "q"));
+  store.appendMany = original;
+  assert.equal((await tools["inbox.answer"].execute(args, api, context)).isError, false);
+  assert.equal(store.readSince(0).filter((e) => e.kind === "delivery.queued").length, 1);
 });
 
-test("answer retries reuse delivery identity across calls and replay the committed receipt after restart", async () => {
+test("answer retries reuse the queued delivery and replay the committed receipt after restart", async () => {
   const directory = mkdtempSync(join(tmpdir(), "armada-native-"));
   const file = join(directory, "fleet.sqlite");
   let store = new EventStore(file);
   seed(store);
   let scope = openCoordinatorStorage({ store, project: "orchard", now: () => at });
   const args = { id: "q", answer: "Oak" };
-  const keys: string[] = [];
-  const delivered = new Set<string>();
-  let confirmed = false;
-  let deliveries = 0;
-  const deliverAnswerOnce: NonNullable<Parameters<typeof nativeTools>[1]["deliverAnswerOnce"]> = async ({
-    key,
-    beforeWrite,
-  }) => {
-    beforeWrite();
-    keys.push(key);
-    if (!delivered.has(key)) {
-      delivered.add(key);
-      deliveries++;
-    }
-    return confirmed;
-  };
   try {
-    let tools = nativeTools(scope, { now: () => at, deliverAnswerOnce });
-    const first = await tools["inbox.answer"].execute(
+    let tools = nativeTools(scope, { now: () => at });
+    const receipt = await tools["inbox.answer"].execute(
       args,
       { taskId: 1, callId: "first" } as ToolExecutionApi,
       context,
     );
-    assert.equal((first.details as unknown as TestFacts).code, "delivery_unconfirmed");
-    assert.ok(fold(store.readSince(0)).projects.orchard?.inbox.some((i) => i.id === "q"));
-    confirmed = true;
-    const receipt = await tools["inbox.answer"].execute(
-      args,
-      { taskId: 2, callId: "retry" } as ToolExecutionApi,
-      context,
-    );
     assert.equal(receipt.isError, false);
-    assert.equal(keys.length, 2);
-    assert.equal(keys[1], keys[0]);
-    assert.equal(deliveries, 1);
+    assert.equal(typeof (receipt.details as unknown as TestFacts).queued, "string");
+    const intent = store.readSince(0).filter((e) => e.kind === "delivery.queued");
+    assert.equal(intent.length, 1);
+    assert.equal(intent[0]?.payload.text, "Oak");
     const seq = store.sequence;
     assert.deepEqual(
-      await tools["inbox.answer"].execute(args, { taskId: 3, callId: "again" } as ToolExecutionApi, context),
+      await tools["inbox.answer"].execute(args, { taskId: 2, callId: "retry" } as ToolExecutionApi, context),
       receipt,
     );
     await scope.close(context);
     store.close();
     store = new EventStore(file);
     scope = openCoordinatorStorage({ store, project: "orchard", now: () => at });
-    tools = nativeTools(scope, { now: () => at, deliverAnswerOnce });
+    tools = nativeTools(scope, { now: () => at });
     assert.deepEqual(
       await tools["inbox.answer"].execute(
         { ...args, answer: " Oak " },
-        { taskId: 4, callId: "after-restart" } as ToolExecutionApi,
+        { taskId: 3, callId: "after-restart" } as ToolExecutionApi,
         context,
       ),
       receipt,
     );
-    assert.equal(keys.length, 2);
-    assert.equal(deliveries, 1);
     assert.equal(store.sequence, seq);
+    assert.deepEqual(
+      store.readSince(0).filter((e) => e.kind === "delivery.queued"),
+      intent,
+    );
   } finally {
     await scope.close(context);
     store.close();
@@ -816,30 +775,19 @@ test("merge.check re-reads after an adapter yields and refuses changed evidence 
   assert.equal(((await closed).details as unknown as TestFacts).code, "coordinator_inactive");
 });
 
-test("shared answer delivery deduplicates within a project without suppressing another project's identical pi identity", async (t) => {
+test("answer queue identity is scoped to its project", async (t) => {
   const { store, scope } = await fixture(t);
   const other = openCoordinatorStorage({ store, project: "other", now: () => at });
   t.after(() => other.close(context));
-  const keys = new Set<string>();
-  let deliveries = 0;
-  const deliverAnswerOnce: NonNullable<Parameters<typeof nativeTools>[1]["deliverAnswerOnce"]> = async ({
-    key,
-    beforeWrite,
-  }) => {
-    beforeWrite();
-    if (!keys.has(key)) {
-      keys.add(key);
-      deliveries++;
-    }
-    return true;
-  };
   const api = { taskId: 50, callId: "same-provider-id" } as ToolExecutionApi;
   for (const owner of [scope, scope, other]) {
-    const tools = nativeTools(owner, { now: () => at, deliverAnswerOnce });
+    const tools = nativeTools(owner, { now: () => at });
     assert.equal((await tools["inbox.answer"].execute({ id: "q", answer: "Oak" }, api, context)).isError, false);
   }
-  assert.equal(deliveries, 2);
-  assert.equal(keys.size, 2);
+  const queued = store.readSince(0).filter((e) => e.kind === "delivery.queued");
+  assert.equal(queued.length, 2);
+  assert.equal(new Set(queued.map((e) => e.payload.id)).size, 2);
+  assert.equal(new Set(queued.map((e) => e.payload.key)).size, 2);
 });
 
 test("unsupported or malformed durable rules produce a structured refusal without writing", async (t) => {

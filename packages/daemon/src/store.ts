@@ -38,12 +38,25 @@ export class EventStore {
   }
 
   append(event: EventInput): FleetEvent {
-    const payload = JSON.stringify(event.payload);
-    const result = this.#db
-      .prepare("INSERT INTO events (project, kind, at, actor, payload) VALUES (?, ?, ?, ?, ?)")
-      .run(event.project, event.kind, event.at, event.actor, payload);
-    // Return exactly what was persisted, detached from the caller's objects.
-    const stored = { ...event, payload: JSON.parse(payload), seq: Number(result.lastInsertRowid) } as FleetEvent;
+    return this.appendMany([event])[0]!;
+  }
+
+  /** Queue intents and their receipts become visible together, including to subscribers. */
+  appendMany(events: readonly EventInput[]): FleetEvent[] {
+    const stored: FleetEvent[] = [];
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const insert = this.#db.prepare("INSERT INTO events (project, kind, at, actor, payload) VALUES (?, ?, ?, ?, ?)");
+      for (const event of events) {
+        const payload = JSON.stringify(event.payload);
+        const result = insert.run(event.project, event.kind, event.at, event.actor, payload);
+        stored.push({ ...event, payload: JSON.parse(payload), seq: Number(result.lastInsertRowid) } as FleetEvent);
+      }
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
     for (const listener of [...this.#listeners]) {
       try {
         listener();

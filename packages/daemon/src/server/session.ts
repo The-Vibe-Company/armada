@@ -13,6 +13,7 @@ import {
   PROTOCOL_VERSION as version,
 } from "@armada/protocol";
 import type { SubmissionDraft } from "@earendil-works/pi-durable";
+import { queueDelivery } from "../deliveries.ts";
 import { fold } from "../fold.ts";
 import type { EventStore } from "../store.ts";
 import { WorkerRefusal, type Workers } from "../workers/service.ts";
@@ -159,28 +160,32 @@ export function outputLines(output: string): string[] {
  * The owner's answer to a worker's open question, with the guards of the
  * coordinator's `inbox.answer` (copied from coordinator/native.ts): the
  * question is open, its worker claimed it and still runs, and it was not asked
- * by an earlier claim. The answer is delivered once (keyed by the item) before
- * it is recorded; the same answer again, once recorded, is not delivered again.
+ * by an earlier claim. The answer and its keyed delivery intent are committed
+ * together; a repeated answer replays that queue acknowledgement.
  * Returns the coordinator's input that tells it, or the line saying why not.
  */
 export function answerWorker(
   request: OwnerAnswerRequest,
   options: SessionOptions & { now: () => number },
-): Promise<{ refused: string } | "taken" | Extract<SubmissionDraft, { type: "input" }>> {
+): Promise<{ refused: string } | "taken" | (Extract<SubmissionDraft, { type: "input" }> & { queued?: string })> {
   return serial(options.store, request.project, () => answer(request, options));
 }
 
 async function answer(
   request: OwnerAnswerRequest,
   options: SessionOptions & { now: () => number },
-): Promise<{ refused: string } | "taken" | Extract<SubmissionDraft, { type: "input" }>> {
+): Promise<{ refused: string } | "taken" | (Extract<SubmissionDraft, { type: "input" }> & { queued?: string })> {
   const { store, project, item } = { ...options, ...request };
   const note = request.note?.trim() || null;
   const text = note ? `${request.choice}${NOTE}${note}` : request.choice;
   const events = store.readSince(0, project);
   const tables = fold(events).projects[project];
   const asked = tables?.inbox.find((i) => i.id === item);
-  const told = (ticket: string): Extract<SubmissionDraft, { type: "input" }> => ({
+  const told = (
+    ticket: string,
+    queued?: string,
+  ): Extract<SubmissionDraft, { type: "input" }> & { queued?: string } => ({
+    ...(queued ? { queued } : {}),
     type: "input",
     content: `The owner answered ${ticket}'s question to its worker: ${request.choice}${note ? `\nNote: ${note}` : ""}`,
     requestId: `owner-answer:${item}`,
@@ -192,7 +197,11 @@ async function answer(
     const opened = events.find((e) => e.kind === "inbox.opened" && e.payload.id === item);
     if (recorded?.kind !== "inbox.answered" || recorded.actor !== "owner" || recorded.payload.answer !== text)
       return "taken";
-    return told(opened?.kind === "inbox.opened" ? opened.payload.ticket : "");
+    const delivery = events.find((e) => e.kind === "delivery.queued" && e.payload.key === `owner-answer:${item}`);
+    return told(
+      opened?.kind === "inbox.opened" ? opened.payload.ticket : "",
+      delivery?.kind === "delivery.queued" ? delivery.payload.id : undefined,
+    );
   }
   const session = tables?.sessions.find((s) => s.ticket === asked.ticket);
   const claim = events.find((e) => e.kind === "session.claimed" && e.payload.session === session?.session);
@@ -201,41 +210,28 @@ async function answer(
   if (asked.seq < claim.seq)
     return { refused: "The question belongs to an earlier worker claim; no answer was delivered" };
   if (!options.workers) return { refused: `${NO_WORKERS}; no answer was delivered` };
-  const unchanged = () => {
-    const fresh = fold(store.readSince(0, project)).projects[project];
-    const now = fresh?.sessions.find((s) => s.ticket === session.ticket);
-    if (now?.session !== session.session || ended(now.phase) || !fresh?.inbox.some((i) => i.id === item))
-      throw new Error("Answer target changed");
-  };
-  try {
-    unchanged();
-    await options.workers.answer(
-      {
-        key: `owner-answer:${item}`,
-        item,
-        session: { ticket: session.ticket, session: session.session },
-        answer: text,
-        beforeWrite: unchanged,
-      },
-      project,
-    );
-  } catch (error) {
-    return {
-      refused:
-        error instanceof WorkerRefusal
-          ? `${error.message}; no answer was delivered`
-          : "The answer's delivery or its worker could not be confirmed; the question stays open",
-    };
-  }
-  // Delivered; the coordinator's own answer may have closed the question meanwhile (as its inbox.answer, unconfirmed).
-  if (!fold(store.readSince(0, project)).projects[project]?.inbox.some((i) => i.id === item))
-    return { refused: "Another answer closed this question while yours was delivered; check the session" };
-  store.append({
+  const at = new Date(options.now()).toISOString();
+  const queued = queueDelivery({
     project,
-    kind: "inbox.answered",
-    at: new Date(options.now()).toISOString(),
+    at,
     actor: "owner",
-    payload: { id: item, answer: text },
+    ticket: session.ticket,
+    session: session.session,
+    generation: session.generation,
+    source: "owner-answer",
+    text,
+    key: `owner-answer:${item}`,
+    item,
   });
-  return told(asked.ticket);
+  store.appendMany([
+    {
+      project,
+      kind: "inbox.answered",
+      at,
+      actor: "owner",
+      payload: { id: item, answer: text },
+    },
+    queued,
+  ]);
+  return told(asked.ticket, queued.payload.id);
 }

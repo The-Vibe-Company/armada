@@ -30,6 +30,7 @@ export interface CoordinatorStorage extends Storage {
   readonly project: string;
   readEvents(): FleetEvent[];
   appendEvent(event: EventInput): FleetEvent;
+  appendEvents(events: readonly EventInput[]): FleetEvent[];
 }
 
 /** MemoryStorage is pi's validated projection, never a second source of truth. */
@@ -49,10 +50,14 @@ class LogStorage extends MemoryStorage implements CoordinatorStorage {
   }
 
   appendEvent(event: EventInput): FleetEvent {
+    return this.appendEvents([event])[0]!;
+  }
+
+  appendEvents(events: readonly EventInput[]): FleetEvent[] {
     if (this.#closed) throw new Error("Coordinator storage is closed");
-    if (event.project !== this.project || event.actor !== "coordinator")
+    if (events.some((event) => event.project !== this.project || event.actor !== "coordinator"))
       throw new Error("Coordinator write is outside its project scope");
-    return this.#options.store.append(event);
+    return this.#options.store.appendMany(events);
   }
 
   constructor(options: LogStorageOptions, release: () => void) {

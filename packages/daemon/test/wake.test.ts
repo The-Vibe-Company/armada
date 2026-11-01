@@ -598,3 +598,84 @@ test("this boot's recovery wake precedes an older undelivered outbox without cha
   assert.match(JSON.stringify(sent[1]), /old hand-back/);
   assert.equal(store.readSince(0).filter((e) => e.kind === "coordinator.wakeup").length, 2);
 });
+
+test("a derived delivery failure wakes once, stays coalesced on retry, and closes on send", async (t) => {
+  const store = new EventStore(":memory:");
+  const clock = new Clock();
+  const drafts: SubmissionDraft[] = [];
+  const waker = new Waker({
+    store,
+    project,
+    clock,
+    conversation: fake(async (draft) => {
+      drafts.push(draft);
+    }),
+  });
+  t.after(async () => {
+    await waker.close();
+    store.close();
+  });
+  const base = { project, actor: "worker", at: new Date(clock.now()).toISOString() };
+  store.append({
+    ...base,
+    kind: "session.claimed",
+    payload: {
+      ticket: "ORC-1",
+      session: "one",
+      generation: 1,
+      owner: "coordinator",
+      runtime: "codex",
+      handle: "local/one",
+    },
+  });
+  store.append({
+    ...base,
+    kind: "delivery.queued",
+    payload: {
+      id: "answer",
+      ticket: "ORC-1",
+      session: "one",
+      generation: 1,
+      source: "owner-answer",
+      text: "Private answer",
+      key: "answer",
+    },
+  });
+  const fail = (attempt: number) =>
+    store.append({
+      ...base,
+      actor: "delivery",
+      at: new Date(clock.now()).toISOString(),
+      kind: "delivery.failed",
+      payload: {
+        id: "answer",
+        attempt,
+        error: "Worker unavailable",
+        nextAt: new Date(clock.now() + 60_000).toISOString(),
+      },
+    });
+  fail(1);
+  fail(2);
+  await clock.advance(10_000);
+  assert.equal(drafts.length, 0);
+  fail(3);
+  await clock.advance(10_000);
+  assert.equal(drafts.length, 1);
+  assert.match(JSON.stringify(drafts[0]), /delivery-failed ORC-1/);
+  assert.doesNotMatch(JSON.stringify(drafts[0]), /Private answer|Worker unavailable/);
+  const item = fold(store.readSince(0)).projects[project]?.inbox[0];
+  assert.equal(item?.kind, "delivery-failed");
+  fail(4);
+  await clock.advance(10_000);
+  assert.equal(drafts.length, 1);
+  assert.equal(fold(store.readSince(0)).projects[project]?.inbox[0]?.id, item?.id);
+  store.append({
+    ...base,
+    actor: "delivery",
+    kind: "delivery.sent",
+    payload: { id: "answer", at: new Date(clock.now()).toISOString() },
+  });
+  await clock.advance(10_000);
+  assert.deepEqual(fold(store.readSince(0)).projects[project]?.inbox, []);
+  assert.equal(drafts.length, 1);
+});

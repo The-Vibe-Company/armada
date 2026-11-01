@@ -8,6 +8,7 @@ import {
   CHAT_LIVE_MINOR,
   CHAT_WAKE_MINOR,
   CONDUCTOR_MINOR,
+  DELIVERIES_MINOR,
   eventSchema,
   MODELS_MINOR,
   type ModelKindEntry,
@@ -240,7 +241,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         },
         native: {
           ...config.native,
-          ...(workers ? { workers, deliverAnswerOnce: (input) => workers.answer(input, project) } : {}),
+          ...(workers ? { workers } : {}),
         },
       });
       coordinators.set(project, coordinator);
@@ -282,7 +283,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       },
       native: {
         ...config.native,
-        ...(workers ? { workers, deliverAnswerOnce: (input) => workers.answer(input, config.project) } : {}),
+        ...(workers ? { workers } : {}),
       },
     });
     coordinators.set(config.project, coordinator);
@@ -313,7 +314,11 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   /** Older same-major clients validate inbox kinds, routing and policy fields strictly. */
   function snapshotFor(snapshot: Snapshot, minor: number): Snapshot {
     if (minor >= WATCHDOG_MINOR) return snapshot;
-    const state = snapshot.state as unknown as ProjectTables;
+    const state = { ...(snapshot.state as unknown as ProjectTables) };
+    if (minor < DELIVERIES_MINOR) {
+      delete state.deliveries;
+      state.inbox = state.inbox.filter((item) => item.kind !== "delivery-failed");
+    }
     const legacy = {
       ...state,
       inbox:

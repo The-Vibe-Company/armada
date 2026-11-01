@@ -4,6 +4,7 @@ import { isRuntimeLaunchRefusal } from "@armada/plugin-api";
 import { guarded } from "@armada/plugin-api/guard";
 import { activePhaseSchema, type ProjectTables, type Ticket, type ToolProgress } from "@armada/protocol";
 import { z } from "zod";
+import { Deliveries, queueDelivery } from "../deliveries.ts";
 import type { EventInput, Json } from "../events.ts";
 import { fold } from "../fold.ts";
 import { maskedTail } from "../liveness/judge.ts";
@@ -46,7 +47,6 @@ interface LiveWorker {
   workspace: Workspace;
   tokenHash: string;
   mask: (value: string) => string;
-  deliveries: Map<string, string>;
   branch: string;
   runtimeKind: string;
   launchId?: string;
@@ -118,6 +118,7 @@ const same = (a: WorkerRef, b: WorkerRef) =>
 /** One host-owned launch path. Tokens never enter durable events or coordinator tool results. */
 export class Workers {
   readonly #options: Options;
+  readonly #outbox: Deliveries;
   readonly #live = new Map<string, LiveWorker>();
   readonly #observations = new Map<string, string>();
   readonly #reads = new Map<string, Promise<WorkerObservation>>();
@@ -135,6 +136,28 @@ export class Workers {
   #forgeAgain = false;
   constructor(options: Options) {
     this.#options = options;
+    this.#outbox = new Deliveries({
+      store: options.store,
+      now: () => this.#at(),
+      deliver: async (delivery, beforeWrite) => {
+        await this.#recovery;
+        const row = this.#row(delivery.project, delivery.ticket);
+        await this.answer(
+          {
+            key: delivery.key,
+            item: delivery.item,
+            session: { ticket: delivery.ticket, session: delivery.session },
+            answer: delivery.text,
+            beforeWrite,
+          },
+          delivery.project,
+        );
+        if (row.briefPending && delivery.source === "coordinator-message" && !delivery.key.startsWith("forge:")) {
+          this.#checkpoint(delivery.project, { type: "recovery-handoff", session: row.ref.session });
+          row.briefPending = false;
+        }
+      },
+    });
     const scan = () => {
       if (this.#closing) return;
       if (this.#forgeScheduled) {
@@ -500,13 +523,30 @@ export class Workers {
           });
           if (name === "worker.message") {
             const message = workerToolSchemas["worker.message"].parse(parsed).message;
-            await this.#deliver(row, message, key, beforeWrite);
-            if (row.briefPending) {
-              // The coordinator prompt requires ticket/parent context in this explicit handoff.
-              this.#checkpoint(project, { type: "recovery-handoff", session: row.ref.session });
-              row.briefPending = false;
-            }
-            result = { ok: true, session: row.ref.session, delivery: "confirmed" };
+            const queued = queueDelivery({
+              project,
+              at: this.#at(),
+              actor: "coordinator",
+              ticket: row.ref.ticket,
+              session: row.ref.session,
+              generation: row.ref.generation,
+              source: "coordinator-message",
+              text: row.mask(message),
+              key,
+            });
+            result = { ok: true, session: row.ref.session, queued: queued.payload.id };
+            this.#check(row.ref, beforeWrite);
+            this.#options.store.appendMany([
+              queued,
+              {
+                project,
+                at: this.#at(),
+                actor: "coordinator",
+                kind: "coordinator.checkpoint",
+                payload: { checkpoint: { format: "armada.worker", version: 1, type: "receipt", key, input, result } },
+              },
+            ]);
+            return result;
           } else {
             const reason = workerToolSchemas["worker.stop"].parse(parsed).reason;
             if (!reason.trim()) throw new WorkerRefusal("Stopping a worker needs a reason");
@@ -995,7 +1035,7 @@ export class Workers {
       workspace,
       tokenHash: hosted ? "" : hash(token),
       mask: (value) => maskHostedText(value.replaceAll(token, "[redacted]")),
-      deliveries: new Map(),
+      briefPending: !hosted,
       branch,
       runtimeKind: route.cli,
       ...(launch ? { launchId: launch.worker.id } : {}),
@@ -1023,6 +1063,7 @@ export class Workers {
       } else {
         await progress("briefing");
         await this.#deliver(row, brief, `brief:${worker.session}`, beforeWrite);
+        row.briefPending = false;
       }
     } catch (error) {
       if (this.#closing) {
@@ -1211,9 +1252,23 @@ export class Workers {
   }
 
   async #deliver(row: LiveWorker, message: string, key: string, beforeWrite: () => void) {
-    const prior = row.deliveries.get(hash(key));
-    if (prior !== undefined) {
-      if (prior !== hash(message)) throw new Error("Delivery key already used with different message");
+    const prior = this.#options.store.readSince(0, row.ref.project).find((e) => {
+      const c = e.kind === "coordinator.checkpoint" ? e.payload.checkpoint : null;
+      return (
+        c &&
+        typeof c === "object" &&
+        !Array.isArray(c) &&
+        c.format === "armada.worker" &&
+        c.type === "delivered" &&
+        c.session === row.ref.session &&
+        c.key === hash(key)
+      );
+    });
+    if (prior?.kind === "coordinator.checkpoint") {
+      const checkpoint = prior.payload.checkpoint as Record<string, Json>;
+      const textHash = checkpoint.textHash ?? checkpoint.messageHash;
+      if (textHash && textHash !== hash(message)) throw new Error("Delivery key already used with different message");
+      this.#check(row.ref, beforeWrite);
       return;
     }
     await guarded(
@@ -1222,14 +1277,13 @@ export class Workers {
       () => row.runtime.deliver(row.ref, message, key),
     );
     this.#check(row.ref, beforeWrite);
-    row.deliveries.set(hash(key), hash(message));
     // Message contents and credentials do not enter event history.
     this.#checkpoint(row.ref.project, {
       type: "delivered",
       session: row.ref.session,
       ticket: row.ref.ticket,
       key: hash(key),
-      messageHash: hash(message),
+      textHash: hash(message),
     });
   }
 
@@ -1542,25 +1596,10 @@ export class Workers {
           );
         }),
       mask: maskHostedText,
-      deliveries: new Map(),
       branch: typeof launch.branch === "string" ? launch.branch : "",
       runtimeKind: launch.runtime,
       ...(typeof launch.launchId === "string" ? { launchId: launch.launchId } : {}),
     };
-    for (const event of events) {
-      const c = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
-      if (
-        c &&
-        typeof c === "object" &&
-        !Array.isArray(c) &&
-        c.format === "armada.worker" &&
-        c.type === "delivered" &&
-        c.session === ref.session &&
-        typeof c.key === "string" &&
-        typeof c.messageHash === "string"
-      )
-        row.deliveries.set(c.key, c.messageHash);
-    }
     this.#unconfirmed.set(ref.session, row);
     const observation = await runtime.observe(ref);
     this.#check(ref, () => {}, allowEnded);
@@ -1814,6 +1853,7 @@ export class Workers {
   async close() {
     this.#closing = true;
     this.#stopForge();
+    await this.#outbox.close();
     await Promise.allSettled([...this.#queues.values()]);
     await this.#observing;
     await Promise.allSettled([...this.#reads.values()]);

@@ -3,7 +3,7 @@
 // never hides it: who asks, the question on one line, and Answer, which opens
 // the card.
 import { Button } from "@/components/ui/button";
-import type { FoldedInboxItem } from "@/fleet/state";
+import type { FoldedDelivery, FoldedInboxItem } from "@/fleet/state";
 import { parseQuestion } from "./view";
 
 export function Asking({
@@ -28,6 +28,30 @@ export function Asking({
           Answer
         </Button>
       </div>
+    </section>
+  );
+}
+
+/** Persisted inputs remain visible after the question's queue acknowledgement removes its card. */
+export function DeliveryStatus({ deliveries }: { deliveries: readonly FoldedDelivery[] }) {
+  if (!deliveries.length) return null;
+  return (
+    <section aria-label="Worker deliveries" aria-live="polite" className="flex-none px-3 pb-2 sm:px-12">
+      <ul className="mx-auto m-0 w-full max-w-(--chat-content-max-width) list-none space-y-1 p-0">
+        {deliveries.map((d) => {
+          const noun = d.source === "owner-answer" ? "Answer" : "Message";
+          const failed = d.attempt >= 3 || d.nextAt === null;
+          return (
+            <li key={d.id} className="flex items-center gap-2 rounded-md bg-card px-3 py-2 text-body shadow-ring">
+              <span aria-hidden className={`size-1.75 flex-none rounded-full ${failed ? "bg-red" : "bg-amber"}`} />
+              <span className={failed ? "text-red" : "text-text-2"}>
+                {failed ? `${noun} not delivered to ${d.ticket}` : `${noun} to ${d.ticket}: Delivering…`}
+              </span>
+              {failed && d.nextAt !== null && <span className="ml-auto text-text-3">Retrying automatically</span>}
+            </li>
+          );
+        })}
+      </ul>
     </section>
   );
 }

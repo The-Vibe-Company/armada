@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { RuntimeProvider, WorkerRef } from "@armada/plugin-api";
+import { queueDelivery } from "../src/deliveries.ts";
 import { fold } from "../src/fold.ts";
 import { PluginRegistry } from "../src/plugins/registry.ts";
 import { dispatchSession } from "../src/server/session.ts";
@@ -15,6 +16,7 @@ const project = "orchard";
 const at = "2030-01-01T00:00:00.000Z";
 for (const scenario of [
   "both adopted",
+  "queued input waits for worker re-adoption",
   "pending GitHub feedback waits for recovery",
   "pending GitHub feedback waits for initial brief",
   "GitHub feedback arriving during delivery is retained",
@@ -58,7 +60,10 @@ for (const scenario of [
     const nativeGate = new Promise<void>((resolve) => {
       releaseNative = resolve;
     });
-    let interrupt = scenario === "interrupted launch" || scenario === "pending GitHub feedback waits for initial brief";
+    let interrupt =
+      scenario === "interrupted launch" ||
+      scenario === "pending GitHub feedback waits for initial brief" ||
+      scenario === "queued input waits for worker re-adoption";
     let observeGate: Promise<void> | undefined;
     let store = new EventStore(join(directory, "fleet.sqlite"));
     const requireApproval = () => {
@@ -278,6 +283,22 @@ for (const scenario of [
       ![...native.values()].some((row) => JSON.stringify(store.readSince(0)).includes(row.token)),
       "raw capability never enters the log",
     );
+    if (scenario === "queued input waits for worker re-adoption") {
+      const { ref } = [...native.values()][0]!;
+      store.append(
+        queueDelivery({
+          project,
+          at,
+          actor: "coordinator",
+          ticket: ref.ticket,
+          session: ref.session,
+          generation: ref.generation,
+          source: "coordinator-message",
+          text: "Queued before restart: ticket SEED-1 plants safely; parent instructions preserve the garden.",
+          key: "pre-restart-input",
+        }),
+      );
+    }
     if (lost) [...native.values()][0]!.alive = false;
     store.close();
     store = new EventStore(join(directory, "fleet.sqlite"));
@@ -420,6 +441,29 @@ for (const scenario of [
       ready = resolve;
     });
     const recovering = workers.recover();
+    if (scenario === "queued input waits for worker re-adoption") {
+      const messages = () =>
+        [...native.values()].flatMap((row) => row.messages).filter((m) => m.startsWith("Queued before restart"));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(messages().length, 0, "queued input waits for native observation");
+      ready();
+      assert.equal((await recovering).readopted.length, 2);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(messages().length, 1, "a boot-time queue attempt must not defer input until a retry timer");
+      await workers.close();
+      store.close();
+      store = new EventStore(join(directory, "fleet.sqlite"));
+      workers = make();
+      assert.equal((await workers.recover()).readopted.length, 2);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(messages().length, 1, "confirmed queued input is not repeated on another boot");
+      const adopted = store
+        .readSince(0)
+        .findLast((event) => event.kind === "worker.readopted" && event.payload.ticket === "SEED-1");
+      assert(adopted?.kind === "worker.readopted");
+      assert.notEqual(adopted.payload.briefPending, true, "the confirmed context handoff survives another restart");
+      return;
+    }
     if (
       scenario.startsWith("pending GitHub feedback") ||
       scenario === "GitHub feedback arriving during delivery is retained"
