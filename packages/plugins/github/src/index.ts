@@ -1,4 +1,5 @@
 import type { FleetEvent } from "@armada/daemon/events";
+import type { FleetTables } from "@armada/daemon/fold";
 import type { ForgeProvider, PluginContext } from "@armada/plugin-api";
 import { GithubReader } from "./github.ts";
 import { inspectGithub } from "./inspect.ts";
@@ -32,6 +33,14 @@ export function activate(ctx: PluginContext): void {
           actor: "owner",
           endpoint: config.endpoint,
           token: (signal) => token(project, signal),
+          activeTickets: async () => {
+            const tables = (await ctx.events.fold(project)) as FleetTables;
+            return new Set(
+              (tables?.projects?.[project]?.sessions ?? [])
+                .filter((session) => !["released", "merged"].includes(session.phase))
+                .map((session) => session.ticket),
+            );
+          },
           tickets: async () =>
             new Set(
               (await ctx.events.read(project, 0)).flatMap((event) =>
@@ -51,7 +60,11 @@ export function activate(ctx: PluginContext): void {
       try {
         const result = await reader.refresh();
         signal?.throwIfAborted();
-        if (!result.ok) throw new Error(result.error);
+        const state = reader.state();
+        return {
+          ...state,
+          ...(!result.ok ? { error: result.error } : state.failures.length ? { error: "GitHub reading failed" } : {}),
+        };
       } finally {
         signal?.removeEventListener("abort", stop);
       }
