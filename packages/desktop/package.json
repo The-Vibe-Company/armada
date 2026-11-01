@@ -8,7 +8,7 @@
   "scripts": {
     "postinstall": "install-electron",
     "dev": "bun run build && electron-vite preview --skipBuild",
-    "build": "node ../../scripts/plugin-catalog.ts && bun run --cwd ../plugin-api build && bun run --cwd ../app build && electron-vite build",
+    "build": "bun ../../scripts/bundle-skills.ts && node ../../scripts/plugin-catalog.ts && bun run --cwd ../plugin-api build && bun run --cwd ../app build && electron-vite build",
     "typecheck": "tsc --noEmit -p .",
     "test": "node --test test/*.test.ts"
   },

@@ -1,6 +1,6 @@
 import { PROTOCOL_VERSION } from "@armada/protocol";
 import { type ReactNode, useEffect, useState } from "react";
-import { fleetOf } from "@/fleet/state";
+import { readersOf } from "@/fleet/readers";
 import { pluginCounts } from "@/plugins/list";
 import { useDaemon } from "@/protocol/store";
 import { FoldedSection, SettingsRow, SettingsSection, StateDot } from "./Layout";
@@ -25,7 +25,7 @@ export function About({ address }: { address: string }) {
   }, []);
   const hour = new Date(Math.floor(now / 3_600_000) * 3_600_000).toISOString();
   const usages = Object.values(fleets).flatMap((snapshot) => {
-    const usage = fleetOf(snapshot).readers?.linear;
+    const usage = readersOf(snapshot)?.linear;
     return usage ? [usage] : [];
   });
   const requests = usages.reduce((total, usage) => total + (usage.hour === hour ? usage.requests : 0), 0);

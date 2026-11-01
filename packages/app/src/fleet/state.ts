@@ -1,4 +1,4 @@
-import { flowStepSchema, phaseSchema, type ReaderUsage, readerUsageSchema, sessionStateSchema } from "@armada/protocol";
+import { flowStepSchema, phaseSchema, sessionStateSchema } from "@armada/protocol";
 import { z } from "zod";
 
 // The protocol owns the folded state's vocabulary. The app reads the few
@@ -37,12 +37,31 @@ const ticketSchema = z.object({
     .optional()
     .catch(undefined),
 });
+const ciSchema = z.enum(["none", "pending", "success", "failure"]);
+const checkSchema = z.object({
+  name: text,
+  state: ciSchema,
+  runId: z.number().int().optional().catch(undefined),
+  runAttempt: z.number().int().optional().catch(undefined),
+});
+/**
+ * What the forge said of a pull request; the panel's Pull requests reads
+ * GitHub's own facts (THE-2086) where the fold kept them, nothing on a tracker's.
+ */
 const pullRequestSchema = z.object({
   number: z.number().int(),
   ticket: text,
   state: z.enum(["open", "closed", "merged"]),
-  ci: z.enum(["none", "pending", "success", "failure"]),
+  ci: ciSchema,
   conflicting: z.boolean(),
+  head: text.optional().catch(undefined),
+  title: text.optional().catch(undefined),
+  url: text.optional().catch(undefined),
+  draft: z.boolean().optional().catch(undefined),
+  review: text.optional().catch(undefined),
+  checks: z.array(checkSchema).optional().catch(undefined),
+  /** Not in today's fold: read if a later one counts the open review threads. */
+  reviewThreads: z.object({ unresolved: z.number().int().nonnegative() }).optional().catch(undefined),
 });
 /** `at`: when it was asked (the room's pinned question shows it). */
 const inboxSchema = z.object({ id: text, ticket: text, kind: text, body: text, at: text.optional() });
@@ -65,6 +84,7 @@ const validationSchema = z.object({
 export type FoldedSession = z.infer<typeof sessionSchema>;
 export type FoldedTicket = z.infer<typeof ticketSchema>;
 export type FoldedPullRequest = z.infer<typeof pullRequestSchema>;
+export type FoldedCheck = z.infer<typeof checkSchema>;
 export type FoldedInboxItem = z.infer<typeof inboxSchema>;
 type FoldedQueueEntry = z.infer<typeof queueSchema>;
 type FoldedValidation = z.infer<typeof validationSchema>;
@@ -72,7 +92,6 @@ type FoldedValidation = z.infer<typeof validationSchema>;
 /** One project's folded state, as far as the fleet's screens read it. */
 export interface FleetState {
   readAt?: Record<string, string>;
-  readers?: Record<string, ReaderUsage>;
   sessions: FoldedSession[];
   tickets: FoldedTicket[];
   pullRequests: FoldedPullRequest[];
@@ -109,9 +128,7 @@ export function readFleetState(state: unknown): FleetState {
   const o =
     state !== null && typeof state === "object" && !Array.isArray(state) ? (state as Record<string, unknown>) : {};
   const reading = z.record(text, z.iso.datetime()).safeParse(o.readAt);
-  const readers = z.record(text, readerUsageSchema).safeParse(o.readers);
   return {
-    ...(readers.success ? { readers: readers.data } : {}),
     ...(reading.success ? { readAt: reading.data } : {}),
     sessions: rows(o.sessions, sessionSchema),
     tickets: rows(o.tickets, ticketSchema),

@@ -22,7 +22,7 @@
     "./plugins/config": "./src/plugins/config.ts"
   },
   "scripts": {
-    "test": "bun ../../scripts/bundle-test-support.ts && node --test test/*.test.ts ../plugins/linear/test/*.test.ts ../plugins/github/test/*.test.ts ../plugins/conductor/test/*.test.ts",
+    "test": "bun ../../scripts/bundle-skills.ts && bun ../../scripts/bundle-test-support.ts && node --test test/*.test.ts ../plugins/linear/test/*.test.ts ../plugins/github/test/*.test.ts ../plugins/conductor/test/*.test.ts",
     "start": "node src/server/main.ts"
   },
   "dependencies": {
