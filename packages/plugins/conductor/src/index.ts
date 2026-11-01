@@ -9,6 +9,7 @@ interface Profile {
   agent: "claude" | "codex" | "opencode" | "cursor";
   model: string;
   effort: string;
+  instructions?: string;
 }
 interface ConductorOptions {
   binary?: string;
