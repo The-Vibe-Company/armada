@@ -29,7 +29,7 @@ for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] a
         const linear = String(url).includes('linear');
         const secret = linear ? process.env.LINEAR_API_KEY : "synthetic-github-environment-secret";
         const expected = linear ? secret : 'Bearer ' + secret;
-        if (init.headers.Authorization !== expected) throw new Error('wrong environment credential');
+        if (new Headers(init.headers).get("authorization") !== expected) throw new Error('wrong environment credential');
         if (${JSON.stringify(mode)} === 'unauthorized') return Response.json({ errors: [{ message: secret }] }, {status: 401});
         if (${JSON.stringify(mode)} === 'network') throw new TypeError('private transport detail ' + secret + '\\nforged log line');
         const {query} = JSON.parse(init.body);

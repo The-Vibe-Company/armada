@@ -26,6 +26,8 @@ export interface RawPull {
   mergeStateStatus: string;
   headRefName: string;
   headRefOid: string;
+  author?: { login: string } | null;
+  baseRefOid?: string;
   reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
   commits: {
     nodes: {
@@ -176,5 +178,9 @@ export function normalize(
     ci,
     checks,
     checksComplete: complete,
+    behind: raw.mergeStateStatus === "BEHIND",
+    ...(raw.author?.login ? { author: clean(raw.author.login) } : {}),
+    ...(raw.baseRefOid ? { base: clean(raw.baseRefOid) } : {}),
+    failingChecks: checks.filter((check) => check.state === "failure").map((check) => check.name),
   };
 }

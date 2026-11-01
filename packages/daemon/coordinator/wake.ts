@@ -5,6 +5,7 @@ import type { Conversation } from "@earendil-works/pi-durable";
 import type { FleetEvent } from "../src/events.ts";
 import { fold } from "../src/fold.ts";
 import type { EventStore } from "../src/store.ts";
+import { forgeWakeups } from "./forge-wake.ts";
 
 /** Reserved host entry metadata distinguishes a wake from owner-written text. */
 export const WAKE_ENTRY = "armada.fleet-wake";
@@ -52,6 +53,7 @@ const generationStart = (events: readonly FleetEvent[], session: Session | undef
 export function wakeups(before: WakeReading, after: WakeReading): WakeCandidate[] {
   const out = new Map<string, WakeCandidate>();
   const add = (key: string, summary: string, facts: WakeCandidate["facts"]) => out.set(key, { key, summary, facts });
+  for (const candidate of forgeWakeups(before.tables, after.tables)) out.set(candidate.key, candidate);
   const priorSeq = before.events.at(-1)?.seq ?? 0;
   for (const item of after.tables?.inbox ?? []) {
     if (before.tables?.inbox.some((i) => i.id === item.id) || item.kind === "owner-request") continue;

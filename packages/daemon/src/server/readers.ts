@@ -1,3 +1,4 @@
+import type { ForgeReadResult } from "@armada/plugin-api";
 import { projectSchema } from "@armada/protocol";
 import { z } from "zod";
 import { fold } from "../fold.ts";
@@ -42,6 +43,9 @@ export interface ReaderState {
   forge: boolean;
   trackerError?: string;
   forgeError?: string;
+  forgeBackoffMs?: number;
+  forgeAbandoned?: number[];
+  forgeFailures?: { pr: number; failures: number; since: string; error: string }[];
 }
 const schedule: Schedule = (callback, delay) => {
   const timer = setTimeout(callback, delay);
@@ -162,18 +166,31 @@ export async function startReaders(options: ReaderOptions): Promise<{
             typeof c.failures === "number" && Number.isSafeInteger(c.failures) && c.failures >= 0 ? c.failures : 0;
       }
       let pausedUntil = 0;
+      let forgeState: ForgeReadResult = {};
       let lastFinished = now();
-      const interval = () => (seam === "tracker" && !isActive(project.id) ? 180_000 : 30_000);
+      const interval = () =>
+        seam === "tracker"
+          ? isActive(project.id)
+            ? 30_000
+            : 180_000
+          : Math.max(
+              (options.store?.readSince ? !!activeProjects.get(project.id) : true) ? 30_000 : 300_000,
+              forgeState.pollMs ?? 0,
+              forgeState.backoffMs ?? 0,
+            );
       const scheduleNext = () => {
         if (!running || pending) return;
         cancelNext?.();
-        const delay = pausedUntil > now() ? pausedUntil - now() : Math.max(0, lastFinished + interval() - now());
+        const delay =
+          seam === "tracker" && pausedUntil > now()
+            ? pausedUntil - now()
+            : Math.max(0, lastFinished + interval() - now(), pausedUntil - now());
         cancelNext = set(() => {
           cancelNext = undefined;
           void tick();
         }, delay);
       };
-      if (seam === "tracker") {
+      {
         const listeners = activityListeners.get(project.id) ?? [];
         listeners.push(scheduleNext);
         activityListeners.set(project.id, listeners);
@@ -192,6 +209,42 @@ export async function startReaders(options: ReaderOptions): Promise<{
             // Await settlement even after abort: an uncooperative plugin must not accumulate reads.
             const result = await provider.read({ project: project.id, signal: controller.signal });
             if (running && controller.signal.aborted) throw new Error("Reader timed out");
+            if (seam === "forge" && result) {
+              const parsed = z
+                .object({
+                  pausedUntil: z.iso.datetime().optional(),
+                  pollMs: z.number().nonnegative().max(86400000).optional(),
+                  backoffMs: z.number().nonnegative().max(86400000).optional(),
+                  abandoned: z.array(z.number().int().positive()).optional(),
+                  failures: z
+                    .array(
+                      z.object({
+                        pr: z.number().int().positive(),
+                        failures: z.number().int().positive(),
+                        since: z.iso.datetime(),
+                        error: z
+                          .string()
+                          .regex(
+                            /^GitHub (?:answered [1-5]\d{2}|reading (?:failed|timed out|still pending)|comments reading is incomplete|returned an incomplete reading|pagination did not complete|lost a previously open pull request|network request failed)$/,
+                          ),
+                      }),
+                    )
+                    .optional(),
+                  error: z.string().optional(),
+                })
+                .safeParse(result);
+              if (parsed.success) {
+                forgeState = parsed.data;
+                pausedUntil = forgeState.pausedUntil ? Date.parse(forgeState.pausedUntil) : 0;
+                if (forgeState.backoffMs) state.forgeBackoffMs = forgeState.backoffMs;
+                else delete state.forgeBackoffMs;
+                if (forgeState.abandoned?.length) state.forgeAbandoned = forgeState.abandoned;
+                else delete state.forgeAbandoned;
+                if (forgeState.failures?.length) state.forgeFailures = forgeState.failures;
+                else delete state.forgeFailures;
+                if (forgeState.error) throw new Error(forgeState.error);
+              }
+            }
             if (
               seam === "tracker" &&
               result?.pausedUntil &&
@@ -205,7 +258,7 @@ export async function startReaders(options: ReaderOptions): Promise<{
               state[errorKey] = reason;
               return;
             }
-            pausedUntil = 0;
+            if (seam === "tracker") pausedUntil = 0;
             if (running) {
               failures = 0;
               options.store?.append({

@@ -255,7 +255,15 @@ test("fleet.status keeps ten active sessions before compact fleet facts and belo
     );
   assert.ok(facts.unavailable.includes("frontier-blockers"));
   assert.equal(facts.pullRequests.length, 10);
-  assert.deepEqual(facts.pullRequests[0], { number: 7, ticket: "SEED-1", head, checks: "success", mergeable: true });
+  assert.deepEqual(facts.pullRequests[0], {
+    number: 7,
+    ticket: "SEED-1",
+    head,
+    checks: "success",
+    mergeable: true,
+    behind: false,
+    unresolvedThreads: 0,
+  });
   assert.equal(facts.holds[0]?.reason, "Main is red");
   assert.equal(facts.sessions[0]?.lastReport, "Green");
   assert.equal(facts.sessions[0]?.head, head);
