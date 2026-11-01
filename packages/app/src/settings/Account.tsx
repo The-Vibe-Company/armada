@@ -2,6 +2,7 @@ import type { AccountDevice, AccountState } from "@armada/protocol";
 import { type ReactNode, useEffect, useId, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { openExternal } from "@/lib/external";
+import type { DaemonClient } from "@/protocol/client";
 import { useDaemon, useDaemonClient } from "@/protocol/store";
 import { SettingsRow, SettingsSection, StateDot } from "./Layout";
 
@@ -37,6 +38,26 @@ const watchSign = (watch: () => void) => {
 const readSign = () => sign;
 
 /**
+ * Starts a sign-in to Armada web: Account's Sign in, and the Armada card's
+ * of Settings › Connections (THE-2075), which opens Account below it.
+ */
+export async function beginSignIn(client: DaemonClient) {
+  const attempt = sign.attempt + 1;
+  setSign({ attempt, waiting: true, opened: null, failure: null });
+  try {
+    await client.login();
+    if (attempt === sign.attempt) setSign({ waiting: false });
+  } catch (error) {
+    // A cancelled or superseded sign-in's end is not news: the account the daemon publishes is.
+    if (attempt === sign.attempt && sign.cancelled !== attempt)
+      setSign({
+        waiting: false,
+        failure: (error as { code?: string }).code === "expired" ? EXPIRED : lineOf(error),
+      });
+  }
+}
+
+/**
  * Settings' Account (THE-2071): the sign-in `armada login` does, run by the
  * daemon (THE-2068's `account.*`) and kept on this device, so the app and the
  * CLI share it. Signed out, one Sign in; signing in, the device code large, the
@@ -65,21 +86,7 @@ export function Account() {
     if (account?.signedIn && sign.failure) setSign({ failure: null });
   }, [account?.signedIn]);
 
-  async function signIn() {
-    const attempt = sign.attempt + 1;
-    setSign({ attempt, waiting: true, opened: null, failure: null });
-    try {
-      await client.login();
-      if (attempt === sign.attempt) setSign({ waiting: false });
-    } catch (error) {
-      // A cancelled or superseded sign-in's end is not news: the account the daemon publishes is.
-      if (attempt === sign.attempt && sign.cancelled !== attempt)
-        setSign({
-          waiting: false,
-          failure: (error as { code?: string }).code === "expired" ? EXPIRED : lineOf(error),
-        });
-    }
-  }
+  const signIn = () => beginSignIn(client);
 
   // Cancel stops waiting here and sends nothing. `account.logout` would also
   // clear what the CLI keeps (an API key, a session for another address), so

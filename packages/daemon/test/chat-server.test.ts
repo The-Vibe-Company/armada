@@ -15,7 +15,7 @@ import { fold } from "../src/fold.ts";
 import { Keychain } from "../src/keychain.ts";
 import { ModelRegistry } from "../src/models/registry.ts";
 import { PluginRegistry } from "../src/plugins/registry.ts";
-import { type ChatOptions, dispatchChat } from "../src/server/chat.ts";
+import { type ChatOptions, dispatchChat, textOf } from "../src/server/chat.ts";
 import { startServer } from "../src/server/index.ts";
 import { coordinatorModels } from "../src/server/models.ts";
 import { EventStore } from "../src/store.ts";
@@ -241,6 +241,7 @@ test("the room sends the owner's message to the coordinator and reads its answer
   if (read.type !== "chat.result") return;
   assert.equal(read.coordinator, true);
   assert.deepEqual(reading(read.items), [
+    "line: Coordinator uses faux/room.",
     "owner: Merge #12 first, then #14.",
     "coordinator: Reading the fleet first.",
     "tool fleet.status ok",
@@ -293,7 +294,7 @@ test("the room sends the owner's message to the coordinator and reads its answer
     "coordinator: Telling ORC-1's worker: North.",
   ]);
 
-  // Closed and reopened on the same file: the same conversation, nothing asked of the model.
+  // Closed and reopened on the same file: prior items are retained alongside the new boot line.
   client.ws.close();
   await server.close();
   store.close();
@@ -302,7 +303,12 @@ test("the room sends the owner's message to the coordinator and reads its answer
   server = await startServer({ store, projects, coordinators: [reopened.config] });
   client = await connect(server.wsUrl);
   const restored = await client.ask({ type: "chat.read", project: "orchard" });
-  assert.deepEqual(restored.type === "chat.result" && restored.items, conversation);
+  assert.ok(restored.type === "chat.result");
+  const previousIds = new Set(conversation.map((item) => item.id));
+  assert.deepEqual(
+    restored.items.filter((item) => previousIds.has(item.id)),
+    conversation,
+  );
   assert.equal(reopened.faux.state.callCount, 0);
   client.ws.close();
   await server.close();
@@ -438,7 +444,12 @@ test("Stop preserves pi's committed partial and reasoning with the live id after
   server = await startServer({ store, projects, coordinators: [coordinator([]).config] });
   client = await connect(server.wsUrl);
   const restored = await client.ask({ type: "chat.read", project: "orchard" });
-  assert.deepEqual(restored.type === "chat.result" && restored.items, read.items);
+  assert.ok(restored.type === "chat.result");
+  const previousIds = new Set(read.items.map((item) => item.id));
+  assert.deepEqual(
+    restored.items.filter((item) => previousIds.has(item.id)),
+    read.items,
+  );
 });
 
 test("a message sent while the coordinator works steers it by default, and waits for the run's end when queued", async () => {
@@ -454,4 +465,106 @@ test("a message sent while the coordinator works steers it by default, and waits
     drafts.map((d) => (d as { requestId: string; whenBusy: string }).whenBusy),
     ["steer", "followUp"],
   );
+});
+
+test("the harness carries a French ticket report and an idle wake's quiet line into the room", async (t) => {
+  const timestamp = clock + 1000;
+  const store = new EventStore(":memory:");
+  for (const [id, title] of [
+    ["ORC-1", "Plant seeds"],
+    ["ORC-2", "Water seedlings"],
+  ]) {
+    store.append(seed("ticket.seen", { id, title, status: "started" }, 0, "tracker"));
+    store.append(
+      seed("session.claimed", {
+        ticket: id,
+        session: `s-${id}`,
+        generation: 1,
+        owner: "default",
+        runtime: "codex",
+        handle: `h-${id}`,
+      }),
+    );
+  }
+  // A faux model tests the harness/projection contract, not real-model instruction following.
+  const { config } = coordinator([
+    fauxAssistantMessage([fauxToolCall("fleet.status", {}, { id: "report-status" })], {
+      stopReason: "toolUse",
+      timestamp,
+    }),
+    fauxAssistantMessage([fauxToolCall("inbox.list", {}, { id: "report-inbox" })], {
+      stopReason: "toolUse",
+      timestamp,
+    }),
+    (transcript) => {
+      const input = JSON.stringify(transcript);
+      assert.match(input, /qu'est-ce qui tourne/);
+      assert.match(input, /at most five lines/);
+      const status = transcript.messages.find((m) => m.role === "toolResult" && m.toolName === "fleet.status");
+      assert.ok(status?.role === "toolResult");
+      const facts = JSON.parse(textOf(status.content));
+      assert.equal(facts.ok, true);
+      assert.deepEqual(
+        facts.sessions.map((session: { ticket: string }) => session.ticket),
+        ["ORC-1", "ORC-2"],
+      );
+      return fauxAssistantMessage(
+        "Fusionné : aucun ticket.\nEn cours : ORC-1 et ORC-2.\nDécision : les sessions continuent.\nAucune action nécessaire.",
+        { timestamp: timestamp + 1000 },
+      );
+    },
+    fauxAssistantMessage("Rien de nouveau pour ORC-1 et ORC-2, aucune action nécessaire.", {
+      timestamp: timestamp + 2000,
+    }),
+  ]);
+  const server = await startServer({ store, projects, coordinators: [config] });
+  const client = await connect(server.wsUrl);
+  t.after(async () => {
+    client.ws.terminate();
+    await server.close();
+    store.close();
+  });
+  assert.equal(
+    (
+      await client.ask({
+        type: "chat.send",
+        project: "orchard",
+        requestId: "french-report",
+        body: "qu'est-ce qui tourne ?",
+      })
+    ).type,
+    "chat.sent",
+  );
+  const agent = server.coordinators.get("orchard");
+  assert.ok(agent);
+  await agent.harness.waitForIdle(context);
+  const read = await client.ask({ type: "chat.read", project: "orchard" });
+  assert.ok(read.type === "chat.result");
+  assert.deepEqual(
+    read.items.filter((i) => i.kind === "tool").map((i) => i.name),
+    ["fleet.status", "inbox.list"],
+  );
+  const report = read.items.at(-1);
+  assert.ok(report?.kind === "coordinator", JSON.stringify(reading(read.items)));
+  const lines = report.body.split("\n");
+  assert.equal(lines.length, 4);
+  assert.match(lines[0] ?? "", /^Fusionné :/);
+  assert.match(lines[1] ?? "", /^En cours : ORC-1 et ORC-2/);
+  assert.match(lines[2] ?? "", /^Décision :/);
+  assert.match(lines[3] ?? "", /^Aucune action nécessaire/);
+  await agent.conversation.submit(
+    {
+      type: "input",
+      content: "No fleet change requires action.",
+      entry: { kind: "armada.fleet-wake", data: {} },
+    },
+    context,
+  );
+  await agent.harness.waitForIdle(context);
+  const wake = await client.ask({ type: "chat.read", project: "orchard" });
+  assert.ok(wake.type === "chat.result");
+  const quiet = wake.items.at(-1);
+  assert.ok(quiet?.kind === "line");
+  assert.equal(quiet.body.split("\n").length, 1);
+  assert.match(quiet.body, /^Rien de nouveau pour ORC-1 et ORC-2/);
 });
