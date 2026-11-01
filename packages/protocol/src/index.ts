@@ -21,7 +21,7 @@ import {
   ownerAnsweredSchema,
   ownerAnswerRequestSchema,
 } from "./chat.js";
-import { counter, identifier, requestSchema, versionSchema } from "./envelope.js";
+import { counter, identifier, requestSchema, USAGE_MINOR, versionSchema } from "./envelope.js";
 import {
   modelConfigSchema,
   modelKindEntrySchema,
@@ -38,7 +38,6 @@ import {
   sessionReleaseRequestSchema,
   sessionReleaseResultSchema,
 } from "./session.js";
-import { USAGE_MINOR } from "./usage.js";
 
 export * from "./account.js";
 export * from "./auth.js";

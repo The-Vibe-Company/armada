@@ -1,5 +1,7 @@
 import type { ProjectUsage } from "./usage.js";
 
+export { projectUsageSchema } from "./usage.js";
+
 /** Civil date and minute at an instant. Intl handles IANA offsets and daylight-saving changes. */
 export function usageTime(at: string, zone: string) {
   const parts = new Intl.DateTimeFormat("en-CA", {

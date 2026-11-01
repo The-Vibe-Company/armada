@@ -79,7 +79,7 @@ export function evaluateBudget({
           kind: "owner-request",
           body: check.unknown
             ? `Coordinator usage is unknown for ${check.unknown} completed turns. Confirm an exception with a reason, or keep the fleet paused while the daily ceiling cannot be verified.`
-            : `Budget reached: ${formatTokens(check.used)} ${check.unit}. Raise to ${formatTokens(Math.min(Number.MAX_SAFE_INTEGER, Math.max(check.cap * 2, 1)))}, or keep the fleet paused until morning? Only the owner may raise this budget or clear its hold with a reason.`,
+            : `Budget reached: ${formatTokens(check.used)} ${check.unit}. Raise to ${formatTokens(Math.min(Number.MAX_SAFE_INTEGER, Math.max(Math.max(check.cap, check.used) * 2, 1)))}, or keep the fleet paused until morning? Only the owner may raise this budget or clear its hold with a reason.`,
         },
       });
   }

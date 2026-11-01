@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { tokenUsageSchema } from "./tokens.js";
 
+export { USAGE_MINOR } from "./envelope.js";
 export { type ReportedUsage, reportedUsageSchema, type TokenUsage, tokenUsageSchema } from "./tokens.js";
 
-export const USAGE_MINOR = 19;
 const count = /* @__PURE__ */ (() => z.number().int().min(0).max(Number.MAX_SAFE_INTEGER))();
 const totalsSchema = /* @__PURE__ */ (() =>
   tokenUsageSchema.omit({ model: true, provider: true, incomplete: true }).extend({

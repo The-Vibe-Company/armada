@@ -106,7 +106,7 @@ test("pure budget decisions return one hold and owner item, survive repeats and 
     payload: {
       checkpoint: {},
       turn: { id: "1", session: "root" },
-      usage: { ...counters, model: "meter-model", provider: "test" },
+      usage: { ...counters, input: 1_000_000, model: "meter-model", provider: "test" },
     },
   });
   const events = store.readSince(0);
@@ -116,7 +116,9 @@ test("pure budget decisions return one hold and owner item, survive repeats and 
     effects.map((e) => e.kind),
     ["hold.opened", "inbox.opened"],
   );
-  assert.match(JSON.stringify(effects), /budget:|Budget reached/);
+  const request = effects.find((event) => event.kind === "inbox.opened");
+  assert.ok(request?.kind === "inbox.opened");
+  assert.match(request.payload.body, /Budget reached: 1\.0M tokens today\. Raise to 2\.0M/);
   for (const e of effects) store.append(e);
   assert.deepEqual(evaluateBudget({ project: "p", events: store.readSince(0), now: at }), []);
   const hold = fold(store.readSince(0)).projects.p?.holds[0];

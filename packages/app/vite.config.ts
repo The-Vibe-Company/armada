@@ -12,6 +12,14 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: { alias: { "@": resolve(import.meta.dirname, "src") } },
   // Electron's Chromium supports modulepreload; the fallback would only add unused first-load JS.
-  build: { modulePreload: { polyfill: false } },
+  build: {
+    modulePreload: { polyfill: false },
+    rolldownOptions: {
+      output: {
+        // Keep the shell's existing static dependencies together; room/settings chunks stay on demand.
+        codeSplitting: { groups: [{ name: "shell", tags: ["$initial"] }] },
+      },
+    },
+  },
   server: { port: 4823 },
 });

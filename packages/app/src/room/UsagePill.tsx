@@ -1,5 +1,4 @@
-import { projectUsageSchema } from "@armada/protocol";
-import { formatTokens, todayUsage, usageSummary } from "@armada/protocol/usage";
+import { formatTokens, projectUsageSchema, todayUsage, usageSummary } from "@armada/protocol/usage";
 
 /** The room is loaded on navigation; older or malformed usage readings show no pill. */
 export default function UsagePill({ usage: raw, now }: { usage: unknown; now: number }) {
