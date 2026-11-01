@@ -5,9 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setImmediate } from "node:timers/promises";
+import type { ForgeReadResult } from "@armada/plugin-api";
 import { serverMessageSchema, PROTOCOL_VERSION as version } from "@armada/protocol";
 import { WebSocket } from "ws";
+import { fleetStatus } from "../coordinator/read.ts";
 import { fold } from "../src/fold.ts";
+import { PluginRegistry } from "../src/plugins/registry.ts";
 import { startServer } from "../src/server/index.ts";
 import { daemonProjectSchema, startReaders } from "../src/server/readers.ts";
 import { EventStore } from "../src/store.ts";
@@ -35,6 +38,173 @@ function clock() {
     },
   };
 }
+
+test("tracker and forge cooldowns stay independent when visibility and worker activity change", async () => {
+  const store = new EventStore(":memory:");
+  const registry = new PluginRegistry();
+  let now = Date.parse("2030-01-01T12:00:00Z");
+  let visible = false;
+  let trackerPause = true;
+  let forgePause = true;
+  let trackerCalls = 0;
+  let forgeCalls = 0;
+  const timers = new Map<() => void, number>();
+  const activation = registry.activation({
+    id: "fixture",
+    description: "Combined readers",
+    version: "1.0.0",
+    pluginApi: "^0.2.0",
+    enabledByDefault: true,
+    contributions: {
+      tracker: { linear: { config: true, secrets: [] } },
+      forge: { github: { config: true, secrets: [] } },
+    },
+  });
+  activation.register.tracker("linear", {
+    read: async () => {
+      trackerCalls++;
+      if (trackerPause) return { pausedUntil: "2030-01-01T12:02:00Z" };
+    },
+    write: async () => {},
+  });
+  activation.register.forge("github", {
+    read: async () => {
+      forgeCalls++;
+      return forgePause ? { pausedUntil: "2030-01-01T12:01:00Z", backoffMs: 60_000 } : {};
+    },
+    merge: async () => ({ merged: false }),
+  });
+  activation.commit();
+  const readers = await startReaders({
+    registry,
+    projects: [project],
+    store,
+    now: () => new Date(now).toISOString(),
+    isRoomVisible: () => visible,
+    schedule: (fn, ms) => {
+      timers.set(fn, ms);
+      return () => {
+        timers.delete(fn);
+      };
+    },
+    log: () => {},
+  });
+  const delays = () => [...timers.values()].sort((a, b) => a - b);
+  try {
+    await readers.ready;
+    assert.deepEqual([trackerCalls, forgeCalls], [1, 1]);
+    assert.deepEqual(delays(), [120_000, 300_000]);
+    visible = true;
+    readers.activityChanged(project.id);
+    assert.deepEqual(
+      delays(),
+      [120_000, 300_000],
+      "room visibility must not bypass either pause or make an idle forge active",
+    );
+    store.append({
+      project: project.id,
+      actor: "worker",
+      at: new Date(now).toISOString(),
+      kind: "session.claimed",
+      payload: {
+        ticket: "SEED-1",
+        session: "session",
+        generation: 1,
+        owner: "worker",
+        runtime: "codex",
+        handle: "handle",
+      },
+    });
+    assert.deepEqual(delays(), [60_000, 120_000]);
+    await readers.refresh(project.id);
+    assert.deepEqual([trackerCalls, forgeCalls], [1, 1]);
+    now += 60_000;
+    forgePause = false;
+    await readers.refresh(project.id);
+    assert.deepEqual([trackerCalls, forgeCalls], [1, 2], "forge resumes while the tracker remains paused");
+    readers.activityChanged(project.id);
+    assert.deepEqual(delays(), [30_000, 60_000]);
+    assert.equal(readers.readers[0]?.forgeBackoffMs, undefined);
+    now += 60_000;
+    trackerPause = false;
+    await readers.refresh(project.id);
+    assert.deepEqual([trackerCalls, forgeCalls], [2, 3]);
+    assert.equal(readers.readers[0]?.tracker, true);
+    assert.equal(readers.readers[0]?.forge, true);
+  } finally {
+    readers.stop();
+    store.close();
+  }
+});
+
+test("forge cadence follows active sessions and exposes/enforces a provider backoff on manual reads", async () => {
+  const store = new EventStore(":memory:");
+  const registry = new PluginRegistry();
+  const timer = clock();
+  let at = "2030-01-01T12:00:00Z";
+  let calls = 0;
+  let result: ForgeReadResult = {};
+  const activation = registry.activation({
+    id: "github",
+    description: "Fixture forge",
+    version: "0.1.0",
+    pluginApi: "^0.2.0",
+    enabledByDefault: true,
+    contributions: { forge: { github: { config: true, secrets: [] } } },
+  });
+  activation.register.forge("github", {
+    read: async () => {
+      calls++;
+      return result;
+    },
+    merge: async () => ({ merged: false }),
+  });
+  activation.commit();
+  const readers = await startReaders({ registry, projects: [project], store, now: () => at, schedule: timer.schedule });
+  try {
+    await readers.ready;
+    assert.deepEqual([...timer.tasks.values()], [300_000]);
+    store.append({
+      project: project.id,
+      at,
+      actor: "worker",
+      kind: "session.claimed",
+      payload: {
+        ticket: "SEED-1",
+        session: "session",
+        generation: 1,
+        owner: "worker",
+        runtime: "codex",
+        handle: "handle",
+      },
+    });
+    assert.deepEqual([...timer.tasks.values()], [30_000], "a new session re-arms the idle timer");
+    await readers.refresh(project.id);
+    assert.deepEqual([...timer.tasks.values()], [30_000]);
+    result = {
+      pausedUntil: "2030-01-01T12:02:00Z",
+      backoffMs: 120_000,
+      abandoned: [41],
+      failures: [{ pr: 42, failures: 2, since: "2030-01-01T12:00:00Z", error: "GitHub answered 404" }],
+    };
+    await readers.refresh(project.id);
+    assert.deepEqual([...timer.tasks.values()], [120_000]);
+    assert.equal(readers.readers[0]?.forgeBackoffMs, 120_000);
+    assert.deepEqual(readers.readers[0]?.forgeAbandoned, [41]);
+    assert.deepEqual(readers.readers[0]?.forgeFailures, result.failures);
+    const before = calls;
+    await readers.refresh(project.id);
+    assert.equal(calls, before);
+    at = "2030-01-01T12:02:00Z";
+    result = {};
+    await readers.refresh(project.id);
+    assert.equal(calls, before + 1);
+    assert.deepEqual([...timer.tasks.values()], [30_000]);
+  } finally {
+    readers.stop();
+    store.close();
+  }
+});
 
 test("daemon readers commit recorded Linear/GitHub facts to the subscribed store and stop active reads", {
   timeout: 5000,
@@ -230,16 +400,22 @@ test("reader health recovers and untrusted plugin errors cannot inject diagnosti
     contributions: { tracker: { linear: { config: true, secrets: [] } } },
   });
   let failed = true;
+  let paused = false;
   activation.register.tracker("linear", {
     read: async () => {
+      if (paused) return { pausedUntil: "2030-01-01T00:02:00.000Z" };
       if (failed) throw new Error("Linear key missing\nprivate-key");
     },
     write: async () => {},
   });
   activation.commit();
   const logs: string[] = [];
-  const readers = await startReaders({
+  const store = new EventStore(":memory:");
+  let at = "2030-01-01T00:00:00.000Z";
+  let readers = await startReaders({
     registry,
+    store,
+    now: () => at,
     projects: [project],
     schedule: clock().schedule,
     log: (line) => logs.push(line),
@@ -250,11 +426,48 @@ test("reader health recovers and untrusted plugin errors cannot inject diagnosti
     assert.deepEqual(readers.readers, [
       { project: "orchard", tracker: false, forge: false, trackerError: "Reader failed (details withheld)" },
     ]);
+    await readers.refresh(project.id);
+    const status = () => fleetStatus(fold(store.readSince(0)).projects.orchard!, store.readSince(0), at);
+    assert.deepEqual(status().problems.readers, []);
+    await readers.refresh(project.id);
+    assert.deepEqual(status().problems.readers, [
+      { provider: "linear", failures: 3, error: "Reader failed (details withheld)" },
+    ]);
+    assert.deepEqual(status().readAt, {});
+    readers.stop();
+    readers = await startReaders({
+      registry,
+      store,
+      projects: [project],
+      now: () => at,
+      schedule: clock().schedule,
+      log: (line) => logs.push(line),
+    });
+    await readers.ready;
+    assert.deepEqual(
+      status().problems.readers,
+      [{ provider: "linear", failures: 4, error: "Reader failed (details withheld)" }],
+      "restart preserves consecutive failure evidence until a successful read",
+    );
+    paused = true;
+    const beforePause = store.readSince(0).length;
+    await readers.refresh(project.id);
+    assert.match(readers.readers[0]?.trackerError ?? "", /paused by its rate limit/);
+    assert.equal(status().problems.readers[0]?.failures, 4, "a rate-limit pause preserves failure evidence");
+    assert.equal(store.readSince(0).length, beforePause, "a pause records neither failure nor successful freshness");
+    assert.deepEqual(status().readAt, {});
+    paused = false;
     failed = false;
     await readers.refresh(project.id);
+    assert.equal(store.readSince(0).length, beforePause, "refresh cannot clear a failure streak during a pause");
+    at = "2030-01-01T00:02:00.000Z";
+    await readers.refresh(project.id);
     assert.deepEqual(readers.readers, [{ project: "orchard", tracker: true, forge: false }]);
+    assert.deepEqual(status().problems.readers, []);
+    assert.deepEqual({ ...status().readAt }, { linear: at });
   } finally {
     readers.stop();
+    store.close();
   }
 });
 

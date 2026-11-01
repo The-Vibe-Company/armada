@@ -12,8 +12,10 @@ import {
 import { usageTime } from "@armada/protocol/usage";
 import { z } from "zod";
 import { evaluateBudget } from "../budget.ts";
+import { Deliveries, queueDelivery } from "../deliveries.ts";
 import type { EventInput, Json } from "../events.ts";
 import { fold } from "../fold.ts";
+import { maskedTail } from "../liveness/judge.ts";
 import { refuse } from "../merge/refusal.ts";
 import type { PluginRegistry } from "../plugins/registry.ts";
 import type { Account } from "../server/account.ts";
@@ -49,7 +51,6 @@ interface LiveWorker {
   workspace: Workspace;
   tokenHash: string;
   mask: (value: string) => string;
-  deliveries: Map<string, string>;
   branch: string;
   runtimeKind: string;
   launchId?: string;
@@ -108,6 +109,7 @@ const same = (a: WorkerRef, b: WorkerRef) =>
 /** One host-owned launch path. Tokens never enter durable events or coordinator tool results. */
 export class Workers {
   readonly #options: Options;
+  readonly #outbox: Deliveries;
   readonly #live = new Map<string, LiveWorker>();
   readonly #observations = new Map<string, string>();
   readonly #reads = new Map<string, Promise<WorkerObservation>>();
@@ -116,8 +118,28 @@ export class Workers {
   readonly #queues = new Map<string, Promise<unknown>>();
   #closing = false;
   readonly #removing = new Set<string>();
+  readonly #stopForge: () => void;
+  readonly #forgeCursors = new Map<string, number>();
+  #forgeScheduled = false;
+  #forgeDirty = false;
   constructor(options: Options) {
     this.#options = options;
+    this.#outbox = new Deliveries({
+      store: options.store,
+      now: () => this.#at(),
+      deliver: async (delivery, beforeWrite) => {
+        await this.answer(
+          {
+            key: delivery.key,
+            item: delivery.item,
+            session: { ticket: delivery.ticket, session: delivery.session },
+            answer: delivery.text,
+            beforeWrite,
+          },
+          delivery.project,
+        );
+      },
+    });
     for (const project of options.projects) {
       for (const session of this.#tables(project.id)?.sessions ?? []) {
         if (!ended(session.phase) && options.registry.get("runtime", session.runtime, project.id)?.needsLaunchToken)
@@ -127,6 +149,69 @@ export class Workers {
             /* Unconfirmed or unmanaged launches remain inspectable, never adopted. */
           }
       }
+    }
+    const scan = () => {
+      if (this.#closing) return;
+      if (this.#forgeScheduled) {
+        this.#forgeDirty = true;
+        return;
+      }
+      this.#forgeScheduled = true;
+      this.#forgeDirty = false;
+      queueMicrotask(() => {
+        void this.#forgeMessages()
+          .catch(() => {})
+          .finally(() => {
+            this.#forgeScheduled = false;
+            if (this.#forgeDirty) scan();
+          });
+      });
+    };
+    this.#stopForge = options.store.subscribe(scan);
+    scan();
+  }
+  /** Source IDs plus the captured session fence replay and prevent notifying a replacement. */
+  async #forgeMessages() {
+    for (const project of this.#options.projects) {
+      const events = this.#options.store.readSince(0, project.id);
+      let cursor = this.#forgeCursors.get(project.id) ?? 0;
+      let failedAt: number | undefined;
+      for (let index = 0; index < events.length && !this.#closing; index++) {
+        const event = events[index]!;
+        if (event.seq <= cursor) continue;
+        cursor = event.seq;
+        if (event.kind !== "pull-request.commented" && event.kind !== "review-thread.opened") continue;
+        const p = event.payload;
+        // PR author is the forge identity of the worker that opened this PR.
+        if (p.repository !== project.repository || !p.worker || p.author.toLowerCase() === p.worker.toLowerCase())
+          continue;
+        const session = fold(events.slice(0, index + 1)).projects[project.id]?.sessions.find(
+          (s) => s.ticket === p.ticket,
+        );
+        if (!session || ended(session.phase) || session.runtime === "tracker") continue;
+        const key = `forge:${hash(JSON.stringify([project.id, session.session, p.pr, p.comment, p.version ?? p.at]))}`;
+        try {
+          await this.tool(
+            project.id,
+            "worker.message",
+            {
+              ticket: p.ticket,
+              session: session.session,
+              message: `GitHub review from ${p.author} on PR #${p.pr}:\n${p.body}\n${p.url}`,
+            },
+            key,
+            () => {
+              const current = this.#tables(project.id)?.sessions.find((s) => s.ticket === p.ticket);
+              if (this.#closing || !current || current.session !== session.session || ended(current.phase))
+                throw new WorkerRefusal("Worker generation changed; review input skipped");
+            },
+          );
+        } catch {
+          const current = this.#tables(project.id)?.sessions.find((s) => s.ticket === p.ticket);
+          if (current?.session === session.session && !ended(current.phase)) failedAt ??= event.seq;
+        }
+      }
+      this.#forgeCursors.set(project.id, failedAt ? failedAt - 1 : cursor);
     }
   }
   #at() {
@@ -180,7 +265,6 @@ export class Workers {
           workspace: { id: current.handle, path: "", node: "conductor" },
           tokenHash: "",
           mask: maskHostedText,
-          deliveries: new Map(),
           branch: "",
           runtimeKind: current.runtime,
           launchId:
@@ -343,8 +427,30 @@ export class Workers {
           });
           if (name === "worker.message") {
             const message = workerToolSchemas["worker.message"].parse(parsed).message;
-            await this.#deliver(row, message, key, beforeWrite);
-            result = { ok: true, session: row.ref.session, delivery: "confirmed" };
+            const queued = queueDelivery({
+              project,
+              at: this.#at(),
+              actor: "coordinator",
+              ticket: row.ref.ticket,
+              session: row.ref.session,
+              generation: row.ref.generation,
+              source: "coordinator-message",
+              text: row.mask(message),
+              key,
+            });
+            result = { ok: true, session: row.ref.session, queued: queued.payload.id };
+            this.#check(row.ref, beforeWrite);
+            this.#options.store.appendMany([
+              queued,
+              {
+                project,
+                at: this.#at(),
+                actor: "coordinator",
+                kind: "coordinator.checkpoint",
+                payload: { checkpoint: { format: "armada.worker", version: 1, type: "receipt", key, input, result } },
+              },
+            ]);
+            return result;
           } else {
             const reason = workerToolSchemas["worker.stop"].parse(parsed).reason;
             if (!reason.trim()) throw new WorkerRefusal("Stopping a worker needs a reason");
@@ -741,7 +847,6 @@ export class Workers {
       workspace,
       tokenHash: hosted ? "" : hash(token),
       mask: (value) => maskHostedText(value.replaceAll(token, "[redacted]")),
-      deliveries: new Map(),
       branch,
       runtimeKind: route.cli,
       ...(launch ? { launchId: launch.worker.id } : {}),
@@ -905,9 +1010,23 @@ export class Workers {
   }
 
   async #deliver(row: LiveWorker, message: string, key: string, beforeWrite: () => void) {
-    const prior = row.deliveries.get(key);
-    if (prior !== undefined) {
-      if (prior !== hash(message)) throw new Error("Delivery key already used with different message");
+    const prior = this.#options.store.readSince(0, row.ref.project).find((e) => {
+      const c = e.kind === "coordinator.checkpoint" ? e.payload.checkpoint : null;
+      return (
+        c &&
+        typeof c === "object" &&
+        !Array.isArray(c) &&
+        c.format === "armada.worker" &&
+        c.type === "delivered" &&
+        c.session === row.ref.session &&
+        c.key === hash(key)
+      );
+    });
+    if (prior?.kind === "coordinator.checkpoint") {
+      const checkpoint = prior.payload.checkpoint as Record<string, Json>;
+      if (checkpoint.textHash && checkpoint.textHash !== hash(message))
+        throw new Error("Delivery key already used with different message");
+      this.#check(row.ref, beforeWrite);
       return;
     }
     await guarded(
@@ -916,13 +1035,13 @@ export class Workers {
       () => row.runtime.deliver(row.ref, message, key),
     );
     this.#check(row.ref, beforeWrite);
-    row.deliveries.set(key, hash(message));
     // Message contents and credentials do not enter event history.
     this.#checkpoint(row.ref.project, {
       type: "delivered",
       session: row.ref.session,
       ticket: row.ref.ticket,
       key: hash(key),
+      textHash: hash(message),
     });
   }
 
@@ -1057,6 +1176,17 @@ export class Workers {
         });
       }
     });
+  }
+
+  /** Read only the pinned generation; unsupported runtime tails are empty. */
+  async transcript(project: string, session: { ticket: string; session: string; generation: number }): Promise<string> {
+    const row = this.#row(project, session.ticket);
+    if (row.ref.session !== session.session || row.ref.generation !== session.generation)
+      throw new WorkerRefusal("Transcript generation changed");
+    this.#check(row.ref);
+    const tail = (await row.runtime.transcript?.(row.ref, 4096)) ?? "";
+    this.#check(row.ref);
+    return maskedTail(tail, row.mask);
   }
 
   async observe(project: string, ticket: string): Promise<WorkerObservation> {
@@ -1273,6 +1403,8 @@ export class Workers {
 
   async close() {
     this.#closing = true;
+    this.#stopForge();
+    await this.#outbox.close();
     await Promise.allSettled([...this.#queues.values()]);
     // Shutdown attempts every owned generation even if one provider is stuck or fails.
     const results = await Promise.allSettled(

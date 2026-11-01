@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
+import { fold } from "../src/fold.ts";
 import { EventStore } from "../src/store.ts";
 import { daemonEnv, nodeExecutable } from "./support/node.ts";
 import { project } from "./support/reader-recordings.ts";
@@ -28,7 +29,7 @@ for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] a
         const linear = String(url).includes('linear');
         const secret = linear ? process.env.LINEAR_API_KEY : "synthetic-github-environment-secret";
         const expected = linear ? secret : 'Bearer ' + secret;
-        if (init.headers.Authorization !== expected) throw new Error('wrong environment credential');
+        if (new Headers(init.headers).get("authorization") !== expected) throw new Error('wrong environment credential');
         if (${JSON.stringify(mode)} === 'unauthorized') return Response.json({ errors: [{ message: secret }] }, {status: 401});
         if (${JSON.stringify(mode)} === 'network') throw new TypeError('private transport detail ' + secret + '\\nforged log line');
         const {query} = JSON.parse(init.body);
@@ -100,14 +101,15 @@ for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] a
           { project: project.id, tracker: false, forge: false, trackerError: reason[0], forgeError: reason[1] },
         ]);
         for (const message of reason) assert.ok(errors.includes(message), `log explains ${message}`);
-        assert.deepEqual(
-          kinds.filter((kind) => kind !== "coordinator.checkpoint"),
-          [],
+        assert.ok(
+          kinds.every((kind) => kind === "coordinator.checkpoint"),
+          "failures publish diagnostics, never tracker or forge facts",
         );
-        const checkpoints = store.readSince(0).filter((event) => event.kind === "coordinator.checkpoint");
-        if (mode === "missing") assert.equal(checkpoints.length, 0);
-        else assert.equal(checkpoints.length, 1, "failed requests retain usage without declaring a successful read");
-        assert.equal((await import("../src/fold.ts")).fold(store.readSince(0)).projects[project.id]?.readAt, undefined);
+        assert.deepEqual(
+          { ...fold(store.readSince(0)).projects[project.id]?.readAt },
+          {},
+          "failed readers never claim freshness",
+        );
       }
       assert.doesNotMatch(
         errors + line + JSON.stringify(store.readSince(0)),

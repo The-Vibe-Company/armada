@@ -4,10 +4,17 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Conversation } from "@earendil-works/pi-durable";
 import type { FleetEvent } from "../src/events.ts";
 import { fold } from "../src/fold.ts";
+import { maskedTail, type ProgressJudge, verdictSchema } from "../src/liveness/judge.ts";
+import { type ProgressSignals, progressSignals, progressSummary, type Report } from "../src/liveness/progress.ts";
 import type { EventStore } from "../src/store.ts";
+import { forgeWakeups } from "./forge-wake.ts";
 
 /** Reserved host entry metadata distinguishes a wake from owner-written text. */
 export const WAKE_ENTRY = "armada.fleet-wake";
+export interface ProgressWatch {
+  judge: ProgressJudge;
+  transcript: (session: Session) => Promise<string>;
+}
 export interface WakeReading {
   tables: ProjectTables | undefined;
   /** Source evidence preserves transient outcomes/actors that the open tables do not retain. */
@@ -52,6 +59,7 @@ const generationStart = (events: readonly FleetEvent[], session: Session | undef
 export function wakeups(before: WakeReading, after: WakeReading): WakeCandidate[] {
   const out = new Map<string, WakeCandidate>();
   const add = (key: string, summary: string, facts: WakeCandidate["facts"]) => out.set(key, { key, summary, facts });
+  for (const candidate of forgeWakeups(before.tables, after.tables)) out.set(candidate.key, candidate);
   const priorSeq = before.events.at(-1)?.seq ?? 0;
   for (const item of after.tables?.inbox ?? []) {
     if (before.tables?.inbox.some((i) => i.id === item.id) || item.kind === "owner-request") continue;
@@ -65,7 +73,17 @@ export function wakeups(before: WakeReading, after: WakeReading): WakeCandidate[
       state: item.kind,
     };
     const pr = facts.pr ? ` #${facts.pr}${facts.head ? ` at ${facts.head.slice(0, 8)}` : ""}` : "";
-    add(`inbox:${identity(item.id)}`, `${item.kind}${facts.ticket ? ` ${facts.ticket}` : ""}${pr}`, facts);
+    const judged =
+      item.kind === "liveness" && after.events.some((e) => e.kind === "session.liveness" && e.payload.id === item.id);
+    add(
+      `inbox:${identity(item.id)}`,
+      judged
+        ? maskedTail(item.body)
+            .replace(/\p{Cc}/gu, " ")
+            .slice(0, 800)
+        : `${item.kind}${facts.ticket ? ` ${facts.ticket}` : ""}${pr}`,
+      facts,
+    );
   }
   for (const pr of after.tables?.pullRequests ?? []) {
     const prior = before.tables?.pullRequests.find((p) => p.number === pr.number);
@@ -202,6 +220,9 @@ export class Waker {
   readonly #project: string;
   readonly #conversation: Pick<Conversation, "submit">;
   readonly #clock: WakeClock;
+  readonly #progress?: ProgressWatch;
+  readonly #attempts = new Map<string, number>();
+  readonly #judging = new Map<string, { abort: AbortController; done: Promise<void> }>();
   readonly #seen = new Set<string>();
   readonly #pending = new Map<string, WakeCandidate>();
   readonly #outbox = new Map<string, WakeEvent>();
@@ -225,10 +246,12 @@ export class Waker {
     conversation: Pick<Conversation, "submit">;
     clock?: WakeClock;
     now?: () => number;
+    progress?: ProgressWatch;
   }) {
     this.#store = options.store;
     this.#project = options.project;
     this.#conversation = options.conversation;
+    this.#progress = options.progress;
     this.#clock = options.clock ?? { ...realClock, now: options.now ?? Date.now };
     // Learn all persisted keys before replaying transitions, including old resolved inbox items.
     for (const e of this.#store.readSince(0, this.#project)) this.#record(e);
@@ -237,6 +260,17 @@ export class Waker {
   }
 
   #record(e: FleetEvent) {
+    const c = e.kind === "coordinator.checkpoint" ? e.payload.checkpoint : null;
+    if (
+      c &&
+      typeof c === "object" &&
+      !Array.isArray(c) &&
+      c.format === "armada.watchdog" &&
+      c.version === 1 &&
+      typeof c.session === "string" &&
+      typeof c.generation === "number"
+    )
+      this.#attempts.set(`${c.session}@${c.generation}`, Date.parse(e.at));
     if (e.kind === "coordinator.wakeup") {
       this.#lastWake = Math.max(this.#lastWake, Date.parse(e.at));
       for (const key of e.payload.keys) {
@@ -264,7 +298,7 @@ export class Waker {
             !c ||
             typeof c !== "object" ||
             Array.isArray(c) ||
-            !["armada.worker", "armada.tools"].includes(String(c.format))
+            !["armada.worker", "armada.tools", "armada.watchdog"].includes(String(c.format))
           )
             continue;
         }
@@ -451,12 +485,16 @@ export class Waker {
       desired.set(id, { ticket: s.ticket, kind, due });
     }
     const now = this.#clock.now();
-    const notices = tables.inbox.filter((i) => i.id.startsWith("notice:") && i.actor === "daemon");
+    const notices = tables.inbox.filter(
+      (i) => i.kind !== "liveness" && i.id.startsWith("notice:") && i.actor === "daemon",
+    );
     const additions = [...desired].filter(
       ([id, d]) => d.due <= now && !this.#events.some((e) => e.kind === "inbox.opened" && e.payload.id === id),
     );
     const removals = notices.filter((i) => !desired.has(i.id));
     const future = [...desired.values()].filter((d) => d.due > now).map((d) => d.due);
+    const progress = this.#progressPlan();
+    future.push(...progress.map((p) => p.due));
     if (!additions.length && !removals.length && !future.length) return;
     const due = additions.length || removals.length ? now : Math.min(...future);
     this.#cancelLiveness = this.#clock.setTimer(
@@ -483,10 +521,129 @@ export class Waker {
               body: `Worker ${item.kind}; inspect current generation before acting`,
             },
           });
+        for (const item of progress) if (item.due <= this.#clock.now() && item.signals.level >= 1) this.#judge(item);
         this.#scan();
       },
       Math.max(1, due - now),
     );
+  }
+
+  #progressPlan(): { session: Session; signals: ProgressSignals; id: string; due: number }[] {
+    if (!this.#progress) return [];
+    const now = this.#clock.now();
+    const policy = this.#reading.tables?.rules?.value.policy;
+    const reports = this.#events.filter((e): e is Report => e.kind === "session.reported");
+    return (this.#reading.tables?.sessions ?? []).flatMap((session) => {
+      if (
+        ["released", "merged", "blocked", "awaiting-approval", "awaiting-validation", "ready-to-merge"].includes(
+          session.phase,
+        ) ||
+        session.runtime === "tracker" ||
+        this.#judging.has(session.session)
+      )
+        return [];
+      const signals = progressSignals(session, reports, this.#events, now, policy);
+      const id = `notice:liveness:${identity(session.session)}@${signals.episode}:${signals.level}`;
+      const already = this.#events.some((e) => e.kind === "session.liveness" && e.payload.id === id);
+      const last = this.#attempts.get(`${session.session}@${session.generation}`) ?? -Infinity;
+      const cadence = (policy?.silenceMinutes ?? 15) * 60_000;
+      return [
+        { session, signals, id, due: Math.max(last + cadence, signals.level >= 1 && !already ? now : signals.nextAt) },
+      ];
+    });
+  }
+
+  #judge(item: { session: Session; signals: ProgressSignals; id: string }) {
+    if (this.#closed || !this.#progress || this.#judging.has(item.session.session)) return;
+    if (this.#events.some((e) => e.kind === "session.liveness" && e.payload.id === item.id)) return;
+    const { session, signals, id } = item;
+    // A refused disk write must still back off in this process; never call the model without a durable attempt.
+    this.#attempts.set(`${session.session}@${session.generation}`, this.#clock.now());
+    const abort = new AbortController();
+    let cancelDeadline = () => {};
+    const deadline = new Promise<never>((_, reject) => {
+      const cancel = () => {
+        abort.abort();
+        reject(new Error("Watchdog cancelled"));
+      };
+      cancelDeadline = this.#clock.setTimer(cancel, 30_000);
+      abort.signal.addEventListener("abort", () => reject(new Error("Watchdog cancelled")), { once: true });
+    });
+    const done = Promise.resolve()
+      .then(async () => {
+        this.#store.append({
+          project: this.#project,
+          actor: "daemon",
+          at: new Date(this.#clock.now()).toISOString(),
+          kind: "coordinator.checkpoint",
+          payload: {
+            checkpoint: {
+              format: "armada.watchdog",
+              version: 1,
+              session: session.session,
+              generation: session.generation,
+              episode: signals.episode,
+              level: signals.level,
+            },
+          },
+        });
+        const policy = this.#reading.tables?.rules?.value.policy;
+        const selection = policy?.watchdogModel;
+        const reports = this.#events
+          .filter((e): e is Report => e.kind === "session.reported" && e.payload.session === session.session)
+          .slice(-3);
+        const work = async () => {
+          const tail = maskedTail(await this.#progress!.transcript(session));
+          abort.signal.throwIfAborted();
+          return this.#progress!.judge(
+            signals,
+            tail,
+            reports,
+            selection ? { provider: selection.provider, modelId: selection.model } : undefined,
+            abort.signal,
+          );
+        };
+        const verdict = verdictSchema.parse(await Promise.race([work(), deadline]));
+        if (this.#closed || abort.signal.aborted || !["looping", "drifting"].includes(verdict.verdict)) return;
+        const current = this.#reading.tables?.sessions.find(
+          (s) => s.session === session.session && s.generation === session.generation,
+        );
+        if (!current) return;
+        const fresh = progressSignals(
+          current,
+          this.#events.filter((e): e is Report => e.kind === "session.reported"),
+          this.#events,
+          this.#clock.now(),
+          policy,
+        );
+        if (fresh.level < 1 || fresh.episode !== signals.episode) return;
+        this.#store.append({
+          project: this.#project,
+          actor: "daemon",
+          at: new Date(this.#clock.now()).toISOString(),
+          kind: "session.liveness",
+          payload: {
+            id,
+            ticket: session.ticket,
+            session: session.session,
+            generation: session.generation,
+            episode: signals.episode,
+            level: signals.level,
+            verdict: verdict.verdict as "looping" | "drifting",
+            evidence: maskedTail(verdict.evidence).replace(/\p{Cc}/gu, " "),
+            summary: progressSummary(signals),
+          },
+        });
+      })
+      .catch(() => {
+        if (!this.#closed) console.warn("armada: watchdog judgment unavailable; no liveness notice recorded");
+      })
+      .finally(() => {
+        cancelDeadline();
+        this.#judging.delete(session.session);
+        this.#scan();
+      });
+    this.#judging.set(session.session, { abort, done });
   }
 
   async close() {
@@ -496,6 +653,8 @@ export class Waker {
     this.#cancelRetry?.();
     this.#cancelQuiet?.();
     this.#cancelLiveness?.();
+    for (const job of this.#judging.values()) job.abort.abort();
+    await Promise.allSettled([...this.#judging.values()].map((job) => job.done));
     await this.#sending;
   }
 }

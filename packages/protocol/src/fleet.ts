@@ -1,9 +1,11 @@
 import { z } from "zod";
+import { deliveryPayloadSchemas, deliveryStateSchema } from "./deliveries.js";
 import { readerUsageSchema } from "./readers.js";
 import { rulesStateSchema } from "./rules.js";
 import { reportedUsageSchema } from "./tokens.js";
 import type { ProjectUsage } from "./usage.js";
 
+export const GITHUB_READER_MINOR = 18;
 const text = z.string();
 const integer = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 export const phaseSchema = z.enum([
@@ -45,26 +47,22 @@ const ticketSchema = z.object({
 });
 export type Ticket = z.infer<typeof ticketSchema>;
 const ciSchema = z.enum(["none", "pending", "success", "failure"]);
-const pullRequestSchema = z.object({
-  number: integer,
-  ticket: text,
-  state: z.enum(["open", "closed", "merged"]),
-  ci: ciSchema,
-  conflicting: z.boolean(),
-  head: text,
-});
+const pullRequestSchema = /* @__PURE__ */ makePullRequestSchema();
+function makePullRequestSchema() {
+  return z.object({
+    number: integer,
+    ticket: text,
+    state: z.enum(["open", "closed", "merged"]),
+    ci: ciSchema,
+    conflicting: z.boolean(),
+    head: text,
+    base: text.optional(),
+    behind: z.boolean().optional(),
+    unresolvedThreads: integer.optional(),
+  });
+}
 export type PullRequest = z.infer<typeof pullRequestSchema>;
-const githubPullRequestSchema = pullRequestSchema.extend({
-  repository: text,
-  title: text,
-  url: text,
-  headRef: text,
-  draft: z.boolean(),
-  review: z.enum(["none", "approved", "changes_requested", "review_required"]),
-  checks: z.array(z.object({ name: text, state: ciSchema, runId: integer.optional(), runAttempt: integer.optional() })),
-  checksComplete: z.boolean(),
-});
-export type GithubPullRequest = z.infer<typeof githubPullRequestSchema>;
+export type GithubPullRequest = EventPayloads["pull-request.opened"];
 const sessionRefSchema = z.object({
   ticket: text,
   /** Unique for each claim; never reuse a runtime handle as a generation. */
@@ -83,26 +81,31 @@ export const workerLaunchCheckpointSchema = sessionRefSchema.extend({
   step: z.enum(["preparing", "starting", "launched"]),
 });
 
-const inboxRequestSchema = z.object({
-  id: text,
-  ticket: text,
-  kind: z.enum([
-    "question",
-    "plan",
-    "hand-back",
-    "owner-request",
-    "launch",
-    "stopped",
-    "silent",
-    "not-started",
-    "deploy",
-    "job",
-    "job-silent",
-    "job-stalled",
-    "version",
-  ]),
-  body: text,
-});
+const inboxRequestSchema = /* @__PURE__ */ makeInboxRequestSchema();
+function makeInboxRequestSchema() {
+  return z.object({
+    id: text,
+    ticket: text,
+    kind: z.enum([
+      "question",
+      "plan",
+      "hand-back",
+      "owner-request",
+      "launch",
+      "delivery-failed",
+      "stopped",
+      "silent",
+      "not-started",
+      "liveness",
+      "deploy",
+      "job",
+      "job-silent",
+      "job-stalled",
+      "version",
+    ]),
+    body: text,
+  });
+}
 export type InboxRequest = z.infer<typeof inboxRequestSchema>;
 const validationRequestSchema = sessionRefSchema.extend({ id: text, question: text, checks: z.array(text) });
 export type ValidationRequest = z.infer<typeof validationRequestSchema>;
@@ -130,9 +133,44 @@ function wakeCandidate() {
 export type WakeCandidate = z.infer<typeof wakeCandidateSchema>;
 const branchHealthSchema = z.object({ branch: text, head: text, ci: ciSchema });
 
-/** The single vocabulary for events appended by daemon adapters and folded offline. */
+/** The single vocabulary for events appended by daemon adapters and folded offline.
+ * A pure factory lets the app omit payload validators it never reads. */
 export const eventPayloadSchemas = /* @__PURE__ */ payloadSchemas();
 function payloadSchemas() {
+  const githubPullRequestSchema = pullRequestSchema.extend({
+    repository: text,
+    title: text,
+    url: text,
+    headRef: text,
+    draft: z.boolean(),
+    review: z.enum(["none", "approved", "changes_requested", "review_required"]),
+    checks: z.array(
+      z.object({ name: text, state: ciSchema, runId: integer.optional(), runAttempt: integer.optional() }),
+    ),
+    checksComplete: z.boolean(),
+    author: text.optional(),
+    failingChecks: z.array(text).optional(),
+  });
+  const forgeCommentSchema = z.object({
+    key: text,
+    repository: text,
+    ticket: text,
+    pr: integer,
+    head: text,
+    author: text,
+    body: z.string().max(600),
+    url: text,
+    at: text,
+    comment: text,
+    version: text.optional(),
+    worker: text.optional(),
+  });
+  const reviewThreadSchema = forgeCommentSchema.extend({
+    thread: text,
+    path: text,
+    line: integer.nullable(),
+    unresolvedThreads: integer,
+  });
   return {
     "ticket.seen": ticketSchema,
     "pull-request.seen": pullRequestSchema,
@@ -154,6 +192,15 @@ function payloadSchemas() {
       activity: z.enum(["working", "idle"]).optional(),
     }),
     "session.usage": sessionRefSchema.extend({ generation: integer.min(1), usage: reportedUsageSchema }),
+    "session.liveness": sessionRefSchema.extend({
+      id: text,
+      generation: integer.min(1),
+      episode: integer,
+      level: integer.min(1),
+      verdict: z.enum(["looping", "drifting"]),
+      evidence: z.string().max(240),
+      summary: z.string().max(500),
+    }),
     "session.released": sessionRefSchema.extend({ reason: text }),
     "inbox.opened": inboxRequestSchema,
     "inbox.answered": idSchema.extend({ answer: text }),
@@ -184,6 +231,7 @@ function payloadSchemas() {
     "ticket.report-posted": z.object({
       ticket: text,
       comment: text,
+      version: text.optional(),
       updatedAt: text,
       phase: phaseSchema,
       summary: text,
@@ -196,6 +244,14 @@ function payloadSchemas() {
     "pull-request.review-changed": githubPullRequestSchema,
     "pull-request.closed": githubPullRequestSchema,
     "pull-request.merged": githubPullRequestSchema,
+    "pull-request.commented": forgeCommentSchema,
+    "review-thread.opened": reviewThreadSchema,
+    "review-thread.resolved": reviewThreadSchema,
+    "pull-request.conflicting": githubPullRequestSchema.extend({ pr: integer, key: text }),
+    "pull-request.behind": githubPullRequestSchema.extend({ pr: integer, key: text }),
+
+    // Durable worker input deliveries (THE-2108).
+    ...deliveryPayloadSchemas,
   } as const;
 }
 export type EventKind = keyof typeof eventPayloadSchemas;
@@ -230,7 +286,7 @@ const sessionSchema = sessionRefSchema.extend({
   heartbeat: text.nullable(),
 });
 export type Session = z.infer<typeof sessionSchema>;
-const inboxItemSchema = inboxRequestSchema.extend({ at: text, actor: text, seq: integer });
+const inboxItemSchema = /* @__PURE__ */ (() => inboxRequestSchema.extend({ at: text, actor: text, seq: integer }))();
 export type InboxItem = z.infer<typeof inboxItemSchema>;
 const queueEntrySchema = queuedSchema.extend({ at: text, seq: integer, state: z.enum(["queued", "running"]) });
 export type QueueEntry = z.infer<typeof queueEntrySchema>;
@@ -242,10 +298,8 @@ const validationSchema = validationRequestSchema.extend({
   decision: decisionSchema.extend({ at: text, actor: text }).nullable(),
 });
 export type Validation = z.infer<typeof validationSchema>;
-// Browser snapshots carry JSON and screens read their own slices. Keep the full
-// table validator removable for clients that only import wire envelopes.
-const tablesSchema = /* @__PURE__ */ (() =>
-  z.object({
+function makeTablesSchema() {
+  return z.object({
     defaultBranch: branchHealthSchema.optional(),
     // Absent on older snapshots; current daemon folds always supply this slice.
     rules: rulesStateSchema.optional(),
@@ -268,11 +322,12 @@ const tablesSchema = /* @__PURE__ */ (() =>
     queue: z.array(queueEntrySchema),
     holds: z.array(holdSchema),
     validations: z.array(validationSchema),
-  }))();
-
+    deliveries: z.array(deliveryStateSchema).optional(),
+  });
+}
 // Usage is an additive JSON extension, validated by its producer and the usage view.
 // General fleet readers need not load its detailed schema before the room opens.
-export type ProjectTables = z.infer<typeof tablesSchema> & { usage?: ProjectUsage };
+export type ProjectTables = z.infer<ReturnType<typeof makeTablesSchema>> & { usage?: ProjectUsage };
 export interface FleetTables {
   seq: number;
   projects: Record<string, ProjectTables>;
@@ -281,11 +336,14 @@ export interface FleetTables {
 /** Validate the known tables without stripping extension fields or reordering JSON keys.
  * Wire consumers can keep ignoring rows and event kinds they do not use.
  */
-export const projectTablesSchema = /* @__PURE__ */ (() =>
-  z
+export const projectTablesSchema = /* @__PURE__ */ makeProjectTablesSchema();
+function makeProjectTablesSchema() {
+  const tablesSchema = makeTablesSchema();
+  return z
     .json()
     .superRefine((value, ctx) => {
       const result = tablesSchema.safeParse(value);
       if (!result.success) for (const issue of result.error.issues) ctx.addIssue({ ...issue });
     })
-    .transform((value) => value as ProjectTables))();
+    .transform((value) => value as ProjectTables);
+}

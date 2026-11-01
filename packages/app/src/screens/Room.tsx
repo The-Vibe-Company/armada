@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 import { RemoveProject } from "@/projects/RemoveProject";
 import { useDaemon, useDaemonClient } from "@/protocol/store";
 import { AgentLane } from "@/room/AgentLane";
-import { Asking } from "@/room/Asking";
+import { Asking, DeliveryStatus } from "@/room/Asking";
 import { Composer } from "@/room/Composer";
 import { type Chat, NO_CHAT, threadItems, useChat, type WhenBusy } from "@/room/chat";
 import { coordinatorModel, ownerHistory } from "@/room/compose";
@@ -319,6 +319,7 @@ export function RoomView({
               </p>
             )}
             <Queued items={chat.queued ?? []} />
+            <DeliveryStatus deliveries={state.deliveries ?? []} />
             {/* The question's card is in the panel's Agents; while that is not on screen, the field says it waits. */}
             {pinned && !(open && tab === "agents") && (
               <Asking item={pinned} waiting={questions.length} onAnswer={() => side.goTo("question", true)} />

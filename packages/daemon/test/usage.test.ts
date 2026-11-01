@@ -596,3 +596,121 @@ for (const failure of ["zero", "throw"])
     assert.equal(fold(store.readSince(0)).projects.p?.usage?.days[0]?.coordinator.unknown, 2);
     assert.equal(store.readSince(0).filter((e) => e.kind === "hold.opened").length, 1);
   });
+
+for (const runtime of ["native", "sdk", "sdk-unknown"] as const) {
+  test(`watchdog ${runtime} completions enter the project ceiling once, without charging another project`, async (t) => {
+    const store = new EventStore(":memory:");
+    const coordinators = new Coordinators(store);
+    t.after(async () => {
+      await coordinators.close();
+      store.close();
+    });
+    rules(store, { coordinatorTokensPerDay: 1, zone: "UTC" });
+    const ref = { ticket: "ORC-1", session: "worker-1", generation: 1 };
+    const append = (kind: "session.claimed" | "session.reported" | "session.heartbeat", payload: object) =>
+      store.append({ project: "p", at, actor: "worker", kind, payload } as import("@armada/protocol").EventInput);
+    append("session.claimed", { ...ref, runtime: "claude", owner: "coordinator", handle: "worker" });
+    for (let i = 0; i < 3; i++) append("session.reported", { ...ref, phase: "implementing", reason: "Same retry" });
+    append("session.heartbeat", ref);
+    let called!: () => void;
+    const request = new Promise<void>((resolve) => {
+      called = resolve;
+    });
+    let calls = 0;
+    const verdict = JSON.stringify({ verdict: "progressing", evidence: "Making progress" });
+    const { createProvider } = await import("@earendil-works/pi-ai/models");
+    const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai/utils/event-stream");
+    const base = fauxProvider({ models: [{ id: "watchdog-meter" }] }).getModel();
+    const model = { ...base, api: "watchdog-meter", provider: "watchdog-meter" };
+    const models = createModels();
+    const stream = () => {
+      calls++;
+      called();
+      const message = fauxAssistantMessage(verdict);
+      Object.assign(message, { provider: model.provider, model: model.id, api: model.api });
+      message.usage = { ...message.usage, ...counters, totalTokens: 160 };
+      const result = createAssistantMessageEventStream();
+      result.push({ type: "done", reason: "stop", message });
+      result.end(message);
+      return result;
+    };
+    models.setProvider(
+      createProvider({
+        id: model.provider,
+        models: [model],
+        auth: { apiKey: { name: "Synthetic", resolve: async () => ({ auth: {} }) } },
+        api: { stream, streamSimple: stream },
+      }),
+    );
+    let config = { models, model: { provider: model.provider, modelId: model.id } };
+    if (runtime !== "native") {
+      const { MockLanguageModelV4 } = await import("ai/test");
+      const { pluginModels } = await import("../src/model-sdk.ts");
+      const known = runtime === "sdk";
+      const sdk = new MockLanguageModelV4({
+        doGenerate: async () => {
+          calls++;
+          called();
+          return {
+            content: [{ type: "text", text: verdict }],
+            finishReason: { unified: "stop", raw: "stop" },
+            warnings: [],
+            usage: {
+              inputTokens: {
+                total: known ? 140 : undefined,
+                noCache: known ? 100 : undefined,
+                cacheRead: known ? 30 : undefined,
+                cacheWrite: known ? 10 : undefined,
+              },
+              outputTokens: { total: known ? 20 : undefined, text: known ? 20 : undefined, reasoning: undefined },
+            },
+          };
+        },
+      });
+      config = pluginModels("fixture", "watchdog-meter", sdk);
+    }
+    // Both coordinators share one registry; only the watchdog's project owns this request.
+    await coordinators.open({ project: "other", ...config, now: () => Date.parse(at), setTimer: () => () => {} });
+    const timers = new Set<{ run: () => void; delay: number }>();
+    const c = await coordinators.open({
+      project: "p",
+      ...config,
+      now: () => Date.parse(at),
+      setTimer: () => () => {},
+      wakeClock: {
+        now: () => Date.parse(at),
+        setTimer(run, delay) {
+          const timer = { run, delay };
+          timers.add(timer);
+          return () => {
+            timers.delete(timer);
+          };
+        },
+      },
+    });
+    assert.equal(fold(store.readSince(0)).projects.p?.holds.length, 0);
+    const due = [...timers].find((timer) => timer.delay === 1);
+    assert.ok(due, "repeated live reports schedule a watchdog judgment");
+    due.run();
+    await request;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await c.waker.close();
+    assert.equal(calls, 1, "one real watchdog request ran without a coordinator conversation turn");
+    const tables = fold(store.readSince(0));
+    const usage = tables.projects.p?.usage?.days[0]?.coordinator;
+    assert.ok(usage, "the completed watchdog request is metered");
+    if (runtime === "sdk-unknown") {
+      assert.equal(usage.input, null);
+      assert.equal(usage.unknown, 1);
+    } else {
+      assert.deepEqual(
+        { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite },
+        counters,
+      );
+      assert.equal(usage.reported, 1);
+    }
+    assert.equal(tables.projects.p?.holds.length, 1);
+    assert.equal(tables.projects.p?.inbox.filter((item) => item.kind === "owner-request").length, 1);
+    assert.equal(tables.projects.other?.usage, undefined);
+  });
+}

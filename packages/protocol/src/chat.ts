@@ -135,6 +135,7 @@ export const ownerAnsweredSchema = z.object({
   type: z.literal("owner.answered"),
   project: identifier,
   item: identifier,
+  queued: identifier.optional(),
 });
 
 export type ChatReadRequest = z.infer<typeof chatReadRequestSchema>;

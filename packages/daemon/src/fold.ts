@@ -1,4 +1,5 @@
 import type {
+  Delivery,
   FleetEvent,
   FleetTables,
   Hold,
@@ -17,6 +18,7 @@ import type {
 import { type ReaderUsage, readerUsageSchema, workerLaunchCheckpointSchema } from "@armada/protocol";
 import { z } from "zod";
 import { checkpointRules, emptyRules, type RulesState } from "../coordinator/rules.ts";
+import { applyDelivery } from "./delivery-state.ts";
 import { flowStep, pipelineStep } from "./rules.ts";
 import { projectUsage } from "./usage.ts";
 
@@ -54,6 +56,7 @@ const readerCheckpoint = z.object({
   format: z.literal("armada.readers"),
   version: z.literal(1),
   provider: z.string().min(1),
+  failures: z.number().int().nonnegative().optional(),
 });
 
 interface Projection {
@@ -70,6 +73,7 @@ interface Projection {
   queue: Map<string, QueueEntry>;
   holds: Map<string, Hold>;
   validations: Map<string, Validation>;
+  deliveries: Map<string, Delivery>;
 }
 const empty = (): Projection => ({
   rules: emptyRules(),
@@ -84,12 +88,17 @@ const empty = (): Projection => ({
   queue: new Map(),
   holds: new Map(),
   validations: new Map(),
+  deliveries: new Map(),
 });
 const active = (p: Projection, ref: SessionRef) => {
   const session = p.sessions.get(ref.ticket);
   return session?.session === ref.session && session.phase !== "released" && session.phase !== "merged"
     ? session
     : undefined;
+};
+
+const clearProgressNotices = (p: Projection, ticket: string) => {
+  for (const [id, item] of p.inbox) if (item.kind === "liveness" && item.ticket === ticket) p.inbox.delete(id);
 };
 
 /** Replay a complete, ascending log (or a project-filtered log with sequence gaps).
@@ -108,6 +117,7 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
       p = empty();
       projects.set(e.project, p);
     }
+    applyDelivery(p.deliveries, e);
     switch (e.kind) {
       case "ticket.seen": {
         const t = e.payload;
@@ -134,18 +144,31 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
         break;
       }
       case "pull-request.opened":
+      case "pull-request.conflicting":
+      case "pull-request.behind":
       case "pull-request.head-moved":
       case "pull-request.checks-green":
       case "pull-request.checks-red":
       case "pull-request.review-changed":
       case "pull-request.closed":
       case "pull-request.merged":
-      case "pull-request.seen":
+      case "pull-request.seen": {
+        const priorHead =
+          p.prs.get(e.payload.number)?.head ??
+          [...p.prs.values()].findLast((pr) => pr.ticket === e.payload.ticket)?.head;
+        if (priorHead !== e.payload.head) clearProgressNotices(p, e.payload.ticket);
         if (e.payload.state === "merged" && p.prs.get(e.payload.number)?.state !== "merged")
           p.mergedAt.set(e.payload.number, { at: e.at, seq: e.seq });
         p.prs.delete(e.payload.number);
         p.prs.set(e.payload.number, { ...e.payload, conflicting: e.payload.state === "open" && e.payload.conflicting });
         break;
+      }
+      case "review-thread.opened":
+      case "review-thread.resolved": {
+        const pr = p.prs.get(e.payload.pr);
+        if (pr) pr.unresolvedThreads = e.payload.unresolvedThreads;
+        break;
+      }
       case "session.claimed":
         if (!Number.isSafeInteger(e.payload.generation) || e.payload.generation < 1)
           throw new Error("claim generation must be a positive safe integer");
@@ -166,16 +189,39 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
             heartbeat: null,
             earlier: [],
           });
+        if (!p.claims.has(e.payload.session) && p.sessions.get(e.payload.ticket)?.session === e.payload.session)
+          clearProgressNotices(p, e.payload.ticket);
         p.claims.add(e.payload.session);
         break;
       case "session.reported": {
         const s = active(p, e.payload);
         if (s) {
+          if (s.phase !== e.payload.phase || s.reason.trim() !== e.payload.reason.trim())
+            clearProgressNotices(p, e.payload.ticket);
           s.earlier.push(s.phase);
           s.phase = e.payload.phase;
           s.reason = e.payload.reason;
           s.at = e.at;
           if (e.payload.stage !== undefined) s.stage = e.payload.stage;
+        }
+        break;
+      }
+      case "session.liveness": {
+        const s = active(p, e.payload);
+        if (
+          s &&
+          s.generation === e.payload.generation &&
+          !["blocked", "awaiting-approval", "awaiting-validation", "ready-to-merge"].includes(s.phase)
+        ) {
+          p.inbox.set(e.payload.id, {
+            id: e.payload.id,
+            ticket: s.ticket,
+            kind: "liveness",
+            actor: e.actor,
+            at: e.at,
+            seq: e.seq,
+            body: `${s.ticket} ${e.payload.verdict}: ${e.payload.summary}; evidence: ${JSON.stringify(e.payload.evidence)}`,
+          });
         }
         break;
       }
@@ -188,6 +234,7 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
         const s = active(p, e.payload);
         if (s) {
           s.earlier.push(s.phase);
+          clearProgressNotices(p, e.payload.ticket);
           s.phase = "released";
           s.reason = e.payload.reason;
           s.at = e.at;
@@ -228,6 +275,7 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
         const s = active(p, e.payload);
         if (s) {
           s.earlier.push(s.phase);
+          clearProgressNotices(p, e.payload.ticket);
           s.phase = "merged";
           s.reason = `Merged #${e.payload.pr}`;
           s.at = e.at;
@@ -291,7 +339,8 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
         const usage = linearUsageCheckpoint.safeParse(e.payload.checkpoint);
         if (usage.success) p.readers.linear = usage.data.usage;
         const reading = readerCheckpoint.safeParse(e.payload.checkpoint);
-        if (reading.success && Number.isFinite(Date.parse(e.at))) p.readAt[reading.data.provider] = e.at;
+        if (reading.success && !reading.data.failures && Number.isFinite(Date.parse(e.at)))
+          p.readAt[reading.data.provider] = e.at;
         const rules = checkpointRules(e.payload.checkpoint);
         if (rules) p.rules = rules;
         break;
@@ -371,6 +420,35 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
       events.filter((e) => e.project === project),
       p.rules.value.policy?.budget?.zone ?? "UTC",
     );
+    const deliveries = [...p.deliveries.values()].filter(
+      (d) =>
+        !d.sentAt &&
+        sessions.some(
+          (s) =>
+            s.ticket === d.ticket &&
+            s.session === d.session &&
+            s.generation === d.generation &&
+            !["released", "merged"].includes(s.phase),
+        ),
+    );
+    const failures: InboxItem[] = deliveries.flatMap((d) => {
+      const session = sessions.find(
+        (s) => s.ticket === d.ticket && s.session === d.session && s.generation === d.generation,
+      );
+      return d.failureSeq !== undefined && session && !["released", "merged"].includes(session.phase)
+        ? [
+            {
+              id: `delivery:${d.id}`,
+              ticket: d.ticket,
+              kind: "delivery-failed" as const,
+              body: `${d.source === "owner-answer" ? "Answer" : "Message"} not delivered to ${d.ticket}: ${d.error}`,
+              at: d.failedAt!,
+              actor: "delivery",
+              seq: d.failureSeq,
+            },
+          ]
+        : [];
+    });
     tables.projects[project] = {
       ...(p.defaultBranch ? { defaultBranch: p.defaultBranch } : {}),
       rules: p.rules,
@@ -381,7 +459,8 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
       pullRequests: [...p.prs.values()],
       sessions,
       sessionsByState,
-      inbox: [...p.inbox.values()],
+      inbox: [...p.inbox.values(), ...failures].sort((a, b) => a.seq - b.seq),
+      ...(p.deliveries.size ? { deliveries } : {}),
       queue: [...p.queue.values()],
       holds: [...p.holds.values()],
       validations: [...p.validations.values()],

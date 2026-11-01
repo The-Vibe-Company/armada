@@ -21,7 +21,9 @@ import {
   ownerAnsweredSchema,
   ownerAnswerRequestSchema,
 } from "./chat.js";
+import { DELIVERIES_MINOR } from "./deliveries.js";
 import { counter, identifier, requestSchema, USAGE_MINOR, versionSchema } from "./envelope.js";
+import { GITHUB_READER_MINOR } from "./fleet.js";
 import {
   modelConfigSchema,
   modelKindEntrySchema,
@@ -33,7 +35,7 @@ import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
 import { PROJECTS_MINOR, projectRequestSchemas, projectSchema, projectsInspectionSchema } from "./projects.js";
 import { providerRequestSchemas, providersCatalogSchema } from "./providers.js";
 import { READER_MINOR, roomPresenceRequestSchema } from "./readers.js";
-import { BRIEF_INSTRUCTIONS_MINOR } from "./rules.js";
+import { BRIEF_INSTRUCTIONS_MINOR, WATCHDOG_MINOR } from "./rules.js";
 import {
   sessionOutputRequestSchema,
   sessionOutputResultSchema,
@@ -56,7 +58,15 @@ export * from "./session.js";
 /** Wire version, independent of the daemon/app release versions. */
 export const PROTOCOL_VERSION = {
   major: 1,
-  minor: Math.max(READER_MINOR, PROJECTS_MINOR, BRIEF_INSTRUCTIONS_MINOR, USAGE_MINOR),
+  minor: Math.max(
+    READER_MINOR,
+    PROJECTS_MINOR,
+    BRIEF_INSTRUCTIONS_MINOR,
+    GITHUB_READER_MINOR,
+    DELIVERIES_MINOR,
+    WATCHDOG_MINOR,
+    USAGE_MINOR,
+  ),
 } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
@@ -284,6 +294,9 @@ export function admitRequest(input: unknown, daemonVersion: ProtocolVersion = PR
   }
   return { ok: true, request: parsed.data };
 }
+
+// Durable worker input deliveries (THE-2108).
+export { DELIVERIES_MINOR, type Delivery } from "./deliveries.js";
 
 // Token metering and budget usage (THE-2109). Keep additive exports separate.
 export * from "./usage.js";

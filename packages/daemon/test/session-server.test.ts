@@ -97,7 +97,11 @@ test("the owner answers a blocked worker's question once: delivered to its gener
   assert.ok(item);
 
   const answer = { type: "owner.answer", project, item, choice: "sunrise", note: "Use the harbour's table" };
-  assert.deepEqual(await client.ask(answer), { type: "owner.answered", version, id: "r1", project, item });
+  const response = await client.ask(answer);
+  assert.equal(response.type, "owner.answered");
+  const intent = store.readSince(0, project).find((e) => e.kind === "delivery.queued");
+  assert.equal(intent?.kind, "delivery.queued");
+  assert.deepEqual(response, { type: "owner.answered", version, id: "r1", project, item, queued: intent?.payload.id });
   const answered = live.fake.delivered.filter((d) => d.key === `owner-answer:${item}`);
   assert.deepEqual(
     answered.map((d) => [d.session, d.message]),
@@ -106,7 +110,12 @@ test("the owner answers a blocked worker's question once: delivered to its gener
   assert.equal(store.readSince(0, project).findLast((e) => e.kind === "inbox.answered")?.actor, "owner");
 
   // The same answer again is answered, not delivered again; another one is refused.
-  assert.equal((await client.ask(answer)).type, "owner.answered");
+  assert.deepEqual(await client.ask(answer), { ...response, id: "r2" }, "same answer replays the same queue id");
+  assert.deepEqual(
+    await client.ask({ ...answer, version: { major: 1, minor: 16 } }),
+    { type: "owner.answered", version, id: "r3", project, item },
+    "old clients retain their response shape",
+  );
   assert.equal(live.fake.delivered.filter((d) => d.key === `owner-answer:${item}`).length, 1);
   const other = await client.ask({ ...answer, choice: "fixed" });
   assert.equal(other.type === "error" && other.message, "This question was already answered");

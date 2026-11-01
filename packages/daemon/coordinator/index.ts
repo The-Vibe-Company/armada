@@ -10,6 +10,7 @@ import {
   type ModelRef,
   section,
 } from "@earendil-works/pi-durable";
+import { judgeProgress } from "../src/liveness/judge.ts";
 import { meteredModels } from "../src/model-sdk.ts";
 import type { EventStore } from "../src/store.ts";
 import { type NativeToolOptions, nativeTools } from "./native.ts";
@@ -77,6 +78,12 @@ export class Coordinators {
       project: options.project,
       now: () => new Date(now()).toISOString(),
     });
+    const resolveModels = (source?: { providerSession: string; session: string }) => {
+      const models = typeof options.models === "function" ? options.models() : options.models;
+      storage.observeModels(models, source);
+      return meteredModels(models);
+    };
+    const watchdogSession = `armada/watchdog/${options.project}`;
     let harness: Harness | undefined;
     try {
       const registry = createRegistry();
@@ -93,11 +100,7 @@ export class Coordinators {
       harness = await Harness.open(
         storage,
         {
-          models: () => {
-            const models = typeof options.models === "function" ? options.models() : options.models;
-            storage.observeModels(models);
-            return meteredModels(models);
-          },
+          models: () => resolveModels(),
           registry,
           now,
           setTimer: options.setTimer,
@@ -132,6 +135,18 @@ export class Coordinators {
         conversation,
         clock: options.wakeClock,
         now,
+        progress: {
+          judge: judgeProgress(
+            () => resolveModels({ providerSession: watchdogSession, session: "watchdog" }),
+            async () => {
+              const model = (await conversation.agent(BACKGROUND_CONTEXT)).model;
+              if (!model) throw new Error("Coordinator model unavailable");
+              return model;
+            },
+            watchdogSession,
+          ),
+          transcript: (session) => options.native?.workers?.transcript(options.project, session) ?? Promise.resolve(""),
+        },
       });
       return { harness, conversation, waker };
     } catch (error) {

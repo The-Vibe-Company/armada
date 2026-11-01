@@ -1,10 +1,11 @@
 import { z } from "zod";
-import { coordinatorModelSchema } from "./models.js";
+import { coordinatorModelSchema, piCoordinatorModelSchema } from "./models.js";
 
 // THE-2043 reserved protocol minor 5 for the extended Rules snapshot vocabulary.
 export const RULES_SCHEMA_MINOR = 5;
 export const CONDUCTOR_MINOR = 13;
 export const BRIEF_INSTRUCTIONS_MINOR = 16;
+export const WATCHDOG_MINOR = 20;
 
 const id = z.string().min(1).max(200).regex(/\S/);
 const target = {
@@ -65,6 +66,7 @@ export const projectRulesSchema = z.strictObject({
       approvalLabel: id.optional(),
       preApprovedLabel: id.optional(),
       silenceMinutes: minutes.optional(),
+      watchdogModel: piCoordinatorModelSchema.optional(),
       quietMinutes: minutes.optional(),
       coordinatorMinutes: z.number().nonnegative().optional(),
       notStartedMinutes: minutes.optional(),

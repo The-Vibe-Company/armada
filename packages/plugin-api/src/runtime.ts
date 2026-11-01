@@ -72,6 +72,8 @@ export interface RuntimeProvider extends ProviderConnection {
   launch(request: LaunchRequest): Promise<WorkerRef>;
   deliver(worker: WorkerRef, message: string, deliveryKey: string): Promise<void>;
   observe(worker: WorkerRef): Promise<WorkerObservation>;
+  /** Optional read-only transcript tail, at most maxBytes UTF-8 bytes. No runtime input is sent. */
+  transcript?(worker: WorkerRef, maxBytes: number): Promise<string>;
   stop(worker: WorkerRef): Promise<void>;
   /** Called only after the host has recorded release, with an ended-generation guard. */
   archive?(worker: WorkerRef): Promise<void>;
@@ -86,5 +88,7 @@ export interface NodeProvider {
   launch(request: LaunchRequest): Promise<WorkerRef>;
   deliver(worker: WorkerRef, message: string, deliveryKey: string): Promise<void>;
   observe(worker: WorkerRef): Promise<WorkerObservation>;
+  /** Optional read-only transcript tail, at most maxBytes UTF-8 bytes. No runtime input is sent. */
+  transcript?(worker: WorkerRef, maxBytes: number): Promise<string>;
   stop(worker: WorkerRef): Promise<void>;
 }

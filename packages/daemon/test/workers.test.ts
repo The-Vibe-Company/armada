@@ -232,6 +232,109 @@ async function fixture(
   };
 }
 
+test("forge comments reach the current worker once, suppress its own account and deduplicate thread openings", {
+  timeout: 15000,
+}, async (t) => {
+  const f = await fixture(t);
+  const launched = await f.tools["worker.launch"].execute(
+    { ticket: "SEED-1", branch: "worker/seed-1", brief: "hold" },
+    f.api("launch-review"),
+    context,
+  );
+  assert.equal(launched.isError, false);
+  await until(f.workers, (value) => value.activity === "working");
+  assert.equal((await socketCall(f.socketPath, f.token(), { command: "claim", ticket: "SEED-1" })).status, 200);
+  const initialMessages = f.messages.length;
+  let releaseScan!: () => void;
+  let scanEntered!: () => void;
+  const holdScan = new Promise<void>((resolve) => {
+    releaseScan = resolve;
+  });
+  const scanning = new Promise<void>((resolve) => {
+    scanEntered = resolve;
+  });
+  const tool = f.workers.tool.bind(f.workers);
+  let held = false;
+  f.workers.tool = async (...args) => {
+    const result = await tool(...args);
+    if (args[1] === "worker.message" && !held) {
+      held = true;
+      scanEntered();
+      await holdScan;
+    }
+    return result;
+  };
+  try {
+    const payload = {
+      key: "comment:1",
+      repository: "example/orchard",
+      ticket: "SEED-1",
+      pr: 41,
+      head: "aaa",
+      author: "owner",
+      worker: "worker",
+      body: "Please fix the edge case",
+      url: "https://github.com/example/orchard/pull/41#discussion_r1",
+      at,
+      comment: "1",
+    };
+    f.daemon.store.append({ project, at, actor: "github", kind: "pull-request.commented", payload });
+    await scanning;
+    // Let the first input finish all its writes while its feedback scan stays in flight.
+    await eventually(async () => f.daemon.store.readSince(0, project).some((event) => event.kind === "delivery.sent"));
+    assert.equal(f.messages.length, initialMessages + 1);
+    assert.match(f.messages[initialMessages]!, /Please fix the edge case/);
+    assert.ok(f.messages[initialMessages]!.includes(payload.url));
+    f.daemon.store.append({
+      project,
+      at,
+      actor: "github",
+      kind: "pull-request.commented",
+      payload: { ...payload, key: "comment:concurrent", comment: "concurrent", body: "Committed during the scan" },
+    });
+    releaseScan();
+    await eventually(async () => f.messages.length === initialMessages + 2);
+    assert.match(f.messages[initialMessages + 1]!, /Committed during the scan/);
+    f.daemon.store.append({ project, at, actor: "github", kind: "pull-request.commented", payload });
+    f.daemon.store.append({
+      project,
+      at,
+      actor: "github",
+      kind: "review-thread.opened",
+      payload: { ...payload, key: "thread:1", thread: "thread-1", path: "boat.ts", line: 12, unresolvedThreads: 1 },
+    });
+    f.daemon.store.append({
+      project,
+      at,
+      actor: "github",
+      kind: "pull-request.commented",
+      payload: { ...payload, key: "comment:2", comment: "2", author: "WORKER" },
+    });
+    f.daemon.store.append({
+      project,
+      at,
+      actor: "github",
+      kind: "pull-request.commented",
+      payload: { ...payload, key: "comment:1:edit", version: "2030-01-01T12:01:00Z", body: "Edited review text" },
+    });
+    // A subsequent external input is a delivery barrier for the suppressed/replayed inputs.
+    f.daemon.store.append({
+      project,
+      at,
+      actor: "github",
+      kind: "pull-request.commented",
+      payload: { ...payload, key: "comment:3", comment: "3", body: "Second external comment" },
+    });
+    await eventually(async () => f.messages.length >= initialMessages + 4);
+    assert.equal(f.messages.length, initialMessages + 4);
+    assert.match(f.messages[initialMessages + 2]!, /Edited review text/);
+    assert.match(f.messages[initialMessages + 3]!, /Second external comment/);
+  } finally {
+    releaseScan();
+    f.workers.tool = tool;
+  }
+});
+
 test("native tools launch a bound CLI, deliver, observe working/idle, authorize socket commands and stop one generation", {
   timeout: 15000,
 }, async (t) => {
@@ -416,6 +519,7 @@ test("a generation changed during node provenance cannot receive the pending nat
     context,
   );
   await enteredGate;
+  assert.equal((await pending).isError, false, "the queue receipt returns while the runtime write is still pending");
   const original = fold(f.daemon.store.readSince(0, project)).projects[project]?.sessions[0];
   assert(original);
   f.daemon.store.append({
@@ -426,7 +530,7 @@ test("a generation changed during node provenance cannot receive the pending nat
     payload: { ticket: "SEED-1", session: original.session, reason: "Retired during provenance" },
   });
   proceed();
-  assert.equal((await pending).isError, true);
+  await eventually(async () => f.daemon.store.readSince(0).some((e) => e.kind === "delivery.failed"));
   assert.equal((await socketCall(f.socketPath, f.token(), { command: "claim", ticket: "SEED-1" })).status, 403);
   await f.workers.close();
   assert.equal(
@@ -1280,4 +1384,46 @@ test("an unchanged usage observation after midnight reports today's coverage wit
   const day = fold(f.daemon.store.readSince(0)).projects[project]?.usage?.days.find((d) => d.day === "2030-01-02");
   assert.equal(day?.workersReported, 1);
   assert.equal(day?.workers.input, 0);
+});
+
+test("transcript reads mask and bound one generation without writes, and unsupported runtimes return empty", async (t) => {
+  let reads = 0;
+  const f = await fixture(t, (node) => ({
+    ...node,
+    async transcript(_ref, maxBytes) {
+      assert.equal(maxBytes, 4096);
+      reads++;
+      return `${"🌱".repeat(3000)}\n${f.token()}\nFailed the same test`;
+    },
+  }));
+  const launched = await f.tools["worker.launch"].execute(
+    { ticket: "SEED-1", brief: "hold" },
+    f.api("transcript-launch"),
+    context,
+  );
+  assert.equal(launched.isError, false);
+  const current = fold(f.daemon.store.readSince(0)).projects[project]?.sessions[0];
+  assert(current);
+  const before = f.daemon.store.sequence;
+  const tail = await f.workers.transcript(project, current);
+  assert.ok(Buffer.byteLength(tail) <= 4096);
+  assert.match(tail, /\[redacted\].*\nFailed the same test/);
+  assert.equal(tail.includes(f.token()), false);
+  assert.equal(tail.includes("�"), false, "UTF-8 boundaries remain intact");
+  assert.equal(f.daemon.store.sequence, before, "a transcript read appends no observation or runtime write");
+  await assert.rejects(
+    f.workers.transcript(project, { ...current, generation: current.generation + 1 }),
+    /generation changed/,
+  );
+  assert.equal(reads, 1, "stale generations cannot read the runtime");
+  const missing = await fixture(t, (node) => ({ ...node, transcript: undefined }));
+  const second = await missing.tools["worker.launch"].execute(
+    { ticket: "SEED-1", brief: "hold" },
+    missing.api("missing-tail"),
+    context,
+  );
+  assert.equal(second.isError, false);
+  const unsupported = fold(missing.daemon.store.readSince(0)).projects[project]?.sessions[0];
+  assert(unsupported);
+  assert.equal(await missing.workers.transcript(project, unsupported), "");
 });

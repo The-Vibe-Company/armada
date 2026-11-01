@@ -28,12 +28,15 @@ export function openCoordinatorStorage(options: LogStorageOptions): CoordinatorS
   return storage;
 }
 
+type UsageScope = { providerSession: string; session: string };
+
 /** The admitted project's writer capability. Native tools cannot outlive this storage owner. */
 export interface CoordinatorStorage extends Storage {
   readonly project: string;
   readEvents(): FleetEvent[];
   appendEvent(event: EventInput): FleetEvent;
-  observeModels(models: object): void;
+  observeModels(models: object, source?: UsageScope): void;
+  appendEvents(events: readonly EventInput[]): FleetEvent[];
 }
 
 /** MemoryStorage is pi's validated projection, never a second source of truth. */
@@ -56,10 +59,14 @@ class LogStorage extends MemoryStorage implements CoordinatorStorage {
   }
 
   appendEvent(event: EventInput): FleetEvent {
+    return this.appendEvents([event])[0]!;
+  }
+
+  appendEvents(events: readonly EventInput[]): FleetEvent[] {
     if (this.#closed) throw new Error("Coordinator storage is closed");
-    if (event.project !== this.project || event.actor !== "coordinator")
+    if (events.some((event) => event.project !== this.project || event.actor !== "coordinator"))
       throw new Error("Coordinator write is outside its project scope");
-    const stored = this.#options.store.append(event);
+    const stored = this.#options.store.appendMany(events);
     this.#budget();
     return stored;
   }
@@ -93,8 +100,9 @@ class LogStorage extends MemoryStorage implements CoordinatorStorage {
     this.#budget();
   }
 
-  observeModels(models: object): void {
+  observeModels(models: object, source?: UsageScope): void {
     if (this.#closed) throw new Error("Coordinator storage is closed");
+    if (source) this.#providerSessions.set(source.providerSession, source.session);
     if (!this.#unobserve.has(models))
       this.#unobserve.set(
         models,
