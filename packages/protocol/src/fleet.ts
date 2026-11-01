@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { rulesStateSchema } from "./rules.js";
+import { reportedUsageSchema } from "./tokens.js";
+import type { ProjectUsage } from "./usage.js";
 
 const text = z.string();
 const integer = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
@@ -95,52 +97,63 @@ const reasonSchema = idSchema.extend({ reason: text });
 const decisionSchema = z.object({ decision: z.enum(["approved", "changes-requested"]), note: text });
 
 /** The single vocabulary for events appended by daemon adapters and folded offline. */
-export const eventPayloadSchemas = {
-  "ticket.seen": ticketSchema,
-  "pull-request.seen": pullRequestSchema,
-  "session.claimed": sessionRefSchema.extend({ generation: integer.min(1), owner: text, runtime: text, handle: text }),
-  "session.reported": sessionRefSchema.extend({
-    phase: activePhaseSchema,
-    reason: text,
-    stage: shippingStageSchema.optional(),
-  }),
-  "session.heartbeat": sessionRefSchema,
-  "session.runtime-observed": sessionRefSchema.extend({
-    generation: integer.min(1),
-    state: z.enum(["starting", "running", "stopped", "failed", "unknown"]),
-    activity: z.enum(["working", "idle"]).optional(),
-  }),
-  "session.released": sessionRefSchema.extend({ reason: text }),
-  "inbox.opened": inboxRequestSchema,
-  "inbox.answered": idSchema.extend({ answer: text }),
-  "merge.queued": queuedSchema,
-  "merge.started": idSchema,
-  "merge.refused": reasonSchema,
-  "merge.canceled": reasonSchema,
-  "merge.confirmed": queuedSchema,
-  "hold.opened": reasonSchema,
-  "hold.cleared": reasonSchema,
-  "validation.opened": validationRequestSchema,
-  "validation.decided": idSchema.extend(decisionSchema.shape),
-  "coordinator.message": z.object({ role: z.enum(["owner", "coordinator"]), body: text }),
-  "coordinator.checkpoint": z.object({ checkpoint: z.json() }),
-  "ticket.phase-changed": z.object({ ticket: text, from: phaseSchema.nullable(), to: phaseSchema.nullable() }),
-  "ticket.report-posted": z.object({
-    ticket: text,
-    comment: text,
-    updatedAt: text,
-    phase: phaseSchema,
-    summary: text,
-    body: text,
-  }),
-  "pull-request.opened": githubPullRequestSchema,
-  "pull-request.head-moved": githubPullRequestSchema,
-  "pull-request.checks-green": githubPullRequestSchema,
-  "pull-request.checks-red": githubPullRequestSchema,
-  "pull-request.review-changed": githubPullRequestSchema,
-  "pull-request.closed": githubPullRequestSchema,
-  "pull-request.merged": githubPullRequestSchema,
-} as const;
+export const eventPayloadSchemas = /* @__PURE__ */ (() =>
+  ({
+    "ticket.seen": ticketSchema,
+    "pull-request.seen": pullRequestSchema,
+    "session.claimed": sessionRefSchema.extend({
+      generation: integer.min(1),
+      owner: text,
+      runtime: text,
+      handle: text,
+    }),
+    "session.reported": sessionRefSchema.extend({
+      phase: activePhaseSchema,
+      reason: text,
+      stage: shippingStageSchema.optional(),
+    }),
+    "session.heartbeat": sessionRefSchema,
+    "session.runtime-observed": sessionRefSchema.extend({
+      generation: integer.min(1),
+      state: z.enum(["starting", "running", "stopped", "failed", "unknown"]),
+      activity: z.enum(["working", "idle"]).optional(),
+    }),
+    "session.usage": sessionRefSchema.extend({ generation: integer.min(1), usage: reportedUsageSchema }),
+    "session.released": sessionRefSchema.extend({ reason: text }),
+    "inbox.opened": inboxRequestSchema,
+    "inbox.answered": idSchema.extend({ answer: text }),
+    "merge.queued": queuedSchema,
+    "merge.started": idSchema,
+    "merge.refused": reasonSchema,
+    "merge.canceled": reasonSchema,
+    "merge.confirmed": queuedSchema,
+    "hold.opened": reasonSchema,
+    "hold.cleared": reasonSchema,
+    "validation.opened": validationRequestSchema,
+    "validation.decided": idSchema.extend(decisionSchema.shape),
+    "coordinator.message": z.object({ role: z.enum(["owner", "coordinator"]), body: text }),
+    "coordinator.checkpoint": z.object({
+      checkpoint: z.json(),
+      turn: z.object({ id: text, session: text }).optional(),
+      usage: reportedUsageSchema.optional(),
+    }),
+    "ticket.phase-changed": z.object({ ticket: text, from: phaseSchema.nullable(), to: phaseSchema.nullable() }),
+    "ticket.report-posted": z.object({
+      ticket: text,
+      comment: text,
+      updatedAt: text,
+      phase: phaseSchema,
+      summary: text,
+      body: text,
+    }),
+    "pull-request.opened": githubPullRequestSchema,
+    "pull-request.head-moved": githubPullRequestSchema,
+    "pull-request.checks-green": githubPullRequestSchema,
+    "pull-request.checks-red": githubPullRequestSchema,
+    "pull-request.review-changed": githubPullRequestSchema,
+    "pull-request.closed": githubPullRequestSchema,
+    "pull-request.merged": githubPullRequestSchema,
+  }) as const)();
 export type EventKind = keyof typeof eventPayloadSchemas;
 export type EventPayloads = { [K in EventKind]: z.infer<(typeof eventPayloadSchemas)[K]> };
 export type EventInput = {
@@ -206,7 +219,9 @@ const tablesSchema = z.object({
   holds: z.array(holdSchema),
   validations: z.array(validationSchema),
 });
-export type ProjectTables = z.infer<typeof tablesSchema>;
+// Usage is an additive JSON extension, validated by its producer and the usage view.
+// General fleet readers need not load its detailed schema before the room opens.
+export type ProjectTables = z.infer<typeof tablesSchema> & { usage?: ProjectUsage };
 export interface FleetTables {
   seq: number;
   projects: Record<string, ProjectTables>;

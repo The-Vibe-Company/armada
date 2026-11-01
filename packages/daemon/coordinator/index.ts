@@ -10,6 +10,7 @@ import {
   type ModelRef,
   section,
 } from "@earendil-works/pi-durable";
+import { meteredModels } from "../src/model-sdk.ts";
 import type { EventStore } from "../src/store.ts";
 import { type NativeToolOptions, nativeTools } from "./native.ts";
 import { openCoordinatorStorage } from "./storage.ts";
@@ -88,7 +89,11 @@ export class Coordinators {
       harness = await Harness.open(
         storage,
         {
-          models: options.models,
+          models: () => {
+            const models = typeof options.models === "function" ? options.models() : options.models;
+            storage.observeModels(models);
+            return meteredModels(models);
+          },
           registry,
           now,
           setTimer: options.setTimer,

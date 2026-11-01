@@ -18,6 +18,7 @@ import {
   RULES_SCHEMA_MINOR,
   type ServerMessage,
   type Snapshot,
+  USAGE_MINOR,
   PROTOCOL_VERSION as version,
   workerLaunchCheckpointSchema,
 } from "@armada/protocol";
@@ -283,7 +284,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
 
   /** Older same-major clients use a strict policy reader; preserve their existing Rules view. */
   function snapshotFor(snapshot: Snapshot, minor: number): Snapshot {
-    if (minor >= CONDUCTOR_MINOR) return snapshot;
+    if (minor >= USAGE_MINOR) return snapshot;
     const state = snapshot.state as unknown as ProjectTables;
     const rules = state.rules;
     if (!rules) return snapshot;
@@ -293,6 +294,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       if (value.defaultRoute?.cli === "conductor") value.defaultRoute = null;
     }
     if (minor < RULES_SCHEMA_MINOR) delete value.gates;
+    if (minor < USAGE_MINOR && value.policy) value.policy = { ...value.policy, budget: undefined };
     if (minor < RULES_SCHEMA_MINOR && value.policy) {
       const policy = { ...value.policy };
       delete policy.plans;

@@ -1120,3 +1120,124 @@ test("project removal waits for a pending launch and then refuses its active wor
   await assert.rejects(removal, /worker in flight/);
   assert.equal(removed, false);
 });
+
+test("a daemon budget hold refuses launch with its reason, and a reasoned clear permits the next launch", {
+  timeout: 15000,
+}, async (t) => {
+  const f = await fixture(t);
+  const budget = await f.tools["rules.set"].execute(
+    {
+      expectedRevision: 1,
+      rules: { policy: { budget: { coordinatorTokensPerDay: 0, zone: "UTC" } } },
+      reason: "Owner sets a ceiling",
+    },
+    f.api("budget"),
+    context,
+  );
+  assert.equal((budget.details as { ok: boolean }).ok, true);
+  const hold = fold(f.daemon.store.readSince(0)).projects[project]?.holds[0];
+  assert.ok(hold);
+  const refused = await f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api("paused-launch"), context);
+  assert.equal(refused.isError, true);
+  assert.match(JSON.stringify(refused.details), /budget:/);
+  assert.equal(f.messages.length, 0, "no native delivery occurred");
+  const cleared = await f.tools["hold.clear"].execute(
+    { id: hold.id, reason: "Owner allows another batch" },
+    f.api("owner-clear"),
+    context,
+  );
+  assert.equal((cleared.details as { ok: boolean }).ok, true);
+  const launched = await f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api("allowed-launch"), context);
+  assert.equal((launched.details as { ok: boolean }).ok, true);
+  const usage = f.daemon.store.readSince(0).filter((e) => e.kind === "session.usage");
+  assert.equal(usage.length, 1);
+  assert.equal(usage[0]?.payload.usage, "unknown");
+});
+
+test("a budget crossed while workspace preparation awaits I/O refuses before native creation", {
+  timeout: 15000,
+}, async (t) => {
+  let entered!: () => void;
+  const preparing = new Promise<void>((r) => {
+    entered = r;
+  });
+  let proceed!: () => void;
+  const prepared = new Promise<void>((r) => {
+    proceed = r;
+  });
+  const f = await fixture(t, (node) => ({
+    ...node,
+    async prepare(request) {
+      const workspace = await node.prepare(request);
+      entered();
+      await prepared;
+      return workspace;
+    },
+  }));
+  await f.tools["rules.set"].execute(
+    {
+      expectedRevision: 1,
+      rules: { policy: { budget: { coordinatorTokensPerDay: 10, zone: "UTC" } } },
+      reason: "Owner's limit",
+    },
+    f.api("cap"),
+    context,
+  );
+  const launch = f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api("race"), context);
+  await preparing;
+  f.daemon.store.append({
+    project,
+    at,
+    actor: "coordinator",
+    kind: "coordinator.checkpoint",
+    payload: {
+      checkpoint: {},
+      turn: { id: "crossed", session: "root" },
+      usage: { input: 10, output: 1, cacheRead: 0, cacheWrite: 0, model: "oak", provider: "fixture" },
+    },
+  });
+  proceed();
+  const result = await launch;
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result.details), /budget:/);
+  assert.equal(f.token(), "", "runtime creation was never entered");
+  const replay = await f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api("race"), context);
+  assert.equal(replay.isError, true);
+  assert.match(JSON.stringify(replay.details), /budget:/);
+  assert.equal(fold(f.daemon.store.readSince(0)).projects[project]?.holds.length, 1);
+});
+
+test("an unchanged usage observation after midnight reports today's coverage without charging tokens again", {
+  timeout: 15000,
+}, async (t) => {
+  let clock = "2030-01-01T23:59:00.000Z";
+  const frame =
+    JSON.stringify({
+      type: "result",
+      uuid: "metered",
+      usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    }) + "\n";
+  const f = await fixture(
+    t,
+    (node) => ({
+      ...node,
+      async observe(ref) {
+        const observed = await node.observe(ref);
+        return { ...observed, reply: (observed.reply ?? "") + "\n" + frame };
+      },
+    }),
+    undefined,
+    () => clock,
+  );
+  const launched = await f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api("metered-launch"), context);
+  assert.equal((launched.details as { ok: boolean }).ok, true);
+  await f.workers.observe(project, "SEED-1");
+  const count = f.daemon.store.readSince(0).filter((e) => e.kind === "session.usage").length;
+  await f.workers.observe(project, "SEED-1");
+  assert.equal(f.daemon.store.readSince(0).filter((e) => e.kind === "session.usage").length, count);
+  clock = "2030-01-02T00:01:00.000Z";
+  await f.workers.observe(project, "SEED-1");
+  const day = fold(f.daemon.store.readSince(0)).projects[project]?.usage?.days.find((d) => d.day === "2030-01-02");
+  assert.equal(day?.workersReported, 1);
+  assert.equal(day?.workers.input, 0);
+});

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { rulesStateSchema } from "@armada/protocol";
 import { defineTool, type JsonObject, type ToolRegistration } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import * as Value from "typebox/value";
@@ -328,10 +329,26 @@ function decide(
         ...rules.value,
         ...patch,
         ...(patch.policy
-          ? { policy: { ...((rules.value.policy as JsonObject) ?? {}), ...(patch.policy as JsonObject) } }
+          ? {
+              policy: {
+                ...((rules.value.policy as JsonObject) ?? {}),
+                ...(patch.policy as JsonObject),
+                ...((patch.policy as JsonObject).budget
+                  ? {
+                      budget: { ...rules.value.policy?.budget, ...((patch.policy as JsonObject).budget as JsonObject) },
+                    }
+                  : {}),
+              },
+            }
           : {}),
       };
       const next = { revision: rules.revision + 1, value };
+      if (!rulesStateSchema.safeParse(next).success)
+        return no(
+          "invalid_rules",
+          "project rules contain an invalid budget or time zone",
+          "rules.set with valid policy numbers and an IANA time zone",
+        );
       return changed(
         {
           ...base,

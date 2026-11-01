@@ -13,6 +13,8 @@ import { PageStrip } from "@/components/page";
 import { GROUPS, type Group } from "@/fleet/overview";
 import { cn } from "@/lib/utils";
 
+import UsagePill from "./UsagePill";
+
 const PILL_WORDS: Record<Group, string> = {
   blocked: "blocked",
   you: "waiting for you",
@@ -42,6 +44,7 @@ export function Header({
   project,
   counts,
   readAt,
+  usage,
   now,
   open,
   panel,
@@ -54,6 +57,7 @@ export function Header({
   /** The folded counts; none while the project's log is read. */
   counts: Record<Group, number> | null;
   readAt: Readonly<Record<string, string>> | undefined;
+  usage?: unknown;
   now: number;
   open: boolean;
   /** The panel's id, which the toggle controls. */
@@ -114,6 +118,7 @@ export function Header({
               {r.text}
             </span>
           ))}
+          {usage && <UsagePill usage={usage} now={now} />}
           <button
             ref={toggle}
             type="button"

@@ -17,6 +17,7 @@ import { workerLaunchCheckpointSchema } from "@armada/protocol";
 import { z } from "zod";
 import { checkpointRules, emptyRules, type RulesState } from "../coordinator/rules.ts";
 import { flowStep, pipelineStep } from "./rules.ts";
+import { projectUsage } from "./usage.ts";
 
 export type {
   FleetTables,
@@ -352,8 +353,13 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
       released: [],
     };
     for (const s of sessions) sessionsByState[s.state].push(s);
+    const usage = projectUsage(
+      events.filter((e) => e.project === project),
+      p.rules.value.policy?.budget?.zone ?? "UTC",
+    );
     tables.projects[project] = {
       rules: p.rules,
+      ...(usage.days.length ? { usage } : {}),
       ...(Object.keys(p.readAt).length ? { readAt: p.readAt } : {}),
       tickets: [...p.tickets.values()],
       pullRequests: [...p.prs.values()],

@@ -1,4 +1,5 @@
 import type { FleetEvent, ProjectTables, Ticket } from "@armada/protocol";
+import { usageSummary } from "@armada/protocol/usage";
 
 const ended = (phase: string) => phase === "merged" || phase === "released";
 const line = (text: string, max = 160) => {
@@ -80,6 +81,7 @@ export function fleetStatus(tables: ProjectTables, events: FleetEvent[], at: str
           : {}),
       },
     },
+    today: tables.usage ? usageSummary(tables.usage, at) : "today: usage unknown",
     unavailable: [
       ...(candidates.some((t) => t.blockers === undefined) ? ["frontier-blockers"] : []),
       "runtime-observations",

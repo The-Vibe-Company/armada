@@ -43,7 +43,19 @@ export interface LaunchRequest {
   labels?: string[];
   baseBranch?: string;
 }
+/** Cumulative since this worker generation launched; omitted counters are explicitly unknown. */
+export interface WorkerUsage {
+  /** Known counters remain lower bounds after an unreported turn. */
+  incomplete?: boolean;
+  input: number | null;
+  output: number | null;
+  cacheRead: number | null;
+  cacheWrite: number | null;
+  model: string | null;
+  provider: string | null;
+}
 export interface WorkerObservation {
+  usage?: WorkerUsage | "unknown";
   state: "starting" | "running" | "stopped" | "failed" | "unknown";
   reply?: string;
   /** CLI activity is independent of the operating-system process state. */

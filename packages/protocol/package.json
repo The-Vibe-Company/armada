@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./usage": {
+      "types": "./dist/usage-view.d.ts",
+      "default": "./dist/usage-view.js"
     }
   },
   "files": [

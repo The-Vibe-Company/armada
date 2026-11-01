@@ -27,6 +27,8 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
       deliveries: Map<string, string>;
       reply?: string;
       failure?: string;
+      usage: NonNullable<import("@armada/plugin-api").WorkerObservation["usage"]>;
+      usageResults: Set<string>;
     }
   >();
   const facilities = () => {
@@ -55,6 +57,31 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
       try {
         const event = JSON.parse(line);
         if (event.type === "result") {
+          // Result usage is authoritative for a whole CLI turn; assistant frames can repeat it.
+          const identity = typeof event.uuid === "string" ? event.uuid : `result:${value.usageResults.size}`;
+          if (!value.usageResults.has(identity)) {
+            value.usageResults.add(identity);
+            const raw = event.usage ?? {};
+            const before = value.usage === "unknown" ? undefined : value.usage;
+            const count = (key: string, previous: number | null | undefined) =>
+              Number.isSafeInteger(raw[key]) && raw[key] >= 0 ? (previous ?? 0) + raw[key] : (previous ?? null);
+            const models =
+              event.modelUsage && typeof event.modelUsage === "object" ? Object.keys(event.modelUsage) : [];
+            value.usage = {
+              input: count("input_tokens", before?.input),
+              output: count("output_tokens", before?.output),
+              cacheRead: count("cache_read_input_tokens", before?.cacheRead),
+              cacheWrite: count("cache_creation_input_tokens", before?.cacheWrite),
+              model: models.length ? models.join(", ") : (before?.model ?? null),
+              provider: "anthropic",
+              ...(before?.incomplete ||
+              ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].some(
+                (k) => !Number.isSafeInteger(raw[k]) || raw[k] < 0,
+              )
+                ? { incomplete: true }
+                : {}),
+            };
+          }
           value.turns = Math.max(0, value.turns - 1);
           value.activity = value.turns ? "working" : "idle";
           if (event.is_error === true) {
@@ -104,6 +131,8 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
         pending: "",
         turns: 0,
         deliveries: new Map(),
+        usage: "unknown",
+        usageResults: new Set(),
       });
       return ref;
     },
@@ -130,12 +159,13 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
     async observe(ref) {
       const value = record(ref);
       const observed = await facilities().observe(ref);
-      if (!value.stream || observed.state !== "running") return observed;
+      if (!value.stream) return { ...observed, usage: "unknown" };
       const reply = consume(value, observed.reply ?? "");
       const answer = value.failure || reply;
       return {
         state: value.failure ? "failed" : observed.state,
         activity: value.activity,
+        usage: value.usage,
         ...(answer === undefined ? {} : { reply: answer }),
       };
     },

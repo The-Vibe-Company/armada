@@ -30,7 +30,12 @@ test("a project's rules read from its own folded snapshot", () => {
               ],
               defaultRoute: { cli: "opencode", model: "garden" },
               placement: { workers: "vm", coordinator: "local" },
-              policy: { silenceMinutes: 12, quietMinutes: 40, maxWorkers: null },
+              policy: {
+                silenceMinutes: 12,
+                quietMinutes: 40,
+                maxWorkers: null,
+                budget: { coordinatorTokensPerDay: 1000000, workerLaunchesPerNight: 3, zone: "Europe/Paris" },
+              },
             },
           },
         },
@@ -80,6 +85,9 @@ test("a project's rules read from its own folded snapshot", () => {
     "12 min",
     "40 min",
     "No cap",
+    "1,000,000",
+    "Worker launches per night",
+    "22:00–07:00 · Europe/Paris",
   ])
     expect(html).toContain(content);
   expect(view("field")).not.toContain("oak");

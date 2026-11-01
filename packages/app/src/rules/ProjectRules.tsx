@@ -36,6 +36,22 @@ export function ProjectRules({ state }: { state: unknown }) {
                   : (parsed.data.value.policy?.maxWorkers?.toString() ?? "Not set")
               }
             />
+            {parsed.data.value.policy?.budget && (
+              <>
+                <Fact
+                  label="Coordinator tokens per day"
+                  value={parsed.data.value.policy.budget.coordinatorTokensPerDay?.toLocaleString("en-US") ?? "No cap"}
+                />
+                <Fact
+                  label="Worker launches per night"
+                  value={parsed.data.value.policy.budget.workerLaunchesPerNight?.toString() ?? "No cap"}
+                />
+                <Fact
+                  label="Night budget window"
+                  value={`${parsed.data.value.policy.budget.nightStart ?? "22:00"}–${parsed.data.value.policy.budget.nightEnd ?? "07:00"} · ${parsed.data.value.policy.budget.zone}`}
+                />
+              </>
+            )}
             <Fact label="Silence after" value={minutes(parsed.data.value.policy?.silenceMinutes)} />
             <Fact label="Quiet after" value={minutes(parsed.data.value.policy?.quietMinutes)} />
           </dl>

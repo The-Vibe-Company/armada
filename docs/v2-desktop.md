@@ -312,8 +312,8 @@ the openai-compatible model plugin, with pi-durable checkpoints in the log.
   env, then the keychain, then `gh` for GitHub, and the readiness line names a
   reader that failed and why. Verified on the owner's machine: ticket and
   pull-request events resume within a minute of a restart.
-- **Cost is not metered yet.** The coordinator's tokens are not counted in the
-  log; a later ticket adds usage to the checkpoint event.
+- **Tokens and night budgets are metered (THE-2109).** Coordinator model completions and compaction calls carry input/output/cache usage in their existing durable checkpoint; the replayed fleet sums it per project, civil day and session. The room header and fleet.status show today's reading. Set `policy.budget` through rules.set with a reason: `coordinatorTokensPerDay`, `workerLaunchesPerNight`, optional `nightStart`/`nightEnd` (22:00–07:00), and an IANA `zone`. Reaching a ceiling, or receiving an unknown/partial completed coordinator usage reading under a configured ceiling, opens an ordinary budget hold and one owner-request; launches and merges refuse under it. Only the owner authorizes raising or clearing it with a reason. Clears are exceptions for that ceiling and period; a new day/night or raised ceiling is metered separately. Existing holds remain until cleared. Tokens include input, output, cache reads and cache writes; no currency estimate is made.
+  Worker usage is cumulative per generation: Claude reports the CLI stream's result usage (available when a turn finishes); Codex, OpenCode and hosted Conductor currently expose no supported usage counters through their adapters and are explicitly unknown. Missing counters stay unknown, including old logs/snapshots, rather than becoming zero. Worker budgets count launches even when token usage is unknown.
 - **Still manual.** Launching a worker and merging a pull request from the room
   (THE-2042) exist as tools but have not yet been exercised end to end on a
   real ticket by the owner; that is the first acceptance of the morning.

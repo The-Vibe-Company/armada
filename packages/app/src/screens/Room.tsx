@@ -39,7 +39,9 @@ import { agentHref, agentKey, agentStep, showAgent, useRoomAgent } from "@/room/
 import { Thread, type ThreadControl } from "@/room/Thread";
 import { useRoomPanel } from "@/room/use-panel";
 import { ownerQuestions, starterAsks } from "@/room/view";
+
 import { ProjectRules } from "@/rules/ProjectRules";
+
 import { NeedsArmada } from "@/settings/NeedsArmada";
 import { linearNeedsSignIn } from "@/settings/needs-armada";
 
@@ -220,6 +222,7 @@ export function RoomView({
         project={project}
         counts={snapshot ? counts : null}
         readAt={state.readAt}
+        usage={state.usage}
         now={now}
         open={open}
         panel={PANEL_ID}
