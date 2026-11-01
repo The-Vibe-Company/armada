@@ -91,7 +91,7 @@ describe("the room's panel in a browser", () => {
     await side.locator("[data-pr-row]").first().waitFor();
     const prs = await side.locator("[data-pr-row]").allInnerTexts();
     expect(prs.map((t) => t.replace(/\s+/g, " ").trim())).toContain(
-      "#41 HAR-15 Price berths by the hour Checks failing",
+      "#41 Price berths by the hour HAR-15 head-41 Red CI",
     );
     // ⌘3: the rules form; ⌘4: the log, newest first, 50 rows.
     await page.keyboard.press("Meta+3");

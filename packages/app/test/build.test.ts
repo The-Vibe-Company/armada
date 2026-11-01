@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 import { bootDaemon } from "@armada/daemon";
 import { Keychain } from "@armada/daemon/keychain";
@@ -103,6 +103,40 @@ describe("in a browser, served by a running daemon", () => {
     expect(await page.getByLabel("Model", { exact: true }).inputValue()).toBe("local-deployment");
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
   });
+
+  test("Settings › Providers shows each agent as a card and opens a card's detail below the list", async () => {
+    // A daemon with the synthetic providers (scripts/dev-providers.ts), booted as armadad boots its plugins.
+    const dir = mkdtempSync(join(tmpdir(), "armada-app-providers-"));
+    const served = await startDevDaemon({ staticDir: out, coordinators: false, providers: join(dir, "config.json") });
+    const tab = await browser?.newPage({ viewport: { width: 1280, height: 900 } });
+    if (!tab) throw new Error("Browser not started");
+    try {
+      await tab.goto(`${served.url}#/settings/providers`);
+      const codex = tab.locator('[data-card="codex"]');
+      await codex.waitFor({ timeout: 5_000 });
+      expect(await tab.locator("[data-card] [data-card-name]").allTextContents()).toEqual([
+        "Claude",
+        "Codex",
+        "OpenCode",
+      ]);
+      expect(await codex.innerText()).toMatch(/Codex\s*v0\.166\.0\s*Authenticated · ChatGPT Pro/);
+      expect(await tab.locator('[data-card="opencode"] [data-card-status]').innerText()).toContain("Not installed");
+      expect(await tab.getByRole("switch", { name: "Enable Claude" }).getAttribute("aria-checked")).toBe("true");
+      await codex.getByRole("button", { expanded: false }).click();
+      await tab.waitForURL(/#\/settings\/providers\/codex$/, { timeout: 5_000 });
+      const detail = tab.locator('[data-detail="codex"]');
+      await detail.getByRole("button", { name: "Sign out" }).waitFor({ timeout: 5_000 });
+      expect(await detail.locator("h2").allInnerTexts()).toEqual(["Codex", "Runtime", "Routing\n0"]);
+      expect(await detail.getByLabel("Binary path").getAttribute("placeholder")).toBe("codex");
+      expect(await tab.evaluate(() => document.body.innerText)).not.toMatch(/plugin|Loaded/i);
+      await tab.keyboard.press("Escape");
+      await detail.waitFor({ state: "detached", timeout: 5_000 });
+    } finally {
+      await tab.close();
+      await served.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
 
   test("repairs and rotates a key when a same-major daemon does not advertise a model catalog", async () => {
     const store = new EventStore(":memory:");
@@ -206,6 +240,38 @@ describe("in a browser, served by a running daemon", () => {
     });
     expect(loaded).toContain("Geist");
     expect(loaded.filter((f) => f !== "Geist" && f !== "Geist Mono")).toEqual([]);
+  }, 20_000);
+
+  test("Add project opens from the hangar and reads a folder through the daemon", async () => {
+    // A synthetic checkout: a Git repository whose origin is on GitHub, no armada.toml.
+    const folder = mkdtempSync(join(tmpdir(), "armada-add-"));
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+    try {
+      for (const args of [
+        ["init", "-q"],
+        ["remote", "add", "origin", "https://github.com/example/kestrel.git"],
+      ])
+        expect(Bun.spawnSync(["git", "-C", folder, ...args], { env }).exitCode).toBe(0);
+      await page.goto(daemon.url);
+      await page.getByRole("complementary", { name: "Sidebar" }).getByRole("status").getByText("Live").waitFor();
+      await page.getByRole("main").locator("header").getByRole("button", { name: "Add project" }).click();
+      const dialog = page.getByRole("dialog", { name: "Add a project" });
+      await dialog.waitFor({ timeout: 5_000 });
+      // A browser has no folder picker: the folder is a field, Enter has the daemon read it.
+      await dialog.getByLabel("Folder", { exact: true }).fill(folder);
+      await dialog.getByLabel("Folder", { exact: true }).press("Enter");
+      await dialog.getByLabel("Repository", { exact: true }).waitFor({ timeout: 5_000 });
+      expect(await dialog.getByLabel("Repository", { exact: true }).inputValue()).toBe("example/kestrel");
+      expect(await dialog.getByLabel("Name", { exact: true }).inputValue()).toBe(basename(folder).replace(/^a/, "A"));
+      expect(await dialog.getByLabel("Linear program", { exact: true }).inputValue()).toBe("");
+      // This daemon keeps no registry of its own: its refusal shows under the form.
+      await dialog.getByRole("button", { name: "Add", exact: true }).click();
+      await dialog.getByRole("alert").getByText("This daemon has no writable project registry").waitFor();
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
   }, 20_000);
 
   test("a state change over the subscription glides the same row to its new group, without a reload", async () => {
@@ -665,26 +731,29 @@ describe("the Plugins screen in a browser, on a daemon that restarts", () => {
     await page.goto(`${running?.server.url ?? ""}#/plugins`);
     await page.waitForURL(/#\/settings\/providers$/, { timeout: 5_000 });
     const buoys = page.locator('[data-plugin="buoys"]');
-    await buoys.locator("[data-state]").filter({ hasText: "Off" }).waitFor({ timeout: 5_000 });
     const sidebar = page.getByRole("complementary", { name: "Sidebar" });
     expect(await sidebar.getByRole("link", { name: "Plugins" }).count()).toBe(0);
     await expect(sidebar.getByRole("link", { name: "Settings" }).getAttribute("aria-current")).resolves.toBe("page");
     const sections = page.getByRole("navigation", { name: "Settings sections" });
     await expect(sections.getByRole("link", { name: "Providers" }).getAttribute("aria-current")).resolves.toBe("page");
+    // The plugins themselves are under About › Advanced (THE-2075).
+    await sections.getByRole("link", { name: "About" }).click();
+    await page.getByRole("button", { name: "Advanced" }).click();
     await expect(page.locator('[data-plugin="lamps"] [data-state]').innerText()).resolves.toBe("Loaded");
 
+    await buoys.locator("[data-state]").filter({ hasText: "Off" }).waitFor({ timeout: 5_000 });
     await page.getByRole("switch", { name: "buoys" }).click();
     await buoys.locator("[data-state]").filter({ hasText: "Restart to apply" }).waitFor({ timeout: 5_000 });
     await expect(page.getByRole("switch", { name: "buoys" }).getAttribute("aria-checked")).resolves.toBe("true");
     expect(JSON.parse(readFileSync(configPath, "utf8")).plugins).toEqual([{ id: "buoys", enabled: true, config: {} }]);
     const notice = page.locator("[data-restart-notice]");
-    await expect(notice.innerText()).resolves.toContain("One plugin changed since the daemon started.");
+    await expect(notice.innerText()).resolves.toContain("One setting changed since the daemon started.");
 
     // A setting from the contribution's form, and a secret that never comes back.
     await page.locator('[data-plugin="lamps"]').getByRole("button", { name: "Settings" }).click();
     await page.getByLabel("team").first().fill("harbour");
     await page.locator('[data-plugin="lamps"]').getByRole("button", { name: "Save", exact: true }).click();
-    await notice.filter({ hasText: "2 plugins changed" }).waitFor({ timeout: 5_000 });
+    await notice.filter({ hasText: "2 settings changed" }).waitFor({ timeout: 5_000 });
     await page.locator('[data-plugin="lamps"]').getByRole("button", { name: "Set", exact: true }).click();
     const token = randomBytes(12).toString("hex");
     await page.getByRole("textbox", { name: "LAMPS_TOKEN" }).fill(token);
@@ -715,10 +784,10 @@ describe("the Plugins screen in a browser, on a daemon that restarts", () => {
     const coordinator = sections.getByRole("link", { name: "Coordinator" });
     await expect(coordinator.getAttribute("aria-current")).resolves.toBe("page");
     await coordinator.focus();
-    await page.keyboard.press("ArrowDown");
-    await page.keyboard.press("ArrowDown");
+    // Coordinator, Providers, then Connections' Linear, GitHub and Armada.
+    for (let i = 0; i < 4; i++) await page.keyboard.press("ArrowDown");
     await page.keyboard.press("Enter");
-    await page.waitForURL(/#\/settings\/account$/, { timeout: 5_000 });
+    await page.waitForURL(/#\/settings\/connections\/armada$/, { timeout: 5_000 });
     await page.getByText("Workers in Conductor and the organization's keys need it.").waitFor({ timeout: 5_000 });
     await page.keyboard.press("End");
     await page.keyboard.press("Enter");

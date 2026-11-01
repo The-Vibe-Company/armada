@@ -266,9 +266,10 @@ required. Status describes the last boot, independently of process liveness.
 
 `armada plugin enable|disable <id>` changes that switch under a shared process-safe read/modify/write lock, preserves
 other app/provider settings, and says to restart the daemon to apply it.
-`setPluginEnabled` and `updateAppConfig` are shared with the app's Providers section
-of Settings (THE-2019, moved there by THE-2069: `#/settings/providers`, the old
-`#/plugins` lands there). It lists the catalog in grouped cards by seam. Each plugin
+`setPluginEnabled` and `updateAppConfig` are shared with the app's plugin list
+(THE-2019, moved into Settings by THE-2069, then under About › Advanced by
+THE-2075; Settings › Providers shows the agents as cards, Connections Linear,
+GitHub and Armada). It lists the catalog in grouped cards by seam. Each plugin
 shows its version, contributions, state on a dot (loaded, off, refused, restart to
 apply) and a switch, plus a "Settings" fold: each contribution's
 config form, generated from its JSON Schema, and each declared secret as set or

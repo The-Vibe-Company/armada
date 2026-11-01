@@ -3,7 +3,10 @@
 // renders the daemon's auth frames in place (the browser's page with Copy, a
 // device code, progress, a question to answer) with Cancel, and a red line
 // when it fails. What the owner types in a prompt lives only in its field
-// until sent: never in state, and the field is cleared once sent.
+// until sent: never in state, and the field is cleared once sent. THE-2075
+// shares it with Settings › Providers and Connections: a provider's sign-in
+// (`providers.connect`, `providers.answer`, `providers.cancel`) also shows
+// its CLI login's terminal, with the prompt's field under it.
 import { Check, Copy, ExternalLink, LoaderCircle } from "lucide-react";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { Input, Select } from "@/components/page";
@@ -29,12 +32,14 @@ export interface SignIn {
 }
 
 /**
- * The one sign-in of the Coordinator section: its view from the daemon's
- * frames, the browser opened once per page it names, and the flow cancelled
- * when the section leaves the screen. Each start is a generation: the end of
- * an earlier one (its late refusal after a cancel) never reaches a later one.
+ * The one sign-in of the Coordinator section (a model's, `models.login`) or
+ * of Providers or Connections (`provider`, `providers.connect`): its view
+ * from the daemon's frames, the browser opened once per page it names, and
+ * the flow cancelled when the section leaves the screen. Each start is a
+ * generation: the end of an earlier one (its late refusal after a cancel)
+ * never reaches a later one.
  */
-export function useSignIn(): SignIn {
+export function useSignIn(kind: "model" | "provider" = "model"): SignIn {
   const client = useDaemonClient();
   const { authFlow } = useDaemon();
   const [view, setView] = useState<SignInView | null>(null);
@@ -45,9 +50,9 @@ export function useSignIn(): SignIn {
     const off = client.auth((frame) => setView((current) => (current ? applyAuthFrame(current, frame) : current)));
     return () => {
       off();
-      if (active.current) void client.cancel().catch(() => {});
+      if (active.current) void (kind === "provider" ? client.cancelProvider() : client.cancel()).catch(() => {});
     };
-  }, [client]);
+  }, [client, kind]);
   const url = view?.url ?? null;
   useEffect(() => {
     if (url && opened.current !== url) {
@@ -62,8 +67,8 @@ export function useSignIn(): SignIn {
       const mine = ++generation.current;
       opened.current = null;
       active.current = true;
-      setView(startSignIn(provider));
-      client.login(provider, "oauth").then(
+      setView(startSignIn(provider, { terminal: kind === "provider" }));
+      (kind === "provider" ? client.connectProvider(provider) : client.login(provider, "oauth")).then(
         () => {
           if (generation.current !== mine) return;
           active.current = false;
@@ -81,7 +86,7 @@ export function useSignIn(): SignIn {
       // The owner's cancel: whatever the daemon says of this flow from now on is not shown.
       generation.current++;
       active.current = false;
-      void client.cancel().catch(() => {});
+      void (kind === "provider" ? client.cancelProvider() : client.cancel()).catch(() => {});
       setView(null);
     },
     close() {
@@ -91,7 +96,8 @@ export function useSignIn(): SignIn {
       const flow = client.getState().authFlow;
       if (!flow) return;
       try {
-        client.answer(flow, prompt.id, value);
+        if (kind === "provider") client.answerProvider(flow, prompt.id, value);
+        else client.answer(flow, prompt.id, value);
         setView((current) => current && { ...current, prompt: null });
       } catch (error) {
         setView((current) => current && { ...current, error: error instanceof Error ? error.message : NOT_SENT });
@@ -100,11 +106,28 @@ export function useSignIn(): SignIn {
   };
 }
 
+/**
+ * A provider's sign-in lives in its card's detail (THE-2075): closing the
+ * detail, or opening another card's, cancels it, as leaving the section does.
+ */
+export function useSignInFollows(signIn: SignIn, shown: string | undefined) {
+  const provider = signIn.view?.provider;
+  const cancel = useRef(signIn.cancel);
+  cancel.current = signIn.cancel;
+  const before = useRef(shown);
+  // Only a detail that leaves: a card's Connect starts the sign-in, then opens its detail.
+  useEffect(() => {
+    const left = before.current;
+    before.current = shown;
+    if (provider !== undefined && left === provider && shown !== provider) cancel.current();
+  }, [provider, shown]);
+}
+
 /** The sign-in in place, under the button that started it. */
 export function SignInPanel({ signIn, name }: { signIn: SignIn; name: string }) {
   const view = signIn.view;
   if (!view) return null;
-  const waiting = !view.url && !view.device && !view.prompt && !view.error && view.lines.length === 0;
+  const waiting = !view.url && !view.device && !view.prompt && !view.error && view.lines.length === 0 && !view.terminal;
   return (
     <section
       data-sign-in={view.provider}
@@ -176,6 +199,7 @@ export function SignInPanel({ signIn, name }: { signIn: SignIn; name: string }) 
           ))}
         </div>
       )}
+      {view.terminal && <Terminal output={view.terminal} />}
       {view.prompt && <PromptForm key={view.prompt.id} prompt={view.prompt} onAnswer={signIn.answer} />}
       {view.error && (
         <p role="alert" className="m-0 text-red">
@@ -199,6 +223,29 @@ export function SignInPanel({ signIn, name }: { signIn: SignIn; name: string }) 
         )}
       </div>
     </section>
+  );
+}
+
+/** A CLI login's output, its last lines in view (after T3 Code's ProviderAuthTerminal). */
+function Terminal({ output }: { output: string }) {
+  const pane = useRef<HTMLPreElement>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each new output scrolls to its end.
+  useEffect(() => {
+    const box = pane.current;
+    if (box) box.scrollTop = box.scrollHeight;
+  }, [output]);
+  return (
+    <pre
+      ref={pane}
+      data-auth-terminal
+      role="log"
+      aria-label="Terminal"
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling pane is scrolled from the keyboard once focused.
+      tabIndex={0}
+      className="m-0 max-h-56 min-w-0 select-text overflow-auto whitespace-pre-wrap break-all rounded-control bg-bg p-3 font-mono text-small text-text-soft shadow-ring outline-none focus-visible:ring-2 focus-visible:ring-blue"
+    >
+      {output}
+    </pre>
   );
 }
 

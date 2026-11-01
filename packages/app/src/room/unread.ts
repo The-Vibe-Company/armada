@@ -78,7 +78,7 @@ export function failedTurn(items: readonly ChatItem[]): boolean {
   return last?.kind === "line" && last.body === CHAT_MODEL_FAILED;
 }
 
-export type PillLabel = "Working" | "Awaiting input" | "Failed";
+type PillLabel = "Working" | "Awaiting input" | "Failed";
 export interface StatusPill {
   label: PillLabel;
   /** The word's colour, then the dot's. */
