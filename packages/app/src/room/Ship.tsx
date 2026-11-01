@@ -1,4 +1,5 @@
 import { HARNESS_LABEL, type Harness } from "@/fleet/sky";
+import { useDisplayName } from "@/settings/display-names";
 import { HARNESS_COLOR } from "@/sky/layout";
 
 /** The mark's triangle, an agent as the sky draws it: its harness's colour, bone for another runtime or a merge. */
@@ -23,12 +24,13 @@ export function Ship({
   );
 }
 
-/** The harness's name beside its triangle. */
+/** The harness's name beside its triangle: the display name Settings › Providers gave it (THE-2075), else its own. */
 export function HarnessName({ harness }: { harness: Harness }) {
+  const name = useDisplayName(harness, HARNESS_LABEL[harness]);
   return (
     <span className="inline-flex flex-none items-center gap-1.5">
       <Ship harness={harness} size={10} />
-      {HARNESS_LABEL[harness]}
+      {name}
     </span>
   );
 }

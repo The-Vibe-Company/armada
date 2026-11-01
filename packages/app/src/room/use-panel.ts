@@ -33,6 +33,8 @@ export interface RoomPanel {
   setTab: (tab: PanelTab) => void;
   /** Keeps a width the owner dragged to. */
   setWidth: (width: number) => void;
+  /** Opens the panel on a tab. */
+  show: (tab: PanelTab) => void;
   /** Opens Agents and goes there. */
   goTo: (to: Target["to"], focus: boolean) => void;
   /** Around the panel: what the focus and the scrolling look in. */
@@ -74,6 +76,13 @@ export function useRoomPanel(project: string): RoomPanel {
     [store],
   );
   const setTab = useCallback((next: PanelTab) => showTab(project, next), [project]);
+  const show = useCallback(
+    (next: PanelTab) => {
+      showTab(project, next);
+      setOpen(true);
+    },
+    [project, setOpen],
+  );
 
   // A tab named by a later address (Back, a link, the old rules page) opens the panel beside the conversation too.
   const named = useRef(routed);
@@ -124,5 +133,5 @@ export function useRoomPanel(project: string): RoomPanel {
     return () => window.removeEventListener("keydown", onKey);
   }, [open, setOpen, project]);
 
-  return { sheet, tab, open, width: store.width, setOpen, setTab, setWidth, goTo, root, toggle };
+  return { sheet, tab, open, width: store.width, setOpen, setTab, setWidth, show, goTo, root, toggle };
 }
