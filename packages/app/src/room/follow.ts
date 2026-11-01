@@ -13,7 +13,7 @@ export interface Geometry {
 }
 
 /** At the end within this (sub-pixel rounding). */
-export const AT_END_PX = 1;
+const AT_END_PX = 1;
 /** Back near the end within this, after leaving it, follows again (streaming leaves the band for a frame). */
 export const REARM_PX = 40;
 /** A sent message sits this far from the thread's top (T3 Code's `CHAT_TIMELINE_ANCHOR_OFFSET`). */

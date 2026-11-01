@@ -1,7 +1,16 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, ipcMain, nativeImage, shell } from "electron";
-import { BADGE_CHANNEL, badgeCount, externalUrl, fromApp, OPEN_EXTERNAL_CHANNEL, REVEAL_CHANNEL } from "./bridge.ts";
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from "electron";
+import {
+  BADGE_CHANNEL,
+  badgeCount,
+  externalUrl,
+  fromApp,
+  OPEN_EXTERNAL_CHANNEL,
+  PICK_FOLDER_CHANNEL,
+  pickedFolder,
+  REVEAL_CHANNEL,
+} from "./bridge.ts";
 import { type DaemonAddress, DaemonProcess, RESTART_EXIT_CODE, restartDaemon } from "./daemon.ts";
 
 app.setName("Armada");
@@ -89,7 +98,7 @@ void app.whenReady().then(async () => {
     });
     // The app's notifications (THE-2055): a click brings the window forward, the dock counts those not yet read.
     // Only the app's own window, from a page of the daemon's origin (never a frame of another).
-    const own = (event: Electron.IpcMainEvent) =>
+    const own = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) =>
       window !== undefined && event.sender === window.webContents && fromApp(event.senderFrame?.url, address.url);
     ipcMain.on(REVEAL_CHANNEL, (event) => {
       if (!window || !own(event)) return;
@@ -105,6 +114,16 @@ void app.whenReady().then(async () => {
     ipcMain.on(OPEN_EXTERNAL_CHANNEL, (event, value: unknown) => {
       const url = own(event) ? externalUrl(value, address.url) : null;
       if (url) void shell.openExternal(url).catch(() => {});
+    });
+    // The hangar's Add project (THE-2081): the system's folder dialog, on the app's window; null when cancelled.
+    ipcMain.handle(PICK_FOLDER_CHANNEL, async (event) => {
+      if (!window || !own(event)) return null;
+      const result = await dialog.showOpenDialog(window, {
+        title: "Add a project",
+        buttonLabel: "Choose",
+        properties: ["openDirectory", "createDirectory"],
+      });
+      return pickedFolder(result);
     });
     window.on("focus", () => app.setBadgeCount(0));
     // No window of its own: a link a message opens apart (the room's markdown, THE-2050) goes to the system

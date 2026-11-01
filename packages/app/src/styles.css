@@ -334,3 +334,17 @@
     animation: waiting-pulse 1.4s ease-in-out infinite;
   }
 }
+
+/* A project added from the hangar (THE-2081): its sidebar line fades in once,
+   when it is first drawn; never under reduced motion. */
+@keyframes arrive {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+@utility arrive {
+  @media (prefers-reduced-motion: no-preference) {
+    animation: arrive 400ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+}

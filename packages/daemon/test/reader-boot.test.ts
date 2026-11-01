@@ -55,6 +55,7 @@ for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] a
           ...process.env,
           ARMADA_APP_CONFIG: join(dir, "config.json"),
           XDG_CONFIG_HOME: dir,
+          ARMADA_KEYCHAIN: "file",
           PATH: dir, // No owner gh session in missing-credential coverage.
           LINEAR_API_KEY: mode === "missing" ? "" : "synthetic-linear-environment-secret",
           GITHUB_TOKEN: mode === "missing" || mode === "gh" ? "" : "synthetic-github-environment-secret",
