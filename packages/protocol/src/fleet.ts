@@ -3,6 +3,7 @@ import { rulesStateSchema } from "./rules.js";
 
 const text = z.string();
 const integer = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+export const DELIVERIES_MINOR = 17;
 export const phaseSchema = z.enum([
   "planning",
   "awaiting-approval",
@@ -83,7 +84,7 @@ export const workerLaunchCheckpointSchema = sessionRefSchema.extend({
 const inboxRequestSchema = z.object({
   id: text,
   ticket: text,
-  kind: z.enum(["question", "plan", "hand-back", "owner-request", "launch"]),
+  kind: z.enum(["question", "plan", "hand-back", "owner-request", "launch", "delivery-failed"]),
   body: text,
 });
 export type InboxRequest = z.infer<typeof inboxRequestSchema>;
@@ -93,9 +94,33 @@ const queuedSchema = sessionRefSchema.extend({ id: text, pr: integer, head: text
 const idSchema = z.object({ id: text });
 const reasonSchema = idSchema.extend({ reason: text });
 const decisionSchema = z.object({ decision: z.enum(["approved", "changes-requested"]), note: text });
+const deliverySchema = sessionRefSchema.extend({
+  id: text,
+  generation: integer.min(1),
+  source: z.enum(["owner-answer", "coordinator-message", "note"]),
+  text,
+  key: text,
+  /** Original inbox identity, needed by hosted runtime bookkeeping. */
+  item: text.optional(),
+});
+const deliveryStateSchema = deliverySchema.extend({
+  seq: integer,
+  at: text,
+  actor: text,
+  attempt: integer,
+  error: text.optional(),
+  nextAt: text.nullable(),
+  sentAt: text.optional(),
+  failedAt: text.optional(),
+  failureSeq: integer.optional(),
+});
+export type Delivery = z.infer<typeof deliveryStateSchema>;
 
 /** The single vocabulary for events appended by daemon adapters and folded offline. */
 export const eventPayloadSchemas = {
+  "delivery.queued": deliverySchema,
+  "delivery.sent": idSchema.extend({ at: text }),
+  "delivery.failed": idSchema.extend({ attempt: integer.min(1), error: text, nextAt: text.nullable() }),
   "ticket.seen": ticketSchema,
   "pull-request.seen": pullRequestSchema,
   "session.claimed": sessionRefSchema.extend({ generation: integer.min(1), owner: text, runtime: text, handle: text }),
@@ -205,6 +230,7 @@ const tablesSchema = z.object({
   queue: z.array(queueEntrySchema),
   holds: z.array(holdSchema),
   validations: z.array(validationSchema),
+  deliveries: z.array(deliveryStateSchema).optional(),
 });
 export type ProjectTables = z.infer<typeof tablesSchema>;
 export interface FleetTables {

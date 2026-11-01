@@ -615,7 +615,7 @@ test("credential socket writes never expose the key to replies, events or logs",
 // the recorded envelope to minor 5 for per-client plan-policy snapshot projection,
 // THE-2045 to minor 6 for the session page, THE-2049 to minor 7 for live chat,
 // THE-2080 adds runtime projects at minor 12;
-// THE-2072 to reserved minor 13 for hosted Conductor routing
+// THE-2072 to reserved minor 13 for hosted Conductor routing; THE-2108 to minor 17 for deliveries
 // (the recorded frames have no coordinator attached and are otherwise unchanged).
 test("subscription bytes stay compatible with the recorded daemon vocabulary and folded tables", async (t) => {
   const fixture = new URL("./support/protocol-subscription.json", import.meta.url);
@@ -739,4 +739,67 @@ test("pre-Conductor clients receive compatible routing in initial and live snaps
   rules(2);
   assert.deepEqual(value(await legacy.next()), { routing: [], defaultRoute: null });
   assert.deepEqual(value(await modern.next()), { routing: [{ labels: ["web"], ...route }], defaultRoute: route });
+});
+
+test("pre-outbox clients keep readable inbox snapshots alongside current delivery failure items", async (t) => {
+  const store = new EventStore(":memory:");
+  const server = await startServer({ store, projects });
+  const legacy = await connect(server.wsUrl);
+  const modern = await connect(server.wsUrl);
+  t.after(async () => {
+    legacy.ws.terminate();
+    modern.ws.terminate();
+    await server.close();
+    store.close();
+  });
+  const base = { project: "orchard", actor: "worker", at: hold().at };
+  store.append({
+    ...base,
+    kind: "session.claimed",
+    payload: {
+      ticket: "SEED-1",
+      session: "one",
+      generation: 1,
+      owner: "coordinator",
+      runtime: "codex",
+      handle: "local/one",
+    },
+  });
+  store.append({
+    ...base,
+    kind: "delivery.queued",
+    payload: {
+      id: "answer",
+      ticket: "SEED-1",
+      session: "one",
+      generation: 1,
+      source: "owner-answer",
+      text: "Oak",
+      key: "answer",
+    },
+  });
+  const state = (frame: ServerMessage) => {
+    assert(frame.type === "project.subscribed" || frame.type === "events");
+    assert(frame.snapshot);
+    return frame.snapshot.state as unknown as import("@armada/protocol").ProjectTables;
+  };
+  legacy.send({ type: "project.subscribe", project: "orchard", after: 0, version: { major: 1, minor: 16 } });
+  modern.send({ type: "project.subscribe", project: "orchard", after: 0 });
+  assert.equal(state(await legacy.next()).deliveries, undefined);
+  assert.equal(state(await modern.next()).deliveries?.length, 1);
+  await legacy.next();
+  await modern.next();
+  for (let attempt = 1; attempt <= 3; attempt++)
+    store.append({
+      ...base,
+      kind: "delivery.failed",
+      payload: { id: "answer", attempt, error: "Worker unavailable", nextAt: base.at },
+    });
+  assert.deepEqual(state(await legacy.next()).inbox, []);
+  assert.equal(state(await modern.next()).inbox[0]?.kind, "delivery-failed");
+  store.append({ ...base, kind: "delivery.sent", payload: { id: "answer", at: base.at } });
+  assert.deepEqual(state(await legacy.next()).inbox, []);
+  const sent = state(await modern.next());
+  assert.deepEqual(sent.inbox, []);
+  assert.deepEqual(sent.deliveries, []);
 });

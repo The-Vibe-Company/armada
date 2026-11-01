@@ -6,6 +6,7 @@ import {
   admitRequest,
   CHAT_LIVE_MINOR,
   CONDUCTOR_MINOR,
+  DELIVERIES_MINOR,
   eventSchema,
   MODELS_MINOR,
   type ModelKindEntry,
@@ -214,7 +215,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         },
         native: {
           ...config.native,
-          ...(workers ? { workers, deliverAnswerOnce: (input) => workers.answer(input, project) } : {}),
+          ...(workers ? { workers } : {}),
         },
       });
       coordinators.set(project, coordinator);
@@ -254,7 +255,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       },
       native: {
         ...config.native,
-        ...(workers ? { workers, deliverAnswerOnce: (input) => workers.answer(input, config.project) } : {}),
+        ...(workers ? { workers } : {}),
       },
     });
     coordinators.set(config.project, coordinator);
@@ -283,10 +284,14 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
 
   /** Older same-major clients use a strict policy reader; preserve their existing Rules view. */
   function snapshotFor(snapshot: Snapshot, minor: number): Snapshot {
-    if (minor >= CONDUCTOR_MINOR) return snapshot;
-    const state = snapshot.state as unknown as ProjectTables;
+    if (minor >= DELIVERIES_MINOR) return snapshot;
+    const state = { ...(snapshot.state as unknown as ProjectTables) };
+    if (minor < DELIVERIES_MINOR) {
+      delete state.deliveries;
+      state.inbox = state.inbox.filter((item) => item.kind !== "delivery-failed");
+    }
     const rules = state.rules;
-    if (!rules) return snapshot;
+    if (!rules) return { seq: snapshot.seq, state: JSON.parse(JSON.stringify(state)) };
     const value = { ...rules.value };
     if (minor < CONDUCTOR_MINOR) {
       value.routing = value.routing?.filter((route) => route.cli !== "conductor");

@@ -3,7 +3,9 @@ import { fold } from "@armada/daemon/fold";
 import type { ChatItem } from "@armada/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SAMPLE_PROJECTS, sampleEvents } from "../scripts/dev-daemon";
+import { readFleetState } from "../src/fleet/state";
 import { routeOf } from "../src/lib/route";
+import { DeliveryStatus } from "../src/room/Asking";
 import { type Chat, withSent } from "../src/room/chat";
 import { lastCoordinatorSeq } from "../src/room/unread";
 import { parseQuestion, segments } from "../src/room/view";
@@ -225,4 +227,23 @@ test("a sent message stays until a reading holds it, and the room reads again pa
     }),
   ).toBe(3);
   expect(lastCoordinatorSeq(undefined)).toBe(0);
+});
+
+test("the room names queued worker answers until sent and exposes repeated delivery failures", () => {
+  const pending = {
+    id: "answer-1",
+    ticket: "ORC-7",
+    session: "one",
+    generation: 1,
+    source: "owner-answer",
+    attempt: 0,
+    nextAt: "2030-01-01T00:00:00.000Z",
+  };
+  const render = (deliveries: unknown[]) =>
+    renderToStaticMarkup(<DeliveryStatus deliveries={readFleetState({ deliveries }).deliveries ?? []} />);
+  expect(render([pending])).toContain("Answer to ORC-7: Delivering…");
+  const failed = render([{ ...pending, attempt: 3 }]);
+  expect(failed).toContain("Answer not delivered to ORC-7");
+  expect(failed).toContain("Retrying automatically");
+  expect(render([])).toBe("");
 });

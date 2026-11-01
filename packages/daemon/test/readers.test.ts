@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import { serverMessageSchema, PROTOCOL_VERSION as version } from "@armada/protocol";
 import { WebSocket } from "ws";
+import { fleetStatus } from "../coordinator/read.ts";
 import { fold } from "../src/fold.ts";
 import { startServer } from "../src/server/index.ts";
 import { daemonProjectSchema, startReaders } from "../src/server/readers.ts";
@@ -238,8 +239,12 @@ test("reader health recovers and untrusted plugin errors cannot inject diagnosti
   });
   activation.commit();
   const logs: string[] = [];
-  const readers = await startReaders({
+  const store = new EventStore(":memory:");
+  const at = "2030-01-01T00:00:00.000Z";
+  let readers = await startReaders({
     registry,
+    store,
+    now: () => at,
     projects: [project],
     schedule: clock().schedule,
     log: (line) => logs.push(line),
@@ -250,10 +255,36 @@ test("reader health recovers and untrusted plugin errors cannot inject diagnosti
     assert.deepEqual(readers.readers, [
       { project: "orchard", tracker: false, forge: false, trackerError: "Reader failed (details withheld)" },
     ]);
+    await readers.refresh(project.id);
+    const status = () => fleetStatus(fold(store.readSince(0)).projects.orchard!, store.readSince(0), at);
+    assert.deepEqual(status().problems.readers, []);
+    await readers.refresh(project.id);
+    assert.deepEqual(status().problems.readers, [
+      { provider: "linear", failures: 3, error: "Reader failed (details withheld)" },
+    ]);
+    assert.deepEqual(status().readAt, {});
+    readers.stop();
+    readers = await startReaders({
+      registry,
+      store,
+      projects: [project],
+      now: () => at,
+      schedule: clock().schedule,
+      log: (line) => logs.push(line),
+    });
+    await readers.ready;
+    assert.deepEqual(
+      status().problems.readers,
+      [{ provider: "linear", failures: 4, error: "Reader failed (details withheld)" }],
+      "restart preserves consecutive failure evidence until a successful read",
+    );
     failed = false;
     await readers.refresh(project.id);
     assert.deepEqual(readers.readers, [{ project: "orchard", tracker: true, forge: false }]);
+    assert.deepEqual(status().problems.readers, []);
+    assert.deepEqual({ ...status().readAt }, { linear: at });
   } finally {
     readers.stop();
+    store.close();
   }
 });

@@ -1,4 +1,5 @@
 import type {
+  Delivery,
   FleetEvent,
   FleetTables,
   Hold,
@@ -16,6 +17,7 @@ import type {
 import { workerLaunchCheckpointSchema } from "@armada/protocol";
 import { z } from "zod";
 import { checkpointRules, emptyRules, type RulesState } from "../coordinator/rules.ts";
+import { applyDelivery } from "./delivery-state.ts";
 import { flowStep, pipelineStep } from "./rules.ts";
 
 export type {
@@ -47,6 +49,7 @@ const readerCheckpoint = z.object({
   format: z.literal("armada.readers"),
   version: z.literal(1),
   provider: z.string().min(1),
+  failures: z.number().int().nonnegative().optional(),
 });
 
 interface Projection {
@@ -61,6 +64,7 @@ interface Projection {
   queue: Map<string, QueueEntry>;
   holds: Map<string, Hold>;
   validations: Map<string, Validation>;
+  deliveries: Map<string, Delivery>;
 }
 const empty = (): Projection => ({
   rules: emptyRules(),
@@ -74,6 +78,7 @@ const empty = (): Projection => ({
   queue: new Map(),
   holds: new Map(),
   validations: new Map(),
+  deliveries: new Map(),
 });
 const active = (p: Projection, ref: SessionRef) => {
   const session = p.sessions.get(ref.ticket);
@@ -98,6 +103,7 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
       p = empty();
       projects.set(e.project, p);
     }
+    applyDelivery(p.deliveries, e);
     switch (e.kind) {
       case "ticket.seen": {
         const t = e.payload;
@@ -279,7 +285,8 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
             });
         }
         const reading = readerCheckpoint.safeParse(e.payload.checkpoint);
-        if (reading.success && Number.isFinite(Date.parse(e.at))) p.readAt[reading.data.provider] = e.at;
+        if (reading.success && !reading.data.failures && Number.isFinite(Date.parse(e.at)))
+          p.readAt[reading.data.provider] = e.at;
         const rules = checkpointRules(e.payload.checkpoint);
         if (rules) p.rules = rules;
         break;
@@ -352,6 +359,35 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
       released: [],
     };
     for (const s of sessions) sessionsByState[s.state].push(s);
+    const deliveries = [...p.deliveries.values()].filter(
+      (d) =>
+        !d.sentAt &&
+        sessions.some(
+          (s) =>
+            s.ticket === d.ticket &&
+            s.session === d.session &&
+            s.generation === d.generation &&
+            !["released", "merged"].includes(s.phase),
+        ),
+    );
+    const failures: InboxItem[] = deliveries.flatMap((d) => {
+      const session = sessions.find(
+        (s) => s.ticket === d.ticket && s.session === d.session && s.generation === d.generation,
+      );
+      return d.failureSeq !== undefined && session && !["released", "merged"].includes(session.phase)
+        ? [
+            {
+              id: `delivery:${d.id}`,
+              ticket: d.ticket,
+              kind: "delivery-failed" as const,
+              body: `${d.source === "owner-answer" ? "Answer" : "Message"} not delivered to ${d.ticket}: ${d.error}`,
+              at: d.failedAt!,
+              actor: "delivery",
+              seq: d.failureSeq,
+            },
+          ]
+        : [];
+    });
     tables.projects[project] = {
       rules: p.rules,
       ...(Object.keys(p.readAt).length ? { readAt: p.readAt } : {}),
@@ -359,7 +395,8 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
       pullRequests: [...p.prs.values()],
       sessions,
       sessionsByState,
-      inbox: [...p.inbox.values()],
+      inbox: [...p.inbox.values(), ...failures].sort((a, b) => a.seq - b.seq),
+      ...(p.deliveries.size ? { deliveries } : {}),
       queue: [...p.queue.values()],
       holds: [...p.holds.values()],
       validations: [...p.validations.values()],

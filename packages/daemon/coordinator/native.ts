@@ -8,8 +8,9 @@ import type { Merges } from "../src/merge/service.ts";
 
 export type { MergeEvidence } from "../src/merge/checklist.ts";
 
+import { queueDelivery } from "../src/deliveries.ts";
 import type { EventInput, FleetEvent } from "../src/events.ts";
-import { fold, type ProjectTables, type Session } from "../src/fold.ts";
+import { fold, type ProjectTables } from "../src/fold.ts";
 import { WorkerRefusal, type Workers, type WorkerTool, workerToolSchemas } from "../src/workers/service.ts";
 import { fleetHistory, fleetStatus, ticketRead } from "./read.ts";
 import { emptyRules, type ProjectRules, type RulesState, rulesSchema } from "./rules.ts";
@@ -26,15 +27,6 @@ export interface NativeToolOptions {
   /** Optional host restriction/adapter for explicitly requested, local V1 file imports. */
   readRulesImport?: (file: string) => Promise<ProjectRules>;
   mergeEvidence?: (pr: number) => Promise<MergeEvidence | null>;
-  /** Must deduplicate by key across restarts, and call beforeWrite immediately before delivery.
-   * Unknown outcomes must return false; never retry an unkeyed runtime write here. */
-  deliverAnswerOnce?: (input: {
-    key: string;
-    session: Session;
-    item: string;
-    answer: string;
-    beforeWrite: () => void;
-  }) => Promise<boolean>;
 }
 
 const text = Type.String({ maxLength: 4000 });
@@ -77,12 +69,12 @@ const descriptions: Record<CoordinatorToolName, string> = {
     "Read the newest project fleet events in log order, optionally filtered by ticket and exclusive ISO since time. limit defaults to 20, maximum 100. Excludes internal checkpoints, receipts and ticket snapshot descriptions/comments.",
   "inbox.list": "Read open project inbox items in event order without resolving them.",
   "inbox.answer":
-    "Deliver and record an answer to a question or plan once. Refuses without a keyed delivery adapter; the worker reports its resumed phase.",
+    "Durably queue an answer to a question or plan once. Delivery retries automatically; the worker reports its resumed phase.",
   "worker.launch":
     "Launch a ticket through the configured runtime and node plugins, building its brief from the ticket. Branch defaults to the tracker suggestion; brief supplies additional notes.",
   "worker.relaunch":
     "Replace one worker generation in its existing branch and worktree. Supply the inspected session and a reason.",
-  "worker.message": "Deliver a keyed message to the current worker generation.",
+  "worker.message": "Durably queue a keyed message to the current worker generation; delivery retries automatically.",
   "worker.stop": "Stop the current worker generation and release its capability.",
   "merge.check":
     "Check a pinned hand-back against recorded fleet facts and adapter evidence. Missing evidence refuses the check.",
@@ -598,16 +590,8 @@ export function nativeTools(
               ),
             );
           }
+          let queued: EventInput | undefined;
           if (decision.event?.kind === "inbox.answered") {
-            const deliver = options.deliverAnswerOnce;
-            if (!deliver)
-              return output(
-                refuse(
-                  "delivery_unavailable",
-                  "no keyed answer delivery adapter is available",
-                  "install the worker runtime adapter; keep the inbox item open",
-                ),
-              );
             const answeredId = decision.event.payload.id;
             const item = projectFacts(events, scope.project).inbox.find((i) => i.id === answeredId);
             const session = projectFacts(events, scope.project).sessions.find((s) => s.ticket === item?.ticket);
@@ -623,44 +607,24 @@ export function nativeTools(
                   "inbox.list",
                 ),
               );
-            const beforeWrite = () => {
-              const fresh = projectFacts(scope.readEvents(), scope.project);
-              const current = fresh?.sessions.find((s) => s.ticket === session.ticket);
-              if (
-                current?.session !== session.session ||
-                current.phase === "merged" ||
-                current.phase === "released" ||
-                !fresh?.inbox.some((i) => i.id === item.id)
-              )
-                throw new Error("Answer target changed");
+            queued = queueDelivery({
+              project: scope.project,
+              at: decision.event.at,
+              actor: "coordinator",
+              ticket: session.ticket,
+              session: session.session,
+              generation: session.generation,
+              source: "owner-answer",
+              text: decision.event.payload.answer,
+              key,
+              item: item.id,
+            });
+            decision.result = {
+              ok: true,
+              id: item.id,
+              answer: decision.event.payload.answer,
+              queued: queued.payload.id,
             };
-            try {
-              beforeWrite();
-              const confirmed = await deliver({
-                key,
-                session,
-                item: item.id,
-                answer: decision.event.payload.answer,
-                beforeWrite,
-              });
-              if (!confirmed)
-                return output(
-                  refuse(
-                    "delivery_unconfirmed",
-                    "answer delivery is unconfirmed; the inbox item stays open",
-                    "inspect delivery, then retry inbox.answer with the same item id and answer text",
-                  ),
-                );
-              beforeWrite();
-            } catch {
-              return output(
-                refuse(
-                  "delivery_unconfirmed",
-                  "answer delivery or its target could not be confirmed; the inbox item stays open",
-                  "inspect delivery, then retry inbox.answer with the same item id and answer text",
-                ),
-              );
-            }
           }
           if (decision.event) {
             const receipt: Receipt = { format: "armada.tools", version: 1, key, input, result: decision.result };
@@ -668,7 +632,7 @@ export function nativeTools(
             const event = decision.event;
             Object.assign(event.payload, { receipt });
             try {
-              scope.appendEvent(event);
+              scope.appendEvents(queued ? [event, queued] : [event]);
             } catch {
               return output(
                 refuse(

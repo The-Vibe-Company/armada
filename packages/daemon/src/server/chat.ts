@@ -11,6 +11,7 @@ import {
   type ChatReadRequest,
   type ChatSendRequest,
   type ChatStopRequest,
+  DELIVERIES_MINOR,
   type OwnerAnswerRequest,
   type ServerMessage,
   PROTOCOL_VERSION as version,
@@ -102,16 +103,24 @@ export async function dispatchChat(request: ChatRequest, options: ChatOptions): 
         if (answer === "missing") return error("not-found", "No such question waits for you");
         if (typeof answer === "object" && "refused" in answer) return error("not-found", answer.refused);
         if (answer === "taken") return error("not-found", "This question was already answered");
+        const { queued, ...submission }: Extract<SubmissionDraft, { type: "input" }> & { queued?: string } = answer;
         if (options.coordinator)
           try {
-            await options.coordinator.conversation.submit(answer, context);
+            await options.coordinator.conversation.submit(submission, context);
           } catch {
             return error(
               "internal",
               "Your answer is recorded, but the coordinator was not told: answer the same again",
             );
           }
-        return { type: "owner.answered", version, id, project, item: request.item };
+        return {
+          type: "owner.answered",
+          version,
+          id,
+          project,
+          item: request.item,
+          ...(queued && request.version.minor >= DELIVERIES_MINOR ? { queued } : {}),
+        };
       }
     }
   } catch {

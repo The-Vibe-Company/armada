@@ -395,6 +395,7 @@ test("a generation changed during node provenance cannot receive the pending nat
     context,
   );
   await enteredGate;
+  assert.equal((await pending).isError, false, "the queue receipt returns while the runtime write is still pending");
   const original = fold(f.daemon.store.readSince(0, project)).projects[project]?.sessions[0];
   assert(original);
   f.daemon.store.append({
@@ -405,7 +406,7 @@ test("a generation changed during node provenance cannot receive the pending nat
     payload: { ticket: "SEED-1", session: original.session, reason: "Retired during provenance" },
   });
   proceed();
-  assert.equal((await pending).isError, true);
+  await eventually(async () => f.daemon.store.readSince(0).some((e) => e.kind === "delivery.failed"));
   assert.equal((await socketCall(f.socketPath, f.token(), { command: "claim", ticket: "SEED-1" })).status, 403);
   await f.workers.close();
   assert.equal(

@@ -8,6 +8,26 @@ const line = (text: string, max = 160) => {
 
 /** The coordinator reads a summary; full snapshots belong to ticket.read, never this result. */
 export function fleetStatus(tables: ProjectTables, events: FleetEvent[], at: string) {
+  const readerFailures = new Map<string, { provider: string; failures: number; error: string }>();
+  for (const e of events) {
+    const c = e.kind === "coordinator.checkpoint" ? e.payload.checkpoint : null;
+    if (
+      !c ||
+      typeof c !== "object" ||
+      Array.isArray(c) ||
+      c.format !== "armada.readers" ||
+      c.version !== 1 ||
+      typeof c.provider !== "string"
+    )
+      continue;
+    if (typeof c.failures === "number" && c.failures >= 3)
+      readerFailures.set(c.provider, {
+        provider: c.provider,
+        failures: c.failures,
+        error: typeof c.error === "string" ? c.error : "Reader failed",
+      });
+    else readerFailures.delete(c.provider);
+  }
   const active = tables.sessions.filter((s) => !ended(s.phase));
   const activeTickets = new Set(active.map((s) => s.ticket));
   const parents = new Set(tables.tickets.flatMap((t) => (t.parent ? [t.parent] : [])));
@@ -56,6 +76,19 @@ export function fleetStatus(tables: ProjectTables, events: FleetEvent[], at: str
       };
     }),
     inbox: { total: tables.inbox.length, byKind },
+    problems: {
+      deliveries: (tables.deliveries ?? [])
+        .filter((d) => d.attempt > 0 && active.some((s) => s.session === d.session && s.generation === d.generation))
+        .map((d) => ({
+          id: d.id,
+          ticket: d.ticket,
+          session: d.session,
+          attempt: d.attempt,
+          error: d.error,
+          nextAt: d.nextAt,
+        })),
+      readers: [...readerFailures.values()],
+    },
     frontier: candidates
       .filter((t) => t.blockers?.every((b) => ["completed", "canceled"].includes(b.status)))
       .map((t) => ({ id: t.id, title: line(t.title), blockers: t.blockers })),

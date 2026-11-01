@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
+import { fold } from "../src/fold.ts";
 import { EventStore } from "../src/store.ts";
 import { nodeExecutable } from "./support/node.ts";
 import { project } from "./support/reader-recordings.ts";
@@ -99,7 +100,15 @@ for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] a
           { project: project.id, tracker: false, forge: false, trackerError: reason[0], forgeError: reason[1] },
         ]);
         for (const message of reason) assert.ok(errors.includes(message), `log explains ${message}`);
-        assert.deepEqual(kinds, []);
+        assert.ok(
+          kinds.every((kind) => kind === "coordinator.checkpoint"),
+          "failures publish diagnostics, never tracker or forge facts",
+        );
+        assert.deepEqual(
+          { ...fold(store.readSince(0)).projects[project.id]?.readAt },
+          {},
+          "failed readers never claim freshness",
+        );
       }
       assert.doesNotMatch(
         errors + line + JSON.stringify(store.readSince(0)),
