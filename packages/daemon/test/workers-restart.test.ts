@@ -15,6 +15,9 @@ const project = "orchard";
 const at = "2030-01-01T00:00:00.000Z";
 for (const scenario of [
   "both adopted",
+  "pending GitHub feedback waits for recovery",
+  "pending GitHub feedback waits for initial brief",
+  "GitHub feedback arriving during delivery is retained",
   "one worker lost",
   "interrupted launch",
   "lost runtime refuses stop",
@@ -31,7 +34,7 @@ for (const scenario of [
   "plan policy changes during stop",
 ]) {
   const lost = scenario === "one worker lost" || scenario === "lost runtime refuses stop";
-  test(`restart preserves generations, capabilities and phases; ${scenario}`, async (t) => {
+  test(`restart preserves generations, capabilities and phases; ${scenario}`, { timeout: 15000 }, async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "armada-restart-"));
     const native = new Map<string, { ref: WorkerRef; alive: boolean; messages: string[]; token: string }>();
     let stops = 0;
@@ -55,7 +58,7 @@ for (const scenario of [
     const nativeGate = new Promise<void>((resolve) => {
       releaseNative = resolve;
     });
-    let interrupt = scenario === "interrupted launch";
+    let interrupt = scenario === "interrupted launch" || scenario === "pending GitHub feedback waits for initial brief";
     let observeGate: Promise<void> | undefined;
     let store = new EventStore(join(directory, "fleet.sqlite"));
     const requireApproval = () => {
@@ -119,6 +122,14 @@ for (const scenario of [
           };
         },
         deliver: async (ref, message) => {
+          if (
+            !firstBoot &&
+            scenario === "GitHub feedback arriving during delivery is retained" &&
+            message.includes("pending feedback 1")
+          ) {
+            nativeEntered();
+            await nativeGate;
+          }
           assert(native.get(ref.handle)?.alive);
           native.get(ref.handle)!.messages.push(message);
         },
@@ -271,6 +282,30 @@ for (const scenario of [
     store.close();
     store = new EventStore(join(directory, "fleet.sqlite"));
     firstBoot = false;
+    const feedback = (comment: number) =>
+      store.append({
+        project,
+        at,
+        actor: "github",
+        kind: "pull-request.commented",
+        payload: {
+          key: `review:restart:${comment}`,
+          repository: "example/orchard",
+          ticket: "SEED-1",
+          pr: 41,
+          head: "a".repeat(40),
+          author: "reviewer",
+          worker: "worker",
+          body: `Preserve pending feedback ${comment}`,
+          url: `https://github.com/example/orchard/pull/41#discussion_r${comment}`,
+          at,
+          comment: String(comment),
+        },
+      });
+    if (scenario.startsWith("pending GitHub feedback")) {
+      feedback(1);
+      feedback(2);
+    }
     workers = make();
     if (merged) {
       assert.deepEqual(await workers.recover(), { readopted: [], lost: [] });
@@ -385,6 +420,41 @@ for (const scenario of [
       ready = resolve;
     });
     const recovering = workers.recover();
+    if (
+      scenario.startsWith("pending GitHub feedback") ||
+      scenario === "GitHub feedback arriving during delivery is retained"
+    ) {
+      const messages = () =>
+        [...native.values()].flatMap((row) => row.messages).filter((m) => m.includes("pending feedback"));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(messages().length, 0, "review input must wait until observation finishes");
+      ready();
+      assert.equal((await recovering).readopted.length, 2);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (scenario === "pending GitHub feedback waits for initial brief") {
+        assert.equal(messages().length, 0, "unbriefed workers must not receive review instructions first");
+        const context = "Ticket SEED-1: plant safely. Parent instructions: keep the garden intact.";
+        await workers.tool(
+          project,
+          "worker.message",
+          { ticket: "SEED-1", message: context },
+          "recovery-handoff",
+          () => {},
+        );
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal([...native.values()][0]!.messages[0], context);
+      } else if (scenario === "GitHub feedback arriving during delivery is retained") {
+        feedback(1);
+        await entered;
+        feedback(2);
+        releaseNative();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      assert.equal(messages().length, 2, "both reviews reach the re-adopted worker without another fleet event");
+      assert.match(messages()[0]!, /pending feedback 1/);
+      assert.match(messages()[1]!, /pending feedback 2/);
+      return;
+    }
     const survivor = [...native.values()].find((row) => row.alive)!;
     let recorded = false;
     const duringBoot = workers

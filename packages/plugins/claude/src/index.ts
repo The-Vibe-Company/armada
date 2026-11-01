@@ -161,6 +161,10 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
       value.delivering = delivery;
       return delivery;
     },
+    async transcript(ref, maxBytes) {
+      record(ref);
+      return facilities().transcript?.(ref, maxBytes) ?? "";
+    },
     async observe(ref) {
       const value = record(ref);
       const observed = await facilities().observe(ref);

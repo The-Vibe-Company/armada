@@ -6,6 +6,7 @@ import { activePhaseSchema, type ProjectTables, type Ticket, type ToolProgress }
 import { z } from "zod";
 import type { EventInput, Json } from "../events.ts";
 import { fold } from "../fold.ts";
+import { maskedTail } from "../liveness/judge.ts";
 import { refuse } from "../merge/refusal.ts";
 import type { PluginRegistry } from "../plugins/registry.ts";
 import type { Account } from "../server/account.ts";
@@ -128,8 +129,100 @@ export class Workers {
   readonly #queues = new Map<string, Promise<unknown>>();
   #closing = false;
   readonly #removing = new Set<string>();
+  readonly #stopForge: () => void;
+  readonly #forgeCursors = new Map<string, number>();
+  #forgeScheduled = false;
+  #forgeAgain = false;
   constructor(options: Options) {
     this.#options = options;
+    const scan = () => {
+      if (this.#closing) return;
+      if (this.#forgeScheduled) {
+        this.#forgeAgain = true;
+        return;
+      }
+      this.#forgeScheduled = true;
+      queueMicrotask(() => {
+        void this.#forgeMessages()
+          .catch(() => {})
+          .finally(() => {
+            this.#forgeScheduled = false;
+            if (this.#forgeAgain) {
+              this.#forgeAgain = false;
+              scan();
+            }
+          });
+      });
+    };
+    let observed = options.store.sequence;
+    this.#stopForge = options.store.subscribe(() => {
+      const changes = options.store.readSince(observed);
+      observed = options.store.sequence;
+      // Delivery's own intents/receipts cannot continuously retry a lost worker.
+      if (
+        changes.some((event) => {
+          const c = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
+          return (
+            !c ||
+            typeof c !== "object" ||
+            Array.isArray(c) ||
+            c.format !== "armada.worker" ||
+            c.type === "recovery-handoff"
+          );
+        })
+      )
+        scan();
+    });
+    scan();
+  }
+  /** Source IDs plus the captured session fence replay and prevent notifying a replacement. */
+  async #forgeMessages() {
+    await this.#recovery;
+    for (const project of this.#options.projects) {
+      const events = this.#options.store.readSince(0, project.id);
+      let cursor = this.#forgeCursors.get(project.id) ?? 0;
+      let failedAt: number | undefined;
+      for (let index = 0; index < events.length && !this.#closing; index++) {
+        const event = events[index]!;
+        if (event.seq <= cursor) continue;
+        cursor = event.seq;
+        if (event.kind !== "pull-request.commented" && event.kind !== "review-thread.opened") continue;
+        const p = event.payload;
+        // PR author is the forge identity of the worker that opened this PR.
+        if (p.repository !== project.repository || !p.worker || p.author.toLowerCase() === p.worker.toLowerCase())
+          continue;
+        const session = fold(events.slice(0, index + 1)).projects[project.id]?.sessions.find(
+          (s) => s.ticket === p.ticket,
+        );
+        if (!session || ended(session.phase) || session.runtime === "tracker") continue;
+        if (this.#live.get(session.session)?.briefPending) {
+          failedAt ??= event.seq;
+          continue;
+        }
+        const key = `forge:${hash(JSON.stringify([project.id, session.session, p.pr, p.comment, p.version ?? p.at]))}`;
+        try {
+          await this.tool(
+            project.id,
+            "worker.message",
+            {
+              ticket: p.ticket,
+              session: session.session,
+              message: `GitHub review from ${p.author} on PR #${p.pr}:\n${p.body}\n${p.url}`,
+            },
+            key,
+            () => {
+              const current = this.#tables(project.id)?.sessions.find((s) => s.ticket === p.ticket);
+              if (this.#closing || !current || current.session !== session.session || ended(current.phase))
+                throw new WorkerRefusal("Worker generation changed; review input skipped");
+            },
+          );
+        } catch {
+          const current = this.#tables(project.id)?.sessions.find((s) => s.ticket === p.ticket);
+          if (current?.session === session.session && !ended(current.phase)) failedAt ??= event.seq;
+        }
+      }
+      this.#forgeCursors.set(project.id, failedAt ? failedAt - 1 : cursor);
+    }
   }
 
   #at() {
@@ -408,6 +501,11 @@ export class Workers {
           if (name === "worker.message") {
             const message = workerToolSchemas["worker.message"].parse(parsed).message;
             await this.#deliver(row, message, key, beforeWrite);
+            if (row.briefPending) {
+              // The coordinator prompt requires ticket/parent context in this explicit handoff.
+              this.#checkpoint(project, { type: "recovery-handoff", session: row.ref.session });
+              row.briefPending = false;
+            }
             result = { ok: true, session: row.ref.session, delivery: "confirmed" };
           } else {
             const reason = workerToolSchemas["worker.stop"].parse(parsed).reason;
@@ -1439,9 +1537,8 @@ export class Workers {
             typeof c === "object" &&
             !Array.isArray(c) &&
             c.format === "armada.worker" &&
-            c.type === "delivered" &&
             c.session === ref.session &&
-            c.key === hash(`brief:${ref.session}`)
+            (c.type === "recovery-handoff" || (c.type === "delivered" && c.key === hash(`brief:${ref.session}`)))
           );
         }),
       mask: maskHostedText,
@@ -1512,6 +1609,17 @@ export class Workers {
       throw new WorkerRefusal("Lost worker generation changed; nothing released");
     this.#append({ project, kind: "session.released", payload: { ticket, session, reason } });
     return { ok: true, session, stopped: false, released: true };
+  }
+
+  /** Read only the pinned generation; unsupported runtime tails are empty. */
+  async transcript(project: string, session: { ticket: string; session: string; generation: number }): Promise<string> {
+    const row = this.#row(project, session.ticket);
+    if (row.ref.session !== session.session || row.ref.generation !== session.generation)
+      throw new WorkerRefusal("Transcript generation changed");
+    this.#check(row.ref);
+    const tail = (await row.runtime.transcript?.(row.ref, 4096)) ?? "";
+    this.#check(row.ref);
+    return maskedTail(tail, row.mask);
   }
 
   async observe(project: string, ticket: string): Promise<WorkerObservation> {
@@ -1705,6 +1813,7 @@ export class Workers {
   /** Stop only host scheduling. The supervisor and hosted workspaces own their workers. */
   async close() {
     this.#closing = true;
+    this.#stopForge();
     await Promise.allSettled([...this.#queues.values()]);
     await this.#observing;
     await Promise.allSettled([...this.#reads.values()]);

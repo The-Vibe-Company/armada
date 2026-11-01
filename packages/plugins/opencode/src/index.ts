@@ -189,6 +189,10 @@ export function opencodeRuntime(options: Options = {}, node?: NodeProvider): Run
       value.delivering = delivery;
       return delivery;
     },
+    async transcript(ref, maxBytes) {
+      record(ref);
+      return facilities().transcript?.(ref, maxBytes) ?? "";
+    },
     async observe(ref) {
       const value = record(ref);
       if (value.stopped) return { state: "stopped", activity: "idle", ...(value.reply ? { reply: value.reply } : {}) };

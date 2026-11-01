@@ -16,18 +16,24 @@ export const SESSION_MINOR = 6;
 export const OUTPUT_LINES = 200;
 
 /** Release this generation of the ticket's worker: the daemon stops it, never another one. */
-export const sessionReleaseRequestSchema = z.object({
-  ...request,
-  ...generation,
-  type: z.literal("session.release"),
-  generation: counter.min(1),
-  reason: z
-    .string()
-    .max(4 * 1024)
-    .regex(/\S/),
-});
+export const sessionReleaseRequestSchema = /* @__PURE__ */ releaseRequest();
+function releaseRequest() {
+  return z.object({
+    ...request,
+    ...generation,
+    type: z.literal("session.release"),
+    generation: counter.min(1),
+    reason: z
+      .string()
+      .max(4 * 1024)
+      .regex(/\S/),
+  });
+}
 /** The worker's last output, as its runtime observes it now. */
-export const sessionOutputRequestSchema = z.object({ ...request, ...generation, type: z.literal("session.output") });
+export const sessionOutputRequestSchema = /* @__PURE__ */ outputRequest();
+function outputRequest() {
+  return z.object({ ...request, ...generation, type: z.literal("session.output") });
+}
 
 /** Released: the ticket is retired; stopped:false explicitly marks an unreachable lost runtime. */
 export const sessionReleaseResultSchema = z.object({

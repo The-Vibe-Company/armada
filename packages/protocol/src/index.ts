@@ -22,6 +22,7 @@ import {
   ownerAnswerRequestSchema,
 } from "./chat.js";
 import { counter, identifier, requestSchema, versionSchema } from "./envelope.js";
+import { GITHUB_READER_MINOR } from "./fleet.js";
 import {
   modelConfigSchema,
   modelKindEntrySchema,
@@ -33,7 +34,7 @@ import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
 import { PROJECTS_MINOR, projectRequestSchemas, projectSchema, projectsInspectionSchema } from "./projects.js";
 import { providerRequestSchemas, providersCatalogSchema } from "./providers.js";
 import { READER_MINOR, roomPresenceRequestSchema } from "./readers.js";
-import { BRIEF_INSTRUCTIONS_MINOR } from "./rules.js";
+import { BRIEF_INSTRUCTIONS_MINOR, WATCHDOG_MINOR } from "./rules.js";
 import {
   sessionOutputRequestSchema,
   sessionOutputResultSchema,
@@ -57,7 +58,14 @@ export * from "./session.js";
 export const WORKER_RECOVERY_MINOR = 15;
 export const PROTOCOL_VERSION = {
   major: 1,
-  minor: Math.max(READER_MINOR, PROJECTS_MINOR, BRIEF_INSTRUCTIONS_MINOR, WORKER_RECOVERY_MINOR),
+  minor: Math.max(
+    READER_MINOR,
+    PROJECTS_MINOR,
+    BRIEF_INSTRUCTIONS_MINOR,
+    WORKER_RECOVERY_MINOR,
+    GITHUB_READER_MINOR,
+    WATCHDOG_MINOR,
+  ),
 } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
 export const DAEMON_TOO_OLD = "Armada daemon is older than the app: update it";
@@ -107,10 +115,13 @@ export const credentialsResultSchema = z.object({
   needsRepair: z.boolean().optional(),
   storage: z.enum(["os-keychain", "file"]),
 });
-export const fleetShutdownRequestSchema = requestSchema("fleet.shutdown", {
-  project: identifier,
-  reason: z.string().trim().min(1).max(4000),
-});
+export const fleetShutdownRequestSchema = /* @__PURE__ */ fleetShutdownRequest();
+function fleetShutdownRequest() {
+  return requestSchema("fleet.shutdown", {
+    project: identifier,
+    reason: z.string().trim().min(1).max(4000),
+  });
+}
 export const fleetShutdownResultSchema = z.object({
   ...request,
   type: z.literal("fleet.shutdown.result"),
