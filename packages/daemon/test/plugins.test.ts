@@ -405,6 +405,7 @@ test("armadad loads the bundled catalog before announcing server readiness", { t
           ...process.env,
           ARMADA_APP_CONFIG: configPath,
           XDG_CONFIG_HOME: dir,
+          ARMADA_KEYCHAIN: "file",
           GITHUB_TOKEN: randomBytes(24).toString("hex"),
         },
         stdio: ["ignore", "pipe", "pipe"],
