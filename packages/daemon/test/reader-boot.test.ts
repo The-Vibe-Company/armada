@@ -7,11 +7,13 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { EventStore } from "../src/store.ts";
-import { nodeExecutable } from "./support/node.ts";
+import { daemonEnv, nodeExecutable } from "./support/node.ts";
 import { project } from "./support/reader-recordings.ts";
 
 // Exercise the actual source entry point, loader, bundled plugins and SQLite store.
 // Only the remote services are replaced; no token or plugin config is saved.
+// File-only test credentials keep this valid even when the owner has a real
+// coordinator credential in macOS Keychain: boot must not start that coordinator.
 for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] as const) {
   test(`daemon reader boot: ${mode}`, { timeout: 10_000 }, async (t) => {
     const dir = mkdtempSync(join(tmpdir(), "armada-reader-boot-"));
@@ -51,10 +53,8 @@ for (const mode of ["environment", "gh", "missing", "unauthorized", "network"] a
       {
         stdio: ["ignore", "pipe", "pipe"],
         env: {
-          ...process.env,
+          ...daemonEnv(dir),
           ARMADA_APP_CONFIG: join(dir, "config.json"),
-          XDG_CONFIG_HOME: dir,
-          ARMADA_KEYCHAIN: "file",
           PATH: dir, // No owner gh session in missing-credential coverage.
           LINEAR_API_KEY: mode === "missing" ? "" : "synthetic-linear-environment-secret",
           GITHUB_TOKEN: mode === "missing" || mode === "gh" ? "" : "synthetic-github-environment-secret",
