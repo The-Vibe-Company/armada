@@ -19,6 +19,7 @@ export type {
   NodeProvider,
   PrepareRequest,
   RuntimeProvider,
+  RuntimeRecovery,
   WorkerObservation,
   WorkerRef,
   WorkerUsage,

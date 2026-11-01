@@ -714,3 +714,76 @@ for (const runtime of ["native", "sdk", "sdk-unknown"] as const) {
     assert.equal(tables.projects.other?.usage, undefined);
   });
 }
+
+test("reattached Claude usage retains the generation floor and marks a bounded replay prefix unknown", async (t) => {
+  const { claudeRuntime } = await import("../../plugins/claude/src/index.ts");
+  const ref = { project: "p", ticket: "SEED-1", session: "same-generation", generation: 1, handle: "native" };
+  const workspace = { id: "workspace", path: "/fixture", node: "local" };
+  const result = (input: number, uuid: string) =>
+    `${JSON.stringify({
+      type: "result",
+      uuid,
+      session_id: uuid === "before" ? "before-clear" : "after-clear",
+      modelUsage: {
+        oak: { inputTokens: input, outputTokens: input / 10, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+      },
+    })}\n`;
+  let output = result(1000, "before");
+  let launches = 0;
+  const node: import("@armada/plugin-api").NodeProvider = {
+    prepare: async () => workspace,
+    launch: async () => {
+      launches++;
+      return ref;
+    },
+    adopt: async () => ({ deliveries: 1 }),
+    deliver: async () => {},
+    observe: async () => ({ state: "running", reply: output }),
+    stop: async () => {},
+  };
+  const store = new EventStore(":memory:");
+  t.after(() => store.close());
+  const record = async (runtime: ReturnType<typeof claudeRuntime>) => {
+    const observed = await runtime.observe(ref);
+    store.append({
+      project: "p",
+      at,
+      actor: "daemon",
+      kind: "session.usage",
+      payload: {
+        ticket: ref.ticket,
+        session: ref.session,
+        generation: ref.generation,
+        usage: observed.usage ?? "unknown",
+      },
+    });
+    return observed.usage;
+  };
+  const first = claudeRuntime({}, node);
+  await first.launch({ workspace, worker: ref, command: "", args: [], env: {} });
+  const initial = await record(first);
+  assert.notEqual(initial, "unknown");
+  assert.equal(typeof initial === "object" ? initial.input : null, 1000);
+  // A restarted daemon sees a bounded node tail, not evidence of the earlier clear or its counters.
+  output = "";
+  const recovered = claudeRuntime({}, node);
+  await recovered.adopt?.(ref, workspace, first.checkpoint?.(ref));
+  assert.equal(await record(recovered), "unknown");
+  output = result(150, "recovered");
+  const partial = await record(recovered);
+  assert.equal(typeof partial === "object" ? partial.input : null, 150);
+  assert.equal(typeof partial === "object" ? partial.incomplete : false, true);
+  const session = () => fold(store.readSince(0)).projects.p?.usage?.sessions.find((row) => row.session === ref.session);
+  assert.equal(session()?.totals.input, 1000, "an incomplete replay cannot erase already observed tokens");
+  assert.equal(session()?.totals.unknown, 1);
+  output += result(1200, "later");
+  await record(recovered);
+  assert.equal(session()?.totals.input, 1200);
+  assert.equal(session()?.totals.unknown, 1);
+  assert.equal(
+    fold(store.readSince(0)).projects.p?.usage?.days[0]?.workers.input,
+    1200,
+    "cumulative lower bounds are not charged twice",
+  );
+  assert.equal(launches, 1, "adoption never creates another worker");
+});

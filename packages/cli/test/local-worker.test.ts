@@ -85,3 +85,141 @@ test("worker capability routes CLI commands to its Unix socket without V1 config
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("a local worker waits for a restarting daemon before connecting, but never retries an accepted refusal", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "armada-worker-reconnect-"));
+  const socketPath = join(directory, "worker.sock");
+  const token = randomBytes(32).toString("base64url");
+  const requests: Record<string, unknown>[] = [];
+  let allowed = true;
+  let disconnect = false;
+  let retries = 0;
+  const server = createServer(async (req, res) => {
+    let data = "";
+    for await (const chunk of req) data += chunk;
+    requests.push(JSON.parse(data));
+    if (disconnect) {
+      disconnect = false;
+      req.socket.destroy();
+      return;
+    }
+    res.writeHead(allowed ? 200 : 403);
+    res.end('{"ok":true}');
+  });
+  const io: Io = {
+    cwd: directory,
+    env: { ARMADA_WORKER_SOCKET: socketPath, ARMADA_WORKER_TOKEN: token, ARMADA_TICKET: "SEED-1" },
+    readFile: async () => {
+      throw new Error("V1 discovery must not run");
+    },
+    ghToken: () => {
+      throw new Error("V1 credentials must not be read");
+    },
+    stdout: () => {},
+    stderr: () => {},
+    sleep: async (ms) => {
+      expect(ms).toBe(500);
+      retries++;
+      if (!server.listening) await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+    },
+  };
+  try {
+    expect(await run(["ask", "Continue planting?"], io)).toBe(0);
+    expect(retries).toBe(1);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ command: "ask", question: "Continue planting?", ticket: "SEED-1" });
+    allowed = false;
+    expect(await run(["heartbeat"], io)).toBe(1);
+    expect(retries).toBe(1);
+    expect(requests).toHaveLength(2);
+    disconnect = true;
+    expect(await run(["report", "implementing", "--message", "Working"], io)).toBe(1);
+    expect(requests).toHaveLength(3);
+    expect(retries).toBe(1);
+    allowed = true;
+    disconnect = true;
+    expect(await run(["heartbeat"], io)).toBe(0);
+    expect(requests).toHaveLength(5);
+    expect(requests.slice(-2)).toEqual([
+      { command: "heartbeat", ticket: "SEED-1" },
+      { command: "heartbeat", ticket: "SEED-1" },
+    ]);
+    expect(retries).toBe(2);
+  } finally {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+      server.closeAllConnections();
+    });
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("heartbeat reconnects share one elapsed deadline and a partial authorization refusal is final", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "armada-worker-deadline-"));
+  const socketPath = join(directory, "worker.sock");
+  let clock = 0;
+  let requests = 0;
+  let sleeps = 0;
+  let refused = false;
+  let refusalClosed: Promise<void> | undefined;
+  const server = createServer(async (req, res) => {
+    for await (const _chunk of req) {
+      /* Drain the request. */
+    }
+    requests++;
+    if (refused) {
+      refusalClosed = new Promise<void>((resolve) => req.socket.once("close", () => resolve()));
+      res.writeHead(403);
+      res.write('{"error":');
+      // A rejected response must close without waiting for this body to end.
+    } else {
+      clock = Math.min(30_000, clock + 10_000);
+      req.socket.destroy();
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  const io: Io = {
+    cwd: directory,
+    env: {
+      ARMADA_WORKER_SOCKET: socketPath,
+      ARMADA_WORKER_TOKEN: randomBytes(32).toString("base64url"),
+      ARMADA_TICKET: "SEED-1",
+    },
+    now: () => new Date(clock),
+    readFile: async () => {
+      throw new Error("V1 discovery must not run");
+    },
+    ghToken: () => {
+      throw new Error("V1 credentials must not be read");
+    },
+    stdout: () => {},
+    stderr: () => {},
+    sleep: async (ms) => {
+      sleeps++;
+      clock += ms;
+    },
+  };
+  try {
+    expect(await run(["heartbeat"], io)).toBe(1);
+    expect(clock).toBe(30_000);
+    expect(requests).toBe(3);
+    expect(sleeps).toBe(2);
+    refused = true;
+    expect(await run(["heartbeat"], io)).toBe(1);
+    expect(requests).toBe(4);
+    expect(sleeps).toBe(2);
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Rejected response socket stayed open")), 1000);
+      void refusalClosed?.then(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  } finally {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+      server.closeAllConnections();
+    });
+    await rm(directory, { recursive: true, force: true });
+  }
+});

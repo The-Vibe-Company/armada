@@ -32,6 +32,8 @@ export interface WorkerRef {
   handle: string;
 }
 export interface LaunchRequest {
+  /** Host-reserved local identity, journaled before process creation. Hosted runtimes return their native handle. */
+  handle?: string;
   workspace: Workspace;
   worker: Omit<WorkerRef, "handle">;
   /** Empty selects the runtime's official CLI; a nonempty command is a host override (e.g. conformance). Nodes receive only resolved commands. */
@@ -58,8 +60,17 @@ export interface WorkerObservation {
   usage?: WorkerUsage | "unknown";
   state: "starting" | "running" | "stopped" | "failed" | "unknown";
   reply?: string;
+  /** Optional node statistic for reconstructing runtime counters after attachment. */
+  acceptedDeliveries?: number;
   /** CLI activity is independent of the operating-system process state. */
   activity?: "working" | "idle";
+}
+export interface RuntimeRecovery {
+  /** CLI wire mode, never prompts, output or credentials. */
+  native?: boolean;
+  stream?: boolean;
+  /** The journaled launch has not returned its runtime handle yet. */
+  starting?: boolean;
 }
 export interface RuntimeProvider extends ProviderConnection {
   /** Owns its workspace and authenticates workers through Armada web, instead of a node socket. */
@@ -69,6 +80,9 @@ export interface RuntimeProvider extends ProviderConnection {
   prepare(request: PrepareRequest): Promise<Workspace>;
   /** Read-only recovery of one native create with an unknown outcome. Never repeats creation. */
   recover?(request: PrepareRequest & { worker: Omit<WorkerRef, "handle">; since: string }): Promise<WorkerRef | null>;
+  /** Reattach a persisted exact generation without creating a process. */
+  checkpoint?(worker: WorkerRef): RuntimeRecovery;
+  adopt?(worker: WorkerRef, workspace: Workspace, recovery?: RuntimeRecovery): Promise<{ deliveries: number }>;
   launch(request: LaunchRequest): Promise<WorkerRef>;
   deliver(worker: WorkerRef, message: string, deliveryKey: string): Promise<void>;
   observe(worker: WorkerRef): Promise<WorkerObservation>;
@@ -85,6 +99,8 @@ export interface NodeProvider {
   /** Refuse while a worker still uses it or local changes would be lost. */
   dispose?(workspace: Workspace): Promise<void>;
   prepare(request: PrepareRequest): Promise<Workspace>;
+  /** Reattach through the live supervisor, never by signaling a persisted PID. */
+  adopt?(worker: WorkerRef, workspace: Workspace, recovery?: { starting?: boolean }): Promise<{ deliveries: number }>;
   launch(request: LaunchRequest): Promise<WorkerRef>;
   deliver(worker: WorkerRef, message: string, deliveryKey: string): Promise<void>;
   observe(worker: WorkerRef): Promise<WorkerObservation>;

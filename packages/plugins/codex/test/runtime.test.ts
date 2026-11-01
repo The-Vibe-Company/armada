@@ -7,8 +7,9 @@ import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import type { RuntimeProvider, WorkerObservation, WorkerRef } from "@armada/plugin-api";
+import type { NodeProvider, RuntimeProvider, WorkerObservation, WorkerRef } from "@armada/plugin-api";
 import { guarded } from "@armada/plugin-api/guard";
+import { claudeRuntime } from "../../claude/src/index.ts";
 import { createLocalNode } from "../../node-local/src/index.ts";
 import { opencodeRuntime } from "../../opencode/src/index.ts";
 import { codexRuntime } from "../src/index.ts";
@@ -31,6 +32,53 @@ async function until(
     await setImmediate();
   } while (Date.now() < deadline);
   throw new Error("Runtime did not produce the expected observation");
+}
+
+// Input order is a runtime contract: a slow observation of the first delivery must
+// not let the next message overtake it before the node's own write queue is entered.
+for (const [kind, create] of [
+  ["claude", claudeRuntime],
+  ["codex", codexRuntime],
+  ["opencode", opencodeRuntime],
+] as const) {
+  test(`${kind} preserves delivery order when the first pre-write observation is delayed`, async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let first = true;
+    const received: string[] = [];
+    const node: NodeProvider = {
+      prepare: async () => ({ id: "workspace", path: "/synthetic/workspace", node: "local" }),
+      launch: async ({ worker }) => ({ ...worker, handle: "synthetic-worker" }),
+      observe: async () => {
+        if (first) {
+          first = false;
+          await gate;
+        }
+        return { state: "running" };
+      },
+      deliver: async (_ref, message) => {
+        received.push(message);
+      },
+      stop: async () => {},
+    };
+    const runtime = create({}, node);
+    const workspace = await runtime.prepare({
+      project: "orchard",
+      ticket: "ORC-1",
+      repository: "/synthetic",
+      branch: "worker",
+    });
+    const worker = { project: "orchard", ticket: "ORC-1", session: "ordered", generation: 1 };
+    const ref = await runtime.launch({ worker, workspace, command: "synthetic-cli", args: [], env: {} });
+    const firstDelivery = runtime.deliver(ref, "first", "one");
+    const secondDelivery = runtime.deliver(ref, "second", "two");
+    await setImmediate();
+    release();
+    await Promise.all([firstDelivery, secondDelivery]);
+    expect(received).toEqual(["first", "second"]);
+  });
 }
 
 for (const [kind, create] of [
@@ -84,7 +132,12 @@ for (const [kind, create] of [
             env: { FAKE_AUTH: auth, XDG_CONFIG_HOME: join(root, "config"), FAKE_RUN_MARKER: join(root, "run") },
           }),
         );
-      return { root, runtime, node, workspace, mutate, launch };
+      const reopen = () => {
+        const fresh = createLocalNode({ workspaceRoot: join(root, "worktrees"), transport: "pipe", outputTail });
+        assert(unbound.withNode);
+        return unbound.withNode(fresh);
+      };
+      return { root, runtime, node, workspace, mutate, launch, reopen };
     }
 
     test("translates routing flags, preserves messages and resumes the exact CLI session", async () => {
@@ -126,6 +179,28 @@ for (const [kind, create] of [
       expect((await runtime.observe(ref)).activity).toBe("idle");
       await node.dispose?.(workspace);
     }, 20_000);
+
+    test("a fresh runtime reattaches and resumes the same CLI session without counting a delivery retry twice", async () => {
+      const { runtime, workspace, mutate, launch, reopen } = await setup();
+      const ref = await launch();
+      let attached = runtime;
+      try {
+        await mutate(() => runtime.deliver(ref, "first", "first"));
+        await until(runtime, ref, (v) => v.activity === "idle");
+        attached = reopen();
+        assert(attached.adopt);
+        await attached.adopt(ref, workspace, runtime.checkpoint?.(ref));
+        assert.equal((await attached.observe(ref)).activity, "idle");
+        await mutate(() => attached.deliver(ref, "first", "first"));
+        assert.equal((await attached.observe(ref)).activity, "idle");
+        await mutate(() => attached.deliver(ref, "after restart", "answer"));
+        const reply = JSON.parse((await until(attached, ref, (v) => v.activity === "idle")).reply ?? "");
+        assert.equal(reply.input, "after restart");
+        assert(reply.args.includes("session-fixture-1"));
+      } finally {
+        await mutate(() => attached.stop(ref));
+      }
+    });
 
     test("refuses missing credentials before any inference and leaves the workspace disposable", async () => {
       const { root, runtime, node, workspace, mutate, launch } = await setup("no");

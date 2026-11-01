@@ -1,11 +1,30 @@
-import { chmod, mkdir } from "node:fs/promises";
+import { chmod, mkdir, unlink } from "node:fs/promises";
 import { createServer } from "node:http";
+import { createConnection } from "node:net";
 import { dirname } from "node:path";
 import type { Workers } from "./service.ts";
 
 /** Private Unix socket, deliberately separate from the owner's unauthenticated loopback WebSocket. */
 export async function startWorkerSocket(workers: Workers, path: string) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  // The production caller holds the stable endpoint's owner lease. Never remove a live socket.
+  await new Promise<void>((resolve, reject) => {
+    const probe = createConnection(path);
+    probe.once("connect", () => {
+      probe.destroy();
+      reject(new Error("Worker socket already has a live owner"));
+    });
+    probe.once("error", (error: NodeJS.ErrnoException) => {
+      probe.destroy();
+      if (error.code === "ENOENT") resolve();
+      else if (error.code === "ECONNREFUSED") void unlink(path).then(resolve, reject);
+      else reject(error);
+    });
+    probe.setTimeout(1000, () => {
+      probe.destroy();
+      reject(new Error("Worker socket owner unavailable"));
+    });
+  });
   const server = createServer(async (req, res) => {
     res.setHeader("Content-Type", "application/json");
     const fail = (status: number) => {

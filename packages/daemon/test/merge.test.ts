@@ -730,6 +730,21 @@ for (const change of [{ baseRef: "release" }, { behindBy: null }]) {
     assert.equal(f.counts().mergeCalls, 0);
   });
 }
+test("a lost worker's explicit release never confirms merge cleanup without native stop proof", async (t) => {
+  const f = await fixture(t);
+  assert.equal((await f.run("merge.check")).ok, true);
+  const stop = f.options.stop;
+  f.options.stop = async () => ({ ok: true, stopped: false, disposed: false });
+  const result = await f.run("merge.run");
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "cleanup_pending");
+  assert.equal(f.counts().mergeCalls, 1, "the merge succeeded before its cleanup refusal");
+  assert(fold(f.store.readSince(0)).projects.orchard?.inbox.some((item) => item.kind === "hand-back"));
+  f.options.stop = stop;
+  assert.equal((await f.run("merge.run", 7, "cleanup-retry")).ok, true);
+  assert.equal(f.counts().mergeCalls, 1);
+});
+
 test("merged generation cleanup preserves an older generation's hand-back", async (t) => {
   const f = await fixture(t, true);
   assert.equal((await f.run("merge.run")).ok, true);

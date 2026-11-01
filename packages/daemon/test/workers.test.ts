@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { NodeProvider, WorkerObservation, WorkerRef } from "@armada/plugin-api";
+import { guarded } from "@armada/plugin-api/guard";
 import type { Ticket } from "@armada/protocol";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
@@ -87,6 +88,7 @@ async function fixture(
   const messages: string[] = [];
   let local: NodeProvider;
   let reference: WorkerRef;
+  const references: WorkerRef[] = [];
   const configPath = join(directory, "config.json");
   await writeFile(
     configPath,
@@ -135,6 +137,7 @@ async function fixture(
                 workspacePath = request.workspace.path;
                 token = request.env.ARMADA_WORKER_TOKEN ?? "";
                 reference = await provider.launch(request);
+                references.push(reference);
                 return reference;
               },
             });
@@ -211,6 +214,13 @@ async function fixture(
     }) as unknown as ToolExecutionApi;
   t.after(async () => {
     await scope.close(context);
+    await workers.shutdown(project, "Fixture cleanup", () => {});
+    for (const ref of references)
+      await guarded(
+        ref,
+        () => {},
+        () => local.stop(ref),
+      );
     await workers.close();
     await socket.close();
     daemon.close();
@@ -694,7 +704,9 @@ test("shutdown revokes every capability and stops later workers after one provid
     ).isError,
     false,
   );
-  await assert.rejects(f.workers.close(), AggregateError);
+  const result = await f.workers.shutdown(project, "Owner quit the fleet", () => {});
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.failed, ["SEED-1"]);
   assert.equal((await f.inspect()).state, "stopped", "the later real process was still stopped");
   const afterStop = fold(f.daemon.store.readSince(0, project)).projects[project];
   assert.equal(

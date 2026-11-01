@@ -22,7 +22,9 @@ export function codexRuntime(options: Options = {}, node?: NodeProvider): Runtim
     string,
     {
       ref: WorkerRef;
+      delivering?: Promise<void>;
       native: boolean;
+      adopted?: boolean;
       sequence: number;
       sent: number;
       completed: number;
@@ -62,6 +64,24 @@ export function codexRuntime(options: Options = {}, node?: NodeProvider): Runtim
     ...codexConnection(options.binary ?? options.command ?? "codex"),
     withNode: (selected) => codexRuntime(options, selected),
     prepare: (request) => facilities().prepare(request),
+    checkpoint: (ref) => ({ native: record(ref).native }),
+    async adopt(ref, workspace, recovery) {
+      const node = facilities();
+      if (!node.adopt) throw new Error("Selected node cannot reattach workers");
+      const { deliveries } = await node.adopt(ref, workspace, { starting: recovery?.starting });
+      const value: ReturnType<typeof record> = {
+        ref: { ...ref },
+        native: recovery?.native ?? true,
+        adopted: true,
+        sequence: 0,
+        sent: deliveries,
+        completed: 0,
+        deliveries: new Map(),
+      };
+      workers.set(ref.handle, value);
+      consume(value, (await node.observe(ref)).reply ?? "");
+      return { deliveries };
+    },
     async launch(request) {
       const native = !request.command;
       // The daemon supplies routing in generic model/effort flags. Copy V1's CLI conventions
@@ -139,23 +159,35 @@ export function codexRuntime(options: Options = {}, node?: NodeProvider): Runtim
     },
     async deliver(ref, message, key) {
       const value = record(ref);
-      if (value.refusal) throw new Error(value.refusal);
-      if (!key) throw new Error("Delivery key must not be empty");
-      const previous = value.deliveries.get(key);
-      if (previous !== undefined) {
-        if (previous !== message) throw new Error("Delivery key already used with another message");
-        return;
-      }
-      const before = await facilities().observe(ref);
-      if (value.native) consume(value, before.reply ?? "");
-      await facilities().deliver(ref, value.native ? JSON.stringify({ key, message }) : message, key);
-      // Node delivery is keyed and serialized; concurrent retries must count only one turn.
-      if (!value.deliveries.has(key)) {
-        value.deliveries.set(key, message);
-        value.reply = undefined;
-        value.failure = undefined;
-        value.sent++;
-      }
+      // Observe crosses a socket after reattachment. Queue before that first await so
+      // simultaneous callers retain their order all the way to the CLI's input.
+      const delivery = (value.delivering ?? Promise.resolve())
+        .catch(() => {})
+        .then(async () => {
+          if (value.refusal) throw new Error(value.refusal);
+          if (!key) throw new Error("Delivery key must not be empty");
+          const previous = value.deliveries.get(key);
+          if (previous !== undefined) {
+            if (previous !== message) throw new Error("Delivery key already used with another message");
+            return;
+          }
+          const before = await facilities().observe(ref);
+          if (value.native) consume(value, before.reply ?? "");
+          await facilities().deliver(ref, value.native ? JSON.stringify({ key, message }) : message, key);
+          // Node delivery is keyed and serialized; concurrent retries must count only one turn.
+          if (!value.deliveries.has(key)) {
+            const sent = value.adopted
+              ? ((await facilities().observe(ref)).acceptedDeliveries ?? value.sent + 1)
+              : value.sent + 1;
+            value.deliveries.set(key, message);
+            if (sent === value.sent) return;
+            value.sent = sent;
+            value.reply = undefined;
+            value.failure = undefined;
+          }
+        });
+      value.delivering = delivery;
+      return delivery;
     },
     async transcript(ref, maxBytes) {
       record(ref);

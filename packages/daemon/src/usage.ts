@@ -147,6 +147,14 @@ export function projectUsage(events: readonly FleetEvent[], zone: string): Proje
     }
     return row;
   };
+  const launched = (id: string, at: string) => {
+    const row = sessionAt(id, "worker");
+    if (!row.launchedAt) {
+      row.launchedAt = at;
+      dayAt(at).workerLaunches++;
+    }
+    return row;
+  };
   for (const e of events) {
     if (e.kind === "coordinator.checkpoint") {
       const c = e.payload.checkpoint;
@@ -164,17 +172,17 @@ export function projectUsage(events: readonly FleetEvent[], zone: string): Proje
         !Array.isArray(c) &&
         c.format === "armada.worker" &&
         c.type === "launch" &&
-        c.step === "launched" &&
         typeof c.session === "string"
       ) {
-        const row = sessionAt(c.session, "worker");
-        if (!row.launchedAt) {
-          row.launchedAt = e.at;
-          row.ticket = typeof c.ticket === "string" ? c.ticket : undefined;
-          row.runtime = typeof c.runtime === "string" ? c.runtime : undefined;
-          dayAt(e.at).workerLaunches++;
-        }
+        const row = c.step === "launched" ? launched(c.session, e.at) : sessionAt(c.session, "worker");
+        if (typeof c.ticket === "string") row.ticket = c.ticket;
+        if (typeof c.runtime === "string") row.runtime = c.runtime;
       }
+    }
+    if (e.kind === "worker.readopted") {
+      // Recovery can be the first confirmation of a create whose launch reply was interrupted.
+      // Already-confirmed generations retain their original launch time and consume no new slot.
+      launched(e.payload.session, e.at).ticket = e.payload.ticket;
     }
     if (e.kind === "session.usage") {
       const { session, ticket, usage } = e.payload;
@@ -188,13 +196,21 @@ export function projectUsage(events: readonly FleetEvent[], zone: string): Proje
         const prior = previous.get(session);
         // A repeated cumulative observation contributes no new tokens. Missing counters stay unknown.
         const delta = { ...usage };
-        for (const k of fields) delta[k] = usage[k] === null ? null : Math.max(0, usage[k] - (prior?.[k] ?? 0));
-        add(day.workers, delta);
         const cumulative = { ...usage };
-        for (const k of fields) cumulative[k] = usage[k] ?? prior?.[k] ?? null;
+        for (const k of fields) {
+          const amount = usage[k];
+          const floor = prior?.[k];
+          delta[k] = amount === null ? null : Math.max(0, amount - (floor ?? 0));
+          cumulative[k] = amount === null ? (floor ?? null) : Math.max(amount, floor ?? 0);
+          if (amount !== null && floor != null && amount < floor) {
+            delta.incomplete = true;
+            cumulative.incomplete = true;
+          }
+        }
+        add(day.workers, delta);
         row.totals = emptyTotals();
         add(row.totals, cumulative);
-        if (usage.incomplete || fields.some((k) => usage[k] === null)) row.totals.unknown = 1;
+        if (cumulative.incomplete || fields.some((k) => usage[k] === null)) row.totals.unknown = 1;
         previous.set(session, cumulative);
         const known = reported.get(day.day) ?? new Set<string>();
         if (fields.some((k) => usage[k] !== null)) known.add(session);

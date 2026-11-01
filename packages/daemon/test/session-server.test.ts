@@ -220,7 +220,7 @@ test("the owner releases exactly the named generation once, never another one no
     ticket: "ORC-1",
     session: next.session,
     generation: next.generation,
-    handle: `fake-${next.session}`,
+    handle: next.handle,
   };
   let open = () => {};
   live.fake.gate = new Promise<void>((resolve) => {
@@ -255,4 +255,29 @@ test("a terminal's output reads as its screen: control sequences out, a carriage
     "a\tb bold",
     "done",
   ]);
+});
+
+test("only an admitted owner request shuts down the project fleet, with minor 15", async (t) => {
+  const { live, client, session } = await fixture(t);
+  await live.launch(project, "ORC-1");
+  await live.launch(project, "ORC-2");
+  assert.equal(session("ORC-1")?.phase, "planning");
+  const old = await client.ask({
+    type: "fleet.shutdown",
+    version: { major: 1, minor: 14 },
+    project,
+    reason: "Quit fleet",
+  });
+  assert.equal(old.type, "error");
+  if (old.type === "error") assert.equal(old.code, "app-too-old");
+  assert.equal(session("ORC-1")?.phase, "planning");
+  const result = await client.ask({ type: "fleet.shutdown", project, reason: "Owner quit the fleet" });
+  assert.equal(result.type, "fleet.shutdown.result");
+  if (result.type === "fleet.shutdown.result") {
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.released.sort(), ["ORC-1", "ORC-2"]);
+    assert.deepEqual(result.failed, []);
+  }
+  assert.equal(session("ORC-1")?.phase, "released");
+  assert.equal(session("ORC-2")?.phase, "released");
 });

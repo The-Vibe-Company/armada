@@ -43,7 +43,7 @@ export function fakeWorkers(store: EventStore, projects: { id: string; repositor
     withNode: () => runtime,
     prepare: (r) => node.prepare(r),
     async launch(request) {
-      const ref = { ...request.worker, handle: `fake-${request.worker.session}` };
+      const ref = { ...request.worker, handle: request.handle ?? `fake-${request.worker.session}` };
       tokens.set(ref.session, request.env.ARMADA_WORKER_TOKEN ?? "");
       running.add(ref.session);
       return ref;
@@ -89,6 +89,7 @@ export function fakeWorkers(store: EventStore, projects: { id: string; repositor
       return {
         session,
         generation: Number(launched.generation),
+        handle: String(launched.handle),
         token,
         ask: (question: string) => workers.request(token, { command: "ask", ticket, question, key: question }),
       };

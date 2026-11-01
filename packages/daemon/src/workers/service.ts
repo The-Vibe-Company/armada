@@ -23,7 +23,7 @@ import type { EventStore } from "../store.ts";
 import { BriefRefusal, workerBrief } from "./brief.ts";
 import { loadBriefContext } from "./brief-context.ts";
 import { maskHostedText } from "./hosted.ts";
-import { workerRoute } from "./routing.ts";
+import { labelKey, workerRoute } from "./routing.ts";
 
 interface WorkerProject {
   id: string;
@@ -44,6 +44,10 @@ interface Options {
   /** Host refresh commits a provider checkpoint only on success; actions require that evidence. */
   refresh?: (project: string) => Promise<void>;
 }
+export interface RecoverySummary {
+  readopted: WorkerRef[];
+  lost: (WorkerRef & { reason: string })[];
+}
 interface LiveWorker {
   ref: WorkerRef;
   runtime: RuntimeProvider;
@@ -54,6 +58,19 @@ interface LiveWorker {
   branch: string;
   runtimeKind: string;
   launchId?: string;
+  briefPending?: boolean;
+}
+interface BriefFacts {
+  config: WorkerProject;
+  tables: ProjectTables;
+  ticket: Ticket;
+  route: ReturnType<typeof workerRoute>;
+  bound: RuntimeProvider;
+  branch: string;
+}
+interface PreparedBrief {
+  create(token: string): string;
+  facts: string;
 }
 const id = z.string().min(1).max(200).regex(/\S/);
 export class WorkerRefusal extends Error {}
@@ -115,19 +132,24 @@ export class Workers {
   readonly #reads = new Map<string, Promise<WorkerObservation>>();
   readonly #lastRead = new Map<string, number>();
   #observing: Promise<void> | undefined;
+  readonly #unconfirmed = new Map<string, LiveWorker>();
+  readonly #lost = new Set<string>();
+  #recovery?: Promise<RecoverySummary>;
   readonly #queues = new Map<string, Promise<unknown>>();
   #closing = false;
   readonly #removing = new Set<string>();
   readonly #stopForge: () => void;
   readonly #forgeCursors = new Map<string, number>();
   #forgeScheduled = false;
-  #forgeDirty = false;
+  #forgeAgain = false;
   constructor(options: Options) {
     this.#options = options;
     this.#outbox = new Deliveries({
       store: options.store,
       now: () => this.#at(),
       deliver: async (delivery, beforeWrite) => {
+        await this.#recovery;
+        const row = this.#row(delivery.project, delivery.ticket);
         await this.answer(
           {
             key: delivery.key,
@@ -138,40 +160,55 @@ export class Workers {
           },
           delivery.project,
         );
+        if (row.briefPending && delivery.source === "coordinator-message" && !delivery.key.startsWith("forge:")) {
+          this.#checkpoint(delivery.project, { type: "recovery-handoff", session: row.ref.session });
+          row.briefPending = false;
+        }
       },
     });
-    for (const project of options.projects) {
-      for (const session of this.#tables(project.id)?.sessions ?? []) {
-        if (!ended(session.phase) && options.registry.get("runtime", session.runtime, project.id)?.needsLaunchToken)
-          try {
-            this.#row(project.id, session.ticket);
-          } catch {
-            /* Unconfirmed or unmanaged launches remain inspectable, never adopted. */
-          }
-      }
-    }
     const scan = () => {
       if (this.#closing) return;
       if (this.#forgeScheduled) {
-        this.#forgeDirty = true;
+        this.#forgeAgain = true;
         return;
       }
       this.#forgeScheduled = true;
-      this.#forgeDirty = false;
       queueMicrotask(() => {
         void this.#forgeMessages()
           .catch(() => {})
           .finally(() => {
             this.#forgeScheduled = false;
-            if (this.#forgeDirty) scan();
+            if (this.#forgeAgain) {
+              this.#forgeAgain = false;
+              scan();
+            }
           });
       });
     };
-    this.#stopForge = options.store.subscribe(scan);
+    let observed = options.store.sequence;
+    this.#stopForge = options.store.subscribe(() => {
+      const changes = options.store.readSince(observed);
+      observed = options.store.sequence;
+      // Delivery's own intents/receipts cannot continuously retry a lost worker.
+      if (
+        changes.some((event) => {
+          const c = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
+          return (
+            !c ||
+            typeof c !== "object" ||
+            Array.isArray(c) ||
+            c.format !== "armada.worker" ||
+            c.type === "recovery-handoff"
+          );
+        })
+      )
+        scan();
+    });
     scan();
   }
   /** Source IDs plus the captured session fence replay and prevent notifying a replacement. */
   async #forgeMessages() {
+    await this.#recovery;
     for (const project of this.#options.projects) {
       const events = this.#options.store.readSince(0, project.id);
       let cursor = this.#forgeCursors.get(project.id) ?? 0;
@@ -189,6 +226,10 @@ export class Workers {
           (s) => s.ticket === p.ticket,
         );
         if (!session || ended(session.phase) || session.runtime === "tracker") continue;
+        if (this.#live.get(session.session)?.briefPending) {
+          failedAt ??= event.seq;
+          continue;
+        }
         const key = `forge:${hash(JSON.stringify([project.id, session.session, p.pr, p.comment, p.version ?? p.at]))}`;
         try {
           await this.tool(
@@ -214,6 +255,7 @@ export class Workers {
       this.#forgeCursors.set(project.id, failedAt ? failedAt - 1 : cursor);
     }
   }
+
   #at() {
     return this.#options.now?.() ?? new Date().toISOString();
   }
@@ -242,43 +284,7 @@ export class Workers {
   }
   #row(project: string, ticket: string, allowEnded = false) {
     const current = this.#tables(project)?.sessions.find((s) => s.ticket === ticket);
-    let row = current && this.#live.get(current.session);
-    if (current && !row) {
-      const runtime = this.#options.registry.get("runtime", current.runtime, project);
-      const launch = this.#options.store.readSince(0, project).findLast((event) => {
-        const c = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
-        return (
-          c &&
-          typeof c === "object" &&
-          !Array.isArray(c) &&
-          c.format === "armada.worker" &&
-          c.type === "launch" &&
-          c.hosted === true &&
-          c.session === current.session &&
-          c.handle === current.handle
-        );
-      });
-      if (runtime?.needsLaunchToken && launch) {
-        row = {
-          ref: { project, ticket, session: current.session, generation: current.generation, handle: current.handle },
-          runtime,
-          workspace: { id: current.handle, path: "", node: "conductor" },
-          tokenHash: "",
-          mask: maskHostedText,
-          branch: "",
-          runtimeKind: current.runtime,
-          launchId:
-            launch.kind === "coordinator.checkpoint" &&
-            launch.payload.checkpoint &&
-            typeof launch.payload.checkpoint === "object" &&
-            !Array.isArray(launch.payload.checkpoint) &&
-            typeof launch.payload.checkpoint.launchId === "string"
-              ? launch.payload.checkpoint.launchId
-              : undefined,
-        };
-        this.#live.set(current.session, row);
-      }
-    }
+    const row = current && this.#live.get(current.session);
     if (!row) throw new WorkerRefusal("No live worker in this daemon; inspect the session before relaunching");
     this.#check(row.ref, () => {}, allowEnded);
     return row;
@@ -390,6 +396,95 @@ export class Workers {
         result = await this.#launch(project, launch, key, input, beforeWrite, undefined, progress);
       } else {
         const action = parsed as { ticket: string; session?: string };
+        const current = this.#tables(project)?.sessions.find((s) => s.ticket === action.ticket);
+        if (
+          current &&
+          !this.#live.has(current.session) &&
+          (name === "worker.stop" || (this.#lost.has(current.session) && name !== "worker.message"))
+        ) {
+          if (action.session && action.session !== current.session)
+            throw new WorkerRefusal("Worker generation changed");
+          const ref = {
+            project,
+            ticket: current.ticket,
+            session: current.session,
+            generation: current.generation,
+            handle: current.handle,
+          };
+          await this.#adopt(ref, name === "worker.stop").catch(() => {});
+          this.#check(ref, () => {}, name === "worker.stop");
+        }
+        if (current && name === "worker.stop" && !this.#live.has(current.session)) {
+          const result = this.#finishStopped(
+            { project, ...current },
+            workerToolSchemas["worker.stop"].parse(parsed).reason,
+            beforeWrite,
+          );
+          if (result) {
+            this.#checkpoint(project, { type: "receipt", key, input, result });
+            return result;
+          }
+        }
+        if (current && this.#lost.has(current.session) && name !== "worker.message") {
+          if (action.session && action.session !== current.session)
+            throw new WorkerRefusal("Worker generation changed");
+          if (name === "worker.stop") {
+            const reason = workerToolSchemas["worker.stop"].parse(parsed).reason;
+            const ref = {
+              project,
+              ticket: current.ticket,
+              session: current.session,
+              generation: current.generation,
+              handle: current.handle,
+            };
+            const result = await this.#stopLost(ref, reason, beforeWrite);
+            this.#checkpoint(project, { type: "receipt", key, input, result });
+            return result;
+          }
+          const relaunch = workerToolSchemas["worker.relaunch"].parse(parsed);
+          const old = {
+            project,
+            ticket: current.ticket,
+            session: current.session,
+            generation: current.generation,
+            handle: current.handle,
+          };
+          const candidate = this.#unconfirmed.get(current.session);
+          if (!candidate && this.#notStarted(project, current.session)?.workspaceDisposed === true) {
+            const replacement = { ...relaunch, branch: this.#notStarted(project, current.session)!.branch as string };
+            const facts = this.#launchFacts(project, replacement, old);
+            const briefing = await this.#prepareBrief(facts, replacement);
+            this.#checkPreparedBrief(project, replacement, old, briefing, beforeWrite);
+            this.#releaseLost(project, old.ticket, old.session, `relaunch: ${relaunch.reason}`, beforeWrite);
+            const result = await this.#launch(
+              project,
+              replacement,
+              key,
+              input,
+              beforeWrite,
+              undefined,
+              progress,
+              briefing,
+            );
+            this.#checkpoint(project, { type: "receipt", key, input, result });
+            return result;
+          }
+          if (!candidate)
+            throw new WorkerRefusal(
+              "Lost worker cannot be safely stopped; restore its runtime or release the ticket explicitly",
+            );
+          const replacement = { ...relaunch, branch: candidate.branch };
+          const facts = this.#launchFacts(project, replacement, old);
+          if (facts.node !== candidate.node)
+            throw new WorkerRefusal("Replacement placement changed; restore the worker node first");
+          const resume = candidate.runtime.needsLaunchToken ? undefined : candidate;
+          const briefing = await this.#prepareBrief(facts, replacement, resume);
+          this.#checkPreparedBrief(project, replacement, old, briefing, beforeWrite);
+          await this.#stop(candidate, `relaunch: ${relaunch.reason}`, beforeWrite, false);
+          const result = await this.#launch(project, replacement, key, input, beforeWrite, resume, progress, briefing);
+          this.#checkpoint(project, { type: "receipt", key, input, result });
+          return result;
+        }
         const row = this.#row(project, action.ticket, name !== "worker.message");
         if (
           (action.session && action.session !== row.ref.session) ||
@@ -405,8 +500,8 @@ export class Workers {
             throw new WorkerRefusal("Conductor relaunch in place is not supported; stop and launch a fresh worker");
           if (facts.node !== row.node)
             throw new WorkerRefusal("Replacement placement changed; keep the existing workspace and inspect its node");
-          await this.#prepareBrief(facts, relaunch, row);
-          this.#check(row.ref, beforeWrite);
+          const briefing = await this.#prepareBrief(facts, relaunch, row);
+          this.#checkPreparedBrief(project, { ...relaunch, branch: row.branch }, row.ref, briefing, beforeWrite);
           this.#checkpoint(project, {
             type: "relaunch-intent",
             key,
@@ -415,7 +510,16 @@ export class Workers {
             session: row.ref.session,
           });
           await this.#stop(row, `relaunch: ${relaunch.reason}`, beforeWrite, false);
-          result = await this.#launch(project, { ...relaunch, branch: row.branch }, key, input, beforeWrite, row);
+          result = await this.#launch(
+            project,
+            { ...relaunch, branch: row.branch },
+            key,
+            input,
+            beforeWrite,
+            row,
+            progress,
+            briefing,
+          );
         } else {
           this.#checkpoint(project, {
             type: "action-intent",
@@ -476,6 +580,8 @@ export class Workers {
         (c) =>
           c.type === "launch-intent" &&
           c.ticket === args.ticket &&
+          c.session !== replacing?.session &&
+          this.#tables(project)?.sessions.some((session) => session.session === c.session && !ended(session.phase)) &&
           !pending.some((done) => done.type === "receipt" && done.key === c.key),
       )
     )
@@ -538,20 +644,51 @@ export class Workers {
     };
   }
 
+  #briefFacts(facts: BriefFacts): string {
+    const policy = facts.tables.rules?.value.policy;
+    const has = (name: string) => facts.ticket.labels?.some((label) => labelKey(label) === labelKey(name)) === true;
+    return JSON.stringify({
+      config: facts.config,
+      branch: facts.branch,
+      route: facts.route,
+      hosted: facts.bound.needsLaunchToken === true,
+      placement: facts.tables.rules?.value.placement?.workers ?? "local",
+      revision: facts.tables.rules?.revision,
+      plan: [
+        policy?.plans,
+        has(policy?.approvalLabel ?? "needs-plan-approval"),
+        has(policy?.preApprovedLabel ?? "plan-approved"),
+      ],
+    });
+  }
+
+  #checkPreparedBrief(
+    project: string,
+    args: z.infer<(typeof workerToolSchemas)["worker.launch"]>,
+    ref: WorkerRef,
+    brief: PreparedBrief,
+    beforeWrite: () => void,
+  ) {
+    this.#check(ref, beforeWrite);
+    if (this.#closing) throw new WorkerRefusal("Worker service is stopping");
+    if (brief.facts !== this.#briefFacts(this.#launchFacts(project, args, ref)))
+      throw new WorkerRefusal("Replacement prerequisites changed during brief preflight");
+  }
+
   async #prepareBrief(
-    facts: {
-      config: WorkerProject;
-      tables: ProjectTables;
-      ticket: Ticket;
-      route: ReturnType<typeof workerRoute>;
-      bound: RuntimeProvider;
-      branch: string;
-    },
+    facts: BriefFacts,
     args: z.infer<(typeof workerToolSchemas)["worker.launch"]>,
     resume?: LiveWorker,
   ) {
     const { config, tables, ticket, route, bound, branch } = facts;
     const hosted = bound.needsLaunchToken;
+    if (hosted && (!this.#options.account || !config.programRoot))
+      throw new WorkerRefusal(
+        !this.#options.account
+          ? "Sign in to Armada in Settings to launch in Conductor"
+          : "Configure the project program root before launching in Conductor",
+      );
+    if (this.#closing) throw new WorkerRefusal("Worker service is stopping");
     let context: Awaited<ReturnType<typeof loadBriefContext>>;
     try {
       context = await loadBriefContext(config.root ?? config.checkout);
@@ -560,6 +697,7 @@ export class Workers {
         "Cannot read repository brief context; check AGENTS.md, CLAUDE.md and [brief] extra in the project root",
       );
     }
+    if (this.#closing) throw new WorkerRefusal("Worker service is stopping");
     const makeBrief = (token: string) => {
       try {
         return workerBrief({
@@ -585,8 +723,10 @@ export class Workers {
       }
     };
     // Validate protected content before minting a token or ending the old generation.
-    makeBrief("pending-launch-token");
-    return makeBrief;
+    // Launch-token exchange accepts at most 200 ASCII characters; reserve that
+    // space before minting. The issued token is rendered from this same context.
+    makeBrief("_".repeat(200));
+    return { create: makeBrief, facts: this.#briefFacts(facts) };
   }
 
   async #launch(
@@ -597,9 +737,13 @@ export class Workers {
     beforeWrite: () => void,
     resume?: LiveWorker,
     progress: (step: ToolProgress) => Promise<void> = async () => {},
+    preparedBrief?: PreparedBrief,
   ) {
     await progress("preparing");
-    const { config, tables, ticket, route, nodeKind, max, bound, node, branch } = this.#launchFacts(project, args);
+    const facts = this.#launchFacts(project, args);
+    const { config, tables, ticket, route, nodeKind, max, bound, node, branch } = facts;
+    if (preparedBrief && preparedBrief.facts !== this.#briefFacts(facts))
+      throw new WorkerRefusal("Replacement prerequisites changed after brief preflight");
     const generation =
       Math.max(0, ...tables.sessions.filter((s) => s.ticket === args.ticket).map((s) => s.generation)) + 1;
     const worker = { project, ticket: args.ticket, session: randomUUID(), generation };
@@ -609,7 +753,7 @@ export class Workers {
       if (!account) throw new WorkerRefusal("Sign in to Armada in Settings to launch in Conductor");
       throw new WorkerRefusal("Configure the project program root before launching in Conductor");
     }
-    const makeBrief = await this.#prepareBrief({ config, tables, ticket, route, bound, branch }, args, resume);
+    const makeBrief = (preparedBrief ?? (await this.#prepareBrief(facts, args, resume))).create;
     beforeWrite();
     this.#checkpoint(project, {
       type: "launch-intent",
@@ -642,6 +786,7 @@ export class Workers {
             minting = true;
             return await account!.launchWorkerToken(project, args.ticket);
           } catch (error) {
+            if (this.#closing) throw new WorkerRefusal("Daemon stopped during launch; ticket retained for recovery");
             if (!minting || isRuntimeLaunchRefusal(error)) {
               this.#append({
                 project,
@@ -681,7 +826,32 @@ export class Workers {
       brief = makeBrief(token);
     } catch (error) {
       await revoke();
-      this.#checkpoint(project, { type: "receipt", key, input, result: { ok: false, code: "brief_refused" } });
+      if (!this.#closing)
+        this.#append({
+          project,
+          kind: "session.released",
+          payload: {
+            ticket: worker.ticket,
+            session: worker.session,
+            reason: "Worker brief refused before native launch",
+          },
+        });
+      this.#checkpoint(project, {
+        type: "receipt",
+        key,
+        input,
+        ...(this.#closing
+          ? {
+              ticket: worker.ticket,
+              session: worker.session,
+              generation,
+              branch,
+              nativeStarted: false,
+              workspaceDisposed: true,
+            }
+          : {}),
+        result: { ok: false, code: "brief_refused" },
+      });
       throw error;
     }
     if (launch)
@@ -739,6 +909,31 @@ export class Workers {
         throw new Error("Worker capacity changed during preparation");
     };
     let workspace: Workspace | undefined;
+    const retainNotStarted = async () => {
+      let workspaceDisposed = false;
+      if (workspace && node?.dispose && !resume) {
+        try {
+          await node.dispose(workspace);
+          workspaceDisposed = true;
+        } catch {
+          /* Preserve dirty work. */
+        }
+      }
+      await revoke();
+      this.#checkpoint(project, {
+        type: "receipt",
+        key,
+        input,
+        ticket: worker.ticket,
+        session: worker.session,
+        generation,
+        branch,
+        nativeStarted: false,
+        workspaceDisposed,
+        ...(workspace ? { workspace: { ...workspace } } : {}),
+        result: { ok: false, code: "daemon_closed_before_launch" },
+      });
+    };
     try {
       beforeWrite();
       workspace =
@@ -752,6 +947,10 @@ export class Workers {
         }));
       checkLaunch();
     } catch (error) {
+      if (this.#closing) {
+        await retainNotStarted();
+        throw new WorkerRefusal("Daemon stopped before native launch; ticket retained for recovery");
+      }
       if (workspace && node?.dispose) await node.dispose(workspace).catch(() => {});
       await revoke();
       this.#append({
@@ -781,6 +980,7 @@ export class Workers {
       throw new Error("Workspace preparation failed before launching a CLI");
     }
     const prepared = workspace;
+    const reservedHandle = hosted ? undefined : randomUUID();
     this.#checkpoint(project, {
       type: "launch",
       ticket: worker.ticket,
@@ -788,6 +988,15 @@ export class Workers {
       generation,
       runtime: route.cli,
       branch,
+      ...(reservedHandle
+        ? {
+            handle: reservedHandle,
+            workspace: { ...prepared },
+            node: nodeKind,
+            capabilityHash: hash(token),
+            runtimeRecovery: { native: true, stream: true },
+          }
+        : {}),
       step: "starting",
     });
     let enteredProvider = false;
@@ -798,6 +1007,7 @@ export class Workers {
         enteredProvider = true;
         return bound.launch({
           workspace: prepared,
+          ...(reservedHandle ? { handle: reservedHandle } : {}),
           worker,
           ...(hosted ? { brief, labels: ticket.labels } : {}),
           command: "",
@@ -809,6 +1019,10 @@ export class Workers {
         });
       });
     } catch (error) {
+      if (this.#closing) {
+        if (!enteredProvider || isRuntimeLaunchRefusal(error)) await retainNotStarted();
+        throw new WorkerRefusal("Daemon stopped during launch; ticket retained for recovery");
+      }
       if (!enteredProvider || isRuntimeLaunchRefusal(error)) {
         if (node?.dispose) await node.dispose(prepared).catch(() => {});
         await revoke();
@@ -837,6 +1051,7 @@ export class Workers {
       ref.session !== worker.session ||
       ref.generation !== generation ||
       !ref.handle ||
+      (reservedHandle !== undefined && ref.handle !== reservedHandle) ||
       ref.handle.includes(token)
     )
       throw new Error("Runtime returned a different worker generation; launch outcome unknown");
@@ -847,37 +1062,41 @@ export class Workers {
       workspace,
       tokenHash: hosted ? "" : hash(token),
       mask: (value) => maskHostedText(value.replaceAll(token, "[redacted]")),
+      briefPending: !hosted,
       branch,
       runtimeKind: route.cli,
       ...(launch ? { launchId: launch.worker.id } : {}),
     };
     this.#live.set(ref.session, row);
+    const retain = () =>
+      this.#checkpoint(project, {
+        type: "launch",
+        ...(launch ? { hosted: true, launchId: launch.worker.id } : {}),
+        ...worker,
+        handle: ref.handle,
+        workspace: { ...prepared },
+        node: hosted ? "conductor" : nodeKind,
+        capabilityHash: row.tokenHash,
+        runtimeRecovery: { ...bound.checkpoint?.(ref) },
+        runtime: route.cli,
+        branch,
+        step: "launched",
+      });
     try {
       checkLaunch();
-      this.#append({
-        project,
-        kind: "coordinator.checkpoint",
-        payload: {
-          checkpoint: {
-            format: "armada.worker",
-            version: 1,
-            type: "launch",
-            ...(launch ? { hosted: true, launchId: launch.worker.id } : {}),
-            ...worker,
-            handle: ref.handle,
-            runtime: route.cli,
-            branch,
-            step: "launched",
-          },
-        },
-      });
+      retain();
       if (launchTarget) {
         await account!.bindWorkerLaunch({ ...launchTarget, handle: ref.handle });
       } else {
         await progress("briefing");
         await this.#deliver(row, brief, `brief:${worker.session}`, beforeWrite);
+        row.briefPending = false;
       }
     } catch (error) {
+      if (this.#closing) {
+        retain();
+        throw new WorkerRefusal("Daemon stopped during launch; worker retained for recovery");
+      }
       row.tokenHash = "";
       // A returned handle is owned even if publishing its claim failed. Clean up exactly it.
       await guarded(
@@ -937,9 +1156,53 @@ export class Workers {
   async stop(ref: WorkerRef, reason: string, beforeWrite: () => void) {
     return this.#serial(ref.project, async () => {
       this.#check(ref, beforeWrite, true);
+      if (!this.#live.has(ref.session)) {
+        await this.#adopt(ref, true).catch(() => {});
+        this.#check(ref, beforeWrite, true);
+      }
+      if (!this.#live.has(ref.session)) {
+        const completed = this.#finishStopped(ref, reason, beforeWrite);
+        if (completed) return completed;
+      }
+      if (this.#lost.has(ref.session)) {
+        return this.#stopLost(ref, reason, beforeWrite);
+      }
       const row = this.#row(ref.project, ref.ticket, true);
       if (!same(row.ref, ref)) throw new WorkerRefusal("Worker generation changed; runtime untouched");
       return this.#stop(row, reason, beforeWrite, true);
+    });
+  }
+
+  #finishStopped(ref: WorkerRef, reason: string, beforeWrite: () => void): Record<string, Json> | undefined {
+    const confirmed = this.#options.store.readSince(0, ref.project).some((event) => {
+      const c = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
+      return (
+        c &&
+        typeof c === "object" &&
+        !Array.isArray(c) &&
+        c.format === "armada.worker" &&
+        c.type === "native-stopped" &&
+        c.session === ref.session &&
+        c.generation === ref.generation &&
+        c.handle === ref.handle
+      );
+    });
+    if (!confirmed) return;
+    this.#check(ref, beforeWrite, true);
+    this.#append({
+      project: ref.project,
+      kind: "session.released",
+      payload: { ticket: ref.ticket, session: ref.session, reason },
+    });
+    return { ok: true, session: ref.session, stopped: true, disposed: false };
+  }
+
+  #retire(row: LiveWorker) {
+    row.tokenHash = "";
+    this.#checkpoint(row.ref.project, {
+      type: "capability-retired",
+      session: row.ref.session,
+      generation: row.ref.generation,
     });
   }
 
@@ -949,15 +1212,22 @@ export class Workers {
     beforeWrite: () => void,
     dispose: boolean,
   ): Promise<Record<string, Json>> {
+    this.#check(row.ref, beforeWrite, true);
+    this.#retire(row);
     await guarded(
       row.ref,
       () => this.#check(row.ref, beforeWrite, true),
       () => row.runtime.stop(row.ref),
     );
-    row.tokenHash = "";
     const stopped = await row.runtime.observe(row.ref);
     this.#check(row.ref, beforeWrite, true);
     this.#record(row.ref, stopped);
+    // Hosted cancellation ends the active turn; its session remains available in an idle workspace.
+    const confirmed =
+      stopped.state === "stopped" ||
+      stopped.state === "failed" ||
+      (row.runtime.needsLaunchToken && stopped.state === "running" && stopped.activity === "idle");
+    if (!confirmed) throw new WorkerRefusal("Runtime has not confirmed the worker stopped; generation retained");
     if (row.runtime.needsLaunchToken) {
       const project = this.#options.projects.find((project) => project.id === row.ref.project);
       if (!project?.programRoot || !row.launchId || !this.#options.account)
@@ -983,6 +1253,8 @@ export class Workers {
       );
       this.#check(row.ref, beforeWrite, true);
     }
+    // Keep host proof before disposal can remove the supervisor's terminal metadata.
+    this.#checkpoint(row.ref.project, { type: "native-stopped", ...row.ref });
     this.#append({
       project: row.ref.project,
       kind: "session.released",
@@ -1024,8 +1296,8 @@ export class Workers {
     });
     if (prior?.kind === "coordinator.checkpoint") {
       const checkpoint = prior.payload.checkpoint as Record<string, Json>;
-      if (checkpoint.textHash && checkpoint.textHash !== hash(message))
-        throw new Error("Delivery key already used with different message");
+      const textHash = checkpoint.textHash ?? checkpoint.messageHash;
+      if (textHash && textHash !== hash(message)) throw new Error("Delivery key already used with different message");
       this.#check(row.ref, beforeWrite);
       return;
     }
@@ -1161,6 +1433,7 @@ export class Workers {
           handle: ref.handle,
         });
         check();
+        await this.#adopt(ref);
         this.#checkpoint(project, {
           type: "receipt",
           key: intent.key,
@@ -1176,6 +1449,235 @@ export class Workers {
         });
       }
     });
+  }
+
+  /** Called before starting the coordinator, so its first wake includes every recovery result. */
+  recover(): Promise<RecoverySummary> {
+    this.#recovery ??= (async () => {
+      const summary: RecoverySummary = { readopted: [], lost: [] };
+      const boot = randomUUID();
+      for (const project of this.#options.projects) {
+        const history = this.#options.store.readSince(0, project.id);
+        if (
+          (this.#tables(project.id)?.sessions ?? []).some(
+            (session) => !ended(session.phase) && session.runtime !== "tracker",
+          ) ||
+          history.some((event) => event.kind === "worker.readopted" || event.kind === "worker.lost")
+        )
+          this.#checkpoint(project.id, { type: "recovery", boot });
+        await this.recoverHosted(project.id).catch(() => {});
+        await this.#serial(project.id, async () => {
+          for (const session of this.#tables(project.id)?.sessions ?? []) {
+            if (ended(session.phase) || session.runtime === "tracker") continue;
+            const ref = {
+              project: project.id,
+              ticket: session.ticket,
+              session: session.session,
+              generation: session.generation,
+              handle: session.handle,
+            };
+            try {
+              if (!this.#live.has(ref.session)) await this.#adopt(ref);
+              this.#check(ref);
+              this.#append({
+                project: project.id,
+                kind: "worker.readopted",
+                payload: {
+                  ticket: ref.ticket,
+                  session: ref.session,
+                  generation: ref.generation,
+                  handle: ref.handle,
+                  boot,
+                  ...(this.#live.get(ref.session)?.briefPending ? { briefPending: true } : {}),
+                },
+              });
+              summary.readopted.push(ref);
+            } catch (error) {
+              // A delayed observation can never label a replacement as lost.
+              try {
+                this.#check(ref);
+              } catch {
+                continue;
+              }
+              if (this.#closing) continue;
+              if (!this.#observations.has(ref.session)) this.#record(ref, { state: "unknown" });
+              const detail =
+                error instanceof WorkerRefusal ? error.message : "Runtime observation or reattachment failed";
+              const reason = `${detail}; relaunch or release, never assume it runs`;
+              this.#lost.add(ref.session);
+              this.#append({
+                project: project.id,
+                kind: "worker.lost",
+                payload: {
+                  ticket: ref.ticket,
+                  session: ref.session,
+                  generation: ref.generation,
+                  handle: ref.handle,
+                  reason,
+                  boot,
+                },
+              });
+              summary.lost.push({ ...ref, reason });
+            }
+          }
+        });
+      }
+      return summary;
+    })();
+    return this.#recovery;
+  }
+
+  #notStarted(project: string, session: string) {
+    return this.#options.store
+      .readSince(0, project)
+      .flatMap((event) => {
+        const c = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
+        return c &&
+          typeof c === "object" &&
+          !Array.isArray(c) &&
+          c.format === "armada.worker" &&
+          c.type === "receipt" &&
+          c.session === session &&
+          c.nativeStarted === false
+          ? [c]
+          : [];
+      })
+      .at(-1);
+  }
+
+  async #adopt(ref: WorkerRef, allowEnded = false) {
+    if (this.#notStarted(ref.project, ref.session))
+      throw new WorkerRefusal("Daemon closed before native launch; no worker was started");
+    const events = this.#options.store.readSince(0, ref.project);
+    const launch = events
+      .flatMap((event) => {
+        const c = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
+        return c &&
+          typeof c === "object" &&
+          !Array.isArray(c) &&
+          c.format === "armada.worker" &&
+          c.version === 1 &&
+          c.type === "launch" &&
+          (c.step === "launched" || (c.step === "starting" && c.hosted !== true)) &&
+          c.ticket === ref.ticket &&
+          c.session === ref.session &&
+          c.generation === ref.generation &&
+          c.handle === ref.handle
+          ? [c]
+          : [];
+      })
+      .at(-1);
+    if (!launch || typeof launch.runtime !== "string") throw new WorkerRefusal("Worker recovery facts unavailable");
+    let runtime = this.#options.registry.get("runtime", launch.runtime, ref.project);
+    if (!runtime) throw new WorkerRefusal("Worker runtime unavailable");
+    const hosted = runtime.needsLaunchToken;
+    const node =
+      !hosted && typeof launch.node === "string"
+        ? this.#options.registry.get("node", launch.node, ref.project)
+        : undefined;
+    const workspace = z
+      .object({ id: z.string(), path: z.string(), node: z.string() })
+      .parse(launch.workspace ?? (hosted ? { id: ref.handle, path: "", node: "conductor" } : null));
+    if (!hosted) {
+      if (!node || !runtime.withNode) throw new WorkerRefusal("Worker node unavailable");
+      runtime = runtime.withNode(node);
+      if (!runtime.adopt) throw new WorkerRefusal("Worker runtime cannot reattach");
+      const recovery = z
+        .object({ native: z.boolean().optional(), stream: z.boolean().optional() })
+        .parse(launch.runtimeRecovery ?? {});
+      await runtime.adopt(ref, workspace, { ...recovery, starting: launch.step === "starting" });
+    }
+    this.#check(ref, () => {}, allowEnded);
+    const row: LiveWorker = {
+      ref,
+      runtime,
+      node,
+      workspace,
+      tokenHash:
+        hosted ||
+        events.some((e) => {
+          const c = e.kind === "coordinator.checkpoint" ? e.payload.checkpoint : null;
+          return (
+            c &&
+            typeof c === "object" &&
+            !Array.isArray(c) &&
+            c.format === "armada.worker" &&
+            c.type === "capability-retired" &&
+            c.session === ref.session &&
+            c.generation === ref.generation
+          );
+        })
+          ? ""
+          : z
+              .string()
+              .regex(/^[a-f0-9]{64}$/)
+              .parse(launch.capabilityHash),
+      briefPending:
+        !hosted &&
+        !events.some((event) => {
+          const c = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
+          return (
+            c &&
+            typeof c === "object" &&
+            !Array.isArray(c) &&
+            c.format === "armada.worker" &&
+            c.session === ref.session &&
+            (c.type === "recovery-handoff" || (c.type === "delivered" && c.key === hash(`brief:${ref.session}`)))
+          );
+        }),
+      mask: maskHostedText,
+      branch: typeof launch.branch === "string" ? launch.branch : "",
+      runtimeKind: launch.runtime,
+      ...(typeof launch.launchId === "string" ? { launchId: launch.launchId } : {}),
+    };
+    this.#unconfirmed.set(ref.session, row);
+    const observation = await runtime.observe(ref);
+    this.#check(ref, () => {}, allowEnded);
+    if (this.#closing) throw new WorkerRefusal("Daemon is closing");
+    this.#record(ref, observation);
+    const terminalCleanup =
+      allowEnded &&
+      ended(this.#tables(ref.project)?.sessions.find((session) => session.session === ref.session)?.phase ?? "");
+    if (!["starting", "running", ...(terminalCleanup ? ["stopped", "failed"] : [])].includes(observation.state))
+      throw new WorkerRefusal(`Worker runtime reported ${observation.state}`);
+    this.#live.set(ref.session, row);
+    this.#unconfirmed.delete(ref.session);
+    this.#lost.delete(ref.session);
+  }
+
+  async #stopLost(ref: WorkerRef, reason: string, beforeWrite: () => void): Promise<Record<string, Json>> {
+    const candidate = this.#unconfirmed.get(ref.session);
+    if (candidate) {
+      try {
+        return await this.#stop(candidate, reason, beforeWrite, true);
+      } catch {
+        this.#check(ref, beforeWrite);
+      }
+    }
+    // Explicit Release remains possible for a lost worker. This retires its ticket;
+    // it deliberately makes no claim that an unreachable native process was stopped.
+    return this.#releaseLost(
+      ref.project,
+      ref.ticket,
+      ref.session,
+      `Lost worker released without a confirmed runtime stop: ${reason}`,
+      beforeWrite,
+    );
+  }
+
+  #releaseLost(
+    project: string,
+    ticket: string,
+    session: string,
+    reason: string,
+    beforeWrite: () => void,
+  ): Record<string, Json> {
+    beforeWrite();
+    const current = this.#tables(project)?.sessions.find((s) => s.ticket === ticket);
+    if (!current || current.session !== session || ended(current.phase) || !this.#lost.has(session))
+      throw new WorkerRefusal("Lost worker generation changed; nothing released");
+    this.#append({ project, kind: "session.released", payload: { ticket, session, reason } });
+    return { ok: true, session, stopped: false, released: true };
   }
 
   /** Read only the pinned generation; unsupported runtime tails are empty. */
@@ -1265,6 +1767,7 @@ export class Workers {
   /** Authenticate from the issued capability, never from caller-supplied project/session ownership. */
   async request(token: string, input: unknown): Promise<Record<string, Json>> {
     const request = workerRequestSchema.parse(input);
+    await this.#recovery;
     const row = [...this.#live.values()].find((row) => row.tokenHash && row.tokenHash === hash(token));
     if (!row || request.ticket !== row.ref.ticket) throw new Error("Worker authorization refused");
     return this.#serial<Record<string, Json>>(row.ref.project, async (): Promise<Record<string, Json>> => {
@@ -1272,6 +1775,7 @@ export class Workers {
         throw new Error("Worker capability retired");
       this.#check(row.ref);
       const { project, ticket, session } = row.ref;
+      const mask = (value: string) => row.mask(value.replaceAll(token, "[redacted]"));
       if (request.command === "claim") {
         if (
           !this.#options.store
@@ -1307,15 +1811,15 @@ export class Workers {
             ticket,
             session,
             phase: request.phase,
-            reason: row.mask(request.message),
+            reason: mask(request.message),
             ...(request.stage ? { stage: request.stage } : {}),
           },
         });
         if (request.phase === "awaiting-approval" || request.phase === "ready-to-merge") {
           const body =
             request.phase === "ready-to-merge"
-              ? `Agent status: ready-to-merge — PR #${request.pr}, head ${request.sha}\n\n${row.mask(request.message)}`
-              : row.mask(request.message);
+              ? `Agent status: ready-to-merge — PR #${request.pr}, head ${request.sha}\n\n${mask(request.message)}`
+              : mask(request.message);
           this.#append(
             {
               project,
@@ -1339,14 +1843,14 @@ export class Workers {
             {
               project,
               kind: "inbox.opened",
-              payload: { id: item, ticket, kind: "question", body: row.mask(request.question) },
+              payload: { id: item, ticket, kind: "question", body: mask(request.question) },
             },
             `worker:${session}`,
           );
           this.#append({
             project,
             kind: "session.reported",
-            payload: { ticket, session, phase: "blocked", reason: row.mask(request.question) },
+            payload: { ticket, session, phase: "blocked", reason: mask(request.question) },
           });
         }
         return { ok: true, id: item };
@@ -1356,7 +1860,7 @@ export class Workers {
         this.#append({
           project,
           kind: "session.released",
-          payload: { ticket, session, reason: row.mask(request.reason) },
+          payload: { ticket, session, reason: mask(request.reason) },
         });
         // Final counters are unverified: retain their known floor without waiting on a runtime read.
         try {
@@ -1404,37 +1908,47 @@ export class Workers {
       throw new Error("Worker handle reused by a different generation");
   }
 
+  /** Stop only host scheduling. The supervisor and hosted workspaces own their workers. */
   async close() {
     this.#closing = true;
     this.#stopForge();
     await this.#outbox.close();
     await Promise.allSettled([...this.#queues.values()]);
-    // Shutdown attempts every owned generation even if one provider is stuck or fails.
-    const results = await Promise.allSettled(
-      [...this.#live.values()]
-        .filter((row) => !row.runtime.needsLaunchToken)
-        .map(async (row) => {
-          row.tokenHash = "";
-          await guarded(
-            row.ref,
-            () => this.#cleanupCheck(row.ref),
-            () => row.runtime.stop(row.ref),
-          );
-          this.#record(row.ref, { state: "stopped" });
-          const current = this.#tables(row.ref.project)?.sessions.find((s) => s.ticket === row.ref.ticket);
-          if (current && same({ project: row.ref.project, ...current }, row.ref) && !ended(current.phase))
-            this.#append({
-              project: row.ref.project,
-              kind: "session.released",
-              payload: {
-                ticket: row.ref.ticket,
-                session: row.ref.session,
-                reason: "Daemon stopped",
-              },
-            });
-        }),
-    );
-    const failed = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
-    if (failed.length) throw new AggregateError(failed, "Some owned workers could not be stopped");
+    await this.#observing;
+    await Promise.allSettled([...this.#reads.values()]);
+  }
+
+  /** Owner-only explicit shutdown; attempt every generation and report partial failures. */
+  async shutdown(project: string, reason: string, beforeWrite: () => void) {
+    if (!reason.trim()) throw new WorkerRefusal("Fleet shutdown needs a reason");
+    return this.#serial(project, async () => {
+      const sessions = this.#tables(project)?.sessions.filter((s) => !ended(s.phase) && s.runtime !== "tracker") ?? [];
+      const released: string[] = [];
+      const failed: string[] = [];
+      for (const session of sessions) {
+        try {
+          beforeWrite();
+          if (this.#lost.has(session.session)) {
+            await this.#adopt({
+              project,
+              ticket: session.ticket,
+              session: session.session,
+              generation: session.generation,
+              handle: session.handle,
+            }).catch(() => {});
+            beforeWrite();
+          }
+          const row = this.#live.get(session.session);
+          if (row) await this.#stop(row, reason, beforeWrite, false);
+          else if (this.#unconfirmed.has(session.session))
+            await this.#stop(this.#unconfirmed.get(session.session)!, reason, beforeWrite, false);
+          else throw new WorkerRefusal("Worker runtime is unavailable; stop could not be confirmed");
+          released.push(session.ticket);
+        } catch {
+          failed.push(session.ticket);
+        }
+      }
+      return { ok: failed.length === 0, released, failed };
+    });
   }
 }
