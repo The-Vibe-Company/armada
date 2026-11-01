@@ -150,6 +150,21 @@ export async function startReaders(options: ReaderOptions): Promise<{
         active?.abort();
       });
       let pending: Promise<void> | undefined;
+      let failures = 0;
+      for (const event of history) {
+        if (event.project !== project.id) continue;
+        const c = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
+        if (
+          c &&
+          typeof c === "object" &&
+          !Array.isArray(c) &&
+          c.format === "armada.readers" &&
+          c.version === 1 &&
+          c.provider === project[seam]
+        )
+          failures =
+            typeof c.failures === "number" && Number.isSafeInteger(c.failures) && c.failures >= 0 ? c.failures : 0;
+      }
       let pausedUntil = 0;
       let forgeState: ForgeReadResult = {};
       let lastFinished = now();
@@ -193,6 +208,7 @@ export async function startReaders(options: ReaderOptions): Promise<{
           try {
             // Await settlement even after abort: an uncooperative plugin must not accumulate reads.
             const result = await provider.read({ project: project.id, signal: controller.signal });
+            if (running && controller.signal.aborted) throw new Error("Reader timed out");
             if (seam === "forge" && result) {
               const parsed = z
                 .object({
@@ -243,13 +259,14 @@ export async function startReaders(options: ReaderOptions): Promise<{
               return;
             }
             if (seam === "tracker") pausedUntil = 0;
-            if (running && !controller.signal.aborted) {
+            if (running) {
+              failures = 0;
               options.store?.append({
                 project: project.id,
                 kind: "coordinator.checkpoint",
                 actor: "reader",
                 at: (options.now ?? (() => new Date().toISOString()))(),
-                payload: { checkpoint: { format: "armada.readers", version: 1, provider: project[seam] } },
+                payload: { checkpoint: { format: "armada.readers", version: 1, provider: project[seam], failures: 0 } },
               });
               state[seam] = true;
               delete state[errorKey];
@@ -274,6 +291,22 @@ export async function startReaders(options: ReaderOptions): Promise<{
                 : safe
                   ? message
                   : "Reader failed (details withheld)";
+              failures = Math.min(Number.MAX_SAFE_INTEGER, failures + 1);
+              options.store?.append({
+                project: project.id,
+                kind: "coordinator.checkpoint",
+                actor: "reader",
+                at: (options.now ?? (() => new Date().toISOString()))(),
+                payload: {
+                  checkpoint: {
+                    format: "armada.readers",
+                    version: 1,
+                    provider: project[seam],
+                    failures,
+                    error: state[errorKey],
+                  },
+                },
+              });
               (options.log ?? console.error)(`armadad: ${id}: ${seam} read failed: ${state[errorKey]}`);
             }
           } finally {

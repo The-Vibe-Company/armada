@@ -21,6 +21,7 @@ import {
   ownerAnsweredSchema,
   ownerAnswerRequestSchema,
 } from "./chat.js";
+import { DELIVERIES_MINOR } from "./deliveries.js";
 import { counter, identifier, requestSchema, versionSchema } from "./envelope.js";
 import { GITHUB_READER_MINOR } from "./fleet.js";
 import {
@@ -65,6 +66,7 @@ export const PROTOCOL_VERSION = {
     PROJECTS_MINOR,
     BRIEF_INSTRUCTIONS_MINOR,
     GITHUB_READER_MINOR,
+    DELIVERIES_MINOR,
     WATCHDOG_MINOR,
     REPLAY_MINOR,
   ),
@@ -316,3 +318,6 @@ export function admitRequest(input: unknown, daemonVersion: ProtocolVersion = PR
   }
   return { ok: true, request: parsed.data };
 }
+
+// Durable worker input deliveries (THE-2108).
+export { DELIVERIES_MINOR, type Delivery } from "./deliveries.js";

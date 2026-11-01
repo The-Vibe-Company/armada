@@ -245,57 +245,94 @@ test("forge comments reach the current worker once, suppress its own account and
   await until(f.workers, (value) => value.activity === "working");
   assert.equal((await socketCall(f.socketPath, f.token(), { command: "claim", ticket: "SEED-1" })).status, 200);
   const initialMessages = f.messages.length;
-  const payload = {
-    key: "comment:1",
-    repository: "example/orchard",
-    ticket: "SEED-1",
-    pr: 41,
-    head: "aaa",
-    author: "owner",
-    worker: "worker",
-    body: "Please fix the edge case",
-    url: "https://github.com/example/orchard/pull/41#discussion_r1",
-    at,
-    comment: "1",
+  let releaseScan!: () => void;
+  let scanEntered!: () => void;
+  const holdScan = new Promise<void>((resolve) => {
+    releaseScan = resolve;
+  });
+  const scanning = new Promise<void>((resolve) => {
+    scanEntered = resolve;
+  });
+  const tool = f.workers.tool.bind(f.workers);
+  let held = false;
+  f.workers.tool = async (...args) => {
+    const result = await tool(...args);
+    if (args[1] === "worker.message" && !held) {
+      held = true;
+      scanEntered();
+      await holdScan;
+    }
+    return result;
   };
-  f.daemon.store.append({ project, at, actor: "github", kind: "pull-request.commented", payload });
-  await eventually(async () => f.messages.length === initialMessages + 1);
-  assert.match(f.messages[initialMessages]!, /Please fix the edge case/);
-  assert.ok(f.messages[initialMessages]!.includes(payload.url));
-  f.daemon.store.append({ project, at, actor: "github", kind: "pull-request.commented", payload });
-  f.daemon.store.append({
-    project,
-    at,
-    actor: "github",
-    kind: "review-thread.opened",
-    payload: { ...payload, key: "thread:1", thread: "thread-1", path: "boat.ts", line: 12, unresolvedThreads: 1 },
-  });
-  f.daemon.store.append({
-    project,
-    at,
-    actor: "github",
-    kind: "pull-request.commented",
-    payload: { ...payload, key: "comment:2", comment: "2", author: "WORKER" },
-  });
-  f.daemon.store.append({
-    project,
-    at,
-    actor: "github",
-    kind: "pull-request.commented",
-    payload: { ...payload, key: "comment:1:edit", version: "2030-01-01T12:01:00Z", body: "Edited review text" },
-  });
-  // A subsequent external input is a delivery barrier for the suppressed/replayed inputs.
-  f.daemon.store.append({
-    project,
-    at,
-    actor: "github",
-    kind: "pull-request.commented",
-    payload: { ...payload, key: "comment:3", comment: "3", body: "Second external comment" },
-  });
-  await eventually(async () => f.messages.length >= initialMessages + 3);
-  assert.equal(f.messages.length, initialMessages + 3);
-  assert.match(f.messages[initialMessages + 1]!, /Edited review text/);
-  assert.match(f.messages[initialMessages + 2]!, /Second external comment/);
+  try {
+    const payload = {
+      key: "comment:1",
+      repository: "example/orchard",
+      ticket: "SEED-1",
+      pr: 41,
+      head: "aaa",
+      author: "owner",
+      worker: "worker",
+      body: "Please fix the edge case",
+      url: "https://github.com/example/orchard/pull/41#discussion_r1",
+      at,
+      comment: "1",
+    };
+    f.daemon.store.append({ project, at, actor: "github", kind: "pull-request.commented", payload });
+    await scanning;
+    // Let the first input finish all its writes while its feedback scan stays in flight.
+    await eventually(async () => f.daemon.store.readSince(0, project).some((event) => event.kind === "delivery.sent"));
+    assert.equal(f.messages.length, initialMessages + 1);
+    assert.match(f.messages[initialMessages]!, /Please fix the edge case/);
+    assert.ok(f.messages[initialMessages]!.includes(payload.url));
+    f.daemon.store.append({
+      project,
+      at,
+      actor: "github",
+      kind: "pull-request.commented",
+      payload: { ...payload, key: "comment:concurrent", comment: "concurrent", body: "Committed during the scan" },
+    });
+    releaseScan();
+    await eventually(async () => f.messages.length === initialMessages + 2);
+    assert.match(f.messages[initialMessages + 1]!, /Committed during the scan/);
+    f.daemon.store.append({ project, at, actor: "github", kind: "pull-request.commented", payload });
+    f.daemon.store.append({
+      project,
+      at,
+      actor: "github",
+      kind: "review-thread.opened",
+      payload: { ...payload, key: "thread:1", thread: "thread-1", path: "boat.ts", line: 12, unresolvedThreads: 1 },
+    });
+    f.daemon.store.append({
+      project,
+      at,
+      actor: "github",
+      kind: "pull-request.commented",
+      payload: { ...payload, key: "comment:2", comment: "2", author: "WORKER" },
+    });
+    f.daemon.store.append({
+      project,
+      at,
+      actor: "github",
+      kind: "pull-request.commented",
+      payload: { ...payload, key: "comment:1:edit", version: "2030-01-01T12:01:00Z", body: "Edited review text" },
+    });
+    // A subsequent external input is a delivery barrier for the suppressed/replayed inputs.
+    f.daemon.store.append({
+      project,
+      at,
+      actor: "github",
+      kind: "pull-request.commented",
+      payload: { ...payload, key: "comment:3", comment: "3", body: "Second external comment" },
+    });
+    await eventually(async () => f.messages.length >= initialMessages + 4);
+    assert.equal(f.messages.length, initialMessages + 4);
+    assert.match(f.messages[initialMessages + 2]!, /Edited review text/);
+    assert.match(f.messages[initialMessages + 3]!, /Second external comment/);
+  } finally {
+    releaseScan();
+    f.workers.tool = tool;
+  }
 });
 
 test("native tools launch a bound CLI, deliver, observe working/idle, authorize socket commands and stop one generation", {
@@ -482,6 +519,7 @@ test("a generation changed during node provenance cannot receive the pending nat
     context,
   );
   await enteredGate;
+  assert.equal((await pending).isError, false, "the queue receipt returns while the runtime write is still pending");
   const original = fold(f.daemon.store.readSince(0, project)).projects[project]?.sessions[0];
   assert(original);
   f.daemon.store.append({
@@ -492,7 +530,7 @@ test("a generation changed during node provenance cannot receive the pending nat
     payload: { ticket: "SEED-1", session: original.session, reason: "Retired during provenance" },
   });
   proceed();
-  assert.equal((await pending).isError, true);
+  await eventually(async () => f.daemon.store.readSince(0).some((e) => e.kind === "delivery.failed"));
   assert.equal((await socketCall(f.socketPath, f.token(), { command: "claim", ticket: "SEED-1" })).status, 403);
   await f.workers.close();
   assert.equal(

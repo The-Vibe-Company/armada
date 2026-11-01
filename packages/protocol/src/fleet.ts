@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { deliveryPayloadSchemas, deliveryStateSchema } from "./deliveries.js";
 import { readerUsageSchema } from "./readers.js";
 import { rulesStateSchema } from "./rules.js";
 
@@ -45,8 +46,9 @@ const ticketSchema = /* @__PURE__ */ (() =>
   }))();
 export type Ticket = z.infer<typeof ticketSchema>;
 const ciSchema = z.enum(["none", "pending", "success", "failure"]);
-const pullRequestSchema = /* @__PURE__ */ (() =>
-  z.object({
+const pullRequestSchema = /* @__PURE__ */ makePullRequestSchema();
+function makePullRequestSchema() {
+  return z.object({
     number: integer,
     ticket: text,
     state: z.enum(["open", "closed", "merged"]),
@@ -56,7 +58,8 @@ const pullRequestSchema = /* @__PURE__ */ (() =>
     base: text.optional(),
     behind: z.boolean().optional(),
     unresolvedThreads: integer.optional(),
-  }))();
+  });
+}
 export type PullRequest = z.infer<typeof pullRequestSchema>;
 export type GithubPullRequest = EventPayloads["pull-request.opened"];
 const sessionRefSchema = z.object({
@@ -77,27 +80,31 @@ export const workerLaunchCheckpointSchema = sessionRefSchema.extend({
   step: z.enum(["preparing", "starting", "launched"]),
 });
 
-const inboxRequestSchema = z.object({
-  id: text,
-  ticket: text,
-  kind: z.enum([
-    "question",
-    "plan",
-    "hand-back",
-    "owner-request",
-    "launch",
-    "stopped",
-    "silent",
-    "not-started",
-    "liveness",
-    "deploy",
-    "job",
-    "job-silent",
-    "job-stalled",
-    "version",
-  ]),
-  body: text,
-});
+const inboxRequestSchema = /* @__PURE__ */ makeInboxRequestSchema();
+function makeInboxRequestSchema() {
+  return z.object({
+    id: text,
+    ticket: text,
+    kind: z.enum([
+      "question",
+      "plan",
+      "hand-back",
+      "owner-request",
+      "launch",
+      "delivery-failed",
+      "stopped",
+      "silent",
+      "not-started",
+      "liveness",
+      "deploy",
+      "job",
+      "job-silent",
+      "job-stalled",
+      "version",
+    ]),
+    body: text,
+  });
+}
 export type InboxRequest = z.infer<typeof inboxRequestSchema>;
 const validationRequestSchema = /* @__PURE__ */ (() =>
   sessionRefSchema.extend({ id: text, question: text, checks: z.array(text) }))();
@@ -238,6 +245,9 @@ function payloadSchemas() {
     "review-thread.resolved": reviewThreadSchema,
     "pull-request.conflicting": githubPullRequestSchema.extend({ pr: integer, key: text }),
     "pull-request.behind": githubPullRequestSchema.extend({ pr: integer, key: text }),
+
+    // Durable worker input deliveries (THE-2108).
+    ...deliveryPayloadSchemas,
   } as const;
 }
 export type EventKind = keyof typeof eventPayloadSchemas;
@@ -311,6 +321,7 @@ function makeTablesSchema() {
     queue: z.array(queueEntrySchema),
     holds: z.array(holdSchema),
     validations: z.array(validationSchema),
+    deliveries: z.array(deliveryStateSchema).optional(),
   });
 }
 export type ProjectTables = z.infer<ReturnType<typeof makeTablesSchema>>;

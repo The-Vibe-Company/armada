@@ -1017,6 +1017,7 @@ test("credential socket writes never expose the key to replies, events or logs",
 // THE-2073 to minor 9 for shared auth and the pi model catalog,
 // THE-2079 to minor 11 for fleet wake rows, THE-2080 to minor 12 for runtime projects,
 // THE-2072 to minor 13 for hosted Conductor routing, and THE-2096 to minor 16 for routing instructions.
+// THE-2108 to minor 17 for durable worker deliveries.
 // THE-2107 to minor 20 for progress watchdog notices.
 // THE-2116 advances it to minor 21, starts fresh subscriptions at their snapshot, and redacts checkpoint bodies.
 test("subscription bytes stay compatible with the recorded daemon vocabulary and folded tables", async (t) => {
@@ -1188,6 +1189,89 @@ test("pre-Conductor clients receive compatible routing in initial and live snaps
   rules(2);
   assert.deepEqual(value(await legacy.next()), { routing: [], defaultRoute: null });
   assert.deepEqual(value(await modern.next()), { routing: [{ labels: ["web"], ...route }], defaultRoute: route });
+});
+
+test("pre-outbox clients keep readable inbox snapshots alongside current delivery failure items", async (t) => {
+  const store = new EventStore(":memory:");
+  const server = await startServer({ store, projects });
+  const legacy = await connect(server.wsUrl);
+  const modern = await connect(server.wsUrl);
+  t.after(async () => {
+    legacy.ws.terminate();
+    modern.ws.terminate();
+    await server.close();
+    store.close();
+  });
+  const base = { project: "orchard", actor: "worker", at: hold().at };
+  const route = { cli: "claude", model: "orchard", instructions: "Review the irrigation." };
+  store.append({
+    ...base,
+    actor: "coordinator",
+    kind: "coordinator.checkpoint",
+    payload: {
+      checkpoint: {
+        format: "armada.tools",
+        version: 1,
+        type: "rules",
+        rules: { revision: 1, value: { defaultRoute: route } },
+      },
+    },
+  });
+  store.append({
+    ...base,
+    kind: "session.claimed",
+    payload: {
+      ticket: "SEED-1",
+      session: "one",
+      generation: 1,
+      owner: "coordinator",
+      runtime: "codex",
+      handle: "local/one",
+    },
+  });
+  store.append({
+    ...base,
+    kind: "delivery.queued",
+    payload: {
+      id: "answer",
+      ticket: "SEED-1",
+      session: "one",
+      generation: 1,
+      source: "owner-answer",
+      text: "Oak",
+      key: "answer",
+    },
+  });
+  const state = (frame: ServerMessage) => {
+    assert(frame.type === "project.subscribed" || frame.type === "events");
+    assert(frame.snapshot);
+    return frame.snapshot.state as unknown as import("@armada/protocol").ProjectTables;
+  };
+  legacy.send({ type: "project.subscribe", project: "orchard", after: 0, version: { major: 1, minor: 16 } });
+  modern.send({ type: "project.subscribe", project: "orchard", after: 0 });
+  const compatible = state(await legacy.next());
+  assert.equal(compatible.deliveries, undefined);
+  assert.deepEqual(
+    compatible.rules?.value.defaultRoute,
+    route,
+    "minor16 retains brief instructions while hiding minor17 delivery fields",
+  );
+  assert.equal(state(await modern.next()).deliveries?.length, 1);
+  await legacy.next();
+  await modern.next();
+  for (let attempt = 1; attempt <= 3; attempt++)
+    store.append({
+      ...base,
+      kind: "delivery.failed",
+      payload: { id: "answer", attempt, error: "Worker unavailable", nextAt: base.at },
+    });
+  assert.deepEqual(state(await legacy.next()).inbox, []);
+  assert.equal(state(await modern.next()).inbox[0]?.kind, "delivery-failed");
+  store.append({ ...base, kind: "delivery.sent", payload: { id: "answer", at: base.at } });
+  assert.deepEqual(state(await legacy.next()).inbox, []);
+  const sent = state(await modern.next());
+  assert.deepEqual(sent.inbox, []);
+  assert.deepEqual(sent.deliveries, []);
 });
 
 test("pre-16 clients receive routes without instructions in initial and live snapshots", async (t) => {
