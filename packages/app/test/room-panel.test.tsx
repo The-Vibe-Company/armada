@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { fold } from "@armada/daemon/fold";
+import type { EventInput } from "@armada/protocol";
 import type { Page } from "playwright-core";
 import { SAMPLE_PROJECTS, sampleEvents } from "../scripts/dev-daemon";
 import { clampWidth, PANEL_KEY, panelKey, readPanel } from "../src/room/panel-rules";
@@ -264,7 +265,7 @@ describe("the room's panel in a browser", () => {
     // The reader pause and daily token pill leave the panel control on screen,
     // even with all five agent states at phone width.
     const at = "2026-03-10T15:00:00.000Z";
-    const events = [
+    const readings: EventInput[] = [
       ...sampleEvents(at),
       {
         project: "harbor",
@@ -290,12 +291,13 @@ describe("the room's panel in a browser", () => {
           },
         },
       },
-    ].map((event, i) => ({ ...event, seq: i + 1 }));
+    ];
+    const events = readings.map((event, i) => ({ ...event, seq: i + 1 }));
     await page.evaluate(
       (next) => {
-        (window as unknown as { daemon: { show(value: unknown): void } }).daemon.show(next);
+        (window as unknown as { daemon: { show(value: unknown): void } }).daemon.show(JSON.parse(next));
       },
-      { state: fold(events).projects.harbor, events },
+      JSON.stringify({ state: fold(events).projects.harbor, events }),
     );
     await page.setViewportSize({ width: 375, height: 800 });
     await page.locator('[data-usage="today"]').waitFor();
