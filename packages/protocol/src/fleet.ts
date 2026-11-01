@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { readerUsageSchema } from "./readers.js";
 import { rulesStateSchema } from "./rules.js";
 
 export const GITHUB_READER_MINOR = 18;
@@ -276,6 +277,8 @@ function makeTablesSchema() {
     rules: rulesStateSchema.optional(),
     /** Successful provider reads, even when no facts changed; absent on older snapshots. */
     readAt: z.record(z.string(), z.iso.datetime()).optional(),
+    /** Safe usage and rate-limit pauses; older daemons omit this slice. */
+    readers: z.record(z.string(), readerUsageSchema).optional(),
     tickets: z.array(ticketSchema),
     pullRequests: z.array(pullRequestSchema),
     sessions: z.array(sessionSchema),

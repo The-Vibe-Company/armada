@@ -31,6 +31,7 @@ interface ReaderOptions {
   registry: Pick<PluginRegistry, "get">;
   projects: readonly ReaderProject[];
   store?: Pick<EventStore, "append"> & Partial<Pick<EventStore, "readSince" | "subscribe">>;
+  isRoomVisible?: (project: string) => boolean;
   now?: () => string;
   schedule?: Schedule;
   log?: (line: string) => void;
@@ -52,15 +53,71 @@ const schedule: Schedule = (callback, delay) => {
 };
 
 /** Independent background consumers; coordinator reads can request one bounded refresh. */
-export async function startReaders(
-  options: ReaderOptions,
-): Promise<{ readers: ReaderState[]; ready: Promise<void>; refresh(project: string): Promise<void>; stop(): void }> {
+export async function startReaders(options: ReaderOptions): Promise<{
+  readers: ReaderState[];
+  ready: Promise<void>;
+  refresh(project: string): Promise<void>;
+  activityChanged(project: string): void;
+  stop(): void;
+}> {
   const projects = options.projects.map((project) => daemonProjectSchema.parse(project));
   const set = options.schedule ?? schedule;
   const stops: (() => void)[] = [];
   const firstReads: Promise<void>[] = [];
   const readers: ReaderState[] = [];
   const refreshers = new Map<string, { read(): Promise<void>; abort(): void }[]>();
+  const activityListeners = new Map<string, (() => void)[]>();
+  const now = () => Date.parse((options.now ?? (() => new Date().toISOString()))());
+  const projectIds = new Set(projects.map((project) => project.id));
+  const history = options.store?.readSince?.(0, projects.length === 1 ? projects[0]?.id : undefined) ?? [];
+  const initial = fold(history);
+  let observed = history.at(-1)?.seq ?? 0;
+  const activeProjects = new Map(
+    Object.entries(initial.projects).map(([id, state]) => [
+      id,
+      state.sessions.some((session) => session.state !== "merged" && session.state !== "released"),
+    ]),
+  );
+  const isActive = (project: string) => options.isRoomVisible?.(project) || activeProjects.get(project);
+  const activityChanged = (project: string) => {
+    for (const listener of activityListeners.get(project) ?? []) listener();
+  };
+  const unsubscribe = options.store?.subscribe?.(() => {
+    const changes = options.store?.readSince?.(observed) ?? [];
+    observed = changes.at(-1)?.seq ?? observed;
+    const affected = new Set(
+      changes
+        .filter(
+          (event) =>
+            projectIds.has(event.project) &&
+            ([
+              "session.claimed",
+              "session.released",
+              "session.reported",
+              "ticket.seen",
+              "merge.confirmed",
+              "pull-request.merged",
+              "pull-request.seen",
+            ].includes(event.kind) ||
+              (event.kind === "coordinator.checkpoint" &&
+                typeof event.payload.checkpoint === "object" &&
+                event.payload.checkpoint !== null &&
+                !Array.isArray(event.payload.checkpoint) &&
+                event.payload.checkpoint.format === "armada.worker")),
+        )
+        .map((event) => event.project),
+    );
+    for (const project of affected) {
+      const active =
+        fold(options.store?.readSince?.(0, project) ?? []).projects[project]?.sessions.some(
+          (session) => session.state !== "merged" && session.state !== "released",
+        ) ?? false;
+      if (activeProjects.get(project) === active) continue;
+      activeProjects.set(project, active);
+      activityChanged(project);
+    }
+  });
+  if (unsubscribe) stops.push(unsubscribe);
   const waiting = new Set<() => void>();
   let stopped = false;
   const stop = () => {
@@ -93,28 +150,39 @@ export async function startReaders(
         active?.abort();
       });
       let pending: Promise<void> | undefined;
+      let pausedUntil = 0;
       let forgeState: ForgeReadResult = {};
-      const now = () => Date.parse((options.now ?? (() => new Date().toISOString()))());
-      const hasActive = () => {
-        const events = options.store?.readSince?.(0, project.id);
-        return events
-          ? !!fold(events).projects[project.id]?.sessions.some((s) => !["released", "merged"].includes(s.phase))
-          : true;
+      let lastFinished = now();
+      const interval = () =>
+        seam === "tracker"
+          ? isActive(project.id)
+            ? 30_000
+            : 180_000
+          : Math.max(
+              (options.store?.readSince ? !!activeProjects.get(project.id) : true) ? 30_000 : 300_000,
+              forgeState.pollMs ?? 0,
+              forgeState.backoffMs ?? 0,
+            );
+      const scheduleNext = () => {
+        if (!running || pending) return;
+        cancelNext?.();
+        const delay =
+          seam === "tracker" && pausedUntil > now()
+            ? pausedUntil - now()
+            : Math.max(0, lastFinished + interval() - now(), pausedUntil - now());
+        cancelNext = set(() => {
+          cancelNext = undefined;
+          void tick();
+        }, delay);
       };
-      const forgeDelay = () => {
-        const active = hasActive();
-        return Math.max(
-          active ? 30_000 : 300_000,
-          forgeState.pollMs ?? 0,
-          forgeState.backoffMs ?? 0,
-          forgeState.pausedUntil ? Date.parse(forgeState.pausedUntil) - now() : 0,
-        );
-      };
+      {
+        const listeners = activityListeners.get(project.id) ?? [];
+        listeners.push(scheduleNext);
+        activityListeners.set(project.id, listeners);
+      }
       const tick = (): Promise<void> => {
         if (pending) return pending;
-        if (!running) return Promise.resolve();
-        if (seam === "forge" && forgeState.pausedUntil && Date.parse(forgeState.pausedUntil) > now())
-          return Promise.resolve();
+        if (!running || pausedUntil > now()) return Promise.resolve();
         cancelNext?.();
         cancelNext = undefined;
         const controller = new AbortController();
@@ -151,6 +219,7 @@ export async function startReaders(
                 .safeParse(result);
               if (parsed.success) {
                 forgeState = parsed.data;
+                pausedUntil = forgeState.pausedUntil ? Date.parse(forgeState.pausedUntil) : 0;
                 if (forgeState.backoffMs) state.forgeBackoffMs = forgeState.backoffMs;
                 else delete state.forgeBackoffMs;
                 if (forgeState.abandoned?.length) state.forgeAbandoned = forgeState.abandoned;
@@ -160,6 +229,20 @@ export async function startReaders(
                 if (forgeState.error) throw new Error(forgeState.error);
               }
             }
+            if (
+              seam === "tracker" &&
+              result?.pausedUntil &&
+              Number.isFinite(Date.parse(result.pausedUntil)) &&
+              Date.parse(result.pausedUntil) > now()
+            ) {
+              pausedUntil = Math.min(Date.parse(result.pausedUntil), now() + 3_600_000);
+              state[seam] = false;
+              const reason = `Linear paused by its rate limit until ${new Date(pausedUntil).toISOString()}`;
+              if (state[errorKey] !== reason) (options.log ?? console.error)(`armadad: tracker: ${reason}`);
+              state[errorKey] = reason;
+              return;
+            }
+            if (seam === "tracker") pausedUntil = 0;
             if (running && !controller.signal.aborted) {
               options.store?.append({
                 project: project.id,
@@ -198,32 +281,12 @@ export async function startReaders(
             cancelDeadline = undefined;
             active = undefined;
             pending = undefined;
-            if (running)
-              cancelNext = set(
-                () => {
-                  void tick();
-                },
-                seam === "forge" ? forgeDelay() : 30_000,
-              );
+            lastFinished = now();
+            scheduleNext();
           }
         });
         return pending;
       };
-      if (seam === "forge" && options.store?.subscribe) {
-        let inFlight = hasActive();
-        stops.push(
-          options.store.subscribe(() => {
-            const current = hasActive();
-            if (current === inFlight) return;
-            inFlight = current;
-            if (!running || pending) return;
-            cancelNext?.();
-            cancelNext = set(() => {
-              void tick();
-            }, forgeDelay());
-          }),
-        );
-      }
       sources.push({ read: tick, abort: () => active?.abort() });
       // Start independently of boot readiness and of the other seam.
       firstReads.push(Promise.resolve().then(tick));
@@ -233,6 +296,7 @@ export async function startReaders(
     readers,
     ready: Promise.all(firstReads).then(() => {}),
     stop,
+    activityChanged,
     async refresh(project) {
       const sources = refreshers.get(project);
       if (stopped || !sources?.length) return;

@@ -86,8 +86,13 @@ export interface ProjectRequest {
   signal?: AbortSignal;
 }
 /** Readers append observations through ctx.events; daemon owns polling/checkpoints. */
+export interface TrackerReadResult {
+  /** A provider cooldown: scheduled and manual reads must honor it. Old providers return void. */
+  pausedUntil?: string;
+}
 export interface TrackerProvider extends ProviderConnection {
-  read(request: ProjectRequest): Promise<void>;
+  // biome-ignore lint/suspicious/noConfusingVoidType: Preserve existing providers returning Promise<void>.
+  read(request: ProjectRequest): Promise<void | TrackerReadResult>;
   write(request: TrackerWriteRequest): Promise<void>;
 }
 export interface ForgeProvider extends ProviderConnection {
