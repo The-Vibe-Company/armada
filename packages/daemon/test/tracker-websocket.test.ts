@@ -56,6 +56,14 @@ describe("reader/WebSocket composition", { timeout: 4000 }, () => {
   before(
     async () => {
       store = new EventStore(":memory:");
+      // Give the initial subscription a positive cursor while both provider reads are still pending.
+      store.append({
+        project: "elsewhere",
+        kind: "hold.opened",
+        at: "2030-01-01T10:00:00Z",
+        actor: "Mira",
+        payload: { id: "seed", reason: "Synthetic cursor" },
+      });
       server = await startServer({ store, projects: [project] });
       ws = new WebSocket(server.wsUrl);
       ws.on("message", (data) => {
@@ -114,8 +122,8 @@ describe("reader/WebSocket composition", { timeout: 4000 }, () => {
     });
     await entered.pending;
     assert.equal(requestSignal?.aborted, false);
-    const subscribe = () =>
-      ws.send(JSON.stringify({ version, id: "subscribe", type: "project.subscribe", project: project.id, after: 0 }));
+    const subscribe = (after = 0) =>
+      ws.send(JSON.stringify({ version, id: "subscribe", type: "project.subscribe", project: project.id, after }));
     subscribe();
     assert.equal((await next()).type, "project.subscribed");
     const empty = await next();
@@ -127,7 +135,7 @@ describe("reader/WebSocket composition", { timeout: 4000 }, () => {
     const liveForge = await eventsUntil((event) => event.kind === "pull-request.opened");
     assert.equal(linearReturned, false, "forge events arrive while Linear is still pending");
 
-    subscribe();
+    subscribe(empty.seq);
     assert.equal((await next()).type, "project.subscribed");
     const replay = await next();
     assert.equal(replay.type, "events");
@@ -137,17 +145,7 @@ describe("reader/WebSocket composition", { timeout: 4000 }, () => {
     assert.equal(requestSignal?.aborted, false);
 
     linear.release();
-    const liveTracker = await eventsUntil(
-      (event) =>
-        event.kind === "coordinator.checkpoint" &&
-        typeof event.payload === "object" &&
-        event.payload !== null &&
-        "checkpoint" in event.payload &&
-        typeof event.payload.checkpoint === "object" &&
-        event.payload.checkpoint !== null &&
-        "format" in event.payload.checkpoint &&
-        event.payload.checkpoint.format === "armada.linear-reader",
-    );
+    const liveTracker = await eventsUntil((event) => event.kind === "coordinator.checkpoint");
     assert.ok(
       liveTracker.some(
         (event) =>
@@ -158,6 +156,18 @@ describe("reader/WebSocket composition", { timeout: 4000 }, () => {
           event.payload.id === "SEED-2",
       ),
     );
-    assert.deepEqual([...liveForge, ...liveTracker], store.readSince(0));
+    assert.deepEqual(
+      [...liveForge, ...liveTracker],
+      store
+        .readSince(empty.seq, project.id)
+        .map((event) =>
+          event.kind === "coordinator.checkpoint" ? { ...event, payload: { checkpoint: null } } : event,
+        ),
+    );
+    assert(
+      store
+        .readSince(empty.seq, project.id)
+        .some((event) => event.kind === "coordinator.checkpoint" && event.payload.checkpoint !== null),
+    );
   });
 });

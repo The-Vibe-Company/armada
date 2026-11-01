@@ -9,6 +9,7 @@ import { Keychain } from "@armada/daemon/keychain";
 import type { PluginCatalogEntry } from "@armada/daemon/plugins/catalog";
 import { type DaemonServer, startServer } from "@armada/daemon/server";
 import { EventStore } from "@armada/daemon/store";
+import type { EventInput } from "@armada/protocol";
 import { type Browser, chromium, type Page } from "playwright-core";
 import { fakeWorkers } from "../../daemon/test/support/fake-worker";
 import { FakeKeychain } from "../../daemon/test/support/keychain";
@@ -806,5 +807,89 @@ describe("the Plugins screen in a browser, on a daemon that restarts", () => {
     } finally {
       await page.setViewportSize({ width: 1280, height: 900 });
     }
+  }, 20_000);
+});
+
+describe("on-demand history on a fresh snapshot-only browser", () => {
+  let historyDaemon: DevDaemon;
+  let historyBrowser: Browser;
+  let historyPage: Page;
+  beforeAll(async () => {
+    const at = "2030-01-01T10:00:00Z";
+    const reports: EventInput[] = Array.from({ length: 75 }, (_, n) => ({
+      project: "harbor",
+      kind: "ticket.report-posted",
+      at,
+      actor: "Mira",
+      payload: {
+        ticket: "HAR-15",
+        comment: `history-${n}`,
+        updatedAt: at,
+        phase: "implementing",
+        summary: `Report ${n}`,
+        body: `Saved history report ${n}`,
+      },
+    }));
+    historyDaemon = await startDevDaemon({ staticDir: out, events: [...sampleEvents(at), ...reports] });
+    historyBrowser = await chromium.launch({ timeout: 15_000 });
+    historyPage = await historyBrowser.newPage({ viewport: { width: 1280, height: 900 } });
+  }, 20_000);
+  afterAll(async () => {
+    await historyBrowser?.close();
+    await historyDaemon?.stop();
+  }, 10_000);
+  test("Reports, agent lane and room Log load historical pages only when opened", async () => {
+    const requests: { type: string; project?: string; ticket?: string; cursor?: number; limit?: number }[] = [];
+    historyPage.on("websocket", (ws) =>
+      ws.on("framesent", ({ payload }) => {
+        const m = JSON.parse(String(payload));
+        if (m.type === "fleet.history") requests.push(m);
+      }),
+    );
+    await historyPage.goto(historyDaemon.url);
+    await historyPage.getByRole("status").filter({ hasText: "Live" }).waitFor();
+    expect(requests).toHaveLength(0);
+    await historyPage.goto(`${historyDaemon.url}#/sessions/HAR-15`);
+    await historyPage.locator("[data-entry]").filter({ hasText: "Saved history report 74" }).waitFor();
+    expect(await historyPage.locator("[data-entry]").count()).toBe(50);
+    await historyPage.getByRole("button", { name: "Load earlier", exact: true }).click();
+    await historyPage.locator("[data-entry]").filter({ hasText: "Saved history report 0" }).waitFor();
+    expect(requests.every((r) => r.project === "harbor" && r.ticket === "HAR-15" && r.limit === 50)).toBe(true);
+    expect(requests[1]?.cursor).toBeNumber();
+    await historyPage.goto(`${historyDaemon.url}#/projects/harbor?panel=agents&agent=HAR-15`);
+    const lane = historyPage.locator("[data-agent-lane=HAR-15]");
+    await lane.locator("[data-entry]").filter({ hasText: "Saved history report 74" }).waitFor();
+    await lane.getByRole("button", { name: "Load earlier", exact: true }).click();
+    await lane.locator("[data-entry]").filter({ hasText: "Saved history report 0" }).waitFor();
+    await historyPage.goto(`${historyDaemon.url}#/projects/harbor?panel=log`);
+    const log = historyPage.getByRole("complementary", { name: "Panel" });
+    await log.locator("[data-event]").first().waitFor();
+    expect(await log.locator("[data-event]").count()).toBe(50);
+    await log.getByRole("button", { name: "Load earlier", exact: true }).click();
+    await historyPage.waitForFunction(() => document.querySelectorAll("[data-event]").length > 50);
+    expect(requests.at(-1)?.ticket).toBeUndefined();
+    const oldest = await log.locator("[data-event]").last().getAttribute("data-event");
+    const before = requests.length;
+    const at = "2030-01-01T10:00:00Z";
+    const post = (comment: string, body: string): EventInput => ({
+      project: "harbor",
+      kind: "ticket.report-posted",
+      at,
+      actor: "Mira",
+      payload: { ticket: "HAR-15", comment, updatedAt: at, phase: "implementing", summary: comment, body },
+    });
+    const live = historyDaemon.append(post("live-history", "New live report"));
+    await log.locator(`[data-event="${live.seq}"]`).waitFor();
+    expect(requests).toHaveLength(before);
+    expect(await log.locator(`[data-event="${oldest}"]`).count()).toBe(1);
+    // An oversized historical row is an explicit read error, never an oversized socket write.
+    historyDaemon.append(post("wide-history", "x".repeat(1_100_000)));
+    await historyPage.goto(`${historyDaemon.url}#/projects/harbor?panel=agents`);
+    await historyPage.goto(`${historyDaemon.url}#/projects/harbor?panel=log`);
+    await log.getByRole("alert").filter({ hasText: "History event exceeds" }).waitFor();
+    for (let n = 0; n < 51; n++) historyDaemon.append(post(`retry-${n}`, "A new small report"));
+    await log.getByRole("button", { name: "Try again", exact: true }).click();
+    await historyPage.waitForFunction(() => !document.querySelector('[role="alert"]'));
+    expect(await log.locator("[data-event]").count()).toBeGreaterThanOrEqual(50);
   }, 20_000);
 });

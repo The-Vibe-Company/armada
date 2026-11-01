@@ -2,7 +2,8 @@ import { useEffect, useMemo } from "react";
 import { Dot, Page, PageHeader } from "@/components/page";
 import { fleetOf } from "@/fleet/state";
 import { cn } from "@/lib/utils";
-import { useDaemon } from "@/protocol/store";
+import { HistoryControls, mergeHistory, useHistory } from "@/protocol/history";
+import { useDaemon, useDaemonClient } from "@/protocol/store";
 import { Facts } from "@/session/Facts";
 import { Quiet, Reports } from "@/session/Reports";
 import { sessionHref, type Tab } from "@/session/route";
@@ -37,7 +38,7 @@ const HINT: Record<PageState, string> = {
  * state's colour saying the state and what to do about it, the six steps, and
  * two tabs: the session's reports and events, newest first, and its pull
  * request's files. Read from the project's folded state and the events the
- * subscription replayed; `now` and `zone` are the viewer's unless a test gives them.
+ * subscription applied, with bounded history loaded on demand; `now` and `zone` are the viewer's unless a test gives them.
  * The card's buttons act (THE-2045): Answer, Release the ticket and Open the
  * session, each through one of the daemon's requests.
  */
@@ -53,6 +54,12 @@ export function Session({
   zone?: string;
 }) {
   const { projects, fleets, logs } = useDaemon();
+  const client = useDaemonClient();
+  const project = projects?.find((p) => {
+    const snapshot = fleets[p.id];
+    return snapshot && fleetOf(snapshot).sessions.some((s) => s.ticket === ticket);
+  });
+  const history = useHistory(client, project?.id, ticket);
   const now = givenNow ?? Date.now();
   const zone = givenZone ?? viewerZone();
   const read = projects?.every((p) => fleets[p.id]) ?? false;
@@ -71,9 +78,14 @@ export function Session({
     () =>
       findSession(ticket, projects ?? [], (id) => {
         const snapshot = fleets[id];
-        return snapshot ? { state: fleetOf(snapshot), events: logs[id]?.events ?? [] } : null;
+        return snapshot
+          ? {
+              state: fleetOf(snapshot),
+              events: mergeHistory(logs[id]?.events ?? [], id === project?.id ? history.events : []),
+            }
+          : null;
       }),
-    [ticket, projects, fleets, logs],
+    [ticket, projects, fleets, logs, project?.id, history.events],
   );
   if (!view)
     return (
@@ -122,14 +134,24 @@ export function Session({
       />
       <StateCard view={view} at={at} tick={tick ?? 0} />
       <Steps step={view.step} group={group} />
-      <Tabs view={view} tab={tab} at={at} />
+      <Tabs view={view} tab={tab} at={at} history={history} />
     </Page>
   );
 }
 
 const TAB_LABEL: Record<Tab, string> = { reports: "Reports", files: "Files" };
 
-function Tabs({ view, tab, at }: { view: SessionView; tab: Tab; at: (time: string | null) => string }) {
+function Tabs({
+  view,
+  tab,
+  at,
+  history,
+}: {
+  view: SessionView;
+  tab: Tab;
+  at: (time: string | null) => string;
+  history: ReturnType<typeof useHistory>;
+}) {
   return (
     <section className="flex min-w-0 flex-col">
       <nav aria-label="Session" className="flex gap-5 border-line border-b">
@@ -152,7 +174,12 @@ function Tabs({ view, tab, at }: { view: SessionView; tab: Tab; at: (time: strin
       </nav>
       <div data-tab={tab}>
         {tab === "reports" ? (
-          <Reports entries={view.entries} at={at} />
+          <>
+            {!((history.loading || history.error) && !view.entries.length) && (
+              <Reports entries={view.entries} at={at} />
+            )}
+            <HistoryControls history={history} />
+          </>
         ) : (
           <Files files={view.files} pr={view.facts.pr} />
         )}

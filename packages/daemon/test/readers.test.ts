@@ -312,7 +312,12 @@ test("daemon readers commit recorded Linear/GitHub facts to the subscribed store
     const message = serverMessageSchema.parse(frame);
     return message.type === "events" ? message.events : [];
   });
-  assert.deepEqual(delivered, store.readSince(0));
+  assert.deepEqual(
+    delivered,
+    store
+      .readSince(0)
+      .map((event) => (event.kind === "coordinator.checkpoint" ? { ...event, payload: { checkpoint: null } } : event)),
+  );
   assert.ok(calls.includes("Comments") && calls.includes("Pulls"));
   timer.tick();
   await entered;

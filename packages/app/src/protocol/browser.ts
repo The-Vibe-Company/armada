@@ -12,6 +12,6 @@ export function browserSocket(url: string): SocketLike {
   };
   ws.onopen = () => socket.onopen?.();
   ws.onmessage = (event) => socket.onmessage?.({ data: event.data });
-  ws.onclose = () => socket.onclose?.();
+  ws.onclose = (event) => socket.onclose?.({ code: event.code, reason: event.reason });
   return socket;
 }

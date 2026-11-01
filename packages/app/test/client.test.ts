@@ -26,7 +26,7 @@ class FakeSocket implements SocketLike {
   closed = false;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event?: { code: number; reason: string }) => void) | null = null;
   send(data: string) {
     this.sent.push(JSON.parse(data));
   }
@@ -36,8 +36,8 @@ class FakeSocket implements SocketLike {
   receive(message: unknown) {
     this.onmessage?.({ data: JSON.stringify(message) });
   }
-  drop() {
-    this.onclose?.();
+  drop(event?: { code: number; reason: string }) {
+    this.onclose?.(event);
   }
 }
 
@@ -89,12 +89,22 @@ const projects = [
   { id: "beta", name: "Beta", repository: "example/beta" },
 ];
 
-function listAndSubscribe(socket: FakeSocket) {
+function listAndSubscribe(socket: FakeSocket, complete = true, version: ProtocolVersion = V) {
   const list = socket.sent.find((m) => m.type === "projects.list");
-  socket.receive({ type: "projects.result", version: V, id: list?.id, projects });
+  socket.receive({ type: "projects.result", version, id: list?.id, projects });
   for (const m of socket.sent)
-    if (m.type === "project.subscribe")
-      socket.receive({ ...m, type: "project.subscribed", subscriptionId: `sub-${m.project}` });
+    if (m.type === "project.subscribe") {
+      socket.receive({ ...m, version, type: "project.subscribed", subscriptionId: `sub-${m.project}` });
+      if (complete)
+        socket.receive({
+          type: "events",
+          version,
+          project: m.project,
+          subscriptionId: `sub-${m.project}`,
+          seq: m.after,
+          events: [],
+        });
+    }
 }
 
 describe("the daemon client", () => {
@@ -108,6 +118,76 @@ describe("the daemon client", () => {
       expect.objectContaining({ project: "alpha", after: 0 }),
       expect.objectContaining({ project: "beta", after: 0 }),
     ]);
+  });
+
+  test("reasoned startup closes remain visible and stop after five attempts despite project lists", () => {
+    const { client, socket, sockets, timers } = setup();
+    for (let n = 0; n < 5; n++) {
+      listAndSubscribe(socket(), false);
+      if (n > 0) expect(client.getState()).toMatchObject({ status: "reconnecting", problem: "Replay drain timed out" });
+      socket().drop({ code: 4008, reason: "Replay drain timed out" });
+      expect(client.getState().problem).toContain("Replay drain timed out");
+      if (n < 4) {
+        timers.at(-1)?.run();
+        socket().onopen?.();
+      }
+    }
+    expect(client.getState()).toMatchObject({
+      status: "refused",
+      problem: "Daemon refused the connection: Replay drain timed out",
+    });
+    expect(sockets).toHaveLength(5);
+    expect(timers).toHaveLength(4);
+  });
+
+  test("an initial subscription refused for a future cursor shows its reason instead of waiting forever", () => {
+    const { client, socket, timers } = setup();
+    listAndSubscribe(socket());
+    socket().receive({
+      type: "events",
+      version: V,
+      project: "alpha",
+      subscriptionId: "sub-alpha",
+      seq: 99,
+      events: [],
+    });
+    socket().drop();
+    timers.at(-1)?.run();
+    socket().onopen?.();
+    listAndSubscribe(socket(), false);
+    const subscription = socket().sent.find((m) => m.type === "project.subscribe" && m.project === "alpha");
+    socket().receive({
+      type: "error",
+      version: V,
+      id: subscription?.id,
+      code: "invalid-message",
+      message: "Replay cursor is ahead of the daemon log",
+    });
+    expect(client.getState()).toMatchObject({ status: "refused", problem: "Replay cursor is ahead of the daemon log" });
+    expect(timers).toHaveLength(1);
+  });
+
+  test("a snapshot-only frame advances the reconnect cursor without replaying history", () => {
+    const { client, socket, timers } = setup();
+    listAndSubscribe(socket());
+    socket().receive({
+      type: "events",
+      version: V,
+      subscriptionId: "sub-alpha",
+      project: "alpha",
+      seq: 5200,
+      events: [],
+      snapshot: { seq: 5200, state: { tickets: [{ id: "TREE-1" }] } },
+    });
+    expect(client.getState().logs.alpha).toEqual({ seq: 5200, events: [] });
+    expect(client.getState().fleets.alpha?.seq).toBe(5200);
+    socket().drop();
+    timers.at(-1)?.run();
+    socket().onopen?.();
+    listAndSubscribe(socket());
+    expect(socket().sent.find((m) => m.type === "project.subscribe" && m.project === "alpha")).toMatchObject({
+      after: 5200,
+    });
   });
 
   test("applies each project's frames and moves its cursor, skipping a replayed event", () => {
@@ -125,7 +205,7 @@ describe("the daemon client", () => {
     expect(seen).toEqual([3, 5, 7]);
     // A frame under a subscription this connection never got changes nothing.
     socket().receive({ type: "events", version: V, subscriptionId: "sub-old", project: "beta", seq: 9, events: [] });
-    expect(client.getState().logs.beta).toBeUndefined();
+    expect(client.getState().logs.beta).toEqual({ seq: 0, events: [] });
   });
 
   test("keeps each project's folded state, from its subscription and then each frame, never an older one", () => {
@@ -181,6 +261,51 @@ describe("the daemon client", () => {
     frame(5, undefined, "sub-alpha-2");
     expect(client.getState().fleets.alpha).toEqual({ seq: 4, state: state(4) });
     expect(client.getState().problem).toBe(NOT_FOLDED);
+  });
+
+  test("partial replay keeps the held snapshot until the final page and a healthy restart resets retries", () => {
+    const { client, socket, timers } = setup();
+    listAndSubscribe(socket());
+    socket().drop();
+    timers.at(-1)?.run();
+    socket().onopen?.();
+    listAndSubscribe(socket());
+    socket().receive({
+      type: "events",
+      version: V,
+      subscriptionId: "sub-alpha",
+      project: "alpha",
+      seq: 1,
+      events: [],
+      snapshot: { seq: 1, state: { tickets: [] } },
+      more: true,
+    });
+    socket().receive({
+      type: "events",
+      version: V,
+      subscriptionId: "sub-alpha",
+      project: "alpha",
+      seq: 2,
+      events: [event(2, "alpha", "s1")],
+      more: true,
+    });
+    expect(client.getState().problem).toBeNull();
+    expect(client.getState().fleets.alpha?.seq).toBe(1);
+    socket().receive({
+      type: "events",
+      version: V,
+      subscriptionId: "sub-alpha",
+      project: "alpha",
+      seq: 3,
+      events: [],
+      snapshot: { seq: 3, state: { tickets: [{ id: "TREE-1" }] } },
+    });
+    socket().receive({ type: "events", version: V, subscriptionId: "sub-beta", project: "beta", seq: 3, events: [] });
+    expect(client.getState().fleets.alpha?.seq).toBe(3);
+    expect(client.getState().logs.alpha?.seq).toBe(3);
+    expect(client.getState().problem).toBeNull();
+    socket().drop();
+    expect(timers.map((timer) => timer.ms)).toEqual([100, 100]);
   });
 
   test("after a drop, waits, reconnects and resumes each project at its last cursor, keeping the projects", () => {
@@ -704,7 +829,7 @@ test("room presence is optional, follows the visible room and is replayed after 
   client.stop();
 
   const older = setup();
-  older.socket().receive({ type: "projects.result", version: { ...V, minor: 13 }, id: "list", projects });
+  listAndSubscribe(older.socket(), true, { ...V, minor: 13 });
   expect(older.client.getState().status).toBe("live");
   older.client.setRoomPresence?.("alpha");
   expect(older.socket().sent.filter((m) => m.type === "room.presence")).toEqual([]);

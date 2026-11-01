@@ -25,8 +25,7 @@ uncorrelatable request. Schema parsing ignores additive object fields.
 | `project.subscribe` | `project`, `after` | `project.subscribed`: `project`, `subscriptionId`, `after` |
 | `session.read` | `project`, `sessionId` | `session.result`: `project`, `sessionId`, `seq`, `events` |
 
-A subscription acknowledges the requested exclusive cursor `after` (0 means
-from the beginning), then emits `events` frames with `subscriptionId`, `project`,
+A subscription acknowledges the requested exclusive cursor `after` (0 requests the current snapshot), then emits `events` frames with `subscriptionId`, `project`,
 `seq`, and `events`. `seq` is the inclusive high-water mark of the scanned log,
 including empty batches. Reconnect with `after` equal to the last fully applied
 frame's `seq`. A server must emit frames with nondecreasing cursors and events
@@ -178,7 +177,8 @@ admitted: sending it again after a drop is the same message, admitted once.
 Mid-run it steers by default (`whenBusy: "steer"`); `whenBusy: "queue"` (THE-2052)
 waits for the run to end. An older daemon ignores the field and steers. Its
 effect reaches every subscriber as the coordinator's `coordinator.checkpoint`
-events; a client reads the conversation again when one arrives. `owner.answer`
+envelopes with `{ checkpoint: null }`; a client reads the conversation again
+when one arrives. Durable checkpoint bodies never enter the fleet stream. `owner.answer`
 answers an open `owner-request` of the project's inbox; anything else is
 `not-found`, as is `chat.send` to a project without a coordinator.
 
@@ -202,3 +202,42 @@ removed.
 
 From minor 6, `owner.answer` also answers a worker's open `question`. The daemon
 delivers it to that worker before recording it.
+
+
+### Bounded subscriptions (minor 21)
+
+A fresh cursor or one more than 2,048 project events behind receives a
+`project.subscribed` with its `snapshot` field pinned at `snapshot.seq`, then an empty `events`
+frame at that sequence. History is read on demand. Recent replay uses event
+pages of at most 1 MiB of UTF-8 JSON with `more: true` until the last page.
+Intermediate cursors are safe to resume; each new subscription supplies a
+final authoritative snapshot even when no events remain. Snapshots are sent
+once and remain indivisible (so a snapshot-only frame can exceed 1 MiB).
+Older same-major clients receive snapshots instead of large partial replays.
+Checkpoint envelopes retain their sequence but carry only `{ checkpoint: null }`.
+
+The daemon waits below 256 KiB of socket buffering between replay frames and
+queued replies. A ten-second drain timeout closes with code 4008 and a reason;
+the steady-state 8 MiB buffer guard also closes with a reason. Clients display
+that reason and stop after five failed connections. Receiving a project list
+alone does not make a connection healthy; completing its subscriptions does.
+
+
+### On-demand history (minor 21)
+
+`fleet.history` takes `project`, optional `ticket`, optional exclusive `cursor`
+(sequence before which to read), and optional `limit` (default 50, maximum 200).
+`fleet.history.result` returns `project`, newest-first `events`, and `cursor`
+for the next older page, or null when complete. Project/ticket filtering,
+correlated item replies, ordering and row limits run in SQLite. Replies also
+stay under 1 MiB; wide rows reduce the page count. An individual row too large
+for that bound returns an explicit error without closing the connection.
+Private checkpoint documents and receipts are omitted; worker launch history
+carries only the validated public launch fields. Ticket descriptions/comments
+are not duplicated into history pages.
+
+Session Reports, the room's agent lane and Room Log read this contract when
+opened and on an explicit Load earlier or retry. There is no history subscription
+or startup history fetch. Loaded rows merge locally with immutable live event
+sequences and never move a subscription cursor. A pane discards results from a
+previous ticket/project or disconnected generation.

@@ -15,6 +15,7 @@ import {
   type ClientMessage,
   type CredentialsResult,
   DAEMON_TOO_OLD,
+  type HistoryRequest,
   MODELS_MINOR,
   type ModelConfig,
   type ModelsCatalog,
@@ -88,7 +89,7 @@ export interface SocketLike {
   close(): void;
   onopen: (() => void) | null;
   onmessage: ((event: { data: unknown }) => void) | null;
-  onclose: (() => void) | null;
+  onclose: ((event?: { code: number; reason: string }) => void) | null;
 }
 
 export interface ClientOptions {
@@ -145,6 +146,7 @@ export interface DaemonClient {
 
 /** A room or session request the screens send and await, without its envelope (`version`, `id`): the client adds it. */
 type DaemonRequest = Unaddressed<
+  | HistoryRequest
   | ChatReadRequest
   | ChatSendRequest
   | ChatStopRequest
@@ -164,6 +166,7 @@ type DaemonReply<R extends DaemonRequest> = Extract<
       "projects.inspect": "projects.inspection";
       "projects.add": "projects.result";
       "projects.remove": "projects.result";
+      "fleet.history": "fleet.history.result";
       "chat.read": "chat.result";
       "chat.send": "chat.sent";
       "chat.stop": "chat.stopped";
@@ -179,6 +182,7 @@ type Unaddressed<M> = M extends unknown ? Omit<M, "id" | "version"> : never;
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
 const BACKOFF = [250, 500, 1000, 2000, 5000];
+const MAX_ATTEMPTS = 5;
 export const UNREADABLE = "The daemon sent a message this app cannot read";
 export const NOT_FOLDED = "The daemon does not send its folded state live: update it";
 export const LOG_BEHIND = "The daemon's log is behind what this app has read: reload the app";
@@ -227,6 +231,8 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
   let socket: SocketLike | null = null;
   let cancelRetry: (() => void) | null = null;
   let attempt = 0;
+  let initialProjects = new Set<string>();
+  let initializing = false;
   let nextId = 0;
   let running = false;
   let visibleRoom: string | null = null;
@@ -350,7 +356,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
     });
   }
   /** Why the last connection ended: after an unreadable frame, the backoff keeps growing. */
-  let lastDrop: "close" | "unreadable" = "close";
+  let unreadableDrop = false;
   /** Per connection: the subscription each project's frames arrive under. */
   let subscriptions = new Map<string, string>();
   let requestedSubscriptions = new Set<string>();
@@ -366,6 +372,8 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
     cancelRetry = null;
     subscriptions = new Map();
     requestedSubscriptions = new Set();
+    initialProjects = new Set();
+    initializing = false;
     let current: SocketLike;
     try {
       current = options.open(options.url);
@@ -377,9 +385,10 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
     current.onmessage = (event) => {
       if (socket === current) receive(event.data);
     };
-    current.onclose = () => {
+    current.onclose = (event) => {
       if (socket !== current) return;
-      lastDrop = "close";
+      unreadableDrop = false;
+      set({ problem: event?.reason || NOT_ANSWERED });
       reconnect();
     };
   }
@@ -396,6 +405,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
     socket = null;
     closing?.close();
     if (!running || state.status === "refused") return;
+    if (attempt + 1 >= MAX_ATTEMPTS) return refuse(`Daemon refused the connection: ${state.problem}`);
     set({ status: "reconnecting", credentials: null });
     const wait = backoff[Math.min(attempt, backoff.length - 1)] ?? 1000;
     attempt += 1;
@@ -404,7 +414,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
 
   function unreadable() {
     set({ problem: UNREADABLE });
-    lastDrop = "unreadable";
+    unreadableDrop = true;
     reconnect();
   }
 
@@ -443,12 +453,40 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
     apply(parsed.data);
   }
 
+  function finishSubscriptions() {
+    if (initialProjects.size || !initializing) return;
+    if (!unreadableDrop) attempt = 0;
+    set({ status: "live", problem: null });
+    initializing = false;
+    const minor = state.minor ?? 0;
+    if (minor >= ACCOUNT_MINOR) {
+      accountStatusId = id();
+      send({ type: "account.status", version, id: accountStatusId });
+    } else set({ account: null, accountProblem: "Update Armada to sign in." });
+    if (minor >= 1) {
+      credentialStatusId = id();
+      send({ type: "credentials.status", version, id: credentialStatusId });
+    }
+    // Listed again on every connection: a restarted daemon says what it loaded.
+    if (minor >= 2) {
+      pluginListId = id();
+      pluginIds.add(pluginListId);
+      send({ type: "plugins.list", version, id: pluginListId });
+    } else set({ plugins: null, pluginsProblem: NO_PLUGINS, restarting: false });
+    if (minor >= MODELS_MINOR) {
+      void askModels({ type: "models.providers" }).catch(() => {});
+    } else set({ catalog: null });
+    if (minor >= PROVIDERS_MINOR) {
+      void askProviders({ type: "providers.list" }).catch((error: Error) => set({ providersProblem: error.message }));
+    } else set({ providers: null, providersProblem: "Update Armada to connect providers." });
+    sendRoomPresence();
+  }
+
   function apply(message: ServerMessage) {
     switch (message.type) {
       case "projects.result": {
-        if (lastDrop === "close") attempt = 0;
-        const firstList = state.status !== "live";
-        set({ status: "live", problem: null, projects: message.projects, minor: message.version.minor });
+        const firstList = !initializing && state.status !== "live";
+        set({ projects: message.projects, minor: message.version.minor });
         const request = pending.get(message.id);
         pending.delete(message.id);
         request?.resolve(message);
@@ -457,40 +495,20 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
           if (!ids.has(project)) {
             requestedSubscriptions.delete(project);
             subscriptions.delete(project);
+            initialProjects.delete(project);
           }
-        if (firstList && message.version.minor >= ACCOUNT_MINOR) {
-          accountStatusId = id();
-          send({ type: "account.status", version, id: accountStatusId });
-        } else if (firstList) set({ account: null, accountProblem: "Update Armada to sign in." });
-        if (firstList && message.version.minor >= 1) {
-          credentialStatusId = id();
-          send({ type: "credentials.status", version, id: credentialStatusId });
+        if (visibleRoom !== null && !message.projects.some((p) => p.id === visibleRoom)) {
+          visibleRoom = null;
+          sendRoomPresence();
         }
-        // Listed again on every connection: a restarted daemon says what it loaded.
-        if (firstList && message.version.minor >= 2) {
-          pluginListId = id();
-          pluginIds.add(pluginListId);
-          send({ type: "plugins.list", version, id: pluginListId });
-        } else if (firstList) set({ plugins: null, pluginsProblem: NO_PLUGINS, restarting: false });
-        if (firstList && message.version.minor >= MODELS_MINOR) {
-          void askModels({ type: "models.providers" }).catch(() => {});
-        } else if (firstList) set({ catalog: null });
-        if (firstList && message.version.minor >= PROVIDERS_MINOR) {
-          void askProviders({ type: "providers.list" }).catch((error: Error) =>
-            set({ providersProblem: error.message }),
-          );
-        } else if (firstList) set({ providers: null, providersProblem: "Update Armada to connect providers." });
-        if (visibleRoom !== null) {
-          if (!message.projects.some((p) => p.id === visibleRoom)) {
-            visibleRoom = null;
-            sendRoomPresence();
-          } else if (firstList) sendRoomPresence();
-        }
+        if (firstList) initializing = true;
         for (const project of message.projects) {
           if (requestedSubscriptions.has(project.id)) continue;
           requestedSubscriptions.add(project.id);
+          initialProjects.add(project.id);
           send({ type: "project.subscribe", version, id: id(), project: project.id, after: cursor(project.id) });
         }
+        finishSubscriptions();
         return;
       }
       case "project.subscribed":
@@ -504,12 +522,15 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
         const fresh = message.events.filter((event) => event.seq > log.seq);
         // Events past the folded state held, without a newer one: the daemon does not fold live for this app.
         const held = state.fleets[message.project];
-        const stale = !message.snapshot && fresh.length > 0 && held !== undefined && message.seq > held.seq;
+        const stale =
+          !message.snapshot && !message.more && fresh.length > 0 && held !== undefined && message.seq > held.seq;
+        if (!message.more) initialProjects.delete(message.project);
         set({
           logs: { ...state.logs, [message.project]: { seq: message.seq, events: [...log.events, ...fresh] } },
           fleets: folded(message.project, message.snapshot),
           ...(stale ? { problem: NOT_FOLDED } : {}),
         });
+        finishSubscriptions();
         return;
       }
       case "account.device":
@@ -589,6 +610,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       case "chat.tool":
         for (const listener of chatListeners) listener(message);
         return;
+      case "fleet.history.result":
       case "projects.inspection":
       case "chat.result":
       case "chat.sent":
@@ -602,6 +624,7 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
         return;
       }
       case "error":
+        if (initializing) return refuse(message.message);
         if (message.id === accountStatusId) return set({ accountProblem: message.message });
         if (message.id !== undefined && pendingProviders.has(message.id)) {
           const waiting = pendingProviders.get(message.id);
