@@ -192,6 +192,13 @@ function payloadSchemas() {
       state: z.enum(["starting", "running", "stopped", "failed", "unknown"]),
       activity: z.enum(["working", "idle"]).optional(),
     }),
+    "worker.readopted": sessionRefSchema.extend({
+      generation: integer.min(1),
+      handle: text,
+      boot: text,
+      briefPending: z.boolean().optional(),
+    }),
+    "worker.lost": sessionRefSchema.extend({ generation: integer.min(1), handle: text, reason: text, boot: text }),
     "session.liveness": sessionRefSchema.extend({
       id: text,
       generation: integer.min(1),

@@ -118,6 +118,7 @@ async function act(request: SessionRequest, options: SessionOptions): Promise<Se
         project,
         ticket,
         session: ref.session,
+        ...(stopped.stopped === false ? { stopped: false } : {}),
         disposed: stopped.disposed === true,
       };
     }
