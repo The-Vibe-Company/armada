@@ -99,6 +99,36 @@ const identity = {
   now: () => new Date("2030-01-01T12:00:00Z"),
 };
 
+test("default-branch health is observed at its pinned head, deduplicated across restarts and never fabricated from a failed read", async (t) => {
+  const store = new EventStore(":memory:");
+  t.after(() => store.close());
+  const head = "a".repeat(40);
+  const health = (state: string, oid = head) => ({
+    data: {
+      repository: {
+        ...page([]).data.repository,
+        defaultBranchRef: { name: "trunk", target: { oid, statusCheckRollup: { state } } },
+      },
+    },
+  });
+  const options = {
+    ...identity,
+    store,
+    token: async () => randomUUID(),
+    fetch: recorded([health("FAILURE"), health("FAILURE"), health("SUCCESS"), health("UNKNOWN")]),
+  };
+  const reader = new GithubReader(options);
+  assert.equal((await reader.refresh()).ok, true);
+  assert.deepEqual(fold(store.readSince(0)).projects.boats?.defaultBranch, { branch: "trunk", head, ci: "failure" });
+  const restarted = new GithubReader(options);
+  assert.equal((await restarted.refresh()).ok, true);
+  assert.equal(store.sequence, 1);
+  assert.equal((await restarted.refresh()).ok, true);
+  assert.equal(fold(store.readSince(0)).projects.boats?.defaultBranch?.ci, "success");
+  assert.equal((await restarted.refresh()).ok, false);
+  assert.equal(store.sequence, 2);
+});
+
 test("two recorded readings persist only changed facts and transitions, with restart and project isolation", async () => {
   const store = new EventStore(":memory:");
   const credential = randomUUID();
