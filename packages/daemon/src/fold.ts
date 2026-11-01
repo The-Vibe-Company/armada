@@ -5,6 +5,7 @@ import type {
   Hold,
   InboxItem,
   Phase,
+  ProjectTables,
   PullRequest,
   QueueEntry,
   Session,
@@ -53,6 +54,7 @@ const readerCheckpoint = z.object({
 });
 
 interface Projection {
+  defaultBranch?: ProjectTables["defaultBranch"];
   readAt: Record<string, string>;
   rules: RulesState;
   tickets: Map<string, Ticket>;
@@ -293,6 +295,9 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
       }
       case "coordinator.message":
         break;
+      case "default-branch.seen":
+        p.defaultBranch = e.payload;
+        break;
     }
   }
   const tables: FleetTables = { seq, projects: Object.create(null) };
@@ -389,6 +394,7 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
         : [];
     });
     tables.projects[project] = {
+      ...(p.defaultBranch ? { defaultBranch: p.defaultBranch } : {}),
       rules: p.rules,
       ...(Object.keys(p.readAt).length ? { readAt: p.readAt } : {}),
       tickets: [...p.tickets.values()],
