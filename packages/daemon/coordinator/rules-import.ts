@@ -31,7 +31,15 @@ export function importV1Rules(body: string): ProjectRules {
   }
   const profiles = new Map<
     string,
-    { target: { cli: "claude" | "codex" | "opencode" | "conductor"; model: string; effort?: string }; when?: string }
+    {
+      target: {
+        cli: "claude" | "codex" | "opencode" | "conductor";
+        model: string;
+        effort?: string;
+        instructions?: string;
+      };
+      when?: string;
+    }
   >();
   for (const [name, value] of Object.entries(table(conductor.profiles ?? {}))) {
     const p = table(value);
@@ -46,6 +54,7 @@ export function importV1Rules(body: string): ProjectRules {
       target: {
         cli: plugin ? "conductor" : (cli as "claude" | "codex" | "opencode"),
         model: plugin ? name : text(p.model),
+        ...(p.instructions === undefined ? {} : { instructions: text(p.instructions) }),
         ...(p.effort === undefined ? {} : { effort: text(p.effort) }),
       },
       ...(p.when === undefined ? {} : { when: text(p.when) }),

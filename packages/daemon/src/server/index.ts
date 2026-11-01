@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import {
   ACCOUNT_MINOR,
   admitRequest,
+  BRIEF_INSTRUCTIONS_MINOR,
   CHAT_LIVE_MINOR,
   CHAT_WAKE_MINOR,
   CONDUCTOR_MINOR,
@@ -293,7 +294,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
 
   /** Older same-major clients validate inbox kinds, routing and policy fields strictly. */
   function snapshotFor(snapshot: Snapshot, minor: number): Snapshot {
-    if (minor >= CHAT_WAKE_MINOR && minor >= CONDUCTOR_MINOR) return snapshot;
+    if (minor >= BRIEF_INSTRUCTIONS_MINOR) return snapshot;
     const state = snapshot.state as unknown as ProjectTables;
     const legacy = {
       ...state,
@@ -307,6 +308,15 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     const rules = state.rules;
     if (rules) {
       const value = { ...rules.value };
+      if (minor < BRIEF_INSTRUCTIONS_MINOR) {
+        const withoutInstructions = <T extends { instructions?: string }>(route: T) => {
+          const copy = { ...route };
+          delete copy.instructions;
+          return copy;
+        };
+        value.routing = value.routing?.map(withoutInstructions);
+        if (value.defaultRoute) value.defaultRoute = withoutInstructions(value.defaultRoute);
+      }
       if (minor < CONDUCTOR_MINOR) {
         value.routing = value.routing?.filter((route) => route.cli !== "conductor");
         if (value.defaultRoute?.cli === "conductor") value.defaultRoute = null;
