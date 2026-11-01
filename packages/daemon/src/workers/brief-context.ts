@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { open, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { parse } from "smol-toml";
+import { CONFIG_FILE } from "../../../core/src/config.ts";
 import type { BriefFile } from "./brief.ts";
 
 /** Nonblocking open prevents a FIFO from holding the daemon before we can reject it. */
@@ -17,7 +18,8 @@ async function boundedFile(path: string, limit: number, truncate: boolean): Prom
       length += bytesRead;
     }
     if (length > limit) {
-      if (!truncate) throw new Error("armada.toml is too large to read for a worker brief (256 KiB maximum)");
+      if (!truncate)
+        throw new Error("The project configuration file is too large to read for a worker brief (256 KiB maximum)");
       // Streaming decode withholds any partial UTF-8 sequence at the prefix boundary.
       return (
         new TextDecoder().decode(buffer.subarray(0, limit), { stream: true }) +
@@ -49,7 +51,7 @@ export async function loadBriefContext(root?: string): Promise<{ instructions?: 
       break;
     }
   }
-  const toml = await optionalFile(resolve(root, "armada.toml"), 256 * 1024, false);
+  const toml = await optionalFile(resolve(root, CONFIG_FILE), 256 * 1024, false);
   if (toml === undefined) return result;
   const config = parse(toml);
   const brief = config.brief;
