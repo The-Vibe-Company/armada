@@ -403,7 +403,14 @@ export class GithubReader {
         changed++;
       }
       const keys = new Set(
-        (await options.store.readSince(0, options.project)).flatMap((e) => ("key" in e.payload ? [e.payload.key] : [])),
+        (await options.store.readSince(0, options.project)).flatMap((e) =>
+          (e.kind === "pull-request.commented" ||
+            e.kind === "review-thread.opened" ||
+            e.kind === "review-thread.resolved") &&
+          e.payload.repository === options.repository
+            ? [e.payload.key]
+            : [],
+        ),
       );
       for (const fact of context.events) {
         if (keys.has(fact.payload.key)) continue;

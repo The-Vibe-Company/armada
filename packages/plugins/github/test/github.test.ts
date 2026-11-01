@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
+import type { EventInput } from "@armada/daemon/events";
 import { fold } from "@armada/daemon/fold";
 import { EventStore } from "@armada/daemon/store";
 import type { GithubCheckpoint } from "../src/checkpoint.ts";
@@ -99,6 +100,30 @@ const identity = {
   tickets: () => new Set(["BOAT-7"]),
   now: () => new Date("2030-01-01T12:00:00Z"),
 };
+
+test("unrelated plugin JSON events cannot interrupt GitHub ingestion", async () => {
+  const store = new EventStore(":memory:");
+  try {
+    for (const payload of [null, 1, "external", []])
+      store.append({
+        project: identity.project,
+        at: identity.now().toISOString(),
+        actor: "plugin",
+        kind: "external.event",
+        payload,
+      } as unknown as EventInput);
+    const reader = new GithubReader({
+      ...identity,
+      store,
+      token: async () => randomUUID(),
+      fetch: recorded([page([pull()])]),
+    });
+    assert.equal((await reader.refresh()).ok, true);
+    assert.equal(store.readSince(0).filter((e) => e.kind === "pull-request.opened").length, 1);
+  } finally {
+    store.close();
+  }
+});
 
 test("active PR review comments and root/reply threads survive replay, 304 and resolution", async () => {
   const store = new EventStore(":memory:");
