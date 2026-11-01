@@ -551,6 +551,55 @@ default routes, including `[plugins.conductor.profiles.<name>]`. Launch context
 uses the selected route without changing selection precedence. Snapshots omit
 this field for clients before minor 16; older rule checkpoints remain valid.
 
+Worker restart recovery (THE-2093, protocol minor 15): a normal daemon close,
+Settings restart, or plugin restart stops host polling and connections only.
+It neither stops worker CLIs nor releases tickets. Local CLIs run under a
+detached supervisor that owns their input, output and process group. Its private
+endpoint is bound to the complete worker identity; a restarted daemon never
+signals a PID copied from disk. Hosted workers are observed through their stored
+Conductor workspace/session handle, without another workspace creation.
+
+The existing `armada.worker` launch checkpoint stores runtime/node identity,
+workspace provenance, generation and handle, CLI wire mode, hosted launch id and
+the local capability's hash. Raw tokens and briefs never enter the event log.
+The local worker socket uses the same private path across restarts, guarded by
+an owner lease. A live second daemon cannot unlink it. A crashed daemon's lease
+may take up to ten seconds to expire before boot can reclaim the endpoint.
+
+Before starting any coordinator, boot observes each in-flight generation and
+records `worker.readopted` or `worker.lost`. Recovery leaves ticket phases
+unchanged. A lost worker means **relaunch or release, never assume it runs**.
+When its runtime can still prove ownership, relaunch stops that exact generation
+and retains its local worktree. If ownership is unavailable, restore the runtime
+or explicitly release the ticket; Armada refuses to guess a process identity.
+Workers launched by older versions without recovery facts are reported lost.
+
+Only an explicit owner WebSocket request ends the project fleet:
+`{ type: "fleet.shutdown", version: { major: 1, minor: 15 }, id, project, reason }`.
+It is absent from coordinator tools and worker capability commands. Its
+`fleet.shutdown.result` reports `ok`, `released` and `failed`; one stop failure
+does not prevent attempts for other workers, and an unconfirmed stop retains
+its phase. Dirty and unpushed worktrees remain available for recovery.
+
+Local launch reserves its handle and journals the workspace/capability hash
+before entering the runtime, so losing the launch reply still leaves a worker
+that can be observed and controlled. A recovered CLI with no confirmed initial
+brief is identified in the recovery event; the coordinator sends current ticket
+instructions before expecting work. The process group's leader stays pinned
+until stop escalates across the entire group, including descendants that ignore
+SIGTERM. Capability requests accepted during boot wait for recovery; the CLI
+retries only a missing/refused connection before any request reached the daemon,
+for at most 30 seconds. Authorization failures and reports with an unknown
+outcome are never retried; idempotent heartbeats can also reconnect after a
+dropped response.
+
+A deliberate Release of an already lost worker can retire the ticket when its
+runtime cannot safely stop it. The owner reply carries `stopped: false` and the
+release event names the missing stop proof; the native process is never presumed
+terminated. Merge cleanup rejects that result and retains its pending cleanup.
+Ship the updated CLI with the daemon to give local reports and heartbeats the
+bounded connection retry during downtime.
+
 
 ### Linear reader budget (THE-2099, protocol minor 14)
 

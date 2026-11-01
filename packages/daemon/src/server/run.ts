@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import lockfile from "proper-lockfile";
 import { bootDaemon } from "../boot.ts";
 import { fold } from "../fold.ts";
 import { systemKeychain } from "../keychain.ts";
@@ -125,8 +127,18 @@ export async function runDaemon(startedAt: number) {
           const coordinators = await modelsFor(projects);
           const modelsMs = performance.now() - beforeModels;
           const beforeWorkers = performance.now();
-          // Private instance directory avoids stale/active socket unlink races after a crash.
-          const workerDirectory = await mkdtemp(join(tmpdir(), "armada-worker-"));
+          // Stable across restarts. The lease serializes stale-socket cleanup and refuses a live second daemon.
+          const workerDirectory = join(
+            tmpdir(),
+            `armada-worker-${process.getuid?.() ?? "user"}-${createHash("sha256").update(resolve(values.database)).digest("hex").slice(0, 20)}`,
+          );
+          await mkdir(workerDirectory, { recursive: true, mode: 0o700 });
+          await chmod(workerDirectory, 0o700);
+          const releaseSocketOwner = await lockfile.lock(workerDirectory, {
+            stale: 10000,
+            update: 2000,
+            retries: { retries: 100, factor: 1, minTimeout: 100, maxTimeout: 100 },
+          });
           const workerSocket = join(workerDirectory, "socket");
           workers = new Workers({
             store: daemon.store,
@@ -162,17 +174,22 @@ export async function runDaemon(startedAt: number) {
                 },
               ),
           });
+          // Requests accepted on the stable endpoint await this same recovery before capability lookup.
+          const recovered = workers.recover();
           let socket: Awaited<ReturnType<typeof startWorkerSocket>>;
           try {
             socket = await startWorkerSocket(workers, workerSocket);
           } catch (error) {
-            await rm(workerDirectory, { recursive: true, force: true });
+            await workers.close();
+            await recovered.catch(() => {});
+            await releaseSocketOwner();
             throw error;
           }
           let stopping = false;
           let workersMs = 0;
           let serverMs = 0;
           try {
+            await recovered;
             workersMs = performance.now() - beforeWorkers;
             const beforeServer = performance.now();
             server = await startServer({
@@ -220,7 +237,9 @@ export async function runDaemon(startedAt: number) {
             controller.abort();
             for (const readers of readerGroups.values()) readers.stop();
             await socket.close();
-            await rm(workerDirectory, { recursive: true, force: true });
+            await workers.close();
+            await recovered.catch(() => {});
+            await releaseSocketOwner();
             throw error;
           }
           let hostedReader: ReturnType<typeof startHostedReader> | undefined;
@@ -252,15 +271,19 @@ export async function runDaemon(startedAt: number) {
             controller.abort();
             for (const readers of readerGroups.values()) readers.stop();
             clearInterval(workerPoll);
+            // Refuse new worker connections before retiring this host. Set closing before
+            // coordinator cancellation so in-progress launches retain their recovery facts.
+            const socketClosed = socket.close();
+            const workersClosed = workers.close();
             try {
               await hostedReader?.stop();
               await registry.close();
               await server?.close();
-              const results = await Promise.allSettled([workers.close(), socket.close()]);
+              const results = await Promise.allSettled([workersClosed, socketClosed]);
               const failed = results.find((result) => result.status === "rejected");
               if (failed?.status === "rejected") throw failed.reason;
             } finally {
-              await rm(workerDirectory, { recursive: true, force: true });
+              await releaseSocketOwner();
               await account.close();
               daemon.close();
             }

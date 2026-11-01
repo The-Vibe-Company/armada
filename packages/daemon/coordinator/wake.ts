@@ -55,12 +55,70 @@ const generationStart = (events: readonly FleetEvent[], session: Session | undef
   return claim?.seq ?? launch?.seq ?? 0;
 };
 
+const bootId = (value: unknown): value is string =>
+  typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value);
+function recoveryBoot(events: readonly FleetEvent[]): string | undefined {
+  for (const event of [...events].reverse()) {
+    const c = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
+    if (
+      c &&
+      typeof c === "object" &&
+      !Array.isArray(c) &&
+      c.format === "armada.worker" &&
+      c.version === 1 &&
+      c.type === "recovery" &&
+      bootId(c.boot)
+    )
+      return c.boot;
+  }
+  for (const event of [...events].reverse())
+    if ((event.kind === "worker.readopted" || event.kind === "worker.lost") && bootId(event.payload.boot))
+      return event.payload.boot;
+  return undefined;
+}
+function recoveryNames(tickets: string[]): string {
+  const names: string[] = [];
+  for (const ticket of tickets) {
+    const name = ticketId(ticket);
+    if (!name || names.join(", ").length + name.length > 90) break;
+    names.push(name);
+  }
+  return `${names.join(", ")}${tickets.length > names.length ? `${names.length ? ", " : ""}+${tickets.length - names.length} more` : ""}`;
+}
+
 /** Pure fleet transitions. Callers may replay the same reading; keys stay stable. */
 export function wakeups(before: WakeReading, after: WakeReading): WakeCandidate[] {
   const out = new Map<string, WakeCandidate>();
   const add = (key: string, summary: string, facts: WakeCandidate["facts"]) => out.set(key, { key, summary, facts });
   for (const candidate of forgeWakeups(before.tables, after.tables)) out.set(candidate.key, candidate);
   const priorSeq = before.events.at(-1)?.seq ?? 0;
+  const boot = recoveryBoot(after.events);
+  const recovered = after.events.filter(
+    (event): event is Extract<FleetEvent, { kind: "worker.readopted" | "worker.lost" }> =>
+      (event.kind === "worker.readopted" || event.kind === "worker.lost") && event.payload.boot === boot,
+  );
+  if (boot && recovered.some((event) => event.seq > priorSeq)) {
+    const current = recovered.filter((event) =>
+      after.tables?.sessions.some(
+        (session) =>
+          session.session === event.payload.session &&
+          session.generation === event.payload.generation &&
+          !["released", "merged"].includes(session.phase),
+      ),
+    );
+    const adopted = current.filter((event) => event.kind === "worker.readopted").map((event) => event.payload.ticket);
+    const lost = current.filter((event) => event.kind === "worker.lost").map((event) => event.payload.ticket);
+    const needsBrief = current
+      .filter((event) => event.kind === "worker.readopted" && event.payload.briefPending)
+      .map((event) => event.payload.ticket);
+    if (current.length)
+      add(
+        `recovery:${boot}`,
+        `${adopted.length} worker${adopted.length === 1 ? "" : "s"} re-adopted${adopted.length ? ` (${recoveryNames(adopted)})` : ""}; ${lost.length} worker${lost.length === 1 ? "" : "s"} lost${lost.length ? ` (${recoveryNames(lost)})` : ""}${needsBrief.length ? `; needs initial brief: ${recoveryNames(needsBrief)}` : ""}`,
+        { item: boot, state: "recovery" },
+      );
+  }
+
   for (const item of after.tables?.inbox ?? []) {
     if (before.tables?.inbox.some((i) => i.id === item.id) || item.kind === "owner-request") continue;
     const handedBack = item.kind === "hand-back" ? item.body.match(/\bPR #(\d+), head ([a-f0-9]{40})\b/i) : null;
@@ -310,6 +368,10 @@ export class Waker {
           if (!this.#seen.has(candidate.key)) this.#pending.set(candidate.key, candidate);
         this.#reading = next;
       }
+      // Keep only this boot's recovery batch when replaying older undelivered history.
+      const boot = recoveryBoot(this.#events);
+      for (const key of this.#pending.keys())
+        if (key.startsWith("recovery:") && key !== `recovery:${boot}`) this.#pending.delete(key);
       // An item resolved during coalescing no longer needs a new turn.
       for (const [key, candidate] of this.#pending)
         if (
@@ -336,7 +398,9 @@ export class Waker {
 
   #flush(reminder = false) {
     if (this.#closed || !this.#pending.size) return;
-    const candidates = [...this.#pending.values()];
+    const candidates = [...this.#pending.values()].sort(
+      (a, b) => Number(b.key.startsWith("recovery:")) - Number(a.key.startsWith("recovery:")),
+    );
     const keys = candidates.map((c) => c.key);
     const id = `fleet-wake:${hash(JSON.stringify(keys))}`;
     this.#store.append({
@@ -349,10 +413,19 @@ export class Waker {
   }
 
   #pump() {
+    const boot = recoveryBoot(this.#events);
+    const recoveryKey = boot ? `recovery:${boot}` : undefined;
+    // Submit this boot's coalesced recovery wake before replaying older outbox entries.
+    if (recoveryKey && this.#pending.has(recoveryKey)) return;
     if (this.#closed || this.#sending || this.#cancelRetry || !this.#outbox.size) return;
     this.#sending = Promise.resolve()
       .then(async () => {
-        for (const [id, e] of this.#outbox) {
+        const outbox = [...this.#outbox].sort(
+          (a, b) =>
+            Number(!!recoveryKey && b[1].payload.keys.includes(recoveryKey)) -
+            Number(!!recoveryKey && a[1].payload.keys.includes(recoveryKey)),
+        );
+        for (const [id, e] of outbox) {
           if (this.#closed) break;
           await this.#conversation.submit(
             {

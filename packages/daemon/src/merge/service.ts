@@ -542,7 +542,7 @@ export class Merges {
     const signal = AbortSignal.timeout(30_000);
     const stopped = await bounded(signal, () => stop(scope, session, `merge-stop:${hash(progress.key)}`, signal));
     this.#guard(scope, progress, true);
-    if (!stopped.ok)
+    if (!stopped.ok || stopped.stopped === false)
       return refuse("cleanup_pending", `Merged #${progress.pr}; worker cleanup remains`, "retry merge.run");
     // Close only this worker generation's hand-back after confirmed merge/cleanup.
     const facts = this.#facts(scope);
