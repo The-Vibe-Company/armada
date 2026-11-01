@@ -94,78 +94,89 @@ const queuedSchema = sessionRefSchema.extend({ id: text, pr: integer, head: text
 const idSchema = z.object({ id: text });
 const reasonSchema = idSchema.extend({ reason: text });
 const decisionSchema = z.object({ decision: z.enum(["approved", "changes-requested"]), note: text });
-const deliverySchema = sessionRefSchema.extend({
-  id: text,
-  generation: integer.min(1),
-  source: z.enum(["owner-answer", "coordinator-message", "note"]),
-  text,
-  key: text,
-  /** Original inbox identity, needed by hosted runtime bookkeeping. */
-  item: text.optional(),
-});
-const deliveryStateSchema = deliverySchema.extend({
-  seq: integer,
-  at: text,
-  actor: text,
-  attempt: integer,
-  error: text.optional(),
-  nextAt: text.nullable(),
-  sentAt: text.optional(),
-  failedAt: text.optional(),
-  failureSeq: integer.optional(),
-});
+const deliverySchema = /* @__PURE__ */ (() =>
+  sessionRefSchema.extend({
+    id: text,
+    generation: integer.min(1),
+    source: z.enum(["owner-answer", "coordinator-message", "note"]),
+    text,
+    key: text,
+    /** Original inbox identity, needed by hosted runtime bookkeeping. */
+    item: text.optional(),
+  }))();
+const deliveryStateSchema = /* @__PURE__ */ (() =>
+  deliverySchema.extend({
+    seq: integer,
+    at: text,
+    actor: text,
+    attempt: integer,
+    error: text.optional(),
+    nextAt: text.nullable(),
+    sentAt: text.optional(),
+    failedAt: text.optional(),
+    failureSeq: integer.optional(),
+  }))();
 export type Delivery = z.infer<typeof deliveryStateSchema>;
 
-/** The single vocabulary for events appended by daemon adapters and folded offline. */
-export const eventPayloadSchemas = {
-  "delivery.queued": deliverySchema,
-  "delivery.sent": idSchema.extend({ at: text }),
-  "delivery.failed": idSchema.extend({ attempt: integer.min(1), error: text, nextAt: text.nullable() }),
-  "ticket.seen": ticketSchema,
-  "pull-request.seen": pullRequestSchema,
-  "session.claimed": sessionRefSchema.extend({ generation: integer.min(1), owner: text, runtime: text, handle: text }),
-  "session.reported": sessionRefSchema.extend({
-    phase: activePhaseSchema,
-    reason: text,
-    stage: shippingStageSchema.optional(),
-  }),
-  "session.heartbeat": sessionRefSchema,
-  "session.runtime-observed": sessionRefSchema.extend({
-    generation: integer.min(1),
-    state: z.enum(["starting", "running", "stopped", "failed", "unknown"]),
-    activity: z.enum(["working", "idle"]).optional(),
-  }),
-  "session.released": sessionRefSchema.extend({ reason: text }),
-  "inbox.opened": inboxRequestSchema,
-  "inbox.answered": idSchema.extend({ answer: text }),
-  "merge.queued": queuedSchema,
-  "merge.started": idSchema,
-  "merge.refused": reasonSchema,
-  "merge.canceled": reasonSchema,
-  "merge.confirmed": queuedSchema,
-  "hold.opened": reasonSchema,
-  "hold.cleared": reasonSchema,
-  "validation.opened": validationRequestSchema,
-  "validation.decided": idSchema.extend(decisionSchema.shape),
-  "coordinator.message": z.object({ role: z.enum(["owner", "coordinator"]), body: text }),
-  "coordinator.checkpoint": z.object({ checkpoint: z.json() }),
-  "ticket.phase-changed": z.object({ ticket: text, from: phaseSchema.nullable(), to: phaseSchema.nullable() }),
-  "ticket.report-posted": z.object({
-    ticket: text,
-    comment: text,
-    updatedAt: text,
-    phase: phaseSchema,
-    summary: text,
-    body: text,
-  }),
-  "pull-request.opened": githubPullRequestSchema,
-  "pull-request.head-moved": githubPullRequestSchema,
-  "pull-request.checks-green": githubPullRequestSchema,
-  "pull-request.checks-red": githubPullRequestSchema,
-  "pull-request.review-changed": githubPullRequestSchema,
-  "pull-request.closed": githubPullRequestSchema,
-  "pull-request.merged": githubPullRequestSchema,
-} as const;
+/** The single vocabulary for events appended by daemon adapters and folded offline.
+ * The client reads the forward-compatible event envelope; unused payload parsers
+ * must be removable from its initial bundle. Keep their construction inside the pure factory.
+ */
+export const eventPayloadSchemas = /* @__PURE__ */ (() =>
+  ({
+    "delivery.queued": deliverySchema,
+    "delivery.sent": idSchema.extend({ at: text }),
+    "delivery.failed": idSchema.extend({ attempt: integer.min(1), error: text, nextAt: text.nullable() }),
+    "ticket.seen": ticketSchema,
+    "pull-request.seen": pullRequestSchema,
+    "session.claimed": sessionRefSchema.extend({
+      generation: integer.min(1),
+      owner: text,
+      runtime: text,
+      handle: text,
+    }),
+    "session.reported": sessionRefSchema.extend({
+      phase: activePhaseSchema,
+      reason: text,
+      stage: shippingStageSchema.optional(),
+    }),
+    "session.heartbeat": sessionRefSchema,
+    "session.runtime-observed": sessionRefSchema.extend({
+      generation: integer.min(1),
+      state: z.enum(["starting", "running", "stopped", "failed", "unknown"]),
+      activity: z.enum(["working", "idle"]).optional(),
+    }),
+    "session.released": sessionRefSchema.extend({ reason: text }),
+    "inbox.opened": inboxRequestSchema,
+    "inbox.answered": idSchema.extend({ answer: text }),
+    "merge.queued": queuedSchema,
+    "merge.started": idSchema,
+    "merge.refused": reasonSchema,
+    "merge.canceled": reasonSchema,
+    "merge.confirmed": queuedSchema,
+    "hold.opened": reasonSchema,
+    "hold.cleared": reasonSchema,
+    "validation.opened": validationRequestSchema,
+    "validation.decided": idSchema.extend(decisionSchema.shape),
+    "coordinator.message": z.object({ role: z.enum(["owner", "coordinator"]), body: text }),
+    "coordinator.checkpoint": z.object({ checkpoint: z.json() }),
+    "ticket.phase-changed": z.object({ ticket: text, from: phaseSchema.nullable(), to: phaseSchema.nullable() }),
+    "ticket.report-posted": z.object({
+      ticket: text,
+      comment: text,
+      updatedAt: text,
+      phase: phaseSchema,
+      summary: text,
+      body: text,
+    }),
+    "pull-request.opened": githubPullRequestSchema,
+    "pull-request.head-moved": githubPullRequestSchema,
+    "pull-request.checks-green": githubPullRequestSchema,
+    "pull-request.checks-red": githubPullRequestSchema,
+    "pull-request.review-changed": githubPullRequestSchema,
+    "pull-request.closed": githubPullRequestSchema,
+    "pull-request.merged": githubPullRequestSchema,
+  }) as const)();
 export type EventKind = keyof typeof eventPayloadSchemas;
 export type EventPayloads = { [K in EventKind]: z.infer<(typeof eventPayloadSchemas)[K]> };
 export type EventInput = {
@@ -210,29 +221,31 @@ const validationSchema = validationRequestSchema.extend({
   decision: decisionSchema.extend({ at: text, actor: text }).nullable(),
 });
 export type Validation = z.infer<typeof validationSchema>;
-const tablesSchema = z.object({
-  // Absent on older snapshots; current daemon folds always supply this slice.
-  rules: rulesStateSchema.optional(),
-  /** Successful provider reads, even when no facts changed; absent on older snapshots. */
-  readAt: z.record(z.string(), z.iso.datetime()).optional(),
-  tickets: z.array(ticketSchema),
-  pullRequests: z.array(pullRequestSchema),
-  sessions: z.array(sessionSchema),
-  sessionsByState: z.object({
-    blocked: z.array(sessionSchema),
-    "waiting-for-owner": z.array(sessionSchema),
-    "in-progress": z.array(sessionSchema),
-    "ready-to-merge": z.array(sessionSchema),
-    merged: z.array(sessionSchema),
-    released: z.array(sessionSchema),
-  }),
-  inbox: z.array(inboxItemSchema),
-  queue: z.array(queueEntrySchema),
-  holds: z.array(holdSchema),
-  validations: z.array(validationSchema),
-  deliveries: z.array(deliveryStateSchema).optional(),
-});
-export type ProjectTables = z.infer<typeof tablesSchema>;
+function makeTablesSchema() {
+  return z.object({
+    // Absent on older snapshots; current daemon folds always supply this slice.
+    rules: rulesStateSchema.optional(),
+    /** Successful provider reads, even when no facts changed; absent on older snapshots. */
+    readAt: z.record(z.string(), z.iso.datetime()).optional(),
+    tickets: z.array(ticketSchema),
+    pullRequests: z.array(pullRequestSchema),
+    sessions: z.array(sessionSchema),
+    sessionsByState: z.object({
+      blocked: z.array(sessionSchema),
+      "waiting-for-owner": z.array(sessionSchema),
+      "in-progress": z.array(sessionSchema),
+      "ready-to-merge": z.array(sessionSchema),
+      merged: z.array(sessionSchema),
+      released: z.array(sessionSchema),
+    }),
+    inbox: z.array(inboxItemSchema),
+    queue: z.array(queueEntrySchema),
+    holds: z.array(holdSchema),
+    validations: z.array(validationSchema),
+    deliveries: z.array(deliveryStateSchema).optional(),
+  });
+}
+export type ProjectTables = z.infer<ReturnType<typeof makeTablesSchema>>;
 export interface FleetTables {
   seq: number;
   projects: Record<string, ProjectTables>;
@@ -241,10 +254,13 @@ export interface FleetTables {
 /** Validate the known tables without stripping extension fields or reordering JSON keys.
  * Wire consumers can keep ignoring rows and event kinds they do not use.
  */
-export const projectTablesSchema = z
-  .json()
-  .superRefine((value, ctx) => {
-    const result = tablesSchema.safeParse(value);
-    if (!result.success) for (const issue of result.error.issues) ctx.addIssue({ ...issue });
-  })
-  .transform((value) => value as ProjectTables);
+export const projectTablesSchema = /* @__PURE__ */ (() => {
+  const tablesSchema = makeTablesSchema();
+  return z
+    .json()
+    .superRefine((value, ctx) => {
+      const result = tablesSchema.safeParse(value);
+      if (!result.success) for (const issue of result.error.issues) ctx.addIssue({ ...issue });
+    })
+    .transform((value) => value as ProjectTables);
+})();
