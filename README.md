@@ -52,6 +52,17 @@ Workers then need no key either: each one's launch message carries a one-time to
 
 GitHub is read with `GITHUB_TOKEN`, `GH_TOKEN` or the GitHub CLI login (`gh auth token`). Without any of them the tickets are still shown.
 
+The V2 daemon coordinator uses three native reading tools: `fleet.status {}`
+returns active sessions first, inbox counts, ready tickets, open PRs, holds and
+rules summary, targeting **under 8 KiB for ten sessions** (below pi-durable's
+50 KiB result cut). It excludes ticket prose, comments, ended sessions and
+repeated tables. `ticket.read { id }` supplies one full ticket, its parent
+id/title, blockers, labels, newest twelve comments and session reports; the
+coordinator reads the ticket and parent before launch. `fleet.history {
+ticket?, since?, limit? }` reads the newest fleet events in log order (default
+20, maximum 100, exclusive ISO `since`), excluding internal checkpoints and
+receipts. See [the native tools contract](packages/daemon/coordinator/README.md).
+
 ## Set up a repository
 
 ```sh
