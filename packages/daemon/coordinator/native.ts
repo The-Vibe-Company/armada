@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { rulesStateSchema } from "@armada/protocol";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineTool, type JsonObject, type ToolRegistration } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import * as Value from "typebox/value";
@@ -428,6 +429,7 @@ export function nativeTools(
                 name,
                 (args as JsonObject).pr as number,
                 JSON.stringify([scope.project, api.taskId, api.callId]),
+                (step) => api.details({ step }, BACKGROUND_CONTEXT).catch(() => {}),
               ),
             );
           }
@@ -450,6 +452,7 @@ export function nativeTools(
                   () => {
                     scope.readEvents();
                   },
+                  (step) => api.details({ step }, BACKGROUND_CONTEXT).catch(() => {}),
                 ),
               );
             } catch (error) {

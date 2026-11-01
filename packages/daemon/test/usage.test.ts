@@ -6,6 +6,7 @@ import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/provid
 import { createSession } from "@earendil-works/pi-durable";
 import { Coordinators } from "../coordinator/index.ts";
 import { openCoordinatorStorage } from "../coordinator/storage.ts";
+import { wakeups } from "../coordinator/wake.ts";
 import { evaluateBudget } from "../src/budget.ts";
 import { fold } from "../src/fold.ts";
 import { startServer } from "../src/server/index.ts";
@@ -120,6 +121,13 @@ test("pure budget decisions return one hold and owner item, survive repeats and 
   assert.ok(request?.kind === "inbox.opened");
   assert.match(request.payload.body, /Budget reached: 1\.0M tokens today\. Raise to 2\.0M/);
   for (const e of effects) store.append(e);
+  const afterBudget = store.readSince(0);
+  const candidates = wakeups(
+    { tables: fold(events).projects.p, events },
+    { tables: fold(afterBudget).projects.p, events: afterBudget },
+  );
+  assert.equal(candidates.length, 1, "the daemon hold wakes the coordinator beside its owner request");
+  assert.equal(candidates[0]?.facts.state, "open");
   assert.deepEqual(evaluateBudget({ project: "p", events: store.readSince(0), now: at }), []);
   const hold = fold(store.readSince(0)).projects.p?.holds[0];
   assert.ok(hold);

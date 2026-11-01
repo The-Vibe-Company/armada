@@ -82,11 +82,12 @@ export function fleetStatus(tables: ProjectTables, events: FleetEvent[], at: str
       },
     },
     today: tables.usage ? usageSummary(tables.usage, at) : "today: usage unknown",
+    ...(tables.defaultBranch ? { defaultBranch: tables.defaultBranch } : {}),
     unavailable: [
       ...(candidates.some((t) => t.blockers === undefined) ? ["frontier-blockers"] : []),
       "runtime-observations",
       "jobs",
-      "default-branch-health",
+      ...(tables.defaultBranch ? [] : ["default-branch-health"]),
       "launch-capacity",
     ],
   };

@@ -51,6 +51,7 @@ const conversation: ChatItem[] = [
   // Each answer numbers its own footnotes from 1.
   { kind: "coordinator", id: "c3", at: at(5), body: "North quay[^1].\n\n[^1]: Footnote of the north." },
   { kind: "coordinator", id: "c4", at: at(6), body: "South quay[^1].\n\n[^1]: Footnote of the south." },
+  { kind: "wake", id: "w1", at: at(7), body: "Woke: hand-back THE-12 #34 at aaaaaaaa" },
 ];
 
 const render = () =>
@@ -76,6 +77,25 @@ const text = (html: string) =>
     .trim();
 
 describe("the thread's markup", () => {
+  test("a fleet wake is a quiet row with ticket and PR links, outside the owner's bubble", () => {
+    const html = renderToStaticMarkup(
+      <Thread
+        items={[conversation[6] as ChatItem]}
+        repository="example/harbor"
+        prefixes="THE"
+        groupOf={() => null}
+        now={Date.parse(AT)}
+        zone="UTC"
+        empty="Nothing said yet."
+      />,
+    );
+    expect(text(html)).toContain("Woke: hand-back THE-12 #34 at aaaaaaaa");
+    expect(html).toContain("data-wake");
+    expect(html).toContain("#/sessions/THE-12");
+    expect(html).toContain("https://github.com/example/harbor/pull/34");
+    expect(html).not.toContain("You: ");
+    expect(html).not.toContain("bg-panel-3");
+  });
   test("a code block is a card with its file's name, Wrap lines and Copy", () => {
     const html = item(render(), 1);
     const block = html.match(/<div[^>]*data-code-block[^>]*>[\s\S]*?<\/pre><\/div>/)?.[0] ?? "";
