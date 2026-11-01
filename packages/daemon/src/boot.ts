@@ -59,22 +59,18 @@ export async function bootDaemon(options: DaemonOptions) {
   const configPath = options.configPath ?? appConfigPath();
   const store = new EventStore(options.databasePath);
   try {
-    const plugins = await loadPlugins(
-      {
-        log: options.log,
-        secrets: options.secrets,
-        events: {
-          append: async (event) =>
-            pluginEventSchema.parse(store.append(pluginEventInputSchema.parse(event) as EventInput)),
-          read: async (project, after) =>
-            store.readSince(after, project).map((event) => pluginEventSchema.parse(event)),
-          fold: async (project) => fold(store.readSince(0, project)),
-        },
+    const services = {
+      log: options.log,
+      secrets: options.secrets,
+      events: {
+        append: async (event: Parameters<PluginContext["events"]["append"]>[0]) =>
+          pluginEventSchema.parse(store.append(pluginEventInputSchema.parse(event) as EventInput)),
+        read: async (project: string, after: number) =>
+          store.readSince(after, project).map((event) => pluginEventSchema.parse(event)),
+        fold: async (project: string) => fold(store.readSince(0, project)),
       },
-      configPath,
-      options.catalog,
-      projectConfig(options.projects ?? []),
-    );
+    };
+    const plugins = await loadPlugins(services, configPath, options.catalog, projectConfig(options.projects ?? []));
     await mkdir(dirname(configPath), { recursive: true });
     const catalog = options.catalog ?? BUNDLED_PLUGINS;
     await writePluginStatus(configPath, catalog, plugins.plugins);
@@ -93,21 +89,7 @@ export async function bootDaemon(options: DaemonOptions) {
             )
           );
         });
-        const scoped = await loadPlugins(
-          {
-            log: options.log,
-            secrets: options.secrets,
-            events: {
-              append: async (event) =>
-                pluginEventSchema.parse(store.append(pluginEventInputSchema.parse(event) as EventInput)),
-              read: async (id, after) => store.readSince(after, id).map((event) => pluginEventSchema.parse(event)),
-              fold: async (id) => fold(store.readSince(0, id)),
-            },
-          },
-          configPath,
-          scopedCatalog,
-          projectConfig([project]),
-        );
+        const scoped = await loadPlugins(services, configPath, scopedCatalog, projectConfig([project]));
         const failed = scoped.plugins.find((p) => p.enabled && !p.loaded);
         if (failed) throw new Error(`Project provider ${failed.id} could not start`);
         plugins.registry.setProject(project.id, scoped.registry);

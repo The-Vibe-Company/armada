@@ -204,6 +204,7 @@
       "dependencies": {
         "@armada/plugin-api": "workspace:*",
         "@armada/protocol": "workspace:*",
+        "zod": "4.6.5",
       },
       "devDependencies": {
         "@armada/daemon": "workspace:*",
