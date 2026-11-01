@@ -1,4 +1,10 @@
 import { execFileSync } from "node:child_process";
+import "../../../../scripts/test-env.ts";
+
+/** Real daemon children always use disposable credentials, including scratch environments. */
+export function daemonEnv(directory: string): NodeJS.ProcessEnv {
+  return { ...process.env, ARMADA_KEYCHAIN: "file", XDG_CONFIG_HOME: directory };
+}
 
 // Root `bun test` discovers these Node suites too. Keep their children on Node:
 // Bun's --import handling does not provide the Node preload used by offline boot fixtures.

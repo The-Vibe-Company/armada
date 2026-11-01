@@ -44,6 +44,9 @@ test("Electron's bundled daemon starts a configured coordinator and reads creden
     staticDir: dir,
     env: {
       ...process.env,
+      // This packaging test alone selects native storage, with every read stubbed
+      // by fixtures/keychain.cjs before the bundled daemon imports its adapters.
+      ARMADA_KEYCHAIN: "native-fixture",
       ELECTRON_RUN_AS_NODE: "1",
       ARMADA_MODEL_KIND: "openai-compatible",
       ARMADA_MODEL_BASE_URL: "http://fixture.invalid/v1",
