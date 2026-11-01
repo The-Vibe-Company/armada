@@ -14,7 +14,7 @@ import type {
   Ticket,
   Validation,
 } from "@armada/protocol";
-import { workerLaunchCheckpointSchema } from "@armada/protocol";
+import { type ReaderUsage, readerUsageSchema, workerLaunchCheckpointSchema } from "@armada/protocol";
 import { z } from "zod";
 import { checkpointRules, emptyRules, type RulesState } from "../coordinator/rules.ts";
 import { flowStep, pipelineStep } from "./rules.ts";
@@ -44,6 +44,11 @@ interface Draft extends SessionRef {
   launchSeq?: number;
   stage?: ShippingStage;
 }
+const linearUsageCheckpoint = z.object({
+  format: z.literal("armada.linear-reader"),
+  version: z.literal(1),
+  usage: readerUsageSchema,
+});
 const readerCheckpoint = z.object({
   format: z.literal("armada.readers"),
   version: z.literal(1),
@@ -53,6 +58,7 @@ const readerCheckpoint = z.object({
 interface Projection {
   defaultBranch?: ProjectTables["defaultBranch"];
   readAt: Record<string, string>;
+  readers: Record<string, ReaderUsage>;
   rules: RulesState;
   tickets: Map<string, Ticket>;
   prs: Map<number, PullRequest>;
@@ -67,6 +73,7 @@ interface Projection {
 const empty = (): Projection => ({
   rules: emptyRules(),
   readAt: Object.create(null),
+  readers: Object.create(null),
   tickets: new Map(),
   prs: new Map(),
   mergedAt: new Map(),
@@ -314,6 +321,8 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
               }[l.step],
             });
         }
+        const usage = linearUsageCheckpoint.safeParse(e.payload.checkpoint);
+        if (usage.success) p.readers.linear = usage.data.usage;
         const reading = readerCheckpoint.safeParse(e.payload.checkpoint);
         if (reading.success && Number.isFinite(Date.parse(e.at))) p.readAt[reading.data.provider] = e.at;
         const rules = checkpointRules(e.payload.checkpoint);
@@ -394,6 +403,7 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
     tables.projects[project] = {
       ...(p.defaultBranch ? { defaultBranch: p.defaultBranch } : {}),
       rules: p.rules,
+      ...(Object.keys(p.readers).length ? { readers: p.readers } : {}),
       ...(Object.keys(p.readAt).length ? { readAt: p.readAt } : {}),
       tickets: [...p.tickets.values()],
       pullRequests: [...p.prs.values()],

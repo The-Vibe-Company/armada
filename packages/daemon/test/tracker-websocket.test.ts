@@ -139,11 +139,24 @@ describe("reader/WebSocket composition", { timeout: 4000 }, () => {
     linear.release();
     const liveTracker = await eventsUntil(
       (event) =>
-        event.kind === "ticket.seen" &&
+        event.kind === "coordinator.checkpoint" &&
         typeof event.payload === "object" &&
         event.payload !== null &&
-        "id" in event.payload &&
-        event.payload.id === "SEED-2",
+        "checkpoint" in event.payload &&
+        typeof event.payload.checkpoint === "object" &&
+        event.payload.checkpoint !== null &&
+        "format" in event.payload.checkpoint &&
+        event.payload.checkpoint.format === "armada.linear-reader",
+    );
+    assert.ok(
+      liveTracker.some(
+        (event) =>
+          event.kind === "ticket.seen" &&
+          typeof event.payload === "object" &&
+          event.payload !== null &&
+          "id" in event.payload &&
+          event.payload.id === "SEED-2",
+      ),
     );
     assert.deepEqual([...liveForge, ...liveTracker], store.readSince(0));
   });
