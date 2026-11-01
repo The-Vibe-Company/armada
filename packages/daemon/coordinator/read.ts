@@ -51,6 +51,9 @@ export function fleetStatus(tables: ProjectTables, events: FleetEvent[], at: str
         runtime: line(s.runtime, 80),
         head: pr?.head ?? null,
         checks: pr?.ci ?? null,
+        conflicting: pr?.conflicting ?? false,
+        behind: pr?.behind ?? false,
+        unresolvedThreads: pr?.unresolvedThreads ?? 0,
         lastReport: lastReport ? line(lastReport) : null,
         ageSeconds: Number.isFinite(age) ? Math.max(0, Math.floor(age)) : null,
       };
@@ -65,6 +68,8 @@ export function fleetStatus(tables: ProjectTables, events: FleetEvent[], at: str
       head: pr.head,
       checks: pr.ci,
       mergeable: !pr.conflicting,
+      behind: pr.behind ?? false,
+      unresolvedThreads: pr.unresolvedThreads ?? 0,
     })),
     holds: tables.holds.map((h) => ({ id: h.id, reason: line(h.reason), at: h.at })),
     rules: {

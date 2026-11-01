@@ -137,6 +137,8 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
         break;
       }
       case "pull-request.opened":
+      case "pull-request.conflicting":
+      case "pull-request.behind":
       case "pull-request.head-moved":
       case "pull-request.checks-green":
       case "pull-request.checks-red":
@@ -152,6 +154,12 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
           p.mergedAt.set(e.payload.number, { at: e.at, seq: e.seq });
         p.prs.delete(e.payload.number);
         p.prs.set(e.payload.number, { ...e.payload, conflicting: e.payload.state === "open" && e.payload.conflicting });
+        break;
+      }
+      case "review-thread.opened":
+      case "review-thread.resolved": {
+        const pr = p.prs.get(e.payload.pr);
+        if (pr) pr.unresolvedThreads = e.payload.unresolvedThreads;
         break;
       }
       case "session.claimed":
