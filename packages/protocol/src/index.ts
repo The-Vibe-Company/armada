@@ -55,6 +55,9 @@ export * from "./readers.js";
 export * from "./rules.js";
 export * from "./session.js";
 
+/** Snapshot-first subscriptions and bounded event replay. */
+export const REPLAY_MINOR = 21;
+
 /** Wire version, independent of the daemon/app release versions. */
 export const PROTOCOL_VERSION = {
   major: 1,
@@ -66,6 +69,7 @@ export const PROTOCOL_VERSION = {
     DELIVERIES_MINOR,
     WATCHDOG_MINOR,
     USAGE_MINOR,
+    REPLAY_MINOR,
   ),
 } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
@@ -88,6 +92,15 @@ export const readSessionRequestSchema = /* @__PURE__ */ requestSchema("session.r
   project: identifier,
   sessionId: identifier,
 });
+/** Exclusive cursor before which older rows are returned, newest first. */
+export const historyRequestSchema = /* @__PURE__ */ (() =>
+  requestSchema("fleet.history", {
+    project: identifier,
+    ticket: identifier.optional(),
+    cursor: counter.optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }))();
+export type HistoryRequest = z.infer<typeof historyRequestSchema>;
 export const modelProviderSchema = modelKindSchema;
 export const credentialsStatusRequestSchema = /* @__PURE__ */ requestSchema("credentials.status", {});
 function credentialsSetSchema() {
@@ -126,6 +139,7 @@ export const clientMessageSchema = /* @__PURE__ */ z.discriminatedUnion("type", 
   subscribeRequestSchema,
   roomPresenceRequestSchema,
   readSessionRequestSchema,
+  historyRequestSchema,
   chatReadRequestSchema,
   chatSendRequestSchema,
   chatStopRequestSchema,
@@ -182,12 +196,22 @@ function checkHistory(value: z.infer<z.ZodObject<typeof history>>, ctx: z.Refine
 export const sessionResultSchema = z
   .object({ ...request, ...history, type: z.literal("session.result"), sessionId: identifier })
   .superRefine(checkHistory);
+export const historyResultSchema = z.object({
+  ...request,
+  type: z.literal("fleet.history.result"),
+  project: identifier,
+  events: z.array(eventSchema),
+  cursor: counter.nullable(),
+});
+export type HistoryResult = z.infer<typeof historyResultSchema>;
 export const eventBatchSchema = z
   .object({
     version: versionSchema,
     ...history,
     type: z.literal("events"),
     subscriptionId: identifier,
+    /** More pages follow; only the final page carries the authoritative snapshot. */
+    more: z.boolean().optional(),
     /** The project's folded state after this frame's events; omitted on a frame without any. */
     snapshot: snapshotSchema.optional(),
   })
@@ -219,6 +243,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   projectsResultSchema,
   subscribedSchema,
   sessionResultSchema,
+  historyResultSchema,
   eventBatchSchema,
   errorSchema,
   chatResultSchema,

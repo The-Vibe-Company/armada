@@ -26,25 +26,26 @@ const shippingStageSchema = z.enum(["review", "ci"]);
 export type ShippingStage = z.infer<typeof shippingStageSchema>;
 export type Json = z.infer<ReturnType<typeof z.json>>;
 
-const ticketSchema = z.object({
-  id: text,
-  title: text,
-  labels: z.array(text).optional(),
-  description: text.optional(),
-  url: text.optional(),
-  branchName: text.optional(),
-  parent: text.nullable().optional(),
-  blockers: z
-    .array(
-      z.object({ id: text, status: z.enum(["triage", "backlog", "unstarted", "started", "completed", "canceled"]) }),
-    )
-    .optional(),
-  comments: z.array(z.object({ body: text, author: text, at: text })).optional(),
-  status: z.enum(["triage", "backlog", "unstarted", "started", "completed", "canceled"]),
-  phase: phaseSchema.nullable().optional(),
-  reason: text.optional(),
-  owner: text.optional(),
-});
+const ticketSchema = /* @__PURE__ */ (() =>
+  z.object({
+    id: text,
+    title: text,
+    labels: z.array(text).optional(),
+    description: text.optional(),
+    url: text.optional(),
+    branchName: text.optional(),
+    parent: text.nullable().optional(),
+    blockers: z
+      .array(
+        z.object({ id: text, status: z.enum(["triage", "backlog", "unstarted", "started", "completed", "canceled"]) }),
+      )
+      .optional(),
+    comments: z.array(z.object({ body: text, author: text, at: text })).optional(),
+    status: z.enum(["triage", "backlog", "unstarted", "started", "completed", "canceled"]),
+    phase: phaseSchema.nullable().optional(),
+    reason: text.optional(),
+    owner: text.optional(),
+  }))();
 export type Ticket = z.infer<typeof ticketSchema>;
 const ciSchema = z.enum(["none", "pending", "success", "failure"]);
 const pullRequestSchema = /* @__PURE__ */ makePullRequestSchema();
@@ -107,12 +108,14 @@ function makeInboxRequestSchema() {
   });
 }
 export type InboxRequest = z.infer<typeof inboxRequestSchema>;
-const validationRequestSchema = sessionRefSchema.extend({ id: text, question: text, checks: z.array(text) });
+const validationRequestSchema = /* @__PURE__ */ (() =>
+  sessionRefSchema.extend({ id: text, question: text, checks: z.array(text) }))();
 export type ValidationRequest = z.infer<typeof validationRequestSchema>;
-const queuedSchema = sessionRefSchema.extend({ id: text, pr: integer, head: text });
-const idSchema = z.object({ id: text });
-const reasonSchema = idSchema.extend({ reason: text });
-const decisionSchema = z.object({ decision: z.enum(["approved", "changes-requested"]), note: text });
+const queuedSchema = /* @__PURE__ */ sessionRefSchema.extend({ id: text, pr: integer, head: text });
+const idSchema = /* @__PURE__ */ z.object({ id: text });
+const reasonSchema = /* @__PURE__ */ idSchema.extend({ reason: text });
+const decisionSchema = /* @__PURE__ */ (() =>
+  z.object({ decision: z.enum(["approved", "changes-requested"]), note: text }))();
 // The app accepts opaque fleet events; construct wake validators only in consumers that use them.
 export const wakeCandidateSchema = /* @__PURE__ */ wakeCandidate();
 function wakeCandidate() {
@@ -131,7 +134,7 @@ function wakeCandidate() {
   });
 }
 export type WakeCandidate = z.infer<typeof wakeCandidateSchema>;
-const branchHealthSchema = z.object({ branch: text, head: text, ci: ciSchema });
+const branchHealthSchema = /* @__PURE__ */ z.object({ branch: text, head: text, ci: ciSchema });
 
 /** The single vocabulary for events appended by daemon adapters and folded offline.
  * A pure factory lets the app omit payload validators it never reads. */
@@ -271,32 +274,35 @@ export const sessionStateSchema = z.enum([
 ]);
 export type SessionState = z.infer<typeof sessionStateSchema>;
 export const flowStepSchema = z.enum(["plan", "implementing", "review", "ci", "merged"]);
-const sessionSchema = sessionRefSchema.extend({
-  generation: integer,
-  owner: text,
-  runtime: text,
-  handle: text,
-  title: text,
-  phase: phaseSchema,
-  state: sessionStateSchema,
-  reason: text,
-  step: integer,
-  flowStep: flowStepSchema,
-  at: text,
-  heartbeat: text.nullable(),
-});
+const sessionSchema = /* @__PURE__ */ (() =>
+  sessionRefSchema.extend({
+    generation: integer,
+    owner: text,
+    runtime: text,
+    handle: text,
+    title: text,
+    phase: phaseSchema,
+    state: sessionStateSchema,
+    reason: text,
+    step: integer,
+    flowStep: flowStepSchema,
+    at: text,
+    heartbeat: text.nullable(),
+  }))();
 export type Session = z.infer<typeof sessionSchema>;
 const inboxItemSchema = /* @__PURE__ */ (() => inboxRequestSchema.extend({ at: text, actor: text, seq: integer }))();
 export type InboxItem = z.infer<typeof inboxItemSchema>;
-const queueEntrySchema = queuedSchema.extend({ at: text, seq: integer, state: z.enum(["queued", "running"]) });
+const queueEntrySchema = /* @__PURE__ */ (() =>
+  queuedSchema.extend({ at: text, seq: integer, state: z.enum(["queued", "running"]) }))();
 export type QueueEntry = z.infer<typeof queueEntrySchema>;
-const holdSchema = reasonSchema.extend({ at: text, actor: text });
+const holdSchema = /* @__PURE__ */ (() => reasonSchema.extend({ at: text, actor: text }))();
 export type Hold = z.infer<typeof holdSchema>;
-const validationSchema = validationRequestSchema.extend({
-  at: text,
-  actor: text,
-  decision: decisionSchema.extend({ at: text, actor: text }).nullable(),
-});
+const validationSchema = /* @__PURE__ */ (() =>
+  validationRequestSchema.extend({
+    at: text,
+    actor: text,
+    decision: decisionSchema.extend({ at: text, actor: text }).nullable(),
+  }))();
 export type Validation = z.infer<typeof validationSchema>;
 function makeTablesSchema() {
   return z.object({

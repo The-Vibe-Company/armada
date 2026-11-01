@@ -9,6 +9,8 @@ import type { Project, ProtocolEvent } from "@armada/protocol";
 import { type RefObject, useEffect, useMemo } from "react";
 import { Dot } from "@/components/page";
 import type { FleetState } from "@/fleet/state";
+import type { DaemonClient } from "@/protocol/client";
+import { HistoryControls, mergeHistory, useHistory } from "@/protocol/history";
 import { Facts } from "@/session/Facts";
 import { Reports } from "@/session/Reports";
 import { sessionHref } from "@/session/route";
@@ -18,6 +20,7 @@ import { findSession, stamp } from "@/session/view";
 
 export function AgentLane({
   project,
+  client,
   ticket,
   state,
   events,
@@ -28,6 +31,7 @@ export function AgentLane({
   lane,
 }: {
   project: Project;
+  client?: DaemonClient;
   ticket: string;
   state: FleetState;
   events: readonly ProtocolEvent[];
@@ -45,9 +49,11 @@ export function AgentLane({
   useEffect(() => {
     lane.current?.scrollTo?.(0, 0);
   }, [ticket]);
+  const history = useHistory(client, project.id, ticket);
+  const ownEvents = useMemo(() => mergeHistory(events, history.events), [events, history.events]);
   const view = useMemo(
-    () => findSession(ticket, [project], () => ({ state, events })),
-    [ticket, project, state, events],
+    () => findSession(ticket, [project], () => ({ state, events: ownEvents })),
+    [ticket, project, state, ownEvents],
   );
   const at = (time: string | null) => (time ? stamp(time, now, zone) : "");
   // The session's latest event: an open output drawer reads the runtime again on each one.
@@ -90,7 +96,10 @@ export function AgentLane({
                 Reports and events
                 <span className="font-mono text-text-3 tnum">{view.entries.length}</span>
               </h3>
-              <Reports entries={view.entries} at={at} />
+              {!((history.loading || history.error) && !view.entries.length) && (
+                <Reports entries={view.entries} at={at} />
+              )}
+              <HistoryControls history={history} />
             </section>
           </>
         ) : (
