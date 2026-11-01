@@ -7,6 +7,9 @@ import type { EventStore } from "../store.ts";
 export const daemonProjectSchema = projectSchema.extend({
   // Model validation belongs to coordinator boot, so readers survive a bad selection.
   coordinatorModel: z.unknown().optional(),
+  checkout: projectSchema.shape.name.optional(),
+  readyLabel: projectSchema.shape.name.optional(),
+  runtimeGroup: projectSchema.shape.name.optional(),
   programRoot: projectSchema.shape.id.optional(),
   phaseGroup: projectSchema.shape.name.default("Agent phase"),
   tracker: projectSchema.shape.id.default("linear"),
@@ -70,7 +73,7 @@ export async function startReaders(
     refreshers.set(project.id, sources);
     if (stopped) continue;
     for (const seam of ["tracker", "forge"] as const) {
-      const provider = options.registry.get(seam, project[seam]);
+      const provider = options.registry.get(seam, project[seam], project.id);
       if (!provider) continue;
       const errorKey = `${seam}Error` as const;
       state[errorKey] = "First read pending";

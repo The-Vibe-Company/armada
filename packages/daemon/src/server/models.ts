@@ -67,11 +67,14 @@ export async function modelEnvironment(
   const pluginSelected = plugin
     ? { kind: plugin.provider, config: { ...plugin.config, apiKeySecret: savedSecret } }
     : undefined;
-  let selected: CoordinatorModel | undefined;
+  let savedSelected: CoordinatorModel | undefined;
+  if (saved?.model) savedSelected = { provider: saved.provider, model: saved.model };
+  else if (saved) savedSelected = { kind: saved.provider, config: { ...saved.config, apiKeySecret: savedSecret } };
+  let genericSelected: CoordinatorModel | undefined;
   if ((env.ARMADA_MODEL_PROVIDER || generic.kind) && !generic.baseURL && env.ARMADA_MODEL_PROVIDER && generic.model) {
-    selected = { provider: env.ARMADA_MODEL_PROVIDER, model: generic.model };
+    genericSelected = { provider: env.ARMADA_MODEL_PROVIDER, model: generic.model };
   } else if (generic.kind) {
-    selected = {
+    genericSelected = {
       kind: generic.kind,
       config: {
         ...(plugin?.provider === generic.kind ? plugin.config : {}),
@@ -80,23 +83,20 @@ export async function modelEnvironment(
         apiKeySecret: "ARMADA_MODEL_API_KEY",
       },
     };
-  } else if (zai.baseURL && zai.model && zai.key) {
+  }
+  // Only a generic model can be forced; an incomplete override must not promote ZAI/Azure.
+  const force = env.ARMADA_MODEL_FORCE === "1" && !!(env.ARMADA_MODEL_PROVIDER || env.ARMADA_MODEL_KIND);
+  let selected: CoordinatorModel | undefined =
+    (force ? genericSelected : undefined) ?? savedSelected ?? genericSelected;
+  if (!selected && zai.baseURL && zai.model && zai.key) {
     selected = {
       kind: "openai-compatible",
       config: { baseURL: zai.baseURL, model: zai.model, apiKeySecret: "ZAI_API_KEY" },
     };
-  } else if (azure.baseURL && azure.model && azure.key) {
+  } else if (!selected && azure.baseURL && azure.model && azure.key) {
     selected = {
       kind: "openai-compatible",
       config: { baseURL: azure.baseURL, model: azure.model, apiKeySecret: "AZURE_AI_API_KEY", apiKeyHeader: "api-key" },
-    };
-  } else if (saved?.model) {
-    selected = { provider: saved.provider, model: saved.model };
-  } else if (saved) {
-    // Read old OpenAI entries without retaining the old identity in the app or catalog.
-    selected = {
-      kind: saved.provider,
-      config: { ...saved.config, apiKeySecret: savedSecret },
     };
   }
   return {

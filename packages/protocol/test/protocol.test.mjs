@@ -479,3 +479,37 @@ test("live chat validates its bounded state and keeps older chat results readabl
   const old = frames.find((f) => f.type === "chat.result");
   assert.equal(serverMessageSchema.parse(old).turn, undefined);
 });
+
+test("runtime project management validates its distinct correlation/project ids and minor admission", () => {
+  const v = { major: 1, minor: 12 };
+  const add = {
+    type: "projects.add",
+    version: v,
+    id: "request-add",
+    projectId: "new-project",
+    path: "/dev/new-project",
+    name: "New project",
+    repository: "example/project",
+  };
+  assert.equal(admitRequest(add).ok, true);
+  assert.equal(
+    admitRequest({ type: "projects.inspect", version: v, id: "inspect", path: "/dev/new-project" }).ok,
+    true,
+  );
+  assert.equal(
+    admitRequest({ type: "projects.remove", version: v, id: "request-remove", project: "new-project" }).ok,
+    true,
+  );
+  for (const repository of ["malformed", "./project", "example/.."])
+    assert.equal(admitRequest({ ...add, repository }).ok, false);
+  assert.equal(admitRequest({ ...add, projectId: "" }).ok, false);
+  assert.equal(admitRequest({ ...add, version: { major: 1, minor: 11 } }).ok, false);
+  assert.equal(admitRequest(add, { major: 1, minor: 11 }).ok, false);
+  const result = serverMessageSchema.parse({
+    type: "projects.result",
+    version: v,
+    id: "request-add",
+    projects: [{ id: "new-project", name: "New project", root: "/dev/new-project", repository: "example/project" }],
+  });
+  assert.equal(result.projects[0].root, "/dev/new-project");
+});

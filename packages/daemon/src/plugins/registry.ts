@@ -4,7 +4,22 @@ import { type PluginManifest, type PluginRegister, type Providers, SEAMS, type S
 export class PluginRegistry {
   readonly #providers = new Map<Seam, Map<string, unknown>>(SEAMS.map((seam) => [seam, new Map()]));
 
-  get<S extends Seam>(seam: S, kind: string): Providers[S] | undefined {
+  readonly #projects = new Map<string, PluginRegistry>();
+
+  setProject(project: string, registry: PluginRegistry): void {
+    this.#projects.set(project, registry);
+  }
+  removeProject(project: string): void {
+    this.#projects.delete(project);
+  }
+
+  get<S extends Seam>(seam: S, kind: string, project?: string): Providers[S] | undefined {
+    if (project && this.#projects.has(project)) {
+      const scoped = this.#projects.get(project);
+      if (!scoped) return undefined;
+      // A disabled/unavailable scoped reader must not fall back to stale boot configuration.
+      if (seam === "tracker" || seam === "forge" || seam === "node") return scoped.get(seam, kind);
+    }
     return this.#providers.get(seam)?.get(kind) as Providers[S] | undefined;
   }
 

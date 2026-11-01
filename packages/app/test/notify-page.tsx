@@ -40,6 +40,15 @@ const client: DaemonClient = {
   answerProvider: () => {},
   cancelProvider: async () => {},
   disconnectProvider: async () => {},
+  inspectProject: async () => {
+    throw new Error("Project inspection is outside this fixture");
+  },
+  addProject: async () => {
+    throw new Error("Project addition is outside this fixture");
+  },
+  removeProject: async () => {
+    throw new Error("Project removal is outside this fixture");
+  },
   saveCredentials: async () => {},
   setPluginEnabled: async () => {},
   configurePlugin: async () => {},

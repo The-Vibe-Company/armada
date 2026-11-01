@@ -390,9 +390,24 @@ resolves the current selection (project/checkpoint rules still win), configures
 the durable coordinator and streams directly through pi. A room can be
 configured for the first time without restarting the daemon. An active turn
 finishes on its model before a newly selected model starts a turn. The daemon
-honors pi's environment sources and `ARMADA_MODEL_PROVIDER`,
-`ARMADA_MODEL_NAME`, `ARMADA_MODEL_API_KEY`; the legacy `ARMADA_MODEL_KIND` and
-custom endpoint settings remain supported. The pinned pi 1.4.0 package does not
+uses the choice saved in Settings first, including custom endpoints. Only when
+no choice is saved does it fall back to `ARMADA_MODEL_PROVIDER` and
+`ARMADA_MODEL_NAME` (or the legacy `ARMADA_MODEL_KIND` and custom endpoint
+settings), then `ZAI_*`, then `AZURE_AI_*`. For a deliberate boot override, set
+`ARMADA_MODEL_FORCE=1` with `ARMADA_MODEL_PROVIDER` and `ARMADA_MODEL_NAME`, or
+`ARMADA_MODEL_KIND`, `ARMADA_MODEL_NAME` and `ARMADA_MODEL_BASE_URL` for a custom
+endpoint. For example, `ARMADA_MODEL_FORCE=1 ARMADA_MODEL_PROVIDER=openai
+ARMADA_MODEL_NAME=gpt-4.1-mini` overrides the saved default for that daemon
+lifetime. Other flag values do not force a selection, and the flag does not
+promote ZAI/Azure fallback settings over a saved choice. The override does not
+rewrite the saved choice; removing it restores that choice on the next restart.
+Project/checkpoint rules still win over the default. Boot, subsequent turns and
+the catalog read the same registry selection, so Settings shows the effective
+default, including an explicit override. Provider credentials still honor pi's
+environment sources and `ARMADA_MODEL_API_KEY`. Each project's room gets one
+quiet `Coordinator uses provider/model.` line when its coordinator opens in a
+daemon lifetime, after its actual model is configured and before work resumes.
+The pinned pi 1.4.0 package does not
 export its `findEnvKeys` helper as a package subpath, so the registry imports
 that module beside the daemon dependency; the desktop build bundles it and
 pi's statically registered OAuth flows.
@@ -435,6 +450,18 @@ output and URLs; the app owns opening the browser. Linear or GitHub token prompt
 write only a declared secret through the daemon's credential store. Disconnect
 clears a pasted key; a key supplied by the environment or Armada remains controlled
 by that source.
+### Runtime projects (THE-2080, protocol minor 12)
+
+`armadad --projects <projects.json>` owns that file as a serialized project registry. A missing file starts with an empty list. Existing entries without a root remain readable; a legacy `checkout` becomes the canonical `root`. New registrations store the real local folder as both `root` and the worker checkout, alongside `id`, `name`, `repository` and the confirmed tracker settings. Add/remove use a temporary file and atomic rename; no restart is required.
+
+The app client exposes `inspectProject(path)`, `addProject({ path, id, name, repository, programRoot?, phaseGroup? })`, and `removeProject(id)`. Inspection is read-only: Git origin (SSH or HTTPS), branch and cleanliness, TOML program root and labels, suggestions from the folder name, and actionable problems for incomplete folders. The Git remote is the preferred repository suggestion. Adding uses confirmed values and reads the folder's TOML phase, runtime and ready labels. The registry owns provider project maps, so removed/re-added ids cannot inherit stale saved tracker roots. A project without a selected coordinator model retains the daemon's existing unavailable-coordinator behavior; configuring a model is still required for a responding room.
+
+Every wire request keeps its existing correlation `id` and `version`. To avoid overloading that `id`, `projects.add` carries the confirmed project identifier in `projectId`, and `projects.remove` carries it in `project`. Their responses are `projects.result` with the current list; `projects.inspect { path }` responds with `projects.inspection`. New operations require minor 12. Connected clients receive a `projects.result` notification after registration/removal, subscribe only to newly listed projects, and retain prior event logs. A disconnected mutation is never replayed automatically: inspect the list before retrying an unconfirmed add/remove.
+
+Each project's readers and coordinator have independent lifetimes. Removal shares the worker launch queue and refuses active workers or an unresolved launch, including a launch whose workspace is still being prepared. It closes the project's coordinator and readers and retains all events; historical session reads and project subscriptions remain available. Local node configuration uses `node.local.projects[id].root`: worktrees go under `<root>/.armada/worktrees/<ticket>`, with one `/.armada/worktrees/` rule in Git's `info/exclude` (resolved for linked checkouts too). Repository `.gitignore` files are untouched.
+
+If persistence fails, the registry restores its prior services and keeps the committed file/list. If compensation itself fails, it cleans partial recovery, returns an actionable recovery error and pauses all queued/new registry mutations until the daemon restarts. It never announces that failure as a successful add/remove.
+
 
 Conductor workers (THE-2072, protocol minor 13) run through the optional
 `conductor` runtime provider. Enable it in Settings > Providers, configure its
