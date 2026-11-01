@@ -104,15 +104,14 @@ test("fleet and inbox refresh their project's readers, see a merge immediately a
       (await tools[name].execute({}, {} as ToolExecutionApi, context)).details as unknown as {
         readAt: Record<string, string>;
         at: string;
-        tables: { pullRequests: { state: string }[]; sessions: { state: string; flowStep: string; reason: string }[] };
+        pullRequests: { number: number }[];
+        sessions: { ticket: string; phase: string }[];
         items: { id: string }[];
       };
     now = next;
     const result = await run("fleet.status");
-    assert.equal(result.tables.pullRequests[0]?.state, "merged");
-    assert.equal(result.tables.sessions[0]?.state, "merged");
-    assert.equal(result.tables.sessions[0]?.flowStep, "merged");
-    assert.doesNotMatch(result.tables.sessions[0]?.reason ?? "", /conflict/i);
+    assert.deepEqual(result.pullRequests, [], "a merged PR is no longer open");
+    assert.deepEqual(result.sessions, [], "its merged session is no longer in flight");
     assert.deepEqual(result.readAt, { linear: next, github: next });
     assert.equal(result.at, next);
     store.append({
@@ -153,7 +152,7 @@ test("fleet and inbox refresh their project's readers, see a merge immediately a
   }
 });
 
-test("the coordinator model receives stale read times and an instruction to qualify its answer with their age", async () => {
+test("one coordinator turn answers what is running and waiting, qualified by stale provider times", async () => {
   const { createModels } = await import("@earendil-works/pi-ai/models");
   const { fauxProvider, fauxAssistantMessage, fauxToolCall } = await import("@earendil-works/pi-ai/providers/faux");
   const { Coordinators } = await import("../coordinator/index.ts");
@@ -169,6 +168,25 @@ test("the coordinator model receives stale read times and an instruction to qual
     at: first,
     payload: { checkpoint: { format: "armada.readers", version: 1, provider: "github" } },
   });
+  for (const [id, title] of [
+    ["SEED-1", "Plant seeds"],
+    ["SEED-2", "Water orchard"],
+  ] as const) {
+    store.append({
+      project: project.id,
+      kind: "ticket.seen",
+      actor: "reader",
+      at: first,
+      payload: { id, title, status: "started", phase: "implementing", description: "A long spec. ".repeat(6000) },
+    });
+  }
+  store.append({
+    project: project.id,
+    kind: "inbox.opened",
+    actor: "worker",
+    at: first,
+    payload: { id: "plan-1", ticket: "SEED-1", kind: "plan", body: "Approve this plan" },
+  });
   try {
     faux.setResponses([
       fauxAssistantMessage(fauxToolCall("fleet.status", {}), { stopReason: "toolUse" }),
@@ -183,8 +201,15 @@ test("the coordinator model receives stale read times and an instruction to qual
         assert.ok(content && content.type === "text");
         const facts = JSON.parse(content.text);
         assert.equal(facts.readAt.github, first);
+        assert.deepEqual(
+          facts.sessions.map((s: { ticket: string }) => s.ticket),
+          ["SEED-1", "SEED-2"],
+        );
+        assert.deepEqual(facts.inbox, { total: 1, byKind: { plan: 1 } });
         const age = Math.floor((Date.parse(facts.at) - Date.parse(facts.readAt.github)) / 60_000);
-        return fauxAssistantMessage(`GitHub last read ${age} min ago. No pull requests recorded.`);
+        return fauxAssistantMessage(
+          `GitHub last read ${age} min ago. Running: ${facts.sessions.map((s: { ticket: string; title: string }) => `${s.ticket} (${s.title})`).join(", ")}. Waiting for you: ${facts.inbox.total} plan.`,
+        );
       },
     ]);
     const coordinator = await coordinators.open({
@@ -194,10 +219,17 @@ test("the coordinator model receives stale read times and an instruction to qual
       now: () => Date.parse(next),
       setTimer: () => () => {},
     });
-    const submission = await coordinator.conversation.submit({ type: "input", content: "What is blocked?" }, context);
+    const submission = await coordinator.conversation.submit(
+      { type: "input", content: "What is running and what waits for me?" },
+      context,
+    );
     assert.equal((await submission.wait(context)).status, "done");
     const history = await coordinator.conversation.entries({ order: "ascending" }, 100, undefined, context);
     assert.match(JSON.stringify(history.items), /GitHub last read 4 min ago/);
+    assert.match(
+      JSON.stringify(history.items),
+      /Running: SEED-1 \(Plant seeds\), SEED-2 \(Water orchard\). Waiting for you: 1 plan/,
+    );
     assert.equal(faux.state.callCount, 2);
   } finally {
     await coordinators.close();
