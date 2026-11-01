@@ -22,7 +22,7 @@ import { startServer } from "../src/server/index.ts";
 import { coordinatorModels, loadedModelKinds, modelEnvironment } from "../src/server/models.ts";
 import { daemonProjectSchema } from "../src/server/readers.ts";
 import { FakeKeychain } from "./support/keychain.ts";
-import { nodeExecutable } from "./support/node.ts";
+import { daemonReady, nodeExecutable } from "./support/node.ts";
 
 for (const problem of ["malformed", "unavailable"]) {
   test(`armadad remains available to repair ${problem} model credentials`, { timeout: 15000 }, async (t) => {
@@ -61,13 +61,7 @@ for (const problem of ["malformed", "unavailable"]) {
       lines.close();
       await rm(dir, { recursive: true, force: true });
     });
-    const [line] = await Promise.race([
-      once(lines, "line"),
-      exited.then(() => {
-        throw new Error("daemon exited before readiness");
-      }),
-    ]);
-    const ready = JSON.parse(line);
+    const ready = await daemonReady(child);
     assert.match(ready.wsUrl, /^ws:\/\/127\.0\.0\.1:/);
   });
 }

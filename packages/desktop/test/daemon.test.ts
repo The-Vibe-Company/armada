@@ -181,3 +181,74 @@ test("spawn errors reject readiness without hanging shutdown", { timeout: 20000 
     rmSync(f.dir, { recursive: true, force: true });
   }
 });
+
+test("starting keeps a live child eligible for readiness beyond the 15-second deadline", {
+  timeout: 10000,
+}, async (t) => {
+  const f = fixture();
+  const entry = join(f.dir, "slow.mjs");
+  writeFileSync(
+    entry,
+    `
+    process.on('SIGUSR1', () => console.log(JSON.stringify({url:'http://127.0.0.1:12345',wsUrl:'ws://127.0.0.1:12345/'})));
+    console.log(JSON.stringify({starting:true,events:5134}));
+    setInterval(() => {}, 1000);
+  `,
+  );
+  let notify!: (events?: number) => void;
+  const started = new Promise<number | undefined>((resolve) => {
+    notify = resolve;
+  });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const daemon = new DaemonProcess({ ...f.options, entry, onStarting: notify });
+  try {
+    assert.equal(await Promise.race([started, daemon.ready]), 5134);
+    t.mock.timers.tick(20_000);
+    // Let any expired readiness timer reject before the child announces its address.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    process.kill(daemon.pid, "SIGUSR1");
+    assert.deepEqual(await daemon.ready, { url: "http://127.0.0.1:12345", wsUrl: "ws://127.0.0.1:12345/" });
+  } finally {
+    t.mock.timers.reset();
+    await daemon.stop();
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("a silent daemon times out after 15 s; exit and malformed readiness name their cause", {
+  timeout: 10000,
+}, async (t) => {
+  const f = fixture();
+  const entry = join(f.dir, "child.mjs");
+  const children: DaemonProcess[] = [];
+  try {
+    writeFileSync(entry, "setInterval(() => {}, 1000);");
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const silent = new DaemonProcess({ ...f.options, entry });
+    children.push(silent);
+    const timedOut = assert.rejects(silent.ready, { message: "armadad readiness timed out after 15 s" });
+    t.mock.timers.tick(15_000);
+    await timedOut;
+    t.mock.timers.reset();
+    await silent.stop();
+    gone(silent.pid);
+    for (const [source, message] of [
+      ["process.exit(23);", "armadad exited before readiness (code 23)"],
+      [
+        'console.log(JSON.stringify({url:"http://example.test",wsUrl:"ws://example.test/"}));setInterval(() => {},1000);',
+        "Invalid armadad readiness line",
+      ],
+    ]) {
+      writeFileSync(entry, source!);
+      const child = new DaemonProcess({ ...f.options, entry });
+      children.push(child);
+      await assert.rejects(child.ready, { message });
+      await child.stop();
+      gone(child.pid);
+    }
+  } finally {
+    t.mock.timers.reset();
+    await Promise.all(children.map((child) => child.stop()));
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});

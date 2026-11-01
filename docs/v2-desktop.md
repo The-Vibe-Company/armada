@@ -261,8 +261,13 @@ in-process modules. Secret names use the existing owner secret flow.
 
 The shell calls `bootDaemon` with the event database, keychain secret getter and
 logger and retains its registry. The `armadad` entry does this before starting
-its WebSocket server; plugin logs go to stderr so stdout keeps its one JSON
-readiness line. Its secret getter uses the shared credential gateway with service
+its WebSocket server. Plugin logs go to stderr; stdout first announces
+`{"starting":true}`, then progress with the stored event count, then the JSON
+readiness line with the bound addresses and boot-stage timings (THE-2117).
+Initial readers start after readiness, so that line does not promise reader
+health; failures reach stderr and the durable log. The desktop opens a local
+startup page immediately and waits without a readiness deadline once the daemon
+announces it is starting. Its secret getter uses the shared credential gateway with service
 `armada.plugins` and the declared secret name as the account; missing/locked
 entries return null. The gateway owns OS storage and the explicit Linux file
 fallback. Embedded hosts can supply their own keychain getter. It also atomically saves the boot catalog and
@@ -319,8 +324,7 @@ the openai-compatible model plugin, with pi-durable checkpoints in the log.
   plugin loader) to THE-2047, `ctx.secrets.get` read the plugin keychain only,
   so a daemon launched with keys in its environment never read Linear or
   GitHub and the room's facts froze while the UI said "live". THE-2047 reads
-  env, then the keychain, then `gh` for GitHub, and the readiness line names a
-  reader that failed and why. Verified on the owner's machine: ticket and
+  env, then the keychain, then `gh` for GitHub, and stderr names a reader that failed and why. Verified on the owner's machine: ticket and
   pull-request events resume within a minute of a restart.
 - **Tokens and night budgets are metered (THE-2109).** Coordinator model completions, watchdog judgments and compaction calls carry input/output/cache usage in their existing durable checkpoint; the replayed fleet sums it per project, civil day and session. The room header and fleet.status show today's reading. Set `policy.budget` through rules.set with a reason: `coordinatorTokensPerDay`, `workerLaunchesPerNight`, optional `nightStart`/`nightEnd` (22:00–07:00), and an IANA `zone`. Reaching a ceiling, or receiving an unknown/partial completed coordinator usage reading under a configured ceiling, opens an ordinary budget hold and one owner-request; launches and merges refuse under it. Only the owner authorizes raising or clearing it with a reason. Clears are exceptions for that ceiling and period; a new day/night or raised ceiling is metered separately. Existing holds remain until cleared. Ordinary merge holds still allow recovery launches; budget holds stop them. Worker release retains the observed token floor and marks the final unverified reading unknown without waiting for the runtime. Tokens include input, output, cache reads and cache writes; no currency estimate is made.
   Worker usage is cumulative per generation: Claude reports the CLI stream's cumulative `modelUsage`, including subagents and compaction (available when a turn finishes); older main-loop-only `usage` is a partial lower bound ([CLI accounting](https://code.claude.com/docs/en/agent-sdk/cost-tracking)); Codex, OpenCode and hosted Conductor currently expose no supported usage counters through their adapters and are explicitly unknown. Missing counters stay unknown, including old logs/snapshots, rather than becoming zero. Worker budgets count launches even when token usage is unknown. Reattachment preserves the observed usage floor and marks an unprovable transcript prefix unknown. Recovery confirms an interrupted launch once; another adoption of the same generation consumes no new launch slot.
@@ -516,7 +520,8 @@ pinned behind-base comparisons. Per-PR `armada.github-reader` v1 checkpoints
 retain cursors, conditional reads and independent failure windows. 404 retries;
 410 drops immediately; 24 hours of continuous failures abandons and names a PR.
 Forge polling follows session activity (30 seconds, otherwise five minutes),
-with GitHub cooldowns and durable doubling backoff shown in readiness. External
+with GitHub cooldowns and doubling backoff retained in its durable checkpoint.
+Reader failures are logged on stderr after readiness. External
 comments reach the current worker through keyed delivery, suppressing its own
 PR-author account; conflict/behind candidates belong to the coordinator Waker.
 Protocol minor 18 adds these events and optional PR unresolved/behind facts.

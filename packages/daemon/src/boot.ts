@@ -8,7 +8,6 @@ import {
   pluginEventSchema,
 } from "@armada/plugin-api";
 import type { EventInput } from "./events.ts";
-import { fold } from "./fold.ts";
 import { BUNDLED_PLUGINS, type PluginCatalogEntry } from "./plugins/catalog.ts";
 import { appConfigPath, loadPlugins } from "./plugins/index.ts";
 import { writePluginStatus } from "./plugins/status.ts";
@@ -22,6 +21,7 @@ export interface DaemonOptions {
   secrets: PluginContext["secrets"];
   projects?: readonly ProjectSettings[];
   log: PluginContext["log"];
+  onStarting?: (events: number) => void;
 }
 
 type ProjectSettings = Pick<DaemonProject, "id" | "repository"> & Partial<DaemonProject>;
@@ -57,8 +57,12 @@ function projectConfig(projects: readonly ProjectSettings[]): PluginConfig {
 /** The shell starts once and retains this registry for the lifetime of the daemon. */
 export async function bootDaemon(options: DaemonOptions) {
   const configPath = options.configPath ?? appConfigPath();
+  const beforeStore = performance.now();
   const store = new EventStore(options.databasePath);
+  const storeMs = performance.now() - beforeStore;
+  const beforePlugins = performance.now();
   try {
+    options.onStarting?.(store.count);
     const services = {
       log: options.log,
       secrets: options.secrets,
@@ -67,7 +71,7 @@ export async function bootDaemon(options: DaemonOptions) {
           pluginEventSchema.parse(store.append(pluginEventInputSchema.parse(event) as EventInput)),
         read: async (project: string, after: number) =>
           store.readSince(after, project).map((event) => pluginEventSchema.parse(event)),
-        fold: async (project: string) => fold(store.readSince(0, project)),
+        fold: async (project: string) => store.fold(project),
       },
     };
     const plugins = await loadPlugins(services, configPath, options.catalog, projectConfig(options.projects ?? []));
@@ -76,6 +80,7 @@ export async function bootDaemon(options: DaemonOptions) {
     await writePluginStatus(configPath, catalog, plugins.plugins);
     return {
       ...plugins,
+      timings: { storeMs, pluginsMs: performance.now() - beforePlugins },
       configPath,
       catalog,
       store,

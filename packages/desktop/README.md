@@ -37,9 +37,11 @@ installer or auto-updater.
 The shell spawns its own Electron executable in Node mode to run the bundled
 armadad entry (including the daemon's dependencies), so it needs no separate
 Node installation. It passes `--port 0`: the OS chooses a free loopback port,
-without a reserve/release race. The daemon's one readiness JSON line supplies
-both addresses. Only then does one sandboxed, isolated window open on the
-built app served by that daemon, with `?daemon=ws://127.0.0.1:<allocated-port>/`.
+without a reserve/release race. A sandboxed, isolated window opens immediately on a local startup page. The daemon
+first prints `{"starting":true}`, then a progress line with its event count, and
+finally a readiness JSON line with both addresses. The window shows
+“Starting the daemon…” and “Reading <n> events” until it can load the built app
+served by that daemon, with `?daemon=ws://127.0.0.1:<allocated-port>/`.
 The renderer has no Node access. Its one preload (`src/preload.ts`, built as
 CommonJS for the sandbox) exposes two calls as `window.armadaShell`, for the
 app's notifications (THE-2055): `reveal()` shows, restores and focuses the
@@ -53,7 +55,10 @@ session). It is handed to the OS to open in Conductor and never loads in the win
 
 Closing the last window, choosing Quit, or receiving SIGINT/SIGTERM stops the
 child before exiting Electron, on macOS too. Startup failure exits with a short
-console error. Startup is bounded to 15 seconds; shutdown first sends SIGTERM
+console error naming the cause (startup timeout, child exit code/signal, or failed
+page URL). The 15-second startup deadline covers the first starting/readiness
+message. Once the daemon announces it is starting, the shell waits for readiness
+until the daemon exits or the owner quits. Shutdown first sends SIGTERM
 for the daemon to close its sockets and SQLite, then escalates to SIGKILL after
 five seconds if needed. An unexpected daemon exit closes the shell with a
 failure code. A hard OS kill cannot run quit handlers.
@@ -76,3 +81,10 @@ For a macOS acceptance pass: point the command above at your real catalog/log,
 confirm the window shows that fleet, then press Cmd+Q. The daemon's PID must no
 longer exist. Linux CI verifies the child lifecycle; macOS window behavior needs
 a Mac.
+
+Boot timing is included in the readiness line (module loading, SQLite setup,
+plugins, model selection, worker setup, server/coordinator setup, and total).
+Initial provider reads start after readiness. A standalone synthetic 10 MB boot
+benchmark runs after the daemon suite, outside parallel cold-process contention,
+and checks startup within one second and readiness within three seconds even
+when the first provider reads hang.

@@ -33,7 +33,6 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { WebSocket, WebSocketServer } from "ws";
 import type { CoordinatorOptions, ProjectCoordinator } from "../../coordinator/index.ts";
 import { dispatchCredentials } from "../credentials.ts";
-import { fold } from "../fold.ts";
 import { type Keychain, systemKeychain } from "../keychain.ts";
 import type { ModelRegistry } from "../models/registry.ts";
 import type { Projects } from "../projects.ts";
@@ -306,7 +305,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   function snapshotOf(project: string): Snapshot {
     const seq = store.sequence;
     // Normalize optional undefined fields to JSON, then validate without changing wire key order.
-    const tables = fold(store.readSince(0, project)).projects[project] ?? emptyProject();
+    const tables = store.fold(project).projects[project] ?? emptyProject();
     return { seq, state: projectTablesSchema.parse(JSON.parse(JSON.stringify(tables))) };
   }
 

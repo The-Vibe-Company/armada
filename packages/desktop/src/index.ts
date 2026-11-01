@@ -12,6 +12,7 @@ import {
   REVEAL_CHANNEL,
 } from "./bridge.ts";
 import { type DaemonAddress, DaemonProcess, RESTART_EXIT_CODE, restartDaemon } from "./daemon.ts";
+import { STARTUP_URL } from "./startup.ts";
 
 app.setName("Armada");
 // The app's icon (resources/icon.png, the mark on its tile): the dock on macOS, the window elsewhere,
@@ -38,8 +39,43 @@ void app.whenReady().then(async () => {
   if (process.platform === "darwin") app.dock?.setIcon(nativeImage.createFromPath(ICON));
   try {
     const dataDir = app.getPath("userData");
+    window = new BrowserWindow({
+      width: 1280,
+      height: 860,
+      minWidth: 800,
+      minHeight: 560,
+      show: false,
+      title: "Armada",
+      icon: ICON,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        preload: fileURLToPath(new URL("../preload/preload.cjs", import.meta.url)),
+      },
+    });
+    window.once("ready-to-show", () => window?.show());
+    const load = async (url: string) => {
+      try {
+        await window?.loadURL(url);
+      } catch (error) {
+        // The static page has no external resource or private address to disclose.
+        const target = url === STARTUP_URL ? "startup page" : url;
+        throw new Error(`could not load ${target}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
+    await load(STARTUP_URL);
+    if (quitting) return;
     const start = (port: number) => {
       daemon = new DaemonProcess({
+        onStarting: (events) => {
+          if (events === undefined || quitting || window?.webContents.getURL() !== STARTUP_URL) return;
+          void window?.webContents
+            .executeJavaScript(
+              `document.getElementById("progress").textContent = ${JSON.stringify(`Reading ${events.toLocaleString("en-US")} events`)};`,
+            )
+            .catch(() => {});
+        },
         executable: process.execPath,
         entry: fileURLToPath(new URL("./armadad.js", import.meta.url)),
         database: process.env.ARMADA_DESKTOP_DATABASE ?? join(dataDir, "fleet.sqlite"),
@@ -60,7 +96,7 @@ void app.whenReady().then(async () => {
     };
     // The app's Restart (the Plugins screen) ends the daemon with RESTART_EXIT_CODE: start it again.
     const supervise = (child: DaemonProcess) =>
-      void child.exited.then(async ({ code }) => {
+      void child.exited.then(async ({ code, signal }) => {
         if (quitting) return;
         if (code === RESTART_EXIT_CODE) {
           try {
@@ -69,33 +105,21 @@ void app.whenReady().then(async () => {
             supervise(daemon as DaemonProcess);
             if (next.url !== address.url) {
               address = next;
-              await window?.loadURL(appUrl(next));
+              await load(appUrl(next));
             }
             return;
-          } catch {
+          } catch (error) {
             if (quitting) return;
+            console.error(
+              `Armada: could not restart the daemon: ${error instanceof Error ? error.message : String(error)}`,
+            );
           }
         }
-        console.error("Armada: the daemon stopped unexpectedly.");
+        console.error(`Armada: the daemon stopped unexpectedly (${signal ? `signal ${signal}` : `code ${code}`}).`);
         exitCode = 1;
         app.quit();
       });
     supervise(daemon as DaemonProcess);
-    window = new BrowserWindow({
-      width: 1280,
-      height: 860,
-      minWidth: 800,
-      minHeight: 560,
-      show: false,
-      title: "Armada",
-      icon: ICON,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true,
-        preload: fileURLToPath(new URL("../preload/preload.cjs", import.meta.url)),
-      },
-    });
     // The app's notifications (THE-2055): a click brings the window forward, the dock counts those not yet read.
     // Only the app's own window, from a page of the daemon's origin (never a frame of another).
     const own = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) =>
@@ -144,13 +168,10 @@ void app.whenReady().then(async () => {
     window.webContents.session.setPermissionRequestHandler((_contents, permission, callback, details) =>
       callback(permission === "notifications" && fromApp(details.requestingUrl, address.url)),
     );
-    window.once("ready-to-show", () => window?.show());
-    await window.loadURL(appUrl(address));
-  } catch {
+    await load(appUrl(address));
+  } catch (error) {
     if (quitting) return;
-    console.error(
-      "Armada: could not open the app. Check ARMADA_DESKTOP_PROJECTS and ARMADA_DESKTOP_DATABASE; see packages/desktop/README.md.",
-    );
+    console.error(`Armada: could not open the app: ${error instanceof Error ? error.message : String(error)}`);
     exitCode = 1;
     app.quit();
   }
