@@ -79,6 +79,7 @@ export function Room({
   zone?: string;
 }) {
   const { projects, fleets, logs, status, credentials } = useDaemon();
+  const client = useDaemonClient();
   const [clock, setClock] = useState(Date.now);
   useEffect(() => {
     const timer = setInterval(() => setClock(Date.now()), 30_000);
@@ -100,6 +101,7 @@ export function Room({
   return (
     <ProjectRoom
       key={project.id}
+      client={client}
       project={project}
       snapshot={fleets[project.id]}
       events={logs[project.id]?.events}
@@ -113,6 +115,7 @@ export function Room({
 }
 
 interface RoomProps {
+  client?: import("@/protocol/client").DaemonClient;
   project: { id: string; name: string; repository: string };
   snapshot: { state: unknown } | undefined;
   live: boolean;
@@ -135,6 +138,7 @@ const NO_EVENTS: readonly ProtocolEvent[] = [];
 /** The room on a given conversation: what `Room` draws, and what a test renders with a synthetic one. */
 export function RoomView({
   project,
+  client,
   snapshot,
   live,
   now,
@@ -347,6 +351,7 @@ export function RoomView({
           {agent !== null && (
             <AgentLane
               lane={lane}
+              client={client}
               project={project}
               ticket={agent}
               state={state}
@@ -428,7 +433,7 @@ export function RoomView({
                 </div>
               </>
             ) : (
-              <Log events={events} now={now} zone={zone} />
+              <Log client={client} project={project.id} events={events} now={now} zone={zone} />
             )}
           </Panel>
         </div>

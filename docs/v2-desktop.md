@@ -572,3 +572,42 @@ is unchanged. Optional snapshot `readers.linear` carries UTC-hour request count,
 last numeric complexity/rate-limit headers and pause-until; older clients ignore it.
 About displays the sum of current-hour tracker read requests across projects,
 including failed requests and pagination (connection probes and writes are excluded).
+
+
+### Large-log subscriptions (THE-2116, protocol minor 21)
+
+A fresh `project.subscribe` (`after: 0`), or a cursor more than 2,048 project
+events behind, begins with the current folded snapshot on `project.subscribed`
+and an empty `events` frame at that snapshot's cursor. Earlier events remain
+available through on-demand history/session reads. A recent cursor replays
+ordered JSON event pages of at most 1 MiB (UTF-8 bytes), with `more: true` until
+the final page. The final authoritative snapshot is sent once; if necessary it
+is a separate empty-event frame. Snapshots are indivisible and may exceed the
+event-page limit. An event too large for one page falls back to the snapshot.
+Older same-major apps receive a snapshot instead of a large partial replay.
+
+Checkpoint events retain only their envelope and `{ checkpoint: null }` on the
+fleet stream. The full payload remains in SQLite for folding and conversation
+recovery; the cursor notification keeps the room's on-demand `chat.read` fresh.
+Conversation content uses the existing chat read/live subscriptions.
+
+Each socket drains to 256 KiB before another replay frame or queued reply is
+sent. One blocked subscription coalesces later commits until it drains, then
+reads from its pinned cursor. Ten seconds without drain closes with code 4008
+and `Replay drain timed out`; the ordinary 8 MiB slow-client guard also closes
+with code 4008 and `Client could not drain daemon updates`. The app displays the
+close reason, retries up to five unsuccessful connections, then says `Daemon
+refused the connection: <reason>`. A project list alone does not reset that
+counter; completed initial subscriptions do. A healthy daemon restart resumes
+from the last applied cursor.
+
+
+History is fetched only when its pane opens: Session Reports, the room's agent
+lane and Room Log use the one `fleet.history` contract (`project`, optional
+`ticket`, exclusive older `cursor`, `limit` default50/max200). SQLite returns
+newest-first rows; Load earlier asks for the next page. Each response is also
+bounded to1MiB, with an explicit error/retry when a single row is too wide.
+The panes retain loaded rows beside newer live events, without subscribing to
+history or altering the connection cursor. No table is added. History omits
+private checkpoint documents and internal receipts; launch rows are projected
+through the public worker launch schema.

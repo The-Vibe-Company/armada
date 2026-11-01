@@ -169,6 +169,7 @@ describe("the Providers and Connections sections in a browser", () => {
       after: 0,
       snapshot: { seq: 0, state: { rules: RULES } },
     });
+    await receive({ type: "events", project: "harbor", subscriptionId: "sub-1", seq: 0, events: [] });
     await receive({ type: "account.result", id: (await last("account.status")).id, ...account });
     await receive({ type: "plugins.result", id: (await last("plugins.list")).id, plugins: PLUGINS, restartable: true });
     await receive({ type: "providers.catalog", id: (await last("providers.list")).id, providers: PROVIDERS });

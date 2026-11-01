@@ -81,6 +81,15 @@ describe("the Account section in a browser", () => {
       id: "r1",
       projects: [{ id: "harbor", name: "Harbor", repository: "example/harbor" }],
     });
+    const subscription = await last("project.subscribe");
+    await receive({
+      type: "project.subscribed",
+      id: subscription.id,
+      project: "harbor",
+      subscriptionId: "sub-harbor",
+      after: 0,
+    });
+    await receive({ type: "events", project: "harbor", subscriptionId: "sub-harbor", seq: 0, events: [] });
     await receive({ type: "account.result", id: (await last("account.status")).id, signedIn: false, apiUrl: API });
     await button("Sign in").waitFor({ timeout: 2_000 });
   }, 10_000);

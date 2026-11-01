@@ -86,6 +86,16 @@ describe("Add project in a browser", () => {
     await page.goto(`${ORIGIN}${at}`);
     await page.evaluate(() => (window as unknown as { fake: { open(): void } }).fake.open());
     await receive({ type: "projects.result", id: "r1", projects });
+    for (const item of projects as { id: string }[]) {
+      await receive({
+        type: "project.subscribed",
+        id: `sub-${item.id}`,
+        project: item.id,
+        subscriptionId: `sub-${item.id}`,
+        after: 0,
+      });
+      await receive({ type: "events", project: item.id, subscriptionId: `sub-${item.id}`, seq: 0, events: [] });
+    }
   }
 
   /** Add project opened from the bar, Browse answered with `folder`, the daemon's inspection `read` arrived. */
