@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import * as Value from "typebox/value";
 import { z } from "zod";
 import { checkMerge, type MergeEvidence, mergeEvidenceSchema } from "../src/merge/checklist.ts";
+import { refusalLine, refuse } from "../src/merge/refusal.ts";
 import type { Merges } from "../src/merge/service.ts";
 
 export type { MergeEvidence } from "../src/merge/checklist.ts";
@@ -93,13 +94,6 @@ const descriptions: Record<CoordinatorToolName, string> = {
   "rules.set":
     "Patch project routing (ordered labels or when descriptions), defaultRoute, placement, policy and gates (requiredChecks/localCommands) with the revision from fleet.status. Alternatively importFile (absolute local file path) imports V1 routing/profiles/policy once into an unconfigured project; never pass file contents in chat. Placement must be chosen explicitly. A reason is required.",
 };
-const refuse = (code: string, message: string, next: string, extra: JsonObject = {}): JsonObject => ({
-  ok: false,
-  code,
-  message,
-  next,
-  ...extra,
-});
 const output = (details: JsonObject) => ({
   output: [{ type: "text" as const, text: JSON.stringify(details) }],
   details,
@@ -259,9 +253,9 @@ function decide(
         return no(
           closed ? "item_closed" : "no_item",
           closed
-            ? `inbox item #${args.id} was already resolved`
+            ? `inbox item #${args.id} is already answered, use worker.message for a follow-up`
             : `inbox item #${args.id} does not exist in project ${project}`,
-          "inbox.list",
+          closed ? "worker.message" : "inbox.list",
         );
       }
       // Hand-backs require merge.run, launches worker.launch, and owner requests an owner's decision.
@@ -462,7 +456,16 @@ export function nativeTools(
                 "invoke through the coordinator harness",
               ),
             );
-          const key = JSON.stringify([scope.project, api.taskId, api.callId]);
+          // pi assigns a new call identity to a model retry. Answers must keep the
+          // same delivery and receipt identity even if the first outcome was unknown.
+          const answerArgs =
+            name === "inbox.answer"
+              ? { id: (args as JsonObject).id, answer: ((args as JsonObject).answer as string).trim() }
+              : undefined;
+          if (answerArgs) args = answerArgs;
+          const key = answerArgs
+            ? JSON.stringify([scope.project, name, answerArgs.id, digest(answerArgs.answer)])
+            : JSON.stringify([scope.project, api.taskId, api.callId]);
           const input = canonical({ name, args });
           for (const event of events) {
             const receipt = (event.payload as typeof event.payload & { receipt?: Receipt }).receipt;
@@ -532,11 +535,11 @@ export function nativeTools(
           if (name === "merge.check" && options.mergeEvidence) {
             try {
               evidence = await options.mergeEvidence((args as JsonObject).pr as number);
-            } catch {
+            } catch (error) {
               return output(
                 refuse(
-                  "evidence_unavailable",
-                  "merge evidence could not be read",
+                  "forge_unreachable",
+                  refusalLine(error, "merge evidence could not be read"),
                   "retry merge.check after the reader recovers",
                 ),
               );
@@ -550,7 +553,7 @@ export function nativeTools(
             )
               return output(
                 refuse(
-                  "evidence_unavailable",
+                  "forge_unreachable",
                   "merge evidence is malformed, stale or incomplete",
                   "refresh all merge evidence, then merge.check",
                 ),
@@ -639,7 +642,7 @@ export function nativeTools(
                   refuse(
                     "delivery_unconfirmed",
                     "answer delivery is unconfirmed; the inbox item stays open",
-                    "inspect delivery, then retry the same call identity",
+                    "inspect delivery, then retry inbox.answer with the same item id and answer text",
                   ),
                 );
               beforeWrite();
@@ -648,7 +651,7 @@ export function nativeTools(
                 refuse(
                   "delivery_unconfirmed",
                   "answer delivery or its target could not be confirmed; the inbox item stays open",
-                  "inspect delivery, then retry the same call identity",
+                  "inspect delivery, then retry inbox.answer with the same item id and answer text",
                 ),
               );
             }
@@ -662,7 +665,13 @@ export function nativeTools(
               scope.appendEvent(event);
             } catch {
               return output(
-                refuse("write_failed", "the decision was not recorded", `retry ${name} with the same call identity`),
+                refuse(
+                  "write_failed",
+                  "the decision was not recorded",
+                  name === "inbox.answer"
+                    ? "retry inbox.answer with the same item id and answer text"
+                    : `retry ${name} with the same call identity`,
+                ),
               );
             }
           }

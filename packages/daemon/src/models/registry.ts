@@ -34,7 +34,8 @@ export class ModelRegistry {
     keychain: Keychain;
     env?: Env;
     providers?: readonly Provider[];
-    selected?: CoordinatorModel;
+    /** null pins an absent boot selection, including a credential that needs repair. */
+    selected?: CoordinatorModel | null;
   }) {
     this.#keychain = options.keychain;
     this.#env = options.env ?? process.env;

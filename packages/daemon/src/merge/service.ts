@@ -13,6 +13,7 @@ import type { EventInput, FleetEvent } from "../events.ts";
 import { fold, type ProjectTables, type Session } from "../fold.ts";
 import type { PluginRegistry } from "../plugins/registry.ts";
 import { checkMerge, type MergeEvidence } from "./checklist.ts";
+import { MergeFailure, type MergeFailureCode, refusalLine, refuse } from "./refusal.ts";
 
 interface Options {
   registry: PluginRegistry;
@@ -41,12 +42,6 @@ const progressSchema = z.object({
 });
 type Progress = z.infer<typeof progressSchema>;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
-const refuse = (code: string, message: string, next = "fleet.status"): JsonObject => ({
-  ok: false,
-  code,
-  message,
-  next,
-});
 const locks = new WeakMap<PluginRegistry, Set<string>>();
 
 /** Bound reversible local work/cleanup even if a provider does not settle after cancellation.
@@ -101,14 +96,34 @@ export class Merges {
     const settings = this.#options.projects.find((p) => p.id === project);
     const forge = this.#options.registry.get("forge", settings?.forge ?? "github", project);
     const tracker = this.#options.registry.get("tracker", settings?.tracker ?? "linear", project);
-    if (!forge?.inspect || !tracker) throw new Error("Merge providers unavailable");
+    if (!forge?.inspect)
+      throw new MergeFailure(
+        "forge_unreachable",
+        "Forge inspection provider unavailable",
+        "merge.check again after the forge provider is available",
+      );
+    if (!tracker)
+      throw new MergeFailure(
+        "tracker_write_failed",
+        "Tracker provider unavailable",
+        "merge.run again after the tracker provider is available",
+      );
     return { forge, tracker };
   }
   async #inspect(scope: CoordinatorStorage, forge: ForgeProvider, pr: number): Promise<ForgeInspection> {
     scope.readEvents();
     const started = Date.parse(this.#now());
     const signal = AbortSignal.timeout(30_000);
-    const result = forgeInspectionSchema.parse(await forge.inspect?.({ project: scope.project, number: pr, signal }));
+    let result: ForgeInspection;
+    try {
+      result = forgeInspectionSchema.parse(await forge.inspect?.({ project: scope.project, number: pr, signal }));
+    } catch (error) {
+      throw new MergeFailure(
+        "forge_unreachable",
+        refusalLine(error, "Forge evidence unavailable"),
+        "merge.check again after the forge reader recovers",
+      );
+    }
     signal.throwIfAborted();
     scope.readEvents();
     if (
@@ -116,7 +131,11 @@ export class Merges {
       Date.parse(result.observedAt) < started ||
       Date.parse(result.observedAt) > Date.parse(this.#now())
     )
-      throw new Error("Stale or mismatched forge evidence");
+      throw new MergeFailure(
+        "forge_unreachable",
+        "Stale or mismatched forge evidence",
+        "merge.check again after fresh forge evidence is available",
+      );
     return result;
   }
   #guard(
@@ -133,7 +152,11 @@ export class Merges {
       (current.phase !== "ready-to-merge" &&
         !(allowMerged && (current.phase === "merged" || current.phase === "released")))
     )
-      throw new Error("Worker generation changed");
+      throw new MergeFailure(
+        "worker_changed",
+        "Worker generation changed",
+        "fleet.status, then merge.check for the current worker hand-back",
+      );
     return { tables: tables as ProjectTables, session: current };
   }
   #evidence(pull: ForgeInspection, tables: ProjectTables, passed: boolean): MergeEvidence {
@@ -196,55 +219,58 @@ export class Merges {
     if (!result.ok || !tables || !session) return { pull, result, session, rules: tables?.rules };
     const commands = tables.rules?.value.gates?.localCommands ?? [];
     if (pull.behindBy === null)
-      result = {
-        ...result,
-        ok: false,
-        code: "merge_refused",
-        problems: [`GitHub could not compare the head of #${number} with ${pull.baseRef}`],
-      };
+      result = refuse(
+        "forge_unreachable",
+        `GitHub could not compare the head of #${number} with ${pull.baseRef}`,
+        "merge.check again after the forge comparison recovers",
+      );
     else if (pull.behindBy > 0) {
       if (!commands.length)
-        result = {
-          ...result,
-          ok: false,
-          code: "merge_refused",
-          problems: [
-            `the head lacks ${pull.behindBy} commit${pull.behindBy > 1 ? "s" : ""} of ${pull.baseRef}; ask the worker to bring ${pull.baseRef} in, or declare [gates] local_commands in armada.toml so armada merge can test the merge (armada merge --wait updates the branch instead)`,
-          ],
-        };
+        result = refuse(
+          "merge_refused",
+          `The head lacks ${pull.behindBy} commits of ${pull.baseRef}; configure local tests with rules.set gates localCommands`,
+          `worker.message to bring ${pull.baseRef} in and hand back, or rules.set gates localCommands, then merge.check`,
+        );
       else {
         const node = this.#options.registry.get("node", "local", scope.project);
         const checkout = this.#options.projects.find((p) => p.id === scope.project)?.checkout;
         if (!node?.testMerge || !checkout)
-          result = {
-            ...result,
-            ok: false,
-            code: "merge_refused",
-            problems: [`the head lacks commits of ${pull.baseRef} and git is not available to test the merge`],
-          };
+          result = refuse(
+            "local_gate_failed",
+            `The head lacks commits of ${pull.baseRef} and the local test provider or checkout is unavailable`,
+            "merge.check again after the local test provider and project checkout are available",
+          );
         else {
           const testMerge = node.testMerge.bind(node);
           const signal = AbortSignal.timeout(15 * 60_000);
-          const test = await bounded(signal, () =>
-            testMerge({
-              signal,
-              project: scope.project,
-              repository: checkout,
-              number,
-              branch: pull.baseRef,
-              base: pull.base,
-              head: pull.head,
-              commands,
-            }),
-          );
-          scope.readEvents();
-          if (!test.ok)
-            result = {
-              ...result,
-              ok: false,
-              code: "merge_refused",
-              problems: [`the test merge into ${pull.baseRef} failed at \`${test.step}\`:\n  ${test.output}`],
-            };
+          try {
+            const test = await bounded(signal, () =>
+              testMerge({
+                signal,
+                project: scope.project,
+                repository: checkout,
+                number,
+                branch: pull.baseRef,
+                base: pull.base,
+                head: pull.head,
+                commands,
+              }),
+            );
+            scope.readEvents();
+            if (!test.ok)
+              result = refuse(
+                test.step.startsWith("git merge ") ? "base_conflict" : "local_gate_failed",
+                `Local step ${refusalLine(test.step)}: ${refusalLine(test.output, "Local test failed")}`,
+                "worker.message to fix the failed local merge or gate and hand back, then merge.check",
+              );
+          } catch (error) {
+            if (error instanceof MergeFailure) throw error;
+            throw new MergeFailure(
+              "local_gate_failed",
+              refusalLine(error, "Local merge tests failed"),
+              "worker.message to inspect the local gates, then merge.check",
+            );
+          }
         }
       }
     }
@@ -269,7 +295,7 @@ export class Merges {
     locks.set(this.#options.registry, held);
     if (held.has(scope.project))
       return refuse(
-        "merge_locked",
+        "lease_held",
         "another coordinator holds the merge lock",
         "retry merge.check after the active merge finishes",
       );
@@ -321,7 +347,7 @@ export class Merges {
         final.behindBy === null ||
         final.behindBy !== pull.behindBy
       )
-        return refuse("head_or_base_moved", "the head or base moved during the merge checklist", "merge.check");
+        return refuse("head_moved", "the head or base moved during the merge checklist", "merge.check");
       if (!sameRules())
         return refuse("rules_changed", "the project's rules changed since they were read", "merge.check");
       const finalResult = this.#assess(scope, final, true);
@@ -340,10 +366,15 @@ export class Merges {
           beforeWrite: () => {
             this.#guard(scope, progress);
             writeSignal.throwIfAborted();
-            if (!sameRules()) throw new Error("Local gates changed");
-            if (this.#facts(scope)?.holds.length) throw new Error("Merge hold opened");
+            if (!sameRules())
+              throw new MergeFailure("rules_changed", "Local gates changed", "merge.check with the current rules");
             const current = this.#assess(scope, final, true);
-            if (!current.ok) throw new Error("Merge prerequisites changed");
+            if (!current.ok)
+              throw new MergeFailure(
+                current.code as MergeFailureCode,
+                current.reason as string,
+                current.next as string,
+              );
             writeStarted = true;
           },
         });
@@ -353,29 +384,33 @@ export class Merges {
           return result;
         }
         progress.mergeCommit = outcome.mergeCommit ?? null;
-      } catch {
+      } catch (error) {
         if (!writeStarted) {
-          const result = refuse(
-            "merge_refused",
-            "merge prerequisites changed before the forge write",
-            "merge.check with a new call identity",
-          );
+          const result =
+            error instanceof MergeFailure
+              ? error.result()
+              : refuse(
+                  "forge_unreachable",
+                  refusalLine(error, "Forge write could not start"),
+                  "merge.check again after the forge provider recovers, using a new call identity",
+                );
           this.#save(scope, { ...progress, stage: "refused", result });
           return result;
         }
         // Never repeat an unknown write. A later call may confirm the exact GitHub fact.
         return refuse(
           "merge_unconfirmed",
-          "GitHub merge outcome is unconfirmed; no second merge was attempted",
-          "inspect the pull request, then retry merge.run",
+          `GitHub merge outcome is unconfirmed: ${refusalLine(error)}; no second merge was attempted`,
+          "merge.run again after the forge reader recovers to confirm the outcome and finish cleanup",
         );
       }
       return await this.#confirmed(scope, tracker, progress);
-    } catch {
+    } catch (error) {
+      if (error instanceof MergeFailure) return error.result();
       return refuse(
         "merge_unavailable",
-        "merge evidence, writer ownership or cleanup could not be confirmed",
-        "inspect fleet state, then retry merge.run for cleanup or merge.check for evidence",
+        refusalLine(error),
+        "fleet.status, then merge.run for cleanup or merge.check for evidence",
       );
     } finally {
       held.delete(scope.project);
@@ -389,7 +424,7 @@ export class Merges {
         return refuse(
           "merge_unconfirmed",
           "GitHub merge outcome is unconfirmed; no second merge was attempted",
-          "inspect the pull request before continuing",
+          "merge.run again after the forge confirms the pinned head was merged; never repeat an unconfirmed forge write",
         );
       progress = { ...progress, mergeCommit: pull.mergeCommit };
       return this.#confirmed(scope, tracker, progress);
@@ -419,17 +454,26 @@ export class Merges {
       // V1 core/src/merge.ts closeTicket wording; stable UUID prevents duplicate comments on retry.
       const hex = hash(`merged:${scope.project}:${progress.pr}:${progress.head}`).slice(0, 32);
       const commentId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20)}`;
-      await tracker.write({
-        project: scope.project,
-        ticket: progress.ticket,
-        state: "completed",
-        signal: AbortSignal.timeout(30_000),
-        commentId,
-        beforeWrite: () => {
-          this.#guard(scope, progress, true);
-        },
-        comment: `Agent status: merged — PR #${progress.pr} squash-merged into ${progress.baseRef} as ${progress.mergeCommit ?? "unknown"}, head ${progress.head}`,
-      });
+      try {
+        await tracker.write({
+          project: scope.project,
+          ticket: progress.ticket,
+          state: "completed",
+          signal: AbortSignal.timeout(30_000),
+          commentId,
+          beforeWrite: () => {
+            this.#guard(scope, progress, true);
+          },
+          comment: `Agent status: merged — PR #${progress.pr} squash-merged into ${progress.baseRef} as ${progress.mergeCommit ?? "unknown"}, head ${progress.head}`,
+        });
+      } catch (error) {
+        if (error instanceof MergeFailure) throw error;
+        throw new MergeFailure(
+          "tracker_write_failed",
+          `Merged #${progress.pr}; ${refusalLine(error, "Tracker write failed")}`,
+          "merge.run again after the tracker recovers to finish cleanup; the confirmed merge will not be repeated",
+        );
+      }
       this.#guard(scope, progress, true);
       progress = { ...progress, stage: "tracker" };
       this.#save(scope, progress);

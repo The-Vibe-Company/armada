@@ -1,16 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { type ClientMessage, type Plugin, PROTOCOL_VERSION } from "@armada/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
-import { routeOf, type SettingsSection } from "../src/lib/route";
+import { routeOf, type SettingsSection, settingsHref } from "../src/lib/route";
 import { configFields, configValue } from "../src/plugins/schema";
 import { createDaemonClient, NO_PLUGINS, type SocketLike, UNCONFIRMED } from "../src/protocol/client";
 import { DaemonProvider } from "../src/protocol/store";
 import { Settings } from "../src/screens/Settings";
 
-// The Settings page (THE-2069) on a synthetic catalog, as the daemon lists it
-// over a fake socket: its route table and nav, then Providers (the Plugins
-// screen of THE-2019 moved in): the groups, the switches, the folded config
-// forms, a switch's message, the restart notice, and the list after a fake restart.
+// The Settings page (THE-2069, THE-2075) on a synthetic catalog, as the daemon
+// lists it over a fake socket: its route table and grouped nav, then the raw
+// plugin list (the Plugins screen of THE-2019, under About › Advanced since
+// THE-2075): the groups, the switches, the folded config forms, a switch's
+// message, the restart notice, and the list after a fake restart.
 
 const V = PROTOCOL_VERSION;
 
@@ -126,18 +127,18 @@ function setup(minor: number = V.minor) {
     socket().receive({ type: "projects.result", version: { ...V, minor }, id: "r1", projects: [] });
   };
   connect();
-  const render = (section: SettingsSection = "providers") =>
+  const render = (section: SettingsSection = "about", detail?: string) =>
     renderToStaticMarkup(
       <DaemonProvider client={client}>
-        <Settings section={section} address="ws://127.0.0.1:4824/" onReload={() => {}} />
+        <Settings section={section} detail={detail} address="ws://127.0.0.1:4824/" onReload={() => {}} />
       </DaemonProvider>,
     );
   return { client, socket, connect, timers, render };
 }
 
-/** The list as it reads: each group's header, then each row's plugin, state on its dot and switch. */
+/** About › Advanced's plugin list as it reads: each group's header, then each row's plugin, state on its dot and switch. */
 function rows(html: string) {
-  return html
+  return (html.split('data-folded="Advanced"')[1] ?? "")
     .split(/(?=<h2\b|<div data-plugin=)/)
     .slice(1)
     .map((block) => {
@@ -161,18 +162,39 @@ const nav = (html: string) =>
     return `${href}${a[0].includes('aria-current="page"') ? " (current)" : ""}`;
   });
 
-test("the address names a section of the settings; the Plugins screen's old one lands on Providers", () => {
+test("the address names a section of the settings and its open card; old addresses are replaced", () => {
   expect(routeOf("#/settings")).toEqual({ kind: "settings", section: "coordinator" });
   expect(routeOf("#/settings/")).toEqual({ kind: "settings", section: "coordinator" });
-  for (const section of ["coordinator", "providers", "account", "about"] as const)
+  for (const section of ["coordinator", "providers", "connections", "about"] as const)
     expect(routeOf(`#/settings/${section}`)).toEqual({ kind: "settings", section });
   expect(routeOf("#/settings/elsewhere")).toEqual({ kind: "settings", section: "coordinator" });
-  expect(routeOf("#/settings/providers/more")).toEqual({ kind: "home" });
-  // One `location.replace` (useRoute) to the providers' address; providers until it lands.
+  // An agent's card, its id encoded (`plugin/kind` when a plugin gives several).
+  expect(routeOf("#/settings/providers/codex")).toEqual({ kind: "settings", section: "providers", detail: "codex" });
+  expect(routeOf("#/settings/providers/skiff%2Fdeep")).toEqual({
+    kind: "settings",
+    section: "providers",
+    detail: "skiff/deep",
+  });
+  expect(settingsHref("providers", "skiff/deep")).toBe("#/settings/providers/skiff%2Fdeep");
+  expect(routeOf("#/settings/connections/github")).toEqual({
+    kind: "settings",
+    section: "connections",
+    detail: "github",
+  });
+  expect(routeOf("#/settings/connections/gitlab")).toEqual({ kind: "settings", section: "connections" });
+  expect(routeOf("#/settings/about/more")).toEqual({ kind: "home" });
+  expect(routeOf("#/settings/providers/codex/more")).toEqual({ kind: "home" });
+  // One `location.replace` (useRoute) to the new address; the section until it lands.
   expect(routeOf("#/plugins")).toEqual({ kind: "settings", section: "providers", redirect: "#/settings/providers" });
+  expect(routeOf("#/settings/account")).toEqual({
+    kind: "settings",
+    section: "connections",
+    detail: "armada",
+    redirect: "#/settings/connections/armada",
+  });
 });
 
-test("the nav lists every section and marks the one shown, beside its content, under one title", () => {
+test("the nav groups its rows and marks the one shown, beside its content, under one title and its breadcrumb", () => {
   const { socket, render } = setup();
   socket().receive({
     type: "plugins.result",
@@ -180,24 +202,41 @@ test("the nav lists every section and marks the one shown, beside its content, u
     plugins: catalog,
     restartable: true,
   });
-  for (const section of ["coordinator", "providers", "account", "about"] as const) {
-    const html = render(section);
-    expect(nav(html)).toEqual(
-      ["coordinator", "providers", "account", "about"].map(
-        (s) => `#/settings/${s}${s === section ? " (current)" : ""}`,
-      ),
-    );
-    // Only the current section is a tab stop: the arrow keys move between the others.
+  const links = [
+    "#/settings/coordinator",
+    "#/settings/providers",
+    "#/settings/connections/linear",
+    "#/settings/connections/github",
+    "#/settings/connections/armada",
+    "#/settings/about",
+  ];
+  const shown: [SettingsSection, string | undefined, string][] = [
+    ["coordinator", undefined, "#/settings/coordinator"],
+    ["providers", "codex", "#/settings/providers"],
+    ["connections", "github", "#/settings/connections/github"],
+    ["about", undefined, "#/settings/about"],
+  ];
+  for (const [section, detail, current] of shown) {
+    const html = render(section, detail);
+    expect(nav(html)).toEqual(links.map((l) => `${l}${l === current ? " (current)" : ""}`));
+    // Only the current row is a tab stop: the arrow keys move between the others.
     expect(html.match(/<a\b[^>]*tabindex="0"[^>]*>/g)).toHaveLength(1);
     expect(html.match(/<h1\b[^>]*>(.*?)<\/h1>/g)).toEqual([expect.stringContaining(">Settings</h1>")]);
+    expect(html).toMatch(/aria-label="Settings breadcrumb".*Settings<\/li><li aria-hidden="true">\/<\/li>/);
   }
-  expect(render("account")).toMatch(/Account.*Reading the sign-in….*<button[^>]*disabled=""[^>]*>Sign in<\/button>/);
+  expect(render("connections", "armada")).toMatch(
+    /Account.*Reading the sign-in….*<button[^>]*disabled=""[^>]*>Sign in<\/button>/,
+  );
   const about = render("about");
   expect(about).toContain("ws://127.0.0.1:4824/");
   expect(about).toMatch(/data-protocol[^>]*>.*>1\.\d+<.*daemon.*>1\.\d+</);
+  // The word plugin: under About's folded Advanced, nowhere else.
+  for (const [section, detail] of shown.filter(([s]) => s !== "about"))
+    expect(render(section, detail).replace(/<[^>]+>/g, " ")).not.toMatch(/plugin/i);
+  expect(about.split('data-folded="Advanced"')[0]?.replace(/<[^>]+>/g, " ")).not.toMatch(/plugin/i);
 });
 
-test("Providers lists the catalog by seam, with each plugin's switch, state on a dot and folded settings", () => {
+test("About › Advanced lists the plugins by seam, with each one's switch, state on a dot and folded settings", () => {
   const { socket, render } = setup();
   expect(socket().last("plugins.list")).toBeDefined();
   socket().receive({
@@ -219,12 +258,11 @@ test("Providers lists the catalog by seam, with each plugin's switch, state on a
     "Other (1)",
     "  hello | Loaded text-green bg-green | on",
   ]);
-  expect(html).toContain("5 plugins");
-  expect(html).toContain("1 refused");
   expect(html).toContain("pluginApi ^9.0.0 excludes daemon Plugin API 0.1.0");
-  // The anatomy: one h1, the title, under the facts line.
-  expect(html.match(/<h1\b/g)).toHaveLength(1);
-  expect(html).toMatch(/<header[^>]*>(?:(?!<\/header>).)*5 plugins(?:(?!<\/header>).)*<h1[^>]*>Settings<\/h1>/);
+  // Folded until opened, kept in the page.
+  expect(html).toMatch(
+    /<button type="button" aria-expanded="false" aria-controls="([^"]+)"[^>]*>.*Advanced<\/button><\/h2><div id="\1" hidden=""/,
+  );
   // Skiff's form, from its schema, folded below its row until opened: each field labelled, typed and filled with the saved value or the default.
   const skiff = html.split('data-plugin="skiff"')[1]?.split("data-plugin=")[0] ?? "";
   expect(skiff).toMatch(
@@ -264,7 +302,7 @@ test("a switch sends its message and says to restart; a setting is saved; after 
   await switched;
   let html = render();
   expect(rows(html)).toContain("  dinghy | Restart to apply text-amber bg-amber | on");
-  expect(html).toMatch(/data-restart-notice[^>]*>.*Restart to apply\..*One plugin changed since the daemon started\./);
+  expect(html).toMatch(/data-restart-notice[^>]*>.*Restart to apply\..*One setting changed since the daemon started\./);
   expect(html).toMatch(/data-restart-notice.*>Restart<\/button>/);
 
   // A config is sent as the form's values say; the daemon's refusal comes back as the promise's.
