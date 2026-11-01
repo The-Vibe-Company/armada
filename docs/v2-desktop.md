@@ -75,6 +75,8 @@ The coordinator sees the fleet through tools, not through a skill telling it to 
 
 The daemon wakes the coordinator automatically on fleet events: worker hand-backs, questions and plans; owner answers; stopped, silent or unstarted workers; deploy and job notices; in-flight pull request checks turning green or red and confirmed merges; refused merge runs; holds added or cleared by someone else; and default-branch health changes. A fixed ten-second window coalesces changes into one `Fleet wake-up:` input. Durable `coordinator.wakeup` keys and idempotent conversation admission survive restart; running turns receive the input as a steer, and owner messages can still steer that turn. The room shows a quiet `Woke:` row, never an owner bubble; a turn that ends without a message leaves only its Woke row (tool progress streams while it runs). `merge.run` and `worker.launch` stream their stages through tool details. Still-open unanswered items receive reminders only after `policy.coordinatorMinutes` (V1 `coordinator_minutes`, default 10; 0 disables reminders), at most once per `policy.quietMinutes` (default 45). Waiting-for-answer phases do not count as silence. Protocol minor 11 adds wake rows and tool progress; older clients keep their existing chat vocabulary.
 
+The `liveness` wake kind is a progress watchdog for live workers: pure signals count repeated report lines, quiet heartbeats, sustained work without progress, and a stationary shipping head with red checks. Working runtimes receive twice the elapsed-time threshold. Only suspicious sessions supply a masked UTF-8 transcript tail (at most 4 KB) and their last three reports to a single read-only model completion with no tools. The judge defaults to the project's coordinator model; `policy.watchdogModel: { provider, model }` selects another available model in the same registry. It runs at most once per session per `policy.silenceMinutes`, with durable cadence across restart. `looping` and `drifting` verdicts open one notice per progress episode and doubling level, carrying bounded evidence into the room's `Woke:` row. A different report line, phase change or PR head move closes it; repeated identical reports do not. `progressing`, `stuck`, model errors and unavailable transcripts never invent a loop notice. An unsupported transcript seam supplies an empty tail. Errors warn without a notice. The coordinator decides whether to send a fact/decision through `worker.message` or relaunch; the judge cannot mutate or stop a worker. Protocol minor 20 adds these notices and the optional watchdog model policy; earlier clients retain their previous vocabulary.
+
 ### Nodes
 
 A node is where sessions run: `local` (the daemon's own machine) or `boat` (a VM created through boat.dev's TypeScript SDK). A node exposes the same small interface: prepare a workspace, start a worker CLI in a PTY, deliver a message, observe, stop. The boat node receives the project's secrets and rules from the daemon at launch over the sandbox's command channel and never stores Armada state. The coordinator itself can run on a boat node: the daemon then relays its tools' calls and keeps the log; the VM holds only the pi process.
@@ -503,6 +505,16 @@ with no schema migration or new route. Legacy report rows without that identity
 are not attributed to a current worker; its generation-bound inbox and heartbeat
 remain readable. A delayed report from an older claim cannot change its replacement.
 
+GitHub overnight reading (THE-2111): active-ticket pull requests ingest review
+and PR discussion comments, unresolved/resolved threads, merge conflicts and
+pinned behind-base comparisons. Per-PR `armada.github-reader` v1 checkpoints
+retain cursors, conditional reads and independent failure windows. 404 retries;
+410 drops immediately; 24 hours of continuous failures abandons and names a PR.
+Forge polling follows session activity (30 seconds, otherwise five minutes),
+with GitHub cooldowns and durable doubling backoff shown in readiness. External
+comments reach the current worker through keyed delivery, suppressing its own
+PR-author account; conflict/behind candidates belong to the coordinator Waker.
+Protocol minor 18 adds these events and optional PR unresolved/behind facts.
 
 Worker briefs (THE-2096, protocol minor 16) include the ticket, the parent
 specification's title and description (up to 4 KiB), repository instructions

@@ -10,6 +10,7 @@ import {
   type ModelRef,
   section,
 } from "@earendil-works/pi-durable";
+import { judgeProgress } from "../src/liveness/judge.ts";
 import type { EventStore } from "../src/store.ts";
 import { type NativeToolOptions, nativeTools } from "./native.ts";
 import { openCoordinatorStorage } from "./storage.ts";
@@ -127,6 +128,14 @@ export class Coordinators {
         conversation,
         clock: options.wakeClock,
         now,
+        progress: {
+          judge: judgeProgress(options.models, async () => {
+            const model = (await conversation.agent(BACKGROUND_CONTEXT)).model;
+            if (!model) throw new Error("Coordinator model unavailable");
+            return model;
+          }),
+          transcript: (session) => options.native?.workers?.transcript(options.project, session) ?? Promise.resolve(""),
+        },
       });
       return { harness, conversation, waker };
     } catch (error) {

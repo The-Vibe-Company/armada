@@ -470,6 +470,14 @@ export class LocalNode implements NodeProvider {
     });
   }
 
+  async transcript(worker: WorkerRef, maxBytes: number): Promise<string> {
+    const record = this.#worker(worker);
+    const bytes = Buffer.from(record.output);
+    let start = Math.max(0, bytes.length - Math.max(0, Math.min(4096, maxBytes)));
+    while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start++;
+    return bytes.subarray(start).toString("utf8");
+  }
+
   async observe(worker: WorkerRef): Promise<WorkerObservation> {
     const record = this.#worker(worker);
     return { state: record.state, reply: record.output };
@@ -703,6 +711,7 @@ export function createLocalNode(options: LocalNodeOptions = {}): NodeProvider {
     launch: node.launch.bind(node),
     deliver: node.deliver.bind(node),
     observe: node.observe.bind(node),
+    transcript: node.transcript.bind(node),
     stop: node.stop.bind(node),
     dispose: node.dispose.bind(node),
   };

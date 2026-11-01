@@ -6,6 +6,7 @@ import { activePhaseSchema, type ProjectTables, type Ticket, type ToolProgress }
 import { z } from "zod";
 import type { EventInput, Json } from "../events.ts";
 import { fold } from "../fold.ts";
+import { maskedTail } from "../liveness/judge.ts";
 import { refuse } from "../merge/refusal.ts";
 import type { PluginRegistry } from "../plugins/registry.ts";
 import type { Account } from "../server/account.ts";
@@ -108,6 +109,9 @@ export class Workers {
   readonly #queues = new Map<string, Promise<unknown>>();
   #closing = false;
   readonly #removing = new Set<string>();
+  readonly #stopForge: () => void;
+  readonly #forgeCursors = new Map<string, number>();
+  #forgeScheduled = false;
   constructor(options: Options) {
     this.#options = options;
     for (const project of options.projects) {
@@ -119,6 +123,63 @@ export class Workers {
             /* Unconfirmed or unmanaged launches remain inspectable, never adopted. */
           }
       }
+    }
+    const scan = () => {
+      if (this.#closing || this.#forgeScheduled) return;
+      this.#forgeScheduled = true;
+      queueMicrotask(() => {
+        void this.#forgeMessages()
+          .catch(() => {})
+          .finally(() => {
+            this.#forgeScheduled = false;
+          });
+      });
+    };
+    this.#stopForge = options.store.subscribe(scan);
+    scan();
+  }
+  /** Source IDs plus the captured session fence replay and prevent notifying a replacement. */
+  async #forgeMessages() {
+    for (const project of this.#options.projects) {
+      const events = this.#options.store.readSince(0, project.id);
+      let cursor = this.#forgeCursors.get(project.id) ?? 0;
+      let failedAt: number | undefined;
+      for (let index = 0; index < events.length && !this.#closing; index++) {
+        const event = events[index]!;
+        if (event.seq <= cursor) continue;
+        cursor = event.seq;
+        if (event.kind !== "pull-request.commented" && event.kind !== "review-thread.opened") continue;
+        const p = event.payload;
+        // PR author is the forge identity of the worker that opened this PR.
+        if (p.repository !== project.repository || !p.worker || p.author.toLowerCase() === p.worker.toLowerCase())
+          continue;
+        const session = fold(events.slice(0, index + 1)).projects[project.id]?.sessions.find(
+          (s) => s.ticket === p.ticket,
+        );
+        if (!session || ended(session.phase) || session.runtime === "tracker") continue;
+        const key = `forge:${hash(JSON.stringify([project.id, session.session, p.pr, p.comment, p.version ?? p.at]))}`;
+        try {
+          await this.tool(
+            project.id,
+            "worker.message",
+            {
+              ticket: p.ticket,
+              session: session.session,
+              message: `GitHub review from ${p.author} on PR #${p.pr}:\n${p.body}\n${p.url}`,
+            },
+            key,
+            () => {
+              const current = this.#tables(project.id)?.sessions.find((s) => s.ticket === p.ticket);
+              if (this.#closing || !current || current.session !== session.session || ended(current.phase))
+                throw new WorkerRefusal("Worker generation changed; review input skipped");
+            },
+          );
+        } catch {
+          const current = this.#tables(project.id)?.sessions.find((s) => s.ticket === p.ticket);
+          if (current?.session === session.session && !ended(current.phase)) failedAt ??= event.seq;
+        }
+      }
+      this.#forgeCursors.set(project.id, failedAt ? failedAt - 1 : cursor);
     }
   }
   #at() {
@@ -1029,6 +1090,17 @@ export class Workers {
     });
   }
 
+  /** Read only the pinned generation; unsupported runtime tails are empty. */
+  async transcript(project: string, session: { ticket: string; session: string; generation: number }): Promise<string> {
+    const row = this.#row(project, session.ticket);
+    if (row.ref.session !== session.session || row.ref.generation !== session.generation)
+      throw new WorkerRefusal("Transcript generation changed");
+    this.#check(row.ref);
+    const tail = (await row.runtime.transcript?.(row.ref, 4096)) ?? "";
+    this.#check(row.ref);
+    return maskedTail(tail, row.mask);
+  }
+
   async observe(project: string, ticket: string): Promise<WorkerObservation> {
     const row = this.#row(project, ticket);
     const previous = this.#reads.get(row.ref.session);
@@ -1217,6 +1289,7 @@ export class Workers {
 
   async close() {
     this.#closing = true;
+    this.#stopForge();
     await Promise.allSettled([...this.#queues.values()]);
     // Shutdown attempts every owned generation even if one provider is stuck or fails.
     const results = await Promise.allSettled(
