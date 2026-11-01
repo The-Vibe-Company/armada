@@ -112,6 +112,7 @@ export class Workers {
   readonly #stopForge: () => void;
   readonly #forgeCursors = new Map<string, number>();
   #forgeScheduled = false;
+  #forgeDirty = false;
   constructor(options: Options) {
     this.#options = options;
     this.#outbox = new Deliveries({
@@ -141,13 +142,19 @@ export class Workers {
       }
     }
     const scan = () => {
-      if (this.#closing || this.#forgeScheduled) return;
+      if (this.#closing) return;
+      if (this.#forgeScheduled) {
+        this.#forgeDirty = true;
+        return;
+      }
       this.#forgeScheduled = true;
+      this.#forgeDirty = false;
       queueMicrotask(() => {
         void this.#forgeMessages()
           .catch(() => {})
           .finally(() => {
             this.#forgeScheduled = false;
+            if (this.#forgeDirty) scan();
           });
       });
     };
