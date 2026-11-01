@@ -2,6 +2,7 @@ import { lazy, type ReactNode, Suspense } from "react";
 import { sessionsInFlight } from "@/fleet/sessions";
 import { fleetOf } from "@/fleet/state";
 import { projectHref, useRoute } from "@/lib/route";
+import { useArrivals } from "@/projects/arrivals";
 import type { ConnectionStatus } from "@/protocol/client";
 import { useDaemon } from "@/protocol/store";
 import { useSessionRoute } from "@/session/route";
@@ -34,6 +35,8 @@ export function Sidebar() {
   const home = route.kind === "home" && !session;
   // The room on screen reads its own conversation, and its project has nothing unread; not under an agent's page.
   const open = route.kind === "project" && !session && !route.agent ? route.id : null;
+  // A project added from the hangar (THE-2081): its line fades in once.
+  const arrived = useArrivals(projects);
   const lines = (badges?: Badges): ReactNode =>
     projects?.map((p) => {
       const fleet = fleets[p.id];
@@ -42,9 +45,10 @@ export function Sidebar() {
         <a
           key={p.id}
           href={projectHref(p.id)}
-          className={`${item} ${current}`}
+          className={`${item} ${current}${arrived.has(p.id) ? " arrive" : ""}`}
           aria-current={(route.kind === "project" || route.kind === "rules") && route.id === p.id ? "page" : undefined}
           title={p.repository}
+          data-arrived={arrived.has(p.id) || undefined}
         >
           <span className="min-w-0 flex-1 truncate">{p.name}</span>
           {badges?.(p.id, state)}

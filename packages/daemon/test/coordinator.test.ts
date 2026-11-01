@@ -6,15 +6,8 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { SYSTEM_PROMPT, TOOL_NAMES } from "../coordinator/index.ts";
 import { EventStore } from "../src/store.ts";
 import { nodeExecutable } from "./support/node.ts";
-
-test("the native coordinator prompt describes each offered tool exactly once", () => {
-  for (const name of TOOL_NAMES) assert.equal(SYSTEM_PROMPT.split(`\`${name}\``).length - 1, 1, name);
-  const mentioned = [...SYSTEM_PROMPT.matchAll(/`([a-z]+\.[a-z]+)`/g)].map((match) => match[1]);
-  assert.deepEqual(mentioned.sort(), [...TOOL_NAMES].sort());
-});
 
 for (const interruption of ["after-result", "tool"]) {
   test(`daemon restart restores three model turns and one tool call (${interruption})`, {

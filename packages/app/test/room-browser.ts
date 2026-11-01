@@ -12,7 +12,7 @@ const ORIGIN = "http://room-panel.test";
 const ROOT = resolve(import.meta.dir, "..");
 
 /** The app's own stylesheet, built for the classes the page's bundle names. */
-async function stylesFor(bundle: string): Promise<string> {
+export async function stylesFor(bundle: string): Promise<string> {
   const tailwind = dirname(Bun.resolveSync("tailwindcss/package.json", ROOT));
   const compiler = await compile(readFileSync(join(ROOT, "src/styles.css"), "utf8"), {
     base: join(ROOT, "src"),

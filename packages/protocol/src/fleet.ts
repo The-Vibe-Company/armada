@@ -55,19 +55,7 @@ const pullRequestSchema = z.object({
   unresolvedThreads: integer.optional(),
 });
 export type PullRequest = z.infer<typeof pullRequestSchema>;
-const githubPullRequestSchema = pullRequestSchema.extend({
-  repository: text,
-  title: text,
-  url: text,
-  headRef: text,
-  draft: z.boolean(),
-  review: z.enum(["none", "approved", "changes_requested", "review_required"]),
-  checks: z.array(z.object({ name: text, state: ciSchema, runId: integer.optional(), runAttempt: integer.optional() })),
-  checksComplete: z.boolean(),
-  author: text.optional(),
-  failingChecks: z.array(text).optional(),
-});
-export type GithubPullRequest = z.infer<typeof githubPullRequestSchema>;
+export type GithubPullRequest = EventPayloads["pull-request.opened"];
 const sessionRefSchema = z.object({
   ticket: text,
   /** Unique for each claim; never reuse a runtime handle as a generation. */
@@ -99,80 +87,102 @@ const queuedSchema = sessionRefSchema.extend({ id: text, pr: integer, head: text
 const idSchema = z.object({ id: text });
 const reasonSchema = idSchema.extend({ reason: text });
 const decisionSchema = z.object({ decision: z.enum(["approved", "changes-requested"]), note: text });
-const forgeCommentSchema = z.object({
-  key: text,
-  repository: text,
-  ticket: text,
-  pr: integer,
-  head: text,
-  author: text,
-  body: z.string().max(600),
-  url: text,
-  at: text,
-  comment: text,
-  version: text.optional(),
-  worker: text.optional(),
-});
-const reviewThreadSchema = forgeCommentSchema.extend({
-  thread: text,
-  path: text,
-  line: integer.nullable(),
-  unresolvedThreads: integer,
-});
-
-/** The single vocabulary for events appended by daemon adapters and folded offline. */
-export const eventPayloadSchemas = {
-  "ticket.seen": ticketSchema,
-  "pull-request.seen": pullRequestSchema,
-  "session.claimed": sessionRefSchema.extend({ generation: integer.min(1), owner: text, runtime: text, handle: text }),
-  "session.reported": sessionRefSchema.extend({
-    phase: activePhaseSchema,
-    reason: text,
-    stage: shippingStageSchema.optional(),
-  }),
-  "session.heartbeat": sessionRefSchema,
-  "session.runtime-observed": sessionRefSchema.extend({
-    generation: integer.min(1),
-    state: z.enum(["starting", "running", "stopped", "failed", "unknown"]),
-    activity: z.enum(["working", "idle"]).optional(),
-  }),
-  "session.released": sessionRefSchema.extend({ reason: text }),
-  "inbox.opened": inboxRequestSchema,
-  "inbox.answered": idSchema.extend({ answer: text }),
-  "merge.queued": queuedSchema,
-  "merge.started": idSchema,
-  "merge.refused": reasonSchema,
-  "merge.canceled": reasonSchema,
-  "merge.confirmed": queuedSchema,
-  "hold.opened": reasonSchema,
-  "hold.cleared": reasonSchema,
-  "validation.opened": validationRequestSchema,
-  "validation.decided": idSchema.extend(decisionSchema.shape),
-  "coordinator.message": z.object({ role: z.enum(["owner", "coordinator"]), body: text }),
-  "coordinator.checkpoint": z.object({ checkpoint: z.json() }),
-  "ticket.phase-changed": z.object({ ticket: text, from: phaseSchema.nullable(), to: phaseSchema.nullable() }),
-  "ticket.report-posted": z.object({
+/** The single vocabulary for events appended by daemon adapters and folded offline.
+ * A pure factory lets the app omit payload validators it never reads. */
+export const eventPayloadSchemas = /* @__PURE__ */ payloadSchemas();
+function payloadSchemas() {
+  const githubPullRequestSchema = pullRequestSchema.extend({
+    repository: text,
+    title: text,
+    url: text,
+    headRef: text,
+    draft: z.boolean(),
+    review: z.enum(["none", "approved", "changes_requested", "review_required"]),
+    checks: z.array(
+      z.object({ name: text, state: ciSchema, runId: integer.optional(), runAttempt: integer.optional() }),
+    ),
+    checksComplete: z.boolean(),
+    author: text.optional(),
+    failingChecks: z.array(text).optional(),
+  });
+  const forgeCommentSchema = z.object({
+    key: text,
+    repository: text,
     ticket: text,
+    pr: integer,
+    head: text,
+    author: text,
+    body: z.string().max(600),
+    url: text,
+    at: text,
     comment: text,
     version: text.optional(),
-    updatedAt: text,
-    phase: phaseSchema,
-    summary: text,
-    body: text,
-  }),
-  "pull-request.opened": githubPullRequestSchema,
-  "pull-request.head-moved": githubPullRequestSchema,
-  "pull-request.checks-green": githubPullRequestSchema,
-  "pull-request.checks-red": githubPullRequestSchema,
-  "pull-request.review-changed": githubPullRequestSchema,
-  "pull-request.closed": githubPullRequestSchema,
-  "pull-request.merged": githubPullRequestSchema,
-  "pull-request.commented": forgeCommentSchema,
-  "review-thread.opened": reviewThreadSchema,
-  "review-thread.resolved": reviewThreadSchema,
-  "pull-request.conflicting": githubPullRequestSchema.extend({ pr: integer, key: text }),
-  "pull-request.behind": githubPullRequestSchema.extend({ pr: integer, key: text }),
-} as const;
+    worker: text.optional(),
+  });
+  const reviewThreadSchema = forgeCommentSchema.extend({
+    thread: text,
+    path: text,
+    line: integer.nullable(),
+    unresolvedThreads: integer,
+  });
+  return {
+    "ticket.seen": ticketSchema,
+    "pull-request.seen": pullRequestSchema,
+    "session.claimed": sessionRefSchema.extend({
+      generation: integer.min(1),
+      owner: text,
+      runtime: text,
+      handle: text,
+    }),
+    "session.reported": sessionRefSchema.extend({
+      phase: activePhaseSchema,
+      reason: text,
+      stage: shippingStageSchema.optional(),
+    }),
+    "session.heartbeat": sessionRefSchema,
+    "session.runtime-observed": sessionRefSchema.extend({
+      generation: integer.min(1),
+      state: z.enum(["starting", "running", "stopped", "failed", "unknown"]),
+      activity: z.enum(["working", "idle"]).optional(),
+    }),
+    "session.released": sessionRefSchema.extend({ reason: text }),
+    "inbox.opened": inboxRequestSchema,
+    "inbox.answered": idSchema.extend({ answer: text }),
+    "merge.queued": queuedSchema,
+    "merge.started": idSchema,
+    "merge.refused": reasonSchema,
+    "merge.canceled": reasonSchema,
+    "merge.confirmed": queuedSchema,
+    "hold.opened": reasonSchema,
+    "hold.cleared": reasonSchema,
+    "validation.opened": validationRequestSchema,
+    "validation.decided": idSchema.extend(decisionSchema.shape),
+    "coordinator.message": z.object({ role: z.enum(["owner", "coordinator"]), body: text }),
+    "coordinator.checkpoint": z.object({ checkpoint: z.json() }),
+    "ticket.phase-changed": z.object({ ticket: text, from: phaseSchema.nullable(), to: phaseSchema.nullable() }),
+    "ticket.report-posted": z.object({
+      ticket: text,
+      comment: text,
+      version: text.optional(),
+      updatedAt: text,
+      phase: phaseSchema,
+      summary: text,
+      body: text,
+    }),
+    "pull-request.opened": githubPullRequestSchema,
+    "pull-request.head-moved": githubPullRequestSchema,
+    "pull-request.checks-green": githubPullRequestSchema,
+    "pull-request.checks-red": githubPullRequestSchema,
+    "pull-request.review-changed": githubPullRequestSchema,
+    "pull-request.closed": githubPullRequestSchema,
+    "pull-request.merged": githubPullRequestSchema,
+    "pull-request.commented": forgeCommentSchema,
+    "review-thread.opened": reviewThreadSchema,
+    "review-thread.resolved": reviewThreadSchema,
+    "pull-request.conflicting": githubPullRequestSchema.extend({ pr: integer, key: text }),
+    "pull-request.behind": githubPullRequestSchema.extend({ pr: integer, key: text }),
+  } as const;
+}
 export type EventKind = keyof typeof eventPayloadSchemas;
 export type EventPayloads = { [K in EventKind]: z.infer<(typeof eventPayloadSchemas)[K]> };
 export type EventInput = {
