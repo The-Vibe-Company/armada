@@ -1,13 +1,15 @@
 // The one bridge between the app's window and the shell (THE-2055): the app's
 // notifications bring the window forward on a click, and keep the dock's
 // badge at the count not yet read; the Account settings open Armada's device
-// page in the system browser (THE-2071). The preload exposes it as
+// page in the system browser (THE-2071); the hangar's Add project picks a
+// folder in the system's dialog (THE-2081). The preload exposes it as
 // `window.armadaShell` (packages/app/src/notify/shell.ts); the main process
 // answers only the app's own window.
 
 export const REVEAL_CHANNEL = "armada:reveal";
 export const BADGE_CHANNEL = "armada:badge";
 export const OPEN_EXTERNAL_CHANNEL = "armada:open-external";
+export const PICK_FOLDER_CHANNEL = "armada:pick-folder";
 /** Past this the dock's badge says no more. */
 export const BADGE_MAX = 99;
 
@@ -36,4 +38,10 @@ export function externalUrl(value: unknown, origin: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** The folder the system's dialog chose: its one absolute path, or null when cancelled or not one path. */
+export function pickedFolder(result: { canceled: boolean; filePaths: readonly string[] }): string | null {
+  const [path, ...more] = result.filePaths;
+  return !result.canceled && path && !more.length ? path : null;
 }
