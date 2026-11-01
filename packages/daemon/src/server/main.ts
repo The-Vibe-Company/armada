@@ -74,6 +74,7 @@ try {
         store: daemon.store,
         projects: [project],
         signal: controller.signal,
+        isRoomVisible: (id) => server?.isRoomVisible(id) ?? false,
       });
       readerGroups.set(project.id, readers);
       if (server) {
@@ -193,6 +194,7 @@ try {
           });
           await recovered;
           server = await startServer({
+            onRoomPresence: (id) => readerGroups.get(id)?.activityChanged(id),
             store: daemon.store,
             projects,
             projectRegistry: registry,
