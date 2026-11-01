@@ -5,6 +5,10 @@ import { labelKey } from "./routing.ts";
 const shell = (value: string) => (/^[A-Za-z0-9_./:@=-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`);
 const LIMIT = 48 * 1024 - 1;
 const MARKER = "\n[truncated: section shortened to fit the launch brief]";
+const commentTime = (at: string) => {
+  const time = Date.parse(at);
+  return Number.isNaN(time) ? -Infinity : time;
+};
 const protocol = BUNDLED_SKILLS.find((skill) => skill.name === "armada-worker")?.files.find(
   (file) => file.path === "SKILL.md",
 )?.content;
@@ -109,19 +113,25 @@ export function workerBrief(input: {
         .join("\n\n") || "Read its hand-back before planning.",
       true,
     );
-  for (const comment of (t.comments ?? []).slice(0, 12))
-    add(`## Recorded by ${comment.author} at ${comment.at}`, comment.body, true);
+  const comments = [...(t.comments ?? [])].sort((a, b) => commentTime(b.at) - commentTime(a.at)).slice(0, 6);
+  for (const comment of comments) {
+    const characters = Array.from(comment.body);
+    const marker = "… [truncated]";
+    const excerpt = characters.length > 600 ? characters.slice(0, 600 - marker.length).join("") + marker : comment.body;
+    add(`## Recorded by ${comment.author} at ${comment.at}`, excerpt, true);
+  }
+  if (comments.length) add("## More context", `Read ticket ${t.id} for the rest.`);
   add(
     "## Plan",
     preApproved
-      ? `Plans are pre-approved for ${t.id}: post your plan with \`armada report implementing --message "<plan>"\` and go on.`
-      : `Plans need the coordinator's approval: post your plan with \`armada report awaiting-approval --message "<plan>"\` and wait for its answer.`,
+      ? `Plans are pre-approved for ${t.id}: post your plan with \`armada report implementing --message "progress: <plan>"\` and go on.`
+      : `Plans need the coordinator's approval: post your plan with \`armada report awaiting-approval --message "waiting: <plan; coordinator approval needed>"\` and wait for its answer.`,
   );
   add(
-    "## Reports and hand-back",
+    "## Report commands",
     [
-      `Report each meaningful step with \`armada report <phase> --message "<progress>"\`; during active work run \`armada heartbeat --every 5m --ticket ${t.id} --parent "$PPID" --background\`. Use \`armada ask "<question>"\` for outcome-changing decisions and wait for the answer. Waiting for approval or an answer is legitimate.`,
-      'Run the repository\'s required checks and independent review, push the branch and get every PR check green. Hand back with `armada report ready-to-merge --pr <number> --sha <full 40-character head> --message "<verification and decisions>"`. Never merge. Use `armada release --reason "<why>"` if you cannot finish.',
+      `Use the worker protocol's report vocabulary with \`armada report <phase> --message "<word>: <report>"\`. During active work run \`armada heartbeat --every 5m --ticket ${t.id} --parent "$PPID" --background\`.`,
+      'Hand back with `armada report ready-to-merge --pr <number> --sha <full 40-character head> --message "ready: <verification and decisions>"` after the protocol\'s shipping gates pass. Never merge.',
     ].join("\n\n"),
   );
   const flight = tables.sessions.filter((s) => s.ticket !== t.id && s.phase !== "released" && s.phase !== "merged");

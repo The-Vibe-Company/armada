@@ -129,6 +129,95 @@ test("brief refuses an oversized protected ticket instead of silently cutting it
   assert.throws(() => workerBrief(value), /ticket and worker protocol.*48 KiB/i);
 });
 
+test("brief inlines only the newest six comments, each at most 600 characters, and points to the ticket", () => {
+  const comments = Array.from({ length: 12 }, (_, i) => ({
+    author: `Gardener ${i}`,
+    at: `2030-01-${String(i + 1).padStart(2, "0")}T00:00:00Z`,
+    body: `Comment ${i}: ${"🌳".repeat(700)} END-${i}`,
+  }));
+  const value = input();
+  // Interleaved input catches accidental reliance on provider ordering or slice direction.
+  value.ticket = { ...ticket, comments: comments.filter((_, i) => i % 2).concat(comments.filter((_, i) => !(i % 2))) };
+  const brief = workerBrief(value);
+  const excerpts = [...brief.matchAll(/## Recorded by (.+) at ([^\n]+)\n\n([\s\S]*?)(?=\n\n## |$)/g)];
+  assert.equal(excerpts.length, 6);
+  assert.deepEqual(
+    excerpts.map((m) => m[1]),
+    [11, 10, 9, 8, 7, 6].map((i) => `Gardener ${i}`),
+  );
+  for (const [index, excerpt] of excerpts.entries()) {
+    const body = excerpt[3]!;
+    assert.equal(Array.from(body).length, 600);
+    assert.ok(body.startsWith(`Comment ${11 - index}: `));
+    assert.match(body, /\[truncated\]$/);
+    assert.ok(!body.includes("�"));
+  }
+  assert.match(brief, /Read (?:the )?ticket SEED-2 for the rest/i);
+  assert.deepEqual(
+    value.ticket.comments,
+    comments.filter((_, i) => i % 2).concat(comments.filter((_, i) => !(i % 2))),
+    "rendering must not reorder the ticket's comments",
+  );
+  const short = workerBrief({
+    ...value,
+    ticket: { ...ticket, comments: [{ ...comments[0]!, body: "The soil is ready." }] },
+  });
+  assert.match(short, /\n\nThe soil is ready\.\n\n/);
+  const invalid = workerBrief({
+    ...value,
+    ticket: {
+      ...value.ticket,
+      comments: [{ author: "Unknown date", at: "unknown", body: "Undated comment" }, ...comments],
+    },
+  });
+  assert.deepEqual(
+    [...invalid.matchAll(/## Recorded by (.+) at /g)].map((m) => m[1]),
+    [11, 10, 9, 8, 7, 6].map((i) => `Gardener ${i}`),
+    "an undated comment must not displace any of the newest six dated comments",
+  );
+});
+
+test("the worker skill and assembled brief share one six-word vocabulary mapped to existing phases", () => {
+  const brief = workerBrief(input());
+  const words = ["progress", "waiting", "ready", "blocked", "failed", "dropped"];
+  for (const text of [protocol, brief]) {
+    const vocabularies = [...text.matchAll(/## Report vocabulary\n([\s\S]*?)(?=\n## |$)/g)];
+    assert.equal(vocabularies.length, 1);
+    const vocabulary = vocabularies[0]![1]!;
+    assert.deepEqual(
+      [...vocabulary.matchAll(/^- `([a-z]+)`:/gm)].map((m) => m[1]),
+      words,
+    );
+    for (const phase of [
+      "implementing",
+      "shipping",
+      "awaiting-approval",
+      "awaiting-validation",
+      "ready-to-merge",
+      "blocked",
+    ]) {
+      assert.ok(vocabulary.includes(`\`${phase}\``), `map vocabulary to ${phase}`);
+    }
+    assert.match(vocabulary, /An unfinished draft is blocked, even with green tests/);
+    assert.match(vocabulary, /stay in `implementing` or `shipping`; do not enter `blocked`/);
+    assert.match(vocabulary, /`ready`: reviewed, checks green on the pushed head, review threads resolved/);
+    for (const word of ["failed", "dropped"]) {
+      const definition = vocabulary.match(new RegExp(`^- \`${word}\`: (.+)$`, "m"))?.[1] ?? "";
+      assert.ok(definition.includes(`Use \`blocked\` with \`${word}:\``), `map ${word} to blocked`);
+    }
+    assert.match(vocabulary, /full SHA/);
+    assert.match(vocabulary, /Keep the evidence in the report; the coordinator forwards only the question/);
+    assert.match(vocabulary, /Keep working on what the answer does not change/);
+    assert.equal(text.split("Report a milestone once.").length - 1, 1);
+    assert.equal(text.split("There is no budget of attempts.").length - 1, 1);
+    assert.match(text, /name the interface and who it affects/);
+    const messages = [...text.matchAll(/--message "([^"]+)"/g)].map((m) => m[1] ?? "");
+    assert.ok(messages.length);
+    for (const message of messages)
+      assert.match(message, /^(?:progress|waiting|ready|blocked|failed|dropped|<word>): /);
+  }
+});
+
 test("repository instructions fall back to CLAUDE.md and can be absent", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "armada-brief-missing-"));
   t.after(() => rm(root, { recursive: true, force: true }));
