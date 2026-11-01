@@ -241,6 +241,7 @@ test("the room sends the owner's message to the coordinator and reads its answer
   if (read.type !== "chat.result") return;
   assert.equal(read.coordinator, true);
   assert.deepEqual(reading(read.items), [
+    "line: Coordinator uses faux/room.",
     "owner: Merge #12 first, then #14.",
     "coordinator: Reading the fleet first.",
     "tool fleet.status ok",
@@ -293,7 +294,7 @@ test("the room sends the owner's message to the coordinator and reads its answer
     "coordinator: Telling ORC-1's worker: North.",
   ]);
 
-  // Closed and reopened on the same file: the same conversation, nothing asked of the model.
+  // Closed and reopened on the same file: prior items are retained alongside the new boot line.
   client.ws.close();
   await server.close();
   store.close();
@@ -302,7 +303,12 @@ test("the room sends the owner's message to the coordinator and reads its answer
   server = await startServer({ store, projects, coordinators: [reopened.config] });
   client = await connect(server.wsUrl);
   const restored = await client.ask({ type: "chat.read", project: "orchard" });
-  assert.deepEqual(restored.type === "chat.result" && restored.items, conversation);
+  assert.ok(restored.type === "chat.result");
+  const previousIds = new Set(conversation.map((item) => item.id));
+  assert.deepEqual(
+    restored.items.filter((item) => previousIds.has(item.id)),
+    conversation,
+  );
   assert.equal(reopened.faux.state.callCount, 0);
   client.ws.close();
   await server.close();
@@ -438,7 +444,12 @@ test("Stop preserves pi's committed partial and reasoning with the live id after
   server = await startServer({ store, projects, coordinators: [coordinator([]).config] });
   client = await connect(server.wsUrl);
   const restored = await client.ask({ type: "chat.read", project: "orchard" });
-  assert.deepEqual(restored.type === "chat.result" && restored.items, read.items);
+  assert.ok(restored.type === "chat.result");
+  const previousIds = new Set(read.items.map((item) => item.id));
+  assert.deepEqual(
+    restored.items.filter((item) => previousIds.has(item.id)),
+    read.items,
+  );
 });
 
 test("a message sent while the coordinator works steers it by default, and waits for the run's end when queued", async () => {
