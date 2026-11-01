@@ -18,6 +18,8 @@
     "packages/app": {
       "entry": [
         "test/**/*.test.{ts,tsx}",
+        "test/account-settings-page.tsx",
+        "test/coordinator-settings-page.tsx",
         "test/notify-page.tsx",
         "test/room-live-page.tsx",
         "test/room-panel-page.tsx",
@@ -46,6 +48,22 @@
       "project": ["src/**/*.ts", "test/**/*.ts"]
     },
     "packages/plugins/node-local": {
+      "entry": ["test/**/*.test.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts"]
+    },
+    "packages/plugins/claude": {
+      "entry": ["test/**/*.test.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts"]
+    },
+    "packages/plugins/codex": {
+      "entry": ["test/**/*.test.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts"]
+    },
+    "packages/plugins/opencode": {
+      "entry": ["test/**/*.test.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts"]
+    },
+    "packages/plugins/conductor": {
       "entry": ["test/**/*.test.ts"],
       "project": ["src/**/*.ts", "test/**/*.ts"]
     }
