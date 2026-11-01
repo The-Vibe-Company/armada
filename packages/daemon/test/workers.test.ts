@@ -1264,3 +1264,45 @@ test("project removal waits for a pending launch and then refuses its active wor
   await assert.rejects(removal, /worker in flight/);
   assert.equal(removed, false);
 });
+
+test("transcript reads mask and bound one generation without writes, and unsupported runtimes return empty", async (t) => {
+  let reads = 0;
+  const f = await fixture(t, (node) => ({
+    ...node,
+    async transcript(_ref, maxBytes) {
+      assert.equal(maxBytes, 4096);
+      reads++;
+      return `${"🌱".repeat(3000)}\n${f.token()}\nFailed the same test`;
+    },
+  }));
+  const launched = await f.tools["worker.launch"].execute(
+    { ticket: "SEED-1", brief: "hold" },
+    f.api("transcript-launch"),
+    context,
+  );
+  assert.equal(launched.isError, false);
+  const current = fold(f.daemon.store.readSince(0)).projects[project]?.sessions[0];
+  assert(current);
+  const before = f.daemon.store.sequence;
+  const tail = await f.workers.transcript(project, current);
+  assert.ok(Buffer.byteLength(tail) <= 4096);
+  assert.match(tail, /\[redacted\].*\nFailed the same test/);
+  assert.equal(tail.includes(f.token()), false);
+  assert.equal(tail.includes("�"), false, "UTF-8 boundaries remain intact");
+  assert.equal(f.daemon.store.sequence, before, "a transcript read appends no observation or runtime write");
+  await assert.rejects(
+    f.workers.transcript(project, { ...current, generation: current.generation + 1 }),
+    /generation changed/,
+  );
+  assert.equal(reads, 1, "stale generations cannot read the runtime");
+  const missing = await fixture(t, (node) => ({ ...node, transcript: undefined }));
+  const second = await missing.tools["worker.launch"].execute(
+    { ticket: "SEED-1", brief: "hold" },
+    missing.api("missing-tail"),
+    context,
+  );
+  assert.equal(second.isError, false);
+  const unsupported = fold(missing.daemon.store.readSince(0)).projects[project]?.sessions[0];
+  assert(unsupported);
+  assert.equal(await missing.workers.transcript(project, unsupported), "");
+});

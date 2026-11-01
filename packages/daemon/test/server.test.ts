@@ -654,6 +654,7 @@ test("credential socket writes never expose the key to replies, events or logs",
 // THE-2079 to minor 11 for fleet wake rows, THE-2080 to minor 12 for runtime projects,
 // THE-2072 to minor 13 for hosted Conductor routing, and THE-2096 to minor 16 for routing instructions.
 // THE-2108 to minor 17 for durable worker deliveries.
+// THE-2107 to minor 20 for progress watchdog notices.
 // (the recorded frames have no coordinator attached and are otherwise unchanged).
 test("subscription bytes stay compatible with the recorded daemon vocabulary and folded tables", async (t) => {
   const fixture = new URL("./support/protocol-subscription.json", import.meta.url);
@@ -956,4 +957,64 @@ test("pre-16 clients receive routes without instructions in initial and live sna
   record(2);
   assert.deepEqual(value(await legacy.next()), old);
   assert.deepEqual(value(await modern.next()), expected);
+});
+
+test("pre-20 snapshots hide watchdog notices and policy, current clients receive both initially and live", async (t) => {
+  const store = new EventStore(":memory:");
+  const server = await startServer({ store, projects });
+  const legacy = await connect(server.wsUrl);
+  const modern = await connect(server.wsUrl);
+  t.after(async () => {
+    legacy.ws.terminate();
+    modern.ws.terminate();
+    await server.close();
+    store.close();
+  });
+  const record = (revision: number) => {
+    store.append({
+      project: "orchard",
+      actor: "coordinator",
+      at: hold().at,
+      kind: "coordinator.checkpoint",
+      payload: {
+        checkpoint: {
+          format: "armada.tools",
+          version: 1,
+          type: "rules",
+          rules: {
+            revision,
+            value: { policy: { silenceMinutes: 15, watchdogModel: { provider: "orchard", model: "small" } } },
+          },
+        },
+      },
+    });
+    store.append({
+      project: "orchard",
+      actor: "daemon",
+      at: hold().at,
+      kind: "inbox.opened",
+      payload: { id: `progress-${revision}`, ticket: "ORC-1", kind: "liveness", body: "Looping" },
+    });
+  };
+  const check = (frame: ServerMessage, old: boolean, count: number) => {
+    assert(frame.type === "project.subscribed" || frame.type === "events");
+    assert(frame.snapshot);
+    const state = frame.snapshot.state as unknown as {
+      inbox: { kind: string }[];
+      rules: { value: { policy: Record<string, unknown> } };
+    };
+    assert.equal(state.inbox.filter((i) => i.kind === "liveness").length, old ? 0 : count);
+    assert.equal("watchdogModel" in state.rules.value.policy, !old);
+    assert.equal(state.rules.value.policy.silenceMinutes, 15);
+  };
+  record(1);
+  legacy.send({ type: "project.subscribe", project: "orchard", after: 0, version: { major: 1, minor: 19 } });
+  modern.send({ type: "project.subscribe", project: "orchard", after: 0 });
+  check(await legacy.next(), true, 1);
+  check(await modern.next(), false, 1);
+  await legacy.next();
+  await modern.next();
+  record(2);
+  check(await legacy.next(), true, 2);
+  check(await modern.next(), false, 2);
 });

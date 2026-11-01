@@ -157,6 +157,10 @@ export function codexRuntime(options: Options = {}, node?: NodeProvider): Runtim
         value.sent++;
       }
     },
+    async transcript(ref, maxBytes) {
+      record(ref);
+      return facilities().transcript?.(ref, maxBytes) ?? "";
+    },
     async observe(ref) {
       const value = record(ref);
       if (value.stopped) return { state: "stopped", activity: "idle", ...(value.reply ? { reply: value.reply } : {}) };

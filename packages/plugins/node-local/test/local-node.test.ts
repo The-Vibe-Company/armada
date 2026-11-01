@@ -175,6 +175,12 @@ test("prepares a checked-out worktree and delivers keyed messages to a headless 
       () => node.deliver(worker, "hello", "delivery-1"),
     );
     await eventually(async () => (await node.observe(worker)).reply?.includes("ACK:hello") === true);
+    assert.equal(
+      await node.transcript?.(worker, 6),
+      "hello\n",
+      "transcript reads the bounded output without sending input",
+    );
+    await assert.rejects(node.transcript!({ ...worker, generation: worker.generation + 1 }, 6), /stale|mismatched/i);
     await assert.rejects(
       guarded(
         worker,

@@ -7,6 +7,7 @@ import { z } from "zod";
 import { Deliveries, queueDelivery } from "../deliveries.ts";
 import type { EventInput, Json } from "../events.ts";
 import { fold } from "../fold.ts";
+import { maskedTail } from "../liveness/judge.ts";
 import { refuse } from "../merge/refusal.ts";
 import type { PluginRegistry } from "../plugins/registry.ts";
 import type { Account } from "../server/account.ts";
@@ -1145,6 +1146,17 @@ export class Workers {
         });
       }
     });
+  }
+
+  /** Read only the pinned generation; unsupported runtime tails are empty. */
+  async transcript(project: string, session: { ticket: string; session: string; generation: number }): Promise<string> {
+    const row = this.#row(project, session.ticket);
+    if (row.ref.session !== session.session || row.ref.generation !== session.generation)
+      throw new WorkerRefusal("Transcript generation changed");
+    this.#check(row.ref);
+    const tail = (await row.runtime.transcript?.(row.ref, 4096)) ?? "";
+    this.#check(row.ref);
+    return maskedTail(tail, row.mask);
   }
 
   async observe(project: string, ticket: string): Promise<WorkerObservation> {
