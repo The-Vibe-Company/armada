@@ -8,6 +8,7 @@ import { z } from "zod";
 import { evaluateBudget } from "../budget.ts";
 import type { EventInput, Json } from "../events.ts";
 import { fold } from "../fold.ts";
+import { refuse } from "../merge/refusal.ts";
 import type { PluginRegistry } from "../plugins/registry.ts";
 import type { Account } from "../server/account.ts";
 import type { EventStore } from "../store.ts";
@@ -304,7 +305,7 @@ export class Workers {
           throw new WorkerRefusal(`${action.ticket}'s worker generation changed; nothing was released`);
         if (name === "worker.relaunch") {
           const relaunch = workerToolSchemas["worker.relaunch"].parse(parsed);
-          if (!relaunch.reason.trim()) throw new WorkerRefusal('relaunch needs --reason "<why>"');
+          if (!relaunch.reason.trim()) throw new WorkerRefusal("worker.relaunch needs a reason");
           // V1 cli/src/relaunch.ts: complete preflight before ending the old generation.
           const facts = this.#launchFacts(project, { ...relaunch, branch: row.branch }, row.ref);
           if (facts.bound.needsLaunchToken)
@@ -484,7 +485,11 @@ export class Workers {
                 type: "receipt",
                 key,
                 input,
-                result: { ok: false, code: "authorization_refused" },
+                result: refuse(
+                  "authorization_refused",
+                  "Conductor launch authorization failed",
+                  "worker.launch again after signing in through Settings",
+                ),
               });
             }
             throw new WorkerRefusal(
@@ -599,8 +604,12 @@ export class Workers {
         input,
         result:
           error instanceof WorkerRefusal
-            ? { ok: false, code: "worker_refused", reason: error.message, message: error.message, next: "fleet.status" }
-            : { ok: false, code: "workspace_prepare_failed" },
+            ? refuse("worker_refused", error.message, "fleet.status")
+            : refuse(
+                "workspace_prepare_failed",
+                "Workspace preparation failed before launch",
+                "worker.launch again after the workspace provider recovers",
+              ),
       });
       if (error instanceof WorkerRefusal) throw error;
       throw new Error("Workspace preparation failed before launching a CLI");
@@ -641,7 +650,16 @@ export class Workers {
           kind: "session.released",
           payload: { ticket: worker.ticket, session: worker.session, reason: "Launch refused" },
         });
-        this.#checkpoint(project, { type: "receipt", key, input, result: { ok: false, code: "launch_refused" } });
+        this.#checkpoint(project, {
+          type: "receipt",
+          key,
+          input,
+          result: refuse(
+            "launch_refused",
+            "The runtime refused the launch",
+            "fleet.status, then worker.launch after resolving the runtime refusal",
+          ),
+        });
       }
       // Once a provider was entered, an error without a handle has an unknown native outcome.
       throw error;
@@ -721,7 +739,16 @@ export class Workers {
           .catch(() => {});
       if (node?.dispose) await node.dispose(prepared).catch(() => {});
       await revoke();
-      this.#checkpoint(project, { type: "receipt", key, input, result: { ok: false, code: "launch_failed" } });
+      this.#checkpoint(project, {
+        type: "receipt",
+        key,
+        input,
+        result: refuse(
+          "launch_failed",
+          "Worker launch did not complete",
+          "fleet.status to inspect the worker before worker.relaunch",
+        ),
+      });
       throw error;
     }
     this.#usage(ref, { state: "starting", usage: "unknown" });

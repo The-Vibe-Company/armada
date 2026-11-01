@@ -3,95 +3,10 @@
 // SettingsSidebarNav.tsx, FoldedSettingsSection.tsx) without its scopes,
 // search and environments (Armada has one daemon): a nav of sections, then
 // the section's groups, each a card of rows divided by a hairline, each row a
-// title, a description and one control on the right.
-import { ChevronRight, type LucideIcon } from "lucide-react";
-import { type KeyboardEvent, type ReactNode, useId, useState } from "react";
-import { type SettingsSection as Section, settingsHref } from "@/lib/route";
+// title, a description and one control on the right. The nav itself is Nav.tsx (THE-2075).
+import { ChevronRight } from "lucide-react";
+import { type ReactNode, useId, useState } from "react";
 import { cn } from "@/lib/utils";
-
-export interface NavSection {
-  section: Section;
-  label: string;
-  icon: LucideIcon;
-}
-
-/**
- * One link per section, the current one filled and `aria-current`. The arrow
- * keys move between them (one tab stop, on the current one). When the
- * settings are narrower than 720 px (the shell keeps the window at 720 px or
- * more, so the settings' own width decides) the labels leave and the nav is
- * an icon rail, each icon telling its label in a tooltip on hover or focus.
- */
-export function SettingsNav({ sections, current }: { sections: readonly NavSection[]; current: Section }) {
-  function move(event: KeyboardEvent<HTMLElement>) {
-    // Alt+Left, ⌘+Left and the like are the browser's (Back): leave them alone.
-    if (event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
-    const links = [...event.currentTarget.querySelectorAll<HTMLAnchorElement>("a[data-section]")];
-    const at = links.indexOf(document.activeElement as HTMLAnchorElement);
-    const next =
-      event.key === "ArrowDown" || event.key === "ArrowRight"
-        ? (at + 1) % links.length
-        : event.key === "ArrowUp" || event.key === "ArrowLeft"
-          ? (at - 1 + links.length) % links.length
-          : event.key === "Home"
-            ? 0
-            : event.key === "End"
-              ? links.length - 1
-              : null;
-    if (next === null || at === -1) return;
-    event.preventDefault();
-    links[next]?.focus();
-  }
-  return (
-    <nav
-      aria-label="Settings sections"
-      onKeyDown={move}
-      className="flex w-50 flex-none flex-col gap-0.5 @max-[720px]/settings:w-9"
-    >
-      {sections.map(({ section, label, icon: Icon }) => (
-        <a
-          key={section}
-          href={settingsHref(section)}
-          data-section={section}
-          aria-current={section === current ? "page" : undefined}
-          tabIndex={section === current ? 0 : -1}
-          className="group relative flex h-item items-center gap-2 whitespace-nowrap rounded-sm px-2 text-text-2 outline-none transition-colors hover:bg-item-hover hover:text-text focus-visible:ring-2 focus-visible:ring-blue aria-[current=page]:bg-item-current aria-[current=page]:text-text @max-[720px]/settings:justify-center @max-[720px]/settings:px-0"
-        >
-          <Icon aria-hidden className="size-4 flex-none" strokeWidth={1.75} />
-          <span className="min-w-0 truncate @max-[720px]/settings:sr-only">{label}</span>
-          {/* The rail's tooltip: the label is already the link's name, so it is only seen. */}
-          <span
-            aria-hidden
-            data-rail-tooltip
-            className="pointer-events-none absolute top-1/2 left-full z-10 ml-2 hidden -translate-y-1/2 rounded-sm bg-overlay px-2 py-1 text-small text-text shadow-pop @max-[720px]/settings:group-hover:block @max-[720px]/settings:group-focus-visible:block"
-          >
-            {label}
-          </span>
-        </a>
-      ))}
-    </nav>
-  );
-}
-
-/** The nav and the chosen section side by side; the container the rail's width is read from. */
-export function SettingsFrame({
-  sections,
-  current,
-  children,
-}: {
-  sections: readonly NavSection[];
-  current: Section;
-  children: ReactNode;
-}) {
-  return (
-    <div className="@container/settings">
-      <div className="flex min-w-0 items-start gap-8 @max-[720px]/settings:gap-4">
-        <SettingsNav sections={sections} current={current} />
-        <div className="flex min-w-0 flex-1 flex-col gap-7">{children}</div>
-      </div>
-    </div>
-  );
-}
 
 /** A section's group under its heading. */
 export function SettingsSection({
@@ -210,5 +125,37 @@ export function StateDot({ word, dot, ink, title }: { word: string; dot: string;
       <span aria-hidden className={cn("size-1.5 flex-none rounded-full", dot)} />
       <span>{word}</span>
     </span>
+  );
+}
+
+/**
+ * A section folded under its heading until opened (T3 Code's
+ * FoldedSettingsSection): About's Advanced. What it holds stays in the page
+ * while folded, as `SettingsFold`'s does.
+ */
+export function FoldedSection({ title, children }: { title: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const panel = useId();
+  return (
+    <section className="flex min-w-0 flex-col gap-4">
+      <h2 className="m-0 px-1 font-semibold text-sub">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={panel}
+          onClick={() => setOpen(!open)}
+          className="-mx-1 flex h-7 cursor-pointer items-center gap-1.5 rounded-sm px-1 outline-none hover:text-text focus-visible:ring-2 focus-visible:ring-blue"
+        >
+          <ChevronRight
+            aria-hidden
+            className={cn("size-4 transition-transform motion-reduce:transition-none", open && "rotate-90")}
+          />
+          {title}
+        </button>
+      </h2>
+      <div id={panel} hidden={!open} data-folded={title} className="flex min-w-0 flex-col gap-7">
+        {children}
+      </div>
+    </section>
   );
 }

@@ -52,6 +52,19 @@ try {
     const keychain = systemKeychain();
     let modelAccess: Awaited<ReturnType<typeof modelEnvironment>>;
     let modelRegistry: ModelRegistry;
+    // Boot, dynamic projects and later turns share the catalog's selection.
+    async function modelsFor(entries: readonly DaemonProject[]) {
+      return coordinatorModels({
+        projects: entries,
+        store: daemon.store,
+        registry: daemon.registry,
+        selected: (await modelRegistry.selection()) ?? undefined,
+        pluginSelected: modelAccess.pluginSelected,
+        pi: modelRegistry,
+        onSkipped: (project) =>
+          console.error(`Coordinator for ${project} not started: check model plugin configuration and credentials`),
+      });
+    }
     async function startProject(project: DaemonProject, configure = true) {
       if (configure) await daemon.addProject(project);
       const readers = await startReaders({
@@ -62,14 +75,7 @@ try {
       });
       readerGroups.set(project.id, readers);
       if (server) {
-        const configs = coordinatorModels({
-          projects: [project],
-          store: daemon.store,
-          registry: daemon.registry,
-          selected: (await modelRegistry.selection()) ?? undefined,
-          pluginSelected: modelAccess.pluginSelected,
-          pi: modelRegistry,
-        });
+        const configs = await modelsFor([project]);
         for (const config of configs)
           await server.openProject({
             ...config,
@@ -93,7 +99,7 @@ try {
     try {
       void account.refresh();
       modelAccess = await modelEnvironment(process.env, keychain, account.secrets);
-      modelRegistry = new ModelRegistry({ keychain, selected: modelAccess.selected });
+      modelRegistry = new ModelRegistry({ keychain, selected: modelAccess.selected ?? null });
       const secrets = connectionSecrets(modelAccess.secrets, keychain);
       const providersFor = (daemon: Awaited<ReturnType<typeof bootDaemon>>) =>
         new Providers({
@@ -112,16 +118,7 @@ try {
         log: { info: (line) => console.error(line), error: (line) => console.error(line) },
       });
       try {
-        const coordinators = coordinatorModels({
-          projects,
-          store: daemon.store,
-          registry: daemon.registry,
-          selected: modelAccess.selected,
-          pluginSelected: modelAccess.pluginSelected,
-          pi: modelRegistry,
-          onSkipped: (project) =>
-            console.error(`Coordinator for ${project} not started: check model plugin configuration and credentials`),
-        });
+        const coordinators = await modelsFor(projects);
         // Private instance directory avoids stale/active socket unlink races after a crash.
         const workerDirectory = await mkdtemp(join(tmpdir(), "armada-worker-"));
         const workerSocket = join(workerDirectory, "socket");
@@ -190,14 +187,7 @@ try {
             modelRegistry,
             providers: providersFor(daemon),
             resolveCoordinator: async (project) => {
-              const config = coordinatorModels({
-                projects: registry.list.filter((p) => p.id === project),
-                store: daemon.store,
-                registry: daemon.registry,
-                pi: modelRegistry,
-                selected: (await modelRegistry.selection()) ?? undefined,
-                pluginSelected: modelAccess.pluginSelected,
-              })[0];
+              const config = (await modelsFor(registry.list.filter((p) => p.id === project)))[0];
               return config
                 ? { ...config, native: { ...config.native, merges, refresh: () => refresh(project) } }
                 : undefined;
