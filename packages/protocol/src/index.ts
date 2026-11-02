@@ -50,6 +50,7 @@ import {
   sessionReleaseRequestSchema,
   sessionReleaseResultSchema,
 } from "./session.js";
+import { TICKETS_MINOR, ticketRequestSchemas, ticketResultSchema } from "./tickets.js";
 
 export * from "./account.js";
 export * from "./auth.js";
@@ -63,6 +64,7 @@ export * from "./providers.js";
 export * from "./readers.js";
 export * from "./rules.js";
 export * from "./session.js";
+export * from "./tickets.js";
 
 /** Snapshot-first subscriptions and bounded event replay. */
 export const REPLAY_MINOR = 21;
@@ -85,6 +87,7 @@ export const PROTOCOL_VERSION = {
     FOLLOW_UP_MINOR,
     PROJECT_TRACKER_MINOR,
     MODEL_SCOPE_MINOR,
+    TICKETS_MINOR,
     IMPORT_MINOR,
   ),
 } as const;
@@ -184,6 +187,7 @@ export const clientMessageSchema = /* @__PURE__ */ z.discriminatedUnion("type", 
   ...authRequestSchemas,
   ...modelsRequestSchemas,
   ...providerRequestSchemas,
+  ...ticketRequestSchemas,
 ]);
 export type CredentialsResult = z.infer<typeof credentialsResultSchema>;
 export type ListProjectsRequest = z.infer<typeof listProjectsRequestSchema>;
@@ -295,6 +299,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   ...authResultSchemas,
   modelsCatalogSchema,
   providersCatalogSchema,
+  ticketResultSchema,
 ]);
 export type ProjectsResult = z.infer<typeof projectsResultSchema>;
 export type Subscribed = z.infer<typeof subscribedSchema>;
@@ -361,6 +366,15 @@ export function admitRequest(input: unknown, daemonVersion: ProtocolVersion = PR
       ok: false,
       close: false,
       error: { ...base, code: "invalid-message", message: "A project's coordinator model requires protocol minor 24" },
+    };
+  if (
+    (parsed.data.type === "ticket.create" || parsed.data.type === "ticket.update") &&
+    (version.minor < TICKETS_MINOR || parsed.data.version.minor < TICKETS_MINOR)
+  )
+    return {
+      ok: false,
+      close: false,
+      error: { ...base, code: "invalid-message", message: "Ticket writes require protocol minor 26" },
     };
   if (parsed.data.type === "fleet.shutdown" && parsed.data.version.minor < WORKER_RECOVERY_MINOR)
     return { ok: false, close: false, error: { ...base, code: "app-too-old", message: APP_TOO_OLD } };

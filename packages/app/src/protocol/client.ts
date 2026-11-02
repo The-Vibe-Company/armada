@@ -40,6 +40,7 @@ import {
   type SessionReleaseRequest,
   type Snapshot,
   serverMessageSchema,
+  type TicketRequest,
   versionSchema,
 } from "@armada/protocol";
 
@@ -158,6 +159,7 @@ type DaemonRequest = Unaddressed<
   | OwnerAnswerRequest
   | SessionReleaseRequest
   | SessionOutputRequest
+  | TicketRequest
   | ProjectRequest
   | Exclude<AccountRequest, { type: "account.status" }>
 >;
@@ -178,6 +180,8 @@ type DaemonReply<R extends DaemonRequest> = Extract<
       "owner.answer": "owner.answered";
       "session.release": "session.release.result";
       "session.output": "session.output.result";
+      "ticket.create": "ticket.result";
+      "ticket.update": "ticket.result";
     }[R["type"]];
   }
 >;
@@ -622,7 +626,8 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
       case "chat.stopped":
       case "owner.answered":
       case "session.release.result":
-      case "session.output.result": {
+      case "session.output.result":
+      case "ticket.result": {
         const request = pending.get(message.id);
         pending.delete(message.id);
         request?.resolve(message);

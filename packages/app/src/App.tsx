@@ -14,6 +14,8 @@ const Room = lazy(() => import("@/screens/Room").then((m) => ({ default: m.Room 
 const Session = lazy(() => import("@/screens/Session").then((m) => ({ default: m.Session })));
 // The notifications (THE-2055): every screen hears them, off the first load, once the shell is drawn.
 const Notifications = lazy(() => import("@/notify/Notifications").then((m) => ({ default: m.Notifications })));
+// A project's tickets (THE-2124), fetched when opened.
+const Tickets = lazy(() => import("@/screens/Tickets").then((m) => ({ default: m.Tickets })));
 // The app's own settings: off the first load (perf-budget.json), fetched when opened.
 const Settings = lazy(() => import("@/screens/Settings").then((m) => ({ default: m.Settings })));
 
@@ -45,6 +47,10 @@ export function App({
           // The shell stays while the screen's code arrives.
           <Suspense fallback={null}>
             <Settings section={route.section} detail={route.detail} address={address} onReload={onReload} />
+          </Suspense>
+        ) : route.kind === "tickets" ? (
+          <Suspense fallback={null}>
+            <Tickets project={route.id} ticket={route.ticket} creating={route.creating} onReload={onReload} />
           </Suspense>
         ) : route.kind === "project" || route.kind === "rules" ? (
           // The old rules page is the room's Rules tab: its address is replaced on the way.

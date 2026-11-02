@@ -7,7 +7,8 @@
 // the old `#/plugins` is replaced by the providers'), `#/settings/<section>/<card>`
 // one card's detail open (THE-2075: an agent under providers, linear, github
 // or armada under connections; the old `#/settings/account` is replaced by
-// the Armada card's); anything else, and off a
+// the Armada card's), `#/projects/<id>/tickets` a project's tickets (THE-2124:
+// `?ticket=<id>` the one its panel shows, `?new` the new ticket's form); anything else, and off a
 // browser (a test's static render), the hangar (the home, THE-2025). A
 // session's page, `#/sessions/<ticket>`, has its own route (src/session/route.ts).
 import { useEffect, useSyncExternalStore } from "react";
@@ -27,6 +28,7 @@ export type Route =
   | { kind: "home" }
   | { kind: "project"; id: string; panel?: PanelTab; agent?: string }
   | { kind: "rules"; id: string; redirect: string }
+  | { kind: "tickets"; id: string; ticket?: string; creating?: boolean }
   | { kind: "settings"; section: SettingsSection; detail?: string; redirect?: string };
 
 /** Where a section of the settings is, with one card's detail open. */
@@ -71,6 +73,12 @@ export function routeOf(hash: string): Route {
     const agent = agentOf(query);
     return { kind: "project", id: value, ...(panel ? { panel } : {}), ...(agent ? { agent } : {}) };
   }
+  if (kind === "projects" && more === "tickets") {
+    const params = new URLSearchParams(query);
+    const ticket = params.get("ticket")?.trim();
+    if (params.has("new")) return { kind: "tickets", id: value, creating: true };
+    return { kind: "tickets", id: value, ...(ticket ? { ticket } : {}) };
+  }
   // The rules page became the room's Rules tab: its old address is replaced, once.
   if (kind === "projects" && more === "rules") return { kind: "rules", id: value, redirect: roomHref(value, "rules") };
   return { kind: "home" };
@@ -96,6 +104,12 @@ export const projectHref = (id: string) => `#/projects/${encodeURIComponent(id)}
 export const roomHref = (id: string, panel?: PanelTab, agent?: string) => {
   const query = new URLSearchParams({ ...(panel ? { panel } : {}), ...(agent ? { agent } : {}) }).toString();
   return `${projectHref(id)}${query ? `?${query}` : ""}`;
+};
+
+/** A project's tickets, with one ticket in its panel, or the new ticket's form. */
+export const ticketsHref = (id: string, open?: { ticket: string } | "new") => {
+  const query = open === "new" ? "?new" : open ? `?${new URLSearchParams({ ticket: open.ticket }).toString()}` : "";
+  return `${projectHref(id)}/tickets${query}`;
 };
 
 const subscribe = (listener: () => void) => {
