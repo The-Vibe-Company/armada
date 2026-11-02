@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import { fold } from "@armada/daemon/fold";
 import { EventStore } from "@armada/daemon/store";
+import { trackerChanges } from "../src/changes.ts";
 import { type LinearFetch, linearTracker } from "../src/linear/index.ts";
 import { TrackerPoller } from "../src/poll.ts";
 
@@ -70,6 +71,238 @@ function initial(comments: unknown[] = []) {
     ],
   };
 }
+async function recordedTicket(phase: string, comments: unknown[]) {
+  const responses = initial(comments);
+  responses.Children[0] = { issues: page([issue("SEED-2", phase)]) };
+  return linearTracker({
+    project: "orchard",
+    rootId: "SEED-1",
+    phaseGroup: "Fleet phase",
+    secrets: async () => "fake-key",
+    fetch: recorded(responses).fetch,
+    now: () => new Date(t0),
+  }).read({ signal: new AbortController().signal });
+}
+
+test("recorded V1 hand-backs keep the full body and author, deduplicate full reads, and retire on supersession", async () => {
+  const body = `Agent status: ready-to-merge — PR #7, head ${"a".repeat(40)}\n\nVerified all checks.`;
+  const reading = await recordedTicket("ready-to-merge", [
+    comment("back", body),
+    comment("note", "Agent status: ready-to-merge — note: Check the merge queue", t1),
+    comment(
+      "allow",
+      "Agent status: ready-to-merge — acceptance: 3 more runs allowed by the coordinator: Retry the fixture",
+      "2030-01-01T10:02:00.000Z",
+    ),
+  ]);
+  for (const supersession of ["report", "phase", "merge", "answer"]) {
+    const store = new EventStore(":memory:");
+    const replay = (next = reading) => {
+      const changes = trackerChanges("orchard", store.readSince(0), next);
+      for (const event of changes) store.append(event);
+      return changes;
+    };
+    try {
+      const opened = replay().filter((e) => e.kind === "inbox.opened");
+      assert.equal(opened.length, 1);
+      assert.deepEqual(opened[0], {
+        project: "orchard",
+        kind: "inbox.opened",
+        actor: "Mira",
+        at: t0,
+        payload: { id: `linear:back:${t0}`, ticket: "SEED-2", kind: "hand-back", body },
+      });
+      assert.deepEqual(replay(), []);
+      assert.deepEqual(
+        replay(
+          await recordedTicket(
+            "ready-to-merge",
+            reading.comments.map((c) => comment(c.id, c.body, c.createdAt)),
+          ),
+        ),
+        [],
+      );
+      const next = structuredClone(reading);
+      if (supersession === "report")
+        next.comments.push({
+          id: "resumed",
+          ticket: "SEED-2",
+          author: "Mira",
+          body: "Agent status: shipping — Fixing CI",
+          createdAt: t1,
+          updatedAt: t1,
+        });
+      if (supersession === "phase") next.tickets[1]!.phase = "shipping";
+      if (supersession === "merge")
+        store.append({
+          project: "orchard",
+          kind: "merge.confirmed",
+          actor: "coordinator",
+          at: t1,
+          payload: { id: "merged", ticket: "SEED-2", session: "tracker:SEED-2", pr: 7, head: "a".repeat(40) },
+        });
+      if (supersession === "answer")
+        store.append({
+          project: "orchard",
+          kind: "inbox.answered",
+          actor: "coordinator",
+          at: t1,
+          payload: { id: `linear:back:${t0}`, answer: "Merged #7" },
+        });
+      replay(next);
+      assert.deepEqual(fold(store.readSince(0)).projects.orchard?.inbox, [], supersession);
+      assert.equal(replay(next).filter((e) => e.kind === "inbox.opened").length, 0, supersession);
+    } finally {
+      store.close();
+    }
+  }
+});
+
+test("tracker plans close on coordinator approval, phase changes or durable answers and never reopen on reread", async () => {
+  for (const body of [
+    "Agent status: awaiting-approval — plan: Plant in rows\n\nKeep a path between them.",
+    "Agent status: awaiting-approval — Plant in rows\n\n## Plan\n\nKeep a path between them.",
+  ]) {
+    for (const resolution of ["answer", "approved", "plain-approval", "phase", "daemon"]) {
+      const reading = await recordedTicket("awaiting-approval", [comment("plan", body)]);
+      const store = new EventStore(":memory:");
+      const replay = () => {
+        for (const event of trackerChanges("orchard", store.readSince(0), reading)) store.append(event);
+      };
+      try {
+        replay();
+        assert.equal(fold(store.readSince(0)).projects.orchard?.inbox[0]?.kind, "plan");
+        assert.equal(fold(store.readSince(0)).projects.orchard?.inbox[0]?.body, body);
+        const reply =
+          resolution === "answer"
+            ? "Agent status: awaiting-approval — answer: Approved"
+            : resolution === "approved"
+              ? "Agent status: awaiting-approval — approved"
+              : "Approved, proceed.";
+        if (["answer", "approved", "plain-approval"].includes(resolution))
+          reading.comments.push({
+            id: "reply",
+            ticket: "SEED-2",
+            author: "Rowan",
+            body: reply,
+            createdAt: t1,
+            updatedAt: t1,
+          });
+        if (resolution === "phase") reading.tickets[1]!.phase = "implementing";
+        if (resolution === "daemon")
+          store.append({
+            project: "orchard",
+            kind: "inbox.answered",
+            actor: "coordinator",
+            at: t1,
+            payload: { id: `linear:plan:${t0}`, answer: "Approved" },
+          });
+        replay();
+        assert.deepEqual(fold(store.readSince(0)).projects.orchard?.inbox, [], resolution);
+        replay();
+        assert.deepEqual(fold(store.readSince(0)).projects.orchard?.inbox, [], resolution);
+      } finally {
+        store.close();
+      }
+    }
+  }
+});
+
+test("edited tracker plans replace the old item, while coordinator notes and non-plan reports cannot open plans", async () => {
+  const reading = await recordedTicket("awaiting-approval", [
+    comment("plan", "Agent status: awaiting-approval — plan: Plant rows"),
+  ]);
+  const store = new EventStore(":memory:");
+  const replay = () => {
+    for (const event of trackerChanges("orchard", store.readSince(0), reading)) store.append(event);
+  };
+  try {
+    replay();
+    const previous = fold(store.readSince(0)).projects.orchard?.inbox[0];
+    assert.ok(previous);
+    const old = previous.id;
+    reading.comments[0]!.updatedAt = t1;
+    reading.comments[0]!.body += "\n\nLeave room for shade.";
+    reading.comments.push({
+      id: "note",
+      ticket: "SEED-2",
+      author: "Rowan",
+      body: "Agent status: awaiting-approval — note: Waiting",
+      createdAt: t1,
+      updatedAt: t1,
+    });
+    replay();
+    const inbox = fold(store.readSince(0)).projects.orchard!.inbox;
+    assert.equal(inbox.length, 1);
+    assert.notEqual(inbox[0]!.id, old);
+    assert.match(inbox[0]!.body, /Leave room for shade/);
+    reading.comments = [
+      reading.comments[1]!,
+      {
+        id: "waiting",
+        ticket: "SEED-2",
+        author: "Mira",
+        body: "Agent status: awaiting-approval — Waiting for feedback",
+        createdAt: t1,
+        updatedAt: t1,
+      },
+    ];
+    replay();
+    assert.deepEqual(fold(store.readSince(0)).projects.orchard!.inbox, []);
+  } finally {
+    store.close();
+  }
+});
+test("a confirmed merge cannot retire a different PR or head posted before its confirmation", async () => {
+  const body = `Agent status: ready-to-merge — PR #7, head ${"a".repeat(40)}`;
+  const reading = await recordedTicket("ready-to-merge", [comment("new-back", body)]);
+  for (const merged of [
+    { pr: 8, head: "a".repeat(40) },
+    { pr: 7, head: "b".repeat(40) },
+    { pr: 8, head: "b".repeat(40) },
+  ]) {
+    const store = new EventStore(":memory:");
+    try {
+      assert.equal(trackerChanges("orchard", [], reading).filter((e) => e.kind === "inbox.opened").length, 1);
+      store.append({
+        project: "orchard",
+        kind: "merge.confirmed",
+        actor: "coordinator",
+        at: t1,
+        payload: { id: "old-merge", ticket: "SEED-2", session: "tracker:SEED-2", ...merged },
+      });
+      for (const event of trackerChanges("orchard", store.readSince(0), reading)) store.append(event);
+      const inbox = fold(store.readSince(0)).projects.orchard?.inbox;
+      assert.equal(inbox?.length, 1);
+      assert.equal(inbox?.[0]?.body, body);
+    } finally {
+      store.close();
+    }
+  }
+});
+
+test("worker approval summaries still record reports and supersede plans when the worker changes phase", async () => {
+  for (const [phase, summary] of [
+    ["implementing", "approved"],
+    ["blocked", "approved"],
+    ["awaiting-approval", "approved changes to layout"],
+  ]) {
+    const reading = await recordedTicket("awaiting-approval", [
+      comment("plan", "Agent status: awaiting-approval — plan: Plant rows"),
+      comment("worker", `Agent status: ${phase} — ${summary}`, t1),
+    ]);
+    const changes = trackerChanges("orchard", [], reading);
+    const report = changes.find((e) => e.kind === "ticket.report-posted" && e.payload.comment === "worker");
+    assert.ok(report && report.kind === "ticket.report-posted");
+    assert.equal(report.payload.phase, phase);
+    if (phase !== "awaiting-approval")
+      assert.equal(
+        changes.some((e) => e.kind === "inbox.opened" && e.payload.kind === "plan"),
+        false,
+      );
+  }
+});
+
 function clock() {
   let instant = t0;
   const pending = new Map<() => void, number>();

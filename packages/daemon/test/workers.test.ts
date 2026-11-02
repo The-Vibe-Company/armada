@@ -18,11 +18,69 @@ import { nativeTools } from "../coordinator/native.ts";
 import { openCoordinatorStorage } from "../coordinator/storage.ts";
 import { bootDaemon } from "../src/boot.ts";
 import { fold } from "../src/fold.ts";
+import { PluginRegistry } from "../src/plugins/registry.ts";
+import { EventStore } from "../src/store.ts";
 import { Workers } from "../src/workers/service.ts";
 import { startWorkerSocket } from "../src/workers/socket.ts";
 
 const at = "2030-01-01T00:00:00.000Z";
 const project = "orchard";
+test("tracker sessions expose their drive and refuse message/stop with a Linear action before runtime control", async (t) => {
+  const store = new EventStore(":memory:");
+  store.append({
+    project,
+    at,
+    actor: "Mira",
+    kind: "ticket.seen",
+    payload: { id: "SEED-1", title: "Plant", status: "started", phase: "ready-to-merge" },
+  });
+  store.append({
+    project,
+    at,
+    actor: "Mira",
+    kind: "inbox.opened",
+    payload: { id: "linear:back", ticket: "SEED-1", kind: "hand-back", body: "Agent status: ready-to-merge — PR #7" },
+  });
+  const workers = new Workers({
+    store,
+    registry: new PluginRegistry(),
+    socketPath: "unused",
+    projects: [{ id: project, repository: "example/orchard" }],
+    now: () => at,
+  });
+  const scope = openCoordinatorStorage({ store, project, now: () => at });
+  const tools = nativeTools(scope, { workers, now: () => at });
+  const execute = async (name: "fleet.status" | "inbox.list" | "worker.message" | "worker.stop", args: object = {}) =>
+    (await tools[name].execute(args, { taskId: 1, callId: name } as ToolExecutionApi, context)).details as Record<
+      string,
+      unknown
+    >;
+  t.after(async () => {
+    await scope.close(context);
+    await workers.close();
+    store.close();
+  });
+  const facts = await execute("fleet.status");
+  assert.equal((facts.sessions as { drive: string }[])[0]?.drive, "tracker");
+  const inbox = await execute("inbox.list");
+  assert.equal((inbox.items as { kind: string }[])[0]?.kind, "hand-back");
+  for (const name of ["worker.message", "worker.stop"] as const) {
+    const result = await execute(name, {
+      ticket: "SEED-1",
+      ...(name === "worker.message" ? { message: "Proceed" } : { reason: "Done" }),
+    });
+    assert.equal(result.ok, false);
+    assert.match(
+      String(result.reason),
+      /this worker was launched outside this daemon; it reads Linear, answer there or relaunch it here/,
+    );
+    assert.equal(fold(store.readSince(0)).projects[project]?.sessions[0]?.phase, "ready-to-merge");
+    assert.equal(
+      store.readSince(0).some((e) => e.kind === "session.released" || e.kind === "delivery.queued"),
+      false,
+    );
+  }
+});
 async function until(workers: Workers, expected: (value: WorkerObservation) => boolean) {
   let observation!: WorkerObservation;
   await eventually(async () => {

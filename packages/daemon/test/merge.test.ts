@@ -9,6 +9,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { inspectGithub } from "../../plugins/github/src/inspect.ts";
 import type { RawPull } from "../../plugins/github/src/normalize.ts";
+import { trackerChanges } from "../../plugins/linear/src/changes.ts";
 import { createLocalNode } from "../../plugins/node-local/src/index.ts";
 import { nativeTools } from "../coordinator/native.ts";
 import { openCoordinatorStorage } from "../coordinator/storage.ts";
@@ -57,7 +58,7 @@ function register(registry: PluginRegistry, forge: ForgeProvider, tracker: Track
   if (node) activation.register.node("local", node);
   activation.commit();
 }
-async function fixture(t: TestContext, priorHandBack = false) {
+async function fixture(t: TestContext, priorHandBack = false, trackerOnly = false) {
   const directory = mkdtempSync(join(tmpdir(), "armada-merge-tool-"));
   const store = new EventStore(join(directory, "events.sqlite"));
   const append = (kind: EventInput["kind"], payload: unknown, actor = "worker") =>
@@ -68,29 +69,60 @@ async function fixture(t: TestContext, priorHandBack = false) {
       at,
       actor,
     } as EventInput);
-  append("ticket.seen", { id: "SEED-1", title: "Grow", status: "started" });
-  if (priorHandBack)
-    append("inbox.opened", {
-      id: "old-back",
+  const trackerReading = {
+    startedAt: at,
+    tickets: [
+      {
+        uuid: "seed",
+        id: "SEED-1",
+        title: "Grow",
+        status: "started" as const,
+        phase: "ready-to-merge" as const,
+        owner: "Mira",
+        parent: null,
+        url: "https://linear.example/issue/SEED-1",
+        labels: [],
+        attachments: [],
+      },
+    ],
+    comments: [
+      {
+        id: "back",
+        ticket: "SEED-1",
+        author: "Mira",
+        body: `Agent status: ready-to-merge — PR #7, head ${head}`,
+        createdAt: at,
+        updatedAt: at,
+      },
+    ],
+  };
+  if (trackerOnly) {
+    for (const event of trackerChanges("orchard", [], trackerReading)) store.append(event);
+  } else {
+    append("ticket.seen", { id: "SEED-1", title: "Grow", status: "started" });
+    if (priorHandBack)
+      append("inbox.opened", {
+        id: "old-back",
+        ticket: "SEED-1",
+        kind: "hand-back",
+        body: `Agent status: ready-to-merge — PR #6, head ${"e".repeat(40)}`,
+      });
+    append("session.claimed", {
       ticket: "SEED-1",
-      kind: "hand-back",
-      body: `Agent status: ready-to-merge — PR #6, head ${"e".repeat(40)}`,
+      session: "one",
+      generation: 1,
+      owner: "Mira",
+      runtime: "claude",
+      handle: "one",
     });
-  append("session.claimed", {
-    ticket: "SEED-1",
-    session: "one",
-    generation: 1,
-    owner: "Mira",
-    runtime: "claude",
-    handle: "one",
-  });
-  append("session.reported", { ticket: "SEED-1", session: "one", phase: "ready-to-merge", reason: "Green" });
+    append("session.reported", { ticket: "SEED-1", session: "one", phase: "ready-to-merge", reason: "Green" });
+  }
   append("pull-request.seen", { number: 7, ticket: "SEED-1", head, state: "open", ci: "success", conflicting: false });
   const handBack = (body = `Agent status: ready-to-merge — PR #7, head ${head}`) => {
     append("inbox.answered", { id: "back", answer: "superseded" });
     append("inbox.opened", { id: "back", ticket: "SEED-1", kind: "hand-back", body });
   };
-  handBack();
+  if (!trackerOnly) handBack();
   const scope = openCoordinatorStorage({ store, project: "orchard", now: () => at });
   let facts = pull();
   let mergeCalls = 0;
@@ -165,6 +197,7 @@ async function fixture(t: TestContext, priorHandBack = false) {
   });
   return {
     store,
+    trackerReading,
     scope,
     append,
     handBack,
@@ -214,6 +247,29 @@ test("native merge tools check read-only, pin squash merge, confirm before Done/
   f.options.registry = new PluginRegistry();
   f.restart();
   assert.deepEqual(await f.run("merge.run"), result, "committed replay must not depend on available providers");
+});
+
+test("tracker-derived hand-backs pass native merge tools and close without daemon runtime cleanup", async (t) => {
+  const f = await fixture(t, false, true);
+  assert.equal(
+    f.store.readSince(0).some((e) => e.kind === "session.claimed"),
+    false,
+  );
+  assert.equal((await f.run("merge.check")).ok, true);
+  assert.equal((await f.run("merge.run")).ok, true);
+  assert.deepEqual(f.counts(), { mergeCalls: 1, stopCalls: 0 });
+  assert.equal(f.writes[0]?.state, "completed");
+  assert.deepEqual(fold(f.store.readSince(0)).projects.orchard?.inbox, []);
+  assert.equal(
+    f.store.readSince(0).filter((e) => e.kind === "inbox.answered" && e.payload.id === `linear:back:${at}`).length,
+    1,
+  );
+  // The tracker can still return the old phase while its write is propagating.
+  for (const event of trackerChanges("orchard", f.store.readSince(0), f.trackerReading)) f.store.append(event);
+  assert.deepEqual(fold(f.store.readSince(0)).projects.orchard?.inbox, []);
+  f.restart();
+  assert.equal((await f.run("merge.run")).ok, true);
+  assert.deepEqual(f.counts(), { mergeCalls: 1, stopCalls: 0 });
 });
 
 // Recorded GitHub wire answers go through the real inspection adapter before the native checklist.
