@@ -4,7 +4,7 @@
 import type { ChatItem } from "@armada/protocol";
 import { GROUP_OF, type Group } from "@/fleet/overview";
 import type { FleetState, FoldedTicket } from "@/fleet/state";
-import type { Streaming, ThreadItem } from "./chat";
+import type { RoomNote, Streaming, ThreadItem } from "./chat";
 
 export interface Choice {
   label: string;
@@ -267,7 +267,7 @@ export function workDuration(ms: number): string {
 }
 
 /** A message, a coordinator's line, or its answer still being written (THE-2052). */
-export type Said = Exclude<ChatItem, { kind: "tool" }> | Streaming;
+export type Said = Exclude<ChatItem, { kind: "tool" }> | Streaming | RoomNote;
 /** A turn's tool calls, at the place of its first: one row alone, or a group. */
 export type Work = { id: string; at: string; tools: Tool[] };
 /**
@@ -300,7 +300,7 @@ export function workRows(items: readonly ThreadItem[]): ThreadRow[] {
     if (work) {
       const id = `work:${work.id}`;
       // The answer still being written (THE-2052) leaves it open too: its reading folds it, same row.
-      if (item.kind === "owner" || item.kind === "wake" || item.kind === "streaming")
+      if (item.kind === "owner" || item.kind === "wake" || item.kind === "streaming" || item.kind === "note")
         out.push({ kind: "work", id, work });
       else {
         const label = item.aborted

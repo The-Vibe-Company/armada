@@ -318,7 +318,7 @@ function Model() {
       <SettingsRow
         data-setting="per-project"
         title="Per project"
-        description="A project's rules can name its own coordinator model. Ask the coordinator in the room to change it."
+        description="A project's rules can name its own coordinator model. Change it from the model under the room's field (⌘⇧M), or ask the coordinator."
       >
         {projects && projects.length > 0 ? (
           <ul className="m-0 flex list-none flex-col p-0 pb-2">

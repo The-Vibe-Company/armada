@@ -42,6 +42,7 @@ import type { Account } from "./account.ts";
 import { AuthFlows } from "./auth.ts";
 import { dispatchChat } from "./chat.ts";
 import { type ChatClock, ChatLive } from "./chat-live.ts";
+import { selectProjectModel } from "./models.ts";
 import { dispatchPlugins, isPluginsRequest, type PluginHost } from "./plugins.ts";
 import { dispatchProjects } from "./projects.ts";
 import type { Providers } from "./providers.ts";
@@ -613,7 +614,15 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
           pendingCredentials++;
           credentialQueue = credentialQueue.then(async () => {
             try {
-              if (request.type === "models.select") await registry.select(request);
+              if (request.type === "models.select") {
+                // THE-2128: a project with its own model gets that override edited; any other, the shared selection.
+                const choice = await registry.usable(request);
+                const own =
+                  request.project !== undefined &&
+                  known.has(request.project) &&
+                  selectProjectModel({ store: options.store, project: request.project, selection: choice });
+                if (!own) await registry.select(choice);
+              }
               if (request.type === "models.logout") {
                 if (!registry.models.getProvider(request.provider)) throw new Error();
                 await auth.cancelScope(`model:${request.provider}`);
