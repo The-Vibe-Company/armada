@@ -86,7 +86,12 @@ for (const [kind, create] of [
   ["opencode", opencodeRuntime],
 ] as const) {
   describe(`${kind} runtime through real node processes`, () => {
-    async function setup(auth = "yes", outputTail = 65_536) {
+    async function setup(
+      auth = "yes",
+      outputTail = 65_536,
+      config: Record<string, unknown> = {},
+      launchEnv: Record<string, string> = {},
+    ) {
       const root = await mkdtemp(join(tmpdir(), `${kind}-worker-`));
       roots.push(root);
       await execute("git", ["init", "--quiet", root]);
@@ -106,10 +111,11 @@ for (const [kind, create] of [
       ]);
       const node = createLocalNode({ workspaceRoot: join(root, "worktrees"), transport: "pipe", outputTail });
       const unbound = create({
-        command: fileURLToPath(new URL(`../../${kind}/test/${kind}-worker.mjs`, import.meta.url)),
+        command: fileURLToPath(new URL(`../../${kind}/test/fixtures/${kind}-worker.mjs`, import.meta.url)),
         model: "configured-model",
         effort: "low",
         extraArgs: ["--fixture-extra", "space value"],
+        ...config,
       });
       assert(unbound.withNode);
       const runtime = unbound.withNode(node);
@@ -129,7 +135,12 @@ for (const [kind, create] of [
             worker,
             command: "",
             args,
-            env: { FAKE_AUTH: auth, XDG_CONFIG_HOME: join(root, "config"), FAKE_RUN_MARKER: join(root, "run") },
+            env: {
+              FAKE_AUTH: auth,
+              XDG_CONFIG_HOME: join(root, "config"),
+              FAKE_RUN_MARKER: join(root, "run"),
+              ...launchEnv,
+            },
           }),
         );
       const reopen = () => {
@@ -153,6 +164,11 @@ for (const [kind, create] of [
         const first = await until(runtime, ref, (v) => v.activity === "idle");
         const result = JSON.parse(first.reply ?? "");
         expect(result.input).toBe(message);
+        if (kind === "codex") {
+          expect(result.args).toContain('approval_policy="never"');
+          expect(result.args).toContain('sandbox_mode="workspace-write"');
+          expect(result.args).toContain("sandbox_workspace_write.network_access=true");
+        } else expect(result.permission).toEqual({ "*": "allow" });
         expect(result.args).toContain("route-model");
         expect(result.args).toContain("space value");
         expect(result.args).not.toContain("--effort");
@@ -164,6 +180,11 @@ for (const [kind, create] of [
         await mutate(() => runtime.deliver(ref, "follow-up", "answer"));
         const second = JSON.parse((await until(runtime, ref, (v) => v.activity === "idle")).reply ?? "");
         expect(second.input).toBe("follow-up");
+        if (kind === "codex") {
+          expect(second.args).toContain('approval_policy="never"');
+          expect(second.args).toContain('sandbox_mode="workspace-write"');
+          expect(second.args).toContain("sandbox_workspace_write.network_access=true");
+        } else expect(second.permission).toEqual({ "*": "allow" });
         expect(second.args).toContain(kind === "codex" ? "resume" : "--session");
         expect(second.args).toContain("session-fixture-1");
         const stale = { ...ref, generation: 2 };
@@ -179,6 +200,73 @@ for (const [kind, create] of [
       expect((await runtime.observe(ref)).activity).toBe("idle");
       await node.dispose?.(workspace);
     }, 20_000);
+
+    for (const permissionMode of ["default", kind === "codex" ? "read-only" : "deny"]) {
+      test(`configured permission mode reaches the executable: ${permissionMode}`, async () => {
+        const { runtime, mutate, launch } = await setup("yes", 65_536, { permissionMode });
+        const ref = await launch([]);
+        try {
+          await mutate(() => runtime.deliver(ref, "configured mode", "brief"));
+          const result = JSON.parse((await until(runtime, ref, (v) => v.activity === "idle")).reply ?? "");
+          if (kind === "codex") {
+            expect(result.args.includes('approval_policy="never"')).toBe(permissionMode !== "default");
+            expect(result.args.includes('sandbox_mode="read-only"')).toBe(permissionMode === "read-only");
+          } else expect(result.permission).toEqual(permissionMode === "default" ? null : { "*": "deny" });
+        } finally {
+          await mutate(() => runtime.stop(ref));
+        }
+      });
+    }
+
+    for (const overrides of kind === "codex"
+      ? [
+          ["-c", 'approval_policy="on-request"', "-c", 'sandbox_mode="read-only"'],
+          ["-a", "on-request", "--sandbox", "read-only"],
+          ["--approve-for-me"],
+          ['--config=approval_policy="on-request"', '--config=sandbox_mode="read-only"'],
+        ]
+      : [[]]) {
+      test(`explicit permission configuration wins over unattended defaults: ${overrides}`, async () => {
+        const { runtime, mutate, launch } = await setup(
+          "yes",
+          65_536,
+          kind === "codex" ? { extraArgs: overrides } : {},
+          kind === "opencode" ? { OPENCODE_PERMISSION: '{"*":"deny"}' } : {},
+        );
+        const ref = await launch([]);
+        try {
+          await mutate(() => runtime.deliver(ref, "override", "brief"));
+          const result = JSON.parse((await until(runtime, ref, (v) => v.activity === "idle")).reply ?? "");
+          if (kind === "codex") {
+            expect(result.args).toEqual(expect.arrayContaining(overrides));
+            expect(result.args).not.toContain('approval_policy="never"');
+            expect(result.args).not.toContain('sandbox_mode="workspace-write"');
+          } else expect(result.permission).toEqual({ "*": "deny" });
+          await mutate(() => runtime.deliver(ref, "resume override", "answer"));
+          const resumed = JSON.parse((await until(runtime, ref, (v) => v.activity === "idle")).reply ?? "");
+          if (kind === "codex") expect(resumed.args).toEqual(expect.arrayContaining(overrides));
+          else expect(resumed.permission).toEqual({ "*": "deny" });
+        } finally {
+          await mutate(() => runtime.stop(ref));
+        }
+      });
+    }
+
+    for (const input of ["permission-denied", "permission-hold"]) {
+      test(`permission failure reaches the watchdog without raw diagnostics: ${input}`, async () => {
+        const { runtime, mutate, launch } = await setup();
+        const ref = await launch([]);
+        try {
+          await mutate(() => runtime.deliver(ref, input, "brief"));
+          await until(runtime, ref, (v) => v.state === "failed");
+          const tail = await runtime.transcript?.(ref, 4096);
+          expect(tail).toContain('"permission":true');
+          expect(tail).not.toContain("private diagnostic");
+        } finally {
+          await mutate(() => runtime.stop(ref));
+        }
+      });
+    }
 
     test("a fresh runtime reattaches and resumes the same CLI session without counting a delivery retry twice", async () => {
       const { runtime, workspace, mutate, launch, reopen } = await setup();

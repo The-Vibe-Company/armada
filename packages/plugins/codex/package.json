@@ -37,6 +37,16 @@
               "binary": {
                 "type": "string",
                 "minLength": 1
+              },
+              "permissionMode": {
+                "type": "string",
+                "enum": [
+                  "workspace-write",
+                  "read-only",
+                  "default"
+                ],
+                "default": "workspace-write",
+                "description": "Worker permission mode. Applies after restarting Armada; explicit runtime arguments take precedence."
               }
             },
             "additionalProperties": false

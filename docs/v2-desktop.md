@@ -615,6 +615,47 @@ output and URLs; the app owns opening the browser. Linear or GitHub token prompt
 write only a declared secret through the daemon's credential store. Disconnect
 clears a pasted key; a key supplied by the environment or Armada remains controlled
 by that source.
+### Unattended local workers (THE-2211)
+
+Local workers run unattended in their worktree by default. Settings > Providers
+shows the mode on each local runtime card; open the card and save **Permission
+mode**, then restart Armada for new workers to use it. Saving a mode replaces
+permission overrides in custom arguments while keeping unrelated configuration.
+The same `permissionMode` field is in each runtime's plugin configuration schema.
+
+- Claude uses `--permission-mode bypassPermissions` and explicitly adds the
+  worktree with `--add-dir`. Choose `acceptEdits` or `default` to restore more
+  restrictive CLI behavior. An existing `args` permission flag takes precedence
+  without adding a second mode. It uses the owner's Claude sign-in and full tool
+  access, like a Conductor worker; the worktree is its working directory, not an
+  operating-system sandbox. See [Claude permissions](https://code.claude.com/docs/en/permissions).
+- Codex defaults to `permissionMode: "workspace-write"`: approval policy `never`,
+  workspace-write sandbox and network access for claim/report and Git pushes.
+  `read-only` keeps approval `never` with a read-only sandbox; `default` leaves
+  the CLI's configured policy in force. Config overrides (`-c`) work on both
+  `exec` and `exec resume` in recorded Codex CLI 0.164.0; explicit top-level
+  approval flags (including `--approve-for-me`) are placed before `exec` on every
+  turn. Its resume command has a
+  smaller flag set. Explicit approval/sandbox `extraArgs` win. See the
+  [Codex CLI reference](https://developers.openai.com/codex/cli/reference/).
+- OpenCode defaults to `permissionMode: "allow"`, supplied as the documented
+  `OPENCODE_PERMISSION={"*":"allow"}` environment setting on every turn.
+  `ask`, `deny` and `default` are alternatives; `default` keeps the CLI's own
+  settings. An explicit launch `OPENCODE_PERMISSION` wins. See
+  [OpenCode CLI](https://opencode.ai/docs/cli/) and
+  [permissions](https://opencode.ai/docs/permissions/).
+
+These choices do not change the worker brief or socket: workers must not read the
+owner's credential files or sign in to hosted Armada. The CLI owns its sign-in.
+More restrictive modes can block a daemon-owned PTY that nobody can answer. On
+the first observation with explicit permission-prompt evidence the watchdog
+records the cause in one durable follow-up, with the fix to set the runtime's
+permission mode in Settings > Providers, restart Armada and relaunch the worker.
+Codex/OpenCode drivers publish only a fixed permission marker when their error
+frames or stderr expose a permission block, even while the CLI waits for input;
+raw diagnostics remain private. Ordinary progress judgments retain their existing
+cadence and thresholds.
+
 ### Runtime projects (THE-2080, protocol minor 12)
 
 `armadad --projects <projects.json>` owns that file as a serialized project registry. A missing file starts with an empty list. Existing entries without a root remain readable; a legacy `checkout` becomes the canonical `root`. New registrations store the real local folder as both `root` and the worker checkout, alongside `id`, `name`, `repository` and `tracker` (`linear` or `internal`, or an explicitly configured plugin kind). Adding with a confirmed program root selects `linear`; leaving it empty selects `internal`, and the project keeps its tickets in Armada. Inspection still suggests the TOML program root, but clearing that suggestion does not restore it. Legacy entries without `tracker` select `linear` when they have a program root and `internal` otherwise. Internal projects read through `tracker.internal`, never poll Linear, and carry no Linear reader telemetry. Project listings expose optional `tracker` metadata from protocol minor 23; an absent field from an older daemon means Linear to the app. Add/remove use a temporary file and atomic rename; no restart is required.

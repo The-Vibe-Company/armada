@@ -29,6 +29,16 @@
               "binary": {
                 "type": "string",
                 "minLength": 1
+              },
+              "permissionMode": {
+                "type": "string",
+                "enum": [
+                  "bypassPermissions",
+                  "acceptEdits",
+                  "default"
+                ],
+                "default": "bypassPermissions",
+                "description": "Worker permission mode. Applies after restarting Armada; explicit runtime arguments take precedence."
               }
             },
             "additionalProperties": false

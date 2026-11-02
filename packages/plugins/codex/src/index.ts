@@ -5,6 +5,7 @@ import { codexConnection } from "./status.ts";
 interface Options {
   command?: string;
   binary?: string;
+  permissionMode?: "workspace-write" | "read-only" | "default";
   model?: string;
   effort?: string;
   extraArgs?: string[];
@@ -98,6 +99,31 @@ export function codexRuntime(options: Options = {}, node?: NodeProvider): Runtim
           if (arg === "--model") model = next;
           else effort = next;
         } else extraArgs.push(arg);
+      }
+      // Config overrides work for both exec and exec resume (whose flags differ).
+      // Never countermand an explicit approval/sandbox override in extraArgs or routing args.
+      const mode = options.permissionMode ?? "workspace-write";
+      const has = (pattern: RegExp) => extraArgs.some((arg) => pattern.test(arg));
+      if (
+        native &&
+        mode !== "default" &&
+        !has(/^--(?:full-auto|approve-for-me|dangerously-bypass-approvals-and-sandbox)(?:=|$)/)
+      ) {
+        if (
+          !has(
+            /^(?:-a(?:$|=|never|on-request|untrusted|on-failure)|--ask-for-approval(?:=|$)|(?:--config=|-c)?approval_policy\s*=)/,
+          )
+        )
+          extraArgs.push("-c", 'approval_policy="never"');
+        if (
+          !has(
+            /^(?:-s(?:$|=|read-only|workspace-write|danger-full-access)|--sandbox(?:=|$)|(?:--config=|-c)?sandbox_mode\s*=)/,
+          )
+        ) {
+          extraArgs.push("-c", `sandbox_mode=${JSON.stringify(mode)}`);
+          if (mode === "workspace-write" && !has(/^(?:--config=|-c)?sandbox_workspace_write\.network_access\s*=/))
+            extraArgs.push("-c", "sandbox_workspace_write.network_access=true");
+        }
       }
       const ref = await facilities().launch(
         native
