@@ -326,7 +326,7 @@ test("live add opens configured readers and coordinator; removal refuses active 
   if (added.type === "projects.result")
     assert.deepEqual(
       Object.keys(added.projects[0] ?? {}).sort(),
-      ["id", "name", "repository", "root"],
+      ["id", "name", "repository", "root", "tracker"],
       "mutation replies expose the same public fields as projects.list",
     );
   assert.ok(messages.some((m) => m.type === "projects.result" && m.id === "projects-changed"));
@@ -531,4 +531,182 @@ test("failed add compensation leaves the file unchanged and latches recovery ins
   await assert.rejects(registry.add(input), /restart the daemon/i);
   assert.equal(await fs.readFile(file, "utf8"), "[]\n");
   assert.deepEqual(registry.list, []);
+});
+
+test("tracker selection survives registry reopen and an empty selection clears the TOML suggestion", async (t) => {
+  const dir = await fixture(t);
+  const path = await repo(dir, "source", "git@github.com:example/source.git");
+  await fs.writeFile(join(path, "armada.toml"), toml);
+  assert.equal((await inspectProject(path)).suggested.programRoot, "EX-1");
+  const file = join(dir, "projects.json");
+  const starts: string[] = [];
+  const lifecycle = {
+    start: async (p: DaemonProject) => {
+      starts.push(p.id);
+    },
+    stop: async () => {},
+  };
+  const registry = await Projects.open(file, lifecycle);
+  await assert.rejects(
+    registry.add({ path, id: "123", name: "123", repository: "example/source" }),
+    /project id.*letter/i,
+  );
+  assert.deepEqual(starts, [], "invalid internal ids never start services");
+  assert.equal(registry.list.length, 0);
+  await assert.rejects(fs.access(file), { code: "ENOENT" });
+  await registry.add({ path, id: "source", name: "Source", repository: "example/source" });
+  assert.equal(registry.list[0]?.tracker, "internal");
+  assert.equal(registry.list[0]?.programRoot, undefined);
+  assert.equal(JSON.parse(await fs.readFile(file, "utf8"))[0].tracker, "internal");
+  assert.equal((await Projects.open(file, lifecycle)).list[0]?.tracker, "internal");
+  await registry.remove("source");
+  await registry.add({ path, id: "source", name: "Source", repository: "example/source", programRoot: "EX-9" });
+  assert.equal(registry.list[0]?.tracker, "linear");
+  assert.equal(registry.list[0]?.programRoot, "EX-9");
+  await registry.remove("source");
+  await registry.add({ path, id: "123", name: "123", repository: "example/source", programRoot: "EX-9" });
+  assert.equal(registry.list[0]?.tracker, "linear", "Linear ids do not need an internal ticket prefix");
+  // Upgrade legacy registrations without guessing Linear for projects without a root.
+  await fs.writeFile(
+    file,
+    JSON.stringify([
+      { id: "old-linear", name: "Linear", repository: "example/linear", programRoot: "EX-1" },
+      { id: "old-internal", name: "Internal", repository: "example/internal" },
+      { id: "custom", name: "Custom", repository: "example/custom", tracker: "custom" },
+    ]),
+  );
+  assert.deepEqual(
+    (await Projects.open(file, lifecycle)).list.map((p) => p.tracker),
+    ["linear", "internal", "custom"],
+  );
+});
+
+test("a project added without Linear boots the internal reader and exposes ready tickets in fleet status", async (t) => {
+  const { fleetStatus } = await import("../coordinator/read.ts");
+  const { BUNDLED_PLUGINS } = await import("../src/plugins/catalog.ts");
+  const dir = await fixture(t);
+  const path = await repo(dir, "source", "git@github.com:example/source.git");
+  const errors: string[] = [];
+  const fetch = t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("Unexpected remote read");
+  });
+  const daemon = await bootDaemon({
+    databasePath: ":memory:",
+    configPath: join(dir, "config.json"),
+    projects: [],
+    secrets: { get: async () => null },
+    catalog: BUNDLED_PLUGINS.filter((p) => ["linear", "internal-tracker"].includes(p.id)),
+    log: {
+      info() {},
+      error(line) {
+        errors.push(line);
+      },
+    },
+  });
+  let readers: Awaited<ReturnType<typeof startReaders>> | undefined;
+  let server: Awaited<ReturnType<typeof startServer>> | undefined;
+  t.after(async () => {
+    await server?.close();
+    readers?.stop();
+    daemon.close();
+  });
+  const registry = await Projects.open(join(dir, "projects.json"), {
+    async start(p) {
+      await daemon.addProject(p);
+      readers = await startReaders({
+        registry: daemon.registry,
+        projects: [p],
+        store: daemon.store,
+        schedule: () => () => {},
+        log: (line) => errors.push(line),
+      });
+      await readers.ready;
+    },
+    async stop() {
+      readers?.stop();
+    },
+  });
+  await registry.add({ path, id: "source", name: "Source", repository: "example/source" });
+  assert.equal(readers?.readers[0]?.tracker, true);
+  assert.equal(readers?.readers[0]?.trackerError, undefined);
+  // Legacy failed Linear polls are retained in the log, but no longer apply.
+  daemon.store.append({
+    project: "source",
+    actor: "reader",
+    at: "2030-01-01T00:00:00Z",
+    kind: "coordinator.checkpoint",
+    payload: {
+      checkpoint: {
+        format: "armada.readers",
+        version: 1,
+        provider: "linear",
+        failures: 4,
+        error: "Linear project is not configured",
+      },
+    },
+  });
+  const tables = daemon.store.fold("source").projects.source!;
+  assert.ok(tables.readAt?.internal);
+  assert.equal(tables.readAt?.linear, undefined);
+  assert.equal(tables.readers?.linear, undefined);
+  assert.deepEqual(tables.tickets, []);
+  assert.deepEqual(
+    fleetStatus(tables, daemon.store.readSince(0, "source"), new Date().toISOString(), "internal").problems.readers,
+    [],
+  );
+  const tracker = daemon.registry.get("tracker", "internal", "source");
+  assert.ok(tracker?.create);
+  const ticket = await tracker.create({
+    project: "source",
+    title: "Grow a canopy",
+    description: "Add shade",
+    labels: ["ready-for-agent"],
+    state: "unstarted",
+    parent: null,
+    blockers: [],
+  });
+  const status = fleetStatus(
+    daemon.store.fold("source").projects.source!,
+    daemon.store.readSince(0, "source"),
+    new Date().toISOString(),
+  );
+  assert.deepEqual(
+    status.frontier.map((t) => t.id),
+    [ticket.id],
+  );
+  // The app receives no obsolete Linear telemetry, while the append-only history remains intact.
+  daemon.store.append({
+    project: "source",
+    actor: "reader",
+    at: "2030-01-01T00:00:00Z",
+    kind: "coordinator.checkpoint",
+    payload: {
+      checkpoint: {
+        format: "armada.linear-reader",
+        version: 1,
+        source: "old",
+        quota: "old",
+        usage: { hour: "2030-01-01T00:00:00Z", requests: 3, pausedUntil: "2030-01-01T01:00:00Z" },
+      },
+    },
+  });
+  server = await startServer({ store: daemon.store, projects: registry.list });
+  const ws = new WebSocket(server.wsUrl);
+  try {
+    await once(ws, "open");
+    const reply = once(ws, "message");
+    ws.send(JSON.stringify({ version, id: "internal-sub", type: "project.subscribe", project: "source", after: 0 }));
+    const frame = serverMessageSchema.parse(JSON.parse(String((await reply)[0])));
+    assert.equal(frame.type, "project.subscribed");
+    if (frame.type !== "project.subscribed") throw new Error("Missing subscription snapshot");
+    const state = frame.snapshot?.state as { readers?: Record<string, unknown>; readAt?: Record<string, string> };
+    assert.equal(state.readers?.linear, undefined);
+    assert.equal(state.readAt?.linear, undefined);
+    assert.ok(state.readAt?.internal);
+    assert.ok(daemon.store.fold("source").projects.source?.readers?.linear, "snapshot filtering never edits history");
+  } finally {
+    ws.terminate();
+  }
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.deepEqual(errors, []);
 });

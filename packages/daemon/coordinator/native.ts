@@ -28,6 +28,8 @@ export interface NativeToolOptions extends TicketToolOptions {
   merges?: Merges;
   /** Host-owned, bounded refresh of the project's tracker and forge readers. */
   refresh?: () => Promise<void>;
+  /** Selected tracker; historical diagnostics from a previous tracker are irrelevant. */
+  tracker?: string;
   /** Optional host restriction/adapter for explicitly requested, local V1 file imports. */
   readRulesImport?: (file: string) => Promise<ProjectRules>;
   mergeEvidence?: (pr: number) => Promise<MergeEvidence | null>;
@@ -181,6 +183,7 @@ function decide(
   operation: string,
   evidence: MergeEvidence | null,
   importedRules?: ProjectRules,
+  tracker?: string,
 ): Decision {
   const tables = projectFacts(events, project);
   const rules = tables.rules ?? emptyRules();
@@ -192,7 +195,7 @@ function decide(
       return {
         result: JSON.parse(
           JSON.stringify({
-            ...fleetStatus(tables, events, at),
+            ...fleetStatus(tables, events, at, tracker),
             ok: true,
             project,
             seq: events.at(-1)?.seq ?? 0,
@@ -616,6 +619,7 @@ export function nativeTools(
               `tool:${digest(key)}`,
               evidence,
               importedRules,
+              options.tracker,
             );
           } catch {
             return output(

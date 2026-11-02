@@ -135,3 +135,22 @@ test("the room explains a Linear rate-limit pause without repeating its stale ag
   expect(html).toMatch(/<span class="font-mono tnum">[0-9:]+<\/span>/);
   expect(html).not.toContain("Linear 25 min ago");
 });
+
+test("an internal project's header names Armada and ignores historical Linear pauses and freshness", () => {
+  const html = renderToStaticMarkup(
+    <Header
+      project={{ name: "Harbor", repository: "example/harbor", tracker: "internal" }}
+      counts={counts({})}
+      now={NOW}
+      open={false}
+      panel="room-panel"
+      onToggle={() => {}}
+      onPill={() => {}}
+      readers={{ linear: { hour: "2026-03-10T15:00:00.000Z", requests: 6, pausedUntil: "2026-03-10T16:00:00.000Z" } }}
+      readAt={{ linear: "2026-03-10T14:00:00.000Z", internal: "2026-03-10T14:00:00.000Z" }}
+    />,
+  );
+  expect(html).toContain("Armada tickets");
+  expect(html).not.toContain("Linear");
+  expect(html).not.toContain("min ago");
+});

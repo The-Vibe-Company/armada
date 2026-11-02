@@ -152,7 +152,26 @@ test("brief inlines only the newest six comments, each at most 600 characters, a
     assert.match(body, /\[truncated\]$/);
     assert.ok(!body.includes("�"));
   }
-  assert.match(brief, /Read (?:the )?ticket SEED-2 for the rest/i);
+  assert.match(brief, /## More context\n\nRun `armada ticket` for the full ticket and its comments\./);
+  const url = "https://linear.app/example/issue/SEED-2";
+  assert.ok(!brief.includes(url));
+  const linked = workerBrief({ ...value, ticket: { ...value.ticket, url } });
+  assert.ok(linked.includes(url), "the Linear link stays available to humans");
+  const hosted = workerBrief({
+    ...value,
+    ticket: { ...value.ticket, url },
+    hosted: {
+      token: "synthetic-launch-token",
+      apiUrl: "https://armada.example.invalid",
+      profile: "claude",
+      project: "orchard",
+    },
+  });
+  const hostedContext = hosted.split("## More context\n\n")[1]?.split("\n\n## ")[0] ?? "";
+  assert.ok(hostedContext.includes(url), "hosted workers retain their ticket link");
+  assert.ok(!hostedContext.includes("armada ticket"), "hosted workers have no local socket capability");
+  assert.ok(Buffer.byteLength(linked) < 48 * 1024);
+  assert.match(workerBrief(input()), /Run `armada ticket` for the full ticket and its comments/);
   assert.deepEqual(
     value.ticket.comments,
     comments.filter((_, i) => i % 2).concat(comments.filter((_, i) => !(i % 2))),

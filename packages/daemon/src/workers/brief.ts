@@ -120,7 +120,12 @@ export function workerBrief(input: {
     const excerpt = characters.length > 600 ? characters.slice(0, 600 - marker.length).join("") + marker : comment.body;
     add(`## Recorded by ${comment.author} at ${comment.at}`, excerpt, true);
   }
-  if (comments.length) add("## More context", `Read ticket ${t.id} for the rest.`);
+  add(
+    "## More context",
+    input.hosted
+      ? `${t.url ? `Full ticket and comments: [${t.id}](${t.url}). ` : ""}Ask the coordinator for any missing ticket context.`
+      : "Run `armada ticket` for the full ticket and its comments.",
+  );
   add(
     "## Plan",
     preApproved

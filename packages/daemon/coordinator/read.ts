@@ -8,7 +8,8 @@ const line = (text: string, max = 160) => {
 };
 
 /** The coordinator reads a summary; full snapshots belong to ticket.read, never this result. */
-export function fleetStatus(tables: ProjectTables, events: FleetEvent[], at: string) {
+export function fleetStatus(tables: ProjectTables, events: FleetEvent[], at: string, tracker?: string) {
+  const relevant = (provider: string) => !tracker || !["linear", "internal"].includes(provider) || provider === tracker;
   const readerFailures = new Map<string, { provider: string; failures: number; error: string }>();
   for (const e of events) {
     const c = e.kind === "coordinator.checkpoint" ? e.payload.checkpoint : null;
@@ -21,6 +22,7 @@ export function fleetStatus(tables: ProjectTables, events: FleetEvent[], at: str
       typeof c.provider !== "string"
     )
       continue;
+    if (!relevant(c.provider)) continue;
     if (typeof c.failures === "number" && c.failures >= 3)
       readerFailures.set(c.provider, {
         provider: c.provider,
@@ -50,7 +52,7 @@ export function fleetStatus(tables: ProjectTables, events: FleetEvent[], at: str
   const { routing, gates, coordinatorModel, ...value } = rules.value;
   return {
     at,
-    readAt: tables.readAt ?? {},
+    readAt: Object.fromEntries(Object.entries(tables.readAt ?? {}).filter(([provider]) => relevant(provider))),
     sessions: active.map((s) => {
       const pr = open.findLast((p) => p.ticket === s.ticket);
       const report = events.findLast(

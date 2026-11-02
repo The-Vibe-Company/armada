@@ -2,10 +2,18 @@ import { z } from "zod";
 import { requestSchema, versionSchema } from "./envelope.js";
 
 export const PROJECTS_MINOR = 12;
+export const PROJECT_TRACKER_MINOR = 23;
 const text = z.string().trim().min(1).max(4096);
 const identifier = z.string().trim().min(1).max(200);
 const request = { version: versionSchema, id: identifier };
-export const projectSchema = z.object({ id: identifier, name: text, repository: text, root: text.optional() });
+export const projectSchema = z.object({
+  id: identifier,
+  name: text,
+  repository: text,
+  root: text.optional(),
+  /** Absent on older daemons, which used Linear. */
+  tracker: identifier.optional(),
+});
 export type Project = z.infer<typeof projectSchema>;
 function addProjectInput() {
   return z.object({

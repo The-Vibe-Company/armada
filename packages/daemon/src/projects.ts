@@ -191,6 +191,10 @@ export class Projects {
       if (!parsed.success)
         throw new ProjectRefusal("Invalid project id, name, path or repository (expected owner/repo)");
       const data = parsed.data;
+      if (!data.programRoot && !/[a-z]/i.test(data.id))
+        throw new ProjectRefusal(
+          "Internal tracker project ids must contain a letter; use a project name with a letter.",
+        );
       if (this.#list.some((p) => p.id === data.id)) throw new ProjectRefusal("Project id already exists");
       let root: string;
       try {
@@ -201,13 +205,14 @@ export class Projects {
       }
       if (this.#list.some((p) => p.root === root)) throw new ProjectRefusal("Project root is already registered");
       const toml = await tomlAt(root, []);
-      const programRoot = data.programRoot ?? toml?.programRoot;
+      const programRoot = data.programRoot;
       const project = daemonProjectSchema.parse({
         id: data.id,
         name: data.name,
         repository: data.repository,
         root,
         checkout: root,
+        tracker: programRoot ? "linear" : "internal",
         ...(programRoot === undefined ? {} : { programRoot }),
         phaseGroup: data.phaseGroup ?? toml?.phaseGroup ?? "Agent phase",
         ...(toml?.readyLabel === undefined ? {} : { readyLabel: toml.readyLabel }),

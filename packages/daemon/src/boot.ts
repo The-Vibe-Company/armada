@@ -31,7 +31,7 @@ function projectConfig(projects: readonly ProjectSettings[]): PluginConfig {
       linear: {
         projects: Object.fromEntries(
           projects.flatMap((p) =>
-            p.programRoot
+            p.programRoot && (p.tracker === undefined || p.tracker === "linear")
               ? [
                   [
                     p.id,

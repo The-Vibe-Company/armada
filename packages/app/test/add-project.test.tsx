@@ -130,8 +130,8 @@ describe("Add project in a browser", () => {
     expect(await field("Repository").inputValue()).toBe("The-Vibe-Company/armada");
     expect(await field("Name").inputValue()).toBe("Armada");
     expect(await field("Linear program").inputValue()).toBe("THE-1982");
-    // Left empty, the daemon still takes armada.toml's program: the hint says so.
-    expect(await dialog().getByText("Empty, armada.toml's THE-1982.", { exact: false }).count()).toBe(1);
+    // A suggested program remains editable; an empty choice uses Armada.
+    expect(await dialog().getByText("the project keeps its tickets in Armada.", { exact: false }).count()).toBe(1);
     expect(await dialog().locator("[data-problems]").count()).toBe(0);
     await button("Add").click();
     const add = await last("projects.add");
@@ -151,6 +151,16 @@ describe("Add project in a browser", () => {
     expect(await sidebar.getByRole("link", { name: "Kestrel" }).getAttribute("data-arrived")).toBeNull();
     // The focus is back on what opened the dialog.
     await settled(() => page.evaluate(() => document.activeElement?.textContent), "Add project");
+  });
+
+  test("clearing the suggested Linear program sends no root", async () => {
+    await open([KESTREL]);
+    await inspected(ARMADA);
+    expect(await field("Linear program").inputValue()).toBe("THE-1982");
+    await field("Linear program").fill("");
+    expect(await field("Linear program").getAttribute("placeholder")).toBe("Without Linear");
+    await button("Add").click();
+    expect(await last("projects.add")).not.toHaveProperty("programRoot");
   });
 
   test("a folder without a remote asks for the repository, and Add waits for owner/repo", async () => {
