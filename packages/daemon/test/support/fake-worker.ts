@@ -81,8 +81,14 @@ export function fakeWorkers(store: EventStore, projects: { id: string; repositor
     workers,
     fake,
     /** Launches the ticket (ready for an agent, in the log) and has its worker claim it; returns its token. */
-    async launch(project: string, ticket: string) {
-      const launched = await workers.tool(project, "worker.launch", { ticket }, `fake-launch-${++calls}`, () => {});
+    async launch(project: string, ticket: string, branch?: string) {
+      const launched = await workers.tool(
+        project,
+        "worker.launch",
+        { ticket, ...(branch ? { branch } : {}) },
+        `fake-launch-${++calls}`,
+        () => {},
+      );
       const session = String(launched.session);
       const token = tokens.get(session) ?? "";
       await workers.request(token, { command: "claim", ticket });

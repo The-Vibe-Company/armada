@@ -24,6 +24,7 @@ import { BriefRefusal, workerBrief } from "./brief.ts";
 import { loadBriefContext } from "./brief-context.ts";
 import { maskHostedText } from "./hosted.ts";
 import { labelKey, workerRoute } from "./routing.ts";
+import { WorkerTicketScopeRefusal, workerTicket } from "./ticket.ts";
 
 interface WorkerProject {
   id: string;
@@ -97,6 +98,7 @@ export const workerToolSchemas = {
 };
 export type WorkerTool = keyof typeof workerToolSchemas;
 const workerRequestSchema = z.discriminatedUnion("command", [
+  z.strictObject({ command: z.literal("ticket"), ticket: id }),
   z.strictObject({ command: z.literal("claim"), ticket: id }),
   z.strictObject({
     command: z.literal("report"),
@@ -1776,12 +1778,18 @@ export class Workers {
     const request = workerRequestSchema.parse(input);
     await this.#recovery;
     const row = [...this.#live.values()].find((row) => row.tokenHash && row.tokenHash === hash(token));
-    if (!row || request.ticket !== row.ref.ticket) throw new Error("Worker authorization refused");
+    if (!row) throw new Error("Worker authorization refused");
     return this.#serial<Record<string, Json>>(row.ref.project, async (): Promise<Record<string, Json>> => {
       if (this.#closing || !row.tokenHash || row.tokenHash !== hash(token))
         throw new Error("Worker capability retired");
       this.#check(row.ref);
+      if (request.ticket !== row.ref.ticket) {
+        if (request.command === "ticket") throw new WorkerTicketScopeRefusal(row.ref.ticket);
+        throw new Error("Worker authorization refused");
+      }
       const { project, ticket, session } = row.ref;
+      if (request.command === "ticket")
+        return { ...workerTicket(this.#options.store.readSince(0, project), project, ticket) };
       const mask = (value: string) => row.mask(value.replaceAll(token, "[redacted]"));
       if (request.command === "claim") {
         if (

@@ -415,6 +415,26 @@ describe("the Providers and Connections sections in a browser", () => {
     ).toBe("page");
   });
 
+  test("Connections: Linear is unnecessary with no Linear projects, and required again for a Linear project", async () => {
+    await open("#/settings/connections/linear");
+    expect(await card("linear").innerText()).toContain("Not connected");
+    for (const projects of [
+      [{ id: "harbor", name: "Harbor", repository: "example/harbor", tracker: "internal" }],
+      [],
+    ]) {
+      await receive({ type: "projects.result", id: "project-change", projects });
+      expect(await card("linear").innerText()).toContain("Not needed by any project");
+      expect(await detail("linear").innerText()).toContain("Not needed by any project");
+      expect(await card("linear").innerText()).not.toContain("Not connected");
+    }
+    await receive({
+      type: "projects.result",
+      id: "project-change",
+      projects: [{ id: "harbor", name: "Harbor", repository: "example/harbor", tracker: "linear" }],
+    });
+    expect(await card("linear").innerText()).toContain("Not connected");
+  });
+
   test("GitHub's sign-in shows its terminal; Linear offers Armada's key when the account provides one", async () => {
     await open("#/settings/connections/github", {
       signedIn: true,

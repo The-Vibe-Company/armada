@@ -307,6 +307,11 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     const seq = store.sequence;
     // Normalize optional undefined fields to JSON, then validate without changing wire key order.
     const tables = store.fold(project).projects[project] ?? emptyProject();
+    // An upgraded no-Linear project may retain telemetry from its old reader.
+    if (projects.find((p) => p.id === project)?.tracker === "internal") {
+      if (tables.readers) delete tables.readers.linear;
+      if (tables.readAt) delete tables.readAt.linear;
+    }
     return { seq, state: projectTablesSchema.parse(JSON.parse(JSON.stringify(tables))) };
   }
 

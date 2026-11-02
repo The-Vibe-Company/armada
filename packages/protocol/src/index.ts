@@ -33,7 +33,13 @@ import {
   modelsRequestSchemas,
 } from "./models.js";
 import { pluginRequestSchemas, pluginResultSchemas } from "./plugins.js";
-import { PROJECTS_MINOR, projectRequestSchemas, projectSchema, projectsInspectionSchema } from "./projects.js";
+import {
+  PROJECT_TRACKER_MINOR,
+  PROJECTS_MINOR,
+  projectRequestSchemas,
+  projectSchema,
+  projectsInspectionSchema,
+} from "./projects.js";
 import { providerRequestSchemas, providersCatalogSchema } from "./providers.js";
 import { READER_MINOR, roomPresenceRequestSchema } from "./readers.js";
 import { BRIEF_INSTRUCTIONS_MINOR, WATCHDOG_MINOR } from "./rules.js";
@@ -74,6 +80,7 @@ export const PROTOCOL_VERSION = {
     USAGE_MINOR,
     REPLAY_MINOR,
     INTERNAL_TRACKER_MINOR,
+    PROJECT_TRACKER_MINOR,
     MODEL_SCOPE_MINOR,
   ),
 } as const;
