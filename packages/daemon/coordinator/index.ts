@@ -52,6 +52,7 @@ export interface ProjectCoordinator {
 
 /** Daemon-owned lifetime: one durable root conversation and scheduler per project. */
 export class Coordinators {
+  readonly timings = { coordinatorRestoreMs: 0, coordinatorHarnessMs: 0, coordinatorWakeMs: 0 };
   readonly #store: EventStore;
   readonly #projects = new Map<string, Promise<ProjectCoordinator>>();
   readonly #announced = new Set<string>();
@@ -73,11 +74,13 @@ export class Coordinators {
 
   async #open(options: CoordinatorOptions): Promise<ProjectCoordinator> {
     const now = options.now ?? Date.now;
+    let before = performance.now();
     const storage = openCoordinatorStorage({
       store: this.#store,
       project: options.project,
       now: () => new Date(now()).toISOString(),
     });
+    this.timings.coordinatorRestoreMs += performance.now() - before;
     const resolveModels = (source?: { providerSession: string; session: string }) => {
       const models = typeof options.models === "function" ? options.models() : options.models;
       storage.observeModels(models, source);
@@ -97,6 +100,7 @@ export class Coordinators {
           sections: [section("armada_coordinator", () => SYSTEM_PROMPT, { tag: false })],
         }),
       );
+      before = performance.now();
       harness = await Harness.open(
         storage,
         {
@@ -129,6 +133,8 @@ export class Coordinators {
         this.#announced.add(options.project);
       }
       harness.resume();
+      this.timings.coordinatorHarnessMs += performance.now() - before;
+      before = performance.now();
       const waker = new Waker({
         store: this.#store,
         project: options.project,
@@ -148,6 +154,7 @@ export class Coordinators {
           transcript: (session) => options.native?.workers?.transcript(options.project, session) ?? Promise.resolve(""),
         },
       });
+      this.timings.coordinatorWakeMs += performance.now() - before;
       return { harness, conversation, waker };
     } catch (error) {
       if (harness) await harness.close(BACKGROUND_CONTEXT);

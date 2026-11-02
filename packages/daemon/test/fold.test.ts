@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EventInput, FleetEvent } from "../src/events.ts";
-import { fold } from "../src/fold.ts";
+import { FoldAccumulator, fold } from "../src/fold.ts";
 
 const at = "2030-01-01T10:00:00Z";
 const ref = { ticket: "SEED-7", session: "sprout" };
@@ -261,4 +261,114 @@ test("a merged PR completes its session, but cannot complete a later launch or c
   assert.equal(current?.phase, "planning");
   assert.equal(current?.state, "in-progress");
   assert.equal(current?.flowStep, "plan");
+});
+
+test("incremental readings isolate retained snapshots and input while preserving every prefix and sequence gap", () => {
+  const events = log(
+    event("ticket.created", {
+      id: "SEED-7",
+      title: "Plant",
+      description: "",
+      labels: [],
+      state: "started",
+      parent: null,
+      blockers: ["SEED-8"],
+    }),
+    event("ticket.created", {
+      id: "SEED-8",
+      title: "Water",
+      description: "",
+      labels: [],
+      state: "backlog",
+      parent: null,
+      blockers: [],
+    }),
+    claimed,
+    event("session.reported", { ...ref, phase: "blocked", reason: "Need water" }),
+    event("inbox.opened", { id: "water", ticket: ref.ticket, kind: "question", body: "Water now?" }),
+    event("inbox.answered", { id: "water", answer: "Yes" }),
+    event("ticket.edited", { ticket: "SEED-8", patch: { state: "completed" } }),
+    event("session.claimed", {
+      ...ref,
+      session: "tree",
+      generation: 2,
+      owner: "Mira",
+      runtime: "codex",
+      handle: "new",
+    }),
+    event("session.reported", { ...ref, phase: "ready-to-merge", reason: "stale generation" }),
+    event("coordinator.checkpoint", {
+      checkpoint: {
+        format: "armada.tools",
+        version: 1,
+        type: "rules",
+        rules: { revision: 1, value: { policy: { plans: "approve" } } },
+      },
+    }),
+    event("coordinator.checkpoint", { checkpoint: { format: "armada.readers", version: 1, provider: "linear" } }),
+    event("tracker.import-started", {
+      id: "import-1",
+      programRoot: "SEED-1",
+      state: "running",
+      imported: 0,
+      skipped: 0,
+      comments: 0,
+      total: 1,
+    }),
+    event("tracker.import-progress", {
+      id: "import-1",
+      programRoot: "SEED-1",
+      state: "running",
+      imported: 1,
+      skipped: 0,
+      comments: 1,
+      total: 1,
+      source: "SEED-7",
+    }),
+    event("tracker.import-ended", {
+      id: "import-1",
+      programRoot: "SEED-1",
+      state: "completed",
+      imported: 1,
+      skipped: 0,
+      comments: 1,
+      total: 1,
+    }),
+  ).map((e) => ({ ...e, seq: e.seq * 2 }));
+  const replay = new FoldAccumulator();
+  const snapshots = [];
+  for (const [index, e] of events.entries()) {
+    replay.append(e);
+    const snapshot = replay.snapshot();
+    assert.deepEqual(snapshot, fold(events.slice(0, index + 1)), `prefix ${index + 1}`);
+    snapshots.push(snapshot);
+    const state = snapshot.projects.orchard;
+    assert.ok(state);
+    state.tickets[0]!.title = "Caller mutation";
+    if (state.rules) state.rules.revision = 999;
+    if (state.trackerImport) state.trackerImport.imported = 999;
+  }
+  const current = replay.snapshot().projects.orchard;
+  assert.equal(current?.tickets[0]?.title, "Plant");
+  assert.equal(current?.tickets[0]?.blockers?.[0]?.status, "completed");
+  assert.equal(current?.sessions[0]?.phase, "planning", "old generation never replaces the current reading");
+  assert.deepEqual(current?.trackerImport, {
+    id: "import-1",
+    programRoot: "SEED-1",
+    state: "completed",
+    imported: 1,
+    skipped: 0,
+    comments: 1,
+    total: 1,
+  });
+  assert.equal(
+    snapshots[3]?.projects.orchard?.sessions[0]?.phase,
+    "blocked",
+    "later events never mutate a retained reading",
+  );
+  events[0]!.payload = { ...events[0]!.payload, title: "Changed source" } as (typeof events)[0]["payload"];
+  assert.equal(replay.snapshot().projects.orchard?.tickets[0]?.title, "Plant");
+  assert.equal(replay.snapshot().projects.constructor, undefined);
+  assert.throws(() => replay.append(events[0]!), /sequence/);
+  assert.throws(() => replay.append({ ...events[0]!, seq: 2.5 }), /sequence/);
 });

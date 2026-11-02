@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { activePhaseSchema } from "@armada/protocol";
 import { z } from "zod";
+import type { FleetEvent } from "../events.ts";
 import { fold } from "../fold.ts";
 import type { Account } from "../server/account.ts";
 import type { EventStore } from "../store.ts";
@@ -73,13 +74,16 @@ export class HostedReader {
   constructor(options: Options) {
     this.#options = options;
   }
-  #active(project: string) {
-    const events = this.#options.store.readSince(0, project);
-    const sessions = fold(events).projects[project]?.sessions ?? [];
+  #active(project: string, events: FleetEvent[] = this.#options.store.readSince(0, project)) {
+    let sessions: ReturnType<typeof fold>["projects"][string]["sessions"] | undefined;
     return events.flatMap((event) => {
+      const value = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
       const checkpoint =
-        event.kind === "coordinator.checkpoint" ? checkpointSchema.safeParse(event.payload.checkpoint) : null;
+        value && typeof value === "object" && !Array.isArray(value) && value.format === "armada.worker"
+          ? checkpointSchema.safeParse(value)
+          : null;
       if (!checkpoint?.success) return [];
+      sessions ??= fold(events).projects[project]?.sessions ?? [];
       const launch = checkpoint.data;
       return sessions.some(
         (session) =>
@@ -93,19 +97,25 @@ export class HostedReader {
   }
   hasWork() {
     return this.#options.projects.some((project) => {
-      if (this.#active(project.id).length) return true;
       const events = this.#options.store.readSince(0, project.id);
-      const sessions = fold(events).projects[project.id]?.sessions ?? [];
+      if (this.#active(project.id, events).length) return true;
+      let sessions: ReturnType<typeof fold>["projects"][string]["sessions"] | undefined;
       return events.some((event) => {
         const c = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
+        if (
+          !(
+            c &&
+            typeof c === "object" &&
+            !Array.isArray(c) &&
+            c.format === "armada.worker" &&
+            c.type === "launch-intent" &&
+            c.hosted === true &&
+            typeof c.launchId === "string"
+          )
+        )
+          return false;
+        sessions ??= fold(events).projects[project.id]?.sessions ?? [];
         return (
-          c &&
-          typeof c === "object" &&
-          !Array.isArray(c) &&
-          c.format === "armada.worker" &&
-          c.type === "launch-intent" &&
-          c.hosted === true &&
-          typeof c.launchId === "string" &&
           sessions.some(
             (session) => session.session === c.session && !["released", "merged"].includes(session.phase),
           ) &&
