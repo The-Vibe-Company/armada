@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { request } from "node:http";
 import { secretNameRefusal } from "@armada/core";
+import type { WorkerTicketResult } from "../../daemon/src/workers/ticket.ts";
 import type { Io } from "./io.ts";
 import { UsageError } from "./io.ts";
 
 class TransportUnavailable extends Error {}
 class BeforeConnect extends TransportUnavailable {}
-const commands = new Set(["claim", "report", "heartbeat", "ask", "release"]);
+const commands = new Set(["ticket", "claim", "report", "heartbeat", "ask", "release"]);
 interface Args {
   command: string;
   rest: string[];
@@ -18,12 +19,18 @@ interface Args {
 export async function localWorker(io: Io, args: Args): Promise<number | null> {
   if (!commands.has(args.command) || (!io.env.ARMADA_WORKER_SOCKET && !io.env.ARMADA_WORKER_TOKEN)) return null;
   const expected = args.command === "claim" || args.command === "report" ? 1 : 0;
-  if (args.command === "ask" ? args.rest.length > 1 : args.rest.length !== expected)
-    throw new UsageError(`local ${args.command} takes ${expected} positional arguments`);
+  const optionalArgument = args.command === "ask" || args.command === "ticket";
+  if (optionalArgument ? args.rest.length > 1 : args.rest.length !== expected)
+    throw new UsageError(
+      `local ${args.command} takes ${optionalArgument ? "at most one positional argument" : `${expected} positional arguments`}`,
+    );
   const socketPath = io.env.ARMADA_WORKER_SOCKET;
   const token = io.env.ARMADA_WORKER_TOKEN;
   if (!socketPath || !token) throw new UsageError("local worker requires its issued socket and token");
-  const ticket = args.options.ticket ?? (args.command === "claim" ? args.rest[0] : undefined) ?? io.env.ARMADA_TICKET;
+  const ticket =
+    args.options.ticket ??
+    (args.command === "claim" || args.command === "ticket" ? args.rest[0] : undefined) ??
+    io.env.ARMADA_TICKET;
   if (!ticket) throw new UsageError("local worker needs its ticket");
   const now = () => (io.now?.() ?? new Date()).getTime();
   const once = async (body: Record<string, unknown>, timeoutMs: number) => {
@@ -48,22 +55,47 @@ export async function localWorker(io: Io, args: Args): Promise<number | null> {
           },
         },
         (res) => {
-          if (res.statusCode !== 200) {
+          const scopeRefusal = args.command === "ticket" && res.statusCode === 409;
+          if (res.statusCode !== 200 && !scopeRefusal) {
             reject(new Error("Local worker authorization refused or generation ended"));
             res.on("error", () => {});
             res.destroy();
             return;
           }
           let output = "";
-          res.on("data", (chunk) => {
+          let bytes = 0;
+          const limit = args.command === "ticket" && !scopeRefusal ? 16 * 1024 * 1024 : 65536;
+          res.setEncoding("utf8");
+          res.on("data", (chunk: string) => {
+            bytes += Buffer.byteLength(chunk);
+            if (bytes > limit) {
+              reject(
+                new Error(
+                  args.command === "ticket" ? "Local ticket response exceeds 16 MiB" : "Invalid local worker response",
+                ),
+              );
+              req.destroy();
+              return;
+            }
             output += chunk;
-            if (output.length > 65536) req.destroy(new Error("Invalid local worker response"));
           });
           res.on("end", () => {
-            if (res.statusCode !== 200)
-              return reject(new Error("Local worker authorization refused or generation ended"));
             try {
-              resolve(JSON.parse(output));
+              const result = JSON.parse(output);
+              if (scopeRefusal) {
+                const own = result.ticket;
+                return reject(
+                  new Error(
+                    result.code === "ticket-scope" &&
+                      typeof own === "string" &&
+                      own.length <= 200 &&
+                      !/[\r\n]/.test(own)
+                      ? `your capability is for ${own}`
+                      : "Local worker authorization refused or generation ended",
+                  ),
+                );
+              }
+              resolve(result);
             } catch {
               reject(new Error("Invalid local worker response"));
             }
@@ -200,6 +232,33 @@ export async function localWorker(io: Io, args: Args): Promise<number | null> {
     return 0;
   }
   const result = await call(body);
-  io.stdout(args.json ? `${JSON.stringify(result)}\n` : `${ticket}: ${args.command} recorded by the local daemon.\n`);
+  if (args.command === "ticket") {
+    const detail = result as unknown as WorkerTicketResult;
+    if (!detail.ticket || typeof detail.ticket.title !== "string") throw new Error("Invalid local ticket response");
+    io.stdout(args.json ? `${JSON.stringify(detail.ticket)}\n` : renderTicket(detail));
+  } else
+    io.stdout(args.json ? `${JSON.stringify(result)}\n` : `${ticket}: ${args.command} recorded by the local daemon.\n`);
   return 0;
+}
+
+function renderTicket({ ticket, parent, internal }: WorkerTicketResult): string {
+  const lines = [
+    `# ${ticket.id} — ${ticket.title}`,
+    "",
+    `State: ${ticket.status}`,
+    `Labels: ${ticket.labels?.join(", ") || "none"}`,
+    `Parent: ${parent ? `${parent.id} — ${parent.title} (${parent.status})` : ticket.parent ? `${ticket.parent} (state unavailable)` : "none"}`,
+    `Blockers: ${ticket.blockers?.map((blocker) => `${blocker.id} (${blocker.status})`).join(", ") || "none"}`,
+    "",
+    "## Description",
+    "",
+    ticket.description ?? "",
+    "",
+    "## Comments",
+    "",
+  ];
+  for (const comment of ticket.comments ?? [])
+    lines.push(`### ${comment.author} — ${comment.at}`, "", comment.body, "");
+  if (!internal && ticket.url) lines.push(`older comments are in Linear: [${ticket.id}](${ticket.url})`, "");
+  return `${lines.join("\n").trimEnd()}\n`;
 }
