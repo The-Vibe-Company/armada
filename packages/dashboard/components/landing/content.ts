@@ -24,6 +24,7 @@ export const SETUP: { command: string; note: string }[] = [
 
 /** Every command of `armada --help`, in its order, with what it is for in a few words. */
 export const COMMANDS: { name: string; role: "both" | "coordinator" | "worker" | "you"; what: string }[] = [
+  { name: "tickets", role: "you", what: "Import a Linear program once into an internal desktop project" },
   { name: "worker", role: "worker", what: "Show the worker protocol commands" },
   { name: "ticket", role: "worker", what: "Read your ticket through its local worker capability" },
   { name: "plugin", role: "you", what: "List bundled desktop plugins and enable or disable them" },
