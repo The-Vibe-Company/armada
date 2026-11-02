@@ -81,7 +81,7 @@ export function ComposerModel({
   const text = (
     <>
       <span className="min-w-0 truncate">{label}</span>
-      {pending && <span className="flex-none text-text-3/80"> · {NEXT_TURN}</span>}
+      {pending && <span className="flex-none whitespace-pre text-text-3/80"> · {NEXT_TURN}</span>}
     </>
   );
   if (!changeable)
