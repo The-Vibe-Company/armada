@@ -10,7 +10,7 @@ import { PluginRegistry } from "../src/plugins/registry.ts";
 import { startReaders } from "../src/server/readers.ts";
 import { EventStore } from "../src/store.ts";
 
-const project = { id: "orchard", name: "Orchard", repository: "example/orchard" };
+const project = { id: "orchard", name: "Orchard", repository: "example/orchard", tracker: "linear" };
 const first = "2026-03-10T09:00:00.000Z";
 const next = "2026-03-10T09:04:00.000Z";
 const pr = {

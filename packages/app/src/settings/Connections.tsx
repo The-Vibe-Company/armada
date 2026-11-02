@@ -27,7 +27,7 @@ const connectionOf = (providers: readonly Provider[] | null, card: "linear" | "g
  * The open card's detail is below the list (`#/settings/connections/<card>`).
  */
 export function Connections({ detail }: { detail?: Connection }) {
-  const { providers, providersProblem, account, accountProblem, status } = useDaemon();
+  const { providers, providersProblem, account, accountProblem, status, projects } = useDaemon();
   const client = useDaemonClient();
   const signIn = useSignIn("provider");
   useEscapeCloses(detail, () => go(settingsHref("connections")));
@@ -36,6 +36,7 @@ export function Connections({ detail }: { detail?: Connection }) {
     detail === "linear" || detail === "github" ? connectionOf(providers, detail)?.id : undefined,
   );
   const live = status === "live";
+  const linearUnused = projects !== null && !projects.some((p) => (p.tracker ?? "linear") === "linear");
   const toggle = (card: Connection) => go(settingsHref("connections", card === detail ? undefined : card));
   const armadaKey = account?.signedIn === true && account.keys.linear;
   function connect(card: "linear" | "github") {
@@ -60,7 +61,7 @@ export function Connections({ detail }: { detail?: Connection }) {
               id={card}
               mark={card}
               name={NAMES[card]}
-              status={providers ? connectionStatus(provider) : READING}
+              status={card === "linear" && linearUnused ? NOT_NEEDED : providers ? connectionStatus(provider) : READING}
               open={detail === card}
               onToggle={() => toggle(card)}
               control={
@@ -124,12 +125,15 @@ export function Connections({ detail }: { detail?: Connection }) {
           signIn={signIn}
           live={live}
           armadaKey={detail === "linear" && armadaKey}
+          unused={detail === "linear" && linearUnused}
           onConnect={() => connect(detail)}
         />
       ) : null}
     </>
   );
 }
+
+const NOT_NEEDED: StatusLine = { word: "Not needed by any project", dot: "bg-text-3", ink: "text-text-3" };
 
 const READING: StatusLine = { word: "Reading…", dot: "bg-text-3", ink: "text-text-3" };
 
@@ -202,6 +206,7 @@ function ConnectionDetail({
   signIn,
   live,
   armadaKey,
+  unused,
   onConnect,
 }: {
   card: "linear" | "github";
@@ -209,11 +214,12 @@ function ConnectionDetail({
   signIn: SignIn;
   live: boolean;
   armadaKey: boolean;
+  unused: boolean;
   onConnect: () => void;
 }) {
   const disconnect = useDisconnect(provider ?? ({ id: card } as Provider));
   const name = NAMES[card];
-  const status = connectionStatus(provider);
+  const status = unused ? NOT_NEEDED : connectionStatus(provider);
   return (
     <div id={detailId(card)} data-detail={card} className="flex min-w-0 flex-col gap-7">
       <SettingsSection

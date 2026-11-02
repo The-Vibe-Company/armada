@@ -13,7 +13,7 @@ import { Dialog } from "@/components/Dialog";
 import { Field, Form, Input } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { useDaemonClient } from "@/protocol/store";
-import { fieldsOf, idOf, isRepository, type ProjectFields, problemsOf, readable, ready, tomlProgram } from "./form";
+import { fieldsOf, idOf, isRepository, type ProjectFields, problemsOf, readable, ready } from "./form";
 
 const problemOf = (error: unknown, fallback: string) => (error instanceof Error && error.message) || fallback;
 
@@ -90,8 +90,6 @@ export default function AddProject({ onClose }: { onClose: () => void }) {
   const read = inspection && folder.trim() === inspection.path ? inspection : null;
   // A path the daemon cannot open shows its problem, and no form: the daemon would refuse it.
   const shown = read && readable(read) ? read : null;
-  // armada.toml's program: the daemon adds the project under it when the field is left empty.
-  const fromToml = shown ? tomlProgram(shown) : undefined;
   const problems = read ? problemsOf(read) : [];
   const repository = fields.repository.trim();
   const badRepository = repository !== "" && !isRepository(repository);
@@ -176,17 +174,13 @@ export default function AddProject({ onClose }: { onClose: () => void }) {
             <Field
               label="Linear program"
               htmlFor={`${ids}-program`}
-              hint={
-                fromToml
-                  ? `Optional: the issue at the root of the project's plan. Empty, armada.toml's ${fromToml}.`
-                  : "Optional: the issue at the root of the project's plan. Empty, the project runs without Linear."
-              }
+              hint="Optional: the issue at the root of the project's plan. Without Linear, the project keeps its tickets in Armada."
             >
               <Input
                 id={`${ids}-program`}
                 value={fields.program}
                 onChange={set("program")}
-                placeholder={fromToml ?? "Without Linear"}
+                placeholder="Without Linear"
                 className="font-mono"
                 spellCheck={false}
                 autoComplete="off"

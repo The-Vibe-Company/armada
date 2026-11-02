@@ -6,17 +6,22 @@ import type { PluginRegistry } from "../plugins/registry.ts";
 import type { EventStore } from "../store.ts";
 
 /** Catalog selection is host-owned; provider configuration belongs to each plugin. */
-export const daemonProjectSchema = projectSchema.extend({
-  // Model validation belongs to coordinator boot, so readers survive a bad selection.
-  coordinatorModel: z.unknown().optional(),
-  checkout: projectSchema.shape.name.optional(),
-  readyLabel: projectSchema.shape.name.optional(),
-  runtimeGroup: projectSchema.shape.name.optional(),
-  programRoot: projectSchema.shape.id.optional(),
-  phaseGroup: projectSchema.shape.name.default("Agent phase"),
-  tracker: projectSchema.shape.id.default("linear"),
-  forge: projectSchema.shape.id.default("github"),
-});
+export const daemonProjectSchema = projectSchema
+  .extend({
+    // Model validation belongs to coordinator boot, so readers survive a bad selection.
+    coordinatorModel: z.unknown().optional(),
+    checkout: projectSchema.shape.name.optional(),
+    readyLabel: projectSchema.shape.name.optional(),
+    runtimeGroup: projectSchema.shape.name.optional(),
+    programRoot: projectSchema.shape.id.optional(),
+    phaseGroup: projectSchema.shape.name.default("Agent phase"),
+    tracker: projectSchema.shape.id.optional(),
+    forge: projectSchema.shape.id.default("github"),
+  })
+  .transform((project) => ({
+    ...project,
+    tracker: project.tracker ?? (project.programRoot ? "linear" : "internal"),
+  }));
 type ReaderProject = {
   id: string;
   name: string;

@@ -55,7 +55,7 @@ export function Header({
   onPill,
   onChat,
 }: {
-  project: { name: string; repository: string };
+  project: { name: string; repository: string; tracker?: string };
   /** The folded counts; none while the project's log is read. */
   counts: Record<Group, number> | null;
   readAt: Readonly<Record<string, string>> | undefined;
@@ -73,7 +73,8 @@ export function Header({
   onChat?: () => void;
 }) {
   const pills = counts ? headerPills(counts) : [];
-  const pausedUntil = readers?.linear?.pausedUntil;
+  const linear = (project.tracker ?? "linear") === "linear";
+  const pausedUntil = linear ? readers?.linear?.pausedUntil : undefined;
   const linearPaused = pausedUntil && Date.parse(pausedUntil) > now ? pausedUntil : null;
   const resumeTime = linearPaused
     ? new Date(linearPaused).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })
@@ -141,7 +142,7 @@ export function Header({
             </span>
           )}
           {staleReadings(readAt, now)
-            .filter((r) => r.provider !== "linear" || !linearPaused)
+            .filter((r) => r.provider !== "internal" && (r.provider !== "linear" || (linear && !linearPaused)))
             .map((r) => (
               <span
                 key={r.provider}
@@ -169,6 +170,13 @@ export function Header({
       }
     >
       <span className="min-w-0 truncate font-mono text-meta text-text-3">{project.repository}</span>
+      <span className="min-w-0 truncate text-body text-text-3 @max-[640px]/strip:hidden" title="Ticket tracker">
+        {project.tracker === "internal"
+          ? "Armada tickets"
+          : project.tracker === undefined || project.tracker === "linear"
+            ? "Linear"
+            : project.tracker}
+      </span>
     </PageStrip>
   );
 }
