@@ -64,6 +64,14 @@ export type { Io } from "./io.ts";
 
 /** Each command's help block, in the order of the full usage; `armada <command> --help` prints its own. */
 const COMMAND_HELP: Record<string, string> = {
+  worker: `  worker            Show the worker protocol commands:
+                    ticket [<id>] [--json]: read your ticket through its local capability
+                    claim, report, heartbeat, ask, release: work with the daemon
+`,
+  ticket: `  ticket [<id>]     Read your capability's ticket from the local daemon as Markdown.
+                    Defaults to ARMADA_TICKET; another ticket is refused.
+                    --json prints the protocol Ticket. No tracker or credential read.
+`,
   plugin: `  plugin list [--json]
   plugin enable|disable <id>
                     List bundled plugins or change a switch (restart the daemon to apply).
@@ -501,6 +509,7 @@ const CONFIG_OPTION = new Set([
   "upgrade",
 ]);
 const JSON_OPTION = new Set([
+  "ticket",
   "peek",
   "skills",
   ...[...CONFIG_OPTION].filter((c) => c !== "run" && c !== "attach" && c !== "upgrade"),
@@ -1005,6 +1014,12 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       throw new UsageError(`-- does not apply to ${args.command}: only \`armada run\` runs a command`);
     const local = await localWorker(io, { ...args, command: args.command });
     if (local !== null) return local;
+    if (args.command === "worker") {
+      noExtra(args.rest);
+      io.stdout(commandHelp("worker")!);
+      return 0;
+    }
+    if (args.command === "ticket") throw new UsageError("armada ticket requires a local worker capability");
     if (args.command === "plugin") return await pluginCommand(io, args.rest, args.json, args.options.report);
     if (args.command === "secrets" || args.command === "run") {
       const { path, text } = await findConfig(io, args.config, args.command, args.project);

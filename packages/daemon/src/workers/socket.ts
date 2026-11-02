@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { createConnection } from "node:net";
 import { dirname } from "node:path";
 import type { Workers } from "./service.ts";
+import { WorkerTicketScopeRefusal } from "./ticket.ts";
 
 /** Private Unix socket, deliberately separate from the owner's unauthenticated loopback WebSocket. */
 export async function startWorkerSocket(workers: Workers, path: string) {
@@ -42,8 +43,11 @@ export async function startWorkerSocket(workers: Workers, path: string) {
       }
       const result = await workers.request(authorization.slice(7), JSON.parse(body));
       res.end(JSON.stringify(result));
-    } catch {
-      fail(403);
+    } catch (error) {
+      if (error instanceof WorkerTicketScopeRefusal) {
+        res.writeHead(409);
+        res.end(JSON.stringify({ code: "ticket-scope", ticket: error.ticket }));
+      } else fail(403);
     }
   });
   server.requestTimeout = 10000;
