@@ -92,6 +92,7 @@ export interface ServerOptions {
   restart?: () => void;
 }
 export interface DaemonServer {
+  timings: { coordinatorRestoreMs: number; coordinatorHarnessMs: number; coordinatorWakeMs: number };
   url: string;
   wsUrl: string;
   coordinators: ReadonlyMap<string, ProjectCoordinator>;
@@ -975,6 +976,7 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
     throw error;
   }
   return {
+    timings: { ...coordinatorManager.timings },
     url: `http://${authority}`,
     wsUrl: `ws://${authority}/`,
     coordinators,

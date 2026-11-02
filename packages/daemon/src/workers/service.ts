@@ -13,7 +13,7 @@ import { usageTime } from "@armada/protocol/usage";
 import { z } from "zod";
 import { evaluateBudget } from "../budget.ts";
 import { Deliveries, queueDelivery } from "../deliveries.ts";
-import type { EventInput, Json } from "../events.ts";
+import type { EventInput, FleetEvent, Json } from "../events.ts";
 import { fold } from "../fold.ts";
 import { maskedTail } from "../liveness/judge.ts";
 import { refuse } from "../merge/refusal.ts";
@@ -212,8 +212,9 @@ export class Workers {
   async #forgeMessages() {
     await this.#recovery;
     for (const project of this.#options.projects) {
-      const events = this.#options.store.readSince(0, project.id);
       let cursor = this.#forgeCursors.get(project.id) ?? 0;
+      const events = this.#options.store.readSince(cursor, project.id);
+      let history: FleetEvent[] | undefined;
       let failedAt: number | undefined;
       for (let index = 0; index < events.length && !this.#closing; index++) {
         const event = events[index]!;
@@ -224,7 +225,10 @@ export class Workers {
         // PR author is the forge identity of the worker that opened this PR.
         if (p.repository !== project.repository || !p.worker || p.author.toLowerCase() === p.worker.toLowerCase())
           continue;
-        const session = fold(events.slice(0, index + 1)).projects[project.id]?.sessions.find(
+        // Only an actual review input needs its historical generation. Inert
+        // coordinator commits must not replay years of checkpoints each time.
+        history ??= this.#options.store.readSince(0, project.id);
+        const session = fold(history.filter((e) => e.seq <= event.seq)).projects[project.id]?.sessions.find(
           (s) => s.ticket === p.ticket,
         );
         if (!session || ended(session.phase) || session.runtime === "tracker") continue;
@@ -1324,12 +1328,14 @@ export class Workers {
   }
 
   /** Recover only a uniquely named native session, never a worker-supplied arbitrary handle or a second create. */
-  async recoverHosted(project: string): Promise<void> {
+  async recoverHosted(project: string, history?: readonly FleetEvent[]): Promise<void> {
     return this.#serial(project, async () => {
       if (this.#closing || !this.#options.account) return;
       const config = this.#options.projects.find((projectConfig) => projectConfig.id === project);
       if (!config) return;
-      const events = this.#options.store.readSince(0, project);
+      const events = history
+        ? [...history, ...this.#options.store.readSince(history.at(-1)?.seq ?? 0, project)]
+        : this.#options.store.readSince(0, project);
       const intents = new Map<
         string,
         {
@@ -1465,15 +1471,16 @@ export class Workers {
       for (const project of this.#options.projects) {
         const history = this.#options.store.readSince(0, project.id);
         if (
-          (this.#tables(project.id)?.sessions ?? []).some(
+          (fold(history).projects[project.id]?.sessions ?? []).some(
             (session) => !ended(session.phase) && session.runtime !== "tracker",
           ) ||
           history.some((event) => event.kind === "worker.readopted" || event.kind === "worker.lost")
         )
           this.#checkpoint(project.id, { type: "recovery", boot });
-        await this.recoverHosted(project.id).catch(() => {});
+        await this.recoverHosted(project.id, history).catch(() => {});
         await this.#serial(project.id, async () => {
-          for (const session of this.#tables(project.id)?.sessions ?? []) {
+          const events = [...history, ...this.#options.store.readSince(history.at(-1)?.seq ?? 0, project.id)];
+          for (const session of fold(events).projects[project.id]?.sessions ?? []) {
             if (ended(session.phase) || session.runtime === "tracker") continue;
             const ref = {
               project: project.id,
@@ -1530,7 +1537,7 @@ export class Workers {
         if (!this.#closing)
           for (const event of evaluateBudget({
             project: project.id,
-            events: this.#options.store.readSince(0, project.id),
+            events: [...history, ...this.#options.store.readSince(history.at(-1)?.seq ?? 0, project.id)],
             now: this.#at(),
           }))
             this.#options.store.append(event);

@@ -787,3 +787,21 @@ test("reattached Claude usage retains the generation floor and marks a bounded r
   );
   assert.equal(launches, 1, "adoption never creates another worker");
 });
+
+test("a running coordinator observes a budget enabled outside its storage owner before its next commit", async (t) => {
+  const store = new EventStore(":memory:");
+  const storage = openCoordinatorStorage({ store, project: "p", now: () => at });
+  t.after(async () => {
+    await storage.close(context);
+    store.close();
+  });
+  await storage.commit([], context);
+  assert.equal(store.fold("p").projects.p?.holds.length, 0);
+  // Server-side rule changes do not pass through storage.appendEvents.
+  rules(store, { coordinatorTokensPerDay: 0, zone: "UTC" });
+  await storage.commit([], context);
+  const state = store.fold("p").projects.p;
+  assert.equal(state?.holds.length, 1);
+  assert.match(state?.holds[0]?.reason ?? "", /budget:.*0.*limit/);
+  assert.equal(state?.inbox[0]?.kind, "owner-request");
+});

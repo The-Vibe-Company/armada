@@ -422,6 +422,26 @@ Specs 4 to 7 (owner decisions, the boat.dev node, the internal tracker, signing
 and auto-update) are cut from here.
 ## Coordinator model connections
 
+Coordinator boot and restore (THE-2171): the restore cut is still sequence zero;
+there is no persisted coordinator snapshot or log migration. Pi storage replays
+its original complete checkpoint history, preserving IDs, commit sequences and
+conversation durability. The measured bottleneck was Waker's repeated fold of
+every growing fleet prefix. Waker now advances one in-memory fold accumulator
+per event and keeps each transition's detached reading; its wake keys, outbox
+and generation fences are unchanged. The ordinary `fold(events)` API remains a
+complete replay and skips cloning opaque checkpoint bodies while still deriving
+legacy usage. Budget-free coordinators inspect the committed rules tail before
+skipping budget replay, so enabling a budget takes effect on the next commit.
+
+Boot timings report coordinator storage restore, harness setup and Waker replay
+separately. Background plugin history reads use bounded pages at a captured log
+head and yield between them, allowing readiness and initial fleet responses to
+drain. Worker review forwarding reads new events first and loads an older prefix
+only for a comment's historical generation check. The isolated `boot.bench.ts`
+checks HTTP and the first fleet snapshot within five seconds on a synthetic
+11,251-event log (7,623 real pi document checkpoints, about 24 MB), then doubles
+only the checkpoint count. No private owner log is required for that benchmark.
+
 Protocol minor 9 lists pi's built-in providers through `models.providers` and
 answers `models.catalog`. The catalog contains each provider's public model
 metadata, available auth methods, environment variable names, connection status,

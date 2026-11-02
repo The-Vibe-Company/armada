@@ -107,7 +107,17 @@ export class EventStore {
       project === undefined
         ? this.#db.prepare(`${columns} ORDER BY seq LIMIT ?`).all(sequence, limit)
         : this.#db.prepare(`${columns} AND project = ? ORDER BY seq LIMIT ?`).all(sequence, project, limit);
-    return rows.map((row) => ({ ...row, payload: JSON.parse(row.payload as string) }) as FleetEvent);
+    return rows.map(
+      (row) =>
+        ({
+          seq: row.seq,
+          project: row.project,
+          kind: row.kind,
+          at: row.at,
+          actor: row.actor,
+          payload: JSON.parse(row.payload as string),
+        }) as FleetEvent,
+    );
   }
 
   /** One replay per project at a committed cursor. Callers own detached results.
