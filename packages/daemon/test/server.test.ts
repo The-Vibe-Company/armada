@@ -209,7 +209,12 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
   assert.equal((await fetch(address.url)).status, 404);
   const client = await connect(address.wsUrl);
   client.send({ type: "projects.list" });
-  assert.deepEqual(await client.next(), { type: "projects.result", version, id: "r1", projects });
+  assert.deepEqual(await client.next(), {
+    type: "projects.result",
+    version,
+    id: "r1",
+    projects: projects.map((p) => ({ ...p, tracker: "linear" })),
+  });
   const closed = once(client.ws, "close");
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);

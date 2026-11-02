@@ -118,7 +118,7 @@ export async function modelEnvironment(
 
 /** Project rules win over the boot default. Provider code is always obtained from the registry. */
 export function coordinatorModels(options: {
-  projects: readonly { id: string; coordinatorModel?: unknown }[];
+  projects: readonly { id: string; coordinatorModel?: unknown; tracker?: string }[];
   store: EventStore;
   registry: PluginRegistry;
   pi?: ModelRegistry;
@@ -141,6 +141,7 @@ export function coordinatorModels(options: {
         return [
           {
             project: project.id,
+            native: { tracker: project.tracker },
             models: options.pi.models,
             model: { provider: selection.provider, modelId: selection.model },
             selection,
@@ -161,6 +162,7 @@ export function coordinatorModels(options: {
       return [
         {
           project: project.id,
+          native: { tracker: project.tracker },
           ...pluginModels(selection.kind, config.model ?? sdk.modelId, sdk),
           selection: { ...selection, config },
         },
