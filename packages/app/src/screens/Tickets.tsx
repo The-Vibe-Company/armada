@@ -10,12 +10,12 @@
 // coordinator, as the room's own "Launch what is ready" does. A project on
 // Linear shows its tickets read-only, and one quiet line where New ticket is.
 import { TICKETS_MINOR } from "@armada/protocol";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DaemonProblem } from "@/components/DaemonProblem";
 import { TONE } from "@/components/fleet/FleetList";
 import { Page, PageBar, PageHeader } from "@/components/page";
 import { Button } from "@/components/ui/button";
-import { type FleetState, fleetOf } from "@/fleet/state";
+import { type FleetState, type FoldedTicket, fleetOf } from "@/fleet/state";
 import { openExternal } from "@/lib/external";
 import { type Translate, useT } from "@/lib/i18n";
 import { roomHref, ticketsHref } from "@/lib/route";
@@ -31,7 +31,9 @@ import { TicketPanel } from "@/tickets/TicketPanel";
 import {
   createFields,
   draftOf,
+  newId,
   READY_LABEL,
+  requestWrites,
   TICKET_GROUPS,
   type TicketDraft,
   type TicketGroup,
@@ -50,22 +52,11 @@ const DOT: Record<TicketGroup, string> = {
   done: "bg-merged",
 };
 
-const newId = () =>
-  typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-
-/**
- * One request id per write: the same write sent again (after a refusal or a
- * drop) keeps its id, so the daemon replays its first answer; another write
- * takes a new one.
- */
-function useRequestIds() {
-  const held = useRef<{ key: string; id: string } | null>(null);
-  return useCallback((key: string) => {
-    if (held.current?.key !== key) held.current = { key, id: newId() };
-    return held.current.id;
-  }, []);
+/** One write sender per page, kept across renders. */
+function useWrites() {
+  const writes = useRef<ReturnType<typeof requestWrites> | null>(null);
+  writes.current ??= requestWrites();
+  return writes.current;
 }
 
 const go = (href: string) => {
@@ -91,8 +82,9 @@ export function Tickets({
   const client = useDaemonClient();
   const t = useT();
   const sheet = useSheet();
-  const requestId = useRequestIds();
-  const [editing, setEditing] = useState<string | null>(null);
+  const write = useWrites();
+  // The ticket under edit, as the form opened on it: Save sends only what changed since.
+  const [editing, setEditing] = useState<FoldedTicket | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -151,17 +143,17 @@ export function Tickets({
   };
   const update = (ticket: string, fields: Record<string, unknown>) => {
     const body = { type: "ticket.update" as const, project: project.id, ticket, ...fields };
-    return client.request({ ...body, requestId: requestId(JSON.stringify(body)) });
+    return write(JSON.stringify(body), (requestId) => client.request({ ...body, requestId }));
   };
   const create = async (draft: TicketDraft) => {
     const body = { type: "ticket.create" as const, project: project.id, ...createFields(draft) };
-    const created = await client.request({ ...body, requestId: requestId(JSON.stringify(body)) });
+    const created = await write(JSON.stringify(body), (requestId) => client.request({ ...body, requestId }));
     go(ticketsHref(project.id, { ticket: created.ticket }));
   };
   const save = async (draft: TicketDraft) => {
-    if (!row) return;
-    const fields = updateFields(row.ticket, draft);
-    if (Object.keys(fields).length) await update(row.ticket.id, fields);
+    if (!editing) return;
+    const fields = updateFields(editing, draft);
+    if (Object.keys(fields).length) await update(editing.id, fields);
     setEditing(null);
   };
 
@@ -263,10 +255,10 @@ export function Tickets({
             ) : (
               <p className="m-0 px-4 py-4 text-body text-text-3">{t("tickets.linear")}</p>
             )
-          ) : row && editing === row.ticket.id ? (
+          ) : row && editing?.id === row.ticket.id ? (
             <TicketForm
               key={`edit:${row.ticket.id}`}
-              initial={draftOf(row.ticket)}
+              initial={draftOf(editing)}
               creating={false}
               t={t}
               onSubmit={save}
@@ -292,7 +284,7 @@ export function Tickets({
                     await update(row.ticket.id, ready ? { addLabels: [READY_LABEL] } : { removeLabels: [READY_LABEL] });
                     return null;
                   }),
-                edit: () => setEditing(row.ticket.id),
+                edit: () => setEditing(row.ticket),
                 cancel: () =>
                   run(async () => {
                     await update(row.ticket.id, { state: "canceled" });

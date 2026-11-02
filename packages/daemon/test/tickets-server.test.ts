@@ -125,25 +125,31 @@ describe("ticket.create and ticket.update", { timeout: 4000 }, () => {
   });
 
   test("an update marks the ticket ready, then cancels it", async () => {
+    const created = await send({ ...create, requestId: "page-create-plums", title: "Water the plums", labels: [] });
+    assert.equal(created.type, "ticket.result");
+    const id = created.type === "ticket.result" ? created.ticket : "";
+    const own = () => tickets().find((t) => t.id === id);
+    assert.deepEqual(own()?.labels, []);
+
     const ready = await send({
       type: "ticket.update",
       project: "orchard",
-      requestId: "page-ready-1",
-      ticket: "ORCHA-1",
+      requestId: "page-ready-plums",
+      ticket: id,
       addLabels: ["ready-for-agent"],
     });
-    assert.equal(ready.type === "ticket.result" && ready.ticket, "ORCHA-1");
-    assert.deepEqual(tickets()[0]?.labels, ["web", "ready-for-agent"]);
+    assert.equal(ready.type === "ticket.result" && ready.ticket, id);
+    assert.deepEqual(own()?.labels, ["ready-for-agent"]);
 
     const canceled = await send({
       type: "ticket.update",
       project: "orchard",
-      requestId: "page-cancel-1",
-      ticket: "ORCHA-1",
+      requestId: "page-cancel-plums",
+      ticket: id,
       state: "canceled",
     });
     assert.equal(canceled.type, "ticket.result");
-    assert.equal(tickets()[0]?.status, "canceled");
+    assert.equal(own()?.status, "canceled");
 
     const missing = await send({
       type: "ticket.update",

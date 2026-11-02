@@ -1,7 +1,7 @@
 // The Tickets page's panel (THE-2124), after the room's (room/Panel.tsx): a
 // column on the right, 400 px, the list beside it; below 900 px a sheet over
-// the list, closed by Escape or a press beside it. It never takes the focus
-// when it opens. Its header names what it shows, then its close button.
+// the list, closed by Escape (not from a field: a draft is never lost to it)
+// or a press beside it. It never takes the focus when it opens. Its header names what it shows, then its close button.
 import { AnimatePresence, m } from "motion/react";
 import { type ReactNode, useEffect } from "react";
 import { PANEL_WIDTH } from "@/room/panel-rules";
@@ -30,13 +30,14 @@ export function TicketPanel({
   children: ReactNode;
 }) {
   useEffect(() => {
-    if (!open) return;
+    if (!sheet || !open) return;
     const close = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !e.defaultPrevented) onClose();
+      const field = e.target instanceof HTMLElement && e.target.closest("input, textarea, select");
+      if (e.key === "Escape" && !e.defaultPrevented && !field) onClose();
     };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
-  }, [open, onClose]);
+  }, [sheet, open, onClose]);
 
   const body = (
     <>

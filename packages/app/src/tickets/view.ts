@@ -29,7 +29,8 @@ export const isReady = (ticket: FoldedTicket) => ticket.labels?.includes(READY_L
  * - done: completed or canceled, newest first (its merge, else its number);
  * - ready to launch: the coordinator's own candidates (coordinator/read.ts): not
  *   started, no phase, the ready label, not parked, not a parent, no open pull
- *   request, and every blocker done (the launch's check);
+ *   request; and what the launch itself checks of blockers (workers/service.ts):
+ *   their evidence read, every one done;
  * - backlog: every other ticket.
  */
 export function ticketRows(state: FleetState): Record<TicketGroup, TicketRow[]> {
@@ -54,11 +55,12 @@ export function ticketRows(state: FleetState): Record<TicketGroup, TicketRow[]> 
     }
     const ready =
       (ticket.status === "unstarted" || ticket.status === "backlog") &&
+      !ticket.phase &&
       isReady(ticket) &&
       !ticket.labels?.includes("parked") &&
       !parents.has(ticket.id) &&
       !open.has(ticket.id) &&
-      (ticket.blockers ?? []).every((b) => DONE.has(b.status));
+      ticket.blockers?.every((b) => DONE.has(b.status)) === true;
     out[ready ? "ready" : "backlog"].push({ ticket, group: ready ? "ready" : "backlog" });
   }
   out.done.sort(
@@ -99,17 +101,25 @@ export function createFields(draft: TicketDraft) {
   };
 }
 
-/** What the edit form sends: only the fields it changed; the ready label stays as it was. */
-export function updateFields(ticket: FoldedTicket, draft: TicketDraft) {
-  const labels = labelsOf(draft.labels).filter((l) => l !== READY_LABEL);
-  const kept = (ticket.labels ?? []).filter((l) => l !== READY_LABEL);
-  const parent = draft.parent.trim() || null;
+/**
+ * What the edit form sends: only what the owner changed since the form opened
+ * (`opened`, the ticket then), so a change the coordinator made meanwhile to
+ * another field stays; labels as added and removed ones, the ready label untouched.
+ */
+export function updateFields(opened: FoldedTicket, draft: TicketDraft) {
+  const was = draftOf(opened);
+  const before = labelsOf(was.labels);
+  const after = labelsOf(draft.labels).filter((l) => l !== READY_LABEL);
+  const addLabels = after.filter((l) => !before.includes(l));
+  const removeLabels = before.filter((l) => !after.includes(l));
   const title = draft.title.trim();
+  const parent = draft.parent.trim() || null;
   return {
-    ...(title !== (ticket.title ?? "") ? { title } : {}),
-    ...(draft.description !== (ticket.description ?? "") ? { description: draft.description } : {}),
-    ...(labels.join("\n") !== kept.join("\n") ? { labels: isReady(ticket) ? [...labels, READY_LABEL] : labels } : {}),
-    ...(parent !== (ticket.parent ?? null) ? { parent } : {}),
+    ...(title !== was.title.trim() ? { title } : {}),
+    ...(draft.description !== was.description ? { description: draft.description } : {}),
+    ...(addLabels.length ? { addLabels } : {}),
+    ...(removeLabels.length ? { removeLabels } : {}),
+    ...(parent !== (was.parent.trim() || null) ? { parent } : {}),
   };
 }
 
@@ -121,3 +131,31 @@ export const draftOf = (ticket: FoldedTicket): TicketDraft => ({
   parent: ticket.parent ?? "",
   ready: isReady(ticket),
 });
+
+export const newId = () =>
+  typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
+/**
+ * Sends a write with its request id. The same write (`key`) sent again after
+ * the daemon did not answer (the connection dropped) keeps its id, so the
+ * daemon replays its first answer rather than write twice; once the daemon
+ * answered, a confirmation or a refusal (an error frame, with its code), the
+ * next write takes a new one.
+ */
+export function requestWrites(id: () => string = newId) {
+  let held: { key: string; id: string } | null = null;
+  return async <T>(key: string, send: (requestId: string) => Promise<T>): Promise<T> => {
+    if (held?.key !== key) held = { key, id: id() };
+    const sent = held;
+    try {
+      const reply = await send(sent.id);
+      if (held === sent) held = null;
+      return reply;
+    } catch (error) {
+      if (held === sent && (error as { code?: unknown }).code !== undefined) held = null;
+      throw error;
+    }
+  };
+}

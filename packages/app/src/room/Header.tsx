@@ -6,7 +6,8 @@
 // narrow header the pills keep their dot and number, their words for screen
 // readers only. While an agent's page holds the lane (THE-2089), the
 // project's name is a button back to the chat. Tickets (THE-2124) opens the
-// project's tickets, before the panel's toggle (on a strip wide enough for it).
+// project's tickets, before the panel's toggle (left out of a narrow strip
+// already full with the usage and Linear's pause).
 import type { ReaderUsage } from "@armada/protocol";
 import { ListTodo, PanelRight } from "lucide-react";
 import type { Ref } from "react";
@@ -162,7 +163,11 @@ export function Header({
               href={ticketsHref(project.id)}
               title="Tickets"
               data-tickets-link
-              className="ml-1 inline-flex h-7 items-center gap-1.5 rounded-sm px-1.5 text-body text-text-3 transition-colors hover:bg-fill hover:text-text @max-[640px]/strip:hidden"
+              className={cn(
+                "ml-1 inline-flex h-7 items-center gap-1.5 rounded-sm px-1.5 text-body text-text-3 transition-colors hover:bg-fill hover:text-text",
+                // A narrow strip holding the usage and Linear's pause too has no room left for it.
+                Boolean(usage) && linearPaused && "@max-[640px]/strip:hidden",
+              )}
             >
               <ListTodo aria-hidden size={16} strokeWidth={1.75} />
               <span className="@max-[900px]/strip:sr-only">Tickets</span>

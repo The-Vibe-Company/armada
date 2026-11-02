@@ -125,10 +125,10 @@ describe("the Tickets page in a browser", () => {
     expect(await problem.textContent()).toBe("the project's tracker is unavailable");
     expect(await problem.evaluate((el) => getComputedStyle(el).color)).toBe("rgb(253, 115, 109)");
 
-    // The same ticket sent again keeps its request id: a retry is never a second ticket.
+    // The daemon answered: the ticket sent again is a new write, with a new request id.
     await form.getByRole("button", { name: "Create ticket" }).click();
     const again = await sent("ticket.create", 1);
-    expect(again.requestId).toBe(create.requestId);
+    expect(again.requestId).not.toBe(create.requestId);
     const ticket = {
       id: "ORCHA-1",
       title: "Prune the pear trees",
@@ -171,6 +171,24 @@ describe("the Tickets page in a browser", () => {
     await settled(() => group("ready").locator('[data-ticket-row="ORCHA-1"]').count(), 1);
     expect(await group("backlog").locator("[data-ticket-row]").count()).toBe(0);
     expect(await page.locator('[data-fact="ready"]').textContent()).toBe("1ready to launch");
+    // Edit sends only what the owner changed, here its description.
+    await detail.getByRole("button", { name: "Edit" }).click();
+    const edit = page.locator('[data-ticket-form="edit"]');
+    expect(await edit.getByLabel("Labels", { exact: true }).inputValue()).toBe("web, orchard");
+    await edit.getByLabel("Description", { exact: true }).fill("Before **spring**, row by row.");
+    await edit.getByRole("button", { name: "Save" }).click();
+    const edited = await sent("ticket.update", 1);
+    expect(
+      Object.keys(edited).filter((k) => !["type", "version", "id", "project", "requestId", "ticket"].includes(k)),
+    ).toEqual(["description"]);
+    await receive({
+      type: "ticket.result",
+      id: edited.id,
+      project: "orchard",
+      requestId: edited.requestId,
+      ticket: "ORCHA-1",
+    });
+    await detail.waitFor();
     // Ready, it can be launched: the coordinator is asked, as the room's own ask does.
     expect(await detail.getByRole("button", { name: "Not ready" }).count()).toBe(1);
     await detail.getByRole("button", { name: "Launch" }).click();
@@ -189,6 +207,7 @@ describe("the Tickets page in a browser", () => {
           status: "unstarted",
           parent: "MEAD-1",
           labels: ["ready-for-agent"],
+          blockers: [],
         },
       ],
     });
