@@ -39,7 +39,11 @@ export function followUpEvent(
   detail: Omit<FollowUp, "cause" | "attempts" | "lastAt">,
   attempts?: number,
 ): EventInput {
-  const cause = canonical([ticket || detail.pr, detail.tool ?? detail.candidate, detail.code]);
+  const cause = canonical([
+    detail.code === "branch_update" ? detail.pr : ticket || detail.pr,
+    detail.code === "branch_update" ? "merge.run" : (detail.tool ?? detail.candidate),
+    detail.code,
+  ]);
   const id = `follow-up:${hash(cause)}`;
   const previous = events.findLast((e) => e.kind === "inbox.opened" && e.payload.id === id);
   const prior = previous?.kind === "inbox.opened" ? (previous.payload.followUp?.attempts ?? 0) : 0;
@@ -83,8 +87,9 @@ export function workerRefusal(error: unknown): JsonObject {
 }
 
 function recordRefusal(scope: CoordinatorStorage, tool: string, args: JsonObject, result: JsonObject, at: string) {
+  const waiting = tool === "merge.run" && result.waiting === true && result.code === "branch_update";
   if (
-    result.ok !== false ||
+    (!waiting && result.ok !== false) ||
     ![
       "merge.check",
       "merge.run",
@@ -107,11 +112,14 @@ function recordRefusal(scope: CoordinatorStorage, tool: string, args: JsonObject
   const ticket = pr?.ticket ?? (typeof args.ticket === "string" ? args.ticket : item?.ticket);
   if (!ticket) return;
   const session = tables.sessions.find((s) => s.ticket === ticket);
+  const updateWait = tables.inbox.find(
+    (i) => i.kind === "follow-up" && i.followUp?.code === "branch_update" && i.followUp.pr === args.pr,
+  );
   const merge =
     ["merge.check", "merge.run"].includes(tool) &&
     session?.phase === "ready-to-merge" &&
     pr?.state === "open" &&
-    pr.ci === "success";
+    (pr.ci === "success" || waiting || !!updateWait);
   const capability =
     ["worker.message", "worker.stop", "worker.launch", "worker.relaunch", "inbox.answer"].includes(tool) &&
     [
@@ -149,19 +157,24 @@ function recordRefusal(scope: CoordinatorStorage, tool: string, args: JsonObject
   const event = followUpEvent(events, scope.project, at, ticket, {
     tool,
     args: masked(args) as Record<string, Json>,
-    code,
+    code: waiting || updateWait ? "branch_update" : code,
     reason:
       name?.startsWith("runtime.") &&
       availability &&
       !availability.some((p) => p.enabled && p.capabilities.some((c) => c.startsWith("runtime.")))
         ? "no runtime provider enabled"
         : refusalLine(result.reason ?? result.message),
-    facts: merge
-      ? `${ticket} is ready-to-merge; PR #${pr.number} is green at ${pr.head.slice(0, 8)}`
-      : `${ticket}: ${session?.runtime ?? "selected worker"} ${session?.phase ?? "not launched"}; action unavailable`,
+    facts:
+      waiting || updateWait
+        ? `${ticket} is ready-to-merge; PR #${pr?.number} branch update at ${String(result.head ?? updateWait?.followUp?.head ?? pr?.head).slice(0, 8)}`
+        : merge
+          ? `${ticket} is ready-to-merge; PR #${pr.number} is green at ${pr.head.slice(0, 8)}`
+          : `${ticket}: ${session?.runtime ?? "selected worker"} ${session?.phase ?? "not launched"}; action unavailable`,
     next: refusalLine(result.next, "fleet.status"),
     ...(fix ? { fix } : {}),
-    ...(pr ? { pr: pr.number, head: pr.head } : {}),
+    ...(pr
+      ? { pr: pr.number, head: typeof result.head === "string" ? result.head : (updateWait?.followUp?.head ?? pr.head) }
+      : {}),
     ...(plugin ? { plugin } : {}),
     ...(name ? { capability: name } : {}),
     ...(session ? { session: session.session, generation: session.generation } : {}),
@@ -221,12 +234,14 @@ export function recoverFollowUps(
       event.payload.ticket === item.ticket &&
       (!f.session || event.payload.session === f.session) &&
       (f.pr === undefined || event.payload.pr === f.pr) &&
-      (!f.head || event.payload.head === f.head) &&
+      (!f.head || f.code === "branch_update" || event.payload.head === f.head) &&
       current?.phase === "merged";
     if (event.kind === "pull-request.seen")
       recovered =
         event.payload.number === f.pr &&
-        (event.payload.state === "merged" || (!!f.head && event.payload.head !== f.head));
+        (event.payload.state === "merged" || (f.code !== "branch_update" && !!f.head && event.payload.head !== f.head));
+    if (f.code === "branch_update" && (event.kind === "pull-request.closed" || event.kind === "pull-request.merged"))
+      recovered = event.payload.number === f.pr;
     if (event.kind === "ticket.seen" && event.payload.id === item.ticket && f.readyToMerge)
       recovered = current
         ? current.session === f.session && current.phase !== "ready-to-merge"

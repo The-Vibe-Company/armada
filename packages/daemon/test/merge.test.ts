@@ -13,6 +13,7 @@ import { trackerChanges } from "../../plugins/linear/src/changes.ts";
 import { createLocalNode } from "../../plugins/node-local/src/index.ts";
 import { nativeTools } from "../coordinator/native.ts";
 import { openCoordinatorStorage } from "../coordinator/storage.ts";
+import { wakeups } from "../coordinator/wake.ts";
 import type { EventInput } from "../src/events.ts";
 import { fold } from "../src/fold.ts";
 import { Merges } from "../src/merge/service.ts";
@@ -134,7 +135,7 @@ async function fixture(t: TestContext, priorHandBack = false, trackerOnly = fals
     merge: async (request) => {
       request.beforeWrite?.();
       mergeCalls++;
-      assert.equal(request.head, head);
+      assert.equal(request.head, facts.head);
       assert.equal(request.number, 7);
       facts = { ...facts, state: "merged", mergeCommit: "c".repeat(40) };
       return { merged: true, mergeCommit: facts.mergeCommit ?? undefined };
@@ -188,6 +189,10 @@ async function fixture(t: TestContext, priorHandBack = false, trackerOnly = fals
       next?: string;
       problems?: string[];
       cleanup?: { disposed?: boolean };
+      waiting?: boolean;
+      head?: string;
+      merged?: boolean;
+      followUp?: string;
     };
   };
   t.after(async () => {
@@ -1044,3 +1049,407 @@ test("merge uses project-scoped forge, tracker and local gates instead of boot p
   assert.deepEqual(f.counts(), { mergeCalls: 1, stopCalls: 1 });
   assert.equal(f.writes.length, 1);
 });
+
+const updatedHead = "d".repeat(40);
+
+function branchUpdate(f: Awaited<ReturnType<typeof fixture>>) {
+  let calls = 0;
+  f.setFacts({ behindBy: 1, mergeState: "BEHIND" });
+  f.forge.updateBranch = async (request) => {
+    request.beforeWrite?.();
+    calls++;
+    assert.equal(request.expectedHead, head);
+    f.setFacts({
+      head: updatedHead,
+      headParents: [head, base],
+      behindBy: 0,
+      mergeState: "BLOCKED",
+      checks: [{ name: "verify", state: "pending" }],
+    });
+    return { updated: true };
+  };
+  return () => calls;
+}
+const followUps = (f: Awaited<ReturnType<typeof fixture>>) =>
+  fold(f.store.readSince(0)).projects.orchard?.inbox.filter((i) => i.kind === "follow-up") ?? [];
+
+test("behind-base hand-back updates once, waits durably, then merges on new-head green without another hand-back", async (t) => {
+  const f = await fixture(t, false, true);
+  const updates = branchUpdate(f);
+  const check = await f.run("merge.check");
+  assert.equal(check.ok, false);
+  assert.match(check.next ?? "", /merge.run/);
+  assert.equal(updates(), 0, "read-only check cannot authorize an unupdated behind head");
+  const waiting = await f.run("merge.run");
+  assert.equal(waiting.ok, true);
+  assert.equal(waiting.waiting, true);
+  assert.equal(waiting.head, updatedHead);
+  assert.equal(waiting.next, "merge.run again when the checks are green");
+  assert.equal(updates(), 1);
+  assert.equal(f.counts().mergeCalls, 0);
+  assert.equal(followUps(f).length, 1);
+  assert.equal(followUps(f)[0]?.followUp?.head, updatedHead);
+  f.append("pull-request.seen", {
+    number: 7,
+    ticket: "SEED-1",
+    head: updatedHead,
+    state: "open",
+    ci: "pending",
+    conflicting: false,
+  });
+  assert.equal(followUps(f).length, 1, "observing the update must not close its wait");
+  f.restart();
+  assert.equal((await f.run("merge.run", 7, "wait-again")).waiting, true);
+  assert.equal(updates(), 1);
+  assert.equal(followUps(f).length, 1);
+  f.setFacts({ mergeState: "CLEAN", checks: [{ name: "verify", state: "success" }] });
+  const beforeGreen = { events: f.store.readSince(0), tables: fold(f.store.readSince(0)).projects.orchard };
+  f.append("pull-request.checks-green", {
+    number: 7,
+    ticket: "SEED-1",
+    head: updatedHead,
+    state: "open",
+    ci: "success",
+    conflicting: false,
+  });
+  const afterGreen = { events: f.store.readSince(0), tables: fold(f.store.readSince(0)).projects.orchard };
+  assert.ok(
+    wakeups(beforeGreen, afterGreen).some(
+      (c) => c.facts.pr === 7 && c.facts.head === updatedHead && c.facts.state === "success",
+    ),
+  );
+  assert.equal((await f.run("merge.run", 7, "green")).merged, true);
+  assert.equal(updates(), 1);
+  assert.equal(f.counts().mergeCalls, 1);
+  assert.deepEqual(fold(f.store.readSince(0)).projects.orchard?.inbox, []);
+  assert.match(f.writes[0]?.comment ?? "", new RegExp(`head ${updatedHead}`));
+});
+
+test("updated-head red checks turn the same wait into named worker repair", async (t) => {
+  const f = await fixture(t);
+  const updates = branchUpdate(f);
+  assert.equal((await f.run("merge.run")).waiting, true);
+  const id = followUps(f)[0]?.id;
+  f.setFacts({ checks: [{ name: "Lint, typecheck and test", state: "failure" }] });
+  f.append("pull-request.checks-red", {
+    number: 7,
+    ticket: "SEED-1",
+    head: updatedHead,
+    state: "open",
+    ci: "failure",
+    conflicting: false,
+  });
+  const result = await f.run("merge.run", 7, "red");
+  assert.equal(result.code, "checks_red");
+  assert.match(result.reason ?? "", /Lint, typecheck and test/);
+  assert.match(result.next ?? "", /worker.message/);
+  assert.equal(followUps(f).length, 1);
+  assert.equal(followUps(f)[0]?.id, id);
+  assert.match(followUps(f)[0]?.followUp?.reason ?? "", /Lint, typecheck and test/);
+  assert.match(followUps(f)[0]?.followUp?.next ?? "", /worker.message/);
+  assert.equal(updates(), 1);
+  assert.equal(f.counts().mergeCalls, 0);
+  const repaired = "e".repeat(40);
+  f.setFacts({ head: repaired, mergeState: "CLEAN", checks: [{ name: "verify", state: "success" }] });
+  f.append("pull-request.seen", {
+    number: 7,
+    ticket: "SEED-1",
+    head: repaired,
+    state: "open",
+    ci: "success",
+    conflicting: false,
+  });
+  f.handBack(`Agent status: ready-to-merge — PR #7, head ${repaired}`);
+  assert.equal((await f.run("merge.run", 7, "repaired")).merged, true);
+  assert.equal(updates(), 1);
+  assert.deepEqual(fold(f.store.readSince(0)).projects.orchard?.inbox, []);
+});
+
+for (const parents of [undefined, [head], [head, "e".repeat(40)], ["e".repeat(40), base], [base, head]]) {
+  test(`branch update refuses unproven base-only parents: ${JSON.stringify(parents)}`, async (t) => {
+    const f = await fixture(t);
+    branchUpdate(f);
+    const update = f.forge.updateBranch;
+    assert.ok(update);
+    f.forge.updateBranch = async (request) => {
+      const result = await update(request);
+      f.setFacts({ headParents: parents });
+      return result;
+    };
+    assert.equal((await f.run("merge.run")).code, "head_moved");
+    assert.equal(f.counts().mergeCalls, 0);
+  });
+}
+
+test("an interrupted accepted branch update is inspected after restart and never written twice", async (t) => {
+  const f = await fixture(t);
+  const updates = branchUpdate(f);
+  const update = f.forge.updateBranch;
+  assert.ok(update);
+  f.forge.updateBranch = async (request) => {
+    await update(request);
+    throw new Error("connection lost after acceptance");
+  };
+  await f.run("merge.run");
+  f.restart();
+  assert.equal((await f.run("merge.run", 7, "recover-update")).waiting, true);
+  assert.equal(updates(), 1);
+  f.setFacts({ head: "e".repeat(40), checks: [{ name: "verify", state: "success" }], mergeState: "CLEAN" });
+  f.append("pull-request.seen", {
+    number: 7,
+    ticket: "SEED-1",
+    head: "e".repeat(40),
+    state: "open",
+    ci: "success",
+    conflicting: false,
+  });
+  assert.equal((await f.run("merge.run", 7, "worker-push")).code, "head_moved");
+  assert.equal(f.counts().mergeCalls, 0);
+});
+
+test("an asynchronous accepted update waits once and recovers directly to green with original hand-back cleanup", async (t) => {
+  const f = await fixture(t);
+  let updates = 0;
+  f.setFacts({ behindBy: 1 });
+  f.forge.updateBranch = async (request) => {
+    request.beforeWrite?.();
+    updates++;
+    return { updated: true };
+  };
+  assert.equal((await f.run("merge.run")).waiting, true);
+  f.restart();
+  assert.equal((await f.run("merge.run", 7, "still-updating")).waiting, true);
+  assert.equal(updates, 1);
+  f.setFacts({ head: updatedHead, headParents: [head, base], behindBy: 0 });
+  assert.equal((await f.run("merge.run", 7, "already-green")).merged, true);
+  assert.equal(updates, 1);
+  assert.deepEqual(fold(f.store.readSince(0)).projects.orchard?.inbox, []);
+  assert.equal((await f.run("merge.run")).merged, true, "original update call replays the finished merge");
+});
+
+for (const state of ["closed", "merged"] as const) {
+  test(`terminal ${state} during update produces an actionable result and ends the wait`, async (t) => {
+    const f = await fixture(t);
+    branchUpdate(f);
+    assert.equal((await f.run("merge.run")).waiting, true);
+    f.setFacts({ state });
+    f.append(state === "merged" ? "pull-request.merged" : "pull-request.closed", {
+      number: 7,
+      ticket: "SEED-1",
+      head: updatedHead,
+      state,
+      ci: "pending",
+      conflicting: false,
+    });
+    const result = await f.run("merge.run", 7, "terminal");
+    assert.equal(result.waiting, undefined);
+    assert.match(result.reason ?? "", new RegExp(state));
+    assert.match(result.next ?? "", /fleet.status/);
+    assert.equal(followUps(f).length, 0);
+    assert.equal(f.counts().mergeCalls, 0);
+  });
+}
+
+test("a replacement generation with a fresh same-head hand-back supersedes the predecessor's update wait", async (t) => {
+  const f = await fixture(t);
+  const updates = branchUpdate(f);
+  assert.equal((await f.run("merge.run")).waiting, true);
+  f.append("session.claimed", {
+    ticket: "SEED-1",
+    session: "two",
+    generation: 2,
+    owner: "Mira",
+    runtime: "claude",
+    handle: "two",
+  });
+  f.append("session.reported", {
+    ticket: "SEED-1",
+    session: "two",
+    phase: "ready-to-merge",
+    reason: "Verified replacement",
+  });
+  f.handBack(`Agent status: ready-to-merge — PR #7, head ${updatedHead}`);
+  f.append("pull-request.seen", {
+    number: 7,
+    ticket: "SEED-1",
+    head: updatedHead,
+    state: "open",
+    ci: "success",
+    conflicting: false,
+  });
+  f.setFacts({ checks: [{ name: "verify", state: "success" }], mergeState: "CLEAN" });
+  const result = await f.run("merge.run", 7, "replacement");
+  assert.equal(result.merged, true, JSON.stringify(result));
+  assert.equal(updates(), 1);
+  assert.deepEqual(fold(f.store.readSince(0)).projects.orchard?.inbox, []);
+});
+
+test("branch update checks holds again immediately before its forge write", async (t) => {
+  const f = await fixture(t);
+  const updates = branchUpdate(f);
+  const update = f.forge.updateBranch;
+  assert.ok(update);
+  f.forge.updateBranch = async (request) => {
+    f.append("hold.opened", { id: "pause-update", reason: "Deployment failed" });
+    return update(request);
+  };
+  const result = await f.run("merge.run");
+  assert.equal(result.code, "hold_open");
+  assert.match(result.reason ?? "", /pause-update/);
+  assert.equal(updates(), 0);
+  assert.equal(f.counts().mergeCalls, 0);
+});
+
+test("two PR update waits on one ticket retain separate identities and close independently", async (t) => {
+  const f = await fixture(t);
+  branchUpdate(f);
+  assert.equal((await f.run("merge.run")).waiting, true);
+  const inspect = f.forge.inspect;
+  assert.ok(inspect);
+  let second = { ...pull(), number: 8, behindBy: 1 };
+  f.forge.inspect = async (request) => (request.number === 8 ? structuredClone(second) : inspect(request));
+  f.forge.updateBranch = async (request) => {
+    request.beforeWrite?.();
+    assert.equal(request.number, 8);
+    second = {
+      ...second,
+      head: "e".repeat(40),
+      headParents: [head, base],
+      behindBy: 0,
+      checks: [{ name: "verify", state: "pending" }],
+    };
+    return { updated: true };
+  };
+  f.append("pull-request.seen", {
+    number: 8,
+    ticket: "SEED-1",
+    head,
+    state: "open",
+    ci: "success",
+    conflicting: false,
+  });
+  f.handBack(`Agent status: ready-to-merge — PR #8, head ${head}`);
+  assert.equal((await f.run("merge.run", 8, "second-pr")).waiting, true);
+  assert.deepEqual(
+    followUps(f)
+      .map((i) => i.followUp?.pr)
+      .sort(),
+    [7, 8],
+  );
+  f.append("pull-request.closed", {
+    number: 7,
+    ticket: "SEED-1",
+    head: updatedHead,
+    state: "closed",
+    ci: "pending",
+    conflicting: false,
+  });
+  assert.deepEqual(
+    followUps(f).map((i) => i.followUp?.pr),
+    [8],
+  );
+});
+
+test("a replacement waits for its predecessor's delayed update instead of repeating the same-head write", async (t) => {
+  const f = await fixture(t);
+  let updates = 0;
+  f.setFacts({ behindBy: 1 });
+  f.forge.updateBranch = async (request) => {
+    request.beforeWrite?.();
+    updates++;
+    return { updated: true };
+  };
+  assert.equal((await f.run("merge.run")).waiting, true);
+  f.append("session.claimed", {
+    ticket: "SEED-1",
+    session: "two",
+    generation: 2,
+    owner: "Mira",
+    runtime: "claude",
+    handle: "two",
+  });
+  f.append("session.reported", {
+    ticket: "SEED-1",
+    session: "two",
+    phase: "ready-to-merge",
+    reason: "Replacement ready",
+  });
+  f.handBack();
+  f.restart();
+  assert.equal((await f.run("merge.run", 7, "replacement-waits")).waiting, true);
+  assert.equal(updates, 1);
+  f.setFacts({ head: updatedHead, headParents: [head, base], behindBy: 0 });
+  f.append("pull-request.seen", {
+    number: 7,
+    ticket: "SEED-1",
+    head: updatedHead,
+    state: "open",
+    ci: "success",
+    conflicting: false,
+  });
+  f.handBack(`Agent status: ready-to-merge — PR #7, head ${updatedHead}`);
+  assert.equal((await f.run("merge.run", 7, "replacement-after-update")).merged, true);
+  assert.equal(updates, 1);
+});
+
+for (const settled of [false, true]) {
+  test(`a changed target ${settled ? "after a verified update can start a new update" : "during delayed acceptance never repeats the pending write"}`, async (t) => {
+    const f = await fixture(t);
+    let updates = 0;
+    f.setFacts({ behindBy: 1 });
+    f.forge.updateBranch = async (request) => {
+      request.beforeWrite?.();
+      updates++;
+      if (settled)
+        f.setFacts({
+          head: updatedHead,
+          headParents: [head, base],
+          behindBy: 0,
+          checks: [{ name: "verify", state: "pending" }],
+        });
+      return { updated: true };
+    };
+    assert.equal((await f.run("merge.run")).waiting, true);
+    const current = settled ? updatedHead : head;
+    f.setFacts({
+      baseRef: "release",
+      base: "e".repeat(40),
+      behindBy: 1,
+      mergeState: "BEHIND",
+      checks: [{ name: "verify", state: "success" }],
+    });
+    f.append("pull-request.seen", {
+      number: 7,
+      ticket: "SEED-1",
+      head: current,
+      state: "open",
+      ci: "success",
+      conflicting: false,
+    });
+    f.handBack(`Agent status: ready-to-merge — PR #7, head ${current}`);
+    const result = await f.run("merge.run", 7, "changed-target");
+    assert.equal(result.code, "head_moved");
+    assert.equal(updates, 1);
+    if (!settled) {
+      assert.match(result.next ?? "", /move the branch head/);
+      assert.equal((await f.run("merge.run", 7, "still-unconfirmed")).code, "head_moved");
+      assert.equal(updates, 1);
+    } else {
+      f.forge.updateBranch = async (request) => {
+        request.beforeWrite?.();
+        updates++;
+        assert.equal(request.expectedHead, current);
+        f.setFacts({
+          head: "f".repeat(40),
+          headParents: [current, "e".repeat(40)],
+          behindBy: 0,
+          checks: [{ name: "verify", state: "pending" }],
+        });
+        return { updated: true };
+      };
+      assert.equal((await f.run("merge.run", 7, "new-target")).waiting, true);
+      assert.equal(updates, 2);
+    }
+    assert.equal(f.counts().mergeCalls, 0);
+  });
+}

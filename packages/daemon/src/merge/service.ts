@@ -28,7 +28,7 @@ const progressSchema = z.object({
   version: z.literal(1),
   key: z.string(),
   pr: z.number().int().positive(),
-  stage: z.enum(["intent", "confirmed", "tracker", "finished", "refused"]),
+  stage: z.enum(["updating", "intent", "confirmed", "tracker", "finished", "refused"]),
   ticket: z.string(),
   session: z.string(),
   generation: z.number().int(),
@@ -40,6 +40,15 @@ const progressSchema = z.object({
     .regex(/^[0-9a-f]{40}$/)
     .nullable(),
   result: z.record(z.string(), z.json()).optional(),
+  /** An update starts at updateFrom; head changes only after its ordered parents prove the base merge. */
+  updateFrom: z
+    .string()
+    .regex(/^[0-9a-f]{40}$/)
+    .optional(),
+  handedHead: z
+    .string()
+    .regex(/^[0-9a-f]{40}$/)
+    .optional(),
 });
 type Progress = z.infer<typeof progressSchema>;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -190,13 +199,33 @@ export class Merges {
             tables.sessions.find((s) => s.ticket === tables.pullRequests.find((p) => p.number === pull.number)?.ticket)
               ?.session,
       );
+    const session = tables.sessions.find((s) => s.ticket === tracked?.ticket);
+    const update = this.#progress(scope.readEvents()).findLast(
+      (p) =>
+        p.pr === pull.number &&
+        p.head === pull.head &&
+        p.updateFrom &&
+        p.head !== p.updateFrom &&
+        p.handedHead &&
+        p.ticket === session?.ticket &&
+        p.session === session.session &&
+        p.generation === session.generation &&
+        p.baseRef === pull.baseRef,
+    );
     const facts = {
       ...tables,
-      inbox: tables.inbox.filter((i) => i.kind !== "hand-back" || !claim || i.seq > claim.seq),
+      inbox: tables.inbox
+        .filter((i) => i.kind !== "hand-back" || !claim || i.seq > claim.seq)
+        .map((i) =>
+          i.kind === "hand-back" && i.ticket === tracked?.ticket && update?.handedHead
+            ? { ...i, body: i.body.replace(new RegExp(`\\bhead ${update.handedHead}\\b`, "i"), `head ${pull.head}`) }
+            : i,
+        ),
       pullRequests: tables.pullRequests.map((p) =>
         p.number === pull.number
           ? {
               ...p,
+              head: update ? pull.head : p.head,
               state: pull.state,
               conflicting: pull.mergeState === "DIRTY",
               ci:
@@ -216,15 +245,20 @@ export class Merges {
     forge: ForgeProvider,
     number: number,
     progress: (step: ToolProgress) => Promise<void>,
+    allowUpdate: boolean,
   ) {
     await progress("checking");
     const pull = await this.#inspect(scope, forge, number);
     const tables = this.#facts(scope);
     const row = tables?.pullRequests.find((p) => p.number === number);
     const session = tables?.sessions.find((s) => s.ticket === row?.ticket);
-    let result = this.#assess(scope, pull, true);
+    const commands = tables?.rules?.value.gates?.localCommands ?? [];
+    const updatable = !!forge.updateBranch && !commands.length && (pull.behindBy ?? 0) > 0;
+    const canUpdate = allowUpdate && updatable;
+    const assess = () =>
+      this.#assess(scope, updatable && pull.mergeState === "BEHIND" ? { ...pull, mergeState: "CLEAN" } : pull, true);
+    let result = assess();
     if (!result.ok || !tables || !session) return { pull, result, session, rules: tables?.rules };
-    const commands = tables.rules?.value.gates?.localCommands ?? [];
     if (pull.behindBy === null)
       result = refuse(
         "forge_unreachable",
@@ -232,13 +266,19 @@ export class Merges {
         "merge.check again after the forge comparison recovers",
       );
     else if (pull.behindBy > 0) {
-      if (!commands.length)
-        result = refuse(
-          "merge_refused",
-          `The head lacks ${pull.behindBy} commits of ${pull.baseRef}; configure local tests with rules.set gates localCommands`,
-          `worker.message to bring ${pull.baseRef} in and hand back, or rules.set gates localCommands, then merge.check`,
-        );
-      else {
+      if (!commands.length && !canUpdate)
+        result = forge.updateBranch
+          ? refuse(
+              "branch_update",
+              `The head lacks ${pull.behindBy} commits of ${pull.baseRef}; a forge update is required`,
+              "merge.run to update the branch and wait for checks",
+            )
+          : refuse(
+              "merge_refused",
+              `The head lacks ${pull.behindBy} commits of ${pull.baseRef}; configure local tests with rules.set gates localCommands`,
+              `worker.message to bring ${pull.baseRef} in and hand back, or rules.set gates localCommands, then merge.check`,
+            );
+      else if (commands.length) {
         const node = this.#options.registry.get("node", "local", scope.project);
         const checkout = this.#options.projects.find((p) => p.id === scope.project)?.checkout;
         if (!node?.testMerge || !checkout)
@@ -288,7 +328,7 @@ export class Merges {
       const fresh = this.#facts(scope);
       if (JSON.stringify(fresh?.rules) !== JSON.stringify(tables.rules))
         result = refuse("rules_changed", "the project's rules changed since they were read", "merge.check");
-      else result = this.#assess(scope, pull, true);
+      else result = assess();
     }
     return { pull, result, session, rules: tables?.rules };
   }
@@ -349,9 +389,8 @@ export class Merges {
       const receipt = sameCall.findLast((p) => p.stage === "finished" || p.stage === "refused");
       if (receipt && name === "merge.run") return receipt.result as JsonObject;
       // A new call may finish an interrupted merge, but cannot bypass another unresolved intent.
-      const pending = journal.findLast(
-        (p) => !journal.some((q) => q.key === p.key && (q.stage === "finished" || q.stage === "refused")),
-      );
+      const latest = [...new Map(journal.map((p) => [p.key, p])).values()];
+      const pending = latest.findLast((p) => !["updating", "finished", "refused"].includes(p.stage));
       if (pending && pending.pr !== pr)
         return refuse("merge_pending", `PR #${pending.pr} has an unfinished merge`, `merge.run for PR #${pending.pr}`);
       const { forge, tracker } = this.#providers(scope.project);
@@ -360,11 +399,57 @@ export class Merges {
         if (result.ok && pending.key !== key) this.#save(scope, { ...pending, key, stage: "finished", result });
         return result;
       }
-      const checked = await this.#check(scope, forge, pr, report);
+      const updating = latest.findLast((p) => p.pr === pr && p.stage === "updating");
+      if (updating && name === "merge.run") {
+        // A worker may repair red CI and supply a fresh hand-back while we wait.
+        const current = await this.#inspect(scope, forge, pr);
+        const session = this.#facts(scope)?.sessions.find((s) => s.ticket === updating.ticket);
+        const replaced = session?.session !== updating.session || session?.generation !== updating.generation;
+        // A replacement cannot repeat a predecessor's still-pending pinned update.
+        if (
+          replaced &&
+          current.state === "open" &&
+          updating.head === updating.updateFrom &&
+          current.head === updating.head
+        ) {
+          if (current.baseRef !== updating.baseRef)
+            return refuse(
+              "head_moved",
+              "The target changed while a branch update is unconfirmed",
+              "worker.message to move the branch head, review the target and hand back before retrying",
+            );
+          return this.#waiting(updating, true);
+        }
+        const assessable = current.mergeState === "BEHIND" ? { ...current, mergeState: "CLEAN" } : current;
+        const freshHandBack = current.head !== updating.head && this.#assess(scope, assessable, true).ok;
+        if (replaced || freshHandBack) {
+          this.#save(scope, {
+            ...updating,
+            stage: "refused",
+            result: refuse("head_moved", "Branch update superseded by a fresh hand-back", "merge.check"),
+          });
+        } else {
+          const resumed = await this.#updated(scope, forge, updating, current);
+          if (resumed.result) return resumed.result;
+        }
+      }
+      const checked = await this.#check(scope, forge, pr, report, name === "merge.run");
       if (!checked.result.ok || name === "merge.check") return checked.result;
       if (!checked.session) return refuse("no_worker", "the runtime worker has ended");
       const { pull, session } = checked;
+      if ((pull.behindBy ?? 0) > 0 && !(checked.rules?.value.gates?.localCommands ?? []).length)
+        return await this.#update(scope, forge, pull, session, key, checked.rules);
       const sameRules = () => JSON.stringify(this.#facts(scope)?.rules) === JSON.stringify(checked.rules);
+      const proof = this.#progress(scope.readEvents()).findLast(
+        (p) =>
+          p.pr === pr &&
+          p.head === pull.head &&
+          p.head !== p.updateFrom &&
+          p.updateFrom &&
+          p.session === session.session &&
+          p.generation === session.generation &&
+          p.handedHead,
+      );
       const progress: Progress = {
         format: "armada.merge",
         version: 1,
@@ -378,6 +463,7 @@ export class Merges {
         base: pull.base,
         baseRef: pull.baseRef,
         mergeCommit: null,
+        ...(proof?.handedHead ? { handedHead: proof.handedHead } : {}),
       };
       // Refresh after the local gates. A moved base requires another complete check/test.
       const final = await this.#inspect(scope, forge, pr);
@@ -457,6 +543,187 @@ export class Merges {
     } finally {
       held.delete(scope.project);
     }
+  }
+
+  #waiting(progress: Progress, updating = false): JsonObject {
+    return {
+      ok: true,
+      merged: false,
+      waiting: true,
+      pr: progress.pr,
+      ticket: progress.ticket,
+      head: progress.head,
+      code: "branch_update",
+      reason: updating
+        ? `Waiting for the branch update of #${progress.pr} from ${progress.head}`
+        : `Waiting for checks on ${progress.head}`,
+      next: "merge.run again when the checks are green",
+    };
+  }
+
+  /** An accepted or uncertain update is never repeated, including after restart. */
+  async #updated(scope: CoordinatorStorage, forge: ForgeProvider, progress: Progress, inspected?: ForgeInspection) {
+    const pull = inspected ?? (await this.#inspect(scope, forge, progress.pr));
+    if (pull.state !== "open") {
+      const result = refuse(
+        "merge_refused",
+        `PR #${progress.pr} is ${pull.state}; branch-update wait ended`,
+        "fleet.status to reconcile the terminal pull request",
+      );
+      this.#save(scope, { ...progress, stage: "refused", result });
+      return { result };
+    }
+    this.#guard(scope, progress);
+    if (pull.baseRef !== progress.baseRef) {
+      const unresolved = progress.head === progress.updateFrom && pull.head === progress.updateFrom;
+      const result = refuse(
+        "head_moved",
+        unresolved
+          ? "The target changed while a branch update is unconfirmed"
+          : "The pull request target changed during the branch update",
+        unresolved
+          ? "worker.message to move the branch head, review the target and hand back before retrying"
+          : "review the target and fresh hand-back, then merge.run",
+      );
+      // An unchanged expected head may still be updated remotely; retain that intent.
+      if (!unresolved) this.#save(scope, { ...progress, stage: "refused", result });
+      return { result };
+    }
+    if (progress.head === progress.updateFrom) {
+      if (pull.head === progress.updateFrom) return { result: this.#waiting(progress, true) };
+      if (
+        pull.headParents?.length !== 2 ||
+        pull.headParents[0] !== progress.updateFrom ||
+        pull.headParents[1] !== progress.base
+      )
+        return {
+          result: refuse(
+            "head_moved",
+            "The updated head is not proven to merge only the inspected base",
+            "worker.message to review the changed head and hand back again",
+          ),
+        };
+      this.#guard(scope, progress);
+      progress = { ...progress, head: pull.head };
+      this.#save(scope, progress);
+    } else if (pull.head !== progress.head) {
+      return {
+        result: refuse(
+          "head_moved",
+          "The head moved after the verified base update",
+          "worker.message to review the changed head and hand back again",
+        ),
+      };
+    }
+    const red = [...new Set(pull.checks.filter((c) => c.state === "failure").map((c) => c.name))];
+    if (red.length)
+      return {
+        result: refuse(
+          "checks_red",
+          `Red: ${red.join(", ")} on ${pull.head.slice(0, 7)}`,
+          "ask the worker (worker.message) to fix and hand back",
+          { head: pull.head },
+        ),
+      };
+    const required = [...pull.requiredChecks, ...(this.#facts(scope)?.rules?.value.gates?.requiredChecks ?? [])];
+    if (
+      !pull.checksComplete ||
+      !pull.checks.length ||
+      pull.checks.some((c) => c.state !== "success") ||
+      required.some((name) => !pull.checks.some((c) => c.name === name))
+    )
+      return { result: this.#waiting(progress) };
+    return {};
+  }
+
+  async #update(
+    scope: CoordinatorStorage,
+    forge: ForgeProvider,
+    pull: ForgeInspection,
+    session: Session,
+    key: string,
+    rules: ProjectTables["rules"],
+  ): Promise<JsonObject> {
+    if (!forge.updateBranch)
+      return refuse(
+        "merge_refused",
+        "The forge cannot update this branch",
+        "worker.message to bring the base in and hand back",
+      );
+    const prior = this.#progress(scope.readEvents()).findLast(
+      (p) =>
+        p.pr === pull.number &&
+        p.head === pull.head &&
+        p.session === session.session &&
+        p.generation === session.generation &&
+        p.baseRef === pull.baseRef &&
+        p.handedHead,
+    );
+    const progress: Progress = {
+      format: "armada.merge",
+      version: 1,
+      key,
+      pr: pull.number,
+      stage: "updating",
+      ticket: session.ticket,
+      session: session.session,
+      generation: session.generation,
+      head: pull.head,
+      updateFrom: pull.head,
+      handedHead: prior?.handedHead ?? pull.head,
+      base: pull.base,
+      baseRef: pull.baseRef,
+      mergeCommit: null,
+    };
+    const signal = AbortSignal.timeout(30_000);
+    const guard = () => {
+      signal.throwIfAborted();
+      this.#guard(scope, progress);
+      if (JSON.stringify(this.#facts(scope)?.rules) !== JSON.stringify(rules))
+        throw new MergeFailure("rules_changed", "The project rules changed", "merge.check");
+      const result = this.#assess(scope, pull.mergeState === "BEHIND" ? { ...pull, mergeState: "CLEAN" } : pull, true);
+      if (!result.ok)
+        throw new MergeFailure(result.code as MergeFailureCode, result.reason as string, result.next as string);
+    };
+    guard();
+    this.#save(scope, progress);
+    let started = false;
+    try {
+      const result = await forge.updateBranch({
+        project: scope.project,
+        number: pull.number,
+        expectedHead: pull.head,
+        signal,
+        beforeWrite: () => {
+          guard();
+          started = true;
+        },
+      });
+      if (!result.updated) {
+        const refused = refuse(
+          "merge_refused",
+          `The forge refused to update #${pull.number}`,
+          "merge.check for fresh head and conflict evidence",
+        );
+        this.#save(scope, { ...progress, stage: "refused", result: refused });
+        return refused;
+      }
+    } catch (error) {
+      if (!started) {
+        const result =
+          error instanceof MergeFailure
+            ? error.result()
+            : refuse("forge_unreachable", "Branch update could not start", "merge.check");
+        this.#save(scope, { ...progress, stage: "refused", result });
+        return result;
+      }
+      // The durable intent keeps a possibly accepted update pinned for inspection.
+    }
+    const resumed = await this.#updated(scope, forge, progress);
+    if (resumed.result) return resumed.result;
+    const saved = this.#progress(scope.readEvents()).findLast((p) => p.key === key);
+    if (!saved) throw new Error("Branch update journal unavailable");
+    return this.#waiting(saved);
   }
 
   async #recover(
@@ -559,7 +826,10 @@ export class Merges {
       if (session.runtime === "tracker" ? !item.id.startsWith("linear:") : !claim || item.seq <= claim.seq) continue;
       const number = item.body.match(/\bPR #(\d+)/i)?.[1];
       const head = item.body.match(/\bhead ([0-9a-f]+)/i)?.[1]?.toLowerCase();
-      if ((number === undefined || Number(number) === progress.pr) && head === progress.head)
+      if (
+        (number === undefined || Number(number) === progress.pr) &&
+        (head === progress.head || head === progress.handedHead)
+      )
         this.#append(scope, "inbox.answered", { id: item.id, answer: `Merged #${progress.pr}` });
     }
     const result: JsonObject = {
@@ -570,6 +840,16 @@ export class Merges {
       merged: true,
       cleanup: stopped,
     };
+    const updates = new Map(this.#progress(scope.readEvents()).map((p) => [p.key, p]));
+    for (const update of updates.values()) {
+      if (
+        update.stage === "updating" &&
+        update.pr === progress.pr &&
+        update.session === progress.session &&
+        update.generation === progress.generation
+      )
+        this.#save(scope, { ...update, stage: "finished", result });
+    }
     this.#save(scope, { ...progress, stage: "finished", result });
     return result;
   }

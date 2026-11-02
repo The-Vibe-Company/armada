@@ -12,7 +12,7 @@ const GRAPHQL_DEFAULT = `${REST_DEFAULT}/graphql`;
  * GraphQL URL), while making the REST half work with both the public API and
  * local recorded fixtures that expose `/graphql` from one origin.
  */
-function restEndpoint(endpoint: string | undefined): string {
+export function restEndpoint(endpoint: string | undefined): string {
   if (!endpoint) return REST_DEFAULT;
   try {
     const url = new URL(endpoint);
@@ -58,6 +58,7 @@ const INSPECT_QUERY = `fragment InspectPull on PullRequest {
   baseRef { name target { oid } }
   mergeCommit { oid }
   commits(last: 1) { nodes { commit { oid
+    parents(first: 3) { totalCount nodes { oid } }
     checkSuites(first: 50) { nodes { status conclusion commit { oid } workflowRun { databaseId runNumber runAttempt workflow { id } } } pageInfo { hasNextPage endCursor } }
     statusCheckRollup { state contexts(first: 50) { pageInfo { hasNextPage endCursor } nodes {
       __typename
@@ -311,9 +312,19 @@ export async function inspectGithub(options: InspectOptions): Promise<ForgeInspe
     const review = await readReviewThreads(options, threads);
     const behindBy = await readBehindBy(options, base, head);
     const required = await readRequiredChecks(options, raw.baseRef.name);
+    const commit = object(raw.commits.nodes.at(-1)?.commit);
+    let headParents: string[] | undefined;
+    if (commit.parents !== undefined) {
+      const parents = object(commit.parents);
+      const nodes = array(parents.nodes).map((node) => cleanSha(object(node).oid));
+      if (!Number.isSafeInteger(parents.totalCount) || (parents.totalCount as number) < nodes.length)
+        throw new Error("invalid commit parents");
+      if (parents.totalCount === nodes.length) headParents = nodes;
+    }
     const inspection = {
       number: normalized.number,
       head,
+      ...(headParents ? { headParents } : {}),
       base,
       baseRef: raw.baseRef.name,
       state: normalized.state,

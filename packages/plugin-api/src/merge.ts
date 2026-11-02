@@ -6,6 +6,8 @@ const sha = z.string().regex(/^[0-9a-f]{40}$/);
 export const forgeInspectionSchema = z.object({
   number: z.number().int().positive(),
   head: sha,
+  /** Complete, ordered parents of head; absent when the forge cannot prove ancestry. */
+  headParents: z.array(sha).optional(),
   base: sha,
   baseRef: z.string().min(1),
   state: z.enum(["open", "closed", "merged"]),
