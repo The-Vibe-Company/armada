@@ -16,6 +16,7 @@ import {
   type CredentialsResult,
   DAEMON_TOO_OLD,
   type HistoryRequest,
+  MODEL_SCOPE_MINOR,
   MODELS_MINOR,
   type ModelConfig,
   type ModelsCatalog,
@@ -120,7 +121,11 @@ export interface DaemonClient {
   cancel(flow?: string): Promise<void>;
   logout(): Promise<void>;
   logout(provider: string): Promise<void>;
-  select(provider: string, model: string): Promise<void>;
+  /**
+   * The coordinator's model. `project` (protocol minor 24, THE-2128) edits that
+   * project's own model when its rules name one; otherwise the shared selection changes.
+   */
+  select(provider: string, model: string, project?: string): Promise<void>;
   auth(listener: (frame: AuthFrame) => void): () => void;
   connectProvider(provider: string): Promise<void>;
   answerProvider(promptId: string, value: string): void;
@@ -733,7 +738,12 @@ export function createDaemonClient(options: ClientOptions): DaemonClient {
     },
     logout: (provider?: string) =>
       provider === undefined ? askAccount("account.logout") : askModels({ type: "models.logout", provider }),
-    select: (provider, model) => askModels({ type: "models.select", provider, model }),
+    select: (provider, model, project) =>
+      project === undefined
+        ? askModels({ type: "models.select", provider, model })
+        : (state.minor ?? 0) < MODEL_SCOPE_MINOR
+          ? Promise.reject(new Error("Update the daemon to change a project's own model."))
+          : askModels({ type: "models.select", provider, model, project }),
     auth(listener) {
       authListeners.add(listener);
       return () => authListeners.delete(listener);

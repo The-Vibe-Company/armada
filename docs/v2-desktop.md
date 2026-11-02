@@ -428,6 +428,26 @@ requests carrying plugin config and clients before minor 9 retain the plugin
 path. Selecting pi preserves the previous plugin credential/config in the
 keychain, so project plugin overrides remain usable after restart.
 
+The coordinator's model has two pickers, one component
+(`settings/ModelPicker.tsx`'s `ModelPickerContent`, groups and labels from
+`settings/models.ts`): Settings › Coordinator's Model row, and the room's
+chat bar (THE-2128). In the room the model under the field is a button; a
+click or ⌘⇧M opens the picker above it, Escape or a choice closes it and the
+focus returns to the field. A provider not connected is listed dimmed with
+"Connect in Settings": the chat never starts a sign-in. The picker's head says
+what the choice edits. "For every project" is the shared selection,
+`models.select { provider, model }`. "For this project" applies when the
+project's rules name their own `coordinatorModel`. From minor 24 the room sends
+`models.select { provider, model, project }`, and the daemon then writes one
+rules checkpoint (`armada.tools`, next revision, actor `owner`, the rest of the
+rules kept). A project without an override changes the shared selection. Either
+way the daemon reconfigures the coordinator once its harness is idle. A turn in
+flight keeps its model and the next turn runs on the new one, with no restart.
+Meanwhile the label reads "<model> · next turn". Once the model applies, the
+room shows one quiet line, "Coordinator now on <provider>/<model>". The line is
+the app's own, kept for the session and never sent to the coordinator. Below
+minor 24 a project's own model shows as a plain label.
+
 Provider connection handlers can reuse the daemon's `AuthFlows` adapter in
 `src/server/auth.ts`: `start(owner, flowId, send, run, scope?)` runs one
 `FlowInteraction` with `signal`, `notify(event)` (including terminal output),

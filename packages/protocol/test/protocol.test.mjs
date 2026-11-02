@@ -538,3 +538,15 @@ test("internal ticket events validate authored fields and preserve optional impo
   for (const patch of [{ state: "unknown" }, { title: "" }, { blockers: [null] }, { id: "GROVE-99" }])
     assert.equal(eventPayloadSchemas["ticket.edited"].safeParse({ ticket: "GROVE-1", patch }).success, false);
 });
+
+test("models.select names a project only from minor 24, on both sides", () => {
+  const v = { major: 1, minor: 24 };
+  const shared = { type: "models.select", version: v, id: "select", provider: "anthropic", model: "claude-a" };
+  const scoped = { ...shared, project: "harbor" };
+  assert.equal(admitRequest(shared).ok, true);
+  assert.equal(admitRequest(scoped).ok, true);
+  assert.equal(admitRequest({ ...shared, version: { major: 1, minor: 9 } }).ok, true);
+  assert.equal(admitRequest({ ...scoped, version: { major: 1, minor: 23 } }).ok, false);
+  assert.equal(admitRequest(scoped, { major: 1, minor: 23 }).ok, false);
+  assert.equal(admitRequest({ ...scoped, project: "" }).ok, false);
+});

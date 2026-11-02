@@ -354,7 +354,9 @@ describe("Settings › Coordinator in a browser", () => {
       "HarborClaude Keel",
       "LanternDefault",
     ]);
-    expect(await row.textContent()).toContain("Ask the coordinator in the room to change it.");
+    expect(await row.textContent()).toContain(
+      "Change it from the model under the room's field (⌘⇧M), or ask the coordinator.",
+    );
     // No picker on this row until the app can write a project's rules (THE-2088).
     expect(await row.getByRole("button").count()).toBe(0);
     await page.context().close();

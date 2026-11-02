@@ -148,11 +148,17 @@ export class ModelRegistry {
       : null;
   }
 
-  async select(selection: { provider: string; model: string }): Promise<void> {
+  /** A pi model the coordinator can run on: in the catalog, its provider configured. */
+  async usable(selection: { provider: string; model: string }): Promise<{ provider: string; model: string }> {
     const parsed = coordinatorModelSchema.parse(selection);
     if (!("provider" in parsed) || !this.models.getModel(parsed.provider, parsed.model))
       throw new Error("Unknown provider or model");
     if (!(await this.models.checkAuth(parsed.provider))) throw new Error("Provider is not configured");
+    return { provider: parsed.provider, model: parsed.model };
+  }
+
+  async select(selection: { provider: string; model: string }): Promise<void> {
+    const parsed = await this.usable(selection);
     await this.#keychain.selectCoordinator(parsed);
     this.#selected = parsed;
   }

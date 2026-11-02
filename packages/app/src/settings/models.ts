@@ -1,7 +1,8 @@
 // Settings › Coordinator's rules (THE-2070), pure: the order of pi's
 // providers, the state word on a provider's dot, the model picker's groups
-// and search, a model's label, a sign-in flow read from the daemon's auth
-// frames, and each project's override read from its folded rules.
+// and search (shared with the room's picker, THE-2128), a model's label, a
+// sign-in flow read from the daemon's auth frames, and each project's
+// override read from its folded rules.
 import { type AuthFrame, type CoordinatorModel, coordinatorModelSchema, type ModelsCatalog } from "@armada/protocol";
 
 export type CatalogProvider = ModelsCatalog["providers"][number];
@@ -66,7 +67,12 @@ export interface PickerGroup {
  * each holding the models the search matches (every word of it, in the
  * model's name or id or the provider's name). A group nothing matches leaves.
  */
-export function pickerGroups(providers: readonly CatalogProvider[], query = ""): PickerGroup[] {
+export function pickerGroups(
+  providers: readonly CatalogProvider[],
+  query = "",
+  /** Why a provider's models cannot be chosen here: Settings connects in place, the room sends there (THE-2128). */
+  unavailable = "Connect first",
+): PickerGroup[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   return providerOrder(providers).flatMap((provider) => {
     const models = provider.models.filter((model) => {
@@ -75,7 +81,7 @@ export function pickerGroups(providers: readonly CatalogProvider[], query = ""):
     });
     if (models.length === 0) return [];
     const available = isUsable(provider);
-    return [{ provider, available, reason: available ? null : "Connect first", models }];
+    return [{ provider, available, reason: available ? null : unavailable, models }];
   });
 }
 

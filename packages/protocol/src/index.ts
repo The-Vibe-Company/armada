@@ -25,6 +25,7 @@ import { DELIVERIES_MINOR } from "./deliveries.js";
 import { counter, identifier, requestSchema, USAGE_MINOR, versionSchema } from "./envelope.js";
 import { GITHUB_READER_MINOR, INTERNAL_TRACKER_MINOR } from "./fleet.js";
 import {
+  MODEL_SCOPE_MINOR,
   modelConfigSchema,
   modelKindEntrySchema,
   modelKindSchema,
@@ -80,6 +81,7 @@ export const PROTOCOL_VERSION = {
     REPLAY_MINOR,
     INTERNAL_TRACKER_MINOR,
     PROJECT_TRACKER_MINOR,
+    MODEL_SCOPE_MINOR,
   ),
 } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
@@ -344,6 +346,16 @@ export function admitRequest(input: unknown, daemonVersion: ProtocolVersion = PR
       error: { ...base, code: "invalid-message", message: "Project management requires protocol minor 12" },
     };
   }
+  if (
+    parsed.data.type === "models.select" &&
+    parsed.data.project !== undefined &&
+    (version.minor < MODEL_SCOPE_MINOR || parsed.data.version.minor < MODEL_SCOPE_MINOR)
+  )
+    return {
+      ok: false,
+      close: false,
+      error: { ...base, code: "invalid-message", message: "A project's coordinator model requires protocol minor 24" },
+    };
   if (parsed.data.type === "fleet.shutdown" && parsed.data.version.minor < WORKER_RECOVERY_MINOR)
     return { ok: false, close: false, error: { ...base, code: "app-too-old", message: APP_TOO_OLD } };
   return { ok: true, request: parsed.data };
