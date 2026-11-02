@@ -1223,7 +1223,8 @@ test("a kept project worktree is reused only for its own branch, never twice at 
             env: {},
           }),
       );
-    const [third, fourth] = await node.prepare(request).then(async (a) => [a, await node.prepare(request)]);
+    const third = await node.prepare(request);
+    const fourth = await node.prepare(request);
     const race = await Promise.allSettled([
       launchIn(third, "session-reuse-3", 3),
       launchIn(fourth, "session-reuse-4", 4),

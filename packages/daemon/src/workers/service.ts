@@ -1792,6 +1792,13 @@ export class Workers {
     });
     if (facts.some((c) => c.type === "native-stopped") || facts.some((c) => c.type === "launch" && c.hosted === true))
       return;
+    // Only a generation released without a stop claim (a lost worker) is worth a probe: a launch
+    // that ended before or during creation left nothing that could run.
+    const release = this.#options.store
+      .readSince(0, project)
+      .findLast((event) => event.kind === "session.released" && event.payload.session === prior.session);
+    if (release?.kind !== "session.released" || !release.payload.reason.includes("without a confirmed runtime stop"))
+      return;
     const ref = {
       project,
       ticket: prior.ticket,
@@ -1803,10 +1810,16 @@ export class Workers {
       () => undefined,
       (error: unknown) => this.#lostCause(error),
     );
-    if (probe === undefined)
-      throw new WorkerRefusal(
-        `${ticket}'s previous worker still answers in its worktree; release it from its session page or stop it yourself before launching again`,
-      );
+    if (probe === undefined) {
+      // The old supervisor answered: refuse only while it reports the worker running.
+      const observed = this.#observations.get(prior.session);
+      const state = observed ? (JSON.parse(observed) as { state?: string }).state : undefined;
+      if (state === "running" || state === "starting")
+        throw new WorkerRefusal(
+          `${ticket}'s previous worker still answers in its worktree; release it from its session page or stop it yourself before launching again`,
+        );
+      return;
+    }
     this.#lost.set(prior.session, probe);
     if (probe.kind === "running")
       throw new WorkerRefusal(
