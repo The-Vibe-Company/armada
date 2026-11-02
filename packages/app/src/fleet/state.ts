@@ -30,11 +30,16 @@ const sessionSchema = z.object({
 const ticketStatusSchema = z.enum(["triage", "backlog", "unstarted", "started", "completed", "canceled"]);
 /**
  * A ticket's comments (where a V1 claim says which runtime session holds it),
- * and what tells whether it is ready to launch (the room's starter asks).
+ * what tells whether it is ready to launch (the room's starter asks), and what
+ * the Tickets page shows of it (THE-2124).
  */
 const ticketSchema = z.object({
   id: text,
-  comments: z.array(z.object({ body: text, at: text })).optional(),
+  title: text.optional().catch(undefined),
+  labels: z.array(text).optional().catch(undefined),
+  description: text.optional().catch(undefined),
+  url: text.optional().catch(undefined),
+  comments: z.array(z.object({ body: text, at: text, author: text.optional().catch(undefined) })).optional(),
   status: ticketStatusSchema.optional().catch(undefined),
   phase: phaseSchema.nullable().optional().catch(undefined),
   parent: text.nullable().optional().catch(undefined),

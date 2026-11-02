@@ -212,6 +212,7 @@ export async function runDaemon(startedAt: number) {
             server = await startServer({
               imports,
               onRoomPresence: (id) => readerGroups.get(id)?.activityChanged(id),
+              trackerFor: (project) => trackerFor(project)(),
               store: daemon.store,
               projects,
               projectRegistry: registry,

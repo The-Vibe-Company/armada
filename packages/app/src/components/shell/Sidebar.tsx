@@ -46,7 +46,11 @@ export function Sidebar() {
           key={p.id}
           href={projectHref(p.id)}
           className={`${item} ${current}${arrived.has(p.id) ? " arrive" : ""}`}
-          aria-current={(route.kind === "project" || route.kind === "rules") && route.id === p.id ? "page" : undefined}
+          aria-current={
+            (route.kind === "project" || route.kind === "rules" || route.kind === "tickets") && route.id === p.id
+              ? "page"
+              : undefined
+          }
           title={p.repository}
           data-arrived={arrived.has(p.id) || undefined}
         >

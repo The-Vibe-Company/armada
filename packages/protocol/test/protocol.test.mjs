@@ -551,6 +551,51 @@ test("models.select names a project only from minor 24, on both sides", () => {
   assert.equal(admitRequest({ ...scoped, project: "" }).ok, false);
 });
 
+test("ticket.create and ticket.update are admitted from minor 26, on both sides, and answer ticket.result", () => {
+  const v = { major: 1, minor: 26 };
+  const create = {
+    type: "ticket.create",
+    version: v,
+    id: "c1",
+    project: "harbor",
+    requestId: "page-1",
+    title: "Dock the ferry",
+    description: "Line **one**",
+    labels: ["web"],
+    parent: null,
+    ready: true,
+  };
+  const update = {
+    type: "ticket.update",
+    version: v,
+    id: "u1",
+    project: "harbor",
+    requestId: "page-2",
+    ticket: "HARBO-1",
+    addLabels: ["ready-for-agent"],
+    state: "canceled",
+  };
+  assert.equal(admitRequest(create).ok, true);
+  assert.equal(admitRequest(update).ok, true);
+  assert.equal(admitRequest({ ...create, version: { major: 1, minor: 25 } }).ok, false);
+  assert.equal(admitRequest(update, { major: 1, minor: 25 }).ok, false);
+  for (const bad of [{ title: " " }, { requestId: undefined }, { labels: [""] }])
+    assert.equal(admitRequest({ ...create, ...bad }).ok, false);
+  assert.equal(admitRequest({ ...update, state: "triage" }).ok, false);
+  assert.equal(
+    serverMessageSchema.safeParse({
+      type: "ticket.result",
+      version: v,
+      id: "c1",
+      project: "harbor",
+      requestId: "page-1",
+      ticket: "HARBO-1",
+    }).success,
+    true,
+  );
+  assert.ok(PROTOCOL_VERSION.minor >= 26);
+});
+
 test("tracker.import requires minor 27 on both sides and a project plus program root", () => {
   const v = { major: 1, minor: 27 };
   const request = { type: "tracker.import", version: v, id: "import", project: "orchard", programRoot: "SEED-1" };

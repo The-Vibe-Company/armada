@@ -38,9 +38,12 @@ export const ticketToolSchemas = {
   "ticket.comment": z.strictObject({ id, body: z.string().min(1).max(100000).regex(/\S/) }),
 };
 export type TicketTool = keyof typeof ticketToolSchemas;
+/** What a ticket call needs of its writer: the coordinator's storage, or the owner's scope on the Tickets page. */
 export type TicketStorage = Pick<CoordinatorStorage, "project" | "readEvents" | "appendEvent">;
 export interface TicketToolOptions {
   now: () => string;
+  /** Who decides the call: its journal's and its tracker writes' actor. The coordinator's unless the owner's page (THE-2124). */
+  author?: "coordinator" | "owner";
   /** Additional host fence, checked at the provider's commit boundary. */
   beforeWrite?: () => void;
   /** Resolve the project's currently configured, scoped provider at the point of use. */
@@ -138,8 +141,9 @@ async function execute(
         );
       pending = true;
     }
+    const author = options.author ?? "coordinator";
     const hash = digest(key);
-    const actor = `coordinator:ticket:${hash}`;
+    const actor = `${author}:ticket:${hash}`;
     // TrackerWriteRequest requires a stable UUID; Linear forwards it as CommentCreateInput.id.
     const commentId =
       options.importing?.comment?.id ??
@@ -147,7 +151,7 @@ async function execute(
     const record = (type: string, result?: JsonObject) =>
       scope.appendEvent({
         project: scope.project,
-        actor: "coordinator",
+        actor: author,
         at: options.now(),
         kind: "coordinator.checkpoint",
         payload: {
@@ -264,7 +268,7 @@ async function execute(
         } else
           await tracker.write({
             project: scope.project,
-            actor: "coordinator",
+            actor: author,
             beforeWrite,
             ticket: comment.id,
             comment: comment.body,

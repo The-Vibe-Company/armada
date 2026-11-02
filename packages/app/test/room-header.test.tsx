@@ -154,3 +154,19 @@ test("an internal project's header names Armada and ignores historical Linear pa
   expect(html).not.toContain("Linear");
   expect(html).not.toContain("min ago");
 });
+
+test("the strip links the project's tickets (THE-2124)", () => {
+  const html = renderToStaticMarkup(
+    <Header
+      project={{ id: "harbor", name: "Harbor", repository: "example/harbor", tracker: "internal" }}
+      counts={counts({})}
+      readAt={undefined}
+      now={NOW}
+      open
+      panel="room-panel"
+      onToggle={() => {}}
+      onPill={() => {}}
+    />,
+  );
+  expect(html.match(/<a href="([^"]+)"[^>]*data-tickets-link/)?.[1]).toBe("#/projects/harbor/tickets");
+});
