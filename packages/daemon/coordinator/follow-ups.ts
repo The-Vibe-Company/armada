@@ -223,6 +223,15 @@ export function recoverFollowUps(
       (f.pr === undefined || event.payload.pr === f.pr) &&
       (!f.head || event.payload.head === f.head) &&
       current?.phase === "merged";
+    if (f.code === "delivery_failed") {
+      recovered ||=
+        (event.kind === "delivery.sent" || (event.kind === "delivery.failed" && event.payload.nextAt === null)) &&
+        event.payload.id === f.args?.delivery;
+      recovered ||=
+        event.kind === "session.released" &&
+        event.payload.ticket === item.ticket &&
+        event.payload.session === f.session;
+    }
     if (event.kind === "pull-request.seen")
       recovered =
         event.payload.number === f.pr &&

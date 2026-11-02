@@ -1,5 +1,7 @@
 import type { Delivery, FleetEvent } from "@armada/protocol";
 
+export const deliveryFollowUpId = (id: string) => `follow-up:delivery:${id}`;
+
 /** A replay cache only: the append-only log remains the outbox's source of truth. */
 export function applyDelivery(deliveries: Map<string, Delivery>, e: FleetEvent): void {
   if (e.kind === "delivery.queued") {

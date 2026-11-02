@@ -129,10 +129,11 @@ export function wakeups(before: WakeReading, after: WakeReading): WakeCandidate[
 
   for (const item of after.tables?.inbox ?? []) {
     const permission = item.kind === "follow-up" && item.followUp?.code === "permission_prompt";
+    const deliveryFailed = item.kind === "follow-up" && item.followUp?.code === "delivery_failed";
     if (
       before.tables?.inbox.some((i) => i.id === item.id) ||
       item.kind === "owner-request" ||
-      (item.kind === "follow-up" && !permission)
+      (item.kind === "follow-up" && !permission && !deliveryFailed)
     )
       continue;
     const handedBack = item.kind === "hand-back" ? item.body.match(/\bPR #(\d+), head ([a-f0-9]{40})\b/i) : null;
@@ -151,11 +152,13 @@ export function wakeups(before: WakeReading, after: WakeReading): WakeCandidate[
       `inbox:${identity(item.id)}`,
       permission
         ? `permission block ${facts.ticket ?? ""}; set the runtime's permission mode in Settings > Providers, restart Armada and relaunch the worker`
-        : judged
-          ? maskedTail(item.body)
-              .replace(/\p{Cc}/gu, " ")
-              .slice(0, 800)
-          : `${item.kind}${facts.ticket ? ` ${facts.ticket}` : ""}${pr}`,
+        : deliveryFailed
+          ? `input unreachable ${facts.ticket ?? ""}; relaunch the worker in place`
+          : judged
+            ? maskedTail(item.body)
+                .replace(/\p{Cc}/gu, " ")
+                .slice(0, 800)
+            : `${item.kind}${facts.ticket ? ` ${facts.ticket}` : ""}${pr}`,
       facts,
     );
   }
@@ -630,6 +633,9 @@ export class Waker {
     const desired = new Map<string, { ticket: string; kind: "silent" | "stopped" | "not-started"; due: number }>();
     for (const s of tables.sessions) {
       if (["released", "merged"].includes(s.phase) || s.runtime === "tracker") continue;
+      // Input reachability outranks heartbeat/process liveness. Its durable follow-up owns the wake.
+      if (tables.deliveries?.some((d) => d.session === s.session && d.generation === s.generation && d.attempt > 0))
+        continue;
       if (
         tables.inbox.some(
           (item) =>

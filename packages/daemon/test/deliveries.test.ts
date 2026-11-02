@@ -87,21 +87,22 @@ test("durable delivery retries twice then sends once without opening an item", a
   }
 });
 
-test("three failures open one stable item and status problem, cleared by a later send", async () => {
+test("three failures pause one follow-up across restart, resolution retries and success clears reachability", async () => {
   const store = new EventStore(":memory:");
   seed(store);
   const time = clock();
   let fail = true;
   const keys: string[] = [];
-  const driver = new Deliveries({
+  const options = {
     store,
     ...time,
-    async deliver(d, guard) {
+    async deliver(d: import("@armada/protocol").Delivery, guard: () => void) {
       guard();
       keys.push(d.key);
       if (fail) throw new Error("PTY unavailable");
     },
-  });
+  };
+  let driver = new Deliveries(options);
   const facts = () => fold(store.readSince(0)).projects[project]!;
   try {
     store.append(queued("answer"));
@@ -109,16 +110,52 @@ test("three failures open one stable item and status problem, cleared by a later
     await time.advance(2000);
     await time.advance(4000);
     const item = facts().inbox[0];
-    assert.equal(item?.kind, "delivery-failed");
-    assert.match(item?.body ?? "", /Answer not delivered to SEED-1/);
+    assert.equal(item?.kind, "follow-up");
+    assert.equal(item?.followUp?.code, "delivery_failed");
+    assert.equal(item?.followUp?.fix, "relaunch the worker in place");
+    assert.equal(item?.followUp?.attempts, 3);
+    assert.equal(facts().inbox.length, 1);
+    store.append({
+      project,
+      at: time.now(),
+      actor: "worker",
+      kind: "session.heartbeat",
+      payload: { ticket: session.ticket, session: session.session },
+    });
+    assert.equal(fleetStatus(facts(), store.readSince(0), time.now()).sessions[0]?.reachability, "unreachable");
     assert.equal(fleetStatus(facts(), store.readSince(0), time.now()).problems.deliveries[0]?.ticket, "SEED-1");
-    await time.advance(8000);
+    store.append(queued("later"));
+    await driver.close();
+    driver = new Deliveries(options);
+    await time.advance(3_600_000);
     assert.deepEqual(facts().inbox, [item]);
-    assert.deepEqual(keys, ["answer", "answer", "answer", "answer"]);
+    assert.deepEqual(keys, ["answer", "answer", "answer"]);
+    store.append({
+      project,
+      at: time.now(),
+      actor: "coordinator",
+      kind: "inbox.answered",
+      payload: { id: item!.id, answer: "Input repaired; retry" },
+    });
+    await settle();
+    await time.advance(2_000);
+    await time.advance(4_000);
+    assert.equal(keys.length, 6);
+    assert.equal(facts().inbox.length, 1);
+    assert.equal(facts().inbox[0]?.followUp?.attempts, 6);
     fail = false;
-    await time.advance(16000);
+    store.append({
+      project,
+      at: time.now(),
+      actor: "coordinator",
+      kind: "inbox.answered",
+      payload: { id: item!.id, answer: "Retry after repair" },
+    });
+    await time.advance(60_000);
     assert.deepEqual(facts().inbox, []);
     assert.deepEqual(fleetStatus(facts(), store.readSince(0), time.now()).problems.deliveries, []);
+    assert.notEqual(fleetStatus(facts(), store.readSince(0), time.now()).sessions[0]?.reachability, "unreachable");
+    assert.deepEqual(keys.slice(-2), ["answer", "later"]);
   } finally {
     await driver.close();
     store.close();
@@ -197,7 +234,7 @@ test("generation changes fail permanently before a write and session end closes 
     async deliver(_d, guard) {
       guard();
       writes++;
-      throw new Error("PTY unavailable");
+      if (_d.generation === 1) throw new Error("PTY unavailable");
     },
   });
   try {
@@ -214,8 +251,10 @@ test("generation changes fail permanently before a write and session end closes 
       assert.equal(failure.payload.nextAt, null);
       assert.match(failure.payload.error, /generation changed/i);
     }
-    await time.advance(60000);
-    assert.equal(writes, 3);
+    store.append(queued("fresh", "fresh", { ...session, session: "replacement", generation: 2 }));
+    await settle();
+    assert.equal(writes, 4); // Only the replacement's new input, never the old answer.
+    await time.advance(60_000);
     assert.deepEqual(fold(store.readSince(0)).projects[project]?.inbox, []);
   } finally {
     await driver.close();
@@ -292,40 +331,59 @@ test("a running completion cannot acknowledge a superseding payload and duplicat
   }
 });
 
-test("backoff caps at sixty seconds and a released session closes its failure item", async () => {
-  const store = new EventStore(":memory:");
-  seed(store);
-  const time = clock();
-  const driver = new Deliveries({
-    store,
-    ...time,
-    async deliver(_d, guard) {
-      guard();
-      throw new Error("private runtime text");
-    },
-  });
-  try {
-    store.append(queued("answer"));
-    await settle();
-    for (const delay of [2000, 4000, 8000, 16000, 32000, 60000, 60000]) await time.advance(delay);
-    const failures = store.readSince(0).filter((e) => e.kind === "delivery.failed");
-    assert.deepEqual(
-      failures.map((e) => Date.parse(e.payload.nextAt ?? "") - Date.parse(e.at)),
-      [2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000],
-    );
-    assert.doesNotMatch(JSON.stringify(failures), /private runtime text/);
-    assert.equal(fold(store.readSince(0)).projects[project]?.inbox.length, 1);
-    store.append({
-      project,
-      at: time.now(),
-      actor: "worker",
-      kind: "session.released",
-      payload: { ticket: session.ticket, session: session.session, reason: "Finished" },
+for (const end of ["release", "external-merge"])
+  test(`bounded retries mask runtime errors and ${end} closes the follow-up`, async () => {
+    const store = new EventStore(":memory:");
+    seed(store);
+    const time = clock();
+    const driver = new Deliveries({
+      store,
+      ...time,
+      async deliver(_d, guard) {
+        guard();
+        throw new Error("private runtime text");
+      },
     });
-    await settle();
-    assert.deepEqual(fold(store.readSince(0)).projects[project]?.inbox, []);
-  } finally {
-    await driver.close();
-    store.close();
-  }
-});
+    try {
+      store.append(queued("answer"));
+      await settle();
+      for (const delay of [2000, 4000, 8000, 16000, 32000, 60000, 60000]) await time.advance(delay);
+      const failures = store.readSince(0).filter((e) => e.kind === "delivery.failed");
+      assert.equal(failures.length, 3);
+      assert.deepEqual(
+        failures.slice(0, 2).map((e) => Date.parse(e.payload.nextAt ?? "") - Date.parse(e.at)),
+        [2000, 4000],
+      );
+      assert.doesNotMatch(JSON.stringify(failures), /private runtime text/);
+      assert.equal(fold(store.readSince(0)).projects[project]?.inbox.length, 1);
+      store.append(
+        end === "release"
+          ? {
+              project,
+              at: time.now(),
+              actor: "worker",
+              kind: "session.released",
+              payload: { ticket: session.ticket, session: session.session, reason: "Finished" },
+            }
+          : {
+              project,
+              at: time.now(),
+              actor: "github",
+              kind: "pull-request.seen",
+              payload: {
+                ticket: session.ticket,
+                number: 1,
+                head: "a".repeat(40),
+                state: "merged",
+                ci: "success",
+                conflicting: false,
+              },
+            },
+      );
+      await settle();
+      assert.deepEqual(fold(store.readSince(0)).projects[project]?.inbox, []);
+    } finally {
+      await driver.close();
+      store.close();
+    }
+  });

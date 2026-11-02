@@ -1,4 +1,5 @@
 import type { NodeProvider, PluginContext, RuntimeProvider, WorkerObservation, WorkerRef } from "@armada/plugin-api";
+import { DRIVER } from "./driver.ts";
 import { claudeConnection } from "./status.ts";
 
 interface ClaudeOptions {
@@ -62,7 +63,13 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
     for (const line of lines) {
       try {
         const event = JSON.parse(line);
-        if (event.type === "conversation_reset") {
+        if (event.type === "armada_turn_state" && Number.isSafeInteger(event.completed) && event.completed >= 0) {
+          value.turns = Math.max(0, (value.accepted ?? value.deliveries.size) - event.completed);
+          value.activity = value.turns ? "working" : "idle";
+        } else if (event.type === "armada_turn_start") {
+          value.usageOffset = value.usage === "unknown" ? "unknown" : { ...value.usage };
+          value.usageResetPending = true;
+        } else if (event.type === "conversation_reset") {
           const identity = `reset:${event.uuid ?? event.new_conversation_id}`;
           if (!value.usageResults.has(identity)) {
             value.usageResults.add(identity);
@@ -194,31 +201,39 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
     async launch(request) {
       // The conformance host supplies an explicit command. Production uses the CLI's streaming protocol.
       const stream = !request.command;
+      const args = stream
+        ? [
+            ...(options.args ?? []),
+            ...(![...(options.args ?? []), ...request.args].some(
+              (arg) =>
+                arg === "--permission-mode" ||
+                arg.startsWith("--permission-mode=") ||
+                arg === "--dangerously-skip-permissions",
+            )
+              ? ["--permission-mode", options.permissionMode ?? "bypassPermissions"]
+              : []),
+            "--add-dir",
+            request.workspace.path,
+            "--print",
+            "--verbose",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            ...request.args,
+          ]
+        : request.args;
       const ref = await facilities().launch({
         ...request,
-        command: request.command || options.binary || options.command || "claude",
+        command: stream ? "node" : request.command,
         args: stream
           ? [
-              ...(options.args ?? []),
-              ...(![...(options.args ?? []), ...request.args].some(
-                (arg) =>
-                  arg === "--permission-mode" ||
-                  arg.startsWith("--permission-mode=") ||
-                  arg === "--dangerously-skip-permissions",
-              )
-                ? ["--permission-mode", options.permissionMode ?? "bypassPermissions"]
-                : []),
-              "--add-dir",
-              request.workspace.path,
-              "--print",
-              "--verbose",
-              "--input-format",
-              "stream-json",
-              "--output-format",
-              "stream-json",
-              ...request.args,
+              "--input-type=module",
+              "--eval",
+              DRIVER,
+              JSON.stringify({ command: options.binary || options.command || "claude", args }),
             ]
-          : request.args,
+          : args,
       });
       workers.set(ref.handle, {
         ref: { ...ref },
