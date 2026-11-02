@@ -41,7 +41,19 @@ input.on("close", () => { chain.finally(() => process.exit(failed ? 1 : 0)); });
 async function turn(message) {
   if (failed) throw new Error("CLI session is no longer usable");
   const args = ["run", ...(session ? ["--session", session] : []), ...(options.model ? ["--model", options.model] : []), ...(options.effort ? ["--variant", options.effort] : []), ...options.extraArgs, "--format", "json"];
-  const child = spawn(options.command, args, { stdio: ["pipe", "pipe", "ignore"], shell: false });
+  const child = spawn(options.command, args, { stdio: ["pipe", "pipe", "pipe"], shell: false });
+  // Retain only a fixed marker; provider errors/stderr may contain credentials.
+  let permissionDenied = false;
+  let diagnosticTail = "";
+  const permissionEvidence = (text) => {
+    diagnosticTail = (diagnosticTail + text).slice(-4096);
+    if (!permissionDenied && /requested permissions|(?:have|has)n['’]t granted|permission gate refused|permission (?:prompt|request)|Permission(?:Denied|Rejected|Required)(?:Error)?|approval (?:required|denied|request)/i.test(diagnosticTail)) {
+      permissionDenied = true;
+      emit("failure", { permission: true });
+    }
+  };
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", permissionEvidence);
   let pending = "";
   let reply = "";
   let completed = false;
@@ -52,7 +64,11 @@ async function turn(message) {
       if (typeof value.sessionID === "string") session = value.sessionID;
       if (value.type === "text" && typeof value.part?.text === "string") reply = (reply + value.part.text).slice(-8192);
       if (value.type === "step_finish" && value.part?.reason === "stop") completed = true;
-      if (value.type === "error") turnFailed = true;
+      if (value.type === "error") {
+        turnFailed = true;
+        for (const detail of [value.error?.name, value.error?.message, value.error?.data?.message])
+          if (typeof detail === "string") permissionEvidence(detail);
+      }
     } catch { /* CLI progress diagnostics are not JSON events. */ }
   };
   child.stdout.setEncoding("utf8");
@@ -71,7 +87,7 @@ async function turn(message) {
   if (pending) event(pending);
   if (code !== 0 || turnFailed || !completed || !session) {
     failed = true;
-    emit("failure");
+    emit("failure", permissionDenied ? { permission: true } : {});
   } else emit("reply", { text: reply });
   emit("done", { completed: ++completedTurns });
 }

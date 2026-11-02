@@ -150,7 +150,11 @@ describe("the Providers and Connections sections in a browser", () => {
   };
 
   /** A fresh page on `hash`, connected to a daemon with providers, one project with routing rules, and an account. */
-  async function open(hash: string, account: Record<string, unknown> = { signedIn: false, apiUrl: API }) {
+  async function open(
+    hash: string,
+    account: Record<string, unknown> = { signedIn: false, apiUrl: API },
+    plugins = PLUGINS,
+  ) {
     // A new document each time (a hash alone would keep the last one).
     await page.goto("about:blank");
     await page.goto(`${ORIGIN}/${hash}`);
@@ -171,7 +175,7 @@ describe("the Providers and Connections sections in a browser", () => {
     });
     await receive({ type: "events", project: "harbor", subscriptionId: "sub-1", seq: 0, events: [] });
     await receive({ type: "account.result", id: (await last("account.status")).id, ...account });
-    await receive({ type: "plugins.result", id: (await last("plugins.list")).id, plugins: PLUGINS, restartable: true });
+    await receive({ type: "plugins.result", id: (await last("plugins.list")).id, plugins, restartable: true });
     await receive({ type: "providers.catalog", id: (await last("providers.list")).id, providers: PROVIDERS });
   }
 
@@ -355,13 +359,57 @@ describe("the Providers and Connections sections in a browser", () => {
     await codex.getByRole("button", { name: "Sign out" }).click();
     expect(await last("providers.disconnect")).toMatchObject({ provider: "codex" });
     await codex.getByLabel("Binary path").fill("/usr/local/bin/codex-next");
-    await codex.getByRole("button", { name: "Save" }).click();
+    await codex.getByRole("button", { name: "Save", exact: true }).click();
     expect(await last("plugins.configure")).toMatchObject({
       plugin: "codex",
       seam: "runtime",
       kind: "codex",
       // The older `command` alias gives way to the field.
       config: { model: "o-7", binary: "/usr/local/bin/codex-next" },
+    });
+  });
+
+  test("permission mode is visible and saves through the provider configuration without losing other fields", async () => {
+    expect(await card("codex").locator("..").getByText("Runs unattended in its worktree").count()).toBe(1);
+    await page.goto(`${ORIGIN}/#/settings/providers/codex`);
+    const row = detail("codex").locator('[data-row="permissions"]');
+    expect(await row.getByLabel("Permission mode").inputValue()).toBe("workspace-write");
+    await row.getByLabel("Permission mode").selectOption("read-only");
+    await row.getByRole("button", { name: "Save mode" }).click();
+    const request = await last("plugins.configure");
+    expect(request).toMatchObject({
+      plugin: "codex",
+      seam: "runtime",
+      kind: "codex",
+      config: { command: "codex", model: "o-7", binary: "/opt/tools/codex", permissionMode: "read-only" },
+    });
+    await receive({ type: "plugins.result", id: request.id, plugins: PLUGINS, restartable: true });
+    expect(await row.innerText()).toContain("Saved. Applies when the daemon restarts.");
+    await open(
+      "#/settings/providers/codex",
+      undefined,
+      PLUGINS.map((p) =>
+        p.id === "codex"
+          ? plugin("codex", "runtime", {
+              model: "o-7",
+              extraArgs: [
+                "-c",
+                'approval_policy="never"',
+                "--sandbox",
+                "workspace-write",
+                "--approve-for-me",
+                "--fixture-extra",
+                "literal",
+              ],
+            })
+          : p,
+      ),
+    );
+    expect(await row.getByLabel("Permission mode").inputValue()).toBe("custom");
+    await row.getByLabel("Permission mode").selectOption("default");
+    await row.getByRole("button", { name: "Save mode" }).click();
+    expect(await last("plugins.configure")).toMatchObject({
+      config: { model: "o-7", extraArgs: ["--fixture-extra", "literal"], permissionMode: "default" },
     });
   });
 
