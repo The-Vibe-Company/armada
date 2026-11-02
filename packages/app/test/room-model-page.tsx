@@ -146,7 +146,17 @@ const client: DaemonClient = {
 
 function Room() {
   const { fleets } = useDaemon();
-  return <RoomView project={PROJECT} snapshot={fleets.harbor} live now={T0} zone="UTC" chat={useChat(PROJECT.id)} />;
+  return (
+    <RoomView
+      project={PROJECT}
+      client={client}
+      snapshot={fleets.harbor}
+      live
+      now={T0}
+      zone="UTC"
+      chat={useChat(PROJECT.id)}
+    />
+  );
 }
 
 const root = document.getElementById("root");

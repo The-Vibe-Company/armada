@@ -16,11 +16,13 @@ export function addNote(project: string, body: string, at = new Date(Date.now())
 }
 
 export function useNotes(project: string): readonly RoomNote[] {
+  const read = () => notes.get(project) ?? NONE;
   return useSyncExternalStore(
     (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    () => notes.get(project) ?? NONE,
+    read,
+    read,
   );
 }

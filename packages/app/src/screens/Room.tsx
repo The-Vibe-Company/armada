@@ -192,8 +192,7 @@ export function RoomView({
   // The coordinator's model under the field, and the picker it opens (THE-2128).
   const model = roomModel(daemon, snapshot?.state);
   const providers = daemon.catalog?.providers ?? NO_PROVIDERS;
-  const selecting = useDaemonClient();
-  const switching = useModelSwitch({ project: project.id, client: selecting, model, providers, busy });
+  const switching = useModelSwitch({ project: project.id, client, model, providers, busy });
   const stop = chat.stop;
   // The thread's scroll (THE-2054): a message the thread shows is pinned near its top; the field pages it.
   const thread = useRef<ThreadControl>(null);

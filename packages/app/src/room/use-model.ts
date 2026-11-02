@@ -18,7 +18,8 @@ export function useModelSwitch({
   busy,
 }: {
   project: string;
-  client: Pick<DaemonClient, "select">;
+  /** None where the room is drawn without a daemon (a test's synthetic room): nothing can be chosen. */
+  client: Pick<DaemonClient, "select"> | undefined;
   model: RoomModel;
   providers: readonly CatalogProvider[];
   /** A coordinator turn is running: a new model applies at the next one. */
@@ -36,6 +37,7 @@ export function useModelSwitch({
   const choose = useCallback(
     async (provider: string, chosen: string) => {
       if (selected?.provider === provider && selected.model === chosen) return;
+      if (!client) throw new Error("Waiting for the daemon.");
       await client.select(provider, chosen, scope === "project" ? project : undefined);
       if (busyNow.current) setWaiting({ provider, model: chosen });
       else addNote(project, modelLine(provider, chosen));
