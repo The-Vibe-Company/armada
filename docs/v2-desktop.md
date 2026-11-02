@@ -125,7 +125,7 @@ Published in Linear under the program root THE-1982 (Spec 1/7 THE-1983, Spec 2/7
 ### Step 3: local runtime
 
 - `daemon/runtime-local`: start a worker CLI in a PTY in a worktree, observe, deliver, stop; one worker generation per action (V1's guard).
-- `daemon/worker-api`: claim, report, heartbeat, ask, release from the worker through the daemon (the `armada` CLI inside the worktree speaks to the daemon over a local socket with a per-ticket token).
+- `daemon/worker-api`: ticket, claim, report, heartbeat, ask, release from the worker through the daemon (the `armada` CLI inside the worktree speaks to the daemon over a local socket with a per-ticket token). `armada ticket [<id>]` reads only that capability's ticket from the event-log fold: metadata, description and comments oldest first; `--json` prints the protocol Ticket. Internal tickets include every logged comment; Linear tickets include the fold's up to twelve comments and link to Linear for older ones. Reads never call a tracker or load credentials; another id is refused with "your capability is for <id>".
 - `app/session`: the session page: state card, six steps, transcript, pull request files, "release".
 - `app/terminal`: the worker's PTY in the app, read-only by default.
 
