@@ -38,8 +38,12 @@ export const ticketToolSchemas = {
   "ticket.comment": z.strictObject({ id, body: z.string().min(1).max(100000).regex(/\S/) }),
 };
 export type TicketTool = keyof typeof ticketToolSchemas;
+/** What a ticket call needs of its writer: the coordinator's storage, or the owner's scope on the Tickets page. */
+export type TicketScope = Pick<CoordinatorStorage, "project" | "readEvents" | "appendEvent">;
 export interface TicketToolOptions {
   now: () => string;
+  /** Who decides the call: its journal's and its tracker writes' actor. The coordinator's unless the owner's page (THE-2124). */
+  author?: "coordinator" | "owner";
   /** Resolve the project's currently configured, scoped provider at the point of use. */
   trackerProvider?: () => TrackerProvider | undefined;
 }
@@ -59,7 +63,7 @@ const conflict = () =>
     "this call identity already committed different arguments",
     "inspect the original call; use a new call for a new decision",
   );
-const serial = new WeakMap<CoordinatorStorage, Promise<unknown>>();
+const serial = new WeakMap<TicketScope, Promise<unknown>>();
 
 /** The provider owns ticket writes; this journal owns the coordinator's durable call identity.
  * Intent precedes the side effect. A keyed actor lets the internal tracker's committed
@@ -67,7 +71,7 @@ const serial = new WeakMap<CoordinatorStorage, Promise<unknown>>();
  * without inspectable evidence leave an interrupted create/update explicitly uncertain.
  */
 export async function ticketTool(
-  scope: CoordinatorStorage,
+  scope: TicketScope,
   options: TicketToolOptions,
   name: TicketTool,
   args: unknown,
@@ -84,7 +88,7 @@ export async function ticketTool(
 }
 
 async function execute(
-  scope: CoordinatorStorage,
+  scope: TicketScope,
   options: TicketToolOptions,
   name: TicketTool,
   args: unknown,
@@ -126,14 +130,15 @@ async function execute(
         );
       pending = true;
     }
+    const author = options.author ?? "coordinator";
     const hash = digest(key);
-    const actor = `coordinator:ticket:${hash}`;
+    const actor = `${author}:ticket:${hash}`;
     // TrackerWriteRequest requires a stable UUID; Linear forwards it as CommentCreateInput.id.
     const commentId = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
     const record = (type: string, result?: JsonObject) =>
       scope.appendEvent({
         project: scope.project,
-        actor: "coordinator",
+        actor: author,
         at: options.now(),
         kind: "coordinator.checkpoint",
         payload: {
@@ -224,7 +229,7 @@ async function execute(
         const comment = action as z.infer<(typeof ticketToolSchemas)["ticket.comment"]>;
         await tracker.write({
           project: scope.project,
-          actor: "coordinator",
+          actor: author,
           beforeWrite,
           ticket: comment.id,
           comment: comment.body,

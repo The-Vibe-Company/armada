@@ -201,6 +201,7 @@ export async function runDaemon(startedAt: number) {
             const beforeServer = performance.now();
             server = await startServer({
               onRoomPresence: (id) => readerGroups.get(id)?.activityChanged(id),
+              trackerFor: (project) => trackerFor(project)(),
               store: daemon.store,
               projects,
               projectRegistry: registry,

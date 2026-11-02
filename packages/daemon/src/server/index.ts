@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
+import type { TrackerProvider } from "@armada/plugin-api";
 import {
   ACCOUNT_MINOR,
   admitRequest,
@@ -49,6 +50,7 @@ import type { Providers } from "./providers.ts";
 import { jsonBytes, PAGE_BYTES, REPLAY_WINDOW, Replay, replayFrames } from "./replay.ts";
 import { dispatchSession } from "./session.ts";
 import { serveStatic } from "./static.ts";
+import { dispatchTickets } from "./tickets.ts";
 
 /** The worker service a host (or the app's dev daemon) hands `startServer`. */
 export type { Workers } from "../workers/service.ts";
@@ -78,6 +80,8 @@ export interface ServerOptions {
   /** The app's Plugins screen; without it, plugin requests answer `not-found`. */
   plugins?: PluginHost;
   providers?: Providers;
+  /** The project's configured tracker, for the Tickets page's writes (THE-2124); without it they are refused. */
+  trackerFor?: (project: string) => TrackerProvider | undefined;
   /** A visible room changed; subscriptions alone do not count as owner presence. */
   onRoomPresence?: (project: string) => void;
   /**
@@ -818,6 +822,13 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         if (request.type === "session.release" || request.type === "session.output") {
           // The session page's actions (THE-2045, server/session.ts), through the coordinator's own Workers.
           void dispatchSession(request, { store, workers }).then((reply) => send(ws, reply));
+          return;
+        }
+        if (request.type === "ticket.create" || request.type === "ticket.update") {
+          // The Tickets page's writes (THE-2124, server/tickets.ts), through the coordinator's own ticket tools.
+          void dispatchTickets(request, { store, trackerFor: options.trackerFor })
+            .then((reply) => send(ws, reply))
+            .catch(() => error(ws, request.id, "internal", "The ticket could not be saved"));
           return;
         }
         if (request.type === "project.subscribe") {
