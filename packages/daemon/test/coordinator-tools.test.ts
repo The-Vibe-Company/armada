@@ -3,14 +3,20 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
+import type { TrackerProvider } from "@armada/plugin-api";
 import type { FleetEvent, ProjectTables, Session, Ticket } from "@armada/protocol";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
+import pkg from "../../plugins/internal-tracker/package.json" with { type: "json" };
+import { activate } from "../../plugins/internal-tracker/src/index.ts";
+import { activate as activateLinear } from "../../plugins/linear/src/index.ts";
 import { type MergeEvidence, nativeTools } from "../coordinator/native.ts";
 import { openCoordinatorStorage } from "../coordinator/storage.ts";
 import type { CoordinatorToolName } from "../coordinator/tools.ts";
+import { bootDaemon } from "../src/boot.ts";
 import { fold, type InboxItem } from "../src/fold.ts";
 import { EventStore } from "../src/store.ts";
+import { fakeWorkers } from "./support/fake-worker.ts";
 
 interface TestFacts {
   ok: boolean;
@@ -1129,4 +1135,346 @@ test("raising one budget preserves the other ceiling and the configured night wi
     nightStart: "21:00",
     zone: "UTC",
   });
+});
+
+async function ticketFixture(t: TestContext, wrap: (tracker: TrackerProvider) => TrackerProvider = (t) => t) {
+  const directory = mkdtempSync(join(tmpdir(), "armada-ticket-tools-"));
+  const daemon = await bootDaemon({
+    databasePath: join(directory, "events.sqlite"),
+    configPath: join(directory, "config.json"),
+    catalog: [{ id: "internal-tracker", manifest: pkg.armada, load: async () => ({ activate }) }],
+    secrets: { get: async () => assert.fail("Internal tickets need no secrets") },
+    log: {
+      info() {},
+      error(line) {
+        assert.fail(line);
+      },
+    },
+  });
+  const { store } = daemon;
+  const internal = daemon.registry.get("tracker", "internal");
+  assert.ok(internal);
+  const tracker = wrap(internal);
+  const { workers, fake } = fakeWorkers(store, [{ id: "orchard", repository: "example/orchard" }]);
+  store.append({
+    project: "orchard",
+    at,
+    actor: "coordinator",
+    kind: "coordinator.checkpoint",
+    payload: {
+      checkpoint: {
+        format: "armada.tools",
+        version: 1,
+        type: "rules",
+        reason: "Owner routing",
+        rules: {
+          revision: 1,
+          value: {
+            defaultRoute: { cli: "claude", model: "fixture" },
+            placement: { workers: "local", coordinator: "local" },
+          },
+        },
+      },
+    },
+  });
+  let scope = openCoordinatorStorage({ store, project: "orchard", now: () => at });
+  const options = { now: () => at, tracker: "internal", trackerProvider: () => tracker, workers };
+  let tools = nativeTools(scope, options);
+  let call = 0;
+  const run = async (name: CoordinatorToolName, args: object, callId = String(++call)) => {
+    const result = await tools[name].execute(
+      args,
+      { taskId: 1, callId, details: async () => {} } as unknown as ToolExecutionApi,
+      context,
+    );
+    const first = result.output?.[0];
+    assert.ok(first?.type === "text");
+    assert.deepEqual(JSON.parse(first.text), result.details);
+    return result.details as unknown as TestFacts;
+  };
+  t.after(async () => {
+    await workers.close();
+    await scope.close(context);
+    daemon.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  return {
+    store,
+    fake,
+    tracker,
+    run,
+    close: () => scope.close(context),
+    restart: async () => {
+      await scope.close(context);
+      scope = openCoordinatorStorage({ store, project: "orchard", now: () => at });
+      tools = nativeTools(scope, options);
+    },
+  };
+}
+
+test("coordinator creates, edits and comments an internal ticket, then launches it on the fake runtime", async (t) => {
+  const f = await ticketFixture(t);
+  const created = await f.run(
+    "ticket.create",
+    { title: "Plant an oak", description: "Beside the river", ready: true, labels: ["api"] },
+    "create",
+  );
+  assert.equal(created.ok, true);
+  assert.equal(created.id, "ORCHA-1");
+  const parent = await f.run("ticket.create", { title: "Orchard", description: "The spec" });
+  const blocker = await f.run("ticket.create", { title: "Prepare soil", description: "Before planting" });
+  assert.equal((await f.run("ticket.update", { id: blocker.id, state: "completed" })).ok, true);
+  assert.equal(
+    (
+      await f.run("ticket.update", {
+        id: created.id,
+        title: "Plant two oaks",
+        description: "Along the river",
+        addLabels: ["trees"],
+        removeLabels: ["api"],
+        parent: parent.id,
+        blockers: [blocker.id],
+      })
+    ).ok,
+    true,
+  );
+  const read = await f.run("ticket.read", { id: created.id });
+  assert.equal(read.ticket.title, "Plant two oaks");
+  assert.equal(read.ticket.description, "Along the river");
+  assert.deepEqual(read.ticket.labels, ["ready-for-agent", "trees"]);
+  assert.equal(read.ticket.parent?.id, parent.id);
+  assert.deepEqual(read.ticket.blockers, [{ id: blocker.id, status: "completed" }]);
+  assert.equal(
+    (await f.run("ticket.comment", { id: created.id, body: "Owner confirmed the location" }, "comment")).ok,
+    true,
+  );
+  assert.deepEqual(
+    (await f.run("ticket.comment", { body: "Owner confirmed the location", id: created.id }, "comment")).ok,
+    true,
+  );
+  assert.equal((await f.run("ticket.comment", { id: created.id, body: "Different" }, "comment")).code, "call_conflict");
+  const launched = await f.run("worker.launch", { ticket: created.id, branch: "worker/plant-oaks" });
+  assert.equal(launched.ok, true);
+  assert.match(f.fake.delivered[0]?.message ?? "", /Plant two oaks/);
+  assert.match(f.fake.delivered[0]?.message ?? "", /The spec/);
+  assert.equal(
+    (
+      await f.run("ticket.update", {
+        id: created.id,
+        labels: ["parked"],
+        addLabels: ["note"],
+        state: "canceled",
+        parent: null,
+        blockers: [],
+      })
+    ).ok,
+    true,
+  );
+  const edited = (await f.run("ticket.read", { id: created.id })).ticket;
+  assert.equal(edited.status, "canceled");
+  assert.equal(edited.parent, null);
+  assert.deepEqual(edited.labels, ["parked", "note"]);
+  assert.deepEqual(edited.blockers, []);
+  assert.equal(edited.comments?.length, 1);
+});
+
+test("ticket call identities survive reopening and recover a committed create whose response was lost", async (t) => {
+  let creates = 0;
+  const f = await ticketFixture(t, (tracker) => ({
+    ...tracker,
+    create: async (request) => {
+      creates++;
+      assert.ok(tracker.create);
+      const result = await tracker.create(request);
+      if (creates === 1) throw new Error("Response lost after commit");
+      return result;
+    },
+  }));
+  const args = { title: "Plant", description: "One tree", ready: true };
+  await f.run("ticket.create", args, "durable");
+  await f.restart();
+  const recovered = await f.run("ticket.create", args, "durable");
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.id, "ORCHA-1");
+  assert.equal(creates, 1);
+  assert.equal((await f.run("ticket.create", { ...args, title: "Other" }, "durable")).code, "call_conflict");
+  assert.equal((await f.run("ticket.update", { id: recovered.id, title: "Other" }, "durable")).code, "call_conflict");
+  assert.equal(f.store.fold("orchard").projects.orchard?.tickets.length, 1);
+  const other = openCoordinatorStorage({ store: f.store, project: "other", now: () => at });
+  const result = await nativeTools(other, { now: () => at, trackerProvider: () => f.tracker })["ticket.update"].execute(
+    { id: recovered.id, title: "Stolen" },
+    { taskId: 1, callId: "other" } as ToolExecutionApi,
+    context,
+  );
+  assert.equal((result.details as { code: string }).code, "no_ticket");
+  await other.close(context);
+  await f.close();
+  assert.equal((await f.run("ticket.create", args, "closed")).code, "coordinator_inactive");
+});
+
+test("Linear create/update refusals carry their reason in the room tool result", async (t) => {
+  const { store, scope } = await fixture(t);
+  let linear: TrackerProvider | undefined;
+  activateLinear({
+    events: {},
+    config: { tracker: { linear: {} } },
+    register: {
+      tracker: (_kind: string, tracker: TrackerProvider) => {
+        linear = tracker;
+      },
+    },
+  } as unknown as import("@armada/plugin-api").PluginContext);
+  assert.ok(linear);
+  const tools = nativeTools(scope, { now: () => at, trackerProvider: () => linear });
+  const before = store.count;
+  for (const [name, args] of [
+    ["ticket.create", { title: "Plant", description: "Tree" }],
+    ["ticket.update", { id: "SEED-1", state: "canceled" }],
+  ] as const) {
+    const result = await tools[name].execute(args, { taskId: 1, callId: name } as ToolExecutionApi, context);
+    const details = result.details as { ok: boolean; reason: string; message: string };
+    assert.equal(result.isError, true);
+    assert.equal(details.ok, false);
+    assert.equal(details.reason, "the project's tracker cannot create tickets; write it in Linear");
+    assert.equal(details.message, details.reason);
+    const first = result.output?.[0];
+    assert.ok(first?.type === "text");
+    assert.match(first.text, /write it in Linear/);
+  }
+  assert.equal(store.count, before);
+});
+
+test("ticket receipts replay successful creates and edits without overwriting later changes", async (t) => {
+  const f = await ticketFixture(t);
+  const args = { title: "Plant", description: "One tree" };
+  const created = await f.run("ticket.create", args, "create");
+  assert.equal((await f.run("ticket.update", { id: created.id, addLabels: ["ready-for-agent"] }, "ready")).ok, true);
+  await f.run("ticket.update", { id: created.id, removeLabels: ["ready-for-agent"] }, "unready");
+  await f.restart();
+  assert.deepEqual(await f.run("ticket.create", { description: "One tree", title: "Plant" }, "create"), created);
+  assert.equal((await f.run("ticket.update", { id: created.id, addLabels: ["ready-for-agent"] }, "ready")).ok, true);
+  const ticket = (await f.run("ticket.read", { id: created.id })).ticket;
+  assert.deepEqual(ticket.labels, []);
+  assert.equal(f.store.fold("orchard").projects.orchard?.tickets.length, 1);
+});
+
+test("unconfirmed creates refuse replay while interrupted comments keep their provider id", async (t) => {
+  let failedCreates = 0;
+  let failCreate = false;
+  const commentIds: (string | undefined)[] = [];
+  const f = await ticketFixture(t, (tracker) => ({
+    ...tracker,
+    create: async (request) => {
+      if (failCreate) {
+        failedCreates++;
+        throw new Error("Unavailable before confirmation");
+      }
+      assert.ok(tracker.create);
+      return tracker.create(request);
+    },
+    write: async (request) => {
+      commentIds.push(request.commentId);
+      if (commentIds.length === 1) throw new Error("Unconfirmed comment request");
+      await tracker.write(request);
+    },
+  }));
+  const args = { title: "Plant", description: "One tree" };
+  const created = await f.run("ticket.create", args, "created");
+  const comment = { id: created.id, body: "Same comment after reconnect" };
+  assert.equal((await f.run("ticket.comment", comment, "note")).code, "tracker_write_failed");
+  await f.restart();
+  assert.equal((await f.run("ticket.comment", comment, "note")).ok, true);
+  assert.equal(commentIds.length, 2);
+  assert.ok(commentIds[0]);
+  assert.equal(commentIds[0], commentIds[1]);
+  failCreate = true;
+  assert.equal((await f.run("ticket.create", args, "unknown")).code, "tracker_write_failed");
+  await f.restart();
+  assert.equal((await f.run("ticket.create", args, "unknown")).code, "ticket_outcome_unknown");
+  assert.equal(failedCreates, 1);
+});
+
+test("ticket mutation validates call identity and fences a provider that yields before writing", async (t) => {
+  let entered!: () => void;
+  let resume!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  const f = await ticketFixture(t, (tracker) => ({
+    ...tracker,
+    create: async (request) => {
+      entered();
+      await gate;
+      assert.ok(tracker.create);
+      return tracker.create(request);
+    },
+  }));
+  const args = { title: "Plant", description: "One tree" };
+  assert.equal((await f.run("ticket.create", args, "")).code, "missing_call_id");
+  assert.equal((await f.run("ticket.create", { ...args, extra: true }, "invalid")).code, "invalid_arguments");
+  const pending = f.run("ticket.create", args, "delayed");
+  await ready;
+  await f.close();
+  resume();
+  assert.equal((await pending).code, "coordinator_inactive");
+  assert.equal(f.store.fold("orchard").projects.orchard?.tickets.length, 0);
+});
+
+test("ticket.comment reaches Linear with a stable UUID and deduplicates an unconfirmed response", async (t) => {
+  const { store, scope } = await fixture(t);
+  let linear: TrackerProvider | undefined;
+  const comments: { id: string; body: string }[] = [];
+  let posts = 0;
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
+    const request = JSON.parse(String(init.body));
+    if (request.query.includes("query WriteIssue"))
+      return Response.json({
+        data: {
+          issue: {
+            id: "linear-issue",
+            labels: { nodes: [], pageInfo: { hasNextPage: false } },
+            comments: { nodes: comments, pageInfo: { hasNextPage: false } },
+          },
+        },
+      });
+    assert.match(request.query, /mutation PostComment/);
+    const input = request.variables.input;
+    assert.match(input.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.equal(input.issueId, "linear-issue");
+    posts++;
+    comments.push({ id: input.id, body: input.body });
+    if (posts === 2) throw new Error("Response lost after Linear accepted the comment");
+    return Response.json({ data: { commentCreate: { success: true } } });
+  });
+  activateLinear({
+    events: {},
+    config: { tracker: { linear: { projects: { orchard: { programRoot: "SPEC" } } } } },
+    secrets: { get: async () => "fixture-key" },
+    register: {
+      tracker: (_kind: string, tracker: TrackerProvider) => {
+        linear = tracker;
+      },
+    },
+  } as unknown as import("@armada/plugin-api").PluginContext);
+  let tools = nativeTools(scope, { now: () => at, trackerProvider: () => linear });
+  const run = async (callId: string, body: string) => {
+    const result = await tools["ticket.comment"].execute(
+      { id: "SEED-1", body },
+      { taskId: 1, callId } as ToolExecutionApi,
+      context,
+    );
+    return result.details as { ok: boolean; code: string };
+  };
+  assert.equal((await run("first", "Owner context")).ok, true);
+  assert.equal((await run("lost", "More context")).code, "tracker_write_failed");
+  await scope.close(context);
+  const reopened = openCoordinatorStorage({ store, project: "orchard", now: () => at });
+  t.after(() => reopened.close(context));
+  tools = nativeTools(reopened, { now: () => at, trackerProvider: () => linear });
+  assert.equal((await run("lost", "More context")).ok, true);
+  assert.equal(posts, 2, "recovery reuses the remote comment id instead of creating a second comment");
+  assert.equal(comments.length, 2);
 });

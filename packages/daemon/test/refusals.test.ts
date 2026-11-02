@@ -7,7 +7,7 @@ import { test } from "node:test";
 // The worker launch brief alone bootstraps the separately installed worker CLI.
 test("native, merge and worker refusal guidance never directs a coordinator to V1", () => {
   const root = new URL("../", import.meta.url);
-  const paths = ["coordinator/native.ts"];
+  const paths = ["coordinator/native.ts", "coordinator/tickets.ts"];
   const visit = (directory: string) => {
     for (const entry of readdirSync(new URL(directory, root), { withFileTypes: true })) {
       const path = join(directory, entry.name);

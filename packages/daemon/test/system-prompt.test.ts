@@ -62,7 +62,15 @@ test("every tool mentioned by the prompt exists and every offered tool has a rul
   const mentioned = [...SYSTEM_PROMPT.matchAll(/`([a-z]+\.[a-z]+)`/g)].map((m) => m[1] ?? "");
   for (const name of mentioned) assert.ok(TOOL_NAMES.includes(name as (typeof TOOL_NAMES)[number]), name);
   const rules = [...SYSTEM_PROMPT.matchAll(/^- `([a-z]+\.[a-z]+)`:/gm)].map((m) => m[1] ?? "");
-  assert.deepEqual(rules.sort(), [...TOOL_NAMES].sort());
+  const work = SYSTEM_PROMPT.match(/^3\. When the owner asks for work (.+?) Launch ready work/m)?.[1] ?? "";
+  const ticketTools = ["ticket.create", "ticket.update", "ticket.comment"];
+  for (const name of ticketTools) {
+    assert.ok(work.includes(`\`${name}\``), `${name} belongs to the owner-work branch`);
+    assert.equal(SYSTEM_PROMPT.split(`\`${name}\``).length - 1, 1, `${name} is named once`);
+  }
+  assert.match(work, /same turn before launching.*unless the owner asked for both/);
+  assert.match(work, /failed on a rerun.*hygiene pass every ten merges/);
+  assert.deepEqual([...rules, ...ticketTools].sort(), [...TOOL_NAMES].sort());
 });
 
 test("status promises exclude evidence the actual tool marks unavailable", async (t) => {
