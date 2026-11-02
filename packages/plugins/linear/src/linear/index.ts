@@ -1,5 +1,6 @@
 import { LinearBudget } from "./budget.ts";
 import { LinearReadError } from "./errors.ts";
+import { type LinearRequest, linearMutations } from "./mutations.ts";
 
 export { LinearRateLimitError, LinearReadError } from "./errors.ts";
 
@@ -92,7 +93,7 @@ export interface LinearOptions {
 }
 
 /** Credentials stay inside this adapter; errors never quote server bodies or causes. */
-export function linearTracker(options: LinearOptions): Tracker {
+export function linearTracker(options: LinearOptions): Tracker & ReturnType<typeof linearMutations> {
   let budget = options.budget ?? new LinearBudget(options.now, options.log);
   let key: string | undefined;
   let quota: string | undefined;
@@ -115,7 +116,47 @@ export function linearTracker(options: LinearOptions): Tracker {
       options.budgets.set(quota, budget);
     }
   }
+  const request: LinearRequest = async <T>(
+    query: string,
+    variables: object,
+    signal?: AbortSignal,
+    beforeWrite?: () => void,
+  ): Promise<T> => {
+    if (!key) await prepare();
+    signal?.throwIfAborted();
+    beforeWrite?.();
+    budget.beforeRequest(options.project);
+    let response: Response;
+    try {
+      response = await options.fetch(options.endpoint ?? "https://api.linear.app/graphql", {
+        method: "POST",
+        redirect: "error",
+        headers: { "Content-Type": "application/json", Authorization: key as string },
+        body: JSON.stringify({ query, variables }),
+        signal,
+      });
+    } catch {
+      budget.response(options.project);
+      throw new LinearReadError("Linear network request failed");
+    }
+    signal?.throwIfAborted();
+    budget.response(options.project, response.headers);
+    if (response.status === 429 || response.headers.has("retry-after")) throw budget.pause(response.headers);
+    let body: { data?: T; errors?: { extensions?: { code?: string } }[] };
+    try {
+      body = (await response.json()) as typeof body;
+    } catch {
+      if (!response.ok) throw new LinearReadError(`Linear answered ${response.status}`);
+      throw new LinearReadError("Linear returned an invalid or incomplete response");
+    }
+    if (body.errors?.some((error) => error?.extensions?.code === "RATELIMITED")) throw budget.pause(response.headers);
+    if (!response.ok) throw new LinearReadError(`Linear answered ${response.status}`);
+    if (!body.data || body.errors?.length)
+      throw new LinearReadError("Linear returned an invalid or incomplete response");
+    return body.data;
+  };
   return {
+    ...linearMutations({ rootId: options.rootId, now: options.now, request }),
     identity: JSON.stringify([
       options.endpoint ?? "https://api.linear.app/graphql",
       options.rootId,
@@ -131,37 +172,7 @@ export function linearTracker(options: LinearOptions): Tracker {
     async read({ previous, signal }) {
       if (!key) await prepare();
       const startedAt = options.now().toISOString();
-      async function gql<T>(query: string, variables: object): Promise<T> {
-        signal.throwIfAborted();
-        budget.beforeRequest(options.project);
-        let response: Response;
-        try {
-          response = await options.fetch(options.endpoint ?? "https://api.linear.app/graphql", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: key as string },
-            body: JSON.stringify({ query, variables }),
-            signal,
-          });
-        } catch {
-          budget.response(options.project);
-          throw new LinearReadError("Linear network request failed");
-        }
-        budget.response(options.project, response.headers);
-        if (response.status === 429 || response.headers.has("retry-after")) throw budget.pause(response.headers);
-        let body: { data?: T; errors?: { extensions?: { code?: string } }[] };
-        try {
-          body = (await response.json()) as typeof body;
-        } catch {
-          if (!response.ok) throw new LinearReadError(`Linear answered ${response.status}`);
-          throw new LinearReadError("Linear returned an invalid or incomplete response");
-        }
-        if (body.errors?.some((error) => error?.extensions?.code === "RATELIMITED"))
-          throw budget.pause(response.headers);
-        if (!response.ok) throw new LinearReadError(`Linear answered ${response.status}`);
-        if (!body.data || body.errors?.length)
-          throw new LinearReadError("Linear returned an invalid or incomplete response");
-        return body.data;
-      }
+      const gql = <T>(query: string, variables: object) => request<T>(query, variables, signal);
 
       async function pages<T>(query: string, field: "issues" | "comments", variables: object): Promise<T[]> {
         const result: T[] = [];

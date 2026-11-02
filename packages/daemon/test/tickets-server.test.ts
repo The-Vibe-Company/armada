@@ -4,19 +4,18 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import type { PluginContext, TrackerProvider } from "@armada/plugin-api";
+import type { TrackerProvider } from "@armada/plugin-api";
 import { type ServerMessage, serverMessageSchema, PROTOCOL_VERSION as version } from "@armada/protocol";
 import { WebSocket } from "ws";
 import pkg from "../../plugins/internal-tracker/package.json" with { type: "json" };
 import { activate } from "../../plugins/internal-tracker/src/index.ts";
-import { activate as activateLinear } from "../../plugins/linear/src/index.ts";
 import { bootDaemon } from "../src/boot.ts";
 import { startServer } from "../src/server/index.ts";
 import type { EventStore } from "../src/store.ts";
 
 // The Tickets page's writes (THE-2124) on the real server: the owner creates
 // and edits an internal project's tickets through the coordinator's own ticket
-// tools, a retry of one `requestId` replays its answer, and a Linear project
+// tools, a retry of one `requestId` replays its answer, and a read-only tracker
 // refuses with the tool's line, as an `error` frame.
 
 describe("ticket.create and ticket.update", { timeout: 4000 }, () => {
@@ -48,24 +47,17 @@ describe("ticket.create and ticket.update", { timeout: 4000 }, () => {
       store = daemon.store;
       const internal = daemon.registry.get("tracker", "internal");
       assert.ok(internal);
-      let linear: TrackerProvider | undefined;
-      activateLinear({
-        events: {},
-        config: { tracker: { linear: {} } },
-        register: {
-          tracker: (_kind: string, tracker: TrackerProvider) => {
-            linear = tracker;
-          },
-        },
-      } as unknown as PluginContext);
-      assert.ok(linear);
+      const readerOnly: TrackerProvider = {
+        read: async () => {},
+        write: async () => assert.fail("Unsupported ticket mutations never call write"),
+      };
       server = await startServer({
         store,
         projects: [
           { id: "orchard", name: "Orchard", repository: "example/orchard", tracker: "internal" },
-          { id: "meadow", name: "Meadow", repository: "example/meadow", tracker: "linear", root: "MEAD-1" },
+          { id: "meadow", name: "Meadow", repository: "example/meadow", tracker: "reader-only", root: "MEAD-1" },
         ],
-        trackerFor: (project) => (project === "orchard" ? internal : linear),
+        trackerFor: (project) => (project === "orchard" ? internal : readerOnly),
       });
       close = async () => {
         await server.close();
@@ -161,7 +153,7 @@ describe("ticket.create and ticket.update", { timeout: 4000 }, () => {
     assert.equal(missing.type === "error" && missing.message, "ticket ORCHA-9 not found");
   });
 
-  test("a Linear project refuses with the tool's line, and writes nothing", async () => {
+  test("a tracker without create/update refuses with the tool's line, and writes nothing", async () => {
     const before = store.count;
     const refused = await send({ ...create, project: "meadow", requestId: "page-linear-1" });
     assert.equal(refused.type, "error");

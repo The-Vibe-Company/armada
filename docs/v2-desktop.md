@@ -80,7 +80,7 @@ Three failed attempts derive one stable `delivery-failed` inbox item; later succ
 
 The coordinator sees the fleet through tools, not through a skill telling it to run a CLI: `fleet.status`, `ticket.read`, `ticket.create`, `ticket.update`, `ticket.comment`, `inbox.list`, `inbox.answer`, `worker.launch`, `worker.relaunch`, `worker.message`, `worker.stop`, `merge.check`, `merge.run`, `hold.add`, `hold.clear`, `owner.ask`, `rules.set`. Each tool is the V1 rule (core's pure derivation or checklist) over the folded tables, with the same refusals. The coordinator's behaviour (when to launch, when to wake the owner, when to merge) is the V1 coordinator skill rewritten as the agent's system prompt, under tests that run the loop against a fake model.
 
-`ticket.create { title, description, labels?, parent?, blockers?, ready? }` calls the project's tracker and returns the new id; `ready` adds `ready-for-agent`. `ticket.update { id, title?, description?, labels?, addLabels?, removeLabels?, state?, parent?, blockers? }` edits it (label replacement, then additions, then removals; removal wins). `ticket.comment { id, body }` writes a comment with a stable tool-call-derived id. Linear has no create/update capability and returns “the project's tracker cannot create tickets; write it in Linear”. The room preserves that refusal reason. The coordinator shows a newly cut ticket to the owner in the same turn before launch, unless the owner asked for creation and launch together.
+`ticket.create { title, description, labels?, parent?, blockers?, ready? }` calls the project's tracker and returns the new id; `ready` adds `ready-for-agent`. `ticket.update { id, title?, description?, labels?, addLabels?, removeLabels?, state?, parent?, blockers? }` edits it (label replacement, then additions, then removals; removal wins). `ticket.comment { id, body }` writes a comment with a stable tool-call-derived id. Linear implements both operations with the bounded deduplication guard described under Plugins. Trackers without these optional capabilities return an explicit refusal, whose reason the room preserves. The coordinator shows a newly cut ticket to the owner in the same turn before launch, unless the owner asked for creation and launch together.
 
 The reserved `armada.tickets` v1 checkpoint journals ticket-call arguments before provider execution and results before publication. Identical call identities replay their result; changed arguments refuse. Internal create/update writes carry a keyed coordinator actor (`coordinator:ticket:<hash>`) so a committed event recovers a lost response after restart. An interrupted create/update without committed evidence refuses as an unknown outcome instead of repeating the side effect. Comments use deterministic UUIDs derived from the call key and the ordinary coordinator author; retries reuse the same id. Every provider write is fenced by the active coordinator scope.
 
@@ -197,9 +197,21 @@ state?, url?, source?, actor?, beforeWrite?, signal? })` returns `{ id }`.
 `update({ project, ticket, patch, actor?, beforeWrite?, signal? })` edits any ticket
 fields other than the identifier. The host also accepts manifests targeting API 0.2.0, since the 0.3 additions
 are optional. Existing plugins need no manifest or source changes.
-Both methods are optional in API 0.3.0; Linear
-leaves them absent. Consumers must refuse unsupported operations explicitly,
-and `armada plugin test` reports them as **SKIP: not implemented**. Blockers in
+Both methods are optional in API 0.3.0. Linear implements both: tickets are
+created on the program root's team, under that root by default, with label names
+resolved to team or workspace labels. Updates support title, Markdown description,
+label additions/removals, workflow state type, parent and blocker relations. Both
+operations share the reader's credential budget and rate-limit pause, persisting
+usage-only checkpoints after mutations without replacing the reader cursor. Consumers
+must refuse unsupported operations explicitly; `armada plugin test` skips only
+methods a plugin omits.
+
+The coordinator journals ticket calls by key. As an additional best-effort guard,
+Linear create checks one page (up to 50 exact-title matches) from the team's last
+hour and reuses a ticket with the exact title and Markdown description and verified
+ancestry under the program root (up to 11 parent levels). It follows no further
+pages. Outside that one-hour/page/ancestry window, deduplication is not guaranteed;
+no marker is inserted in the description. Blockers in
 these requests are ticket identifiers; the fold resolves their current statuses.
 
 `TrackerProvider.readProgram({ project, programRoot, phaseGroup?, signal? })` is

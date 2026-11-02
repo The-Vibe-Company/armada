@@ -34,7 +34,7 @@ export function recorded(responses: Record<string, unknown[]>) {
   const calls: { operation: string; variables: Record<string, unknown> }[] = [];
   const fetch: LinearFetch = async (_url, init) => {
     const { query, variables } = JSON.parse(String(init?.body));
-    const operation = /query\s+(\w+)/.exec(query)?.[1] ?? "?";
+    const operation = /(?:query|mutation)\s+(\w+)/.exec(query)?.[1] ?? "?";
     calls.push({ operation, variables });
     let data = operation === "Changed" && !variables.readIssues ? {} : responses[operation]?.shift();
     if (operation === "Changed") {

@@ -122,7 +122,7 @@ export async function runSeamChecks(options: SeamCheckOptions): Promise<void> {
           for (const expected of recording.expectedEvents) {
             assert(
               options.events
-                .slice(eventStart)
+                .slice(created ? 0 : eventStart)
                 .some(
                   (event) =>
                     event.project === project &&
