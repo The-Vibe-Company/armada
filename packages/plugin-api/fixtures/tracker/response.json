@@ -229,7 +229,7 @@
           "team": {
             "id": "fixture-team",
             "states": {
-              "nodes": [],
+              "nodes": [{ "id": "fixture-backlog", "type": "backlog", "position": 0 }],
               "pageInfo": {
                 "hasNextPage": false,
                 "endCursor": null

@@ -38,8 +38,31 @@ input.on("line", (line) => {
 input.on("close", () => { chain.finally(() => process.exit(failed ? 1 : 0)); });
 async function turn(message) {
   if (failed) throw new Error("CLI session is no longer usable");
-  const args = ["exec", ...(session ? ["resume", session] : []), ...(options.model ? ["--model", options.model] : []), ...(options.effort ? ["-c", "model_reasoning_effort=" + JSON.stringify(options.effort)] : []), "-c", "check_for_update_on_startup=false", ...options.extraArgs, "--json", "-"];
-  const child = spawn(options.command, args, { stdio: ["pipe", "pipe", "ignore"], shell: false });
+  // Approval/sandbox switches are top-level flags; resume does not accept them after its subcommand.
+  const globalArgs = [];
+  const extraArgs = [];
+  for (let i = 0; i < options.extraArgs.length; i++) {
+    const arg = options.extraArgs[i];
+    if (arg === "--approve-for-me") globalArgs.push(arg);
+    else if (/^(?:-a|-s|--ask-for-approval|--sandbox)$/.test(arg)) {
+      globalArgs.push(arg, options.extraArgs[++i]);
+    } else if (/^(?:--ask-for-approval=|--sandbox=|-[as].+)/.test(arg)) globalArgs.push(arg);
+    else extraArgs.push(arg);
+  }
+  const args = [...globalArgs, "exec", ...(session ? ["resume", session] : []), ...(options.model ? ["--model", options.model] : []), ...(options.effort ? ["-c", "model_reasoning_effort=" + JSON.stringify(options.effort)] : []), "-c", "check_for_update_on_startup=false", ...extraArgs, "--json", "-"];
+  const child = spawn(options.command, args, { stdio: ["pipe", "pipe", "pipe"], shell: false });
+  // Retain only a fixed marker; provider errors/stderr may contain credentials.
+  let permissionDenied = false;
+  let diagnosticTail = "";
+  const permissionEvidence = (text) => {
+    diagnosticTail = (diagnosticTail + text).slice(-4096);
+    if (!permissionDenied && /requested permissions|(?:have|has)n['’]t granted|permission gate refused|permission (?:prompt|request)|Permission(?:Denied|Rejected|Required)(?:Error)?|approval (?:required|denied|request)/i.test(diagnosticTail)) {
+      permissionDenied = true;
+      emit("failure", { permission: true });
+    }
+  };
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", permissionEvidence);
   let pending = "";
   let reply = "";
   let completed = false;
@@ -50,7 +73,11 @@ async function turn(message) {
       if (value.type === "thread.started" && typeof value.thread_id === "string") session = value.thread_id;
       if (value.type === "item.completed" && value.item?.type === "agent_message") reply = typeof value.item.text === "string" ? value.item.text.slice(-8192) : "";
       if (value.type === "turn.completed") completed = true;
-      if (value.type === "turn.failed" || value.type === "error") turnFailed = true;
+      if (value.type === "turn.failed" || value.type === "error") {
+        turnFailed = true;
+        if (typeof value.error?.message === "string") permissionEvidence(value.error.message);
+        if (typeof value.message === "string") permissionEvidence(value.message);
+      }
     } catch { /* CLI progress diagnostics are not JSON events. */ }
   };
   child.stdout.setEncoding("utf8");
@@ -69,7 +96,7 @@ async function turn(message) {
   if (pending) event(pending);
   if (code !== 0 || turnFailed || !completed || !session) {
     failed = true;
-    emit("failure");
+    emit("failure", permissionDenied ? { permission: true } : {});
   } else emit("reply", { text: reply });
   emit("done", { completed: ++completedTurns });
 }

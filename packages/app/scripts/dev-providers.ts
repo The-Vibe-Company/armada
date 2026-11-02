@@ -30,6 +30,7 @@ const runtimeConfig = {
     command: { type: "string", minLength: 1 },
     binary: { type: "string", minLength: 1 },
     model: { type: "string", minLength: 1 },
+    permissionMode: { type: "string", minLength: 1 },
   },
   additionalProperties: false,
 };

@@ -66,7 +66,7 @@ registration.register.node("local", {
 registration.register.runtime(
   kind,
   (kind === "codex" ? codexRuntime : opencodeRuntime)({
-    command: fileURLToPath(new URL(`../../${kind}/test/${kind}-worker.mjs`, import.meta.url)),
+    command: fileURLToPath(new URL(`../../${kind}/test/fixtures/${kind}-worker.mjs`, import.meta.url)),
   }),
 );
 registration.commit();

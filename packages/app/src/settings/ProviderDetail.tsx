@@ -1,6 +1,6 @@
 import type { Provider } from "@armada/protocol";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
-import { Input } from "@/components/page";
+import { Input, Select } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { roomHref } from "@/lib/route";
 import { useDaemon, useDaemonClient } from "@/protocol/store";
@@ -9,7 +9,15 @@ import { setDisplayName, useDisplayName } from "./display-names";
 import { SettingsRow, SettingsSection, StateDot } from "./Layout";
 import { Mark } from "./marks";
 import { type SignIn, SignInPanel } from "./ProviderSignIn";
-import { agentStatus, binaryConfig, routesTo, runtimeOf, versionLabel } from "./provider-view";
+import {
+  agentStatus,
+  binaryConfig,
+  permissionConfig,
+  routesTo,
+  runtimeOf,
+  runtimePermission,
+  versionLabel,
+} from "./provider-view";
 
 /** The card whose detail opens on Sign in: an agent just turned on while signed out. */
 let focusSignIn: string | null = null;
@@ -47,6 +55,7 @@ export function ProviderDetail({ provider, signIn }: { provider: Provider; signI
       </SettingsSection>
       <SettingsSection title="Runtime">
         <BinaryPath provider={provider} live={live} />
+        <PermissionMode provider={provider} live={live} />
       </SettingsSection>
       <Routing provider={provider} name={name} />
     </div>
@@ -227,6 +236,72 @@ function BinaryPath({ provider, live }: { provider: Provider; live: boolean }) {
           />
           <Button type="submit" variant="soft" disabled={saving || !live || !runtime}>
             {saving ? "Saving…" : "Save"}
+          </Button>
+        </form>
+      }
+    />
+  );
+}
+
+function PermissionMode({ provider, live }: { provider: Provider; live: boolean }) {
+  const { plugins } = useDaemon();
+  const client = useDaemonClient();
+  const id = useId();
+  const mode = runtimePermission(provider, plugins?.plugins ?? []);
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  if (!mode) return null;
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!mode) return;
+    const value = String(new FormData(event.currentTarget).get("permissionMode"));
+    const plugin = plugins?.plugins.find((p) => p.id === mode.plugin);
+    if (!plugin || !mode.choices.some(([v]) => v === value)) return;
+    setSaving(true);
+    setProblem(null);
+    setSaved(false);
+    try {
+      await client.configurePlugin(mode.plugin, "runtime", mode.kind, permissionConfig(plugin, mode.kind, value));
+      setSaved(true);
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : "The mode was not saved.");
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <SettingsRow
+      data-row="permissions"
+      title={<label htmlFor={id}>Permission mode</label>}
+      description={`${mode.summary}. Saving replaces permission overrides in custom arguments. Uses the owner's CLI sign-in.`}
+      status={
+        problem ? (
+          <span role="alert" className="text-red">
+            {problem}
+          </span>
+        ) : saved ? (
+          <span role="status" className="text-text-2">
+            Saved. Applies when the daemon restarts.
+          </span>
+        ) : undefined
+      }
+      control={
+        <form onSubmit={submit} className="m-0 flex w-full items-center gap-2 @min-[32rem]/row:w-80">
+          <Select key={mode.value} id={id} name="permissionMode" defaultValue={mode.value} disabled={saving || !live}>
+            {mode.value === "custom" && (
+              <option value="custom" disabled>
+                Custom arguments
+              </option>
+            )}
+            {mode.choices.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </Select>
+          <Button type="submit" variant="soft" disabled={saving || !live}>
+            {saving ? "Saving…" : "Save mode"}
           </Button>
         </form>
       }

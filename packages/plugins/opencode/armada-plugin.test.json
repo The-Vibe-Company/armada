@@ -1,0 +1,7 @@
+{
+  "runtime": {
+    "opencode": {
+      "binary": "${directory}/opencode-worker.mjs"
+    }
+  }
+}
