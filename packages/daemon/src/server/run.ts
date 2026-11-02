@@ -7,6 +7,7 @@ import { parseArgs } from "node:util";
 import lockfile from "proper-lockfile";
 import { bootDaemon } from "../boot.ts";
 import { fold } from "../fold.ts";
+import { Imports } from "../import/service.ts";
 import { systemKeychain } from "../keychain.ts";
 import { Merges } from "../merge/service.ts";
 import { ModelRegistry } from "../models/registry.ts";
@@ -49,6 +50,7 @@ export async function runDaemon(startedAt: number) {
       let server: Awaited<ReturnType<typeof startServer>> | undefined;
       let workers: Workers;
       let merges: Merges;
+      let imports: Imports | undefined;
       const readerGroups = new Map<string, Awaited<ReturnType<typeof startReaders>>>();
       const controller = new AbortController();
       const refresh = (project: string) => readerGroups.get(project)?.refresh(project) ?? Promise.resolve();
@@ -72,6 +74,7 @@ export async function runDaemon(startedAt: number) {
       }
       async function startProject(project: DaemonProject, configure = true) {
         if (configure) await daemon.addProject(project);
+        imports?.openProject(project.id);
         const readers = await startReaders({
           registry: daemon.registry,
           store: daemon.store,
@@ -95,6 +98,7 @@ export async function runDaemon(startedAt: number) {
         }
       }
       async function stopProject(project: DaemonProject) {
+        await imports?.stopProject(project.id);
         readerGroups.get(project.id)?.stop();
         readerGroups.delete(project.id);
         await server?.closeProject(project.id);
@@ -199,7 +203,14 @@ export async function runDaemon(startedAt: number) {
             await recovered;
             workersMs = performance.now() - beforeWorkers;
             const beforeServer = performance.now();
+            imports = new Imports({
+              store: daemon.store,
+              projects: registry.list.map((p) => p.id),
+              project: (id) => registry.list.find((p) => p.id === id),
+              tracker: (kind, project) => daemon.registry.get("tracker", kind, project),
+            });
             server = await startServer({
+              imports,
               onRoomPresence: (id) => readerGroups.get(id)?.activityChanged(id),
               trackerFor: (project) => trackerFor(project)(),
               store: daemon.store,
@@ -255,6 +266,7 @@ export async function runDaemon(startedAt: number) {
             });
             serverMs = performance.now() - beforeServer;
           } catch (error) {
+            await imports?.close();
             controller.abort();
             for (const readers of readerGroups.values()) readers.stop();
             await socket.close();
@@ -268,6 +280,7 @@ export async function runDaemon(startedAt: number) {
           /* Background services start after readiness, so their first log reads/network
            * ticks cannot hold the desktop closed. Shutdown handlers are installed first. */
           const startBackground = async () => {
+            imports?.recover();
             for (const project of projects) {
               if (stopping) return;
               await startProject(project, false);
@@ -300,6 +313,7 @@ export async function runDaemon(startedAt: number) {
               await hostedReader?.stop();
               await registry.close();
               await server?.close();
+              await imports?.close();
               const results = await Promise.allSettled([workersClosed, socketClosed]);
               const failed = results.find((result) => result.status === "rejected");
               if (failed?.status === "rejected") throw failed.reason;

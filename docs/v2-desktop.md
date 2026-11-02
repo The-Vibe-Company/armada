@@ -155,6 +155,7 @@ Published in Linear under the program root THE-1982 (Spec 1/7 THE-1983, Spec 2/7
 - The Linear reader derives three inbox kinds from worker comments: `question`, `plan`, and `hand-back`. Repeated/full reads preserve answered items; later reports, coordinator answers/approvals, phase changes and confirmed merges retire the items they supersede. Hand-backs retain the complete PR/head evidence. `fleet.status` marks sessions with `drive: "daemon" | "tracker"`; tracker sessions can be read and merged, while messages and stops explain that the worker reads Linear and must be answered there or relaunched here. Merging a tracker session completes the ticket and closes its hand-back without attempting daemon runtime control.
 - `app/tickets` (THE-2124): `#/projects/<id>/tickets`, opened from the room's strip, lists a project's tickets in the room's list style: ready to launch (the coordinator's own candidates, with the launch's blocker check), in flight (the session's phase and reason, opening its page), backlog, then Done behind a disclosure, newest first. A ticket opens in a panel beside the list (`?ticket=`): its fields, its description as Markdown, its comments oldest first, then Mark ready or Not ready, Edit, Cancel and Launch (a `chat.send` asking the coordinator, as the room's own ask does). New ticket (`?new`) is a form in the same panel. Writes are protocol minor 26's `ticket.create` and `ticket.update`, which the daemon (`server/tickets.ts`) runs through the coordinator's own ticket tools with the owner as author and the request's `requestId` as the call identity, so a retry after a dropped connection replays its answer; a refusal is an `error` frame shown in red under the form. On a Linear project the list is read-only and one quiet line, "This project's tickets live in Linear", replaces New ticket. Its strings are the first of `app/src/lib/i18n.ts` (English and French).
 - `daemon/import-toml`: import an `armada.toml` into the app's rules.
+- `daemon/import`: import a Linear program once into an internal project, preserving its source links, states, labels, parent/blocker links and comment provenance; repeat imports add only new source tickets.
 
 ### Step 7: finish
 
@@ -198,6 +199,44 @@ Both methods are optional in API 0.3.0; Linear
 leaves them absent. Consumers must refuse unsupported operations explicitly,
 and `armada plugin test` reports them as **SKIP: not implemented**. Blockers in
 these requests are ticket identifiers; the fold resolves their current statuses.
+
+`TrackerProvider.readProgram({ project, programRoot, phaseGroup?, signal? })` is
+an optional read-only export returning `{ reading?, pausedUntil? }`. A complete
+reading contains tickets (`TrackerTicketFields` plus their original `id`) and
+comments (`id`, `ticket`, `body`, `author`, `at`). The Linear plugin reuses its
+existing poller and retained reading, including cursor, request accounting and
+shared credential cooldowns. It records checkpoints without publishing Linear
+ticket/session observations into the target project. The host's `quotaProjects`
+configuration includes internal projects so restart restores import cooldowns
+before another project with the same key can read. Existing plugins can omit
+this method; no external write capability is added.
+
+From protocol minor 27, the owner's loopback request
+`tracker.import { project, programRoot }` acknowledges with
+`tracker.import.result { project, importId }`. The daemon then owns the chore;
+disconnecting the caller does not cancel it. `tracker.import-started`,
+`tracker.import-progress` and `tracker.import-ended` fold into optional
+`ProjectTables.trackerImport`: the source root, state, imported/skipped/comment
+counts, total and any pause or failure. The room shows that snapshot in one
+status line. An interrupted daemon records an interrupted chore on restart;
+retry continues unfinished source tickets with their original internal ids.
+Completed source tickets are skipped, preserving subsequent internal edits.
+Ready labels are withheld until each source's relationships and comments are
+complete. Retries preserve fields edited since creation, and a provider commit
+fence refuses an import patch if the owner changes the same fields in flight.
+Interruption recovery runs after daemon readiness; removing a project blocks
+new import admission until that project is explicitly started again.
+Parents outside the program become null, internal blockers map to imported ids,
+and external blockers retain their source ids (unresolved locally, hence not
+assumed completed). Linear projects refuse with
+"this project reads Linear live; add it without Linear to import".
+
+`armada tickets import <program-root> --project <id>` calls that owner protocol
+and prints the final counts. Set `ARMADA_DAEMON_URL` to the running daemon's
+`http://127.0.0.1:<port>` URL (the daemon's readiness line), or pass
+`--api-url <url>`. This command does not discover hosted checkout configuration
+or use worker capabilities. After a 60-second CLI deadline, the daemon keeps
+working and the room remains the source of progress. No import writes to Linear.
 
 `PluginEvents` retains `append`, `read` and `fold`. Its one optional capability,
 `appendWith(project, (fold) => events[])`, runs a synchronous callback with a

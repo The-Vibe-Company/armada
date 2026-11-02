@@ -595,3 +595,12 @@ test("ticket.create and ticket.update are admitted from minor 26, on both sides,
   );
   assert.ok(PROTOCOL_VERSION.minor >= 26);
 });
+
+test("tracker.import requires minor 27 on both sides and a project plus program root", () => {
+  const v = { major: 1, minor: 27 };
+  const request = { type: "tracker.import", version: v, id: "import", project: "orchard", programRoot: "SEED-1" };
+  assert.equal(admitRequest(request, v).ok, true);
+  assert.equal(admitRequest({ ...request, version: { ...v, minor: 26 } }, v).ok, false);
+  assert.equal(admitRequest(request, { ...v, minor: 26 }).ok, false);
+  assert.equal(admitRequest({ ...request, programRoot: "" }, v).ok, false);
+});

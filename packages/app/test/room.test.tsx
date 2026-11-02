@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { fold } from "@armada/daemon/fold";
-import type { ChatItem } from "@armada/protocol";
+import type { ChatItem, TrackerImport } from "@armada/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SAMPLE_PROJECTS, sampleEvents } from "../scripts/dev-daemon";
 import { readFleetState } from "../src/fleet/state";
@@ -48,13 +48,18 @@ const conversation: ChatItem[] = [
 
 function render(
   chat: Partial<Chat> = {},
-  { asked = true, readAt = undefined as Record<string, string> | undefined } = {},
+  {
+    asked = true,
+    readAt = undefined as Record<string, string> | undefined,
+    trackerImport = undefined as TrackerImport | undefined,
+  } = {},
 ) {
   const events = sampleEvents(AT)
     .filter((e) => asked || !(e.kind === "inbox.opened" && e.payload.kind === "owner-request"))
     .map((e, i) => ({ ...e, seq: i + 1 }));
   const state = JSON.parse(JSON.stringify(fold(events).projects.harbor));
   if (readAt) state.readAt = readAt;
+  if (trackerImport) state.trackerImport = trackerImport;
   const project = SAMPLE_PROJECTS[0];
   if (!project) throw new Error("no sample project");
   const full: Chat = {
@@ -247,4 +252,22 @@ test("the room names queued worker answers until sent and exposes repeated deliv
   expect(failed).toContain("Answer not delivered to ORC-7");
   expect(failed).toContain("Retrying automatically");
   expect(render([])).toBe("");
+});
+
+test("the room shows import progress and failure from its snapshot", () => {
+  const progress: TrackerImport = {
+    id: "import-1",
+    programRoot: "SEED-1",
+    state: "running",
+    imported: 2,
+    total: 4,
+    skipped: 1,
+    comments: 3,
+  };
+  expect(text(render({}, { trackerImport: progress }))).toContain(
+    "Linear import SEED-1: running · 2/4 imported, 1 skipped, 3 comments",
+  );
+  expect(
+    text(render({}, { trackerImport: { ...progress, state: "failed", error: "Check the Linear connection." } })),
+  ).toContain("failed · 2/4 imported, 1 skipped, 3 comments · Check the Linear connection.");
 });

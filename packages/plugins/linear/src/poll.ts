@@ -74,6 +74,11 @@ export class TrackerPoller {
     return { ...this.#status, ...(usage ? { usage, pausedUntil: usage.pausedUntil } : {}) };
   }
 
+  /** The last complete, checkpointed reading; consumers must first check readNow's status. */
+  get reading(): TrackerReading | undefined {
+    return this.#previous;
+  }
+
   start(): void {
     if (this.#running) return;
     this.#running = true;

@@ -5,7 +5,7 @@
 // request answers once: `ticket.result`, or its refusal as one `error` line.
 import type { TrackerProvider } from "@armada/plugin-api";
 import { type ServerMessage, type TicketRequest, PROTOCOL_VERSION as version } from "@armada/protocol";
-import { type TicketScope, ticketTool } from "../../coordinator/tickets.ts";
+import { type TicketStorage, ticketTool } from "../../coordinator/tickets.ts";
 import type { EventStore } from "../store.ts";
 
 export interface TicketsOptions {
@@ -16,9 +16,9 @@ export interface TicketsOptions {
 }
 
 // One owner scope per project and store: the tool's calls on it run one at a time.
-const scopes = new WeakMap<EventStore, Map<string, TicketScope>>();
-function ownerScope(store: EventStore, project: string): TicketScope {
-  const byProject = scopes.get(store) ?? new Map<string, TicketScope>();
+const scopes = new WeakMap<EventStore, Map<string, TicketStorage>>();
+function ownerScope(store: EventStore, project: string): TicketStorage {
+  const byProject = scopes.get(store) ?? new Map<string, TicketStorage>();
   scopes.set(store, byProject);
   let scope = byProject.get(project);
   if (!scope) {

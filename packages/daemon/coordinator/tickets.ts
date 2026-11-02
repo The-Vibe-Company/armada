@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { TrackerProvider, TrackerUpdateRequest } from "@armada/plugin-api";
+import type { TrackerCreateRequest, TrackerProvider, TrackerUpdateRequest } from "@armada/plugin-api";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { z } from "zod";
 import { fold } from "../src/fold.ts";
@@ -39,13 +39,20 @@ export const ticketToolSchemas = {
 };
 export type TicketTool = keyof typeof ticketToolSchemas;
 /** What a ticket call needs of its writer: the coordinator's storage, or the owner's scope on the Tickets page. */
-export type TicketScope = Pick<CoordinatorStorage, "project" | "readEvents" | "appendEvent">;
+export type TicketStorage = Pick<CoordinatorStorage, "project" | "readEvents" | "appendEvent">;
 export interface TicketToolOptions {
   now: () => string;
   /** Who decides the call: its journal's and its tracker writes' actor. The coordinator's unless the owner's page (THE-2124). */
   author?: "coordinator" | "owner";
+  /** Additional host fence, checked at the provider's commit boundary. */
+  beforeWrite?: () => void;
   /** Resolve the project's currently configured, scoped provider at the point of use. */
   trackerProvider?: () => TrackerProvider | undefined;
+  /** Host-only import facts; never accepted by the coordinator's tool schemas. */
+  importing?: {
+    create?: Pick<TrackerCreateRequest, "state" | "source" | "url">;
+    comment?: { id: string; author: string; at: string };
+  };
 }
 const canonical = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -63,7 +70,7 @@ const conflict = () =>
     "this call identity already committed different arguments",
     "inspect the original call; use a new call for a new decision",
   );
-const serial = new WeakMap<TicketScope, Promise<unknown>>();
+const serial = new WeakMap<TicketStorage, Promise<unknown>>();
 
 /** The provider owns ticket writes; this journal owns the coordinator's durable call identity.
  * Intent precedes the side effect. A keyed actor lets the internal tracker's committed
@@ -71,7 +78,7 @@ const serial = new WeakMap<TicketScope, Promise<unknown>>();
  * without inspectable evidence leave an interrupted create/update explicitly uncertain.
  */
 export async function ticketTool(
-  scope: TicketScope,
+  scope: TicketStorage,
   options: TicketToolOptions,
   name: TicketTool,
   args: unknown,
@@ -88,7 +95,7 @@ export async function ticketTool(
 }
 
 async function execute(
-  scope: TicketScope,
+  scope: TicketStorage,
   options: TicketToolOptions,
   name: TicketTool,
   args: unknown,
@@ -102,7 +109,11 @@ async function execute(
         "tool arguments do not match its schema",
         `call ${name} with its declared parameters`,
       );
-    const input = canonical({ name, args: parsed.data });
+    const input = canonical({
+      name,
+      args: parsed.data,
+      ...(options.importing ? { importing: options.importing } : {}),
+    });
     const events = scope.readEvents();
     let pending = false;
     for (const event of events) {
@@ -134,7 +145,9 @@ async function execute(
     const hash = digest(key);
     const actor = `${author}:ticket:${hash}`;
     // TrackerWriteRequest requires a stable UUID; Linear forwards it as CommentCreateInput.id.
-    const commentId = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+    const commentId =
+      options.importing?.comment?.id ??
+      `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
     const record = (type: string, result?: JsonObject) =>
       scope.appendEvent({
         project: scope.project,
@@ -165,7 +178,10 @@ async function execute(
           ok: true,
           id: effect.kind === "ticket.created" ? effect.payload.id : (action as { id: string }).id,
         });
-      if (name !== "ticket.comment")
+      // A trusted import targets only the event-backed internal provider. Its
+      // complete history proves an absent keyed effect never committed, so it
+      // can retry safely. External/ordinary tool outcomes remain uncertain.
+      if (name !== "ticket.comment" && !options.importing)
         return refuse(
           "ticket_outcome_unknown",
           "the tracker action's outcome is unknown; inspect the ticket history before making a new decision",
@@ -187,6 +203,7 @@ async function execute(
       );
     const beforeWrite = () => {
       scope.readEvents();
+      options.beforeWrite?.();
     };
     let patch: TrackerUpdateRequest["patch"] = {};
     if ("id" in action) {
@@ -218,6 +235,7 @@ async function execute(
           labels: [...new Set([...(create.labels ?? []), ...(create.ready ? ["ready-for-agent"] : [])])],
           ...(create.parent !== undefined ? { parent: create.parent } : {}),
           ...(create.blockers !== undefined ? { blockers: create.blockers } : {}),
+          ...options.importing?.create,
         });
         if (!id.safeParse(created?.id).success) throw new Error("Tracker returned an invalid ticket id");
         result = { ok: true, id: created?.id as string };
@@ -227,14 +245,35 @@ async function execute(
         result = { ok: true, id: edit.id };
       } else {
         const comment = action as z.infer<(typeof ticketToolSchemas)["ticket.comment"]>;
-        await tracker.write({
-          project: scope.project,
-          actor: author,
-          beforeWrite,
-          ticket: comment.id,
-          comment: comment.body,
-          commentId,
-        });
+        const imported = options.importing?.comment;
+        if (imported) {
+          // Only the trusted internal import host supplies original Linear provenance.
+          // Keep it in this journal so interrupted comments recover like other ticket calls.
+          beforeWrite();
+          if (
+            !events.some(
+              (event) =>
+                event.kind === "ticket.commented" &&
+                event.payload.ticket === comment.id &&
+                event.payload.id === commentId,
+            )
+          )
+            scope.appendEvent({
+              project: scope.project,
+              actor: imported.author,
+              at: imported.at,
+              kind: "ticket.commented",
+              payload: { ticket: comment.id, id: commentId, body: comment.body, author: imported.author },
+            });
+        } else
+          await tracker.write({
+            project: scope.project,
+            actor: author,
+            beforeWrite,
+            ticket: comment.id,
+            comment: comment.body,
+            commentId,
+          });
         result = { ok: true, id: comment.id };
       }
     } catch (error) {

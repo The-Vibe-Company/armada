@@ -34,6 +34,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { WebSocket, WebSocketServer } from "ws";
 import type { CoordinatorOptions, ProjectCoordinator } from "../../coordinator/index.ts";
 import { dispatchCredentials } from "../credentials.ts";
+import { ImportRefusal, type Imports } from "../import/service.ts";
 import { type Keychain, systemKeychain } from "../keychain.ts";
 import type { ModelRegistry } from "../models/registry.ts";
 import type { Projects } from "../projects.ts";
@@ -56,6 +57,7 @@ export type { Workers } from "../workers/service.ts";
 
 export interface ServerOptions {
   store: EventStore;
+  imports?: Imports;
   workers?: Workers;
   /** Clock and scheduling for coalescing committed chat partials. */
   chatClock?: ChatClock;
@@ -497,6 +499,31 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
       const request = admitted.request;
       minors.set(ws, request.version.minor);
       try {
+        if (request.type === "tracker.import") {
+          if (!known.has(request.project)) return error(ws, request.id, "not-found", "Unknown fleet project");
+          if (!options.imports) return error(ws, request.id, "not-found", "Import service unavailable");
+          try {
+            const started = options.imports.start(request.project, request.programRoot);
+            void started.done.catch(() => {});
+            send(ws, {
+              type: "tracker.import.result",
+              version,
+              id: request.id,
+              project: request.project,
+              importId: started.id,
+            });
+          } catch (reason) {
+            error(
+              ws,
+              request.id,
+              "not-found",
+              reason instanceof ImportRefusal
+                ? reason.message
+                : "Import could not be started; check the daemon and try again",
+            );
+          }
+          return;
+        }
         if (request.type === "fleet.shutdown") {
           // Owner loopback WebSocket admission only; deliberately absent from coordinator/worker tools.
           if (!projects.some((project) => project.id === request.project))
