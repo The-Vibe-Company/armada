@@ -7,6 +7,7 @@ import { fold } from "../src/fold.ts";
 import { maskedTail, type ProgressJudge, verdictSchema } from "../src/liveness/judge.ts";
 import { type ProgressSignals, progressSignals, progressSummary, type Report } from "../src/liveness/progress.ts";
 import type { EventStore } from "../src/store.ts";
+import { factsHash, followUpEvent, readWakeEvidence, type WakeEvidence, wakeEvidenceCheckpoint } from "./follow-ups.ts";
 import { forgeWakeups } from "./forge-wake.ts";
 
 /** Reserved host entry metadata distinguishes a wake from owner-written text. */
@@ -120,7 +121,8 @@ export function wakeups(before: WakeReading, after: WakeReading): WakeCandidate[
   }
 
   for (const item of after.tables?.inbox ?? []) {
-    if (before.tables?.inbox.some((i) => i.id === item.id) || item.kind === "owner-request") continue;
+    if (before.tables?.inbox.some((i) => i.id === item.id) || ["owner-request", "follow-up"].includes(item.kind))
+      continue;
     const handedBack = item.kind === "hand-back" ? item.body.match(/\bPR #(\d+), head ([a-f0-9]{40})\b/i) : null;
     const facts = {
       ...prFacts(after.tables, item.ticket),
@@ -282,6 +284,7 @@ export class Waker {
   readonly #attempts = new Map<string, number>();
   readonly #judging = new Map<string, { abort: AbortController; done: Promise<void> }>();
   readonly #seen = new Set<string>();
+  readonly #evidence = new Map<string, WakeEvidence>();
   readonly #pending = new Map<string, WakeCandidate>();
   readonly #outbox = new Map<string, WakeEvent>();
   readonly #delivered = new Set<string>();
@@ -318,6 +321,9 @@ export class Waker {
   }
 
   #record(e: FleetEvent) {
+    const evidence = readWakeEvidence(e);
+    if (evidence && evidence.seq >= (this.#evidence.get(evidence.key)?.seq ?? 0))
+      this.#evidence.set(evidence.key, evidence);
     const c = e.kind === "coordinator.checkpoint" ? e.payload.checkpoint : null;
     if (
       c &&
@@ -331,6 +337,16 @@ export class Waker {
       this.#attempts.set(`${c.session}@${c.generation}`, Date.parse(e.at));
     if (e.kind === "coordinator.wakeup") {
       this.#lastWake = Math.max(this.#lastWake, Date.parse(e.at));
+      for (const candidate of e.payload.candidates)
+        if (!this.#evidence.has(candidate.key))
+          this.#evidence.set(candidate.key, {
+            key: candidate.key,
+            factsHash: factsHash(candidate),
+            wokeAt: Date.parse(e.at),
+            attempts: 1,
+            totalAttempts: 1,
+            seq: e.seq,
+          });
       for (const key of e.payload.keys) {
         this.#seen.add(key);
         this.#pending.delete(key);
@@ -340,6 +356,69 @@ export class Waker {
       this.#delivered.add(e.payload.id);
       this.#outbox.delete(e.payload.id);
     }
+  }
+
+  #needsFollowUp(candidate: WakeCandidate, evidence: WakeEvidence) {
+    return (
+      evidence.attempts >= 3 ||
+      this.#reading.tables?.inbox.some((i) => i.kind === "follow-up" && i.followUp?.candidate === candidate.key)
+    );
+  }
+
+  #wakeFollowUp(candidate: WakeCandidate, evidence: WakeEvidence, at: string) {
+    const session = this.#reading.tables?.sessions.find((s) => s.ticket === candidate.facts.ticket);
+    return followUpEvent(
+      this.#events,
+      this.#project,
+      at,
+      candidate.facts.ticket ?? "",
+      {
+        candidate: candidate.key,
+        code: "repeated_wake",
+        reason: "Wake candidate repeated without new evidence",
+        facts: candidate.summary,
+        next: "inspect the block with fleet.status and inbox.list; resolve it or answer with a reason",
+        ...(candidate.facts.pr ? { pr: candidate.facts.pr } : {}),
+        ...(candidate.facts.head ? { head: candidate.facts.head } : {}),
+        ...(session
+          ? {
+              session: session.session,
+              generation: session.generation,
+              ...(session.phase === "ready-to-merge" ? { readyToMerge: true } : {}),
+            }
+          : {}),
+      },
+      evidence.totalAttempts,
+    );
+  }
+
+  /** Separate from scanning so an incremental fold can feed the same evidence policy. */
+  #considerEvidence(candidate: WakeCandidate, seq: number) {
+    if (candidate.key.startsWith("recovery:") && this.#seen.has(candidate.key)) return;
+    const prior = this.#evidence.get(candidate.key);
+    if (prior && seq <= prior.seq) return;
+    const now = this.#clock.now();
+    const pending = this.#pending.has(candidate.key);
+    const same = prior && prior.factsHash === factsHash(candidate) && now - prior.wokeAt < 3_600_000;
+    const evidence: WakeEvidence = {
+      key: candidate.key,
+      factsHash: factsHash(candidate),
+      wokeAt: same ? prior.wokeAt : now,
+      attempts: same ? prior.attempts + (candidate.key.startsWith("recovery:") ? 0 : 1) : 1,
+      totalAttempts: prior ? prior.totalAttempts + (candidate.key.startsWith("recovery:") ? 0 : 1) : 1,
+      seq,
+    };
+    this.#evidence.set(candidate.key, evidence);
+    // Pending facts and their history are committed atomically by #flush, even after coalescing.
+    if (pending || !same) {
+      this.#pending.set(candidate.key, candidate);
+      return;
+    }
+    const at = new Date(now).toISOString();
+    this.#store.appendMany([
+      wakeEvidenceCheckpoint(this.#project, at, evidence),
+      ...(this.#needsFollowUp(candidate, evidence) ? [this.#wakeFollowUp(candidate, evidence, at)] : []),
+    ]);
   }
 
   #scan() {
@@ -364,8 +443,7 @@ export class Waker {
         }
         this.#events.push(e);
         const next = { tables: fold(this.#events).projects[this.#project], events: [...this.#events] };
-        for (const candidate of wakeups(this.#reading, next))
-          if (!this.#seen.has(candidate.key)) this.#pending.set(candidate.key, candidate);
+        for (const candidate of wakeups(this.#reading, next)) this.#considerEvidence(candidate, e.seq);
         this.#reading = next;
       }
       // Keep only this boot's recovery batch when replaying older undelivered history.
@@ -402,14 +480,26 @@ export class Waker {
       (a, b) => Number(b.key.startsWith("recovery:")) - Number(a.key.startsWith("recovery:")),
     );
     const keys = candidates.map((c) => c.key);
-    const id = `fleet-wake:${hash(JSON.stringify(keys))}`;
-    this.#store.append({
-      project: this.#project,
-      actor: "daemon",
-      at: new Date(this.#clock.now()).toISOString(),
-      kind: "coordinator.wakeup",
-      payload: { id, keys, candidates, ...(reminder ? { reminder: true } : {}) },
-    });
+    const id = `fleet-wake:${hash(JSON.stringify(candidates.map((c) => [c.key, factsHash(c), this.#evidence.get(c.key)?.wokeAt])))}`;
+    const at = new Date(this.#clock.now()).toISOString();
+    this.#store.appendMany([
+      ...candidates.flatMap((c) => {
+        const evidence = this.#evidence.get(c.key);
+        return evidence
+          ? [
+              wakeEvidenceCheckpoint(this.#project, at, evidence),
+              ...(this.#needsFollowUp(c, evidence) ? [this.#wakeFollowUp(c, evidence, at)] : []),
+            ]
+          : [];
+      }),
+      {
+        project: this.#project,
+        actor: "daemon",
+        at,
+        kind: "coordinator.wakeup",
+        payload: { id, keys, candidates, ...(reminder ? { reminder: true } : {}) },
+      },
+    ]);
   }
 
   #pump() {
@@ -463,7 +553,7 @@ export class Waker {
     this.#cancelQuiet?.();
     this.#cancelQuiet = undefined;
     const tables = this.#reading.tables;
-    const items = tables?.inbox ?? [];
+    const items = (tables?.inbox ?? []).filter((i) => i.kind !== "follow-up");
     const policy = tables?.rules?.value.policy;
     const minutes = policy?.coordinatorMinutes ?? 10;
     if (!items.length || minutes === 0 || this.#pending.size) return;
@@ -474,7 +564,9 @@ export class Waker {
         this.#cancelQuiet = undefined;
         if (this.#clock.now() < due) return this.#quiet();
         const overdue =
-          this.#reading.tables?.inbox.filter((i) => this.#clock.now() - Date.parse(i.at) >= minutes * 60_000) ?? [];
+          this.#reading.tables?.inbox.filter(
+            (i) => i.kind !== "follow-up" && this.#clock.now() - Date.parse(i.at) >= minutes * 60_000,
+          ) ?? [];
         if (!overdue.length) return this.#quiet();
         for (const item of overdue) {
           const key = `reminder:${hash(JSON.stringify([due, item.id]))}`;

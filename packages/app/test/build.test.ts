@@ -647,7 +647,7 @@ describe("a session's page in a browser: its buttons act on a live worker", () =
 
 describe("the Plugins screen in a browser, on a daemon that restarts", () => {
   // A synthetic catalog booted as armadad boots it; Restart closes the daemon and
-  // boots it again on the same port, as the desktop shell does.
+  // boots it again on the same port and durable log, as the desktop shell does.
   const manifest = (id: string, enabledByDefault: boolean) => ({
     id,
     version: "1.0.0",
@@ -689,7 +689,7 @@ describe("the Plugins screen in a browser, on a daemon that restarts", () => {
 
   async function open(port = 0) {
     const daemon = await bootDaemon({
-      databasePath: ":memory:",
+      databasePath: join(dir, "fleet.sqlite"),
       configPath,
       catalog,
       secrets: { get: async () => null },

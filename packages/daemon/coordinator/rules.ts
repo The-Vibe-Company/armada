@@ -11,6 +11,7 @@ export function checkpointRules(checkpoint: unknown): RulesState | null {
   const c = checkpoint as Record<string, unknown>;
   if (c.format !== "armada.tools") return null;
   if (c.version !== 1) throw new Error("Unsupported native tools checkpoint");
+  if (c.type === "wake-evidence" || c.type === "providers") return null;
   const state = rulesStateSchema.safeParse(c.rules);
   if (c.type !== "rules" || !state.success || state.data.revision < 1)
     throw new Error("Invalid native tools checkpoint");

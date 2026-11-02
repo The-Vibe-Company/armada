@@ -7,6 +7,7 @@ import type { ProjectUsage } from "./usage.js";
 
 export const GITHUB_READER_MINOR = 18;
 export const INTERNAL_TRACKER_MINOR = 22;
+export const FOLLOW_UP_MINOR = 25;
 const text = z.string();
 const integer = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 export const phaseSchema = z.enum([
@@ -97,6 +98,29 @@ export const workerLaunchCheckpointSchema = sessionRefSchema.extend({
   step: z.enum(["preparing", "starting", "launched"]),
 });
 
+/** Host-owned cause and recovery evidence; carried by the existing inbox.opened event. */
+export const followUpSchema = z.object({
+  cause: text,
+  tool: text.optional(),
+  candidate: text.optional(),
+  args: z.record(z.string(), z.json()).optional(),
+  code: text,
+  reason: text,
+  facts: text,
+  next: text,
+  fix: text.optional(),
+  attempts: z.number().int().positive(),
+  lastAt: text,
+  pr: integer.optional(),
+  session: text.optional(),
+  generation: integer.optional(),
+  plugin: text.optional(),
+  capability: text.optional(),
+  readyToMerge: z.boolean().optional(),
+  head: text.optional(),
+});
+export type FollowUp = z.infer<typeof followUpSchema>;
+
 const inboxRequestSchema = /* @__PURE__ */ makeInboxRequestSchema();
 function makeInboxRequestSchema() {
   return z.object({
@@ -118,8 +142,10 @@ function makeInboxRequestSchema() {
       "job-silent",
       "job-stalled",
       "version",
+      "follow-up",
     ]),
     body: text,
+    followUp: followUpSchema.optional(),
   });
 }
 export type InboxRequest = z.infer<typeof inboxRequestSchema>;

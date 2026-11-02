@@ -312,4 +312,50 @@ describe("the room's panel in a browser", () => {
     await sheet.getByRole("tab", { name: "Agents" }).waitFor();
     await page.close();
   }, 15_000);
+  test("follow-ups render under Blocked with their next action and disappear when resolved", async () => {
+    const page = await open();
+    const side = panel(page);
+    const card = side.getByRole("region", { name: "Blocked follow-up" });
+    expect(await card.count()).toBe(0);
+    const at = "2026-03-10T15:00:00.000Z";
+    const readings: EventInput[] = [
+      ...sampleEvents(at),
+      {
+        project: "harbor",
+        at,
+        actor: "coordinator",
+        kind: "inbox.opened",
+        payload: {
+          id: "follow-up:hand-back",
+          ticket: "HAR-20",
+          kind: "follow-up",
+          body: "merge.check: No hand-back found\nHAR-20 is ready-to-merge; PR #44 is green\nNext: inspect the tracker hand-back\nAttempts: 3",
+        },
+      },
+    ];
+    const show = async () => {
+      const events = readings.map((e, i) => ({ ...e, seq: i + 1 }));
+      await page.evaluate(
+        (next) => {
+          (window as unknown as { daemon: { show(value: unknown): void } }).daemon.show(JSON.parse(next));
+        },
+        JSON.stringify({ state: fold(events).projects.harbor, events }),
+      );
+    };
+    await show();
+    await card.waitFor();
+    expect(await card.innerText()).toContain("Next: inspect the tracker hand-back");
+    expect(await side.locator('[data-group-heading="blocked"]').innerText()).toContain("2");
+    expect(await card.getByRole("button", { name: "Answer", exact: true }).count()).toBe(0);
+    readings.push({
+      project: "harbor",
+      at,
+      actor: "coordinator",
+      kind: "inbox.answered",
+      payload: { id: "follow-up:hand-back", answer: "Recorded the tracker gap" },
+    });
+    await show();
+    await card.waitFor({ state: "detached" });
+    await page.close();
+  }, 15_000);
 });

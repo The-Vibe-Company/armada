@@ -1,6 +1,8 @@
 import type { FleetEvent, ProjectTables, Ticket } from "@armada/protocol";
 import { usageSummary } from "@armada/protocol/usage";
 
+import { followUpSummary } from "./follow-ups.ts";
+
 const ended = (phase: string) => phase === "merged" || phase === "released";
 const line = (text: string, max = 160) => {
   const first = text.split(/\r?\n/, 1)[0] ?? "";
@@ -51,6 +53,7 @@ export function fleetStatus(tables: ProjectTables, events: FleetEvent[], at: str
   const rules = tables.rules ?? { revision: 0, value: {} };
   const { routing, gates, coordinatorModel, ...value } = rules.value;
   return {
+    followUps: followUpSummary(tables, at),
     at,
     readAt: Object.fromEntries(Object.entries(tables.readAt ?? {}).filter(([provider]) => relevant(provider))),
     sessions: active.map((s) => {

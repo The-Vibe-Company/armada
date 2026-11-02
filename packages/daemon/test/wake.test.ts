@@ -679,3 +679,119 @@ test("a derived delivery failure wakes once, stays coalesced on retry, and close
   assert.deepEqual(fold(store.readSince(0)).projects[project]?.inbox, []);
   assert.equal(drafts.length, 1);
 });
+
+test("identical wake facts persist across restart, escalate once on attempt three, and new facts wake", async (t) => {
+  const store = new EventStore(":memory:");
+  const clock = new Clock();
+  const drafts: SubmissionDraft[] = [];
+  const conversation = fake(async (draft) => {
+    drafts.push(draft);
+  });
+  const append = (kind: FleetEvent["kind"], payload: unknown) =>
+    store.append({ project, kind, payload, actor: "reader", at: new Date(clock.now()).toISOString() } as never);
+  append("coordinator.checkpoint", {
+    checkpoint: {
+      format: "armada.tools",
+      version: 1,
+      type: "rules",
+      rules: { revision: 1, value: { policy: { coordinatorMinutes: 0 } } },
+    },
+  });
+  append("ticket.seen", { id: "ORC-1", title: "Plant", status: "started", phase: "ready-to-merge" });
+  let waker = new Waker({ store, project, conversation, clock });
+  t.after(async () => {
+    await waker.close();
+    store.close();
+  });
+  const checks = (ci: string, prHead = head) =>
+    append("pull-request.seen", { number: 12, ticket: "ORC-1", head: prHead, state: "open", ci, conflicting: false });
+  checks("success");
+  await waker.close();
+  waker = new Waker({ store, project, conversation, clock });
+  await clock.advance(10_000);
+  assert.equal(drafts.length, 1);
+  checks("pending");
+  checks("success");
+  await clock.advance(10_000);
+  assert.equal(drafts.length, 1, "same facts do not submit another turn");
+  await waker.close();
+  waker = new Waker({ store, project, conversation, clock });
+  checks("pending");
+  checks("success");
+  await clock.advance(10_000);
+  const followUps = fold(store.readSince(0)).projects[project]!.inbox.filter((i) => i.kind === "follow-up");
+  assert.equal(followUps.length, 1);
+  assert.equal(followUps[0]?.followUp?.attempts, 3);
+  assert.equal(drafts.length, 1, "escalation does not repeat the Woke line");
+  checks("success", "b".repeat(40));
+  await clock.advance(10_000);
+  assert.equal(drafts.length, 2, "changed evidence wakes again");
+  for (let i = 0; i < 2; i++) {
+    checks("pending", "b".repeat(40));
+    checks("success", "b".repeat(40));
+    await clock.advance(10_000);
+  }
+  const beforeRollover = fold(store.readSince(0)).projects[project]?.inbox.find((i) => i.kind === "follow-up");
+  assert.equal(beforeRollover?.followUp?.attempts, 3);
+  await clock.advance(3_600_000);
+  checks("pending", "b".repeat(40));
+  checks("success", "b".repeat(40));
+  await clock.advance(10_000);
+  assert.equal(drafts.length, 3, "identical evidence may wake again after an hour");
+  const afterRollover = fold(store.readSince(0)).projects[project]?.inbox.find((i) => i.kind === "follow-up");
+  assert.equal(afterRollover?.followUp?.attempts, 4, "an open cause keeps a monotonic count across wake windows");
+  assert.notEqual(afterRollover?.followUp?.lastAt, beforeRollover?.followUp?.lastAt);
+  await clock.advance(3_600_000);
+  for (let i = 0; i < 3; i++) {
+    checks("pending", "b".repeat(40));
+    checks("success", "b".repeat(40));
+  }
+  await clock.advance(10_000);
+  const batched = fold(store.readSince(0)).projects[project]?.inbox.find((i) => i.kind === "follow-up");
+  assert.equal(batched?.followUp?.attempts, 7, "every coalesced repeat is counted across hour rollover");
+});
+
+test("coalescing checkpoints the latest same-key facts and retains attempt counts before flush", async (t) => {
+  const store = new EventStore(":memory:");
+  const clock = new Clock();
+  const drafts: SubmissionDraft[] = [];
+  const conversation = fake(async (draft) => {
+    drafts.push(draft);
+  });
+  const append = (kind: FleetEvent["kind"], payload: unknown) =>
+    store.append({ project, kind, payload, actor: "reader", at: new Date(clock.now()).toISOString() } as never);
+  append("coordinator.checkpoint", {
+    checkpoint: {
+      format: "armada.tools",
+      version: 1,
+      type: "rules",
+      rules: { revision: 1, value: { policy: { coordinatorMinutes: 0 } } },
+    },
+  });
+  let waker = new Waker({ store, project, conversation, clock });
+  t.after(async () => {
+    await waker.close();
+    store.close();
+  });
+  const refused = (id: string, prHead: string) =>
+    append("merge.refused", { id, pr: 12, ticket: "ORC-1", head: prHead, reason: "Hand-back gap" });
+  refused("merge-12", head);
+  refused("merge-12", "b".repeat(40));
+  await clock.advance(10_000);
+  assert.equal(drafts.length, 1);
+  assert.match(JSON.stringify(drafts[0]), new RegExp("b".repeat(40)));
+  refused("merge-12", "b".repeat(40));
+  await clock.advance(10_000);
+  assert.equal(drafts.length, 1, "coalesced facts cannot immediately submit another turn");
+  await waker.close();
+  waker = new Waker({ store, project, conversation, clock });
+  refused("merge-12", "b".repeat(40));
+  await clock.advance(10_000);
+  assert.equal(drafts.length, 1, "facts already delivered during coalescing cannot wake again after restart");
+  for (let i = 0; i < 3; i++) refused("merge-13", head);
+  await clock.advance(10_000);
+  const item = fold(store.readSince(0)).projects[project]?.inbox.find(
+    (i) => i.followUp?.candidate === "merge-refused:merge-13",
+  );
+  assert.equal(item?.followUp?.attempts, 3);
+});

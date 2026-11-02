@@ -1,5 +1,5 @@
 import { AnimatePresence, m } from "motion/react";
-import { useRef } from "react";
+import { type ReactNode, useRef } from "react";
 import { type FleetItem, GROUP_LABEL, GROUPS, type Group, LONG_LIST, rowTime, STEPS } from "@/fleet/overview";
 import type { Harness } from "@/fleet/sky";
 import { cn } from "@/lib/utils";
@@ -49,6 +49,8 @@ const GLIDE = { duration: 0.2, ease: [0.23, 1, 0.32, 1] } as const;
  */
 export function FleetList({
   items,
+  blocked,
+  blockedCount = 0,
   harnessOf,
   repository,
   prefixes,
@@ -59,6 +61,8 @@ export function FleetList({
   onOpen,
 }: {
   items: readonly FleetItem[];
+  blocked?: ReactNode;
+  blockedCount?: number;
   harnessOf: (ticket: string) => Harness | null;
   /** The project's repository: `#34` links to its pull request there. */
   repository: string;
@@ -97,9 +101,12 @@ export function FleetList({
             >
               <span aria-hidden className={`size-2 rounded-full ${TONE[group].bg}`} />
               {GROUP_LABEL[group]}
-              <span className="font-medium font-mono text-meta text-text-2 tnum">{rows.length}</span>
+              <span className="font-medium font-mono text-meta text-text-2 tnum">
+                {rows.length + (group === "blocked" ? blockedCount : 0)}
+              </span>
             </m.h2>,
-            ...(rows.length === 0
+            ...(group === "blocked" && blocked ? [<div key="blocked-follow-ups">{blocked}</div>] : []),
+            ...(rows.length === 0 && !(group === "blocked" && blockedCount)
               ? [
                   <m.p
                     key={`empty:${group}`}

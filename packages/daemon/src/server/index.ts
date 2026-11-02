@@ -10,6 +10,7 @@ import {
   CONDUCTOR_MINOR,
   DELIVERIES_MINOR,
   eventSchema,
+  FOLLOW_UP_MINOR,
   MODELS_MINOR,
   type ModelKindEntry,
   PROVIDERS_MINOR,
@@ -31,10 +32,12 @@ import {
 } from "@armada/protocol";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { WebSocket, WebSocketServer } from "ws";
+import { providerCheckpoint } from "../../coordinator/follow-ups.ts";
 import type { CoordinatorOptions, ProjectCoordinator } from "../../coordinator/index.ts";
 import { dispatchCredentials } from "../credentials.ts";
 import { type Keychain, systemKeychain } from "../keychain.ts";
 import type { ModelRegistry } from "../models/registry.ts";
+import { catalogList } from "../plugins/list.ts";
 import type { Projects } from "../projects.ts";
 import type { EventStore } from "../store.ts";
 import type { Workers } from "../workers/service.ts";
@@ -129,6 +132,17 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
   let projects = options.projects.map((p) => projectSchema.parse(p));
   if (new Set(projects.map((p) => p.id)).size !== projects.length) throw new Error("Duplicate project id");
   const known = new Set(projects.map((p) => p.id));
+  if (options.plugins) {
+    const host = options.plugins;
+    const availability = catalogList(host.catalog, host.boot.settings, host.boot.plugins).map((p) => ({
+      id: p.id,
+      enabled: p.enabled,
+      loaded: p.loaded,
+      capabilities: p.contributions,
+    }));
+    for (const project of projects)
+      store.append(providerCheckpoint(project.id, new Date().toISOString(), availability));
+  }
   const configured = options.coordinators ?? [];
   if (new Set(configured.map((entry) => entry.project)).size !== configured.length)
     throw new Error("Duplicate coordinator project");
@@ -317,8 +331,9 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
 
   /** Older same-major clients validate inbox kinds, routing and policy fields strictly. */
   function snapshotFor(snapshot: Snapshot, minor: number): Snapshot {
-    if (minor >= Math.max(WATCHDOG_MINOR, USAGE_MINOR, DELIVERIES_MINOR)) return snapshot;
+    if (minor >= Math.max(WATCHDOG_MINOR, USAGE_MINOR, DELIVERIES_MINOR, FOLLOW_UP_MINOR)) return snapshot;
     const state = { ...(snapshot.state as unknown as ProjectTables) };
+    if (minor < FOLLOW_UP_MINOR) state.inbox = state.inbox.filter((item) => item.kind !== "follow-up");
     if (minor < DELIVERIES_MINOR) {
       delete state.deliveries;
       state.inbox = state.inbox.filter((item) => item.kind !== "delivery-failed");
@@ -716,6 +731,16 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
                 return;
               }
               const result = await dispatchPlugins(request, host, !!options.restart);
+              if (result.type === "plugins.result") {
+                const availability = result.plugins.map((p) => ({
+                  id: p.id,
+                  enabled: p.enabled,
+                  loaded: p.loaded,
+                  capabilities: p.contributions.map((c) => `${c.seam}.${c.kind}`),
+                }));
+                for (const project of projects)
+                  store.append(providerCheckpoint(project.id, new Date().toISOString(), availability));
+              }
               send(ws, result);
               if (result.type === "plugins.result" && request.type !== "plugins.list")
                 await options.providers?.refresh(true);
