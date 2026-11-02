@@ -6,6 +6,9 @@ import { Type } from "typebox";
 export const TOOL_NAMES = [
   "fleet.status",
   "ticket.read",
+  "ticket.create",
+  "ticket.update",
+  "ticket.comment",
   "fleet.history",
   "inbox.list",
   "inbox.answer",

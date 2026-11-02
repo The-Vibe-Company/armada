@@ -52,6 +52,8 @@ export async function runDaemon(startedAt: number) {
       const readerGroups = new Map<string, Awaited<ReturnType<typeof startReaders>>>();
       const controller = new AbortController();
       const refresh = (project: string) => readerGroups.get(project)?.refresh(project) ?? Promise.resolve();
+      const trackerFor = (project: string) => () =>
+        daemon.registry.get("tracker", registry.list.find((p) => p.id === project)?.tracker ?? "linear", project);
       const keychain = systemKeychain();
       let modelAccess: Awaited<ReturnType<typeof modelEnvironment>>;
       let modelRegistry: ModelRegistry;
@@ -83,7 +85,7 @@ export async function runDaemon(startedAt: number) {
           for (const config of configs)
             await server.openProject({
               ...config,
-              native: { ...config.native, merges, refresh: () => refresh(project.id) },
+              native: { ...config.native, merges, tracker: trackerFor(project.id), refresh: () => refresh(project.id) },
             });
         }
       }
@@ -207,12 +209,25 @@ export async function runDaemon(startedAt: number) {
               resolveCoordinator: async (project) => {
                 const config = (await modelsFor(registry.list.filter((p) => p.id === project)))[0];
                 return config
-                  ? { ...config, native: { ...config.native, merges, refresh: () => refresh(project) } }
+                  ? {
+                      ...config,
+                      native: {
+                        ...config.native,
+                        merges,
+                        tracker: trackerFor(project),
+                        refresh: () => refresh(project),
+                      },
+                    }
                   : undefined;
               },
               coordinators: coordinators.map((config) => ({
                 ...config,
-                native: { ...config.native, merges, refresh: () => refresh(config.project) },
+                native: {
+                  ...config.native,
+                  merges,
+                  tracker: trackerFor(config.project),
+                  refresh: () => refresh(config.project),
+                },
               })),
               modelKinds: loadedModelKinds(daemon.registry),
               // The keychain is opened on first use, as the plugins' own secret getter does.

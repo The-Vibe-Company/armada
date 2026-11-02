@@ -19,9 +19,10 @@ import { fleetHistory, fleetStatus, ticketRead } from "./read.ts";
 import { emptyRules, type ProjectRules, type RulesState, rulesSchema } from "./rules.ts";
 import { readV1RulesFile } from "./rules-file.ts";
 import type { CoordinatorStorage } from "./storage.ts";
+import { type TicketToolOptions, ticketTool, ticketToolSchemas } from "./tickets.ts";
 import { type CoordinatorToolName, TOOL_NAMES } from "./tools.ts";
 
-export interface NativeToolOptions {
+export interface NativeToolOptions extends TicketToolOptions {
   now: () => string;
   workers?: Workers;
   merges?: Merges;
@@ -40,6 +41,9 @@ const object = <T extends Parameters<typeof Type.Object>[0]>(properties: T) =>
 const schemas = {
   "fleet.status": object({}),
   "ticket.read": object({ id }),
+  "ticket.create": Type.Unsafe(z.toJSONSchema(ticketToolSchemas["ticket.create"])),
+  "ticket.update": Type.Unsafe(z.toJSONSchema(ticketToolSchemas["ticket.update"])),
+  "ticket.comment": Type.Unsafe(z.toJSONSchema(ticketToolSchemas["ticket.comment"])),
   "fleet.history": object({
     ticket: Type.Optional(id),
     since: Type.Optional(Type.String({ maxLength: 40 })),
@@ -68,6 +72,11 @@ const descriptions: Record<CoordinatorToolName, string> = {
     "Read a compact fleet summary: active sessions first, inbox counts, ready frontier, open PRs, holds and rules summary. No ticket descriptions or comments; unavailable evidence is explicit.",
   "ticket.read":
     "Read one full ticket, parent id/title, blockers, labels, latest twelve comments, session and reports. Read the ticket and its parent before launching.",
+  "ticket.create":
+    "Create a ticket through the project tracker. ready adds ready-for-agent. Reusing a call identity replays its ticket id.",
+  "ticket.update":
+    "Edit ticket fields. labels replaces labels; addLabels and removeLabels modify that set (removal wins). Use for readiness and cancellation.",
+  "ticket.comment": "Comment on a ticket through the project tracker, with a stable comment identity for retries.",
   "fleet.history":
     "Read the newest project fleet events in log order, optionally filtered by ticket and exclusive ISO since time. limit defaults to 20, maximum 100. Excludes internal checkpoints, receipts and ticket snapshot descriptions/comments.",
   "inbox.list": "Read open project inbox items in event order without resolving them.",
@@ -391,6 +400,19 @@ export function nativeTools(
                 `call ${name} with its declared parameters`,
               ),
             );
+          if (name === "ticket.create" || name === "ticket.update" || name === "ticket.comment") {
+            if (!api.callId || !Number.isSafeInteger(api.taskId))
+              return output(
+                refuse(
+                  "missing_call_id",
+                  "a write needs its durable tool call identity",
+                  "invoke through the coordinator harness",
+                ),
+              );
+            return output(
+              await ticketTool(scope, options, name, args, JSON.stringify([scope.project, api.taskId, api.callId])),
+            );
+          }
           if (["fleet.status", "ticket.read", "inbox.list"].includes(name) && options.refresh) {
             // The host bounds the refresh; failure leaves the last committed facts and their age.
             await options.refresh().catch(() => {});

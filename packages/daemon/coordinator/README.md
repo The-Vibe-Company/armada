@@ -130,3 +130,13 @@ Launch/relaunch requires a successful new tracker reading before preflight and b
 a ticket-derived brief with pinned CLI install/exec fallback and the worker skill. Worker refusals expose safe rule messages; arbitrary provider errors remain
 fixed credential-free diagnostics. Missing worker or merge services return `not_available_yet`, naming the missing capability;
 configured merge tools use the shared worker stop/disposal path after confirmation. No native tool imports V1 core.
+
+Ticket mutations are implemented in `tickets.ts` through the project's scoped
+`TrackerProvider`, injected by the daemon host. `ticket.create` returns the new
+id and can label it ready; `ticket.update` handles field and label changes;
+`ticket.comment` uses a stable comment id. Their reserved `armada.tickets` v1
+journal records intent and result by durable call identity. Create/update events
+carry a keyed coordinator actor for response-loss recovery; uncertain effects
+without evidence refuse rather than run twice. Linear creation/editing refuses
+with its reason preserved in the room. The coordinator prompt names these tools
+only in its owner-asks-for-work branch.
