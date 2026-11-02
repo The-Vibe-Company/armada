@@ -22,7 +22,8 @@
     "./plugins/config": "./src/plugins/config.ts"
   },
   "scripts": {
-    "test": "bun ../../scripts/bundle-skills.ts && bun ../../scripts/bundle-test-support.ts && node --import ../../scripts/test-env.ts --test test/*.test.ts ../plugins/internal-tracker/test/*.test.ts ../plugins/linear/test/*.test.ts ../plugins/github/test/*.test.ts ../plugins/conductor/test/*.test.ts && node --import ../../scripts/test-env.ts --test test/boot.bench.ts",
+    "test": "bun ../../scripts/bundle-skills.ts && bun ../../scripts/bundle-test-support.ts && node --import ../../scripts/test-env.ts --test test/*.test.ts ../plugins/internal-tracker/test/*.test.ts ../plugins/linear/test/*.test.ts ../plugins/github/test/*.test.ts ../plugins/conductor/test/*.test.ts",
+    "bench": "node --import ../../scripts/test-env.ts --test test/boot.bench.ts",
     "start": "node src/server/main.ts"
   },
   "dependencies": {
