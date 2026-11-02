@@ -85,7 +85,7 @@ export class WorkerRefusal extends Error {
 }
 /**
  * Why a generation could not be reattached. `gone` is the runtime's own proof that the whole
- * process tree ended (THE-2212); it carries the generation's facts so a relaunch can replace it
+ * pinned process group ended (THE-2212); it carries the generation's facts so a relaunch can replace it
  * in its kept worktree. `unknown` is a runtime that could not say (a dead endpoint without
  * that proof, a legacy worker, an ambiguous probe) and never admits an automatic replacement.
  */
@@ -1004,8 +1004,9 @@ export class Workers {
         throw new Error("Worker capacity changed during preparation");
     };
     let workspace: Workspace | undefined;
-    // A kept worktree is never disposed by a failed replacement: its work is the point of keeping it.
-    const disposable = (candidate: Workspace) => !(keep !== undefined && candidate.path === keep);
+    // A kept worktree is never disposed by a failed launch: its work is the point of keeping it.
+    const priorPath = this.#priorWorkspacePath(project, args.ticket, worker.session);
+    const disposable = (candidate: Workspace) => candidate.path !== keep && candidate.path !== priorPath;
     const retainNotStarted = async () => {
       let workspaceDisposed = false;
       if (workspace && node?.dispose && !resume && disposable(workspace)) {
@@ -1776,8 +1777,21 @@ export class Workers {
   async #refusePriorRunning(project: string, ticket: string) {
     const prior = this.#tables(project)?.sessions.find((s) => s.ticket === ticket);
     if (!prior || !ended(prior.phase) || prior.runtime === "tracker") return;
+    // Durable facts, not memory: a generation stopped under this host, or proven gone, needs no probe.
     const cause = this.#lost.get(prior.session);
-    if (!cause || cause.kind === "gone") return;
+    if (cause?.kind === "gone") return;
+    const facts = this.#options.store.readSince(0, project).flatMap((event) => {
+      const c = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
+      return c &&
+        typeof c === "object" &&
+        !Array.isArray(c) &&
+        c.format === "armada.worker" &&
+        c.session === prior.session
+        ? [c]
+        : [];
+    });
+    if (facts.some((c) => c.type === "native-stopped") || facts.some((c) => c.type === "launch" && c.hosted === true))
+      return;
     const ref = {
       project,
       ticket: prior.ticket,
@@ -1798,6 +1812,30 @@ export class Workers {
       throw new WorkerRefusal(
         `${ticket}'s previous worker still runs in its kept worktree: ${probe.detail}. Wait for it to end or stop it yourself; nothing was launched`,
       );
+  }
+
+  /** The worktree the ticket's previous local generation launched in, if any: a launch there reuses it. */
+  #priorWorkspacePath(project: string, ticket: string, session: string): string | undefined {
+    const launch = this.#options.store
+      .readSince(0, project)
+      .flatMap((event) => {
+        const c = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
+        return c &&
+          typeof c === "object" &&
+          !Array.isArray(c) &&
+          c.format === "armada.worker" &&
+          c.type === "launch" &&
+          c.ticket === ticket &&
+          c.session !== session &&
+          c.hosted !== true
+          ? [c]
+          : [];
+      })
+      .at(-1);
+    const workspace = launch?.workspace;
+    return workspace && typeof workspace === "object" && !Array.isArray(workspace) && typeof workspace.path === "string"
+      ? workspace.path
+      : undefined;
   }
 
   #lostCause(error: unknown): LostCause {

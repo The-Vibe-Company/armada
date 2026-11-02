@@ -45,7 +45,7 @@ for (const scenario of [
     scenario === "runtime proven gone" ||
     scenario === "concurrent relaunch of a gone runtime" ||
     scenario === "gone relaunch lands elsewhere";
-  const priorAlive = false;
+  let priorAlive = false;
   const unknownRuntime = scenario === "runtime unknown without a liveness contract";
   test(`restart preserves generations, capabilities and phases; ${scenario}`, { timeout: 15000 }, async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "armada-restart-"));
@@ -507,6 +507,25 @@ for (const scenario of [
         assert.equal(released.released, true);
         assert.match(String(released.next), /worker\.launch continues in the kept worktree/);
         assert.equal(stops, 0);
+        // Another daemon boot forgets nothing: the launch still probes the released generation.
+        await workers.close();
+        store.close();
+        store = new EventStore(join(directory, "fleet.sqlite"));
+        workers = make();
+        assert.deepEqual(
+          await workers.recover(),
+          { readopted: [], lost: [] },
+          "a released generation is not recovered",
+        );
+        priorAlive = true;
+        await assert.rejects(
+          workers.tool(project, "worker.launch", { ticket: "SEED-1" }, "launch-beside-alive", () => {}),
+          /still runs in its kept worktree.*nothing was launched/,
+          "a launch never lands beside a process group the runtime can still see",
+        );
+        assert.equal(native.size, 1);
+        assert.equal(stops, 0);
+        priorAlive = false;
         const relaunched = await workers.tool(
           project,
           "worker.launch",

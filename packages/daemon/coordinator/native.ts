@@ -89,7 +89,7 @@ const descriptions: Record<CoordinatorToolName, string> = {
   "worker.launch":
     "Launch a ticket through the configured runtime and node plugins, building its brief from the ticket. Branch defaults to the tracker suggestion; brief supplies additional notes.",
   "worker.relaunch":
-    "Replace one worker generation in its existing branch and worktree. Supply the inspected session and a reason. A lost worker whose runtime proved its process tree gone is replaced in its kept worktree and released without a stop claim; one that may still run is refused and names its next action.",
+    "Replace one worker generation in its existing branch and worktree. Supply the inspected session and a reason. A lost worker whose runtime proved its pinned process group ended is replaced in its kept worktree and released without a stop claim; one whose group still runs, or whose state is unknown, is refused and names its next action.",
   "worker.message": "Durably queue a keyed message to the current worker generation; delivery retries automatically.",
   "worker.stop":
     "Stop the current worker generation and release its capability. For a lost worker it releases the ticket without a stop claim and keeps its worktree, branch and pull request.",

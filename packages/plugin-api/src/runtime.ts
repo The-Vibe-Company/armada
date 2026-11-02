@@ -11,9 +11,11 @@ export const isRuntimeLaunchRefusal = (value: unknown): value is RuntimeLaunchRe
   value instanceof Error && value.name === "RuntimeLaunchRefusal";
 
 /**
- * Reattachment found that the generation's whole process tree ended without a final record:
+ * Reattachment found that the generation's pinned process group ended without a final record:
  * its runtime endpoint is gone and independent evidence, recorded by the runtime itself while
- * the worker ran, proves termination. A missing endpoint alone is never this error; nothing
+ * the worker ran, proves that every process still in that group has exited (a descendant that
+ * left the group, as under a pty session, is outside this proof as it is outside the runtime's
+ * own stop). A missing endpoint alone is never this error; nothing
  * was signaled. The host may then replace the generation in its kept workspace.
  */
 export class WorkerRuntimeGone extends Error {
