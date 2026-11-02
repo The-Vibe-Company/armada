@@ -45,11 +45,24 @@ export class EventStore {
 
   /** Queue intents and their receipts become visible together, including to subscribers. */
   appendMany(events: readonly EventInput[]): FleetEvent[] {
+    return this.#append(() => events);
+  }
+
+  /** Allocation reads the committed fold only after acquiring SQLite's writer lock. */
+  appendWith(project: string, build: (tables: FleetTables) => readonly EventInput[]): FleetEvent[] {
+    return this.#append(() => {
+      const events = build(this.fold(project));
+      if (events.some((event) => event.project !== project)) throw new Error("appendWith project mismatch");
+      return events;
+    });
+  }
+
+  #append(build: () => readonly EventInput[]): FleetEvent[] {
     const stored: FleetEvent[] = [];
     this.#db.exec("BEGIN IMMEDIATE");
     try {
       const insert = this.#db.prepare("INSERT INTO events (project, kind, at, actor, payload) VALUES (?, ?, ?, ?, ?)");
-      for (const event of events) {
+      for (const event of build()) {
         const payload = JSON.stringify(event.payload);
         const result = insert.run(event.project, event.kind, event.at, event.actor, payload);
         stored.push({ ...event, payload: JSON.parse(payload), seq: Number(result.lastInsertRowid) } as FleetEvent);
@@ -130,7 +143,7 @@ export class EventStore {
       WHERE project = ? AND seq < ?
         AND (kind != 'coordinator.checkpoint' OR json_extract(payload, '$.checkpoint.format') = 'armada.worker')
         AND (? IS NULL OR json_extract(payload, '$.ticket') = ?
-          OR (kind = 'ticket.seen' AND json_extract(payload, '$.id') = ?)
+          OR (kind IN ('ticket.seen', 'ticket.created') AND json_extract(payload, '$.id') = ?)
           OR (kind = 'coordinator.checkpoint' AND json_extract(payload, '$.checkpoint.ticket') = ?)
           OR (kind IN ('inbox.answered', 'validation.decided', 'merge.started', 'merge.refused', 'merge.canceled')
             AND json_extract(payload, '$.id') IN (

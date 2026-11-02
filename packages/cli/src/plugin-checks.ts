@@ -25,6 +25,7 @@ export interface SeamCheckOptions {
   endpoint: string;
   requests: FixtureRequest[];
   nodeCommand?: string;
+  skip?(name: string, reason: string): void;
   check(name: string, action: (signal: AbortSignal) => Promise<void>): Promise<boolean>;
 }
 interface Recording {
@@ -43,6 +44,60 @@ export async function runSeamChecks(options: SeamCheckOptions): Promise<void> {
       const name = `${seam}.${kind}`;
       if (seam === "tracker" || seam === "forge") {
         const provider = options.registry.get(seam, kind);
+        let trackerTicket = ticket;
+        let created = false;
+        if (seam === "tracker") {
+          const tracker = options.registry.get("tracker", kind);
+          if (!tracker?.create) options.skip?.(`${name}.create`, "not implemented");
+          else {
+            created = await options.check(`${name}.create`, async (signal) => {
+              const result = await tracker.create!({
+                project,
+                title: "Conformance ticket",
+                description: "Created through the tracker seam",
+                labels: ["ready-for-agent"],
+                signal,
+              });
+              assert(result.id, "create did not return a ticket identifier");
+              trackerTicket = result.id;
+              await tracker.read({ project, signal });
+              assert(
+                options.events.some(
+                  (event) =>
+                    event.project === project &&
+                    (event.kind === "ticket.created" || event.kind === "ticket.seen") &&
+                    contains(event.payload, { id: result.id, title: "Conformance ticket" }),
+                ),
+                "create did not make the ticket readable",
+              );
+            });
+          }
+          if (!tracker?.update) options.skip?.(`${name}.update`, "not implemented");
+          else if (created)
+            await options.check(`${name}.update`, async (signal) => {
+              await tracker.update!({
+                project,
+                ticket: trackerTicket,
+                patch: { title: "Edited conformance ticket", labels: ["ready-for-agent", "implementing"] },
+                signal,
+              });
+              await tracker.read({ project, signal });
+              assert(
+                options.events.some(
+                  (event) =>
+                    event.project === project &&
+                    ((event.kind === "ticket.edited" &&
+                      contains(event.payload, {
+                        ticket: trackerTicket,
+                        patch: { title: "Edited conformance ticket" },
+                      })) ||
+                      (event.kind === "ticket.seen" &&
+                        contains(event.payload, { id: trackerTicket, title: "Edited conformance ticket" }))),
+                ),
+                "update did not make the patch readable",
+              );
+            });
+        }
         const ready = await options.check(`${name}.read-events`, async () => {
           assert(provider, "provider was not registered");
           const recording = JSON.parse(
@@ -60,6 +115,9 @@ export async function runSeamChecks(options: SeamCheckOptions): Promise<void> {
           const eventStart = options.events.length;
           const requestStart = options.requests.length;
           await provider.read({ project, signal: AbortSignal.timeout(4000) });
+          // A log-backed tracker has no remote read. Its create check already
+          // proved that authored facts are readable through the event seam.
+          if (created && options.requests.length === requestStart && options.events.length === eventStart) return;
           assertContact(options, requestStart, seam);
           for (const expected of recording.expectedEvents) {
             assert(
@@ -80,19 +138,37 @@ export async function runSeamChecks(options: SeamCheckOptions): Promise<void> {
           await options.check(`${name}.write`, async () => {
             const comment = `conformance-write-${randomUUID()}`;
             const start = options.requests.length;
+            const eventStart = options.events.length;
             await options.registry.get("tracker", kind)?.write({
               project,
-              ticket,
+              ticket: trackerTicket,
               phase: "implementing",
               comment,
               signal: AbortSignal.timeout(4000),
             });
             const writes = writeRequests(options, start, seam);
             assert(
-              [comment, "implementing", ticket].every((value) =>
+              [comment, "implementing", trackerTicket].every((value) =>
                 writes.some((request) => `${request.path} ${JSON.stringify(request.body)}`.includes(value)),
-              ),
-              "write did not send its unique comment to the fixture",
+              ) ||
+                (options.events
+                  .slice(eventStart)
+                  .some(
+                    (event) =>
+                      event.project === project &&
+                      event.kind === "ticket.commented" &&
+                      contains(event.payload, { ticket: trackerTicket, body: comment }),
+                  ) &&
+                  options.events.slice(eventStart).some(
+                    (event) =>
+                      event.project === project &&
+                      event.kind === "ticket.edited" &&
+                      contains(event.payload, {
+                        ticket: trackerTicket,
+                        patch: { labels: ["ready-for-agent", "implementing"] },
+                      }),
+                  )),
+              "write did not record its phase and unique comment",
             );
           });
         } else {

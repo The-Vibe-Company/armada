@@ -6,6 +6,7 @@ import { reportedUsageSchema } from "./tokens.js";
 import type { ProjectUsage } from "./usage.js";
 
 export const GITHUB_READER_MINOR = 18;
+export const INTERNAL_TRACKER_MINOR = 22;
 const text = z.string();
 const integer = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 export const phaseSchema = z.enum([
@@ -34,6 +35,7 @@ const ticketSchema = /* @__PURE__ */ (() =>
     description: text.optional(),
     url: text.optional(),
     branchName: text.optional(),
+    source: text.optional(),
     parent: text.nullable().optional(),
     blockers: z
       .array(
@@ -47,6 +49,19 @@ const ticketSchema = /* @__PURE__ */ (() =>
     owner: text.optional(),
   }))();
 export type Ticket = z.infer<typeof ticketSchema>;
+/** Internal tickets are authored facts; tracker observations cannot overwrite them. */
+export const internalTicketFieldsSchema = z.strictObject({
+  title: z.string().trim().min(1),
+  description: text,
+  labels: z.array(z.string().min(1)),
+  state: z.enum(["backlog", "unstarted", "started", "completed", "canceled"]),
+  parent: z.string().min(1).nullable(),
+  blockers: z.array(z.string().min(1)),
+  url: text.optional(),
+  source: text.optional(),
+});
+export const ticketCreatedSchema = internalTicketFieldsSchema.extend({ id: z.string().min(1) });
+export const ticketPatchSchema = internalTicketFieldsSchema.partial();
 const ciSchema = z.enum(["none", "pending", "success", "failure"]);
 const pullRequestSchema = /* @__PURE__ */ makePullRequestSchema();
 function makePullRequestSchema() {
@@ -176,6 +191,14 @@ function payloadSchemas() {
   });
   return {
     "ticket.seen": ticketSchema,
+    "ticket.created": ticketCreatedSchema,
+    "ticket.edited": z.strictObject({ ticket: z.string().min(1), patch: ticketPatchSchema }),
+    "ticket.commented": z.strictObject({
+      ticket: z.string().min(1),
+      id: z.string().min(1),
+      body: text,
+      author: z.string().min(1),
+    }),
     "pull-request.seen": pullRequestSchema,
     "session.claimed": sessionRefSchema.extend({
       generation: integer.min(1),

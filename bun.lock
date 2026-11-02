@@ -50,7 +50,7 @@
     },
     "packages/cli": {
       "name": "@the-vibe-company/armada",
-      "version": "0.2.68",
+      "version": "0.2.69",
       "bin": {
         "armada": "dist/armada.js",
       },
@@ -148,7 +148,7 @@
     },
     "packages/plugin-api": {
       "name": "@armada/plugin-api",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "zod": "4.6.5",
       },
@@ -197,6 +197,18 @@
       "version": "0.1.0",
       "devDependencies": {
         "@armada/plugin-api": "workspace:*",
+      },
+    },
+    "packages/plugins/internal-tracker": {
+      "name": "@armada/plugin-internal-tracker",
+      "version": "0.1.0",
+      "dependencies": {
+        "@armada/plugin-api": "workspace:*",
+        "@armada/protocol": "workspace:*",
+        "zod": "4.6.5",
+      },
+      "devDependencies": {
+        "@armada/daemon": "workspace:*",
       },
     },
     "packages/plugins/linear": {
@@ -289,6 +301,8 @@
     "@armada/plugin-github": ["@armada/plugin-github@workspace:packages/plugins/github"],
 
     "@armada/plugin-hello": ["@armada/plugin-hello@workspace:packages/plugins/hello"],
+
+    "@armada/plugin-internal-tracker": ["@armada/plugin-internal-tracker@workspace:packages/plugins/internal-tracker"],
 
     "@armada/plugin-linear": ["@armada/plugin-linear@workspace:packages/plugins/linear"],
 

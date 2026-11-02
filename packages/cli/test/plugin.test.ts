@@ -88,8 +88,8 @@ test("plugin list shows the boot catalog and switches preserve config until rest
         "  └─ model.test enabled, loaded",
         "disabled@1.0.0 disabled, not loaded",
         "  └─ model.test disabled, not loaded",
-        "future@1.0.0 enabled, refused: pluginApi >=2.0.0 excludes daemon Plugin API 0.2.0",
-        "  └─ model.test enabled, refused: pluginApi >=2.0.0 excludes daemon Plugin API 0.2.0",
+        "future@1.0.0 enabled, refused: pluginApi >=2.0.0 excludes daemon Plugin API 0.3.0",
+        "  └─ model.test enabled, refused: pluginApi >=2.0.0 excludes daemon Plugin API 0.3.0",
         "",
       ]);
       out = "";
@@ -238,7 +238,9 @@ test("plugin test exercises recorded reads, writes, headless workers, workspaces
     );
     expect(result.stderr).toBe("");
     const report = JSON.parse(result.stdout);
-    expect(report.checks.filter((check: { passed: boolean }) => !check.passed)).toEqual([]);
+    expect(
+      report.checks.filter((check: { passed: boolean; skipped?: string }) => !check.passed && !check.skipped),
+    ).toEqual([]);
     expect(result.code).toBe(0);
     expect(report.checks.map((check: { name: string }) => check.name)).toEqual(
       expect.arrayContaining([

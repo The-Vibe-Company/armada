@@ -23,7 +23,7 @@ import {
 } from "./chat.js";
 import { DELIVERIES_MINOR } from "./deliveries.js";
 import { counter, identifier, requestSchema, USAGE_MINOR, versionSchema } from "./envelope.js";
-import { GITHUB_READER_MINOR } from "./fleet.js";
+import { GITHUB_READER_MINOR, INTERNAL_TRACKER_MINOR } from "./fleet.js";
 import {
   modelConfigSchema,
   modelKindEntrySchema,
@@ -72,6 +72,7 @@ export const PROTOCOL_VERSION = {
     WATCHDOG_MINOR,
     USAGE_MINOR,
     REPLAY_MINOR,
+    INTERNAL_TRACKER_MINOR,
   ),
 } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";

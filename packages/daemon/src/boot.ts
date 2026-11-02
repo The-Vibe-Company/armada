@@ -69,6 +69,15 @@ export async function bootDaemon(options: DaemonOptions) {
       events: {
         append: async (event: Parameters<PluginContext["events"]["append"]>[0]) =>
           pluginEventSchema.parse(store.append(pluginEventInputSchema.parse(event) as EventInput)),
+        appendWith: async (
+          project: string,
+          build: (fold: unknown) => import("@armada/plugin-api").PluginEventInput[],
+        ) =>
+          store
+            .appendWith(project, (tables) =>
+              build(tables).map((event) => pluginEventInputSchema.parse(event) as EventInput),
+            )
+            .map((event) => pluginEventSchema.parse(event)),
         read: async (project: string, after: number) =>
           store.readSince(after, project).map((event) => pluginEventSchema.parse(event)),
         fold: async (project: string) => store.fold(project),

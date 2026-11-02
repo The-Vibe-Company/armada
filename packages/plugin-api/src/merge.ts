@@ -38,6 +38,7 @@ export interface TestMergeRequest extends ProjectRequest {
 export type TestMergeResult = { ok: true } | { ok: false; step: string; output: string };
 export interface TrackerWriteRequest extends ProjectRequest {
   ticket: string;
+  actor?: string;
   /** Host writer/generation fence, called immediately before each external write. */
   beforeWrite?: () => void;
   phase?: string;

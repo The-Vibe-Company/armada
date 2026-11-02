@@ -109,7 +109,9 @@ export async function loadPlugins(
       if (manifest.id !== entry.id) throw new Error(`manifest id ${manifest.id} does not match catalog id ${entry.id}`);
       if (!valid(manifest.version)) throw new Error(`invalid plugin version ${manifest.version}`);
       if (!validRange(manifest.pluginApi)) throw new Error(`invalid pluginApi range ${manifest.pluginApi}`);
-      if (!satisfies(PLUGIN_API_VERSION, manifest.pluginApi))
+      // API 0.3 only adds optional methods: providers written against 0.2
+      // remain usable without changing their manifest or event host.
+      if (![PLUGIN_API_VERSION, "0.2.0"].some((version) => satisfies(version, manifest.pluginApi)))
         throw new Error(`pluginApi ${manifest.pluginApi} excludes daemon Plugin API ${PLUGIN_API_VERSION}`);
       const config = validateConfig(manifest, setting?.config ?? {}, defaults);
       const declared = new Set(

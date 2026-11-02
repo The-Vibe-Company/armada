@@ -112,7 +112,7 @@ test("daemon boot loads a temporary catalog once, exposes providers/events and r
           ["future", "1.2.3", false],
         ],
       );
-      assert.match(lines.join("\n"), /future.*>=2\.0\.0.*0\.2\.0/);
+      assert.match(lines.join("\n"), /future.*>=2\.0\.0.*0\.3\.0/);
       assert.equal(lines.length, 1);
       const provider = daemon.registry.get("tracker", "tickets");
       assert.ok(provider);
