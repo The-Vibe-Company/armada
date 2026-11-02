@@ -27,24 +27,29 @@ import { useDaemon, useDaemonClient } from "@/protocol/store";
 import { AgentLane } from "@/room/AgentLane";
 import { Asking, DeliveryStatus } from "@/room/Asking";
 import { Composer } from "@/room/Composer";
-import { type Chat, NO_CHAT, threadItems, useChat, type WhenBusy } from "@/room/chat";
-import { coordinatorModel, ownerHistory } from "@/room/compose";
+import { ComposerModel } from "@/room/ComposerModel";
+import { type Chat, NO_CHAT, threadItems, useChat, type WhenBusy, withNotes } from "@/room/chat";
+import { ownerHistory } from "@/room/compose";
 import { Header } from "@/room/Header";
 import { HeroHeadline, StarterAsks } from "@/room/Hero";
 import { Queued, TurnActions } from "@/room/Live";
 import { Log } from "@/room/Log";
 import { ticketPrefix } from "@/room/markdown-rules";
+import { roomModel } from "@/room/model";
+import { useNotes } from "@/room/notes";
 import { PANEL_ID, Panel } from "@/room/Panel";
 import { Pinned } from "@/room/Pinned";
 import { PullRequests, useMerging } from "@/room/PullRequests";
 import { agentHref, agentKey, agentStep, showAgent, useRoomAgent } from "@/room/panel-rules";
 import { forgeReads, openPullRequests } from "@/room/pr-rules";
 import { Thread, type ThreadControl } from "@/room/Thread";
+import { useModelSwitch } from "@/room/use-model";
 import { useRoomPanel } from "@/room/use-panel";
 import { ownerQuestions, starterAsks } from "@/room/view";
 
 import { ProjectRules } from "@/rules/ProjectRules";
 
+import type { CatalogProvider } from "@/settings/models";
 import { NeedsArmada } from "@/settings/NeedsArmada";
 import { linearNeedsSignIn } from "@/settings/needs-armada";
 
@@ -80,7 +85,7 @@ export function Room({
   now?: number;
   zone?: string;
 }) {
-  const { projects, fleets, logs, status, credentials } = useDaemon();
+  const { projects, fleets, logs, status } = useDaemon();
   const client = useDaemonClient();
   const [clock, setClock] = useState(Date.now);
   useEffect(() => {
@@ -109,7 +114,6 @@ export function Room({
       events={logs[project.id]?.events}
       onReload={onReload}
       live={status === "live"}
-      model={coordinatorModel(credentials)}
       now={givenNow ?? clock}
       zone={givenZone ?? viewerZone()}
     />
@@ -123,8 +127,6 @@ interface RoomProps {
   live: boolean;
   now: number;
   zone: string;
-  /** The coordinator's model, when the daemon says it. */
-  model?: string | null;
   /** The project's events the subscription applied: the panel's Log. */
   events?: readonly ProtocolEvent[];
   /** Reloads the app: the daemon's problem, when there is one, offers it. */
@@ -136,6 +138,7 @@ function ProjectRoom(props: RoomProps) {
 }
 
 const NO_EVENTS: readonly ProtocolEvent[] = [];
+const NO_PROVIDERS: readonly CatalogProvider[] = [];
 
 /** The room on a given conversation: what `Room` draws, and what a test renders with a synthetic one. */
 export function RoomView({
@@ -145,7 +148,6 @@ export function RoomView({
   live,
   now,
   zone,
-  model = null,
   events = NO_EVENTS,
   onReload,
   chat,
@@ -184,7 +186,16 @@ export function RoomView({
   // The coordinator's turn (THE-2052): null on a daemon older than CHAT_LIVE_MINOR, which shows nothing live.
   const turn = chat.live?.turn ?? null;
   const busy = turn !== null && turn.state !== "idle";
-  const shown = useMemo(() => threadItems(chat.items, chat.live), [chat.items, chat.live]);
+  // The room's own lines (THE-2128) go into the thread by time; the coordinator never reads them.
+  const notes = useNotes(project.id);
+  const said = useMemo(() => threadItems(chat.items, chat.live), [chat.items, chat.live]);
+  const shown = useMemo(() => withNotes(said, notes), [said, notes]);
+  // The coordinator's model under the field, and the picker it opens (THE-2128).
+  const model = roomModel(daemon, snapshot?.state);
+  const providers = daemon.catalog?.providers ?? NO_PROVIDERS;
+  // A room opened again during a turn learns it from the daemon's next frame: until then the choice keeps waiting.
+  const known = chat.live == null || turn !== null;
+  const switching = useModelSwitch({ project: project.id, client, model, providers, busy, known });
   const stop = chat.stop;
   // The thread's scroll (THE-2054): a message the thread shows is pinned near its top; the field pages it.
   const thread = useRef<ThreadControl>(null);
@@ -197,7 +208,8 @@ export function RoomView({
     [send],
   );
   // Nothing said yet (THE-2055): the hero holds the thread's place, the field centred under it.
-  const hero = chat.status === "ready" && shown.length === 0 && !busy && !chat.queued?.length && !chat.problem;
+  // The room's own lines (a model switch) keep the hero: they wait in the thread for the first message.
+  const hero = chat.status === "ready" && said.length === 0 && !busy && !chat.queued?.length && !chat.problem;
   const asks = useMemo(() => starterAsks(state), [state]);
   // Only leaving the hero glides the field (its first Send); the hero arriving with the first reading does not.
   const [dock, setDock] = useState({ hero, glides: 0 });
@@ -339,7 +351,21 @@ export function RoomView({
                 disabled={closed}
                 hint={hint}
                 history={history}
-                model={model}
+                picker={
+                  switching.label === null
+                    ? undefined
+                    : ({ fail, focus }) => (
+                        <ComposerModel
+                          model={model}
+                          label={switching.label ?? ""}
+                          pending={switching.pending}
+                          providers={providers}
+                          onChoose={switching.choose}
+                          focusField={focus}
+                          fail={fail}
+                        />
+                      )
+                }
               />
             </m.div>
             {hero && (

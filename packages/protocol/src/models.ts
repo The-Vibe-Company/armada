@@ -25,6 +25,8 @@ export const modelKindEntrySchema = z.object({ kind: modelKindSchema, descriptio
 export type ModelKindEntry = z.infer<typeof modelKindEntrySchema>;
 
 export const MODELS_MINOR = 9;
+/** THE-2128: `models.select` may name a project, whose own coordinator model it then edits. */
+export const MODEL_SCOPE_MINOR = 24;
 const counter = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const request = { version: z.object({ major: counter, minor: counter }), id: z.string().min(1).max(200) };
 export const modelProviderEntrySchema = z.object({
@@ -56,6 +58,11 @@ export const modelsSelectSchema = z.object({
   ...request,
   type: z.literal("models.select"),
   ...piCoordinatorModelSchema.shape,
+  /**
+   * Minor 24: the project whose rules name their own coordinator model; the
+   * daemon edits that override. A project without one changes the shared selection.
+   */
+  project: z.string().min(1).optional(),
 });
 export const modelsCatalogSchema = z.object({
   ...request,

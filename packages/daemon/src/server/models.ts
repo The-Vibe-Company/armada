@@ -116,6 +116,45 @@ export async function modelEnvironment(
   };
 }
 
+/**
+ * The owner's choice in a project's room (THE-2128, protocol minor 24): a
+ * project whose rules name their own coordinator model gets that override
+ * replaced, as the coordinator's `rules.set` would (one rules checkpoint, the
+ * next revision, the rest of the rules kept). False when the project has no
+ * override: the shared selection is the one to change.
+ */
+export function selectProjectModel(options: {
+  store: EventStore;
+  project: string;
+  selection: { provider: string; model: string };
+  now?: () => number;
+}): boolean {
+  const { provider, model } = options.selection;
+  const events = options.store.appendWith(options.project, (tables) => {
+    const rules = tables.projects[options.project]?.rules;
+    if (!rules?.value.coordinatorModel) return [];
+    const next = { revision: rules.revision + 1, value: { ...rules.value, coordinatorModel: { provider, model } } };
+    return [
+      {
+        project: options.project,
+        kind: "coordinator.checkpoint",
+        at: new Date((options.now ?? Date.now)()).toISOString(),
+        actor: "owner",
+        payload: {
+          checkpoint: {
+            format: "armada.tools",
+            version: 1,
+            type: "rules",
+            rules: next,
+            reason: `The owner chose ${provider}/${model} in the room.`,
+          },
+        },
+      },
+    ];
+  });
+  return events.length > 0;
+}
+
 /** Project rules win over the boot default. Provider code is always obtained from the registry. */
 export function coordinatorModels(options: {
   projects: readonly { id: string; coordinatorModel?: unknown; tracker?: string }[];

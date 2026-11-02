@@ -656,6 +656,14 @@ function Item({
           {when}
         </div>
       );
+    case "note":
+      // The room's own line (THE-2128), as quiet as a wake's.
+      return (
+        <div className="flex min-h-6 min-w-0 items-baseline px-0.5 py-0.5 text-body text-text-3" data-note>
+          <span className="min-w-0 truncate">{item.body}</span>
+          {when}
+        </div>
+      );
     case "owner":
       return (
         <div className="flex flex-col items-end gap-1">

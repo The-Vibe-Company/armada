@@ -122,7 +122,25 @@ export function afterReading(live: Live, items: readonly ChatItem[], turn: ChatT
 const blank = (e: Streaming) => !e.text.trim() && !e.reasoning.trim();
 
 /** One row of the thread: an item read, or an answer still being written. */
-export type ThreadItem = ChatItem | Streaming;
+/** A quiet line of the room's own (THE-2128: the coordinator's new model), never a message to the coordinator. */
+export interface RoomNote {
+  kind: "note";
+  id: string;
+  at: string;
+  body: string;
+}
+export type ThreadItem = ChatItem | Streaming | RoomNote;
+
+/** The thread with the room's own lines, each before the first item said after it. */
+export function withNotes(items: readonly ThreadItem[], notes: readonly RoomNote[]): readonly ThreadItem[] {
+  if (!notes.length) return items;
+  const out = [...items];
+  for (const note of notes) {
+    const after = out.findIndex((i) => Date.parse(i.at) > Date.parse(note.at));
+    out.splice(after < 0 ? out.length : after, 0, note);
+  }
+  return out;
+}
 
 /**
  * The thread as drawn: the reading (a call that streams shows its latest

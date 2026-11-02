@@ -2,7 +2,8 @@
 // T3 Code's composer (THE-2051): a glass card in the thread's lane (THE-2050), a textarea
 // that grows from two lines to `max-h-52`, Enter sends and Shift+Enter breaks
 // the line, ↑ and ↓ walk the owner's earlier messages, the draft kept per
-// project, the coordinator's model on the left and a round Send on the right;
+// project, the coordinator's model on the left (a picker in the room,
+// THE-2128) and a round Send on the right;
 // PageUp and PageDown scroll the thread above it (THE-2054).
 // The text stays in the field until the daemon admitted it; a failure says why
 // under it and keeps it for another try (the same message). The rules are
@@ -12,6 +13,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -54,6 +56,7 @@ export function Composer({
   hint,
   history = [],
   model = null,
+  picker,
   primary,
   restore = null,
   onPage,
@@ -71,6 +74,8 @@ export function Composer({
   history?: readonly string[];
   /** The coordinator's model, a quiet label on the footer's left; nothing when unknown. */
   model?: string | null;
+  /** Replaces the model's label with the room's picker (THE-2128): it can fail under the field and focus it back. */
+  picker?: (field: { fail: (problem: string) => void; focus: () => void }) => ReactNode;
   /** Replaces the round Send (the live turn's Stop, Steer and Queue, THE-2052). */
   primary?: (field: ComposerField) => ReactNode;
   /** Messages a Stop withdrew (THE-2052): each new `key` puts their words back in the field, after what it holds. */
@@ -88,6 +93,7 @@ export function Composer({
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const area = useRef<HTMLTextAreaElement>(null);
+  const focus = useCallback(() => area.current?.focus(), []);
   // What the field holds now, for a send that resolves after the owner went on typing or walking.
   const latest = useRef({ body, recall });
   latest.current = { body, recall };
@@ -244,11 +250,13 @@ export function Composer({
             className="block max-h-52 w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-compose text-text outline-none placeholder:text-text-3 disabled:opacity-60"
           />
           <div className="flex items-center gap-3 px-3 pt-1 pb-2.5 pl-4">
-            {model && (
-              <span className="min-w-0 truncate font-mono text-body text-text-3" title="The coordinator's model">
-                {model}
-              </span>
-            )}
+            {picker
+              ? picker({ fail: setProblem, focus })
+              : model && (
+                  <span className="min-w-0 truncate font-mono text-body text-text-3" title="The coordinator's model">
+                    {model}
+                  </span>
+                )}
             <span className="ml-auto flex flex-none items-center gap-2.5">
               {/* Present before it speaks, so a screen reader announces "Sending…". */}
               <span role="status" className="text-body text-text-3">
