@@ -384,7 +384,10 @@ describe("the Providers and Connections sections in a browser", () => {
       config: { command: "codex", model: "o-7", binary: "/opt/tools/codex", permissionMode: "read-only" },
     });
     await receive({ type: "plugins.result", id: request.id, plugins: PLUGINS, restartable: true });
-    expect(await row.innerText()).toContain("Saved. Applies when the daemon restarts.");
+    await row
+      .getByRole("status")
+      .filter({ hasText: "Saved. Applies when the daemon restarts." })
+      .waitFor({ timeout: 2000 });
     await open(
       "#/settings/providers/codex",
       undefined,
