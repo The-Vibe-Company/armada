@@ -1,5 +1,59 @@
 # Changelog
 
+## [0.2.69](https://github.com/The-Vibe-Company/armada/compare/v0.2.68...v0.2.69) (2026-11-01)
+
+
+### Features
+
+* **app:** add a project from the hangar, remove it from its room ([#400](https://github.com/The-Vibe-Company/armada/issues/400)) ([beddeb3](https://github.com/The-Vibe-Company/armada/commit/beddeb3e16d26c8c57693ecb4f4531c0e3f13d43))
+* **app:** an agent's page replaces the chat, the panel hops between agents ([#385](https://github.com/The-Vibe-Company/armada/issues/385)) ([6c1449a](https://github.com/The-Vibe-Company/armada/commit/6c1449a1e2efaf84250083b65a63348b6458beed))
+* **app:** one Settings page like T3 Code's, with Providers inside ([#372](https://github.com/The-Vibe-Company/armada/issues/372)) ([d1a52af](https://github.com/The-Vibe-Company/armada/commit/d1a52afa35d797f074384d4529eb4202b7538a0d))
+* **app:** render the room's messages like T3 Code's thread ([#366](https://github.com/The-Vibe-Company/armada/issues/366)) ([09b4b57](https://github.com/The-Vibe-Company/armada/commit/09b4b577993dfcb7611e6f6907b64053308481f7))
+* **app:** settings as T3 Code's, providers and connections as cards ([#395](https://github.com/The-Vibe-Company/armada/issues/395)) ([179f006](https://github.com/The-Vibe-Company/armada/commit/179f0062463da8801edf777f74f4003a79d60c1a))
+* **app:** show the coordinator's turn live in the room ([#371](https://github.com/The-Vibe-Company/armada/issues/371)) ([5dd2eb9](https://github.com/The-Vibe-Company/armada/commit/5dd2eb96960c6e4ce81e281ca468c56a02015223))
+* **app:** show the coordinator's work as T3 Code's grouped rows ([#370](https://github.com/The-Vibe-Company/armada/issues/370)) ([6fa1f4a](https://github.com/The-Vibe-Company/armada/commit/6fa1f4a046bde0f73b154dcb31fba8b67da12788))
+* **app:** sign in to Armada from Settings › Account ([#383](https://github.com/The-Vibe-Company/armada/issues/383)) ([71da4fa](https://github.com/The-Vibe-Company/armada/commit/71da4fa5705f9c039adbf9456f0ae9bcd8ac790a))
+* **app:** the Coordinator section opens on Continue with ChatGPT, pi's providers and a model picker ([#381](https://github.com/The-Vibe-Company/armada/issues/381)) ([4f714e1](https://github.com/The-Vibe-Company/armada/commit/4f714e1363061f11ef587dfccf12e442eb9ef10b))
+* **app:** the empty room's hero, starter asks and notifications ([#373](https://github.com/The-Vibe-Company/armada/issues/373)) ([dad8718](https://github.com/The-Vibe-Company/armada/commit/dad87188688f6292adaf59beeffb141ae0431839))
+* **app:** the panel's Pull requests show checks and ask the coordinator to merge ([#398](https://github.com/The-Vibe-Company/armada/issues/398)) ([e84717b](https://github.com/The-Vibe-Company/armada/commit/e84717bd96af4f1aee05100246a5afc9b11089af))
+* **app:** the room's composer grows, sends on Enter, keeps drafts and recalls messages ([#365](https://github.com/The-Vibe-Company/armada/issues/365)) ([6cd2771](https://github.com/The-Vibe-Company/armada/commit/6cd2771e2f2c8e787236d8e21ee63639ce4730d6))
+* **app:** the room's header pills and right panel with tabs ([#380](https://github.com/The-Vibe-Company/armada/issues/380)) ([76f0464](https://github.com/The-Vibe-Company/armada/commit/76f0464bb8c5de9a99e31460df11568fd5b91cd0))
+* **app:** the thread scrolls like T3 Code's, unread per project ([#375](https://github.com/The-Vibe-Company/armada/issues/375)) ([ed86473](https://github.com/The-Vibe-Company/armada/commit/ed86473320da5fc3d1ec9a25ad1275dff49c8824))
+* **conductor:** launch workers through desktop sign-in ([#387](https://github.com/The-Vibe-Company/armada/issues/387)) ([b960e40](https://github.com/The-Vibe-Company/armada/commit/b960e40509387465007a634e6c4f873b4d8c6ac3))
+* **daemon:** connect coordinator models through pi ([#376](https://github.com/The-Vibe-Company/armada/issues/376)) ([6a51b4b](https://github.com/The-Vibe-Company/armada/commit/6a51b4ba55cda0138658adba2324a3d14374a134))
+* **daemon:** define coordinator and worker prompt vocabulary ([#407](https://github.com/The-Vibe-Company/armada/issues/407)) ([9d4a9e4](https://github.com/The-Vibe-Company/armada/commit/9d4a9e4655a2c4799bac4e081c587b539c66257f))
+* **daemon:** judge live worker loops and drift with a watchdog ([#409](https://github.com/The-Vibe-Company/armada/issues/409)) ([b0fd7e5](https://github.com/The-Vibe-Company/armada/commit/b0fd7e5a1e6abbd396af73e4b01bb33fd6ee5245))
+* **daemon:** make worker deliveries durable ([#404](https://github.com/The-Vibe-Company/armada/issues/404)) ([02bd6a1](https://github.com/The-Vibe-Company/armada/commit/02bd6a112b5f581d972a4a8ab674f09749d8c4dc))
+* **daemon:** manage projects from local folders at runtime ([#384](https://github.com/The-Vibe-Company/armada/issues/384)) ([5db902d](https://github.com/The-Vibe-Company/armada/commit/5db902d13ebc0ed9e6d67e6c8e48d98a7330f091))
+* **daemon:** meter fleet tokens and enforce night budgets ([#406](https://github.com/The-Vibe-Company/armada/issues/406)) ([e21d391](https://github.com/The-Vibe-Company/armada/commit/e21d391de42a39fa996c8d6695710e74cab2e0b5))
+* **daemon:** share Armada web sign-in with the CLI ([#374](https://github.com/The-Vibe-Company/armada/issues/374)) ([07820e2](https://github.com/The-Vibe-Company/armada/commit/07820e2bbd11ab8664e9b6ac90643a06caf49bbd))
+* **daemon:** stream coordinator turns and support Stop ([#367](https://github.com/The-Vibe-Company/armada/issues/367)) ([97da103](https://github.com/The-Vibe-Company/armada/commit/97da1039f68eade0572e1b39b67b4fbb7cb32aee))
+* **daemon:** wake coordinators on fleet events ([#379](https://github.com/The-Vibe-Company/armada/issues/379)) ([3b375c8](https://github.com/The-Vibe-Company/armada/commit/3b375c8f9ab5f383c2ebbec5557966b0c00f7f12))
+* **desktop:** give the Electron app its icon ([#377](https://github.com/The-Vibe-Company/armada/issues/377)) ([b8e6b5e](https://github.com/The-Vibe-Company/armada/commit/b8e6b5ef2bde86fc3779985e7b0bf3d96d362db4))
+* **github:** ingest review feedback and PR drift with durable polling ([#403](https://github.com/The-Vibe-Company/armada/issues/403)) ([f62a0b2](https://github.com/The-Vibe-Company/armada/commit/f62a0b2dd093ddddf29794a0367b377833468980))
+* **providers:** connect providers from the app ([#382](https://github.com/The-Vibe-Company/armada/issues/382)) ([95895cf](https://github.com/The-Vibe-Company/armada/commit/95895cf6ac68613af0cfee44934cd1ccb7ee0846))
+
+
+### Bug Fixes
+
+* **coordinator:** compact fleet status and add detail reads ([#389](https://github.com/The-Vibe-Company/armada/issues/389)) ([eccba85](https://github.com/The-Vibe-Company/armada/commit/eccba85a3a9a95b474652b102c018b2fc3ad2819))
+* **daemon:** alias dotted tool names for OpenAI providers ([#386](https://github.com/The-Vibe-Company/armada/issues/386)) ([c9131dc](https://github.com/The-Vibe-Company/armada/commit/c9131dcd6e67e1d694c2ab92c0978417b113df84))
+* **daemon:** alias tool names inside pi transcripts, surface the daemon's stderr ([#388](https://github.com/The-Vibe-Company/armada/issues/388)) ([5de23e4](https://github.com/The-Vibe-Company/armada/commit/5de23e44faf73cfe284ed8b77085407915dda66e))
+* **daemon:** carry actionable merge refusal reasons ([#393](https://github.com/The-Vibe-Company/armada/issues/393)) ([0865e62](https://github.com/The-Vibe-Company/armada/commit/0865e62dd22fea9cd0fc732b2fd251ce7cd940a4))
+* **daemon:** deduplicate inbox answer retries across tool calls ([#391](https://github.com/The-Vibe-Company/armada/issues/391)) ([cdd8504](https://github.com/The-Vibe-Company/armada/commit/cdd8504f44c3176edef9647472810b464dd512aa))
+* **daemon:** order coordinator turns and surface empty reports ([#397](https://github.com/The-Vibe-Company/armada/issues/397)) ([e21e54a](https://github.com/The-Vibe-Company/armada/commit/e21e54abb2c9676d21ba5ecb06e98865bc412355))
+* **daemon:** page large-log subscriptions and read history on demand ([#410](https://github.com/The-Vibe-Company/armada/issues/410)) ([b454dcc](https://github.com/The-Vibe-Company/armada/commit/b454dcccd3c8211ca8dcb67ec8c0bc17f6eb3327))
+* **daemon:** preserve the saved coordinator model on restart ([#392](https://github.com/The-Vibe-Company/armada/issues/392)) ([28166f0](https://github.com/The-Vibe-Company/armada/commit/28166f0484ac6d006eea7fac07ffc2dae3d53a08))
+* **daemon:** preserve workers across daemon restarts ([#408](https://github.com/The-Vibe-Company/armada/issues/408)) ([b3db15d](https://github.com/The-Vibe-Company/armada/commit/b3db15d83918228757ac0647ff7d7db08d30c277))
+* **daemon:** restore complete worker launch briefs ([#394](https://github.com/The-Vibe-Company/armada/issues/394)) ([b5c8e29](https://github.com/The-Vibe-Company/armada/commit/b5c8e299baa657e5d2841f65c714243cb054632d))
+* **daemon:** tests that start a real daemon never reach the owner's Keychain ([#390](https://github.com/The-Vibe-Company/armada/issues/390)) ([5acb30f](https://github.com/The-Vibe-Company/armada/commit/5acb30f8a61c37f4b0bdad176c5373bc53085c89))
+* **daemon:** the projects test compares real paths on macOS ([#402](https://github.com/The-Vibe-Company/armada/issues/402)) ([d24f48c](https://github.com/The-Vibe-Company/armada/commit/d24f48cda92867117bac34ec355f1c3efc1c26c9))
+* **desktop:** show daemon startup and wait for readiness ([#411](https://github.com/The-Vibe-Company/armada/issues/411)) ([5288b74](https://github.com/The-Vibe-Company/armada/commit/5288b741182018e87673fb767b046b7054767920))
+* **linear:** respect the daemon API budget ([#396](https://github.com/The-Vibe-Company/armada/issues/396)) ([1b34cdc](https://github.com/The-Vibe-Company/armada/commit/1b34cdc06a081dd4629fb16de70dc3a33e482b50))
+* **node-local:** exclude project worktrees through a symlinked root ([#401](https://github.com/The-Vibe-Company/armada/issues/401)) ([689c856](https://github.com/The-Vibe-Company/armada/commit/689c85691c47e277f7a0321fc57eeeaee79672cd))
+* **node-local:** tolerate exited process group signal races ([#369](https://github.com/The-Vibe-Company/armada/issues/369)) ([d5c51f2](https://github.com/The-Vibe-Company/armada/commit/d5c51f2fe3952167a7036483fac9cd1f66829ef4))
+* **test:** isolate test runners from the OS keychain ([#405](https://github.com/The-Vibe-Company/armada/issues/405)) ([014fb24](https://github.com/The-Vibe-Company/armada/commit/014fb240fa7ac54f17cde4af9056410e7a7894c3))
+
 ## [0.2.68](https://github.com/The-Vibe-Company/armada/compare/v0.2.67...v0.2.68) (2026-10-30)
 
 
