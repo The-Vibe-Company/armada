@@ -1,8 +1,9 @@
-import type { EventInput, EventKind, EventPayloads, GithubPullRequest } from "@armada/daemon/events";
+import type { EventInput, EventKind, EventPayloads, GithubPullRequest, PullRequest } from "@armada/daemon/events";
+import { z } from "zod";
 import { emptyCheckpoint, emptyPr, type GithubCheckpoint, githubCheckpoint } from "./checkpoint.ts";
 import { GithubHttp, GithubReadError } from "./http.ts";
 import { githubToken } from "./keychain.ts";
-import { normalize, type RawPull } from "./normalize.ts";
+import { normalize } from "./normalize.ts";
 import { readReviews } from "./reviews.ts";
 import {
   type Forge,
@@ -36,15 +37,12 @@ query Pulls($owner: String!, $name: String!, $after: String) {
     }
   }
 }`;
-const ONE = `${FIELDS}
-query Pull($owner: String!, $name: String!, $number: Int!) {
-  repository(owner: $owner, name: $name) { pullRequest(number: $number) { ...P } }
-}`;
 interface Options {
   endpoint?: string;
   repository: string;
   tickets: () => ReadonlySet<string> | Promise<ReadonlySet<string>>;
   perPrTimeoutMs?: number;
+  openPullRequests?: () => readonly PullRequest[] | Promise<readonly PullRequest[]>;
   schedule?: Schedule;
   activeTickets?: () => ReadonlySet<string> | Promise<ReadonlySet<string>>;
   token?: (signal: AbortSignal) => Promise<string>;
@@ -190,26 +188,41 @@ class GithubForge implements Forge {
       cursors.add(after);
     }
     context?.onDetails?.();
-    // Looking up disappeared open PRs avoids a lossy 'last 30 closed' window.
-    await Promise.all(
-      previousOpen
-        .filter((number) => !pulls.has(number) && !state.prs[number]?.abandoned)
-        .map(async (number) => {
-          try {
-            const pr = await this.#isolated(number, signal, async (child) => {
-              const { pullRequest } = await query(ONE, { number }, child);
-              if (!pullRequest || pullRequest.number !== number)
-                throw new GithubReadError("GitHub lost a previously open pull request");
-              return normalize(pullRequest as RawPull, options.repository, tickets, token);
-            });
-            pulls.set(number, pr);
-            if (pr.state !== "open" || !active.has(pr.ticket)) recovered(number);
-          } catch (error) {
-            signal.throwIfAborted();
-            failed(number, error);
-          }
-        }),
-    );
+    // Reconciliation is independent of comment following, including abandoned PRs.
+    // The fold includes terminal/conflict facts from writers other than this reader.
+    const held = (await options.openPullRequests?.()) ?? context?.openPullRequests;
+    if (context) context.openPullRequests = held;
+    const missing = [
+      ...new Set(held ? held.filter((pr) => pr.state === "open").map((pr) => pr.number) : previousOpen),
+    ].filter((number) => !pulls.has(number));
+    for (const number of missing) {
+      if (state.pausedUntil && Date.parse(state.pausedUntil) > Date.parse(at)) {
+        if (context) context.reconciliationError = "GitHub reading failed";
+        break;
+      }
+      try {
+        const pr = await this.#isolated(number, signal, async (child) => {
+          const response = await http.request(`${http.rest}/repos/${options.repository}/pulls/${number}`, child);
+          const raw = await response.json();
+          child.throwIfAborted();
+          return terminalPull(
+            raw,
+            number,
+            options.repository,
+            tickets,
+            token,
+            held?.find((pr) => pr.number === number),
+          );
+        });
+        if (pr) pulls.set(number, pr);
+        recovered(number);
+      } catch (error) {
+        signal.throwIfAborted();
+        failed(number, error);
+        if (context)
+          context.reconciliationError = error instanceof GithubReadError ? error.message : "GitHub reading failed";
+      }
+    }
     await Promise.all(
       [...pulls.values()]
         .filter((pr) => pr.state === "open" && active.has(pr.ticket))
@@ -234,13 +247,82 @@ class GithubForge implements Forge {
   }
 }
 
+/** REST terminal evidence must be complete before it can retire an open fold row. */
+function terminalPull(
+  raw: unknown,
+  number: number,
+  repository: string,
+  tickets: ReadonlySet<string>,
+  token: string,
+  held?: PullRequest,
+): (GithubPullRequest & { mergeCommit?: string; mergedAt?: string }) | undefined {
+  const fail = () => {
+    throw new GithubReadError("GitHub returned an incomplete reading");
+  };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fail();
+  const pr = raw as Record<string, unknown>;
+  if (pr.number !== number || !["open", "closed"].includes(String(pr.state))) return fail();
+  // A PR may reopen between the complete list and this lookup. Never fabricate a close.
+  if (pr.state === "open") return undefined;
+  const head = pr.head as { sha?: unknown; ref?: unknown } | undefined;
+  if (
+    typeof pr.merged !== "boolean" ||
+    typeof pr.title !== "string" ||
+    typeof pr.html_url !== "string" ||
+    typeof pr.draft !== "boolean" ||
+    typeof head?.sha !== "string" ||
+    !head.sha ||
+    typeof head.ref !== "string"
+  )
+    return fail();
+  if (
+    pr.merged &&
+    (typeof pr.merge_commit_sha !== "string" ||
+      !/^[0-9a-f]{40}$/i.test(pr.merge_commit_sha) ||
+      typeof pr.merged_at !== "string" ||
+      !z.iso.datetime().safeParse(pr.merged_at).success)
+  )
+    return fail();
+  const clean = (value: string) => value.replaceAll(token, "[redacted]");
+  const ticket =
+    held?.ticket ||
+    [...head.ref.matchAll(/(?:^|[/_-])([a-z][a-z0-9]*-\d+)(?=[-_/]|$)/gi)]
+      .map((match) => (match[1] ?? "").toUpperCase())
+      .find((id) => tickets.has(id)) ||
+    "";
+  return {
+    review: "none",
+    checks: [],
+    checksComplete: false,
+    ci: held?.ci ?? "none",
+    ...held,
+    number,
+    repository,
+    ticket: clean(ticket),
+    title: clean(pr.title),
+    url: clean(pr.html_url),
+    head: clean(head.sha),
+    headRef: clean(head.ref),
+    draft: pr.draft,
+    // REST owns the terminal facts even when the fold retains older open metadata.
+    state: pr.merged ? "merged" : "closed",
+    conflicting: false,
+    ...(pr.merged
+      ? { mergeCommit: clean(String(pr.merge_commit_sha).toLowerCase()), mergedAt: clean(String(pr.merged_at)) }
+      : {}),
+  };
+}
+
 type TransitionKind = Exclude<
   Extract<EventKind, `pull-request.${string}`>,
   "pull-request.seen" | "pull-request.commented"
 >;
 type Transition = Extract<EventInput, { kind: TransitionKind }>;
 
-function transitions(before: GithubPullRequest | undefined, pr: GithubPullRequest): TransitionKind[] {
+function transitions(
+  before: (PullRequest & Partial<GithubPullRequest>) | undefined,
+  pr: GithubPullRequest,
+): TransitionKind[] {
   const kinds: TransitionKind[] = [];
   if (pr.state === "open" && pr.conflicting && (!before?.conflicting || before.head !== pr.head))
     kinds.push("pull-request.conflicting");
@@ -378,6 +460,10 @@ export class GithubReader {
             previous.set(pr.number, pr);
           }
         } else if (event.kind.startsWith("pull-request.")) {
+          if (event.kind !== "pull-request.commented") {
+            const pr = event.payload as GithubPullRequest;
+            if (pr.repository === options.repository) previous.set(pr.number, pr);
+          }
           const key = fingerprint(event);
           for (const [id, pending] of this.#pending) {
             if (fingerprint(pending) !== key) continue;
@@ -397,7 +483,13 @@ export class GithubReader {
         return { ok: true, changed: 0 };
       draft = structuredClone(this.#state);
       delete draft.pausedUntil;
-      const context: ForgeReadContext = { checkpoint: draft, at, events: [], onDetails: cancelDeadline };
+      const context: ForgeReadContext = {
+        checkpoint: draft,
+        at,
+        events: [],
+        onDetails: cancelDeadline,
+        openPullRequests: [...previous.values()],
+      };
       this.#providerPending = true;
       const reading = await Promise.race([
         this.#forge
@@ -414,10 +506,25 @@ export class GithubReader {
       controller.signal.throwIfAborted();
       let changed = 0;
       for (const pr of reading) {
-        const before = previous.get(pr.number);
+        const before = context.openPullRequests?.find((held) => held.number === pr.number) ?? previous.get(pr.number);
         if (pr.unresolvedThreads === undefined && before?.unresolvedThreads !== undefined)
           pr.unresolvedThreads = before.unresolvedThreads;
         if (JSON.stringify(before) === JSON.stringify(pr)) continue;
+        if (pr.state !== "open") {
+          // The terminal event is its own durable observation. A preceding seen
+          // snapshot would expose a merge without its generation-fencing time.
+          await append(
+            transitionEvent(
+              pr.state === "merged" ? "pull-request.merged" : "pull-request.closed",
+              pr,
+              options.project,
+              options.actor,
+              at,
+            ),
+          );
+          changed++;
+          continue;
+        }
         await append({
           project: options.project,
           actor: options.actor,
@@ -473,7 +580,7 @@ export class GithubReader {
         });
         this.#state = draft;
       }
-      return { ok: true, changed };
+      return context.reconciliationError ? { ok: false, error: context.reconciliationError } : { ok: true, changed };
     } catch (error) {
       if (draft && error instanceof GithubReadError && !controller.signal.aborted) {
         const state = {

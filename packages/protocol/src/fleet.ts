@@ -304,7 +304,13 @@ function payloadSchemas() {
     "pull-request.checks-red": githubPullRequestSchema,
     "pull-request.review-changed": githubPullRequestSchema,
     "pull-request.closed": githubPullRequestSchema,
-    "pull-request.merged": githubPullRequestSchema,
+    "pull-request.merged": githubPullRequestSchema.extend({
+      mergeCommit: z
+        .string()
+        .regex(/^[0-9a-f]{40}$/i)
+        .optional(),
+      mergedAt: z.iso.datetime().optional(),
+    }),
     "pull-request.commented": forgeCommentSchema,
     "review-thread.opened": reviewThreadSchema,
     "review-thread.resolved": reviewThreadSchema,
