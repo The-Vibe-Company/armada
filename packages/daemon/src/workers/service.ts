@@ -407,6 +407,10 @@ export class Workers {
       } else {
         const action = parsed as { ticket: string; session?: string };
         const current = this.#tables(project)?.sessions.find((s) => s.ticket === action.ticket);
+        if (current?.runtime === "tracker" && (name === "worker.message" || name === "worker.stop"))
+          throw new WorkerRefusal(
+            "this worker was launched outside this daemon; it reads Linear, answer there or relaunch it here",
+          );
         if (
           current &&
           !this.#live.has(current.session) &&

@@ -154,6 +154,7 @@ Published in Linear under the program root THE-1982 (Spec 1/7 THE-1983, Spec 2/7
 
 - `@armada/plugin-api`'s `TrackerProvider`: Linear and internal behind the same `read`/`write` seam, with optional `create` and `update`; the conformance test exercises both and skips methods not implemented by Linear.
 - `packages/plugins/internal-tracker` (`internal-tracker`, tracker kind `internal`): tickets, states, labels, comments, parent and blockers in the log through `ticket.created`, `ticket.edited` and `ticket.commented` (protocol minor 22). Its pure fold supplies the same tickets table as Linear. No credentials or separate ticket database; description links carry attachments.
+- The Linear reader derives three inbox kinds from worker comments: `question`, `plan`, and `hand-back`. Repeated/full reads preserve answered items; later reports, coordinator answers/approvals, phase changes and confirmed merges retire the items they supersede. Hand-backs retain the complete PR/head evidence. `fleet.status` marks sessions with `drive: "daemon" | "tracker"`; tracker sessions can be read and merged, while messages and stops explain that the worker reads Linear and must be answered there or relaunched here. Merging a tracker session completes the ticket and closes its hand-back without attempting daemon runtime control.
 - `app/tickets`: a project's tickets, create and edit, ready to launch.
 - `daemon/import-toml`: import an `armada.toml` into the app's rules.
 

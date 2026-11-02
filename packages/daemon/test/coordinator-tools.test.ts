@@ -32,6 +32,7 @@ interface TestFacts {
     phase: string;
     step: number;
     runtime: string;
+    drive: "daemon" | "tracker";
     head: string | null;
     checks: string | null;
     lastReport: string | null;
@@ -151,6 +152,7 @@ test("fleet.status returns detached project facts and refuses an inactive coordi
   assert.equal(facts.ok, true);
   assert.equal(facts.project, "orchard");
   assert.equal(facts.sessions.length, 1);
+  assert.equal(facts.sessions[0]?.drive, "daemon");
   facts.sessions.length = 0;
   assert.equal((await run("fleet.status")).sessions.length, 1);
   assert.equal(store.readSince(0, "other").length, 6);
