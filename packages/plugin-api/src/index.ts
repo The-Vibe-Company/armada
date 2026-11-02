@@ -128,12 +128,21 @@ export interface TrackerUpdateRequest extends TrackerMutationRequest {
   ticket: string;
   patch: Partial<TrackerTicketFields>;
 }
+/** Read-only complete program export; no ticket observations or external writes. */
+export interface TrackerProgramReading {
+  tickets: (TrackerTicketFields & { id: string })[];
+  comments: { id: string; ticket: string; body: string; author: string; at: string }[];
+}
 export interface TrackerProvider extends ProviderConnection {
   // biome-ignore lint/suspicious/noConfusingVoidType: Preserve existing providers returning Promise<void>.
   read(request: ProjectRequest): Promise<void | TrackerReadResult>;
   write(request: TrackerWriteRequest): Promise<void>;
   create?(request: TrackerCreateRequest): Promise<{ id: string }>;
   update?(request: TrackerUpdateRequest): Promise<void>;
+  readProgram?(request: ProjectRequest & { programRoot: string; phaseGroup?: string }): Promise<{
+    reading?: TrackerProgramReading;
+    pausedUntil?: string;
+  }>;
 }
 export interface ForgeProvider extends ProviderConnection {
   // biome-ignore lint/suspicious/noConfusingVoidType: Existing plugins return void.

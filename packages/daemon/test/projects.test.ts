@@ -333,6 +333,7 @@ test("live add opens configured readers and coordinator; removal refuses active 
   assert.deepEqual(reads.sort(), ["forge:source", "tracker:source"]);
   assert.equal(timers.size, 2);
   assert.deepEqual(configurations.at(-1)?.tracker?.linear, {
+    quotaProjects: ["source"],
     projects: {
       source: {
         programRoot: "EX-1",
@@ -463,8 +464,12 @@ test("host project scope clears stale saved roots while keeping provider options
     tracker: "linear",
     forge: "github",
   });
-  assert.deepEqual(configs.at(-1), { endpoint: "https://linear.example.invalid", projects: {} });
-  assert.deepEqual(configs[0], configs.at(-1));
+  assert.deepEqual(configs.at(-1), {
+    endpoint: "https://linear.example.invalid",
+    projects: {},
+    quotaProjects: ["source"],
+  });
+  assert.deepEqual(configs[0], { endpoint: "https://linear.example.invalid", projects: {}, quotaProjects: [] });
 });
 
 test("failed removal recovery preserves the committed registry and blocks queued mutations with an actionable error", async (t) => {
