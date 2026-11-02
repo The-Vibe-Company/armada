@@ -428,3 +428,66 @@ test("armadad loads the bundled catalog before announcing server readiness", { t
     }
   }),
 );
+
+test("paged plugin history stays complete, project-scoped and pinned before concurrent appends", async () =>
+  fixture(async (dir) => {
+    const reader = await plugin(
+      dir,
+      "paged",
+      manifest("paged"),
+      `
+      export function activate(ctx) {
+        ctx.register.tracker('tickets', { read: async ({project}) => {
+          const reading = ctx.events.read(project, 0);
+          const refused = [];
+          for (const cursor of [NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, -1, 0.5]) {
+            try { await ctx.events.read(project, cursor); refused.push(false); }
+            catch { refused.push(true); }
+          }
+          const events = await reading;
+          await ctx.events.append({ project, kind:'coordinator.checkpoint', actor:'paged',
+            at:'2030-01-01T00:00:00Z', payload:{ checkpoint:{ refused, seqs:events.map(e => e.seq), last:events.at(-1).payload } } });
+        }, write: async () => {} });
+      }
+    `,
+    );
+    const configPath = join(dir, "config.json");
+    await writeFile(configPath, JSON.stringify({ plugins: [{ id: reader.id, config: reader.config }] }));
+    const daemon = await bootDaemon({
+      databasePath: join(dir, "events.sqlite"),
+      configPath,
+      catalog: [reader],
+      secrets: { get: async () => null },
+      log: { info() {}, error() {} },
+    });
+    try {
+      const base = { kind: "hold.opened" as const, actor: "Mira", at: "2030-01-01T00:00:00Z" };
+      daemon.store.appendMany(
+        Array.from({ length: 400 }, (_, i) => ({
+          ...base,
+          project: i % 7 ? "orchard" : "harbor",
+          payload: { id: String(i), reason: `Wait ${i}` },
+        })),
+      );
+      const expected = daemon.store.readSince(0, "orchard");
+      assert.ok(expected.length > 256, "history spans several batches");
+      const provider = daemon.registry.get("tracker", "tickets");
+      assert.ok(provider);
+      const pending = provider.read({ project: "orchard" });
+      daemon.store.append({ ...base, project: "orchard", payload: { id: "later", reason: "New commit" } });
+      await pending;
+      const result = daemon.store.readSince(400, "orchard").find((e) => e.kind === "coordinator.checkpoint");
+      assert.deepEqual(result?.payload, {
+        checkpoint: {
+          refused: [true, true, true, true, true],
+          seqs: expected.map((e) => e.seq),
+          last: expected.at(-1)?.payload,
+        },
+      });
+      const later = daemon.store.readSince(400, "orchard")[0];
+      assert.equal(later?.kind, "hold.opened");
+      assert.deepEqual(later?.payload, { id: "later", reason: "New commit" });
+    } finally {
+      daemon.close();
+    }
+  }));

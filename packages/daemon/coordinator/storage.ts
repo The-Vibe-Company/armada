@@ -5,6 +5,7 @@ import type { EventInput, FleetEvent, Json } from "../src/events.ts";
 import { type ModelUsageReport, observeModelUsage } from "../src/model-sdk.ts";
 import type { EventStore } from "../src/store.ts";
 import { checkpointUsage, type UsageDocuments } from "../src/usage.ts";
+import { checkpointRules, emptyRules } from "./rules.ts";
 
 export interface LogStorageOptions {
   store: EventStore;
@@ -45,6 +46,8 @@ class LogStorage extends MemoryStorage implements CoordinatorStorage {
   readonly #release: () => void;
   #nextId = 2;
   #usageDocuments: UsageDocuments = new Map();
+  #budgetCursor = 0;
+  #budgetRules = emptyRules();
   #closed = false;
   readonly #unobserve = new Map<object, () => void>();
   readonly #providerSessions = new Map<string, string>();
@@ -75,7 +78,8 @@ class LogStorage extends MemoryStorage implements CoordinatorStorage {
     super();
     this.#options = options;
     this.#release = release;
-    for (const event of options.store.readSince(0, options.project)) {
+    const history = options.store.readSince(0, options.project);
+    for (const event of history) {
       if (event.kind !== "coordinator.checkpoint") continue;
       const value = event.payload.checkpoint;
       if (!value || typeof value !== "object" || Array.isArray(value)) continue;
@@ -97,7 +101,7 @@ class LogStorage extends MemoryStorage implements CoordinatorStorage {
         throw new Error("Invalid Armada pi checkpoint");
       }
     }
-    this.#budget();
+    this.#budget(history);
   }
 
   observeModels(models: object, source?: UsageScope): void {
@@ -133,8 +137,23 @@ class LogStorage extends MemoryStorage implements CoordinatorStorage {
     return true;
   }
 
-  #budget(): void {
-    for (const event of evaluateBudget({ project: this.project, events: this.readEvents(), now: this.#options.now() }))
+  #budget(history?: readonly FleetEvent[]): void {
+    // Rules can also be written outside this storage owner. Read the committed
+    // tail before deciding that no budget is configured; never memoize that
+    // decision for the lifetime of a running coordinator.
+    const changes = history ?? this.#options.store.readSince(this.#budgetCursor, this.project);
+    for (const event of changes) {
+      if (event.kind !== "coordinator.checkpoint") continue;
+      const rules = checkpointRules(event.payload.checkpoint);
+      if (rules) this.#budgetRules = rules;
+    }
+    this.#budgetCursor = changes.at(-1)?.seq ?? this.#budgetCursor;
+    if (!this.#budgetRules.value.policy?.budget) return;
+    for (const event of evaluateBudget({
+      project: this.project,
+      events: history ?? this.readEvents(),
+      now: this.#options.now(),
+    }))
       this.#options.store.append(event);
   }
 

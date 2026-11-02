@@ -108,6 +108,38 @@ const clearProgressNotices = (p: Projection, ticket: string) => {
   for (const [id, item] of p.inbox) if (item.kind === "liveness" && item.ticket === ticket) p.inbox.delete(id);
 };
 
+/** Append-only, in-memory replay state. Each snapshot is detached so a caller
+ * can keep the previous reading while the next event advances the same fold.
+ * The event log remains the authority; nothing here is persisted.
+ */
+export class FoldAccumulator {
+  readonly #projects = new Map<string, Projection>();
+  readonly #events: FleetEvent[] = [];
+  #seq = 0;
+
+  append(source: FleetEvent): void {
+    if (!Number.isSafeInteger(source.seq) || source.seq <= this.#seq)
+      throw new Error("events must have increasing positive sequence numbers");
+    const event = structuredClone(source);
+    applyEvent(this.#projects, event);
+    // Only these event kinds contribute to projectUsage; the rest of the fold
+    // already lives in the projection, without a growing replay prefix.
+    if (["coordinator.checkpoint", "worker.readopted", "session.usage"].includes(event.kind)) this.#events.push(event);
+    this.#seq = event.seq;
+  }
+
+  snapshot(): FleetTables {
+    const tables = structuredClone(projectTables(this.#projects, this.#seq, this.#events));
+    // structuredClone normalizes null dictionaries; preserve missing-name reads.
+    Object.setPrototypeOf(tables.projects, null);
+    for (const project of Object.values(tables.projects)) {
+      if (project.readAt) Object.setPrototypeOf(project.readAt, null);
+      if (project.readers) Object.setPrototypeOf(project.readers, null);
+    }
+    return tables;
+  }
+}
+
 /** Replay a complete, ascending log (or a project-filtered log with sequence gaps).
  * No database, clock or V1 imports. All returned data is detached from the input.
  */
@@ -118,280 +150,285 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
     if (!Number.isSafeInteger(source.seq) || source.seq <= seq)
       throw new Error("events must have increasing positive sequence numbers");
     seq = source.seq;
-    const e = structuredClone(source);
-    let p = projects.get(e.project);
-    if (!p) {
-      p = empty();
-      projects.set(e.project, p);
+    // Checkpoints are read-only here: their fleet fields are schema-decoded
+    // below, and projectUsage reads legacy pi documents without retaining them.
+    // Unlike the reusable accumulator, this call cannot outlive its input.
+    applyEvent(projects, source.kind === "coordinator.checkpoint" ? source : structuredClone(source));
+  }
+  return projectTables(projects, seq, events);
+}
+
+function applyEvent(projects: Map<string, Projection>, e: FleetEvent): void {
+  let p = projects.get(e.project);
+  if (!p) {
+    p = empty();
+    projects.set(e.project, p);
+  }
+  applyDelivery(p.deliveries, e);
+  switch (e.kind) {
+    case "tracker.import-started":
+    case "tracker.import-progress":
+    case "tracker.import-ended": {
+      if (e.kind === "tracker.import-started" || p.trackerImport?.id === e.payload.id) {
+        const { source: _source, ...value } = e.payload as typeof e.payload & { source?: string };
+        p.trackerImport = value;
+      }
+      break;
     }
-    applyDelivery(p.deliveries, e);
-    switch (e.kind) {
-      case "tracker.import-started":
-      case "tracker.import-progress":
-      case "tracker.import-ended": {
-        if (e.kind === "tracker.import-started" || p.trackerImport?.id === e.payload.id) {
-          const { source: _source, ...value } = e.payload as typeof e.payload & { source?: string };
-          p.trackerImport = value;
-        }
-        break;
+    case "ticket.seen": {
+      const t = e.payload;
+      if (p.internal.has(t.id)) break;
+      p.tickets.set(t.id, t);
+      const current = p.sessions.get(t.id);
+      const trackerId = `tracker:${t.id}`;
+      if (!current || current.session === trackerId) {
+        if (t.phase)
+          p.sessions.set(t.id, {
+            ticket: t.id,
+            session: trackerId,
+            generation: 0,
+            owner: t.owner ?? e.actor,
+            runtime: "tracker",
+            handle: "",
+            phase: t.phase,
+            reason: t.reason ?? t.phase,
+            at: e.at,
+            heartbeat: null,
+            earlier: current ? [...current.earlier, current.phase] : [],
+          });
+        else if (current) p.sessions.delete(t.id);
       }
-      case "ticket.seen": {
-        const t = e.payload;
-        if (p.internal.has(t.id)) break;
-        p.tickets.set(t.id, t);
-        const current = p.sessions.get(t.id);
-        const trackerId = `tracker:${t.id}`;
-        if (!current || current.session === trackerId) {
-          if (t.phase)
-            p.sessions.set(t.id, {
-              ticket: t.id,
-              session: trackerId,
-              generation: 0,
-              owner: t.owner ?? e.actor,
-              runtime: "tracker",
-              handle: "",
-              phase: t.phase,
-              reason: t.reason ?? t.phase,
-              at: e.at,
-              heartbeat: null,
-              earlier: current ? [...current.earlier, current.phase] : [],
-            });
-          else if (current) p.sessions.delete(t.id);
-        }
-        break;
+      break;
+    }
+    case "ticket.created": {
+      if (p.internal.has(e.payload.id)) break;
+      p.internal.set(e.payload.id, e.payload);
+      // A prior external observation cannot leave a synthetic tracker session behind.
+      if (p.sessions.get(e.payload.id)?.session === `tracker:${e.payload.id}`) p.sessions.delete(e.payload.id);
+      break;
+    }
+    case "ticket.edited": {
+      const ticket = p.internal.get(e.payload.ticket);
+      if (ticket) p.internal.set(ticket.id, { ...ticket, ...e.payload.patch });
+      break;
+    }
+    case "ticket.commented": {
+      if (!p.internal.has(e.payload.ticket)) break;
+      const comments = p.comments.get(e.payload.ticket) ?? new Map();
+      if (!comments.has(e.payload.id))
+        comments.set(e.payload.id, { body: e.payload.body, author: e.actor, at: e.at, seq: e.seq });
+      p.comments.set(e.payload.ticket, comments);
+      break;
+    }
+    case "pull-request.opened":
+    case "pull-request.conflicting":
+    case "pull-request.behind":
+    case "pull-request.head-moved":
+    case "pull-request.checks-green":
+    case "pull-request.checks-red":
+    case "pull-request.review-changed":
+    case "pull-request.closed":
+    case "pull-request.merged":
+    case "pull-request.seen": {
+      const priorHead =
+        p.prs.get(e.payload.number)?.head ?? [...p.prs.values()].findLast((pr) => pr.ticket === e.payload.ticket)?.head;
+      if (priorHead !== e.payload.head) clearProgressNotices(p, e.payload.ticket);
+      if (e.payload.state === "merged" && p.prs.get(e.payload.number)?.state !== "merged")
+        p.mergedAt.set(e.payload.number, { at: e.at, seq: e.seq });
+      p.prs.delete(e.payload.number);
+      p.prs.set(e.payload.number, { ...e.payload, conflicting: e.payload.state === "open" && e.payload.conflicting });
+      break;
+    }
+    case "review-thread.opened":
+    case "review-thread.resolved": {
+      const pr = p.prs.get(e.payload.pr);
+      if (pr) pr.unresolvedThreads = e.payload.unresolvedThreads;
+      break;
+    }
+    case "session.claimed":
+      if (!Number.isSafeInteger(e.payload.generation) || e.payload.generation < 1)
+        throw new Error("claim generation must be a positive safe integer");
+      // Caller-assigned generations fence even previously unseen delayed claims.
+      if (
+        !p.claims.has(e.payload.session) &&
+        (e.payload.generation > (p.sessions.get(e.payload.ticket)?.generation ?? 0) ||
+          (p.sessions.get(e.payload.ticket)?.session === e.payload.session &&
+            p.sessions.get(e.payload.ticket)?.claimSeq === undefined &&
+            !["released", "merged"].includes(p.sessions.get(e.payload.ticket)?.phase ?? "released")))
+      )
+        p.sessions.set(e.payload.ticket, {
+          ...e.payload,
+          claimSeq: e.seq,
+          phase: "planning",
+          reason: "Claimed",
+          at: e.at,
+          heartbeat: null,
+          earlier: [],
+        });
+      if (!p.claims.has(e.payload.session) && p.sessions.get(e.payload.ticket)?.session === e.payload.session)
+        clearProgressNotices(p, e.payload.ticket);
+      p.claims.add(e.payload.session);
+      break;
+    case "session.reported": {
+      const s = active(p, e.payload);
+      if (s) {
+        if (s.phase !== e.payload.phase || s.reason.trim() !== e.payload.reason.trim())
+          clearProgressNotices(p, e.payload.ticket);
+        s.earlier.push(s.phase);
+        s.phase = e.payload.phase;
+        s.reason = e.payload.reason;
+        s.at = e.at;
+        if (e.payload.stage !== undefined) s.stage = e.payload.stage;
       }
-      case "ticket.created": {
-        if (p.internal.has(e.payload.id)) break;
-        p.internal.set(e.payload.id, e.payload);
-        // A prior external observation cannot leave a synthetic tracker session behind.
-        if (p.sessions.get(e.payload.id)?.session === `tracker:${e.payload.id}`) p.sessions.delete(e.payload.id);
-        break;
+      break;
+    }
+    case "session.liveness": {
+      const s = active(p, e.payload);
+      if (
+        s &&
+        s.generation === e.payload.generation &&
+        !["blocked", "awaiting-approval", "awaiting-validation", "ready-to-merge"].includes(s.phase)
+      ) {
+        p.inbox.set(e.payload.id, {
+          id: e.payload.id,
+          ticket: s.ticket,
+          kind: "liveness",
+          actor: e.actor,
+          at: e.at,
+          seq: e.seq,
+          body: `${s.ticket} ${e.payload.verdict}: ${e.payload.summary}; evidence: ${JSON.stringify(e.payload.evidence)}`,
+        });
       }
-      case "ticket.edited": {
-        const ticket = p.internal.get(e.payload.ticket);
-        if (ticket) p.internal.set(ticket.id, { ...ticket, ...e.payload.patch });
-        break;
+      break;
+    }
+    case "session.heartbeat": {
+      const s = active(p, e.payload);
+      if (s) s.heartbeat = e.at;
+      break;
+    }
+    case "session.released": {
+      const s = active(p, e.payload);
+      if (s) {
+        s.earlier.push(s.phase);
+        clearProgressNotices(p, e.payload.ticket);
+        s.phase = "released";
+        s.reason = e.payload.reason;
+        s.at = e.at;
       }
-      case "ticket.commented": {
-        if (!p.internal.has(e.payload.ticket)) break;
-        const comments = p.comments.get(e.payload.ticket) ?? new Map();
-        if (!comments.has(e.payload.id))
-          comments.set(e.payload.id, { body: e.payload.body, author: e.actor, at: e.at, seq: e.seq });
-        p.comments.set(e.payload.ticket, comments);
+      break;
+    }
+    case "inbox.opened": {
+      const prior = p.inbox.get(e.payload.id);
+      if (!prior || (e.payload.kind === "follow-up" && prior.kind === "follow-up"))
+        p.inbox.set(e.payload.id, { ...e.payload, at: prior?.at ?? e.at, actor: e.actor, seq: e.seq });
+      break;
+    }
+    case "inbox.answered":
+      p.inbox.delete(e.payload.id);
+      break;
+    case "merge.queued":
+      if (!p.queue.has(e.payload.id))
+        p.queue.set(e.payload.id, { ...e.payload, at: e.at, seq: e.seq, state: "queued" });
+      break;
+    case "merge.started": {
+      const q = p.queue.get(e.payload.id);
+      if (q) q.state = "running";
+      break;
+    }
+    case "merge.refused":
+    case "merge.canceled":
+      p.queue.delete(e.payload.id);
+      break;
+    case "merge.confirmed": {
+      const q = p.queue.get(e.payload.id);
+      if (
+        q &&
+        (q.head !== e.payload.head ||
+          q.pr !== e.payload.pr ||
+          q.session !== e.payload.session ||
+          q.ticket !== e.payload.ticket)
+      )
         break;
+      p.queue.delete(e.payload.id);
+      const s = active(p, e.payload);
+      if (s) {
+        s.earlier.push(s.phase);
+        clearProgressNotices(p, e.payload.ticket);
+        s.phase = "merged";
+        s.reason = `Merged #${e.payload.pr}`;
+        s.at = e.at;
       }
-      case "pull-request.opened":
-      case "pull-request.conflicting":
-      case "pull-request.behind":
-      case "pull-request.head-moved":
-      case "pull-request.checks-green":
-      case "pull-request.checks-red":
-      case "pull-request.review-changed":
-      case "pull-request.closed":
-      case "pull-request.merged":
-      case "pull-request.seen": {
-        const priorHead =
-          p.prs.get(e.payload.number)?.head ??
-          [...p.prs.values()].findLast((pr) => pr.ticket === e.payload.ticket)?.head;
-        if (priorHead !== e.payload.head) clearProgressNotices(p, e.payload.ticket);
-        if (e.payload.state === "merged" && p.prs.get(e.payload.number)?.state !== "merged")
-          p.mergedAt.set(e.payload.number, { at: e.at, seq: e.seq });
-        p.prs.delete(e.payload.number);
-        p.prs.set(e.payload.number, { ...e.payload, conflicting: e.payload.state === "open" && e.payload.conflicting });
-        break;
-      }
-      case "review-thread.opened":
-      case "review-thread.resolved": {
-        const pr = p.prs.get(e.payload.pr);
-        if (pr) pr.unresolvedThreads = e.payload.unresolvedThreads;
-        break;
-      }
-      case "session.claimed":
-        if (!Number.isSafeInteger(e.payload.generation) || e.payload.generation < 1)
-          throw new Error("claim generation must be a positive safe integer");
-        // Caller-assigned generations fence even previously unseen delayed claims.
+      break;
+    }
+    case "hold.opened":
+      if (!p.holds.has(e.payload.id)) p.holds.set(e.payload.id, { ...e.payload, at: e.at, actor: e.actor });
+      break;
+    case "hold.cleared":
+      p.holds.delete(e.payload.id);
+      break;
+    case "validation.opened":
+      if (!p.validations.has(e.payload.id))
+        p.validations.set(e.payload.id, { ...e.payload, at: e.at, actor: e.actor, decision: null });
+      break;
+    case "validation.decided": {
+      const v = p.validations.get(e.payload.id);
+      if (v && !v.decision)
+        v.decision = { decision: e.payload.decision, note: e.payload.note, at: e.at, actor: e.actor };
+      break;
+    }
+    case "coordinator.checkpoint": {
+      // THE-2043: launch and claim are distinct; launch progress uses the existing worker checkpoint format.
+      const checkpoint = e.payload.checkpoint;
+      const format =
+        checkpoint && typeof checkpoint === "object" && !Array.isArray(checkpoint) ? checkpoint.format : undefined;
+      const launch = format === "armada.worker" ? workerLaunchCheckpointSchema.safeParse(checkpoint) : null;
+      if (launch?.success) {
+        const l = launch.data;
+        const current = p.sessions.get(l.ticket);
         if (
-          !p.claims.has(e.payload.session) &&
-          (e.payload.generation > (p.sessions.get(e.payload.ticket)?.generation ?? 0) ||
-            (p.sessions.get(e.payload.ticket)?.session === e.payload.session &&
-              p.sessions.get(e.payload.ticket)?.claimSeq === undefined &&
-              !["released", "merged"].includes(p.sessions.get(e.payload.ticket)?.phase ?? "released")))
+          (!current ||
+            l.generation > current.generation ||
+            (current.session === l.session && !["released", "merged"].includes(current.phase))) &&
+          !p.claims.has(l.session)
         )
-          p.sessions.set(e.payload.ticket, {
-            ...e.payload,
-            claimSeq: e.seq,
+          p.sessions.set(l.ticket, {
+            ticket: l.ticket,
+            launchSeq: current?.session === l.session ? current.launchSeq : e.seq,
+            session: l.session,
+            generation: l.generation,
+            runtime: l.runtime,
+            handle: l.handle ?? "",
+            owner: e.actor,
             phase: "planning",
-            reason: "Claimed",
             at: e.at,
             heartbeat: null,
             earlier: [],
+            reason: {
+              preparing: "Preparing workspace",
+              starting: "Starting worker CLI",
+              launched: "Launched; waiting for worker claim",
+            }[l.step],
           });
-        if (!p.claims.has(e.payload.session) && p.sessions.get(e.payload.ticket)?.session === e.payload.session)
-          clearProgressNotices(p, e.payload.ticket);
-        p.claims.add(e.payload.session);
-        break;
-      case "session.reported": {
-        const s = active(p, e.payload);
-        if (s) {
-          if (s.phase !== e.payload.phase || s.reason.trim() !== e.payload.reason.trim())
-            clearProgressNotices(p, e.payload.ticket);
-          s.earlier.push(s.phase);
-          s.phase = e.payload.phase;
-          s.reason = e.payload.reason;
-          s.at = e.at;
-          if (e.payload.stage !== undefined) s.stage = e.payload.stage;
-        }
-        break;
       }
-      case "session.liveness": {
-        const s = active(p, e.payload);
-        if (
-          s &&
-          s.generation === e.payload.generation &&
-          !["blocked", "awaiting-approval", "awaiting-validation", "ready-to-merge"].includes(s.phase)
-        ) {
-          p.inbox.set(e.payload.id, {
-            id: e.payload.id,
-            ticket: s.ticket,
-            kind: "liveness",
-            actor: e.actor,
-            at: e.at,
-            seq: e.seq,
-            body: `${s.ticket} ${e.payload.verdict}: ${e.payload.summary}; evidence: ${JSON.stringify(e.payload.evidence)}`,
-          });
-        }
-        break;
-      }
-      case "session.heartbeat": {
-        const s = active(p, e.payload);
-        if (s) s.heartbeat = e.at;
-        break;
-      }
-      case "session.released": {
-        const s = active(p, e.payload);
-        if (s) {
-          s.earlier.push(s.phase);
-          clearProgressNotices(p, e.payload.ticket);
-          s.phase = "released";
-          s.reason = e.payload.reason;
-          s.at = e.at;
-        }
-        break;
-      }
-      case "inbox.opened": {
-        const prior = p.inbox.get(e.payload.id);
-        if (!prior || (e.payload.kind === "follow-up" && prior.kind === "follow-up"))
-          p.inbox.set(e.payload.id, { ...e.payload, at: prior?.at ?? e.at, actor: e.actor, seq: e.seq });
-        break;
-      }
-      case "inbox.answered":
-        p.inbox.delete(e.payload.id);
-        break;
-      case "merge.queued":
-        if (!p.queue.has(e.payload.id))
-          p.queue.set(e.payload.id, { ...e.payload, at: e.at, seq: e.seq, state: "queued" });
-        break;
-      case "merge.started": {
-        const q = p.queue.get(e.payload.id);
-        if (q) q.state = "running";
-        break;
-      }
-      case "merge.refused":
-      case "merge.canceled":
-        p.queue.delete(e.payload.id);
-        break;
-      case "merge.confirmed": {
-        const q = p.queue.get(e.payload.id);
-        if (
-          q &&
-          (q.head !== e.payload.head ||
-            q.pr !== e.payload.pr ||
-            q.session !== e.payload.session ||
-            q.ticket !== e.payload.ticket)
-        )
-          break;
-        p.queue.delete(e.payload.id);
-        const s = active(p, e.payload);
-        if (s) {
-          s.earlier.push(s.phase);
-          clearProgressNotices(p, e.payload.ticket);
-          s.phase = "merged";
-          s.reason = `Merged #${e.payload.pr}`;
-          s.at = e.at;
-        }
-        break;
-      }
-      case "hold.opened":
-        if (!p.holds.has(e.payload.id)) p.holds.set(e.payload.id, { ...e.payload, at: e.at, actor: e.actor });
-        break;
-      case "hold.cleared":
-        p.holds.delete(e.payload.id);
-        break;
-      case "validation.opened":
-        if (!p.validations.has(e.payload.id))
-          p.validations.set(e.payload.id, { ...e.payload, at: e.at, actor: e.actor, decision: null });
-        break;
-      case "validation.decided": {
-        const v = p.validations.get(e.payload.id);
-        if (v && !v.decision)
-          v.decision = { decision: e.payload.decision, note: e.payload.note, at: e.at, actor: e.actor };
-        break;
-      }
-      case "coordinator.checkpoint": {
-        // THE-2043: launch and claim are distinct; launch progress uses the existing worker checkpoint format.
-        const checkpoint = e.payload.checkpoint;
-        const launch =
-          checkpoint &&
-          typeof checkpoint === "object" &&
-          !Array.isArray(checkpoint) &&
-          checkpoint.format === "armada.worker"
-            ? workerLaunchCheckpointSchema.safeParse(checkpoint)
-            : null;
-        if (launch?.success) {
-          const l = launch.data;
-          const current = p.sessions.get(l.ticket);
-          if (
-            (!current ||
-              l.generation > current.generation ||
-              (current.session === l.session && !["released", "merged"].includes(current.phase))) &&
-            !p.claims.has(l.session)
-          )
-            p.sessions.set(l.ticket, {
-              ticket: l.ticket,
-              launchSeq: current?.session === l.session ? current.launchSeq : e.seq,
-              session: l.session,
-              generation: l.generation,
-              runtime: l.runtime,
-              handle: l.handle ?? "",
-              owner: e.actor,
-              phase: "planning",
-              at: e.at,
-              heartbeat: null,
-              earlier: [],
-              reason: {
-                preparing: "Preparing workspace",
-                starting: "Starting worker CLI",
-                launched: "Launched; waiting for worker claim",
-              }[l.step],
-            });
-        }
-        const usage = linearUsageCheckpoint.safeParse(e.payload.checkpoint);
-        if (usage.success) p.readers.linear = usage.data.usage;
-        const reading = readerCheckpoint.safeParse(e.payload.checkpoint);
-        if (reading.success && !reading.data.failures && Number.isFinite(Date.parse(e.at)))
-          p.readAt[reading.data.provider] = e.at;
-        const rules = checkpointRules(e.payload.checkpoint);
-        if (rules) p.rules = rules;
-        break;
-      }
-      case "coordinator.message":
-        break;
-      case "default-branch.seen":
-        p.defaultBranch = e.payload;
-        break;
+      const usage = format === "armada.linear-reader" ? linearUsageCheckpoint.safeParse(checkpoint) : null;
+      if (usage?.success) p.readers.linear = usage.data.usage;
+      const reading = format === "armada.readers" ? readerCheckpoint.safeParse(checkpoint) : null;
+      if (reading?.success && !reading.data.failures && Number.isFinite(Date.parse(e.at)))
+        p.readAt[reading.data.provider] = e.at;
+      const rules = checkpointRules(e.payload.checkpoint);
+      if (rules) p.rules = rules;
+      break;
     }
-    recoverFollowUps(p.inbox, e, p.sessions);
+    case "coordinator.message":
+      break;
+    case "default-branch.seen":
+      p.defaultBranch = e.payload;
+      break;
   }
+  recoverFollowUps(p.inbox, e, p.sessions);
+}
+
+function projectTables(projects: Map<string, Projection>, seq: number, events: readonly FleetEvent[]): FleetTables {
   const tables: FleetTables = { seq, projects: Object.create(null) };
   for (const [project, p] of projects) {
     for (const t of p.internal.values()) {
