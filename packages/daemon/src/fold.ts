@@ -46,6 +46,7 @@ interface Draft extends SessionRef {
   heartbeat: string | null;
   earlier: Phase[];
   claimSeq?: number;
+  startedAt?: string;
   launchSeq?: number;
   stage?: ShippingStage;
 }
@@ -235,6 +236,11 @@ function applyEvent(projects: Map<string, Projection>, e: FleetEvent): void {
       if (priorHead !== e.payload.head) clearProgressNotices(p, e.payload.ticket);
       if (e.payload.state === "merged" && p.prs.get(e.payload.number)?.state !== "merged")
         p.mergedAt.set(e.payload.number, { at: e.at, seq: e.seq });
+      if (e.kind === "pull-request.merged" && e.payload.mergedAt) {
+        const merged = p.mergedAt.get(e.payload.number) ?? { at: e.at, seq: e.seq };
+        // Reconciliation may discover yesterday's merge only after a replacement starts.
+        p.mergedAt.set(e.payload.number, { ...merged, at: e.payload.mergedAt });
+      }
       p.prs.delete(e.payload.number);
       p.prs.set(e.payload.number, { ...e.payload, conflicting: e.payload.state === "open" && e.payload.conflicting });
       break;
@@ -259,6 +265,10 @@ function applyEvent(projects: Map<string, Projection>, e: FleetEvent): void {
         p.sessions.set(e.payload.ticket, {
           ...e.payload,
           claimSeq: e.seq,
+          startedAt:
+            p.sessions.get(e.payload.ticket)?.session === e.payload.session
+              ? (p.sessions.get(e.payload.ticket)?.startedAt ?? e.at)
+              : e.at,
           phase: "planning",
           reason: "Claimed",
           at: e.at,
@@ -409,6 +419,7 @@ function applyEvent(projects: Map<string, Projection>, e: FleetEvent): void {
           p.sessions.set(l.ticket, {
             ticket: l.ticket,
             launchSeq: current?.session === l.session ? current.launchSeq : e.seq,
+            startedAt: current?.session === l.session ? current.startedAt : e.at,
             session: l.session,
             generation: l.generation,
             runtime: l.runtime,
@@ -479,7 +490,8 @@ function projectTables(projects: Map<string, Projection>, seq: number, events: r
           !(
             pr.state === "merged" &&
             (s.claimSeq ?? s.launchSeq) !== undefined &&
-            (p.mergedAt.get(pr.number)?.seq ?? 0) < (s.claimSeq ?? s.launchSeq ?? 0)
+            ((p.mergedAt.get(pr.number)?.seq ?? 0) < (s.claimSeq ?? s.launchSeq ?? 0) ||
+              (s.startedAt !== undefined && Date.parse(p.mergedAt.get(pr.number)?.at ?? "") < Date.parse(s.startedAt)))
           ),
       );
       const validation = [...p.validations.values()].find(

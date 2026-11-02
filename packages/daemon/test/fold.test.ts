@@ -372,3 +372,90 @@ test("incremental readings isolate retained snapshots and input while preserving
   assert.throws(() => replay.append(events[0]!), /sequence/);
   assert.throws(() => replay.append({ ...events[0]!, seq: 2.5 }), /sequence/);
 });
+
+test("fifteen stale conflicting PRs reconcile to zero open after terminal observations", () => {
+  const payloads = Array.from({ length: 15 }, (_, index) => ({
+    number: index + 10,
+    ticket: `SEED-${index + 1}`,
+    repository: "example/orchard",
+    title: "Grow",
+    url: `https://github.com/example/orchard/pull/${index + 10}`,
+    headRef: `feature/seed-${index + 1}`,
+    head: "a".repeat(40),
+    state: "open" as const,
+    ci: "pending" as const,
+    conflicting: true,
+    draft: false,
+    review: "none" as const,
+    checks: [],
+    checksComplete: true,
+  }));
+  const inputs: EventInput[] = payloads.map((payload) =>
+    event("pull-request.conflicting", {
+      ...payload,
+      pr: payload.number,
+      key: `conflict-${payload.number}`,
+    }),
+  );
+  assert.equal(fold(log(...inputs)).projects.orchard?.pullRequests.filter((pr) => pr.state === "open").length, 15);
+  inputs.push(
+    ...payloads.map((payload) =>
+      event("pull-request.merged", {
+        ...payload,
+        state: "merged",
+        mergeCommit: "c".repeat(40),
+        mergedAt: "2030-01-01T10:30:00Z",
+      }),
+    ),
+  );
+  const project = fold(log(...inputs)).projects.orchard;
+  assert.equal(project?.pullRequests.length, 15);
+  assert.equal(project?.pullRequests.filter((pr) => pr.state === "open").length, 0);
+});
+
+test("a merge first discovered after a replacement claim cannot complete that generation", () => {
+  const payload = {
+    number: 10,
+    ticket: ref.ticket,
+    repository: "example/orchard",
+    title: "Grow",
+    url: "https://github.com/example/orchard/pull/10",
+    headRef: "feature/seed-7",
+    head: "a".repeat(40),
+    state: "open" as const,
+    ci: "success" as const,
+    conflicting: true,
+    draft: false,
+    review: "none" as const,
+    checks: [],
+    checksComplete: true,
+  };
+  const inputs: EventInput[] = [
+    claimed,
+    event("pull-request.conflicting", { ...payload, pr: 10, key: "conflict-10" }),
+    {
+      ...event("session.claimed", {
+        ...ref,
+        session: "new",
+        generation: 2,
+        owner: "Mira",
+        runtime: "codex",
+        handle: "new",
+      }),
+      at: "2030-01-02T10:00:00Z",
+    },
+  ];
+  assert.equal(fold(log(...inputs)).projects.orchard?.sessions[0]?.phase, "planning");
+  inputs.push({
+    ...event("pull-request.merged", {
+      ...payload,
+      state: "merged",
+      mergeCommit: "c".repeat(40),
+      mergedAt: "2030-01-01T11:00:00Z",
+    }),
+    at: "2030-01-02T12:00:00Z",
+  });
+  const session = fold(log(...inputs)).projects.orchard?.sessions[0];
+  assert.equal(session?.session, "new");
+  assert.equal(session?.phase, "planning");
+});

@@ -649,6 +649,12 @@ retain cursors, conditional reads and independent failure windows. 404 retries;
 410 drops immediately; 24 hours of continuous failures abandons and names a PR.
 Forge polling follows session activity (30 seconds, otherwise five minutes),
 with GitHub cooldowns and doubling backoff retained in its durable checkpoint.
+After every complete open-list read, the forge reconciles the fold's open PRs
+against GitHub: each missing number gets one budgeted REST lookup, recording
+merged (with merge commit and merge time) or closed only from validated evidence.
+A failed lookup retains the open row and reports a reader error. Reconciliation
+also checks PRs abandoned by comment following; it does not resume that following.
+The actual merge time fences a late observation from ending a replacement session.
 Reader failures are logged on stderr after readiness. External
 comments reach the current worker through keyed delivery, suppressing its own
 PR-author account; conflict/behind candidates belong to the coordinator Waker.

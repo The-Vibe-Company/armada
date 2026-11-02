@@ -619,7 +619,34 @@ test("unknown merge write is not repeated across restart; exact merged head reco
   assert.equal((await f.run("merge.run")).code, "merge_unconfirmed");
   assert.equal(writes, 1);
   f.setFacts({ state: "merged", mergeCommit: "c".repeat(40) });
+  // The reader discovers the completed merge well after the original hand-back.
+  f.append("pull-request.merged", {
+    number: 7,
+    ticket: "SEED-1",
+    head,
+    state: "merged",
+    ci: "success",
+    conflicting: false,
+    repository: "example/orchard",
+    title: "Grow",
+    url: "https://github.com/example/orchard/pull/7",
+    headRef: "feature/seed-1",
+    draft: false,
+    review: "none",
+    checks: [],
+    checksComplete: true,
+    mergeCommit: "c".repeat(40),
+    mergedAt: at,
+  });
+  assert.equal(
+    fold(f.store.readSince(0)).projects.orchard?.inbox.some((item) => item.id === "back"),
+    true,
+  );
   const recovered = await f.run("merge.run", 7, "recover");
+  assert.equal(
+    fold(f.store.readSince(0)).projects.orchard?.inbox.some((item) => item.id === "back"),
+    false,
+  );
   assert.equal(recovered.ok, true);
   assert.deepEqual(await f.run("merge.run", 7, "recover"), recovered);
   assert.deepEqual(await f.run("merge.run", 7, "merge"), recovered, "original intent also has a terminal receipt");
@@ -630,6 +657,63 @@ test("unknown merge write is not repeated across restart; exact merged head reco
   );
   assert.equal(writes, 1);
   assert.equal(f.store.readSince(0).filter((e) => e.kind === "merge.confirmed").length, 1);
+});
+
+test("late merge recovery cannot clean up a replacement generation or its hand-back", async (t) => {
+  const f = await fixture(t);
+  f.forge.merge = async (request) => {
+    request.beforeWrite?.();
+    throw new Error("Connection lost");
+  };
+  assert.equal((await f.run("merge.run")).code, "merge_unconfirmed");
+  f.store.append({
+    project: "orchard",
+    actor: "worker",
+    at: "2030-01-02T00:00:00Z",
+    kind: "session.claimed",
+    payload: {
+      ticket: "SEED-1",
+      session: "replacement",
+      generation: 2,
+      owner: "Mira",
+      runtime: "claude",
+      handle: "replacement",
+    },
+  });
+  f.append("inbox.opened", {
+    id: "replacement-back",
+    ticket: "SEED-1",
+    kind: "hand-back",
+    body: `Agent status: ready-to-merge — PR #8, head ${"d".repeat(40)}`,
+  });
+  f.append("pull-request.merged", {
+    number: 7,
+    ticket: "SEED-1",
+    head,
+    state: "merged",
+    ci: "success",
+    conflicting: false,
+    repository: "example/orchard",
+    title: "Grow",
+    url: "https://github.com/example/orchard/pull/7",
+    headRef: "feature/seed-1",
+    draft: false,
+    review: "none",
+    checks: [],
+    checksComplete: true,
+    mergeCommit: "c".repeat(40),
+    mergedAt: at,
+  });
+  assert.equal(fold(f.store.readSince(0)).projects.orchard?.sessions[0]?.phase, "planning");
+  f.setFacts({ state: "merged", mergeCommit: "c".repeat(40) });
+  f.restart();
+  assert.equal((await f.run("merge.run", 7, "late-recover")).code, "worker_changed");
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.counts().stopCalls, 0);
+  assert.deepEqual(
+    fold(f.store.readSince(0)).projects.orchard?.inbox.map((item) => item.id),
+    ["back", "replacement-back"],
+  );
 });
 
 test("tracker failure retains confirmed merge and resumes tracker/stop without merging twice", async (t) => {
