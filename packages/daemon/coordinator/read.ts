@@ -72,6 +72,7 @@ export function fleetStatus(tables: ProjectTables, events: FleetEvent[], at: str
         phase: s.phase,
         step: s.step,
         runtime: line(s.runtime, 80),
+        drive: s.runtime === "tracker" ? "tracker" : "daemon",
         head: pr?.head ?? null,
         checks: pr?.ci ?? null,
         conflicting: pr?.conflicting ?? false,

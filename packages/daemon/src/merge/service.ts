@@ -532,25 +532,31 @@ export class Merges {
       progress = { ...progress, stage: "tracker" };
       this.#save(scope, progress);
     }
-    if (!this.#options.stop)
-      return refuse(
-        "cleanup_pending",
-        `Merged #${progress.pr}; worker stop and workspace disposal remain`,
-        "install the worker.stop provider, then retry merge.run",
-      );
-    const stop = this.#options.stop;
-    const signal = AbortSignal.timeout(30_000);
-    const stopped = await bounded(signal, () => stop(scope, session, `merge-stop:${hash(progress.key)}`, signal));
+    // Tracker sessions are observations of workers launched elsewhere. Their
+    // merge owns tracker cleanup, never a runtime stop or workspace disposal.
+    let stopped: JsonObject = { ok: true, drive: "tracker" };
+    if (session.runtime !== "tracker") {
+      const stop = this.#options.stop;
+      if (!stop)
+        return refuse(
+          "cleanup_pending",
+          `Merged #${progress.pr}; worker stop and workspace disposal remain`,
+          "install the worker.stop provider, then retry merge.run",
+        );
+      const signal = AbortSignal.timeout(30_000);
+      stopped = await bounded(signal, () => stop(scope, session, `merge-stop:${hash(progress.key)}`, signal));
+    }
     this.#guard(scope, progress, true);
     if (!stopped.ok || stopped.stopped === false)
       return refuse("cleanup_pending", `Merged #${progress.pr}; worker cleanup remains`, "retry merge.run");
-    // Close only this worker generation's hand-back after confirmed merge/cleanup.
+    // Close matching tracker hand-backs, or only this daemon generation's hand-backs.
     const facts = this.#facts(scope);
     const claim = scope
       .readEvents()
       .findLast((e) => e.kind === "session.claimed" && e.payload.session === progress.session);
     for (const item of facts?.inbox ?? []) {
-      if (item.ticket !== progress.ticket || item.kind !== "hand-back" || !claim || item.seq <= claim.seq) continue;
+      if (item.ticket !== progress.ticket || item.kind !== "hand-back") continue;
+      if (session.runtime === "tracker" ? !item.id.startsWith("linear:") : !claim || item.seq <= claim.seq) continue;
       const number = item.body.match(/\bPR #(\d+)/i)?.[1];
       const head = item.body.match(/\bhead ([0-9a-f]+)/i)?.[1]?.toLowerCase();
       if ((number === undefined || Number(number) === progress.pr) && head === progress.head)
