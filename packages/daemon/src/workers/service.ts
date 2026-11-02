@@ -299,7 +299,11 @@ export class Workers {
   #row(project: string, ticket: string, allowEnded = false) {
     const current = this.#tables(project)?.sessions.find((s) => s.ticket === ticket);
     const row = current && this.#live.get(current.session);
-    if (!row) throw new WorkerRefusal("No live worker in this daemon; inspect the session before relaunching");
+    if (!row)
+      throw new WorkerRefusal(
+        "This worker is not attached here; inspect its session and relaunch it here if needed",
+        "worker_outside_daemon",
+      );
     this.#check(row.ref, () => {}, allowEnded);
     return row;
   }

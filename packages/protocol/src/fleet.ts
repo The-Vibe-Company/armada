@@ -110,6 +110,7 @@ export const followUpSchema = z.object({
   facts: text,
   next: text,
   fix: text.optional(),
+  toldOwnerAt: text.optional(),
   attempts: z.number().int().positive(),
   lastAt: text,
   pr: integer.optional(),

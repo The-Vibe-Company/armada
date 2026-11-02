@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { EventInput, FleetEvent, Json } from "../src/events.ts";
 import { fold } from "../src/fold.ts";
 import { refusalLine, refuse } from "../src/merge/refusal.ts";
+import { launchFix, providerFix } from "./capabilities.ts";
 import type { CoordinatorStorage } from "./storage.ts";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -42,7 +43,12 @@ export function followUpEvent(
   const id = `follow-up:${hash(cause)}`;
   const previous = events.findLast((e) => e.kind === "inbox.opened" && e.payload.id === id);
   const prior = previous?.kind === "inbox.opened" ? (previous.payload.followUp?.attempts ?? 0) : 0;
-  const followUp: FollowUp = { ...detail, cause, attempts: Math.max(attempts ?? 1, prior + 1), lastAt: at };
+  const followUp: FollowUp = {
+    ...detail,
+    cause,
+    attempts: Math.max(attempts ?? 1, prior + 1),
+    lastAt: at,
+  };
   return {
     project,
     actor: "coordinator",
@@ -66,8 +72,7 @@ export function workerRefusal(error: unknown): JsonObject {
     : "worker action could not be confirmed; inspect fleet state before retrying";
   const structured = error as { code?: string; capability?: string } | null;
   let code = structured?.code ?? "worker_refused";
-  if (/No live worker in this daemon/i.test(reason)) code = "worker_outside_daemon";
-  else if (/not confirmed|could not be confirmed|unresolved .*launch|retained for recovery/i.test(reason))
+  if (/not confirmed|could not be confirmed|unresolved .*launch|retained for recovery/i.test(reason))
     code = "outcome_unconfirmed";
   else if (/provider is unavailable|runtime unavailable|node unavailable|cannot reattach|cannot bind/i.test(reason))
     code = "capability_missing";
@@ -118,25 +123,36 @@ function recordRefusal(scope: CoordinatorStorage, tool: string, args: JsonObject
   let code = String(result.code);
   let plugin = typeof result.plugin === "string" ? result.plugin : undefined;
   const name = typeof result.capability === "string" ? result.capability : undefined;
-  const availability = events.map(readProviders).findLast((v) => v !== undefined);
-  const provider = name && availability?.providers.find((p) => p.capabilities.includes(name));
+  const availability = providerAvailability(events);
+  const provider = name ? availability?.find((p) => p.capabilities.includes(name)) : undefined;
   if (code === "capability_missing" && provider && !provider.enabled) {
     code = "plugin_disabled";
     plugin = provider.id;
   }
   const fix =
-    code === "plugin_disabled"
-      ? `Enable ${plugin ?? name ?? "the required plugin"} in Settings › Providers`
-      : code === "worker_outside_daemon" || code === "no_worker"
-        ? "answer in Linear or relaunch here"
-        : code === "capability_missing"
-          ? (name ?? "required runtime or node provider")
-          : undefined;
+    typeof result.fix === "string"
+      ? refusalLine(result.fix)
+      : code === "plugin_disabled"
+        ? `Enable ${plugin ?? name ?? "the required plugin"} in Settings › Providers`
+        : code === "worker_outside_daemon" || code === "no_worker"
+          ? "answer in Linear or relaunch here"
+          : code === "capability_missing"
+            ? name === "launch"
+              ? launchFix
+              : name
+                ? providerFix(name, !!provider?.enabled)
+                : launchFix
+            : undefined;
   const event = followUpEvent(events, scope.project, at, ticket, {
     tool,
     args: masked(args) as Record<string, Json>,
     code,
-    reason: refusalLine(result.reason ?? result.message),
+    reason:
+      name?.startsWith("runtime.") &&
+      availability &&
+      !availability.some((p) => p.enabled && p.capabilities.some((c) => c.startsWith("runtime.")))
+        ? "no runtime provider enabled"
+        : refusalLine(result.reason ?? result.message),
     facts: merge
       ? `${ticket} is ready-to-merge; PR #${pr.number} is green at ${pr.head.slice(0, 8)}`
       : `${ticket}: ${session?.runtime ?? "selected worker"} ${session?.phase ?? "not launched"}; action unavailable`,
@@ -179,6 +195,13 @@ export function withFollowUps(scope: CoordinatorStorage, now: () => string, tool
 
 /** Follow-ups are coordinator work; resolving one must never queue worker input. */
 export const isFollowUp = (item: InboxItem | undefined) => item?.kind === "follow-up";
+
+/** A receipt belongs to the owner's required action, not just the cause's stable id. */
+export function sameFollowUpAction(a: FollowUp | undefined, b: FollowUp | undefined) {
+  return (
+    !!a && !!b && a.capability === b.capability && a.reason === b.reason && (a.fix ?? a.next) === (b.fix ?? b.next)
+  );
+}
 
 /** Recovery only uses later, host-owned facts; an unrelated event cannot dismiss the cause. */
 export function recoverFollowUps(
@@ -252,6 +275,10 @@ function readProviders(event: FleetEvent) {
   const parsed = providersSchema.safeParse(event.payload.checkpoint);
   return parsed.success ? parsed.data : undefined;
 }
+/** The host's latest public provider reading; settings alone do not prove a loaded runtime. */
+export function providerAvailability(events: readonly FleetEvent[]) {
+  return events.map(readProviders).findLast((value) => value !== undefined)?.providers;
+}
 /** Persist only public availability, never plugin settings or secrets. */
 export function providerCheckpoint(project: string, at: string, providers: ProviderAvailability): EventInput {
   return {
@@ -282,11 +309,101 @@ export function followUpSummary(tables: ProjectTables, at: string) {
         ticket: i.ticket,
         cause: refusalLine(`${f?.tool ?? f?.candidate ?? "follow-up"}: ${f?.reason ?? i.body}`).slice(0, 96),
         next: (f?.next ?? "inbox.list").slice(0, 96),
+        fix: f?.fix ?? null,
+        toldOwnerAt: f?.toldOwnerAt ?? null,
         attempts: f?.attempts ?? 1,
         ageSeconds,
       };
     }),
   };
+}
+
+/** Saved with the final pi commit: a published line and its receipt cannot diverge on restart. */
+export function followUpOwnerReport(
+  tables: ProjectTables | undefined,
+  project: string,
+  at: string,
+  text: string,
+  turnStart: number,
+): EventInput[] {
+  const minutes = tables?.rules?.value.policy?.coordinatorMinutes ?? 10;
+  const events: EventInput[] = [];
+  let addedLine = false;
+  const untold = tables?.inbox.filter((item) => item.kind === "follow-up" && !item.followUp?.toldOwnerAt) ?? [];
+  for (const item of tables?.inbox ?? []) {
+    const f = item.followUp;
+    if (item.kind !== "follow-up" || !f || f.toldOwnerAt) continue;
+    const action = f.fix ?? f.next;
+    const told = text.split(/\r?\n/).some((line) => ownerActionSaid(item, line, untold.length === 1));
+    const due =
+      (!!f.fix && item.seq > turnStart) || (minutes > 0 && Date.parse(at) - Date.parse(item.at) >= minutes * 60_000);
+    if (!told && (!due || addedLine)) continue;
+    const base = { project, actor: "coordinator", at };
+    if (!told) {
+      const capability =
+        f.tool === "worker.launch" ? "launch a worker" : `complete ${f.tool ?? f.candidate ?? "this action"}`;
+      events.push({
+        ...base,
+        kind: "coordinator.message",
+        payload: {
+          role: "coordinator",
+          body: `${item.ticket}: Cannot ${capability}: ${refusalLine(f.reason)}. ${refusalLine(action)}`,
+        },
+      });
+      addedLine = true;
+    }
+    events.push({
+      ...base,
+      kind: "inbox.opened",
+      payload: {
+        id: item.id,
+        ticket: item.ticket,
+        kind: "follow-up",
+        body: item.body,
+        followUp: { ...f, toldOwnerAt: at },
+      },
+    });
+  }
+  return events;
+}
+
+/** Be conservative: a promise, bare fix or unrelated Settings sentence is not an owner report. */
+function ownerActionSaid(item: InboxItem, text: string, sole: boolean) {
+  const f = item.followUp;
+  if (!f?.fix) return false; // A prose promise cannot prove that a coordinator's next action ran.
+  const said = text.toLowerCase();
+  const tickets = text.match(/\b[A-Z][A-Z0-9_]*-\d+\b/gi) ?? [];
+  if (tickets.length ? !tickets.some((ticket) => ticket.toLowerCase() === item.ticket.toLowerCase()) : !sole)
+    return false;
+  const capabilities: Record<string, RegExp> = {
+    "worker.launch": /(?:launch|start|lancer).*worker/i,
+    "worker.relaunch": /(?:relaunch|restart|relancer).*worker/i,
+    "worker.message": /message|deliver|envoyer|transmettre/i,
+    "worker.stop": /stop|arrêter|arreter/i,
+    "inbox.answer": /answer|répondre/i,
+    "merge.check": /merge|fusion/i,
+    "merge.run": /merge|fusion/i,
+  };
+  if (
+    !/(?:cannot|can't|unable|blocked|ne peux pas|ne pouvons pas|impossible)/i.test(text) ||
+    !capabilities[f.tool ?? ""]?.test(text)
+  )
+    return false;
+  const reason =
+    said.includes(f.reason.toLowerCase()) ||
+    (f.reason === "no runtime provider enabled" && /no active runtime|aucun runtime actif/i.test(text));
+  if (!reason) return false;
+  const directive = (text.split(/(?:[.!?;]\s+|:\s+)/).at(-1) ?? "").replace(/[.!?]\s*$/, "").trim();
+  if (directive.toLowerCase() === f.fix.toLowerCase()) return true;
+  if (!/^enable /i.test(f.fix)) return false;
+  const providers = [...f.fix.matchAll(/\b(conductor|claude|codex|opencode)\b/gi)].map((match) =>
+    match[0].toLowerCase(),
+  );
+  const enabled =
+    /^(?:enable|activate|active|activez|activer)\s+(conductor|claude|codex|opencode)\s+(?:in|dans)\s+(?:settings\s*›\s*providers|réglages\s*›\s*fournisseurs)$/i.exec(
+      directive,
+    );
+  return !!enabled?.[1] && providers.includes(enabled[1].toLowerCase());
 }
 
 export interface WakeEvidence {

@@ -7,7 +7,14 @@ import { FoldAccumulator } from "../src/fold.ts";
 import { maskedTail, type ProgressJudge, verdictSchema } from "../src/liveness/judge.ts";
 import { type ProgressSignals, progressSignals, progressSummary, type Report } from "../src/liveness/progress.ts";
 import type { EventStore } from "../src/store.ts";
-import { factsHash, followUpEvent, readWakeEvidence, type WakeEvidence, wakeEvidenceCheckpoint } from "./follow-ups.ts";
+import {
+  factsHash,
+  followUpEvent,
+  readWakeEvidence,
+  sameFollowUpAction,
+  type WakeEvidence,
+  wakeEvidenceCheckpoint,
+} from "./follow-ups.ts";
 import { forgeWakeups } from "./forge-wake.ts";
 
 /** Reserved host entry metadata distinguishes a wake from owner-written text. */
@@ -265,7 +272,7 @@ const contentOf = (candidates: readonly WakeCandidate[]) => {
     lines.push(line);
     size += line.length;
   }
-  return `Fleet wake-up:\n${lines.join("\n")}${candidates.length > lines.length ? `\n- ${candidates.length - lines.length} more changes; read fleet.status and inbox.list for the full reading.` : ""}\nRead current fleet/inbox facts before acting. End silently if nothing needs doing.`;
+  return `Fleet wake-up:\n${lines.join("\n")}${candidates.length > lines.length ? `\n- ${candidates.length - lines.length} more changes; read fleet.status and inbox.list for the full reading.` : ""}\nRead current fleet/inbox facts before acting. End silently if nothing needs doing; report an overdue untold follow-up once, naming its fix.`;
 };
 export const wakeBody = (candidates: readonly WakeCandidate[]) =>
   `Woke: ${candidates
@@ -299,6 +306,7 @@ export class Waker {
   #cancelQuiet?: () => void;
   #cancelLiveness?: () => void;
   #sending?: Promise<void>;
+  readonly #remindedAt = new Map<string, number>();
   #lastWake = 0;
   readonly #unsubscribe: () => void;
 
@@ -339,6 +347,9 @@ export class Waker {
       this.#attempts.set(`${c.session}@${c.generation}`, Date.parse(e.at));
     if (e.kind === "coordinator.wakeup") {
       this.#lastWake = Math.max(this.#lastWake, Date.parse(e.at));
+      if (e.payload.reminder)
+        for (const candidate of e.payload.candidates)
+          if (candidate.facts.item) this.#remindedAt.set(candidate.facts.item, Date.parse(e.at));
       for (const candidate of e.payload.candidates)
         if (!this.#evidence.has(candidate.key))
           this.#evidence.set(candidate.key, {
@@ -447,6 +458,12 @@ export class Waker {
         this.#fold.append(e);
         const next = { tables: this.#fold.snapshot().projects[this.#project], events: [...this.#events] };
         for (const candidate of wakeups(this.#reading, next)) this.#considerEvidence(candidate, e.seq);
+        for (const id of this.#remindedAt.keys()) {
+          const before = this.#reading.tables?.inbox.find((item) => identity(item.id) === id);
+          const current = next.tables?.inbox.find((item) => identity(item.id) === id);
+          if (!before || !current || (before.followUp && !sameFollowUpAction(before.followUp, current.followUp)))
+            this.#remindedAt.delete(id);
+        }
         this.#reading = next;
       }
       // Keep only this boot's recovery batch when replaying older undelivered history.
@@ -556,19 +573,27 @@ export class Waker {
     this.#cancelQuiet?.();
     this.#cancelQuiet = undefined;
     const tables = this.#reading.tables;
-    const items = (tables?.inbox ?? []).filter((i) => i.kind !== "follow-up");
+    const items = (tables?.inbox ?? []).filter((i) => i.kind !== "follow-up" || !i.followUp?.toldOwnerAt);
     const policy = tables?.rules?.value.policy;
     const minutes = policy?.coordinatorMinutes ?? 10;
     if (!items.length || minutes === 0 || this.#pending.size) return;
-    const oldest = Math.min(...items.map((i) => Date.parse(i.at)));
-    const due = Math.max(oldest + minutes * 60_000, this.#lastWake + (policy?.quietMinutes ?? 45) * 60_000);
+    const deadline = (item: (typeof items)[number]) => {
+      if (item.kind !== "follow-up")
+        return Math.max(Date.parse(item.at) + minutes * 60_000, this.#lastWake + (policy?.quietMinutes ?? 45) * 60_000);
+      const reminder = this.#remindedAt.get(identity(item.id));
+      return Math.max(
+        Date.parse(item.at) + minutes * 60_000,
+        reminder === undefined ? 0 : reminder + Math.max(1, policy?.quietMinutes ?? 45) * 60_000,
+      );
+    };
+    const due = Math.min(...items.map(deadline));
     this.#cancelQuiet = this.#clock.setTimer(
       () => {
         this.#cancelQuiet = undefined;
         if (this.#clock.now() < due) return this.#quiet();
         const overdue =
           this.#reading.tables?.inbox.filter(
-            (i) => i.kind !== "follow-up" && this.#clock.now() - Date.parse(i.at) >= minutes * 60_000,
+            (i) => (i.kind !== "follow-up" || !i.followUp?.toldOwnerAt) && this.#clock.now() >= deadline(i),
           ) ?? [];
         if (!overdue.length) return this.#quiet();
         for (const item of overdue) {
