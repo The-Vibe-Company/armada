@@ -1,0 +1,7 @@
+{
+  "runtime": {
+    "claude": {
+      "binary": "${directory}/claude-worker.mjs"
+    }
+  }
+}

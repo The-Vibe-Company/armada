@@ -24,6 +24,48 @@ export type ProgressJudge = (
   signal: AbortSignal,
 ) => Promise<ProgressVerdict>;
 
+/** Explicit CLI permission evidence is a blocker, even before silence thresholds. */
+export function permissionBlock(tail: string): ProgressVerdict | undefined {
+  // User echoes and tool inputs can quote the incident verbatim. Only runtime
+  // replies/diagnostics are evidence; ordinary filesystem EACCES is a different fix.
+  const replies = maskedTail(tail)
+    .split(/\r?\n/)
+    .flatMap((line): string[] => {
+      try {
+        const frame = JSON.parse(line);
+        if (frame.armada === 1 && frame.kind === "failure" && frame.permission === true)
+          return ["Runtime requested permissions for tool use"];
+        if (frame.type === "result") {
+          if (Array.isArray(frame.permission_denials) && frame.permission_denials.length)
+            return ["Runtime requested permissions for tool use"];
+          return [frame.result, ...(Array.isArray(frame.errors) ? frame.errors : [])].filter(
+            (v): v is string => typeof v === "string",
+          );
+        }
+        if (frame.type === "assistant") {
+          const content = frame.message?.content;
+          return typeof content === "string"
+            ? [content]
+            : Array.isArray(content)
+              ? content.flatMap((part) => (part.type === "text" && typeof part.text === "string" ? [part.text] : []))
+              : [];
+        }
+        if (frame.armada === 1 && frame.kind === "reply" && typeof frame.text === "string") return [frame.text];
+        return [];
+      } catch {
+        return line.trimStart().startsWith("{") ? [] : [line];
+      }
+    });
+  const evidence = replies
+    .join("\n")
+    .match(
+      /[^\r\n]*(?:requested permissions|(?:have|has)n['’]t granted|permission gate refused|permission (?:prompt|request))[^\r\n]*/i,
+    )?.[0];
+  return evidence
+    ? { verdict: "stuck", evidence: `Runtime permission block: ${evidence.trim()}`.slice(0, 240) }
+    : undefined;
+}
+
 /** A single bounded completion. No harness, tool registry, tool context or mutation capability. */
 export function judgeProgress(
   models: Models | (() => Models),
@@ -32,6 +74,8 @@ export function judgeProgress(
   sessionId?: string,
 ): ProgressJudge {
   return async (signals, tail, lastReports, selection, signal) => {
+    const blocked = permissionBlock(tail);
+    if (blocked) return blocked;
     const ref = selection ?? (typeof defaultModel === "function" ? await defaultModel() : defaultModel);
     const registry = typeof models === "function" ? models() : models;
     const model = registry.getModel(ref.provider, ref.modelId);

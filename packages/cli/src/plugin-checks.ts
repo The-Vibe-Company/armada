@@ -375,6 +375,53 @@ async function workerChecks(options: SeamCheckOptions, seam: "runtime" | "node",
       );
     });
     if (!launched || !worker || !workspace || !provider) return;
+    // Bundled CLI fixtures opt in to exercising the official launch path too.
+    // The explicit-command lifecycle below remains available to any third-party runtime.
+    if (
+      seam === "runtime" &&
+      ["claude", "codex", "opencode"].includes(kind) &&
+      hostNode &&
+      (await stat(join(options.directory, `${kind}-worker.mjs`)).then(
+        () => true,
+        () => false,
+      ))
+    ) {
+      await options.check(`${name}.permissions`, async (signal) => {
+        assert(provider && workspace);
+        const native = await provider.launch({
+          workspace,
+          worker: { project, ticket, session: randomUUID(), generation: 1 },
+          command: "",
+          args: [],
+          env: { FAKE_AUTH: "yes" },
+        });
+        try {
+          await provider.deliver(native, "permission-check", randomUUID());
+          let reply = "";
+          await poll(
+            provider,
+            native,
+            (observation) => {
+              reply = observation.reply ?? "";
+              return reply.includes("permission-check");
+            },
+            undefined,
+            signal,
+          );
+          const launched = JSON.parse(reply) as { args: string[]; permission?: unknown };
+          if (kind === "claude")
+            assert.equal(launched.args[launched.args.indexOf("--permission-mode") + 1], "bypassPermissions");
+          else if (kind === "codex") {
+            assert(launched.args.includes('approval_policy="never"'));
+            assert(launched.args.includes('sandbox_mode="workspace-write"'));
+            assert(launched.args.includes("sandbox_workspace_write.network_access=true"));
+          } else if (kind === "opencode") assert.deepEqual(launched.permission, { "*": "allow" });
+          else throw new Error("Unknown native permission fixture");
+        } finally {
+          await provider.stop(native);
+        }
+      });
+    }
     await options.check(`${name}.deliver`, async (signal) => {
       assert(worker);
       const nonce = `nonce-${randomUUID()}`;

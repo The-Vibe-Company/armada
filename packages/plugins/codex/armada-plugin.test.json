@@ -1,0 +1,7 @@
+{
+  "runtime": {
+    "codex": {
+      "binary": "${directory}/codex-worker.mjs"
+    }
+  }
+}
