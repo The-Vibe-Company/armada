@@ -336,6 +336,18 @@ export function RoomView({
             )}
             <Queued items={chat.queued ?? []} />
             <DeliveryStatus deliveries={state.deliveries ?? []} />
+            {state.trackerImport && (
+              <p
+                role="status"
+                className="m-0 mx-auto w-full min-w-0 max-w-[calc(var(--chat-content-max-width)+1.5rem)] flex-none px-3 pb-2 text-body text-text-3 [overflow-wrap:anywhere] sm:max-w-[calc(var(--chat-content-max-width)+6rem)] sm:px-12"
+              >
+                Linear import {state.trackerImport.programRoot}: {state.trackerImport.state} ·{" "}
+                {state.trackerImport.imported}/{state.trackerImport.total} imported, {state.trackerImport.skipped}{" "}
+                skipped, {state.trackerImport.comments} comments
+                {state.trackerImport.pausedUntil ? ` · paused until ${state.trackerImport.pausedUntil}` : ""}
+                {state.trackerImport.error ? ` · ${state.trackerImport.error}` : ""}
+              </p>
+            )}
             {/* The question's card is in the panel's Agents; while that is not on screen, the field says it waits. */}
             {pinned && !(open && tab === "agents") && (
               <Asking item={pinned} waiting={questions.length} onAnswer={() => side.goTo("question", true)} />

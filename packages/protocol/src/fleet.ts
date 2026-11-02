@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { deliveryPayloadSchemas, deliveryStateSchema } from "./deliveries.js";
+import { importPayloadSchemas, trackerImportSchema } from "./import.js";
 import { readerUsageSchema } from "./readers.js";
 import { rulesStateSchema } from "./rules.js";
 import { reportedUsageSchema } from "./tokens.js";
@@ -311,6 +312,7 @@ function payloadSchemas() {
 
     // Durable worker input deliveries (THE-2108).
     ...deliveryPayloadSchemas,
+    ...importPayloadSchemas,
   } as const;
 }
 export type EventKind = keyof typeof eventPayloadSchemas;
@@ -385,6 +387,7 @@ function makeTablesSchema() {
     holds: z.array(holdSchema),
     validations: z.array(validationSchema),
     deliveries: z.array(deliveryStateSchema).optional(),
+    trackerImport: trackerImportSchema.optional(),
   });
 }
 // Usage is an additive JSON extension, validated by its producer and the usage view.

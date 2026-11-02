@@ -63,6 +63,9 @@ function validateConfig(manifest: PluginManifest, config: PluginConfig, defaults
               ...((base as Record<string, Json>).projects && {
                 projects: (base as Record<string, Json>).projects,
               }),
+              ...((base as Record<string, Json>).quotaProjects && {
+                quotaProjects: (base as Record<string, Json>).quotaProjects,
+              }),
             }
           : saved;
       validateContribution(contribution.config as JsonSchema, seam, kind, value);

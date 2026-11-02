@@ -24,6 +24,7 @@ import {
 import { DELIVERIES_MINOR } from "./deliveries.js";
 import { counter, identifier, requestSchema, USAGE_MINOR, versionSchema } from "./envelope.js";
 import { FOLLOW_UP_MINOR, GITHUB_READER_MINOR, INTERNAL_TRACKER_MINOR } from "./fleet.js";
+import { IMPORT_MINOR, trackerImportRequestSchema, trackerImportResultSchema } from "./import.js";
 import {
   MODEL_SCOPE_MINOR,
   modelConfigSchema,
@@ -54,6 +55,7 @@ export * from "./account.js";
 export * from "./auth.js";
 export * from "./chat.js";
 export * from "./fleet.js";
+export * from "./import.js";
 export * from "./models.js";
 export * from "./plugins.js";
 export * from "./projects.js";
@@ -83,6 +85,7 @@ export const PROTOCOL_VERSION = {
     FOLLOW_UP_MINOR,
     PROJECT_TRACKER_MINOR,
     MODEL_SCOPE_MINOR,
+    IMPORT_MINOR,
   ),
 } as const;
 export const APP_TOO_OLD = "Armada app is older than the daemon: update it";
@@ -158,6 +161,7 @@ export const fleetShutdownResultSchema = z.object({
   failed: z.array(identifier),
 });
 export const clientMessageSchema = /* @__PURE__ */ z.discriminatedUnion("type", [
+  trackerImportRequestSchema,
   fleetShutdownRequestSchema,
   accountStatusRequestSchema,
   accountLoginRequestSchema,
@@ -266,6 +270,7 @@ export const errorSchema = z.object({
   message: identifier,
 });
 export const serverMessageSchema = z.discriminatedUnion("type", [
+  trackerImportResultSchema,
   fleetShutdownResultSchema,
   accountResultSchema,
   accountDeviceSchema,
@@ -358,6 +363,11 @@ export function admitRequest(input: unknown, daemonVersion: ProtocolVersion = PR
       error: { ...base, code: "invalid-message", message: "A project's coordinator model requires protocol minor 24" },
     };
   if (parsed.data.type === "fleet.shutdown" && parsed.data.version.minor < WORKER_RECOVERY_MINOR)
+    return { ok: false, close: false, error: { ...base, code: "app-too-old", message: APP_TOO_OLD } };
+  if (
+    parsed.data.type === "tracker.import" &&
+    (version.minor < IMPORT_MINOR || parsed.data.version.minor < IMPORT_MINOR)
+  )
     return { ok: false, close: false, error: { ...base, code: "app-too-old", message: APP_TOO_OLD } };
   return { ok: true, request: parsed.data };
 }

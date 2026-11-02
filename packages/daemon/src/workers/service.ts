@@ -410,6 +410,7 @@ export class Workers {
         if (current?.runtime === "tracker" && (name === "worker.message" || name === "worker.stop"))
           throw new WorkerRefusal(
             "this worker was launched outside this daemon; it reads Linear, answer there or relaunch it here",
+            "worker_outside_daemon",
           );
         if (
           current &&

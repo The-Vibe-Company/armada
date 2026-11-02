@@ -1,4 +1,10 @@
-import { flowStepSchema, phaseSchema, sessionStateSchema } from "@armada/protocol";
+import {
+  flowStepSchema,
+  phaseSchema,
+  sessionStateSchema,
+  type TrackerImport,
+  trackerImportSchema,
+} from "@armada/protocol";
 import { z } from "zod";
 
 // The protocol owns the folded state's vocabulary. The app reads the few
@@ -103,6 +109,7 @@ type FoldedValidation = z.infer<typeof validationSchema>;
 /** One project's folded state, as far as the fleet's screens read it. */
 export interface FleetState {
   deliveries?: FoldedDelivery[];
+  trackerImport?: TrackerImport;
   readAt?: Record<string, string>;
   usage?: unknown;
   sessions: FoldedSession[];
@@ -140,9 +147,11 @@ export function fleetOf(snapshot: { state: unknown }): FleetState {
 export function readFleetState(state: unknown): FleetState {
   const o =
     state !== null && typeof state === "object" && !Array.isArray(state) ? (state as Record<string, unknown>) : {};
+  const importing = trackerImportSchema.safeParse(o.trackerImport);
   const reading = z.record(text, z.iso.datetime()).safeParse(o.readAt);
   return {
     ...(o.usage ? { usage: o.usage } : {}),
+    ...(importing.success ? { trackerImport: importing.data } : {}),
     ...(reading.success ? { readAt: reading.data } : {}),
     ...(Array.isArray(o.deliveries) ? { deliveries: rows(o.deliveries, deliverySchema) } : {}),
     sessions: rows(o.sessions, sessionSchema),
