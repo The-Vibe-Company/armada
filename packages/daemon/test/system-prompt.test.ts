@@ -16,6 +16,7 @@ test("the coordinator reads, resolves, launches, merges and reports before the t
   assert.match(steps[1] ?? "", /questions.*before merging or launching/);
   assert.match(steps[1] ?? "", /remaining items oldest first/);
   assert.match(steps[2] ?? "", /launch.*cap/i);
+  assert.match(steps[2] ?? "", /each candidate.*`worker.launch`.*capacity.free.*null or positive/);
   assert.match(steps[2] ?? "", /whole ticket and parent spec with `ticket.read`/);
   assert.match(steps[2] ?? "", /verifying blockers, claims, capacity and policy/);
   assert.match(steps[3] ?? "", /merge/i);
@@ -104,16 +105,17 @@ test("status promises exclude evidence the actual tool marks unavailable", async
   assert.equal(facts.ok, true);
   assert.ok(facts.unavailable.length);
   const unavailable = SYSTEM_PROMPT.split("## Unavailable evidence")[1]?.split("##")[0] ?? "";
+  assert.match(unavailable, /Launch capacity is in capacity/);
+  assert.match(unavailable, /`worker.launch` enforces the cap; its refusal is the only signal/);
+  assert.match(unavailable, /Never defer a launch to ask the owner about slots or runtime observations/);
+  assert.match(unavailable, /notes.*never gate a launch, merge or answer/);
   const statusRule = SYSTEM_PROMPT.match(/^- `fleet.status`: (.+)$/m)?.[1] ?? "";
   assert.ok(statusRule);
   const concepts: Record<string, RegExp> = {
     launch: /enabled runtime providers/,
     "tracker-write": /tracker write support/,
     "frontier-blockers": /ready frontier|frontier with blockers/,
-    "runtime-observations": /runtime observations/,
-    jobs: /jobs/,
     "default-branch-health": /default.branch health|main health/,
-    "launch-capacity": /launch capacity/,
   };
   for (const { capability: field, reason, fix } of facts.unavailable) {
     assert.ok(reason);

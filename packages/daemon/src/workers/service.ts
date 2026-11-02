@@ -77,10 +77,12 @@ const id = z.string().min(1).max(200).regex(/\S/);
 export class WorkerRefusal extends Error {
   readonly code?: string;
   readonly capability?: string;
-  constructor(message: string, code?: string, capability?: string) {
+  readonly fix?: string;
+  constructor(message: string, code?: string, capability?: string, fix?: string) {
     super(message);
     this.code = code;
     this.capability = capability;
+    this.fix = fix;
   }
 }
 const launchArgs = {
@@ -640,7 +642,7 @@ export class Workers {
     const nodeKind = rules?.placement?.workers ?? "local";
     const max = rules?.policy?.maxWorkers;
     if (max != null && active.length >= max)
-      throw new WorkerRefusal(`worker cap reached: ${active.length} of ${max} workers; nothing was launched`);
+      throw new WorkerRefusal(`cap reached: ${active.length} of ${max} workers; release or raise policy.maxWorkers`);
     const runtime = this.#options.registry.get("runtime", route.cli, project);
     const node = this.#options.registry.get("node", nodeKind, project);
     if (!runtime || (!runtime.needsLaunchToken && !node))
@@ -652,7 +654,13 @@ export class Workers {
     let bound = runtime;
     if (!runtime.needsLaunchToken) {
       if (!runtime.withNode || !node) throw new WorkerRefusal("Runtime cannot bind the selected node");
-      if (!config.checkout) throw new WorkerRefusal("Local runtime needs a project checkout");
+      if (!config.checkout)
+        throw new WorkerRefusal(
+          "Local runtime needs a project checkout",
+          "capability_missing",
+          "project-checkout",
+          "Register the project's folder: Settings › Projects, or re-add the project from its folder",
+        );
       bound = runtime.withNode(node);
     }
     const branch = args.branch ?? ticket.branchName;
@@ -716,6 +724,13 @@ export class Workers {
           : "Configure the project program root before launching in Conductor",
       );
     if (this.#closing) throw new WorkerRefusal("Worker service is stopping");
+    if (route.cli === "claude" && bound.status && !(await bound.status()).installed)
+      throw new WorkerRefusal(
+        "Claude Code is not installed",
+        "capability_missing",
+        "claude-cli",
+        "Install Claude Code or enable Conductor in Settings › Providers",
+      );
     let context: Awaited<ReturnType<typeof loadBriefContext>>;
     try {
       context = await loadBriefContext(config.root ?? config.checkout);

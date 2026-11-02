@@ -25,6 +25,10 @@ test("native, merge and worker refusal guidance never directs a coordinator to V
   for (const path of paths) {
     const source = readFileSync(new URL(path, root), "utf8");
     assert.doesNotMatch(source, /armada |armada\.toml/, path);
-    assert.doesNotMatch(source, /capacity unavailable|No live worker in this daemon/i, path);
+    assert.doesNotMatch(
+      source,
+      /capacity unavailable|No live worker in this daemon|confirme[rz]?-moi la capacit[eé]|confirm (?:the |available )?(?:capacity|slots)|v[eé]rifie.*workers actifs/i,
+      path,
+    );
   }
 });
