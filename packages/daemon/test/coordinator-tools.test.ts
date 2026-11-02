@@ -1178,7 +1178,7 @@ async function ticketFixture(t: TestContext, wrap: (tracker: TrackerProvider) =>
     },
   });
   let scope = openCoordinatorStorage({ store, project: "orchard", now: () => at });
-  const options = { now: () => at, tracker: () => tracker, workers };
+  const options = { now: () => at, tracker: "internal", trackerProvider: () => tracker, workers };
   let tools = nativeTools(scope, options);
   let call = 0;
   const run = async (name: CoordinatorToolName, args: object, callId = String(++call)) => {
@@ -1301,7 +1301,7 @@ test("ticket call identities survive reopening and recover a committed create wh
   assert.equal((await f.run("ticket.update", { id: recovered.id, title: "Other" }, "durable")).code, "call_conflict");
   assert.equal(f.store.fold("orchard").projects.orchard?.tickets.length, 1);
   const other = openCoordinatorStorage({ store: f.store, project: "other", now: () => at });
-  const result = await nativeTools(other, { now: () => at, tracker: () => f.tracker })["ticket.update"].execute(
+  const result = await nativeTools(other, { now: () => at, trackerProvider: () => f.tracker })["ticket.update"].execute(
     { id: recovered.id, title: "Stolen" },
     { taskId: 1, callId: "other" } as ToolExecutionApi,
     context,
@@ -1325,7 +1325,7 @@ test("Linear create/update refusals carry their reason in the room tool result",
     },
   } as unknown as import("@armada/plugin-api").PluginContext);
   assert.ok(linear);
-  const tools = nativeTools(scope, { now: () => at, tracker: () => linear });
+  const tools = nativeTools(scope, { now: () => at, trackerProvider: () => linear });
   const before = store.count;
   for (const [name, args] of [
     ["ticket.create", { title: "Plant", description: "Tree" }],
@@ -1459,7 +1459,7 @@ test("ticket.comment reaches Linear with a stable UUID and deduplicates an uncon
       },
     },
   } as unknown as import("@armada/plugin-api").PluginContext);
-  let tools = nativeTools(scope, { now: () => at, tracker: () => linear });
+  let tools = nativeTools(scope, { now: () => at, trackerProvider: () => linear });
   const run = async (callId: string, body: string) => {
     const result = await tools["ticket.comment"].execute(
       { id: "SEED-1", body },
@@ -1473,7 +1473,7 @@ test("ticket.comment reaches Linear with a stable UUID and deduplicates an uncon
   await scope.close(context);
   const reopened = openCoordinatorStorage({ store, project: "orchard", now: () => at });
   t.after(() => reopened.close(context));
-  tools = nativeTools(reopened, { now: () => at, tracker: () => linear });
+  tools = nativeTools(reopened, { now: () => at, trackerProvider: () => linear });
   assert.equal((await run("lost", "More context")).ok, true);
   assert.equal(posts, 2, "recovery reuses the remote comment id instead of creating a second comment");
   assert.equal(comments.length, 2);

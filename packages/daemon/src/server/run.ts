@@ -85,7 +85,12 @@ export async function runDaemon(startedAt: number) {
           for (const config of configs)
             await server.openProject({
               ...config,
-              native: { ...config.native, merges, tracker: trackerFor(project.id), refresh: () => refresh(project.id) },
+              native: {
+                ...config.native,
+                merges,
+                trackerProvider: trackerFor(project.id),
+                refresh: () => refresh(project.id),
+              },
             });
         }
       }
@@ -214,7 +219,7 @@ export async function runDaemon(startedAt: number) {
                       native: {
                         ...config.native,
                         merges,
-                        tracker: trackerFor(project),
+                        trackerProvider: trackerFor(project),
                         refresh: () => refresh(project),
                       },
                     }
@@ -225,7 +230,7 @@ export async function runDaemon(startedAt: number) {
                 native: {
                   ...config.native,
                   merges,
-                  tracker: trackerFor(config.project),
+                  trackerProvider: trackerFor(config.project),
                   refresh: () => refresh(config.project),
                 },
               })),

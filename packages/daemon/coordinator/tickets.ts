@@ -41,7 +41,7 @@ export type TicketTool = keyof typeof ticketToolSchemas;
 export interface TicketToolOptions {
   now: () => string;
   /** Resolve the project's currently configured, scoped provider at the point of use. */
-  tracker?: () => TrackerProvider | undefined;
+  trackerProvider?: () => TrackerProvider | undefined;
 }
 const canonical = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -167,7 +167,7 @@ async function execute(
           "fleet.history",
         );
     }
-    const tracker = options.tracker?.();
+    const tracker = options.trackerProvider?.();
     if (!tracker)
       return refuse(
         "tracker_unavailable",

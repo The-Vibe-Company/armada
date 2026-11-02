@@ -28,7 +28,7 @@ export interface NativeToolOptions extends TicketToolOptions {
   merges?: Merges;
   /** Host-owned, bounded refresh of the project's tracker and forge readers. */
   refresh?: () => Promise<void>;
-  /** Selected tracker; historical diagnostics from a previous tracker are irrelevant. */
+  /** Selected tracker kind, separate from trackerProvider; historical diagnostics from a previous tracker are irrelevant. */
   tracker?: string;
   /** Optional host restriction/adapter for explicitly requested, local V1 file imports. */
   readRulesImport?: (file: string) => Promise<ProjectRules>;
