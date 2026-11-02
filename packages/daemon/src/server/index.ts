@@ -50,7 +50,6 @@ import type { Providers } from "./providers.ts";
 import { jsonBytes, PAGE_BYTES, REPLAY_WINDOW, Replay, replayFrames } from "./replay.ts";
 import { dispatchSession } from "./session.ts";
 import { serveStatic } from "./static.ts";
-import { dispatchTickets } from "./tickets.ts";
 
 /** The worker service a host (or the app's dev daemon) hands `startServer`. */
 export type { Workers } from "../workers/service.ts";
@@ -826,7 +825,9 @@ export async function startServer(options: ServerOptions): Promise<DaemonServer>
         }
         if (request.type === "ticket.create" || request.type === "ticket.update") {
           // The Tickets page's writes (THE-2124, server/tickets.ts), through the coordinator's own ticket tools.
-          void dispatchTickets(request, { store, trackerFor: options.trackerFor })
+          // Loaded on first use: the coordinator's ticket tools stay off the boot path.
+          void import("./tickets.ts")
+            .then(({ dispatchTickets }) => dispatchTickets(request, { store, trackerFor: options.trackerFor }))
             .then((reply) => send(ws, reply))
             .catch(() => error(ws, request.id, "internal", "The ticket could not be saved"));
           return;
