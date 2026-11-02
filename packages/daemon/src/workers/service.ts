@@ -143,6 +143,8 @@ const workerRequestSchema = z.discriminatedUnion("command", [
   z.strictObject({ command: z.literal("release"), ticket: id, reason: text }),
 ]);
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+/** The release reason of a lost generation: no runtime confirmed its stop, so a later launch probes it first. */
+const RELEASED_WITHOUT_STOP = "lost worker released without a confirmed runtime stop";
 const ended = (phase: string) => phase === "released" || phase === "merged";
 const same = (a: WorkerRef, b: WorkerRef) =>
   a.project === b.project &&
@@ -542,7 +544,7 @@ export class Workers {
               project,
               old.ticket,
               old.session,
-              `relaunch: ${relaunch.reason}; lost worker released without a confirmed runtime stop`,
+              `relaunch: ${relaunch.reason}; ${RELEASED_WITHOUT_STOP}`,
               beforeWrite,
             );
             this.#lost.delete(old.session);
@@ -1797,8 +1799,7 @@ export class Workers {
     const release = this.#options.store
       .readSince(0, project)
       .findLast((event) => event.kind === "session.released" && event.payload.session === prior.session);
-    if (release?.kind !== "session.released" || !release.payload.reason.includes("without a confirmed runtime stop"))
-      return;
+    if (release?.kind !== "session.released" || !release.payload.reason.includes(RELEASED_WITHOUT_STOP)) return;
     const ref = {
       project,
       ticket: prior.ticket,
@@ -1895,13 +1896,7 @@ export class Workers {
     }
     // Explicit Release remains possible for a lost worker. This retires its ticket;
     // it deliberately makes no claim that an unreachable native process was stopped.
-    return this.#releaseLost(
-      ref.project,
-      ref.ticket,
-      ref.session,
-      `Lost worker released without a confirmed runtime stop: ${reason}`,
-      beforeWrite,
-    );
+    return this.#releaseLost(ref.project, ref.ticket, ref.session, `${RELEASED_WITHOUT_STOP}: ${reason}`, beforeWrite);
   }
 
   #releaseLost(
@@ -2199,7 +2194,7 @@ export class Workers {
               project,
               session.ticket,
               session.session,
-              `${reason}; lost worker released without a confirmed runtime stop`,
+              `${reason}; ${RELEASED_WITHOUT_STOP}`,
               beforeWrite,
             );
           else throw new WorkerRefusal("Worker runtime is unavailable; stop could not be confirmed");

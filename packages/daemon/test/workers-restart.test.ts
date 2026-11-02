@@ -4,7 +4,13 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { type RuntimeProvider, type WorkerRef, WorkerRuntimeAlive, WorkerRuntimeGone } from "@armada/plugin-api";
+import {
+  RuntimeLaunchRefusal,
+  type RuntimeProvider,
+  type WorkerRef,
+  WorkerRuntimeAlive,
+  WorkerRuntimeGone,
+} from "@armada/plugin-api";
 import { queueDelivery } from "../src/deliveries.ts";
 import { fold } from "../src/fold.ts";
 import { PluginRegistry } from "../src/plugins/registry.ts";
@@ -46,6 +52,9 @@ for (const scenario of [
     scenario === "concurrent relaunch of a gone runtime" ||
     scenario === "gone relaunch lands elsewhere";
   let priorAlive = false;
+  // The old supervisor answers the probe; its reported state then decides.
+  let priorAnswers = false;
+  let refuseNextLaunch = false;
   const unknownRuntime = scenario === "runtime unknown without a liveness contract";
   test(`restart preserves generations, capabilities and phases; ${scenario}`, { timeout: 15000 }, async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "armada-restart-"));
@@ -121,6 +130,10 @@ for (const scenario of [
           return { id: ticket, path: directory, node: "local" };
         },
         launch: async ({ worker, env, handle }) => {
+          if (refuseNextLaunch) {
+            refuseNextLaunch = false;
+            throw new RuntimeLaunchRefusal("Fixture refused this launch before creating anything");
+          }
           const ref = { ...worker, handle: mismatched ? randomUUID() : (handle ?? randomUUID()) };
           native.set(ref.handle, { ref, alive: true, messages: [], token: env.ARMADA_WORKER_TOKEN! });
           if (scenario === "close during launch") {
@@ -135,6 +148,7 @@ for (const scenario of [
         },
         adopt: async (ref) => {
           assert.deepEqual(native.get(ref.handle)?.ref, ref);
+          if (priorAnswers) return { deliveries: native.get(ref.handle)!.messages.length };
           if (!firstBoot && gone && !native.get(ref.handle)?.alive)
             throw new WorkerRuntimeGone(
               "local worker SEED-1 generation 1 is unreachable: the supervisor endpoint refused the connection, and no final record exists; its liveness contract (version 1) names a process group that no longer exists, so its whole process tree ended; nothing was signaled",
@@ -535,6 +549,54 @@ for (const scenario of [
         );
         assert.equal(relaunched.generation, 2, "the deliberate path continues in the kept worktree");
         assert.equal(native.size, 2);
+        const launchNext = (key: string) => workers.tool(project, "worker.launch", { ticket: "SEED-1" }, key, () => {});
+        const lose = async (session: string) => {
+          // A daemon boot that cannot reattach, then the explicit release without a stop claim.
+          await workers.close();
+          store.close();
+          store = new EventStore(join(directory, "fleet.sqlite"));
+          workers = make();
+          assert.equal((await workers.recover()).lost.length, 1);
+          const released = await workers.tool(
+            project,
+            "worker.stop",
+            { ticket: "SEED-1", session, reason: "Owner released it" },
+            `release-${session}`,
+            () => {},
+          );
+          assert.equal(released.stopped, false);
+        };
+        // A generation stopped under this host carries native-stopped: never probed.
+        await workers.tool(
+          project,
+          "worker.stop",
+          { ticket: "SEED-1", session: String(relaunched.session), reason: "Done" },
+          "stop-2",
+          () => {},
+        );
+        priorAlive = true;
+        const third = await launchNext("launch-3");
+        assert.equal(third.generation, 3, "a confirmed stop needs no probe");
+        await workers.tool(
+          project,
+          "worker.stop",
+          { ticket: "SEED-1", session: String(third.session), reason: "Done" },
+          "stop-3",
+          () => {},
+        );
+        // A launch refused before creation leaves no marker: never probed either.
+        refuseNextLaunch = true;
+        await assert.rejects(launchNext("launch-4-refused"), /refused/);
+        assert.equal((await launchNext("launch-4")).generation, 5, "a refused launch is not probed");
+        priorAlive = false;
+        // A released lost generation whose supervisor answers blocks only while it reports running.
+        const fourth = [...native.values()].find((row) => row.ref.generation === 5)!;
+        await lose(fourth.ref.session);
+        priorAnswers = true;
+        fourth.alive = true;
+        await assert.rejects(launchNext("launch-6-blocked"), /still answers in its worktree/);
+        fourth.alive = false;
+        assert.equal((await launchNext("launch-6")).generation, 6, "a stopped supervisor record never blocks");
         return;
       }
       assert.match(recorded.payload.reason, /process tree ended/);
