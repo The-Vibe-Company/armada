@@ -10,6 +10,11 @@ import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import pkg from "../../plugins/internal-tracker/package.json" with { type: "json" };
 import { activate } from "../../plugins/internal-tracker/src/index.ts";
 import { activate as activateLinear } from "../../plugins/linear/src/index.ts";
+import {
+  issue as linearIssue,
+  page as linearPage,
+  recorded as linearRecorded,
+} from "../../plugins/linear/test/support/program.ts";
 import { type MergeEvidence, nativeTools } from "../coordinator/native.ts";
 import { openCoordinatorStorage } from "../coordinator/storage.ts";
 import type { CoordinatorToolName } from "../coordinator/tools.ts";
@@ -1327,36 +1332,76 @@ test("ticket call identities survive reopening and recover a committed create wh
   assert.equal((await f.run("ticket.create", args, "closed")).code, "coordinator_inactive");
 });
 
-test("Linear create/update refusals carry their reason in the room tool result", async (t) => {
+test("Linear ticket tools create once per call key and the next reader publishes ticket.seen", async (t) => {
   const { store, scope } = await fixture(t);
   let linear: TrackerProvider | undefined;
+  const recording = linearRecorded({
+    MutationRoot: [{ issue: { id: "uuid-SEED-1", team: { id: "team" } } }],
+    RecentTickets: [{ issues: linearPage([]) }],
+    CreateTicket: [
+      {
+        issueCreate: {
+          success: true,
+          issue: { id: "uuid-SEED-3", identifier: "SEED-3", url: "https://linear.example/SEED-3" },
+        },
+      },
+    ],
+    Root: [{ issue: linearIssue("SEED-1") }],
+    Children: [
+      { issues: linearPage([{ ...linearIssue("SEED-3"), title: "Plant", description: "Tree" }]) },
+      { issues: linearPage([]) },
+    ],
+    Comments: [
+      {
+        issues: {
+          nodes: [
+            { identifier: "SEED-1", comments: linearPage([]) },
+            { identifier: "SEED-3", comments: linearPage([]) },
+          ],
+        },
+      },
+    ],
+  });
+  t.mock.method(globalThis, "fetch", recording.fetch);
   activateLinear({
-    events: {},
-    config: { tracker: { linear: {} } },
+    events: {
+      read: async (project: string, after: number) =>
+        store.readSince(after).filter((event) => event.project === project),
+      append: async (event: Parameters<EventStore["append"]>[0]) => store.append(event),
+    },
+    log: { info() {}, error() {} },
+    secrets: { get: async () => "synthetic-key" },
+    config: { tracker: { linear: { projects: { orchard: { programRoot: "SEED-1" } } } } },
     register: {
       tracker: (_kind: string, tracker: TrackerProvider) => {
         linear = tracker;
       },
     },
   } as unknown as import("@armada/plugin-api").PluginContext);
-  assert.ok(linear);
+  assert.ok(linear?.create);
   const tools = nativeTools(scope, { now: () => at, trackerProvider: () => linear });
-  const before = store.count;
-  for (const [name, args] of [
-    ["ticket.create", { title: "Plant", description: "Tree" }],
-    ["ticket.update", { id: "SEED-1", state: "canceled" }],
-  ] as const) {
-    const result = await tools[name].execute(args, { taskId: 1, callId: name } as ToolExecutionApi, context);
-    const details = result.details as { ok: boolean; reason: string; message: string };
-    assert.equal(result.isError, true);
-    assert.equal(details.ok, false);
-    assert.equal(details.reason, "the project's tracker cannot create tickets; write it in Linear");
-    assert.equal(details.message, details.reason);
-    const first = result.output?.[0];
-    assert.ok(first?.type === "text");
-    assert.match(first.text, /write it in Linear/);
-  }
-  assert.equal(store.count, before);
+  const create = () =>
+    tools["ticket.create"].execute(
+      { title: "Plant", description: "Tree" },
+      { taskId: 1, callId: "linear-create" } as ToolExecutionApi,
+      context,
+    );
+  const result = await create();
+  assert.deepEqual(result.details, { ok: true, id: "SEED-3" });
+  assert.deepEqual((await create()).details, result.details);
+  assert.equal(recording.calls.filter((call) => call.operation === "CreateTicket").length, 1);
+  await linear.read({ project: "orchard" });
+  assert.ok(
+    store
+      .readSince(0)
+      .some(
+        (event) => event.kind === "ticket.seen" && event.payload.id === "SEED-3" && event.payload.title === "Plant",
+      ),
+  );
+  assert.equal(
+    store.fold("orchard").projects.orchard?.tickets.find((ticket) => ticket.id === "SEED-3")?.description,
+    "Tree",
+  );
 });
 
 test("ticket receipts replay successful creates and edits without overwriting later changes", async (t) => {

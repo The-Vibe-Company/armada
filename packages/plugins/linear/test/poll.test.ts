@@ -273,6 +273,17 @@ test("provider restart restores pauses only for the same credential, including a
     "another project restores the shared key pause before polling",
   );
   assert.equal(calls.length, before);
+  assert.ok(restart.create);
+  assert.ok(restart.update);
+  await assert.rejects(
+    restart.create({ project: "shared", title: "Plant", description: "One oak", labels: [] }),
+    (error: unknown) => error instanceof Error && error.message.includes(shared.pausedUntil as string),
+  );
+  await assert.rejects(
+    restart.update({ project: "shared", ticket: "GROW-2", patch: { title: "Changed" } }),
+    (error: unknown) => error instanceof Error && error.message.includes(shared.pausedUntil as string),
+  );
+  assert.equal(calls.length, before, "restored credential pauses fence create and update before HTTP too");
   await restart.read({ project: "orchard" });
   assert.equal(calls.length, before + 1, "the unrelated key resumes its cursor in one delta request");
   keys.garden = "synthetic-key-three";

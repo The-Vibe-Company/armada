@@ -86,7 +86,46 @@
     "Children": {
       "data": {
         "issues": {
-          "nodes": [],
+          "nodes": [
+            {
+              "id": "CHECK-2",
+              "identifier": "CHECK-2",
+              "title": "Conformance ticket",
+              "url": "https://linear.example/issue/CHECK-2",
+              "state": {
+                "type": "started"
+              },
+              "assignee": {
+                "name": "Avery"
+              },
+              "parent": {
+                "identifier": "CHECK-1"
+              },
+              "labels": {
+                "nodes": [
+                  {
+                    "id": "label-implementing",
+                    "name": "implementing",
+                    "parent": {
+                      "name": "Agent phase"
+                    }
+                  }
+                ],
+                "pageInfo": {
+                  "hasNextPage": false,
+                  "endCursor": null
+                }
+              },
+              "attachments": {
+                "nodes": [],
+                "pageInfo": {
+                  "hasNextPage": false,
+                  "endCursor": null
+                }
+              },
+              "description": "Created through the tracker seam"
+            }
+          ],
           "pageInfo": {
             "hasNextPage": false,
             "endCursor": null
@@ -117,6 +156,16 @@
                   "endCursor": null
                 }
               }
+            },
+            {
+              "identifier": "CHECK-2",
+              "comments": {
+                "nodes": [],
+                "pageInfo": {
+                  "hasNextPage": false,
+                  "endCursor": null
+                }
+              }
             }
           ]
         }
@@ -125,7 +174,7 @@
     "WriteIssue": {
       "data": {
         "issue": {
-          "id": "CHECK-1",
+          "id": "CHECK-2",
           "team": {
             "id": "fixture-team"
           },
@@ -166,6 +215,195 @@
               "team": null
             }
           ],
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          }
+        }
+      }
+    },
+    "MutationRoot": {
+      "data": {
+        "issue": {
+          "id": "CHECK-1",
+          "team": {
+            "id": "fixture-team",
+            "states": {
+              "nodes": [],
+              "pageInfo": {
+                "hasNextPage": false,
+                "endCursor": null
+              }
+            }
+          }
+        }
+      }
+    },
+    "RecentTickets": {
+      "data": {
+        "issues": {
+          "nodes": [],
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          }
+        }
+      }
+    },
+    "TicketLabels": {
+      "data": {
+        "issueLabels": {
+          "nodes": [
+            {
+              "id": "label-ready",
+              "name": "ready-for-agent",
+              "parent": null,
+              "team": null
+            },
+            {
+              "id": "label-implementing",
+              "name": "implementing",
+              "parent": {
+                "name": "Agent phase"
+              },
+              "team": null
+            }
+          ],
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          }
+        }
+      }
+    },
+    "CreateTicket": {
+      "data": {
+        "issueCreate": {
+          "success": true,
+          "issue": {
+            "id": "CHECK-2",
+            "identifier": "CHECK-2",
+            "url": "https://linear.example/issue/CHECK-2"
+          }
+        }
+      }
+    },
+    "EditTicket": {
+      "data": {
+        "issue": {
+          "id": "CHECK-2",
+          "team": {
+            "id": "fixture-team"
+          },
+          "labels": {
+            "nodes": [],
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": null
+            }
+          },
+          "inverseRelations": {
+            "nodes": [],
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": null
+            }
+          }
+        }
+      }
+    },
+    "UpdateTicket": {
+      "data": {
+        "issueUpdate": {
+          "success": true
+        }
+      }
+    },
+    "Changed": {
+      "data": {
+        "issues": {
+          "nodes": [
+            {
+              "id": "CHECK-1",
+              "identifier": "CHECK-1",
+              "title": "Exercise a plugin seam",
+              "url": "https://linear.example/issue/CHECK-1",
+              "state": {
+                "type": "started"
+              },
+              "assignee": {
+                "name": "Avery"
+              },
+              "parent": null,
+              "labels": {
+                "nodes": [
+                  {
+                    "id": "label-implementing",
+                    "name": "implementing",
+                    "parent": {
+                      "name": "Agent phase"
+                    }
+                  }
+                ],
+                "pageInfo": {
+                  "hasNextPage": false,
+                  "endCursor": null
+                }
+              },
+              "attachments": {
+                "nodes": [],
+                "pageInfo": {
+                  "hasNextPage": false,
+                  "endCursor": null
+                }
+              }
+            },
+            {
+              "id": "CHECK-2",
+              "identifier": "CHECK-2",
+              "title": "Edited conformance ticket",
+              "url": "https://linear.example/issue/CHECK-2",
+              "state": {
+                "type": "started"
+              },
+              "assignee": {
+                "name": "Avery"
+              },
+              "parent": {
+                "identifier": "CHECK-1"
+              },
+              "labels": {
+                "nodes": [
+                  {
+                    "id": "label-implementing",
+                    "name": "implementing",
+                    "parent": {
+                      "name": "Agent phase"
+                    }
+                  }
+                ],
+                "pageInfo": {
+                  "hasNextPage": false,
+                  "endCursor": null
+                }
+              },
+              "attachments": {
+                "nodes": [],
+                "pageInfo": {
+                  "hasNextPage": false,
+                  "endCursor": null
+                }
+              },
+              "description": "Created through the tracker seam"
+            }
+          ],
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          }
+        },
+        "comments": {
+          "nodes": [],
           "pageInfo": {
             "hasNextPage": false,
             "endCursor": null

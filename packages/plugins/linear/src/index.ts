@@ -1,8 +1,9 @@
 import type { FleetEvent } from "@armada/daemon/events";
-import type { PluginContext, TrackerProvider } from "@armada/plugin-api";
+import type { PluginContext, ProjectRequest, TrackerProvider } from "@armada/plugin-api";
 import { linearReaderCheckpointSchema } from "./checkpoint.ts";
 import type { LinearBudget } from "./linear/budget.ts";
 import { linearTracker } from "./linear/index.ts";
+import { applicableLabel } from "./linear/mutations.ts";
 import { TrackerPoller } from "./poll.ts";
 import { linearConnection } from "./status.ts";
 
@@ -142,6 +143,38 @@ export function activate(ctx: PluginContext): void {
       signal?.removeEventListener("abort", stop);
     }
   };
+  const mutate = async <T>(
+    request: ProjectRequest,
+    action: (tracker: ReturnType<typeof linearTracker>) => Promise<T>,
+  ) => {
+    await waitForRestore(request.signal);
+    const tracker = trackerFor(request.project);
+    await tracker.prepare?.();
+    const before = JSON.stringify(tracker.budget?.snapshot(request.project));
+    try {
+      return await action(tracker);
+    } finally {
+      const usage = tracker.budget?.snapshot(request.project);
+      if (JSON.stringify(usage) !== before && tracker.quota && tracker.identity)
+        await ctx.events.append({
+          project: request.project,
+          kind: "coordinator.checkpoint",
+          actor: "Linear",
+          at: new Date().toISOString(),
+          payload: {
+            checkpoint: JSON.parse(
+              JSON.stringify({
+                format: "armada.linear-reader",
+                version: 1,
+                source: tracker.identity,
+                quota: tracker.quota,
+                usage,
+              }),
+            ),
+          },
+        });
+    }
+  };
   const provider: TrackerProvider = {
     ...linearConnection(ctx.secrets, config.endpoint),
     async readProgram({ project, programRoot, phaseGroup, signal }) {
@@ -258,6 +291,12 @@ export function activate(ctx: PluginContext): void {
         signal?.removeEventListener("abort", stop);
       }
     },
+    create(request) {
+      return mutate(request, (tracker) => tracker.create(request));
+    },
+    update(request) {
+      return mutate(request, (tracker) => tracker.update(request));
+    },
     async write({ project, ticket, phase, state, comment, commentId, signal, beforeWrite }) {
       try {
         const settings = config.projects?.[project];
@@ -364,8 +403,7 @@ export function activate(ctx: PluginContext): void {
           }
           const applicable = candidates.filter((label) => label.name === phase && label.parent?.name === group);
           // Match the host label model: this issue's team shadows the workspace label.
-          const label =
-            applicable.find((label) => label.team?.id === issue.team.id) ?? applicable.find((label) => !label.team);
+          const label = applicableLabel(applicable, issue.team.id);
           if (!label) throw new Error();
           const labelIds = issue.labels.nodes.filter((label) => label.parent?.name !== group).map((label) => label.id);
           beforeWrite?.();
