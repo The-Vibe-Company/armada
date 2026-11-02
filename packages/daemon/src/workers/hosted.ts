@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { activePhaseSchema } from "@armada/protocol";
 import { z } from "zod";
+import type { FleetEvent } from "../events.ts";
 import { fold } from "../fold.ts";
 import type { Account } from "../server/account.ts";
 import type { EventStore } from "../store.ts";
@@ -73,12 +74,14 @@ export class HostedReader {
   constructor(options: Options) {
     this.#options = options;
   }
-  #active(project: string) {
-    const events = this.#options.store.readSince(0, project);
+  #active(project: string, events: FleetEvent[] = this.#options.store.readSince(0, project)) {
     const sessions = fold(events).projects[project]?.sessions ?? [];
     return events.flatMap((event) => {
+      const value = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
       const checkpoint =
-        event.kind === "coordinator.checkpoint" ? checkpointSchema.safeParse(event.payload.checkpoint) : null;
+        value && typeof value === "object" && !Array.isArray(value) && value.format === "armada.worker"
+          ? checkpointSchema.safeParse(value)
+          : null;
       if (!checkpoint?.success) return [];
       const launch = checkpoint.data;
       return sessions.some(
@@ -93,8 +96,8 @@ export class HostedReader {
   }
   hasWork() {
     return this.#options.projects.some((project) => {
-      if (this.#active(project.id).length) return true;
       const events = this.#options.store.readSince(0, project.id);
+      if (this.#active(project.id, events).length) return true;
       const sessions = fold(events).projects[project.id]?.sessions ?? [];
       return events.some((event) => {
         const c = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;

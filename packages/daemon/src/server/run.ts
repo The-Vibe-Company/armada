@@ -329,6 +329,7 @@ export async function runDaemon(startedAt: number) {
                   modelsMs,
                   workersMs,
                   serverMs,
+                  ...server.timings,
                   totalMs: performance.now() - startedAt,
                 },
               }),

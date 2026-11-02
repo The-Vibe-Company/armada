@@ -3,7 +3,7 @@ import type { ProjectTables, Session, WakeCandidate } from "@armada/protocol";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Conversation } from "@earendil-works/pi-durable";
 import type { FleetEvent } from "../src/events.ts";
-import { fold } from "../src/fold.ts";
+import { FoldAccumulator } from "../src/fold.ts";
 import { maskedTail, type ProgressJudge, verdictSchema } from "../src/liveness/judge.ts";
 import { type ProgressSignals, progressSignals, progressSummary, type Report } from "../src/liveness/progress.ts";
 import type { EventStore } from "../src/store.ts";
@@ -286,6 +286,7 @@ export class Waker {
   readonly #outbox = new Map<string, WakeEvent>();
   readonly #delivered = new Set<string>();
   readonly #events: FleetEvent[] = [];
+  readonly #fold = new FoldAccumulator();
   #reading: WakeReading = { tables: undefined, events: [] };
   #cursor = 0;
   #scanning = false;
@@ -312,9 +313,10 @@ export class Waker {
     this.#progress = options.progress;
     this.#clock = options.clock ?? { ...realClock, now: options.now ?? Date.now };
     // Learn all persisted keys before replaying transitions, including old resolved inbox items.
-    for (const e of this.#store.readSince(0, this.#project)) this.#record(e);
+    const history = this.#store.readSince(0, this.#project);
+    for (const e of history) this.#record(e);
     this.#unsubscribe = this.#store.subscribe(() => this.#scan());
-    this.#scan();
+    this.#scan(history);
   }
 
   #record(e: FleetEvent) {
@@ -342,11 +344,11 @@ export class Waker {
     }
   }
 
-  #scan() {
+  #scan(history?: readonly FleetEvent[]) {
     if (this.#closed || this.#scanning) return;
     this.#scanning = true;
     try {
-      for (const e of this.#store.readSince(this.#cursor, this.#project)) {
+      for (const e of history ?? this.#store.readSince(this.#cursor, this.#project)) {
         this.#cursor = e.seq;
         this.#record(e);
         // Chat bodies cannot change fleet state or wake evidence. Replaying them
@@ -363,7 +365,8 @@ export class Waker {
             continue;
         }
         this.#events.push(e);
-        const next = { tables: fold(this.#events).projects[this.#project], events: [...this.#events] };
+        this.#fold.append(e);
+        const next = { tables: this.#fold.snapshot().projects[this.#project], events: [...this.#events] };
         for (const candidate of wakeups(this.#reading, next))
           if (!this.#seen.has(candidate.key)) this.#pending.set(candidate.key, candidate);
         this.#reading = next;

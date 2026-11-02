@@ -1,5 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import { setImmediate } from "node:timers/promises";
 import {
   manifestSchema,
   type PluginConfig,
@@ -78,8 +79,26 @@ export async function bootDaemon(options: DaemonOptions) {
               build(tables).map((event) => pluginEventInputSchema.parse(event) as EventInput),
             )
             .map((event) => pluginEventSchema.parse(event)),
-        read: async (project: string, after: number) =>
-          store.readSince(after, project).map((event) => pluginEventSchema.parse(event)),
+        read: async (project: string, after: number) => {
+          if (!Number.isSafeInteger(after) || after < 0)
+            throw new Error("sequence must be a non-negative safe integer");
+          const head = store.sequence;
+          let cursor = after;
+          const events = [];
+          while (cursor < head) {
+            // Page the SQLite read too: decoding the whole log before yielding
+            // still delays the first fleet response behind background readers.
+            await setImmediate();
+            const page = store.readSince(cursor, project, 128);
+            for (const event of page) {
+              if (event.seq > head) return events;
+              events.push(pluginEventSchema.parse(event));
+            }
+            if (page.length < 128) break;
+            cursor = page.at(-1)!.seq;
+          }
+          return events;
+        },
         fold: async (project: string) => store.fold(project),
       },
     };
