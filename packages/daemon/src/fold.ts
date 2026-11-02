@@ -18,6 +18,7 @@ import type {
 } from "@armada/protocol";
 import { phaseSchema, type ReaderUsage, readerUsageSchema, workerLaunchCheckpointSchema } from "@armada/protocol";
 import { z } from "zod";
+import { recoverFollowUps } from "../coordinator/follow-ups.ts";
 import { checkpointRules, emptyRules, type RulesState } from "../coordinator/rules.ts";
 import { applyDelivery } from "./delivery-state.ts";
 import { flowStep, pipelineStep } from "./rules.ts";
@@ -316,9 +317,12 @@ function applyEvent(projects: Map<string, Projection>, e: FleetEvent): void {
       }
       break;
     }
-    case "inbox.opened":
-      if (!p.inbox.has(e.payload.id)) p.inbox.set(e.payload.id, { ...e.payload, at: e.at, actor: e.actor, seq: e.seq });
+    case "inbox.opened": {
+      const prior = p.inbox.get(e.payload.id);
+      if (!prior || (e.payload.kind === "follow-up" && prior.kind === "follow-up"))
+        p.inbox.set(e.payload.id, { ...e.payload, at: prior?.at ?? e.at, actor: e.actor, seq: e.seq });
       break;
+    }
     case "inbox.answered":
       p.inbox.delete(e.payload.id);
       break;
@@ -421,6 +425,7 @@ function applyEvent(projects: Map<string, Projection>, e: FleetEvent): void {
       p.defaultBranch = e.payload;
       break;
   }
+  recoverFollowUps(p.inbox, e, p.sessions);
 }
 
 function projectTables(projects: Map<string, Projection>, seq: number, events: readonly FleetEvent[]): FleetTables {

@@ -14,7 +14,8 @@ export type { MergeEvidence } from "../src/merge/checklist.ts";
 import { queueDelivery } from "../src/deliveries.ts";
 import type { EventInput, FleetEvent } from "../src/events.ts";
 import { fold, type ProjectTables } from "../src/fold.ts";
-import { WorkerRefusal, type Workers, type WorkerTool, workerToolSchemas } from "../src/workers/service.ts";
+import { type Workers, type WorkerTool, workerToolSchemas } from "../src/workers/service.ts";
+import { isFollowUp, withFollowUps, workerRefusal } from "./follow-ups.ts";
 import { fleetHistory, fleetStatus, ticketRead } from "./read.ts";
 import { emptyRules, type ProjectRules, type RulesState, rulesSchema } from "./rules.ts";
 import { readV1RulesFile } from "./rules-file.ts";
@@ -265,7 +266,7 @@ function decide(
         );
       }
       // Hand-backs require merge.run, launches worker.launch, and owner requests an owner's decision.
-      if (item.kind !== "question" && item.kind !== "plan")
+      if (item.kind !== "question" && item.kind !== "plan" && !isFollowUp(item))
         return no(
           "not_answerable",
           `inbox item #${item.id} is a ${item.kind}, not something to answer`,
@@ -373,7 +374,7 @@ export function nativeTools(
   scope: CoordinatorStorage,
   options: NativeToolOptions,
 ): Record<CoordinatorToolName, ToolRegistration> {
-  return Object.fromEntries(
+  const tools = Object.fromEntries(
     TOOL_NAMES.map((name) => [
       name,
       defineTool({
@@ -473,15 +474,7 @@ export function nativeTools(
                 ),
               );
             } catch (error) {
-              return output(
-                refuse(
-                  "worker_refused",
-                  error instanceof WorkerRefusal
-                    ? error.message
-                    : "worker action could not be confirmed; inspect fleet state before retrying",
-                  "fleet.status",
-                ),
-              );
+              return output(workerRefusal(error));
             }
           }
           const mutation = ["inbox.answer", "hold.add", "hold.clear", "owner.ask", "rules.set"].includes(name);
@@ -631,7 +624,11 @@ export function nativeTools(
             );
           }
           let queued: EventInput | undefined;
-          if (decision.event?.kind === "inbox.answered") {
+          const answered = decision.event?.kind === "inbox.answered" ? decision.event.payload.id : undefined;
+          if (
+            decision.event?.kind === "inbox.answered" &&
+            !isFollowUp(projectFacts(events, scope.project).inbox.find((i) => i.id === answered))
+          ) {
             const answeredId = decision.event.payload.id;
             const item = projectFacts(events, scope.project).inbox.find((i) => i.id === answeredId);
             const session = projectFacts(events, scope.project).sessions.find((s) => s.ticket === item?.ticket);
@@ -690,4 +687,6 @@ export function nativeTools(
       }) as ToolRegistration,
     ]),
   ) as Record<CoordinatorToolName, ToolRegistration>;
+  for (const name of TOOL_NAMES) tools[name] = withFollowUps(scope, options.now, tools[name]);
+  return tools;
 }

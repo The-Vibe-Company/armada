@@ -23,7 +23,7 @@ import {
 } from "./chat.js";
 import { DELIVERIES_MINOR } from "./deliveries.js";
 import { counter, identifier, requestSchema, USAGE_MINOR, versionSchema } from "./envelope.js";
-import { GITHUB_READER_MINOR, INTERNAL_TRACKER_MINOR } from "./fleet.js";
+import { FOLLOW_UP_MINOR, GITHUB_READER_MINOR, INTERNAL_TRACKER_MINOR } from "./fleet.js";
 import { IMPORT_MINOR, trackerImportRequestSchema, trackerImportResultSchema } from "./import.js";
 import {
   MODEL_SCOPE_MINOR,
@@ -84,6 +84,7 @@ export const PROTOCOL_VERSION = {
     USAGE_MINOR,
     REPLAY_MINOR,
     INTERNAL_TRACKER_MINOR,
+    FOLLOW_UP_MINOR,
     PROJECT_TRACKER_MINOR,
     MODEL_SCOPE_MINOR,
     TICKETS_MINOR,

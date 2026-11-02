@@ -245,7 +245,7 @@ test("fleet.status keeps ten active sessions before compact fleet facts and belo
   t.diagnostic(`forty tickets, ten sessions/open PRs: status ${bytes} bytes`);
   assert.ok(bytes < 8 * 1024, `status is ${bytes} bytes`);
   assert.ok(bytes < 50 * 1024, "pi-durable must receive the entire JSON text block");
-  assert.deepEqual(Object.keys(facts).slice(0, 4), ["at", "readAt", "sessions", "inbox"]);
+  assert.deepEqual(Object.keys(facts).slice(0, 5), ["followUps", "at", "readAt", "sessions", "inbox"]);
   assert.deepEqual(
     facts.sessions.map((s) => s.ticket),
     Array.from({ length: 10 }, (_, i) => `SEED-${i + 1}`),
@@ -474,7 +474,7 @@ test("inbox.answer resolves a question once, preserves phase and refuses missing
 });
 
 for (const name of ["worker.launch", "worker.relaunch", "worker.message", "worker.stop", "merge.run"] as const) {
-  test(`${name} refuses unavailable actions without writing`, async (t) => {
+  test(`${name} records an unavailable action as follow-up without performing it`, async (t) => {
     const { run, store } = await fixture(t);
     const before = store.sequence;
     const args =
@@ -491,7 +491,12 @@ for (const name of ["worker.launch", "worker.relaunch", "worker.message", "worke
     assert.equal(result.code, "not_available_yet");
     assert.equal(result.message, "not available yet");
     assert.ok(result.next);
-    assert.equal(store.sequence, before);
+    const added = store.readSince(before, "orchard");
+    assert.deepEqual(
+      added.map((e) => e.kind),
+      ["inbox.opened"],
+    );
+    assert.equal((await run("inbox.list")).items.filter((i) => i.kind === "follow-up").length, 1);
   });
 }
 
@@ -1479,4 +1484,148 @@ test("ticket.comment reaches Linear with a stable UUID and deduplicates an uncon
   assert.equal((await run("lost", "More context")).ok, true);
   assert.equal(posts, 2, "recovery reuses the remote comment id instead of creating a second comment");
   assert.equal(comments.length, 2);
+});
+
+test("a green tracker hand-back gap is one durable follow-up, answerable locally and closed by merge", async (t) => {
+  const { store, run } = await fixture(t);
+  const append = (kind: FleetEvent["kind"], payload: unknown) =>
+    store.append({ project: "orchard", at, actor: "reader", kind, payload } as never);
+  append("ticket.seen", { id: "SEED-2", title: "Water", status: "started", phase: "ready-to-merge" });
+  append("pull-request.seen", { number: 8, ticket: "SEED-2", head, state: "open", ci: "success", conflicting: false });
+  const ready = (await run("fleet.status")).sessions.find((s) => s.ticket === "SEED-2");
+  assert.equal(ready?.runtime, "tracker");
+  assert.equal(ready?.phase, "ready-to-merge");
+  assert.equal(ready?.checks, "success");
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const refusal = await run("merge.check", { pr: 8 });
+    assert.equal(refusal.ok, false);
+    const followUps = (await run("inbox.list")).items.filter((i) => i.kind === "follow-up");
+    assert.equal(followUps.length, 1);
+    const item = followUps[0]!;
+    assert.equal(item.followUp?.attempts, attempt);
+    assert.equal(item.followUp?.code, refusal.code);
+    assert.match(item.followUp?.reason ?? "", /no .*ready-to-merge.*comment/);
+    assert.match(item.followUp?.facts ?? "", /ready-to-merge.*green/);
+    assert.equal(item.followUp?.tool, "merge.check");
+    assert.deepEqual(item.followUp?.args, { pr: 8 });
+  }
+  const item = (await run("inbox.list")).items.find((i) => i.kind === "follow-up")!;
+  assert.equal((await run("inbox.answer", { id: item.id, answer: "  " })).code, "empty_answer");
+  assert.equal((await run("inbox.answer", { id: item.id, answer: "Tracked the hand-back gap" })).ok, true);
+  assert.equal(
+    (await run("inbox.list")).items.some((i) => i.id === item.id),
+    false,
+  );
+  assert.equal(
+    store.readSince(0, "orchard").some((e) => e.kind === "delivery.queued"),
+    false,
+  );
+  await run("merge.check", { pr: 8 });
+  assert.equal((await run("inbox.list")).items.filter((i) => i.kind === "follow-up").length, 1);
+  append("merge.confirmed", { id: "merge-8", pr: 8, head, ticket: "SEED-2", session: "tracker:SEED-2" });
+  assert.equal((await run("inbox.list")).items.filter((i) => i.kind === "follow-up").length, 0);
+});
+
+test("a disabled runtime refusal names its owner fix, masks inputs and clears only on relevant recovery", async (t) => {
+  const f = await ticketFixture(t);
+  const created = await f.run("ticket.create", { title: "Water the trees", description: "At dawn", ready: true });
+  assert.equal(created.ok, true);
+  assert.equal(
+    (
+      await f.run("rules.set", {
+        expectedRevision: 1,
+        reason: "Choose runtime",
+        rules: { defaultRoute: { cli: "codex", model: "fixture" } },
+      })
+    ).ok,
+    true,
+  );
+  const availability = (enabled: boolean) =>
+    f.store.append({
+      project: "orchard",
+      at,
+      actor: "coordinator",
+      kind: "coordinator.checkpoint",
+      payload: {
+        checkpoint: {
+          format: "armada.tools",
+          version: 1,
+          type: "providers",
+          providers: [{ id: "codex", enabled, loaded: false, capabilities: ["runtime.codex"] }],
+        },
+      },
+    });
+  availability(false);
+  for (let i = 0; i < 2; i++) {
+    const refusal = await f.run("worker.launch", { ticket: created.id, brief: "Bearer synthetic-private-value" });
+    assert.equal(refusal.code, "plugin_disabled");
+  }
+  const blocked = (await f.run("inbox.list", {})).items.filter((i) => i.kind === "follow-up");
+  assert.equal(blocked.length, 1);
+  assert.equal(blocked[0]?.followUp?.attempts, 2);
+  assert.equal(blocked[0]?.followUp?.fix, "Enable codex in Settings › Providers");
+  assert.equal(f.fake.delivered.length, 0);
+  assert.doesNotMatch(JSON.stringify(blocked), /synthetic-private-value/);
+  assert.equal(
+    (await f.run("worker.message", { ticket: created.id, message: "Continue" })).code,
+    "worker_outside_daemon",
+  );
+  assert.equal((await f.run("inbox.list", {})).items.filter((i) => i.kind === "follow-up").length, 2);
+  availability(true);
+  const remaining = (await f.run("inbox.list", {})).items.filter((i) => i.kind === "follow-up");
+  assert.equal(remaining.length, 1, "enabling a plugin cannot clear a worker-outside-daemon cause");
+  assert.equal(remaining[0]?.followUp?.fix, "answer in Linear or relaunch here");
+  assert.equal(
+    (
+      await f.run("rules.set", {
+        expectedRevision: 2,
+        reason: "Use available runtime",
+        rules: { defaultRoute: { cli: "claude", model: "fixture" } },
+      })
+    ).ok,
+    true,
+  );
+  const launch = await f.run("worker.launch", { ticket: created.id, branch: "worker/water" });
+  assert.equal(launch.ok, true, JSON.stringify(launch));
+  assert.equal((await f.run("inbox.list", {})).items.filter((i) => i.kind === "follow-up").length, 0);
+});
+
+test("a tracker refresh or stale worker report cannot resolve a live generation's merge follow-up", async (t) => {
+  const { store, run } = await fixture(t);
+  store.append({
+    project: "orchard",
+    at,
+    actor: "coordinator",
+    kind: "inbox.answered",
+    payload: { id: "back", answer: "Hand-back not confirmed" },
+  });
+  assert.equal((await run("fleet.status")).sessions[0]?.phase, "ready-to-merge");
+  assert.equal((await run("merge.check", { pr: 7 })).ok, false);
+  const count = async () => (await run("inbox.list")).items.filter((i) => i.kind === "follow-up").length;
+  assert.equal(await count(), 1);
+  store.append({
+    project: "orchard",
+    at,
+    actor: "reader",
+    kind: "ticket.seen",
+    payload: { id: "SEED-1", title: "Renamed", status: "started" },
+  });
+  assert.equal((await run("fleet.status")).sessions[0]?.phase, "ready-to-merge");
+  assert.equal(await count(), 1, "an observation that preserves the socket worker is not recovery");
+  store.append({
+    project: "orchard",
+    at,
+    actor: "worker",
+    kind: "session.reported",
+    payload: { ticket: "SEED-1", session: "old", phase: "implementing", reason: "Stale" },
+  });
+  assert.equal(await count(), 1);
+  store.append({
+    project: "orchard",
+    at,
+    actor: "worker",
+    kind: "session.reported",
+    payload: { ticket: "SEED-1", session: "one", phase: "implementing", reason: "Fixing the gap" },
+  });
+  assert.equal(await count(), 0);
 });

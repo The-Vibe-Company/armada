@@ -24,12 +24,13 @@ export function Pinned({
   title: string | null;
   harness: Harness | null;
   time: string;
-  answer: (item: string, choice: string, note: string) => Promise<void>;
+  answer?: (item: string, choice: string, note: string) => Promise<void>;
 }) {
   const field = useId();
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const followUp = item.kind === "follow-up";
   const { question, choices } = parseQuestion(item.body);
 
   /** Without choices, the note is the answer itself, not a note beside it. */
@@ -37,7 +38,7 @@ export function Pinned({
     setSending(true);
     setProblem(null);
     try {
-      await answer(item.id, choice, withNote ? note : "");
+      await answer?.(item.id, choice, withNote ? note : "");
       setNote("");
     } catch (error) {
       setProblem(error instanceof Error ? error.message : "The answer was not recorded. Try again.");
@@ -47,7 +48,11 @@ export function Pinned({
   }
 
   return (
-    <section aria-label="A question waiting for you" className="flex-none px-3 pt-3 pb-1" data-pinned>
+    <section
+      aria-label={followUp ? "Blocked follow-up" : "A question waiting for you"}
+      className="flex-none px-3 pt-3 pb-1"
+      data-pinned
+    >
       <div className="rounded-md bg-card px-3.5 pt-3 pb-3.5 shadow-ring">
         <div className="mb-1.5 flex min-w-0 items-center gap-2 text-body text-text-2">
           <Ship harness={harness} />
@@ -74,33 +79,35 @@ export function Pinned({
             ))}
           </div>
         )}
-        <form
-          className="flex items-center gap-2.5"
-          onSubmit={(e) => {
-            e.preventDefault();
-            // Enter answers a question without choices; with choices, a button does.
-            if (!choices.length && note.trim() && !sending) choose(note.trim(), false);
-          }}
-        >
-          <label htmlFor={`${field}-note`} className="flex-none text-body text-text-2">
-            Note
-          </label>
-          <input
-            id={`${field}-note`}
-            type="text"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            maxLength={choices.length ? 4096 : 1024}
-            placeholder={choices.length ? "Add a note…" : "Your answer…"}
-            disabled={sending}
-            className="h-8.5 min-w-0 flex-1 rounded-sm bg-bg px-3 text-sub text-text shadow-ring placeholder:text-text-3"
-          />
-          {choices.length === 0 && (
-            <Button type="submit" variant="primary" disabled={sending || !note.trim()}>
-              Answer
-            </Button>
-          )}
-        </form>
+        {!followUp && (
+          <form
+            className="flex items-center gap-2.5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              // Enter answers a question without choices; with choices, a button does.
+              if (!choices.length && note.trim() && !sending) choose(note.trim(), false);
+            }}
+          >
+            <label htmlFor={`${field}-note`} className="flex-none text-body text-text-2">
+              Note
+            </label>
+            <input
+              id={`${field}-note`}
+              type="text"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              maxLength={choices.length ? 4096 : 1024}
+              placeholder={choices.length ? "Add a note…" : "Your answer…"}
+              disabled={sending}
+              className="h-8.5 min-w-0 flex-1 rounded-sm bg-bg px-3 text-sub text-text shadow-ring placeholder:text-text-3"
+            />
+            {choices.length === 0 && (
+              <Button type="submit" variant="primary" disabled={sending || !note.trim()}>
+                Answer
+              </Button>
+            )}
+          </form>
+        )}
         {problem && (
           <p role="alert" className="m-0 mt-2 text-body text-red">
             {problem}

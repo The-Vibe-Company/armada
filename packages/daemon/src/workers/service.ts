@@ -74,7 +74,15 @@ interface PreparedBrief {
   facts: string;
 }
 const id = z.string().min(1).max(200).regex(/\S/);
-export class WorkerRefusal extends Error {}
+export class WorkerRefusal extends Error {
+  readonly code?: string;
+  readonly capability?: string;
+  constructor(message: string, code?: string, capability?: string) {
+    super(message);
+    this.code = code;
+    this.capability = capability;
+  }
+}
 const launchArgs = {
   ticket: id,
   branch: id.optional(),
@@ -406,6 +414,7 @@ export class Workers {
         if (current?.runtime === "tracker" && (name === "worker.message" || name === "worker.stop"))
           throw new WorkerRefusal(
             "this worker was launched outside this daemon; it reads Linear, answer there or relaunch it here",
+            "worker_outside_daemon",
           );
         if (
           current &&
@@ -631,7 +640,11 @@ export class Workers {
     const runtime = this.#options.registry.get("runtime", route.cli, project);
     const node = this.#options.registry.get("node", nodeKind, project);
     if (!runtime || (!runtime.needsLaunchToken && !node))
-      throw new WorkerRefusal("Selected runtime or node provider is unavailable");
+      throw new WorkerRefusal(
+        "Selected runtime or node provider is unavailable",
+        "capability_missing",
+        !runtime ? `runtime.${route.cli}` : `node.${nodeKind}`,
+      );
     let bound = runtime;
     if (!runtime.needsLaunchToken) {
       if (!runtime.withNode || !node) throw new WorkerRefusal("Runtime cannot bind the selected node");

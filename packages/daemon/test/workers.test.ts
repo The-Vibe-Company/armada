@@ -70,6 +70,11 @@ test("tracker sessions expose their drive and refuse message/stop with a Linear 
       ...(name === "worker.message" ? { message: "Proceed" } : { reason: "Done" }),
     });
     assert.equal(result.ok, false);
+    assert.equal(result.code, "worker_outside_daemon");
+    const item = fold(store.readSince(0)).projects[project]?.inbox.find((i) => i.followUp?.tool === name);
+    assert.equal(item?.kind, "follow-up");
+    assert.equal(item?.followUp?.fix, "answer in Linear or relaunch here");
+    assert.equal(item?.followUp?.attempts, 1);
     assert.match(
       String(result.reason),
       /this worker was launched outside this daemon; it reads Linear, answer there or relaunch it here/,

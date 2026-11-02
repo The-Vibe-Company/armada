@@ -229,7 +229,10 @@ test("armadad starts beside a crashed socket, announces its address and quits cl
       events.every(
         (event) =>
           (event.kind === "coordinator.checkpoint" &&
-            (event.payload.checkpoint as { format?: unknown }).format === "armada.pi") ||
+            (() => {
+              const c = event.payload.checkpoint as { format?: unknown; type?: unknown };
+              return c.format === "armada.pi" || (c.format === "armada.tools" && c.type === "providers");
+            })()) ||
           (event.kind === "coordinator.message" &&
             event.actor === "coordinator" &&
             event.payload.role === "coordinator" &&
@@ -1370,4 +1373,54 @@ test("pre-20 snapshots hide watchdog notices and policy, current clients receive
   record(2);
   check(await legacy.next(), true, 2);
   check(await modern.next(), false, 2);
+});
+
+test("pre-25 clients omit follow-ups while current clients retain the kind initially and live", async (t) => {
+  const store = new EventStore(":memory:");
+  const server = await startServer({ store, projects });
+  const legacy = await connect(server.wsUrl);
+  const modern = await connect(server.wsUrl);
+  t.after(async () => {
+    legacy.ws.terminate();
+    modern.ws.terminate();
+    await server.close();
+    store.close();
+  });
+  const record = (id: string) =>
+    store.append({
+      project: "orchard",
+      at: hold().at,
+      actor: "coordinator",
+      kind: "inbox.opened",
+      payload: {
+        id,
+        ticket: "ORC-1",
+        kind: "follow-up",
+        body: "Hand-back gap",
+        followUp: {
+          cause: id,
+          code: "merge_refused",
+          reason: "Hand-back gap",
+          facts: "Ready and green",
+          next: "inspect hand-back",
+          attempts: 1,
+          lastAt: hold().at,
+        },
+      },
+    });
+  const count = (frame: ServerMessage) => {
+    assert(frame.type === "project.subscribed" || frame.type === "events");
+    assert(frame.snapshot);
+    return (frame.snapshot.state as unknown as ProjectTables).inbox.filter((i) => i.kind === "follow-up").length;
+  };
+  record("first");
+  legacy.send({ type: "project.subscribe", project: "orchard", after: 0, version: { major: 1, minor: 24 } });
+  modern.send({ type: "project.subscribe", project: "orchard", after: 0 });
+  assert.equal(count(await legacy.next()), 0);
+  assert.equal(count(await modern.next()), 1);
+  await legacy.next();
+  await modern.next();
+  record("second");
+  assert.equal(count(await legacy.next()), 0);
+  assert.equal(count(await modern.next()), 2);
 });

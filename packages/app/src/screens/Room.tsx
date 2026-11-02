@@ -432,6 +432,19 @@ export function RoomView({
                 {snapshot ? (
                   <FleetList
                     items={items}
+                    blockedCount={state.inbox.filter((i) => i.kind === "follow-up").length}
+                    blocked={state.inbox
+                      .filter((i) => i.kind === "follow-up")
+                      .map((item) => (
+                        <Pinned
+                          key={item.id}
+                          item={item}
+                          waiting={1}
+                          title={state.sessions.find((s) => s.ticket === item.ticket)?.title ?? null}
+                          harness={harnessOf(item.ticket)}
+                          time={item.at ? rowTime(item.at, now, zone) : ""}
+                        />
+                      ))}
                     harnessOf={harnessOf}
                     repository={project.repository}
                     prefixes={prefixes}
