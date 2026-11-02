@@ -70,13 +70,16 @@ export function workerRefusal(error: unknown): JsonObject {
   const reason = known
     ? (error as Error).message
     : "worker action could not be confirmed; inspect fleet state before retrying";
-  const structured = error as { code?: string; capability?: string } | null;
+  const structured = error as { code?: string; capability?: string; fix?: string } | null;
   let code = structured?.code ?? "worker_refused";
   if (/not confirmed|could not be confirmed|unresolved .*launch|retained for recovery/i.test(reason))
     code = "outcome_unconfirmed";
   else if (/provider is unavailable|runtime unavailable|node unavailable|cannot reattach|cannot bind/i.test(reason))
     code = "capability_missing";
-  return refuse(code, reason, "fleet.status", structured?.capability ? { capability: structured.capability } : {});
+  return refuse(code, reason, structured?.fix ?? "fleet.status", {
+    ...(structured?.capability ? { capability: structured.capability } : {}),
+    ...(structured?.fix ? { fix: structured.fix } : {}),
+  });
 }
 
 function recordRefusal(scope: CoordinatorStorage, tool: string, args: JsonObject, result: JsonObject, at: string) {

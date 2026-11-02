@@ -14,6 +14,7 @@ import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { activate as activateClaude } from "../../plugins/claude/src/index.ts";
 import { createLocalNode } from "../../plugins/node-local/src/index.ts";
 import { eventually } from "../../plugins/node-local/test/support.ts";
+import { providerCheckpoint } from "../coordinator/follow-ups.ts";
 import { nativeTools } from "../coordinator/native.ts";
 import { openCoordinatorStorage } from "../coordinator/storage.ts";
 import { bootDaemon } from "../src/boot.ts";
@@ -119,6 +120,7 @@ async function fixture(
   wrap?: (node: NodeProvider) => NodeProvider,
   refresh?: (store: import("../src/store.ts").EventStore) => Promise<void>,
   now = () => at,
+  command = process.execPath,
 ) {
   const directory = await mkdtemp(join(tmpdir(), "armada-worker-"));
   const repository = join(directory, "repo");
@@ -162,7 +164,7 @@ async function fixture(
           config: {
             runtime: {
               claude: {
-                command: process.execPath,
+                command,
                 args: [fileURLToPath(new URL("./support/claude-worker.mjs", import.meta.url))],
               },
             },
@@ -303,6 +305,45 @@ async function fixture(
     progress,
     inspect: () => local.observe(reference),
   };
+}
+
+for (const gap of ["checkout", "claude"]) {
+  test(`local launch refuses missing ${gap} with an actionable capability follow-up`, async (t) => {
+    const f = await fixture(
+      t,
+      undefined,
+      undefined,
+      () => at,
+      gap === "claude" ? join(tmpdir(), "armada-absent-claude", "claude") : process.execPath,
+    );
+    if (gap === "checkout") Reflect.deleteProperty(f.projectConfig, "checkout");
+    const result = await f.tools["worker.launch"].execute({ ticket: "SEED-1" }, f.api(gap), context);
+    assert.equal(result.isError, true);
+    const detail = result.details as { code: string; capability: string; fix: string; followUp: string };
+    assert.equal(detail.code, "capability_missing");
+    assert.equal(detail.capability, gap === "checkout" ? "project-checkout" : "claude-cli");
+    assert.equal(
+      detail.fix,
+      gap === "checkout"
+        ? "Register the project's folder: Settings › Projects, or re-add the project from its folder"
+        : "Install Claude Code or enable Conductor in Settings › Providers",
+    );
+    const item = f.daemon.store.fold(project).projects[project]?.inbox.find((item) => item.id === detail.followUp);
+    assert.equal(item?.kind, "follow-up");
+    assert.equal(item?.followUp?.fix, detail.fix);
+    f.daemon.store.append(
+      providerCheckpoint(project, at, [
+        { id: "claude", enabled: true, loaded: true, capabilities: ["runtime.claude"] },
+      ]),
+    );
+    assert.equal(
+      f.daemon.store.fold(project).projects[project]?.inbox.find((row) => row.id === detail.followUp)?.followUp?.fix,
+      detail.fix,
+      "a loaded runtime does not establish that the CLI or project checkout exists",
+    );
+    assert.equal(f.token(), "", "refuse before creating a worker or worktree");
+    assert.equal(f.workspace(), "");
+  });
 }
 
 test("forge comments reach the current worker once, suppress its own account and deduplicate thread openings", {
@@ -974,7 +1015,7 @@ test("launch builds the ticket brief, uses plugin defaults and refuses unsafe fl
   const capped = await f.tools["worker.launch"].execute({ ticket: "SEED-2" }, f.api("cap"), context);
   assert.equal(
     (capped.details as { message: string }).message,
-    "worker cap reached: 1 of 1 workers; nothing was launched",
+    "cap reached: 1 of 1 workers; release or raise policy.maxWorkers",
   );
   assert.equal((await run("duplicate-launch")).isError, true);
   assert.equal((await socketCall(f.socketPath, f.token(), { command: "claim", ticket: "SEED-1" })).status, 200);
