@@ -188,11 +188,14 @@ export function RoomView({
   const busy = turn !== null && turn.state !== "idle";
   // The room's own lines (THE-2128) go into the thread by time; the coordinator never reads them.
   const notes = useNotes(project.id);
-  const shown = useMemo(() => withNotes(threadItems(chat.items, chat.live), notes), [chat.items, chat.live, notes]);
+  const said = useMemo(() => threadItems(chat.items, chat.live), [chat.items, chat.live]);
+  const shown = useMemo(() => withNotes(said, notes), [said, notes]);
   // The coordinator's model under the field, and the picker it opens (THE-2128).
   const model = roomModel(daemon, snapshot?.state);
   const providers = daemon.catalog?.providers ?? NO_PROVIDERS;
-  const switching = useModelSwitch({ project: project.id, client, model, providers, busy });
+  // A room opened again during a turn learns it from the daemon's next frame: until then the choice keeps waiting.
+  const known = chat.live == null || turn !== null;
+  const switching = useModelSwitch({ project: project.id, client, model, providers, busy, known });
   const stop = chat.stop;
   // The thread's scroll (THE-2054): a message the thread shows is pinned near its top; the field pages it.
   const thread = useRef<ThreadControl>(null);
@@ -205,7 +208,8 @@ export function RoomView({
     [send],
   );
   // Nothing said yet (THE-2055): the hero holds the thread's place, the field centred under it.
-  const hero = chat.status === "ready" && shown.length === 0 && !busy && !chat.queued?.length && !chat.problem;
+  // The room's own lines (a model switch) keep the hero: they wait in the thread for the first message.
+  const hero = chat.status === "ready" && said.length === 0 && !busy && !chat.queued?.length && !chat.problem;
   const asks = useMemo(() => starterAsks(state), [state]);
   // Only leaving the hero glides the field (its first Send); the hero arriving with the first reading does not.
   const [dock, setDock] = useState({ hero, glides: 0 });

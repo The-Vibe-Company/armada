@@ -61,7 +61,8 @@ export function ComposerModel({
   useEffect(() => {
     if (!changeable) return;
     function onKey(event: KeyboardEvent) {
-      if (!isPickerKey(event) || event.defaultPrevented) return;
+      // Not while the chat is inert under an agent's page (a modal `Dialog` already keeps its keys).
+      if (!isPickerKey(event) || event.defaultPrevented || root.current?.closest("[inert]")) return;
       event.preventDefault();
       toggle();
     }

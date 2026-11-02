@@ -1,4 +1,4 @@
-import { MODELS_MINOR } from "@armada/protocol";
+import { MODEL_SCOPE_MINOR, MODELS_MINOR } from "@armada/protocol";
 import { ChevronRight } from "lucide-react";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { Input } from "@/components/page";
@@ -279,7 +279,7 @@ function ProviderRow({ provider, signIn, panel }: { provider: CatalogProvider; s
 
 /** Model: the default every coordinator thinks with, and each project's own from its rules. */
 function Model() {
-  const { catalog, projects, fleets, status } = useDaemon();
+  const { catalog, projects, fleets, status, minor } = useDaemon();
   const client = useDaemonClient();
   const [problem, setProblem] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -318,7 +318,11 @@ function Model() {
       <SettingsRow
         data-setting="per-project"
         title="Per project"
-        description="A project's rules can name its own coordinator model. Change it from the model under the room's field (⌘⇧M), or ask the coordinator."
+        description={
+          (minor ?? 0) >= MODEL_SCOPE_MINOR
+            ? "A project's rules can name its own coordinator model. Change it from the model under the room's field (⌘⇧M), or ask the coordinator."
+            : "A project's rules can name its own coordinator model. Ask the coordinator in the room to change it."
+        }
       >
         {projects && projects.length > 0 ? (
           <ul className="m-0 flex list-none flex-col p-0 pb-2">

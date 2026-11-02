@@ -204,6 +204,10 @@ describe("the coordinator's model changes from the chat bar in a browser", () =>
       "Coordinator now on openai-codex/codex-mini",
       "Coordinator now on anthropic/claude-skiff",
     ]);
+    // Under an agent's page the chat is inert: ⌘⇧M opens nothing there.
+    await page.evaluate(() => document.querySelector("[data-dock]")?.parentElement?.setAttribute("inert", ""));
+    await page.keyboard.press("Meta+Shift+M");
+    expect(await picker.count()).toBe(0);
   });
 
   test("a choice during a turn waits for the next one: the label says so until the turn ends, then the room's line", async () => {
