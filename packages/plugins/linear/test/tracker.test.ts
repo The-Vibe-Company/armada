@@ -4,73 +4,11 @@ import { setImmediate } from "node:timers/promises";
 import { fold } from "@armada/daemon/fold";
 import { EventStore } from "@armada/daemon/store";
 import { trackerChanges } from "../src/changes.ts";
-import { type LinearFetch, linearTracker } from "../src/linear/index.ts";
+import { linearTracker } from "../src/linear/index.ts";
 import { TrackerPoller } from "../src/poll.ts";
 
-const t0 = "2030-01-01T10:00:00.000Z";
-const t1 = "2030-01-01T10:01:00.000Z";
-const page = <T>(nodes: T[], endCursor: string | null = null) => ({
-  nodes,
-  pageInfo: { hasNextPage: endCursor !== null, endCursor },
-});
-const issue = (id: string, phase: string | null = null) => ({
-  id: `uuid-${id}`,
-  identifier: id,
-  title: `Grow ${id}`,
-  description: `Full requirements for ${id}`,
-  branchName: `worker/${id.toLowerCase()}`,
-  inverseRelations: page<{ type: string; issue: { identifier: string; state: { type: string } } }>([]),
-  url: `https://linear.example/issue/${id}`,
-  updatedAt: t0,
-  state: { type: phase ? "started" : "backlog" },
-  assignee: { name: "Mira" },
-  parent: id === "SEED-1" ? null : { identifier: "SEED-1" },
-  labels: page(phase ? [{ name: phase, parent: { name: "Fleet phase" } }] : []),
-  attachments: page([]),
-});
-const comment = (id: string, body: string, at = t0) => ({
-  id,
-  body,
-  createdAt: at,
-  updatedAt: at,
-  user: { name: "Mira" },
-});
-/** Synthetic recorded GraphQL responses, queued by operation (V1 support.ts pattern). */
-function recorded(responses: Record<string, unknown[]>) {
-  const calls: { operation: string; variables: Record<string, unknown> }[] = [];
-  const fetch: LinearFetch = async (_url, init) => {
-    const { query, variables } = JSON.parse(String(init?.body));
-    const operation = /query\s+(\w+)/.exec(query)?.[1] ?? "?";
-    calls.push({ operation, variables });
-    let data = operation === "Changed" && !variables.readIssues ? {} : responses[operation]?.shift();
-    if (operation === "Changed") {
-      if (!variables.readIssues) data = {};
-      assert.ok(data, `unexpected ${operation}`);
-      const comments = variables.readComments ? responses.ChangedComments?.shift() : undefined;
-      assert.ok(!variables.readComments || comments, "unexpected changed-comments page");
-      data = { ...(data as object), ...(comments as object | undefined) };
-    }
-    assert.ok(data, `unexpected ${operation}`);
-    return Response.json({ data });
-  };
-  return { calls, fetch };
-}
-function initial(comments: unknown[] = []) {
-  return {
-    Root: [{ issue: issue("SEED-1") }],
-    Children: [{ issues: page([issue("SEED-2", "implementing")]) }, { issues: page([]) }],
-    Comments: [
-      {
-        issues: {
-          nodes: [
-            { identifier: "SEED-1", comments: page([]) },
-            { identifier: "SEED-2", comments: page(comments) },
-          ],
-        },
-      },
-    ],
-  };
-}
+import { comment, initial, issue, page, recorded, t0, t1 } from "./support/program.ts";
+
 async function recordedTicket(phase: string, comments: unknown[]) {
   const responses = initial(comments);
   responses.Children[0] = { issues: page([issue("SEED-2", phase)]) };

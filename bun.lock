@@ -58,6 +58,7 @@
         "@armada/core": "workspace:*",
         "@armada/daemon": "workspace:*",
         "@armada/plugin-api": "workspace:*",
+        "@armada/protocol": "workspace:*",
         "ai": "7.0.156",
       },
     },

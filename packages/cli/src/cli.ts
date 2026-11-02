@@ -54,6 +54,7 @@ import { stop } from "./runtime.ts";
 import { runCommand, secretsCommand } from "./secrets.ts";
 import { printSkill, updateSkills } from "./skills.ts";
 import { requireSpecCoordinator, specCommand } from "./spec.ts";
+import { importTickets } from "./tickets.ts";
 import { upgrade } from "./upgrade.ts";
 import { askOwner, done, namedTicket, validate } from "./validate.ts";
 import { hookSessionStart, hookStop, stopHookBanner, stopWatch, watch } from "./watch.ts";
@@ -64,6 +65,10 @@ export type { Io } from "./io.ts";
 
 /** Each command's help block, in the order of the full usage; `armada <command> --help` prints its own. */
 const COMMAND_HELP: Record<string, string> = {
+  tickets: `  tickets import <program-root> --project <id> [--api-url <url>]
+                    Import Linear into an internal project through the running daemon.
+                    ARMADA_DAEMON_URL supplies its loopback URL. No Linear writes.
+`,
   worker: `  worker            Show the worker protocol commands:
                     ticket [<id>] [--json]: read your ticket through its local capability
                     claim, report, heartbeat, ask, release: work with the daemon
@@ -705,6 +710,7 @@ const FLAG_OPTIONS = [
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  tickets: ["api-url"],
   plugin: ["report"],
   acceptance: ["ticket", "name", "runs", "reason"],
   doctor: ["deep"],
@@ -1012,6 +1018,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     if (args.all) args.options.all = "true";
     if (args.passthrough && args.command !== "run")
       throw new UsageError(`-- does not apply to ${args.command}: only \`armada run\` runs a command`);
+    if (args.command === "tickets") return await importTickets(io, args.rest, args.project, args.options["api-url"]);
     const local = await localWorker(io, { ...args, command: args.command });
     if (local !== null) return local;
     if (args.command === "worker") {

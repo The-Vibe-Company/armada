@@ -8,6 +8,7 @@ import { linearConnection } from "./status.ts";
 
 interface Config {
   endpoint?: string;
+  quotaProjects?: string[];
   projects?: Record<string, { programRoot: string; phaseGroup?: string; runtimeGroup?: string; readyLabel?: string }>;
 }
 
@@ -55,6 +56,7 @@ const readerPools = new WeakMap<
   {
     budgets: Map<string, LinearBudget>;
     pending: Set<Promise<void>>;
+    projects: Set<string>;
   }
 >();
 
@@ -63,21 +65,24 @@ export function activate(ctx: PluginContext): void {
   const readers = new Map<string, TrackerPoller>();
   let pool = readerPools.get(ctx.events);
   if (!pool) {
-    pool = { budgets: new Map(), pending: new Set() };
+    pool = { budgets: new Map(), pending: new Set(), projects: new Set() };
     readerPools.set(ctx.events, pool);
   }
   const { budgets, pending } = pool;
+  for (const project of [...(config.quotaProjects ?? []), ...Object.keys(config.projects ?? {})])
+    pool.projects.add(project);
   const trackers = new Map<string, ReturnType<typeof linearTracker>>();
-  const trackerFor = (project: string) => {
+  const programs = new Map<string, { root: string; reader: TrackerPoller }>();
+  const trackerFor = (project: string, quotaOnly = false) => {
     let tracker = trackers.get(project);
     if (tracker) return tracker;
     const settings = config.projects?.[project];
-    if (!settings) throw new Error("Linear project is not configured");
+    if (!settings && !quotaOnly) throw new Error("Linear project is not configured");
     tracker = linearTracker({
       project,
       budgets,
-      rootId: settings.programRoot,
-      phaseGroup: settings.phaseGroup ?? "Agent phase",
+      rootId: settings?.programRoot ?? "",
+      phaseGroup: settings?.phaseGroup ?? "Agent phase",
       endpoint: config.endpoint,
       secrets: async () => ctx.secrets.get("LINEAR_API_KEY", project),
       fetch: (...args) => fetch(...args),
@@ -93,8 +98,8 @@ export function activate(ctx: PluginContext): void {
   const restoreBudget = () => {
     if (restoredBudget) return restoredBudget;
     const attempt = Promise.all(
-      Object.keys(config.projects ?? {}).map(async (project) => {
-        const tracker = trackerFor(project);
+      [...pool.projects].map(async (project) => {
+        const tracker = trackerFor(project, true);
         try {
           await tracker.prepare?.();
         } catch {
@@ -139,6 +144,85 @@ export function activate(ctx: PluginContext): void {
   };
   const provider: TrackerProvider = {
     ...linearConnection(ctx.secrets, config.endpoint),
+    async readProgram({ project, programRoot, phaseGroup, signal }) {
+      await waitForRestore(signal);
+      signal?.throwIfAborted();
+      const group = phaseGroup ?? config.projects?.[project]?.phaseGroup ?? "Agent phase";
+      const identity = JSON.stringify([programRoot, group]);
+      let program = programs.get(project);
+      if (!program || program.root !== identity) {
+        program?.reader.stop();
+        const tracker = linearTracker({
+          project,
+          budgets,
+          rootId: programRoot,
+          phaseGroup: group,
+          endpoint: config.endpoint,
+          secrets: () => ctx.secrets.get("LINEAR_API_KEY", project),
+          fetch: (...args) => fetch(...args),
+          now: () => new Date(),
+          log: (line) => ctx.log.info(line),
+        });
+        program = {
+          root: identity,
+          reader: new TrackerPoller({
+            project,
+            tracker,
+            store: {
+              // Retain the existing reader's cursor, quota and pause accounting only.
+              // Linear observations must never become target-project tickets/sessions.
+              append: async (event) =>
+                event.kind === "coordinator.checkpoint"
+                  ? ((await ctx.events.append(event)) as FleetEvent)
+                  : ({ ...event, seq: 0 } as FleetEvent),
+              readSince: async (after) => (await ctx.events.read(project, after)) as FleetEvent[],
+            },
+            clock: {
+              now: () => new Date(),
+              set(callback, delay) {
+                const timer = setTimeout(callback, delay);
+                return () => clearTimeout(timer);
+              },
+            },
+          }),
+        };
+        programs.set(project, program);
+      }
+      const { reader } = program;
+      const stop = () => reader.stop();
+      signal?.addEventListener("abort", stop, { once: true });
+      try {
+        await reader.readNow();
+        signal?.throwIfAborted();
+        const status = reader.status;
+        if (status.pausedUntil) return { pausedUntil: status.pausedUntil };
+        if (status.error || !reader.reading) throw new Error(status.error ?? "Tracker read failed");
+        return {
+          reading: {
+            tickets: reader.reading.tickets.map((ticket) => ({
+              id: ticket.id,
+              title: ticket.title,
+              description: ticket.description ?? "",
+              state: ticket.status === "triage" ? "backlog" : ticket.status,
+              labels: [...ticket.labels],
+              parent: ticket.parent,
+              blockers: (ticket.blockers ?? []).map((blocker) => blocker.id),
+              url: ticket.url,
+              source: ticket.id,
+            })),
+            comments: reader.reading.comments.map((comment) => ({
+              id: comment.id,
+              ticket: comment.ticket,
+              body: comment.body,
+              author: comment.author,
+              at: comment.createdAt,
+            })),
+          },
+        };
+      } finally {
+        signal?.removeEventListener("abort", stop);
+      }
+    },
     async read({ project, signal }) {
       signal?.throwIfAborted();
       await waitForRestore(signal);

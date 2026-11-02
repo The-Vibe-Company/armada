@@ -30,6 +30,7 @@ function projectConfig(projects: readonly ProjectSettings[]): PluginConfig {
   return {
     tracker: {
       linear: {
+        quotaProjects: projects.map((p) => p.id),
         projects: Object.fromEntries(
           projects.flatMap((p) =>
             p.programRoot && (p.tracker === undefined || p.tracker === "linear")

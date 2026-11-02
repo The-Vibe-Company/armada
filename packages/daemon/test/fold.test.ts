@@ -306,6 +306,34 @@ test("incremental readings isolate retained snapshots and input while preserving
       },
     }),
     event("coordinator.checkpoint", { checkpoint: { format: "armada.readers", version: 1, provider: "linear" } }),
+    event("tracker.import-started", {
+      id: "import-1",
+      programRoot: "SEED-1",
+      state: "running",
+      imported: 0,
+      skipped: 0,
+      comments: 0,
+      total: 1,
+    }),
+    event("tracker.import-progress", {
+      id: "import-1",
+      programRoot: "SEED-1",
+      state: "running",
+      imported: 1,
+      skipped: 0,
+      comments: 1,
+      total: 1,
+      source: "SEED-7",
+    }),
+    event("tracker.import-ended", {
+      id: "import-1",
+      programRoot: "SEED-1",
+      state: "completed",
+      imported: 1,
+      skipped: 0,
+      comments: 1,
+      total: 1,
+    }),
   ).map((e) => ({ ...e, seq: e.seq * 2 }));
   const replay = new FoldAccumulator();
   const snapshots = [];
@@ -318,11 +346,21 @@ test("incremental readings isolate retained snapshots and input while preserving
     assert.ok(state);
     state.tickets[0]!.title = "Caller mutation";
     if (state.rules) state.rules.revision = 999;
+    if (state.trackerImport) state.trackerImport.imported = 999;
   }
   const current = replay.snapshot().projects.orchard;
   assert.equal(current?.tickets[0]?.title, "Plant");
   assert.equal(current?.tickets[0]?.blockers?.[0]?.status, "completed");
   assert.equal(current?.sessions[0]?.phase, "planning", "old generation never replaces the current reading");
+  assert.deepEqual(current?.trackerImport, {
+    id: "import-1",
+    programRoot: "SEED-1",
+    state: "completed",
+    imported: 1,
+    skipped: 0,
+    comments: 1,
+    total: 1,
+  });
   assert.equal(
     snapshots[3]?.projects.orchard?.sessions[0]?.phase,
     "blocked",

@@ -46,6 +46,12 @@
               },
               "endpoint": {
                 "type": "string"
+              },
+              "quotaProjects": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "additionalProperties": false

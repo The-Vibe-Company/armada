@@ -61,6 +61,7 @@ const readerCheckpoint = z.object({
 });
 
 interface Projection {
+  trackerImport?: ProjectTables["trackerImport"];
   defaultBranch?: ProjectTables["defaultBranch"];
   readAt: Record<string, string>;
   readers: Record<string, ReaderUsage>;
@@ -164,6 +165,15 @@ function applyEvent(projects: Map<string, Projection>, e: FleetEvent): void {
   }
   applyDelivery(p.deliveries, e);
   switch (e.kind) {
+    case "tracker.import-started":
+    case "tracker.import-progress":
+    case "tracker.import-ended": {
+      if (e.kind === "tracker.import-started" || p.trackerImport?.id === e.payload.id) {
+        const { source: _source, ...value } = e.payload as typeof e.payload & { source?: string };
+        p.trackerImport = value;
+      }
+      break;
+    }
     case "ticket.seen": {
       const t = e.payload;
       if (p.internal.has(t.id)) break;
@@ -538,6 +548,7 @@ function projectTables(projects: Map<string, Projection>, seq: number, events: r
     tables.projects[project] = {
       ...(p.defaultBranch ? { defaultBranch: p.defaultBranch } : {}),
       rules: p.rules,
+      ...(p.trackerImport ? { trackerImport: p.trackerImport } : {}),
       ...(usage.days.length ? { usage } : {}),
       ...(Object.keys(p.readers).length ? { readers: p.readers } : {}),
       ...(Object.keys(p.readAt).length ? { readAt: p.readAt } : {}),

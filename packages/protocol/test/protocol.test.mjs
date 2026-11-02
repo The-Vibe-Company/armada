@@ -550,3 +550,12 @@ test("models.select names a project only from minor 24, on both sides", () => {
   assert.equal(admitRequest(scoped, { major: 1, minor: 23 }).ok, false);
   assert.equal(admitRequest({ ...scoped, project: "" }).ok, false);
 });
+
+test("tracker.import requires minor 27 on both sides and a project plus program root", () => {
+  const v = { major: 1, minor: 27 };
+  const request = { type: "tracker.import", version: v, id: "import", project: "orchard", programRoot: "SEED-1" };
+  assert.equal(admitRequest(request, v).ok, true);
+  assert.equal(admitRequest({ ...request, version: { ...v, minor: 26 } }, v).ok, false);
+  assert.equal(admitRequest(request, { ...v, minor: 26 }).ok, false);
+  assert.equal(admitRequest({ ...request, programRoot: "" }, v).ok, false);
+});
