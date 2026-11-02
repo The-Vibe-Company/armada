@@ -419,7 +419,7 @@ test("starting adoption waits for the preallocated endpoint, and terminal metada
     const endpointDirectory = join(tmpdir(), `armada-nl-${endpointHash}`);
     await assert.rejects(
       adopter.adopt(worker, workspace),
-      /stale or mismatched/,
+      /unreachable.*no liveness contract/,
       "ordinary adoption does not wait for a launch that has not started",
     );
 
@@ -946,6 +946,314 @@ test("a missing executable returns a failed handle that can still be observed an
     );
     assert.equal((await node.observe(failed)).state, "failed");
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// THE-2212: a supervisor that died with its daemon (a tree kill of the dev app, a kill by
+// name) leaves a dead endpoint and no final record. Only the liveness contract it wrote
+// once the CLI ran, plus the end of that process group, proves the tree gone.
+const supervisorDirectory = (workspaceRoot: string, handle: string) =>
+  join(
+    process.platform === "win32" ? tmpdir() : "/tmp",
+    `armada-nl-${createHash("sha256").update(workspaceRoot).update("\0").update(handle).digest("hex").slice(0, 24)}`,
+  );
+const parentOf = async (pid: number) => Number((await execute("ps", ["-o", "ppid=", "-p", String(pid)])).stdout.trim());
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+/** A CLI fixture that survives its supervisor: it ignores stdin's end and exits only on a stop file. */
+const survivingFixture = (pidFile: string, stopFile: string) =>
+  [
+    "import { existsSync, writeFileSync } from 'node:fs';",
+    "console.log('READY');",
+    `writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify({ pin: process.ppid }));`,
+    "process.stdin.resume();",
+    `setInterval(() => { if (existsSync(${JSON.stringify(stopFile)})) process.exit(0); }, 50);`,
+    "setTimeout(() => process.exit(0), 60_000);",
+  ].join("\n");
+
+test("a dead supervisor is reported gone only once its contracted process group ended; the kept worktree is then reused", {
+  skip: process.platform === "win32",
+  timeout: 60_000,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "armada-node-gone-"));
+  let fixture: { pin: number; supervisor: number } | undefined;
+  const handles: string[] = [];
+  let workspaceRoot = "";
+  try {
+    const source = await repository(root);
+    const projects = { "local-test": { root: source } };
+    workspaceRoot = join(source, ".armada", "worktrees");
+    const node = createLocalNode({ projects, transport: "pipe" });
+    const request = { project: "local-test", ticket: "CHECK-1", repository: source, branch: "kept-branch" };
+    const workspace = await node.prepare(request);
+    const pidFile = join(root, "fixture.json");
+    const stopFile = join(root, "stop");
+    await writeFile(join(workspace.path, "worker.mjs"), survivingFixture(pidFile, stopFile));
+    await writeFile(join(workspace.path, "unpushed-notes.txt"), "dirty work to preserve\n");
+    const worker = await launch(node, workspace, "session-gone");
+    handles.push(worker.handle);
+    const paths = supervisorDirectory(workspaceRoot, worker.handle);
+    await eventually(async () => (await node.observe(worker)).reply?.includes("READY") === true);
+    await eventually(() =>
+      stat(join(paths, "pin.json")).then(
+        () => true,
+        () => false,
+      ),
+    );
+    const contract = JSON.parse(await readFile(join(paths, "pin.json"), "utf8"));
+    const { pin } = JSON.parse(await readFile(pidFile, "utf8")) as { pin: number };
+    assert.equal(contract.version, 1);
+    assert.equal(contract.group, pin, "the contract names the pinned group, the pin runner's pid");
+    assert.deepEqual(contract.worker, worker);
+    fixture = { pin, supervisor: await parentOf(pin) };
+    assert(fixture.supervisor > 1);
+
+    process.kill(fixture.supervisor, "SIGKILL");
+    await eventually(async () => !alive(fixture!.supervisor), { timeoutMs: 10_000 });
+    const adopter = createLocalNode({ projects, transport: "pipe" });
+    await eventually(
+      async () => {
+        const error = await adopter.adopt!(worker, workspace).then(
+          () => undefined,
+          (e: Error) => e,
+        );
+        return /refused the connection|no supervisor endpoint/.test(error?.message ?? "");
+      },
+      { timeoutMs: 10_000 },
+    );
+    const running = await adopter.adopt!(worker, workspace).then(
+      () => undefined,
+      (e: Error) => e,
+    );
+    assert.match(running!.message, /process group still exists/);
+    assert.equal(running!.name, "WorkerRuntimeAlive", "a live group is reported alive, never gone");
+    assert(alive(pin), "nothing was signaled: the surviving tree keeps running");
+
+    await writeFile(stopFile, "stop\n");
+    await eventually(async () => !alive(pin), { timeoutMs: 15_000 });
+    const gone = await adopter.adopt!(worker, workspace).then(
+      () => undefined,
+      (e: Error) => e,
+    );
+    assert.equal(gone!.name, "WorkerRuntimeGone");
+    assert.match(gone!.message, /process group that no longer exists/);
+    assert.match(gone!.message, /nothing was signaled/);
+
+    const reused = await adopter.prepare(request);
+    assert.equal(reused.path, workspace.path, "the kept worktree is reused at its path");
+    assert.notEqual(reused.id, workspace.id, "under a new workspace identity");
+    assert.equal(await readFile(join(reused.path, "unpushed-notes.txt"), "utf8"), "dirty work to preserve\n");
+    await writeFile(
+      join(reused.path, "worker.mjs"),
+      "import { createInterface } from 'node:readline'; console.log('READY'); createInterface({ input: process.stdin }).on('line', () => {});\n",
+    );
+    const replacement = await guarded(
+      { project: "local-test", ticket: "CHECK-1", session: "session-replacement", generation: 2 },
+      () => {},
+      () =>
+        adopter.launch({
+          workspace: reused,
+          worker: { project: "local-test", ticket: "CHECK-1", session: "session-replacement", generation: 2 },
+          command: process.execPath,
+          args: [join(reused.path, "worker.mjs")],
+          env: {},
+        }),
+    );
+    handles.push(replacement.handle);
+    await eventually(async () => (await adopter.observe(replacement)).reply?.includes("READY") === true);
+    await assert.rejects(adopter.prepare(request), /active worker/, "no second worker in the reused worktree");
+    await guarded(
+      replacement,
+      () => {},
+      () => adopter.stop(replacement),
+    );
+    assert.equal((await adopter.observe(replacement)).state, "stopped");
+  } finally {
+    if (fixture && alive(fixture.pin)) process.kill(fixture.pin, "SIGKILL");
+    for (const handle of handles)
+      await rm(supervisorDirectory(workspaceRoot, handle), { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a missing, legacy or foreign liveness contract never proves a tree gone", {
+  skip: process.platform === "win32",
+  timeout: 60_000,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "armada-node-legacy-"));
+  let fixture: { pin: number; supervisor: number } | undefined;
+  let handle = "";
+  const workspaceRoot = join(root, "workspaces");
+  try {
+    const source = await repository(root);
+    const node = createLocalNode({ workspaceRoot, transport: "pipe" });
+    const workspace = await node.prepare({
+      project: "local-test",
+      ticket: "CHECK-1",
+      repository: source,
+      branch: "legacy-branch",
+    });
+    const pidFile = join(root, "fixture.json");
+    const stopFile = join(root, "stop");
+    await writeFile(join(workspace.path, "worker.mjs"), survivingFixture(pidFile, stopFile));
+    const worker = await launch(node, workspace, "session-legacy");
+    handle = worker.handle;
+    const paths = supervisorDirectory(workspaceRoot, handle);
+    await eventually(async () => (await node.observe(worker)).reply?.includes("READY") === true);
+    await eventually(() =>
+      stat(join(paths, "pin.json")).then(
+        () => true,
+        () => false,
+      ),
+    );
+    const { pin } = JSON.parse(await readFile(pidFile, "utf8")) as { pin: number };
+    fixture = { pin, supervisor: await parentOf(pin) };
+    const contract = await readFile(join(paths, "pin.json"), "utf8");
+    // A worker launched before the contract existed left no such file.
+    await rm(join(paths, "pin.json"));
+    process.kill(fixture.supervisor, "SIGKILL");
+    await eventually(async () => !alive(fixture!.supervisor), { timeoutMs: 10_000 });
+    const adopter = createLocalNode({ workspaceRoot, transport: "pipe" });
+    const reject = async () =>
+      adopter.adopt!(worker, workspace).then(
+        () => undefined,
+        (e: Error) => e,
+      );
+    await eventually(async () => /unreachable/.test((await reject())?.message ?? ""), { timeoutMs: 10_000 });
+    const legacyLive = await reject();
+    assert.match(legacyLive!.message, /no liveness contract was recorded/);
+    assert.notEqual(legacyLive!.name, "WorkerRuntimeGone");
+    assert(alive(pin));
+
+    await writeFile(stopFile, "stop\n");
+    await eventually(async () => !alive(pin), { timeoutMs: 15_000 });
+    const legacyDead = await reject();
+    assert.match(legacyDead!.message, /no liveness contract was recorded/);
+    assert.notEqual(legacyDead!.name, "WorkerRuntimeGone", "absence of evidence is not evidence of termination");
+
+    const parsed = JSON.parse(contract);
+    await writeFile(join(paths, "pin.json"), JSON.stringify({ ...parsed, worker: { ...worker, session: "other" } }), {
+      mode: 0o600,
+    });
+    assert.match((await reject())!.message, /belongs to another worker generation/);
+    await writeFile(join(paths, "pin.json"), JSON.stringify({ ...parsed, version: 2 }), { mode: 0o600 });
+    assert.match((await reject())!.message, /unknown version/);
+    await writeFile(join(paths, "pin.json"), "not json", { mode: 0o600 });
+    assert.match((await reject())!.message, /not valid JSON/);
+    for (const message of [/another worker generation/, /unknown version/, /not valid JSON/])
+      assert.notEqual((await reject())!.name, "WorkerRuntimeGone", String(message));
+
+    await writeFile(join(paths, "pin.json"), contract, { mode: 0o600 });
+    const gone = await reject();
+    assert.equal(gone!.name, "WorkerRuntimeGone", "the contract plus the ended group is the evidence");
+    assert.match(gone!.message, /version 1/);
+  } finally {
+    if (fixture && alive(fixture.pin)) process.kill(fixture.pin, "SIGKILL");
+    if (handle) await rm(supervisorDirectory(workspaceRoot, handle), { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a kept project worktree is reused only for its own branch, never twice at once", async () => {
+  const root = await mkdtemp(join(tmpdir(), "armada-node-reuse-"));
+  const handles: string[] = [];
+  let workspaceRoot = "";
+  try {
+    const source = await repository(root);
+    workspaceRoot = join(source, ".armada", "worktrees");
+    const node = createLocalNode({ projects: { "local-test": { root: source } }, transport: "pipe" });
+    const request = { project: "local-test", ticket: "CHECK-1", repository: source, branch: "kept-branch" };
+    const first = await node.prepare(request);
+    await writeFile(
+      join(first.path, "worker.mjs"),
+      "import { createInterface } from 'node:readline'; console.log('READY'); createInterface({ input: process.stdin }).on('line', () => {});\n",
+    );
+    const worker = await launch(node, first, "session-reuse-1");
+    handles.push(worker.handle);
+    await eventually(async () => (await node.observe(worker)).reply?.includes("READY") === true);
+    await assert.rejects(node.prepare(request), /active worker/, "a running worker keeps its worktree");
+    await guarded(
+      worker,
+      () => {},
+      () => node.stop(worker),
+    );
+    await writeFile(join(first.path, "kept.txt"), "kept\n");
+
+    const [again, concurrent] = await Promise.all([node.prepare(request), node.prepare(request)]);
+    assert.equal(again.path, first.path);
+    assert.equal(concurrent.path, first.path);
+    assert.notEqual(again.id, concurrent.id);
+    assert.equal(await readFile(join(again.path, "kept.txt"), "utf8"), "kept\n", "nothing in it is reset");
+    const second = await guarded(
+      { project: "local-test", ticket: "CHECK-1", session: "session-reuse-2", generation: 2 },
+      () => {},
+      () =>
+        node.launch({
+          workspace: again,
+          worker: { project: "local-test", ticket: "CHECK-1", session: "session-reuse-2", generation: 2 },
+          command: process.execPath,
+          args: [join(again.path, "worker.mjs")],
+          env: {},
+        }),
+    );
+    handles.push(second.handle);
+    await guarded(
+      second,
+      () => {},
+      () => node.stop(second),
+    );
+    // Two admissions of one worktree launching at the same moment still run at most one worker in it.
+    const launchIn = (workspace: Workspace, session: string, generation: number) =>
+      guarded(
+        { project: "local-test", ticket: "CHECK-1", session, generation },
+        () => {},
+        () =>
+          node.launch({
+            workspace,
+            worker: { project: "local-test", ticket: "CHECK-1", session, generation },
+            command: process.execPath,
+            args: [join(workspace.path, "worker.mjs")],
+            env: {},
+          }),
+      );
+    const third = await node.prepare(request);
+    const fourth = await node.prepare(request);
+    const race = await Promise.allSettled([
+      launchIn(third, "session-reuse-3", 3),
+      launchIn(fourth, "session-reuse-4", 4),
+    ]);
+    const won = race.filter((r) => r.status === "fulfilled") as PromiseFulfilledResult<WorkerRef>[];
+    assert.equal(won.length, 1, "exactly one of two simultaneous launches wins the kept worktree");
+    const lostRace = race.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    assert.match(String(lostRace.reason.message), /active worker/);
+    handles.push(won[0]!.value.handle);
+    await guarded(
+      won[0]!.value,
+      () => {},
+      () => node.stop(won[0]!.value),
+    );
+
+    await assert.rejects(
+      node.prepare({ ...request, branch: "other-branch" }),
+      /kept worktree on kept-branch, not other-branch/,
+      "provenance is the branch the worktree is attached to, not a name",
+    );
+    await mkdir(join(workspaceRoot, "CHECK-2"));
+    await assert.rejects(
+      node.prepare({ ...request, ticket: "CHECK-2", branch: "plain-branch" }),
+      /not a worktree of/,
+      "a plain directory at the path is never adopted",
+    );
+  } finally {
+    for (const handle of handles)
+      await rm(supervisorDirectory(workspaceRoot, handle), { recursive: true, force: true });
     await rm(root, { recursive: true, force: true });
   }
 });

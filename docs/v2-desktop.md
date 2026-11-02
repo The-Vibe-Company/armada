@@ -761,6 +761,35 @@ and retains its local worktree. If ownership is unavailable, restore the runtime
 or explicitly release the ticket; Armada refuses to guess a process identity.
 Workers launched by older versions without recovery facts are reported lost.
 
+A supervisor that dies with its daemon (THE-2212: a restart that kills the whole
+dev process tree, or a kill by name, reaches the detached supervisors and their
+pins, which are Electron processes; a production quit sends SIGTERM to armadad
+only and leaves them running) leaves a dead endpoint and no final record. The
+`worker.lost` reason then carries the local node's actual finding and one next
+action. Once the CLI runs, the supervisor writes a version 1 liveness contract
+(`pin.json` beside its socket: the worker identity and its pinned process group,
+never a command, output or token). On reattachment with a dead endpoint and no
+final record the node reads that contract and asks the kernel whether the group
+still exists (`kill(-group, 0)` delivers nothing; a group id stays reserved
+while any member lives): gone only when the contract is valid and the group
+ended (every process still pinned to it has ended: a descendant that left
+the group is outside this proof, as it is outside the supervisor's own stop),
+still running when the group exists, unknown without a contract (a
+worker launched before this version, or ended before its CLI started), with a
+foreign or invalid one, on Windows, or when the probe is ambiguous. A gone
+worker admits `worker.relaunch`: after the brief preflight and a fresh probe,
+the old generation is released without a stop claim (`stopped: false`) and the
+replacement launches in the kept worktree, which the local node reuses for the
+same branch once the source lists it as its attached worktree with no worker of
+this node in it (dirty and unpushed work is never reset; admission is serialized
+per path). An unknown or still-running worker refuses automatic replacement and
+names the deliberate path: wait or stop the process yourself, or `worker.stop`
+with a reason, which releases the ticket without a stop claim and keeps the
+worktree, branch and pull request, then `worker.launch` continues there. That
+launch probes the released generation first and refuses while its pinned
+process group still exists; a failed replacement never disposes a kept
+worktree.
+
 Only an explicit owner WebSocket request ends the project fleet:
 `{ type: "fleet.shutdown", version: { major: 1, minor: 15 }, id, project, reason }`.
 It is absent from coordinator tools and worker capability commands. Its
