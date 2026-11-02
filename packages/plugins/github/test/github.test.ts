@@ -68,11 +68,32 @@ function checks(head: string, conclusion: string, extra: Record<string, unknown>
 function page(nodes: unknown[], hasNextPage = false, endCursor: string | null = null) {
   return { data: { repository: { open: { nodes, pageInfo: { hasNextPage, endCursor } } } } };
 }
+function restPull(raw: ReturnType<typeof pull>) {
+  return {
+    number: raw.number,
+    title: raw.title,
+    html_url: raw.url,
+    draft: raw.isDraft,
+    head: { sha: raw.headRefOid, ref: raw.headRefName },
+    state: raw.state === "OPEN" ? "open" : "closed",
+    merged: raw.state === "MERGED",
+    merge_commit_sha: raw.state === "MERGED" ? "c".repeat(40) : null,
+    merged_at: raw.state === "MERGED" ? "2030-01-01T11:00:00Z" : null,
+  };
+}
 function recorded(bodies: unknown[], requests: Record<string, unknown>[] = []) {
-  return async (_url: string | URL | Request, init?: RequestInit) => {
-    requests.push(JSON.parse(String(init?.body)).variables);
+  return async (url: string | URL | Request, init?: RequestInit) => {
+    const number = String(url).match(/\/pulls\/(\d+)$/)?.[1];
+    requests.push(number ? { number: Number(number) } : JSON.parse(String(init?.body)).variables);
     assert.ok(bodies.length, "unexpected GitHub request");
-    return Response.json(bodies.shift());
+    const body = bodies.shift();
+    return Response.json(
+      number
+        ? restPull(
+            (body as { data: { repository: { pullRequest: ReturnType<typeof pull> } } }).data.repository.pullRequest,
+          )
+        : body,
+    );
   };
 }
 function clock() {
@@ -100,6 +121,152 @@ const identity = {
   tickets: () => new Set(["BOAT-7"]),
   now: () => new Date("2030-01-01T12:00:00Z"),
 };
+
+for (const outcome of ["merged", "closed", "failed", "invalid", "throttled"] as const) {
+  test(`reconciles conflicting-only fold history with one REST lookup: ${outcome}`, async (t) => {
+    const store = new EventStore(":memory:");
+    t.after(() => store.close());
+    const stale = {
+      repository: identity.repository,
+      number: 10,
+      ticket: "BOAT-7",
+      title: "Float",
+      url: "https://github.com/acme/boats/pull/10",
+      state: "open" as const,
+      head: "a".repeat(40),
+      headRef: "feature/boat-7",
+      draft: false,
+      ci: "success" as const,
+      conflicting: true,
+      review: "none" as const,
+      checks: [],
+      checksComplete: true,
+      pr: 10,
+      key: "conflict-10",
+    };
+    store.append({
+      project: identity.project,
+      actor: "owner",
+      at: identity.now().toISOString(),
+      kind: "pull-request.conflicting",
+      payload: stale,
+    });
+    assert.equal(fold(store.readSince(0)).projects.boats?.pullRequests[0]?.state, "open");
+    if (outcome === "merged")
+      store.append({
+        project: identity.project,
+        actor: "owner",
+        at: identity.now().toISOString(),
+        kind: "coordinator.checkpoint",
+        payload: {
+          checkpoint: {
+            format: "armada.github-reader",
+            version: 1,
+            repository: identity.repository,
+            prs: { "10": { failures: 1, comments: {}, threads: {}, abandoned: "gone" } },
+            pollMs: 0,
+            backoffMs: 0,
+          },
+        },
+      });
+    const observedPhases: string[] = [];
+    if (outcome === "merged") {
+      store.append({
+        project: identity.project,
+        actor: "worker",
+        at: "2030-01-01T11:30:00Z",
+        kind: "session.claimed",
+        payload: {
+          ticket: "BOAT-7",
+          session: "replacement",
+          generation: 2,
+          owner: "Mira",
+          runtime: "codex",
+          handle: "replacement",
+        },
+      });
+      assert.equal(store.fold(identity.project).projects.boats?.sessions[0]?.phase, "planning");
+      const unsubscribe = store.subscribe(() => {
+        const phase = store.fold(identity.project).projects.boats?.sessions[0]?.phase;
+        if (phase) observedPhases.push(phase);
+      });
+      t.after(unsubscribe);
+    }
+    const urls: string[] = [];
+    const options = {
+      ...identity,
+      store,
+      token: async () => randomUUID(),
+      openPullRequests: () => fold(store.readSince(0)).projects.boats?.pullRequests ?? [],
+      fetch: async (input: string | URL | Request) => {
+        const url = String(input);
+        urls.push(url);
+        if (url.endsWith("/graphql")) return Response.json(page([pull(11)]));
+        assert.equal(url, "https://api.github.com/repos/acme/boats/pulls/10");
+        if (outcome === "failed") return new Response(null, { status: 503 });
+        if (outcome === "throttled")
+          return new Response(null, { status: 429, headers: { "retry-after": "120", "x-poll-interval": "45" } });
+        return Response.json({
+          number: 10,
+          state: "closed",
+          merged: outcome !== "closed",
+          merge_commit_sha: outcome === "invalid" ? null : "c".repeat(40),
+          merged_at: outcome === "closed" ? null : "2030-01-01T11:00:00Z",
+          title: "Float",
+          html_url: stale.url,
+          draft: false,
+          head: { sha: stale.head, ref: stale.headRef },
+        });
+      },
+    };
+    const reader = new GithubReader(options);
+    const result = await reader.refresh();
+    const terminal = store
+      .readSince(1)
+      .filter((e) => e.kind === "pull-request.merged" || e.kind === "pull-request.closed");
+    assert.equal(urls.filter((url) => url.endsWith("/pulls/10")).length, 1);
+    if (outcome === "failed" || outcome === "invalid" || outcome === "throttled") {
+      assert.equal(terminal.length, 0);
+      assert.equal(fold(store.readSince(0)).projects.boats?.pullRequests[0]?.state, "open");
+      assert.equal(result.ok, false);
+      assert.deepEqual(
+        reader.state().failures.map((failure) => failure.pr),
+        [10],
+      );
+      if (outcome === "throttled") {
+        assert.equal(reader.state().backoffMs, 60_000);
+        assert.equal(reader.state().pollMs, 45_000);
+        assert.equal(reader.state().pausedUntil, "2030-01-01T12:02:00.000Z");
+        await new GithubReader(options).refresh();
+        assert.equal(urls.length, 2, "reconciliation honors the persisted request cooldown");
+      }
+    } else {
+      assert.equal(result.ok, true);
+      assert.equal(terminal.length, 1);
+      assert.equal(terminal[0]?.kind, `pull-request.${outcome}`);
+      if (terminal[0]?.kind === "pull-request.merged") {
+        assert.equal(
+          observedPhases.includes("merged"),
+          false,
+          "no committed prefix may end the replacement generation",
+        );
+        assert.equal(terminal[0].payload.mergeCommit, "c".repeat(40));
+        assert.equal(terminal[0].payload.mergedAt, "2030-01-01T11:00:00Z");
+      }
+      assert.deepEqual(
+        fold(store.readSince(0))
+          .projects.boats?.pullRequests.filter((pr) => pr.state === "open")
+          .map((pr) => pr.number),
+        [11],
+      );
+      const sequence = store.sequence;
+      await new GithubReader(options).refresh();
+      assert.equal(store.sequence, sequence, "cold replay cannot fabricate checks-green after a terminal observation");
+      assert.equal(urls.filter((url) => url.endsWith("/pulls/10")).length, 1);
+      assert.equal(store.readSince(0).filter((e) => e.kind === `pull-request.${outcome}`).length, 1);
+    }
+  });
+}
 
 test("unrelated plugin JSON events cannot interrupt GitHub ingestion", async () => {
   const store = new EventStore(":memory:");
@@ -320,12 +487,12 @@ test("a successful disappeared-PR lookup clears prior failure state for closed, 
       ...identity,
       store,
       token: async () => randomUUID(),
-      fetch: async (_url, init) => {
+      fetch: async (url, init) => {
+        if (String(url).endsWith("/pulls/41"))
+          return poll === 2 ? new Response(null, { status: 404 }) : Response.json(restPull(pull(41, { state })));
         const { query } = JSON.parse(String(init?.body));
         if (query.includes("query Pulls")) return Response.json(page(++poll === 1 ? [pull()] : []));
-        return poll === 2
-          ? new Response(null, { status: 404 })
-          : Response.json({ data: { repository: { pullRequest: pull(41, { state }) } } });
+        throw new Error("Unexpected GitHub recording request");
       },
     });
     try {
@@ -591,11 +758,11 @@ test("two recorded readings persist only changed facts and transitions, with res
         .readSince(0)
         .slice(count)
         .map((e) => e.kind),
-      ["pull-request.seen", "pull-request.merged"],
+      ["pull-request.merged"],
     );
     assert.equal(requests.at(-1)?.number, 41);
     await new GithubReader(options).refresh();
-    assert.equal(store.readSince(0).length, count + 2);
+    assert.equal(store.readSince(0).length, count + 1);
     assert.equal(fold(store.readSince(0)).projects.boats?.pullRequests[0]?.state, "merged");
     assert.equal(JSON.stringify(store.readSince(0)).includes(credential), false);
     await new GithubReader({ ...options, project: "another", fetch: recorded([page([first])]) }).refresh();

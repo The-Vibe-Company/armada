@@ -1,4 +1,4 @@
-import type { EventInput, EventPayloads, FleetEvent, GithubPullRequest } from "@armada/daemon/events";
+import type { EventInput, EventPayloads, FleetEvent, GithubPullRequest, PullRequest } from "@armada/daemon/events";
 import type { GithubCheckpoint } from "./checkpoint.ts";
 import type { ReviewFact } from "./reviews.ts";
 
@@ -22,6 +22,8 @@ export type ForgeRefresh = { ok: true; changed: number } | { ok: false; error: s
 
 export interface ForgeReadContext {
   onDetails?: () => void;
+  openPullRequests?: readonly PullRequest[];
+  reconciliationError?: string;
   checkpoint: GithubCheckpoint;
   at: string;
   events: ReviewFact[];

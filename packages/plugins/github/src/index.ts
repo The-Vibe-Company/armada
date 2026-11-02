@@ -33,6 +33,12 @@ export function activate(ctx: PluginContext): void {
           actor: "owner",
           endpoint: config.endpoint,
           token: (signal) => token(project, signal),
+          openPullRequests: async () => {
+            const tables = (await ctx.events.fold(project)) as FleetTables;
+            return (tables?.projects?.[project]?.pullRequests ?? []).filter(
+              (pr) => !("repository" in pr) || pr.repository === settings.repository,
+            );
+          },
           activeTickets: async () => {
             const tables = (await ctx.events.fold(project)) as FleetTables;
             return new Set(
