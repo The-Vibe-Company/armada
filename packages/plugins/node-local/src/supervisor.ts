@@ -136,6 +136,28 @@ export const supervisorScript = String.raw`(() => {
     }
   }
 
+  // The liveness contract (version 1) is written once the CLI runs inside the pinned
+  // process group. A later host that finds this endpoint dead without a final record
+  // may check whether that group still exists; without the contract it knows nothing.
+  // The file names the group only: no command, environment, output or token.
+  let contractWrite = Promise.resolve();
+  function persistContract(group) {
+    if (!config.paths.pin || !Number.isInteger(group) || group < 1) return;
+    const temporary = config.paths.pin + ".tmp-" + crypto.randomBytes(6).toString("hex");
+    contractWrite = (async () => {
+      const contract = {
+        version: 1,
+        worker: config.worker,
+        workspace: config.workspace,
+        group,
+        platform: process.platform,
+        establishedAt: new Date().toISOString(),
+      };
+      await fs.promises.writeFile(temporary, JSON.stringify(contract), { flag: "wx", mode: 0o600 });
+      await fs.promises.rename(temporary, config.paths.pin);
+    })().catch(() => fs.promises.unlink(temporary).catch(() => {}));
+  }
+
   let serverClosing = false;
   function maybeCloseServer() {
     if (serverClosing || !closed || activeConnections !== 0 || !launchAnswered || !server || !server.listening) return;
@@ -147,7 +169,10 @@ export const supervisorScript = String.raw`(() => {
         return;
       }
       server.close(() => {
-        fs.promises.unlink(config.paths.socket).catch(() => {}).finally(() => {
+        // The group ended under this supervisor; its final record (if any) is the proof now.
+        const removals = [fs.promises.unlink(config.paths.socket).catch(() => {})];
+        if (config.paths.pin) removals.push(contractWrite.then(() => fs.promises.unlink(config.paths.pin)).catch(() => {}));
+        Promise.all(removals).finally(() => {
           // The final metadata is intentionally retained for a new host to adopt
           // a completed worker once. It contains no command or environment data.
           fs.promises.lstat(config.paths.state).catch(() => null).then((metadata) => {
@@ -356,6 +381,7 @@ export const supervisorScript = String.raw`(() => {
       }
       if (message.type === "started") {
         state = "running";
+        persistContract(livePinPid());
         resolveStarted();
       } else if (message.type === "launch-error") {
         startError = new Error(typeof message.message === "string" ? message.message : "worker failed to start");
@@ -598,7 +624,7 @@ export const supervisorScript = String.raw`(() => {
       if (!directory.isDirectory() || directory.isSymbolicLink() ||
         (typeof process.getuid === "function" && directory.uid !== process.getuid()) ||
         (directory.mode & 0o077) !== 0) throw new Error("local supervisor directory is not private");
-      for (const path of [config.paths.socket, config.paths.state]) {
+      for (const path of [config.paths.socket, config.paths.state, config.paths.pin].filter(Boolean)) {
         try {
           await fs.promises.lstat(path);
           throw new Error("local supervisor endpoint already exists");
