@@ -25,7 +25,14 @@ export type {
   WorkerUsage,
   Workspace,
 } from "./runtime.js";
-export { isRuntimeLaunchRefusal, isWorkerRuntimeGone, RuntimeLaunchRefusal, WorkerRuntimeGone } from "./runtime.js";
+export {
+  isRuntimeLaunchRefusal,
+  isWorkerRuntimeAlive,
+  isWorkerRuntimeGone,
+  RuntimeLaunchRefusal,
+  WorkerRuntimeAlive,
+  WorkerRuntimeGone,
+} from "./runtime.js";
 
 import { z } from "zod";
 

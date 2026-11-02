@@ -731,7 +731,9 @@ never a command, output or token). On reattachment with a dead endpoint and no
 final record the node reads that contract and asks the kernel whether the group
 still exists (`kill(-group, 0)` delivers nothing; a group id stays reserved
 while any member lives): gone only when the contract is valid and the group
-ended, still running when the group exists, unknown without a contract (a
+ended (every process still pinned to it has ended: a descendant that left
+the group is outside this proof, as it is outside the supervisor's own stop),
+still running when the group exists, unknown without a contract (a
 worker launched before this version, or ended before its CLI started), with a
 foreign or invalid one, on Windows, or when the probe is ambiguous. A gone
 worker admits `worker.relaunch`: after the brief preflight and a fresh probe,
@@ -742,7 +744,10 @@ this node in it (dirty and unpushed work is never reset; admission is serialized
 per path). An unknown or still-running worker refuses automatic replacement and
 names the deliberate path: wait or stop the process yourself, or `worker.stop`
 with a reason, which releases the ticket without a stop claim and keeps the
-worktree, branch and pull request, then `worker.launch` continues there.
+worktree, branch and pull request, then `worker.launch` continues there. That
+launch probes the released generation first and refuses while its pinned
+process group still exists; a failed replacement never disposes a kept
+worktree.
 
 Only an explicit owner WebSocket request ends the project fleet:
 `{ type: "fleet.shutdown", version: { major: 1, minor: 15 }, id, project, reason }`.

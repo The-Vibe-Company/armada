@@ -15,7 +15,7 @@ import type {
   WorkerRef,
   Workspace,
 } from "@armada/plugin-api";
-import { WorkerRuntimeGone } from "@armada/plugin-api";
+import { WorkerRuntimeAlive, WorkerRuntimeGone } from "@armada/plugin-api";
 import { checkedMutation } from "@armada/plugin-api/guard";
 
 import { supervisorScript } from "./supervisor.ts";
@@ -421,9 +421,16 @@ async function readLivenessContract(
   } catch {
     return { kind: "invalid", reason: "its liveness contract is not valid JSON" };
   }
-  if (!contract || contract.version !== 1)
+  if (!contract || typeof contract !== "object" || contract.version !== 1)
     return { kind: "invalid", reason: "its liveness contract has an unknown version" };
-  if (!sameWorker(contract.worker, worker) || !sameWorkspace(contract.workspace, workspace))
+  if (
+    !contract.worker ||
+    typeof contract.worker !== "object" ||
+    !contract.workspace ||
+    typeof contract.workspace !== "object" ||
+    !sameWorker(contract.worker, worker) ||
+    !sameWorkspace(contract.workspace, workspace)
+  )
     return { kind: "invalid", reason: "its liveness contract belongs to another worker generation" };
   if (!Number.isInteger(contract.group) || contract.group < 2 || contract.platform !== process.platform)
     return { kind: "invalid", reason: "its liveness contract names no process group of this platform" };
@@ -457,13 +464,13 @@ async function unreachableWorker(
     return new Error(`${head}; process-group liveness cannot be checked on Windows, so its tree may still run`);
   try {
     process.kill(-read.contract.group, 0);
-    return new Error(
-      `${head}; its process group still exists, so the worker's CLI or a descendant still runs; nothing was signaled`,
+    return new WorkerRuntimeAlive(
+      `${head}; its pinned process group still exists, so the worker's CLI or a descendant still runs; nothing was signaled`,
     );
   } catch (probe) {
     if (isErrno(probe, "ESRCH"))
       return new WorkerRuntimeGone(
-        `${head}; its liveness contract (version 1) names a process group that no longer exists, so its whole process tree ended; nothing was signaled`,
+        `${head}; its liveness contract (version 1) names a process group that no longer exists: every process still pinned to it has ended; nothing was signaled`,
       );
     return new Error(
       `${head}; its process group could not be inspected (${isErrno(probe, "EPERM") ? "EPERM" : "unknown error"}), so its tree may still run; nothing was signaled`,
@@ -1196,17 +1203,23 @@ function supervisorUnavailable(error: unknown): boolean {
   );
 }
 
+// Keyed by directory, not by record: two admissions of one kept worktree share one lock.
+const pathLocks = new Map<string, Promise<void>>();
 async function withWorkspaceLock<T>(workspace: WorkspaceRecord, action: () => Promise<T>): Promise<T> {
-  const previous = workspace.lock;
+  const key = workspace.workspace.path;
+  const previous = pathLocks.get(key) ?? workspace.lock;
   let release!: () => void;
-  workspace.lock = new Promise<void>((resolvePromise) => {
+  const lock = new Promise<void>((resolvePromise) => {
     release = resolvePromise;
   });
+  workspace.lock = lock;
+  pathLocks.set(key, lock);
   await previous;
   try {
     return await action();
   } finally {
     release();
+    if (pathLocks.get(key) === lock) pathLocks.delete(key);
   }
 }
 

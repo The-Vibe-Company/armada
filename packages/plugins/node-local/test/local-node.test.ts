@@ -1033,7 +1033,7 @@ test("a dead supervisor is reported gone only once its contracted process group 
       (e: Error) => e,
     );
     assert.match(running!.message, /process group still exists/);
-    assert.notEqual(running!.name, "WorkerRuntimeGone", "a live group is never gone");
+    assert.equal(running!.name, "WorkerRuntimeAlive", "a live group is reported alive, never gone");
     assert(alive(pin), "nothing was signaled: the surviving tree keeps running");
 
     await writeFile(stopFile, "stop\n");
@@ -1204,26 +1204,39 @@ test("a kept project worktree is reused only for its own branch, never twice at 
         }),
     );
     handles.push(second.handle);
-    await assert.rejects(
-      guarded(
-        { project: "local-test", ticket: "CHECK-1", session: "session-reuse-3", generation: 3 },
-        () => {},
-        () =>
-          node.launch({
-            workspace: concurrent,
-            worker: { project: "local-test", ticket: "CHECK-1", session: "session-reuse-3", generation: 3 },
-            command: process.execPath,
-            args: [join(concurrent.path, "worker.mjs")],
-            env: {},
-          }),
-      ),
-      /active worker/,
-      "two admissions of one worktree still run at most one worker in it",
-    );
     await guarded(
       second,
       () => {},
       () => node.stop(second),
+    );
+    // Two admissions of one worktree launching at the same moment still run at most one worker in it.
+    const launchIn = (workspace: Workspace, session: string, generation: number) =>
+      guarded(
+        { project: "local-test", ticket: "CHECK-1", session, generation },
+        () => {},
+        () =>
+          node.launch({
+            workspace,
+            worker: { project: "local-test", ticket: "CHECK-1", session, generation },
+            command: process.execPath,
+            args: [join(workspace.path, "worker.mjs")],
+            env: {},
+          }),
+      );
+    const [third, fourth] = await node.prepare(request).then(async (a) => [a, await node.prepare(request)]);
+    const race = await Promise.allSettled([
+      launchIn(third, "session-reuse-3", 3),
+      launchIn(fourth, "session-reuse-4", 4),
+    ]);
+    const won = race.filter((r) => r.status === "fulfilled") as PromiseFulfilledResult<WorkerRef>[];
+    assert.equal(won.length, 1, "exactly one of two simultaneous launches wins the kept worktree");
+    const lostRace = race.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    assert.match(String(lostRace.reason.message), /active worker/);
+    handles.push(won[0]!.value.handle);
+    await guarded(
+      won[0]!.value,
+      () => {},
+      () => node.stop(won[0]!.value),
     );
 
     await assert.rejects(

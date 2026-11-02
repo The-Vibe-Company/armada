@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { NodeProvider, RuntimeProvider, WorkerObservation, WorkerRef, Workspace } from "@armada/plugin-api";
-import { isRuntimeLaunchRefusal, isWorkerRuntimeGone } from "@armada/plugin-api";
+import { isRuntimeLaunchRefusal, isWorkerRuntimeAlive, isWorkerRuntimeGone } from "@armada/plugin-api";
 import { guarded } from "@armada/plugin-api/guard";
 import {
   activePhaseSchema,
@@ -90,7 +90,7 @@ export class WorkerRefusal extends Error {
  * that proof, a legacy worker, an ambiguous probe) and never admits an automatic replacement.
  */
 interface LostCause {
-  kind: "gone" | "unknown" | "refused";
+  kind: "gone" | "running" | "unknown" | "refused";
   detail: string;
   row?: LiveWorker;
 }
@@ -430,6 +430,7 @@ export class Workers {
       let result: Record<string, Json>;
       if (name === "worker.launch") {
         const launch = workerToolSchemas["worker.launch"].parse(parsed);
+        await this.#refusePriorRunning(project, launch.ticket);
         result = await this.#launch(project, launch, key, input, beforeWrite, undefined, progress);
       } else {
         const action = parsed as { ticket: string; session?: string };
@@ -556,7 +557,7 @@ export class Workers {
               briefing,
               row.workspace.path,
             );
-            const result = { ...launched, recovered: "runtime-gone", stopped: false, released: old.session };
+            const result = { ...launched, recovered: "runtime-gone", stopped: false, releasedSession: old.session };
             this.#checkpoint(project, { type: "receipt", key, input, result });
             return result;
           }
@@ -1003,9 +1004,11 @@ export class Workers {
         throw new Error("Worker capacity changed during preparation");
     };
     let workspace: Workspace | undefined;
+    // A kept worktree is never disposed by a failed replacement: its work is the point of keeping it.
+    const disposable = (candidate: Workspace) => !(keep !== undefined && candidate.path === keep);
     const retainNotStarted = async () => {
       let workspaceDisposed = false;
-      if (workspace && node?.dispose && !resume) {
+      if (workspace && node?.dispose && !resume && disposable(workspace)) {
         try {
           await node.dispose(workspace);
           workspaceDisposed = true;
@@ -1047,7 +1050,7 @@ export class Workers {
         await retainNotStarted();
         throw new WorkerRefusal("Daemon stopped before native launch; ticket retained for recovery");
       }
-      if (workspace && node?.dispose) await node.dispose(workspace).catch(() => {});
+      if (workspace && node?.dispose && disposable(workspace)) await node.dispose(workspace).catch(() => {});
       await revoke();
       this.#append({
         project,
@@ -1120,7 +1123,7 @@ export class Workers {
         throw new WorkerRefusal("Daemon stopped during launch; ticket retained for recovery");
       }
       if (!enteredProvider || isRuntimeLaunchRefusal(error)) {
-        if (node?.dispose) await node.dispose(prepared).catch(() => {});
+        if (node?.dispose && disposable(prepared)) await node.dispose(prepared).catch(() => {});
         await revoke();
         this.#append({
           project,
@@ -1219,7 +1222,7 @@ export class Workers {
             { ticket: worker.ticket, handle: ref.handle, id: launchTarget.id, reason: "Launch did not complete" },
           )
           .catch(() => {});
-      if (node?.dispose) await node.dispose(prepared).catch(() => {});
+      if (node?.dispose && disposable(prepared)) await node.dispose(prepared).catch(() => {});
       await revoke();
       this.#checkpoint(project, {
         type: "receipt",
@@ -1738,8 +1741,16 @@ export class Workers {
       try {
         await runtime.adopt!(ref, workspace, { ...recovery, starting: launch.step === "starting" });
       } catch (error) {
-        const detail = error instanceof Error && error.message ? error.message : "Runtime reattachment failed";
-        throw new LostRuntime(isWorkerRuntimeGone(error) ? { kind: "gone", detail, row } : { kind: "unknown", detail });
+        // Plugins are trusted installed code; their finding is kept, bounded, as the durable cause.
+        const detail = (error instanceof Error && error.message ? error.message : "Runtime reattachment failed").slice(
+          0,
+          600,
+        );
+        throw new LostRuntime(
+          isWorkerRuntimeGone(error)
+            ? { kind: "gone", detail, row }
+            : { kind: isWorkerRuntimeAlive(error) ? "running" : "unknown", detail },
+        );
       }
     }
     this.#check(ref, () => {}, allowEnded);
@@ -1756,6 +1767,37 @@ export class Workers {
     this.#live.set(ref.session, row);
     this.#unconfirmed.delete(ref.session);
     this.#lost.delete(ref.session);
+  }
+
+  /**
+   * A launch after an explicit release of a lost worker lands in that worker's kept worktree (THE-2212).
+   * When the runtime can still tell, a generation whose process group runs there is never built beside.
+   */
+  async #refusePriorRunning(project: string, ticket: string) {
+    const prior = this.#tables(project)?.sessions.find((s) => s.ticket === ticket);
+    if (!prior || !ended(prior.phase) || prior.runtime === "tracker") return;
+    const cause = this.#lost.get(prior.session);
+    if (!cause || cause.kind === "gone") return;
+    const ref = {
+      project,
+      ticket: prior.ticket,
+      session: prior.session,
+      generation: prior.generation,
+      handle: prior.handle,
+    };
+    const probe = await this.#adopt(ref, true).then(
+      () => undefined,
+      (error: unknown) => this.#lostCause(error),
+    );
+    if (probe === undefined)
+      throw new WorkerRefusal(
+        `${ticket}'s previous worker still answers in its worktree; release it from its session page or stop it yourself before launching again`,
+      );
+    this.#lost.set(prior.session, probe);
+    if (probe.kind === "running")
+      throw new WorkerRefusal(
+        `${ticket}'s previous worker still runs in its kept worktree: ${probe.detail}. Wait for it to end or stop it yourself; nothing was launched`,
+      );
   }
 
   #lostCause(error: unknown): LostCause {
@@ -1776,6 +1818,8 @@ export class Workers {
       "worker.stop with a reason releases the ticket without a stop claim (its worktree, branch and pull request are kept) and worker.launch continues in that worktree";
     if (cause.kind === "gone")
       return "worker.relaunch with a reason replaces it in its kept worktree; the old generation is released without a stop claim";
+    if (cause.kind === "running")
+      return "its process group still runs: wait for it to end or stop it yourself, then worker.relaunch; nothing may be launched beside it";
     if (this.#unconfirmed.has(ref.session) || this.#notStarted(ref.project, ref.session)?.workspaceDisposed === true)
       return "worker.relaunch with a reason replaces it";
     if (cause.kind === "refused" && /runtime unavailable|runtime cannot reattach|node unavailable/i.test(cause.detail))

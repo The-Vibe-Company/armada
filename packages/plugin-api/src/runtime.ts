@@ -22,6 +22,16 @@ export class WorkerRuntimeGone extends Error {
 export const isWorkerRuntimeGone = (value: unknown): value is WorkerRuntimeGone =>
   value instanceof Error && value.name === "WorkerRuntimeGone";
 
+/**
+ * Reattachment found the generation's endpoint gone but its recorded process group still alive:
+ * the worker's CLI or a descendant still runs. Nothing was signaled; the host must not replace it.
+ */
+export class WorkerRuntimeAlive extends Error {
+  override readonly name = "WorkerRuntimeAlive";
+}
+export const isWorkerRuntimeAlive = (value: unknown): value is WorkerRuntimeAlive =>
+  value instanceof Error && value.name === "WorkerRuntimeAlive";
+
 export interface Workspace {
   id: string;
   path: string;

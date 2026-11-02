@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { type RuntimeProvider, type WorkerRef, WorkerRuntimeGone } from "@armada/plugin-api";
+import { type RuntimeProvider, type WorkerRef, WorkerRuntimeAlive, WorkerRuntimeGone } from "@armada/plugin-api";
 import { queueDelivery } from "../src/deliveries.ts";
 import { fold } from "../src/fold.ts";
 import { PluginRegistry } from "../src/plugins/registry.ts";
@@ -37,10 +37,15 @@ for (const scenario of [
   "runtime proven gone",
   "runtime unknown without a liveness contract",
   "concurrent relaunch of a gone runtime",
+  "gone relaunch lands elsewhere",
 ]) {
   const lost = scenario === "one worker lost" || scenario === "lost runtime refuses stop";
   // THE-2212: the runtime itself could not reattach: either it proved the tree gone, or it could not say.
-  const gone = scenario === "runtime proven gone" || scenario === "concurrent relaunch of a gone runtime";
+  const gone =
+    scenario === "runtime proven gone" ||
+    scenario === "concurrent relaunch of a gone runtime" ||
+    scenario === "gone relaunch lands elsewhere";
+  const priorAlive = false;
   const unknownRuntime = scenario === "runtime unknown without a liveness contract";
   test(`restart preserves generations, capabilities and phases; ${scenario}`, { timeout: 15000 }, async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "armada-restart-"));
@@ -111,6 +116,8 @@ for (const scenario of [
             nativeEntered();
             await nativeGate;
           }
+          if (!firstBoot && scenario === "gone relaunch lands elsewhere")
+            return { id: ticket, path: join(directory, "elsewhere"), node: "local" };
           return { id: ticket, path: directory, node: "local" };
         },
         launch: async ({ worker, env, handle }) => {
@@ -131,6 +138,10 @@ for (const scenario of [
           if (!firstBoot && gone && !native.get(ref.handle)?.alive)
             throw new WorkerRuntimeGone(
               "local worker SEED-1 generation 1 is unreachable: the supervisor endpoint refused the connection, and no final record exists; its liveness contract (version 1) names a process group that no longer exists, so its whole process tree ended; nothing was signaled",
+            );
+          if (!firstBoot && unknownRuntime && priorAlive)
+            throw new WorkerRuntimeAlive(
+              "local worker SEED-1 generation 1 is unreachable: the supervisor endpoint refused the connection, and no final record exists; its pinned process group still exists, so the worker's CLI or a descendant still runs; nothing was signaled",
             );
           if (!firstBoot && unknownRuntime)
             throw new Error(
@@ -517,6 +528,17 @@ for (const scenario of [
           key,
           () => {},
         );
+      if (scenario === "gone relaunch lands elsewhere") {
+        await assert.rejects(relaunch("relaunch-elsewhere"), /not the lost worker's kept worktree/);
+        assert.equal(native.size, 1, "no replacement outside the kept worktree");
+        assert.equal(stops, 0);
+        assert.equal(disposed, 1, "the stray workspace is disposed, never the kept one");
+        assert.match(
+          String(store.readSince(0).findLast((e) => e.kind === "session.released")?.payload.reason),
+          /Workspace preparation failed|kept worktree/,
+        );
+        return;
+      }
       const attempts =
         scenario === "concurrent relaunch of a gone runtime"
           ? await Promise.allSettled([relaunch("relaunch-gone-a"), relaunch("relaunch-gone-b")])
@@ -529,7 +551,7 @@ for (const scenario of [
       assert.equal(replacement.generation, 2);
       assert.equal(replacement.recovered, "runtime-gone");
       assert.equal(replacement.stopped, false, "the old generation was released, never claimed stopped");
-      assert.equal(replacement.released, old.ref.session);
+      assert.equal(replacement.releasedSession, old.ref.session);
       assert.equal(stops, 0, "nothing was signaled");
       assert.equal(native.size, 2);
       assert(native.get(String(replacement.handle))?.alive);
