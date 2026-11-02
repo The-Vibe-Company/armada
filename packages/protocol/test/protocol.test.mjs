@@ -513,3 +513,28 @@ test("runtime project management validates its distinct correlation/project ids 
   });
   assert.equal(result.projects[0].root, "/dev/new-project");
 });
+
+test("internal ticket events validate authored fields and preserve optional import links", () => {
+  const created = {
+    id: "GROVE-1",
+    title: "Plant an oak",
+    description: "Beside the river",
+    labels: ["ready-for-agent"],
+    state: "backlog",
+    parent: null,
+    blockers: ["GROVE-2"],
+    source: "SEED-7",
+    url: "https://example.test/ticket/7",
+  };
+  assert.deepEqual(eventPayloadSchemas["ticket.created"].parse(created), created);
+  assert.deepEqual(eventPayloadSchemas["ticket.edited"].parse({ ticket: "GROVE-1", patch: { state: "completed" } }), {
+    ticket: "GROVE-1",
+    patch: { state: "completed" },
+  });
+  assert.deepEqual(
+    eventPayloadSchemas["ticket.commented"].parse({ ticket: "GROVE-1", id: "note-1", body: "Ready", author: "Mira" }),
+    { ticket: "GROVE-1", id: "note-1", body: "Ready", author: "Mira" },
+  );
+  for (const patch of [{ state: "unknown" }, { title: "" }, { blockers: [null] }, { id: "GROVE-99" }])
+    assert.equal(eventPayloadSchemas["ticket.edited"].safeParse({ ticket: "GROVE-1", patch }).success, false);
+});

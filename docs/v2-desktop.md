@@ -146,8 +146,8 @@ Published in Linear under the program root THE-1982 (Spec 1/7 THE-1983, Spec 2/7
 
 ### Step 6: tracker
 
-- `daemon/tracker-interface`: the tracker interface; Linear behind it; a conformance test both implementations pass.
-- `daemon/tracker-internal`: tickets, states, labels, comments, parent, attachments in the log; the conformance test.
+- `@armada/plugin-api`'s `TrackerProvider`: Linear and internal behind the same `read`/`write` seam, with optional `create` and `update`; the conformance test exercises both and skips methods not implemented by Linear.
+- `packages/plugins/internal-tracker` (`internal-tracker`, tracker kind `internal`): tickets, states, labels, comments, parent and blockers in the log through `ticket.created`, `ticket.edited` and `ticket.commented` (protocol minor 22). Its pure fold supplies the same tickets table as Linear. No credentials or separate ticket database; description links carry attachments.
 - `app/tickets`: a project's tickets, create and edit, ready to launch.
 - `daemon/import-toml`: import an `armada.toml` into the app's rules.
 
@@ -172,7 +172,7 @@ in-process ES modules exporting `activate(ctx)`, loaded once at boot. Nothing is
 unloaded. A changed switch or configuration takes effect when the daemon
 restarts. V2 runs the official worker CLIs itself.
 
-`@armada/plugin-api` (`packages/plugin-api`, API **0.2.0**) owns the manifest
+`@armada/plugin-api` (`packages/plugin-api`, API **0.3.0**) owns the manifest
 schema and TypeScript contracts, independently of Armada and wire protocol
 versions. Its only runtime dependency is Zod, also used by the protocol. The five
 seams are `runtime` (prepare, launch a CLI in a PTY, deliver, observe, stop, with
@@ -183,6 +183,48 @@ merge at a head), `node` (workspace and PTY facilities, local or VM), and `model
 Tracker and forge readers use `read({ project, signal })` and append observations
 through context events; their consumers own scheduling. The generic model result
 lets consumers use their AI SDK version without coupling this API to that SDK.
+
+`TrackerProvider.create({ project, title, description, labels, parent?, blockers?,
+state?, url?, source?, actor?, beforeWrite?, signal? })` returns `{ id }`.
+`update({ project, ticket, patch, actor?, beforeWrite?, signal? })` edits any ticket
+fields other than the identifier. The host also accepts manifests targeting API 0.2.0, since the 0.3 additions
+are optional. Existing plugins need no manifest or source changes.
+Both methods are optional in API 0.3.0; Linear
+leaves them absent. Consumers must refuse unsupported operations explicitly,
+and `armada plugin test` reports them as **SKIP: not implemented**. Blockers in
+these requests are ticket identifiers; the fold resolves their current statuses.
+
+`PluginEvents` retains `append`, `read` and `fold`. Its one optional capability,
+`appendWith(project, (fold) => events[])`, runs a synchronous callback with a
+detached current fold under the store's SQLite write lock, then appends the
+returned events in one transaction. Every event must belong to that project.
+Throwing rolls back the whole append; subscribers see only the committed batch.
+Existing plugins and hosts can omit this method. A plugin requiring atomic
+allocation refuses mutations explicitly when the host does not provide it.
+No async work, nested append or external I/O belongs in the callback.
+
+The bundled **internal-tracker** plugin is enabled by default and contributes
+`tracker.internal`, with no configuration or secrets. Its `read` returns at once;
+the host reader scheduler still checkpoints success so `readAt.internal`
+advances and launch's freshness check passes. `create` allocates `<PREFIX>-<n>`
+inside `appendWith`: the first five upper-case letters of the project's id,
+with nonletters removed, and one above that prefix's highest existing ticket
+number in the project. A project id must contain a letter. Allocation survives
+restart and concurrent creates. New tickets default to `backlog`, no parent and
+no blockers. `source` and `url` preserve an imported ticket's original identity.
+
+`ticket.created { id, title, description, labels, state, parent, blockers, url?,
+source? }`, `ticket.edited { ticket, patch }` and
+`ticket.commented { ticket, id, body, author }` are authored facts, folded without
+clock or I/O. `state` becomes `Ticket.status`; completed/canceled become
+merged/released, otherwise the phase label supplies the phase. Comments keep
+the newest twelve (newest first); their ids deduplicate across the full replay,
+including comments no longer visible. The envelope's `actor` supplies the
+author. Mutation callers pass their actor identity (default: `coordinator`).
+An external `ticket.seen` cannot overwrite an internally created ticket.
+Ticket edits do not fabricate worker sessions or emit extra phase events.
+`write` preserves non-phase labels, applies phase/completed edits and appends
+keyed comments, invoking the caller's `beforeWrite` fence before each append.
 
 Every plugin ships with the application under `packages/plugins/<id>/`. The
 build runs `scripts/plugin-catalog.ts` to resolve every package's manifest and

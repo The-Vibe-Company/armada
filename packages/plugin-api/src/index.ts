@@ -30,7 +30,7 @@ export { isRuntimeLaunchRefusal, RuntimeLaunchRefusal } from "./runtime.js";
 import { z } from "zod";
 
 /** Independent of Armada releases and of the daemon/app wire protocol. */
-export const PLUGIN_API_VERSION = "0.2.0";
+export const PLUGIN_API_VERSION = "0.3.0";
 export const SEAMS = ["runtime", "tracker", "forge", "node", "model"] as const;
 export type Seam = (typeof SEAMS)[number];
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -75,6 +75,11 @@ export type PluginEventInput = z.infer<typeof pluginEventInputSchema>;
 export type PluginEvent = z.infer<typeof pluginEventSchema>;
 export interface PluginEvents {
   append(event: PluginEventInput): Promise<PluginEvent>;
+  /** Optional atomic read/append. The synchronous callback sees a detached current fold
+   * under the store's write lock. All returned events must belong to project and
+   * commit together; throwing appends nothing. Hosts without it remain valid.
+   */
+  appendWith?(project: string, build: (fold: unknown) => PluginEventInput[]): Promise<PluginEvent[]>;
   read(project: string, after: number): Promise<PluginEvent[]>;
   /** Snapshot vocabulary belongs to the event log; callers narrow the result. */
   fold(project: string): Promise<unknown>;
@@ -92,10 +97,43 @@ export interface TrackerReadResult {
   /** A provider cooldown: scheduled and manual reads must honor it. Old providers return void. */
   pausedUntil?: string;
 }
+export type TrackerState = "backlog" | "unstarted" | "started" | "completed" | "canceled";
+export interface TrackerTicketFields {
+  title: string;
+  description: string;
+  labels: string[];
+  state: TrackerState;
+  parent: string | null;
+  /** Ticket identifiers; the fold resolves their current status for launch checks. */
+  blockers: string[];
+  url?: string;
+  source?: string;
+}
+export interface TrackerMutationRequest extends ProjectRequest {
+  /** Identity of the coordinator, owner or worker making the mutation. */
+  actor?: string;
+  beforeWrite?: () => void;
+}
+export interface TrackerCreateRequest extends TrackerMutationRequest {
+  title: string;
+  description: string;
+  labels: string[];
+  state?: TrackerState;
+  parent?: string | null;
+  blockers?: string[];
+  url?: string;
+  source?: string;
+}
+export interface TrackerUpdateRequest extends TrackerMutationRequest {
+  ticket: string;
+  patch: Partial<TrackerTicketFields>;
+}
 export interface TrackerProvider extends ProviderConnection {
   // biome-ignore lint/suspicious/noConfusingVoidType: Preserve existing providers returning Promise<void>.
   read(request: ProjectRequest): Promise<void | TrackerReadResult>;
   write(request: TrackerWriteRequest): Promise<void>;
+  create?(request: TrackerCreateRequest): Promise<{ id: string }>;
+  update?(request: TrackerUpdateRequest): Promise<void>;
 }
 export interface ForgeProvider extends ProviderConnection {
   // biome-ignore lint/suspicious/noConfusingVoidType: Existing plugins return void.

@@ -13,6 +13,7 @@ export interface PluginCheck {
   name: string;
   passed: boolean;
   error?: string;
+  skipped?: string;
 }
 export interface PluginTestReport {
   plugin: string;
@@ -165,6 +166,15 @@ export async function testPlugin(io: Io, path: string, reportPath?: string, json
               events.push(event);
               return structuredClone(event);
             },
+            appendWith: async (project, build) => {
+              const { fold } = await import("@armada/daemon");
+              const tables = fold(events.filter((e) => e.project === project) as unknown as Parameters<typeof fold>[0]);
+              const inputs = build(tables).map((input) => pluginEventInputSchema.parse(input));
+              if (inputs.some((input) => input.project !== project)) throw new Error("appendWith project mismatch");
+              const appended = inputs.map((input, i) => ({ ...input, seq: events.length + i + 1 }));
+              events.push(...appended);
+              return structuredClone(appended);
+            },
             read: async (project, after) =>
               structuredClone(events.filter((e) => e.project === project && e.seq > after)),
             fold: async (project) => {
@@ -198,6 +208,10 @@ export async function testPlugin(io: Io, path: string, reportPath?: string, json
       endpoint,
       requests,
       nodeCommand: "node",
+      skip: (name, reason) => {
+        report.checks.push({ name, passed: false, skipped: reason });
+        if (!json) io.stdout(`SKIP ${name}: ${reason}\n`);
+      },
       check: async (name, action) => {
         const result: PluginCheck = { name, passed: false };
         try {

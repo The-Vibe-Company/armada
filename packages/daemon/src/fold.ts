@@ -1,5 +1,6 @@
 import type {
   Delivery,
+  EventPayloads,
   FleetEvent,
   FleetTables,
   Hold,
@@ -15,7 +16,7 @@ import type {
   Ticket,
   Validation,
 } from "@armada/protocol";
-import { type ReaderUsage, readerUsageSchema, workerLaunchCheckpointSchema } from "@armada/protocol";
+import { phaseSchema, type ReaderUsage, readerUsageSchema, workerLaunchCheckpointSchema } from "@armada/protocol";
 import { z } from "zod";
 import { checkpointRules, emptyRules, type RulesState } from "../coordinator/rules.ts";
 import { applyDelivery } from "./delivery-state.ts";
@@ -65,6 +66,8 @@ interface Projection {
   readers: Record<string, ReaderUsage>;
   rules: RulesState;
   tickets: Map<string, Ticket>;
+  internal: Map<string, EventPayloads["ticket.created"]>;
+  comments: Map<string, Map<string, { body: string; author: string; at: string; seq: number }>>;
   prs: Map<number, PullRequest>;
   mergedAt: Map<number, { at: string; seq: number }>;
   sessions: Map<string, Draft>;
@@ -80,6 +83,8 @@ const empty = (): Projection => ({
   readAt: Object.create(null),
   readers: Object.create(null),
   tickets: new Map(),
+  internal: new Map(),
+  comments: new Map(),
   prs: new Map(),
   mergedAt: new Map(),
   sessions: new Map(),
@@ -121,6 +126,7 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
     switch (e.kind) {
       case "ticket.seen": {
         const t = e.payload;
+        if (p.internal.has(t.id)) break;
         p.tickets.set(t.id, t);
         const current = p.sessions.get(t.id);
         const trackerId = `tracker:${t.id}`;
@@ -141,6 +147,26 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
             });
           else if (current) p.sessions.delete(t.id);
         }
+        break;
+      }
+      case "ticket.created": {
+        if (p.internal.has(e.payload.id)) break;
+        p.internal.set(e.payload.id, e.payload);
+        // A prior external observation cannot leave a synthetic tracker session behind.
+        if (p.sessions.get(e.payload.id)?.session === `tracker:${e.payload.id}`) p.sessions.delete(e.payload.id);
+        break;
+      }
+      case "ticket.edited": {
+        const ticket = p.internal.get(e.payload.ticket);
+        if (ticket) p.internal.set(ticket.id, { ...ticket, ...e.payload.patch });
+        break;
+      }
+      case "ticket.commented": {
+        if (!p.internal.has(e.payload.ticket)) break;
+        const comments = p.comments.get(e.payload.ticket) ?? new Map();
+        if (!comments.has(e.payload.id))
+          comments.set(e.payload.id, { body: e.payload.body, author: e.actor, at: e.at, seq: e.seq });
+        p.comments.set(e.payload.ticket, comments);
         break;
       }
       case "pull-request.opened":
@@ -354,6 +380,30 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
   }
   const tables: FleetTables = { seq, projects: Object.create(null) };
   for (const [project, p] of projects) {
+    for (const t of p.internal.values()) {
+      const labelPhase =
+        t.labels.map((label) => phaseSchema.safeParse(label)).find((result) => result.success)?.data ?? null;
+      const phase = t.state === "completed" ? "merged" : t.state === "canceled" ? "released" : labelPhase;
+      p.tickets.set(t.id, {
+        id: t.id,
+        title: t.title,
+        description: t.description,
+        labels: t.labels,
+        status: t.state,
+        phase,
+        parent: t.parent,
+        ...(t.url !== undefined ? { url: t.url } : {}),
+        ...(t.source !== undefined ? { source: t.source } : {}),
+        blockers: t.blockers.map((id) => ({
+          id,
+          status: p.internal.get(id)?.state ?? p.tickets.get(id)?.status ?? "unstarted",
+        })),
+        comments: [...(p.comments.get(t.id)?.values() ?? [])]
+          .sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || b.seq - a.seq)
+          .slice(0, 12)
+          .map(({ body, author, at }) => ({ body, author, at })),
+      });
+    }
     const sessions = [...p.sessions.values()].map((s): Session => {
       const pr = [...p.prs.values()].reverse().find(
         (pr) =>
