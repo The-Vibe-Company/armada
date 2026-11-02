@@ -104,7 +104,7 @@ test("daemon refuses invalid coordinator configuration, releases failed startup 
         { stopReason: "toolUse", timestamp: 0 },
       ),
       async (transcript) => {
-        assert.match(JSON.stringify(transcript.messages), /not_available_yet/);
+        assert.match(JSON.stringify(transcript.messages), /capability_missing/);
         return fauxAssistantMessage("Launching is unavailable", { timestamp: 0 });
       },
     ]);

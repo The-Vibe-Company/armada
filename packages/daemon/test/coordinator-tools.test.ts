@@ -48,7 +48,7 @@ interface TestFacts {
   events: FleetEvent[];
   more: boolean;
   defaultBranch?: ProjectTables["defaultBranch"];
-  unavailable: string[];
+  unavailable: { capability: string; reason: string; fix: string }[];
   items: InboxItem[];
   problems: string[];
   rules: { value: { policy: { maxWorkers: number }; coordinatorModel?: { kind: string } } };
@@ -156,7 +156,7 @@ test("fleet.status returns detached project facts and refuses an inactive coordi
   facts.sessions.length = 0;
   assert.equal((await run("fleet.status")).sessions.length, 1);
   assert.equal(store.readSince(0, "other").length, 6);
-  assert.ok(facts.unavailable.includes("default-branch-health"));
+  assert.ok(facts.unavailable.some((gap) => gap.capability === "default-branch-health"));
   const health = { branch: "trunk", head: "e".repeat(40), ci: "failure" as const };
   store.append({ project: "orchard", at, actor: "github", kind: "default-branch.seen", payload: health });
   store.append({
@@ -168,7 +168,10 @@ test("fleet.status returns detached project facts and refuses an inactive coordi
   });
   const current = await run("fleet.status");
   assert.deepEqual(current.defaultBranch, health);
-  assert.equal(current.unavailable.includes("default-branch-health"), false);
+  assert.equal(
+    current.unavailable.some((gap) => gap.capability === "default-branch-health"),
+    false,
+  );
 
   await scope.close(context);
   assert.equal((await run("fleet.status")).code, "coordinator_inactive");
@@ -261,7 +264,7 @@ test("fleet.status keeps ten active sessions before compact fleet facts and belo
       false,
       id,
     );
-  assert.ok(facts.unavailable.includes("frontier-blockers"));
+  assert.ok(facts.unavailable.some((gap) => gap.capability === "frontier-blockers"));
   assert.equal(facts.pullRequests.length, 10);
   assert.deepEqual(facts.pullRequests[0], {
     number: 7,
@@ -488,8 +491,9 @@ for (const name of ["worker.launch", "worker.relaunch", "worker.message", "worke
               ? { pr: 7 }
               : { ticket: "SEED-1", session: "one", pr: 7 };
     const result = await run(name, args);
-    assert.equal(result.code, "not_available_yet");
-    assert.equal(result.message, "not available yet");
+    const launch = name === "worker.launch" || name === "worker.relaunch";
+    assert.equal(result.code, launch ? "capability_missing" : "not_available_yet");
+    assert.equal(result.message, launch ? "no runtime provider enabled" : "not available yet");
     assert.ok(result.next);
     const added = store.readSince(before, "orchard");
     assert.deepEqual(
@@ -1221,6 +1225,10 @@ async function ticketFixture(t: TestContext, wrap: (tracker: TrackerProvider) =>
 
 test("coordinator creates, edits and comments an internal ticket, then launches it on the fake runtime", async (t) => {
   const f = await ticketFixture(t);
+  assert.equal(
+    (await f.run("fleet.status", {})).unavailable.some((gap) => gap.capability === "tracker-write"),
+    false,
+  );
   const created = await f.run(
     "ticket.create",
     { title: "Plant an oak", description: "Beside the river", ready: true, labels: ["api"] },
@@ -1628,4 +1636,65 @@ test("a tracker refresh or stale worker report cannot resolve a live generation'
     payload: { ticket: "SEED-1", session: "one", phase: "implementing", reason: "Fixing the gap" },
   });
   assert.equal(await count(), 0);
+});
+
+// A disabled Conductor must not hide other enabled runtime providers.
+test("fleet.status gives actionable gaps from enabled runtimes and the selected tracker's write support", async (t) => {
+  const { store, scope } = await fixture(t);
+  const tools = nativeTools(scope, { now: () => at, trackerProvider: () => undefined });
+  const read = async () =>
+    (await tools["fleet.status"].execute({}, {} as ToolExecutionApi, context)).details as unknown as TestFacts;
+  const providers = (enabled: boolean, loaded = enabled) =>
+    store.append({
+      project: "orchard",
+      at,
+      actor: "coordinator",
+      kind: "coordinator.checkpoint",
+      payload: {
+        checkpoint: {
+          format: "armada.tools",
+          version: 1,
+          type: "providers",
+          providers: [
+            { id: "conductor", enabled: false, loaded: false, capabilities: ["runtime.conductor"] },
+            { id: "codex", enabled, loaded, capabilities: ["runtime.codex"] },
+          ],
+        },
+      },
+    });
+  providers(false);
+  const missing = (await read()).unavailable;
+  assert.deepEqual(
+    missing.find((gap) => gap.capability === "launch"),
+    {
+      capability: "launch",
+      reason: "no runtime provider enabled",
+      fix: "Enable Conductor, Claude, Codex or OpenCode in Settings › Providers",
+    },
+  );
+  assert.deepEqual(
+    missing.find((gap) => gap.capability === "tracker-write"),
+    {
+      capability: "tracker-write",
+      reason: "the project's tracker cannot create tickets",
+      fix: "write it in Linear",
+    },
+  );
+  for (const gap of missing) {
+    assert.ok(gap.reason.trim(), gap.capability);
+    assert.ok(gap.fix.trim(), gap.capability);
+  }
+  providers(true);
+  assert.equal(
+    (await read()).unavailable.some((gap) => gap.capability === "launch"),
+    false,
+  );
+  const noHost = await tools["worker.launch"].execute(
+    { ticket: "SEED-1" },
+    { taskId: 1, callId: "no-host" } as ToolExecutionApi,
+    context,
+  );
+  assert.match(JSON.stringify(noHost.details), /worker execution is not attached.*Restart Armada/);
+  providers(true, false);
+  assert.match((await read()).unavailable.find((gap) => gap.capability === "launch")?.fix ?? "", /restart|reopen/i);
 });

@@ -1,7 +1,8 @@
 import type { FleetEvent, ProjectTables, Ticket } from "@armada/protocol";
 import { usageSummary } from "@armada/protocol/usage";
 
-import { followUpSummary } from "./follow-ups.ts";
+import { capabilityGap, launchFix } from "./capabilities.ts";
+import { followUpSummary, providerAvailability } from "./follow-ups.ts";
 
 const ended = (phase: string) => phase === "merged" || phase === "released";
 const line = (text: string, max = 160) => {
@@ -10,7 +11,17 @@ const line = (text: string, max = 160) => {
 };
 
 /** The coordinator reads a summary; full snapshots belong to ticket.read, never this result. */
-export function fleetStatus(tables: ProjectTables, events: FleetEvent[], at: string, tracker?: string) {
+export function fleetStatus(
+  tables: ProjectTables,
+  events: FleetEvent[],
+  at: string,
+  tracker?: string,
+  canCreateTickets = false,
+) {
+  const runtimes = (providerAvailability(events) ?? []).filter((p) =>
+    p.capabilities.some((c) => c.startsWith("runtime.")),
+  );
+  const enabled = runtimes.filter((p) => p.enabled);
   const relevant = (provider: string) => !tracker || !["linear", "internal"].includes(provider) || provider === tracker;
   const readerFailures = new Map<string, { provider: string; failures: number; error: string }>();
   for (const e of events) {
@@ -128,11 +139,49 @@ export function fleetStatus(tables: ProjectTables, events: FleetEvent[], at: str
     today: tables.usage ? usageSummary(tables.usage, at) : "today: usage unknown",
     ...(tables.defaultBranch ? { defaultBranch: tables.defaultBranch } : {}),
     unavailable: [
-      ...(candidates.some((t) => t.blockers === undefined) ? ["frontier-blockers"] : []),
-      "runtime-observations",
-      "jobs",
-      ...(tables.defaultBranch ? [] : ["default-branch-health"]),
-      "launch-capacity",
+      ...(!enabled.length
+        ? [capabilityGap("launch", "no runtime provider enabled", launchFix)]
+        : !enabled.some((p) => p.loaded)
+          ? [
+              capabilityGap(
+                "launch",
+                "enabled runtime providers are not loaded",
+                "Restart Armada after enabling a runtime in Settings › Providers",
+              ),
+            ]
+          : []),
+      ...(!canCreateTickets
+        ? [capabilityGap("tracker-write", "the project's tracker cannot create tickets", "write it in Linear")]
+        : []),
+      ...(candidates.some((t) => t.blockers === undefined)
+        ? [
+            capabilityGap(
+              "frontier-blockers",
+              "candidate blocker evidence is missing",
+              "Refresh the project's tracker reading in Settings › Providers",
+            ),
+          ]
+        : []),
+      capabilityGap(
+        "runtime-observations",
+        "live runtime observations are absent from this summary",
+        "Inspect the worker in its runtime app",
+      ),
+      capabilityGap("jobs", "job progress is absent from this summary", "Check job progress on its declared runner"),
+      ...(tables.defaultBranch
+        ? []
+        : [
+            capabilityGap(
+              "default-branch-health",
+              "default-branch checks have not been read",
+              "Restore the forge provider's default-branch reading in Settings › Providers",
+            ),
+          ]),
+      capabilityGap(
+        "launch-capacity",
+        "free worker slots are not established by this summary",
+        "Check the worker cap and active workers before launching",
+      ),
     ],
   };
 }

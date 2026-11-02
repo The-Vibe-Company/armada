@@ -16,7 +16,8 @@ status, ticket detail, history and inbox read only the admitted project's events
   (ticket/title, phase/step, runtime, head/check state, last report line and
   `ageSeconds` since the last session update or heartbeat), inbox total/counts by
   kind, ready frontier (id/title/blockers), open PRs, holds, rules revision and
-  routing/policy summary, and `unavailable`. The target is **under 8 KiB for ten
+  routing/policy summary, and `unavailable` as `{ capability, reason, fix } entries.
+  `launch` follows enabled/loaded runtime providers and `tracker-write` follows the selected tracker's create support; each gap gives the exact Settings path or recovery action. The target is **under 8 KiB for ten
   sessions**, safely below pi-durable's 50 KiB result cut. No descriptions,
   comments, ended sessions or duplicated tables enter this reading. Missing
   blocker evidence excludes a candidate from the frontier and is explicit in

@@ -15,6 +15,7 @@ import { queueDelivery } from "../src/deliveries.ts";
 import type { EventInput, FleetEvent } from "../src/events.ts";
 import { fold, type ProjectTables } from "../src/fold.ts";
 import { type Workers, type WorkerTool, workerToolSchemas } from "../src/workers/service.ts";
+import { capabilityGap } from "./capabilities.ts";
 import { isFollowUp, withFollowUps, workerRefusal } from "./follow-ups.ts";
 import { fleetHistory, fleetStatus, ticketRead } from "./read.ts";
 import { emptyRules, type ProjectRules, type RulesState, rulesSchema } from "./rules.ts";
@@ -185,6 +186,7 @@ function decide(
   evidence: MergeEvidence | null,
   importedRules?: ProjectRules,
   tracker?: string,
+  canCreateTickets = false,
 ): Decision {
   const tables = projectFacts(events, project);
   const rules = tables.rules ?? emptyRules();
@@ -196,7 +198,7 @@ function decide(
       return {
         result: JSON.parse(
           JSON.stringify({
-            ...fleetStatus(tables, events, at, tracker),
+            ...fleetStatus(tables, events, at, tracker, canCreateTickets),
             ok: true,
             project,
             seq: events.at(-1)?.seq ?? 0,
@@ -360,6 +362,21 @@ function decide(
     }
     case "merge.check":
       return checkMerge(tables, args.pr as number, project, evidence);
+    case "worker.launch":
+    case "worker.relaunch": {
+      const gap =
+        fleetStatus(tables, events, at, tracker, canCreateTickets).unavailable.find(
+          (gap) => gap.capability === "launch",
+        ) ??
+        capabilityGap(
+          "launch",
+          "worker execution is not attached to this coordinator",
+          "Restart Armada to attach enabled runtime providers from Settings › Providers",
+        );
+      return {
+        result: refuse("capability_missing", gap.reason, gap.fix, { capability: gap.capability, fix: gap.fix }),
+      };
+    }
     default:
       return no(
         "not_available_yet",
@@ -613,6 +630,7 @@ export function nativeTools(
               evidence,
               importedRules,
               options.tracker,
+              !!options.trackerProvider?.()?.create,
             );
           } catch {
             return output(

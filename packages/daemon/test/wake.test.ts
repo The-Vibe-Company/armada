@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Conversation, Submission, SubmissionDraft } from "@earendil-works/pi-durable";
+import { followUpEvent } from "../coordinator/follow-ups.ts";
 import { type WakeClock, Waker, wakeups } from "../coordinator/wake.ts";
 import type { FleetEvent } from "../src/events.ts";
 import { fold } from "../src/fold.ts";
@@ -794,4 +795,114 @@ test("coalescing checkpoints the latest same-key facts and retains attempt count
     (i) => i.followUp?.candidate === "merge-refused:merge-13",
   );
   assert.equal(item?.followUp?.attempts, 3);
+});
+
+test("an untold follow-up wakes once when overdue and its owner receipt stops reminders", async (t) => {
+  const store = new EventStore(":memory:");
+  const clock = new Clock();
+  const drafts: SubmissionDraft[] = [];
+  const at = () => new Date(clock.now()).toISOString();
+  store.append({
+    project,
+    at: at(),
+    actor: "coordinator",
+    kind: "coordinator.checkpoint",
+    payload: {
+      checkpoint: {
+        format: "armada.tools",
+        version: 1,
+        type: "rules",
+        rules: { revision: 1, value: { policy: { coordinatorMinutes: 1, quietMinutes: 10 } } },
+      },
+    },
+  });
+  store.append(
+    followUpEvent([], project, at(), "ORC-1", {
+      tool: "worker.launch",
+      code: "capability_missing",
+      reason: "no runtime provider enabled",
+      facts: "ORC-1 not launched",
+      next: "fleet.status",
+      fix: "Enable Conductor in Settings › Providers",
+    }),
+  );
+  let waker = new Waker({
+    store,
+    project,
+    clock,
+    conversation: fake(async (draft) => {
+      drafts.push(draft);
+    }),
+  });
+  t.after(async () => {
+    await waker.close();
+    store.close();
+  });
+  await clock.advance(59_000);
+  assert.equal(drafts.length, 0);
+  await clock.advance(1_000);
+  assert.equal(drafts.length, 1, "follow-ups need not wait for the ordinary quiet window");
+  assert.match(JSON.stringify(drafts[0]), /follow-up/);
+  await clock.advance(10_000);
+  assert.equal(
+    store.readSince(0, project).filter((event) => event.kind === "coordinator.wakeup").length,
+    1,
+    "a pending owner report must not schedule a millisecond wake loop",
+  );
+  const item = store.fold(project).projects[project]?.inbox[0];
+  assert.ok(item?.followUp);
+  store.append({
+    project,
+    actor: "coordinator",
+    at: at(),
+    kind: "inbox.opened",
+    payload: {
+      id: item.id,
+      ticket: item.ticket,
+      kind: "follow-up",
+      body: item.body,
+      followUp: { ...item.followUp, toldOwnerAt: at() },
+    },
+  });
+  await clock.advance(10_000);
+  assert.equal(drafts.length, 1);
+  store.append({
+    project,
+    actor: "coordinator",
+    at: at(),
+    kind: "inbox.answered",
+    payload: { id: item.id, answer: "Recovered" },
+  });
+  const { toldOwnerAt: _receipt, ...detail } = item.followUp;
+  store.append(followUpEvent(store.readSince(0, project), project, at(), item.ticket, detail));
+  await waker.close();
+  waker = new Waker({
+    store,
+    project,
+    clock,
+    conversation: fake(async (draft) => {
+      drafts.push(draft);
+    }),
+  });
+  await clock.advance(59_000);
+  assert.equal(drafts.length, 1);
+  await clock.advance(1_000);
+  assert.equal(drafts.length, 2, "a reopened cause gets a new reminder deadline, including after restart");
+  const reopened = store.fold(project).projects[project]?.inbox[0];
+  assert.ok(reopened?.followUp);
+  store.append({
+    project,
+    actor: "coordinator",
+    at: at(),
+    kind: "inbox.opened",
+    payload: {
+      id: reopened.id,
+      ticket: reopened.ticket,
+      kind: "follow-up",
+      body: reopened.body,
+      followUp: { ...reopened.followUp, toldOwnerAt: at() },
+    },
+  });
+  await clock.advance(20 * 60_000);
+  assert.equal(drafts.length, 2);
 });

@@ -18,7 +18,7 @@ import type {
 } from "@armada/protocol";
 import { phaseSchema, type ReaderUsage, readerUsageSchema, workerLaunchCheckpointSchema } from "@armada/protocol";
 import { z } from "zod";
-import { recoverFollowUps } from "../coordinator/follow-ups.ts";
+import { recoverFollowUps, sameFollowUpAction } from "../coordinator/follow-ups.ts";
 import { checkpointRules, emptyRules, type RulesState } from "../coordinator/rules.ts";
 import { applyDelivery } from "./delivery-state.ts";
 import { flowStep, pipelineStep } from "./rules.ts";
@@ -319,8 +319,23 @@ function applyEvent(projects: Map<string, Projection>, e: FleetEvent): void {
     }
     case "inbox.opened": {
       const prior = p.inbox.get(e.payload.id);
-      if (!prior || (e.payload.kind === "follow-up" && prior.kind === "follow-up"))
-        p.inbox.set(e.payload.id, { ...e.payload, at: prior?.at ?? e.at, actor: e.actor, seq: e.seq });
+      if (!prior || (e.payload.kind === "follow-up" && prior.kind === "follow-up")) {
+        const changedAction =
+          prior?.followUp && e.payload.followUp && !sameFollowUpAction(prior.followUp, e.payload.followUp);
+        let followUp = e.payload.followUp;
+        if (followUp && changedAction) {
+          const { toldOwnerAt: _oldReceipt, ...detail } = followUp;
+          followUp = detail;
+        } else if (followUp && prior?.followUp?.toldOwnerAt)
+          followUp = { ...followUp, toldOwnerAt: prior.followUp.toldOwnerAt };
+        p.inbox.set(e.payload.id, {
+          ...e.payload,
+          ...(followUp ? { followUp } : {}),
+          at: changedAction ? e.at : (prior?.at ?? e.at),
+          actor: e.actor,
+          seq: e.seq,
+        });
+      }
       break;
     }
     case "inbox.answered":

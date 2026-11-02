@@ -32,6 +32,13 @@ test("the assembled coordinator prompt states each closed-vocabulary rule once w
   const promptByteBudget = 13_545;
   assert.ok(Buffer.byteLength(SYSTEM_PROMPT) <= promptByteBudget);
   const rules = [
+    /A refusal opens a follow-up, never a silence/g,
+    /Never retry the same call with the same facts/g,
+    /Say what you cannot do and what unlocks it/g,
+    /drive: "tracker"/g,
+    /do not message or stop it/g,
+    /say once per session that it was launched elsewhere/g,
+    /toldOwnerAt/g,
     /`looping` or `drifting` notices require a fact or decision via `worker.message`, or relaunch; never ignore them twice/g,
     /read `fleet.status` once/g,
     /decide in this turn every item the reading already settles/g,
@@ -93,20 +100,24 @@ test("status promises exclude evidence the actual tool marks unavailable", async
     {} as ToolExecutionApi,
     context,
   );
-  const facts = result.details as { ok: boolean; unavailable: string[] };
+  const facts = result.details as { ok: boolean; unavailable: { capability: string; reason: string; fix: string }[] };
   assert.equal(facts.ok, true);
   assert.ok(facts.unavailable.length);
   const unavailable = SYSTEM_PROMPT.split("## Unavailable evidence")[1]?.split("##")[0] ?? "";
   const statusRule = SYSTEM_PROMPT.match(/^- `fleet.status`: (.+)$/m)?.[1] ?? "";
   assert.ok(statusRule);
   const concepts: Record<string, RegExp> = {
+    launch: /enabled runtime providers/,
+    "tracker-write": /tracker write support/,
     "frontier-blockers": /ready frontier|frontier with blockers/,
     "runtime-observations": /runtime observations/,
     jobs: /jobs/,
     "default-branch-health": /default.branch health|main health/,
     "launch-capacity": /launch capacity/,
   };
-  for (const field of facts.unavailable) {
+  for (const { capability: field, reason, fix } of facts.unavailable) {
+    assert.ok(reason);
+    assert.ok(fix);
     assert.ok(unavailable.includes(`\`${field}\``), `explain missing ${field}`);
     assert.ok(concepts[field], `classify new unavailable evidence ${field}`);
     assert.doesNotMatch(statusRule, concepts[field], `do not promise ${field}`);

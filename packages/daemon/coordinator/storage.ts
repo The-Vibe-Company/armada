@@ -5,6 +5,7 @@ import type { EventInput, FleetEvent, Json } from "../src/events.ts";
 import { type ModelUsageReport, observeModelUsage } from "../src/model-sdk.ts";
 import type { EventStore } from "../src/store.ts";
 import { checkpointUsage, type UsageDocuments } from "../src/usage.ts";
+import { followUpOwnerReport } from "./follow-ups.ts";
 import { checkpointRules, emptyRules } from "./rules.ts";
 
 export interface LogStorageOptions {
@@ -51,6 +52,7 @@ class LogStorage extends MemoryStorage implements CoordinatorStorage {
   #closed = false;
   readonly #unobserve = new Map<object, () => void>();
   readonly #providerSessions = new Map<string, string>();
+  readonly #turnStarts = new Map<number, number>();
 
   get project(): string {
     return this.#options.project;
@@ -97,6 +99,7 @@ class LogStorage extends MemoryStorage implements CoordinatorStorage {
         this.#observeIds(checkpoint.writes);
         checkpointUsage(checkpoint, this.#usageDocuments);
         this.#observeProviders(checkpoint.writes);
+        this.#observeTurns(checkpoint.writes, event.seq);
       } else {
         throw new Error("Invalid Armada pi checkpoint");
       }
@@ -191,17 +194,58 @@ class LogStorage extends MemoryStorage implements CoordinatorStorage {
     if (this.#closed) throw new Error("Coordinator storage is closed");
     const documents = new Map(this.#usageDocuments);
     const completion = checkpointUsage(checkpoint, documents)[0];
-    this.#options.store.append({
-      project: this.#options.project,
-      kind: "coordinator.checkpoint",
-      actor: "coordinator",
-      at: this.#options.now(),
-      payload: {
-        checkpoint: JSON.parse(JSON.stringify(checkpoint)) as Json,
-        ...(completion ?? {}),
+    const at = this.#options.now();
+    const answer = checkpoint.type === "commit" ? this.#answer(checkpoint.writes) : undefined;
+    const reports = answer
+      ? followUpOwnerReport(
+          this.#options.store.fold(this.project).projects[this.project],
+          this.project,
+          at,
+          answer.text,
+          this.#turnStarts.get(answer.conversation) ?? Infinity,
+        )
+      : [];
+    const [saved] = this.#options.store.appendMany([
+      {
+        project: this.#options.project,
+        kind: "coordinator.checkpoint",
+        actor: "coordinator",
+        at,
+        payload: {
+          checkpoint: JSON.parse(JSON.stringify(checkpoint)) as Json,
+          ...(completion ?? {}),
+        },
       },
-    });
+      ...reports,
+    ]);
+    if (checkpoint.type === "commit") this.#observeTurns(checkpoint.writes, saved!.seq);
     this.#usageDocuments = documents;
+  }
+
+  #answer(writes: readonly StorageWrite[]) {
+    for (const w of writes) {
+      if (w.type !== "entry" || w.value.kind !== "pi.assistant") continue;
+      const message = w.value.model?.[0];
+      if (message?.role !== "assistant" || !["stop", "length", "toolUse"].includes(message.stopReason)) continue;
+      if (message.content.some((block) => block.type === "toolCall")) continue;
+      return {
+        conversation: w.value.conversationId,
+        text: message.content
+          .filter((block) => block.type === "text")
+          .map((block) => block.text)
+          .join("\n"),
+      };
+    }
+  }
+
+  #observeTurns(writes: readonly StorageWrite[], seq: number) {
+    for (const w of writes) {
+      if (w.type !== "entry") continue;
+      if (w.value.model?.some((message) => message.role === "user") && !this.#turnStarts.has(w.value.conversationId))
+        this.#turnStarts.set(w.value.conversationId, seq);
+    }
+    const answer = this.#answer(writes);
+    if (answer) this.#turnStarts.delete(answer.conversation);
   }
 
   #observeIds(writes: readonly StorageWrite[]): void {
