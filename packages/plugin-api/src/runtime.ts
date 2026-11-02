@@ -10,6 +10,18 @@ export class RuntimeLaunchRefusal extends Error {
 export const isRuntimeLaunchRefusal = (value: unknown): value is RuntimeLaunchRefusal =>
   value instanceof Error && value.name === "RuntimeLaunchRefusal";
 
+/**
+ * Reattachment found that the generation's whole process tree ended without a final record:
+ * its runtime endpoint is gone and independent evidence, recorded by the runtime itself while
+ * the worker ran, proves termination. A missing endpoint alone is never this error; nothing
+ * was signaled. The host may then replace the generation in its kept workspace.
+ */
+export class WorkerRuntimeGone extends Error {
+  override readonly name = "WorkerRuntimeGone";
+}
+export const isWorkerRuntimeGone = (value: unknown): value is WorkerRuntimeGone =>
+  value instanceof Error && value.name === "WorkerRuntimeGone";
+
 export interface Workspace {
   id: string;
   path: string;

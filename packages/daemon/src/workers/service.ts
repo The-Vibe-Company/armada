@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { NodeProvider, RuntimeProvider, WorkerObservation, WorkerRef, Workspace } from "@armada/plugin-api";
-import { isRuntimeLaunchRefusal } from "@armada/plugin-api";
+import { isRuntimeLaunchRefusal, isWorkerRuntimeGone } from "@armada/plugin-api";
 import { guarded } from "@armada/plugin-api/guard";
 import {
   activePhaseSchema,
@@ -83,6 +83,24 @@ export class WorkerRefusal extends Error {
     this.capability = capability;
   }
 }
+/**
+ * Why a generation could not be reattached. `gone` is the runtime's own proof that the whole
+ * process tree ended (THE-2212); it carries the generation's facts so a relaunch can replace it
+ * in its kept worktree. `unknown` is a runtime that could not say (a dead endpoint without
+ * that proof, a legacy worker, an ambiguous probe) and never admits an automatic replacement.
+ */
+interface LostCause {
+  kind: "gone" | "unknown" | "refused";
+  detail: string;
+  row?: LiveWorker;
+}
+class LostRuntime extends WorkerRefusal {
+  readonly lost: LostCause;
+  constructor(lost: LostCause) {
+    super(lost.detail);
+    this.lost = lost;
+  }
+}
 const launchArgs = {
   ticket: id,
   branch: id.optional(),
@@ -143,7 +161,8 @@ export class Workers {
   readonly #lastRead = new Map<string, number>();
   #observing: Promise<void> | undefined;
   readonly #unconfirmed = new Map<string, LiveWorker>();
-  readonly #lost = new Set<string>();
+  /** Sessions boot or a probe could not reattach, with why, and the generation's facts when its tree is proven gone. */
+  readonly #lost = new Map<string, LostCause>();
   #recovery?: Promise<RecoverySummary>;
   readonly #queues = new Map<string, Promise<unknown>>();
   #closing = false;
@@ -434,7 +453,7 @@ export class Workers {
             generation: current.generation,
             handle: current.handle,
           };
-          await this.#adopt(ref, name === "worker.stop").catch(() => {});
+          await this.#adopt(ref, name === "worker.stop").catch((error: unknown) => this.#relost(ref, error));
           this.#check(ref, () => {}, name === "worker.stop");
         }
         if (current && name === "worker.stop" && !this.#live.has(current.session)) {
@@ -492,10 +511,56 @@ export class Workers {
             this.#checkpoint(project, { type: "receipt", key, input, result });
             return result;
           }
-          if (!candidate)
-            throw new WorkerRefusal(
-              "Lost worker cannot be safely stopped; restore its runtime or release the ticket explicitly",
+          const lost = this.#lost.get(current.session);
+          if (!candidate && lost?.kind === "gone" && lost.row) {
+            // Deliberate recovery (THE-2212): the runtime proved the old tree ended, so the
+            // generation is released without a stop claim and replaced in its kept worktree.
+            const row = lost.row;
+            const replacement = { ...relaunch, branch: row.branch };
+            const facts = this.#launchFacts(project, replacement, old);
+            if (facts.bound.needsLaunchToken)
+              throw new WorkerRefusal("Hosted workers are never proven gone; inspect the Conductor workspace");
+            if (facts.node !== row.node)
+              throw new WorkerRefusal("Replacement placement changed; restore the worker node first");
+            const briefing = await this.#prepareBrief(facts, replacement, row);
+            this.#checkPreparedBrief(project, replacement, old, briefing, beforeWrite);
+            // Fresh evidence immediately before replacement: still our generation, still gone.
+            this.#check(old, beforeWrite);
+            const probe = await this.#adopt(old).then(
+              () => undefined,
+              (error: unknown) => error,
             );
+            if (probe === undefined) throw new WorkerRefusal("Lost worker was readopted; nothing was replaced");
+            if (!(probe instanceof LostRuntime) || probe.lost.kind !== "gone")
+              throw new WorkerRefusal(
+                `Lost worker's state changed; nothing was replaced: ${probe instanceof Error ? probe.message : "unknown"}`,
+              );
+            this.#check(old, beforeWrite);
+            this.#retire(row);
+            this.#releaseLost(
+              project,
+              old.ticket,
+              old.session,
+              `relaunch: ${relaunch.reason}; lost worker released without a confirmed runtime stop`,
+              beforeWrite,
+            );
+            this.#lost.delete(old.session);
+            const launched = await this.#launch(
+              project,
+              replacement,
+              key,
+              input,
+              beforeWrite,
+              undefined,
+              progress,
+              briefing,
+              row.workspace.path,
+            );
+            const result = { ...launched, recovered: "runtime-gone", stopped: false, released: old.session };
+            this.#checkpoint(project, { type: "receipt", key, input, result });
+            return result;
+          }
+          if (!candidate) throw new WorkerRefusal(this.#lostRefusal(old, lost));
           const replacement = { ...relaunch, branch: candidate.branch };
           const facts = this.#launchFacts(project, replacement, old);
           if (facts.node !== candidate.node)
@@ -765,6 +830,8 @@ export class Workers {
     resume?: LiveWorker,
     progress: (step: ToolProgress) => Promise<void> = async () => {},
     preparedBrief?: PreparedBrief,
+    /** The lost generation's worktree a replacement must land in (THE-2212); anything else is refused. */
+    keep?: string,
   ) {
     await progress("preparing");
     const facts = this.#launchFacts(project, args);
@@ -972,6 +1039,8 @@ export class Workers {
           ...(hosted ? { labels: ticket.labels, profile: route.model } : {}),
           branch,
         }));
+      if (keep !== undefined && workspace.path !== keep)
+        throw new WorkerRefusal("Replacement workspace is not the lost worker's kept worktree; nothing was launched");
       checkLaunch();
     } catch (error) {
       if (this.#closing) {
@@ -1184,7 +1253,7 @@ export class Workers {
     return this.#serial(ref.project, async () => {
       this.#check(ref, beforeWrite, true);
       if (!this.#live.has(ref.session)) {
-        await this.#adopt(ref, true).catch(() => {});
+        await this.#adopt(ref, true).catch((error: unknown) => this.#relost(ref, error));
         this.#check(ref, beforeWrite, true);
       }
       if (!this.#live.has(ref.session)) {
@@ -1531,10 +1600,9 @@ export class Workers {
               }
               if (this.#closing) continue;
               if (!this.#observations.has(ref.session)) this.#record(ref, { state: "unknown" });
-              const detail =
-                error instanceof WorkerRefusal ? error.message : "Runtime observation or reattachment failed";
-              const reason = `${detail}; relaunch or release, never assume it runs`;
-              this.#lost.add(ref.session);
+              const cause = this.#lostCause(error);
+              const reason = `${cause.detail}; relaunch or release, never assume it runs. Next: ${this.#nextAction(ref, cause)}`;
+              this.#lost.set(ref.session, cause);
               this.#append({
                 project: project.id,
                 kind: "worker.lost",
@@ -1619,12 +1687,8 @@ export class Workers {
       if (!node || !runtime.withNode) throw new WorkerRefusal("Worker node unavailable");
       runtime = runtime.withNode(node);
       if (!runtime.adopt) throw new WorkerRefusal("Worker runtime cannot reattach");
-      const recovery = z
-        .object({ native: z.boolean().optional(), stream: z.boolean().optional() })
-        .parse(launch.runtimeRecovery ?? {});
-      await runtime.adopt(ref, workspace, { ...recovery, starting: launch.step === "starting" });
     }
-    this.#check(ref, () => {}, allowEnded);
+    // The generation's facts first: a runtime that proves the tree gone hands them to the relaunch.
     const row: LiveWorker = {
       ref,
       runtime,
@@ -1667,6 +1731,18 @@ export class Workers {
       runtimeKind: launch.runtime,
       ...(typeof launch.launchId === "string" ? { launchId: launch.launchId } : {}),
     };
+    if (!hosted) {
+      const recovery = z
+        .object({ native: z.boolean().optional(), stream: z.boolean().optional() })
+        .parse(launch.runtimeRecovery ?? {});
+      try {
+        await runtime.adopt!(ref, workspace, { ...recovery, starting: launch.step === "starting" });
+      } catch (error) {
+        const detail = error instanceof Error && error.message ? error.message : "Runtime reattachment failed";
+        throw new LostRuntime(isWorkerRuntimeGone(error) ? { kind: "gone", detail, row } : { kind: "unknown", detail });
+      }
+    }
+    this.#check(ref, () => {}, allowEnded);
     this.#unconfirmed.set(ref.session, row);
     const observation = await runtime.observe(ref);
     this.#check(ref, () => {}, allowEnded);
@@ -1680,6 +1756,37 @@ export class Workers {
     this.#live.set(ref.session, row);
     this.#unconfirmed.delete(ref.session);
     this.#lost.delete(ref.session);
+  }
+
+  #lostCause(error: unknown): LostCause {
+    if (error instanceof LostRuntime) return error.lost;
+    if (error instanceof WorkerRefusal) return { kind: "refused", detail: error.message };
+    return { kind: "unknown", detail: "Runtime observation or reattachment failed" };
+  }
+
+  /** A later probe of a still-lost session refreshes why, so refusals and relaunches act on fresh evidence. */
+  #relost(ref: WorkerRef, error: unknown) {
+    if (this.#lost.has(ref.session) && !this.#live.has(ref.session))
+      this.#lost.set(ref.session, this.#lostCause(error));
+  }
+
+  /** The one next action a lost worker admits, named in its recovery event and in every refusal. */
+  #nextAction(ref: WorkerRef, cause: LostCause): string {
+    const release =
+      "worker.stop with a reason releases the ticket without a stop claim (its worktree, branch and pull request are kept) and worker.launch continues in that worktree";
+    if (cause.kind === "gone")
+      return "worker.relaunch with a reason replaces it in its kept worktree; the old generation is released without a stop claim";
+    if (this.#unconfirmed.has(ref.session) || this.#notStarted(ref.project, ref.session)?.workspaceDisposed === true)
+      return "worker.relaunch with a reason replaces it";
+    if (cause.kind === "refused" && /runtime unavailable|runtime cannot reattach|node unavailable/i.test(cause.detail))
+      return `enable its runtime in Settings › Providers and restart to observe it, or ${release}`;
+    return `if its process still runs, wait for it or stop it yourself; otherwise ${release}`;
+  }
+
+  #lostRefusal(ref: WorkerRef, cause: LostCause | undefined): string {
+    if (!cause) return "Lost worker cannot be safely stopped; restore its runtime or release the ticket explicitly";
+    const next = this.#nextAction(ref, cause);
+    return `Lost worker ${ref.ticket} cannot be replaced automatically: ${cause.detail}. Nothing was launched. ${next.charAt(0).toUpperCase()}${next.slice(1)}`;
   }
 
   async #stopLost(ref: WorkerRef, reason: string, beforeWrite: () => void): Promise<Record<string, Json>> {
@@ -1714,7 +1821,13 @@ export class Workers {
     if (!current || current.session !== session || ended(current.phase) || !this.#lost.has(session))
       throw new WorkerRefusal("Lost worker generation changed; nothing released");
     this.#append({ project, kind: "session.released", payload: { ticket, session, reason } });
-    return { ok: true, session, stopped: false, released: true };
+    return {
+      ok: true,
+      session,
+      stopped: false,
+      released: true,
+      next: "worker.launch continues in the kept worktree; its branch and pull request are kept",
+    };
   }
 
   /** Read only the pinned generation; unsupported runtime tails are empty. */
@@ -1985,6 +2098,15 @@ export class Workers {
           if (row) await this.#stop(row, reason, beforeWrite, false);
           else if (this.#unconfirmed.has(session.session))
             await this.#stop(this.#unconfirmed.get(session.session)!, reason, beforeWrite, false);
+          else if (this.#lost.get(session.session)?.kind === "gone")
+            // The runtime proved the tree ended: release without a stop claim, as a relaunch would.
+            this.#releaseLost(
+              project,
+              session.ticket,
+              session.session,
+              `${reason}; lost worker released without a confirmed runtime stop`,
+              beforeWrite,
+            );
           else throw new WorkerRefusal("Worker runtime is unavailable; stop could not be confirmed");
           released.push(session.ticket);
         } catch {

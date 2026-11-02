@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { RuntimeProvider, WorkerRef } from "@armada/plugin-api";
+import { type RuntimeProvider, type WorkerRef, WorkerRuntimeGone } from "@armada/plugin-api";
 import { queueDelivery } from "../src/deliveries.ts";
 import { fold } from "../src/fold.ts";
 import { PluginRegistry } from "../src/plugins/registry.ts";
@@ -34,8 +34,14 @@ for (const scenario of [
   "brief changes during relaunch stop",
   "plan policy changes before stop",
   "plan policy changes during stop",
+  "runtime proven gone",
+  "runtime unknown without a liveness contract",
+  "concurrent relaunch of a gone runtime",
 ]) {
   const lost = scenario === "one worker lost" || scenario === "lost runtime refuses stop";
+  // THE-2212: the runtime itself could not reattach: either it proved the tree gone, or it could not say.
+  const gone = scenario === "runtime proven gone" || scenario === "concurrent relaunch of a gone runtime";
+  const unknownRuntime = scenario === "runtime unknown without a liveness contract";
   test(`restart preserves generations, capabilities and phases; ${scenario}`, { timeout: 15000 }, async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "armada-restart-"));
     const native = new Map<string, { ref: WorkerRef; alive: boolean; messages: string[]; token: string }>();
@@ -48,7 +54,16 @@ for (const scenario of [
     let uncertain = lostBrief;
     const policyChange = scenario.startsWith("plan policy changes");
     const total =
-      scenario.startsWith("close ") || merged || mismatched || lostBrief || changedBrief || policyChange ? 1 : 2;
+      scenario.startsWith("close ") ||
+      merged ||
+      mismatched ||
+      lostBrief ||
+      changedBrief ||
+      policyChange ||
+      gone ||
+      unknownRuntime
+        ? 1
+        : 2;
     let disposed = 0;
     let firstBoot = true;
     if (changedBrief) await writeFile(join(directory, "AGENTS.md"), "Prepared instructions before stopping");
@@ -113,6 +128,14 @@ for (const scenario of [
         },
         adopt: async (ref) => {
           assert.deepEqual(native.get(ref.handle)?.ref, ref);
+          if (!firstBoot && gone && !native.get(ref.handle)?.alive)
+            throw new WorkerRuntimeGone(
+              "local worker SEED-1 generation 1 is unreachable: the supervisor endpoint refused the connection, and no final record exists; its liveness contract (version 1) names a process group that no longer exists, so its whole process tree ended; nothing was signaled",
+            );
+          if (!firstBoot && unknownRuntime)
+            throw new Error(
+              "local worker SEED-1 generation 1 is unreachable: the supervisor endpoint refused the connection, and no final record exists; no liveness contract was recorded for it, so its process tree may still run; nothing was signaled",
+            );
           return { deliveries: native.get(ref.handle)!.messages.length };
         },
         observe: async (ref) => {
@@ -434,6 +457,99 @@ for (const scenario of [
       assert.equal(replacement.generation, 2);
       assert.equal(native.size, 1);
       assert.equal((await workers.shutdown(project, "fixture finished", () => {})).ok, true);
+      return;
+    }
+    if (gone || unknownRuntime) {
+      const old = [...native.values()][0]!;
+      if (gone) old.alive = false;
+      const recovery = await workers.recover();
+      assert.equal(recovery.readopted.length, 0);
+      assert.equal(recovery.lost.length, 1);
+      const recorded = store.readSince(0).find((event) => event.kind === "worker.lost");
+      assert(recorded?.kind === "worker.lost");
+      assert.match(recorded.payload.reason, /nothing was signaled/, "the actual cause is recorded, not a generic line");
+      const before = fold(store.readSince(0)).projects[project]!.sessions[0]!;
+      if (unknownRuntime) {
+        assert.match(recorded.payload.reason, /no liveness contract/);
+        assert.match(recorded.payload.reason, /Next: if its process still runs.*worker\.stop with a reason/);
+        await assert.rejects(
+          workers.tool(
+            project,
+            "worker.relaunch",
+            { ticket: "SEED-1", session: old.ref.session, reason: "Replace the unknown worker" },
+            "relaunch-unknown",
+            () => {},
+          ),
+          /cannot be replaced automatically.*no liveness contract.*worker\.stop with a reason/s,
+        );
+        assert.equal(stops, 0, "nothing is signaled for a worker that may still run");
+        assert.equal(native.size, 1, "no replacement without proof the old tree ended");
+        assert.equal(fold(store.readSince(0)).projects[project]!.sessions[0]!.phase, before.phase);
+        const released = await workers.tool(
+          project,
+          "worker.stop",
+          { ticket: "SEED-1", session: old.ref.session, reason: "Owner checked the machine: nothing runs" },
+          "release-unknown",
+          () => {},
+        );
+        assert.equal(released.stopped, false, "an explicit release never claims a stop");
+        assert.equal(released.released, true);
+        assert.match(String(released.next), /worker\.launch continues in the kept worktree/);
+        assert.equal(stops, 0);
+        const relaunched = await workers.tool(
+          project,
+          "worker.launch",
+          { ticket: "SEED-1" },
+          "launch-after-release",
+          () => {},
+        );
+        assert.equal(relaunched.generation, 2, "the deliberate path continues in the kept worktree");
+        assert.equal(native.size, 2);
+        return;
+      }
+      assert.match(recorded.payload.reason, /process tree ended/);
+      assert.match(recorded.payload.reason, /Next: worker\.relaunch with a reason replaces it in its kept worktree/);
+      const relaunch = (key: string) =>
+        workers.tool(
+          project,
+          "worker.relaunch",
+          { ticket: "SEED-1", session: old.ref.session, reason: "Daemon restart killed the supervisor" },
+          key,
+          () => {},
+        );
+      const attempts =
+        scenario === "concurrent relaunch of a gone runtime"
+          ? await Promise.allSettled([relaunch("relaunch-gone-a"), relaunch("relaunch-gone-b")])
+          : await Promise.allSettled([relaunch("relaunch-gone")]);
+      const fulfilled = attempts.filter((a) => a.status === "fulfilled");
+      assert.equal(fulfilled.length, 1, "exactly one replacement");
+      for (const attempt of attempts)
+        if (attempt.status === "rejected") assert.match(String(attempt.reason.message), /generation changed/);
+      const replacement = (fulfilled[0] as PromiseFulfilledResult<Record<string, unknown>>).value;
+      assert.equal(replacement.generation, 2);
+      assert.equal(replacement.recovered, "runtime-gone");
+      assert.equal(replacement.stopped, false, "the old generation was released, never claimed stopped");
+      assert.equal(replacement.released, old.ref.session);
+      assert.equal(stops, 0, "nothing was signaled");
+      assert.equal(native.size, 2);
+      assert(native.get(String(replacement.handle))?.alive);
+      // The fold keeps one row per ticket: the released generation is now history behind generation 2.
+      assert.equal(fold(store.readSince(0)).projects[project]!.sessions[0]!.generation, 2);
+      assert.match(
+        String(store.readSince(0).findLast((e) => e.kind === "session.released")?.payload.reason),
+        /without a confirmed runtime stop/,
+      );
+      await assert.rejects(workers.request(old.token, { command: "heartbeat", ticket: "SEED-1" }), /authorization/);
+      await assert.rejects(
+        workers.tool(
+          project,
+          "worker.stop",
+          { ticket: "SEED-1", session: old.ref.session, reason: "Stale stop" },
+          "stale-stop-gone",
+          () => {},
+        ),
+        /generation changed/,
+      );
       return;
     }
     let ready!: () => void;
