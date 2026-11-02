@@ -451,10 +451,22 @@ Boot timings report coordinator storage restore, harness setup and Waker replay
 separately. Background plugin history reads use bounded pages at a captured log
 head and yield between them, allowing readiness and initial fleet responses to
 drain. Worker review forwarding reads new events first and loads an older prefix
-only for a comment's historical generation check. The isolated `boot.bench.ts`
-checks HTTP and the first fleet snapshot within five seconds on a synthetic
-11,251-event log (7,623 real pi document checkpoints, about 24 MB), then doubles
-only the checkpoint count. No private owner log is required for that benchmark.
+only for a comment's historical generation check.
+
+The isolated `packages/daemon/test/boot.bench.ts` runs via `bun run bench`,
+separately from `bun run verify` and the default daemon tests. CI runs it in the
+**Daemon boot benchmark** job on Ubuntu with Node 22. It checks HTTP and the
+first fleet snapshot on a synthetic 11,251-event log (7,623 real pi document
+checkpoints, about 24 MB), then doubles only the checkpoint count. Three paired
+cold boots compare median window-ready times: doubling must cost less than
+1.8 times as much, and Waker must use less than half the total on every large-log
+run. The Waker fraction also catches the old per-prefix refold, which was slow
+at both sizes. Absolute times and stages are printed for diagnosis. A separate
+small log retains a five-second window-ready budget; `ARMADA_BENCH_SLOW=1 bun
+run bench` skips only that budget on slow hosts, preserving both relative
+gates. Generous process watchdogs catch hangs independently of these performance
+budgets. No private owner log is required; this is a synthetic readiness proxy,
+not a measurement of the owner's Mac.
 
 Protocol minor 9 lists pi's built-in providers through `models.providers` and
 answers `models.catalog`. The catalog contains each provider's public model
