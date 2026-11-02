@@ -1008,6 +1008,7 @@ test("credential socket writes never expose the key to replies, events or logs",
 // THE-2108 to minor 17 for durable worker deliveries.
 // THE-2107 to minor 20 for progress watchdog notices.
 // THE-2116 advances it to minor 21, starts fresh subscriptions at their snapshot, and redacts checkpoint bodies.
+// Later minors only advance the envelope; THE-2124 to minor 26 for the Tickets page's writes.
 test("subscription bytes stay compatible with the recorded daemon vocabulary and folded tables", async (t) => {
   const fixture = new URL("./support/protocol-subscription.json", import.meta.url);
   const inputs = JSON.parse(readFileSync(fixture, "utf8")) as { history: EventInput[]; live: EventInput[] };

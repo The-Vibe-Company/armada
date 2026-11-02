@@ -95,7 +95,7 @@ test("the room is its chat: one header line, no sky, the conversation, then the 
   const header = block(html, /<header/, /<\/header>/);
   expect(header).toMatch(/<h1[^>]*>Harbor<\/h1><span[^>]*>example\/harbor<\/span>/);
   expect(text(header)).toBe(
-    "Harbor example/harbor Linear 1 blocked 1 waiting for you 1 in progress 1 ready to merge 1 merged today",
+    "Harbor example/harbor Linear 1 blocked 1 waiting for you 1 in progress 1 ready to merge 1 merged today Tickets",
   );
   expect(header).toMatch(/aria-pressed="true" aria-controls="room-panel"/);
   // The sky flies in the hangar only; the facts line and the quiet sentence are gone.
