@@ -1799,7 +1799,8 @@ export class Workers {
     const release = this.#options.store
       .readSince(0, project)
       .findLast((event) => event.kind === "session.released" && event.payload.session === prior.session);
-    if (release?.kind !== "session.released" || !release.payload.reason.includes(RELEASED_WITHOUT_STOP)) return;
+    if (release?.kind !== "session.released" || !release.payload.reason.toLowerCase().includes(RELEASED_WITHOUT_STOP))
+      return;
     const ref = {
       project,
       ticket: prior.ticket,

@@ -55,6 +55,7 @@ for (const scenario of [
   // The old supervisor answers the probe; its reported state then decides.
   let priorAnswers = false;
   let refuseNextLaunch = false;
+  let adopts = 0;
   const unknownRuntime = scenario === "runtime unknown without a liveness contract";
   test(`restart preserves generations, capabilities and phases; ${scenario}`, { timeout: 15000 }, async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "armada-restart-"));
@@ -147,6 +148,7 @@ for (const scenario of [
           return ref;
         },
         adopt: async (ref) => {
+          adopts++;
           assert.deepEqual(native.get(ref.handle)?.ref, ref);
           if (priorAnswers) return { deliveries: native.get(ref.handle)!.messages.length };
           if (!firstBoot && gone && !native.get(ref.handle)?.alive)
@@ -587,7 +589,9 @@ for (const scenario of [
         // A launch refused before creation leaves no marker: never probed either.
         refuseNextLaunch = true;
         await assert.rejects(launchNext("launch-4-refused"), /refused/);
-        assert.equal((await launchNext("launch-4")).generation, 5, "a refused launch is not probed");
+        const adoptsBefore = adopts;
+        assert.equal((await launchNext("launch-4")).generation, 5);
+        assert.equal(adopts, adoptsBefore, "a refused launch is not probed");
         priorAlive = false;
         // A released lost generation whose supervisor answers blocks only while it reports running.
         const fourth = [...native.values()].find((row) => row.ref.generation === 5)!;
