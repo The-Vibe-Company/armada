@@ -96,6 +96,11 @@ export function fleetStatus(
         ageSeconds: Number.isFinite(age) ? Math.max(0, Math.floor(age)) : null,
       };
     }),
+    capacity: {
+      active: active.length,
+      cap: rules.value.policy?.maxWorkers ?? null,
+      free: rules.value.policy?.maxWorkers == null ? null : rules.value.policy.maxWorkers - active.length,
+    },
     inbox: { total: tables.inbox.length, byKind },
     problems: {
       deliveries: (tables.deliveries ?? [])
@@ -138,6 +143,14 @@ export function fleetStatus(
     },
     today: tables.usage ? usageSummary(tables.usage, at) : "today: usage unknown",
     ...(tables.defaultBranch ? { defaultBranch: tables.defaultBranch } : {}),
+    notes: [
+      capabilityGap(
+        "runtime-observations",
+        "live runtime observations are absent from this summary",
+        "Inspect the worker in its runtime app",
+      ),
+      capabilityGap("jobs", "job progress is absent from this summary", "Check job progress on its declared runner"),
+    ],
     unavailable: [
       ...(!enabled.length
         ? [capabilityGap("launch", "no runtime provider enabled", launchFix)]
@@ -162,12 +175,6 @@ export function fleetStatus(
             ),
           ]
         : []),
-      capabilityGap(
-        "runtime-observations",
-        "live runtime observations are absent from this summary",
-        "Inspect the worker in its runtime app",
-      ),
-      capabilityGap("jobs", "job progress is absent from this summary", "Check job progress on its declared runner"),
       ...(tables.defaultBranch
         ? []
         : [
@@ -177,11 +184,6 @@ export function fleetStatus(
               "Restore the forge provider's default-branch reading in Settings › Providers",
             ),
           ]),
-      capabilityGap(
-        "launch-capacity",
-        "free worker slots are not established by this summary",
-        "Check the worker cap and active workers before launching",
-      ),
     ],
   };
 }

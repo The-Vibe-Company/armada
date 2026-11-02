@@ -18,6 +18,7 @@ import { dispatchChat } from "../src/server/chat.ts";
 import { ChatLive } from "../src/server/chat-live.ts";
 import { EventStore } from "../src/store.ts";
 import { Workers } from "../src/workers/service.ts";
+import { fakeWorkers } from "./support/fake-worker.ts";
 import { nodeExecutable } from "./support/node.ts";
 
 for (const interruption of ["after-result", "tool"]) {
@@ -118,6 +119,135 @@ for (const interruption of ["after-result", "tool"]) {
       "recovery preserves the original log prefix",
     );
     reopened.close();
+  });
+}
+
+for (const capped of [false, true]) {
+  test(`owner launch uses default local Claude without capacity questions (cap reached: ${capped})`, {
+    timeout: 15000,
+  }, async (t) => {
+    const store = new EventStore(":memory:");
+    const at = "2030-01-01T00:00:00.000Z";
+    store.append({
+      project: "orchard",
+      at,
+      actor: "tracker",
+      kind: "ticket.seen",
+      payload: {
+        id: "THE-1",
+        title: "Plant",
+        status: "unstarted",
+        labels: ["ready-for-agent"],
+        blockers: [],
+        branchName: "feature/the-1",
+      },
+    });
+    const { workers, fake, launch } = fakeWorkers(store, [{ id: "orchard", repository: "example/orchard" }]);
+    if (capped) {
+      store.append({
+        project: "orchard",
+        at,
+        actor: "tracker",
+        kind: "ticket.seen",
+        payload: {
+          id: "THE-2",
+          title: "Other work",
+          status: "unstarted",
+          labels: ["ready-for-agent"],
+          blockers: [],
+          branchName: "feature/the-2",
+        },
+      });
+      await launch("orchard", "THE-2");
+      store.append({
+        project: "orchard",
+        at,
+        actor: "coordinator",
+        kind: "coordinator.checkpoint",
+        payload: {
+          checkpoint: {
+            format: "armada.tools",
+            version: 1,
+            type: "rules",
+            rules: { revision: 1, value: { policy: { maxWorkers: 1 } } },
+          },
+        },
+      });
+    }
+    const live = new ChatLive();
+    const manager = new Coordinators(store);
+    t.after(async () => {
+      await live.close();
+      await manager.close();
+      await workers.close();
+      store.close();
+    });
+    const faux = fauxProvider({ models: [{ id: "coordinator" }] });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const coordinator = await manager.open({
+      project: "orchard",
+      models,
+      model: { provider: faux.getModel().provider, modelId: faux.getModel().id },
+      native: { workers },
+      wakeClock: { now: () => Date.parse(at), setTimer: () => () => {} },
+    });
+    const deliveredBefore = fake.delivered.length;
+    let statusMessages = "";
+    let launchMessages = "";
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("fleet.status", {}), { stopReason: "toolUse", timestamp: Date.parse(at) }),
+      (transcript) => {
+        statusMessages = JSON.stringify(transcript.messages);
+        // Model intent is fixed; native tools must actually admit or refuse this launch.
+        return fauxAssistantMessage(fauxToolCall("worker.launch", { ticket: "THE-1" }), {
+          stopReason: "toolUse",
+          timestamp: Date.parse(at),
+        });
+      },
+      (transcript) => {
+        launchMessages = JSON.stringify(transcript.messages);
+        return fauxAssistantMessage(
+          capped ? "cap reached: 1 of 1 workers; release or raise policy.maxWorkers" : "THE-1 started.",
+          { timestamp: Date.parse(at) },
+        );
+      },
+    ]);
+    await (await coordinator.conversation.submit({ type: "input", content: "lance THE-1" }, context)).wait(context);
+    assert.match(statusMessages, /capacity/);
+    assert.doesNotMatch(statusMessages, /launch-capacity/);
+    if (capped) assert.match(launchMessages, /cap reached: 1 of 1 workers; release or raise policy.maxWorkers/);
+    const tables = store.fold("orchard").projects.orchard;
+    assert.equal(
+      tables?.inbox.some((item) => item.kind === "owner-request"),
+      false,
+    );
+    assert.equal(fake.delivered.length, deliveredBefore + (capped ? 0 : 1));
+    assert.equal(
+      tables?.sessions.some((session) => session.ticket === "THE-1" && session.runtime === "claude"),
+      !capped,
+    );
+    if (capped) {
+      faux.setResponses([fauxAssistantMessage("", { timestamp: Date.parse(at) })]);
+      await (
+        await coordinator.conversation.submit(
+          {
+            type: "input",
+            content: "Fleet wake-up: unchanged capacity",
+            entry: { kind: WAKE_ENTRY, data: { body: "Woke: unchanged capacity" } },
+          },
+          context,
+        )
+      ).wait(context);
+      const chat = await dispatchChat(
+        { type: "chat.read", version, id: "read", project: "orchard" },
+        { store, live, coordinator },
+      );
+      assert.equal(chat.type, "chat.result");
+      if (chat.type !== "chat.result") throw new Error("missing chat");
+      assert.equal(chat.items.filter((item) => item.kind === "coordinator" && /cap reached/.test(item.body)).length, 1);
+      assert.equal(fake.delivered.length, deliveredBefore);
+    }
   });
 }
 

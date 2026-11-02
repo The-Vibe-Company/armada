@@ -53,6 +53,8 @@ interface TestFacts {
   events: FleetEvent[];
   more: boolean;
   defaultBranch?: ProjectTables["defaultBranch"];
+  capacity: { active: number; cap: number | null; free: number | null };
+  notes: { capability: string; reason: string; fix: string }[];
   unavailable: { capability: string; reason: string; fix: string }[];
   items: InboxItem[];
   problems: string[];
@@ -182,6 +184,45 @@ test("fleet.status returns detached project facts and refuses an inactive coordi
   assert.equal((await run("fleet.status")).code, "coordinator_inactive");
 });
 
+test("fleet.status exposes launch slots independently of informational runtime and job notes", async (t) => {
+  const { store, run } = await fixture(t);
+  const unbounded = await run("fleet.status");
+  assert.deepEqual(unbounded.capacity, { active: 1, cap: null, free: null });
+  assert.deepEqual(
+    unbounded.notes.map((note) => note.capability),
+    ["runtime-observations", "jobs"],
+  );
+  assert.equal(
+    unbounded.unavailable.some((gap) => ["launch-capacity", "runtime-observations", "jobs"].includes(gap.capability)),
+    false,
+  );
+  for (const cap of [3, 1]) {
+    store.append({
+      project: "orchard",
+      at,
+      actor: "coordinator",
+      kind: "coordinator.checkpoint",
+      payload: {
+        checkpoint: {
+          format: "armada.tools",
+          version: 1,
+          type: "rules",
+          rules: { revision: cap, value: { policy: { maxWorkers: cap } } },
+        },
+      },
+    });
+    assert.deepEqual((await run("fleet.status")).capacity, { active: 1, cap, free: cap - 1 });
+  }
+  store.append({
+    project: "orchard",
+    at,
+    actor: "worker",
+    kind: "session.released",
+    payload: { ticket: "SEED-1", session: "one", reason: "Finished" },
+  });
+  assert.deepEqual((await run("fleet.status")).capacity, { active: 0, cap: 1, free: 1 });
+});
+
 test("fleet.status keeps ten active sessions before compact fleet facts and below both tool byte limits", async (t) => {
   const { store, run } = await fixture(t);
   for (let i = 2; i <= 40; i++) {
@@ -253,7 +294,7 @@ test("fleet.status keeps ten active sessions before compact fleet facts and belo
   t.diagnostic(`forty tickets, ten sessions/open PRs: status ${bytes} bytes`);
   assert.ok(bytes < 8 * 1024, `status is ${bytes} bytes`);
   assert.ok(bytes < 50 * 1024, "pi-durable must receive the entire JSON text block");
-  assert.deepEqual(Object.keys(facts).slice(0, 5), ["followUps", "at", "readAt", "sessions", "inbox"]);
+  assert.deepEqual(Object.keys(facts).slice(0, 5), ["followUps", "at", "readAt", "sessions", "capacity"]);
   assert.deepEqual(
     facts.sessions.map((s) => s.ticket),
     Array.from({ length: 10 }, (_, i) => `SEED-${i + 1}`),
@@ -1336,7 +1377,14 @@ test("Linear ticket tools create once per call key and the next reader publishes
   const { store, scope } = await fixture(t);
   let linear: TrackerProvider | undefined;
   const recording = linearRecorded({
-    MutationRoot: [{ issue: { id: "uuid-SEED-1", team: { id: "team" } } }],
+    MutationRoot: [
+      {
+        issue: {
+          id: "uuid-SEED-1",
+          team: { id: "team", states: linearPage([{ id: "backlog", type: "backlog", position: 0 }]) },
+        },
+      },
+    ],
     RecentTickets: [{ issues: linearPage([]) }],
     CreateTicket: [
       {
