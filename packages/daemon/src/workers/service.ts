@@ -1328,12 +1328,14 @@ export class Workers {
   }
 
   /** Recover only a uniquely named native session, never a worker-supplied arbitrary handle or a second create. */
-  async recoverHosted(project: string): Promise<void> {
+  async recoverHosted(project: string, history?: readonly FleetEvent[]): Promise<void> {
     return this.#serial(project, async () => {
       if (this.#closing || !this.#options.account) return;
       const config = this.#options.projects.find((projectConfig) => projectConfig.id === project);
       if (!config) return;
-      const events = this.#options.store.readSince(0, project);
+      const events = history
+        ? [...history, ...this.#options.store.readSince(history.at(-1)?.seq ?? 0, project)]
+        : this.#options.store.readSince(0, project);
       const intents = new Map<
         string,
         {
@@ -1469,15 +1471,16 @@ export class Workers {
       for (const project of this.#options.projects) {
         const history = this.#options.store.readSince(0, project.id);
         if (
-          (this.#tables(project.id)?.sessions ?? []).some(
+          (fold(history).projects[project.id]?.sessions ?? []).some(
             (session) => !ended(session.phase) && session.runtime !== "tracker",
           ) ||
           history.some((event) => event.kind === "worker.readopted" || event.kind === "worker.lost")
         )
           this.#checkpoint(project.id, { type: "recovery", boot });
-        await this.recoverHosted(project.id).catch(() => {});
+        await this.recoverHosted(project.id, history).catch(() => {});
         await this.#serial(project.id, async () => {
-          for (const session of this.#tables(project.id)?.sessions ?? []) {
+          const events = [...history, ...this.#options.store.readSince(history.at(-1)?.seq ?? 0, project.id)];
+          for (const session of fold(events).projects[project.id]?.sessions ?? []) {
             if (ended(session.phase) || session.runtime === "tracker") continue;
             const ref = {
               project: project.id,

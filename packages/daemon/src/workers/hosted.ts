@@ -75,7 +75,7 @@ export class HostedReader {
     this.#options = options;
   }
   #active(project: string, events: FleetEvent[] = this.#options.store.readSince(0, project)) {
-    const sessions = fold(events).projects[project]?.sessions ?? [];
+    let sessions: ReturnType<typeof fold>["projects"][string]["sessions"] | undefined;
     return events.flatMap((event) => {
       const value = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
       const checkpoint =
@@ -83,6 +83,7 @@ export class HostedReader {
           ? checkpointSchema.safeParse(value)
           : null;
       if (!checkpoint?.success) return [];
+      sessions ??= fold(events).projects[project]?.sessions ?? [];
       const launch = checkpoint.data;
       return sessions.some(
         (session) =>
@@ -98,17 +99,23 @@ export class HostedReader {
     return this.#options.projects.some((project) => {
       const events = this.#options.store.readSince(0, project.id);
       if (this.#active(project.id, events).length) return true;
-      const sessions = fold(events).projects[project.id]?.sessions ?? [];
+      let sessions: ReturnType<typeof fold>["projects"][string]["sessions"] | undefined;
       return events.some((event) => {
         const c = event.kind === "coordinator.checkpoint" ? event.payload.checkpoint : null;
+        if (
+          !(
+            c &&
+            typeof c === "object" &&
+            !Array.isArray(c) &&
+            c.format === "armada.worker" &&
+            c.type === "launch-intent" &&
+            c.hosted === true &&
+            typeof c.launchId === "string"
+          )
+        )
+          return false;
+        sessions ??= fold(events).projects[project.id]?.sessions ?? [];
         return (
-          c &&
-          typeof c === "object" &&
-          !Array.isArray(c) &&
-          c.format === "armada.worker" &&
-          c.type === "launch-intent" &&
-          c.hosted === true &&
-          typeof c.launchId === "string" &&
           sessions.some(
             (session) => session.session === c.session && !["released", "merged"].includes(session.phase),
           ) &&
