@@ -2,6 +2,9 @@ import type { NodeProvider, PluginContext, RuntimeProvider, WorkerObservation, W
 import { DRIVER } from "./driver.ts";
 import { claudeConnection } from "./status.ts";
 
+/** The Armada desktop shell's headless flag (packages/desktop/src/headless.ts); the plugin names it, never imports Electron code. */
+export const HEADLESS_VARIABLE = "ARMADA_DESKTOP_HEADLESS";
+
 interface ClaudeOptions {
   command?: string;
   binary?: string;
@@ -225,6 +228,9 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
         : request.args;
       const ref = await facilities().launch({
         ...request,
+        // A local worker runs on the owner's logged-in desktop (THE-2234): the Armada shell it may
+        // smoke-test opens no window and no dock icon. An explicit launch environment wins.
+        env: { [HEADLESS_VARIABLE]: "1", ...request.env },
         command: stream ? "node" : request.command,
         args: stream
           ? [
