@@ -386,12 +386,12 @@ test("a corrupt or foreign-version snapshot row is ignored and rebuilt from the 
   const dir = mkdtempSync(join(tmpdir(), "armada-snapshot-corrupt-"));
   const path = join(dir, "fleet.sqlite");
   const expected = json(fold(mixedLog().map((e, i) => ({ ...e, seq: i + 1 })) as never).projects.orchard);
-  const plant = (fold_version: number, state: string) => {
+  const plant = (fold_version: number, state: string, seq = 3) => {
     const sql = new DatabaseSync(path);
     try {
       sql
         .prepare("INSERT OR REPLACE INTO fold_snapshots (project, fold_version, seq, state) VALUES (?, ?, ?, ?)")
-        .run("orchard", fold_version, 3, state);
+        .run("orchard", fold_version, seq, state);
     } finally {
       sql.close();
     }
@@ -404,17 +404,20 @@ test("a corrupt or foreign-version snapshot row is ignored and rebuilt from the 
     const valid = new DatabaseSync(path);
     const stored = valid.prepare("SELECT state FROM fold_snapshots WHERE project = 'orchard'").get()?.state as string;
     valid.close();
+    assert.match(stored, /"models":\["oak"\]/);
     const cases = [
-      ["garbage", FOLD_VERSION, "{not json"],
-      ["wrong shape", FOLD_VERSION, JSON.stringify({ version: FOLD_VERSION, seq: 3, projects: [["orchard", 7]] })],
-      ["foreign version", FOLD_VERSION + 1, stored],
-      ["a cursor ahead of the log", FOLD_VERSION, stored.replace(/"seq":\d+/, '"seq":999')],
+      ["garbage", FOLD_VERSION, "{not json", 3],
+      ["wrong shape", FOLD_VERSION, JSON.stringify({ version: FOLD_VERSION, seq: 3, projects: [["orchard", 7]] }), 3],
+      ["foreign version", FOLD_VERSION + 1, stored, 12],
+      ["a cursor ahead of the log", FOLD_VERSION, stored.replace(/"seq":\d+/, '"seq":999'), 999],
+      // Passes restore's shape checks, then breaks the fold itself when it reads the state.
+      ["values the fold cannot read", FOLD_VERSION, stored.replaceAll('"models":["oak"]', '"models":5'), 12],
     ] as const;
-    for (const [name, version, state] of cases) {
-      plant(version, state);
+    for (const [name, version, state, seq] of cases) {
+      plant(version, state, seq);
       const store = new EventStore(path);
       try {
-        assert.equal(store.pending(["orchard"]), 12, `${name}: the whole log is pending`);
+        if (seq !== 12) assert.equal(store.pending(["orchard"]), 12, `${name}: the whole log is pending`);
         const warmup = store.warm("orchard");
         assert.match(warmup.ignored ?? "", /./, `${name}: the ignored reason is reported`);
         assert.equal(warmup.from, 0, name);
@@ -465,5 +468,37 @@ test("two connections each resume the fold from rows the other committed", () =>
     first.close();
     second.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a latest-wins checkpoint without a readable usage never hides the earlier reading", () => {
+  const store = new EventStore(":memory:");
+  const at = "2030-01-01T10:00:00Z";
+  const reading = (requests: number) =>
+    checkpoint("armada.linear-reader", {
+      format: "armada.linear-reader",
+      version: 1,
+      usage: { hour: at, requests, pausedUntil: null },
+    });
+  try {
+    const stored = store.appendMany([
+      reading(900),
+      reading(850),
+      // A cursor-only checkpoint, as the tracker writes without a budget.
+      checkpoint("armada.linear-reader", { format: "armada.linear-reader", version: 1, cursor: "abc" }),
+      checkpoint("armada.linear-reader", { format: "armada.linear-reader", version: 2, usage: { hour: at } }),
+    ]);
+    const read = store.readForFold(0, "orchard");
+    assert.deepEqual(
+      read.events.map((e) => e.kind === "coordinator.checkpoint" && e.payload.checkpoint === null),
+      [true, false, false, false],
+      "only the superseded readable row is stubbed",
+    );
+    assert.equal(read.parsed, 3);
+    assert.deepEqual(json(store.fold("orchard")), json(fold(store.readSince(0, "orchard"))));
+    assert.equal(store.fold("orchard").projects.orchard?.readers?.linear?.requests, 850);
+    assert.equal(store.fold("orchard").seq, stored[3]!.seq);
+  } finally {
+    store.close();
   }
 });

@@ -23,6 +23,14 @@ interface ProjectFold {
   tables?: { seq: number; tables: FleetTables };
   /** The cursor of the snapshot row on disk, -1 without one. */
   written: number;
+  /** Rows replayed since the snapshot on disk. */
+  sinceWritten: number;
+  /** Whether the accumulator came from a stored snapshot the fold has not yet confirmed. */
+  restored: boolean;
+  /** Set when a restored snapshot was discarded mid-replay: the replay started over from 0. */
+  replayedFrom?: number;
+  /** The row on disk was rejected: the next write replaces it whatever its cursor says. */
+  rejected?: boolean;
   ignored?: string;
 }
 
@@ -158,7 +166,9 @@ export class EventStore {
    * `coordinator.checkpoint` without a turn whose format the fold never reads,
    * or that a later row of the same actor and format supersedes, comes back with
    * a `{ checkpoint: null }` stub instead of its parsed payload. Exact for the
-   * fold only, which reads those formats latest-wins; `readSince` is unchanged.
+   * fold only, which reads those formats latest-wins: a row counts as superseding
+   * only when it carries what the fold reads (version 1 and a usage object), so
+   * a cursor-only checkpoint never hides an earlier reading. `readSince` is unchanged.
    */
   readForFold(sequence: number, project: string): { events: FleetEvent[]; parsed: number } {
     if (!Number.isSafeInteger(sequence) || sequence < 0)
@@ -169,14 +179,17 @@ export class EventStore {
       WITH scope AS MATERIALIZED (
         SELECT seq, actor,
           CASE WHEN kind = 'coordinator.checkpoint' AND json_type(payload, '$.turn') IS NULL
-            THEN json_extract(payload, '$.checkpoint.format') END AS format
+            THEN json_extract(payload, '$.checkpoint.format') END AS format,
+          json_extract(payload, '$.checkpoint.version') = 1
+            AND json_type(payload, '$.checkpoint.usage') = 'object' AS readable
         FROM events WHERE seq > ? AND project = ?),
       latest AS MATERIALIZED (
-        SELECT MAX(seq) AS seq FROM scope WHERE format IN (${list(CHECKPOINT_RETENTION.latest)})
+        SELECT MAX(seq) AS seq FROM scope WHERE format IN (${list(CHECKPOINT_RETENTION.latest)}) AND readable
         GROUP BY actor, format)
       SELECT e.seq, e.project, e.kind, e.at, e.actor,
         CASE WHEN s.format IN (${list(CHECKPOINT_RETENTION.skipped)})
-          OR (s.format IN (${list(CHECKPOINT_RETENTION.latest)}) AND s.seq NOT IN (SELECT seq FROM latest))
+          OR (s.format IN (${list(CHECKPOINT_RETENTION.latest)}) AND s.readable
+            AND s.seq NOT IN (SELECT seq FROM latest))
           THEN NULL ELSE e.payload END AS payload
       FROM scope s JOIN events e ON e.seq = s.seq ORDER BY e.seq
     `)
@@ -204,15 +217,10 @@ export class EventStore {
     const seq = this.sequence;
     const entry = this.#entry(project);
     if (entry.tables?.seq !== seq) {
-      const { events } = this.#advance(entry, project);
-      entry.tables = {
-        seq,
-        tables: events.length || !entry.tables ? entry.accumulator.snapshot() : entry.tables.tables,
-      };
-      if (!this.#appending && entry.accumulator.seq - Math.max(entry.written, 0) >= SNAPSHOT_EVERY)
-        this.#writeSnapshot(project, entry);
+      this.#advance(entry, project, seq);
+      if (!this.#appending && entry.sinceWritten >= SNAPSHOT_EVERY) this.#writeSnapshot(project, entry);
     }
-    const tables = structuredClone(entry.tables.tables);
+    const tables = structuredClone(entry.tables!.tables);
     // structuredClone drops null prototypes. Keep dictionary lookups identical to
     // the pure fold, including a missing project/provider named "constructor".
     Object.setPrototypeOf(tables.projects, null);
@@ -235,20 +243,28 @@ export class EventStore {
   /** Replay a project's rows after its snapshot now, and store the result when anything was replayed. */
   warm(project: string): FoldWarmup {
     const before = performance.now();
+    const seq = this.sequence;
     const entry = this.#entry(project);
     const from = entry.accumulator.seq;
-    const { events, parsed } = this.#advance(entry, project);
-    entry.tables = { seq: this.sequence, tables: entry.accumulator.snapshot() };
-    if (events.length) this.#writeSnapshot(project, entry);
+    const read = this.#advance(entry, project, seq);
+    if (read.events.length) this.#writeSnapshot(project, entry);
     const ignored = entry.ignored;
     delete entry.ignored;
-    return { from, replayed: events.length, parsed, ms: performance.now() - before, ...(ignored ? { ignored } : {}) };
+    const replayedFrom = entry.replayedFrom;
+    delete entry.replayedFrom;
+    return {
+      from: replayedFrom ?? from,
+      replayed: read.events.length,
+      parsed: read.parsed,
+      ms: performance.now() - before,
+      ...(ignored ? { ignored } : {}),
+    };
   }
 
   #entry(project: string): ProjectFold {
     let entry = this.#folds.get(project);
     if (entry) return entry;
-    entry = { accumulator: new FoldAccumulator(), written: -1 };
+    entry = { accumulator: new FoldAccumulator(), written: -1, sinceWritten: 0, restored: false };
     const row = this.#db
       .prepare("SELECT fold_version, seq, state FROM fold_snapshots WHERE project = ?")
       .get(project) as { fold_version: unknown; seq: unknown; state: unknown } | undefined;
@@ -261,18 +277,42 @@ export class EventStore {
         if (accumulator.seq > this.sequence) throw new Error("cursor is ahead of the log");
         entry.accumulator = accumulator;
         entry.written = accumulator.seq;
+        entry.restored = true;
       } catch (error) {
         // The log is the truth: a snapshot that cannot be read is rebuilt from it.
         entry.ignored = error instanceof Error ? error.message : String(error);
+        entry.rejected = true;
       }
     }
     this.#folds.set(project, entry);
     return entry;
   }
 
-  #advance(entry: ProjectFold, project: string) {
+  /** Replay the rows after the accumulator's cursor and rebuild the tables at `seq`.
+   * A restored snapshot whose values break the fold is discarded here and the
+   * project folds from the log instead: the snapshot can never fail a reading.
+   */
+  #advance(entry: ProjectFold, project: string, seq: number): { events: FleetEvent[]; parsed: number } {
     const read = this.readForFold(entry.accumulator.seq, project);
-    for (const event of read.events) entry.accumulator.append(event, true);
+    try {
+      for (const event of read.events) entry.accumulator.append(event, true);
+      if (read.events.length || !entry.tables) entry.tables = { seq, tables: entry.accumulator.snapshot() };
+      else entry.tables.seq = seq;
+    } catch (error) {
+      if (!entry.restored) throw error;
+      entry.ignored = `fold failed on its state: ${error instanceof Error ? error.message : String(error)}`;
+      entry.replayedFrom = 0;
+      entry.rejected = true;
+      entry.accumulator = new FoldAccumulator();
+      entry.written = -1;
+      entry.restored = false;
+      entry.tables = undefined;
+      const rebuilt = this.#advance(entry, project, seq);
+      entry.sinceWritten = 0;
+      return rebuilt;
+    }
+    entry.restored = false;
+    entry.sinceWritten += read.events.length;
     return read;
   }
 
@@ -280,10 +320,16 @@ export class EventStore {
     const seq = entry.accumulator.seq;
     if (seq <= entry.written) return;
     try {
+      // Another connection may have stored a newer reading: never move a row this
+      // connection could read back. A rejected row is replaced whatever it says.
+      const guard = entry.rejected ? "" : " WHERE excluded.seq > fold_snapshots.seq";
       this.#db
-        .prepare("INSERT OR REPLACE INTO fold_snapshots (project, fold_version, seq, state) VALUES (?, ?, ?, ?)")
+        .prepare(`INSERT INTO fold_snapshots (project, fold_version, seq, state) VALUES (?, ?, ?, ?)
+          ON CONFLICT(project) DO UPDATE SET fold_version = excluded.fold_version, seq = excluded.seq, state = excluded.state${guard}`)
         .run(project, FOLD_VERSION, seq, entry.accumulator.serialize());
       entry.written = seq;
+      entry.sinceWritten = 0;
+      entry.rejected = false;
     } catch {
       // A snapshot is a convenience: the next fold retries, and the log stays complete.
     }

@@ -824,11 +824,30 @@ test("the usage ledger buckets its entries in the zone given at read time", () =
   });
   const events = [event("2030-01-01T23:30:00Z", "1"), event("2030-01-02T00:30:00Z", "2")];
   for (const e of events) ledger.apply(e);
-  assert.deepEqual(ledger.usage("UTC"), projectUsage(events, "UTC"));
-  assert.deepEqual(ledger.usage("Europe/Paris"), projectUsage(events, "Europe/Paris"));
-  assert.equal(ledger.usage("UTC").days.length, 2);
-  assert.equal(ledger.usage("Europe/Paris").days.length, 1, "both turns fall on the same Paris day");
-  assert.equal(ledger.usage("Europe/Paris").days[0]?.coordinator.input, 200);
+  assert.deepEqual(
+    ledger.usage("UTC").days.map((d) => [d.day, d.coordinator.input]),
+    [
+      ["2030-01-01", 100],
+      ["2030-01-02", 100],
+    ],
+  );
+  assert.deepEqual(
+    ledger.usage("Europe/Paris").days.map((d) => [d.day, d.coordinator.input, d.coordinator.reported]),
+    [["2030-01-02", 200, 2]],
+    "both turns fall on the same Paris day",
+  );
+  assert.deepEqual(ledger.usage("Europe/Paris").sessions, [
+    {
+      session: "root",
+      kind: "coordinator",
+      totals: { input: 200, output: 40, cacheRead: 60, cacheWrite: 20, reported: 2, unknown: 0, models: ["oak"] },
+    },
+  ]);
   const restored = UsageLedger.restore(JSON.parse(JSON.stringify(ledger.serialize())));
   assert.deepEqual(restored.usage("Europe/Paris"), ledger.usage("Europe/Paris"));
+  assert.deepEqual(projectUsage(events, "Europe/Paris"), ledger.usage("Europe/Paris"), "the wrapper is the ledger");
+  // A long-lived project's ledger restores whole, well past the argument-list limit of a spread.
+  for (let i = 3; i <= 200_000; i++) ledger.apply(event("2030-01-03T00:00:00Z", String(i)));
+  const large = UsageLedger.restore(JSON.parse(JSON.stringify(ledger.serialize())));
+  assert.equal(large.usage("UTC").days[2]?.coordinator.reported, 199_998);
 });

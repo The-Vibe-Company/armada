@@ -307,7 +307,7 @@ export class UsageLedger {
         throw new Error("usage ledger session is malformed");
       ledger.#sessions.set(key, row as SessionRow);
     }
-    ledger.#entries.push(...(state.entries as LedgerEntry[]));
+    for (const entry of state.entries as LedgerEntry[]) ledger.#entries.push(entry);
     return ledger;
   }
 }
