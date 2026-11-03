@@ -223,7 +223,7 @@ function readChat(
   wakes: boolean,
 ): ChatItem[] {
   const items: ChatItem[] = [];
-  for (const event of store.readSince(0, project))
+  for (const event of store.readKind(project, "coordinator.message"))
     if (event.kind === "coordinator.message")
       items.push({
         kind: event.payload.role === "owner" ? "owner" : "line",
