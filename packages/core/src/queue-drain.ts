@@ -1,5 +1,5 @@
 // The coordinator owns execution; Armada stores only intent and lease-fenced progress.
-import { ArmadaApiError } from "./armada-api.ts";
+import { ArmadaApiError, type ArmadaRecoveryOperation, withArmadaFleetRequest } from "./armada-api.ts";
 import type { Fleet } from "./live.ts";
 import {
   MERGE_WAIT_DEFAULT_MS,
@@ -13,6 +13,7 @@ import { Refusal } from "./refusal.ts";
 
 const TTL_MS = 10 * 60_000;
 const POLL_MS = 30_000;
+const MARGIN_MS = 30_000;
 const BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000];
 const PROGRESS_MAX = 300;
 class TakenOver extends Refusal {
@@ -22,7 +23,9 @@ class TakenOver extends Refusal {
 }
 const temporary = (err: unknown): boolean =>
   err instanceof ArmadaApiError
-    ? !err.signedOut && !err.upgrade && (err.status === null || err.status === 429 || err.status >= 500)
+    ? !err.signedOut &&
+      !err.upgrade &&
+      (err.transient || err.status === 429 || (err.status !== null && err.status >= 500))
     : err instanceof MergeStateError
       ? err.transient || !err.pull // Recovery starts with a state read, never a blind merge.
       : err instanceof Error && "transient" in err && err.transient === true;
@@ -38,8 +41,13 @@ export async function drainMergeQueue(
     afterMerge: (outcome: MergeOutcome, entry: QueueEntry, tick: () => Promise<void>) => Promise<void>;
     onRefused?: (entry: QueueEntry, error: unknown) => void;
     onFinished?: (entry: QueueEntry) => void;
+    /** Duration clock: wall-clock corrections must never extend confirmed ownership. */
+    monotonic?: () => number;
+    signal?: AbortSignal;
   },
 ): Promise<void> {
+  const duration = opts.monotonic ?? (() => performance.now());
+  const acquiredAt = duration();
   const lease = { name: MERGE_QUEUE_LEASE, holder: ctx.holder, ttlMs: TTL_MS };
   const got = await fleet.acquireLease(lease);
   if (!got.acquired)
@@ -48,11 +56,83 @@ export async function drainMergeQueue(
       "armada merge --drain once that coordinator finishes",
     );
   let pulseError: unknown = null;
+  let confirmedUntil = acquiredAt + TTL_MS;
+  let renewing: Promise<void> | null = null;
+  const controller = new AbortController();
+  const signal = opts.signal ? AbortSignal.any([controller.signal, opts.signal]) : controller.signal;
   let pulse = Promise.resolve();
   let stopPulse: (() => void) | undefined;
-  const tick = async () => {
+  const request = <T>(operation: ArmadaRecoveryOperation, act: () => Promise<T>, fence = false): Promise<T> => {
+    const began = duration();
+    const until = confirmedUntil;
+    let notified = false;
+    return withArmadaFleetRequest(
+      {
+        operation,
+        signal,
+        retry: true,
+        remainingMs: () => Math.min(until, confirmedUntil) - duration() - MARGIN_MS,
+        beforeAttempt: fence ? tick : undefined,
+        sleep: ctx.sleep,
+        onRetry: (message) => {
+          if (notified) return;
+          notified = true;
+          ctx.progress?.(
+            `Armada unreachable, ${operation === "lease/renew" ? "renewing the lease" : operation} again: ${message}; elapsed ${Math.ceil((duration() - began) / 1000)} s; remaining ${Math.max(0, Math.floor((until - duration() - MARGIN_MS) / 1000))} s`,
+          );
+        },
+      },
+      async () => {
+        const answer = await act();
+        if (operation === "holds" && !Array.isArray(answer))
+          throw new Refusal(
+            "Armada returned an invalid hold answer; nothing was merged",
+            "armada merge --drain once Armada answers",
+          );
+        return answer;
+      },
+    ).catch((error) => {
+      // Some merge reads deliberately convert failures to warnings. Keep the failed
+      // authority check latched here so those callers cannot continue the drain.
+      if (!(operation === "queue/progress" && error instanceof ArmadaApiError && error.status === 404))
+        pulseError ??= error;
+      throw error;
+    });
+  };
+  const tick = async (): Promise<void> => {
+    signal.throwIfAborted();
     if (pulseError) throw pulseError;
-    if (!(await fleet.renewLease(lease))) throw new TakenOver();
+    if (duration() >= confirmedUntil - MARGIN_MS) {
+      pulseError = new Refusal(
+        "the queue lease expired; nothing was merged",
+        "armada merge --drain once Armada answers",
+      );
+      throw pulseError;
+    }
+    if (!renewing) {
+      const started = duration();
+      renewing = request("lease/renew", () => fleet.renewLease(lease))
+        .then((held) => {
+          if (held === false) throw new TakenOver();
+          if (held !== true)
+            throw new Refusal(
+              "Armada returned an invalid lease renewal; nothing was merged",
+              "armada merge --drain once Armada answers",
+            );
+          // Only a confirmed answer extends the horizon, conservatively from request start.
+          confirmedUntil = started + TTL_MS;
+        })
+        .catch((error) => {
+          pulseError = error;
+          throw error;
+        })
+        .finally(() => {
+          renewing = null;
+        });
+    }
+    await renewing;
+    signal.throwIfAborted();
+    if (pulseError) throw pulseError;
   };
   const sleep = async (ms: number) => {
     for (let remaining = ms; remaining > 0; remaining -= POLL_MS) {
@@ -70,8 +150,14 @@ export async function drainMergeQueue(
         if (typeof value !== "function") return value;
         if (mutations && !mutations.includes(key as keyof T)) return value.bind(target);
         return async (...args: unknown[]) => {
+          // A pending progress write can discover auth/fence loss. Settle it before
+          // allowing the next adapter effect, including the native GitHub merge.
+          await recorded;
           await tick();
-          const result = await Reflect.apply(value, target, args);
+          const result =
+            key === "holds"
+              ? await request("holds", () => Reflect.apply(value, target, args), true)
+              : await Reflect.apply(value, target, args);
           if (!mutations) await tick();
           return result;
         };
@@ -88,10 +174,20 @@ export async function drainMergeQueue(
     if (!entry || !detail || detail === shown) return;
     shown = detail;
     recorded = recorded
-      .then(() => fleet.queueProgress({ id: entry.id, holder: ctx.holder, detail }))
+      .then(async () => {
+        const held = await request(
+          "queue/progress",
+          () => fleet.queueProgress({ id: entry.id, holder: ctx.holder, detail }),
+          true,
+        );
+        if (held !== true) throw new TakenOver();
+      })
       .then(
         () => {},
-        () => {},
+        (error) => {
+          // Optional on older servers, but a lost fence/auth or exhausted recovery is terminal.
+          if (!(error instanceof ArmadaApiError && error.status === 404)) pulseError = error;
+        },
       );
   };
   const run: MergeContext = {
@@ -129,11 +225,12 @@ export async function drainMergeQueue(
     });
     for (;;) {
       await tick();
-      const next = await fleet.queueNext({ holder: ctx.holder });
+      const next = await request("queue/next", () => fleet.queueNext({ holder: ctx.holder }), true);
       if ("refused" in next) throw new TakenOver();
+      await tick();
       const entry = next.entry;
       if (!entry) {
-        const pending = (await fleet.queueList()).find(queueOpen);
+        const pending = (await request("queue/list", () => fleet.queueList(), true)).find(queueOpen);
         if (!pending) {
           ctx.progress?.("queue empty");
           return;
@@ -195,6 +292,7 @@ export async function drainMergeQueue(
   } finally {
     stopPulse?.();
     current = null;
+    controller.abort();
     await Promise.all([pulse, recorded]);
     await fleet.releaseLease(lease).catch(() => {});
   }

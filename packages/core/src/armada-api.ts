@@ -6,6 +6,7 @@
 // project's secrets for workers (THE-859). It is the
 // one address the CLI knows (`resolveCredentials` picks it). The adapter takes
 // an injected `fetch`; no error it raises quotes a token or a key.
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Attachment } from "./attachments.ts";
 import { HttpRequestError, type HttpRequestOptions, HttpStatusError, httpRequest, retryStatus } from "./http.ts";
 import type { Fetch } from "./linear.ts";
@@ -227,9 +228,22 @@ export class ArmadaApiError extends Error {
     /** The HTTP status of a refusal; null when Armada did not answer. */
     readonly status: number | null = null,
     readonly upgrade: string | null = null,
+    readonly transient = false,
   ) {
     super(message);
   }
+}
+
+export type ArmadaRecoveryOperation = "lease/renew" | "queue/next" | "queue/progress" | "queue/list" | "holds";
+type FleetRequest = Pick<HttpRequestOptions, "remainingMs" | "beforeAttempt" | "sleep" | "onRetry" | "random"> & {
+  operation: ArmadaRecoveryOperation;
+  signal?: AbortSignal;
+  retry: boolean;
+};
+const fleetRequests = new AsyncLocalStorage<FleetRequest>();
+/** Drain-local transport controls survive asynchronous fleet routing without changing the wire contract. */
+export function withArmadaFleetRequest<T>(request: FleetRequest, act: () => Promise<T>): Promise<T> {
+  return fleetRequests.run(request, act);
 }
 
 export const LOGIN_NEXT = "armada login";
@@ -279,9 +293,9 @@ export function armadaApi(opts: ArmadaApiOptions) {
   async function call(
     method: string,
     path: string,
-    init: { body?: object; signIn?: ArmadaSignIn; timeoutMs?: number; retry?: boolean } = {},
+    init: { body?: object; signIn?: ArmadaSignIn; timeoutMs?: number; retry?: boolean; request?: FleetRequest } = {},
   ): Promise<{ status: number; body: Record<string, unknown> }> {
-    const limit = init.timeoutMs ?? timeoutMs;
+    const limit = Math.min(init.timeoutMs ?? timeoutMs, init.request ? 15_000 : Number.POSITIVE_INFINITY);
     const headers: Record<string, string> = { Accept: "application/json" };
     if (init.body) headers["Content-Type"] = "application/json";
     if (init.signIn?.kind === "session" || init.signIn?.kind === "worker")
@@ -293,10 +307,12 @@ export function armadaApi(opts: ArmadaApiOptions) {
       {
         method,
         headers,
+        signal: init.request?.signal,
         ...(init.body ? { body: JSON.stringify(init.body) } : {}),
       },
       {
         ...opts,
+        ...init.request,
         timeoutMs: limit,
         retry: init.retry ?? method === "GET",
         retryStatus: (status) => retryStatus(status) && (path !== "credentials" || status !== 429),
@@ -338,8 +354,12 @@ export function armadaApi(opts: ArmadaApiOptions) {
         );
       if (err instanceof HttpRequestError)
         throw new ArmadaApiError(
-          `Armada (${host}) unreachable: ${err.message} (${method} ${path})`,
+          `Armada (${host}) unreachable: ${init.request ? err.code : err.message} (${method} ${path})`,
           "the same command again once it answers, or check ARMADA_API_URL",
+          false,
+          null,
+          null,
+          err.transient,
         );
       throw err;
     });
@@ -467,32 +487,46 @@ export function armadaApi(opts: ArmadaApiOptions) {
      * naming the refusal.
      */
     async fleet(signIn: ArmadaSignIn, op: string, body: object, timeoutMs?: number): Promise<unknown> {
+      const context = fleetRequests.getStore();
+      const request = context?.operation === op ? context : undefined;
       const { status, body: answer } = await call("POST", `fleet/${op}`, {
         signIn,
         body,
         ...(timeoutMs ? { timeoutMs } : {}),
-        retry: [
-          "job/list",
-          "events/latest",
-          "events/state",
-          "events/since",
-          "heartbeats/latest",
-          "runtime/handles",
-          "runtime/handle",
-          "launches",
-          "inbox/item",
-          "inbox/ticket",
-          "validations",
-          "reservations",
-          "deliveries/pending",
-          "deliveries/due",
-          // These writes are idempotent on the project and message key.
-          "deliveries/keep",
-          "deliveries/settle",
-        ].includes(op),
+        request,
+        retry:
+          request?.retry ??
+          [
+            "job/list",
+            "events/latest",
+            "events/state",
+            "events/since",
+            "heartbeats/latest",
+            "runtime/handles",
+            "runtime/handle",
+            "launches",
+            "inbox/item",
+            "inbox/ticket",
+            "validations",
+            "reservations",
+            "deliveries/pending",
+            "deliveries/due",
+            // These writes are idempotent on the project and message key.
+            "deliveries/keep",
+            "deliveries/settle",
+          ].includes(op),
       });
       if (status === 304) return null;
-      if (status !== 200) throw refusal(status, answer, status === 401 ? null : "Armada refused");
+      if (status !== 200) {
+        if (request)
+          throw new ArmadaApiError(
+            `Armada refused fleet/${op} (HTTP ${status})`,
+            status === 401 ? LOGIN_NEXT : null,
+            status === 401,
+            status,
+          );
+        throw refusal(status, answer, status === 401 ? null : "Armada refused");
+      }
       if (!("result" in answer))
         throw new ArmadaApiError(`Armada (${host}) answered fleet/${op} in a shape this CLI does not know`);
       return answer.result;
