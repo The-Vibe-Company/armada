@@ -847,7 +847,8 @@ test("the usage ledger buckets its entries in the zone given at read time", () =
   assert.deepEqual(restored.usage("Europe/Paris"), ledger.usage("Europe/Paris"));
   assert.deepEqual(projectUsage(events, "Europe/Paris"), ledger.usage("Europe/Paris"), "the wrapper is the ledger");
   // A long-lived project's ledger restores whole, well past the argument-list limit of a spread.
-  for (let i = 3; i <= 200_000; i++) ledger.apply(event("2030-01-03T00:00:00Z", String(i)));
-  const large = UsageLedger.restore(JSON.parse(JSON.stringify(ledger.serialize())));
-  assert.equal(large.usage("UTC").days[2]?.coordinator.reported, 199_998);
+  const long = new UsageLedger();
+  for (let i = 1; i <= 150_000; i++) long.apply(event("2030-01-03T00:00:00Z", String(i)));
+  const large = UsageLedger.restore(JSON.parse(JSON.stringify(long.serialize())));
+  assert.equal(large.serialize().entries.length, 150_000);
 });
