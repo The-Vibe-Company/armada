@@ -1965,9 +1965,12 @@ export class Workers {
   #usage(ref: WorkerRef, observation: WorkerObservation) {
     const parsed = reportedUsageSchema.safeParse(observation.usage ?? "unknown");
     const usage = parsed.success ? parsed.data : "unknown";
-    const prior = this.#options.store
-      .readSince(0, ref.project)
-      .findLast((e) => e.kind === "session.usage" && e.payload.session === ref.session);
+    // One row by session, never a replay: this runs on every observation of every
+    // worker and used to parse the whole log each time (THE-2238).
+    const prior = this.#options.store.latestKind(ref.project, "session.usage", {
+      path: "$.session",
+      equals: ref.session,
+    });
     const zone = this.#tables(ref.project)?.rules?.value.policy?.budget?.zone ?? "UTC";
     if (
       prior?.kind === "session.usage" &&
