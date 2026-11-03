@@ -31,8 +31,62 @@ for a packaged build; `test/icon.test.ts` holds the three together.
 
 `bun run desktop` builds the existing app, bundles the main process and daemon,
 then launches Electron. Run it again after source edits. `bun run build:desktop`
-builds without opening a window. This is a source checkout launcher, not an
-installer or auto-updater.
+builds without opening a window.
+
+## Building the macOS app (THE-2229)
+
+On an Apple Silicon Mac, from the repository root:
+
+```sh
+bun run build:desktop:dmg
+```
+
+(the same as `bun run --cwd packages/desktop dist`: the build above, then
+`electron-builder --mac --publish never`). It writes, under
+`packages/desktop/release/` (gitignored):
+
+- `Armada-<version>-arm64.dmg`, the installer: open it and drag Armada to
+  Applications;
+- `Armada-<version>-arm64-mac.zip`, the same app zipped (the update feed's
+  format, THE-2231), with `latest-mac.yml`;
+- `mac-arm64/Armada.app`, the bundle itself, runnable in place.
+
+The version is the package's (`packages/desktop/package.json`, bumped by
+release-please with the CLI's on each release, THE-2230); the About panel
+shows it. The rules are `src/packaging.ts`,
+read by electron-builder through `electron-builder.ts`: app id
+`co.thevibecompany.armada`, dmg and zip for arm64, `resources/icon.icns`, the
+main output in an asar with `out/main` (the daemon entry and the chunks it
+imports) and the `@napi-rs/keyring` binding unpacked beside it, and the built
+room (`packages/app/dist`) and `resources/icon.png` as extra resources under
+`Contents/Resources`. The main process resolves those three paths through
+`src/paths.ts`: under `process.resourcesPath` when `app.isPackaged`, under the
+checkout otherwise (`test/packaging.test.ts` holds both). The daemon's data stays
+under `app.getPath("userData")` either way, so an installed app opens the same
+fleet as `bun run desktop`. A packaged build publishes nothing: the release
+workflow (`.github/workflows/release.yml`, `desktop` job) builds it on an Apple
+Silicon runner at each release tag and attaches the dmg, the zip,
+`latest-mac.yml` and the blockmaps to the GitHub release, signed and notarised
+when the repository holds the Apple secrets the runbook names ("Ship the
+desktop app with the release train"), unsigned otherwise.
+
+The DMG is **unsigned** unless a certificate is named: setting `CSC_LINK`,
+`CSC_NAME`, `APPLE_ID` or `APPLE_TEAM_ID` turns electron-builder's signing on
+(hardened runtime, `resources/entitlements.mac.plist`: a network client, no
+sandbox); without them `identity` is `null` and no certificate is looked for.
+Notarisation is on only when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and
+`APPLE_TEAM_ID` are all set (`notarize` in `src/packaging.ts`).
+macOS quarantines an unsigned app downloaded from the web. To open one, remove
+the quarantine once after copying it to Applications:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Armada.app
+```
+
+Only do this for a build you made or trust. A DMG built locally and opened in
+place is not quarantined. An app started from the Finder has the login shell's
+minimal `PATH`: a local worker runtime found through `PATH` in a terminal may
+not be found from the installed app (a follow-up, not covered here).
 
 The shell spawns its own Electron executable in Node mode to run the bundled
 armadad entry (including the daemon's dependencies), so it needs no separate

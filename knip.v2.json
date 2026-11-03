@@ -30,8 +30,8 @@
       "project": ["src/**/*.{ts,tsx,css}", "scripts/**/*.ts", "test/**/*.{ts,tsx}"]
     },
     "packages/desktop": {
-      "entry": ["test/**/*.test.ts"],
-      "project": ["src/**/*.ts", "test/**/*.ts"]
+      "entry": ["test/**/*.test.ts", "electron-builder.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts", "electron-builder.ts"]
     },
     "packages/plugin-api": {
       "project": ["src/**/*.ts"]
