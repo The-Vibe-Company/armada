@@ -4,7 +4,14 @@ import { dirname, join, relative } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import config from "../electron-builder.ts";
-import { APP_ID, ENTITLEMENTS, PRODUCT_NAME, packagingConfig, SIGNING_VARIABLES } from "../src/packaging.ts";
+import {
+  APP_ID,
+  ENTITLEMENTS,
+  NOTARIZATION_VARIABLES,
+  PRODUCT_NAME,
+  packagingConfig,
+  SIGNING_VARIABLES,
+} from "../src/packaging.ts";
 import { shellPaths } from "../src/paths.ts";
 
 const desktop = fileURLToPath(new URL("..", import.meta.url));
@@ -73,6 +80,14 @@ test("electron-builder packages Armada for macOS arm64 as a dmg and a zip, unsig
     assert.equal("identity" in (signed.mac ?? {}), false, `${name} turns signing on`);
   }
   assert.equal(packagingConfig({ CSC_LINK: "  " }).mac?.identity, null, "a blank variable does not");
+
+  // Notarisation needs the Apple account, the app-specific password and the team: all three or none.
+  assert.equal(unsigned.mac?.notarize, false, "no Apple account: electron-builder must not try notarytool");
+  const apple = Object.fromEntries(NOTARIZATION_VARIABLES.map((name) => [name, "set"]));
+  assert.equal(packagingConfig(apple).mac?.notarize, true);
+  for (const name of NOTARIZATION_VARIABLES) {
+    assert.equal(packagingConfig({ ...apple, [name]: " " }).mac?.notarize, false, `${name} missing turns it off`);
+  }
 
   // The file electron-builder reads hands the rules the process environment.
   assert.deepEqual(config, packagingConfig(process.env));

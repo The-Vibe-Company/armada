@@ -15,6 +15,16 @@ export const SIGNING_VARIABLES = ["CSC_LINK", "CSC_NAME", "APPLE_ID", "APPLE_TEA
 export const signingRequested = (env: Record<string, string | undefined>): boolean =>
   SIGNING_VARIABLES.some((name) => (env[name] ?? "").trim() !== "");
 
+/**
+ * All three set turns notarisation on: electron-builder hands them to notarytool after signing.
+ * Said explicitly because electron-builder 26 otherwise notarises whenever they exist and warns
+ * on every build without them (the release workflow sets them only with a certificate, THE-2230).
+ */
+export const NOTARIZATION_VARIABLES = ["APPLE_ID", "APPLE_APP_SPECIFIC_PASSWORD", "APPLE_TEAM_ID"] as const;
+
+export const notarizationRequested = (env: Record<string, string | undefined>): boolean =>
+  NOTARIZATION_VARIABLES.every((name) => (env[name] ?? "").trim() !== "");
+
 /** electron-builder's configuration (electron-builder.ts hands it `process.env`). */
 export function packagingConfig(env: Record<string, string | undefined>): Configuration {
   return {
@@ -44,8 +54,10 @@ export function packagingConfig(env: Record<string, string | undefined>): Config
       entitlements: ENTITLEMENTS,
       entitlementsInherit: ENTITLEMENTS,
       ...(signingRequested(env) ? {} : { identity: null }),
+      notarize: notarizationRequested(env),
     },
-    // The update feed of THE-2230 and THE-2231; `dist` builds with `--publish never`.
+    // The update feed (THE-2231); `dist` builds with `--publish never`, and the release workflow
+    // attaches the dmg, the zip, latest-mac.yml and the blockmaps to the release itself (THE-2230).
     publish: { provider: "github", owner: "The-Vibe-Company", repo: "armada" },
   };
 }
