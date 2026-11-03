@@ -55,7 +55,14 @@ export function headlessDaemonEnv(env: Env, dataDir: string): Env {
   };
 }
 
-/** Linux without a display server: Chromium's headless Ozone platform lets Electron start without X or Wayland. */
+/**
+ * Chromium's headless Ozone platform lets Electron start on Linux without X or Wayland. It is
+ * chosen before the main script runs, so the launcher passes it on Electron's command line
+ * (the shell cannot add it itself); `noDisplay` says when a launcher needs to.
+ */
+export const OZONE_HEADLESS_SWITCH = "--ozone-platform=headless";
+
+/** Linux without a display server: the launcher adds OZONE_HEADLESS_SWITCH. */
 export function noDisplay(platform: NodeJS.Platform, env: Env): boolean {
   return platform === "linux" && !env.DISPLAY?.trim() && !env.WAYLAND_DISPLAY?.trim();
 }

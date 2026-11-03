@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { PROTOCOL_VERSION, serverMessageSchema } from "@armada/protocol";
 import { EventStore } from "../../daemon/src/store.ts";
 import { DaemonProcess } from "../src/daemon.ts";
-import { type HeadlessReadiness, parseReadiness } from "../src/headless.ts";
+import { type HeadlessReadiness, noDisplay, OZONE_HEADLESS_SWITCH, parseReadiness } from "../src/headless.ts";
 
 const buildBundle = () => {
   execFileSync("bun", ["run", "build"], {
@@ -122,11 +122,15 @@ const shellEnvironment = (home: string): NodeJS.ProcessEnv => {
   delete env.ARMADA_APP_CONFIG;
   return env;
 };
-// A GitHub runner has no configured setuid sandbox helper for Electron's zygote (it aborts before
-// the main script runs); the headless shell creates no renderer, so the test runs it unsandboxed on Linux.
-const SANDBOX = process.platform === "linux" ? ["--no-sandbox"] : [];
+// Linux switches a launcher passes before Electron runs the main script: a GitHub runner has no
+// configured setuid sandbox helper for Electron's zygote (the headless shell creates no renderer, so
+// it runs unsandboxed there), and without a display Chromium needs its headless Ozone platform.
+const LINUX_SWITCHES =
+  process.platform === "linux"
+    ? ["--no-sandbox", ...(noDisplay(process.platform, process.env) ? [OZONE_HEADLESS_SWITCH] : [])]
+    : [];
 const bootShell = (env: NodeJS.ProcessEnv) => {
-  const child = spawn(electron, [...SANDBOX, desktopPackage], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(electron, [...LINUX_SWITCHES, desktopPackage], { env, stdio: ["ignore", "pipe", "pipe"] });
   let stderr = "";
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk: string) => {

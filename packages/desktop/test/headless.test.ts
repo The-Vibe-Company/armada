@@ -8,6 +8,7 @@ import {
   headlessDaemonEnv,
   headlessRequested,
   noDisplay,
+  OZONE_HEADLESS_SWITCH,
   PROJECTS_VARIABLE,
   parseReadiness,
   readinessLine,
@@ -61,7 +62,8 @@ test("a headless shell's daemon gets its own configuration, app config and file 
   assert.equal(headlessDaemonEnv({ XDG_CONFIG_HOME: "" }, dataDir).XDG_CONFIG_HOME, join(dataDir, "config"));
 });
 
-test("only Linux without a display server takes Chromium's headless platform", () => {
+test("only Linux without a display server needs Chromium's headless platform, passed by the launcher", () => {
+  assert.equal(OZONE_HEADLESS_SWITCH, "--ozone-platform=headless");
   assert.equal(noDisplay("linux", {}), true);
   assert.equal(noDisplay("linux", { DISPLAY: ":99" }), false);
   assert.equal(noDisplay("linux", { WAYLAND_DISPLAY: "wayland-0" }), false);

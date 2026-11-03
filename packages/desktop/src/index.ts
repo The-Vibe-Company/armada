@@ -14,21 +14,22 @@ import {
   REVEAL_CHANNEL,
 } from "./bridge.ts";
 import { type DaemonAddress, DaemonProcess, RESTART_EXIT_CODE, restartDaemon } from "./daemon.ts";
-import { daemonData, headlessDaemonEnv, headlessRequested, noDisplay, readinessLine } from "./headless.ts";
+import { daemonData, headlessDaemonEnv, headlessRequested, readinessLine } from "./headless.ts";
 import { shellPaths } from "./paths.ts";
 import { STARTUP_URL } from "./startup.ts";
 
 app.setName("Armada");
 // A headless shell (THE-2234): no window, no dock icon, a disposable user data directory and only
 // the catalog and log it was given. Workers and CI smoke-test a build with it; the owner's desktop
-// and the owner's own fleet are never touched. Everything here runs before Electron is ready.
+// and the owner's own fleet are never touched. Everything here runs before Electron is ready
+// (Chromium's display platform is already chosen by then: on Linux without a display the launcher
+// passes OZONE_HEADLESS_SWITCH, see headless.ts).
 const HEADLESS = headlessRequested(process.env);
 const HEADLESS_DATA = HEADLESS ? mkdtempSync(join(tmpdir(), "armada-desktop-headless-")) : undefined;
 if (HEADLESS_DATA) {
   app.setPath("userData", HEADLESS_DATA);
   app.dock?.hide();
   app.disableHardwareAcceleration();
-  if (noDisplay(process.platform, process.env)) app.commandLine.appendSwitch("ozone-platform", "headless");
 }
 // The room's built files, the icon and the daemon entry: under the installed bundle's resources when
 // packaged (THE-2229), under the checkout when run from source.
