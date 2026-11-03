@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 export const PACKAGED_APP_DIR = "app";
 /** The dock icon under Contents/Resources (an extra resource; the bundle's own icon is resources/icon.icns). */
 export const PACKAGED_ICON = "icon.png";
-/** The main process's build output, relative to the app's root; unpacked from the asar (see MAIN_OUTPUT_UNPACKED). */
+/** The main process's build output, relative to the app's root; unpacked from the asar (`asarUnpack` in packaging.ts). */
 export const MAIN_OUTPUT = "out/main";
 /** The bundled daemon entry, under MAIN_OUTPUT with the chunks it shares with the shell's own entry. */
 export const DAEMON_ENTRY = `${MAIN_OUTPUT}/armadad.js`;

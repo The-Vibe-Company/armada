@@ -51,8 +51,9 @@ bun run build:desktop:dmg
   format, THE-2231), with `latest-mac.yml`;
 - `mac-arm64/Armada.app`, the bundle itself, runnable in place.
 
-The version is the package's (`packages/desktop/package.json`, the repository's
-release version); the About panel shows it. The rules are `src/packaging.ts`,
+The version is the package's (`packages/desktop/package.json`, set by hand to
+the repository's release version until THE-2230 has release-please bump it);
+the About panel shows it. The rules are `src/packaging.ts`,
 read by electron-builder through `electron-builder.ts`: app id
 `co.thevibecompany.armada`, dmg and zip for arm64, `resources/icon.icns`, the
 main output in an asar with `out/main` (the daemon entry and the chunks it
