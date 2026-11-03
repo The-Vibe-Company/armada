@@ -24,6 +24,7 @@
     "test:daemon": "bun run plugins:catalog && bun run --cwd packages/daemon test && bun run test:desktop",
     "desktop": "bun run --cwd packages/desktop dev",
     "build:desktop": "bun run --cwd packages/desktop build",
+    "build:desktop:dmg": "bun run --cwd packages/desktop dist",
     "test:desktop": "bun run --cwd packages/desktop test",
     "plugins:catalog": "node scripts/plugin-catalog.ts"
   },
