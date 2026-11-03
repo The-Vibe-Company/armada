@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       stability:
-        description: Run the verify job ten times on fresh runners
+        description: Run the browser-backed dashboard tests ten times on fresh runners
         type: boolean
         default: false
       validation_id:
@@ -23,16 +23,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.stability && format('Browser stability {0}/10', matrix.run) || 'Lint, typecheck and test' }}
-    strategy:
-      # An opt-in proof of reliability, using the same job as every PR. Stop on
-      # the first failure; the normal PR/push path still runs once.
-      max-parallel: 1
-      matrix:
-        run: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.stability && '[1,2,3,4,5,6,7,8,9,10]' || '[1]') }}
+  # The required check, "Lint, typecheck and test" (required_checks in armada.toml),
+  # is the verify gate below: four suite jobs run in parallel and it passes only
+  # when every one of them succeeded (THE-2239). `bun run verify` runs the same
+  # work in one terminal; scripts/test-partition.ts holds the partitions.
+  core:
+    name: Lint, typecheck, core and CLI tests
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -44,11 +42,95 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run lint
       - run: bun run typecheck
+      - name: Every test file belongs to one CI partition
+        run: bun run test:ci:check
+      - name: Test core, the CLI and the e2e helpers
+        run: bun run test:ci:core
+
+  dashboard-tests:
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.stability && format('Browser stability {0}/10', matrix.run) || 'Dashboard tests' }}
+    strategy:
+      # An opt-in proof of reliability of the browser-backed suite, using the same
+      # job as every PR. Stop on the first failure; the normal PR/push path still
+      # runs once.
+      max-parallel: 1
+      matrix:
+        run: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.stability && '[1,2,3,4,5,6,7,8,9,10]' || '[1]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
       - name: Install the pinned test browser and system libraries
         uses: ./.github/actions/test-browser
-      - run: bun run test
-      - name: Test the daemon on Node
-        run: bun run test:daemon
+      - name: Test the dashboard (PGlite and the pinned browser)
+        run: bun run test:ci:dashboard
+
+  app:
+    name: App and plugin tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - name: Test the protocol, the app and the plugins, then every bundled plugin through the packed CLI
+        run: bun run test:ci:app
+
+  daemon:
+    name: Daemon and desktop tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - name: Test the daemon and the desktop shell, under Bun then Node
+        run: bun run test:ci:daemon
+
+  verify:
+    name: Lint, typecheck and test
+    # The gate the branch protection requires. It always runs, so a skipped,
+    # cancelled or timed-out suite turns it red instead of counting as passed;
+    # its only step is the dependent summary `armada ci why --rerun` recognizes
+    # (docs/runbook.md), naming the first suite that did not succeed.
+    needs: [core, dashboard-tests, app, daemon]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - if: needs.core.result != 'success'
+        run: |
+          echo "Dependency failed: Lint, typecheck, core and CLI tests"
+          exit 1
+      - if: needs.dashboard-tests.result != 'success'
+        run: |
+          echo "Dependency failed: Dashboard tests"
+          exit 1
+      - if: needs.app.result != 'success'
+        run: |
+          echo "Dependency failed: App and plugin tests"
+          exit 1
+      - if: needs.daemon.result != 'success'
+        run: |
+          echo "Dependency failed: Daemon and desktop tests"
+          exit 1
 
   boot-benchmark:
     name: Daemon boot benchmark
@@ -80,8 +162,9 @@ jobs:
         with:
           node-version: 22
       - run: bun install --frozen-lockfile
-      # Lint, typecheck and tests of the dashboard run in the verify job; this
-      # proves the Next.js production build, as Vercel runs it.
+      # Lint and typecheck of the dashboard run in the core job and its tests in
+      # the dashboard-tests job; this proves the Next.js production build, as
+      # Vercel runs it.
       - name: Build the dashboard
         working-directory: packages/dashboard
         run: bun run build
