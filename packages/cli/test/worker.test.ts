@@ -1,7 +1,10 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
+import type { ChildProcess, spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { type Fetch, formatWorkerSession, machinePaths, updateWatchState } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import {
@@ -19,9 +22,11 @@ import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
 import type { Exec } from "../src/io.ts";
 import { detectCoordinator } from "../src/presence.ts";
+import { createExec } from "../src/spawn.ts";
 
 const dirs: string[] = [];
 afterEach(async () => {
+  jest.useRealTimers();
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
@@ -73,6 +78,64 @@ function worker(
   return { io, linear, armada, store, net, out: () => out.join(""), err: () => err.join(""), reset };
 }
 
+/** Exercise the production runner's deadline, output bound and group kill without wall-clock waits. */
+function preflightTransport(
+  w: ReturnType<typeof worker>,
+  result: (command: string, args: readonly string[]) => { ms: number; code?: number; stdout?: string; stderr?: string },
+) {
+  jest.useFakeTimers();
+  const calls: Parameters<Exec>[] = [];
+  const killed: number[] = [];
+  const children = new Map<number, () => void>();
+  const execute = createExec({
+    spawn: ((command, args, options) => {
+      expect(options?.cwd).toBe("/work/widgets");
+      expect(options?.env?.GIT_TERMINAL_PROMPT).toBe("0");
+      expect(options?.detached).toBe(true);
+      expect(options?.stdio).toEqual(["ignore", "pipe", "pipe"]);
+      const outcome = result(command, args ?? []);
+      const events = new EventEmitter();
+      const pid = 12345 + calls.length;
+      const child = Object.assign(events, {
+        pid,
+        stdin: null,
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        kill: () => {
+          throw new Error("must kill the process group");
+        },
+      }) as unknown as ChildProcess;
+      let completion: ReturnType<typeof setTimeout>;
+      children.set(pid, () => {
+        clearTimeout(completion);
+        events.emit("close", null);
+      });
+      // Register completion after createExec arms the deadline. At the exact
+      // deadline, timeout wins; a completion delivered before it cancels it.
+      queueMicrotask(() => {
+        completion = setTimeout(() => {
+          child.stdout?.emit("data", outcome.stdout ?? "");
+          child.stderr?.emit("data", outcome.stderr ?? "");
+          events.emit("close", outcome.code ?? 0);
+        }, outcome.ms);
+        jest.advanceTimersByTime(outcome.ms);
+      });
+      return child;
+    }) as typeof spawn,
+    killGroup: (pid) => {
+      killed.push(pid);
+      const close = children.get(pid);
+      if (!close) throw new Error("unknown child");
+      close();
+    },
+  });
+  w.io.exec = (command, args, options) => {
+    calls.push([command, args, options]);
+    return execute(command, args, options);
+  };
+  return { calls, killed };
+}
+
 describe("armada claim, report and release", () => {
   test("claim preflight keeps a refused branch claimed and reports the Git reason to the coordinator", async () => {
     const w = worker(SIGNED_IN);
@@ -80,17 +143,16 @@ describe("armada claim, report and release", () => {
     const branch = "feature/demo-7-do-the-thing";
     const secret = "opaque-project-canary";
     w.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", secret]]));
-    const calls: Parameters<Exec>[] = [];
-    w.io.exec = async (command, args, options) => {
-      calls.push([command, args, options]);
+    const transport = preflightTransport(w, (_command, args) => {
       if (args[0] === "push")
         return {
+          ms: 16_000,
           code: 1,
-          stdout: "",
-          stderr: `remote: Write access to repository not granted.\nhelper: ${secret}\nfatal: unable to access https://user:password@github.com/acme/widgets.git\n`,
+          stderr: `remote: Write access to repository not granted.\nhelper: ${secret}\nfatal: unable to access https://user:password@github.com/acme/widgets.git\n\x1b[31mDenied\x07`,
         };
-      return { code: 0, stdout: "", stderr: "" };
-    };
+      return { ms: 16_000 };
+    });
+    const calls = transport.calls;
     expect(
       await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1/s-1", "--branch", branch], w.io),
     ).toBe(0);
@@ -102,7 +164,9 @@ describe("armada claim, report and release", () => {
       input: {
         ticket: "DEMO-7",
         phase: "blocked",
-        message: expect.stringContaining(`cannot push ${branch}: remote: Write access to repository not granted.`),
+        message: expect.stringContaining(
+          `cannot push --dry-run origin HEAD:refs/heads/${branch}: remote: Write access to repository not granted.`,
+        ),
       },
     });
     expect(w.out()).toContain("phase blocked");
@@ -113,16 +177,22 @@ describe("armada claim, report and release", () => {
     w.reset();
     expect(await run(["inbox"], w.io)).toBe(0);
     expect(w.out()).not.toContain(secret);
-    expect(w.out()).toContain(`cannot push ${branch}: remote: Write access to repository not granted.`);
+    expect(w.out()).toContain(
+      `cannot push --dry-run origin HEAD:refs/heads/${branch}: remote: Write access to repository not granted.`,
+    );
     expect(calls.map(([command, args]) => [command, args])).toEqual([
       ["git", ["ls-remote", "origin", "HEAD"]],
       ["git", ["push", "--dry-run", "origin", `HEAD:refs/heads/${branch}`]],
     ]);
     for (const [, , options] of calls) {
       expect(options.env?.GIT_TERMINAL_PROMPT).toBe("0");
-      expect(options.timeoutMs).toBe(10_000);
+      expect(options.timeoutMs).toBe(20_000);
       expect(options.processGroup).toBe(true);
+      expect(options.maxOutputBytes).toBe(16_384);
     }
+    expect(transport.killed).toEqual([]);
+    expect(w.linear.bodies.join("\n")).not.toContain("\x1b");
+    expect(w.linear.bodies.join("\n")).not.toContain("\x07");
     const before = calls.length;
     expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "other/session"], w.io)).toBe(1);
     expect(calls.length).toBe(before);
@@ -137,31 +207,47 @@ describe("armada claim, report and release", () => {
     expect((await w.store.getRuntimeHandle("widgets", "DEMO-7"))?.branch).toBe(branch);
   });
 
-  test("claim preflight is quiet on success and blocks on read, timeout or interactive signing failures", async () => {
-    for (const failure of ["none", "read", "timeout", "signing", "config"] as const) {
+  test.each([
+    { failure: "none", readMs: 16_000, pushMs: 16_000 },
+    { failure: "none", readMs: 19_999, pushMs: 19_999 },
+    { failure: "read", readMs: 16_000, pushMs: 0 },
+    { failure: "read-timeout", readMs: 20_000, pushMs: 0 },
+    { failure: "read-timeout", readMs: 20_001, pushMs: 0 },
+    { failure: "push-timeout", readMs: 16_000, pushMs: 20_000 },
+    { failure: "push-timeout", readMs: 16_000, pushMs: 20_001 },
+    { failure: "read-output", readMs: 16_000, pushMs: 0 },
+    { failure: "push-output", readMs: 16_000, pushMs: 16_000 },
+    { failure: "runner", readMs: 0, pushMs: 0 },
+    { failure: "signing", readMs: 16_000, pushMs: 16_000 },
+    { failure: "config", readMs: 16_000, pushMs: 16_000 },
+  ] as const)(
+    "claim preflight $failure with read $readMs ms and push $pushMs ms retains its claim",
+    async ({ failure, readMs, pushMs }) => {
       const w = worker(SIGNED_IN);
       w.linear.add("DEMO-7");
+      const branch = "feature/demo-7-do-the-thing";
       if (failure === "none") w.io.cwd = "/elsewhere";
-      let configReads = 0;
-      w.io.exec = async (_command, args, options) => {
-        expect(options.cwd).toBe("/work/widgets");
-        expect(options.env?.GIT_TERMINAL_PROMPT).toBe("0");
+      const transport = preflightTransport(w, (command, args) => {
+        if (failure === "runner") throw new Error("synthetic unavailable git");
         if (args[0] === "config") {
-          configReads++;
-          expect(options.timeoutMs).toBe(1_000);
-          if (failure === "config") return { code: 128, stdout: "", stderr: "bad config" };
-          const key = args.at(-1);
-          const value =
-            failure === "signing"
-              ? { "commit.gpgsign": "true", "gpg.format": "ssh", "gpg.ssh.program": "/app/op-ssh-sign" }[key ?? ""]
-              : undefined;
-          return { code: value ? 0 : 1, stdout: value ?? "", stderr: "" };
+          if (failure === "config") return { ms: 1_000 }; // Even code 0 cannot rescue a timed-out read.
+          const value = {
+            "commit.gpgsign": "true",
+            "gpg.format": failure === "signing" ? "ssh" : "openpgp",
+            "gpg.ssh.program": failure === "signing" ? "/app/op-ssh-sign" : undefined,
+          }[args.at(-1) ?? ""];
+          return { ms: 999, code: value ? 0 : 1, stdout: value };
         }
-        if (failure === "read" && args[0] === "ls-remote")
-          return { code: 128, stdout: "", stderr: "fatal: repository not found" };
-        if (failure === "timeout" && args[0] === "push") return { code: 0, stdout: "", stderr: "", timedOut: true };
-        return { code: 0, stdout: "", stderr: "" };
-      };
+        if (command === "gpgconf") return { ms: 999 };
+        if (args[0] === "ls-remote")
+          return {
+            ms: readMs,
+            code: failure === "read" ? 128 : 0,
+            stderr: failure === "read" ? "fatal: repository not found" : "",
+            stdout: failure === "read-output" ? "x".repeat(16_385) : "",
+          };
+        return { ms: pushMs, stdout: failure === "push-output" ? "x".repeat(16_385) : "" };
+      });
       expect(
         await run(
           [
@@ -171,31 +257,59 @@ describe("armada claim, report and release", () => {
             "conductor",
             "--handle",
             "ws-1/s-1",
+            "--branch",
+            branch,
             ...(failure === "none" ? ["--json", "--config", "/work/widgets/armada.toml"] : []),
           ],
           w.io,
         ),
       ).toBe(0);
       expect(w.out()).not.toContain("claimedBranch");
+      expect(await w.store.getRuntimeHandle("widgets", "DEMO-7")).toMatchObject({
+        handle: "ws-1/s-1",
+        branch,
+        releasedAt: null,
+        claimedAt: NOW.toISOString(),
+      });
+      expect(transport.calls[0]?.slice(0, 2)).toEqual(["git", ["ls-remote", "origin", "HEAD"]]);
+      const readFailed = ["read", "read-timeout", "read-output", "runner"].includes(failure);
+      expect(transport.calls.filter(([, args]) => args[0] === "push").map(([, args]) => args)).toEqual(
+        readFailed ? [] : [["push", "--dry-run", "origin", `HEAD:refs/heads/${branch}`]],
+      );
+      const signingCalls = transport.calls.filter(([, args]) => args[0] === "config");
+      const reachedSigning = ["none", "signing", "config"].includes(failure);
+      expect(signingCalls.length).toBe(reachedSigning ? (failure === "config" ? 1 : 6) : 0);
+      for (const [, , options] of signingCalls) expect(options.timeoutMs).toBe(1_000);
       const phase = failure === "none" ? "planning" : "blocked";
       expect(w.linear.get("DEMO-7").labels.some((l) => l.name === phase)).toBe(true);
       if (failure === "none") {
+        expect(transport.calls.at(-1)?.[0]).toBe("gpgconf");
+        expect(transport.calls.reduce((sum, [, , options]) => sum + (options.timeoutMs ?? 0), 0)).toBe(47_000);
+        expect(transport.killed).toEqual([]);
         expect(w.store.events.map((e) => e.kind)).toEqual(["claim"]);
         expect(w.err()).toBe("");
         expect(w.out()).not.toContain("preflight");
       } else {
         const reason = {
-          read: "cannot fetch origin: fatal: repository not found",
-          timeout: "cannot push feature/demo-7-do-the-thing: timed out after 10 seconds",
+          read: "cannot ls-remote origin HEAD: fatal: repository not found",
+          "read-timeout": "cannot ls-remote origin HEAD: timed out after 20 seconds",
+          "push-timeout": `cannot push --dry-run origin HEAD:refs/heads/${branch}: timed out after 20 seconds`,
+          "read-output": "cannot ls-remote origin HEAD: Git output exceeded the check's limit",
+          "push-output": `cannot push --dry-run origin HEAD:refs/heads/${branch}: Git output exceeded the check's limit`,
+          runner: "cannot ls-remote origin HEAD: git could not be run",
           signing: "cannot commit without a person: signing uses op-ssh-sign",
           config: "cannot check commit signing: effective Git configuration could not be read",
         }[failure];
         expect(w.linear.bodies.at(-1)).toContain(reason);
         expect((await w.store.latestEvents("widgets"))["DEMO-7"]?.phase).toBe("blocked");
+        expect(w.store.items[0]).toMatchObject({ kind: "question", ticket: "DEMO-7", resolvedAt: null });
+        expect(w.store.items[0]?.body).toContain(reason);
+        expect(transport.killed.length).toBe(
+          ["read-timeout", "push-timeout", "read-output", "push-output", "config"].includes(failure) ? 1 : 0,
+        );
       }
-      if (failure === "none" || failure === "signing") expect(configReads).toBeGreaterThan(0);
-    }
-  });
+    },
+  );
 
   test("coordinator release pins its claim and spares a worker launched afterward", async () => {
     const clock = fakeClock(NOW);
