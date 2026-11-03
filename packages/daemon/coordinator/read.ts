@@ -84,6 +84,11 @@ export function fleetStatus(
         ticket: s.ticket,
         title: line(s.title),
         phase: s.phase,
+        reachability: tables.deliveries?.some(
+          (d) => d.session === s.session && d.generation === s.generation && d.attempt > 0,
+        )
+          ? "unreachable"
+          : "unknown",
         step: s.step,
         runtime: line(s.runtime, 80),
         drive: s.runtime === "tracker" ? "tracker" : "daemon",

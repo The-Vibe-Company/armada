@@ -1,4 +1,6 @@
-import type { FleetEvent, ProjectRules, Session } from "@armada/protocol";
+import type { Delivery, FleetEvent, ProjectRules, Session } from "@armada/protocol";
+
+import { applyDelivery } from "../delivery-state.ts";
 
 export type Report = Extract<FleetEvent, { kind: "session.reported" }>;
 export interface ProgressReason {
@@ -103,6 +105,15 @@ export function progressSignals(
     lastPr = pr;
   }
   const result: ProgressSignals = { level: 0, reasons: [], episode, nextAt: now + silence * minute };
+  const deliveries = new Map<string, Delivery>();
+  for (const event of observations) applyDelivery(deliveries, event);
+  // A heartbeat cannot prove that the input endpoint is usable. Delivery recovery owns this block.
+  if (
+    [...deliveries.values()].some(
+      (d) => d.session === session.session && d.generation === session.generation && !d.sentAt && d.attempt > 0,
+    )
+  )
+    return result;
   if (terminal.includes(session.phase) || session.runtime === "tracker") return result;
   const live =
     runtime?.kind === "session.runtime-observed" && ["stopped", "failed"].includes(runtime.payload.state)

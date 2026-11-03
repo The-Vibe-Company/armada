@@ -513,6 +513,7 @@ test("native tools launch a bound CLI, deliver, observe working/idle, authorize 
     403,
   );
   assert.equal((await socketCall(f.socketPath, "invalid", { command: "heartbeat", ticket: "SEED-1" })).status, 403);
+  await writeFile(join(f.workspace(), ".fixture-complete"), "finish active turn");
   const delivered = await f.tools["worker.message"].execute(
     { ticket: "SEED-1", message: "finish" },
     f.api("message"),
@@ -1121,6 +1122,7 @@ test("relaunch keeps branch/worktree changes, retires old capabilities and refus
     false,
   );
   assert.equal(f.daemon.store.sequence, before, "replacement replay cannot stop the replacement");
+  await writeFile(join(f.workspace(), ".fixture-complete"), "finish active turn");
   assert.equal(
     (await f.tools["worker.message"].execute({ ticket: "SEED-1", message: "finish" }, f.api("message"), context))
       .isError,

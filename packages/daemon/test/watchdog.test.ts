@@ -5,7 +5,9 @@ import type { EventInput, Session } from "@armada/protocol";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import type { Conversation, Submission } from "@earendil-works/pi-durable";
+import { fleetStatus } from "../coordinator/read.ts";
 import { type WakeClock, Waker } from "../coordinator/wake.ts";
+import { Deliveries, queueDelivery } from "../src/deliveries.ts";
 import { fold } from "../src/fold.ts";
 import { judgeProgress } from "../src/liveness/judge.ts";
 import { EventStore } from "../src/store.ts";
@@ -462,5 +464,56 @@ test("completed-turn evidence diagnoses permissions even when the runtime state 
   assert.equal(
     fold(f.store.readSince(0)).projects[project]?.inbox.filter((i) => i.followUp?.code === "permission_prompt").length,
     1,
+  );
+});
+
+test("input failures outrank fresh heartbeats: one follow-up wakes, no live-progress judgment, recovery clears it", async (t) => {
+  const f = await fixture(t);
+  let failing = true;
+  const driver = new Deliveries({
+    store: f.store,
+    now: () => new Date(f.clock.now()).toISOString(),
+    schedule: f.clock.setTimer,
+    async deliver(_d, guard) {
+      guard();
+      if (failing) throw new Error("closed input");
+    },
+  });
+  t.after(() => driver.close());
+  f.store.append(
+    queueDelivery({
+      project,
+      at: new Date(f.clock.now()).toISOString(),
+      actor: "coordinator",
+      ...ref,
+      source: "coordinator-message",
+      text: "bring main in",
+      key: "behind-main",
+    }),
+  );
+  await f.clock.advance(0);
+  await f.clock.advance(2000);
+  await f.clock.advance(4000);
+  await f.run();
+  const facts = () => fold(f.store.readSince(0)).projects[project]!;
+  assert.equal(facts().inbox.length, 1);
+  assert.equal(facts().inbox[0]?.followUp?.code, "delivery_failed");
+  assert.equal(
+    fleetStatus(facts(), f.store.readSince(0), new Date(f.clock.now()).toISOString()).sessions[0]?.reachability,
+    "unreachable",
+  );
+  assert.equal(f.inputs.length, 0);
+  assert.equal(f.wakes.length, 1);
+  await f.restart();
+  f.beat();
+  await f.clock.advance(30 * minute);
+  assert.equal(f.wakes.length, 1);
+  failing = false;
+  f.append("inbox.answered", { id: facts().inbox[0]!.id, answer: "Input repaired" });
+  await f.clock.advance(10000);
+  assert.equal(facts().inbox.length, 0);
+  assert.notEqual(
+    fleetStatus(facts(), f.store.readSince(0), new Date(f.clock.now()).toISOString()).sessions[0]?.reachability,
+    "unreachable",
   );
 });

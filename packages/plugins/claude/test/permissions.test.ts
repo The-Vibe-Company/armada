@@ -39,12 +39,13 @@ for (const [options, args, mode] of [
       env: {},
     });
     assert(launched);
-    const flags = launched.args.filter(
+    const cliArgs: string[] = JSON.parse(launched.args.at(-1)!).args;
+    const flags = cliArgs.filter(
       (a) => a === "--permission-mode" || a.startsWith("--permission-mode=") || a === "--dangerously-skip-permissions",
     );
     assert.equal(flags.length, 1);
-    if (mode !== "skip") assert(launched.args.includes(mode) || launched.args.includes(`--permission-mode=${mode}`));
-    assert(launched.args.includes("--add-dir"));
-    assert(launched.args.includes(workspace.path));
+    if (mode !== "skip") assert(cliArgs.includes(mode) || cliArgs.includes(`--permission-mode=${mode}`));
+    assert(cliArgs.includes("--add-dir"));
+    assert(cliArgs.includes(workspace.path));
   });
 }

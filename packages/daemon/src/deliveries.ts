@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Delivery, EventInput, EventPayloads } from "@armada/protocol";
-import { applyDelivery } from "./delivery-state.ts";
+import { applyDelivery, deliveryFollowUpId } from "./delivery-state.ts";
 import { fold } from "./fold.ts";
 import type { EventStore } from "./store.ts";
 
@@ -85,6 +85,47 @@ export class Deliveries {
       return "Worker session ended; delivery permanently refused";
     return null;
   }
+  #episode(project: string, row: Delivery) {
+    const events = this.#options.store.readSince(0, project);
+    const id = deliveryFollowUpId(row.id);
+    const opened = events.findLast((e) => e.kind === "inbox.opened" && e.payload.id === id);
+    const answered = events.findLast((e) => e.kind === "inbox.answered" && e.payload.id === id);
+    const baseline = answered
+      ? events.findLast((e) => e.seq < answered.seq && e.kind === "delivery.failed" && e.payload.id === row.id)
+      : undefined;
+    return {
+      failures: row.attempt - (baseline?.kind === "delivery.failed" ? baseline.payload.attempt : 0),
+      paused: !!opened && (!answered || opened.seq > answered.seq),
+    };
+  }
+  #followUp(project: string, row: Delivery, at: string, attempt: number): EventInput {
+    return {
+      project,
+      at,
+      actor: "delivery",
+      kind: "inbox.opened",
+      payload: {
+        id: deliveryFollowUpId(row.id),
+        ticket: row.ticket,
+        kind: "follow-up",
+        body: `Worker input not delivered to ${row.ticket} after three failures; retries paused. Fix: relaunch the worker in place`,
+        followUp: {
+          cause: `delivery:${row.id}`,
+          tool: "worker.message",
+          code: "delivery_failed",
+          args: { delivery: row.id },
+          session: row.session,
+          generation: row.generation,
+          reason: "Worker input delivery failed three times; retries paused",
+          facts: `${row.ticket}: input unreachable despite any continuing heartbeat`,
+          next: "worker.relaunch",
+          fix: "relaunch the worker in place",
+          attempts: attempt,
+          lastAt: at,
+        },
+      },
+    };
+  }
   #pump() {
     this.#cancel?.();
     this.#cancel = undefined;
@@ -99,6 +140,19 @@ export class Deliveries {
         if (blocked.has(key)) continue;
         blocked.add(key);
         if (this.#running.has(key)) continue;
+        if (!this.#target(project, row)) {
+          const episode = this.#episode(project, row);
+          if (episode.paused) continue;
+          if (episode.failures >= 3) {
+            // Upgrade/restart also bounds a legacy outbox that already retried indefinitely.
+            try {
+              this.#options.store.append(this.#followUp(project, row, this.#now(), row.attempt));
+            } catch {
+              nextAt = Math.min(nextAt, now + 2000);
+            }
+            continue;
+          }
+        }
         const due = Math.max(this.#retryAt.get(key) ?? 0, this.#target(project, row) ? now : Date.parse(row.nextAt));
         if (due > now) {
           nextAt = Math.min(nextAt, due);
@@ -142,7 +196,7 @@ export class Deliveries {
     const changed = this.#target(project, row);
     const attempt = row.attempt + 1;
     try {
-      this.#options.store.append(
+      const receipt: EventInput =
         failed || changed
           ? {
               project,
@@ -156,11 +210,18 @@ export class Deliveries {
                 error: changed ?? "Worker input delivery failed (runtime details withheld)",
                 nextAt: changed
                   ? null
-                  : new Date(Date.parse(at) + Math.min(60_000, 2000 * 2 ** Math.min(attempt - 1, 5))).toISOString(),
+                  : new Date(
+                      Date.parse(at) + Math.min(60_000, 2000 * 2 ** Math.min(this.#episode(project, row).failures, 5)),
+                    ).toISOString(),
               },
             }
-          : { project, at, actor: "delivery", kind: "delivery.sent", payload: { id: row.id, at } },
-      );
+          : { project, at, actor: "delivery", kind: "delivery.sent", payload: { id: row.id, at } };
+      this.#options.store.appendMany([
+        receipt,
+        ...(failed && !changed && this.#episode(project, row).failures + 1 >= 3
+          ? [this.#followUp(project, row, at, attempt)]
+          : []),
+      ]);
     } catch {
       // A failed receipt write leaves a keyed input pending. Avoid spinning on a broken store.
       this.#retryAt.set(lane(project, row.session), Date.parse(at) + 2000);
