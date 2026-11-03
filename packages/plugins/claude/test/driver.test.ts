@@ -80,6 +80,18 @@ test("a result with live background tasks keeps the CLI until it continues on it
   }
 });
 
+test("a held CLI whose tasks end without a turn of its own is retired", { timeout: 20_000 }, async () => {
+  const run = await driver("quiet-end");
+  try {
+    run.send("watch CI");
+    await run.until("the result", () => run.results().includes("waiting"));
+    assert.deepEqual(run.completed(), [0]);
+    await run.until("the retire", () => run.completed().at(-1) === 1);
+  } finally {
+    await run.close();
+  }
+});
+
 test("a turn that starts after a stale empty result is never retired mid-turn", { timeout: 20_000 }, async () => {
   const run = await driver("stale-result");
   try {

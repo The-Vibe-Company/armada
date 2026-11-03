@@ -27,6 +27,8 @@ let results = 0;
 let completed = 0;
 // Set while the current process may take one more line: its first turn, or a held process.
 let accept;
+// Ends the current process's input once, from any path.
+let endInput;
 const waiting = [];
 // Frames that mean the process is running a turn again after a result.
 const turnFrames = new Set(["assistant", "user", "stream_event"]);
@@ -58,10 +60,31 @@ function start() {
   let retired = false;
   let lines = 0;
   let open = true;
+  let held = false;
+  // A result arrived and no turn has started since.
+  let quiet = false;
+  let lateLine = false;
   const tasks = new Set();
   const into = (line) => {
     lines++;
+    if (held) lateLine = true;
     cli.stdin.write(line + "\n", (error) => { if (error) failure(); });
+  };
+  endInput = () => { if (open) { open = false; cli.stdin.end(); } };
+  // No more input for this process; retire it unless another turn begins first.
+  const settle = () => {
+    held = false;
+    accept = undefined;
+    finishing = true;
+    endInput();
+    // Some print CLIs retain an idle process after their final result and EOF.
+    // Retire only this completed subprocess; the supervisor's group pin stays alive.
+    // A line written while held may start its turn after the CLI's own: allow it longer.
+    if (!retire && !retired && !tasks.size) retire = setTimeout(() => {
+      retired = true;
+      cli.kill("SIGTERM");
+      kill = setTimeout(() => cli.kill("SIGKILL"), 1000);
+    }, lateLine ? 30000 : 1000);
   };
   // One line per turn: later input waits in the driver for this turn's result.
   const once = (line) => { accept = undefined; into(line); };
@@ -73,30 +96,25 @@ function start() {
       if (value.type === "system" && value.subtype === "background_tasks_changed" && Array.isArray(value.tasks)) {
         tasks.clear();
         for (const task of value.tasks) if (typeof task?.task_id === "string") tasks.add(task.task_id);
+        // Tasks that end without a turn of their own leave nothing to hold for.
+        if (quiet && !tasks.size) settle();
       } else if (!retired && (turnFrames.has(value.type) || (value.type === "system" && turnSystem.has(value.subtype)))) {
         // Another turn began before the retire fired: neither SIGTERM nor SIGKILL is scheduled now.
         clearTimeout(retire);
         retire = undefined;
+        held = false;
+        quiet = false;
       }
       if (value.type === "result") {
         result = true;
+        quiet = true;
         results++;
-        if (tasks.size && open) {
+        if (tasks.size && open && !closed) {
           // Held: background work continues in this process, and input reaches it directly.
+          held = true;
           if (waiting.length) for (const queued of waiting.splice(0)) into(queued);
           else accept = once;
-        } else {
-          accept = undefined;
-          finishing = true;
-          if (open) { open = false; cli.stdin.end(); }
-          // Some print CLIs retain an idle process after their final result and EOF.
-          // Retire only this completed subprocess; the supervisor's group pin stays alive.
-          if (!retire && !retired && !tasks.size) retire = setTimeout(() => {
-            retired = true;
-            cli.kill("SIGTERM");
-            kill = setTimeout(() => cli.kill("SIGKILL"), 1000);
-          }, 1000);
-        }
+        } else settle();
       }
       emit(value);
       if (value.type === "result") emit({ type: "armada_turn_state", completed });
@@ -119,6 +137,7 @@ function start() {
     clearTimeout(kill);
     child = undefined;
     accept = undefined;
+    endInput = undefined;
     finishing = false;
     if ((!retired && code !== 0) || !result) failure();
     // Every line this process took is settled once it ends.
@@ -139,7 +158,7 @@ input.on("line", (line) => {
 });
 input.on("close", () => {
   closed = true;
-  if (child) { if (!finishing) child.stdin.end(); }
+  if (child) endInput?.();
   else process.exit(failed ? 1 : 0);
 });
 `;

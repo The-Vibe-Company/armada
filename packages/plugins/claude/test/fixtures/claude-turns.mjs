@@ -12,6 +12,11 @@ const ledger = (entry) =>
   appendFileSync(process.env.FIXTURE_LEDGER, `${JSON.stringify({ pid: process.pid, ...entry })}\n`);
 const task = { task_id: "b1", task_type: "local_bash", description: "bun run verify" };
 let line = 0;
+let ended = false;
+// Like the real CLI, the background scenario exits once its input ended and its work is done.
+process.stdin.on("end", () => {
+  ended = true;
+});
 setInterval(() => {}, 1000);
 createInterface({ input: process.stdin }).on("line", (raw) => {
   const input = JSON.parse(raw).message.content;
@@ -25,10 +30,17 @@ createInterface({ input: process.stdin }).on("line", (raw) => {
       say({ type: "system", subtype: "background_tasks_changed", tasks: [] });
       say({ type: "system", subtype: "init" });
       say({ type: "result", num_turns: 1, result: "verify finished" });
+      setTimeout(() => ended && process.exit(0), 50);
     }, later);
   } else if (scenario === "background") {
     say({ type: "system", subtype: "init" });
     say({ type: "result", num_turns: 1, result: `held:${input}` });
+  } else if (scenario === "quiet-end") {
+    // The task is stopped without a turn of its own.
+    say({ type: "system", subtype: "init" });
+    say({ type: "system", subtype: "background_tasks_changed", tasks: [task] });
+    say({ type: "result", num_turns: 1, result: "waiting" });
+    setTimeout(() => say({ type: "system", subtype: "background_tasks_changed", tasks: [] }), 300);
   } else if (scenario === "stale-result") {
     // A resumed session answers a stale task notification first, then runs the real turn.
     say({ type: "system", subtype: "task_notification", status: "stopped" });

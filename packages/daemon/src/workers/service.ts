@@ -2016,7 +2016,7 @@ export class Workers {
     this.#observations.set(ref.session, value);
   }
   /**
-   * THE-2266: a local worker whose turn ended with no report a minute later most likely
+   * THE-2266: a local worker idle for a minute after its turn, with no report since that turn ended, most likely
    * ended it to wait for background work, which the turn's end can stop. Queue one keyed
    * note per report episode (durable: its id is the key's) so the room's silent notice is
    * not the only recovery. Legitimate waits are left alone: a plan or validation awaiting
@@ -2063,6 +2063,7 @@ export class Workers {
           await this.observe(row.ref.project, row.ref.ticket);
           this.#continueAfterSilentTurn(row);
         } catch {
+          this.#turnEnded.delete(row.ref.session);
           /* Ended/stale generations never mutate the replacement. */
         }
       }
