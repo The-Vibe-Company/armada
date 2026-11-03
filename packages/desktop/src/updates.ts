@@ -101,6 +101,8 @@ export class UpdateController {
   private state: UpdateState = { kind: "idle" };
   private checking?: Promise<void>;
   private restarting = false;
+  /** A menu check asked during the running check. */
+  private manual = false;
   private readonly updater: Updater;
   private readonly shell: UpdateShell;
   private readonly packaged: boolean;
@@ -119,31 +121,37 @@ export class UpdateController {
     }, FIRST_CHECK_MS);
   }
 
-  /** One check at a time; a menu check while one runs waits for it. */
+  /** One check at a time; a menu check while one runs joins it and still gets its answer. */
   check(manual: boolean): Promise<void> {
-    this.checking ??= this.run(manual).finally(() => {
+    if (manual) this.manual = true;
+    this.checking ??= this.run().finally(() => {
       this.checking = undefined;
     });
     return this.checking;
   }
 
-  private async run(manual: boolean): Promise<void> {
-    this.shell.log(manual ? "checking for updates (menu)" : "checking for updates");
+  private async run(): Promise<void> {
+    this.shell.log("checking for updates");
+    let outcome: "up-to-date" | "failed" | undefined;
     try {
       const result = await this.updater.checkForUpdates();
       // Download failures reach `failed` through the updater's error event; never unhandled.
       void result?.downloadPromise?.catch(() => {});
-      if (manual && this.state.kind === "idle") await this.shell.tellManual("up-to-date");
+      if (this.state.kind === "idle") outcome = "up-to-date";
     } catch (error) {
       this.shell.log(`update check failed: ${describe(error)}`);
-      if (manual && !signatureRefused(error)) await this.shell.tellManual("failed");
+      if (!signatureRefused(error)) outcome = "failed";
     }
+    const manual = this.manual;
+    this.manual = false;
+    if (manual && outcome) await this.shell.tellManual(outcome);
   }
 
   /** electron-updater's update-available and update-downloaded. */
   found(version: string): Promise<void> {
     this.shell.log(`update ${version} found`);
-    if (this.state.kind !== "ready") this.state = { kind: "downloading", version };
+    // The update Squirrel holds stays ready; a newer release starts its own download and dialog.
+    if (this.state.kind !== "ready" || this.state.version !== version) this.state = { kind: "downloading", version };
     return this.settle();
   }
 

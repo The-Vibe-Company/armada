@@ -132,3 +132,20 @@ test("release pages and log lines carry no query string and no non-version tag",
     "Downloading https://objects.example.test/a.zip done",
   );
 });
+
+test("a newer release found while an older one waits for Later gets its own dialog", async () => {
+  const { calls, controller } = harness({ restart: false });
+  await controller.found("1.2.3");
+  await controller.ready();
+  await controller.found("1.3.0");
+  await controller.ready();
+  assert.deepEqual(calls, ["remember 1.2.3", "ask 1.2.3", "remember 1.2.3,1.3.0", "ask 1.3.0"]);
+});
+
+test("a menu check that joins a running automatic check still says the outcome", async () => {
+  const { calls, controller } = harness();
+  const automatic = controller.check(false);
+  const manual = controller.check(true);
+  await Promise.all([automatic, manual]);
+  assert.deepEqual(calls, ["check", "manual up-to-date"]);
+});
