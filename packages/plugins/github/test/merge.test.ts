@@ -137,6 +137,7 @@ test("inspect returns fresh merge evidence from GitHub and paginates review thre
                   {
                     commit: {
                       oid: head,
+                      parents: { totalCount: 2, nodes: [{ oid: "f".repeat(40) }, { oid: base }] },
                       checkSuites: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
                       statusCheckRollup: {
                         state: "SUCCESS",
@@ -173,6 +174,7 @@ test("inspect returns fresh merge evidence from GitHub and paginates review thre
   });
   const result = await provider.inspect({ project: "orchard", number: 17 });
   assert.equal(result.number, 17);
+  assert.deepEqual(result.headParents, ["f".repeat(40), base]);
   assert.deepEqual(
     {
       head: result.head,
@@ -349,4 +351,59 @@ test("the declared token wins; missing or locked secrets fall back to gh without
   );
   assert.equal(secretReads, 0);
   assert.deepEqual(calls, []);
+});
+
+test("updateBranch pins the expected head, fences the write, and distinguishes rejection from uncertainty", async (t) => {
+  let provider: ForgeProvider | undefined;
+  activate({
+    config: {
+      forge: {
+        github: { endpoint: "https://github.test/graphql", projects: { orchard: { repository: "example/orchard" } } },
+      },
+    },
+    secrets: { get: async () => "synthetic-key" },
+    register: {
+      forge: (_kind: string, value: ForgeProvider) => {
+        provider = value;
+      },
+    },
+  } as unknown as PluginContext);
+  assert.ok(provider?.updateBranch);
+  const expectedHead = "a".repeat(40);
+  let calls = 0;
+  let status = 202;
+  let fenced = false;
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    calls++;
+    assert.equal(fenced, true);
+    assert.equal(url, "https://github.test/repos/example/orchard/pulls/17/update-branch");
+    assert.equal(init.method, "PUT");
+    assert.equal(new Headers(init.headers).get("Authorization"), "Bearer synthetic-key");
+    assert.deepEqual(JSON.parse(String(init.body)), { expected_head_sha: expectedHead });
+    return Response.json({ message: "Updating pull request branch." }, { status });
+  });
+  const request = {
+    project: "orchard",
+    number: 17,
+    expectedHead,
+    beforeWrite: () => {
+      fenced = true;
+    },
+  };
+  assert.deepEqual(await provider.updateBranch(request), { updated: true });
+  status = 422;
+  assert.deepEqual(await provider.updateBranch(request), { updated: false });
+  status = 503;
+  await assert.rejects(provider.updateBranch(request), /GitHub branch update failed/);
+  await assert.rejects(provider.updateBranch({ ...request, expectedHead: "bad" }), /GitHub branch update failed/);
+  await assert.rejects(
+    provider.updateBranch({
+      ...request,
+      beforeWrite: () => {
+        throw new Error("closed");
+      },
+    }),
+    /GitHub branch update failed/,
+  );
+  assert.equal(calls, 3);
 });

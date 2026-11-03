@@ -2,7 +2,7 @@ import type { FleetEvent } from "@armada/daemon/events";
 import type { FleetTables } from "@armada/daemon/fold";
 import type { ForgeProvider, PluginContext } from "@armada/plugin-api";
 import { GithubReader } from "./github.ts";
-import { inspectGithub } from "./inspect.ts";
+import { inspectGithub, restEndpoint } from "./inspect.ts";
 import { githubToken } from "./keychain.ts";
 import { githubConnection } from "./status.ts";
 
@@ -92,6 +92,32 @@ export function activate(ctx: PluginContext): void {
         });
       } catch {
         throw new Error("GitHub inspection failed");
+      }
+    },
+    async updateBranch({ project, number, expectedHead, signal, beforeWrite }) {
+      try {
+        const repository = config.projects?.[project]?.repository;
+        if (!repository || !Number.isSafeInteger(number) || number <= 0 || !/^[a-f0-9]{40}$/i.test(expectedHead))
+          throw new Error();
+        const key = await token(project, signal);
+        signal?.throwIfAborted();
+        beforeWrite?.();
+        const response = await fetch(
+          `${restEndpoint(config.endpoint)}/repos/${repository}/pulls/${number}/update-branch`,
+          {
+            method: "PUT",
+            redirect: "error",
+            signal,
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+            body: JSON.stringify({ expected_head_sha: expectedHead }),
+          },
+        );
+        signal?.throwIfAborted();
+        if (response.status === 202) return { updated: true };
+        if ([401, 403, 404, 409, 422].includes(response.status)) return { updated: false };
+        throw new Error();
+      } catch {
+        throw new Error("GitHub branch update failed");
       }
     },
     async merge({ project, number, head, signal, beforeWrite }) {

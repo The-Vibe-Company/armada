@@ -156,6 +156,10 @@ export interface ForgeProvider extends ProviderConnection {
   read(request: ProjectRequest): Promise<void | ForgeReadResult>;
   /** Complete fresh facts for the merge checklist. Absence refuses merge tools. */
   inspect?(request: ProjectRequest & { number: number }): Promise<ForgeInspection>;
+  /** Merge the base into this exact head. An accepted update is asynchronous; inspect before merging. */
+  updateBranch?(
+    request: ProjectRequest & { number: number; expectedHead: string; beforeWrite?: () => void },
+  ): Promise<{ updated: boolean }>;
   merge(
     request: ProjectRequest & { number: number; head: string; beforeWrite?: () => void },
   ): Promise<{ merged: boolean; mergeCommit?: string }>;
