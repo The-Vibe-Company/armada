@@ -61,10 +61,23 @@ export async function bootDaemon(options: DaemonOptions) {
   const configPath = options.configPath ?? appConfigPath();
   const beforeStore = performance.now();
   const store = new EventStore(options.databasePath);
-  const storeMs = performance.now() - beforeStore;
+  let foldMs = 0;
+  let storeMs = 0;
   const beforePlugins = performance.now();
   try {
-    options.onStarting?.(store.count);
+    // Each project resumes from its stored fold snapshot: the splash counts the
+    // rows appended since, and the warm-up writes the next snapshot.
+    const projectIds = (options.projects ?? []).map((p) => p.id);
+    options.onStarting?.(store.pending(projectIds));
+    for (const id of projectIds) {
+      const warmup = store.warm(id);
+      foldMs += warmup.ms;
+      if (warmup.ignored) options.log.info(`armadad: ${id} fold snapshot ignored (${warmup.ignored}); rebuilding`);
+      options.log.info(
+        `armadad: ${id} fold replayed: ${warmup.replayed} events after seq ${warmup.from} (${warmup.parsed} parsed) in ${warmup.ms.toFixed(0)} ms`,
+      );
+    }
+    storeMs = performance.now() - beforeStore;
     const services = {
       log: options.log,
       secrets: options.secrets,
@@ -109,7 +122,7 @@ export async function bootDaemon(options: DaemonOptions) {
     await writePluginStatus(configPath, catalog, plugins.plugins);
     return {
       ...plugins,
-      timings: { storeMs, pluginsMs: performance.now() - beforePlugins },
+      timings: { storeMs, foldMs, pluginsMs: performance.now() - beforePlugins },
       configPath,
       catalog,
       store,
