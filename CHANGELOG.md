@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.2.70](https://github.com/The-Vibe-Company/armada/compare/v0.2.69...v0.2.70) (2026-11-03)
+
+
+### Features
+
+* **app:** change the coordinator's model from the chat bar ([#417](https://github.com/The-Vibe-Company/armada/issues/417)) ([70c6510](https://github.com/The-Vibe-Company/armada/commit/70c6510ca6d04691b43d641f6239bef9c658008b))
+* **app:** the Tickets page: a project's tickets, create, edit, ready ([#422](https://github.com/The-Vibe-Company/armada/issues/422)) ([c18613b](https://github.com/The-Vibe-Company/armada/commit/c18613b12d57ee766be7018dd46a91d9b682980d))
+* **coordinator:** create and edit tickets from the room ([#416](https://github.com/The-Vibe-Company/armada/issues/416)) ([372e4ec](https://github.com/The-Vibe-Company/armada/commit/372e4ecd041c9ea8608bda1ffe3d9e3156c01867))
+* **coordinator:** retain durable follow-ups for blocked actions ([#420](https://github.com/The-Vibe-Company/armada/issues/420)) ([5b25290](https://github.com/The-Vibe-Company/armada/commit/5b25290b89986e7b6a91eb3a5f3164c5e10943fe))
+* **daemon:** import Linear programs into internal tickets ([#421](https://github.com/The-Vibe-Company/armada/issues/421)) ([e93de67](https://github.com/The-Vibe-Company/armada/commit/e93de67a1c38ca38a053a7f4d373dbdc691baa67))
+* **linear:** create and update tracker tickets ([#425](https://github.com/The-Vibe-Company/armada/issues/425)) ([e02e59d](https://github.com/The-Vibe-Company/armada/commit/e02e59d993ba4137d925b0cc868e7a114a6868b1))
+* **merge:** update behind branches and wait for checks ([#432](https://github.com/The-Vibe-Company/armada/issues/432)) ([8135838](https://github.com/The-Vibe-Company/armada/commit/81358380d310af33dc30936659620e64a1f04cdf))
+* **projects:** run projects without Linear on the internal tracker ([#415](https://github.com/The-Vibe-Company/armada/issues/415)) ([8113715](https://github.com/The-Vibe-Company/armada/commit/811371566fd2fc40d328790c309ee9451b488858))
+* **tracker:** store internal tickets in the event log ([#412](https://github.com/The-Vibe-Company/armada/issues/412)) ([2b44c1b](https://github.com/The-Vibe-Company/armada/commit/2b44c1b96928486516f02b05dc913725ef997245))
+* **worker:** read a ticket through its capability ([#414](https://github.com/The-Vibe-Company/armada/issues/414)) ([465e61c](https://github.com/The-Vibe-Company/armada/commit/465e61ca3457753130462b933dd287e588a66918))
+
+
+### Bug Fixes
+
+* **coordinator:** launch with known capacity and actionable runtime gaps ([#426](https://github.com/The-Vibe-Company/armada/issues/426)) ([027c17b](https://github.com/The-Vibe-Company/armada/commit/027c17b54df160fce9ea2d0359349004d234126c))
+* **coordinator:** name blocked capabilities and their owner fixes ([#423](https://github.com/The-Vibe-Company/armada/issues/423)) ([28abb0a](https://github.com/The-Vibe-Company/armada/commit/28abb0a63f15a709a6a5e934979b2aad408755d1))
+* **daemon:** avoid repeated fleet folds during startup ([#419](https://github.com/The-Vibe-Company/armada/issues/419)) ([1db666e](https://github.com/The-Vibe-Company/armada/commit/1db666e2cacdea8ecfec6ee7c337d3137ff46ddc))
+* **daemon:** derive tracker hand-backs and plans ([#418](https://github.com/The-Vibe-Company/armada/issues/418)) ([d7348c1](https://github.com/The-Vibe-Company/armada/commit/d7348c133c7e2f1a611c875c1bc5de63b5f2e971))
+* **daemon:** make boot benchmark independent of host speed ([#430](https://github.com/The-Vibe-Company/armada/issues/430)) ([0752995](https://github.com/The-Vibe-Company/armada/commit/0752995535b60730d0c4e84affb4a52cdd5e7354))
+* **daemon:** name failing local merge tests and base failures ([#431](https://github.com/The-Vibe-Company/armada/issues/431)) ([876bb3b](https://github.com/The-Vibe-Company/armada/commit/876bb3b3c25feeebbfcb822f62e334ab2c916f43))
+* **daemon:** recover lost local workers safely after a daemon restart ([#428](https://github.com/The-Vibe-Company/armada/issues/428)) ([3d70975](https://github.com/The-Vibe-Company/armada/commit/3d70975ac990f356c2dac5ca91d67eb3e4b1fba5))
+* **github:** reconcile pull requests missed while reading paused ([#424](https://github.com/The-Vibe-Company/armada/issues/424)) ([0189806](https://github.com/The-Vibe-Company/armada/commit/01898064c8a45a4ed5bce372fd152655fc3fa802))
+* **linear:** create coordinator tickets in backlog ([#427](https://github.com/The-Vibe-Company/armada/issues/427)) ([d99d8a4](https://github.com/The-Vibe-Company/armada/commit/d99d8a455e6ef8244f079d3ff09ffcc60f0e0410))
+* **runtime:** keep local workers reachable after hand-back ([#433](https://github.com/The-Vibe-Company/armada/issues/433)) ([02ca800](https://github.com/The-Vibe-Company/armada/commit/02ca8000d2adf783e949c171f1342cc2b233e8c2))
+* **runtime:** run local workers unattended by default ([#429](https://github.com/The-Vibe-Company/armada/issues/429)) ([e66fec9](https://github.com/The-Vibe-Company/armada/commit/e66fec9a423d602866a9114af6f3e3a39988da14))
+
 ## [0.2.69](https://github.com/The-Vibe-Company/armada/compare/v0.2.68...v0.2.69) (2026-11-01)
 
 
