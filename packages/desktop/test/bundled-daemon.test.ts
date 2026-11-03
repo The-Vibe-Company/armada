@@ -107,18 +107,16 @@ test("Electron's bundled daemon starts a configured coordinator and reads creden
 // or CI smoke-tests a build. Nothing here may touch the desktop this test runs on.
 const electron = createRequire(import.meta.url)("electron") as string;
 const desktopPackage = fileURLToPath(new URL("..", import.meta.url));
-const shellEnvironment = (dir: string): NodeJS.ProcessEnv => {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    ARMADA_DESKTOP_HEADLESS: "1",
-    // The daemon the shell spawns inherits this: disposable credentials, never the developer's.
-    ARMADA_KEYCHAIN: "file",
-    XDG_CONFIG_HOME: dir,
-    ARMADA_APP_CONFIG: join(dir, "config.json"),
-  };
+const shellEnvironment = (): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = { ...process.env, ARMADA_DESKTOP_HEADLESS: "1" };
   // The shell itself runs as Electron; only its daemon child runs as Node.
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.NODE_OPTIONS;
+  // The shell, not this test, keeps its daemon off the account's configuration and keychain
+  // (headlessDaemonEnv): the test runner's own disposable values are withheld to prove it.
+  delete env.ARMADA_KEYCHAIN;
+  delete env.XDG_CONFIG_HOME;
+  delete env.ARMADA_APP_CONFIG;
   return env;
 };
 const bootShell = (env: NodeJS.ProcessEnv) => {
@@ -141,7 +139,7 @@ test("ARMADA_DESKTOP_HEADLESS=1 boots the built shell with no window or dock ico
   const projects = join(dir, "projects.json");
   writeFileSync(projects, JSON.stringify([{ id: "quiet", name: "Quiet", repository: "example/quiet" }]));
   const shell = bootShell({
-    ...shellEnvironment(dir),
+    ...shellEnvironment(),
     ARMADA_DESKTOP_PROJECTS: projects,
     ARMADA_DESKTOP_DATABASE: join(dir, "fleet.sqlite"),
   });
@@ -188,7 +186,7 @@ test("a headless shell without an explicit catalog and log refuses instead of op
   timeout: 40000,
 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "armada-desktop-headless-refusal-"));
-  const env = shellEnvironment(dir);
+  const env = shellEnvironment();
   delete env.ARMADA_DESKTOP_PROJECTS;
   delete env.ARMADA_DESKTOP_DATABASE;
   const shell = bootShell(env);

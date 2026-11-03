@@ -14,7 +14,7 @@ import {
   REVEAL_CHANNEL,
 } from "./bridge.ts";
 import { type DaemonAddress, DaemonProcess, RESTART_EXIT_CODE, restartDaemon } from "./daemon.ts";
-import { daemonData, headlessRequested, noDisplay, readinessLine } from "./headless.ts";
+import { daemonData, headlessDaemonEnv, headlessRequested, noDisplay, readinessLine } from "./headless.ts";
 import { shellPaths } from "./paths.ts";
 import { STARTUP_URL } from "./startup.ts";
 
@@ -51,8 +51,10 @@ app.on("before-quit", (event) => {
 });
 app.on("window-all-closed", () => app.quit());
 app.on("activate", () => window?.focus());
-process.once("SIGTERM", () => app.quit());
-process.once("SIGINT", () => app.quit());
+// Every signal asks for the one quit (before-quit stops the daemon once); a repeated one must not
+// end Electron by default and orphan the daemon.
+process.on("SIGTERM", () => app.quit());
+process.on("SIGINT", () => app.quit());
 
 void app.whenReady().then(async () => {
   if (quitting) return;
@@ -107,7 +109,10 @@ void app.whenReady().then(async () => {
         staticDir: PATHS.staticDir,
         port,
         restartable: true,
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+        env: {
+          ...(HEADLESS_DATA ? headlessDaemonEnv(process.env, HEADLESS_DATA) : process.env),
+          ELECTRON_RUN_AS_NODE: "1",
+        },
       });
       return daemon;
     };

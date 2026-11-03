@@ -5,6 +5,7 @@ import {
   DATABASE_VARIABLE,
   daemonData,
   HEADLESS_VARIABLE,
+  headlessDaemonEnv,
   headlessRequested,
   noDisplay,
   PROJECTS_VARIABLE,
@@ -39,6 +40,22 @@ test("the daemon's data is the explicit catalog and log, else under the user dat
     assert.throws(() => daemonData(env, userData, true), {
       message: `${HEADLESS_VARIABLE} needs ${PROJECTS_VARIABLE} and ${DATABASE_VARIABLE}: a headless shell never opens this account's own fleet`,
     });
+});
+
+test("a headless shell's daemon gets its own configuration, app config and file keychain under the shell's directory; explicit values win", () => {
+  const dataDir = join("/tmp", "armada-desktop-headless-abc");
+  assert.deepEqual(headlessDaemonEnv({ PATH: "/usr/bin", HOME: undefined }, dataDir), {
+    XDG_CONFIG_HOME: join(dataDir, "config"),
+    ARMADA_APP_CONFIG: join(dataDir, "config.json"),
+    ARMADA_KEYCHAIN: "file",
+    PATH: "/usr/bin",
+  });
+  const explicit = {
+    XDG_CONFIG_HOME: "/tmp/elsewhere",
+    ARMADA_APP_CONFIG: "/tmp/elsewhere/app.json",
+    ARMADA_KEYCHAIN: "native",
+  };
+  assert.deepEqual(headlessDaemonEnv(explicit, dataDir), explicit);
 });
 
 test("only Linux without a display server takes Chromium's headless platform", () => {

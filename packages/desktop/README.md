@@ -82,11 +82,16 @@ xattr -dr com.apple.quarantine /Applications/Armada.app
 A worker or CI never opens the app on the owner's screen: no `open -a`, no
 `osascript`, no `screencapture`. The shell honours `ARMADA_DESKTOP_HEADLESS=1`
 instead: it creates no window, hides its dock icon (`app.dock.hide()`), keeps
-Electron's own user data in a disposable directory removed at quit, and takes
+Electron's own user data in a disposable directory removed at quit, starts its
+daemon with its own configuration directory, app configuration and file
+keychain under that directory (`XDG_CONFIG_HOME`, `ARMADA_APP_CONFIG`,
+`ARMADA_KEYCHAIN=file`, each only when not set: the account's `~/.config/armada`,
+its plugins and its login keychain are never touched), and takes
 only the catalog and log it is given. Without `ARMADA_DESKTOP_PROJECTS` and
 `ARMADA_DESKTOP_DATABASE` it exits with code 1 naming them: it never opens the
 fleet of the account it runs under. Once its daemon is ready it prints one JSON
-line on stdout, `{"headless":true,"url":…,"wsUrl":…,"windows":0,"dockVisible":false}`,
+line on stdout, `{"headless":true,"url":…,"wsUrl":…,"windows":0,"dockVisible":false}`
+(and another one should the app's Restart bring the daemon back on a new port),
 and waits for SIGTERM or SIGINT, which stop the daemon and exit with code 0.
 Assertions go through the daemon's HTTP and WebSocket addresses on that line.
 For a packaged build:

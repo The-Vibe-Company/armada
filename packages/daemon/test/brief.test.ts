@@ -176,7 +176,8 @@ test("brief inlines only the newest six comments, each at most 600 characters, a
   const hostedContext = hosted.split("## More context\n\n")[1]?.split("\n\n## ")[0] ?? "";
   assert.ok(hostedContext.includes(url), "hosted workers retain their ticket link");
   assert.ok(!hostedContext.includes("armada ticket"), "hosted workers have no local socket capability");
-  assert.ok(!hosted.includes("ARMADA_DESKTOP_HEADLESS"), "only a local launch environment carries the desktop flag");
+  const hostedLaunch = hosted.split("## Launch instructions")[1]!.split("\n\n## ")[0]!;
+  assert.ok(!hostedLaunch.includes("ARMADA_DESKTOP_HEADLESS"), "only a local launch names the desktop flag it sets");
   assert.ok(Buffer.byteLength(linked) < 48 * 1024);
   assert.match(workerBrief(input()), /Run `armada ticket` for the full ticket and its comments/);
   assert.deepEqual(
