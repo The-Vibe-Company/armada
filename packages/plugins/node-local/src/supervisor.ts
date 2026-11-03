@@ -58,6 +58,19 @@ export const supervisorScript = String.raw`(() => {
     return error && typeof error === "object" ? error.code : undefined;
   }
 
+  /** The last line a dying supervisor leaves: the reason, never the configuration or output. */
+  function crash(reason, error) {
+    try {
+      const detail = error instanceof Error ? error.stack || error.message : String(error);
+      const line = new Date().toISOString() + " supervisor exiting: " + reason + ": " + detail + "\n";
+      if (config && config.paths && config.paths.directory)
+        fs.appendFileSync(path.join(config.paths.directory, "supervisor.log"), line, { mode: 0o600 });
+    } catch {}
+    process.exit(1);
+  }
+  process.on("uncaughtException", (error) => crash("uncaught exception", error));
+  process.on("unhandledRejection", (error) => crash("unhandled rejection", error));
+
   function uuid(value) {
     return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
   }
@@ -480,6 +493,9 @@ export const supervisorScript = String.raw`(() => {
   function reply(socket, value) {
     if (socket.destroyed) return;
     const payload = JSON.stringify(value) + "\n";
+    // A peer that already reset the connection (a timed-out or satisfied host
+    // request) surfaces as EPIPE/ECONNRESET here; the socket's error listener
+    // below keeps that a closed connection, never a supervisor crash.
     socket.end(payload);
   }
 
@@ -496,6 +512,9 @@ export const supervisorScript = String.raw`(() => {
         maybeCloseServer();
       };
       socket.setEncoding("utf8");
+      // Without this listener one reset peer raises an uncaught error and ends
+      // the supervisor while its process group keeps running (THE-2233).
+      socket.on("error", () => socket.destroy());
       socket.on("close", done);
       socket.on("data", (chunk) => {
         if (replied) return;
@@ -521,7 +540,7 @@ export const supervisorScript = String.raw`(() => {
         );
       });
     });
-    server.on("error", () => process.exit(1));
+    server.on("error", (error) => crash("socket server error", error));
     server.listen(config.paths.socket, async () => {
       try {
         if (process.platform !== "win32") await fs.promises.chmod(config.paths.socket, 0o600);
