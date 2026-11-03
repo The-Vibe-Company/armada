@@ -1,6 +1,6 @@
 {
   "name": "@armada/desktop",
-  "version": "0.0.0",
+  "version": "0.2.70",
   "private": true,
   "type": "module",
   "description": "Replaceable Electron shell for the local Armada daemon and app.",
@@ -9,6 +9,7 @@
     "postinstall": "install-electron",
     "dev": "bun run build && electron-vite preview --skipBuild",
     "build": "bun ../../scripts/bundle-skills.ts && node ../../scripts/plugin-catalog.ts && bun run --cwd ../plugin-api build && bun run --cwd ../app build && electron-vite build",
+    "dist": "bun run build && electron-builder --mac --publish never",
     "typecheck": "tsc --noEmit -p .",
     "test": "node --import ../../scripts/test-env.ts --test test/*.test.ts"
   },
@@ -19,6 +20,7 @@
     "@armada/protocol": "workspace:*",
     "@types/node": "22.20.5",
     "electron": "45.1.0",
+    "electron-builder": "26.18.1",
     "electron-vite": "6.0.0",
     "vite": "8.3.5"
   }
