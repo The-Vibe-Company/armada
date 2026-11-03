@@ -12,12 +12,15 @@ import {
   REVEAL_CHANNEL,
 } from "./bridge.ts";
 import { type DaemonAddress, DaemonProcess, RESTART_EXIT_CODE, restartDaemon } from "./daemon.ts";
+import { shellPaths } from "./paths.ts";
 import { STARTUP_URL } from "./startup.ts";
 
 app.setName("Armada");
-// The app's icon (resources/icon.png, the mark on its tile): the dock on macOS, the window elsewhere,
-// until a packaged build carries resources/icon.icns itself.
-const ICON = fileURLToPath(new URL("../../resources/icon.png", import.meta.url));
+// The room's built files, the icon and the daemon entry: under the installed bundle's resources when
+// packaged (THE-2229), under the checkout when run from source.
+const PATHS = shellPaths({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, mainUrl: import.meta.url });
+// The app's icon (resources/icon.png, the mark on its tile): the dock on macOS, the window elsewhere.
+const ICON = PATHS.icon;
 let daemon: DaemonProcess | undefined;
 let window: BrowserWindow | undefined;
 let quitting = false;
@@ -77,10 +80,10 @@ void app.whenReady().then(async () => {
             .catch(() => {});
         },
         executable: process.execPath,
-        entry: fileURLToPath(new URL("./armadad.js", import.meta.url)),
+        entry: PATHS.daemonEntry,
         database: process.env.ARMADA_DESKTOP_DATABASE ?? join(dataDir, "fleet.sqlite"),
         projects: process.env.ARMADA_DESKTOP_PROJECTS ?? join(dataDir, "projects.json"),
-        staticDir: fileURLToPath(new URL("../../../app/dist/", import.meta.url)),
+        staticDir: PATHS.staticDir,
         port,
         restartable: true,
         env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
