@@ -40,7 +40,7 @@ createInterface({ input: process.stdin }).on("line", (raw) => {
     say({ type: "system", subtype: "init" });
     say({ type: "system", subtype: "background_tasks_changed", tasks: [task] });
     say({ type: "result", num_turns: 1, result: "waiting" });
-    setTimeout(() => say({ type: "system", subtype: "background_tasks_changed", tasks: [] }), 300);
+    setTimeout(() => say({ type: "system", subtype: "background_tasks_changed", tasks: [] }), later / 3);
   } else if (scenario === "stale-result") {
     // A resumed session answers a stale task notification first, then runs the real turn.
     say({ type: "system", subtype: "task_notification", status: "stopped" });

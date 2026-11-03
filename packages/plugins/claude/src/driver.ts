@@ -18,6 +18,8 @@ export const DRIVER = String.raw`
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 const options = JSON.parse(process.argv[1]);
+// The grace after a final result; tests shorten it, production keeps one second.
+const retireMs = Number.isSafeInteger(options.retireMs) && options.retireMs > 0 ? options.retireMs : 1000;
 let child;
 let session;
 let finishing = false;
@@ -83,8 +85,8 @@ function start() {
     if (!retire && !retired && !tasks.size) retire = setTimeout(() => {
       retired = true;
       cli.kill("SIGTERM");
-      kill = setTimeout(() => cli.kill("SIGKILL"), 1000);
-    }, lateLine ? 30000 : 1000);
+      kill = setTimeout(() => cli.kill("SIGKILL"), retireMs);
+    }, lateLine ? retireMs * 30 : retireMs);
   };
   // One line per turn: later input waits in the driver for this turn's result.
   const once = (line) => { accept = undefined; into(line); };

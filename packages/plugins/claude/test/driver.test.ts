@@ -8,6 +8,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { DRIVER } from "../src/driver.ts";
 
+/** The injected retire grace (production: one second); each scenario's timing scales from it. */
+const RETIRE_MS = 150;
 const fixture = fileURLToPath(new URL("./fixtures/claude-turns.mjs", import.meta.url));
 
 /** The driver exactly as the plugin launches it, over the scripted CLI. */
@@ -16,8 +18,22 @@ async function driver(scenario: string) {
   const ledger = join(root, "turns.jsonl");
   const child = spawn(
     "node",
-    ["--input-type=module", "--eval", DRIVER, JSON.stringify({ command: "node", args: [fixture] })],
-    { env: { ...process.env, FIXTURE_SCENARIO: scenario, FIXTURE_LEDGER: ledger }, stdio: "pipe" },
+    [
+      "--input-type=module",
+      "--eval",
+      DRIVER,
+      JSON.stringify({ command: "node", args: [fixture], retireMs: RETIRE_MS }),
+    ],
+    {
+      // Later frames arrive after the retire and its SIGKILL would both have fired.
+      env: {
+        ...process.env,
+        FIXTURE_SCENARIO: scenario,
+        FIXTURE_LEDGER: ledger,
+        FIXTURE_LATER_MS: String(RETIRE_MS * 3),
+      },
+      stdio: "pipe",
+    },
   );
   const frames: Record<string, unknown>[] = [];
   let pending = "";
