@@ -14,7 +14,8 @@
     "test": "node --import ../../scripts/test-env.ts --test test/*.test.ts"
   },
   "dependencies": {
-    "@napi-rs/keyring": "2.1.2"
+    "@napi-rs/keyring": "2.1.2",
+    "electron-updater": "6.8.11"
   },
   "devDependencies": {
     "@armada/protocol": "workspace:*",
