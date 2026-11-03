@@ -34,6 +34,16 @@ interface ProjectFold {
   ignored?: string;
 }
 
+const rowToEvent = (row: Record<string, unknown>): FleetEvent =>
+  ({
+    seq: row.seq,
+    project: row.project,
+    kind: row.kind,
+    at: row.at,
+    actor: row.actor,
+    payload: JSON.parse(row.payload as string),
+  }) as FleetEvent;
+
 /** The only durable store: callers supply time and identity; SQLite supplies order. */
 export class EventStore {
   readonly #db: DatabaseSync;
@@ -160,6 +170,29 @@ export class EventStore {
           payload: JSON.parse(row.payload as string),
         }) as FleetEvent,
     );
+  }
+
+  /** Every event of one kind in a project, oldest first: SQL filters so a reader of
+   * one stream (chat lines, usage) never parses the whole log (THE-2238). */
+  readKind(project: string, kind: string): FleetEvent[] {
+    const rows = this.#db
+      .prepare("SELECT seq, project, kind, at, actor, payload FROM events WHERE project = ? AND kind = ? ORDER BY seq")
+      .all(project, kind);
+    return rows.map(rowToEvent);
+  }
+
+  /** The newest event of one kind in a project, optionally where one JSON path of its
+   * payload equals a value, read as one row instead of a replay. */
+  latestKind(project: string, kind: string, where?: { path: string; equals: string }): FleetEvent | undefined {
+    if (where && !/^\$(\.[A-Za-z_][A-Za-z0-9_]*)+$/.test(where.path))
+      throw new Error("latestKind needs a plain JSON path such as $.session");
+    const columns = "SELECT seq, project, kind, at, actor, payload FROM events WHERE project = ? AND kind = ?";
+    const row = where
+      ? this.#db
+          .prepare(`${columns} AND json_extract(payload, '${where.path}') = ? ORDER BY seq DESC LIMIT 1`)
+          .get(project, kind, where.equals)
+      : this.#db.prepare(`${columns} ORDER BY seq DESC LIMIT 1`).get(project, kind);
+    return row ? rowToEvent(row as Record<string, unknown>) : undefined;
   }
 
   /** The fold's own read: the same rows as `readSince`, except that a

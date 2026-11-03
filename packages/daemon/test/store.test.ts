@@ -120,6 +120,61 @@ function mixedLog(): EventInput[] {
   ];
 }
 
+test("one kind is read on its own and the newest row by a payload field is one lookup, not a replay", () => {
+  const store = new EventStore(":memory:");
+  const at = "2030-01-01T10:00:00Z";
+  const usage = (session: string, n: number, project = "orchard"): EventInput => ({
+    project,
+    kind: "session.usage",
+    at,
+    actor: "daemon",
+    payload: {
+      ticket: "ORC-1",
+      session,
+      generation: 1,
+      usage: { input: n, output: 0, cacheRead: null, cacheWrite: null, model: null, provider: null },
+    },
+  });
+  store.appendMany([
+    {
+      project: "orchard",
+      kind: "coordinator.message",
+      at,
+      actor: "coordinator",
+      payload: { role: "owner", body: "hi" },
+    },
+    usage("one", 1),
+    usage("two", 2),
+    {
+      project: "orchard",
+      kind: "coordinator.message",
+      at,
+      actor: "coordinator",
+      payload: { role: "coordinator", body: "ok" },
+    },
+    usage("one", 3),
+    usage("one", 9, "elsewhere"),
+  ]);
+  assert.deepEqual(
+    store.readKind("orchard", "coordinator.message").map((e) => (e.payload as { body: string }).body),
+    ["hi", "ok"],
+    "only that kind, oldest first, this project only",
+  );
+  assert.deepEqual(store.readKind("orchard", "session.heartbeat"), []);
+  const latest = store.latestKind("orchard", "session.usage", { path: "$.session", equals: "one" });
+  assert(latest, "the session has usage rows");
+  assert.equal((latest.payload as { usage: { input: number } }).usage.input, 3, "the newest row of that session");
+  assert.equal(latest.seq, 5);
+  assert.equal(store.latestKind("orchard", "session.usage")?.seq, 5, "without a filter: the newest of the kind");
+  assert.equal(store.latestKind("orchard", "session.usage", { path: "$.session", equals: "none" }), undefined);
+  assert.throws(
+    () => store.latestKind("orchard", "session.usage", { path: "$.session') OR 1=1 --", equals: "x" }),
+    /plain JSON path/,
+    "the path is not interpolated unchecked",
+  );
+  store.close();
+});
+
 test("durable append, exclusive replay cursor and project isolation use the committed sequence", () => {
   const dir = mkdtempSync(join(tmpdir(), "armada-events-"));
   const path = join(dir, "fleet.sqlite");
