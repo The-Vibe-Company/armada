@@ -3,6 +3,7 @@ import { ChildProcess, execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readdir, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
@@ -977,6 +978,86 @@ const survivingFixture = (pidFile: string, stopFile: string) =>
     `setInterval(() => { if (existsSync(${JSON.stringify(stopFile)})) process.exit(0); }, 50);`,
     "setTimeout(() => process.exit(0), 60_000);",
   ].join("\n");
+
+/** A CLI fixture whose output outgrows a Unix socket's send buffer, so every observe reply is written in several chunks. */
+const talkativeFixture = () =>
+  [
+    "console.log('READY');",
+    "for (let i = 0; i < 2000; i += 1) console.log('line ' + i + ' ' + 'x'.repeat(100));",
+    "console.log('DONE');",
+    "process.stdin.resume();",
+    "setTimeout(() => process.exit(0), 60_000);",
+  ].join("\n");
+
+test("a peer that resets the connection before reading a large reply does not end the supervisor", {
+  skip: process.platform === "win32",
+  timeout: 60_000,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "armada-node-reset-"));
+  const handles: string[] = [];
+  let node: ReturnType<typeof createLocalNode> | undefined;
+  let worker: Awaited<ReturnType<typeof launch>> | undefined;
+  try {
+    const source = await repository(root);
+    const workspaceRoot = join(source, ".armada", "worktrees");
+    node = createLocalNode({ projects: { "local-test": { root: source } }, transport: "pipe" });
+    const workspace = await node.prepare({
+      project: "local-test",
+      ticket: "CHECK-1",
+      repository: source,
+      branch: "reset-branch",
+    });
+    await writeFile(join(workspace.path, "worker.mjs"), talkativeFixture());
+    worker = await launch(node, workspace, "session-reset");
+    handles.push(worker.handle);
+    await eventually(async () => (await node!.observe(worker!)).reply?.includes("DONE") === true, {
+      timeoutMs: 15_000,
+    });
+    const paths = supervisorDirectory(workspaceRoot, worker.handle);
+    const contract = JSON.parse(await readFile(join(paths, "pin.json"), "utf8")) as { group: number };
+    const supervisor = await parentOf(contract.group);
+    assert(supervisor > 1);
+    const request = `${JSON.stringify({
+      op: "observe",
+      worker,
+      workspace: { id: workspace.id, path: workspace.path, node: workspace.node },
+    })}\n`;
+    // The host's client destroys its socket on a timeout, or as soon as it has read a
+    // whole line: either way the supervisor may still be writing the rest of a reply
+    // larger than the socket buffer. Reproduce both: never read, and read one chunk.
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await new Promise<void>((resolveAttempt, rejectAttempt) => {
+        const socket = createConnection(join(paths, "s"));
+        socket.on("error", rejectAttempt);
+        socket.once("connect", () => {
+          socket.write(request);
+          if (attempt % 2 === 0) setTimeout(() => socket.destroy(), 5);
+          else socket.once("data", () => socket.destroy());
+        });
+        socket.once("close", () => resolveAttempt());
+      });
+      await setImmediate();
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 300));
+    assert(alive(supervisor), "the supervisor survived every reset peer");
+    const observed = await node.observe(worker);
+    assert.equal(observed.state, "running");
+    assert(observed.reply?.includes("DONE"));
+    await assert.rejects(
+      stat(join(paths, "supervisor.log")),
+      /ENOENT/,
+      "nothing crashed, so no crash line was written",
+    );
+  } finally {
+    if (node && worker)
+      await guarded(
+        worker,
+        () => {},
+        () => node!.stop(worker!),
+      ).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("a dead supervisor is reported gone only once its contracted process group ended; the kept worktree is then reused", {
   skip: process.platform === "win32",

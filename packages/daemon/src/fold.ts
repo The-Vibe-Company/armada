@@ -22,7 +22,7 @@ import { recoverFollowUps, sameFollowUpAction } from "../coordinator/follow-ups.
 import { checkpointRules, emptyRules, type RulesState } from "../coordinator/rules.ts";
 import { applyDelivery, deliveryFollowUpId } from "./delivery-state.ts";
 import { flowStep, pipelineStep } from "./rules.ts";
-import { projectUsage } from "./usage.ts";
+import { UsageLedger } from "./usage.ts";
 
 export type {
   FleetTables,
@@ -62,6 +62,18 @@ const readerCheckpoint = z.object({
   failures: z.number().int().nonnegative().optional(),
 });
 
+/** Bump when the fold's rules or the projection's shape change: a stored
+ * snapshot of another version is ignored and rebuilt from the log.
+ */
+export const FOLD_VERSION = 1;
+/** Checkpoint formats whose rows the fold never reads, and those it reads
+ * latest-wins per actor, so a store can hand it a stub for the others.
+ */
+export const CHECKPOINT_RETENTION = {
+  skipped: ["armada.github-reader"],
+  latest: ["armada.linear-reader"],
+} as const;
+
 interface Projection {
   trackerImport?: ProjectTables["trackerImport"];
   defaultBranch?: ProjectTables["defaultBranch"];
@@ -81,8 +93,10 @@ interface Projection {
   validations: Map<string, Validation>;
   deliveries: Map<string, Delivery>;
   deliveryFollowUps: Set<string>;
+  usage: UsageLedger;
 }
 const empty = (): Projection => ({
+  usage: new UsageLedger(),
   rules: emptyRules(),
   readAt: Object.create(null),
   readers: Object.create(null),
@@ -113,26 +127,28 @@ const clearProgressNotices = (p: Projection, ticket: string) => {
 
 /** Append-only, in-memory replay state. Each snapshot is detached so a caller
  * can keep the previous reading while the next event advances the same fold.
- * The event log remains the authority; nothing here is persisted.
+ * The event log remains the authority; `serialize` only lets a store resume
+ * this state from a cursor instead of replaying the whole log.
  */
 export class FoldAccumulator {
   readonly #projects = new Map<string, Projection>();
-  readonly #events: FleetEvent[] = [];
   #seq = 0;
 
-  append(source: FleetEvent): void {
+  /** The last applied sequence number: a resumed replay starts after it. */
+  get seq(): number {
+    return this.#seq;
+  }
+
+  /** `owned` events were parsed for this accumulator and are not cloned. */
+  append(source: FleetEvent, owned = false): void {
     if (!Number.isSafeInteger(source.seq) || source.seq <= this.#seq)
       throw new Error("events must have increasing positive sequence numbers");
-    const event = structuredClone(source);
-    applyEvent(this.#projects, event);
-    // Only these event kinds contribute to projectUsage; the rest of the fold
-    // already lives in the projection, without a growing replay prefix.
-    if (["coordinator.checkpoint", "worker.readopted", "session.usage"].includes(event.kind)) this.#events.push(event);
-    this.#seq = event.seq;
+    applyEvent(this.#projects, owned ? source : structuredClone(source));
+    this.#seq = source.seq;
   }
 
   snapshot(): FleetTables {
-    const tables = structuredClone(projectTables(this.#projects, this.#seq, this.#events));
+    const tables = structuredClone(projectTables(this.#projects, this.#seq));
     // structuredClone normalizes null dictionaries; preserve missing-name reads.
     Object.setPrototypeOf(tables.projects, null);
     for (const project of Object.values(tables.projects)) {
@@ -141,6 +157,118 @@ export class FoldAccumulator {
     }
     return tables;
   }
+
+  /** The projection as JSON text, every map and set written as entry lists. */
+  serialize(): string {
+    const state: SerializedFold = {
+      version: FOLD_VERSION,
+      seq: this.#seq,
+      projects: [...this.#projects].map(([project, p]) => [
+        project,
+        {
+          ...(p.trackerImport ? { trackerImport: p.trackerImport } : {}),
+          ...(p.defaultBranch ? { defaultBranch: p.defaultBranch } : {}),
+          readAt: Object.entries(p.readAt),
+          readers: Object.entries(p.readers),
+          rules: p.rules,
+          tickets: [...p.tickets],
+          internal: [...p.internal],
+          comments: [...p.comments].map(([ticket, comments]) => [ticket, [...comments]]),
+          prs: [...p.prs],
+          mergedAt: [...p.mergedAt],
+          sessions: [...p.sessions],
+          claims: [...p.claims],
+          inbox: [...p.inbox],
+          queue: [...p.queue],
+          holds: [...p.holds],
+          validations: [...p.validations],
+          deliveries: [...p.deliveries],
+          deliveryFollowUps: [...p.deliveryFollowUps],
+          usage: p.usage.serialize(),
+        },
+      ]),
+    };
+    return JSON.stringify(state);
+  }
+
+  /** Read `serialize`'s text back; throws on another fold version or any odd shape. */
+  static restore(text: string): FoldAccumulator {
+    const state: unknown = JSON.parse(text);
+    if (!isRecord(state)) throw new Error("fold snapshot is not an object");
+    if (state.version !== FOLD_VERSION) throw new Error(`fold snapshot version ${String(state.version)}`);
+    if (!Number.isSafeInteger(state.seq) || (state.seq as number) < 0) throw new Error("fold snapshot cursor");
+    const accumulator = new FoldAccumulator();
+    for (const [project, p] of entries(state.projects, "projects")) {
+      if (!isRecord(p)) throw new Error("fold snapshot project is not an object");
+      if (!isRecord(p.rules) || typeof p.rules.revision !== "number" || !isRecord(p.rules.value))
+        throw new Error("fold snapshot rules are malformed");
+      const projection = empty();
+      if (p.trackerImport !== undefined) projection.trackerImport = record(p.trackerImport, "trackerImport") as never;
+      if (p.defaultBranch !== undefined) projection.defaultBranch = record(p.defaultBranch, "defaultBranch") as never;
+      for (const [provider, at] of entries(p.readAt, "readAt")) {
+        if (typeof at !== "string") throw new Error("fold snapshot readAt is malformed");
+        projection.readAt[provider] = at;
+      }
+      for (const [provider, usage] of entries(p.readers, "readers"))
+        projection.readers[provider] = record(usage, "readers") as ReaderUsage;
+      projection.rules = p.rules as RulesState;
+      for (const [id, t] of entries(p.tickets, "tickets")) projection.tickets.set(id, record(t, "tickets") as Ticket);
+      for (const [id, t] of entries(p.internal, "internal"))
+        projection.internal.set(id, record(t, "internal") as EventPayloads["ticket.created"]);
+      for (const [ticket, comments] of entries(p.comments, "comments"))
+        projection.comments.set(
+          ticket,
+          new Map(entries(comments, "comments").map(([id, c]) => [id, record(c, "comments") as never])),
+        );
+      for (const [number, pr] of entries(p.prs, "prs", "number"))
+        projection.prs.set(number, record(pr, "prs") as PullRequest);
+      for (const [number, merged] of entries(p.mergedAt, "mergedAt", "number"))
+        projection.mergedAt.set(number, record(merged, "mergedAt") as never);
+      for (const [ticket, draft] of entries(p.sessions, "sessions"))
+        projection.sessions.set(ticket, record(draft, "sessions") as unknown as Draft);
+      for (const claim of strings(p.claims, "claims")) projection.claims.add(claim);
+      for (const [id, item] of entries(p.inbox, "inbox")) projection.inbox.set(id, record(item, "inbox") as InboxItem);
+      for (const [id, entry] of entries(p.queue, "queue"))
+        projection.queue.set(id, record(entry, "queue") as QueueEntry);
+      for (const [id, hold] of entries(p.holds, "holds")) projection.holds.set(id, record(hold, "holds") as Hold);
+      for (const [id, v] of entries(p.validations, "validations"))
+        projection.validations.set(id, record(v, "validations") as Validation);
+      for (const [id, d] of entries(p.deliveries, "deliveries"))
+        projection.deliveries.set(id, record(d, "deliveries") as Delivery);
+      for (const id of strings(p.deliveryFollowUps, "deliveryFollowUps")) projection.deliveryFollowUps.add(id);
+      projection.usage = UsageLedger.restore(p.usage);
+      accumulator.#projects.set(project, projection);
+    }
+    accumulator.#seq = state.seq as number;
+    return accumulator;
+  }
+}
+
+interface SerializedFold {
+  version: number;
+  seq: number;
+  projects: [string, Record<string, unknown>][];
+}
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const record = (value: unknown, name: string): Record<string, unknown> => {
+  if (!isRecord(value)) throw new Error(`fold snapshot ${name} entry is not an object`);
+  return value;
+};
+const strings = (value: unknown, name: string): string[] => {
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string"))
+    throw new Error(`fold snapshot ${name} is not a list of strings`);
+  return value;
+};
+function entries(value: unknown, name: string, key: "number"): [number, unknown][];
+function entries(value: unknown, name: string): [string, unknown][];
+function entries(value: unknown, name: string, key?: "number"): [string | number, unknown][] {
+  if (
+    !Array.isArray(value) ||
+    value.some((e) => !Array.isArray(e) || e.length !== 2 || typeof e[0] !== (key ?? "string"))
+  )
+    throw new Error(`fold snapshot ${name} is not a list of entries`);
+  return value as [string | number, unknown][];
 }
 
 /** Replay a complete, ascending log (or a project-filtered log with sequence gaps).
@@ -158,7 +286,7 @@ export function fold(events: readonly FleetEvent[]): FleetTables {
     // Unlike the reusable accumulator, this call cannot outlive its input.
     applyEvent(projects, source.kind === "coordinator.checkpoint" ? source : structuredClone(source));
   }
-  return projectTables(projects, seq, events);
+  return projectTables(projects, seq);
 }
 
 function applyEvent(projects: Map<string, Projection>, e: FleetEvent): void {
@@ -168,6 +296,7 @@ function applyEvent(projects: Map<string, Projection>, e: FleetEvent): void {
     projects.set(e.project, p);
   }
   applyDelivery(p.deliveries, e);
+  p.usage.apply(e);
   if (e.kind === "inbox.opened" && e.payload.followUp?.code === "delivery_failed")
     p.deliveryFollowUps.add(e.payload.id);
   switch (e.kind) {
@@ -458,14 +587,17 @@ function applyEvent(projects: Map<string, Projection>, e: FleetEvent): void {
   recoverFollowUps(p.inbox, e, p.sessions);
 }
 
-function projectTables(projects: Map<string, Projection>, seq: number, events: readonly FleetEvent[]): FleetTables {
+function projectTables(projects: Map<string, Projection>, seq: number): FleetTables {
   const tables: FleetTables = { seq, projects: Object.create(null) };
   for (const [project, p] of projects) {
+    // A local view: the projection keeps only observed tickets, so a reading
+    // resumed from a snapshot lists tickets in the same order as a full replay.
+    const tickets = new Map(p.tickets);
     for (const t of p.internal.values()) {
       const labelPhase =
         t.labels.map((label) => phaseSchema.safeParse(label)).find((result) => result.success)?.data ?? null;
       const phase = t.state === "completed" ? "merged" : t.state === "canceled" ? "released" : labelPhase;
-      p.tickets.set(t.id, {
+      tickets.set(t.id, {
         id: t.id,
         title: t.title,
         description: t.description,
@@ -477,7 +609,7 @@ function projectTables(projects: Map<string, Projection>, seq: number, events: r
         ...(t.source !== undefined ? { source: t.source } : {}),
         blockers: t.blockers.map((id) => ({
           id,
-          status: p.internal.get(id)?.state ?? p.tickets.get(id)?.status ?? "unstarted",
+          status: p.internal.get(id)?.state ?? tickets.get(id)?.status ?? "unstarted",
         })),
         comments: [...(p.comments.get(t.id)?.values() ?? [])]
           .sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || b.seq - a.seq)
@@ -529,7 +661,7 @@ function projectTables(projects: Map<string, Projection>, seq: number, events: r
         owner: s.owner,
         runtime: s.runtime,
         handle: s.handle,
-        title: p.tickets.get(s.ticket)?.title ?? s.ticket,
+        title: tickets.get(s.ticket)?.title ?? s.ticket,
         phase,
         state,
         reason,
@@ -548,10 +680,7 @@ function projectTables(projects: Map<string, Projection>, seq: number, events: r
       released: [],
     };
     for (const s of sessions) sessionsByState[s.state].push(s);
-    const usage = projectUsage(
-      events.filter((e) => e.project === project),
-      p.rules.value.policy?.budget?.zone ?? "UTC",
-    );
+    const usage = p.usage.usage(p.rules.value.policy?.budget?.zone ?? "UTC");
     const deliveries = [...p.deliveries.values()].filter(
       (d) =>
         !d.sentAt &&
@@ -591,7 +720,7 @@ function projectTables(projects: Map<string, Projection>, seq: number, events: r
       ...(usage.days.length ? { usage } : {}),
       ...(Object.keys(p.readers).length ? { readers: p.readers } : {}),
       ...(Object.keys(p.readAt).length ? { readAt: p.readAt } : {}),
-      tickets: [...p.tickets.values()],
+      tickets: [...tickets.values()],
       pullRequests: [...p.prs.values()],
       sessions,
       sessionsByState,

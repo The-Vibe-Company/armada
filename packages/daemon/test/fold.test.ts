@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EventInput, FleetEvent } from "../src/events.ts";
-import { FoldAccumulator, fold } from "../src/fold.ts";
+import { FOLD_VERSION, FoldAccumulator, fold } from "../src/fold.ts";
 
 const at = "2030-01-01T10:00:00Z";
 const ref = { ticket: "SEED-7", session: "sprout" };
@@ -458,4 +458,151 @@ test("a merge first discovered after a replacement claim cannot complete that ge
   const session = fold(log(...inputs)).projects.orchard?.sessions[0];
   assert.equal(session?.session, "new");
   assert.equal(session?.phase, "planning");
+});
+
+test("a serialized reading restores to the same fold at every prefix, and refuses another version or shape", () => {
+  const json = <T>(value: T): T => JSON.parse(JSON.stringify(value));
+  const checkpoint = (actor: string, checkpoint: unknown, extra: Record<string, unknown> = {}): EventInput =>
+    ({
+      project: "orchard",
+      kind: "coordinator.checkpoint",
+      at,
+      actor,
+      payload: { checkpoint, ...extra },
+    }) as EventInput;
+  const events = log(
+    event("ticket.seen", { id: "SEED-9", title: "Prune", status: "started", phase: "implementing" }),
+    event("ticket.created", {
+      id: "SEED-7",
+      title: "Plant",
+      description: "",
+      labels: ["implementing"],
+      state: "started",
+      parent: null,
+      blockers: ["SEED-9"],
+    }),
+    event("ticket.commented", { ticket: "SEED-7", id: "c1", body: "Watered", author: "Mira" }),
+    claimed,
+    event("session.reported", { ...ref, phase: "shipping", reason: "Review", stage: "review" }),
+    event("session.heartbeat", ref),
+    event("pull-request.seen", {
+      number: 8,
+      ticket: ref.ticket,
+      state: "open",
+      ci: "pending",
+      conflicting: false,
+      head: "abc",
+    }),
+    event("inbox.opened", { id: "water", ticket: ref.ticket, kind: "question", body: "Water now?" }),
+    event("merge.queued", { ...ref, id: "m1", pr: 8, head: "abc" }),
+    event("hold.opened", { id: "rain", reason: "Wait" }),
+    event("validation.opened", { ...ref, id: "v1", question: "Does it read?", checks: [] }),
+    event("validation.decided", { id: "v1", decision: "approved", note: "" }),
+    event("delivery.queued", { ...ref, id: "d1", generation: 1, key: "k1", text: "Go on", source: "owner-answer" }),
+    event("delivery.failed", { id: "d1", attempt: 3, error: "pane gone", nextAt: null }),
+    checkpoint("coordinator", {
+      format: "armada.tools",
+      version: 1,
+      type: "rules",
+      rules: { revision: 2, value: { policy: { budget: { zone: "Europe/Paris" } } } },
+    }),
+    checkpoint("coordinator", { format: "armada.readers", version: 1, provider: "linear" }),
+    checkpoint("armada.linear-reader", {
+      format: "armada.linear-reader",
+      version: 1,
+      usage: { hour: at, requests: 12, pausedUntil: null },
+    }),
+    checkpoint("coordinator", {
+      format: "armada.worker",
+      version: 1,
+      type: "launch",
+      step: "launched",
+      ticket: "SEED-8",
+      session: "bud",
+      generation: 1,
+      runtime: "local",
+    }),
+    checkpoint("coordinator", {
+      format: "armada.pi",
+      version: 1,
+      type: "commit",
+      seq: 1,
+      writes: [
+        {
+          type: "document.create",
+          record: { id: 5, kind: "pi.usage", scope: { kind: "conversation", conversationId: 1 } },
+          content: {
+            kind: "base",
+            value: { models: { "fixture/oak": { input: 40, output: 4, cacheRead: 0, cacheWrite: 0 } } },
+          },
+        },
+      ],
+    }),
+    checkpoint("coordinator", {
+      format: "armada.pi",
+      version: 1,
+      type: "commit",
+      seq: 2,
+      writes: [
+        {
+          type: "document.change",
+          id: 5,
+          content: {
+            kind: "base",
+            value: { models: { "fixture/oak": { input: 70, output: 9, cacheRead: 0, cacheWrite: 0 } } },
+          },
+        },
+      ],
+    }),
+    checkpoint("coordinator", {}, { turn: { id: "t9", session: "root" }, usage: "unknown" }),
+    event("session.usage", {
+      ...ref,
+      generation: 1,
+      usage: { input: 30, output: 3, cacheRead: null, cacheWrite: 0, model: "oak", provider: "fixture" },
+    }),
+    event("default-branch.seen", { branch: "main", head: "abc", ci: "success" }),
+    event("tracker.import-started", {
+      id: "import-1",
+      programRoot: "SEED-1",
+      state: "running",
+      imported: 0,
+      skipped: 0,
+      comments: 0,
+      total: 1,
+    }),
+    event("hold.opened", { id: "tide", reason: "Wait" }, "harbor"),
+  );
+  let replay = new FoldAccumulator();
+  for (const [index, e] of events.entries()) {
+    replay.append(e);
+    const text = replay.serialize();
+    assert.equal(JSON.parse(text).version, FOLD_VERSION);
+    const restored = FoldAccumulator.restore(text);
+    assert.equal(restored.seq, e.seq);
+    assert.deepEqual(json(restored.snapshot()), json(fold(events.slice(0, index + 1))), `prefix ${index + 1}`);
+    assert.equal(restored.snapshot().projects.constructor, undefined);
+    // Continue from the restored reading, so each prefix also checks resuming mid-log.
+    replay = restored;
+  }
+  const final = replay.snapshot().projects.orchard;
+  assert.equal(final?.usage?.days[0]?.coordinator.input, 70, "pi usage deltas survive the restore");
+  assert.equal(final?.usage?.days[0]?.workers.input, 30);
+  assert.equal(final?.readers?.linear?.requests, 12);
+  assert.equal(
+    final?.inbox.some((i) => i.kind === "delivery-failed"),
+    true,
+  );
+  assert.throws(() => FoldAccumulator.restore("{not json"), SyntaxError);
+  const text = replay.serialize();
+  assert.throws(
+    () => FoldAccumulator.restore(text.replace(`"version":${FOLD_VERSION}`, `"version":${FOLD_VERSION + 1}`)),
+    /version/,
+  );
+  const state = JSON.parse(text);
+  state.projects[0][1].tickets = { "SEED-9": {} };
+  assert.throws(() => FoldAccumulator.restore(JSON.stringify(state)), /tickets/);
+  state.projects[0][1].tickets = [];
+  state.projects[0][1].usage.entries = "none";
+  assert.throws(() => FoldAccumulator.restore(JSON.stringify(state)), /usage ledger/);
+  assert.throws(() => FoldAccumulator.restore("[]"), /object/);
 });

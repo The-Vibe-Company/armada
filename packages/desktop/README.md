@@ -51,9 +51,9 @@ bun run build:desktop:dmg
   format, THE-2231), with `latest-mac.yml`;
 - `mac-arm64/Armada.app`, the bundle itself, runnable in place.
 
-The version is the package's (`packages/desktop/package.json`, set by hand to
-the repository's release version until THE-2230 has release-please bump it);
-the About panel shows it. The rules are `src/packaging.ts`,
+The version is the package's (`packages/desktop/package.json`, bumped by
+release-please with the CLI's on each release, THE-2230); the About panel
+shows it. The rules are `src/packaging.ts`,
 read by electron-builder through `electron-builder.ts`: app id
 `co.thevibecompany.armada`, dmg and zip for arm64, `resources/icon.icns`, the
 main output in an asar with `out/main` (the daemon entry and the chunks it
@@ -64,12 +64,18 @@ room (`packages/app/dist`) and `resources/icon.png` as extra resources under
 checkout otherwise (`test/packaging.test.ts` holds both). The daemon's data stays
 under `app.getPath("userData")` either way, so an installed app opens the same
 fleet as `bun run desktop`. A packaged build publishes nothing: the release
-workflow is THE-2230.
+workflow (`.github/workflows/release.yml`, `desktop` job) builds it on an Apple
+Silicon runner at each release tag and attaches the dmg, the zip,
+`latest-mac.yml` and the blockmaps to the GitHub release, signed and notarised
+when the repository holds the Apple secrets the runbook names ("Ship the
+desktop app with the release train"), unsigned otherwise.
 
 The DMG is **unsigned** unless a certificate is named: setting `CSC_LINK`,
 `CSC_NAME`, `APPLE_ID` or `APPLE_TEAM_ID` turns electron-builder's signing on
 (hardened runtime, `resources/entitlements.mac.plist`: a network client, no
 sandbox); without them `identity` is `null` and no certificate is looked for.
+Notarisation is on only when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and
+`APPLE_TEAM_ID` are all set (`notarize` in `src/packaging.ts`).
 macOS quarantines an unsigned app downloaded from the web. To open one, remove
 the quarantine once after copying it to Applications:
 
