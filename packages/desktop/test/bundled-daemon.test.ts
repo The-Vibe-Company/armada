@@ -122,8 +122,11 @@ const shellEnvironment = (home: string): NodeJS.ProcessEnv => {
   delete env.ARMADA_APP_CONFIG;
   return env;
 };
+// A GitHub runner has no configured setuid sandbox helper for Electron's zygote (it aborts before
+// the main script runs); the headless shell creates no renderer, so the test runs it unsandboxed on Linux.
+const SANDBOX = process.platform === "linux" ? ["--no-sandbox"] : [];
 const bootShell = (env: NodeJS.ProcessEnv) => {
-  const child = spawn(electron, [desktopPackage], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(electron, [...SANDBOX, desktopPackage], { env, stdio: ["ignore", "pipe", "pipe"] });
   let stderr = "";
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk: string) => {

@@ -107,7 +107,8 @@ packages/desktop/release/mac-arm64/Armada.app/Contents/MacOS/Armada
 development Electron and asserts the readiness line reports no window and no
 dock icon, the app answers on its addresses, and SIGTERM leaves no daemon. On
 Linux without a display the shell selects Chromium's headless Ozone platform,
-so CI needs no X server for it. The rules are `src/headless.ts`. Everything that
+so CI needs no X server for it; the test adds `--no-sandbox` there, as a GitHub
+runner has no configured setuid sandbox helper for Electron's zygote. The rules are `src/headless.ts`. Everything that
 needs eyes on the window (the fleet it shows, Cmd+Q) stays in the acceptance
 pass below, run by the owner or the coordinator.
 
