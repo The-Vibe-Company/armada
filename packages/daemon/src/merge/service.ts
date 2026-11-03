@@ -14,7 +14,7 @@ import type { EventInput, FleetEvent } from "../events.ts";
 import { fold, type ProjectTables, type Session } from "../fold.ts";
 import type { PluginRegistry } from "../plugins/registry.ts";
 import { checkMerge, type MergeEvidence } from "./checklist.ts";
-import { MergeFailure, type MergeFailureCode, refusalLine, refuse } from "./refusal.ts";
+import { localGateRefusal, MergeFailure, type MergeFailureCode, refusalLine, refuse } from "./refusal.ts";
 
 interface Options {
   registry: PluginRegistry;
@@ -265,12 +265,7 @@ export class Merges {
               }),
             );
             scope.readEvents();
-            if (!test.ok)
-              result = refuse(
-                test.step.startsWith("git merge ") ? "base_conflict" : "local_gate_failed",
-                `Local step ${refusalLine(test.step)}: ${refusalLine(test.output, "Local test failed")}`,
-                "worker.message to fix the failed local merge or gate and hand back, then merge.check",
-              );
+            if (!test.ok) result = localGateRefusal(test, pull.baseRef);
           } catch (error) {
             if (error instanceof MergeFailure) throw error;
             throw new MergeFailure(

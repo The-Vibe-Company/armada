@@ -1,3 +1,4 @@
+import type { TestMergeResult } from "@armada/plugin-api";
 import type { JsonObject } from "@earendil-works/pi-durable";
 
 export type MergeFailureCode =
@@ -11,6 +12,7 @@ export type MergeFailureCode =
   | "hold_open"
   | "lease_held"
   | "local_gate_failed"
+  | "local_gate_environment"
   | "rules_changed"
   | "worker_changed"
   | "merge_refused";
@@ -43,6 +45,42 @@ export function refusalLine(value: unknown, fallback = "Unknown merge error"): s
 export function refuse(code: string, reason: string, next = "fleet.status", extra: JsonObject = {}): JsonObject {
   const safe = refusalLine(reason);
   return { ...extra, ok: false, code, reason: safe, message: safe, next: refusalLine(next) };
+}
+
+/** No subprocess output crosses the tool boundary: pi also checkpoints tool results.
+ * Bun's pattern matches core/ci.ts; TAP uses the same single-test-name capture semantics.
+ * Do not fall back to free text when no runner marker is present.
+ */
+export function localGateRefusal(test: Extract<TestMergeResult, { ok: false }>, branch: string): JsonObject {
+  const lines = test.output
+    .trimEnd()
+    .split(/\r\n|[\r\n\u2028\u2029]/)
+    .map((line) => refusalLine(line, ""));
+  const patterns = [
+    /^\s*not ok\s+\d+\s*-?\s+(.+?)(?:\s+#\s+(?:TODO|SKIP)\b.*)?$/,
+    /\(fail\)\s+(.+?)(?:\s+\[[\d.]+m?s\])?$/,
+  ];
+  const tests = [
+    ...new Set(
+      lines.flatMap((line) => {
+        const name = patterns.map((pattern) => pattern.exec(line)?.[1]?.trim()).find(Boolean);
+        return name ? [name] : [];
+      }),
+    ),
+  ].slice(0, 100);
+  const step = refusalLine(test.step);
+  const conflict = test.step.startsWith("git merge ");
+  const environment = !conflict && test.baseCheck === "failed";
+  const fix = "Run the gate on CI, or fix the environment, then merge.check";
+  const summary = refusalLine(
+    `${environment ? `The gate fails on ${refusalLine(branch)} too: your machine, not the PR; ` : ""}Local step ${step} failed${tests.length ? `: ${tests.join("; ")}` : ""}`,
+  );
+  return refuse(
+    conflict ? "base_conflict" : environment ? "local_gate_environment" : "local_gate_failed",
+    summary,
+    environment ? fix : "worker.message to fix the failed local merge or gate and hand back, then merge.check",
+    { step, tests, ...(test.baseCheck ? { baseCheck: test.baseCheck } : {}), ...(environment ? { fix } : {}) },
+  );
 }
 
 /** Preserve a known refusal through asynchronous provider and generation guards. */

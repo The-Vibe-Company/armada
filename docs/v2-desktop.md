@@ -80,6 +80,8 @@ After three consecutive failures the driver atomically opens one durable `follow
 
 The coordinator sees the fleet through tools, not through a skill telling it to run a CLI: `fleet.status`, `ticket.read`, `ticket.create`, `ticket.update`, `ticket.comment`, `inbox.list`, `inbox.answer`, `worker.launch`, `worker.relaunch`, `worker.message`, `worker.stop`, `merge.check`, `merge.run`, `hold.add`, `hold.clear`, `owner.ask`, `rules.set`. Each tool is the V1 rule (core's pure derivation or checklist) over the folded tables, with the same refusals. The coordinator's behaviour (when to launch, when to wake the owner, when to merge) is the V1 coordinator skill rewritten as the agent's system prompt, under tests that run the loop against a fake model.
 
+A failed local merge gate returns its step and matched TAP (`not ok`) / Bun (`(fail)`) test names in `merge.check` / `merge.run`, and in the follow-up's facts. The local node retains at most the last 64 KiB of combined output in memory to extract those names; no output tail crosses the daemon tool boundary, because pi checkpoints tool results too. Names use the daemon's existing masking. The node reruns only the failed step once on the pinned base in the same private worktree, preserving earlier setup files while resetting tracked changes and removing new gate artifacts, under the gate deadline. A completed failure there yields `local_gate_environment`: “the gate fails on main too: your machine, not the PR”, with “Run the gate on CI, or fix the environment” as the follow-up fix. If the step passes on base, or comparison is unavailable/canceled, it remains `local_gate_failed`. Both refuse the merge; merge conflicts remain `base_conflict`.
+
 `ticket.create { title, description, labels?, parent?, blockers?, ready? }` calls the project's tracker and returns the new id; `ready` adds `ready-for-agent`. `ticket.update { id, title?, description?, labels?, addLabels?, removeLabels?, state?, parent?, blockers? }` edits it (label replacement, then additions, then removals; removal wins). `ticket.comment { id, body }` writes a comment with a stable tool-call-derived id. Linear implements both operations with the bounded deduplication guard described under Plugins. Trackers without these optional capabilities return an explicit refusal, whose reason the room preserves. The coordinator shows a newly cut ticket to the owner in the same turn before launch, unless the owner asked for creation and launch together.
 
 The reserved `armada.tickets` v1 checkpoint journals ticket-call arguments before provider execution and results before publication. Identical call identities replay their result; changed arguments refuse. Internal create/update writes carry a keyed coordinator actor (`coordinator:ticket:<hash>`) so a committed event recovers a lost response after restart. An interrupted create/update without committed evidence refuses as an unknown outcome instead of repeating the side effect. Comments use deterministic UUIDs derived from the call key and the ordinary coordinator author; retries reuse the same id. Every provider write is fenced by the active coordinator scope.
@@ -451,10 +453,22 @@ Boot timings report coordinator storage restore, harness setup and Waker replay
 separately. Background plugin history reads use bounded pages at a captured log
 head and yield between them, allowing readiness and initial fleet responses to
 drain. Worker review forwarding reads new events first and loads an older prefix
-only for a comment's historical generation check. The isolated `boot.bench.ts`
-checks HTTP and the first fleet snapshot within five seconds on a synthetic
-11,251-event log (7,623 real pi document checkpoints, about 24 MB), then doubles
-only the checkpoint count. No private owner log is required for that benchmark.
+only for a comment's historical generation check.
+
+The isolated `packages/daemon/test/boot.bench.ts` runs via `bun run bench`,
+separately from `bun run verify` and the default daemon tests. CI runs it in the
+**Daemon boot benchmark** job on Ubuntu with Node 22. It checks HTTP and the
+first fleet snapshot on a synthetic 11,251-event log (7,623 real pi document
+checkpoints, about 24 MB), then doubles only the checkpoint count. Three paired
+cold boots compare median window-ready times: doubling must cost less than
+1.8 times as much, and Waker must use less than half the total on every large-log
+run. The Waker fraction also catches the old per-prefix refold, which was slow
+at both sizes. Absolute times and stages are printed for diagnosis. A separate
+small log retains a five-second window-ready budget; `ARMADA_BENCH_SLOW=1 bun
+run bench` skips only that budget on slow hosts, preserving both relative
+gates. Generous process watchdogs catch hangs independently of these performance
+budgets. No private owner log is required; this is a synthetic readiness proxy,
+not a measurement of the owner's Mac.
 
 Protocol minor 9 lists pi's built-in providers through `models.providers` and
 answers `models.catalog`. The catalog contains each provider's public model
@@ -760,6 +774,35 @@ When its runtime can still prove ownership, relaunch stops that exact generation
 and retains its local worktree. If ownership is unavailable, restore the runtime
 or explicitly release the ticket; Armada refuses to guess a process identity.
 Workers launched by older versions without recovery facts are reported lost.
+
+A supervisor that dies with its daemon (THE-2212: a restart that kills the whole
+dev process tree, or a kill by name, reaches the detached supervisors and their
+pins, which are Electron processes; a production quit sends SIGTERM to armadad
+only and leaves them running) leaves a dead endpoint and no final record. The
+`worker.lost` reason then carries the local node's actual finding and one next
+action. Once the CLI runs, the supervisor writes a version 1 liveness contract
+(`pin.json` beside its socket: the worker identity and its pinned process group,
+never a command, output or token). On reattachment with a dead endpoint and no
+final record the node reads that contract and asks the kernel whether the group
+still exists (`kill(-group, 0)` delivers nothing; a group id stays reserved
+while any member lives): gone only when the contract is valid and the group
+ended (every process still pinned to it has ended: a descendant that left
+the group is outside this proof, as it is outside the supervisor's own stop),
+still running when the group exists, unknown without a contract (a
+worker launched before this version, or ended before its CLI started), with a
+foreign or invalid one, on Windows, or when the probe is ambiguous. A gone
+worker admits `worker.relaunch`: after the brief preflight and a fresh probe,
+the old generation is released without a stop claim (`stopped: false`) and the
+replacement launches in the kept worktree, which the local node reuses for the
+same branch once the source lists it as its attached worktree with no worker of
+this node in it (dirty and unpushed work is never reset; admission is serialized
+per path). An unknown or still-running worker refuses automatic replacement and
+names the deliberate path: wait or stop the process yourself, or `worker.stop`
+with a reason, which releases the ticket without a stop claim and keeps the
+worktree, branch and pull request, then `worker.launch` continues there. That
+launch probes the released generation first and refuses while its pinned
+process group still exists; a failed replacement never disposes a kept
+worktree.
 
 Only an explicit owner WebSocket request ends the project fleet:
 `{ type: "fleet.shutdown", version: { major: 1, minor: 15 }, id, project, reason }`.

@@ -4,7 +4,13 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { RuntimeProvider, WorkerRef } from "@armada/plugin-api";
+import {
+  RuntimeLaunchRefusal,
+  type RuntimeProvider,
+  type WorkerRef,
+  WorkerRuntimeAlive,
+  WorkerRuntimeGone,
+} from "@armada/plugin-api";
 import { queueDelivery } from "../src/deliveries.ts";
 import { fold } from "../src/fold.ts";
 import { PluginRegistry } from "../src/plugins/registry.ts";
@@ -34,8 +40,23 @@ for (const scenario of [
   "brief changes during relaunch stop",
   "plan policy changes before stop",
   "plan policy changes during stop",
+  "runtime proven gone",
+  "runtime unknown without a liveness contract",
+  "concurrent relaunch of a gone runtime",
+  "gone relaunch lands elsewhere",
 ]) {
   const lost = scenario === "one worker lost" || scenario === "lost runtime refuses stop";
+  // THE-2212: the runtime itself could not reattach: either it proved the tree gone, or it could not say.
+  const gone =
+    scenario === "runtime proven gone" ||
+    scenario === "concurrent relaunch of a gone runtime" ||
+    scenario === "gone relaunch lands elsewhere";
+  let priorAlive = false;
+  // The old supervisor answers the probe; its reported state then decides.
+  let priorAnswers = false;
+  let refuseNextLaunch = false;
+  let adopts = 0;
+  const unknownRuntime = scenario === "runtime unknown without a liveness contract";
   test(`restart preserves generations, capabilities and phases; ${scenario}`, { timeout: 15000 }, async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "armada-restart-"));
     const native = new Map<string, { ref: WorkerRef; alive: boolean; messages: string[]; token: string }>();
@@ -48,7 +69,16 @@ for (const scenario of [
     let uncertain = lostBrief;
     const policyChange = scenario.startsWith("plan policy changes");
     const total =
-      scenario.startsWith("close ") || merged || mismatched || lostBrief || changedBrief || policyChange ? 1 : 2;
+      scenario.startsWith("close ") ||
+      merged ||
+      mismatched ||
+      lostBrief ||
+      changedBrief ||
+      policyChange ||
+      gone ||
+      unknownRuntime
+        ? 1
+        : 2;
     let disposed = 0;
     let firstBoot = true;
     if (changedBrief) await writeFile(join(directory, "AGENTS.md"), "Prepared instructions before stopping");
@@ -96,9 +126,15 @@ for (const scenario of [
             nativeEntered();
             await nativeGate;
           }
+          if (!firstBoot && scenario === "gone relaunch lands elsewhere")
+            return { id: ticket, path: join(directory, "elsewhere"), node: "local" };
           return { id: ticket, path: directory, node: "local" };
         },
         launch: async ({ worker, env, handle }) => {
+          if (refuseNextLaunch) {
+            refuseNextLaunch = false;
+            throw new RuntimeLaunchRefusal("Fixture refused this launch before creating anything");
+          }
           const ref = { ...worker, handle: mismatched ? randomUUID() : (handle ?? randomUUID()) };
           native.set(ref.handle, { ref, alive: true, messages: [], token: env.ARMADA_WORKER_TOKEN! });
           if (scenario === "close during launch") {
@@ -112,7 +148,21 @@ for (const scenario of [
           return ref;
         },
         adopt: async (ref) => {
+          adopts++;
           assert.deepEqual(native.get(ref.handle)?.ref, ref);
+          if (priorAnswers) return { deliveries: native.get(ref.handle)!.messages.length };
+          if (!firstBoot && gone && !native.get(ref.handle)?.alive)
+            throw new WorkerRuntimeGone(
+              "local worker SEED-1 generation 1 is unreachable: the supervisor endpoint refused the connection, and no final record exists; its liveness contract (version 1) names a process group that no longer exists, so its whole process tree ended; nothing was signaled",
+            );
+          if (!firstBoot && unknownRuntime && priorAlive)
+            throw new WorkerRuntimeAlive(
+              "local worker SEED-1 generation 1 is unreachable: the supervisor endpoint refused the connection, and no final record exists; its pinned process group still exists, so the worker's CLI or a descendant still runs; nothing was signaled",
+            );
+          if (!firstBoot && unknownRuntime)
+            throw new Error(
+              "local worker SEED-1 generation 1 is unreachable: the supervisor endpoint refused the connection, and no final record exists; no liveness contract was recorded for it, so its process tree may still run; nothing was signaled",
+            );
           return { deliveries: native.get(ref.handle)!.messages.length };
         },
         observe: async (ref) => {
@@ -434,6 +484,179 @@ for (const scenario of [
       assert.equal(replacement.generation, 2);
       assert.equal(native.size, 1);
       assert.equal((await workers.shutdown(project, "fixture finished", () => {})).ok, true);
+      return;
+    }
+    if (gone || unknownRuntime) {
+      const old = [...native.values()][0]!;
+      if (gone) old.alive = false;
+      const recovery = await workers.recover();
+      assert.equal(recovery.readopted.length, 0);
+      assert.equal(recovery.lost.length, 1);
+      const recorded = store.readSince(0).find((event) => event.kind === "worker.lost");
+      assert(recorded?.kind === "worker.lost");
+      assert.match(recorded.payload.reason, /nothing was signaled/, "the actual cause is recorded, not a generic line");
+      const before = fold(store.readSince(0)).projects[project]!.sessions[0]!;
+      if (unknownRuntime) {
+        assert.match(recorded.payload.reason, /no liveness contract/);
+        assert.match(recorded.payload.reason, /Next: if its process still runs.*worker\.stop with a reason/);
+        await assert.rejects(
+          workers.tool(
+            project,
+            "worker.relaunch",
+            { ticket: "SEED-1", session: old.ref.session, reason: "Replace the unknown worker" },
+            "relaunch-unknown",
+            () => {},
+          ),
+          /cannot be replaced automatically.*no liveness contract.*worker\.stop with a reason/s,
+        );
+        assert.equal(stops, 0, "nothing is signaled for a worker that may still run");
+        assert.equal(native.size, 1, "no replacement without proof the old tree ended");
+        assert.equal(fold(store.readSince(0)).projects[project]!.sessions[0]!.phase, before.phase);
+        const released = await workers.tool(
+          project,
+          "worker.stop",
+          { ticket: "SEED-1", session: old.ref.session, reason: "Owner checked the machine: nothing runs" },
+          "release-unknown",
+          () => {},
+        );
+        assert.equal(released.stopped, false, "an explicit release never claims a stop");
+        assert.equal(released.released, true);
+        assert.match(String(released.next), /worker\.launch continues in the kept worktree/);
+        assert.equal(stops, 0);
+        // Another daemon boot forgets nothing: the launch still probes the released generation.
+        await workers.close();
+        store.close();
+        store = new EventStore(join(directory, "fleet.sqlite"));
+        workers = make();
+        assert.deepEqual(
+          await workers.recover(),
+          { readopted: [], lost: [] },
+          "a released generation is not recovered",
+        );
+        priorAlive = true;
+        await assert.rejects(
+          workers.tool(project, "worker.launch", { ticket: "SEED-1" }, "launch-beside-alive", () => {}),
+          /still runs in its kept worktree.*nothing was launched/,
+          "a launch never lands beside a process group the runtime can still see",
+        );
+        assert.equal(native.size, 1);
+        assert.equal(stops, 0);
+        priorAlive = false;
+        const relaunched = await workers.tool(
+          project,
+          "worker.launch",
+          { ticket: "SEED-1" },
+          "launch-after-release",
+          () => {},
+        );
+        assert.equal(relaunched.generation, 2, "the deliberate path continues in the kept worktree");
+        assert.equal(native.size, 2);
+        const launchNext = (key: string) => workers.tool(project, "worker.launch", { ticket: "SEED-1" }, key, () => {});
+        const lose = async (session: string) => {
+          // A daemon boot that cannot reattach, then the explicit release without a stop claim.
+          await workers.close();
+          store.close();
+          store = new EventStore(join(directory, "fleet.sqlite"));
+          workers = make();
+          assert.equal((await workers.recover()).lost.length, 1);
+          const released = await workers.tool(
+            project,
+            "worker.stop",
+            { ticket: "SEED-1", session, reason: "Owner released it" },
+            `release-${session}`,
+            () => {},
+          );
+          assert.equal(released.stopped, false);
+        };
+        // A generation stopped under this host carries native-stopped: never probed.
+        await workers.tool(
+          project,
+          "worker.stop",
+          { ticket: "SEED-1", session: String(relaunched.session), reason: "Done" },
+          "stop-2",
+          () => {},
+        );
+        priorAlive = true;
+        const third = await launchNext("launch-3");
+        assert.equal(third.generation, 3, "a confirmed stop needs no probe");
+        await workers.tool(
+          project,
+          "worker.stop",
+          { ticket: "SEED-1", session: String(third.session), reason: "Done" },
+          "stop-3",
+          () => {},
+        );
+        // A launch refused before creation leaves no marker: never probed either.
+        refuseNextLaunch = true;
+        await assert.rejects(launchNext("launch-4-refused"), /refused/);
+        const adoptsBefore = adopts;
+        assert.equal((await launchNext("launch-4")).generation, 5);
+        assert.equal(adopts, adoptsBefore, "a refused launch is not probed");
+        priorAlive = false;
+        // A released lost generation whose supervisor answers blocks only while it reports running.
+        const fourth = [...native.values()].find((row) => row.ref.generation === 5)!;
+        await lose(fourth.ref.session);
+        priorAnswers = true;
+        fourth.alive = true;
+        await assert.rejects(launchNext("launch-6-blocked"), /still answers in its worktree/);
+        fourth.alive = false;
+        assert.equal((await launchNext("launch-6")).generation, 6, "a stopped supervisor record never blocks");
+        return;
+      }
+      assert.match(recorded.payload.reason, /process tree ended/);
+      assert.match(recorded.payload.reason, /Next: worker\.relaunch with a reason replaces it in its kept worktree/);
+      const relaunch = (key: string) =>
+        workers.tool(
+          project,
+          "worker.relaunch",
+          { ticket: "SEED-1", session: old.ref.session, reason: "Daemon restart killed the supervisor" },
+          key,
+          () => {},
+        );
+      if (scenario === "gone relaunch lands elsewhere") {
+        await assert.rejects(relaunch("relaunch-elsewhere"), /not the lost worker's kept worktree/);
+        assert.equal(native.size, 1, "no replacement outside the kept worktree");
+        assert.equal(stops, 0);
+        assert.equal(disposed, 1, "the stray workspace is disposed, never the kept one");
+        assert.match(
+          String(store.readSince(0).findLast((e) => e.kind === "session.released")?.payload.reason),
+          /Workspace preparation failed|kept worktree/,
+        );
+        return;
+      }
+      const attempts =
+        scenario === "concurrent relaunch of a gone runtime"
+          ? await Promise.allSettled([relaunch("relaunch-gone-a"), relaunch("relaunch-gone-b")])
+          : await Promise.allSettled([relaunch("relaunch-gone")]);
+      const fulfilled = attempts.filter((a) => a.status === "fulfilled");
+      assert.equal(fulfilled.length, 1, "exactly one replacement");
+      for (const attempt of attempts)
+        if (attempt.status === "rejected") assert.match(String(attempt.reason.message), /generation changed/);
+      const replacement = (fulfilled[0] as PromiseFulfilledResult<Record<string, unknown>>).value;
+      assert.equal(replacement.generation, 2);
+      assert.equal(replacement.recovered, "runtime-gone");
+      assert.equal(replacement.stopped, false, "the old generation was released, never claimed stopped");
+      assert.equal(replacement.releasedSession, old.ref.session);
+      assert.equal(stops, 0, "nothing was signaled");
+      assert.equal(native.size, 2);
+      assert(native.get(String(replacement.handle))?.alive);
+      // The fold keeps one row per ticket: the released generation is now history behind generation 2.
+      assert.equal(fold(store.readSince(0)).projects[project]!.sessions[0]!.generation, 2);
+      assert.match(
+        String(store.readSince(0).findLast((e) => e.kind === "session.released")?.payload.reason),
+        /without a confirmed runtime stop/,
+      );
+      await assert.rejects(workers.request(old.token, { command: "heartbeat", ticket: "SEED-1" }), /authorization/);
+      await assert.rejects(
+        workers.tool(
+          project,
+          "worker.stop",
+          { ticket: "SEED-1", session: old.ref.session, reason: "Stale stop" },
+          "stale-stop-gone",
+          () => {},
+        ),
+        /generation changed/,
+      );
       return;
     }
     let ready!: () => void;

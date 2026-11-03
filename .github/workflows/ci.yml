@@ -50,6 +50,21 @@ jobs:
       - name: Test the daemon on Node
         run: bun run test:daemon
 
+  boot-benchmark:
+    name: Daemon boot benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - run: bun run bench
+
   dashboard:
     name: Dashboard builds
     runs-on: ubuntu-latest
