@@ -8,9 +8,11 @@ import { Coordinators } from "../coordinator/index.ts";
 import { openCoordinatorStorage } from "../coordinator/storage.ts";
 import { wakeups } from "../coordinator/wake.ts";
 import { evaluateBudget } from "../src/budget.ts";
+import type { FleetEvent } from "../src/events.ts";
 import { fold } from "../src/fold.ts";
 import { startServer } from "../src/server/index.ts";
 import { EventStore } from "../src/store.ts";
+import { projectUsage, UsageLedger } from "../src/usage.ts";
 
 const at = "2030-01-02T02:00:00.000Z";
 const counters = { input: 100, output: 20, cacheRead: 30, cacheWrite: 10 };
@@ -804,4 +806,29 @@ test("a running coordinator observes a budget enabled outside its storage owner 
   assert.equal(state?.holds.length, 1);
   assert.match(state?.holds[0]?.reason ?? "", /budget:.*0.*limit/);
   assert.equal(state?.inbox[0]?.kind, "owner-request");
+});
+
+test("the usage ledger buckets its entries in the zone given at read time", () => {
+  const ledger = new UsageLedger();
+  const event = (at: string, id: string): FleetEvent => ({
+    seq: Number(id),
+    project: "p",
+    at,
+    actor: "coordinator",
+    kind: "coordinator.checkpoint",
+    payload: {
+      checkpoint: {},
+      turn: { id, session: "root" },
+      usage: { ...counters, model: "oak", provider: "fixture" },
+    },
+  });
+  const events = [event("2030-01-01T23:30:00Z", "1"), event("2030-01-02T00:30:00Z", "2")];
+  for (const e of events) ledger.apply(e);
+  assert.deepEqual(ledger.usage("UTC"), projectUsage(events, "UTC"));
+  assert.deepEqual(ledger.usage("Europe/Paris"), projectUsage(events, "Europe/Paris"));
+  assert.equal(ledger.usage("UTC").days.length, 2);
+  assert.equal(ledger.usage("Europe/Paris").days.length, 1, "both turns fall on the same Paris day");
+  assert.equal(ledger.usage("Europe/Paris").days[0]?.coordinator.input, 200);
+  const restored = UsageLedger.restore(JSON.parse(JSON.stringify(ledger.serialize())));
+  assert.deepEqual(restored.usage("Europe/Paris"), ledger.usage("Europe/Paris"));
 });
