@@ -88,6 +88,12 @@ test("brief carries ordered launch context and the complete bundled worker proto
   assert(Buffer.byteLength(brief) < 48 * 1024);
   assert.match(brief, /if it fails, say so in your first report/);
   assert.match(brief, /command -v armada/);
+  // The local launch runs on the owner's desktop (THE-2234): the brief names what a worker never does there.
+  const launch = brief.split("## Launch instructions")[1]!.split("\n\n## ")[0]!;
+  assert.match(launch, /Never open a window or an app \(`open -a`/);
+  assert.match(launch, /`osascript`/);
+  assert.match(launch, /`screencapture`/);
+  assert.match(launch, /ARMADA_DESKTOP_HEADLESS=1/);
   assert(
     !brief.split("## Launch instructions")[1]!.includes("armada skill armada-worker"),
     "protocol is delivered, not fetched by the worker",
@@ -170,6 +176,7 @@ test("brief inlines only the newest six comments, each at most 600 characters, a
   const hostedContext = hosted.split("## More context\n\n")[1]?.split("\n\n## ")[0] ?? "";
   assert.ok(hostedContext.includes(url), "hosted workers retain their ticket link");
   assert.ok(!hostedContext.includes("armada ticket"), "hosted workers have no local socket capability");
+  assert.ok(!hosted.includes("ARMADA_DESKTOP_HEADLESS"), "only a local launch environment carries the desktop flag");
   assert.ok(Buffer.byteLength(linked) < 48 * 1024);
   assert.match(workerBrief(input()), /Run `armada ticket` for the full ticket and its comments/);
   assert.deepEqual(

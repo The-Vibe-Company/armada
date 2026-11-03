@@ -96,6 +96,7 @@ export function workerBrief(input: {
         : [
             `Run \`armada claim ${t.id}\`. Your per-ticket capability is already in the environment; never print it, read credential files or sign in to hosted Armada. If authorization is refused, stop and quote the refusal.`,
             `Work only in this prepared worktree on branch \`${input.branch}\`. Check git status and the current branch before editing; keep the branch.`,
+            "This machine is the owner's logged-in desktop. Never open a window or an app (`open -a`, a packaged app's binary), bring one to the front, script System Events (`osascript`, AppleScript) or capture the screen (`screencapture`). Your environment sets `ARMADA_DESKTOP_HEADLESS=1`: the Armada desktop shell then opens no window and no dock icon and takes only the catalog and log named by `ARMADA_DESKTOP_PROJECTS` and `ARMADA_DESKTOP_DATABASE`; keep it set, verify a GUI change through the app's own HTTP and WebSocket endpoints, and leave what needs a screen to the coordinator as a written procedure in your hand-back.",
           ]),
     ].join("\n\n"),
   );
