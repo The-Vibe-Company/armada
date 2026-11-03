@@ -20,7 +20,7 @@ import { phaseSchema, type ReaderUsage, readerUsageSchema, workerLaunchCheckpoin
 import { z } from "zod";
 import { recoverFollowUps, sameFollowUpAction } from "../coordinator/follow-ups.ts";
 import { checkpointRules, emptyRules, type RulesState } from "../coordinator/rules.ts";
-import { applyDelivery } from "./delivery-state.ts";
+import { applyDelivery, deliveryFollowUpId } from "./delivery-state.ts";
 import { flowStep, pipelineStep } from "./rules.ts";
 import { projectUsage } from "./usage.ts";
 
@@ -80,6 +80,7 @@ interface Projection {
   holds: Map<string, Hold>;
   validations: Map<string, Validation>;
   deliveries: Map<string, Delivery>;
+  deliveryFollowUps: Set<string>;
 }
 const empty = (): Projection => ({
   rules: emptyRules(),
@@ -97,6 +98,7 @@ const empty = (): Projection => ({
   holds: new Map(),
   validations: new Map(),
   deliveries: new Map(),
+  deliveryFollowUps: new Set(),
 });
 const active = (p: Projection, ref: SessionRef) => {
   const session = p.sessions.get(ref.ticket);
@@ -166,6 +168,8 @@ function applyEvent(projects: Map<string, Projection>, e: FleetEvent): void {
     projects.set(e.project, p);
   }
   applyDelivery(p.deliveries, e);
+  if (e.kind === "inbox.opened" && e.payload.followUp?.code === "delivery_failed")
+    p.deliveryFollowUps.add(e.payload.id);
   switch (e.kind) {
     case "tracker.import-started":
     case "tracker.import-progress":
@@ -563,7 +567,10 @@ function projectTables(projects: Map<string, Projection>, seq: number, events: r
       const session = sessions.find(
         (s) => s.ticket === d.ticket && s.session === d.session && s.generation === d.generation,
       );
-      return d.failureSeq !== undefined && session && !["released", "merged"].includes(session.phase)
+      return d.failureSeq !== undefined &&
+        !p.deliveryFollowUps.has(deliveryFollowUpId(d.id)) &&
+        session &&
+        !["released", "merged"].includes(session.phase)
         ? [
             {
               id: `delivery:${d.id}`,
