@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -107,8 +107,11 @@ test("Electron's bundled daemon starts a configured coordinator and reads creden
 // or CI smoke-tests a build. Nothing here may touch the desktop this test runs on.
 const electron = createRequire(import.meta.url)("electron") as string;
 const desktopPackage = fileURLToPath(new URL("..", import.meta.url));
-const shellEnvironment = (): NodeJS.ProcessEnv => {
-  const env: NodeJS.ProcessEnv = { ...process.env, ARMADA_DESKTOP_HEADLESS: "1" };
+const shellEnvironment = (home: string): NodeJS.ProcessEnv => {
+  // A disposable home: had the shell let its daemon fall back to the account's configuration,
+  // it would appear under this home's .config, where the test looks after the run.
+  mkdirSync(home, { recursive: true });
+  const env: NodeJS.ProcessEnv = { ...process.env, ARMADA_DESKTOP_HEADLESS: "1", HOME: home };
   // The shell itself runs as Electron; only its daemon child runs as Node.
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.NODE_OPTIONS;
@@ -138,8 +141,9 @@ test("ARMADA_DESKTOP_HEADLESS=1 boots the built shell with no window or dock ico
   const dir = mkdtempSync(join(tmpdir(), "armada-desktop-headless-test-"));
   const projects = join(dir, "projects.json");
   writeFileSync(projects, JSON.stringify([{ id: "quiet", name: "Quiet", repository: "example/quiet" }]));
+  const home = join(dir, "home");
   const shell = bootShell({
-    ...shellEnvironment(),
+    ...shellEnvironment(home),
     ARMADA_DESKTOP_PROJECTS: projects,
     ARMADA_DESKTOP_DATABASE: join(dir, "fleet.sqlite"),
   });
@@ -174,6 +178,7 @@ test("ARMADA_DESKTOP_HEADLESS=1 boots the built shell with no window or dock ico
     const exit = await shell.closed;
     assert.deepEqual(exit, { code: 0, signal: null }, shell.stderr());
     await assert.rejects(fetch(readiness.url, { signal: AbortSignal.timeout(5000) }));
+    assert.equal(existsSync(join(home, ".config")), false, "the shell kept its daemon off the account's configuration");
   } finally {
     socket?.close();
     shell.child.kill("SIGKILL");
@@ -186,7 +191,7 @@ test("a headless shell without an explicit catalog and log refuses instead of op
   timeout: 40000,
 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "armada-desktop-headless-refusal-"));
-  const env = shellEnvironment();
+  const env = shellEnvironment(join(dir, "home"));
   delete env.ARMADA_DESKTOP_PROJECTS;
   delete env.ARMADA_DESKTOP_DATABASE;
   const shell = bootShell(env);

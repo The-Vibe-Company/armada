@@ -43,14 +43,15 @@ export function daemonData(env: Env, userData: string, headless: boolean): Daemo
  * The environment of a headless shell's daemon: its own configuration directory, app
  * configuration and file keychain under the shell's disposable directory, so it never reads
  * or rewrites the account's `~/.config/armada`, its enabled plugins or its login keychain
- * (which could raise a prompt on the owner's desktop). An explicit value wins.
+ * (which could raise a prompt on the owner's desktop). An explicit value wins; an empty one
+ * counts as unset, as the XDG rule has it.
  */
 export function headlessDaemonEnv(env: Env, dataDir: string): Env {
   return {
     XDG_CONFIG_HOME: join(dataDir, "config"),
     ARMADA_APP_CONFIG: join(dataDir, "config.json"),
     ARMADA_KEYCHAIN: "file",
-    ...Object.fromEntries(Object.entries(env).filter(([, value]) => value !== undefined)),
+    ...Object.fromEntries(Object.entries(env).filter(([, value]) => value !== undefined && value !== "")),
   };
 }
 

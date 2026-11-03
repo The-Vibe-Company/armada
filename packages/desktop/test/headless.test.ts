@@ -56,6 +56,9 @@ test("a headless shell's daemon gets its own configuration, app config and file 
     ARMADA_KEYCHAIN: "native",
   };
   assert.deepEqual(headlessDaemonEnv(explicit, dataDir), explicit);
+  // An empty value is unset, never a fall-back to the account's own paths.
+  assert.equal(headlessDaemonEnv({ XDG_CONFIG_HOME: "", ARMADA_KEYCHAIN: "" }, dataDir).ARMADA_KEYCHAIN, "file");
+  assert.equal(headlessDaemonEnv({ XDG_CONFIG_HOME: "" }, dataDir).XDG_CONFIG_HOME, join(dataDir, "config"));
 });
 
 test("only Linux without a display server takes Chromium's headless platform", () => {
