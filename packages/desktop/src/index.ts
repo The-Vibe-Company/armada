@@ -1,3 +1,5 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from "electron";
@@ -12,10 +14,23 @@ import {
   REVEAL_CHANNEL,
 } from "./bridge.ts";
 import { type DaemonAddress, DaemonProcess, RESTART_EXIT_CODE, restartDaemon } from "./daemon.ts";
+import { daemonData, headlessDaemonEnv, headlessRequested, readinessLine } from "./headless.ts";
 import { shellPaths } from "./paths.ts";
 import { STARTUP_URL } from "./startup.ts";
 
 app.setName("Armada");
+// A headless shell (THE-2234): no window, no dock icon, a disposable user data directory and only
+// the catalog and log it was given. Workers and CI smoke-test a build with it; the owner's desktop
+// and the owner's own fleet are never touched. Everything here runs before Electron is ready
+// (Chromium's display platform is already chosen by then: on Linux without a display the launcher
+// passes OZONE_HEADLESS_SWITCH, see headless.ts).
+const HEADLESS = headlessRequested(process.env);
+const HEADLESS_DATA = HEADLESS ? mkdtempSync(join(tmpdir(), "armada-desktop-headless-")) : undefined;
+if (HEADLESS_DATA) {
+  app.setPath("userData", HEADLESS_DATA);
+  app.dock?.hide();
+  app.disableHardwareAcceleration();
+}
 // The room's built files, the icon and the daemon entry: under the installed bundle's resources when
 // packaged (THE-2229), under the checkout when run from source.
 const PATHS = shellPaths({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, mainUrl: import.meta.url });
@@ -30,34 +45,43 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   if (quitting) return;
   quitting = true;
-  void (daemon?.stop() ?? Promise.resolve()).then(() => app.exit(exitCode));
+  void (daemon?.stop() ?? Promise.resolve()).then(() => {
+    if (HEADLESS_DATA) rmSync(HEADLESS_DATA, { recursive: true, force: true });
+    app.exit(exitCode);
+  });
 });
 app.on("window-all-closed", () => app.quit());
 app.on("activate", () => window?.focus());
-process.once("SIGTERM", () => app.quit());
-process.once("SIGINT", () => app.quit());
+// Every signal asks for the one quit (before-quit stops the daemon once); a repeated one must not
+// end Electron by default and orphan the daemon.
+process.on("SIGTERM", () => app.quit());
+process.on("SIGINT", () => app.quit());
 
 void app.whenReady().then(async () => {
   if (quitting) return;
-  if (process.platform === "darwin") app.dock?.setIcon(nativeImage.createFromPath(ICON));
+  if (HEADLESS) app.dock?.hide();
+  else if (process.platform === "darwin") app.dock?.setIcon(nativeImage.createFromPath(ICON));
   try {
-    const dataDir = app.getPath("userData");
-    window = new BrowserWindow({
-      width: 1280,
-      height: 860,
-      minWidth: 800,
-      minHeight: 560,
-      show: false,
-      title: "Armada",
-      icon: ICON,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true,
-        preload: fileURLToPath(new URL("../preload/preload.cjs", import.meta.url)),
-      },
-    });
-    window.once("ready-to-show", () => window?.show());
+    // Refused before any window or daemon when a headless shell was not told which fleet to open.
+    const data = daemonData(process.env, app.getPath("userData"), HEADLESS);
+    if (!HEADLESS) {
+      window = new BrowserWindow({
+        width: 1280,
+        height: 860,
+        minWidth: 800,
+        minHeight: 560,
+        show: false,
+        title: "Armada",
+        icon: ICON,
+        webPreferences: {
+          nodeIntegration: false,
+          contextIsolation: true,
+          sandbox: true,
+          preload: fileURLToPath(new URL("../preload/preload.cjs", import.meta.url)),
+        },
+      });
+      window.once("ready-to-show", () => window?.show());
+    }
     const load = async (url: string) => {
       try {
         await window?.loadURL(url);
@@ -67,7 +91,7 @@ void app.whenReady().then(async () => {
         throw new Error(`could not load ${target}: ${error instanceof Error ? error.message : String(error)}`);
       }
     };
-    await load(STARTUP_URL);
+    if (window) await load(STARTUP_URL);
     if (quitting) return;
     const start = (port: number) => {
       daemon = new DaemonProcess({
@@ -81,12 +105,15 @@ void app.whenReady().then(async () => {
         },
         executable: process.execPath,
         entry: PATHS.daemonEntry,
-        database: process.env.ARMADA_DESKTOP_DATABASE ?? join(dataDir, "fleet.sqlite"),
-        projects: process.env.ARMADA_DESKTOP_PROJECTS ?? join(dataDir, "projects.json"),
+        database: data.database,
+        projects: data.projects,
         staticDir: PATHS.staticDir,
         port,
         restartable: true,
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+        env: {
+          ...(HEADLESS_DATA ? headlessDaemonEnv(process.env, HEADLESS_DATA) : process.env),
+          ELECTRON_RUN_AS_NODE: "1",
+        },
       });
       return daemon;
     };
@@ -97,6 +124,17 @@ void app.whenReady().then(async () => {
       url.searchParams.set("daemon", at.wsUrl);
       return url.toString();
     };
+    // A headless shell announces its daemon's addresses on stdout instead of loading the app.
+    const announce = (at: DaemonAddress) =>
+      console.log(
+        readinessLine({
+          headless: true,
+          url: at.url,
+          wsUrl: at.wsUrl,
+          windows: BrowserWindow.getAllWindows().length,
+          dockVisible: app.dock?.isVisible() ?? false,
+        }),
+      );
     // The app's Restart (the Plugins screen) ends the daemon with RESTART_EXIT_CODE: start it again.
     const supervise = (child: DaemonProcess) =>
       void child.exited.then(async ({ code, signal }) => {
@@ -108,7 +146,8 @@ void app.whenReady().then(async () => {
             supervise(daemon as DaemonProcess);
             if (next.url !== address.url) {
               address = next;
-              await load(appUrl(next));
+              if (window) await load(appUrl(next));
+              else announce(next);
             }
             return;
           } catch (error) {
@@ -123,6 +162,10 @@ void app.whenReady().then(async () => {
         app.quit();
       });
     supervise(daemon as DaemonProcess);
+    if (!window) {
+      announce(address);
+      return;
+    }
     // The app's notifications (THE-2055): a click brings the window forward, the dock counts those not yet read.
     // Only the app's own window, from a page of the daemon's origin (never a frame of another).
     const own = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) =>

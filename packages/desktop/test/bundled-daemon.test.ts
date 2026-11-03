@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { PROTOCOL_VERSION, serverMessageSchema } from "@armada/protocol";
 import { EventStore } from "../../daemon/src/store.ts";
 import { DaemonProcess } from "../src/daemon.ts";
+import { type HeadlessReadiness, noDisplay, OZONE_HEADLESS_SWITCH, parseReadiness } from "../src/headless.ts";
 
 const buildBundle = () => {
   execFileSync("bun", ["run", "build"], {
@@ -97,6 +99,116 @@ test("Electron's bundled daemon starts a configured coordinator and reads creden
   } finally {
     socket?.close();
     await daemon.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The headless shell (THE-2234): the built main process under the development Electron, as a worker
+// or CI smoke-tests a build. Nothing here may touch the desktop this test runs on.
+const electron = createRequire(import.meta.url)("electron") as string;
+const desktopPackage = fileURLToPath(new URL("..", import.meta.url));
+const shellEnvironment = (home: string): NodeJS.ProcessEnv => {
+  // A disposable home: had the shell let its daemon fall back to the account's configuration,
+  // it would appear under this home's .config, where the test looks after the run.
+  mkdirSync(home, { recursive: true });
+  const env: NodeJS.ProcessEnv = { ...process.env, ARMADA_DESKTOP_HEADLESS: "1", HOME: home };
+  // The shell itself runs as Electron; only its daemon child runs as Node.
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.NODE_OPTIONS;
+  // The shell, not this test, keeps its daemon off the account's configuration and keychain
+  // (headlessDaemonEnv): the test runner's own disposable values are withheld to prove it.
+  delete env.ARMADA_KEYCHAIN;
+  delete env.XDG_CONFIG_HOME;
+  delete env.ARMADA_APP_CONFIG;
+  return env;
+};
+// Linux switches a launcher passes before Electron runs the main script: a GitHub runner has no
+// configured setuid sandbox helper for Electron's zygote (the headless shell creates no renderer, so
+// it runs unsandboxed there), and without a display Chromium needs its headless Ozone platform.
+const LINUX_SWITCHES =
+  process.platform === "linux"
+    ? ["--no-sandbox", ...(noDisplay(process.platform, process.env) ? [OZONE_HEADLESS_SWITCH] : [])]
+    : [];
+const bootShell = (env: NodeJS.ProcessEnv) => {
+  const child = spawn(electron, [...LINUX_SWITCHES, desktopPackage], { env, stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+    child.once("close", (code, signal) => resolve({ code, signal })),
+  );
+  return { child, closed, stderr: () => stderr };
+};
+
+test("ARMADA_DESKTOP_HEADLESS=1 boots the built shell with no window or dock icon, reachable through its daemon only", {
+  timeout: 40000,
+}, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "armada-desktop-headless-test-"));
+  const projects = join(dir, "projects.json");
+  writeFileSync(projects, JSON.stringify([{ id: "quiet", name: "Quiet", repository: "example/quiet" }]));
+  const home = join(dir, "home");
+  const shell = bootShell({
+    ...shellEnvironment(home),
+    ARMADA_DESKTOP_PROJECTS: projects,
+    ARMADA_DESKTOP_DATABASE: join(dir, "fleet.sqlite"),
+  });
+  let socket: WebSocket | undefined;
+  try {
+    const lines = createInterface({ input: shell.child.stdout });
+    const readiness = await new Promise<HeadlessReadiness>((resolve, reject) => {
+      lines.on("line", (line) => {
+        const value = parseReadiness(line);
+        if (value) resolve(value);
+      });
+      void shell.closed.then(({ code, signal }) =>
+        reject(new Error(`the shell exited before readiness (${signal ?? `code ${code}`}): ${shell.stderr()}`)),
+      );
+    });
+    lines.close();
+    assert.equal(readiness.windows, 0, "a headless shell creates no BrowserWindow");
+    assert.equal(readiness.dockVisible, false, "a headless shell shows no dock icon");
+    // The assertions a worker is allowed: the app's own HTTP and WebSocket endpoints.
+    const page = await (await fetch(readiness.url, { signal: t.signal })).text();
+    assert.match(page, /<title>Armada/);
+    socket = new WebSocket(readiness.wsUrl);
+    await once(socket, "open", { signal: t.signal });
+    const answer = once(socket, "message", { signal: t.signal });
+    socket.send(JSON.stringify({ type: "credentials.status", version: PROTOCOL_VERSION, id: "headless" }));
+    const [event] = await answer;
+    const result = serverMessageSchema.parse(JSON.parse(event.data));
+    assert.equal(result.type, "credentials.result");
+    socket.close();
+    // Quit ends the daemon too: its port stops answering and the shell exits cleanly.
+    shell.child.kill("SIGTERM");
+    const exit = await shell.closed;
+    assert.deepEqual(exit, { code: 0, signal: null }, shell.stderr());
+    await assert.rejects(fetch(readiness.url, { signal: AbortSignal.timeout(5000) }));
+    assert.equal(existsSync(join(home, ".config")), false, "the shell kept its daemon off the account's configuration");
+  } finally {
+    socket?.close();
+    shell.child.kill("SIGKILL");
+    await shell.closed;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a headless shell without an explicit catalog and log refuses instead of opening the account's own fleet", {
+  timeout: 40000,
+}, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "armada-desktop-headless-refusal-"));
+  const env = shellEnvironment(join(dir, "home"));
+  delete env.ARMADA_DESKTOP_PROJECTS;
+  delete env.ARMADA_DESKTOP_DATABASE;
+  const shell = bootShell(env);
+  try {
+    const exit = await shell.closed;
+    assert.equal(exit.code, 1, shell.stderr());
+    assert.match(shell.stderr(), /ARMADA_DESKTOP_HEADLESS needs ARMADA_DESKTOP_PROJECTS and ARMADA_DESKTOP_DATABASE/);
+  } finally {
+    shell.child.kill("SIGKILL");
+    await shell.closed;
     rmSync(dir, { recursive: true, force: true });
   }
 });
