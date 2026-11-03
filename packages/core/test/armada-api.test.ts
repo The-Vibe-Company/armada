@@ -7,6 +7,7 @@ import {
   releaseLine,
   type ServerCli,
   waitForApproval,
+  withArmadaFleetRequest,
 } from "../src/armada-api.ts";
 import { ARMADA_URL, fakeArmada, NOW } from "./support.ts";
 
@@ -234,3 +235,53 @@ test("Armada retries temporary read statuses while broker 429, inbox polls and w
     expect(result instanceof ArmadaApiError).toBe(expected === 1);
   }
 });
+
+test.each(["ECONNRESET", "E_CANARY_PRIVATE_CODE"])(
+  "scoped fleet recovery masks diagnostics and leaves unrelated writes single-attempt (%s)",
+  async (code) => {
+    const signIn = { kind: "session" as const, token: "CANARY_session_credential" };
+    const limits: number[] = [];
+    const requests: string[] = [];
+    const notices: string[] = [];
+    let elapsed = 0;
+    const api = armadaApi({
+      url: ARMADA_URL,
+      timeoutMs: 30_000,
+      timeoutSignal: (ms) => {
+        limits.push(ms);
+        return new AbortController().signal;
+      },
+      fetch: async (url) => {
+        requests.push(url.split("/fleet/")[1]!);
+        elapsed += 2000;
+        throw new TypeError("fetch failed CANARY_session_credential https://user:password@private.example.test/path", {
+          cause: Object.assign(new Error("private transport details"), { code }),
+        });
+      },
+    });
+    const failure = await withArmadaFleetRequest(
+      {
+        operation: "lease/renew",
+        retry: true,
+        remainingMs: () => 7000 - elapsed,
+        sleep: async (ms) => {
+          elapsed += ms;
+        },
+        onRetry: (line) => notices.push(line),
+      },
+      async () => {
+        await Promise.resolve();
+        return api.fleet(signIn, "lease/renew", {});
+      },
+    ).catch((error) => error);
+    expect(requests.length).toBe(code === "ECONNRESET" ? 2 : 1);
+    expect(limits.every((ms) => ms <= 15_000)).toBe(true);
+    expect(String(failure)).toContain(code === "ECONNRESET" ? "ECONNRESET" : "network");
+    expect(`${failure}\n${notices.join("\n")}`).not.toMatch(/CANARY|password|private\.example|private transport/);
+    requests.length = 0;
+    await withArmadaFleetRequest({ operation: "lease/renew", retry: true, remainingMs: () => 60_000 }, () =>
+      api.fleet(signIn, "lease/acquire", {}),
+    ).catch(() => {});
+    expect(requests).toEqual(["lease/acquire"]);
+  },
+);

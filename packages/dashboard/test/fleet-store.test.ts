@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+  armadaApi,
+  fleetClient,
   type Job,
   type NewRequest,
   readInbox,
@@ -2128,3 +2130,91 @@ test("deferred token creation fences the admitted request atomically", async () 
   expect(await store.pendingLaunches(project.slug, at(0))).toMatchObject([{ ticket: "DEMO-74" }]);
   expect(await store.pendingLaunches(project.slug, at(0))).toHaveLength(1);
 });
+
+test.each(["before", "after", "takeover"])(
+  "queue next response loss %s transaction preserves durable selection, retry delay and fencing",
+  async (scenario) => {
+    const project = {
+      slug: `replay-${scenario}`,
+      name: "Synthetic queue",
+      repository: "acme/widgets",
+      programRoot: "WID-1",
+    };
+    const store = fleetStore(db);
+    let now = at(0);
+    let loseAnswer = false;
+    const api = armadaApi({
+      url: "https://fleet.example.test",
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init.body));
+        const op = _url.split("/fleet/")[1]!;
+        if (loseAnswer && op === "queue/next" && scenario === "before") {
+          loseAnswer = false;
+          throw new DOMException("answer lost", "TimeoutError");
+        }
+        const answer = await serveFleet(
+          store,
+          { op, project, input: body.input, caller: { kind: "organization" } },
+          { now: () => now },
+        );
+        if (loseAnswer && op === "queue/next") {
+          loseAnswer = false;
+          throw new DOMException("answer lost", "TimeoutError");
+        }
+        return Response.json(answer.body, { status: answer.status });
+      },
+    });
+    const client = () => fleetClient({ api, signIn: { kind: "api-key", key: "synthetic" }, project });
+    const fleet = client();
+    for (const pr of [12, 15])
+      await fleet.queueAdd({
+        pr,
+        ticket: null,
+        noTicket: true,
+        keepOpen: false,
+        throughHold: null,
+        reason: null,
+        headSha: "a".repeat(40),
+        queuedBy: "owner",
+      });
+    expect(await fleet.acquireLease({ name: "merge-queue", holder: "owner", ttlMs: 600_000 })).toEqual({
+      acquired: true,
+    });
+    const first = await fleet.queueNext({ holder: "owner" });
+    expect(first).toMatchObject({ entry: { pr: 12, attempts: 0 } });
+    if (!("entry" in first) || !first.entry) throw new Error("missing selected row");
+    expect(
+      await fleet.queueFinish({
+        id: first.entry.id,
+        holder: "owner",
+        outcome: "retry",
+        detail: "checks pending",
+        notBefore: at(2).toISOString(),
+      }),
+    ).toBe(true);
+    loseAnswer = true;
+    await expect(fleet.queueNext({ holder: "owner" })).rejects.toThrow("unreachable");
+    expect(await client().queueNext({ holder: "owner" })).toMatchObject({ entry: null });
+    expect(await fleet.queueList()).toMatchObject([
+      { pr: 12, state: "queued", attempts: 1, notBefore: at(2).toISOString() },
+      { pr: 15, state: "queued", attempts: 0 },
+    ]);
+    now = at(2);
+    loseAnswer = true;
+    await expect(fleet.queueNext({ holder: "owner" })).rejects.toThrow("unreachable");
+    if (scenario === "takeover") {
+      now = at(11);
+      expect(await client().acquireLease({ name: "merge-queue", holder: "peer", ttlMs: 600_000 })).toEqual({
+        acquired: true,
+      });
+      expect(await client().queueNext({ holder: "owner" })).toMatchObject({ refused: true, held: { holder: "peer" } });
+    }
+    expect(await client().queueNext({ holder: scenario === "takeover" ? "peer" : "owner" })).toMatchObject({
+      entry: { id: first.entry.id, pr: 12, state: "merging", attempts: 1, notBefore: at(2).toISOString() },
+    });
+    expect(await fleet.queueList()).toMatchObject([
+      { id: first.entry.id, state: "merging", attempts: 1 },
+      { pr: 15, state: "queued", attempts: 0 },
+    ]);
+  },
+);
