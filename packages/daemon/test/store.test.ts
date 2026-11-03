@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { EventInput, Json } from "../src/events.ts";
-import { FOLD_VERSION, fold } from "../src/fold.ts";
+import { FOLD_VERSION, FoldAccumulator, fold } from "../src/fold.ts";
 import { EventStore, SNAPSHOT_EVERY } from "../src/store.ts";
 
 /** The fold's consumers read JSON: an absent key and an undefined one are the same reading. */
@@ -437,6 +437,33 @@ test("a corrupt or foreign-version snapshot row is ignored and rebuilt from the 
       } finally {
         store.close();
       }
+    }
+    // A project reached only through fold() replaces a rejected row once the debounce allows.
+    const grown = new EventStore(path);
+    grown.appendMany(
+      Array.from({ length: SNAPSHOT_EVERY }, (_, i) => ({
+        project: "orchard",
+        kind: "hold.opened" as const,
+        at: "2030-01-01T10:00:00Z",
+        actor: "Mira",
+        payload: { id: `hold-${i}`, reason: "Wait" },
+      })),
+    );
+    grown.close();
+    plant(FOLD_VERSION, stored.replaceAll('"models":["oak"]', '"models":5').replace(/"seq":\d+/, '"seq":77'), 77);
+    const folded = new EventStore(path);
+    try {
+      assert.equal(folded.fold("orchard").projects.orchard?.holds.length, SNAPSHOT_EVERY);
+      const sql = new DatabaseSync(path);
+      try {
+        const row = sql.prepare("SELECT seq, state FROM fold_snapshots WHERE project = 'orchard'").get();
+        assert.equal(row?.seq, 77);
+        assert.doesNotThrow(() => FoldAccumulator.restore(row?.state as string).snapshot(), "a readable row again");
+      } finally {
+        sql.close();
+      }
+    } finally {
+      folded.close();
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });

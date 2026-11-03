@@ -307,9 +307,9 @@ export class EventStore {
       entry.written = -1;
       entry.restored = false;
       entry.tables = undefined;
-      const rebuilt = this.#advance(entry, project, seq);
-      entry.sinceWritten = 0;
-      return rebuilt;
+      // The rows replayed by the rebuild count toward the next write, so the
+      // rejected row is replaced by a plain fold as soon as the debounce allows.
+      return this.#advance(entry, project, seq);
     }
     entry.restored = false;
     entry.sinceWritten += read.events.length;
