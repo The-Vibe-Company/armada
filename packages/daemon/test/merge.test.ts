@@ -1686,19 +1686,36 @@ test("detached cleanup still refuses a replacement generation and a lost worker'
   const released = await f.run("merge.run", 7, "released");
   assert.equal(released.code, "cleanup_pending");
   assert.deepEqual(inboxIds(f), ["back"]);
-  // A replacement generation owns the ticket now: the old generation's bookkeeping is never finished over it.
-  f.store.append({
-    project: "orchard",
-    actor: "worker",
-    at: "2030-01-02T00:00:00Z",
-    kind: "session.claimed",
-    payload: { ticket: "SEED-1", session: "replacement", generation: 2, owner: "Mira", runtime: "claude", handle: "r" },
-  });
+  // A replacement claims the ticket while the stop is refused as detached: the old generation's
+  // bookkeeping is never finished over it, even though its guard passed on entry.
+  let claimed = 0;
   useStop(f, async () => {
+    claimed++;
+    f.store.append({
+      project: "orchard",
+      actor: "worker",
+      at: "2030-01-02T00:00:00Z",
+      kind: "session.claimed",
+      payload: {
+        ticket: "SEED-1",
+        session: "replacement",
+        generation: 2,
+        owner: "Mira",
+        runtime: "claude",
+        handle: "r",
+      },
+    });
     throw notAttached();
   });
   f.restart();
   assert.equal((await f.run("merge.run", 7, "detached")).code, "worker_changed");
+  assert.equal(claimed, 1, "the stop was attempted; the replacement arrived during it");
   assert.deepEqual(inboxIds(f), ["back"]);
   assert.equal(f.counts().mergeCalls, 1);
+  // Once the replacement owns the ticket, no later call touches the old generation's bookkeeping either.
+  useStop(f, async () => {
+    throw notAttached();
+  });
+  assert.equal((await f.run("merge.run", 7, "detached-again")).code, "worker_changed");
+  assert.deepEqual(inboxIds(f), ["back"]);
 });
