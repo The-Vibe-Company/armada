@@ -10,7 +10,11 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "exclude-paths": ["packages/dashboard"],
-      "extra-files": [{ "type": "json", "path": "packages/cli/package.json", "jsonpath": "$.version" }]
+      "extra-files": [
+        { "type": "json", "path": "packages/cli/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/desktop/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/daemon/package.json", "jsonpath": "$.version" }
+      ]
     }
   }
 }

@@ -73,7 +73,7 @@
     },
     "packages/daemon": {
       "name": "@armada/daemon",
-      "version": "0.0.0",
+      "version": "0.2.70",
       "bin": {
         "armadad": "./src/server/main.ts",
       },
@@ -135,7 +135,7 @@
     },
     "packages/desktop": {
       "name": "@armada/desktop",
-      "version": "0.0.0",
+      "version": "0.2.70",
       "dependencies": {
         "@napi-rs/keyring": "2.1.2",
       },

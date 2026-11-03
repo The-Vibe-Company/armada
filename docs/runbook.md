@@ -63,6 +63,30 @@ One project has one coordinator at a time.
 
 Never paste a key into a prompt, a ticket, a file in the repository or a chat. A launch token is the one exception, made for it: it works once, within the hour, for one ticket.
 
+## Ship the desktop app with the release train
+
+Each release the train cuts (`vX.Y.Z`, `.github/workflows/release.yml`) now ships the macOS desktop app beside the CLI: the `desktop` job builds `packages/desktop` on an Apple Silicon runner at the tag and attaches `Armada-X.Y.Z-arm64.dmg`, `Armada-X.Y.Z-arm64-mac.zip`, `latest-mac.yml` and their `.blockmap` files to the GitHub release, in parallel with the npm publish. release-please bumps `packages/desktop/package.json` and `packages/daemon/package.json` with the CLI's version (`extra-files` of `release-please-config.json`), so the app's About panel and the update feed carry the release's version; there is one tag for the whole repository. A failed desktop job never affects the CLI's publication: fix the cause and re-run the failed job of that Release run.
+
+To try the job without a release, from any ref:
+
+```sh
+gh workflow run release.yml --ref main -f desktop_only=true
+```
+
+That run merges, tags and publishes nothing, waits for no release in progress, and leaves the DMG, zip, feed and blockmaps as the `armada-desktop-macos-arm64` artifact of the run (`gh run download <run id> -n armada-desktop-macos-arm64`), kept two weeks.
+
+Without a certificate the DMG is **unsigned**: the release notes say so, and the README of `packages/desktop` says how to open it (`xattr -dr com.apple.quarantine` once, for a build you trust). For a signed and notarised app, the owner adds five repository secrets (Settings > Secrets and variables > Actions), all of them or none; a partial set fails the job rather than ship an unsigned app by mistake:
+
+| Secret | What it is |
+| --- | --- |
+| `APPLE_CERTIFICATE_P12` | the Developer ID Application certificate with its private key, exported from Keychain Access as a `.p12`, base64 encoded on one line: `base64 -i certificate.p12 \| tr -d '\n'` |
+| `APPLE_CERTIFICATE_PASSWORD` | the password given to that export |
+| `APPLE_ID` | the Apple account of the developer team |
+| `APPLE_APP_SPECIFIC_PASSWORD` | an app-specific password for it (appleid.apple.com > Sign-In and Security), for notarytool |
+| `APPLE_TEAM_ID` | the ten-character team id (developer.apple.com > Membership) |
+
+The job imports the certificate into a temporary keychain with a random password, signs with the hardened runtime and the entitlements of `packages/desktop/resources`, notarises through electron-builder, and deletes the keychain in a final step that runs even when the build fails. No value is printed, written to the checkout or uploaded; GitHub masks them in the log. Rotate the app-specific password and re-export the certificate if either ever appears anywhere else. Auto-update from these assets is a later ticket.
+
 ## Move the keys out of Conductor
 
 For a fleet that ran with the keys in Conductor's organization environment:
