@@ -144,6 +144,10 @@ const workerRequestSchema = z.discriminatedUnion("command", [
   z.strictObject({ command: z.literal("ask"), ticket: id, question: text, key: id }),
   z.strictObject({ command: z.literal("release"), ticket: id, reason: text }),
 ]);
+/** How long a local worker may sit idle after its turn's result before the daemon asks it to continue. */
+const SILENT_TURN_MS = 60_000;
+export const SILENT_TURN_NOTE =
+  "Your turn ended without a report. In this runtime a turn that ends can stop its background tasks and subagents, so any verify, CI watch or review you were waiting for may be gone. Continue in the foreground: rerun what you were waiting for within this turn, with a timeout, then report your phase.";
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 /** The release reason of a lost generation: no runtime confirmed its stop, so a later launch probes it first. */
 const RELEASED_WITHOUT_STOP = "lost worker released without a confirmed runtime stop";
@@ -163,6 +167,8 @@ export class Workers {
   readonly #observations = new Map<string, string>();
   readonly #reads = new Map<string, Promise<WorkerObservation>>();
   readonly #lastRead = new Map<string, number>();
+  /** When each live local worker's runtime went from working to idle, until its continue check. */
+  readonly #turnEnded = new Map<string, number>();
   #observing: Promise<void> | undefined;
   readonly #unconfirmed = new Map<string, LiveWorker>();
   /** Sessions boot or a probe could not reattach, with why, and the generation's facts when its tree is proven gone. */
@@ -1990,7 +1996,12 @@ export class Workers {
   #record(ref: WorkerRef, observation: WorkerObservation) {
     this.#usage(ref, observation);
     const value = JSON.stringify({ state: observation.state, activity: observation.activity });
-    if (this.#observations.get(ref.session) === value) return;
+    const previous = this.#observations.get(ref.session);
+    if (previous === value) return;
+    if (observation.state === "running" && observation.activity === "idle") {
+      if (previous === JSON.stringify({ state: "running", activity: "working" }))
+        this.#turnEnded.set(ref.session, Date.parse(this.#at()));
+    } else this.#turnEnded.delete(ref.session);
     this.#append({
       project: ref.project,
       kind: "session.runtime-observed",
@@ -2004,6 +2015,43 @@ export class Workers {
     });
     this.#observations.set(ref.session, value);
   }
+  /**
+   * THE-2266: a local worker whose turn ended with no report a minute later most likely
+   * ended it to wait for background work, which the turn's end can stop. Queue one keyed
+   * note per report episode (durable: its id is the key's) so the room's silent notice is
+   * not the only recovery. Legitimate waits are left alone: a plan or validation awaiting
+   * its decision, an open question, a block and a hand-back.
+   */
+  #continueAfterSilentTurn(row: LiveWorker) {
+    const { project, ticket, session, generation } = row.ref;
+    const endedAt = this.#turnEnded.get(session);
+    if (endedAt === undefined || row.runtime.needsLaunchToken) return;
+    const now = Date.parse(this.#at());
+    if (now - endedAt < SILENT_TURN_MS) return;
+    this.#turnEnded.delete(session);
+    const store = this.#options.store;
+    const bySession = { path: "$.session", equals: session };
+    if (!store.latestKind(project, "session.claimed", bySession)) return;
+    const report = store.latestKind(project, "session.reported", bySession);
+    if (report && Date.parse(report.at) >= endedAt) return;
+    const tables = this.#tables(project);
+    const current = tables?.sessions.find((s) => s.session === session && s.generation === generation);
+    if (!current || !["planning", "implementing", "shipping"].includes(current.phase)) return;
+    if (tables?.inbox.some((item) => item.ticket === ticket && item.kind === "question")) return;
+    const queued = queueDelivery({
+      project,
+      at: this.#at(),
+      actor: "daemon",
+      ticket,
+      session,
+      generation,
+      source: "note",
+      text: SILENT_TURN_NOTE,
+      key: `silent-turn:${session}:${report?.seq ?? 0}`,
+    });
+    if (store.latestKind(project, "delivery.queued", { path: "$.id", equals: queued.payload.id })) return;
+    store.append(queued);
+  }
   observeAll(): Promise<void> {
     if (this.#observing) return this.#observing;
     this.#observing = (async () => {
@@ -2013,6 +2061,7 @@ export class Workers {
         this.#lastRead.set(row.ref.session, now);
         try {
           await this.observe(row.ref.project, row.ref.ticket);
+          this.#continueAfterSilentTurn(row);
         } catch {
           /* Ended/stale generations never mutate the replacement. */
         }

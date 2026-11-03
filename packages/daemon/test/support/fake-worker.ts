@@ -15,6 +15,8 @@ export interface FakeRuntime {
   disposed: string[];
   /** What `observe` answers as the worker's output, by session. */
   output: Map<string, string>;
+  /** A running worker's activity, by session; working when unset. */
+  activity: Map<string, "working" | "idle">;
   /** While set, a stop waits for it: a test holds one stop in flight. */
   gate?: Promise<void>;
 }
@@ -23,8 +25,12 @@ const MANIFEST = {
   contributions: { runtime: { claude: {} }, node: { local: {} }, tracker: {}, forge: {}, model: {} },
 } as unknown as PluginManifest;
 
-export function fakeWorkers(store: EventStore, projects: { id: string; repository: string }[]) {
-  const fake: FakeRuntime = { delivered: [], stopped: [], disposed: [], output: new Map() };
+export function fakeWorkers(
+  store: EventStore,
+  projects: { id: string; repository: string }[],
+  options: { now?: () => string } = {},
+) {
+  const fake: FakeRuntime = { delivered: [], stopped: [], disposed: [], output: new Map(), activity: new Map() };
   const tokens = new Map<string, string>();
   const running = new Set<string>();
   const node: NodeProvider = {
@@ -55,7 +61,7 @@ export function fakeWorkers(store: EventStore, projects: { id: string; repositor
       const output = fake.output.get(ref.session);
       return {
         state: running.has(ref.session) ? "running" : "stopped",
-        activity: running.has(ref.session) ? "working" : "idle",
+        activity: running.has(ref.session) ? (fake.activity.get(ref.session) ?? "working") : "idle",
         ...(output === undefined ? {} : { reply: output }),
       };
     },
@@ -75,6 +81,7 @@ export function fakeWorkers(store: EventStore, projects: { id: string; repositor
     registry,
     socketPath: "/fake/worker.sock",
     projects: projects.map((p) => ({ ...p, checkout: `/fake/${p.id}` })),
+    ...(options.now ? { now: options.now } : {}),
   });
   let calls = 0;
   return {
