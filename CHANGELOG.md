@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.72](https://github.com/The-Vibe-Company/armada/compare/v0.2.71...v0.2.72) (2026-11-03)
+
+
+### Bug Fixes
+
+* **core:** recover merge drain within confirmed lease budget ([#446](https://github.com/The-Vibe-Company/armada/issues/446)) ([ff65513](https://github.com/The-Vibe-Company/armada/commit/ff65513148ee307b4d76e6077ec4023b7c4a18bc))
+
 ## [0.2.71](https://github.com/The-Vibe-Company/armada/compare/v0.2.70...v0.2.71) (2026-11-03)
 
 
