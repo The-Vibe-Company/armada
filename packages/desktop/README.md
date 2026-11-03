@@ -83,6 +83,43 @@ the quarantine once after copying it to Applications:
 xattr -dr com.apple.quarantine /Applications/Armada.app
 ```
 
+### Smoke-testing a build without touching the desktop (THE-2234)
+
+A worker or CI never opens the app on the owner's screen: no `open -a`, no
+`osascript`, no `screencapture`. The shell honours `ARMADA_DESKTOP_HEADLESS=1`
+instead: it creates no window, hides its dock icon (`app.dock.hide()`), keeps
+Electron's own user data in a disposable directory removed at quit, starts its
+daemon with its own configuration directory, app configuration and file
+keychain under that directory (`XDG_CONFIG_HOME`, `ARMADA_APP_CONFIG`,
+`ARMADA_KEYCHAIN=file`, each only when not set: the account's `~/.config/armada`,
+its plugins and its login keychain are never touched), and takes
+only the catalog and log it is given. Without `ARMADA_DESKTOP_PROJECTS` and
+`ARMADA_DESKTOP_DATABASE` it exits with code 1 naming them: it never opens the
+fleet of the account it runs under. Once its daemon is ready it prints one JSON
+line on stdout, `{"headless":true,"url":…,"wsUrl":…,"windows":0,"dockVisible":false}`
+(and another one should the app's Restart bring the daemon back on a new port),
+and waits for SIGTERM or SIGINT, which stop the daemon and exit with code 0.
+Assertions go through the daemon's HTTP and WebSocket addresses on that line.
+For a packaged build:
+
+```sh
+ARMADA_DESKTOP_HEADLESS=1 \
+ARMADA_DESKTOP_PROJECTS=/tmp/smoke/projects.json \
+ARMADA_DESKTOP_DATABASE=/tmp/smoke/fleet.sqlite \
+packages/desktop/release/mac-arm64/Armada.app/Contents/MacOS/Armada
+```
+
+`test/bundled-daemon.test.ts` boots the built shell this way under the
+development Electron and asserts the readiness line reports no window and no
+dock icon, the app answers on its addresses, and SIGTERM leaves no daemon. On
+Linux without a display, start Electron with `--ozone-platform=headless`
+(Chromium picks its platform before the shell's own code runs, so the launcher
+passes it; `noDisplay` in `src/headless.ts` says when), and on a GitHub runner
+with `--no-sandbox` too, as it has no configured setuid sandbox helper for
+Electron's zygote: the test does both, so CI needs no X server. The rules are `src/headless.ts`. Everything that
+needs eyes on the window (the fleet it shows, Cmd+Q) stays in the acceptance
+pass below, run by the owner or the coordinator.
+
 Only do this for a build you made or trust. A DMG built locally and opened in
 place is not quarantined. An app started from the Finder has the login shell's
 minimal `PATH`: a local worker runtime found through `PATH` in a terminal may
