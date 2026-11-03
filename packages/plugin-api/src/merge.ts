@@ -37,7 +37,16 @@ export interface TestMergeRequest extends ProjectRequest {
   head: string;
   commands: string[];
 }
-export type TestMergeResult = { ok: true } | { ok: false; step: string; output: string };
+export type TestMergeResult =
+  | { ok: true }
+  | {
+      ok: false;
+      step: string;
+      /** Last 64 KiB of combined output. Transient diagnostics only; never persist this field. */
+      output: string;
+      /** Only a completed nonzero exit of the same gate on the pinned base counts as failed. */
+      baseCheck?: "passed" | "failed" | "unavailable";
+    };
 export interface TrackerWriteRequest extends ProjectRequest {
   ticket: string;
   actor?: string;

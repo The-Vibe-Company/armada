@@ -4,7 +4,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Conversation } from "@earendil-works/pi-durable";
 import type { FleetEvent } from "../src/events.ts";
 import { FoldAccumulator } from "../src/fold.ts";
-import { maskedTail, type ProgressJudge, verdictSchema } from "../src/liveness/judge.ts";
+import { maskedTail, type ProgressJudge, permissionBlock, verdictSchema } from "../src/liveness/judge.ts";
 import { type ProgressSignals, progressSignals, progressSummary, type Report } from "../src/liveness/progress.ts";
 import type { EventStore } from "../src/store.ts";
 import {
@@ -128,7 +128,12 @@ export function wakeups(before: WakeReading, after: WakeReading): WakeCandidate[
   }
 
   for (const item of after.tables?.inbox ?? []) {
-    if (before.tables?.inbox.some((i) => i.id === item.id) || ["owner-request", "follow-up"].includes(item.kind))
+    const permission = item.kind === "follow-up" && item.followUp?.code === "permission_prompt";
+    if (
+      before.tables?.inbox.some((i) => i.id === item.id) ||
+      item.kind === "owner-request" ||
+      (item.kind === "follow-up" && !permission)
+    )
       continue;
     const handedBack = item.kind === "hand-back" ? item.body.match(/\bPR #(\d+), head ([a-f0-9]{40})\b/i) : null;
     const facts = {
@@ -144,11 +149,13 @@ export function wakeups(before: WakeReading, after: WakeReading): WakeCandidate[
       item.kind === "liveness" && after.events.some((e) => e.kind === "session.liveness" && e.payload.id === item.id);
     add(
       `inbox:${identity(item.id)}`,
-      judged
-        ? maskedTail(item.body)
-            .replace(/\p{Cc}/gu, " ")
-            .slice(0, 800)
-        : `${item.kind}${facts.ticket ? ` ${facts.ticket}` : ""}${pr}`,
+      permission
+        ? `permission block ${facts.ticket ?? ""}; set the runtime's permission mode in Settings > Providers, restart Armada and relaunch the worker`
+        : judged
+          ? maskedTail(item.body)
+              .replace(/\p{Cc}/gu, " ")
+              .slice(0, 800)
+          : `${item.kind}${facts.ticket ? ` ${facts.ticket}` : ""}${pr}`,
       facts,
     );
   }
@@ -288,6 +295,7 @@ export class Waker {
   readonly #conversation: Pick<Conversation, "submit">;
   readonly #clock: WakeClock;
   readonly #progress?: ProgressWatch;
+  readonly #permissionChecks = new Set<string>();
   readonly #attempts = new Map<string, number>();
   readonly #judging = new Map<string, { abort: AbortController; done: Promise<void> }>();
   readonly #seen = new Set<string>();
@@ -437,10 +445,12 @@ export class Waker {
   #scan(history?: readonly FleetEvent[]) {
     if (this.#closed || this.#scanning) return;
     this.#scanning = true;
+    const observed = new Set<string>();
     try {
       for (const e of history ?? this.#store.readSince(this.#cursor, this.#project)) {
         this.#cursor = e.seq;
         this.#record(e);
+        if (e.kind === "session.runtime-observed" || e.kind === "session.usage") observed.add(e.payload.session);
         // Chat bodies cannot change fleet state or wake evidence. Replaying them
         // through every growing prefix makes a chat-heavy boot quadratic.
         if (e.kind === "coordinator.message" || e.kind.startsWith("coordinator.wakeup")) continue;
@@ -486,6 +496,8 @@ export class Waker {
           this.#cancelBatch = undefined;
           this.#flush();
         }, 10_000);
+      for (const session of this.#reading.tables?.sessions ?? [])
+        if (observed.has(session.session)) this.#permissionPrompt(session);
       this.#quiet();
       this.#liveness();
     } finally {
@@ -618,6 +630,15 @@ export class Waker {
     const desired = new Map<string, { ticket: string; kind: "silent" | "stopped" | "not-started"; due: number }>();
     for (const s of tables.sessions) {
       if (["released", "merged"].includes(s.phase) || s.runtime === "tracker") continue;
+      if (
+        tables.inbox.some(
+          (item) =>
+            item.followUp?.code === "permission_prompt" &&
+            item.followUp.session === s.session &&
+            item.followUp.generation === s.generation,
+        )
+      )
+        continue;
       const observation = this.#events.findLast(
         (e) =>
           e.kind === "session.runtime-observed" &&
@@ -721,6 +742,57 @@ export class Waker {
       },
       Math.max(1, due - now),
     );
+  }
+
+  /** Diagnose a daemon-owned PTY that nobody can answer; no idle threshold or model is needed. */
+  #permissionPrompt(session: Session) {
+    if (
+      !this.#progress ||
+      ["released", "merged", "ready-to-merge", "awaiting-validation", "awaiting-approval", "blocked"].includes(
+        session.phase,
+      ) ||
+      session.runtime === "tracker"
+    )
+      return;
+    const candidate = `permissions:${identity(session.session)}@${session.generation}`;
+    if (
+      this.#permissionChecks.has(candidate) ||
+      this.#events.some((e) => e.kind === "inbox.opened" && e.payload.followUp?.candidate === candidate)
+    )
+      return;
+    this.#permissionChecks.add(candidate);
+    void this.#progress
+      .transcript(session)
+      .then((tail) => {
+        const verdict = permissionBlock(tail);
+        const current = this.#reading.tables?.sessions.find((s) => s.ticket === session.ticket);
+        if (
+          this.#closed ||
+          !verdict ||
+          current?.session !== session.session ||
+          current.generation !== session.generation ||
+          ["released", "merged", "ready-to-merge", "awaiting-validation", "awaiting-approval", "blocked"].includes(
+            current.phase,
+          )
+        )
+          return;
+        this.#store.append(
+          followUpEvent(this.#events, this.#project, new Date(this.#clock.now()).toISOString(), session.ticket, {
+            candidate,
+            code: "permission_prompt",
+            session: session.session,
+            generation: session.generation,
+            reason: "Worker blocked by runtime permissions; nobody can answer its daemon-owned PTY",
+            facts: verdict.evidence,
+            next: "Set the runtime's permission mode in Settings > Providers, restart Armada, then relaunch this worker.",
+            fix: "Set the runtime's permission mode in Settings > Providers to its unattended default.",
+          }),
+        );
+      })
+      .catch(() => {
+        // An unavailable transcript is not proof of a permission block.
+      })
+      .finally(() => this.#permissionChecks.delete(candidate));
   }
 
   #progressPlan(): { session: Session; signals: ProgressSignals; id: string; due: number }[] {

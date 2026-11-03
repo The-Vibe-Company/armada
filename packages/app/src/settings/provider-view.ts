@@ -138,3 +138,95 @@ export function routesTo(
     return routes;
   });
 }
+
+const PERMISSION_MODES: Record<string, { initial: string; choices: [string, string][] }> = {
+  claude: {
+    initial: "bypassPermissions",
+    choices: [
+      ["bypassPermissions", "Unattended"],
+      ["acceptEdits", "Accept edits"],
+      ["default", "CLI default"],
+    ],
+  },
+  codex: {
+    initial: "workspace-write",
+    choices: [
+      ["workspace-write", "Unattended · workspace write"],
+      ["read-only", "Unattended · read only"],
+      ["default", "CLI default"],
+    ],
+  },
+  opencode: {
+    initial: "allow",
+    choices: [
+      ["allow", "Unattended"],
+      ["ask", "Ask for permission"],
+      ["deny", "Deny tools"],
+      ["default", "CLI default"],
+    ],
+  },
+};
+const permissionFlag =
+  /^(?:--permission-mode|--dangerously-skip-permissions|--ask-for-approval|--sandbox|--full-auto|--approve-for-me|--dangerously-bypass-approvals-and-sandbox)(?:=|$)|^-[as](?:$|=|never|on-request|untrusted|on-failure|workspace-write|read-only|danger-full-access)/;
+const permissionSetting =
+  /^(?:(?:--config=|-c))?(?:approval_policy|sandbox_mode|sandbox_workspace_write\.network_access)\s*=/;
+const savedRuntime = (plugin: Plugin, kind: string): { [key: string]: Json } => {
+  const value = plugin.contributions.find((c) => c.seam === "runtime" && c.kind === kind)?.config;
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+};
+
+/** Show custom argv truthfully; the selector deliberately replaces only permission overrides. */
+export function runtimePermission(provider: Provider, plugins: readonly Plugin[]) {
+  const runtime = runtimeOf(provider, plugins);
+  const modes = runtime && PERMISSION_MODES[runtime.kind];
+  const plugin = runtime && plugins.find((p) => p.id === runtime.plugin);
+  if (!runtime || !modes || !plugin) return null;
+  const config = savedRuntime(plugin, runtime.kind);
+  const args = config.args ?? config.extraArgs;
+  const custom =
+    Array.isArray(args) &&
+    args.some((a) => typeof a === "string" && (permissionFlag.test(a) || permissionSetting.test(a)));
+  const value = custom ? "custom" : typeof config.permissionMode === "string" ? config.permissionMode : modes.initial;
+  return {
+    ...runtime,
+    ...modes,
+    value,
+    summary: custom
+      ? "Permissions set by custom arguments"
+      : value === modes.initial
+        ? "Runs unattended in its worktree"
+        : value === "read-only"
+          ? "Runs unattended with read-only tools"
+          : value === "default"
+            ? "Uses the CLI's permission settings"
+            : `Permission mode: ${value}`,
+  };
+}
+
+export function permissionConfig(plugin: Plugin, kind: string, permissionMode: string): { [key: string]: Json } {
+  const config: { [key: string]: Json } = { ...savedRuntime(plugin, kind), permissionMode };
+  for (const key of ["args", "extraArgs"]) {
+    const args = config[key];
+    if (!Array.isArray(args)) continue;
+    config[key] = args.filter((arg, i) => {
+      const before = args[i - 1];
+      if (typeof arg !== "string") return true;
+      if (
+        permissionFlag.test(arg) ||
+        (typeof before === "string" && /^(?:--permission-mode|--ask-for-approval|--sandbox|-[as])$/.test(before))
+      )
+        return false;
+      if (
+        (arg === "-c" || arg === "--config") &&
+        typeof args[i + 1] === "string" &&
+        permissionSetting.test(String(args[i + 1]))
+      )
+        return false;
+      return (
+        !permissionSetting.test(arg) &&
+        !/^--config=(?:approval_policy|sandbox_mode|sandbox_workspace_write\.network_access)\s*=/.test(arg)
+      );
+    });
+  }
+  return config;
+}

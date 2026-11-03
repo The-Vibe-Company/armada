@@ -188,6 +188,10 @@ async function fixture(t: TestContext, priorHandBack = false, trackerOnly = fals
       reason?: string;
       next?: string;
       problems?: string[];
+      step?: string;
+      tests?: string[];
+      tail?: string;
+      fix?: string;
       cleanup?: { disposed?: boolean };
       waiting?: boolean;
       head?: string;
@@ -577,8 +581,11 @@ test("failed local gate and moving final base refuse the pinned merge", async (t
   });
   const failed = await f.run("merge.run");
   assert.equal(failed.code, "local_gate_failed");
-  assert.match(failed.reason ?? "", /bun run verify.*failed first line/);
-  assert.doesNotMatch(JSON.stringify(failed), /private subprocess body/);
+  assert.match(failed.reason ?? "", /bun run verify/);
+  assert.equal(failed.tail, undefined);
+  assert.deepEqual(failed.tests, []);
+  assert.doesNotMatch(JSON.stringify(failed), /private subprocess body|failed first line/);
+  assert.doesNotMatch(JSON.stringify(f.store.readSince(0)), /private subprocess body|failed first line/);
   assert.ok(
     f.store.readSince(0).some((e) => e.kind === "merge.refused" && e.payload.pr === 7),
     "a refusal before the merge still wakes the coordinator",
@@ -591,6 +598,49 @@ test("failed local gate and moving final base refuse the pinned merge", async (t
   assert.equal((await f.run("merge.run")).code, "head_moved");
   assert.equal(f.counts().mergeCalls, 0);
 });
+
+for (const baseCheck of ["failed", "passed", "unavailable", undefined] as const) {
+  test(`local gate diagnostics distinguish base ${baseCheck} without persisting output`, async (t) => {
+    const f = await fixture(t);
+    gates(f);
+    f.setFacts({ behindBy: 1 });
+    f.node.testMerge = async () => ({
+      ok: false,
+      step: "bun run verify",
+      output: [
+        "\x1b[31mnot ok 12 - boot stays responsive\x1b[0m",
+        "(fail) plugin loads [5.12ms]",
+        "not ok 12 - boot stays responsive",
+        "not ok 13 - masks token=synthetic-test-token",
+        ...Array.from({ length: 35 }, (_, i) => `private diagnostic ${i}`),
+        "authorization: Bearer synthetic-credential",
+        "token=synthetic-tail-token",
+        "armada_worker_synthetic_session",
+        "final diagnostic",
+      ].join("\n"),
+      ...(baseCheck ? { baseCheck } : {}),
+    });
+    const result = await f.run("merge.check");
+    assert.equal(result.code, baseCheck === "failed" ? "local_gate_environment" : "local_gate_failed");
+    assert.equal(result.step, "bun run verify");
+    assert.deepEqual(result.tests, ["boot stays responsive", "plugin loads", "masks token=[redacted]"]);
+    assert.equal(result.tail, undefined);
+    assert.match(result.reason ?? "", /boot stays responsive/);
+    assert.doesNotMatch(JSON.stringify(result), /private diagnostic|final diagnostic|synthetic-|synthetic_session/);
+    if (baseCheck === "failed") {
+      assert.match(result.reason ?? "", /fails on main too/);
+      assert.match(result.fix ?? "", /CI.*environment/);
+      assert.doesNotMatch(result.next ?? "", /worker.message/);
+    }
+    const events = f.store.readSince(0);
+    const followUp = events.findLast((e) => e.kind === "inbox.opened" && e.payload.kind === "follow-up");
+    assert.ok(followUp?.kind === "inbox.opened");
+    assert.match(followUp.payload.followUp?.facts ?? "", /bun run verify.*boot stays responsive.*plugin loads/);
+    if (baseCheck === "failed") assert.match(followUp.payload.followUp?.fix ?? "", /CI.*environment/);
+    assert.doesNotMatch(JSON.stringify(events), /private diagnostic|final diagnostic|synthetic-|synthetic_session/);
+    assert.equal(f.counts().mergeCalls, 0);
+  });
+}
 
 test("daemon lease refuses concurrent merges and releases after failure", async (t) => {
   const f = await fixture(t);
@@ -767,7 +817,9 @@ test("replacement generation and closed writer fence async evidence and cleanup"
   assert.equal(f.counts().mergeCalls, 0);
 });
 
-test("local node test merge runs ordered gates on pinned commits and removes dirty throwaway on failure", async () => {
+test("local node test merge runs ordered gates on pinned commits and removes dirty throwaway on failure", {
+  timeout: 10_000,
+}, async () => {
   const directory = mkdtempSync(join(tmpdir(), "armada-merge-git-"));
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: directory, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -776,6 +828,7 @@ test("local node test merge runs ordered gates on pinned commits and removes dir
     git("config", "user.name", "Merge test");
     git("config", "user.email", "merge@example.test");
     git("config", "commit.gpgsign", "false");
+    writeFileSync(join(directory, ".gitignore"), "node_modules/\n");
     writeFileSync(join(directory, "main.txt"), "base\n");
     git("add", ".");
     git("commit", "-m", "base");
@@ -803,8 +856,31 @@ test("local node test merge runs ordered gates on pinned commits and removes dir
     assert.equal(git("worktree", "list", "--porcelain").match(/^worktree /gm)?.length, 1);
     assert.equal(git("rev-parse", "HEAD"), main);
     assert.equal(git("status", "--porcelain"), "");
-    const failure = await node.testMerge?.({ ...request, commands: ["echo dirty > generated; exit 1", "exit 0"] });
+    // The same private worktree is cleaned and checked out at base; the worker file disappears.
+    const headOnly = await node.testMerge?.({
+      ...request,
+      commands: [
+        "mkdir -p node_modules; echo ready > node_modules/setup; echo ready > setup-prerequisite",
+        "test -f node_modules/setup && test -f setup-prerequisite || exit 2; if test -f worker.txt; then echo dirty > generated; echo 'not ok 1 - head regression' >&2; exit 1; fi; test ! -f generated",
+      ],
+    });
+    assert.equal(headOnly?.ok, false);
+    if (headOnly && !headOnly.ok) {
+      assert.match(headOnly.output, /not ok 1 - head regression/);
+      assert.equal(headOnly.baseCheck, "passed");
+    }
+    // A descendant inherits both pipes after the gate exits. Completion also proves
+    // process-group cleanup closes them instead of waiting until the gate timeout.
+    const command = `node -e "process.stdout.write('x'.repeat(70000)); process.stderr.write('not ok 2 - machine gate\\n'); require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000)'], { stdio: 'inherit' }).unref(); process.exitCode = 1"`;
+    const failure = await node.testMerge?.({ ...request, commands: [command, "exit 0"] });
     assert.equal(failure?.ok, false);
+    if (failure && !failure.ok) {
+      assert.equal(failure.step, command);
+      assert.equal(failure.baseCheck, "failed");
+      assert.ok(Buffer.byteLength(failure.output) <= 64 * 1024);
+      assert.ok(failure.output.length > 60 * 1024);
+      assert.match(failure.output, /not ok 2 - machine gate/);
+    }
     assert.equal(git("worktree", "list", "--porcelain").match(/^worktree /gm)?.length, 1);
     assert.equal(readFileSync(join(directory, "main.txt"), "utf8"), "main advanced\n");
   } finally {

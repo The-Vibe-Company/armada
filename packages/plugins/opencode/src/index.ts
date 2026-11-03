@@ -5,6 +5,7 @@ import { opencodeConnection } from "./status.ts";
 interface Options {
   command?: string;
   binary?: string;
+  permissionMode?: "allow" | "ask" | "deny" | "default";
   model?: string;
   effort?: string;
   extraArgs?: string[];
@@ -104,6 +105,12 @@ export function opencodeRuntime(options: Options = {}, node?: NodeProvider): Run
           ? {
               ...request,
               command: "node",
+              env: {
+                ...request.env,
+                ...((options.permissionMode ?? "allow") === "default" || request.env.OPENCODE_PERMISSION !== undefined
+                  ? {}
+                  : { OPENCODE_PERMISSION: JSON.stringify({ "*": options.permissionMode ?? "allow" }) }),
+              },
               args: [
                 "--input-type=module",
                 "-e",

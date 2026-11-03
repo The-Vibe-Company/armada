@@ -7,7 +7,19 @@ import { LinearRateLimitError } from "../src/linear/errors.ts";
 import { linearTracker } from "../src/linear/index.ts";
 import { page, recorded, t1 } from "./support/program.ts";
 
-const root = { id: "root", team: { id: "team", states: page([{ id: "active", type: "started", position: 0 }]) } };
+const root = {
+  id: "root",
+  team: {
+    id: "team",
+    states: page([
+      { id: "triage", type: "triage", position: -1 },
+      { id: "todo", type: "unstarted", position: 0 },
+      { id: "later-backlog", type: "backlog", position: 2 },
+      { id: "backlog", type: "backlog", position: 1 },
+      { id: "active", type: "started", position: 3 },
+    ]),
+  },
+};
 const label = (id: string, name: string, team: string | null = null) => ({
   id,
   name,
@@ -80,12 +92,59 @@ test("creates under the root, resolves team labels, and reuses an exact recent d
       description: request.description,
       parentId: "root",
       labelIds: ["team-ready"],
+      stateId: "backlog",
     },
   });
   assert.deepEqual(await tracker.create(request), { id: "SEED-3", url: existing.url });
   assert.equal(calls.filter((call) => call.operation === "CreateTicket").length, 1);
   assert.equal(calls.filter((call) => call.operation === "MutationRoot").length, 1);
   assert.equal(calls.filter((call) => call.operation === "RecentTickets").length, 2);
+});
+
+test("creation falls back to the first unstarted state only when backlog is absent, otherwise refuses", async (t) => {
+  for (const workflow of [
+    {
+      states: page([
+        { id: "triage", type: "triage", position: -1 },
+        { id: "later", type: "unstarted", position: 2 },
+        { id: "todo", type: "unstarted", position: 1 },
+      ]),
+      stateId: "todo",
+      error: null,
+    },
+    { states: page([{ id: "triage", type: "triage", position: 0 }]), stateId: null, error: /workflow state not found/ },
+    { states: page(root.team.states.nodes, "more"), stateId: null, error: /workflow states incomplete/ },
+  ]) {
+    await t.test(workflow.stateId ?? String(workflow.error), async () => {
+      const { tracker, calls } = setup({
+        MutationRoot: [{ issue: { ...root, team: { id: "team", states: workflow.states } } }],
+        RecentTickets: [{ issues: page([]) }],
+        CreateTicket: [
+          {
+            issueCreate: {
+              success: true,
+              issue: { id: "new", identifier: "SEED-3", url: "https://linear.example/SEED-3" },
+            },
+          },
+        ],
+      });
+      if (workflow.error) {
+        await assert.rejects(tracker.create({ ...request, labels: [] }), workflow.error);
+        assert.equal(
+          calls.some((call) => call.operation === "CreateTicket"),
+          false,
+        );
+      } else {
+        assert.deepEqual(await tracker.create({ ...request, labels: [] }), {
+          id: "SEED-3",
+          url: "https://linear.example/SEED-3",
+        });
+        const created = calls.find((call) => call.operation === "CreateTicket");
+        assert.ok(created);
+        assert.equal((created.variables.input as { stateId: string }).stateId, workflow.stateId);
+      }
+    });
+  }
 });
 
 test("updates title, Markdown, parent, state and label deltas without dropping a phase, and directs blockers toward the ticket", async () => {

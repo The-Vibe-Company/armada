@@ -4,6 +4,7 @@ import { claudeConnection } from "./status.ts";
 interface ClaudeOptions {
   command?: string;
   binary?: string;
+  permissionMode?: "bypassPermissions" | "acceptEdits" | "default";
   args?: string[];
 }
 const same = (a: WorkerRef, b: WorkerRef) =>
@@ -199,6 +200,16 @@ export function claudeRuntime(options: ClaudeOptions = {}, node?: NodeProvider):
         args: stream
           ? [
               ...(options.args ?? []),
+              ...(![...(options.args ?? []), ...request.args].some(
+                (arg) =>
+                  arg === "--permission-mode" ||
+                  arg.startsWith("--permission-mode=") ||
+                  arg === "--dangerously-skip-permissions",
+              )
+                ? ["--permission-mode", options.permissionMode ?? "bypassPermissions"]
+                : []),
+              "--add-dir",
+              request.workspace.path,
               "--print",
               "--verbose",
               "--input-format",

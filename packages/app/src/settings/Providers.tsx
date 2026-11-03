@@ -11,7 +11,7 @@ import { useDisplayName } from "./display-names";
 import { SettingsRow, SettingsSection } from "./Layout";
 import { focusSignInOf, ProviderDetail } from "./ProviderDetail";
 import { useSignIn, useSignInFollows } from "./ProviderSignIn";
-import { agentCards, agentStatus, versionLabel } from "./provider-view";
+import { agentCards, agentStatus, runtimePermission, versionLabel } from "./provider-view";
 import { Restart } from "./RestartNotice";
 
 /**
@@ -75,6 +75,8 @@ function AgentCard({
 }) {
   const client = useDaemonClient();
   const name = useDisplayName(provider.mark, provider.name);
+  const { plugins } = useDaemon();
+  const permission = runtimePermission(provider, plugins?.plugins ?? []);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const status = agentStatus(provider);
@@ -114,6 +116,11 @@ function AgentCard({
           />
         }
       />
+      {permission && (
+        <p data-permission-summary className="m-0 px-4 pb-2 text-small text-text-3">
+          {permission.summary}
+        </p>
+      )}
       {problem && (
         <p role="alert" className="m-0 px-4 pb-3 text-small text-red">
           {problem}

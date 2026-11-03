@@ -1377,7 +1377,14 @@ test("Linear ticket tools create once per call key and the next reader publishes
   const { store, scope } = await fixture(t);
   let linear: TrackerProvider | undefined;
   const recording = linearRecorded({
-    MutationRoot: [{ issue: { id: "uuid-SEED-1", team: { id: "team" } } }],
+    MutationRoot: [
+      {
+        issue: {
+          id: "uuid-SEED-1",
+          team: { id: "team", states: linearPage([{ id: "backlog", type: "backlog", position: 0 }]) },
+        },
+      },
+    ],
     RecentTickets: [{ issues: linearPage([]) }],
     CreateTicket: [
       {

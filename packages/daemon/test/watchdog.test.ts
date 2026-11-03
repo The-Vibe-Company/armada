@@ -41,7 +41,12 @@ class Clock implements WakeClock {
 const ref = { ticket: "ORC-1", session: "worker-1", generation: 1 };
 const project = "orchard";
 
-async function fixture(t: { after(fn: () => Promise<void>): void }, verdict = "looping", withPr = false) {
+async function fixture(
+  t: { after(fn: () => Promise<void>): void },
+  verdict = "looping",
+  withPr = false,
+  transcript?: () => Promise<string>,
+) {
   const store = new EventStore(":memory:");
   const clock = new Clock();
   const token = `armada_worker_${randomBytes(24).toString("hex")}`;
@@ -71,7 +76,18 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, verdict = "l
       rules: { revision: 1, value: { policy: { silenceMinutes: 15, quietMinutes: 45, coordinatorMinutes: 0 } } },
     },
   });
-  append("session.claimed", { ...ref, runtime: "claude", owner: "coordinator", handle: "handle-1" });
+  append("coordinator.checkpoint", {
+    checkpoint: {
+      format: "armada.worker",
+      version: 1,
+      type: "launch",
+      ...ref,
+      runtime: "claude",
+      handle: "handle-1",
+      step: "launched",
+    },
+  });
+  if (!transcript) append("session.claimed", { ...ref, runtime: "claude", owner: "coordinator", handle: "handle-1" });
   if (withPr)
     append("pull-request.seen", {
       number: 1,
@@ -83,7 +99,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, verdict = "l
     });
   const report = (line = `Retrying failing test ${token}`, phase = "implementing") =>
     append("session.reported", { ...ref, phase, reason: line });
-  report();
+  if (!transcript) report();
   append("session.runtime-observed", { ...ref, state: "running", activity: "working" });
   const conversation: Pick<Conversation, "submit"> = {
     submit: async (draft) => {
@@ -100,7 +116,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, verdict = "l
       judge: judgeProgress(models, { provider: faux.provider.id, modelId: "small" }),
       transcript: async (_session: Session) => {
         tails++;
-        return `${"noise".repeat(1500)}\nTest failed ${token}`;
+        return transcript ? transcript() : `${"noise".repeat(1500)}\nTest failed ${token}`;
       },
     },
   };
@@ -147,7 +163,7 @@ test("a live loop appends one judged notice and one wake, masks model input, and
   const f = await fixture(t);
   await f.run();
   assert.equal(f.inputs.length, 1);
-  assert.equal(f.tails(), 1, "healthy workers do not read transcripts");
+  assert.equal(f.tails(), 2, "first observation checks permissions; suspicious progress gets one judgment");
   assert.doesNotMatch(JSON.stringify(f.inputs), new RegExp(f.token));
   assert.match(f.inputs[0]!, /\[redacted\]/);
   assert.ok(f.inputs[0]!.length < 18_000);
@@ -349,4 +365,102 @@ test("a failed watchdog checkpoint backs off without spinning or calling the mod
   await f.clock.advance(minute);
   assert.equal(attempts, 2);
   assert.equal(f.wakes.length, 0);
+});
+
+for (const text of [
+  "Claude requested permissions for Bash",
+  JSON.stringify({ armada: 1, kind: "failure", permission: true }),
+  "You haven't granted permission to Write",
+  JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "text", text: "I requested permissions for Bash but was refused" }] },
+  }),
+  JSON.stringify({ type: "result", permission_denials: [{ tool_name: "Bash", tool_input: { command: "claim" } }] }),
+]) {
+  test(`first observation diagnoses permissions and opens one actionable follow-up: ${text}`, async (t) => {
+    const f = await fixture(t, "progressing", false, async () => text);
+    await f.clock.advance(1);
+    const items = () => fold(f.store.readSince(0)).projects[project]!.inbox.filter((i) => i.kind === "follow-up");
+    assert.equal(items().length, 1);
+    assert.equal(items()[0]!.followUp?.code, "permission_prompt");
+    assert.match(items()[0]!.followUp!.reason, /permission/i);
+    assert.match(items()[0]!.followUp!.fix!, /permission mode in Settings > Providers/i);
+    assert.equal(f.inputs.length, 0, "explicit permission evidence needs no model or silence threshold");
+    await f.clock.advance(10_000);
+    assert.equal(f.wakes.length, 1, "the new block wakes the coordinator without a reminder delay");
+    assert.match(f.wakes[0]!, /permission mode in Settings > Providers/);
+    f.append("session.runtime-observed", { ...ref, state: "running", activity: "idle" });
+    await f.clock.advance(1);
+    await f.restart();
+    await f.clock.advance(1);
+    assert.equal(items().length, 1);
+    assert.equal(items()[0]!.followUp?.attempts, 1);
+    assert.equal(f.wakes.length, 1);
+    f.append("session.runtime-observed", { ...ref, state: "failed", activity: "idle" });
+    await f.clock.advance(20 * minute);
+    assert.equal(
+      fold(f.store.readSince(0)).projects[project]?.inbox.filter((i) =>
+        ["silent", "stopped", "not-started", "liveness"].includes(i.kind),
+      ).length,
+      0,
+    );
+  });
+}
+
+test("a permission transcript arriving after replacement cannot blame the new generation", async (t) => {
+  let finish!: (text: string) => void;
+  const f = await fixture(
+    t,
+    "progressing",
+    false,
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  await f.clock.advance(1);
+  f.append("session.claimed", {
+    ...ref,
+    session: "replacement",
+    generation: 2,
+    runtime: "claude",
+    owner: "coordinator",
+    handle: "two",
+  });
+  finish("You haven't granted permission");
+  await f.clock.advance(1);
+  assert.equal(fold(f.store.readSince(0)).projects[project]!.inbox.filter((i) => i.kind === "follow-up").length, 0);
+});
+
+for (const text of [
+  JSON.stringify({ type: "user", message: { content: "Document requested permissions and permission prompts" } }),
+  JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "tool_use", input: { text: "requested permissions" } }] },
+  }),
+  "bash: ./build.sh: Permission denied",
+]) {
+  test(`permission follow-up ignores prompt/tool input and filesystem errors: ${text}`, async (t) => {
+    const f = await fixture(t, "progressing", false, async () => text);
+    await f.clock.advance(1);
+    assert.equal(fold(f.store.readSince(0)).projects[project]?.inbox.filter((i) => i.kind === "follow-up").length, 0);
+    assert.equal(f.inputs.length, 0);
+  });
+}
+
+test("completed-turn evidence diagnoses permissions even when the runtime state stays idle", async (t) => {
+  let tail = "";
+  const f = await fixture(t, "progressing", false, async () => tail);
+  await f.clock.advance(1);
+  assert.equal(fold(f.store.readSince(0)).projects[project]?.inbox.length, 0);
+  tail = JSON.stringify({ type: "result", result: "This session hasn't granted permissions to Bash" });
+  f.append("session.usage", {
+    ...ref,
+    usage: { input: 12, output: 3, cacheRead: 0, cacheWrite: 0, model: "small", provider: "anthropic" },
+  });
+  await f.clock.advance(1);
+  assert.equal(
+    fold(f.store.readSince(0)).projects[project]?.inbox.filter((i) => i.followUp?.code === "permission_prompt").length,
+    1,
+  );
 });

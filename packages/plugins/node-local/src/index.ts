@@ -15,6 +15,7 @@ import type {
   WorkerRef,
   Workspace,
 } from "@armada/plugin-api";
+import { WorkerRuntimeAlive, WorkerRuntimeGone } from "@armada/plugin-api";
 import { checkedMutation } from "@armada/plugin-api/guard";
 
 import { supervisorScript } from "./supervisor.ts";
@@ -119,6 +120,8 @@ interface SupervisorPaths {
   directory: string;
   socket: string;
   state: string;
+  /** The liveness contract the supervisor writes once the CLI runs in its pinned group. */
+  pin: string;
 }
 
 interface SupervisorSnapshot {
@@ -231,7 +234,7 @@ function supervisorPaths(workspaceRoot: string, handle: string): SupervisorPaths
   const digest = createHash("sha256").update(workspaceRoot).update("\0").update(handle).digest("hex").slice(0, 24);
   const directory = join(process.platform === "win32" ? tmpdir() : "/tmp", `armada-nl-${digest}`);
   const socket = process.platform === "win32" ? `\\\\.\\pipe\\armada-nl-${digest}` : join(directory, "s");
-  return { directory, socket, state: join(directory, "state.json") };
+  return { directory, socket, state: join(directory, "state.json"), pin: join(directory, "pin.json") };
 }
 
 async function privateDirectory(directory: string): Promise<boolean> {
@@ -381,7 +384,98 @@ async function readFinalMetadata(
 
 async function removeFinalMetadata(paths: SupervisorPaths): Promise<void> {
   await unlink(paths.state).catch(() => {});
+  await unlink(paths.pin).catch(() => {});
   await rmdir(paths.directory).catch(() => {});
+}
+
+interface LivenessContract {
+  version: 1;
+  worker: WorkerRef;
+  workspace: Workspace;
+  /** The pinned process group's id: the pin runner's pid, a group leader until the whole group ends. */
+  group: number;
+  platform: string;
+  establishedAt: string;
+}
+
+/** The contract the supervisor wrote once the CLI ran; absent for workers launched before it existed. */
+async function readLivenessContract(
+  paths: SupervisorPaths,
+  worker: WorkerRef,
+  workspace: Workspace,
+): Promise<{ kind: "none" } | { kind: "invalid"; reason: string } | { kind: "contract"; contract: LivenessContract }> {
+  if (!(await privateDirectory(paths.directory))) return { kind: "none" };
+  let text: string;
+  try {
+    const details = await lstat(paths.pin);
+    if (!details.isFile() || details.isSymbolicLink() || details.size > 64 * 1024)
+      return { kind: "invalid", reason: "its liveness contract is not a private file" };
+    text = await readFile(paths.pin, "utf8");
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return { kind: "none" };
+    return { kind: "invalid", reason: "its liveness contract could not be read" };
+  }
+  let contract: LivenessContract;
+  try {
+    contract = JSON.parse(text) as LivenessContract;
+  } catch {
+    return { kind: "invalid", reason: "its liveness contract is not valid JSON" };
+  }
+  if (!contract || typeof contract !== "object" || contract.version !== 1)
+    return { kind: "invalid", reason: "its liveness contract has an unknown version" };
+  if (
+    !contract.worker ||
+    typeof contract.worker !== "object" ||
+    !contract.workspace ||
+    typeof contract.workspace !== "object" ||
+    !sameWorker(contract.worker, worker) ||
+    !sameWorkspace(contract.workspace, workspace)
+  )
+    return { kind: "invalid", reason: "its liveness contract belongs to another worker generation" };
+  if (!Number.isInteger(contract.group) || contract.group < 2 || contract.platform !== process.platform)
+    return { kind: "invalid", reason: "its liveness contract names no process group of this platform" };
+  return { kind: "contract", contract };
+}
+
+/**
+ * The supervisor endpoint is unreachable and left no final record. Only the version 1 liveness
+ * contract plus the end of its recorded process group proves the tree ended; `kill(-group, 0)`
+ * delivers nothing and the kernel keeps a group id reserved while any member lives, so it can
+ * say "gone" only when every member exited. Everything else stays unknown or still running.
+ */
+async function unreachableWorker(
+  paths: SupervisorPaths,
+  worker: WorkerRef,
+  workspace: Workspace,
+  error: unknown,
+): Promise<Error> {
+  const finding = isErrno(error, "ENOENT")
+    ? `no supervisor endpoint at ${paths.socket}`
+    : `the supervisor endpoint ${paths.socket} refused the connection`;
+  const head = `local worker ${worker.ticket} generation ${worker.generation} is unreachable: ${finding}, and no final record exists`;
+  const read = await readLivenessContract(paths, worker, workspace);
+  if (read.kind === "none")
+    return new Error(
+      `${head}; no liveness contract was recorded for it (launched before version 1 or ended before its CLI started), so its process tree may still run; nothing was signaled`,
+    );
+  if (read.kind === "invalid")
+    return new Error(`${head}; ${read.reason}, so its process tree may still run; nothing was signaled`);
+  if (process.platform === "win32")
+    return new Error(`${head}; process-group liveness cannot be checked on Windows, so its tree may still run`);
+  try {
+    process.kill(-read.contract.group, 0);
+    return new WorkerRuntimeAlive(
+      `${head}; its pinned process group still exists, so the worker's CLI or a descendant still runs; nothing was signaled`,
+    );
+  } catch (probe) {
+    if (isErrno(probe, "ESRCH"))
+      return new WorkerRuntimeGone(
+        `${head}; its liveness contract (version 1) names a process group that no longer exists: every process still pinned to it has ended; nothing was signaled`,
+      );
+    return new Error(
+      `${head}; its process group could not be inspected (${isErrno(probe, "EPERM") ? "EPERM" : "unknown error"}), so its tree may still run; nothing was signaled`,
+    );
+  }
 }
 
 function staleWorker(): Error {
@@ -425,6 +519,8 @@ async function git(
 // Linked checkouts share Git's info/exclude. Serialize its append across local
 // providers so parallel project launches cannot duplicate or overwrite rules.
 const excludeWrites = new Map<string, Promise<void>>();
+// One admission at a time per kept worktree path, so two launches cannot both reuse it.
+const reuseAdmissions = new Map<string, Promise<Workspace | undefined>>();
 
 async function projectWorktreeRoot(projectRoot: string, path: string, signal?: AbortSignal): Promise<void> {
   for (const directory of [join(projectRoot, ".armada"), join(projectRoot, ".armada", "worktrees")]) {
@@ -542,6 +638,8 @@ export class LocalNode implements NodeProvider {
     if (projectRoot) {
       await projectWorktreeRoot(projectRoot, path, request.signal);
       await excludeWorktrees(source, workspaceRoot, request.signal);
+      const kept = await this.#keptWorktree(source, path, workspaceRoot, request);
+      if (kept) return kept;
     } else await mkdir(workspaceRoot, { recursive: true });
 
     const base = (await git(["rev-parse", "HEAD"], { cwd: source, signal: request.signal })).stdout.trim();
@@ -670,7 +768,24 @@ export class LocalNode implements NodeProvider {
           if (!final) throw error;
           this.#applySnapshot(existing, final);
         }
-      } else await this.#refresh(existing, "adopt");
+      } else {
+        try {
+          await this.#refresh(existing, "adopt");
+        } catch (error) {
+          if (!supervisorUnavailable(error)) throw error;
+          const final = await readFinalMetadata(existing.paths, worker, workspace);
+          if (final) this.#applySnapshot(existing, final);
+          else {
+            const verdict = await unreachableWorker(existing.paths, worker, workspace, error);
+            if (verdict instanceof WorkerRuntimeGone) {
+              // The group ended: this record no longer holds its workspace.
+              existing.state = "failed";
+              existing.closedValue = true;
+            } else existing.state = "unknown";
+            throw verdict;
+          }
+        }
+      }
       return { deliveries: existing.deliveries };
     }
 
@@ -693,10 +808,8 @@ export class LocalNode implements NodeProvider {
     } catch (error) {
       if (!supervisorUnavailable(error)) throw error;
       const final = await readFinalMetadata(paths, worker, workspace);
-      if (!final) {
-        if (recovery.starting) throw error;
-        throw staleWorker();
-      }
+      // A launch that never returned its handle stays a raw transport error: unknown, never gone.
+      if (!final) throw recovery.starting ? error : await unreachableWorker(paths, worker, workspace, error);
       snapshot = final;
     }
 
@@ -827,10 +940,98 @@ export class LocalNode implements NodeProvider {
     return record;
   }
 
+  /** By path: a reused worktree gets a new workspace record, and one worker per directory is the rule. */
   #activeWorker(workspace: WorkspaceRecord): WorkerRecord | undefined {
     for (const record of this.#workers.values())
-      if (record.workspace === workspace && !record.closedValue) return record;
+      if (
+        (record.workspace === workspace || record.workspace.workspace.path === workspace.workspace.path) &&
+        !record.closedValue
+      )
+        return record;
     return undefined;
+  }
+
+  /**
+   * A project worktree kept from an earlier generation (a released or lost worker) is reused
+   * for the same branch instead of failing `git worktree add`: nothing in it is reset, so dirty
+   * and unpushed work survives. Provenance is checked beyond the branch name: the source lists
+   * the directory as its worktree, attached (not detached, not prunable) to that branch, and the
+   * directory's own toplevel is itself. Admission is serialized per path and refused while a
+   * worker of this node still runs there.
+   */
+  async #keptWorktree(
+    source: string,
+    path: string,
+    workspaceRoot: string,
+    request: PrepareRequest,
+  ): Promise<Workspace | undefined> {
+    const previous = reuseAdmissions.get(path) ?? Promise.resolve();
+    const operation = previous
+      .catch(() => {})
+      .then(async (): Promise<Workspace | undefined> => {
+        try {
+          if ((await lstat(path)).isSymbolicLink()) throw invalidInput("project worktree must not be a symbolic link");
+        } catch (error) {
+          if (isErrno(error, "ENOENT")) return undefined;
+          throw error;
+        }
+        const real = await realPathOf(path);
+        const describe = `${path} already exists`;
+        const listing = (await git(["worktree", "list", "--porcelain"], { cwd: source, signal: request.signal }))
+          .stdout;
+        let entry: string[] | undefined;
+        for (const block of listing.split(/\r?\n\r?\n/)) {
+          const lines = block.split(/\r?\n/);
+          const first = lines[0];
+          if (!first?.startsWith("worktree ")) continue;
+          if ((await realPathOf(first.slice("worktree ".length))) === real) {
+            entry = lines;
+            break;
+          }
+        }
+        if (!entry)
+          throw invalidInput(
+            `${describe} but is not a worktree of ${source}; move it aside before launching ${request.ticket}`,
+          );
+        const branch = entry.find((line) => line.startsWith("branch "))?.slice("branch ".length);
+        if (
+          entry.includes("detached") ||
+          entry.some((line) => line.startsWith("prunable")) ||
+          branch !== `refs/heads/${request.branch}`
+        )
+          throw invalidInput(
+            `${describe} as a kept worktree on ${branch ? branch.replace(/^refs\/heads\//, "") : "(detached HEAD)"}, not ${request.branch}; move it aside or finish it before launching ${request.ticket}`,
+          );
+        request.signal?.throwIfAborted();
+        const current = (await git(["branch", "--show-current"], { cwd: path, signal: request.signal })).stdout.trim();
+        const top = (await git(["rev-parse", "--show-toplevel"], { cwd: path, signal: request.signal })).stdout.trim();
+        if (current !== request.branch || !top || (await realPathOf(top)) !== real)
+          throw invalidInput(
+            `${describe} but its checkout is not ${request.branch} at that path; inspect it before launching`,
+          );
+        const busy = [...this.#workers.values()].find(
+          (record) => record.workspace.workspace.path === path && !record.closedValue,
+        );
+        if (busy) throw new Error("workspace already has an active worker");
+        const base = (await git(["rev-parse", "HEAD"], { cwd: source, signal: request.signal })).stdout.trim();
+        const workspace: Workspace = { id: randomUUID(), path, node: "local" };
+        this.#workspaces.set(workspace.id, {
+          workspace: { ...workspace },
+          workspaceRoot,
+          repository: source,
+          branch: request.branch,
+          base,
+          lock: Promise.resolve(),
+          removed: false,
+        });
+        return workspace;
+      });
+    reuseAdmissions.set(path, operation);
+    try {
+      return await operation;
+    } finally {
+      if (reuseAdmissions.get(path) === operation) reuseAdmissions.delete(path);
+    }
   }
 
   #record(ref: WorkerRef, workspace: WorkspaceRecord, paths: SupervisorPaths): WorkerRecord {
@@ -1002,17 +1203,23 @@ function supervisorUnavailable(error: unknown): boolean {
   );
 }
 
+// Keyed by directory, not by record: two admissions of one kept worktree share one lock.
+const pathLocks = new Map<string, Promise<void>>();
 async function withWorkspaceLock<T>(workspace: WorkspaceRecord, action: () => Promise<T>): Promise<T> {
-  const previous = workspace.lock;
+  const key = workspace.workspace.path;
+  const previous = pathLocks.get(key) ?? workspace.lock;
   let release!: () => void;
-  workspace.lock = new Promise<void>((resolvePromise) => {
+  const lock = new Promise<void>((resolvePromise) => {
     release = resolvePromise;
   });
+  workspace.lock = lock;
+  pathLocks.set(key, lock);
   await previous;
   try {
     return await action();
   } finally {
     release();
+    if (pathLocks.get(key) === lock) pathLocks.delete(key);
   }
 }
 

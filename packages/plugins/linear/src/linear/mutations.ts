@@ -111,14 +111,15 @@ export function linearMutations(options: { rootId: string; now: () => Date; requ
       return label.id;
     });
   }
-  function state(team: Team, type: string): string {
+  function state(team: Team, ...types: string[]): string {
     if (team.states?.pageInfo?.hasNextPage !== false || !Array.isArray(team.states.nodes))
       throw new LinearReadError("Linear workflow states incomplete");
-    const found = team.states.nodes
-      .filter((s) => s.type === type)
-      .sort((a, b) => (a.position ?? Infinity) - (b.position ?? Infinity))[0];
-    if (!found?.id) throw new LinearReadError(`Linear workflow state not found: ${type}`);
-    return found.id;
+    const sorted = [...team.states.nodes].sort((a, b) => (a.position ?? Infinity) - (b.position ?? Infinity));
+    for (const type of types) {
+      const found = sorted.find((s) => s.type === type);
+      if (found?.id) return found.id;
+    }
+    throw new LinearReadError(`Linear workflow state not found: ${types.join(" or ")}`);
   }
   async function blockers(ticket: string, desired: string[], existing: Relation[], mutation: TrackerMutationRequest) {
     for (const relation of existing.filter((r) => r.type === "blocks" && !desired.includes(r.issue.identifier))) {
@@ -204,7 +205,9 @@ export function linearMutations(options: { rootId: string; now: () => Date; requ
             description,
             parentId: mutation.parent ?? programRoot.id,
             labelIds,
-            ...(mutation.state ? { stateId: state(programRoot.team, mutation.state) } : {}),
+            stateId: mutation.state
+              ? state(programRoot.team, mutation.state)
+              : state(programRoot.team, "backlog", "unstarted"),
           },
         },
         signal,

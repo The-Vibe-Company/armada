@@ -10,6 +10,30 @@ export class RuntimeLaunchRefusal extends Error {
 export const isRuntimeLaunchRefusal = (value: unknown): value is RuntimeLaunchRefusal =>
   value instanceof Error && value.name === "RuntimeLaunchRefusal";
 
+/**
+ * Reattachment found that the generation's pinned process group ended without a final record:
+ * its runtime endpoint is gone and independent evidence, recorded by the runtime itself while
+ * the worker ran, proves that every process still in that group has exited (a descendant that
+ * left the group, as under a pty session, is outside this proof as it is outside the runtime's
+ * own stop). A missing endpoint alone is never this error; nothing
+ * was signaled. The host may then replace the generation in its kept workspace.
+ */
+export class WorkerRuntimeGone extends Error {
+  override readonly name = "WorkerRuntimeGone";
+}
+export const isWorkerRuntimeGone = (value: unknown): value is WorkerRuntimeGone =>
+  value instanceof Error && value.name === "WorkerRuntimeGone";
+
+/**
+ * Reattachment found the generation's endpoint gone but its recorded process group still alive:
+ * the worker's CLI or a descendant still runs. Nothing was signaled; the host must not replace it.
+ */
+export class WorkerRuntimeAlive extends Error {
+  override readonly name = "WorkerRuntimeAlive";
+}
+export const isWorkerRuntimeAlive = (value: unknown): value is WorkerRuntimeAlive =>
+  value instanceof Error && value.name === "WorkerRuntimeAlive";
+
 export interface Workspace {
   id: string;
   path: string;

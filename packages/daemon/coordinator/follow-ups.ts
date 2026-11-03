@@ -154,6 +154,18 @@ function recordRefusal(scope: CoordinatorStorage, tool: string, args: JsonObject
                 ? providerFix(name, !!provider?.enabled)
                 : launchFix
             : undefined;
+  // Gate diagnostics contain only the step and runner-matched, masked test names.
+  const gate = merge && ["local_gate_failed", "local_gate_environment", "base_conflict"].includes(code);
+  const gateFacts = gate
+    ? [
+        typeof result.step === "string" ? `step ${refusalLine(result.step)}` : "",
+        ...(Array.isArray(result.tests)
+          ? result.tests.filter((name): name is string => typeof name === "string").map((name) => refusalLine(name))
+          : []),
+      ]
+        .filter(Boolean)
+        .join("; ")
+    : "";
   const event = followUpEvent(events, scope.project, at, ticket, {
     tool,
     args: masked(args) as Record<string, Json>,
@@ -166,9 +178,9 @@ function recordRefusal(scope: CoordinatorStorage, tool: string, args: JsonObject
         : refusalLine(result.reason ?? result.message),
     facts:
       waiting || updateWait
-        ? `${ticket} is ready-to-merge; PR #${pr?.number} branch update at ${String(result.head ?? updateWait?.followUp?.head ?? pr?.head).slice(0, 8)}`
+        ? `${ticket} is ready-to-merge; PR #${pr?.number} branch update at ${String(result.head ?? updateWait?.followUp?.head ?? pr?.head).slice(0, 8)}${gateFacts ? `; ${gateFacts}` : ""}`
         : merge
-          ? `${ticket} is ready-to-merge; PR #${pr.number} is green at ${pr.head.slice(0, 8)}`
+          ? `${ticket} is ready-to-merge; PR #${pr.number} is green at ${pr.head.slice(0, 8)}${gateFacts ? `; ${gateFacts}` : ""}`
           : `${ticket}: ${session?.runtime ?? "selected worker"} ${session?.phase ?? "not launched"}; action unavailable`,
     next: refusalLine(result.next, "fleet.status"),
     ...(fix ? { fix } : {}),
