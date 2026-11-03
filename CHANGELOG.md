@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.71](https://github.com/The-Vibe-Company/armada/compare/v0.2.70...v0.2.71) (2026-11-03)
+
+
+### Features
+
+* **daemon:** boot from a durable fold snapshot instead of replaying the log ([#435](https://github.com/The-Vibe-Company/armada/issues/435)) ([3475371](https://github.com/The-Vibe-Company/armada/commit/3475371ba2a1fe4dd7da4c2a09afc92752a52fdd))
+* **desktop:** headless shell for workers, who never drive the owner's desktop ([#440](https://github.com/The-Vibe-Company/armada/issues/440)) ([a39fb15](https://github.com/The-Vibe-Company/armada/commit/a39fb15ba337214fe89a3f065ed1ddb66445f9db))
+* **desktop:** package the app with electron-builder into a macOS DMG ([#434](https://github.com/The-Vibe-Company/armada/issues/434)) ([9e11299](https://github.com/The-Vibe-Company/armada/commit/9e11299d970722dc78a48eb86fb7d794c7205d57))
+* **release:** build and attach the macOS DMG to each release-please release ([#438](https://github.com/The-Vibe-Company/armada/issues/438)) ([0841dac](https://github.com/The-Vibe-Company/armada/commit/0841dac02b9cfe472594feb7d73bbe028e67a3d5))
+
+
+### Bug Fixes
+
+* **cli:** preserve Git preflight checks for slow transport ([1d23aa5](https://github.com/The-Vibe-Company/armada/commit/1d23aa5ca29af41872bceeb55222f5ae65795e6e))
+* **daemon:** finish confirmed merge cleanup when its worker is no longer attached ([#439](https://github.com/The-Vibe-Company/armada/issues/439)) ([c7e61e5](https://github.com/The-Vibe-Company/armada/commit/c7e61e50084f6d1dbd18b243ef6a6dd46d17f135))
+* **daemon:** stop replaying the whole log on every worker observation and chat read ([#441](https://github.com/The-Vibe-Company/armada/issues/441)) ([ef3c627](https://github.com/The-Vibe-Company/armada/commit/ef3c627c4f24136f27b62ca4c146dd9c608e362b))
+* **node-local:** keep the supervisor alive when a peer resets mid-reply ([#437](https://github.com/The-Vibe-Company/armada/issues/437)) ([15b8288](https://github.com/The-Vibe-Company/armada/commit/15b828889009d97d1ef6ef6613db5fe6b601f9a8))
+
 ## [0.2.70](https://github.com/The-Vibe-Company/armada/compare/v0.2.69...v0.2.70) (2026-11-03)
 
 
