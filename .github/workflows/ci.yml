@@ -85,6 +85,9 @@ jobs:
         with:
           node-version: 22
       - run: bun install --frozen-lockfile
+      # The app's panels are tested in the same pinned browser as the dashboard.
+      - name: Install the pinned test browser and system libraries
+        uses: ./.github/actions/test-browser
       - name: Test the protocol, the app and the plugins, then every bundled plugin through the packed CLI
         run: bun run test:ci:app
 
