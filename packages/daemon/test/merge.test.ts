@@ -1529,3 +1529,176 @@ for (const settled of [false, true]) {
     assert.equal(f.counts().mergeCalls, 0);
   });
 }
+
+/** THE-2225: a confirmed merge whose worker is no longer attached finishes its bookkeeping and never locks the queue. */
+function secondHandBack(f: Awaited<ReturnType<typeof fixture>>, other: ForgeInspection) {
+  f.append("ticket.seen", { id: "SEED-2", title: "Prune", status: "started" });
+  f.append("session.claimed", {
+    ticket: "SEED-2",
+    session: "two",
+    generation: 1,
+    owner: "Mira",
+    runtime: "claude",
+    handle: "two",
+  });
+  f.append("session.reported", { ticket: "SEED-2", session: "two", phase: "ready-to-merge", reason: "Green" });
+  f.append("pull-request.seen", {
+    number: other.number,
+    ticket: "SEED-2",
+    head: other.head,
+    state: "open",
+    ci: "success",
+    conflicting: false,
+  });
+  f.append("inbox.opened", {
+    id: "back-two",
+    ticket: "SEED-2",
+    kind: "hand-back",
+    body: `Agent status: ready-to-merge — PR #${other.number}, head ${other.head}`,
+  });
+  const facts = new Map<number, ForgeInspection>([[other.number, other]]);
+  const inspect = f.forge.inspect;
+  const merge = f.forge.merge;
+  f.forge.inspect = async (request) =>
+    structuredClone(facts.get(request.number) ?? ((await inspect?.(request)) as ForgeInspection));
+  f.forge.merge = async (request) => {
+    const current = facts.get(request.number);
+    if (!current) return merge(request);
+    request.beforeWrite?.();
+    assert.equal(request.head, current.head);
+    facts.set(request.number, { ...current, state: "merged", mergeCommit: "f".repeat(40) });
+    return { merged: true, mergeCommit: "f".repeat(40) };
+  };
+  f.tracker.write = async (request) => {
+    request.beforeWrite?.();
+    f.writes.push(request);
+  };
+}
+type Stop = NonNullable<ConstructorParameters<typeof Merges>[0]["stop"]>;
+const useStop = (f: Awaited<ReturnType<typeof fixture>>, stop: Stop) => Object.assign(f.options, { stop });
+const notAttached = () =>
+  Object.assign(new Error("This worker is not attached here; inspect its session and relaunch it here if needed"), {
+    code: "worker_outside_daemon",
+  });
+const inboxIds = (f: Awaited<ReturnType<typeof fixture>>) =>
+  fold(f.store.readSince(0))
+    .projects.orchard?.inbox.filter((i) => i.kind === "hand-back")
+    .map((i) => i.id)
+    .sort();
+
+test("a confirmed merge with its worker gone never locks the queue and finishes without a stop claim", async (t) => {
+  const f = await fixture(t);
+  const other: ForgeInspection = {
+    ...pull(),
+    number: 8,
+    head: "d".repeat(40),
+    url: "https://github.com/example/orchard/pull/8",
+  };
+  secondHandBack(f, other);
+  const stops: string[] = [];
+  useStop(f, async (_scope, session) => {
+    stops.push(session.session);
+    if (session.session === "one") throw new Error("Supervisor crashed");
+    return { ok: true, stopped: true, disposed: true };
+  });
+  // An unconfirmed forge write is the one thing that locks the queue.
+  const merge = f.forge.merge;
+  let writesOf7 = 0;
+  f.forge.merge = async (request) => {
+    request.beforeWrite?.();
+    writesOf7++;
+    throw new Error("Connection lost");
+  };
+  assert.equal((await f.run("merge.run")).code, "merge_unconfirmed");
+  assert.equal((await f.run("merge.check", 8, "check-8")).code, "merge_pending");
+  // GitHub confirms the pinned head, the tracker is written, then the worker's stop fails for another reason.
+  f.forge.merge = async (request) => {
+    if (request.number === 7) writesOf7++;
+    return merge(request);
+  };
+  f.setFacts({ state: "merged", mergeCommit: "c".repeat(40) });
+  const refusals = () => f.store.readSince(0).filter((e) => e.kind === "merge.refused").length;
+  const refusedBefore = refusals();
+  const failed = await f.run("merge.run", 7, "recover");
+  assert.equal(failed.ok, false);
+  assert.match(failed.reason ?? "", /Supervisor crashed/);
+  assert.equal(f.store.readSince(0).filter((e) => e.kind === "merge.confirmed").length, 1);
+  assert.equal(f.writes.filter((w) => w.ticket === "SEED-1").length, 1);
+  assert.equal(refusals(), refusedBefore, "a cleanup failure is not a refusal of the confirmed merge");
+  assert.deepEqual(inboxIds(f), ["back", "back-two"], "an uncleaned hand-back stays until its cleanup");
+  // Its cleanup is a follow-up, not a lock: the next pull request checks and merges.
+  const check = await f.run("merge.check", 8, "check-8-again");
+  assert.equal(check.ok, true, JSON.stringify(check));
+  assert.equal(check.followUp, "merge.run for PR #7 to finish its confirmed merge's cleanup");
+  const merged = await f.run("merge.run", 8, "merge-8");
+  assert.equal(merged.ok, true, JSON.stringify(merged));
+  assert.equal(merged.merged, true);
+  assert.deepEqual(stops, ["one", "two"]);
+  assert.equal(f.writes.filter((w) => w.ticket === "SEED-2").length, 1);
+  assert.deepEqual(inboxIds(f), ["back"]);
+  // After a restart the merged generation is not attached: its bookkeeping finishes with no stop claim.
+  f.restart();
+  useStop(f, async (_scope, session) => {
+    stops.push(session.session);
+    throw notAttached();
+  });
+  const finished = await f.run("merge.run", 7, "finish");
+  assert.equal(finished.ok, true, JSON.stringify(finished));
+  assert.equal(finished.merged, true);
+  assert.deepEqual(finished.cleanup, {
+    ok: true,
+    stopped: false,
+    disposed: false,
+    detached: true,
+    next: "the worker was not attached here; its worktree, branch and pull request are kept",
+  });
+  assert.equal(finished.followUp, undefined);
+  assert.deepEqual(stops, ["one", "two", "one"]);
+  assert.deepEqual(inboxIds(f), []);
+  assert.equal(writesOf7, 1, "the forge merge of #7 is never repeated");
+  assert.equal(f.store.readSince(0).filter((e) => e.kind === "merge.confirmed").length, 2);
+  assert.equal(f.writes.filter((w) => w.ticket === "SEED-1").length, 1, "the tracker write is never repeated");
+  assert.equal(
+    fold(f.store.readSince(0)).projects.orchard?.sessions.find((s) => s.ticket === "SEED-1")?.phase,
+    "merged",
+  );
+  assert.deepEqual(await f.run("merge.run", 7, "finish"), finished);
+  assert.deepEqual(await f.run("merge.run", 7, "merge"), finished, "the original intent has its receipt too");
+  assert.equal(
+    (await f.run("merge.run", 7, "recover")).ok,
+    false,
+    "a key without a journal entry rechecks and writes nothing",
+  );
+  assert.equal(writesOf7, 1);
+  assert.notEqual((await f.run("merge.check", 9, "check-9")).code, "merge_pending");
+  assert.equal((await f.run("merge.check", 9, "check-9")).followUp, undefined);
+});
+
+test("detached cleanup still refuses a replacement generation and a lost worker's release", async (t) => {
+  const f = await fixture(t);
+  useStop(f, async () => {
+    throw new Error("Supervisor crashed");
+  });
+  assert.equal((await f.run("merge.run")).ok, false);
+  assert.equal(f.counts().mergeCalls, 1);
+  // A lost worker released without a stop proof keeps the cleanup pending, as before.
+  useStop(f, async () => ({ ok: true, stopped: false, released: true }));
+  const released = await f.run("merge.run", 7, "released");
+  assert.equal(released.code, "cleanup_pending");
+  assert.deepEqual(inboxIds(f), ["back"]);
+  // A replacement generation owns the ticket now: the old generation's bookkeeping is never finished over it.
+  f.store.append({
+    project: "orchard",
+    actor: "worker",
+    at: "2030-01-02T00:00:00Z",
+    kind: "session.claimed",
+    payload: { ticket: "SEED-1", session: "replacement", generation: 2, owner: "Mira", runtime: "claude", handle: "r" },
+  });
+  useStop(f, async () => {
+    throw notAttached();
+  });
+  f.restart();
+  assert.equal((await f.run("merge.run", 7, "detached")).code, "worker_changed");
+  assert.deepEqual(inboxIds(f), ["back"]);
+  assert.equal(f.counts().mergeCalls, 1);
+});

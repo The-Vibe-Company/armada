@@ -20,8 +20,14 @@ interface Options {
   registry: PluginRegistry;
   projects: readonly { id: string; checkout?: string; forge?: string; tracker?: string }[];
   now?: () => string;
-  /** Same admitted worker.stop dispatch as the coordinator registry. Must pin the generation. */
+  /** Same admitted worker.stop dispatch as the coordinator registry. Must pin the generation.
+   * A refusal carrying `code: "worker_outside_daemon"` means the generation is not attached here.
+   */
   stop?: (scope: CoordinatorStorage, session: Session, key: string, signal: AbortSignal) => Promise<JsonObject>;
+}
+/** The worker service's refusal for a generation this daemon does not hold. */
+function detached(error: unknown): boolean {
+  return error instanceof Error && (error as { code?: unknown }).code === "worker_outside_daemon";
 }
 const progressSchema = z.object({
   format: z.literal("armada.merge"),
@@ -335,7 +341,7 @@ export class Merges {
     key: string,
     progress: (step: ToolProgress) => Promise<void> = async () => {},
   ): Promise<JsonObject> {
-    const result = await this.#run(scope, name, pr, key, progress);
+    const result = this.#withFollowUp(scope, pr, await this.#run(scope, name, pr, key, progress));
     if (name === "merge.run" && result.ok === false) {
       try {
         const id = `merge-refused:${hash(key)}`;
@@ -358,6 +364,19 @@ export class Merges {
       }
     }
     return result;
+  }
+
+  /** Another PR's confirmed merge with bookkeeping left is named as the follow-up it is, not as a lock. */
+  #withFollowUp(scope: CoordinatorStorage, pr: number, result: JsonObject): JsonObject {
+    try {
+      const latest = [...new Map(this.#progress(scope.readEvents()).map((p) => [p.key, p])).values()];
+      const left = latest.find((p) => p.pr !== pr && (p.stage === "confirmed" || p.stage === "tracker"));
+      return left
+        ? { ...result, followUp: `merge.run for PR #${left.pr} to finish its confirmed merge's cleanup` }
+        : result;
+    } catch {
+      return result;
+    }
   }
 
   async #run(
@@ -383,11 +402,18 @@ export class Merges {
         return refuse("call_conflict", "this call identity already committed different arguments");
       const receipt = sameCall.findLast((p) => p.stage === "finished" || p.stage === "refused");
       if (receipt && name === "merge.run") return receipt.result as JsonObject;
-      // A new call may finish an interrupted merge, but cannot bypass another unresolved intent.
+      // A new call may finish an interrupted merge, but cannot bypass another unresolved forge intent.
+      // A confirmed merge is complete for the queue: its remaining bookkeeping is a follow-up, never a lock.
       const latest = [...new Map(journal.map((p) => [p.key, p])).values()];
-      const pending = latest.findLast((p) => !["updating", "finished", "refused"].includes(p.stage));
-      if (pending && pending.pr !== pr)
-        return refuse("merge_pending", `PR #${pending.pr} has an unfinished merge`, `merge.run for PR #${pending.pr}`);
+      const unfinished = latest.filter((p) => !["updating", "finished", "refused"].includes(p.stage));
+      const uncertain = unfinished.findLast((p) => p.stage === "intent" && p.pr !== pr);
+      if (uncertain)
+        return refuse(
+          "merge_pending",
+          `PR #${uncertain.pr} has an unfinished merge`,
+          `merge.run for PR #${uncertain.pr}`,
+        );
+      const pending = unfinished.findLast((p) => p.pr === pr);
       const { forge, tracker } = this.#providers(scope.project);
       if (name === "merge.run" && pending) {
         const result = await this.#recover(scope, forge, tracker, pending, report);
@@ -806,10 +832,27 @@ export class Merges {
           "install the worker.stop provider, then retry merge.run",
         );
       const signal = AbortSignal.timeout(30_000);
-      stopped = await bounded(signal, () => stop(scope, session, `merge-stop:${hash(progress.key)}`, signal));
+      try {
+        stopped = await bounded(signal, () => stop(scope, session, `merge-stop:${hash(progress.key)}`, signal));
+      } catch (error) {
+        if (!detached(error)) throw error;
+        // The merged generation is not attached to this daemon (a restart, an ended process). Its
+        // bookkeeping finishes without claiming a stop or a disposal: the worktree, branch and pull
+        // request are kept, and the confirmed forge write is never repeated. Any other stop error,
+        // a replacement generation or a lost worker's release still leaves the cleanup pending.
+        const { session: current } = this.#guard(scope, progress, true);
+        if (current.phase !== "merged" && current.phase !== "released") throw error;
+        stopped = {
+          ok: true,
+          stopped: false,
+          disposed: false,
+          detached: true,
+          next: "the worker was not attached here; its worktree, branch and pull request are kept",
+        };
+      }
     }
     this.#guard(scope, progress, true);
-    if (!stopped.ok || stopped.stopped === false)
+    if (!stopped.ok || (stopped.stopped === false && stopped.detached !== true))
       return refuse("cleanup_pending", `Merged #${progress.pr}; worker cleanup remains`, "retry merge.run");
     // Close matching tracker hand-backs, or only this daemon generation's hand-backs.
     const facts = this.#facts(scope);
