@@ -1066,6 +1066,14 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "CREATE UNIQUE INDEX inbox_delivery_failed_open ON inbox_items (project, ticket) WHERE kind = 'delivery-failed' AND recipient = 'coordinator' AND ticket IS NOT NULL AND resolved_at IS NULL",
     ],
   },
+  {
+    version: 52,
+    statements: [
+      // Migrations run in a transaction, which cannot create indexes concurrently.
+      `CREATE INDEX IF NOT EXISTS events_latest_activity ON events (project, ticket, created_at DESC)
+       WHERE ticket <> '' AND kind NOT IN ('heartbeat', 'handover')`,
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;
