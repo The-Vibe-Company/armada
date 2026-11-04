@@ -83,6 +83,39 @@ the quarantine once after copying it to Applications:
 xattr -dr com.apple.quarantine /Applications/Armada.app
 ```
 
+### Updates (THE-2231)
+
+An installed Armada updates itself from this repository's GitHub releases
+(electron-updater's `github` provider on `The-Vibe-Company/armada`, the
+`latest-mac.yml` and zip the release workflow attaches). It checks 10 seconds
+after the app has loaded, then every 6 hours, and from **Armada › Check for
+Updates…** (which says so when there is nothing new). **Armada › About
+Armada** shows the installed version. A new version downloads in the
+background. Once macOS's updater (Squirrel.Mac) holds it, one dialog asks:
+"Armada X.Y.Z is ready." **Restart now** stops the daemon as a quit does, then
+installs and reopens Armada. **Later** installs it the next time you quit.
+
+macOS installs an update only into a signed app. An unsigned build (no Apple
+secrets at release time) gets Squirrel.Mac's signature refusal instead. Armada
+then shows one dialog, "Armada X.Y.Z is available", whose **Open release page**
+opens the release on GitHub to download the new DMG by hand. Any other failure
+(offline, a missing asset) is only logged. Each version gets at most one dialog,
+remembered in `updates.json` under the user data, whether the check was
+automatic or from the menu.
+
+The feed is public, so the app holds no GitHub token (`private: false`: a
+`GH_TOKEN` in the environment is never sent). Updater events are logged on the
+shell's stderr as `Armada: updater: …`, with any URL's query string cut.
+Updates never run from a source checkout (`bun run desktop`), in a headless
+shell, or with `ARMADA_DESKTOP_NO_UPDATE=1` set, for example:
+
+```sh
+ARMADA_DESKTOP_NO_UPDATE=1 /Applications/Armada.app/Contents/MacOS/Armada
+```
+
+The rules are `src/updates.ts` (`test/updates.test.ts`: what to show for each
+state, with the updater and the dialogs behind interfaces, no network).
+
 ### Smoke-testing a build without touching the desktop (THE-2234)
 
 A worker or CI never opens the app on the owner's screen: no `open -a`, no

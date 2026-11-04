@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, autoUpdater as nativeUpdater, shell } from "electron";
 import {
   BADGE_CHANNEL,
   badgeCount,
@@ -17,6 +17,15 @@ import { type DaemonAddress, DaemonProcess, RESTART_EXIT_CODE, restartDaemon } f
 import { daemonData, headlessDaemonEnv, headlessRequested, readinessLine } from "./headless.ts";
 import { shellPaths } from "./paths.ts";
 import { STARTUP_URL } from "./startup.ts";
+import {
+  readShown,
+  redact,
+  UPDATE_FEED,
+  UpdateController,
+  type Updater,
+  updatesEnabled,
+  writeShown,
+} from "./updates.ts";
 
 app.setName("Armada");
 // A headless shell (THE-2234): no window, no dock icon, a disposable user data directory and only
@@ -40,8 +49,14 @@ let daemon: DaemonProcess | undefined;
 let window: BrowserWindow | undefined;
 let quitting = false;
 let exitCode = 0;
+// Set once the daemon has stopped for an update: electron-updater's quit then goes through untouched.
+let installing = false;
+// Updates (THE-2231): an installed app only, never from source, headless or with ARMADA_DESKTOP_NO_UPDATE.
+const UPDATES = updatesEnabled({ packaged: app.isPackaged, headless: HEADLESS, env: process.env });
+let updates: UpdateController | undefined;
 
 app.on("before-quit", (event) => {
+  if (installing) return;
   event.preventDefault();
   if (quitting) return;
   quitting = true;
@@ -61,6 +76,7 @@ void app.whenReady().then(async () => {
   if (quitting) return;
   if (HEADLESS) app.dock?.hide();
   else if (process.platform === "darwin") app.dock?.setIcon(nativeImage.createFromPath(ICON));
+  if (!HEADLESS) setMenu();
   try {
     // Refused before any window or daemon when a headless shell was not told which fleet to open.
     const data = daemonData(process.env, app.getPath("userData"), HEADLESS);
@@ -215,6 +231,7 @@ void app.whenReady().then(async () => {
       callback(permission === "notifications" && fromApp(details.requestingUrl, address.url)),
     );
     await load(appUrl(address));
+    if (UPDATES && !quitting) updates = await startUpdates();
   } catch (error) {
     if (quitting) return;
     console.error(`Armada: could not open the app: ${error instanceof Error ? error.message : String(error)}`);
@@ -222,3 +239,121 @@ void app.whenReady().then(async () => {
     app.quit();
   }
 });
+
+const updateLog = (message: string) => console.error(`Armada: updater: ${redact(message)}`);
+
+/** The app menu: About (the version) and Check for Updates…, then the platform's usual menus. */
+function setMenu(): void {
+  app.setAboutPanelOptions({ applicationName: "Armada", applicationVersion: app.getVersion(), version: "" });
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      {
+        label: "Armada",
+        submenu: [
+          { role: "about", label: "About Armada" },
+          {
+            label: "Check for Updates…",
+            enabled: UPDATES,
+            click: () => void updates?.check(true),
+          },
+          { type: "separator" },
+          { role: "services" },
+          { type: "separator" },
+          { role: "hide" },
+          { role: "hideOthers" },
+          { role: "unhide" },
+          { type: "separator" },
+          { role: "quit" },
+        ],
+      },
+      { role: "editMenu" },
+      { role: "viewMenu" },
+      { role: "windowMenu" },
+    ]),
+  );
+}
+
+/**
+ * electron-updater on the public repository's releases: downloads in the background, installs on
+ * quit, asks once per version before restarting (src/updates.ts decides). Loaded only when enabled.
+ */
+async function startUpdates(): Promise<UpdateController> {
+  const { autoUpdater } = await import("electron-updater");
+  autoUpdater.logger = {
+    info: (message?: unknown) => updateLog(String(message)),
+    warn: (message?: unknown) => updateLog(String(message)),
+    error: (message?: unknown) => updateLog(String(message)),
+    debug: () => {},
+  };
+  autoUpdater.setFeedURL({ ...UPDATE_FEED });
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  const memory = join(app.getPath("userData"), "updates.json");
+  const parent = () => (window && !window.isDestroyed() ? window : undefined);
+  const box = (options: Electron.MessageBoxOptions) => {
+    const owner = parent();
+    return owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options);
+  };
+  const updater: Updater = {
+    checkForUpdates: () => autoUpdater.checkForUpdates(),
+    // Not silent, and Armada opens again once installed.
+    quitAndInstall: () => autoUpdater.quitAndInstall(false, true),
+  };
+  const controller = new UpdateController(
+    updater,
+    {
+      askRestart: async (version) => {
+        const { response } = await box({
+          type: "info",
+          message: `Armada ${version} is ready.`,
+          detail: "Restart now to install it, or Later to install it when you quit Armada.",
+          buttons: ["Restart now", "Later"],
+          defaultId: 0,
+          cancelId: 1,
+        });
+        return response === 0;
+      },
+      offerRelease: async (version, url) => {
+        const { response } = await box({
+          type: "info",
+          message: `Armada ${version} is available.`,
+          detail: "This build is not signed, so macOS cannot install the update in place. Download it from GitHub.",
+          buttons: ["Open release page", "Close"],
+          defaultId: 0,
+          cancelId: 1,
+        });
+        if (response === 0) await shell.openExternal(url).catch(() => {});
+      },
+      tellManual: async (outcome) => {
+        await box(
+          outcome === "up-to-date"
+            ? { type: "info", message: `Armada ${app.getVersion()} is up to date.`, buttons: ["OK"] }
+            : {
+                type: "warning",
+                message: "Armada could not check for updates.",
+                detail: "Try again later.",
+                buttons: ["OK"],
+              },
+        );
+      },
+      // As on quit (before-quit): the daemon closes its sockets and SQLite before the app is replaced.
+      stopDaemon: async () => {
+        quitting = true;
+        await (daemon?.stop() ?? Promise.resolve());
+        installing = true;
+      },
+      shown: readShown(memory),
+      remember: (shown) => writeShown(memory, shown),
+      log: updateLog,
+    },
+    app.isPackaged,
+  );
+  autoUpdater.on("update-available", (info) => void controller.found(info.version));
+  autoUpdater.on("update-not-available", () => controller.none());
+  autoUpdater.on("update-downloaded", (info) => void controller.found(info.version));
+  autoUpdater.on("error", (error) => void controller.failed(error));
+  nativeUpdater.on("update-downloaded", () => void controller.ready());
+  controller.schedule();
+  updateLog(`on, from the releases of ${UPDATE_FEED.owner}/${UPDATE_FEED.repo}`);
+  return controller;
+}
