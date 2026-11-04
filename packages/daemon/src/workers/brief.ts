@@ -22,6 +22,9 @@ function cut(text: string, bytes: number): string {
   while (end > 0 && ((encoded[end] ?? 0) & 0xc0) === 0x80) end--;
   return encoded.subarray(0, end).toString("utf8") + MARKER;
 }
+/** THE-2266: a local runtime may end the turn's process with its result, and nothing resumes it until a message arrives. */
+export const TURN_RULE =
+  "**In this runtime a turn is the unit of work: never end a turn to wait for a background task or subagent, because a turn that ends can stop them and nothing resumes you until a message arrives; run `verify`, CI watches and reviews in the foreground with a timeout, or poll them within the same turn.**";
 export class BriefRefusal extends Error {}
 
 export interface BriefFile {
@@ -61,6 +64,7 @@ export function workerBrief(input: {
     [
       `# ${t.id} — ${t.title}`,
       `You are an Armada worker. You own exactly one ticket, ${t.id}${t.url ? ` (${t.url})` : ""}, and turn it into one green pull request on ${input.repository}. Never merge. Follow the repository's instructions.`,
+      ...(input.hosted ? [] : [TURN_RULE]),
     ].join("\n\n"),
   );
   add("## Ticket", t.description || t.title);

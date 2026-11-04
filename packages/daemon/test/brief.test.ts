@@ -7,7 +7,7 @@ import { test } from "node:test";
 import type { Ticket } from "@armada/protocol";
 import { BUNDLED_SKILLS } from "../../core/src/skills.ts";
 import { fold } from "../src/fold.ts";
-import { workerBrief } from "../src/workers/brief.ts";
+import { TURN_RULE, workerBrief } from "../src/workers/brief.ts";
 import { loadBriefContext } from "../src/workers/brief-context.ts";
 
 const ticket: Ticket = {
@@ -327,4 +327,24 @@ test("special repository files refuse without blocking the daemon", async (t) =>
     ],
     { timeout: 2000, stdio: "pipe" },
   );
+});
+
+test("a local brief opens with the turn rule; a hosted one does not", () => {
+  const head = (brief: string) => brief.split("\n\n## Ticket")[0]!;
+  const local = head(workerBrief(input()));
+  assert.ok(local.includes(TURN_RULE), "the rule sits under the title, before the ticket");
+  assert.match(TURN_RULE, /never end a turn to wait for a background task or subagent, because/);
+  const hosted = head(
+    workerBrief({
+      ...input(),
+      hosted: {
+        token: "synthetic-launch-token",
+        apiUrl: "https://armada.example.invalid",
+        profile: "claude",
+        project: "orchard",
+      },
+    }),
+  );
+  assert.ok(hosted.includes("You are an Armada worker"));
+  assert.ok(!hosted.includes(TURN_RULE), "a hosted runtime keeps its own sessions alive");
 });
