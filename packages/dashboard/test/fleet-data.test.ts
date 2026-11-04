@@ -37,6 +37,7 @@ import {
 import { answerJson, answerOverview } from "../lib/live-http.ts";
 import { submitAnswer as answer, submitLaunch as launchReq, submitDecision } from "../lib/requests.ts";
 import { dbSnapshots, markRepository } from "../lib/snapshots.ts";
+import { fakeAttachmentBlobs } from "./attachment-support.ts";
 import { addOrganizations, tempDatabase } from "./support.ts";
 
 const open: Database[] = [];
@@ -963,16 +964,20 @@ describe("what the owner validates (THE-885)", () => {
     await assignUnownedProjects(db, "org-home");
     const w = world(db);
     await w.warm();
-    const shot = await saveAttachment(db, {
-      project: "widgets",
-      ticket: "WID-2",
-      input: { kind: "image", contentType: "image/png", bytes: Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]) },
-      caption: "The new card",
-      reference: null,
-      author: "ws/2",
-      now: new Date(T0),
-      policy: parseConfig(configTemplate({ ...WIDGETS, programRoot: "WID-1" })).policy,
-    });
+    const shot = await saveAttachment(
+      db,
+      {
+        project: "widgets",
+        ticket: "WID-2",
+        input: { kind: "image", contentType: "image/png", bytes: Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]) },
+        caption: "The new card",
+        reference: null,
+        author: "ws/2",
+        now: new Date(T0),
+        policy: parseConfig(configTemplate({ ...WIDGETS, programRoot: "WID-1" })).policy,
+      },
+      fakeAttachmentBlobs(),
+    );
     const pr = {
       number: 12,
       url: "https://github.com/acme/widgets/pull/12",

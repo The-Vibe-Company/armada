@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { CONFIG_DEFAULTS, parseConfig } from "@armada/core/read";
 import { NextRequest } from "next/server";
 import { DEMO_TOML } from "../../core/test/support.ts";
@@ -6,15 +7,21 @@ import { accountsGuard } from "../lib/accounts-http.ts";
 import { attachmentBody, attachmentInput } from "../lib/attachment-http.ts";
 import {
   listTicketAttachments,
-  pruneAttachments,
+  pruneAttachments as prune,
   readAttachment,
-  saveAttachment,
-  serveAttachment,
+  saveAttachment as save,
+  serveAttachment as serve,
 } from "../lib/attachments.ts";
 import type { Database, Queryable } from "../lib/db.ts";
 import { assignUnownedProjects, upsertProject } from "../lib/fleet-store.ts";
+import { fakeAttachmentBlobs } from "./attachment-support.ts";
 import { addOrganizations, scalar, tempDatabase } from "./support.ts";
 
+const blobs = fakeAttachmentBlobs();
+const saveAttachment = (...[db, target]: Parameters<typeof save>) => save(db, target, blobs);
+const serveAttachment = (...[db, scope, id, etag]: Parameters<typeof serve>) => serve(db, scope, id, etag, blobs);
+const pruneAttachments = (...[db, project, issues, days, now]: Parameters<typeof prune>) =>
+  prune(db, project, issues, days, now, blobs);
 let db: Database;
 const now = new Date("2026-04-01T00:00:00Z");
 const policy = parseConfig(DEMO_TOML).policy;
@@ -42,6 +49,17 @@ test("an image and link are private metadata with member-only bytes", async () =
     ...target("DEMO-7"),
     input: { kind: "image", bytes: png, contentType: "image/png" },
   });
+  const row = (
+    await db.query("SELECT bytes, storage_key, stored_at, size, content_type FROM attachments WHERE id = $1", [
+      image.id,
+    ])
+  ).rows[0];
+  expect(row?.bytes).toBeNull();
+  expect(row?.storage_key).toBe(`attachments/widgets/${createHash("sha256").update(png).digest("hex")}`);
+  expect(new Date(String(row?.stored_at)).toISOString()).toBe(now.toISOString());
+  expect(row?.size).toBe(png.length);
+  expect(row?.content_type).toBe("image/png");
+  expect(blobs.put).toHaveBeenLastCalledWith(row?.storage_key, png, "image/png");
   const link = await saveAttachment(db, {
     ...target("DEMO-7"),
     input: { kind: "link", url: "https://example.test/design" },
@@ -61,6 +79,7 @@ test("an image and link are private metadata with member-only bytes", async () =
   expect(response.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
   expect(response.headers.get("content-type")).toBe("image/png");
   expect(Buffer.from(await response.arrayBuffer())).toEqual(png);
+  const reads = blobs.get.mock.calls.length;
   const anonymousImage = await serveAttachment(db, null, image.id, `"${image.sha256}"`);
   expect(anonymousImage.status).toBe(403);
   expect(anonymousImage.headers.get("cache-control")).toBe("private, no-store");
@@ -69,6 +88,7 @@ test("an image and link are private metadata with member-only bytes", async () =
   expect(forbidden.status).toBe(403);
   expect(forbidden.headers.get("cache-control")).toBe("private, no-store");
   expect(forbidden.headers.get("etag")).toBeNull();
+  expect(blobs.get.mock.calls.length).toBe(reads);
   expect(await readAttachment(db, other, image.id)).toBeNull();
   expect(await listTicketAttachments(db, other, "widgets", "DEMO-7")).toBeNull();
   const redirect = await serveAttachment(db, scope, link.id, "*");
@@ -96,6 +116,7 @@ test("image revalidation reads metadata only and returns bytes only on a cache m
       return result;
     },
   };
+  const reads = blobs.get.mock.calls.length;
   for (const validator of [etag, `W/${etag}`, `"other", W/${etag}`, "*"]) {
     const response = await serveAttachment(metadataOnly, scope, image.id, validator);
     expect(response.status).toBe(304);
@@ -103,6 +124,7 @@ test("image revalidation reads metadata only and returns bytes only on a cache m
     expect(response.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
     expect(response.body).toBeNull();
   }
+  expect(blobs.get.mock.calls.length).toBe(reads);
   const missing = await serveAttachment(metadataOnly, scope, "missing-attachment", "*");
   expect(missing.status).toBe(403);
   expect(missing.headers.get("cache-control")).toBe("private, no-store");
@@ -111,15 +133,17 @@ test("image revalidation reads metadata only and returns bytes only on a cache m
   expect(Buffer.from(await miss.arrayBuffer())).toEqual(png);
 });
 
-test("duplicates store bytes once, can bind a new free reference, and do not consume quota", async () => {
+test("duplicates upload once, can bind a new free reference, and do not consume quota", async () => {
   const input = { kind: "image" as const, bytes: png, contentType: "image/png" };
   const first = await saveAttachment(db, { ...target("DEMO-8"), input });
+  const uploads = blobs.put.mock.calls.length;
   const second = await saveAttachment(db, {
     ...target("DEMO-8"),
     input,
     policy: { ...policy, attachmentsPerTicket: 1 },
     reference: "owner-check",
   });
+  expect(blobs.put.mock.calls.length).toBe(uploads);
   expect(second.id).toBe(first.id);
   expect(second.reference).toBe("owner-check");
   expect(await scalar(db, "SELECT count(*) FROM attachments WHERE ticket = 'DEMO-8'")).toBe(1);
@@ -201,4 +225,108 @@ test("the upload body is bounded and malformed images are rejected before storag
     attachmentBody(new Request("https://example.test", { method: "POST", body: "x".repeat(3 * 1024 * 1024 + 1) })),
   ).rejects.toThrow("2 MB");
   expect(() => attachmentInput({ kind: "image", contentType: "image/png", data: "not base64!" })).toThrow("base64");
+});
+
+test("legacy images still serve from bytea and revalidate without loading bytes", async () => {
+  const id = "legacy-image";
+  const hash = createHash("sha256").update(png).digest("hex");
+  await db.query(
+    `INSERT INTO attachments (id, project, ticket, kind, bytes, content_type, size, sha256, author, created_at)
+     VALUES ($1, 'widgets', 'DEMO-14', 'image', $2, 'image/png', $3, $4, 'Worker', $5)`,
+    [id, png, png.length, hash, now],
+  );
+  const reads = blobs.get.mock.calls.length;
+  const metadataOnly: Queryable = {
+    async query<R>(sql: string, params?: readonly unknown[]) {
+      const result = await db.query<R>(sql, params);
+      expect(result.rows.every((row) => !("bytes" in (row as object)))).toBe(true);
+      return result;
+    },
+  };
+  expect((await serveAttachment(metadataOnly, scope, id, `"${hash}"`)).status).toBe(304);
+  const response = await serveAttachment(db, scope, id);
+  expect(response.status).toBe(200);
+  expect(Buffer.from(await response.arrayBuffer())).toEqual(png);
+  expect(blobs.get.mock.calls.length).toBe(reads);
+});
+
+test("a failed insert rolls back and cleans only an unreferenced blob, even when deletion fails", async () => {
+  for (const shared of [false, true]) {
+    const bytes = Buffer.concat([png, Buffer.from(shared ? "shared" : "orphan")]);
+    const input = { kind: "image" as const, bytes, contentType: "image/png" };
+    const key = `attachments/widgets/${createHash("sha256").update(bytes).digest("hex")}`;
+    if (shared) await saveAttachment(db, { ...target("DEMO-15"), input });
+    const deletes = blobs.del.mock.calls.length;
+    // A real database error after upload: created_at is NOT NULL.
+    await expect(saveAttachment(db, { ...target("DEMO-16"), input, now: null as unknown as Date })).rejects.toThrow();
+    expect(await scalar(db, "SELECT count(*) FROM attachments WHERE ticket = 'DEMO-16'")).toBe(0);
+    expect(blobs.del.mock.calls.length).toBe(deletes + (shared ? 0 : 1));
+    expect(blobs.objects.has(key)).toBe(shared);
+  }
+  const broken = fakeAttachmentBlobs();
+  broken.del.mockRejectedValue(new Error("storage unavailable"));
+  await expect(
+    save(
+      db,
+      {
+        ...target("DEMO-17"),
+        input: { kind: "image", bytes: Buffer.concat([png, Buffer.from("cleanup-failure")]), contentType: "image/png" },
+        now: null as unknown as Date,
+      },
+      broken,
+    ),
+  ).rejects.toThrow("null");
+  expect(broken.del).toHaveBeenCalledTimes(1);
+});
+
+test("an upload whose acknowledgement fails still cleans an unreferenced Blob", async () => {
+  const ambiguous = fakeAttachmentBlobs();
+  ambiguous.put.mockImplementation(async (key, bytes) => {
+    ambiguous.objects.set(key, new Uint8Array(bytes));
+    throw new Error("upload acknowledgement lost");
+  });
+  await expect(
+    save(
+      db,
+      {
+        ...target("DEMO-20"),
+        input: { kind: "image", bytes: Buffer.concat([png, Buffer.from("ambiguous")]), contentType: "image/png" },
+      },
+      ambiguous,
+    ),
+  ).rejects.toThrow("upload acknowledgement lost");
+  expect(await scalar(db, "SELECT count(*) FROM attachments WHERE ticket = 'DEMO-20'")).toBe(0);
+  expect(ambiguous.del).toHaveBeenCalledTimes(1);
+  expect(ambiguous.objects.size).toBe(0);
+});
+
+test("pruning commits row deletion, retains shared content, and tolerates Blob deletion failure", async () => {
+  const isolated = fakeAttachmentBlobs();
+  const bytes = Buffer.concat([png, Buffer.from("retention")]);
+  const input = { kind: "image" as const, bytes, contentType: "image/png" };
+  const first = await save(db, { ...target("DEMO-18"), input, doneAt: now.toISOString() }, isolated);
+  const second = await save(db, { ...target("DEMO-19"), input }, isolated);
+  const key = `attachments/widgets/${first.sha256}`;
+  const later = new Date("2026-05-02T00:00:00Z");
+  expect(await prune(db, "widgets", [], 30, later, isolated)).toBe(1);
+  expect(isolated.del).not.toHaveBeenCalled();
+  expect(Buffer.from(await (await serve(db, scope, second.id, null, isolated)).arrayBuffer())).toEqual(bytes);
+  let remainingAtDelete: number | undefined;
+  isolated.del.mockImplementation(async (key) => {
+    remainingAtDelete = await scalar(db, "SELECT count(*) FROM attachments WHERE id = $1", [second.id]);
+    throw new Error(`cannot delete ${key}`);
+  });
+  expect(
+    await prune(
+      db,
+      "widgets",
+      [{ id: "DEMO-19", statusType: "completed", completedAt: now.toISOString(), canceledAt: null }],
+      30,
+      later,
+      isolated,
+    ),
+  ).toBe(1);
+  expect(remainingAtDelete).toBe(0);
+  expect(isolated.del).toHaveBeenCalledWith(key);
+  expect(await readAttachment(db, scope, second.id)).toBeNull();
 });

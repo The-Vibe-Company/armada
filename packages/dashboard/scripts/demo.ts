@@ -9,11 +9,10 @@
 // A PGlite database belongs to one process at a time: stop the dashboard before
 // `report`, `ask` or `seen` on it, or point both at a Postgres database
 // (the dashboard's ARMADA_DATABASE_URL and this script's ARMADA_DEMO_DATABASE_URL).
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { deflateSync } from "node:zlib";
-import { CONFIG_DEFAULTS, parseConfig } from "@armada/core/read";
-import { saveAttachment } from "../lib/attachments";
 import { databaseUrlOf, openDatabase } from "../lib/db";
 import {
   DEMO_COORDINATOR_SEEN,
@@ -205,27 +204,29 @@ const HUES: [number, number, number][] = [
 ];
 
 async function seedValidations(db: Awaited<ReturnType<typeof openDatabase>>) {
-  const policy = parseConfig(
-    `[project]\nname = "Demo"\nslug = "demo"\n[tracker]\nprogram_root = "DEMO-1"\n[github]\nrepository = "acme/demo"\n`,
-  ).policy;
   for (const v of DEMO_VALIDATIONS) {
     const attachments: string[] = [];
     for (const [k, caption] of v.shots.entries()) {
-      const saved = await saveAttachment(db, {
-        project: v.project,
-        ticket: v.ticket,
-        input: {
-          kind: "image",
-          bytes: mockScreenshot(HUES[k % HUES.length] ?? [126, 166, 255], k),
-          contentType: "image/png",
-        },
-        caption,
-        reference: "validation",
-        author: v.author,
-        now: ago(v.ago + 1),
-        policy: { ...policy, attachmentsPerTicket: CONFIG_DEFAULTS.attachmentsPerTicket },
-      });
-      attachments.push(saved.id);
+      // Synthetic demo images deliberately exercise the legacy bytea read path.
+      const bytes = mockScreenshot(HUES[k % HUES.length] ?? [126, 166, 255], k);
+      const id = randomUUID();
+      const saved = await db.query(
+        `INSERT INTO attachments (id, project, ticket, kind, bytes, content_type, size, sha256, caption, author, created_at, reference)
+         VALUES ($1, $2, $3, 'image', $4, 'image/png', $5, $6, $7, $8, $9, 'validation')
+         ON CONFLICT (project, ticket, sha256) DO UPDATE SET reference = EXCLUDED.reference RETURNING id`,
+        [
+          id,
+          v.project,
+          v.ticket,
+          bytes,
+          bytes.length,
+          createHash("sha256").update(bytes).digest("hex"),
+          caption,
+          v.author,
+          ago(v.ago + 1),
+        ],
+      );
+      attachments.push(String(saved.rows[0]?.id));
     }
     const added = await addValidation(db, {
       project: v.project,
