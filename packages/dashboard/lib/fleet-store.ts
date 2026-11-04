@@ -325,8 +325,12 @@ export async function recordEvent(db: Database | Queryable, e: EventInput, guard
 
 /** Time of the newest event of every ticket of a project (ISO strings, by ticket id). */
 export async function lastEventTimes(db: Queryable, project: string): Promise<Record<string, string>> {
+  // Keep all tickets, including those whose last activity is old. The partial
+  // events_latest_activity index supplies this order without a heap aggregate.
   const rs = await db.query(
-    "SELECT ticket, max(created_at) AS at FROM events WHERE project = $1 AND ticket <> '' AND kind NOT IN ('heartbeat', 'handover') GROUP BY ticket",
+    `SELECT DISTINCT ON (ticket) ticket, created_at AS at FROM events
+     WHERE project = $1 AND ticket <> '' AND kind NOT IN ('heartbeat', 'handover')
+     ORDER BY ticket, created_at DESC`,
     [project],
   );
   return Object.fromEntries(rs.rows.map((r) => [String(r.ticket), isoAt(r.at)]));

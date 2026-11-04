@@ -84,6 +84,48 @@ describe("the project registry", () => {
 });
 
 describe("live data", () => {
+  test("latest activity keeps the aggregate's all-time result across tickets, kinds and timestamp ties", async () => {
+    const project = "latest-activity";
+    const old = new Date("2020-01-01T00:00:00Z");
+    const fixtures = [
+      { ticket: "WID-1", kind: "claim", at: at(0) },
+      { ticket: "WID-1", kind: "report", at: at(5) },
+      { ticket: "WID-1", kind: "release", at: at(5) },
+      { ticket: "WID-1", kind: "report", at: at(1) },
+      { ticket: "WID-1", kind: "heartbeat", at: at(10) },
+      { ticket: "WID-1", kind: "handover", at: at(11) },
+      { ticket: "WID-2", kind: "merge", at: at(3) },
+      { ticket: "WID-2", kind: "claim", at: at(0) },
+      { ticket: "WID-3", kind: "report", at: old },
+      { ticket: "WID-4", kind: "heartbeat", at: at(10) },
+      { ticket: "WID-4", kind: "handover", at: at(11) },
+      { ticket: "WID-5", kind: "inbox", at: at(2) },
+      { ticket: "", kind: "report", at: at(20) },
+    ] as const;
+    for (const event of fixtures) await recordEvent(db, { project, ...event });
+    await recordEvent(db, { project: `${project}-other`, ticket: "WID-1", kind: "report", at: at(30) });
+    await recordEvent(db, { project: `${project}-other`, ticket: "WID-6", kind: "claim", at: at(30) });
+
+    const expected = {
+      "WID-1": at(5).toISOString(),
+      "WID-2": at(3).toISOString(),
+      "WID-3": old.toISOString(),
+      "WID-5": at(2).toISOString(),
+    };
+    const previous = await db.query<{ ticket: string; at: Date }>(
+      `SELECT ticket, max(created_at) AS at FROM events
+       WHERE project = $1 AND ticket <> '' AND kind NOT IN ('heartbeat', 'handover') GROUP BY ticket`,
+      [project],
+    );
+    expect(Object.fromEntries(previous.rows.map((row) => [row.ticket, row.at.toISOString()]))).toEqual(expected);
+    expect(await lastEventTimes(db, project)).toEqual(expected);
+    expect(await lastEventTimes(db, `${project}-empty`)).toEqual({});
+    await recordEvent(db, { project: `${project}-excluded`, ticket: "WID-1", kind: "heartbeat", at: at(0) });
+    await recordEvent(db, { project: `${project}-excluded`, ticket: "WID-1", kind: "handover", at: at(1) });
+    await recordEvent(db, { project: `${project}-excluded`, ticket: "", kind: "report", at: at(2) });
+    expect(await lastEventTimes(db, `${project}-excluded`)).toEqual({});
+  });
+
   test("keyed deliveries admit one retry, fence settlement, and retire failures once a newer answer is confirmed", async () => {
     const project = "delivery-outbox";
     await upsertProject(
