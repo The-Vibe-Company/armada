@@ -330,3 +330,41 @@ test("pruning commits row deletion, retains shared content, and tolerates Blob d
   expect(isolated.del).toHaveBeenCalledWith(key);
   expect(await readAttachment(db, scope, second.id)).toBeNull();
 });
+
+test("mixed legacy and Blob copies leave no orphan after both tickets expire", async () => {
+  const isolated = fakeAttachmentBlobs();
+  const bytes = Buffer.concat([png, Buffer.from("mixed-retention")]);
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  await db.query(
+    `INSERT INTO attachments (id, project, ticket, kind, bytes, content_type, size, sha256, author, created_at)
+     VALUES ('mixed-legacy', 'widgets', 'DEMO-21', 'image', $1, 'image/png', $2, $3, 'Worker', $4)`,
+    [bytes, bytes.length, hash, now],
+  );
+  await save(
+    db,
+    {
+      ...target("DEMO-22"),
+      input: { kind: "image", bytes, contentType: "image/png" },
+      doneAt: now.toISOString(),
+    },
+    isolated,
+  );
+  expect(isolated.objects.size).toBe(1);
+  const later = new Date("2026-05-02T00:00:00Z");
+  expect(await prune(db, "widgets", [], 30, later, isolated)).toBe(1);
+  const legacy = await serve(db, scope, "mixed-legacy", null, isolated);
+  expect(legacy.status).toBe(200);
+  expect(Buffer.from(await legacy.arrayBuffer())).toEqual(bytes);
+  expect(
+    await prune(
+      db,
+      "widgets",
+      [{ id: "DEMO-21", statusType: "completed", completedAt: now.toISOString(), canceledAt: null }],
+      30,
+      later,
+      isolated,
+    ),
+  ).toBe(1);
+  expect(await readAttachment(db, scope, "mixed-legacy")).toBeNull();
+  expect(isolated.objects.size).toBe(0);
+});

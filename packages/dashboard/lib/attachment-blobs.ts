@@ -44,12 +44,12 @@ export async function removeUnusedAttachmentBlobs(
   try {
     await transaction(db, async (tx) => {
       await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR UPDATE", [project]);
-      const rows = await tx.query("SELECT sha256, storage_key FROM attachments WHERE project = $1 AND kind = 'image'", [
-        project,
-      ]);
-      const used = new Set(
-        rows.rows.flatMap((row) => [row.storage_key, attachmentStorageKey(project, String(row.sha256))]),
+      const rows = await tx.query(
+        "SELECT storage_key FROM attachments WHERE project = $1 AND kind = 'image' AND storage_key IS NOT NULL",
+        [project],
       );
+      // Legacy rows serve bytea. A backfill holds this same lock until its real pointer is stored.
+      const used = new Set(rows.rows.map((row) => row.storage_key));
       for (const key of new Set(keys)) if (!used.has(key)) await blobs.del(key).catch(() => {});
     });
   } catch {
