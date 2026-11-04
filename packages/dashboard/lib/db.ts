@@ -1066,6 +1066,22 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "CREATE UNIQUE INDEX inbox_delivery_failed_open ON inbox_items (project, ticket) WHERE kind = 'delivery-failed' AND recipient = 'coordinator' AND ticket IS NOT NULL AND resolved_at IS NULL",
     ],
   },
+  {
+    // Private Blob storage is additive: existing images keep their bytea copy.
+    version: 52,
+    statements: [
+      "ALTER TABLE attachments ADD COLUMN storage_key text",
+      "ALTER TABLE attachments ADD COLUMN stored_at timestamptz",
+      "ALTER TABLE attachments ALTER COLUMN bytes DROP NOT NULL",
+      "ALTER TABLE attachments DROP CONSTRAINT attachments_check",
+      `ALTER TABLE attachments ADD CONSTRAINT attachments_check CHECK (
+        (kind = 'image' AND (bytes IS NOT NULL OR (storage_key IS NOT NULL AND stored_at IS NOT NULL))
+          AND content_type IN ('image/png', 'image/jpeg', 'image/webp', 'image/gif') AND url IS NULL
+          AND (bytes IS NULL OR octet_length(bytes) = size))
+        OR (kind = 'link' AND bytes IS NULL AND content_type IS NULL AND url IS NOT NULL AND size = 0
+          AND storage_key IS NULL AND stored_at IS NULL))`,
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

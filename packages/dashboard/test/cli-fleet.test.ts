@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import {
   type ArmadaConfig,
   type ArmadaSignIn,
@@ -15,6 +15,7 @@ import {
 import { issue } from "../../core/test/support.ts";
 import { type Auth, createAuth, type EmailMessage, recordApiKeyCreator } from "../lib/accounts.ts";
 import { accountsModeOf } from "../lib/accounts-settings.ts";
+import { attachmentBlobs } from "../lib/attachment-blobs.ts";
 import { type CliAccounts, type CliApiDeps, handleCli } from "../lib/cli-api.ts";
 import type { Database } from "../lib/db.ts";
 import type { Scope } from "../lib/fleet-data.ts";
@@ -124,6 +125,11 @@ const api = armadaApi({ url: BASE, fetch, version: CLI });
 const fleetOf = (signIn: ArmadaSignIn, project: ProjectInput = WIDGETS): Fleet => fleetClient({ api, signIn, project });
 
 describe("private attachments through the authenticated CLI API", () => {
+  let upload: ReturnType<typeof spyOn<typeof attachmentBlobs, "put">>;
+  beforeAll(() => {
+    upload = spyOn(attachmentBlobs, "put").mockResolvedValue();
+  });
+  afterAll(() => upload.mockRestore());
   test("a coordinator and scoped worker attach to cached tickets; cross-project and cross-ticket calls fail", async () => {
     const coordinator: ArmadaSignIn = { kind: "api-key", key: apiKey };
     await fleetOf(coordinator).register();

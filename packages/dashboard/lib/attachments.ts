@@ -7,6 +7,12 @@ import {
   checkAttachment,
   type Issue,
 } from "@armada/core/read";
+import {
+  type AttachmentBlobs,
+  attachmentBlobs,
+  attachmentStorageKey,
+  removeUnusedAttachmentBlobs,
+} from "./attachment-blobs";
 import { type Database, isoAt, type Queryable, text, transaction } from "./db";
 import type { Scope } from "./fleet-data";
 
@@ -85,13 +91,17 @@ const READ_SCOPE = `id = $1 AND project IN
   (SELECT slug FROM projects WHERE organization_id = $2 OR (organization_id IS NULL AND $2 = $3))`;
 
 /** Read metadata without loading the immutable image blob, including during cache revalidation. */
-export async function readAttachment(db: Queryable, scope: Scope, id: string): Promise<Attachment | null> {
-  const result = await db.query(`SELECT ${COLUMNS} FROM attachments WHERE ${READ_SCOPE}`, [
+export async function readAttachment(
+  db: Queryable,
+  scope: Scope,
+  id: string,
+): Promise<(Attachment & { storageKey: string | null }) | null> {
+  const result = await db.query(`SELECT ${COLUMNS}, storage_key FROM attachments WHERE ${READ_SCOPE}`, [
     id,
     scope.organization,
     scope.home,
   ]);
-  return result.rows[0] ? metadata(result.rows[0]) : null;
+  return result.rows[0] ? { ...metadata(result.rows[0]), storageKey: text(result.rows[0].storage_key) } : null;
 }
 
 async function readAttachmentBytes(db: Queryable, scope: Scope, id: string): Promise<Uint8Array<ArrayBuffer> | null> {
@@ -117,6 +127,7 @@ export async function saveAttachment(
     policy: ArmadaConfig["policy"];
     doneAt?: string | null;
   },
+  blobs: AttachmentBlobs = attachmentBlobs,
 ): Promise<Attachment> {
   const refusal = checkAttachment(target.input);
   if (refusal)
@@ -132,78 +143,103 @@ export async function saveAttachment(
   const sha256 = createHash("sha256")
     .update(bytes ?? (target.input.kind === "link" ? target.input.url : ""))
     .digest("hex");
-  return transaction(db, async (tx) => {
-    const project = await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR UPDATE", [target.project]);
-    if (!project.rows.length) throw new AttachmentRefusal("attachment ticket limit: project is not registered", 403);
-    const existing = await tx.query(
-      `SELECT ${COLUMNS} FROM attachments WHERE project = $1 AND ticket = $2 AND sha256 = $3`,
-      [target.project, target.ticket, sha256],
-    );
-    if (existing.rows[0]) {
-      if (target.reference !== null)
-        await tx.query("UPDATE attachments SET reference = $2 WHERE id = $1", [existing.rows[0].id, target.reference]);
-      return { ...metadata(existing.rows[0]), reference: target.reference ?? text(existing.rows[0].reference) };
-    }
-    const totals = (
-      await tx.query(
-        "SELECT count(*) FILTER (WHERE ticket = $2) AS count, COALESCE(sum(size), 0) AS size FROM attachments WHERE project = $1",
-        [target.project, target.ticket],
-      )
-    ).rows[0];
-    const countLimit = target.policy.attachmentsPerTicket ?? CONFIG_DEFAULTS.attachmentsPerTicket;
-    const sizeLimit = target.policy.attachmentsProjectMb ?? CONFIG_DEFAULTS.attachmentsProjectMb;
-    if (Number(totals?.count) >= countLimit)
-      throw new AttachmentRefusal(`attachment count limit: ${countLimit} per ticket`, 409);
-    if (Number(totals?.size) + (bytes?.length ?? 0) > sizeLimit * 1024 * 1024)
-      throw new AttachmentRefusal(`attachment project size limit: ${sizeLimit} MB`, 409);
-    const result = await tx.query(
-      `INSERT INTO attachments (id, project, ticket, kind, bytes, content_type, size, sha256, caption, author, created_at, reference, url, done_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING ${COLUMNS}`,
-      [
-        randomUUID(),
-        target.project,
-        target.ticket,
-        target.input.kind,
-        bytes,
-        target.input.kind === "image" ? target.input.contentType : null,
-        bytes?.length ?? 0,
-        sha256,
-        target.caption,
-        target.author,
-        target.now,
-        target.reference,
-        target.input.kind === "link" ? target.input.url : null,
-        target.doneAt ?? null,
-      ],
-    );
-    return metadata(result.rows[0] ?? {});
-  });
+  let attemptedKey: string | null = null;
+  try {
+    return await transaction(db, async (tx) => {
+      const project = await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR UPDATE", [target.project]);
+      if (!project.rows.length) throw new AttachmentRefusal("attachment ticket limit: project is not registered", 403);
+      const existing = await tx.query(
+        `SELECT ${COLUMNS} FROM attachments WHERE project = $1 AND ticket = $2 AND sha256 = $3`,
+        [target.project, target.ticket, sha256],
+      );
+      if (existing.rows[0]) {
+        if (target.reference !== null)
+          await tx.query("UPDATE attachments SET reference = $2 WHERE id = $1", [
+            existing.rows[0].id,
+            target.reference,
+          ]);
+        return { ...metadata(existing.rows[0]), reference: target.reference ?? text(existing.rows[0].reference) };
+      }
+      const totals = (
+        await tx.query(
+          "SELECT count(*) FILTER (WHERE ticket = $2) AS count, COALESCE(sum(size), 0) AS size FROM attachments WHERE project = $1",
+          [target.project, target.ticket],
+        )
+      ).rows[0];
+      const countLimit = target.policy.attachmentsPerTicket ?? CONFIG_DEFAULTS.attachmentsPerTicket;
+      const sizeLimit = target.policy.attachmentsProjectMb ?? CONFIG_DEFAULTS.attachmentsProjectMb;
+      if (Number(totals?.count) >= countLimit)
+        throw new AttachmentRefusal(`attachment count limit: ${countLimit} per ticket`, 409);
+      if (Number(totals?.size) + (bytes?.length ?? 0) > sizeLimit * 1024 * 1024)
+        throw new AttachmentRefusal(`attachment project size limit: ${sizeLimit} MB`, 409);
+      const storageKey = bytes ? attachmentStorageKey(target.project, sha256) : null;
+      if (storageKey && bytes && target.input.kind === "image") {
+        attemptedKey = storageKey;
+        await blobs.put(storageKey, bytes, target.input.contentType);
+      }
+      const result = await tx.query(
+        `INSERT INTO attachments (id, project, ticket, kind, bytes, content_type, size, sha256, caption, author, created_at, reference, url, done_at, storage_key, stored_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING ${COLUMNS}`,
+        [
+          randomUUID(),
+          target.project,
+          target.ticket,
+          target.input.kind,
+          null,
+          target.input.kind === "image" ? target.input.contentType : null,
+          bytes?.length ?? 0,
+          sha256,
+          target.caption,
+          target.author,
+          target.now,
+          target.reference,
+          target.input.kind === "link" ? target.input.url : null,
+          target.doneAt ?? null,
+          storageKey,
+          storageKey ? target.now : null,
+        ],
+      );
+      return metadata(result.rows[0] ?? {});
+    });
+  } catch (error) {
+    if (attemptedKey) await removeUnusedAttachmentBlobs(db, target.project, [attemptedKey], blobs);
+    throw error;
+  }
 }
 
 export async function pruneAttachments(
-  db: Queryable,
+  db: Database,
   project: string,
   issues: Pick<Issue, "id" | "statusType" | "completedAt" | "canceledAt">[],
   days: number,
   now: Date,
+  blobs: AttachmentBlobs = attachmentBlobs,
 ): Promise<number> {
   const states = issues.map((issue) => ({
     ticket: issue.id,
     done: ["completed", "canceled"].includes(issue.statusType),
     at: issue.completedAt ?? issue.canceledAt,
   }));
-  await db.query(
-    `UPDATE attachments AS attachment SET done_at = CASE WHEN state.done THEN COALESCE(state.at, attachment.done_at, $3) ELSE NULL END
+  const deleted = await transaction(db, async (tx) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR UPDATE", [project]);
+    await tx.query(
+      `UPDATE attachments AS attachment SET done_at = CASE WHEN state.done THEN COALESCE(state.at, attachment.done_at, $3) ELSE NULL END
     FROM jsonb_to_recordset($2::jsonb) AS state(ticket text, done boolean, at timestamptz)
     WHERE attachment.project = $1 AND attachment.ticket = state.ticket`,
-    [project, JSON.stringify(states), now],
-  );
-  return (
-    await db.query("DELETE FROM attachments WHERE project = $1 AND done_at <= $2", [
+      [project, JSON.stringify(states), now],
+    );
+    return tx.query("DELETE FROM attachments WHERE project = $1 AND done_at <= $2 RETURNING storage_key", [
       project,
       new Date(now.getTime() - days * 86400_000),
-    ])
-  ).rowCount;
+    ]);
+  });
+  await removeUnusedAttachmentBlobs(
+    db,
+    project,
+    deleted.rows.flatMap((row) => (row.storage_key ? [String(row.storage_key)] : [])),
+    blobs,
+  );
+  return deleted.rowCount;
 }
 
 export async function serveAttachment(
@@ -211,6 +247,7 @@ export async function serveAttachment(
   scope: Scope | null,
   id: string,
   ifNoneMatch: string | null = null,
+  blobs: AttachmentBlobs = attachmentBlobs,
 ): Promise<Response> {
   const headers = {
     "Cache-Control": "private, no-store",
@@ -236,6 +273,10 @@ export async function serveAttachment(
   // If-None-Match on GET uses weak comparison and may contain a list or wildcard.
   if (ifNoneMatch?.split(",").some((tag) => tag.trim() === "*" || tag.trim().replace(/^W\//, "") === etag))
     return new Response(null, { status: 304, headers: imageHeaders });
+  if (attachment.storageKey) {
+    const stream = await blobs.get(attachment.storageKey);
+    return stream ? new Response(stream, { headers: imageHeaders }) : forbidden();
+  }
   const bytes = await readAttachmentBytes(db, scope, id);
   if (!bytes) return forbidden();
   return new Response(bytes, { headers: imageHeaders });
