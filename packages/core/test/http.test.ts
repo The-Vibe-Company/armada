@@ -345,3 +345,81 @@ test("repeated Retry-After headers stay within the call's 14 s wait budget", asy
     expect(answer).toBe(status === 503 ? "ok" : "HTTP 429; try again after 10 s");
   }
 });
+
+test("a confirmed duration budget bounds every attempt, including fence latency and immediate fresh transport recovery", async () => {
+  let elapsed = 0;
+  const limits: number[] = [];
+  const starts: number[] = [];
+  const signals: AbortSignal[] = [];
+  const waits: number[] = [];
+  let fences = 0;
+  const failure = await httpRequest(
+    url,
+    { method: "POST" },
+    {
+      retry: true,
+      retryStatus,
+      timeoutMs: 15_000,
+      remainingMs: () => 22_000 - elapsed,
+      beforeAttempt: async () => {
+        fences++;
+        elapsed += 1000;
+      },
+      timeoutSignal: (limit) => {
+        limits.push(limit);
+        return new AbortController().signal;
+      },
+      sleep: async (ms) => {
+        waits.push(ms);
+        elapsed += ms;
+      },
+      fetch: async (_url, init) => {
+        starts.push(elapsed);
+        signals.push(init.signal!);
+        elapsed += limits.at(-1)!;
+        throw timeout();
+      },
+    },
+    (response) => response.text(),
+  ).catch((error) => error);
+  expect(failure).toBeInstanceOf(HttpRequestError);
+  expect(starts.length).toBeGreaterThan(2);
+  expect(fences).toBe(starts.length);
+  expect(limits.every((limit, i) => limit <= 15_000 && starts[i]! + limit <= 22_000)).toBe(true);
+  expect(waits[0]).toBe(0);
+  expect(waits.some((ms) => ms > 0)).toBe(true);
+  expect(new Set(signals).size).toBe(signals.length);
+  expect(signals.every((signal) => signal.aborted)).toBe(true);
+  expect(elapsed).toBe(22_000);
+});
+
+test("cancellation during bounded backoff and a refused fresh fence prevent another physical request", async () => {
+  for (const scenario of ["cancelled", "fence-refused"] as const) {
+    const controller = new AbortController();
+    let requests = 0;
+    let fences = 0;
+    const stopped = new Error("ownership no longer confirmed");
+    const failure = await httpRequest(
+      url,
+      { signal: controller.signal },
+      {
+        retry: true,
+        remainingMs: () => 60_000,
+        beforeAttempt: async () => {
+          if (++fences === 2 && scenario === "fence-refused") throw stopped;
+        },
+        sleep: async () => {
+          if (scenario === "cancelled") controller.abort(stopped);
+        },
+        fetch: async () => {
+          requests++;
+          throw timeout();
+        },
+      },
+      (response) => response.text(),
+    ).catch((error) => error);
+    expect(failure).toBe(stopped);
+    expect(requests).toBe(1);
+    expect(fences).toBe(scenario === "fence-refused" ? 2 : 1);
+  }
+});

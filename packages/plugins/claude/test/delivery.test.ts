@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -14,7 +14,7 @@ for (const mode of ["exit", "closed-input"])
   test(`post-result input resumes the exact Claude session (${mode}), including host reattachment`, {
     timeout: 20_000,
   }, async () => {
-    const root = await mkdtemp(join(tmpdir(), "claude-delivery-"));
+    const root = await mkdtemp(join(await realpath(tmpdir()), "claude-delivery-"));
     const node = createLocalNode({ workspaceRoot: join(root, "worktrees"), transport: "pipe" });
     const options = {
       command: process.execPath,
