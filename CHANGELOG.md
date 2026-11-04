@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.73](https://github.com/The-Vibe-Company/armada/compare/v0.2.72...v0.2.73) (2026-11-04)
+
+
+### Features
+
+* **desktop:** auto-update the installed app from GitHub releases ([#442](https://github.com/The-Vibe-Company/armada/issues/442)) ([ff18a1f](https://github.com/The-Vibe-Company/armada/commit/ff18a1fff253b7c6d68d3715e5bf99b663d79559))
+
+
+### Bug Fixes
+
+* **claude:** keep a worker's CLI alive while its background tasks run ([#444](https://github.com/The-Vibe-Company/armada/issues/444)) ([55acd11](https://github.com/The-Vibe-Company/armada/commit/55acd1184cb463cce243c793538bceb29b7413ec))
+
 ## [0.2.72](https://github.com/The-Vibe-Company/armada/compare/v0.2.71...v0.2.72) (2026-11-03)
 
 
