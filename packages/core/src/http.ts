@@ -1,6 +1,8 @@
 // Shared request deadlines and explicitly safe retries. A deadline includes the
 // response body; getting headers alone is not an answer.
 export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
+const TRANSIENT_CODE =
+  /^(?:ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|UND_ERR_(?:CONNECT_TIMEOUT|HEADERS_TIMEOUT|BODY_TIMEOUT|SOCKET)|ConnectionClosed|ConnectionRefused)$/;
 
 class UnreadableAnswer extends Error {
   constructor(readonly status: number) {
@@ -20,6 +22,7 @@ export async function readJson<T>(response: Response): Promise<T> {
 
 export class HttpRequestError extends Error {
   override name = "HttpRequestError";
+  readonly code: string;
   constructor(
     error: unknown,
     timeoutMs: number,
@@ -30,6 +33,13 @@ export class HttpRequestError extends Error {
     super(
       `${networkReason(error, timeoutMs)}${attempts > 1 ? `; failed after ${attempts} attempts (${attempts === 2 ? "one retry" : `${attempts - 1} retries`})` : ""}`,
     );
+    const code = codeOf(error);
+    this.code =
+      code && TRANSIENT_CODE.test(code)
+        ? code
+        : error instanceof Error && error.name === "TimeoutError"
+          ? "TimeoutError"
+          : "network";
   }
 }
 
@@ -56,10 +66,7 @@ function transient(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   if (error.name === "TimeoutError" || error.name === "AbortError") return true;
   const code = codeOf(error);
-  if (code)
-    return /^(?:ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|UND_ERR_(?:CONNECT_TIMEOUT|HEADERS_TIMEOUT|BODY_TIMEOUT|SOCKET)|ConnectionClosed|ConnectionRefused)$/.test(
-      code,
-    );
+  if (code) return TRANSIENT_CODE.test(code);
   return error instanceof TypeError && error.message === "fetch failed";
 }
 
@@ -127,6 +134,10 @@ export interface HttpRequestOptions extends HttpRetryOptions {
   timeoutMs?: number;
   /** Tests drive a deadline without waiting for a real timer. */
   timeoutSignal?: (ms: number) => AbortSignal;
+  /** Confirmed external lifetime, already excluding its safety margin; measured monotonically. */
+  remainingMs?: () => number;
+  /** Revalidate ownership before every physical attempt of a guarded operation. */
+  beforeAttempt?: () => Promise<void>;
 }
 
 export async function httpRequest<T>(
@@ -137,19 +148,31 @@ export async function httpRequest<T>(
 ): Promise<T> {
   init.signal?.throwIfAborted();
   const doFetch = opts.fetch ?? fetch;
-  const attempts = opts.retry ? (opts.retryStatus ? 3 : 2) : 1;
+  const attempts = opts.retry ? (opts.remainingMs ? Number.MAX_SAFE_INTEGER : opts.retryStatus ? 3 : 2) : 1;
   let transportRetries = 0;
   let waitedMs = 0;
+  let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    const limit = opts.retry
+    init.signal?.throwIfAborted();
+    const remaining = () => opts.remainingMs?.() ?? Number.POSITIVE_INFINITY;
+    const checkBudget = () => {
+      if (remaining() <= 0)
+        throw lastError ?? new HttpRequestError(new DOMException("deadline", "TimeoutError"), 0, attempt);
+    };
+    checkBudget();
+    await opts.beforeAttempt?.();
+    init.signal?.throwIfAborted();
+    checkBudget();
+    const requestLimit = opts.retry
       ? Math.min(opts.timeoutMs ?? 30_000, attempt === 1 ? 5000 : 10_000)
       : (opts.timeoutMs ?? 30_000);
+    const limit = Math.max(1, Math.floor(Math.min(requestLimit, remaining())));
     const deadline = (opts.timeoutSignal ?? AbortSignal.timeout)(limit);
     const controller = new AbortController();
     const signal = init.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal;
     let response: Response | undefined;
     let fetchFailed = false;
-    let pause: { status: number; ms: number } | undefined;
+    let pause: { status: number | null; ms: number; code?: string } | undefined;
     let onDeadline: () => void = () => {};
     const expired = new Promise<never>((_resolve, reject) => {
       onDeadline = () => {
@@ -172,17 +195,18 @@ export async function httpRequest<T>(
           }
           if (opts.retry && opts.retryStatus?.(response.status)) {
             const after = retryAfterMs(response.headers.get("Retry-After"), opts.now ?? (() => new Date()));
-            const remaining = 14_000 - waitedMs;
-            if (response.status === 429 && after !== null && after > Math.min(10_000, remaining))
+            const waitBudget = Math.min(opts.remainingMs ? remaining() : 14_000 - waitedMs, 10_000);
+            if (response.status === 429 && after !== null && after > waitBudget)
               throw new HttpStatusError(429, `${after / 1000} s`);
             if (attempt < attempts) {
+              lastError = new HttpStatusError(response.status, "the confirmed request budget expires");
               const base = attempt === 1 ? 1000 : 3000;
               // Cap each wait at 10 s and total extra waiting at 14 s.
               // A rate limit that exceeds the remaining budget fails above.
               const jitter = base * (0.8 + (opts.random ?? Math.random)() * 0.4);
               pause = {
                 status: response.status,
-                ms: Math.min(10_000, remaining, Math.max(after ?? 0, Math.round(jitter))),
+                ms: Math.max(0, Math.min(waitBudget, Math.max(after ?? 0, Math.round(jitter)))),
               };
               // This response is discarded; draining it would buffer an unbounded error body.
               await response.body?.cancel().catch(() => {});
@@ -192,6 +216,7 @@ export async function httpRequest<T>(
           return read(response);
         })(),
       ]);
+      checkBudget();
       if (!pause) return answer as T;
     } catch (error) {
       // A transport wrapper may compose caller cancellation into its own signal.
@@ -203,11 +228,18 @@ export async function httpRequest<T>(
       const retryable = transient(cause) || (unreadable && !!opts.retry && !!response?.ok);
       const transport = fetchFailed || deadline.aborted || transient(cause) || unreadable;
       if (!transport) throw error;
-      if (attempt < attempts && transportRetries < 1 && (!response || response.ok) && retryable) {
+      const failure = new HttpRequestError(cause, limit, attempt, retryable);
+      lastError = failure;
+      if (attempt < attempts && (transportRetries < 1 || opts.remainingMs) && (!response || response.ok) && retryable) {
         transportRetries++;
-        continue;
+        pause = {
+          status: null,
+          code: failure.code,
+          ms: transportRetries === 1 ? 0 : Math.max(0, Math.min(10_000, remaining(), 3000)),
+        };
+      } else {
+        throw failure;
       }
-      throw new HttpRequestError(cause, limit, attempt, retryable);
     } finally {
       deadline.removeEventListener("abort", onDeadline);
       // Abort closes a failed request's socket; its retry gets a new signal.
@@ -215,9 +247,10 @@ export async function httpRequest<T>(
       if (response?.body && !response.bodyUsed) void response.body.cancel().catch(() => {});
     }
     if (pause) {
-      opts.onRetry?.(
-        `${opts.service ?? "Service"} answered ${pause.status}; trying again in ${Math.round(pause.ms / 100) / 10} s (${attempt + 1}/${attempts})`,
-      );
+      if (pause.status !== null || opts.remainingMs)
+        opts.onRetry?.(
+          `${opts.service ?? "Service"} ${pause.status === null ? `unreachable (${pause.code})` : `answered ${pause.status}`}; trying again in ${Math.round(pause.ms / 100) / 10} s (${opts.remainingMs ? "attempt " : ""}${attempt + 1}${opts.remainingMs ? "" : `/${attempts}`})`,
+        );
       waitedMs += pause.ms;
       await wait(pause.ms, opts, init.signal);
     }
