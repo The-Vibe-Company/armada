@@ -4,7 +4,7 @@ import { serveAttachment } from "@/lib/attachments";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
+export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const access = await requireFleetAccess().catch(() => null);
   const scope = access ? scopeOf(access) : null;
   if (!scope)
@@ -14,5 +14,5 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     );
   const db = await appDatabase();
   if (!db) return Response.json({ error: "attachments unavailable" }, { status: 503 });
-  return serveAttachment(db, scope, (await context.params).id);
+  return serveAttachment(db, scope, (await context.params).id, request.headers.get("If-None-Match"));
 }

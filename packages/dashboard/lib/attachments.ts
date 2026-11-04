@@ -81,20 +81,27 @@ export async function captionedAttachments(db: Queryable, project: string, since
   ).rows.map(metadata);
 }
 
-export async function readAttachment(
-  db: Queryable,
-  scope: Scope,
-  id: string,
-): Promise<{ attachment: Attachment; bytes: Uint8Array | null } | null> {
-  const result = await db.query(
-    `SELECT ${COLUMNS}, bytes FROM attachments WHERE id = $1 AND project IN
-    (SELECT slug FROM projects WHERE organization_id = $2 OR (organization_id IS NULL AND $2 = $3))`,
-    [id, scope.organization, scope.home],
-  );
-  const row = result.rows[0];
-  return row
-    ? { attachment: metadata(row), bytes: row.bytes == null ? null : new Uint8Array(row.bytes as Uint8Array) }
-    : null;
+const READ_SCOPE = `id = $1 AND project IN
+  (SELECT slug FROM projects WHERE organization_id = $2 OR (organization_id IS NULL AND $2 = $3))`;
+
+/** Read metadata without loading the immutable image blob, including during cache revalidation. */
+export async function readAttachment(db: Queryable, scope: Scope, id: string): Promise<Attachment | null> {
+  const result = await db.query(`SELECT ${COLUMNS} FROM attachments WHERE ${READ_SCOPE}`, [
+    id,
+    scope.organization,
+    scope.home,
+  ]);
+  return result.rows[0] ? metadata(result.rows[0]) : null;
+}
+
+async function readAttachmentBytes(db: Queryable, scope: Scope, id: string): Promise<Uint8Array<ArrayBuffer> | null> {
+  const result = await db.query(`SELECT bytes FROM attachments WHERE ${READ_SCOPE}`, [
+    id,
+    scope.organization,
+    scope.home,
+  ]);
+  const bytes = result.rows[0]?.bytes;
+  return bytes == null ? null : new Uint8Array(bytes as Uint8Array);
 }
 
 export async function saveAttachment(
@@ -199,26 +206,37 @@ export async function pruneAttachments(
   ).rowCount;
 }
 
-export async function serveAttachment(db: Queryable, scope: Scope | null, id: string): Promise<Response> {
+export async function serveAttachment(
+  db: Queryable,
+  scope: Scope | null,
+  id: string,
+  ifNoneMatch: string | null = null,
+): Promise<Response> {
   const headers = {
     "Cache-Control": "private, no-store",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
   };
-  const found = scope ? await readAttachment(db, scope, id) : null;
-  if (!found)
-    return Response.json(
-      { error: "organization membership is required for this attachment" },
-      { status: 403, headers },
-    );
-  if (found.attachment.kind === "link")
-    return new Response(null, { status: 303, headers: { ...headers, Location: found.attachment.url ?? "" } });
-  return new Response(found.bytes ? new Uint8Array(found.bytes) : null, {
-    headers: {
-      ...headers,
-      "Content-Type": found.attachment.contentType ?? "application/octet-stream",
-      "Content-Disposition": 'inline; filename="attachment"',
-      "Content-Security-Policy": "default-src 'none'; sandbox",
-    },
-  });
+  const forbidden = () =>
+    Response.json({ error: "organization membership is required for this attachment" }, { status: 403, headers });
+  if (!scope) return forbidden();
+  const attachment = await readAttachment(db, scope, id);
+  if (!attachment) return forbidden();
+  if (attachment.kind === "link")
+    return new Response(null, { status: 303, headers: { ...headers, Location: attachment.url ?? "" } });
+  const etag = `"${attachment.sha256}"`;
+  const imageHeaders = {
+    ...headers,
+    "Cache-Control": "private, max-age=31536000, immutable",
+    ETag: etag,
+    "Content-Type": attachment.contentType ?? "application/octet-stream",
+    "Content-Disposition": 'inline; filename="attachment"',
+    "Content-Security-Policy": "default-src 'none'; sandbox",
+  };
+  // If-None-Match on GET uses weak comparison and may contain a list or wildcard.
+  if (ifNoneMatch?.split(",").some((tag) => tag.trim() === "*" || tag.trim().replace(/^W\//, "") === etag))
+    return new Response(null, { status: 304, headers: imageHeaders });
+  const bytes = await readAttachmentBytes(db, scope, id);
+  if (!bytes) return forbidden();
+  return new Response(bytes, { headers: imageHeaders });
 }

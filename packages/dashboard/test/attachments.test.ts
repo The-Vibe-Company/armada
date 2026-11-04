@@ -11,7 +11,7 @@ import {
   saveAttachment,
   serveAttachment,
 } from "../lib/attachments.ts";
-import type { Database } from "../lib/db.ts";
+import type { Database, Queryable } from "../lib/db.ts";
 import { assignUnownedProjects, upsertProject } from "../lib/fleet-store.ts";
 import { addOrganizations, scalar, tempDatabase } from "./support.ts";
 
@@ -52,15 +52,27 @@ test("an image and link are private metadata with member-only bytes", async () =
   expect(list?.every((item) => !("bytes" in item))).toBe(true);
   expect(link.reference).toBe("validation-1");
   const response = await serveAttachment(db, scope, image.id);
-  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
+  expect(response.headers.get("etag")).toBe(`"${image.sha256}"`);
+  expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+  expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+  expect(response.headers.get("content-disposition")).toBe('inline; filename="attachment"');
+  expect(response.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
   expect(response.headers.get("content-type")).toBe("image/png");
   expect(Buffer.from(await response.arrayBuffer())).toEqual(png);
-  expect((await serveAttachment(db, null, image.id)).status).toBe(403);
+  const anonymousImage = await serveAttachment(db, null, image.id, `"${image.sha256}"`);
+  expect(anonymousImage.status).toBe(403);
+  expect(anonymousImage.headers.get("cache-control")).toBe("private, no-store");
   const other = { organization: "org-b", home: "org-a" };
-  expect((await serveAttachment(db, other, image.id)).status).toBe(403);
+  const forbidden = await serveAttachment(db, other, image.id, `"${image.sha256}"`);
+  expect(forbidden.status).toBe(403);
+  expect(forbidden.headers.get("cache-control")).toBe("private, no-store");
+  expect(forbidden.headers.get("etag")).toBeNull();
   expect(await readAttachment(db, other, image.id)).toBeNull();
   expect(await listTicketAttachments(db, other, "widgets", "DEMO-7")).toBeNull();
-  const redirect = await serveAttachment(db, scope, link.id);
+  const redirect = await serveAttachment(db, scope, link.id, "*");
+  expect(redirect.headers.get("cache-control")).toBe("private, no-store");
   expect(redirect.status).toBe(303);
   expect(redirect.headers.get("location")).toBe("https://example.test/design");
   const anonymous = await accountsGuard(new NextRequest(`https://example.test/api/attachments/${image.id}`), {
@@ -68,6 +80,35 @@ test("an image and link are private metadata with member-only bytes", async () =
     session: async () => "none",
   });
   expect(anonymous.status).toBe(403);
+});
+
+test("image revalidation reads metadata only and returns bytes only on a cache miss", async () => {
+  const image = await saveAttachment(db, {
+    ...target("DEMO-13"),
+    input: { kind: "image", bytes: png, contentType: "image/png" },
+  });
+  const etag = `"${image.sha256}"`;
+  const metadataOnly: Queryable = {
+    async query<R>(sql: string, params?: readonly unknown[]) {
+      const result = await db.query<R>(sql, params);
+      // Check the real database result: selecting the blob (including SELECT *) fails this contract.
+      expect(result.rows.every((row) => !("bytes" in (row as object)))).toBe(true);
+      return result;
+    },
+  };
+  for (const validator of [etag, `W/${etag}`, `"other", W/${etag}`, "*"]) {
+    const response = await serveAttachment(metadataOnly, scope, image.id, validator);
+    expect(response.status).toBe(304);
+    expect(response.headers.get("etag")).toBe(etag);
+    expect(response.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
+    expect(response.body).toBeNull();
+  }
+  const missing = await serveAttachment(metadataOnly, scope, "missing-attachment", "*");
+  expect(missing.status).toBe(403);
+  expect(missing.headers.get("cache-control")).toBe("private, no-store");
+  const miss = await serveAttachment(db, scope, image.id, '"other"');
+  expect(miss.status).toBe(200);
+  expect(Buffer.from(await miss.arrayBuffer())).toEqual(png);
 });
 
 test("duplicates store bytes once, can bind a new free reference, and do not consume quota", async () => {
