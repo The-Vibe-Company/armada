@@ -9,6 +9,19 @@ import {
   deployFailed,
   deployRetryLine,
 } from "../src/deploy.ts";
+import {
+  claimGeneration,
+  HAND_BACK_LIMIT,
+  HAND_BACK_SCHEMA,
+  HandBackRefusal,
+  type HandBackRevision,
+  handBackPrUrl,
+  handBackReceiptSuperseded,
+  sameHandBack,
+  validateDeclaration,
+  validateHandBackMerge,
+} from "../src/hand-backs.ts";
+import type { MergeRecorded } from "../src/live.ts";
 // The fleet's live data in memory, for tests: the same results as the app's
 // Postgres store (`packages/dashboard/lib/fleet-store.ts`, tested on PGlite),
 // with its unique rules (one open plan, hand-back and launch request per
@@ -57,6 +70,7 @@ interface ItemRow extends Omit<StoredInboxItem, "request"> {
   launchId?: string;
   deployTarget?: string | null;
   deploySha?: string | null;
+  supersededBy?: number | null;
 }
 
 type DeployInputWithCoverage = DeployInput & { project: string; coveredShas?: readonly string[] | null };
@@ -87,6 +101,17 @@ export function memoryFleet(): FleetStore & {
   const jobs: Job[] = [];
   const queue: QueueEntry[] = [];
   const projects = new Map<string, ProjectRecord>();
+  const handBackReceipts = new Map<
+    number,
+    { key: string; result: MergeRecorded; receipt: import("../src/hand-backs.ts").HandBackMerge; keepOpen: boolean }
+  >();
+  const transactions = new Map<string, Promise<unknown>>();
+  const serial = <T>(project: string, run: () => Promise<T>): Promise<T> => {
+    const next = (transactions.get(project) ?? Promise.resolve()).catch(() => {}).then(run);
+    transactions.set(project, next);
+    return next;
+  };
+
   const events: EventRow[] = [];
   const handles = new Map<string, HandleRow>();
   const paths = new Map<string, string[]>();
@@ -1584,7 +1609,337 @@ export function memoryFleet(): FleetStore & {
       if (was) Object.assign(was, { body: i.body, author: i.author, createdAt: i.at.toISOString() });
       else await this.addInboxItem({ ...i, kind: "plan", recipient: "coordinator" });
     },
+    async hasScopedHandBacks(project, ticket) {
+      const generations = (await this.openRuntimeHandles(project)).map((h) => claimGeneration(h));
+      return items.some(
+        (i) =>
+          i.project === project &&
+          (!ticket || i.ticket === ticket) &&
+          i.handBack &&
+          (!i.resolvedAt || generations.includes(i.handBack.claimGeneration)),
+      );
+    },
+    async handBackState(project, ticket) {
+      const p = projects.get(project);
+      if (!p) throw new HandBackRefusal("unknown hand-back project");
+      const rows = items.filter(
+        (i) => i.project === project && i.ticket === ticket && i.kind === "hand-back" && !i.resolvedAt,
+      );
+      const handle = await this.getRuntimeHandle(project, ticket);
+      const receipts = [...handBackReceipts.values()].filter(
+        (i) => i.receipt.handBack.project === project && i.receipt.handBack.ticket === ticket,
+      );
+      return {
+        schema: HAND_BACK_SCHEMA,
+        project,
+        repository: p.repository,
+        ticket,
+        claimGeneration: claimGeneration(handle),
+        complete: rows.length <= HAND_BACK_LIMIT && receipts.length <= HAND_BACK_LIMIT,
+        items: rows.slice(0, HAND_BACK_LIMIT).map(stored),
+        merges: receipts
+          .slice(-HAND_BACK_LIMIT)
+          .reverse()
+          .map((i) => ({
+            receipt: i.receipt,
+            keepOpen: i.keepOpen,
+            superseded: handBackReceiptSuperseded(handle, i.receipt.handBack.claimGeneration, i.keepOpen),
+          })),
+      };
+    },
+    async recordHandBack(input) {
+      return serial(input.project, async () => {
+        const { project, report: r, at } = input;
+        const p = projects.get(project);
+        const h = await this.getRuntimeHandle(project, r.ticket);
+        const generation = claimGeneration(h);
+        if (
+          !p ||
+          !h ||
+          !generation ||
+          r.handBack?.schema !== HAND_BACK_SCHEMA ||
+          r.handBack.claimGeneration !== generation ||
+          (r.workerSessionId && h.workerSessionId !== r.workerSessionId)
+        )
+          throw new HandBackRefusal("hand-back claim generation is no longer held");
+        if (
+          [...leases.values()].some(
+            (l) =>
+              l.project === project &&
+              ["merge", "merge-queue"].includes(l.name) &&
+              Date.parse(l.expiresAt) > at.getTime() &&
+              l.handBackContract !== HAND_BACK_SCHEMA,
+          )
+        )
+          throw new HandBackRefusal("an active legacy merge lease prevents hand-back/v2 admission");
+        const pr = validateDeclaration(p.repository, r.prUrl, r.headSha, r.summary);
+        const rows = items.filter((i) => i.project === project && i.ticket === r.ticket && i.kind === "hand-back");
+        if (rows.some((i) => !i.resolvedAt && !i.handBack))
+          throw new HandBackRefusal("legacy-unbound hand-back must be resolved by its existing route");
+        const body = `Agent status: ready-to-merge — ${r.summary}`;
+        const author = r.workerSessionId ?? h.workerSessionId ?? h.handle;
+        const revision = (i: ItemRow): HandBackRevision => ({
+          ...i.handBack!,
+          body: i.body,
+          author: i.author!,
+          createdAt: i.createdAt,
+          resolvedAt: i.resolvedAt,
+          resolution: i.resolution,
+          supersededBy: i.supersededBy ?? null,
+        });
+        const duplicate = rows.find(
+          (i) => i.handBack?.pr === pr && i.handBack.headSha === r.headSha && i.handBack.claimGeneration === generation,
+        );
+        if (duplicate) {
+          if (duplicate.body !== body || duplicate.author !== author)
+            throw new HandBackRefusal("same hand-back pin with different evidence");
+          if (duplicate.resolvedAt) throw new HandBackRefusal("hand-back revision is already closed; no stale replay");
+          return revision(duplicate);
+        }
+        const current = rows.filter((i) => !i.resolvedAt && i.handBack?.pr === pr);
+        if (current.length > 1) throw new HandBackRefusal("ambiguous current hand-back");
+        const previous = current[0];
+        if (!previous && rows.filter((i) => !i.resolvedAt).length >= HAND_BACK_LIMIT)
+          throw new HandBackRefusal("hand-back capacity reached; no incomplete admission");
+        if (
+          previous
+            ? !r.handBack.previous ||
+              !sameHandBack(previous.handBack!, r.handBack.previous) ||
+              previous.handBack?.claimGeneration !== generation ||
+              Date.parse(previous.createdAt) >= at.getTime()
+            : r.handBack.previous !== null
+        )
+          throw new HandBackRefusal("hand-back changed since observation; stale report refused");
+        const beforeItems = structuredClone(items),
+          beforeEvents = structuredClone(events),
+          beforeSessions = structuredClone(sessions),
+          beforePaths = structuredClone(paths),
+          beforeHandles = structuredClone(handles);
+        try {
+          if (previous) {
+            previous.resolvedAt = at.toISOString();
+            previous.resolution = "superseded";
+          }
+          const id = insert({
+            project,
+            ticket: r.ticket,
+            kind: "hand-back",
+            recipient: "coordinator",
+            author,
+            body,
+            coordinator: h.coordinator,
+            createdAt: at.toISOString(),
+            requestQuestion: null,
+            requestProfile: null,
+          });
+          if (previous) previous.supersededBy = id;
+          const row = items.find((i) => i.id === id)!;
+          row.handBack = {
+            schema: HAND_BACK_SCHEMA,
+            id,
+            project,
+            ticket: r.ticket,
+            repository: p.repository,
+            pr,
+            headSha: r.headSha!,
+            claimGeneration: generation,
+          };
+          await this.recordEvent({
+            project,
+            ticket: r.ticket,
+            kind: "report",
+            phase: "ready-to-merge",
+            runtime: h.runtime,
+            handle: h.handle,
+            message: r.summary,
+            prUrl: r.prUrl,
+            headSha: r.headSha,
+            at,
+          });
+          if (r.paths !== undefined) paths.set(key(project, r.ticket), [...r.paths]);
+          return revision(row);
+        } catch (error) {
+          items.splice(0, items.length, ...beforeItems);
+          events.splice(0, events.length, ...beforeEvents);
+          sessions.splice(0, sessions.length, ...beforeSessions);
+          paths.clear();
+          for (const [k, v] of beforePaths) paths.set(k, v);
+          handles.clear();
+          for (const [k, v] of beforeHandles) handles.set(k, v);
+          throw error;
+        }
+      });
+    },
+    async resumeHandBack(input) {
+      return serial(input.project, async () => {
+        const { project, report: r, at } = input;
+        const h = await this.getRuntimeHandle(project, r.ticket),
+          ref = r.handBack?.previous;
+        if (
+          !h ||
+          !ref ||
+          claimGeneration(h) !== ref.claimGeneration ||
+          r.handBack?.claimGeneration !== ref.claimGeneration ||
+          ref.project !== project ||
+          ref.ticket !== r.ticket ||
+          ref.repository !== projects.get(project)?.repository ||
+          ref.headSha !== r.headSha ||
+          handBackPrUrl(ref.repository, r.prUrl) !== ref.pr ||
+          (r.workerSessionId && r.workerSessionId !== h.workerSessionId)
+        )
+          throw new HandBackRefusal("scoped correction claim or reference changed");
+        const row = items.find((i) => i.project === project && i.id === ref.id);
+        if (!row?.handBack || row.resolvedAt || !sameHandBack(row.handBack, ref))
+          throw new HandBackRefusal("scoped correction hand-back is no longer current");
+        const beforeItems = structuredClone(items),
+          beforeEvents = structuredClone(events),
+          beforeSessions = structuredClone(sessions);
+        try {
+          row.resolvedAt = at.toISOString();
+          row.resolution = `scoped correction: ${r.phase}`;
+          await this.recordEvent({
+            project,
+            ticket: r.ticket,
+            kind: "report",
+            phase: r.phase,
+            message: r.summary,
+            prUrl: r.prUrl,
+            headSha: r.headSha,
+            runtime: h.runtime,
+            handle: h.handle,
+            at,
+          });
+        } catch (error) {
+          items.splice(0, items.length, ...beforeItems);
+          events.splice(0, events.length, ...beforeEvents);
+          sessions.splice(0, sessions.length, ...beforeSessions);
+          throw error;
+        }
+      });
+    },
+    async consumeHandBack(input) {
+      return serial(input.project, async () => {
+        const { project, merge: m, at } = input;
+        const receipt = m.handBackReceipt;
+        if (!receipt) throw new HandBackRefusal("merge has no hand-back receipt");
+        const ref = receipt.handBack;
+        if (
+          ref.project !== project ||
+          ref.ticket !== m.ticket ||
+          ref.pr !== m.number ||
+          receipt.mergedHeadSha !== m.headSha ||
+          receipt.mergeCommit !== m.mergeCommit
+        )
+          throw new HandBackRefusal("merge receipt scope mismatch");
+        const receiptKey = JSON.stringify([
+          ref.id,
+          ref.project,
+          ref.repository,
+          ref.ticket,
+          ref.pr,
+          ref.headSha,
+          ref.claimGeneration,
+          receipt.mergedHeadSha,
+          receipt.mergeCommit,
+          !!m.keepOpen,
+          receipt.verifiedMainLineage?.from ?? null,
+          receipt.verifiedMainLineage?.to ?? null,
+        ]);
+        const prior = handBackReceipts.get(ref.id);
+        if (prior) {
+          if (prior.key !== receiptKey)
+            throw new HandBackRefusal("different receipt for an already consumed hand-back");
+          const current = await this.getRuntimeHandle(project, m.ticket);
+          const remaining = items
+            .filter(
+              (i) =>
+                i.project === project &&
+                i.ticket === m.ticket &&
+                !i.resolvedAt &&
+                i.handBack?.claimGeneration === ref.claimGeneration,
+            )
+            .map((i) => i.handBack!);
+          return {
+            ...structuredClone(prior.result),
+            handle: current,
+            open: await this.openRuntimeHandles(project),
+            remainingHandBacks: remaining,
+            aggregatePhase: remaining.length ? "ready-to-merge" : "implementing",
+            superseded: handBackReceiptSuperseded(current, ref.claimGeneration, !!m.keepOpen),
+          };
+        }
+        const row = items.find((i) => i.project === project && i.id === ref.id);
+        if (!row?.handBack || row.resolvedAt) throw new HandBackRefusal("hand-back is missing or closed");
+        validateHandBackMerge(row.handBack, receipt);
+        const h = await this.getRuntimeHandle(project, m.ticket);
+        if (claimGeneration(h) !== ref.claimGeneration)
+          throw new HandBackRefusal("merge belongs to a superseded claim");
+        const state = await this.handBackState(project, m.ticket);
+        if (!state.complete) throw new HandBackRefusal("incomplete hand-back state prevents cleanup");
+        const remaining = state.items.filter((i) => i.id !== ref.id);
+        if (remaining.length && !m.keepOpen)
+          throw new HandBackRefusal("another hand-back remains; final closure refused");
+        if (remaining.some((i) => !i.handBack || i.handBack.claimGeneration !== ref.claimGeneration))
+          throw new HandBackRefusal("remaining hand-back is not bound to this claim");
+        const aggregatePhase = remaining.length ? "ready-to-merge" : "implementing";
+        const beforeItems = structuredClone(items),
+          beforeEvents = structuredClone(events),
+          beforeSessions = structuredClone(sessions),
+          beforePaths = structuredClone(paths),
+          beforeHandles = structuredClone(handles);
+        try {
+          row.resolvedAt = at.toISOString();
+          row.resolution = `merged as ${m.mergeCommit}`;
+          await this.recordEvent({
+            project,
+            ticket: m.ticket,
+            kind: m.keepOpen ? "report" : "merge",
+            phase: m.keepOpen ? aggregatePhase : "merged",
+            message: `PR #${m.number} merged as ${m.mergeCommit}`,
+            prUrl: m.url,
+            headSha: m.headSha,
+            at,
+          });
+          if (!m.keepOpen && h) {
+            await this.releaseRuntimeHandle(
+              project,
+              m.ticket,
+              at,
+              { handle: h.handle, claimedAt: h.claimedAt, workerSessionId: h.workerSessionId },
+              true,
+            );
+            await this.deleteTicketPaths(project, m.ticket);
+          }
+          const result: MergeRecorded = {
+            handle: h ? { ...h, ...(!m.keepOpen ? { releasedAt: at.toISOString() } : {}) } : null,
+            resolved: 1,
+            superseded: false,
+            open: await this.openRuntimeHandles(project),
+            remainingHandBacks: remaining.map((i) => i.handBack!),
+            aggregatePhase,
+          };
+          handBackReceipts.set(ref.id, {
+            key: receiptKey,
+            result: structuredClone(result),
+            receipt: structuredClone(receipt),
+            keepOpen: !!m.keepOpen,
+          });
+          return result;
+        } catch (error) {
+          items.splice(0, items.length, ...beforeItems);
+          events.splice(0, events.length, ...beforeEvents);
+          sessions.splice(0, sessions.length, ...beforeSessions);
+          paths.clear();
+          for (const [k, v] of beforePaths) paths.set(k, v);
+          handles.clear();
+          for (const [k, v] of beforeHandles) handles.set(k, v);
+          throw error;
+        }
+      });
+    },
     async putHandBack(i) {
+      if (await this.hasScopedHandBacks(i.project, i.ticket))
+        throw new HandBackRefusal("legacy writer cannot refresh scoped hand-backs");
       if (!reportGuardMatches(i.project, i.ticket, i.guard)) return;
       const was = open(i.project, i.ticket, "hand-back");
       if (was) Object.assign(was, { body: i.body, author: i.author, createdAt: i.at.toISOString() });
@@ -1733,8 +2088,34 @@ export function memoryFleet(): FleetStore & {
     },
 
     async queueAdd(e) {
+      if (e.handBack && (!projects.has(e.project) || !e.ticket || e.noTicket))
+        throw new HandBackRefusal("scoped queue admission requires its registered ticket");
+      if (e.ticket && projects.has(e.project)) {
+        const state = await this.handBackState(e.project, e.ticket);
+        if (state.items.some((i) => i.handBack) || e.handBack) {
+          const row = state.items.find((i) => i.handBack?.pr === e.pr)?.handBack;
+          if (
+            !state.complete ||
+            !row ||
+            !e.handBack ||
+            !sameHandBack(row, e.handBack) ||
+            row.headSha !== e.headSha ||
+            row.claimGeneration !== state.claimGeneration
+          )
+            throw new HandBackRefusal("queue admission has no matching current hand-back revision");
+          if (!e.keepOpen && state.items.some((i) => i.id !== row.id))
+            throw new HandBackRefusal("final queued merge would leave another hand-back");
+        }
+      }
       const existing = queue.find((r) => r.project === e.project && r.pr === e.pr && queueOpen(r));
-      if (existing) return { existing: structuredClone(existing) };
+      if (existing) {
+        if (
+          !!existing.handBack !== !!e.handBack ||
+          (existing.handBack && e.handBack && !sameHandBack(existing.handBack, e.handBack))
+        )
+          throw new HandBackRefusal("queued revision changed; existing FIFO entry is preserved");
+        return { existing: structuredClone(existing) };
+      }
       const { at, ...input } = e;
       const entry: QueueEntry = {
         ...input,
@@ -1850,28 +2231,45 @@ export function memoryFleet(): FleetStore & {
       return true;
     },
     async acquireLease(l) {
-      const k = key(l.project, l.name);
-      const held = leases.get(k);
-      if (held && held.holder !== l.holder && Date.parse(held.expiresAt) > l.at.getTime())
-        return { acquired: false, held: { ...held } };
-      leases.set(k, {
-        project: l.project,
-        name: l.name,
-        holder: l.holder,
-        acquiredAt: held?.holder === l.holder ? held.acquiredAt : l.at.toISOString(),
-        expiresAt: new Date(l.at.getTime() + l.ttlMs).toISOString(),
+      return serial(l.project, async () => {
+        if (
+          ["merge", "merge-queue"].includes(l.name) &&
+          l.handBackContract !== HAND_BACK_SCHEMA &&
+          (await this.hasScopedHandBacks(l.project))
+        )
+          throw new HandBackRefusal("legacy merge lease cannot consume scoped hand-backs");
+        const k = key(l.project, l.name);
+        const held = leases.get(k);
+        if (held && held.holder !== l.holder && Date.parse(held.expiresAt) > l.at.getTime())
+          return { acquired: false, held: { ...held } } as const;
+        leases.set(k, {
+          project: l.project,
+          name: l.name,
+          holder: l.holder,
+          acquiredAt: held?.holder === l.holder ? held.acquiredAt : l.at.toISOString(),
+          handBackContract: l.handBackContract ?? null,
+          expiresAt: new Date(l.at.getTime() + l.ttlMs).toISOString(),
+        });
+        return { acquired: true } as const;
       });
-      return { acquired: true };
     },
     async getLease(project, name) {
       const l = leases.get(key(project, name));
       return l ? { ...l } : null;
     },
     async renewLease(l) {
-      const held = leases.get(key(l.project, l.name));
-      if (!held || held.holder !== l.holder) return false;
-      held.expiresAt = new Date(l.at.getTime() + l.ttlMs).toISOString();
-      return true;
+      return serial(l.project, async () => {
+        if (
+          ["merge", "merge-queue"].includes(l.name) &&
+          l.handBackContract !== HAND_BACK_SCHEMA &&
+          (await this.hasScopedHandBacks(l.project))
+        )
+          throw new HandBackRefusal("legacy merge lease cannot consume scoped hand-backs");
+        const held = leases.get(key(l.project, l.name));
+        if (!held || held.holder !== l.holder) return false;
+        held.expiresAt = new Date(l.at.getTime() + l.ttlMs).toISOString();
+        return true;
+      });
     },
     async releaseLease(l) {
       const k = key(l.project, l.name);

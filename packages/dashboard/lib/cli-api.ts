@@ -21,9 +21,12 @@ import {
   CLI_MINIMUM_HEADER,
   CLI_VERSION_HEADER,
   COORDINATOR,
+  claimGeneration,
   compareVersions,
   FLEET_TEXT_OPERATIONS,
   type FleetCaller,
+  fullSha,
+  HAND_BACK_SCHEMA,
   type HandBackSnapshot,
   type Issue,
   installCommand,
@@ -866,6 +869,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       config: storedConfig,
       validationSamples: storedConfig?.policy.validationSamples,
       cliVersion: request.headers.get(CLI_VERSION_HEADER),
+      serverRevision: deps.serverRevision,
       appUrl: a.settings.baseUrl,
       sendDigest: async (slug, digest, language, at) => {
         const vault = deps.vault?.();
@@ -1288,6 +1292,25 @@ async function answerCli(request: Request, path: string[], deps: CliApiDeps, lat
     const identity = await identify(a, credentialOf(request), now);
     if (identity instanceof Response) return identity;
     const { launch: _, ...shown } = identity;
+    // Existing own-session read only; never expose another ticket to a worker.
+    if (identity.launch && shown.worker && fullSha(deps.serverRevision)) {
+      const store = fleetStore(a.client);
+      const h = await store.getRuntimeHandle(shown.worker.project, shown.worker.ticket);
+      if (h && !h.releasedAt && h.workerSessionId === shown.worker.id && claimGeneration(h)) {
+        const state = await store.handBackState(shown.worker.project, shown.worker.ticket);
+        const after = await store.getRuntimeHandle(shown.worker.project, shown.worker.ticket);
+        // No projection from a replacement/released claim observed during this read.
+        if (
+          after?.workerSessionId === shown.worker.id &&
+          claimGeneration(after) === claimGeneration(h) &&
+          state.claimGeneration === claimGeneration(h)
+        )
+          return Response.json(
+            { ...shown, ownHandBacks: { ...state, serverRevision: deps.serverRevision } },
+            { headers: NO_STORE },
+          );
+      }
+    }
     return Response.json(shown, { headers: NO_STORE });
   }
   if (route === "POST credentials") return credentials(a, request, deps, now, latest);

@@ -1,8 +1,10 @@
+import type { HandBackRef } from "./hand-backs.ts";
 import type { Lease } from "./live.ts";
 
 export const MERGE_QUEUE_LEASE = "merge-queue";
 export type QueueState = "queued" | "merging" | "merged" | "refused" | "removed";
 export interface QueueInput {
+  handBack?: HandBackRef;
   pr: number;
   ticket: string | null;
   noTicket: boolean;

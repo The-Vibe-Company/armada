@@ -600,3 +600,35 @@ test("whole configured secrets are masked before prefixes, including resolved un
   const saved = await readWatchState(f.paths, "widgets.peek");
   expect(saved?.peekTail?.[f.handle]?.lastReply?.text).toBe("[redacted] [redacted]");
 });
+
+test("peek-two: native JSON exposes both hand-backs without treating last report as the list", async () => {
+  const f = await fixture();
+  await f.store.ensureProject(
+    { slug: "widgets", name: "Widgets", repository: "acme/widgets", programRoot: "DEMO-1" },
+    new Date("2026-07-01T11:00:00Z"),
+  );
+  const generation = (await f.store.handBackState("widgets", "DEMO-7")).claimGeneration!;
+  for (const [pr, sha] of [
+    [10, "a".repeat(40)],
+    [11, "b".repeat(40)],
+  ] as const)
+    await f.store.recordHandBack({
+      project: "widgets",
+      at: new Date(`2026-07-01T12:${pr}:00Z`),
+      report: {
+        ticket: "DEMO-7",
+        phase: "ready-to-merge",
+        previous: "shipping",
+        summary: `PR #${pr}, head ${sha}, CI green`,
+        message: "",
+        prUrl: `https://github.com/acme/widgets/pull/${pr}`,
+        headSha: sha,
+        handBack: { schema: "hand-back/v2", claimGeneration: generation, previous: null },
+      },
+    });
+  expect(await run(["peek", "DEMO-7", "--json"], f.io)).toBe(0);
+  const result = JSON.parse(f.out.join("\n"));
+  expect(result.handBacks.items.map((i: { handBack: { pr: number } }) => i.handBack.pr)).toEqual([10, 11]);
+  expect(result.handBacks.complete).toBe(true);
+  expect(result.handBacks.reportPullView).toBe("latest-event");
+});

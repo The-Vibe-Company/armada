@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { allowAcceptance } from "../src/acceptance.ts";
 import { parseConfig } from "../src/config.ts";
 import { type CommitShape, type Comparison, GithubError, type MergePull } from "../src/github.ts";
+import { HAND_BACK_SCHEMA, type HandBackRef } from "../src/hand-backs.ts";
 import { LinearError } from "../src/linear.ts";
 import { createLinearWriter } from "../src/linear-write.ts";
 import type { Fleet } from "../src/live.ts";
@@ -2520,4 +2521,104 @@ test.each([
     expect(s.linear.get("DEMO-7").statusType).toBe("completed");
     expect(live.store.events.filter((e) => e.ticket === "DEMO-7" && e.kind === "merge")).toHaveLength(1);
   }
+});
+
+async function scopedFixture() {
+  const live = tempFleet();
+  const s = setup({ live });
+  await live.store.ensureProject(
+    { slug: "widgets", name: "Widgets", repository: "acme/widgets", programRoot: "DEMO-1" },
+    NOW,
+  );
+  await live.store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-7",
+    runtime: "conductor",
+    handle: "ws-1/s-1",
+    branch: "feature/demo-7",
+    at: NOW,
+  });
+  const generation = (await live.store.handBackState("widgets", "DEMO-7")).claimGeneration!;
+  const report = async (pr: number, head: string, previous: HandBackRef | null = null) => {
+    live.clock.advance(1);
+    const summary = `PR #${pr}, head ${head}, CI green`;
+    const row = await live.store.recordHandBack({
+      project: "widgets",
+      at: live.clock.now(),
+      report: {
+        ticket: "DEMO-7",
+        phase: "ready-to-merge",
+        previous: "shipping",
+        summary,
+        message: "",
+        prUrl: `https://github.com/acme/widgets/pull/${pr}`,
+        headSha: head,
+        handBack: { schema: HAND_BACK_SCHEMA, claimGeneration: generation, previous },
+      },
+    });
+    s.linear.post("DEMO-7", `Agent status: ready-to-merge — ${summary}`, live.clock.now().toISOString());
+    return row;
+  };
+  return { ...s, live, report };
+}
+test("latest-global-other-pr: native merge selects its own PR and keeps the other ready", async () => {
+  const s = await scopedFixture(),
+    first = await s.report(9, HEAD),
+    second = await s.report(10, UPDATED);
+  const out = await mergePullRequest(s.ctx, { pr: 9, keepOpen: true });
+  expect(out.merged).toBe(true);
+  expect(out.remainingHandBacks?.map((i) => i.id)).toEqual([second.id]);
+  expect(out.continuation).toBeNull();
+  expect((await s.linear.readTicket("DEMO-7"))?.agentPhase).toBe("ready-to-merge");
+  expect((await s.live.store.getInboxItem("widgets", first.id))?.resolvedAt).not.toBeNull();
+});
+test("no-opportunistic-old-head: an old green comment cannot replace the current revision", async () => {
+  const s = await scopedFixture(),
+    first = await s.report(9, HEAD);
+  await s.report(9, UPDATED, first);
+  expect(s.forge.pr.headSha).toBe(HEAD);
+  await expect(mergePullRequest(s.ctx, { pr: 9, keepOpen: true })).rejects.toThrow();
+  expect((await s.live.store.handBackState("widgets", "DEMO-7")).items[0]?.handBack?.headSha).toBe(UPDATED);
+});
+test("human-phase-preserved: cleanup does not overwrite a later blocking decision", async () => {
+  const s = await scopedFixture();
+  await s.report(9, HEAD);
+  await s.report(10, UPDATED);
+  const merge = s.ctx.forge.merge.bind(s.ctx.forge);
+  s.ctx.forge.merge = async (...args) => {
+    const result = await merge(...args);
+    const t = s.linear.get("DEMO-7");
+    t.labels = t.labels.map((l) => (l.group === "Agent phase" ? { ...l, id: "phase-blocked", name: "blocked" } : l));
+    return result;
+  };
+  const out = await mergePullRequest(s.ctx, { pr: 9, keepOpen: true });
+  expect(out.merged).toBe(true);
+  expect((await s.linear.readTicket("DEMO-7"))?.agentPhase).toBe("blocked");
+  expect(out.continuation).toBeNull();
+});
+
+test("legacy queued entry cannot silently adopt a newly scoped hand-back", async () => {
+  const s = await scopedFixture();
+  await s.report(9, HEAD);
+  await expect(mergePullRequest(s.ctx, { pr: 9, keepOpen: true, queue: true, queuedHead: HEAD })).rejects.toThrow(
+    "legacy queue entry",
+  );
+  expect(s.forge.pr.state).toBe("open");
+});
+
+test("scoped final merge repairs Linear after its own claim release", async () => {
+  const s = await scopedFixture();
+  await s.report(9, HEAD);
+  const update = s.linear.updateTicket.bind(s.linear);
+  s.linear.updateTicket = async () => {
+    throw new LinearError("synthetic unavailable", true, true);
+  };
+  const out = await mergePullRequest(s.ctx, { pr: 9 });
+  expect(out.merged).toBe(true);
+  expect(out.linearPending).toBe(true);
+  expect((await s.live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).not.toBeNull();
+  s.linear.updateTicket = update;
+  const repaired = await finishMerge(s.ctx, { pr: 9 });
+  expect(repaired.linearPending).toBe(false);
+  expect(s.linear.get("DEMO-7").statusType).toBe("completed");
 });

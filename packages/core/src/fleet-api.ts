@@ -1,3 +1,12 @@
+import {
+  checkedHandBackState,
+  fullSha,
+  HAND_BACK_SCHEMA,
+  HandBackRefusal,
+  parseHandBackDeclaration,
+  parseHandBackMerge,
+  parseHandBackRef,
+} from "./hand-backs.ts";
 // The fleet's live data through the Armada API (THE-850): both halves of
 // `POST /api/cli/fleet/<operation>`. The CLI's half (`fleetClient`) sends each
 // command's record, for one project, with the terminal's sign-in; the app's
@@ -404,6 +413,8 @@ export const FLEET_TEXT_OPERATIONS: ReadonlySet<string> = new Set([
 ]);
 
 export interface ServeFleetDeps {
+  /** Trusted deployment revision; never caller supplied. */
+  serverRevision?: string;
   /** Prepared by the host from this authorized project's secrets, once per request. */
   redact?: (text: string) => string;
   sendDigest?: (project: string, digest: Digest, language: "en" | "fr", now: Date) => Promise<boolean>;
@@ -471,6 +482,12 @@ export async function serveFleet(
                   ? "name"
                   : "coordinatorName",
             );
+    if (
+      ["holds", "lease/acquire", "lease/renew", "queue/next", "queue/add", "merge"].includes(op) &&
+      b.handBackContract !== HAND_BACK_SCHEMA &&
+      (await store.hasScopedHandBacks(slug))
+    )
+      throw new HandBackRefusal("hand-back/v2 work requires a compatible coordinator before merge or queue effects");
     const result = await (async (): Promise<unknown> => {
       switch (op) {
         case "launch/failed": {
@@ -669,6 +686,7 @@ export async function serveFleet(
               phase: phaseOf(b, "phase") as LabelPhase,
               workerSessionId: caller.kind === "worker" ? caller.sessionId : null,
               shippingStage: shippingStageOf(b),
+              ...(b.handBack === undefined ? {} : { handBack: parseHandBackDeclaration(b.handBack) }),
               previous: phaseOf(b, "previous", true),
               ...(b.paths !== undefined ? { paths: pathsOf(b) } : {}),
               summary: text(b, "summary", BODY_MAX),
@@ -1081,6 +1099,10 @@ export async function serveFleet(
         case "inbox/item":
           return store.getInboxItem(slug, idOf(b, "id"));
         case "inbox/ticket":
+          if (b.handBackState === HAND_BACK_SCHEMA) {
+            if (!fullSha(deps.serverRevision)) throw new HandBackRefusal("server build provenance is unavailable");
+            return { ...(await store.handBackState(slug, ticketOf(b))), serverRevision: deps.serverRevision };
+          }
           return store.openInboxItems({ project: slug, recipient: "coordinator", ticket: ticketOf(b) });
         case "inbox/resolve": {
           const id = idOf(b, "id");
@@ -1181,6 +1203,7 @@ export async function serveFleet(
               coordinator: coordinatorName ?? "default",
               ticket: ticketOf(b),
               number,
+              ...(b.handBackReceipt === undefined ? {} : { handBackReceipt: parseHandBackMerge(b.handBackReceipt) }),
               url: text(b, "url", URL_MAX),
               mergeCommit: shaOf(b, "mergeCommit"),
               headSha,
@@ -1254,6 +1277,7 @@ export async function serveFleet(
           const pr = idOf(b, "pr");
           if (pr > 2147483647) throw new Invalid("pr is too large");
           return store.queueAdd({
+            ...(b.handBack === undefined ? {} : { handBack: parseHandBackRef(b.handBack) }),
             project: slug,
             at,
             pr,
@@ -1314,6 +1338,7 @@ export async function serveFleet(
             name: text(b, "name", 64),
             holder: text(b, "holder", LINE_MAX),
             ttlMs: ttl,
+            ...(b.handBackContract === HAND_BACK_SCHEMA ? { handBackContract: HAND_BACK_SCHEMA } : {}),
             at,
           };
           const throughHold = optText(b, "throughHold", BODY_MAX);
@@ -1339,6 +1364,8 @@ export async function serveFleet(
     if (result === NOT_MODIFIED) return { status: 304, body: {} };
     return { status: 200, body: { result: result ?? null } };
   } catch (err) {
+    if (err instanceof HandBackRefusal)
+      return refuse(409, err.message, "read the current scoped hand-back with a compatible CLI");
     if (err instanceof DeployRetryRefusal) return refuse(409, err.message, err.next);
     if (err instanceof JobScopeError) return refuse(403, "job is not on this ticket and project", "armada job list");
     if (err instanceof Held) return refuse(409, err.message, err.next);
@@ -1460,7 +1487,7 @@ const CALL_TIMEOUT_MS = 15_000;
  * warning, since Linear is the record.
  */
 export function fleetClient(o: {
-  api: Pick<ArmadaApi, "fleet">;
+  api: Pick<ArmadaApi, "fleet"> & Partial<Pick<ArmadaApi, "whoami">>;
   signIn: ArmadaSignIn;
   project: ProjectInput;
   coordinatorName?: string | (() => Promise<string>);
@@ -1472,12 +1499,23 @@ export function fleetClient(o: {
       op,
       {
         project: o.project,
-        input: { ...input, ...(coordinatorName === undefined ? {} : { coordinatorName }) },
+        input: {
+          ...input,
+          handBackContract: HAND_BACK_SCHEMA,
+          ...(coordinatorName === undefined ? {} : { coordinatorName }),
+        },
       },
       CALL_TIMEOUT_MS,
     )) as T;
   };
   return {
+    handBackState: async (ticket) => {
+      const raw =
+        o.signIn.kind === "worker"
+          ? (await o.api.whoami?.(o.signIn))?.ownHandBacks
+          : await call("inbox/ticket", { ticket, handBackState: HAND_BACK_SCHEMA });
+      return checkedHandBackState(raw, o.project.slug, ticket);
+    },
     keepDelivery: (input) => call<PendingDelivery>("deliveries/keep", input),
     pendingDeliveries: () => call<PendingDelivery[]>("deliveries/pending", {}),
     dueDeliveries: () => call<PendingDelivery[]>("deliveries/due", {}),

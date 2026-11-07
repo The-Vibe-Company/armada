@@ -9,6 +9,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { Attachment } from "./attachments.ts";
+import type { HandBackState } from "./hand-backs.ts";
 import { HttpRequestError, type HttpRequestOptions, HttpStatusError, httpRequest, retryStatus } from "./http.ts";
 import type { Fetch } from "./linear.ts";
 import { RUNTIME_NAMES, type RuntimeName } from "./runtime.ts";
@@ -82,6 +83,8 @@ export interface ArmadaIdentity {
   } | null;
   expiresAt: string | null;
   ownClaim?: OwnClaimObservation;
+  /** Own-ticket state only; absent on legacy servers. Not a forge attestation. */
+  ownHandBacks?: HandBackState;
 }
 
 /** Negotiated on GET session; neither a bearer capability nor a host attestation. */

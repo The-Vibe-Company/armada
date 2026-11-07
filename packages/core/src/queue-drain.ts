@@ -252,6 +252,7 @@ export async function drainMergeQueue(
           reason: entry.reason,
           queue: true,
           queuedHead: entry.noTicket ? undefined : entry.headSha,
+          queuedHandBack: entry.handBack,
           wait: { timeoutMs: opts.timeoutMs ?? MERGE_WAIT_DEFAULT_MS },
           retest: ctx.config.merge.queueRetest,
         });

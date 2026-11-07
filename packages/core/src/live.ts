@@ -1,3 +1,5 @@
+import type { HandBackDeclaration, HandBackMerge, HandBackRef, HandBackRevision, HandBackState } from "./hand-backs.ts";
+import { HAND_BACK_SCHEMA, HandBackRefusal } from "./hand-backs.ts";
 import { jobStalled, jobStalledMinutes } from "./jobs.ts";
 // The fleet's live data: the project registry, events, the runtime session
 // holding each ticket and the profile its claim named, the coordinators'
@@ -297,6 +299,7 @@ export type InboxKind =
 export type InboxRecipient = "coordinator" | "worker";
 
 export interface InboxItem {
+  handBack?: HandBackRef;
   coordinator?: string | null;
   /** The exact generation a failed or uncertain launch notice describes. */
   launchId?: string;
@@ -394,6 +397,7 @@ export const holdsNext = (holds: readonly MergeHold[], pr: number | string = "<p
   `armada hold clear ${holds[0]?.id} --reason "<why>" to resume, or armada merge ${pr} --through-hold "<why this fixes the pause>"`;
 
 export interface Lease {
+  handBackContract?: string | null;
   project: string;
   name: string;
   holder: string;
@@ -689,6 +693,12 @@ export interface FleetStore {
   putPlan(item: Item): Promise<void>;
   /** Adds the coordinator's hand-back item for a ticket, or refreshes the unresolved one. */
   putHandBack(item: Item): Promise<void>;
+  /** Atomically validates a generation and inserts the report plus immutable revision. */
+  recordHandBack(input: { project: string; report: ReportRecord; at: Date }): Promise<HandBackRevision>;
+  handBackState(project: string, ticket: string): Promise<Omit<HandBackState, "serverRevision">>;
+  consumeHandBack(input: { project: string; merge: MergeRecord; at: Date }): Promise<MergeRecorded>;
+  resumeHandBack(input: { project: string; report: ReportRecord; at: Date }): Promise<void>;
+  hasScopedHandBacks(project: string, ticket?: string): Promise<boolean>;
   /** Adds or refreshes the coordinator’s unfinished Linear work for a merged pull request. */
   putChore(item: Item & ChoreRecord): Promise<void>;
   /** Unresolved items of a project for one recipient, optionally for one ticket, oldest first. */
@@ -753,10 +763,24 @@ export interface FleetStore {
   queueRemove(q: { project: string; pr: number; at: Date }): Promise<boolean>;
 
   /** Takes a lease when it is free, expired or already ours (which renews it); atomic. */
-  acquireLease(l: { project: string; name: string; holder: string; ttlMs: number; at: Date }): Promise<LeaseResult>;
+  acquireLease(l: {
+    project: string;
+    name: string;
+    holder: string;
+    ttlMs: number;
+    at: Date;
+    handBackContract?: string;
+  }): Promise<LeaseResult>;
   getLease(project: string, name: string): Promise<Lease | null>;
   /** Extends a lease we hold; false when it expired and someone else took it. */
-  renewLease(l: { project: string; name: string; holder: string; ttlMs: number; at: Date }): Promise<boolean>;
+  renewLease(l: {
+    project: string;
+    name: string;
+    holder: string;
+    ttlMs: number;
+    at: Date;
+    handBackContract?: string;
+  }): Promise<boolean>;
   /** Gives a lease back; a lease someone else took after ours expired is left alone. */
   releaseLease(l: { project: string; name: string; holder: string }): Promise<void>;
 
@@ -875,10 +899,12 @@ export async function recordClaim(store: FleetStore, project: string, c: ClaimRe
 }
 
 export interface ReportResult extends Pick<OverlapReading, "overlaps" | "incomplete"> {
+  handBack?: HandBackRef;
   inbox: InboxItem[];
 }
 
 export interface ReportRecord {
+  handBack?: HandBackDeclaration;
   paths?: string[];
   ticket: string;
   phase: LabelPhase;
@@ -903,6 +929,33 @@ export async function recordReport(
   at: Date,
   snapshot?: HandBackSnapshot,
 ): Promise<InboxItem[] | ReportResult> {
+  if (r.phase === "ready-to-merge" && r.handBack?.schema === HAND_BACK_SCHEMA) {
+    const handBack = await store.recordHandBack({ project, report: r, at });
+    await store.resolvePlans({
+      project,
+      ticket: r.ticket,
+      resolution: "worker reported ready-to-merge",
+      at,
+      guard: { workerSessionId: r.workerSessionId },
+    });
+    const reading = r.paths === undefined ? null : await readOverlap(store, project, r.ticket, r.paths, at, snapshot);
+    return {
+      inbox: await store.openInboxItems({ project, recipient: "worker", ticket: r.ticket }),
+      handBack,
+      overlaps: reading?.overlaps ?? [],
+      incomplete: reading?.incomplete ?? false,
+    };
+  }
+  if (r.phase !== "ready-to-merge" && r.handBack?.previous) {
+    await store.resumeHandBack({ project, report: r, at });
+    return {
+      inbox: await store.openInboxItems({ project, recipient: "worker", ticket: r.ticket }),
+      overlaps: [],
+      incomplete: false,
+    };
+  }
+  if (!r.handBack && (await store.hasScopedHandBacks(project, r.ticket)))
+    throw new HandBackRefusal("legacy report cannot change a ticket with hand-back/v2 revisions");
   const reportingHandle = await store.getRuntimeHandle(project, r.ticket);
   if (r.workerSessionId) {
     if (reportingHandle && (reportingHandle.releasedAt || reportingHandle.workerSessionId !== r.workerSessionId))
@@ -971,7 +1024,7 @@ export async function recordReport(
       at,
     });
   }
-  if (r.phase !== "ready-to-merge")
+  if (r.phase !== "ready-to-merge" && !r.handBack)
     await store.resolveInboxItems({
       project,
       ticket: r.ticket,
@@ -1143,6 +1196,7 @@ export interface ChoreRecord {
 }
 
 export interface MergeRecord {
+  handBackReceipt?: HandBackMerge;
   /** The named coordinator performing the merge, supplied by the server context. */
   coordinator?: string;
   ticket: string;
@@ -1157,6 +1211,10 @@ export interface MergeRecord {
 }
 
 export interface MergeRecorded {
+  /** A receipt replay after its generation ended must never reopen a later ticket. */
+  superseded?: boolean;
+  remainingHandBacks?: HandBackRef[];
+  aggregatePhase?: "ready-to-merge" | "implementing";
   /** PR notices cleared by this merge; optional for older servers. */
   cleared?: number[];
   /** Kinds for the CLI's labelled result line. */
@@ -1177,6 +1235,9 @@ export async function recordMerge(
   m: MergeRecord,
   at: Date,
 ): Promise<MergeRecorded> {
+  if (m.handBackReceipt) return store.consumeHandBack({ project, merge: m, at });
+  if (await store.hasScopedHandBacks(project, m.ticket))
+    throw new HandBackRefusal("legacy merge cannot resolve scoped hand-backs");
   const handle = await store.getRuntimeHandle(project, m.ticket);
   // A retry may follow a failed inbox write or a lost response after the event landed.
   const previous = (await store.latestEvents(project, { since: new Date(handle?.claimedAt ?? at) }))[m.ticket];
@@ -1594,6 +1655,8 @@ export async function reconcileHandles(
   let changed = false;
   for (const h of handles) {
     if (h.releasedAt || flight.after <= h.claimedAt) continue;
+    // A global ticket closure/one merged PR is not a receipt for every revision.
+    if (items.some((i) => i.ticket === h.ticket && i.handBack)) continue;
     const event = events[h.ticket];
     const handback = items.find(
       (i) =>
@@ -1669,6 +1732,8 @@ async function reconcileMerged(
       });
     } else if (
       item.kind === "hand-back" &&
+      !item.handBack &&
+      // Typed revisions require their exact transactional merge receipt, never a snapshot.
       // Keep exact session evidence until a fresh reading has ended that claim.
       !handles.some((h) => h.ticket === item.ticket && h.workerSessionId && item.author === h.workerSessionId) &&
       ((item.ticket && completed.has(item.ticket)) || merged.has(handBackPr(item.body) ?? 0))
@@ -2756,6 +2821,7 @@ export interface Fleet {
   inboxItem(id: number): Promise<StoredInboxItem | null>;
   /** The coordinator's open items for one ticket. */
   ticketItems(ticket: string): Promise<InboxItem[]>;
+  handBackState(ticket: string): Promise<HandBackState>;
   answer(a: AnswerRecord): Promise<string>;
   /** Resolves one open item (a declined launch); false when it was already resolved. */
   resolve(r: { id: number; resolution: string }): Promise<boolean>;

@@ -1,3 +1,4 @@
+import { HandBackRefusal } from "./hand-backs.ts";
 // Live checks are bounded local commands. Linear records attempts and evidence;
 // fleet report events are optional, as for every worker command.
 
@@ -144,27 +145,33 @@ export async function allowAcceptance(
   const ticket = await readOpenTicket(ctx, input.ticket);
   if (!ticket.agentPhase) throw new Refusal("acceptance allowances need a claimed ticket", "claim the ticket first");
   const phase = ticket.agentPhase;
+  const service = await ctx.fleet?.();
+  const scoped = service?.fleet ? (await service.fleet.ticketItems(ticket.id)).filter((i) => i.handBack) : [];
+  if (scoped.length > 1)
+    throw new HandBackRefusal("acceptance allowance has no PR selector; multiple hand-backs are ambiguous");
   const handedBack = phase === "ready-to-merge" ? findHandBack(ticket) : null;
   const pr =
     phase === "ready-to-merge" ? resolvePr(ticket, ctx.config.github.repository, handedBack?.pr?.toString()) : null;
   const summary = `acceptance: ${input.runs} more runs allowed by the coordinator: ${input.reason.trim()}`;
   await ctx.linear.comment(ticket.uuid, `Agent status: ${phase} — ${summary}`);
   const warnings = [...ticket.warnings];
-  const recorded = await live(ctx, warnings, "record the acceptance allowance", (fleet) =>
-    fleet.report({
-      ticket: ticket.id,
-      phase,
-      previous: phase,
-      shippingStage: null,
-      summary:
-        phase === "ready-to-merge"
-          ? `${ticket.comments.find((c) => c.status?.phase === phase && c.status.summary.includes("PR #"))?.status?.summary ?? ""}; ${summary}`
-          : summary,
-      message: summary,
-      prUrl: pr?.url ?? null,
-      headSha: handedBack?.sha ?? null,
-    }),
-  );
+  const recorded = scoped.length
+    ? null
+    : await live(ctx, warnings, "record the acceptance allowance", (fleet) =>
+        fleet.report({
+          ticket: ticket.id,
+          phase,
+          previous: phase,
+          shippingStage: null,
+          summary:
+            phase === "ready-to-merge"
+              ? `${ticket.comments.find((c) => c.status?.phase === phase && c.status.summary.includes("PR #"))?.status?.summary ?? ""}; ${summary}`
+              : summary,
+          message: summary,
+          prUrl: pr?.url ?? null,
+          headSha: handedBack?.sha ?? null,
+        }),
+      );
   return {
     ticket: ticket.id,
     url: ticket.url,
