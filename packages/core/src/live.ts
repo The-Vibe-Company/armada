@@ -1,5 +1,5 @@
 import type { HandBackDeclaration, HandBackMerge, HandBackRef, HandBackRevision, HandBackState } from "./hand-backs.ts";
-import { HAND_BACK_SCHEMA, HandBackRefusal } from "./hand-backs.ts";
+import { HAND_BACK_SCHEMA, HandBackRefusal, sameHandBack } from "./hand-backs.ts";
 import { jobStalled, jobStalledMinutes } from "./jobs.ts";
 // The fleet's live data: the project registry, events, the runtime session
 // holding each ticket and the profile its claim named, the coordinators'
@@ -1623,11 +1623,21 @@ export function handBackPr(body: string): number | null {
 }
 
 /** Shared by inbox and dashboard; positions include every open PR in the project. */
-export function handBackQueue(body: string, queue: readonly QueueEntry[]): InboxEntry["queue"] {
+export function handBackQueue(body: string, queue: readonly QueueEntry[], ref?: HandBackRef): InboxEntry["queue"] {
   const open = queue.filter(queueOpen).sort((a, b) => a.queuedAt.localeCompare(b.queuedAt) || a.id - b.id);
-  const index = open.findIndex((e) => e.pr === handBackPr(body));
+  const index = open.findIndex(
+    (e) =>
+      e.pr === handBackPr(body) && (ref || e.handBack ? !!ref && !!e.handBack && sameHandBack(ref, e.handBack) : true),
+  );
   const entry = open[index];
   return entry ? { state: entry.state as "queued" | "merging", position: index + 1, detail: entry.detail } : undefined;
+}
+
+export function handBackQueueStale(body: string, queue: readonly QueueEntry[], ref?: HandBackRef): string {
+  const entry = queue.find((e) => queueOpen(e) && e.pr === handBackPr(body));
+  return entry && (ref || entry.handBack) && (!ref || !entry.handBack || !sameHandBack(ref, entry.handBack))
+    ? "Queue entry references a different hand-back revision; this declaration is not queued."
+    : "";
 }
 
 /** Close exact claims only from a stored reading that started after their claim. */
@@ -2027,11 +2037,13 @@ async function readInboxAndFlight(
         ? `Pre-approved at launch; answer approved to let this worker continue.\n\n${i.body}`
         : i.kind === "hold" && waiting
           ? `${i.body}\nmerge queue paused (${waiting} waiting)`
-          : i.body,
+          : i.kind === "hand-back" && handBackQueueStale(i.body, queue, i.handBack)
+            ? `${i.body}\n${handBackQueueStale(i.body, queue, i.handBack)}`
+            : i.body,
     createdAt: i.createdAt,
     new: false,
     ...(i.request ? { request: i.request } : {}),
-    ...(i.kind === "hand-back" ? { queue: handBackQueue(i.body, queue) } : {}),
+    ...(i.kind === "hand-back" ? { queue: handBackQueue(i.body, queue, i.handBack) } : {}),
   }));
   for (const job of jobs) {
     if (!visible(ownerOf(job.ticket)) || job.state !== "running") continue;

@@ -2539,9 +2539,9 @@ async function scopedFixture() {
     at: NOW,
   });
   const generation = (await live.store.handBackState("widgets", "DEMO-7")).claimGeneration!;
-  const report = async (pr: number, head: string, previous: HandBackRef | null = null) => {
+  const report = async (pr: number, head: string, previous: HandBackRef | null = null, more = "") => {
     live.clock.advance(1);
-    const summary = `PR #${pr}, head ${head}, CI green`;
+    const summary = `PR #${pr}, head ${head}, CI green${more ? `; more PRs: ${more}` : ""}`;
     const row = await live.store.recordHandBack({
       project: "widgets",
       at: live.clock.now(),
@@ -2621,4 +2621,113 @@ test("scoped final merge repairs Linear after its own claim release", async () =
   const repaired = await finishMerge(s.ctx, { pr: 9 });
   expect(repaired.linearPending).toBe(false);
   expect(s.linear.get("DEMO-7").statusType).toBe("completed");
+});
+
+test("F1 immutable declaration survives a refused legacy same-pin rewrite", async () => {
+  const s = await scopedFixture();
+  const ref = await s.report(9, HEAD, null, "dashboard part");
+  const body = (await s.live.store.getInboxItem("widgets", ref.id))!.body;
+  s.live.clock.advance(1);
+  s.linear.post(
+    "DEMO-7",
+    `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green`,
+    s.live.clock.now().toISOString(),
+  );
+  await expect(
+    s.live.fleet.report({
+      ticket: "DEMO-7",
+      phase: "ready-to-merge",
+      previous: "shipping",
+      summary: `PR #9, head ${HEAD}, CI green`,
+      message: "",
+      prUrl: "https://github.com/acme/widgets/pull/9",
+      headSha: HEAD,
+    }),
+  ).rejects.toThrow();
+  await expect(mergePullRequest(s.ctx, { pr: 9 })).rejects.toThrow();
+  expect(s.forge.pr.state).toBe("open");
+  expect((await s.live.store.getInboxItem("widgets", ref.id))!.body).toBe(body);
+  expect((await s.live.store.getRuntimeHandle("widgets", "DEMO-7"))!.releasedAt).toBeNull();
+});
+
+test.each(["unreadable", "contradictory"])("F2 partial receipt controls repair: %s", async (scenario) => {
+  const s = await scopedFixture();
+  await s.report(9, HEAD);
+  const sibling = await s.report(10, UPDATED);
+  const update = s.linear.updateTicket.bind(s.linear);
+  // Fail before the partial status comment, even when no label change was needed.
+  const link = s.linear.linkUrl.bind(s.linear);
+  s.linear.linkUrl = async () => {
+    throw new Error("synthetic Linear outage");
+  };
+  const merged = await mergePullRequest(s.ctx, { pr: 9, keepOpen: true });
+  expect(merged.merged).toBe(true);
+  expect(merged.linearPending).toBe(true);
+  const chore = (await s.live.fleet.ticketItems("DEMO-7")).find((i) => i.kind === "linear-pending")!;
+  expect(chore.body).toContain("Partial merge next:");
+  const read = s.live.fleet.handBackState.bind(s.live.fleet);
+  if (scenario === "unreadable")
+    s.live.fleet.handBackState = async () => {
+      throw new Error("synthetic state outage");
+    };
+  else
+    await s.live.fleet.chore({
+      ticket: "DEMO-7",
+      kind: "linear-pending",
+      pr: 9,
+      body: "Finish Linear for #9: Done, labels removed, PR linked, merged status. Run: armada merge --finish 9",
+    });
+  const expected = (await s.live.fleet.ticketItems("DEMO-7")).find((i) => i.id === chore.id)!.body;
+  s.linear.linkUrl = link;
+  s.linear.updateTicket = update;
+  const first = await finishMerge(s.ctx, { pr: 9 });
+  expect(first.linearPending).toBe(true);
+  expect((await s.live.fleet.ticketItems("DEMO-7")).find((i) => i.id === chore.id)!.body).toBe(expected);
+  s.live.fleet.handBackState = read;
+  const second = await finishMerge(s.ctx, { pr: 9 });
+  expect(second.linearPending).toBe(scenario === "contradictory");
+  expect(s.linear.get("DEMO-7").statusType).not.toBe("completed");
+  expect((await s.live.store.getInboxItem("widgets", sibling.id))!.resolvedAt).toBeNull();
+  expect((await s.live.store.getRuntimeHandle("widgets", "DEMO-7"))!.releasedAt).toBeNull();
+});
+
+test.each(["after-consume", "confirmation"])(
+  "F3 newly admitted sibling fences partial effects: %s",
+  async (boundary) => {
+    const s = await scopedFixture();
+    await s.report(9, HEAD);
+    let sibling: HandBackRef | null = null;
+    const admit = async () => {
+      if (!sibling) sibling = await s.report(10, UPDATED);
+    };
+    if (boundary === "after-consume") {
+      const consume = s.live.fleet.merge.bind(s.live.fleet);
+      s.live.fleet.merge = async (input) => {
+        const result = await consume(input);
+        await admit();
+        return result;
+      };
+    } else {
+      const sleep = s.ctx.sleep;
+      s.ctx.sleep = async (ms) => {
+        await sleep(ms);
+        if (s.forge.pr.state === "merged") await admit();
+      };
+    }
+    const out = await mergePullRequest(s.ctx, { pr: 9, keepOpen: true });
+    expect(out.merged).toBe(true);
+    expect(sibling).not.toBeNull();
+    expect(out.continuation).toBeNull();
+    expect(out.linearPending || s.linear.get("DEMO-7").agentPhase === "ready-to-merge").toBe(true);
+    expect((await s.live.store.handBackState("widgets", "DEMO-7")).items.map((i) => i.id)).toContain(sibling!.id);
+  },
+);
+
+test.each([false, true])("F1 immutable continuation permits deliberate close=%s", async (close) => {
+  const s = await scopedFixture();
+  await s.report(9, HEAD, null, "dashboard part");
+  const result = await mergePullRequest(s.ctx, { pr: 9, close });
+  expect(result.merged).toBe(true);
+  expect(result.keepOpen === true).toBe(!close);
+  expect((await s.live.store.getRuntimeHandle("widgets", "DEMO-7"))!.releasedAt === null).toBe(!close);
 });

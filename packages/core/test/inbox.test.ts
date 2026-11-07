@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseConfig } from "../src/config.ts";
+import { HAND_BACK_SCHEMA } from "../src/hand-backs.ts";
 import { answerItem, askCoordinator, checkInbox } from "../src/inbox.ts";
 import {
   entryKey,
@@ -1753,4 +1754,72 @@ test("inbox --wait keeps listening when a hand-back is first observed already qu
   });
   expect(report.wait?.timedOut).toBe(true);
   expect(report.items.find((i) => i.kind === "hand-back")?.queue?.state).toBe("queued");
+});
+
+test("F4 superseded queued revision wakes inbox wait without inheriting old queue status", async () => {
+  const live = tempFleet();
+  await live.store.ensureProject({ slug: P, name: "Widgets", repository: "acme/widgets", programRoot: "DEMO-1" }, NOW);
+  await live.store.saveRuntimeHandle({
+    project: P,
+    ticket: "DEMO-2",
+    runtime: "conductor",
+    handle: "ws/s",
+    branch: "feature/demo-2",
+    at: NOW,
+  });
+  const generation = (await live.store.handBackState(P, "DEMO-2")).claimGeneration!;
+  const report = async (head: string, previous: import("../src/hand-backs.ts").HandBackRef | null) =>
+    live.store.recordHandBack({
+      project: P,
+      at: live.clock.now(),
+      report: {
+        ticket: "DEMO-2",
+        phase: "ready-to-merge",
+        previous: "shipping",
+        summary: `PR #12, head ${head}, CI green`,
+        message: "",
+        prUrl: "https://github.com/acme/widgets/pull/12",
+        headSha: head,
+        handBack: { schema: HAND_BACK_SCHEMA, claimGeneration: generation, previous },
+      },
+    });
+  const first = await report("a".repeat(40), null);
+  await live.store.queueAdd({
+    project: P,
+    pr: 12,
+    ticket: "DEMO-2",
+    noTicket: false,
+    keepOpen: true,
+    throughHold: null,
+    reason: null,
+    headSha: first.headSha,
+    handBack: first,
+    queuedBy: "owner",
+    at: live.clock.now(),
+  });
+  expect((await inbox(live.store)).find((i) => i.id === first.id)?.queue?.state).toBe("queued");
+  let replaced = false;
+  const result = await checkInbox(live.fleet, {
+    project: P,
+    silentAfterMinutes: 15,
+    now: live.clock.now,
+    wait: {
+      timeoutMs: 60_000,
+      sleep: async (ms) => {
+        await live.clock.sleep(ms);
+        if (!replaced) {
+          replaced = true;
+          await report("b".repeat(40), first);
+        }
+      },
+    },
+  });
+  expect(replaced).toBe(true);
+  expect(result.wait?.timedOut).toBe(false);
+  const current = result.items.find((i) => i.kind === "hand-back")!;
+  expect(current.id).not.toBe(first.id);
+  expect(current.queue).toBeUndefined();
+  expect(current.body).toContain("different hand-back revision");
+  const rows = await live.store.queueList(P, { since: NOW });
+  expect(rows[0]?.handBack?.id).toBe(first.id);
 });

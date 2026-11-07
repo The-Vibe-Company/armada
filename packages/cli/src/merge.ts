@@ -9,6 +9,7 @@ import {
   AGENTS_SKILLS_DIR,
   type ArmadaConfig,
   askOwnerToMerge,
+  assertScopedMergeEffects,
   buildModel,
   buildStatus,
   CLAUDE_SKILLS_DIR,
@@ -656,6 +657,11 @@ export async function merge(
         try {
           if (live.fleet && continuation.claim) {
             const fleet = live.fleet;
+            const scopedGuard = continuation.handBack
+              ? () => assertScopedMergeEffects(fleet, continuation.handBack!, true, [])
+              : undefined;
+            await scopedGuard?.();
+            const deliveryIo = scopedGuard ? fencedIo(io, scopedGuard, io.exec ?? exec) : io;
             const ref = claimRef(continuation.claim);
             const key = deliveryKey({
               project: config.project.slug,
@@ -674,7 +680,7 @@ export async function merge(
             delivered =
               receipt === "delivered" ||
               !!(await deliverToRuntime(
-                { ...io, cwd: repoDir },
+                { ...deliveryIo, cwd: repoDir },
                 fleet,
                 o.ticket.id,
                 continuation.message,
@@ -683,18 +689,23 @@ export async function merge(
                 { kind: "note", key },
               ));
             if (delivered && receipt !== "delivered")
-              await guarded(fleet, ref, "active", () =>
-                fleet.answer({
+              await guarded(fleet, ref, "active", async () => {
+                await scopedGuard?.();
+                return fleet.answer({
                   note: true,
                   generated: true,
                   deliveryKey: key,
                   ticket: ref.ticket,
                   text: continuation.message,
                   item: null,
-                }),
-              );
+                });
+              });
           }
         } catch (error) {
+          if (continuation.handBack) {
+            o.continuation = null;
+            o.armadaPending = true;
+          }
           // Native writes of unknown outcome are never retried.
           o.warnings.push(
             `could not confirm continuation delivery to ${o.ticket.id} (${mask.text(redactRuntimeText(error instanceof Error ? error.message : String(error)))}); inspect its session before manual delivery`,
@@ -703,7 +714,9 @@ export async function merge(
         o.lines.push(
           delivered
             ? `${o.ticket.id}: continuation delivered to the active worker.`
-            : `Deliver to ${o.ticket.id}: ${continuation.message}`,
+            : continuation.handBack
+              ? `${o.ticket.id}: scoped continuation withheld; re-read hand-backs and repair before any delivery.`
+              : `Deliver to ${o.ticket.id}: ${continuation.message}`,
         );
       }
 
