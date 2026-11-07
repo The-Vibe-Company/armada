@@ -7,10 +7,12 @@
 // one address the CLI knows (`resolveCredentials` picks it). The adapter takes
 // an injected `fetch`; no error it raises quotes a token or a key.
 import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import type { Attachment } from "./attachments.ts";
 import { HttpRequestError, type HttpRequestOptions, HttpStatusError, httpRequest, retryStatus } from "./http.ts";
 import type { Fetch } from "./linear.ts";
-import type { RuntimeName } from "./runtime.ts";
+import { RUNTIME_NAMES, type RuntimeName } from "./runtime.ts";
+import { LABEL_PHASES, type LabelPhase } from "./types.ts";
 
 /**
  * How a terminal proves who it is: the session of `armada login`, an
@@ -70,8 +72,114 @@ export interface ArmadaIdentity {
   organization: { id: string; name: string; slug: string; role: string | null } | null;
   apiKey: { id: string; name: string | null; start: string | null } | null;
   /** The ticket a worker session acts on, and who launched it; absent from older servers. */
-  worker?: { id: string; project: string; ticket: string; launchedBy: string; coordinator?: string | null } | null;
+  worker?: {
+    id: string;
+    project: string;
+    ticket: string;
+    launchedBy: string;
+    coordinator?: string | null;
+    phase?: LabelPhase;
+  } | null;
   expiresAt: string | null;
+  ownClaim?: OwnClaimObservation;
+}
+
+/** Negotiated on GET session; neither a bearer capability nor a host attestation. */
+export const OWN_CLAIM_SCHEMA = "own-claim-phase/v1";
+export const OWN_CLAIM_HEADER = "x-armada-own-claim";
+export const OWN_CLAIM_REQUEST_HEADER = "x-armada-observation-id";
+export const OWN_CLAIM_SERVER_MS = 4_000;
+export const OWN_CLAIM_CLIENT_MS = 5_000;
+export const OWN_CLAIM_MAX_BYTES = 1024 * 1024;
+export interface OwnClaimObservation {
+  schema: typeof OWN_CLAIM_SCHEMA;
+  requestId: string;
+  project: string;
+  ticket: string;
+  workerId: string;
+  claimedAt: string;
+  releasedAt: null;
+  runtime: string;
+  handle: string;
+  workspaceId: string | null;
+  sessionId: string | null;
+  phase: LabelPhase | null;
+  source: "linear-live" | "unavailable";
+  provenance: { repository: string; programRoot: string; phaseGroup: string; serverRevision: string };
+  startedAt: string;
+  phaseReadStartedAt: string;
+  phaseReadEndedAt: string;
+  verifiedAt: string;
+  elapsedMs: number;
+  phaseReadElapsedMs: number;
+}
+
+/** Validate both clocks' internal order, not the client's UTC offset against the server's. */
+export function validateOwnClaim(identity: ArmadaIdentity, requestId: string, elapsedMs: number): OwnClaimObservation {
+  const bad = () => new ArmadaApiError("Armada could not prove a fresh own-claim observation");
+  const c = identity.ownClaim;
+  const w = identity.worker;
+  const text = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 512;
+  const time = (v: unknown) => (typeof v === "string" && Number.isFinite(Date.parse(v)) ? Date.parse(v) : NaN);
+  if (
+    identity.schemaVersion !== 1 ||
+    identity.via !== "worker" ||
+    !w ||
+    !c ||
+    c.schema !== OWN_CLAIM_SCHEMA ||
+    c.requestId !== requestId ||
+    !text(w.id) ||
+    !text(w.project) ||
+    !text(w.ticket) ||
+    c.workerId !== w.id ||
+    c.project !== w.project ||
+    c.ticket !== w.ticket ||
+    c.releasedAt !== null ||
+    !RUNTIME_NAMES.includes(c.runtime as RuntimeName) ||
+    !text(c.handle) ||
+    !Number.isFinite(time(c.claimedAt)) ||
+    !Number.isFinite(elapsedMs) ||
+    elapsedMs < 0 ||
+    elapsedMs > OWN_CLAIM_CLIENT_MS ||
+    !Number.isFinite(c.elapsedMs) ||
+    c.elapsedMs < 0 ||
+    c.elapsedMs > OWN_CLAIM_SERVER_MS ||
+    c.elapsedMs > elapsedMs + 1 ||
+    !Number.isFinite(c.phaseReadElapsedMs) ||
+    c.phaseReadElapsedMs < 0 ||
+    c.phaseReadElapsedMs > c.elapsedMs ||
+    !c.provenance ||
+    !text(c.provenance.repository) ||
+    !text(c.provenance.programRoot) ||
+    !text(c.provenance.phaseGroup) ||
+    !/^[a-f0-9]{40}$/.test(c.provenance.serverRevision)
+  )
+    throw bad();
+  const times = [c.startedAt, c.phaseReadStartedAt, c.phaseReadEndedAt, c.verifiedAt].map(time);
+  if (
+    times.some((t, i) => !Number.isFinite(t) || (i > 0 && t < (times[i - 1] ?? Infinity))) ||
+    (times[3] ?? Infinity) - (times[0] ?? 0) > OWN_CLAIM_SERVER_MS ||
+    time(c.claimedAt) > (times[3] ?? 0)
+  )
+    throw bad();
+  if (c.runtime === "conductor") {
+    const parts = c.handle.split("/");
+    const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+    if (
+      parts.length !== 2 ||
+      !uuid.test(parts[0] ?? "") ||
+      !uuid.test(parts[1] ?? "") ||
+      c.workspaceId !== parts[0] ||
+      c.sessionId !== parts[1]
+    )
+      throw bad();
+  } else if (c.workspaceId !== null || c.sessionId !== null) throw bad();
+  if (
+    !(c.source === "unavailable" && c.phase === null) &&
+    !(c.source === "linear-live" && LABEL_PHASES.includes(c.phase as LabelPhase))
+  )
+    throw bad();
+  return c;
 }
 
 export interface DeviceCode {
@@ -282,6 +390,8 @@ export interface ArmadaApiOptions extends HttpRequestOptions {
   version?: string;
   /** Called with what every answer says of the CLIs the server serves (`serverCli`). */
   onServerCli?: (server: ServerCli) => void;
+  /** Injectable monotonic clock for own-claim observation tests. */
+  monotonicNow?: () => number;
 }
 
 export function armadaApi(opts: ArmadaApiOptions) {
@@ -293,10 +403,18 @@ export function armadaApi(opts: ArmadaApiOptions) {
   async function call(
     method: string,
     path: string,
-    init: { body?: object; signIn?: ArmadaSignIn; timeoutMs?: number; retry?: boolean; request?: FleetRequest } = {},
+    init: {
+      body?: object;
+      signIn?: ArmadaSignIn;
+      timeoutMs?: number;
+      retry?: boolean;
+      request?: FleetRequest;
+      headers?: Record<string, string>;
+      maxBytes?: number;
+    } = {},
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const limit = Math.min(init.timeoutMs ?? timeoutMs, init.request ? 15_000 : Number.POSITIVE_INFINITY);
-    const headers: Record<string, string> = { Accept: "application/json" };
+    const headers: Record<string, string> = { Accept: "application/json", ...init.headers };
     if (init.body) headers["Content-Type"] = "application/json";
     if (init.signIn?.kind === "session" || init.signIn?.kind === "worker")
       headers.Authorization = `Bearer ${init.signIn.token}`;
@@ -333,7 +451,28 @@ export function armadaApi(opts: ArmadaApiOptions) {
         }
         // Not modified: no body to read (an unchanged inbox).
         if (res.status === 304) return { status: 304, body: {} };
-        const body = (await res.json().catch((err) => {
+        const readJson = async () => {
+          if (init.maxBytes === undefined) return res.json();
+          const reader = res.body?.getReader();
+          if (!reader) throw new ArmadaApiError("Armada returned an empty own-claim observation");
+          const chunks: Uint8Array[] = [];
+          let size = 0;
+          try {
+            for (;;) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              size += value.length;
+              if (size > init.maxBytes)
+                throw new ArmadaApiError("Armada own-claim observation exceeded its output limit");
+              chunks.push(value);
+            }
+          } finally {
+            await reader.cancel().catch(() => {});
+            reader.releaseLock();
+          }
+          return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        };
+        const body = (await readJson().catch((err) => {
           if (err instanceof SyntaxError) return null;
           throw err;
         })) as unknown;
@@ -414,10 +553,44 @@ export function armadaApi(opts: ArmadaApiOptions) {
     },
 
     /** Who `signIn` is; an ArmadaApiError with `signedOut` when it is expired or revoked. */
-    async whoami(signIn: ArmadaSignIn): Promise<ArmadaIdentity> {
-      const { status, body } = await call("GET", "session", { signIn });
+    async whoami(signIn: ArmadaSignIn, options: { ownClaim?: boolean } = {}): Promise<ArmadaIdentity> {
+      const own = options.ownClaim === true;
+      if (own && signIn.kind !== "worker") throw new ArmadaApiError("only a worker reads its own claim");
+      const requestId = own ? randomUUID() : "";
+      const clock = opts.monotonicNow ?? (() => performance.now());
+      const started = clock();
+      const { status, body } = await call("GET", "session", {
+        signIn,
+        ...(own
+          ? {
+              timeoutMs: OWN_CLAIM_CLIENT_MS,
+              retry: false,
+              maxBytes: OWN_CLAIM_MAX_BYTES,
+              headers: { [OWN_CLAIM_HEADER]: OWN_CLAIM_SCHEMA, [OWN_CLAIM_REQUEST_HEADER]: requestId },
+            }
+          : {}),
+      });
       if (status !== 200) throw refusal(status, body, status === 401 ? null : "Armada could not say who is signed in");
-      return body as unknown as ArmadaIdentity;
+      const identity = body as unknown as ArmadaIdentity;
+      if (own) {
+        // An older server's current identity can serve cleanup, but never phase
+        // authorization: discard any unversioned phase, without a second request.
+        if (identity.schemaVersion !== 1 || identity.via !== "worker" || !identity.worker)
+          throw new ArmadaApiError("Armada returned an invalid worker identity");
+        const observation =
+          identity.ownClaim === undefined ? null : validateOwnClaim(identity, requestId, clock() - started);
+        if (
+          signIn.kind !== "worker" ||
+          identity.worker?.ticket !== signIn.ticket ||
+          identity.worker.project !== signIn.project
+        )
+          throw new ArmadaApiError("Armada own-claim identity does not match this sign-in");
+        // Only a validated observation yields the compatibility projection. Cleanup
+        // can still use this authenticated identity when the phase source is down.
+        const { phase: _, ...worker } = identity.worker;
+        identity.worker = { ...worker, ...(observation?.phase ? { phase: observation.phase } : {}) };
+      }
+      return identity;
     },
 
     /** The organization's keys for `signIn`. Answers 503 when that Armada keeps no keys. */

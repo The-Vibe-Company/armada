@@ -1,9 +1,14 @@
 import { expect, test } from "bun:test";
 import {
   ArmadaApiError,
+  type ArmadaIdentity,
   armadaApi,
   compareVersions,
   newerRelease,
+  OWN_CLAIM_HEADER,
+  OWN_CLAIM_REQUEST_HEADER,
+  OWN_CLAIM_SCHEMA,
+  type OwnClaimObservation,
   releaseLine,
   type ServerCli,
   waitForApproval,
@@ -285,3 +290,203 @@ test.each(["ECONNRESET", "E_CANARY_PRIVATE_CODE"])(
     expect(requests).toEqual(["lease/acquire"]);
   },
 );
+
+describeOwnClaim();
+function describeOwnClaim() {
+  const claimOf = (body: ArmadaIdentity) => {
+    if (!body.ownClaim) throw new Error("fixture observation missing");
+    return body.ownClaim;
+  };
+  const workerOf = (body: ArmadaIdentity) => {
+    if (!body.worker) throw new Error("fixture worker missing");
+    return body.worker;
+  };
+  const signIn = { kind: "worker" as const, token: "synthetic-worker", project: "widgets", ticket: "DEMO-2" };
+  const workspace = "11111111-1111-4111-8111-111111111111";
+  const session = "22222222-2222-4222-8222-222222222222";
+  const answer = (requestId: string): ArmadaIdentity => ({
+    schemaVersion: 1,
+    via: "worker",
+    user: null,
+    organization: { id: "org", name: "Example", slug: "example", role: null },
+    apiKey: null,
+    expiresAt: null,
+    worker: { id: "worker", project: "widgets", ticket: "DEMO-2", launchedBy: "Example" },
+    ownClaim: {
+      schema: OWN_CLAIM_SCHEMA,
+      requestId,
+      project: "widgets",
+      ticket: "DEMO-2",
+      workerId: "worker",
+      claimedAt: NOW.toISOString(),
+      releasedAt: null,
+      runtime: "conductor",
+      handle: `${workspace}/${session}`,
+      workspaceId: workspace,
+      sessionId: session,
+      phase: "implementing",
+      source: "linear-live",
+      provenance: {
+        repository: "example/widgets",
+        programRoot: "DEMO-1",
+        phaseGroup: "Agent phase",
+        serverRevision: "a".repeat(40),
+      },
+      startedAt: NOW.toISOString(),
+      phaseReadStartedAt: NOW.toISOString(),
+      phaseReadEndedAt: NOW.toISOString(),
+      verifiedAt: NOW.toISOString(),
+      elapsedMs: 0,
+      phaseReadElapsedMs: 0,
+    },
+  });
+  const call = (mutate: (body: ArmadaIdentity) => void = () => {}, elapsed = 0) => {
+    let time = 0;
+    const api = armadaApi({
+      url: ARMADA_URL,
+      monotonicNow: () => time,
+      fetch: async (_url, init) => {
+        const headers = new Headers(init.headers);
+        expect(headers.get(OWN_CLAIM_HEADER)).toBe(OWN_CLAIM_SCHEMA);
+        const body = answer(headers.get(OWN_CLAIM_REQUEST_HEADER) ?? "");
+        mutate(body);
+        time = elapsed;
+        return Response.json(body);
+      },
+    });
+    return api.whoami(signIn, { ownClaim: true });
+  };
+  test("only a validated current observation projects phase; an unavailable phase preserves identity for cleanup", async () => {
+    expect((await call()).worker?.phase).toBe("implementing");
+    const result = await call((b) => {
+      claimOf(b).source = "unavailable";
+      claimOf(b).phase = null;
+    });
+    expect(result.worker?.id).toBe("worker");
+    expect(result.worker?.phase).toBeUndefined();
+    const old = await call((b) => {
+      delete b.ownClaim;
+      workerOf(b).phase = "implementing";
+    });
+    expect(old.worker?.id).toBe("worker");
+    expect(old.worker?.phase).toBeUndefined();
+  });
+  for (const [name, mutate] of [
+    [
+      "replayed nonce",
+      (c: OwnClaimObservation) => {
+        c.requestId = "old-request";
+      },
+    ],
+    [
+      "unknown schema",
+      (c: OwnClaimObservation) => {
+        Object.assign(c, { schema: "unknown/v2" });
+      },
+    ],
+    [
+      "wrong worker",
+      (c: OwnClaimObservation) => {
+        c.workerId = "foreign";
+      },
+    ],
+    [
+      "wrong project",
+      (c: OwnClaimObservation) => {
+        c.project = "foreign";
+      },
+    ],
+    [
+      "wrong ticket",
+      (c: OwnClaimObservation) => {
+        c.ticket = "OTHER-2";
+      },
+    ],
+    [
+      "released generation",
+      (c: OwnClaimObservation) => {
+        Object.assign(c, { releasedAt: NOW.toISOString() });
+      },
+    ],
+    [
+      "future claim",
+      (c: OwnClaimObservation) => {
+        c.claimedAt = new Date(NOW.getTime() + 1000).toISOString();
+      },
+    ],
+    [
+      "wrong workspace",
+      (c: OwnClaimObservation) => {
+        c.workspaceId = session;
+      },
+    ],
+    [
+      "missing provenance",
+      (c: OwnClaimObservation) => {
+        Object.assign(c, { provenance: null });
+      },
+    ],
+    [
+      "unknown runtime",
+      (c: OwnClaimObservation) => {
+        c.runtime = "invented";
+      },
+    ],
+    [
+      "unknown phase",
+      (c: OwnClaimObservation) => {
+        Object.assign(c, { phase: "invented" });
+      },
+    ],
+    [
+      "reversed server time",
+      (c: OwnClaimObservation) => {
+        c.verifiedAt = new Date(NOW.getTime() - 1).toISOString();
+      },
+    ],
+    [
+      "stale server age",
+      (c: OwnClaimObservation) => {
+        c.elapsedMs = 4001;
+      },
+    ],
+    [
+      "impossible round trip",
+      (c: OwnClaimObservation) => {
+        c.elapsedMs = 3000;
+      },
+    ],
+    [
+      "negative read duration",
+      (c: OwnClaimObservation) => {
+        c.phaseReadElapsedMs = -1;
+      },
+    ],
+  ] as const)
+    test(`own-claim rejects ${name}, not a different fixture's failure`, async () => {
+      expect((await call()).worker?.phase).toBe("implementing");
+      await expect(call((b) => mutate(claimOf(b)))).rejects.toThrow("fresh own-claim");
+    });
+  test("whole response RTT and output are bounded, including a delayed body", async () => {
+    expect((await call()).worker?.phase).toBe("implementing");
+    await expect(call(() => {}, 5001)).rejects.toThrow("fresh own-claim");
+    await expect(
+      call((b) => {
+        workerOf(b).launchedBy = "x".repeat(1024 * 1024);
+      }),
+    ).rejects.toThrow("output limit");
+    const controller = new AbortController();
+    let calls = 0;
+    const api = armadaApi({
+      url: ARMADA_URL,
+      timeoutSignal: () => controller.signal,
+      fetch: async () => {
+        calls++;
+        controller.abort(new DOMException("fixture timeout", "TimeoutError"));
+        return new Response(new ReadableStream({ start() {} }));
+      },
+    });
+    await expect(api.whoami(signIn, { ownClaim: true })).rejects.toThrow();
+    expect(calls).toBe(1);
+  });
+}

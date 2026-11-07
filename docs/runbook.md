@@ -509,3 +509,74 @@ worker with one retry and telemetry disabled; cache files are read-only.
 The nonrequired **End-to-end journeys** job shares WCAG's demo build/seed
 action and uploads JUnit, the run report and failure evidence. Its log should
 show replayed steps and zero model calls on an unchanged journey.
+
+
+## A worker observing its own claim
+
+A pinned official client uses `armada whoami --json` from the worker's own
+credential context. Plain `whoami`, coordinator identity reads and old clients
+keep their identity-only contract. This is an explicit command, not a page or
+fleet poll. It adds no credential, endpoint, coordinator permission or daemon.
+
+The JSON command negotiates `own-claim-phase/v1` on `GET /api/cli/session`, with a
+new `x-armada-observation-id` nonce each time. The server resolves identity from
+the existing worker credential; it does not accept a candidate ticket, phase or
+runtime binding. It joins the authenticated worker with its active claim before
+and after a fresh Linear query. Linear is the canonical phase source. An event
+or fleet snapshot is never a phase fallback. Missing, released, revoked,
+superseded or foreign bindings are refused without returning a foreign tuple.
+The registered project and its stored configuration select the program and phase
+label group. More than one phase label, an unknown label, terminal ticket,
+incomplete label page or unproved ancestry does not authorize execution.
+
+The outer identity retains `schemaVersion: 1`. Its `ownClaim` contains:
+
+- `schema`, `requestId`, `project`, `ticket`, `workerId`, `claimedAt` (generation),
+  `releasedAt: null`, `runtime`, `handle`, `workspaceId` and `sessionId`;
+- `phase` with `source: "linear-live"`, or `phase: null` with
+  `source: "unavailable"` when only the canonical phase read failed;
+- `provenance.repository`, `programRoot`, `phaseGroup` and `serverRevision`
+  (the deployment's `VERCEL_GIT_COMMIT_SHA`, not a physical host attestation);
+- `startedAt`, `phaseReadStartedAt`, `phaseReadEndedAt`, `verifiedAt`, plus
+  monotonic `elapsedMs` and `phaseReadElapsedMs`.
+
+Only Conductor handles with the stored workspace/session UUID pair populate
+those two fields. Other supported runtimes leave them null. The tuple describes
+Armada's authenticated registration; it is not evidence of a process on a host.
+An independent receiver must compare it to its own admitted generation and
+runtime pins. The HTTP schema is unrelated to the desktop daemon's session wire
+protocol. No database migration is needed.
+
+The server refuses observations exceeding 4000ms from request resolution through
+its final claim check. Its canonical HTTP reads use the remaining budget, without
+retry. The client bounds request, body and validation to 5000ms and 1MiB, checks
+nonce, schema, binding, server time order and monotonic durations, and retries
+nothing. These are chosen refusal limits, not a measured availability guarantee
+or a promise to terminate every database operation in 4s. A nonce is correlation,
+not authority. Client UTC clock alone is not a freshness proof. A backwards clock
+or a late observation closes the execution path; no cached phase is reused.
+
+The client projects `worker.phase` only from a validated observation. An older
+server's current identity, without this schema, never yields a phase, even if it
+contains an unversioned phase field. Missing schema/phase cannot authorize
+start/dispatch. Authenticated status/stop of the same job need no implementing
+phase: a valid own identity can still clean up when the phase source is
+unavailable. Invalid/revoked identity is never revived for cleanup. A consumer
+must not use an identity-only response to authorize new execution.
+
+Consumers make a new observation before intent/spawn, before READY, and after
+the child requests its final execution permit. They must validate the schema and
+independent tuple and bound monotonic age through the actual boundary (not just
+accept a process response within 20s). A response containing implementing is not
+a permit by itself. A later phase or generation change closes start/dispatch.
+This is not atomic GET-to-execve authorization and not an atomic transaction
+across Linear and Postgres; a stronger native permit would be a separate contract.
+No credential is given to the child or judge.
+
+Deploy the dashboard first through its existing GitHub/Vercel route, verify the
+actual deployment revision, then publish the CLI through the existing
+release-please/npm OIDC train. CI or a commit does not prove either delivery.
+Keep the server deployment SHA, client version/tarball integrity, schema and
+receiver pins separately. An isolated synthetic route test is not a real worker
+admission. Install no new client in another worker implicitly, and keep dependent
+execution disabled until its own owner has tested and admitted the actual tuple.

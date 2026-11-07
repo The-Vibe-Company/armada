@@ -16,6 +16,7 @@ import {
   CONFIG_FILE,
   type FleetOverview,
   fetchDefaultBranchFile,
+  fetchOwnClaimPhase,
   fetchProgramIssue,
   parseConfig,
   readProjectConfig,
@@ -214,6 +215,24 @@ export async function readAttachmentTicket(config: ArmadaConfig, scope: Scope, t
   const apiKey = (await projectLinear(config.project.slug)) ?? keys.linearApiKey;
   if (!apiKey) throw new Error("LINEAR_API_KEY is not set on the dashboard");
   return fetchProgramIssue({ apiKey, rootId: config.tracker.programRoot, labels: config.tracker.labels }, ticket);
+}
+
+/** Explicit own-session observation; never used by a page or a fleet poll. */
+export async function readOwnPhase(config: ArmadaConfig, scope: Scope, ticket: string, remainingMs: () => number) {
+  const { keys, projectLinear } = await readKeysOf(scope);
+  const apiKey = (await projectLinear(config.project.slug)) ?? keys.linearApiKey;
+  if (!apiKey) throw new Error("the own-claim phase source is unavailable");
+  return fetchOwnClaimPhase(
+    {
+      apiKey,
+      rootId: config.tracker.programRoot,
+      labels: config.tracker.labels,
+      retry: false,
+      remainingMs,
+      timeoutMs: Math.max(1, remainingMs()),
+    },
+    ticket,
+  );
 }
 
 /** The fleet one scope reads: its process cache (shared by its viewers) and its sources. */

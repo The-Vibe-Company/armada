@@ -452,6 +452,62 @@ export async function fetchProgramIssue(opts: FetchProgramOptions, ticket: strin
   return normalizeIssue(issue, opts.labels);
 }
 
+/** One fresh phase read, never the optional fleet projection or a partial label page. */
+export async function fetchOwnClaimPhase(opts: FetchProgramOptions, ticket: string): Promise<LabelPhase> {
+  type Parent = { identifier: string; parent?: Parent | null };
+  const ancestry = (depth: number): string => `identifier${depth ? ` parent { ${ancestry(depth - 1)} }` : ""}`;
+  const { issue } = await gql<{
+    issue: {
+      identifier: string;
+      state: { type: string };
+      parent: Parent | null;
+      labels: { nodes: { name: string; parent: { name: string } | null }[]; pageInfo: { hasNextPage: boolean } };
+    } | null;
+  }>(
+    { ...opts, retry: false },
+    `query OwnClaimPhase($id: String!) {
+    issue(id: $id) { identifier state { type } parent { ${ancestry(MAX_DEPTH)} }
+      labels(first: 250) { nodes { name parent { name } } pageInfo { hasNextPage } } }
+  }`,
+    { id: ticket },
+  );
+  const invalid = () => new LinearError("the own-claim phase source is incomplete or inadmissible");
+  if (
+    !issue ||
+    issue.identifier !== ticket ||
+    !issue.state ||
+    !["backlog", "unstarted", "started"].includes(issue.state.type) ||
+    !Array.isArray(issue.labels?.nodes) ||
+    issue.labels.pageInfo?.hasNextPage !== false
+  )
+    throw invalid();
+  let belongs = ticket === opts.rootId;
+  let parent = issue.parent;
+  const seen = new Set([ticket]);
+  while (!belongs && parent) {
+    if (typeof parent.identifier !== "string" || seen.has(parent.identifier)) throw invalid();
+    seen.add(parent.identifier);
+    if (parent.identifier === opts.rootId) {
+      belongs = true;
+      break;
+    }
+    if (parent.parent === undefined) {
+      const next = await gql<{ issue: Parent | null }>(
+        { ...opts, retry: false },
+        `query OwnClaimAncestry($id: String!) { issue(id: $id) { ${ancestry(MAX_DEPTH)} } }`,
+        { id: parent.identifier },
+      );
+      if (next.issue?.identifier !== parent.identifier || next.issue.parent === undefined) throw invalid();
+      parent = next.issue.parent;
+    } else parent = parent.parent;
+  }
+  if (!belongs) throw invalid();
+  const labels = issue.labels.nodes.filter((label) => label.parent?.name === opts.labels.phaseGroup);
+  const phase = labels.length === 1 && typeof labels[0]?.name === "string" ? phaseNamed(labels[0].name) : null;
+  if (!phase) throw invalid();
+  return phase;
+}
+
 /** Reads the whole program under `rootId` plus the comments of every ticket an agent may hold. */
 export async function fetchProgram(opts: FetchProgramOptions): Promise<ProgramData> {
   try {

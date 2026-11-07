@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type ArmadaIdentity, OWN_CLAIM_HEADER, OWN_CLAIM_REQUEST_HEADER, OWN_CLAIM_SCHEMA } from "@armada/core";
 import { ARMADA_URL, fakeArmada, NOW } from "../../core/test/support.ts";
 import { run } from "../src/cli.ts";
 import type { Io } from "../src/io.ts";
@@ -176,4 +177,71 @@ describe("where a sign-in may go", () => {
     expect(armada.calls.slice(calls)).toMatchObject([{ method: "DELETE", path: "session" }]);
     expect(armada.sessions.size).toBe(0);
   });
+});
+
+test("worker JSON whoami negotiates its own current observation; ordinary whoami stays an identity read", async () => {
+  const armada = fakeArmada();
+  armada.launches.set("armada_launch_SYNTHETIC", { project: "widgets", ticket: "DEMO-7", used: false });
+  const m = await machine(armada);
+  expect(await run(["login", "--launch-token", "armada_launch_SYNTHETIC", "--api-url", ARMADA_URL], m.io)).toBe(0);
+  m.printed();
+  const original = m.io.fetch;
+  if (!original) throw new Error("fixture fetch missing");
+  const nonces: string[] = [];
+  let phase = "implementing";
+  m.io.fetch = async (url, init) => {
+    const response = await original(url, init);
+    if (!url.endsWith("/session") || init.method !== "GET") return response;
+    const headers = new Headers(init.headers);
+    if (!headers.has(OWN_CLAIM_HEADER)) return response;
+    expect(headers.get(OWN_CLAIM_HEADER)).toBe(OWN_CLAIM_SCHEMA);
+    const requestId = headers.get(OWN_CLAIM_REQUEST_HEADER) ?? "";
+    nonces.push(requestId);
+    const identity = (await response.json()) as ArmadaIdentity;
+    if (!identity.worker) throw new Error("fixture worker missing");
+    const workspaceId = "11111111-1111-4111-8111-111111111111";
+    const sessionId = "22222222-2222-4222-8222-222222222222";
+    return Response.json({
+      ...identity,
+      ownClaim: {
+        schema: OWN_CLAIM_SCHEMA,
+        requestId,
+        workerId: identity.worker.id,
+        project: "widgets",
+        ticket: "DEMO-7",
+        claimedAt: NOW.toISOString(),
+        releasedAt: null,
+        runtime: "conductor",
+        handle: `${workspaceId}/${sessionId}`,
+        workspaceId,
+        sessionId,
+        phase,
+        source: "linear-live",
+        provenance: {
+          repository: "example/widgets",
+          programRoot: "DEMO-1",
+          phaseGroup: "Agent phase",
+          serverRevision: "a".repeat(40),
+        },
+        startedAt: NOW.toISOString(),
+        phaseReadStartedAt: NOW.toISOString(),
+        phaseReadEndedAt: NOW.toISOString(),
+        verifiedAt: NOW.toISOString(),
+        elapsedMs: 0,
+        phaseReadElapsedMs: 0,
+      },
+    });
+  };
+  expect(await run(["whoami"], m.io)).toBe(0);
+  m.printed();
+  expect(nonces).toHaveLength(0);
+  expect(await run(["whoami", "--json"], m.io)).toBe(0);
+  expect(JSON.parse(m.printed()).worker.phase).toBe("implementing");
+  phase = "blocked";
+  expect(await run(["whoami", "--json"], m.io)).toBe(0);
+  expect(JSON.parse(m.printed()).worker.phase).toBe("blocked");
+  expect(new Set(nonces).size).toBe(2);
+  phase = "unknown";
+  expect(await run(["whoami", "--json"], m.io)).toBe(1);
+  expect(m.printed()).toContain("fresh own-claim");
 });

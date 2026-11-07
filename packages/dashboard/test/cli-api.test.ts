@@ -1,5 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { armadaApi, MINIMUM_CLI_VERSION, parseConfig } from "@armada/core/read";
+import { randomUUID } from "node:crypto";
+import {
+  armadaApi,
+  fetchOwnClaimPhase,
+  MINIMUM_CLI_VERSION,
+  OWN_CLAIM_HEADER,
+  OWN_CLAIM_REQUEST_HEADER,
+  OWN_CLAIM_SCHEMA,
+  parseConfig,
+} from "@armada/core/read";
 import { NextRequest } from "next/server";
 import { DEMO_TOML, issue, NOW } from "../../core/test/support.ts";
 import { type Auth, createAuth, type EmailMessage } from "../lib/accounts.ts";
@@ -9,8 +18,10 @@ import { guard } from "../lib/auth-http.ts";
 import { fleetKeysOf, organizationKeys, type Release } from "../lib/broker.ts";
 import { type CliAccounts, type CliApiDeps, type CliIdentity, handleCli } from "../lib/cli-api.ts";
 import type { Database } from "../lib/db.ts";
+import { holdProject, saveRuntimeHandle } from "../lib/fleet-store.ts";
 import { dbSnapshots, memorySnapshots } from "../lib/snapshots.ts";
 import { deleteSecret, listEvents, type SecretName, setSecret, type VaultKey, vaultModeOf } from "../lib/vault.ts";
+import { bindLaunch, createLaunch, endWorker, exchangeLaunch } from "../lib/workers.ts";
 import { tempDatabase } from "./support.ts";
 
 // Synthetic people and secrets, for these tests only.
@@ -487,5 +498,252 @@ test("deferred launches use stored facts and coordinator ownership across authen
   });
   expect(await (await send("launch-requests", b.key, { coordinatorName: "other" })).json()).toMatchObject({
     result: [],
+  });
+});
+
+describe("own-worker phase through server serialization and official client", () => {
+  let number = 0;
+  async function fixture() {
+    const config = parseConfig(DEMO_TOML);
+    config.project.slug = `own-phase-${++number}`;
+    const project = {
+      slug: config.project.slug,
+      name: config.project.name,
+      repository: config.github.repository,
+      programRoot: config.tracker.programRoot,
+    };
+    await holdProject(client, project, orgId, async () => orgId, NOW);
+    const snapshots = dbSnapshots(client, memorySnapshots());
+    const refresh = await snapshots.claim(project.slug, NOW, 60_000);
+    if (!refresh) throw new Error("fixture refresh not acquired");
+    await snapshots.save(
+      project.slug,
+      {
+        config,
+        configWarning: null,
+        startedAt: NOW,
+        sources: {
+          program: {
+            rootId: project.programRoot,
+            issues: [issue("DEMO-2", { agentPhase: "implementing" })],
+            comments: [],
+            warnings: [],
+            fetchedAt: NOW.toISOString(),
+          },
+          forge: null,
+          forgeError: null,
+        },
+      },
+      refresh,
+      { full: true, now: NOW },
+    );
+    const launch = await createLaunch(client, {
+      organization: orgId,
+      project: project.slug,
+      ticket: "DEMO-2",
+      launcher: { kind: "api-key", id: "fixture", label: "Fixture" },
+      now: NOW,
+    });
+    const handle = `${randomUUID()}/${randomUUID()}`;
+    expect(
+      await bindLaunch(client, {
+        organization: orgId,
+        project: project.slug,
+        ticket: "DEMO-2",
+        id: launch.worker.id,
+        runtime: "conductor",
+        handle,
+        now: NOW,
+      }),
+    ).toBe("bound");
+    const exchange = await exchangeLaunch(client, {
+      token: launch.token,
+      address: `fixture-${number}`,
+      handle,
+      now: NOW,
+    });
+    if (!exchange.ok) throw new Error("fixture worker did not sign in");
+    await saveRuntimeHandle(client, {
+      project: project.slug,
+      ticket: "DEMO-2",
+      runtime: "Conductor",
+      handle,
+      branch: "feature/example",
+      workerSessionId: launch.worker.id,
+      at: NOW,
+    });
+    let phase = "implementing";
+    let elapsed = 0;
+    let beforeRead: () => Promise<void> = async () => {};
+    const requested: string[] = [];
+    const deps: CliApiDeps = {
+      accounts: async () => accounts,
+      now: () => NOW,
+      monotonicNow: () => elapsed,
+      serverRevision: "a".repeat(40),
+      readOwnPhase: async (cfg, scope, ticket, remainingMs) => {
+        expect(scope.organization).toBe(orgId);
+        expect(ticket).toBe("DEMO-2");
+        requested.push(ticket);
+        await beforeRead();
+        // Real Linear parser/transport -> real route -> JSON -> official API parser.
+        return fetchOwnClaimPhase(
+          {
+            apiKey: "synthetic-only",
+            rootId: cfg.tracker.programRoot,
+            labels: cfg.tracker.labels,
+            remainingMs,
+            fetch: async () =>
+              Response.json({
+                data: {
+                  issue: {
+                    identifier: ticket,
+                    state: { type: "started" },
+                    parent: { identifier: cfg.tracker.programRoot, parent: null },
+                    labels: {
+                      nodes: phase ? [{ name: phase, parent: { name: cfg.tracker.labels.phaseGroup } }] : [],
+                      pageInfo: { hasNextPage: false },
+                    },
+                  },
+                },
+              }),
+          },
+          ticket,
+        );
+      },
+    };
+    const signIn = { kind: "worker" as const, token: exchange.token, project: project.slug, ticket: "DEMO-2" };
+    const api = armadaApi({
+      url: BASE,
+      monotonicNow: () => elapsed,
+      fetch: async (url, init) => handleCli(new Request(url, init), ["session"], deps),
+    });
+    return {
+      config,
+      deps,
+      project,
+      launch,
+      handle,
+      requested,
+      signIn,
+      read: () => api.whoami(signIn, { ownClaim: true }),
+      legacy: () => api.whoami(signIn),
+      phase: (value: string) => {
+        phase = value;
+      },
+      during: (f: () => Promise<void>) => {
+        beforeRead = f;
+      },
+      elapsed: (value: number) => {
+        elapsed = value;
+      },
+    };
+  }
+  test("live transitions override the cached implementing label; old clients receive no phase", async () => {
+    const f = await fixture();
+    const first = await f.read();
+    expect(first.worker?.phase).toBe("implementing");
+    expect(first.ownClaim).toMatchObject({
+      workerId: f.launch.worker.id,
+      handle: f.handle,
+      claimedAt: NOW.toISOString(),
+      runtime: "conductor",
+    });
+    expect((await f.legacy()).worker).not.toHaveProperty("phase");
+    f.phase("blocked");
+    const second = await f.read();
+    expect(second.worker?.phase).toBe("blocked");
+    expect(second.ownClaim?.requestId).not.toBe(first.ownClaim?.requestId);
+    expect(f.requested).toHaveLength(2);
+    f.phase("");
+    const cleanup = await f.read();
+    expect(cleanup.worker?.id).toBe(f.launch.worker.id);
+    expect(cleanup.worker).not.toHaveProperty("phase");
+    expect(cleanup.ownClaim?.source).toBe("unavailable");
+  });
+  for (const mode of [
+    "revoked",
+    "released",
+    "supplanted",
+    "foreign organization",
+    "generation changes during read",
+  ] as const)
+    test(`refuses ${mode} from its own previously usable claim`, async () => {
+      const f = await fixture();
+      expect((await f.read()).worker?.phase).toBe("implementing");
+      const args = [f.project.slug, "DEMO-2"];
+      if (mode === "revoked")
+        await endWorker(client, {
+          organization: orgId,
+          id: f.launch.worker.id,
+          reason: "released",
+          by: { kind: "dashboard", id: "fixture", label: "Fixture" },
+          now: NOW,
+        });
+      if (mode === "released")
+        await client.query("UPDATE runtime_handles SET released_at = $3 WHERE project = $1 AND ticket = $2", [
+          ...args,
+          NOW,
+        ]);
+      if (mode === "supplanted")
+        await client.query(
+          "UPDATE runtime_handles SET worker_session_id = NULL WHERE project = $1 AND ticket = $2",
+          args,
+        );
+      if (mode === "foreign organization")
+        await client.query("UPDATE projects SET organization_id = NULL WHERE slug = $1", [f.project.slug]);
+      if (mode === "generation changes during read")
+        f.during(async () => {
+          await client.query("UPDATE runtime_handles SET claimed_at = $3 WHERE project = $1 AND ticket = $2", [
+            ...args,
+            new Date(NOW.getTime() + 1),
+          ]);
+        });
+      await expect(f.read()).rejects.toThrow();
+    });
+  test("a source failure allows authenticated cleanup without phase; missing provenance and expired budget do not authorize", async () => {
+    const f = await fixture();
+    expect((await f.read()).worker?.phase).toBe("implementing");
+    f.during(async () => {
+      throw new Error("synthetic source unavailable");
+    });
+    expect((await f.read()).worker).not.toHaveProperty("phase");
+    f.during(async () => {
+      f.elapsed(4001);
+    });
+    await expect(f.read()).rejects.toThrow("fresh own-claim");
+    const g = await fixture();
+    expect((await g.read()).worker?.phase).toBe("implementing");
+    g.deps.serverRevision = undefined;
+    await expect(g.read()).rejects.toThrow("fresh own-claim");
+  });
+  test("caller selectors cannot disclose a foreign session; coordinator own-claim requests are refused", async () => {
+    const f = await fixture();
+    expect((await f.read()).worker?.phase).toBe("implementing");
+    const forged = await handleCli(
+      new Request(`${BASE}/api/cli/session?ticket=OTHER-9&worker=other`, {
+        headers: {
+          authorization: `Bearer ${f.signIn.token}`,
+          [OWN_CLAIM_HEADER]: OWN_CLAIM_SCHEMA,
+          [OWN_CLAIM_REQUEST_HEADER]: randomUUID(),
+        },
+      }),
+      ["session"],
+      f.deps,
+    );
+    expect((await forged.json()).ownClaim.ticket).toBe("DEMO-2");
+    const login = await auth.api.signInEmail({ body: { email: OWNER, password: PASSWORD } });
+    const res = await handleCli(
+      new Request(`${BASE}/api/cli/session`, {
+        headers: {
+          authorization: `Bearer ${login.token}`,
+          [OWN_CLAIM_HEADER]: OWN_CLAIM_SCHEMA,
+          [OWN_CLAIM_REQUEST_HEADER]: randomUUID(),
+        },
+      }),
+      ["session"],
+      f.deps,
+    );
+    expect(res.status).toBe(403);
   });
 });
