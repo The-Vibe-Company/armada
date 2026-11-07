@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.74](https://github.com/The-Vibe-Company/armada/compare/v0.2.73...v0.2.74) (2026-11-07)
+
+
+### Bug Fixes
+
+* expose a fresh authenticated own-worker phase observation ([#452](https://github.com/The-Vibe-Company/armada/issues/452)) ([b557295](https://github.com/The-Vibe-Company/armada/commit/b5572958ca6ed9dd8704991c67716d65dfc9f45d))
+
 ## [0.2.73](https://github.com/The-Vibe-Company/armada/compare/v0.2.72...v0.2.73) (2026-11-04)
 
 
