@@ -1074,6 +1074,28 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
        WHERE ticket <> '' AND kind NOT IN ('heartbeat', 'handover')`,
     ],
   },
+  {
+    // Armada resource reservation1117, THE-812, owner a307/60fd. Keep legacy indexes intact.
+    version: 53,
+    statements: [
+      `ALTER TABLE inbox_items ADD COLUMN hb_repository text, ADD COLUMN hb_pr integer,
+        ADD COLUMN hb_head_sha text, ADD COLUMN hb_generation text, ADD COLUMN hb_superseded_by bigint`,
+      `ALTER TABLE inbox_items ADD CONSTRAINT hand_back_v2_binding CHECK (
+        kind <> 'hand-back-v2' OR (ticket IS NOT NULL AND hb_repository IS NOT NULL AND hb_pr IS NOT NULL AND hb_pr > 0
+        AND hb_head_sha IS NOT NULL AND hb_generation IS NOT NULL
+        AND hb_head_sha ~ '^[a-f0-9]{40}$' AND hb_generation ~ '^[a-f0-9]{64}$' AND author IS NOT NULL))`,
+      `CREATE UNIQUE INDEX hand_back_v2_open_pr ON inbox_items(project, ticket, hb_repository, hb_pr)
+        WHERE kind = 'hand-back-v2' AND resolved_at IS NULL`,
+      `CREATE UNIQUE INDEX hand_back_v2_revision ON inbox_items(project, ticket, hb_repository, hb_pr, hb_head_sha, hb_generation)
+        WHERE kind = 'hand-back-v2'`,
+      `CREATE TABLE hand_back_merge_receipts (
+        project text NOT NULL REFERENCES projects(slug), hand_back_id bigint NOT NULL REFERENCES inbox_items(id),
+        receipt jsonb NOT NULL, keep_open boolean NOT NULL, result jsonb NOT NULL, created_at timestamptz NOT NULL,
+        PRIMARY KEY(project, hand_back_id))`,
+      `ALTER TABLE leases ADD COLUMN hand_back_contract text`,
+      `ALTER TABLE merge_queue ADD COLUMN hand_back_reference jsonb`,
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

@@ -5,6 +5,7 @@
 import { ArmadaApiError } from "./armada-api.ts";
 import { type ArmadaConfig, routingLabelKey } from "./config.ts";
 import type { MergePull } from "./github.ts";
+import { currentHandBack, HAND_BACK_SCHEMA, type HandBackDeclaration, HandBackRefusal } from "./hand-backs.ts";
 import { herdrChoice } from "./herdr-profile.ts";
 import { parsePullRequestUrl, sameName } from "./linear.ts";
 import type { LinearWriter, Ticket, TicketLabel, WorkflowState } from "./linear-write.ts";
@@ -611,6 +612,38 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
       "use armada acceptance run; ask the coordinator for more runs",
     );
 
+  // Negotiation precedes every Linear write; an old server cannot silently accept a second PR.
+  let handBack: HandBackDeclaration | undefined;
+  const connection = await ctx.fleet?.();
+  if (input.phase === "ready-to-merge") {
+    if (!connection?.fleet) throw new HandBackRefusal("hand-back/v2 service is unavailable; no report was written");
+    const state = await connection.fleet.handBackState(ticket.id);
+    if (!state.claimGeneration || state.items.some((i) => !i.handBack))
+      throw new HandBackRefusal("claim or legacy-unbound hand-back prevents scoped report");
+    const current = pr ? currentHandBack(state, pr.number) : null;
+    if (current?.handBack?.headSha === sha && current.body !== `Agent status: ready-to-merge — ${summary}`)
+      throw new HandBackRefusal("same hand-back pin with different evidence; no report was written");
+    handBack = {
+      schema: HAND_BACK_SCHEMA,
+      claimGeneration: state.claimGeneration,
+      previous: current?.handBack ?? null,
+    };
+  } else if (connection?.fleet) {
+    // Preserve independent hand-backs when reporting continued work; unknown servers
+    // keep the established single-hand-back path for these non-admission reports.
+    let state: import("./hand-backs.ts").HandBackState | undefined;
+    try {
+      state = await connection.fleet.handBackState(ticket.id);
+    } catch {
+      /* No v2 admission occurs in this branch. */
+    }
+    if (state?.claimGeneration) {
+      const current = input.pr && pr ? currentHandBack(state, pr.number)?.handBack : null;
+      if (current && sha !== current.headSha)
+        throw new HandBackRefusal("scoped correction needs the current hand-back SHA");
+      handBack = { schema: HAND_BACK_SCHEMA, claimGeneration: state.claimGeneration, previous: current ?? null };
+    }
+  }
   // Every lookup that can refuse happens before the first write.
   const target =
     ticket.agentPhase === input.phase
@@ -644,6 +677,7 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
   const recorded = await live(ctx, warnings, "record the report", (fleet) =>
     fleet.report({
       ticket: ticket.id,
+      ...(handBack ? { handBack } : {}),
       ...(input.paths !== undefined ? { paths: input.paths } : {}),
       phase: input.phase,
       shippingStage: isShippingStage(input.stage) ? input.stage : null,
@@ -657,6 +691,10 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
       headSha: sha,
     }),
   );
+  if (input.phase === "ready-to-merge" && !recorded?.handBack)
+    throw new HandBackRefusal(
+      "Linear report exists but its atomic hand-back receipt is missing; reconcile this report before retrying",
+    );
   const state = await readBack(ctx, ticket.id, warnings);
   if (recorded) lines.push(...overlapLines(recorded));
   return {

@@ -11,6 +11,7 @@ import type { JobSummary } from "./jobs.ts";
 import {
   type CoordinatorPresence,
   handBackQueue,
+  handBackQueueStale,
   type InboxEntry,
   type InboxItem,
   type InboxReadEvent,
@@ -466,8 +467,11 @@ export function buildOverview(input: {
         project: p.slug,
         ticket: item.ticket,
         ...about(item.ticket),
-        ...(item.kind === "hand-back" ? { queue: handBackQueue(item.body, p.live?.queue ?? []) } : {}),
-        detail: item.body,
+        ...(item.kind === "hand-back" ? { queue: handBackQueue(item.body, p.live?.queue ?? [], item.handBack) } : {}),
+        detail:
+          item.kind === "hand-back" && handBackQueueStale(item.body, p.live?.queue ?? [], item.handBack)
+            ? `${item.body}\n${handBackQueueStale(item.body, p.live?.queue ?? [], item.handBack)}`
+            : item.body,
         author: item.author,
         since: item.createdAt,
         item: answerable ? item.id : null,

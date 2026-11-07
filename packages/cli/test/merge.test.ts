@@ -9,6 +9,7 @@ import { join } from "node:path";
 import {
   type Fetch,
   GITHUB_GRAPHQL,
+  HAND_BACK_SCHEMA,
   LinearError,
   type MergeOutcome,
   machinePaths,
@@ -965,7 +966,11 @@ Result: merged #9
     "secrets/release",
     "fleet/lease/acquire",
     "fleet/holds",
+    "fleet/inbox/ticket",
+    "fleet/inbox/ticket",
     "fleet/validations",
+    "fleet/inbox/ticket",
+    "fleet/inbox/ticket",
     "fleet/inbox/ticket",
     "fleet/holds",
     "fleet/lease/renew",
@@ -983,7 +988,7 @@ Result: merged #9
   expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt).toBe(NOW.toISOString());
 });
 
-test("signed in, Armada down refuses the merge; --no-lock merges anyway and says so", async () => {
+test("signed in, Armada down refuses admission even with --no-lock because the hand-back contract is unknown", async () => {
   const f = await fixture();
   f.net.armadaDown = true;
   expect(await run(["merge", "9"], f.io)).toBe(1);
@@ -992,13 +997,10 @@ test("signed in, Armada down refuses the merge; --no-lock merges anyway and says
   );
   expect(f.ghCalls).toEqual([]);
 
-  expect(await run(["merge", "9", "--no-lock"], f.io)).toBe(0);
-  expect(f.merged()).toBe(true);
-  expect(f.err()).toContain(
-    "armada: warning: merged without the merge lock (--no-lock), merge holds were not checked: make sure no other coordinator merges in widgets now\n",
-  );
-  expect(f.err()).toMatch(/armada: warning: Armada: could not record the merge \(.+\)\n/);
-  expect(f.linear.bodies.at(-1)).toContain(", merged without lock (--no-lock)");
+  expect(await run(["merge", "9", "--no-lock"], f.io)).toBe(1);
+  expect(f.merged()).toBe(false);
+  expect(f.ghCalls).toEqual([]);
+  expect(f.linear.bodies).toEqual([]);
 });
 
 test("not signed in, the merge goes on without the lock, with a warning", async () => {
@@ -2020,3 +2022,78 @@ test.each([false, true])("an empty merge drain shows the Claude hook banner and 
     expect(err.join("")).toContain("Stop hook NOT on:");
   } else expect(out.join("")).toContain("queue empty\nStop hook NOT on:");
 });
+
+test.each(["stable", "late-sibling", "state-unavailable"])(
+  "F3 scoped continuation revalidates at native delivery: %s",
+  async (scenario) => {
+    const f = await fixture();
+    await f.store.saveRuntimeHandle({
+      project: "widgets",
+      ticket: "DEMO-18",
+      runtime: "Conductor",
+      handle: "ws-18/ses-18",
+      branch: BRANCH,
+      at: NOW,
+    });
+    const generation = (await f.store.handBackState("widgets", "DEMO-18")).claimGeneration!;
+    const report = async (pr: number, head: string) => {
+      const summary = `PR #${pr}, head ${head}, CI green; more PRs: dashboard part`;
+      const ref = await f.store.recordHandBack({
+        project: "widgets",
+        at: NOW,
+        report: {
+          ticket: "DEMO-18",
+          phase: "ready-to-merge",
+          previous: "shipping",
+          summary,
+          message: "",
+          prUrl: `https://github.com/acme/widgets/pull/${pr}`,
+          headSha: head,
+          handBack: { schema: HAND_BACK_SCHEMA, claimGeneration: generation, previous: null },
+        },
+      });
+      f.linear.post("DEMO-18", `Agent status: ready-to-merge — ${summary}`, "2026-03-04T10:00:00Z");
+      return ref;
+    };
+    await report(9, f.head);
+    const exec = f.io.exec!;
+    let observed = false,
+      delivered = 0;
+    f.io.exec = async (command, args, options) => {
+      if (command !== "conductor") return exec(command, args, options);
+      if (args[1] === "message" && args[2] === "create") {
+        delivered++;
+        return { code: 0, stdout: JSON.stringify({ messageId: "message-1", state: "queued" }), stderr: "" };
+      }
+      if (!observed) {
+        observed = true;
+        expect(f.merged()).toBe(true);
+        if (scenario === "late-sibling") await report(10, "b".repeat(40));
+        if (scenario === "state-unavailable")
+          f.store.handBackState = async () => {
+            throw new Error("synthetic state outage");
+          };
+      }
+      return {
+        code: 0,
+        stdout: JSON.stringify(
+          args[1] === "session"
+            ? { sessionId: "ses-18", workspaceId: "ws-18", status: "idle" }
+            : { workspaceId: "ws-18", status: "ready" },
+        ),
+        stderr: "",
+      };
+    };
+    expect(await run(["merge", "9", "--json"], f.io), f.err()).toBe(0);
+    const result = JSON.parse(f.out());
+    expect(result.merged).toBe(true);
+    expect(observed).toBe(true);
+    expect(delivered).toBe(scenario === "stable" ? 1 : 0);
+    if (scenario !== "stable") {
+      expect(result.continuation).toBeNull();
+      expect(result.armadaPending).toBe(true);
+      expect(result.lines.join("\n")).not.toContain("Deliver to DEMO-18:");
+    }
+    expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))!.releasedAt).toBeNull();
+  },
+);

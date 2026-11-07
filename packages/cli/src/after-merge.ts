@@ -257,7 +257,7 @@ export async function afterMerge(
     onDeferredLaunch?: (results: DeferredLaunchResult[]) => Promise<void>;
   },
 ): Promise<AfterMergeResult> {
-  const keepOpen = !!outcome.keepOpen || !!opts.keepOpen;
+  const keepOpen = !!outcome.keepOpen || !!opts.keepOpen || !!outcome.remainingHandBacks?.length;
   const notified = opts.noNotify ? [] : await notifyWorkers(io, config, credentials, outcome);
   const deferred =
     outcome.merged && outcome.pr.mergeCommit && outcome.ticket && !keepOpen
@@ -284,7 +284,7 @@ async function archiveWorker(
     archived,
     detail,
   });
-  const keepOpen = !!outcome.keepOpen || !!opts.keepOpen;
+  const keepOpen = !!outcome.keepOpen || !!opts.keepOpen || !!outcome.remainingHandBacks?.length;
   if (keepOpen || opts.noArchive) return result(false, keepOpen ? "ticket kept open" : "--no-archive");
   const runtime = runtimeNameOf(a.runtime);
   if (!runtime || runtime === "claude-code") {

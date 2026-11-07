@@ -49,6 +49,7 @@ interface PeekResult {
     complete: boolean;
   } | null;
   inbox: InboxItem[];
+  handBacks?: { items: InboxItem[]; complete: boolean; reportPullView: "latest-event" };
   warnings: string[];
 }
 const clipped = (text: string, limit: number) =>
@@ -269,6 +270,14 @@ export async function peek(io: Io, config: ArmadaConfig, credentials: Credential
     },
     pull,
     inbox: inbox.map((item) => ({ ...item, body: clean(item.body) })),
+    handBacks: {
+      items: inbox
+        .filter((i) => i.kind === "hand-back")
+        .slice(0, 100)
+        .map((i) => ({ ...i, body: clean(i.body) })),
+      complete: inbox.filter((i) => i.kind === "hand-back").length <= 100,
+      reportPullView: "latest-event",
+    },
     warnings,
   };
   io.stdout(args.json ? `${JSON.stringify(result, null, 2)}\n` : renderPeek(result, io, now));

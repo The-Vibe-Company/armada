@@ -235,6 +235,7 @@ export async function requestMerge(
       reason: `merge asked on the dashboard by ${author}`,
       headSha: head,
       queuedBy: author,
+      ...(handBack.handBack ? { handBack: handBack.handBack } : {}),
       at: input.now,
     });
     return "existing" in added

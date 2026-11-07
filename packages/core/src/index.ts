@@ -16,6 +16,7 @@ export * from "./dotenv.ts";
 export * from "./fleet.ts";
 export * from "./fleet-api.ts";
 export * from "./github.ts";
+export * from "./hand-backs.ts";
 export * from "./heartbeat.ts";
 export * from "./herdr-profile.ts";
 export * from "./inbox.ts";

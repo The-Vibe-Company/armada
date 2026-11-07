@@ -1,6 +1,8 @@
 // Durable merge intent only. GitHub and Linear writes stay in the coordinator CLI.
 import {
+  HandBackRefusal,
   MERGE_QUEUE_LEASE,
+  parseHandBackRef,
   type QueueAdded,
   type QueueEntry,
   type QueueFinish,
@@ -8,9 +10,10 @@ import {
   type QueueNext,
   type QueueProgress,
   queueRefusedPrefix,
+  sameHandBack,
 } from "@armada/core/read";
 import { type Database, iso, isoAt, type Queryable, type Row, transaction } from "./db";
-import { addInboxItem, getLease, resolvePrItems } from "./fleet-store";
+import { addInboxItem, getLease, handBackState, resolvePrItems } from "./fleet-store";
 
 const OPEN = "state IN ('queued','merging')";
 const entryOf = (r: Row): QueueEntry => ({
@@ -24,6 +27,7 @@ const entryOf = (r: Row): QueueEntry => ({
   reason: r.reason == null ? null : String(r.reason),
   headSha: String(r.head_sha),
   queuedBy: String(r.queued_by),
+  ...(r.hand_back_reference ? { handBack: parseHandBackRef(r.hand_back_reference) } : {}),
   state: r.state as QueueEntry["state"],
   detail: r.detail == null ? null : String(r.detail),
   attempts: Number(r.attempts),
@@ -36,21 +40,63 @@ const entryOf = (r: Row): QueueEntry => ({
 
 export async function queueAdd(db: Database, e: QueueInput & { project: string; at: Date }): Promise<QueueAdded> {
   return transaction(db, async (tx) => {
+    // Project lock comes first, matching report/claim generation fencing.
+    const registered =
+      (await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [e.project])).rows.length > 0;
+    if (e.handBack && (!registered || !e.ticket || e.noTicket))
+      throw new HandBackRefusal("scoped queue admission requires its registered ticket");
+    // Legacy rows without a registered project retain their existing queue semantics.
+    if (e.ticket && registered) {
+      const state = await handBackState(tx, e.project, e.ticket);
+      const typed = state.items.filter((i) => i.handBack);
+      if (typed.length || e.handBack) {
+        const row = typed.find((i) => i.handBack?.pr === e.pr);
+        if (
+          !state.complete ||
+          !e.handBack ||
+          !row?.handBack ||
+          !sameHandBack(row.handBack, e.handBack) ||
+          e.headSha !== row.handBack.headSha ||
+          row.handBack.claimGeneration !== state.claimGeneration
+        )
+          throw new HandBackRefusal("queue admission has no matching current hand-back revision");
+        if (!e.keepOpen && state.items.some((i) => i.id !== row.id))
+          throw new HandBackRefusal("final queued merge would leave another hand-back");
+      }
+    }
     // Serialize enqueue/removal so the returned position describes the committed order.
     await tx.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext('merge-queue'))", [e.project]);
     const rs = await tx.query(
       `INSERT INTO merge_queue
-      (project, pr, ticket, no_ticket, keep_open, through_hold, reason, head_sha, state, queued_by, queued_at, updated_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$10,$10)
+      (project, pr, ticket, no_ticket, keep_open, through_hold, reason, head_sha, state, queued_by, queued_at, updated_at, hand_back_reference)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$10,$10,$11)
       ON CONFLICT (project, pr) WHERE ${OPEN} DO NOTHING RETURNING id`,
-      [e.project, e.pr, e.ticket, e.noTicket, e.keepOpen, e.throughHold, e.reason, e.headSha, e.queuedBy, e.at],
+      [
+        e.project,
+        e.pr,
+        e.ticket,
+        e.noTicket,
+        e.keepOpen,
+        e.throughHold,
+        e.reason,
+        e.headSha,
+        e.queuedBy,
+        e.at,
+        e.handBack ? JSON.stringify(e.handBack) : null,
+      ],
     );
     if (!rs.rows[0]) {
       const existing = (
         await tx.query(`SELECT * FROM merge_queue WHERE project = $1 AND pr = $2 AND ${OPEN}`, [e.project, e.pr])
       ).rows[0];
       if (!existing) throw new Error("merge queue conflict without an open entry");
-      return { existing: entryOf(existing) };
+      const prior = entryOf(existing);
+      if (
+        !!prior.handBack !== !!e.handBack ||
+        (prior.handBack && e.handBack && !sameHandBack(prior.handBack, e.handBack))
+      )
+        throw new HandBackRefusal("queued revision changed; existing FIFO entry is preserved");
+      return { existing: prior };
     }
     const id = Number(rs.rows[0].id);
     // Queued again: the refusal the coordinator was told of is settled.

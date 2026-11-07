@@ -183,6 +183,7 @@ export async function answerFleet(
     { op, project, caller, input: b.input },
     {
       now: clock.now,
+      serverRevision: "e".repeat(40), // Synthetic deployment, not a published pin.
       cliVersion,
       appUrl: ARMADA_URL,
       ...(typeof facts === "function" ? { sendDigest: facts } : facts),
@@ -894,20 +895,27 @@ export function fakeArmada(
       }
       return Response.json({ ended });
     }
-    if (worker && route === "GET session")
+    if (worker && route === "GET session") {
+      const handle = await store.getRuntimeHandle(worker.project, worker.ticket);
+      const ownHandBacks =
+        handle && !handle.releasedAt && handle.workerSessionId === worker.id
+          ? { ...(await store.handBackState(worker.project, worker.ticket)), serverRevision: "e".repeat(40) }
+          : undefined;
       return Response.json({
+        ...(ownHandBacks ? { ownHandBacks } : {}),
         ...PERSON,
         via: "worker",
         user: null,
         organization: { ...PERSON.organization, role: null },
         worker: {
-          id: "wk-1",
+          id: worker.id,
           project: worker.project,
           ticket: worker.ticket,
           launchedBy: "Ada Example",
           coordinator: worker.coordinator,
         },
       });
+    }
     if (worker && route === "DELETE session") {
       worker.ended = "the ticket was released";
       return Response.json({ signedOut: true });

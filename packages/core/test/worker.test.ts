@@ -209,6 +209,30 @@ describe("report", () => {
     return s;
   }
 
+  test("old-server: native report refuses before the first Linear write", async () => {
+    let old = false;
+    const live = tempFleet({ fail: (op) => (old && op === "inbox/ticket" ? Response.json({ result: [] }) : null) });
+    const pr: PullRequest = {
+      number: 9,
+      repo: "acme/widgets",
+      url: "https://github.com/acme/widgets/pull/9",
+      title: "Synthetic",
+      state: "open",
+      headSha: HEAD,
+      checks: [{ name: "test", state: "success" }],
+    };
+    const s = await claimed({ live, pull: pr });
+    await reportPhase(s.ctx, { ticket: "DEMO-7", phase: "implementing", message: "approved" });
+    await reportPhase(s.ctx, { ticket: "DEMO-7", phase: "shipping", message: "ready" });
+    const before = s.linear.writes.length;
+    old = true;
+    await expect(
+      reportPhase(s.ctx, { ticket: "DEMO-7", phase: "ready-to-merge", pr: "9", sha: HEAD, shippedWith: "ship-pr-dev" }),
+    ).rejects.toThrow("server has no complete");
+    expect(s.linear.writes.length).toBe(before);
+    expect((await live.store.handBackState("widgets", "DEMO-7")).items).toHaveLength(0);
+  });
+
   test("shipping stages record Armada data and reject invalid input before writes", async () => {
     const live = tempFleet();
     const { linear, ctx } = await claimed({ live });
@@ -304,8 +328,20 @@ describe("report", () => {
       `comment DEMO-7 Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green; shipped with ship-pr-dev; more PRs: the dashboard part`,
     ]);
     expect(db.items.find((i) => i.kind === "hand-back")?.body).toContain("more PRs: the dashboard part");
-    // Handing back again refreshes the coordinator's item instead of adding one.
-    await reportPhase(green.ctx, { ticket: "DEMO-7", phase: "ready-to-merge", pr: "9", sha: HEAD });
+    // Exact retries preserve the immutable revision; changed evidence at that pin refuses before Linear.
+    await reportPhase(green.ctx, {
+      ticket: "DEMO-7",
+      phase: "ready-to-merge",
+      pr: "9",
+      sha: HEAD,
+      shippedWith: "ship-pr-dev",
+      morePrs: "the dashboard part",
+    });
+    const beforeDifferent = green.linear.writes.length;
+    await expect(
+      reportPhase(green.ctx, { ticket: "DEMO-7", phase: "ready-to-merge", pr: "9", sha: HEAD }),
+    ).rejects.toThrow("different evidence");
+    expect(green.linear.writes.length).toBe(beforeDifferent);
     expect(db.items.filter((i) => i.ticket === "DEMO-7").map((i) => [i.kind, i.recipient])).toEqual([
       ["hand-back", "coordinator"],
     ]);
@@ -518,7 +554,7 @@ describe("release", () => {
   });
 });
 
-test("live acceptance hand-back uses Linear while Armada is down, skips docs, and fails closed on partial files", async () => {
+test("live acceptance remains checked, while scoped admission also refuses an unavailable Armada", async () => {
   const acceptanceConfig = parseConfig(
     `${DEMO_TOML}\n[[acceptance]]\nname = "production build"\ncommand = "build"\npaths = ["deploy/**"]`,
   );
@@ -546,7 +582,8 @@ test("live acceptance hand-back uses Linear while Armada is down, skips docs, an
   );
   expect(await refusal(handBack())).toContain("has not passed");
   pull.files = [{ path: "docs/guide.md", additions: 1, deletions: 0 }];
-  await handBack();
+  expect(await refusal(handBack())).toContain("service is unavailable");
+  expect(linear.writes).toEqual([]);
   pull.files[0] = { path: "docs/Dockerfile", additions: 0, deletions: 0, changeType: "RENAMED" };
   expect(await refusal(handBack())).toContain("has not passed");
   pull.filesComplete = false;
@@ -556,21 +593,18 @@ test("live acceptance hand-back uses Linear while Armada is down, skips docs, an
     `Agent status: shipping — acceptance "production build" passed on ${HEAD} in 1m1s`,
     NOW.toISOString(),
   );
-  const outcome = await reportPhase(ctx, {
-    ticket: "DEMO-7",
-    phase: "ready-to-merge",
-    pr: "9",
-    sha: HEAD,
-    morePrs: "the dashboard part",
-  });
-  expect(outcome.warnings).toContain("not signed in to Armada");
   expect(
-    linear
-      .get("DEMO-7")
-      .comments.some((c) =>
-        c.status?.summary.endsWith("acceptance: production build ok; more PRs: the dashboard part"),
-      ),
-  ).toBe(true);
+    await refusal(
+      reportPhase(ctx, {
+        ticket: "DEMO-7",
+        phase: "ready-to-merge",
+        pr: "9",
+        sha: HEAD,
+        morePrs: "the dashboard part",
+      }),
+    ),
+  ).toContain("service is unavailable");
+  expect(linear.writes).toEqual([]);
   linear.get("DEMO-7").commentsTruncated = true;
   expect(await refusal(handBack())).toContain("evidence is incomplete");
 });

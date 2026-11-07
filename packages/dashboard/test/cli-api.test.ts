@@ -18,7 +18,7 @@ import { guard } from "../lib/auth-http.ts";
 import { fleetKeysOf, organizationKeys, type Release } from "../lib/broker.ts";
 import { type CliAccounts, type CliApiDeps, type CliIdentity, handleCli } from "../lib/cli-api.ts";
 import type { Database } from "../lib/db.ts";
-import { holdProject, saveRuntimeHandle } from "../lib/fleet-store.ts";
+import { fleetStore, holdProject, saveRuntimeHandle } from "../lib/fleet-store.ts";
 import { dbSnapshots, memorySnapshots } from "../lib/snapshots.ts";
 import { deleteSecret, listEvents, type SecretName, setSecret, type VaultKey, vaultModeOf } from "../lib/vault.ts";
 import { bindLaunch, createLaunch, endWorker, exchangeLaunch } from "../lib/workers.ts";
@@ -716,6 +716,54 @@ describe("own-worker phase through server serialization and official client", ()
     expect((await g.read()).worker?.phase).toBe("implementing");
     g.deps.serverRevision = undefined;
     await expect(g.read()).rejects.toThrow("fresh own-claim");
+  });
+  test("hand-back capability uses authenticated own GET session and never grants coordinator inbox access", async () => {
+    const f = await fixture();
+    const state = (await f.legacy()).ownHandBacks;
+    expect(state).toMatchObject({
+      schema: "hand-back/v2",
+      project: f.project.slug,
+      ticket: "DEMO-2",
+      complete: true,
+      serverRevision: "a".repeat(40),
+    });
+    expect(state?.claimGeneration).toMatch(/^[a-f0-9]{64}$/);
+    const ref = await fleetStore(client).recordHandBack({
+      project: f.project.slug,
+      at: new Date(NOW.getTime() + 1),
+      report: {
+        ticket: "DEMO-2",
+        phase: "ready-to-merge",
+        previous: "shipping",
+        summary: `PR #10, head ${"b".repeat(40)}, CI green`,
+        message: "",
+        prUrl: `https://github.com/${f.project.repository}/pull/10`,
+        headSha: "b".repeat(40),
+        workerSessionId: f.launch.worker.id,
+        handBack: { schema: "hand-back/v2", claimGeneration: state!.claimGeneration!, previous: null },
+      },
+    });
+    expect((await f.legacy()).ownHandBacks?.items[0]?.handBack?.id).toBe(ref.id);
+    const denied = await handleCli(
+      new Request(`${BASE}/api/cli/fleet/inbox/ticket`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${f.signIn.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ project: f.project, input: { ticket: "DEMO-2", handBackState: "hand-back/v2" } }),
+      }),
+      ["fleet", "inbox", "ticket"],
+      f.deps,
+    );
+    expect(denied.status).toBe(403);
+    await saveRuntimeHandle(client, {
+      project: f.project.slug,
+      ticket: "DEMO-2",
+      runtime: "conductor",
+      handle: "synthetic/replacement",
+      branch: null,
+      workerSessionId: "replacement",
+      at: new Date(NOW.getTime() + 2),
+    });
+    expect((await f.legacy()).ownHandBacks).toBeUndefined();
   });
   test("caller selectors cannot disclose a foreign session; coordinator own-claim requests are refused", async () => {
     const f = await fixture();

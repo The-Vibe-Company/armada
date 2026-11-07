@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { allowAcceptance } from "../src/acceptance.ts";
 import { parseConfig } from "../src/config.ts";
 import { type CommitShape, type Comparison, GithubError, type MergePull } from "../src/github.ts";
+import { HAND_BACK_SCHEMA, type HandBackRef } from "../src/hand-backs.ts";
 import { LinearError } from "../src/linear.ts";
 import { createLinearWriter } from "../src/linear-write.ts";
 import type { Fleet } from "../src/live.ts";
@@ -2521,3 +2522,416 @@ test.each([
     expect(live.store.events.filter((e) => e.ticket === "DEMO-7" && e.kind === "merge")).toHaveLength(1);
   }
 });
+
+async function scopedFixture() {
+  const live = tempFleet();
+  const s = setup({ live });
+  await live.store.ensureProject(
+    { slug: "widgets", name: "Widgets", repository: "acme/widgets", programRoot: "DEMO-1" },
+    NOW,
+  );
+  await live.store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-7",
+    runtime: "conductor",
+    handle: "ws-1/s-1",
+    branch: "feature/demo-7",
+    at: NOW,
+  });
+  const generation = (await live.store.handBackState("widgets", "DEMO-7")).claimGeneration!;
+  const report = async (pr: number, head: string, previous: HandBackRef | null = null, more = "") => {
+    live.clock.advance(1);
+    const summary = `PR #${pr}, head ${head}, CI green${more ? `; more PRs: ${more}` : ""}`;
+    const row = await live.store.recordHandBack({
+      project: "widgets",
+      at: live.clock.now(),
+      report: {
+        ticket: "DEMO-7",
+        phase: "ready-to-merge",
+        previous: "shipping",
+        summary,
+        message: "",
+        prUrl: `https://github.com/acme/widgets/pull/${pr}`,
+        headSha: head,
+        handBack: { schema: HAND_BACK_SCHEMA, claimGeneration: generation, previous },
+      },
+    });
+    s.linear.post("DEMO-7", `Agent status: ready-to-merge — ${summary}`, live.clock.now().toISOString());
+    return row;
+  };
+  return { ...s, live, report };
+}
+test("latest-global-other-pr: native merge selects its own PR and keeps the other ready", async () => {
+  const s = await scopedFixture(),
+    first = await s.report(9, HEAD),
+    second = await s.report(10, UPDATED);
+  const out = await mergePullRequest(s.ctx, { pr: 9, keepOpen: true });
+  expect(out.merged).toBe(true);
+  expect(out.remainingHandBacks?.map((i) => i.id)).toEqual([second.id]);
+  expect(out.continuation).toBeNull();
+  expect((await s.linear.readTicket("DEMO-7"))?.agentPhase).toBe("ready-to-merge");
+  expect((await s.live.store.getInboxItem("widgets", first.id))?.resolvedAt).not.toBeNull();
+});
+test("no-opportunistic-old-head: an old green comment cannot replace the current revision", async () => {
+  const s = await scopedFixture(),
+    first = await s.report(9, HEAD);
+  await s.report(9, UPDATED, first);
+  expect(s.forge.pr.headSha).toBe(HEAD);
+  await expect(mergePullRequest(s.ctx, { pr: 9, keepOpen: true })).rejects.toThrow();
+  expect((await s.live.store.handBackState("widgets", "DEMO-7")).items[0]?.handBack?.headSha).toBe(UPDATED);
+});
+test("human-phase-preserved: cleanup does not overwrite a later blocking decision", async () => {
+  const s = await scopedFixture();
+  await s.report(9, HEAD);
+  await s.report(10, UPDATED);
+  const merge = s.ctx.forge.merge.bind(s.ctx.forge);
+  s.ctx.forge.merge = async (...args) => {
+    const result = await merge(...args);
+    const t = s.linear.get("DEMO-7");
+    t.labels = t.labels.map((l) => (l.group === "Agent phase" ? { ...l, id: "phase-blocked", name: "blocked" } : l));
+    return result;
+  };
+  const out = await mergePullRequest(s.ctx, { pr: 9, keepOpen: true });
+  expect(out.merged).toBe(true);
+  expect((await s.linear.readTicket("DEMO-7"))?.agentPhase).toBe("blocked");
+  expect(out.continuation).toBeNull();
+});
+
+test("legacy queued entry cannot silently adopt a newly scoped hand-back", async () => {
+  const s = await scopedFixture();
+  await s.report(9, HEAD);
+  await expect(mergePullRequest(s.ctx, { pr: 9, keepOpen: true, queue: true, queuedHead: HEAD })).rejects.toThrow(
+    "legacy queue entry",
+  );
+  expect(s.forge.pr.state).toBe("open");
+});
+
+test("scoped final merge repairs Linear after its own claim release", async () => {
+  const s = await scopedFixture();
+  await s.report(9, HEAD);
+  const update = s.linear.updateTicket.bind(s.linear);
+  s.linear.updateTicket = async () => {
+    throw new LinearError("synthetic unavailable", true, true);
+  };
+  const out = await mergePullRequest(s.ctx, { pr: 9 });
+  expect(out.merged).toBe(true);
+  expect(out.linearPending).toBe(true);
+  expect((await s.live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).not.toBeNull();
+  s.linear.updateTicket = update;
+  const repaired = await finishMerge(s.ctx, { pr: 9 });
+  expect(repaired.linearPending).toBe(false);
+  expect(s.linear.get("DEMO-7").statusType).toBe("completed");
+});
+
+test("F1 immutable declaration survives a refused legacy same-pin rewrite", async () => {
+  const s = await scopedFixture();
+  const ref = await s.report(9, HEAD, null, "dashboard part");
+  const body = (await s.live.store.getInboxItem("widgets", ref.id))!.body;
+  s.live.clock.advance(1);
+  s.linear.post(
+    "DEMO-7",
+    `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green`,
+    s.live.clock.now().toISOString(),
+  );
+  await expect(
+    s.live.fleet.report({
+      ticket: "DEMO-7",
+      phase: "ready-to-merge",
+      previous: "shipping",
+      summary: `PR #9, head ${HEAD}, CI green`,
+      message: "",
+      prUrl: "https://github.com/acme/widgets/pull/9",
+      headSha: HEAD,
+    }),
+  ).rejects.toThrow();
+  await expect(mergePullRequest(s.ctx, { pr: 9 })).rejects.toThrow();
+  expect(s.forge.pr.state).toBe("open");
+  expect((await s.live.store.getInboxItem("widgets", ref.id))!.body).toBe(body);
+  expect((await s.live.store.getRuntimeHandle("widgets", "DEMO-7"))!.releasedAt).toBeNull();
+});
+
+test.each(["unreadable", "contradictory"])("F2 partial receipt controls repair: %s", async (scenario) => {
+  const s = await scopedFixture();
+  await s.report(9, HEAD);
+  const sibling = await s.report(10, UPDATED);
+  const update = s.linear.updateTicket.bind(s.linear);
+  // Fail before the partial status comment, even when no label change was needed.
+  const link = s.linear.linkUrl.bind(s.linear);
+  s.linear.linkUrl = async () => {
+    throw new Error("synthetic Linear outage");
+  };
+  const merged = await mergePullRequest(s.ctx, { pr: 9, keepOpen: true });
+  expect(merged.merged).toBe(true);
+  expect(merged.linearPending).toBe(true);
+  const chore = (await s.live.fleet.ticketItems("DEMO-7")).find((i) => i.kind === "linear-pending")!;
+  expect(chore.body).toContain("Partial merge next:");
+  const read = s.live.fleet.handBackState.bind(s.live.fleet);
+  if (scenario === "unreadable")
+    s.live.fleet.handBackState = async () => {
+      throw new Error("synthetic state outage");
+    };
+  else
+    await s.live.fleet.chore({
+      ticket: "DEMO-7",
+      kind: "linear-pending",
+      pr: 9,
+      body: "Finish Linear for #9: Done, labels removed, PR linked, merged status. Run: armada merge --finish 9",
+    });
+  const expected = (await s.live.fleet.ticketItems("DEMO-7")).find((i) => i.id === chore.id)!.body;
+  s.linear.linkUrl = link;
+  s.linear.updateTicket = update;
+  const first = await finishMerge(s.ctx, { pr: 9 });
+  expect(first.linearPending).toBe(true);
+  expect((await s.live.fleet.ticketItems("DEMO-7")).find((i) => i.id === chore.id)!.body).toBe(expected);
+  s.live.fleet.handBackState = read;
+  const second = await finishMerge(s.ctx, { pr: 9 });
+  expect(second.linearPending).toBe(scenario === "contradictory");
+  expect(s.linear.get("DEMO-7").statusType).not.toBe("completed");
+  expect((await s.live.store.getInboxItem("widgets", sibling.id))!.resolvedAt).toBeNull();
+  expect((await s.live.store.getRuntimeHandle("widgets", "DEMO-7"))!.releasedAt).toBeNull();
+});
+
+test.each(["after-consume", "confirmation"])(
+  "F3 newly admitted sibling fences partial effects: %s",
+  async (boundary) => {
+    const s = await scopedFixture();
+    await s.report(9, HEAD);
+    let sibling: HandBackRef | null = null;
+    const admit = async () => {
+      if (!sibling) sibling = await s.report(10, UPDATED);
+    };
+    if (boundary === "after-consume") {
+      const consume = s.live.fleet.merge.bind(s.live.fleet);
+      s.live.fleet.merge = async (input) => {
+        const result = await consume(input);
+        await admit();
+        return result;
+      };
+    } else {
+      const sleep = s.ctx.sleep;
+      s.ctx.sleep = async (ms) => {
+        await sleep(ms);
+        if (s.forge.pr.state === "merged") await admit();
+      };
+    }
+    const out = await mergePullRequest(s.ctx, { pr: 9, keepOpen: true });
+    expect(out.merged).toBe(true);
+    expect(sibling).not.toBeNull();
+    expect(out.continuation).toBeNull();
+    expect(out.linearPending || s.linear.get("DEMO-7").agentPhase === "ready-to-merge").toBe(true);
+    expect((await s.live.store.handBackState("widgets", "DEMO-7")).items.map((i) => i.id)).toContain(sibling!.id);
+  },
+);
+
+test.each([false, true])("F1 immutable continuation permits deliberate close=%s", async (close) => {
+  const s = await scopedFixture();
+  await s.report(9, HEAD, null, "dashboard part");
+  const result = await mergePullRequest(s.ctx, { pr: 9, close });
+  expect(result.merged).toBe(true);
+  expect(result.keepOpen === true).toBe(!close);
+  expect((await s.live.store.getRuntimeHandle("widgets", "DEMO-7"))!.releasedAt === null).toBe(!close);
+});
+
+async function replacementClaim(s: Awaited<ReturnType<typeof scopedFixture>>) {
+  s.live.clock.advance(1000);
+  await s.live.store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-7",
+    runtime: "conductor",
+    handle: "ws-2/s-2",
+    branch: "feature/demo-7-g2",
+    at: s.live.clock.now(),
+  });
+  const t = s.linear.get("DEMO-7");
+  t.statusType = "started";
+  t.stateId = "st-progress";
+  t.labels = [label("phase-implementing"), label("rt-conductor")];
+}
+
+test.each(
+  ["immediate", "finish"].flatMap((route) => ["replacement", "unreadable", "stable"].map((mode) => ({ route, mode }))),
+)("C1 final cleanup fences replacement during Linear read: %j", async ({ route, mode }) => {
+  const s = await scopedFixture();
+  const ref = await s.report(9, HEAD);
+  const update = s.linear.updateTicket.bind(s.linear);
+  let choreBody: string | undefined;
+  if (route === "finish") {
+    s.linear.updateTicket = async () => {
+      throw new Error("initial Linear outage");
+    };
+    const first = await mergePullRequest(s.ctx, { pr: 9 });
+    expect(first.merged).toBe(true);
+    expect(first.linearPending).toBe(true);
+    expect((await s.live.store.handBackState("widgets", "DEMO-7")).merges[0]?.keepOpen).toBe(false);
+    choreBody = (await s.live.fleet.ticketItems("DEMO-7")).find((i) => i.kind === "linear-pending")!.body;
+    s.linear.updateTicket = update;
+  }
+  const read = s.linear.readTicket.bind(s.linear);
+  let boundary = false,
+    writesBefore = 0;
+  let labelsBefore: ReturnType<typeof s.linear.get>["labels"] = [];
+  s.linear.readTicket = async (id) => {
+    if (id === "DEMO-7" && s.forge.pr.state === "merged" && !boundary) {
+      boundary = true;
+      if (mode === "replacement") await replacementClaim(s);
+      if (mode === "unreadable")
+        s.live.fleet.handBackState = async () => {
+          throw new Error("state unreadable at final effect");
+        };
+      labelsBefore = structuredClone(s.linear.get("DEMO-7").labels);
+      writesBefore = s.linear.writes.length;
+    }
+    return read(id);
+  };
+  const out = route === "finish" ? await finishMerge(s.ctx, { pr: 9 }) : await mergePullRequest(s.ctx, { pr: 9 });
+  expect(boundary).toBe(true);
+  expect(out.merged).toBe(true);
+  if (mode === "stable") {
+    expect(out.linearPending).toBe(false);
+    expect(s.linear.get("DEMO-7").statusType).toBe("completed");
+  } else {
+    expect(out.linearPending).toBe(true);
+    expect(s.linear.get("DEMO-7").statusType).toBe("started");
+    expect(s.linear.get("DEMO-7").labels).toEqual(labelsBefore);
+    expect(s.linear.writes.slice(writesBefore)).toEqual([]);
+    const chore = (await s.live.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).find(
+      (i) => i.kind === "linear-pending",
+    );
+    expect(chore).toBeDefined();
+    expect((await s.live.store.getInboxItem("widgets", chore!.id))?.resolvedAt).toBeNull();
+    expect(chore?.body).toBe(
+      choreBody ?? "Finish Linear for #9: Done, labels removed, PR linked, merged status. Run: armada merge --finish 9",
+    );
+    const receipts = (await s.live.store.handBackState("widgets", "DEMO-7")).merges;
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]?.receipt.handBack.id).toBe(ref.id);
+    if (mode === "replacement")
+      expect((await s.live.store.getRuntimeHandle("widgets", "DEMO-7"))?.handle).toBe("ws-2/s-2");
+  }
+});
+
+test.each([false, true].flatMap((queued) => ["replacement", "caught-read-failure"].map((mode) => ({ queued, mode }))))(
+  "C1 session ending checks the receipt at native callback boundary: %j",
+  async ({ queued, mode }) => {
+    const s = await scopedFixture();
+    const ref = await s.report(9, HEAD);
+    let attempts = 0,
+      effects = 0;
+    s.ctx.afterRecord = async (_ticket, tick) => {
+      attempts++;
+      if (mode === "replacement") {
+        await replacementClaim(s);
+        await tick?.();
+      } else {
+        const read = s.live.fleet.handBackState.bind(s.live.fleet);
+        s.live.fleet.handBackState = async (ticket) => {
+          s.live.fleet.handBackState = read;
+          throw new Error(`unreadable ${ticket}`);
+        };
+        try {
+          await tick?.();
+        } catch {
+          return;
+        }
+      }
+      effects++;
+    };
+    let out: Awaited<ReturnType<typeof mergePullRequest>> | undefined;
+    if (queued) {
+      await s.live.fleet.queueAdd({
+        pr: 9,
+        ticket: "DEMO-7",
+        noTicket: false,
+        keepOpen: false,
+        headSha: HEAD,
+        handBack: ref,
+        queuedBy: "owner",
+        reason: null,
+        throughHold: null,
+      });
+      await drainMergeQueue(s.ctx, s.live.fleet, {
+        timeoutMs: 60_000,
+        every: () => () => {},
+        afterMerge: async (result) => {
+          out = result;
+        },
+      });
+    } else out = await mergePullRequest(s.ctx, { pr: 9 });
+    expect(attempts).toBe(1);
+    expect(effects).toBe(0);
+    expect(out?.merged).toBe(true);
+    expect(out?.linearPending).toBe(true);
+    expect(s.linear.get("DEMO-7").statusType).toBe("started");
+    if (mode === "replacement")
+      expect((await s.live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBeNull();
+  },
+);
+
+test.each(["link", "spec-read", "spec-comment", "pending-read"])(
+  "C1 dependent cleanup effects stop after a new generation: %s",
+  async (boundary) => {
+    const s = await scopedFixture();
+    await s.report(9, HEAD);
+    s.linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: s.ctx.config.tracker.programRoot });
+    s.linear.get("DEMO-7").parentId = "DEMO-2";
+    let hit = false,
+      writesBefore = 0;
+    const replace = async () => {
+      if (hit) return;
+      hit = true;
+      await replacementClaim(s);
+      writesBefore = s.linear.writes.length;
+    };
+    if (boundary === "link") {
+      const link = s.linear.linkUrl.bind(s.linear);
+      s.linear.linkUrl = async (...args) => {
+        await link(...args);
+        await replace();
+      };
+    } else if (boundary === "spec-read") {
+      const read = s.linear.readChildren.bind(s.linear);
+      s.linear.readChildren = async (ids) => {
+        const children = await read(ids);
+        if (children.length) await replace();
+        return children;
+      };
+    } else if (boundary === "spec-comment") {
+      const comment = s.linear.comment.bind(s.linear);
+      s.linear.comment = async (...args) => {
+        const result = await comment(...args);
+        if (args[1].startsWith("Spec completion")) await replace();
+        return result;
+      };
+    }
+    let priorChore: string | undefined;
+    if (boundary === "pending-read") {
+      const update = s.linear.updateTicket.bind(s.linear);
+      s.linear.updateTicket = async () => {
+        throw new Error("initial outage");
+      };
+      expect((await mergePullRequest(s.ctx, { pr: 9 })).linearPending).toBe(true);
+      s.linear.updateTicket = update;
+      priorChore = (await s.live.fleet.ticketItems("DEMO-7")).find((i) => i.kind === "linear-pending")!.body;
+      const items = s.live.fleet.ticketItems.bind(s.live.fleet);
+      let reads = 0;
+      s.live.fleet.ticketItems = async (id) => {
+        const result = await items(id);
+        if (++reads === 2) await replace();
+        return result;
+      };
+    }
+    const out =
+      boundary === "pending-read" ? await finishMerge(s.ctx, { pr: 9 }) : await mergePullRequest(s.ctx, { pr: 9 });
+    expect(hit).toBe(true);
+    expect(out.linearPending).toBe(true);
+    expect(s.linear.get("DEMO-7").statusType).toBe("started");
+    expect(s.linear.writes.slice(writesBefore)).toEqual([]);
+    if (boundary !== "pending-read") expect(s.linear.get("DEMO-2").statusType).not.toBe("completed");
+    const chore = (await s.live.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).find(
+      (i) => i.kind === "linear-pending",
+    );
+    expect(chore).toBeDefined();
+    expect((await s.live.store.getInboxItem("widgets", chore!.id))?.resolvedAt).toBeNull();
+    if (priorChore) expect(chore?.body).toBe(priorChore);
+  },
+);

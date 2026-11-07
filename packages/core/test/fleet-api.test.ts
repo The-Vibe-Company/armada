@@ -803,7 +803,10 @@ test("fleet client resolves the coordinator preference for each request", async 
   await fleet.runtimeHandles();
   name = "back";
   await fleet.coordinators();
-  expect(requests).toEqual([{ coordinatorName: "front" }, { coordinatorName: "back" }]);
+  expect(requests).toEqual([
+    { coordinatorName: "front", handBackContract: "hand-back/v2" },
+    { coordinatorName: "back", handBackContract: "hand-back/v2" },
+  ]);
 });
 
 test("inbox ETag refreshes ownership when an unowned ticket is taken without changing visible entries", async () => {
@@ -1180,4 +1183,42 @@ test("a coordinator whose CLI does not read holds cannot acquire or renew the me
   expect(await refused(fleet.renewLease({ ...lease, throughHold: " " }))).toContain(400);
   await fleet.clearHold({ id: hold.id, reason: "recovered" });
   expect(await fleet.renewLease(lease)).toBe(true);
+});
+
+test("completed ticket snapshots never globally resolve typed hand-backs", async () => {
+  const store = memoryFleet();
+  await store.ensureProject(DEMO_PROJECT, NOW);
+  await store.saveRuntimeHandle({
+    project: DEMO_PROJECT.slug,
+    ticket: "DEMO-7",
+    runtime: "conductor",
+    handle: "synthetic",
+    branch: null,
+    at: NOW,
+  });
+  const state = await store.handBackState(DEMO_PROJECT.slug, "DEMO-7"),
+    head = "a".repeat(40);
+  const hb = await store.recordHandBack({
+    project: DEMO_PROJECT.slug,
+    at: NOW,
+    report: {
+      ticket: "DEMO-7",
+      phase: "ready-to-merge",
+      previous: "shipping",
+      summary: `PR #9, head ${head}, CI green`,
+      message: "",
+      prUrl: `https://github.com/${DEMO_PROJECT.repository}/pull/9`,
+      headSha: head,
+      handBack: { schema: "hand-back/v2", claimGeneration: state.claimGeneration!, previous: null },
+    },
+  });
+  const { readInbox } = await import("../src/live.ts");
+  const result = await readInbox(store, {
+    project: DEMO_PROJECT.slug,
+    silentAfterMinutes: 30,
+    now: NOW,
+    snapshot: { repository: DEMO_PROJECT.repository, issues: [{ id: "DEMO-7", statusType: "completed" }], prs: [] },
+  });
+  expect(result.some((i) => i.id === hb.id)).toBe(true);
+  expect((await store.getInboxItem(DEMO_PROJECT.slug, hb.id))?.resolvedAt).toBeNull();
 });

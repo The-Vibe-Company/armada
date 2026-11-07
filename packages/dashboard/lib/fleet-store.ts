@@ -1,3 +1,22 @@
+import {
+  claimGeneration,
+  HAND_BACK_KIND,
+  HAND_BACK_LIMIT,
+  HAND_BACK_SCHEMA,
+  type HandBackRef,
+  HandBackRefusal,
+  type HandBackRevision,
+  type HandBackState,
+  handBackPrUrl,
+  handBackReceiptSuperseded,
+  type MergeRecord,
+  type MergeRecorded,
+  parseHandBackRef,
+  type ReportRecord,
+  sameHandBack,
+  validateDeclaration,
+  validateHandBackMerge,
+} from "@armada/core/read";
 import { queueAdd, queueFinish, queueList, queueNext, queueProgress, queueRemove } from "./merge-queue";
 import { requestSecret } from "./secret-requests";
 // The fleet's live data in the app's database (THE-849): the project
@@ -1142,14 +1161,366 @@ export async function getRuntimeReference(
 
 // ------------------------------------------------------------------ inbox
 
+const handBackRefOf = (r: Row): HandBackRef =>
+  parseHandBackRef({
+    schema: HAND_BACK_SCHEMA,
+    id: Number(r.id),
+    project: String(r.project),
+    ticket: String(r.ticket),
+    repository: String(r.hb_repository),
+    pr: Number(r.hb_pr),
+    headSha: String(r.hb_head_sha),
+    claimGeneration: String(r.hb_generation),
+  });
+const handBackRevisionOf = (r: Row): HandBackRevision => ({
+  ...handBackRefOf(r),
+  body: String(r.body),
+  author: String(r.author),
+  createdAt: isoAt(r.created_at),
+  resolvedAt: iso(r.resolved_at),
+  resolution: text(r.resolution),
+  supersededBy: r.hb_superseded_by == null ? null : Number(r.hb_superseded_by),
+});
+
+export async function hasScopedHandBacks(db: Queryable, project: string, ticket?: string): Promise<boolean> {
+  const handles = ticket ? [await getRuntimeHandle(db, project, ticket)] : await openRuntimeHandles(db, project);
+  const generations = handles.flatMap((h) => {
+    const generation = claimGeneration(h);
+    return generation ? [generation] : [];
+  });
+  return !!(
+    await db.query(
+      `SELECT 1 FROM inbox_items WHERE project = $1 AND kind = 'hand-back-v2'
+    AND (resolved_at IS NULL OR hb_generation = ANY($2::text[])) ${ticket ? "AND ticket = $3" : ""} LIMIT 1`,
+      ticket ? [project, generations, ticket] : [project, generations],
+    )
+  ).rows.length;
+}
+export async function handBackState(
+  db: Queryable,
+  project: string,
+  ticket: string,
+): Promise<Omit<HandBackState, "serverRevision">> {
+  const registered = (await db.query("SELECT repository FROM projects WHERE slug = $1", [project])).rows[0];
+  if (!registered) throw new HandBackRefusal("unknown hand-back project");
+  const rows = await db.query(
+    `SELECT ${INBOX_COLUMNS} FROM inbox_items WHERE project = $1 AND ticket = $2
+    AND kind IN ('hand-back', 'hand-back-v2') AND resolved_at IS NULL ORDER BY id LIMIT $3`,
+    [project, ticket, HAND_BACK_LIMIT + 1],
+  );
+  const receipts = await db.query(
+    `SELECT m.receipt, m.keep_open FROM hand_back_merge_receipts m
+    JOIN inbox_items i ON i.id = m.hand_back_id AND i.project = m.project
+    WHERE m.project = $1 AND i.ticket = $2 ORDER BY m.created_at DESC, m.hand_back_id DESC LIMIT $3`,
+    [project, ticket, HAND_BACK_LIMIT + 1],
+  );
+  const handle = await getRuntimeHandle(db, project, ticket);
+  return {
+    schema: HAND_BACK_SCHEMA,
+    project,
+    repository: String(registered.repository),
+    ticket,
+    claimGeneration: claimGeneration(handle),
+    complete: rows.rows.length <= HAND_BACK_LIMIT && receipts.rows.length <= HAND_BACK_LIMIT,
+    merges: receipts.rows.slice(0, HAND_BACK_LIMIT).map((r) => ({
+      receipt: r.receipt as import("@armada/core/read").HandBackMerge,
+      keepOpen: Boolean(r.keep_open),
+      superseded: handBackReceiptSuperseded(
+        handle,
+        (r.receipt as import("@armada/core/read").HandBackMerge).handBack.claimGeneration,
+        Boolean(r.keep_open),
+      ),
+    })),
+    items: rows.rows.slice(0, HAND_BACK_LIMIT).map(inboxRow),
+  };
+}
+async function lockHandBackProject(tx: Queryable, project: string) {
+  const row = (await tx.query("SELECT repository FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [project])).rows[0];
+  if (!row) throw new HandBackRefusal("unknown hand-back project");
+  return String(row.repository);
+}
+async function assertNoLegacyLease(tx: Queryable, project: string, at: Date) {
+  const rows = await tx.query(
+    `SELECT name FROM leases WHERE project = $1 AND name IN ('merge', 'merge-queue')
+    AND expires_at > $2 AND hand_back_contract IS DISTINCT FROM $3`,
+    [project, at, HAND_BACK_SCHEMA],
+  );
+  if (rows.rows.length) throw new HandBackRefusal("an active legacy merge lease prevents hand-back/v2 admission");
+}
+export async function recordHandBack(
+  db: Database,
+  input: { project: string; report: ReportRecord; at: Date },
+): Promise<HandBackRevision> {
+  const { project, report: r, at } = input;
+  return transaction(db, async (tx) => {
+    const repository = await lockHandBackProject(tx, project);
+    const h = await getRuntimeHandle(tx, project, r.ticket);
+    const generation = claimGeneration(h);
+    if (
+      !h ||
+      !generation ||
+      r.handBack?.schema !== HAND_BACK_SCHEMA ||
+      r.handBack.claimGeneration !== generation ||
+      (r.workerSessionId && r.workerSessionId !== h.workerSessionId)
+    )
+      throw new HandBackRefusal("hand-back claim generation is no longer held");
+    await assertNoLegacyLease(tx, project, at);
+    const pr = validateDeclaration(repository, r.prUrl, r.headSha, r.summary);
+    const rows = (
+      await tx.query(
+        `SELECT ${INBOX_COLUMNS} FROM inbox_items WHERE project = $1 AND ticket = $2
+      AND kind IN ('hand-back', 'hand-back-v2') AND (resolved_at IS NULL OR (hb_pr = $3 AND hb_head_sha = $4 AND hb_generation = $5))
+      ORDER BY id`,
+        [project, r.ticket, pr, r.headSha, generation],
+      )
+    ).rows;
+    if (rows.some((row) => row.kind === "hand-back" && !row.resolved_at))
+      throw new HandBackRefusal("legacy-unbound hand-back must be resolved by its existing route");
+    const body = `Agent status: ready-to-merge — ${r.summary}`;
+    const author = r.workerSessionId ?? h.workerSessionId ?? h.handle;
+    const same = rows.find(
+      (row) => row.hb_pr === pr && row.hb_head_sha === r.headSha && row.hb_generation === generation,
+    );
+    if (same) {
+      if (same.body !== body || same.author !== author)
+        throw new HandBackRefusal("same hand-back pin with different evidence");
+      if (same.resolved_at) throw new HandBackRefusal("hand-back revision is already closed; no stale replay");
+      return handBackRevisionOf(same);
+    }
+    const open = rows.filter((row) => !row.resolved_at && row.hb_pr === pr);
+    if (open.length > 1) throw new HandBackRefusal("ambiguous current hand-back");
+    const previous = open[0];
+    if (!previous && rows.filter((row) => !row.resolved_at).length >= HAND_BACK_LIMIT)
+      throw new HandBackRefusal("hand-back capacity reached; no incomplete admission");
+    if (
+      previous
+        ? !r.handBack.previous ||
+          !sameHandBack(handBackRefOf(previous), r.handBack.previous) ||
+          previous.hb_generation !== generation ||
+          at.getTime() <= Date.parse(isoAt(previous.created_at))
+        : r.handBack.previous !== null
+    )
+      throw new HandBackRefusal("hand-back changed since observation; stale report refused");
+    if (previous)
+      await tx.query("UPDATE inbox_items SET resolved_at = $2, resolution = 'superseded' WHERE id = $1", [
+        previous.id,
+        at,
+      ]);
+    const inserted = (
+      await tx.query(
+        `INSERT INTO inbox_items
+      (project, ticket, kind, recipient, author, body, created_at, coordinator, hb_repository, hb_pr, hb_head_sha, hb_generation)
+      VALUES ($1, $2, 'hand-back-v2', 'coordinator', $3, $4, $5, $6, $7, $8, $9, $10) RETURNING ${INBOX_COLUMNS}`,
+        [project, r.ticket, author, body, at, h.coordinator ?? null, repository, pr, r.headSha, generation],
+      )
+    ).rows[0];
+    if (!inserted) throw new HandBackRefusal("hand-back insert returned no row");
+    if (previous)
+      await tx.query("UPDATE inbox_items SET hb_superseded_by = $2 WHERE id = $1", [previous.id, inserted.id]);
+    if (r.paths !== undefined)
+      await tx.query(
+        `INSERT INTO ticket_paths(project,ticket,paths,declared_at) VALUES($1,$2,$3,$4)
+      ON CONFLICT(project,ticket) DO UPDATE SET paths=EXCLUDED.paths, declared_at=EXCLUDED.declared_at`,
+        [project, r.ticket, r.paths, at],
+      );
+    await recordEvent(
+      tx,
+      {
+        project,
+        ticket: r.ticket,
+        kind: "report",
+        phase: "ready-to-merge",
+        runtime: h.runtime,
+        handle: h.handle,
+        message: r.summary,
+        prUrl: r.prUrl,
+        headSha: r.headSha,
+        at,
+      },
+      { handle: h.handle, claimedAt: h.claimedAt, workerSessionId: h.workerSessionId },
+    );
+    return handBackRevisionOf(inserted);
+  });
+}
+export async function resumeHandBack(
+  db: Database,
+  input: { project: string; report: ReportRecord; at: Date },
+): Promise<void> {
+  const { project, report: r, at } = input;
+  return transaction(db, async (tx) => {
+    const repository = await lockHandBackProject(tx, project);
+    const h = await getRuntimeHandle(tx, project, r.ticket),
+      ref = r.handBack?.previous;
+    if (
+      !h ||
+      !ref ||
+      claimGeneration(h) !== ref.claimGeneration ||
+      r.handBack?.claimGeneration !== ref.claimGeneration ||
+      ref.project !== project ||
+      ref.ticket !== r.ticket ||
+      ref.repository !== repository ||
+      ref.headSha !== r.headSha ||
+      handBackPrUrl(repository, r.prUrl) !== ref.pr ||
+      (r.workerSessionId && r.workerSessionId !== h.workerSessionId)
+    )
+      throw new HandBackRefusal("scoped correction claim or reference changed");
+    const row = (
+      await tx.query(
+        `SELECT ${INBOX_COLUMNS} FROM inbox_items WHERE project = $1 AND id = $2 AND kind = 'hand-back-v2'`,
+        [project, ref.id],
+      )
+    ).rows[0];
+    if (!row || row.resolved_at || !sameHandBack(handBackRefOf(row), ref))
+      throw new HandBackRefusal("scoped correction hand-back is no longer current");
+    await tx.query("UPDATE inbox_items SET resolved_at = $3, resolution = $4 WHERE project = $1 AND id = $2", [
+      project,
+      ref.id,
+      at,
+      `scoped correction: ${r.phase}`,
+    ]);
+    await recordEvent(
+      tx,
+      {
+        project,
+        ticket: r.ticket,
+        kind: "report",
+        phase: r.phase,
+        message: r.summary,
+        prUrl: r.prUrl,
+        headSha: r.headSha,
+        runtime: h.runtime,
+        handle: h.handle,
+        at,
+      },
+      { handle: h.handle, claimedAt: h.claimedAt, workerSessionId: h.workerSessionId },
+    );
+  });
+}
+export async function consumeHandBack(
+  db: Database,
+  input: { project: string; merge: MergeRecord; at: Date },
+): Promise<MergeRecorded> {
+  const { project, merge: m, at } = input;
+  const receipt = m.handBackReceipt;
+  if (!receipt) throw new HandBackRefusal("merge has no hand-back receipt");
+  return transaction(db, async (tx) => {
+    await lockHandBackProject(tx, project);
+    const ref = parseHandBackRef(receipt.handBack);
+    if (
+      ref.project !== project ||
+      ref.ticket !== m.ticket ||
+      ref.pr !== m.number ||
+      receipt.mergedHeadSha !== m.headSha ||
+      receipt.mergeCommit !== m.mergeCommit
+    )
+      throw new HandBackRefusal("merge receipt scope mismatch");
+    const prior = (
+      await tx.query(
+        "SELECT receipt, keep_open, result FROM hand_back_merge_receipts WHERE project = $1 AND hand_back_id = $2",
+        [project, ref.id],
+      )
+    ).rows[0];
+    if (prior) {
+      if (
+        !sameHandBack((prior.receipt as typeof receipt).handBack, receipt.handBack) ||
+        (prior.receipt as typeof receipt).mergedHeadSha !== receipt.mergedHeadSha ||
+        (prior.receipt as typeof receipt).mergeCommit !== receipt.mergeCommit ||
+        prior.keep_open !== !!m.keepOpen ||
+        (prior.receipt as typeof receipt).verifiedMainLineage?.from !== receipt.verifiedMainLineage?.from ||
+        (prior.receipt as typeof receipt).verifiedMainLineage?.to !== receipt.verifiedMainLineage?.to
+      )
+        throw new HandBackRefusal("different receipt for an already consumed hand-back");
+      const current = await getRuntimeHandle(tx, project, m.ticket);
+      const state = await handBackState(tx, project, m.ticket);
+      const remaining = state.items.flatMap((i) =>
+        i.handBack && i.handBack.claimGeneration === ref.claimGeneration ? [i.handBack] : [],
+      );
+      return {
+        ...(prior.result as MergeRecorded),
+        handle: current,
+        open: await openRuntimeHandles(tx, project),
+        remainingHandBacks: remaining,
+        aggregatePhase: remaining.length ? "ready-to-merge" : "implementing",
+        superseded: handBackReceiptSuperseded(current, ref.claimGeneration, !!m.keepOpen),
+      };
+    }
+    const row = (
+      await tx.query(
+        `SELECT ${INBOX_COLUMNS} FROM inbox_items WHERE project = $1 AND id = $2 AND kind = 'hand-back-v2'`,
+        [project, ref.id],
+      )
+    ).rows[0];
+    if (!row || row.resolved_at) throw new HandBackRefusal("hand-back is missing or closed");
+    validateHandBackMerge(handBackRefOf(row), receipt);
+    const h = await getRuntimeHandle(tx, project, m.ticket);
+    if (claimGeneration(h) !== ref.claimGeneration) throw new HandBackRefusal("merge belongs to a superseded claim");
+    const state = await handBackState(tx, project, m.ticket);
+    if (!state.complete) throw new HandBackRefusal("incomplete hand-back state prevents cleanup");
+    const remaining = state.items.filter((i) => i.id !== ref.id);
+    if (remaining.length && !m.keepOpen) throw new HandBackRefusal("another hand-back remains; final closure refused");
+    if (remaining.some((i) => !i.handBack || i.handBack.claimGeneration !== ref.claimGeneration))
+      throw new HandBackRefusal("remaining hand-back is not bound to this claim");
+    await tx.query("UPDATE inbox_items SET resolved_at = $3, resolution = $4 WHERE project = $1 AND id = $2", [
+      project,
+      ref.id,
+      at,
+      `merged as ${m.mergeCommit}`,
+    ]);
+    const aggregatePhase = remaining.length ? "ready-to-merge" : "implementing";
+    await recordEvent(tx, {
+      project,
+      ticket: m.ticket,
+      kind: m.keepOpen ? "report" : "merge",
+      phase: m.keepOpen ? aggregatePhase : "merged",
+      runtime: m.keepOpen ? h?.runtime : "coordinator",
+      handle: m.keepOpen ? h?.handle : (m.coordinator ?? "default"),
+      message: `PR #${m.number} merged as ${m.mergeCommit}`,
+      prUrl: m.url,
+      headSha: m.headSha,
+      at,
+    });
+    if (!m.keepOpen) {
+      if (
+        !h ||
+        !(await releaseRuntimeHandle(
+          tx,
+          project,
+          m.ticket,
+          at,
+          { handle: h.handle, claimedAt: h.claimedAt, workerSessionId: h.workerSessionId },
+          true,
+        ))
+      )
+        throw new HandBackRefusal("claim changed during final cleanup");
+      for (const kind of ["question", "answer-request", "decision"] as const)
+        await resolveInboxItems(tx, { project, ticket: m.ticket, kind, resolution: "merged", at });
+      await tx.query("DELETE FROM ticket_paths WHERE project = $1 AND ticket = $2", [project, m.ticket]);
+    }
+    const result: MergeRecorded = {
+      handle: h ? { ...h, ...(!m.keepOpen ? { releasedAt: at.toISOString() } : {}) } : null,
+      resolved: 1,
+      superseded: false,
+      open: await openRuntimeHandles(tx, project),
+      remainingHandBacks: remaining.map((i) => i.handBack as HandBackRef),
+      aggregatePhase,
+    };
+    await tx.query(
+      "INSERT INTO hand_back_merge_receipts (project, hand_back_id, receipt, keep_open, result, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
+      [project, ref.id, JSON.stringify(receipt), !!m.keepOpen, JSON.stringify(result), at],
+    );
+    return result;
+  });
+}
+
 const INBOX_COLUMNS = `id, project, coordinator, ticket, kind, recipient, author, body, created_at, resolved_at, resolution,
-  request_question, request_profile, request_pr, request_validation, request_deferred, request_pinned, request_expires_at, request_attempts, request_attempted_at, request_runtime, request_notes, request_reason, launch_id`;
+  request_question, request_profile, request_pr, request_validation, request_deferred, request_pinned, request_expires_at, request_attempts, request_attempted_at, request_runtime, request_notes, request_reason, launch_id, hb_repository, hb_pr, hb_head_sha, hb_generation, hb_superseded_by`;
 
 const inboxRow = (r: Row): StoredInboxItem => ({
   id: Number(r.id),
   project: String(r.project),
   ticket: text(r.ticket),
-  kind: String(r.kind) as InboxKind,
+  kind: (r.kind === HAND_BACK_KIND ? "hand-back" : String(r.kind)) as InboxKind,
+  ...(r.kind === HAND_BACK_KIND ? { handBack: handBackRefOf(r) } : {}),
   recipient: String(r.recipient) as InboxRecipient,
   author: text(r.author),
   coordinator: text(r.coordinator),
@@ -1332,6 +1703,8 @@ export async function putHandBack(
   const run = async (tx: Queryable) => {
     await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [item.project]);
     if (!(await reportGuardMatches(tx, item.project, item.ticket, item.guard))) return;
+    if (await hasScopedHandBacks(tx, item.project, item.ticket))
+      throw new HandBackRefusal("legacy writer cannot refresh scoped hand-backs");
     if (item.author) {
       const held = (
         await tx.query(
@@ -1577,6 +1950,7 @@ const leaseOf = (r: Row): Lease => ({
   name: String(r.name),
   holder: String(r.holder),
   acquiredAt: isoAt(r.acquired_at),
+  handBackContract: text(r.hand_back_contract),
   expiresAt: isoAt(r.expires_at),
 });
 
@@ -1589,20 +1963,27 @@ const leaseOf = (r: Row): Lease => ({
  */
 export async function acquireLease(
   db: Database,
-  l: { project: string; name: string; holder: string; ttlMs: number; at: Date },
+  l: { project: string; name: string; holder: string; ttlMs: number; at: Date; handBackContract?: string },
 ): Promise<{ acquired: true } | { acquired: false; held: Lease | null }> {
   const expires = new Date(l.at.getTime() + l.ttlMs);
   return transaction(db, async (tx) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [l.project]);
+    if (
+      ["merge", "merge-queue"].includes(l.name) &&
+      l.handBackContract !== HAND_BACK_SCHEMA &&
+      (await hasScopedHandBacks(tx, l.project))
+    )
+      throw new HandBackRefusal("legacy merge lease cannot consume scoped hand-backs");
     // A lease released between the insert and the lock leaves no row to update: insert again.
     for (let attempt = 0; attempt < 3; attempt++) {
       const inserted = await tx.query(
-        `INSERT INTO leases (project, name, holder, acquired_at, expires_at) VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO leases (project, name, holder, acquired_at, expires_at, hand_back_contract) VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (project, name) DO NOTHING`,
-        [l.project, l.name, l.holder, l.at, expires],
+        [l.project, l.name, l.holder, l.at, expires, l.handBackContract ?? null],
       );
       if (inserted.rowCount) return { acquired: true } as const;
       const rs = await tx.query(
-        "SELECT project, name, holder, acquired_at, expires_at FROM leases WHERE project = $1 AND name = $2 FOR UPDATE",
+        "SELECT project, name, holder, acquired_at, expires_at, hand_back_contract FROM leases WHERE project = $1 AND name = $2 FOR UPDATE",
         [l.project, l.name],
       );
       const row = rs.rows[0];
@@ -1612,9 +1993,9 @@ export async function acquireLease(
         return { acquired: false, held } as const;
       const updated = await tx.query(
         `UPDATE leases SET holder = $3, expires_at = $5,
-           acquired_at = CASE WHEN holder = $3 THEN acquired_at ELSE $4 END
+           acquired_at = CASE WHEN holder = $3 THEN acquired_at ELSE $4 END, hand_back_contract = $6
          WHERE project = $1 AND name = $2`,
-        [l.project, l.name, l.holder, l.at, expires],
+        [l.project, l.name, l.holder, l.at, expires, l.handBackContract ?? null],
       );
       if (updated.rowCount) return { acquired: true } as const;
     }
@@ -1624,7 +2005,7 @@ export async function acquireLease(
 
 export async function getLease(db: Queryable, project: string, name: string): Promise<Lease | null> {
   const rs = await db.query(
-    "SELECT project, name, holder, acquired_at, expires_at FROM leases WHERE project = $1 AND name = $2",
+    "SELECT project, name, holder, acquired_at, expires_at, hand_back_contract FROM leases WHERE project = $1 AND name = $2",
     [project, name],
   );
   const r = rs.rows[0];
@@ -1633,16 +2014,26 @@ export async function getLease(db: Queryable, project: string, name: string): Pr
 
 /** Extends a lease we hold; false when it expired and someone else took it. */
 export async function renewLease(
-  db: Queryable,
-  l: { project: string; name: string; holder: string; ttlMs: number; at: Date },
+  db: Database | Queryable,
+  l: { project: string; name: string; holder: string; ttlMs: number; at: Date; handBackContract?: string },
 ): Promise<boolean> {
-  const rs = await db.query("UPDATE leases SET expires_at = $1 WHERE project = $2 AND name = $3 AND holder = $4", [
-    new Date(l.at.getTime() + l.ttlMs),
-    l.project,
-    l.name,
-    l.holder,
-  ]);
-  return rs.rowCount > 0;
+  const run = async (tx: Queryable) => {
+    await tx.query("SELECT slug FROM projects WHERE slug=$1 FOR NO KEY UPDATE", [l.project]);
+    if (
+      ["merge", "merge-queue"].includes(l.name) &&
+      l.handBackContract !== HAND_BACK_SCHEMA &&
+      (await hasScopedHandBacks(tx, l.project))
+    )
+      throw new HandBackRefusal("legacy merge lease cannot consume scoped hand-backs");
+    const rs = await tx.query("UPDATE leases SET expires_at=$1 WHERE project=$2 AND name=$3 AND holder=$4", [
+      new Date(l.at.getTime() + l.ttlMs),
+      l.project,
+      l.name,
+      l.holder,
+    ]);
+    return rs.rowCount > 0;
+  };
+  return "connect" in db ? transaction(db, run) : run(db);
 }
 
 /** Gives a lease back; a lease someone else took after ours expired is left alone. */
@@ -2722,6 +3113,11 @@ export const fleetStore = (db: Database): FleetStore => ({
   closeDeferredLaunches: (q) => closeDeferredLaunches(db, q),
   putPlan: (item) => putPlan(db, item),
   putHandBack: (item) => putHandBack(db, item),
+  recordHandBack: (input) => recordHandBack(db, input),
+  handBackState: (project, ticket) => handBackState(db, project, ticket),
+  consumeHandBack: (input) => consumeHandBack(db, input),
+  resumeHandBack: (input) => resumeHandBack(db, input),
+  hasScopedHandBacks: (project, ticket) => hasScopedHandBacks(db, project, ticket),
   putChore: (item) => putChore(db, item),
   openInboxItems: (q) => openInboxItems(db, q),
   ackEntry: (input) => ackEntry(db, input),

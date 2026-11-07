@@ -9,6 +9,7 @@ import { type Fetch, formatWorkerSession, machinePaths, updateWatchState } from 
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import {
   ARMADA_URL,
+  DEMO_PROJECT,
   DEMO_TOML,
   FakeLinear,
   type FakeVault,
@@ -390,17 +391,26 @@ describe("armada claim, report and release", () => {
   });
 
   test("shipping paths reach the ticket and coordinator inbox, without inventing legacy review evidence", async () => {
-    const w = worker(SIGNED_IN);
-    w.linear.add("DEMO-7", { labels: [{ id: "phase-shipping", name: "shipping", group: "Agent phase" }] });
-    w.net.rest = async () =>
-      Response.json(pullResponse({ number: 9, headSha: HEAD, checks: [{ name: "test", conclusion: "SUCCESS" }] }));
+    let w = worker(SIGNED_IN);
     const handBack = ["report", "ready-to-merge", "--pr", "9", "--sha", HEAD];
     for (const [path, line] of [
       ["ship-pr-dev", "shipped with ship-pr-dev"],
       ["fallback: GitHub OCR download unavailable", "shipped with the fallback: GitHub OCR download unavailable"],
       [null, "shipping path unreported"],
     ] as const) {
-      w.reset();
+      w = worker(SIGNED_IN);
+      w.linear.add("DEMO-7", { labels: [{ id: "phase-shipping", name: "shipping", group: "Agent phase" }] });
+      await w.store.ensureProject(DEMO_PROJECT, NOW);
+      await w.store.saveRuntimeHandle({
+        project: "widgets",
+        ticket: "DEMO-7",
+        runtime: "conductor",
+        handle: "ws-1/s-1",
+        branch: null,
+        at: NOW,
+      });
+      w.net.rest = async () =>
+        Response.json(pullResponse({ number: 9, headSha: HEAD, checks: [{ name: "test", conclusion: "SUCCESS" }] }));
       expect(await run(path ? [...handBack, "--shipped-with", path] : handBack, w.io)).toBe(0);
       expect(w.linear.bodies.at(-1)).toContain(line);
       expect(await run(["inbox"], w.io)).toBe(0);
@@ -411,12 +421,16 @@ describe("armada claim, report and release", () => {
       expect(await run([...handBack, "--shipped-with", path], w.io)).toBe(1);
       expect(w.linear.writes.length).toBe(before);
     }
-    const item = w.store.items.find((i) => i.kind === "hand-back");
-    if (!item) throw new Error("hand-back missing");
-    item.body = `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green`;
-    w.reset();
-    expect(await run(["inbox"], w.io)).toBe(0);
-    expect(w.out()).toContain("shipping path unreported");
+    const legacy = worker(SIGNED_IN);
+    await legacy.store.putHandBack({
+      project: "widgets",
+      ticket: "DEMO-7",
+      author: "legacy",
+      body: `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green`,
+      at: NOW,
+    });
+    expect(await run(["inbox"], legacy.io)).toBe(0);
+    expect(legacy.out()).toContain("shipping path unreported");
     expect(await run(["report", "shipping", "--message", "working", "--shipped-with", "ship-pr-dev"], w.io)).toBe(1);
   });
   test("a signed-in worker claims, reports on its branch and releases; Armada records every event", async () => {
@@ -449,6 +463,7 @@ describe("armada claim, report and release", () => {
     const fleet = w.armada.calls.filter((c) => c.path.startsWith("fleet/"));
     expect(fleet.map((c) => [c.path, c.apiKey])).toEqual([
       ["fleet/claim", KEY],
+      ["fleet/inbox/ticket", KEY],
       ["fleet/report", KEY],
       ["fleet/runtime/handle", KEY],
       ["fleet/release", KEY],
@@ -500,6 +515,15 @@ describe("armada claim, report and release", () => {
 
   test("a ready-to-merge report without a message option stays valid", async () => {
     const w = worker(SIGNED_IN);
+    await w.store.ensureProject(DEMO_PROJECT, NOW);
+    await w.store.saveRuntimeHandle({
+      project: "widgets",
+      ticket: "DEMO-7",
+      runtime: "conductor",
+      handle: "ws-1/s-1",
+      branch: null,
+      at: NOW,
+    });
     w.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", "synthetic-project-secret"]]));
     w.linear.add("DEMO-7", {
       labels: [{ id: "phase-shipping", name: "shipping", group: "Agent phase" }],
@@ -565,6 +589,15 @@ describe("armada claim, report and release", () => {
       messages.push(options?.input ?? "");
       return { code: 0, stdout: JSON.stringify({ messageId: args.at(-1), state: "sent" }), stderr: "" };
     };
+    await w.store.ensureProject(DEMO_PROJECT, NOW);
+    await w.store.saveRuntimeHandle({
+      project: "widgets",
+      ticket: "DEMO-7",
+      runtime: "conductor",
+      handle: "ws-1/s-1",
+      branch: null,
+      at: NOW,
+    });
     w.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", "synthetic-project-secret"]]));
     w.linear.add("DEMO-7");
     expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws/s"], w.io)).toBe(0);
