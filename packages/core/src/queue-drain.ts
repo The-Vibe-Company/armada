@@ -204,10 +204,14 @@ export async function drainMergeQueue(
       const live = await ctx.fleet();
       return { ...live, fleet: live.fleet ? fenced(live.fleet) : null };
     },
-    afterRecord: async (ticket) => {
-      await tick();
-      await ctx.afterRecord?.(ticket, tick);
-      await tick();
+    afterRecord: async (ticket, guard) => {
+      const check = async () => {
+        await tick();
+        await guard?.();
+      };
+      await check();
+      await ctx.afterRecord?.(ticket, check);
+      await check();
     },
   };
   const finish = async (entry: QueueEntry, result: Omit<QueueFinish, "id" | "holder">) => {

@@ -2731,3 +2731,207 @@ test.each([false, true])("F1 immutable continuation permits deliberate close=%s"
   expect(result.keepOpen === true).toBe(!close);
   expect((await s.live.store.getRuntimeHandle("widgets", "DEMO-7"))!.releasedAt === null).toBe(!close);
 });
+
+async function replacementClaim(s: Awaited<ReturnType<typeof scopedFixture>>) {
+  s.live.clock.advance(1000);
+  await s.live.store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-7",
+    runtime: "conductor",
+    handle: "ws-2/s-2",
+    branch: "feature/demo-7-g2",
+    at: s.live.clock.now(),
+  });
+  const t = s.linear.get("DEMO-7");
+  t.statusType = "started";
+  t.stateId = "st-progress";
+  t.labels = [label("phase-implementing"), label("rt-conductor")];
+}
+
+test.each(
+  ["immediate", "finish"].flatMap((route) => ["replacement", "unreadable", "stable"].map((mode) => ({ route, mode }))),
+)("C1 final cleanup fences replacement during Linear read: %j", async ({ route, mode }) => {
+  const s = await scopedFixture();
+  const ref = await s.report(9, HEAD);
+  const update = s.linear.updateTicket.bind(s.linear);
+  let choreBody: string | undefined;
+  if (route === "finish") {
+    s.linear.updateTicket = async () => {
+      throw new Error("initial Linear outage");
+    };
+    const first = await mergePullRequest(s.ctx, { pr: 9 });
+    expect(first.merged).toBe(true);
+    expect(first.linearPending).toBe(true);
+    expect((await s.live.store.handBackState("widgets", "DEMO-7")).merges[0]?.keepOpen).toBe(false);
+    choreBody = (await s.live.fleet.ticketItems("DEMO-7")).find((i) => i.kind === "linear-pending")!.body;
+    s.linear.updateTicket = update;
+  }
+  const read = s.linear.readTicket.bind(s.linear);
+  let boundary = false,
+    writesBefore = 0;
+  let labelsBefore: ReturnType<typeof s.linear.get>["labels"] = [];
+  s.linear.readTicket = async (id) => {
+    if (id === "DEMO-7" && s.forge.pr.state === "merged" && !boundary) {
+      boundary = true;
+      if (mode === "replacement") await replacementClaim(s);
+      if (mode === "unreadable")
+        s.live.fleet.handBackState = async () => {
+          throw new Error("state unreadable at final effect");
+        };
+      labelsBefore = structuredClone(s.linear.get("DEMO-7").labels);
+      writesBefore = s.linear.writes.length;
+    }
+    return read(id);
+  };
+  const out = route === "finish" ? await finishMerge(s.ctx, { pr: 9 }) : await mergePullRequest(s.ctx, { pr: 9 });
+  expect(boundary).toBe(true);
+  expect(out.merged).toBe(true);
+  if (mode === "stable") {
+    expect(out.linearPending).toBe(false);
+    expect(s.linear.get("DEMO-7").statusType).toBe("completed");
+  } else {
+    expect(out.linearPending).toBe(true);
+    expect(s.linear.get("DEMO-7").statusType).toBe("started");
+    expect(s.linear.get("DEMO-7").labels).toEqual(labelsBefore);
+    expect(s.linear.writes.slice(writesBefore)).toEqual([]);
+    const chore = (await s.live.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).find(
+      (i) => i.kind === "linear-pending",
+    );
+    expect(chore).toBeDefined();
+    expect((await s.live.store.getInboxItem("widgets", chore!.id))?.resolvedAt).toBeNull();
+    expect(chore?.body).toBe(
+      choreBody ?? "Finish Linear for #9: Done, labels removed, PR linked, merged status. Run: armada merge --finish 9",
+    );
+    const receipts = (await s.live.store.handBackState("widgets", "DEMO-7")).merges;
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]?.receipt.handBack.id).toBe(ref.id);
+    if (mode === "replacement")
+      expect((await s.live.store.getRuntimeHandle("widgets", "DEMO-7"))?.handle).toBe("ws-2/s-2");
+  }
+});
+
+test.each([false, true].flatMap((queued) => ["replacement", "caught-read-failure"].map((mode) => ({ queued, mode }))))(
+  "C1 session ending checks the receipt at native callback boundary: %j",
+  async ({ queued, mode }) => {
+    const s = await scopedFixture();
+    const ref = await s.report(9, HEAD);
+    let attempts = 0,
+      effects = 0;
+    s.ctx.afterRecord = async (_ticket, tick) => {
+      attempts++;
+      if (mode === "replacement") {
+        await replacementClaim(s);
+        await tick?.();
+      } else {
+        const read = s.live.fleet.handBackState.bind(s.live.fleet);
+        s.live.fleet.handBackState = async (ticket) => {
+          s.live.fleet.handBackState = read;
+          throw new Error(`unreadable ${ticket}`);
+        };
+        try {
+          await tick?.();
+        } catch {
+          return;
+        }
+      }
+      effects++;
+    };
+    let out: Awaited<ReturnType<typeof mergePullRequest>> | undefined;
+    if (queued) {
+      await s.live.fleet.queueAdd({
+        pr: 9,
+        ticket: "DEMO-7",
+        noTicket: false,
+        keepOpen: false,
+        headSha: HEAD,
+        handBack: ref,
+        queuedBy: "owner",
+        reason: null,
+        throughHold: null,
+      });
+      await drainMergeQueue(s.ctx, s.live.fleet, {
+        timeoutMs: 60_000,
+        every: () => () => {},
+        afterMerge: async (result) => {
+          out = result;
+        },
+      });
+    } else out = await mergePullRequest(s.ctx, { pr: 9 });
+    expect(attempts).toBe(1);
+    expect(effects).toBe(0);
+    expect(out?.merged).toBe(true);
+    expect(out?.linearPending).toBe(true);
+    expect(s.linear.get("DEMO-7").statusType).toBe("started");
+    if (mode === "replacement")
+      expect((await s.live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBeNull();
+  },
+);
+
+test.each(["link", "spec-read", "spec-comment", "pending-read"])(
+  "C1 dependent cleanup effects stop after a new generation: %s",
+  async (boundary) => {
+    const s = await scopedFixture();
+    await s.report(9, HEAD);
+    s.linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: s.ctx.config.tracker.programRoot });
+    s.linear.get("DEMO-7").parentId = "DEMO-2";
+    let hit = false,
+      writesBefore = 0;
+    const replace = async () => {
+      if (hit) return;
+      hit = true;
+      await replacementClaim(s);
+      writesBefore = s.linear.writes.length;
+    };
+    if (boundary === "link") {
+      const link = s.linear.linkUrl.bind(s.linear);
+      s.linear.linkUrl = async (...args) => {
+        await link(...args);
+        await replace();
+      };
+    } else if (boundary === "spec-read") {
+      const read = s.linear.readChildren.bind(s.linear);
+      s.linear.readChildren = async (ids) => {
+        const children = await read(ids);
+        if (children.length) await replace();
+        return children;
+      };
+    } else if (boundary === "spec-comment") {
+      const comment = s.linear.comment.bind(s.linear);
+      s.linear.comment = async (...args) => {
+        const result = await comment(...args);
+        if (args[1].startsWith("Spec completion")) await replace();
+        return result;
+      };
+    }
+    let priorChore: string | undefined;
+    if (boundary === "pending-read") {
+      const update = s.linear.updateTicket.bind(s.linear);
+      s.linear.updateTicket = async () => {
+        throw new Error("initial outage");
+      };
+      expect((await mergePullRequest(s.ctx, { pr: 9 })).linearPending).toBe(true);
+      s.linear.updateTicket = update;
+      priorChore = (await s.live.fleet.ticketItems("DEMO-7")).find((i) => i.kind === "linear-pending")!.body;
+      const items = s.live.fleet.ticketItems.bind(s.live.fleet);
+      let reads = 0;
+      s.live.fleet.ticketItems = async (id) => {
+        const result = await items(id);
+        if (++reads === 2) await replace();
+        return result;
+      };
+    }
+    const out =
+      boundary === "pending-read" ? await finishMerge(s.ctx, { pr: 9 }) : await mergePullRequest(s.ctx, { pr: 9 });
+    expect(hit).toBe(true);
+    expect(out.linearPending).toBe(true);
+    expect(s.linear.get("DEMO-7").statusType).toBe("started");
+    expect(s.linear.writes.slice(writesBefore)).toEqual([]);
+    if (boundary !== "pending-read") expect(s.linear.get("DEMO-2").statusType).not.toBe("completed");
+    const chore = (await s.live.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).find(
+      (i) => i.kind === "linear-pending",
+    );
+    expect(chore).toBeDefined();
+    expect((await s.live.store.getInboxItem("widgets", chore!.id))?.resolvedAt).toBeNull();
+    if (priorChore) expect(chore?.body).toBe(priorChore);
+  },
+);

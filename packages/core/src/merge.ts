@@ -1584,7 +1584,9 @@ async function closeTicket(
   c: Pick<Checked, "updatedFrom" | "decided">,
   unlocked: boolean,
   override = "",
+  guard?: () => Promise<void>,
 ) {
+  await guard?.();
   const groups = ctx.config.tracker.labels;
   const done = ticket.statusType === "completed" ? null : firstState(ticket.states, "completed");
   const removeLabelIds = [
@@ -1592,22 +1594,32 @@ async function closeTicket(
     ...others(ticket, groups.runtimeGroup, null),
     ...ticket.labels.filter((label) => label.name === ctx.config.tracker.readyLabel).map((label) => label.id),
   ];
-  if (done || removeLabelIds.length)
+  if (done || removeLabelIds.length) {
+    await guard?.();
     await ctx.linear.updateTicket(ticket.uuid, { ...(done ? { stateId: done.id } : {}), removeLabelIds });
-  if (!ticket.prs.some((p) => p.url === merged.url))
+    await guard?.();
+  }
+  if (!ticket.prs.some((p) => p.url === merged.url)) {
+    await guard?.();
     await ctx.linear.linkUrl(ticket.uuid, merged.url, merged.title || `Pull request #${merged.number}`);
+    await guard?.();
+  }
   if (
     !ticket.comments.some(
       (comment) =>
         comment.status?.phase === "merged" && new RegExp(`^PR #${merged.number}\\b`).test(comment.status.summary),
     )
-  )
+  ) {
+    await guard?.();
     await ctx.linear.comment(
       ticket.uuid,
       `Agent status: merged — PR #${merged.number} squash-merged into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"}, head ${merged.headSha}${
         c.updatedFrom ? `, the handed-back ${c.updatedFrom} updated with ${merged.baseRef}` : ""
       }${unlocked ? ", merged without lock (--no-lock)" : ""}${c.decided ? `; ${c.decided}` : ""}${override ? `; ${override}` : ""}`,
     );
+    await guard?.();
+  }
+  await guard?.();
   return [
     `${ticket.id}: ${done ? `moved to ${done.name}` : "state unchanged"}, agent and ready labels removed, merged status posted.`,
   ];
@@ -2040,22 +2052,36 @@ async function after(
       `cleared: ${live$.cleared.map((id) => `${live$.clearedKinds?.[id] === "queue-refused" ? "queue refusal" : "merge request"} #${id}`).join(", ")}`,
     );
   if (live$?.resolved) lines.push(`Hand-back resolved in the coordinator's inbox.`);
+  let effectFailure: Error | null = null;
   const effectGuard =
     c.scopedHandBack && live$
       ? async () => {
-          const { fleet } = await ctx.fleet();
-          if (!fleet) throw new HandBackRefusal("scoped state unavailable; cleanup pending");
-          await assertScopedMergeEffects(fleet, c.scopedHandBack!, keepOpen, live$!.remainingHandBacks ?? []);
+          // A native adapter may catch failures as warnings; authority failure
+          // still ends this cleanup attempt, even if the next read could succeed.
+          if (effectFailure) throw effectFailure;
+          try {
+            const { fleet } = await ctx.fleet();
+            if (!fleet) throw new HandBackRefusal("scoped state unavailable; cleanup pending");
+            await assertScopedMergeEffects(fleet, c.scopedHandBack!, keepOpen, live$!.remainingHandBacks ?? []);
+          } catch (error) {
+            effectFailure = error instanceof Error ? error : new Error(String(error));
+            throw effectFailure;
+          }
         }
       : undefined;
   let linearPending = false;
   if (ticket && !live$?.superseded) {
     try {
-      if (!keepOpen && (!c.scopedHandBack || live$)) await ctx.afterRecord?.(ticket.id);
-    } catch (err) {
-      c.warnings.push(`Could not end worker sessions (${err instanceof Error ? err.message : String(err)})`);
-    }
-    try {
+      if (!keepOpen && (!c.scopedHandBack || live$)) {
+        await effectGuard?.();
+        try {
+          await ctx.afterRecord?.(ticket.id, effectGuard);
+        } catch (err) {
+          c.warnings.push(`Could not end worker sessions (${err instanceof Error ? err.message : String(err)})`);
+          if (effectGuard) throw err;
+        }
+        await effectGuard?.();
+      }
       if (c.scopedHandBack && !live$)
         throw new HandBackRefusal("scoped cleanup is pending; ticket and worker remain open");
       const fresh = recorded && !("armadaHandBack" in ticket) ? ticket : await ctx.linear.readTicket(ticket.id);
@@ -2065,10 +2091,12 @@ async function after(
           ? [`${ticket.id}: this partial merge is already recorded; retained its current phase.`]
           : keepOpen
             ? await keepTicketOpen(ctx, fresh, merged, c, more, unlocked, override, live$?.aggregatePhase, effectGuard)
-            : await closeTicket(ctx, fresh, merged, c, unlocked, override)),
+            : await closeTicket(ctx, fresh, merged, c, unlocked, override, effectGuard)),
       );
       if (!keepOpen) {
-        const spec = await closeFinishedSpec(ctx, fresh);
+        await effectGuard?.();
+        const spec = await closeFinishedSpec(ctx, fresh, effectGuard);
+        await effectGuard?.();
         c.warnings.push(...spec.warnings);
         lines.push(...spec.lines);
       }
@@ -2077,14 +2105,20 @@ async function after(
       c.warnings.push(
         `#${merged.number} is merged, but Linear could not be updated (${err instanceof Error ? err.message : String(err)})`,
       );
-      const chore = await mergeLive(ctx, c.warnings, "record pending Linear work", (fleet) =>
-        fleet.chore({
+      const chore = await mergeLive(ctx, c.warnings, "record pending Linear work", async (fleet) => {
+        if (c.scopedHandBack) {
+          const existing = (await fleet.ticketItems(ticket.id)).find(
+            (i) => i.kind === "linear-pending" && linearChorePr(i.body) === merged.number,
+          );
+          if (existing) return existing.id;
+        }
+        return fleet.chore({
           ticket: ticket.id,
           kind: "linear-pending",
           pr: merged.number,
           body: pendingLinearBody(merged.number, override, keepOpen ? more : null),
-        }),
-      );
+        });
+      });
       chorePending = chore === null;
       if (chore === null)
         c.warnings.push(
@@ -2309,13 +2343,20 @@ export async function finishMerge(ctx: MergeContext, input: Pick<MergeInput, "pr
         if (remaining.length && !receipt.keepOpen)
           throw new HandBackRefusal("another hand-back prevents final Linear cleanup");
         scopedKeepOpen = receipt.keepOpen;
-        repairGuard = () =>
-          assertScopedMergeEffects(
-            fleet,
-            receipt.receipt.handBack,
-            receipt.keepOpen,
-            remaining.flatMap((i) => (i.handBack ? [i.handBack] : [])),
-          );
+        repairGuard = async () => {
+          try {
+            await assertScopedMergeEffects(
+              fleet,
+              receipt.receipt.handBack,
+              receipt.keepOpen,
+              remaining.flatMap((i) => (i.handBack ? [i.handBack] : [])),
+            );
+          } catch (error) {
+            // Unknown/changed authority must never replace or resolve the old chore.
+            auditUnreadable = true;
+            throw error;
+          }
+        };
         scopedSuperseded = receipt.superseded;
         scopedPhase = remaining.length ? "ready-to-merge" : "implementing";
         if (receipt.keepOpen) more = "retain the existing ticket scope";
@@ -2372,10 +2413,12 @@ export async function finishMerge(ctx: MergeContext, input: Pick<MergeInput, "pr
               scopedPhase,
               repairGuard,
             )
-          : await closeTicket(ctx, ticket, pull, { updatedFrom: null, decided: null }, false, audit)),
+          : await closeTicket(ctx, ticket, pull, { updatedFrom: null, decided: null }, false, audit, repairGuard)),
       );
     if (more === null && !scopedSuperseded) {
-      const spec = await closeFinishedSpec(ctx, ticket);
+      await repairGuard?.();
+      const spec = await closeFinishedSpec(ctx, ticket, repairGuard);
+      await repairGuard?.();
       warnings.push(...spec.warnings);
       lines.push(...spec.lines);
     }
@@ -2384,10 +2427,14 @@ export async function finishMerge(ctx: MergeContext, input: Pick<MergeInput, "pr
     const resolved = await mergeLive(ctx, warnings, "resolve pending Linear work", async (fleet) => {
       const items = await fleet.ticketItems(ticket?.id ?? "");
       for (const item of items)
-        if (item.kind === "linear-pending" && linearChorePr(item.body) === pull.number)
+        if (item.kind === "linear-pending" && linearChorePr(item.body) === pull.number) {
+          if (!scopedSuperseded) await repairGuard?.();
           await fleet.resolve({ id: item.id, resolution: `Linear finished for PR #${pull.number}` });
+          if (!scopedSuperseded) await repairGuard?.();
+        }
       return true;
     });
+    if (auditUnreadable) linearPending = true;
     armadaPending = ctx.lockRequired && !resolved;
   } catch (err) {
     warnings.push(

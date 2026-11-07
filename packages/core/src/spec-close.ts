@@ -12,10 +12,21 @@ const DEPTH = 64;
 export async function closeFinishedSpec(
   ctx: { config: ArmadaConfig; linear: LinearWriter },
   ticket: Ticket,
+  guard?: () => Promise<void>,
 ): Promise<{ lines: string[]; warnings: string[] }> {
   let spec: Ticket | null = null;
   const warnings: string[] = [];
+  let guardFailed = false;
+  const check = async () => {
+    try {
+      await guard?.();
+    } catch (error) {
+      guardFailed = true;
+      throw error;
+    }
+  };
   try {
+    await check();
     const root = ctx.config.tracker.programRoot;
     const seen = new Set([ticket.id]);
     let parent = ticket.parentId;
@@ -81,14 +92,20 @@ export async function closeFinishedSpec(
     const marker = `Spec completion — all descendants are completed or canceled. Summary ${key}.`;
     if (spec.commentsTruncated)
       throw new Error("Linear did not return every spec comment; summary retry cannot be checked");
-    if (!spec.comments.some((comment) => comment.excerpt.startsWith(marker)))
+    if (!spec.comments.some((comment) => comment.excerpt.startsWith(marker))) {
+      await check();
       await ctx.linear.comment(spec.uuid, `${marker}\n\n${summary}`);
+      await check();
+    }
+    await check();
     await ctx.linear.updateTicket(spec.uuid, { stateId: done.id });
+    await check();
     return {
       lines: [`${spec.id}: all ${descendants.length} descendants closed; moved to ${done.name}, summary posted.`],
       warnings,
     };
   } catch (err) {
+    if (guardFailed) throw err;
     return {
       lines: [],
       warnings: [
