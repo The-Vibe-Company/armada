@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   type Fetch,
+  fetchOwnClaimPhase,
   fetchProgram,
   fetchProgramChanges,
   fetchProgramIssue,
@@ -460,4 +461,114 @@ test("CLI description batches paginate flat reads and refuse missing tickets or 
     "could not be read",
   );
   expect(await fetchTicketDescriptions({ apiKey: "synthetic", fetch: stalled }, [])).toEqual([]);
+});
+
+describe("canonical own-claim phase", () => {
+  const fresh = () => ({
+    identifier: "DEMO-2",
+    state: { type: "started" },
+    parent: { identifier: "DEMO-1", parent: null },
+    labels: { nodes: [{ name: "implementing", parent: { name: "Agent phase" } }], pageInfo: { hasNextPage: false } },
+  });
+  const read = (value: unknown) =>
+    fetchOwnClaimPhase(
+      {
+        apiKey: "synthetic",
+        rootId: "DEMO-1",
+        labels,
+        fetch: async (_url, init) => {
+          expect(JSON.parse(String(init.body)).variables).toEqual({ id: "DEMO-2" });
+          return Response.json({ data: { issue: value } });
+        },
+      },
+      "DEMO-2",
+    );
+  const labelOf = (value: ReturnType<typeof fresh>) => {
+    const label = value.labels.nodes[0];
+    if (!label) throw new Error("fixture label missing");
+    return label;
+  };
+  test("each call reads Linear again and observes a transition, not the previous phase", async () => {
+    const value = fresh();
+    expect(await read(value)).toBe("implementing");
+    labelOf(value).name = "blocked";
+    expect(await read(value)).toBe("blocked");
+  });
+  for (const [name, mutate] of [
+    [
+      "foreign ticket",
+      (v: ReturnType<typeof fresh>) => {
+        v.identifier = "OTHER-9";
+      },
+    ],
+    [
+      "foreign program",
+      (v: ReturnType<typeof fresh>) => {
+        v.parent.identifier = "OTHER-1";
+      },
+    ],
+    [
+      "terminal issue",
+      (v: ReturnType<typeof fresh>) => {
+        v.state.type = "completed";
+      },
+    ],
+    [
+      "missing phase",
+      (v: ReturnType<typeof fresh>) => {
+        v.labels.nodes = [];
+      },
+    ],
+    [
+      "unknown phase",
+      (v: ReturnType<typeof fresh>) => {
+        labelOf(v).name = "invented";
+      },
+    ],
+    [
+      "ambiguous phase",
+      (v: ReturnType<typeof fresh>) => {
+        v.labels.nodes.push({ name: "blocked", parent: { name: "Agent phase" } });
+      },
+    ],
+    [
+      "incomplete label page",
+      (v: ReturnType<typeof fresh>) => {
+        v.labels.pageInfo.hasNextPage = true;
+      },
+    ],
+    [
+      "wrong label group",
+      (v: ReturnType<typeof fresh>) => {
+        labelOf(v).parent.name = "Other group";
+      },
+    ],
+  ] as const)
+    test(`refuses ${name} after a usable own phase`, async () => {
+      const value = fresh();
+      expect(await read(value)).toBe("implementing");
+      mutate(value);
+      await expect(read(value)).rejects.toThrow("incomplete or inadmissible");
+    });
+  test("a missing response and a transport timeout never become a cached phase or retry", async () => {
+    expect(await read(fresh())).toBe("implementing");
+    await expect(read(null)).rejects.toThrow();
+    let calls = 0;
+    await expect(
+      fetchOwnClaimPhase(
+        {
+          apiKey: "synthetic",
+          rootId: "DEMO-1",
+          labels,
+          retry: true,
+          fetch: async () => {
+            calls++;
+            throw new DOMException("fixture timeout", "TimeoutError");
+          },
+        },
+        "DEMO-2",
+      ),
+    ).rejects.toThrow();
+    expect(calls).toBe(1);
+  });
 });

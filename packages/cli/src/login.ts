@@ -248,10 +248,14 @@ export async function whoami(io: Io, json: boolean): Promise<number> {
       worker: { command: "whoami", project: "", ticket: () => only },
     }));
   const signIn = requireSignIn(credentials);
-  const identity = await apiOf(io, credentials.armadaApi.url).whoami(signIn);
+  const identity = await apiOf(io, credentials.armadaApi.url).whoami(signIn, {
+    ownClaim: json && signIn.kind === "worker",
+  });
   if (json) {
     const out = { ...identity, api: credentials.armadaApi.url, source: signIn.source };
-    io.stdout(`${JSON.stringify(out, null, 2)}\n`);
+    const text = JSON.stringify(out, null, 2);
+    if (Buffer.byteLength(text) + 1 > 1024 * 1024) throw new Error("Armada identity exceeded its output limit");
+    io.stdout(`${text}\n`);
     return 0;
   }
   io.stdout(`Signed in to ${hostOf(credentials.armadaApi.url)} as ${describeIdentity(identity)}.\n`);

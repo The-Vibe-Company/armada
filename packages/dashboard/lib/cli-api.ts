@@ -28,9 +28,15 @@ import {
   type Issue,
   installCommand,
   isMaskedLaunchToken,
+  type LabelPhase,
   MASKED_LAUNCH_TOKEN_REFUSAL,
   MINIMUM_CLI_VERSION,
   type OpenPr,
+  OWN_CLAIM_HEADER,
+  OWN_CLAIM_REQUEST_HEADER,
+  OWN_CLAIM_SCHEMA,
+  OWN_CLAIM_SERVER_MS,
+  type OwnClaimObservation,
   parseProject,
   RUNTIME_NAMES,
   redactor,
@@ -43,7 +49,7 @@ import { attachmentBody, attachmentInput } from "./attachment-http";
 import { AttachmentRefusal, attachmentProjectAllowed, saveAttachment } from "./attachments";
 import { type Holder, releaseCredentials, releaseWorkerSecrets } from "./broker";
 import type { PublishedCli } from "./cli-version";
-import type { Database, Queryable } from "./db";
+import { type Database, isoAt, type Queryable } from "./db";
 import type { Scope } from "./fleet-data";
 import { fleetStore, holdProject, projectsOf } from "./fleet-store";
 import { addSnapshotIssue, dbSnapshots, memorySnapshots } from "./snapshots";
@@ -99,6 +105,9 @@ export interface CliApiDeps {
   after?: (work: () => Promise<void>) => void;
   /** Linear-backed membership check for attachment cache misses, using this scope's project keys. */
   readAttachmentTicket?: (config: ArmadaConfig, scope: Scope, ticket: string) => Promise<Issue | null>;
+  readOwnPhase?: (config: ArmadaConfig, scope: Scope, ticket: string, remainingMs: () => number) => Promise<LabelPhase>;
+  monotonicNow?: () => number;
+  serverRevision?: string;
 }
 
 /** Who a terminal is signed in as. Carries no secret. */
@@ -1131,7 +1140,118 @@ export async function handleCli(request: Request, path: string[], deps: CliApiDe
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
+/** The authenticated launch and active generation are read together, never from caller fields. */
+async function ownBinding(a: CliAccounts, w: Worker, now: Date) {
+  const { rows } = await a.client.query(
+    `SELECT h.runtime, h.handle, h.claimed_at
+    FROM runtime_handles h JOIN armada_worker w ON w.id = h.worker_session_id
+    WHERE h.project = $1 AND h.ticket = $2 AND h.worker_session_id = $3 AND w."organizationId" = $4
+      AND h.released_at IS NULL AND w."endedAt" IS NULL AND w."sessionExpiresAt" > $5
+      AND w.project = h.project AND w.ticket = h.ticket AND w."runtimeHandle" = h.handle
+      AND lower(w.runtime) = lower(h.runtime)`,
+    [w.project, w.ticket, w.id, w.organization, now],
+  );
+  const row = rows[0];
+  return row
+    ? { runtime: String(row.runtime).toLowerCase(), handle: String(row.handle), claimedAt: isoAt(row.claimed_at) }
+    : null;
+}
+
+async function ownSession(a: CliAccounts, request: Request, deps: CliApiDeps, startedAt: Date, started: number) {
+  const clock = deps.monotonicNow ?? (() => performance.now());
+  const now = () => deps.now?.() ?? new Date();
+  const remaining = () => OWN_CLAIM_SERVER_MS - (clock() - started);
+  const unavailable = () =>
+    refuse(
+      503,
+      "Armada cannot prove a fresh own-claim observation",
+      "inspect the own-claim contract; no execution is authorized",
+    );
+  const requestId = request.headers.get(OWN_CLAIM_REQUEST_HEADER) ?? "";
+  if (request.headers.get(OWN_CLAIM_HEADER) !== OWN_CLAIM_SCHEMA || !/^[a-f0-9-]{36}$/i.test(requestId))
+    return refuse(400, "unknown own-claim observation contract", "use a compatible official client");
+  const identity = await identify(a, credentialOf(request), now());
+  if (identity instanceof Response) return identity;
+  if (identity.via !== "worker" || !identity.launch || !identity.organization)
+    return refuse(403, "only a worker observes its own claim", "use the worker's existing context");
+  const w = identity.launch;
+  const denied = () => refuse(403, "this worker has no current bound claim", "execution is not authorized");
+  const first = await ownBinding(a, w, now());
+  if (!first) return denied();
+  const scope = { organization: w.organization, home: (await firstOrganization(a.client))?.id ?? null };
+  const project = (await projectsOf(a.client, w.organization)).find((p) => p.slug === w.project);
+  const snapshot = (await dbSnapshots(a.client, memorySnapshots()).entries([w.project])).get(w.project)?.snapshot;
+  if (
+    !project ||
+    !snapshot ||
+    snapshot.config.project.slug !== w.project ||
+    snapshot.config.github.repository !== project.repository ||
+    snapshot.config.tracker.programRoot !== project.programRoot
+  )
+    return denied();
+  if (!deps.serverRevision || !/^[a-f0-9]{40}$/.test(deps.serverRevision) || remaining() <= 0) return unavailable();
+  const phaseReadStartedAt = now();
+  const phaseStarted = clock();
+  let phase: LabelPhase | null = null;
+  try {
+    if (!deps.readOwnPhase) throw new Error("unavailable phase source");
+    phase = await deps.readOwnPhase(snapshot.config, scope, w.ticket, remaining);
+  } catch {
+    /* An authenticated same-job cleanup does not need implementing. */
+  }
+  const phaseReadEndedAt = now();
+  const phaseReadElapsedMs = clock() - phaseStarted;
+  const last = await ownBinding(a, w, now());
+  if (!last || JSON.stringify(first) !== JSON.stringify(last)) return denied();
+  const verifiedAt = now();
+  const elapsedMs = clock() - started;
+  if (
+    !Number.isFinite(elapsedMs) ||
+    elapsedMs < 0 ||
+    remaining() < 0 ||
+    phaseReadElapsedMs < 0 ||
+    phaseReadElapsedMs > elapsedMs ||
+    startedAt > phaseReadStartedAt ||
+    phaseReadStartedAt > phaseReadEndedAt ||
+    phaseReadEndedAt > verifiedAt ||
+    verifiedAt.getTime() - startedAt.getTime() > OWN_CLAIM_SERVER_MS
+  )
+    return unavailable();
+  const parts = first.handle.split("/");
+  const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+  if (first.runtime === "conductor" && (parts.length !== 2 || !uuid.test(parts[0] ?? "") || !uuid.test(parts[1] ?? "")))
+    return denied();
+  const ownClaim: OwnClaimObservation = {
+    schema: OWN_CLAIM_SCHEMA,
+    requestId,
+    project: w.project,
+    ticket: w.ticket,
+    workerId: w.id,
+    ...first,
+    releasedAt: null,
+    workspaceId: first.runtime === "conductor" ? (parts[0] ?? null) : null,
+    sessionId: first.runtime === "conductor" ? (parts[1] ?? null) : null,
+    phase,
+    source: phase === null ? "unavailable" : "linear-live",
+    provenance: {
+      repository: project.repository,
+      programRoot: project.programRoot,
+      phaseGroup: snapshot.config.tracker.labels.phaseGroup,
+      serverRevision: deps.serverRevision,
+    },
+    startedAt: startedAt.toISOString(),
+    phaseReadStartedAt: phaseReadStartedAt.toISOString(),
+    phaseReadEndedAt: phaseReadEndedAt.toISOString(),
+    verifiedAt: verifiedAt.toISOString(),
+    elapsedMs,
+    phaseReadElapsedMs,
+  };
+  const { launch: _, ...shown } = identity;
+  return Response.json({ ...shown, ownClaim }, { headers: NO_STORE });
+}
+
 async function answerCli(request: Request, path: string[], deps: CliApiDeps, latest: string): Promise<Response> {
+  const observationStarted = (deps.monotonicNow ?? (() => performance.now()))();
   // An outdated CLI is refused before anything runs: no write happens that it could not read back.
   const version = request.headers.get(CLI_VERSION_HEADER);
   if (version && compareVersions(version, MINIMUM_CLI_VERSION) < 0)
@@ -1162,6 +1282,8 @@ async function answerCli(request: Request, path: string[], deps: CliApiDeps, lat
       device_code: code,
     });
   }
+  if (route === "GET session" && request.headers.has(OWN_CLAIM_HEADER))
+    return ownSession(a, request, deps, now, observationStarted);
   if (route === "GET session") {
     const identity = await identify(a, credentialOf(request), now);
     if (identity instanceof Response) return identity;
