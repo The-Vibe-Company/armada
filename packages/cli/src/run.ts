@@ -85,7 +85,7 @@ const HELP = `armada ${VERSION}: launch coding agents on boat.dev
 Usage:
   armada --version                         Print the version
   armada --help                            Show this help
-  armada golden create <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...] [--private]
+  armada golden create <name> (--repo <url>[@branch] ... | --config <file>) [--setup <script>|--init <cmd> ...] [--private]
   armada golden connect <name>             Open the master sandbox to place .env files
   armada golden snapshot <name>            Freeze the master sandbox
   armada golden list [--json]              Goldens you can see
@@ -116,7 +116,7 @@ when you belong to more than one org.
 Environment:
   SUPABASE_URL, SUPABASE_ANON_KEY          armada login and every signed-in command
   ARMADA_URL                               The Armada server: armada org, armada creds and armada launch
-  BOAT_API_KEY                             golden commands, until the server runs them with the org key
+  GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY    required by the server for secure private golden checkout
   PORT, ARMADA_DATABASE_URL, SUPABASE_URL, SUPABASE_ANON_KEY,
   ARMADA_AUTH_SECRET, ARMADA_PUBLIC_URL, ARMADA_ENCRYPTION_KEY,
   GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET
@@ -513,7 +513,8 @@ function jsonGolden(row: GoldenRecord) {
 async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promise<GoldenConfig> {
   const file = single(args, "--config");
   const repos = values(args, "--repo");
-  const init = values(args, "--init");
+  const setup = values(args, "--setup");
+  const init = [...values(args, "--init"), ...setup];
   if (file && (repos.length > 0 || init.length > 0)) {
     throw new GoldenError("invalid_config", "Pass either --config or --repo and --init, not both.");
   }
