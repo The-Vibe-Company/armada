@@ -95,7 +95,7 @@ The tools are `golden_list`, `launch` (the same rules as `armada launch`: `noEnv
 - `steer` reports `restart` for Codex (the turn is interrupted and the text sent as a new one) and `native` for Claude Code.
 - The boat key for tools stays on the server: an org golden uses the org's key, a private golden its owner's personal key. `launch/resolve` on the control API returns the boat key to the signed-in CLI, which launches locally (#479's design).
 
-Environment: `PORT`, `ARMADA_DATABASE_URL` (the Postgres connection string, server-side only), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `ARMADA_AUTH_SECRET`, `ARMADA_PUBLIC_URL` (the origin clients reach) and `ARMADA_ENCRYPTION_KEY` (32 bytes in base64, the key of the encrypted credentials).
+Environment: `PORT`, `ARMADA_DATABASE_URL` (the Postgres connection string, server-side only; token, membership and credential lookups all use it, so the server holds no service role key), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `ARMADA_AUTH_SECRET`, `ARMADA_PUBLIC_URL` (the origin clients reach) and `ARMADA_ENCRYPTION_KEY` (32 bytes in base64, the key of the encrypted credentials).
 
 `Dockerfile` builds the binary and runs `armada serve`; `railway.json` deploys it on Railway from this repository, with `/healthz` as the health check.
 

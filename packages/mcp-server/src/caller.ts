@@ -22,6 +22,26 @@ export type CallerResult = { ok: true; caller: Caller } | { ok: false };
 /** Thrown when Supabase or the token store cannot answer: the request may succeed later. */
 export class AuthUnavailable extends Error {
   override readonly name = "AuthUnavailable";
+
+  /** `cause` is the real failure, for the server's log. It never holds a token or a key. */
+  constructor(message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+  }
+}
+
+/** One line for the log: the message and the chain of causes. */
+export function describeFailure(error: unknown): string {
+  const parts: string[] = [];
+  for (let current = error, depth = 0; current !== undefined && depth < 4; depth++) {
+    if (current instanceof Error) {
+      parts.push(`${current.name}: ${current.message}`);
+      current = current.cause;
+    } else {
+      parts.push(String(current));
+      break;
+    }
+  }
+  return parts.join(" <- ");
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -39,8 +59,8 @@ export async function authenticateCaller(
     let result: Awaited<ReturnType<typeof authenticate>>;
     try {
       result = await authenticate(authorization, options.store, options.now);
-    } catch {
-      throw new AuthUnavailable("The token store is unavailable.");
+    } catch (error) {
+      throw new AuthUnavailable("The token store is unavailable.", error);
     }
     if (!result.ok) return { ok: false };
     const { userId, orgId, role, kind: via } = result.principal;
@@ -52,8 +72,8 @@ export async function authenticateCaller(
   let memberships: Awaited<ReturnType<AuthStore["memberships"]>>;
   try {
     memberships = await options.store.memberships(userId);
-  } catch {
-    throw new AuthUnavailable("The membership store is unavailable.");
+  } catch (error) {
+    throw new AuthUnavailable("The membership store is unavailable.", error);
   }
   return {
     ok: true,
@@ -71,8 +91,8 @@ export async function verifySupabaseUser(token: string, project: SupabaseProject
     response = await (project.fetch ?? fetch)(`${assertSupabaseUrl(project.supabaseUrl)}/auth/v1/user`, {
       headers: { apikey: project.anonKey, authorization: `Bearer ${token}`, accept: "application/json" },
     });
-  } catch {
-    throw new AuthUnavailable("Supabase is unreachable.");
+  } catch (error) {
+    throw new AuthUnavailable("Supabase is unreachable.", error);
   }
   if (response.status === 400 || response.status === 401 || response.status === 403) return null;
   if (!response.ok) throw new AuthUnavailable(`Supabase answered ${response.status}.`);

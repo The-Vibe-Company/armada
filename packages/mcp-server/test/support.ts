@@ -1,4 +1,5 @@
 import {
+  type AuthStore,
   createMemoryAuthStore,
   generateToken,
   type MemoryAuthStore,
@@ -271,7 +272,14 @@ export interface TestServer {
   close(): Promise<void>;
 }
 
-export async function harness(options: { routes?: readonly Route[] } = {}): Promise<TestServer> {
+export async function harness(
+  options: {
+    routes?: readonly Route[];
+    /** The store `/mcp` authenticates against. Default: the in-memory one the helpers fill. */
+    authStore?: (db: PGlite) => AuthStore;
+    log?: (line: string) => void;
+  } = {},
+): Promise<TestServer> {
   const { db, people } = await database();
   const boat = fakeBoat();
   const auth = createMemoryAuthStore();
@@ -308,13 +316,14 @@ export async function harness(options: { routes?: readonly Route[] } = {}): Prom
   const handler = createHandler({
     publicUrl: PUBLIC_URL,
     oauth,
-    authStore: auth,
+    authStore: options.authStore ? options.authStore(db) : auth,
     supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "anon", fetch: supabaseFetch },
     data: createSqlData(db),
     vault: createSqlVaultStore(db),
     encryptionKey: ENCRYPTION_KEY,
     providerFor: boat.providerFor,
     ...(options.routes ? { routes: options.routes } : {}),
+    log: options.log ?? (() => {}),
     now: () => clock.now,
     sleep: async (ms) => {
       clock.now = new Date(clock.now.getTime() + ms);

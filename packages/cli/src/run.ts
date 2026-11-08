@@ -109,7 +109,7 @@ Environment:
   SUPABASE_URL, SUPABASE_ANON_KEY          armada login and every signed-in command
   ARMADA_URL                               The Armada server: armada org, armada creds and armada launch
   BOAT_API_KEY                             golden commands, until the server runs them with the org key
-  PORT, ARMADA_DATABASE_URL, SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY,
+  PORT, ARMADA_DATABASE_URL, SUPABASE_URL, SUPABASE_ANON_KEY,
   ARMADA_AUTH_SECRET, ARMADA_PUBLIC_URL, ARMADA_ENCRYPTION_KEY
                                            armada serve
 `;

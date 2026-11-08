@@ -7,7 +7,6 @@ const ENV = {
   ARMADA_DATABASE_URL: "postgres://postgres:pw@db.example.com:5432/postgres",
   SUPABASE_URL: "https://project.supabase.co/",
   SUPABASE_ANON_KEY: "anon",
-  SUPABASE_SERVICE_ROLE_KEY: "service-role",
   ARMADA_AUTH_SECRET: "a-test-auth-secret-of-enough-length",
   ARMADA_PUBLIC_URL: "https://armada.example.com",
   ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY,
@@ -21,7 +20,7 @@ describe("config", () => {
 
   test("names every missing variable and never echoes a value", () => {
     expect(() => configFromEnv({ SUPABASE_ANON_KEY: "anon" })).toThrow(
-      "Set ARMADA_DATABASE_URL, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ARMADA_AUTH_SECRET, ARMADA_PUBLIC_URL, ARMADA_ENCRYPTION_KEY.",
+      "Set ARMADA_DATABASE_URL, SUPABASE_URL, ARMADA_AUTH_SECRET, ARMADA_PUBLIC_URL, ARMADA_ENCRYPTION_KEY.",
     );
     expect(() => configFromEnv({ ...ENV, ARMADA_ENCRYPTION_KEY: "c2hvcnQ=" })).toThrow(/must be 32 bytes/);
     expect(() => configFromEnv({ ...ENV, ARMADA_PUBLIC_URL: "http://armada.example.com/x" })).toThrow(/origin/);

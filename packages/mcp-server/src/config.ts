@@ -4,7 +4,6 @@ export interface ServerConfig {
   port: number;
   supabaseUrl: string;
   anonKey: string;
-  serviceRoleKey: string;
   authSecret: string;
   /** Origin only. The MCP resource is this plus `/mcp`. */
   publicUrl: string;
@@ -17,7 +16,6 @@ const REQUIRED = [
   "ARMADA_DATABASE_URL",
   "SUPABASE_URL",
   "SUPABASE_ANON_KEY",
-  "SUPABASE_SERVICE_ROLE_KEY",
   "ARMADA_AUTH_SECRET",
   "ARMADA_PUBLIC_URL",
   "ARMADA_ENCRYPTION_KEY",
@@ -54,7 +52,6 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
     port,
     supabaseUrl: value("SUPABASE_URL").replace(/\/+$/, ""),
     anonKey: value("SUPABASE_ANON_KEY"),
-    serviceRoleKey: value("SUPABASE_SERVICE_ROLE_KEY"),
     authSecret: value("ARMADA_AUTH_SECRET"),
     publicUrl,
     encryptionKey: value("ARMADA_ENCRYPTION_KEY"),

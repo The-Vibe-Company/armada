@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createServiceStore, createSqlAuthStore } from "@armada/auth";
 import { call, harness, PUBLIC_URL, SECRETS, type TestServer } from "./support.ts";
 
 let server: TestServer | undefined;
@@ -158,6 +159,53 @@ describe("http", () => {
     const jwt = session(people.member);
     supabaseDown(true);
     expect((await rpc(handler, jwt).tool("list", {})).status).toBe(503);
+  });
+});
+
+describe("when the auth lookup fails", () => {
+  const SERVICE_KEY = "service-role-key-that-supabase-rejects";
+
+  test("a rejected PostgREST key is a 503 whose real cause is logged, without the token or the key", async () => {
+    const lines: string[] = [];
+    const rejecting = createServiceStore({
+      env: { SUPABASE_URL: "https://project.supabase.co", SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY },
+      fetch: async () =>
+        Response.json(
+          { message: "Invalid API key" },
+          { status: 401, headers: { "sb-error-code": "UNAUTHORIZED_INVALID_API_KEY" } },
+        ),
+    });
+    const { handler, session, people } = await start({ authStore: () => rejecting, log: (line) => lines.push(line) });
+    const jwt = session(people.member);
+    const response = await rpc(handler, jwt).tool("list", {});
+    expect(response.status).toBe(503);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("Supabase answered 401 (UNAUTHORIZED_INVALID_API_KEY) for GET members");
+    expect(lines[0]).not.toContain(jwt);
+    expect(lines[0]).not.toContain(SERVICE_KEY);
+  });
+
+  test("a database failure on an Armada token is a 503 with its cause logged", async () => {
+    const lines: string[] = [];
+    const broken = createSqlAuthStore({
+      query: async () => {
+        throw new Error("connection terminated unexpectedly");
+      },
+    });
+    const { handler, token, people } = await start({ authStore: () => broken, log: (line) => lines.push(line) });
+    const response = await rpc(handler, await token(people.member)).tool("list", {});
+    expect(response.status).toBe(503);
+    expect(lines.join("\n")).toContain("connection terminated unexpectedly");
+  });
+
+  test("the memberships of a Supabase session come from the server's own database connection", async () => {
+    const { handler, session, people } = await start({ authStore: (db) => createSqlAuthStore(db) });
+    const jwt = session(people.member, []);
+    const listed = await rpc(handler, jwt).tool("golden_list", {});
+    expect(listed.result?.isError).toBeUndefined();
+    const content = listed.result?.structuredContent as { goldens: { name: string }[] };
+    const names = content.goldens.map((g) => g.name);
+    expect(names.sort()).toEqual(["elsewhere", "shared"]);
   });
 });
 

@@ -38,11 +38,15 @@ export function createHttpAuthStore(options: HttpStoreOptions): AuthStore {
         headers: requestHeaders,
         body,
       });
-    } catch {
-      throw new AuthError("Armada could not reach Supabase.", "unavailable");
+    } catch (error) {
+      throw new AuthError("Armada could not reach Supabase.", "unavailable", error);
     }
     if (response.status === 409) throw new AuthError("That token is already registered.", "conflict");
-    if (!response.ok) throw new AuthError("Armada could not reach Supabase.", "unavailable");
+    if (!response.ok) {
+      const code = response.headers.get("sb-error-code");
+      const answered = `Supabase answered ${response.status}${code ? ` (${code})` : ""} for ${init.method} ${path.split("?")[0]}`;
+      throw new AuthError("Armada could not reach Supabase.", "unavailable", new Error(answered));
+    }
     if (response.status === 204) return [] as T;
     try {
       return (await response.json()) as T;
