@@ -1,4 +1,4 @@
-import { type AuthFetch, assertSupabaseUrl } from "@armada/auth";
+import { type AuthStore, createSqlAuthStore } from "@armada/auth";
 import {
   addMember,
   createGoldenCreateService,
@@ -35,16 +35,20 @@ import {
   type Visibility,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
+import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
+import type { DataSource } from "./data.ts";
 import { bunSql } from "./sql.ts";
 
 export const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = 128 * 1024;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
-  /** Supabase project origin and anon key: they identify the project, so a user's session can be checked. */
-  supabaseUrl: string;
-  anonKey: string;
+  /** Same verified bearer dependencies as MCP: Armada service/OAuth tokens and Supabase sessions. */
+  authStore: AuthStore;
+  supabase: SupabaseProject;
+  now?: () => Date;
+  /** Scoped golden/sandbox queries shared with MCP. */
+  data?: DataSource;
   /** Service-role access: orgs, members and ciphertext. See `createSqlVaultStore`. */
   store: VaultStore;
   /**
@@ -60,7 +64,6 @@ export interface ControlOptions {
   goldenCreate?: GoldenCreateService;
   /** A provider for one boat.dev key, for `golden/create`. The key is used in this process only. */
   providerFor?: (apiKey: string) => Provider;
-  fetch?: AuthFetch;
 }
 
 const STATUS: Record<VaultErrorCode, number> = {
@@ -84,7 +87,7 @@ const GOLDEN_STATUS: Record<GoldenErrorCode, number> = {
 /**
  * The CLI's way to the things that need the server: org creation and email lookup (service role)
  * and credential encryption (the encryption key). Every call is a POST with the person's Supabase
- * access token as the bearer; the answer is JSON. Returns null for any other path, so #464 mounts
+ * bearer accepted by MCP (Armada service/OAuth token or verified Supabase session); the answer is JSON. Returns null for any other path, so #464 mounts
  * this next to the OAuth routes. No request body, token or credential value is logged.
  */
 export async function handleControlRequest(request: Request, options: ControlOptions): Promise<Response | null> {
@@ -93,13 +96,14 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   const route = url.pathname.slice(CONTROL_PREFIX.length);
   if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
   try {
-    const userId = await verifiedUser(request, options);
+    const caller = await authenticatedCaller(request, options);
     const body = await readBody(request);
-    const result = await dispatch(route, userId, body, options);
+    const result = await dispatch(route, caller, body, options);
     if (result === undefined) return fail(404, "not_found", "Unknown route.");
     return Response.json(result, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
+    if (error instanceof AuthUnavailable) return fail(503, "unavailable", "Authentication is temporarily unavailable.");
     if (error instanceof VaultError) return fail(STATUS[error.code], error.code, error.message);
     if (error instanceof GoldenError) return fail(GOLDEN_STATUS[error.code], error.code, error.message);
     if (error instanceof EncryptionKeyError) {
@@ -111,12 +115,13 @@ export async function handleControlRequest(request: Request, options: ControlOpt
 
 async function dispatch(
   route: string,
-  userId: string,
+  caller: Caller,
   body: Record<string, unknown>,
   options: ControlOptions,
 ): Promise<unknown> {
   const { store, encryptionKey } = options;
-  const org = optional(body, "org");
+  const userId = caller.userId;
+  const org = scopedOrg(caller, optional(body, "org"));
   switch (route) {
     case "org/create":
       return { org: await createOrg(store, userId, required(body, "name")) };
@@ -160,14 +165,49 @@ async function dispatch(
       });
       return { ok: true };
     case "launch/resolve":
-      return resolveLaunch(options, userId, body, org);
+      return resolveLaunch(options, caller, body, org);
     case "logs/read":
-      return readLogs(options, userId, required(body, "id"), body);
+      return readLogs(options, caller, required(body, "id"), body);
+    case "golden/list":
+      return listGoldens(options, caller);
     case "golden/create":
-      return createGoldenRoute(options, userId, body);
+      return createGoldenRoute(options, caller, body);
     default:
       return undefined;
   }
+}
+
+/** The same visibility-filtered representation returned by MCP golden_list. */
+async function listGoldens(options: ControlOptions, caller: Caller): Promise<{ goldens: GoldenJson[] }> {
+  if (!options.data) throw new VaultError("unavailable", "Golden listing is not configured on this server.");
+  const data = options.data(caller);
+  const goldens = [];
+  for (const { orgId } of caller.orgs) goldens.push(...(await data.goldens.list(orgId)));
+  return { goldens: goldens.map(goldenJson) };
+}
+
+export interface GoldenJson {
+  name: string;
+  orgId: string;
+  visibility: Visibility;
+  ownerId: string;
+  boatSnapshotId: string | null;
+  boatSandboxId: string | null;
+  repos: number;
+  config: { repos: { url: string; branch: string; dir: string }[]; init: string[] };
+}
+
+function goldenJson(row: import("@armada/core/server").GoldenRecord): GoldenJson {
+  return {
+    name: row.name,
+    orgId: row.orgId,
+    visibility: row.visibility,
+    ownerId: row.ownerId,
+    boatSnapshotId: row.boatSnapshotId,
+    boatSandboxId: row.boatSandboxId,
+    repos: row.config.repos.length,
+    config: row.config,
+  };
 }
 
 /**
@@ -177,19 +217,23 @@ async function dispatch(
  */
 async function createGoldenRoute(
   options: ControlOptions,
-  userId: string,
+  caller: Caller,
   body: Record<string, unknown>,
 ): Promise<{ name: string; visibility: Visibility; snapshot: string }> {
   if (!options.goldenCreate || !options.providerFor) {
     throw new VaultError("unavailable", "Secure golden creation is not configured on this server.");
   }
-  const org = await resolveOrg(options.store, userId, optional(body, "org"));
+  const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
   const visibility: Visibility = requiredBoolean(body, "private", false) ? "private" : "org";
   const name = required(body, "name");
   const repos = requiredStringArray(body, "repos");
   const setup = optional(body, "setup");
-  const actor: GoldenActor = { userId, orgId: org.id, role: org.role };
-  const boat = await resolveBoatKey(options.store, options.encryptionKey, { userId, orgId: org.id, visibility });
+  const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
+  const boat = await resolveBoatKey(options.store, options.encryptionKey, {
+    userId: caller.userId,
+    orgId: org.id,
+    visibility,
+  });
   const result = await options.goldenCreate.create(options.providerFor(boat.key), actor, {
     name,
     visibility,
@@ -201,7 +245,7 @@ async function createGoldenRoute(
 
 async function readLogs(
   options: ControlOptions,
-  userId: string,
+  caller: Caller,
   id: string,
   body: Record<string, unknown>,
 ): Promise<{
@@ -211,7 +255,7 @@ async function readLogs(
   settled: boolean;
 }> {
   if (!options.logs) throw new VaultError("unavailable", "Sandbox logs are not configured on the server.");
-  const target = await options.logs(userId, id);
+  const target = await options.logs(caller.userId, id);
   const all = body.all === true;
   const follow = body.follow === true;
   const maxPages = 100;
@@ -262,12 +306,13 @@ function dedupe<T extends { id: string }>(events: readonly T[]): T[] {
 
 async function resolveLaunch(
   options: ControlOptions,
-  userId: string,
+  caller: Caller,
   body: Record<string, unknown>,
   orgRef: string | undefined,
 ): Promise<{ env: Record<string, string>; codexAuth: string | null; boatKey: string; github: GitHubAccess }> {
   const { store, encryptionKey } = options;
-  const org = await resolveOrg(store, userId, orgRef);
+  const userId = caller.userId;
+  const org = await resolveOrg(store, userId, scopedOrg(caller, orgRef));
   const harness = required(body, "harness");
   if (harness !== "claude" && harness !== "codex") throw new VaultError("invalid", "The agent is claude or codex.");
   const visibility = required(body, "visibility");
@@ -290,24 +335,31 @@ async function resolveLaunch(
 
 class Unauthorized extends Error {}
 
-async function verifiedUser(request: Request, options: ControlOptions): Promise<string> {
-  const header = request.headers.get("authorization") ?? "";
-  const match = /^Bearer\s+(\S+)$/i.exec(header);
-  if (!match?.[1]) throw new Unauthorized("Run armada login.");
-  let response: Response;
-  try {
-    response = await (options.fetch ?? fetch)(`${assertSupabaseUrl(options.supabaseUrl)}/auth/v1/user`, {
-      headers: { apikey: options.anonKey, authorization: `Bearer ${match[1]}`, accept: "application/json" },
-    });
-  } catch {
-    throw new VaultError("unavailable", "The server could not reach Supabase.");
+/** Shared MCP/control bearer boundary. Callers receive only the orgs embedded in the verified principal. */
+export async function authenticatedControlCaller(request: Request, options: ControlOptions): Promise<Caller | null> {
+  const result = await authenticateCaller(request.headers.get("authorization"), {
+    store: options.authStore,
+    supabase: options.supabase,
+    now: (options.now ?? (() => new Date()))(),
+  });
+  return result.ok ? result.caller : null;
+}
+
+async function authenticatedCaller(request: Request, options: ControlOptions): Promise<Caller> {
+  const caller = await authenticatedControlCaller(request, options);
+  if (!caller) throw new Unauthorized("Run armada login.");
+  return caller;
+}
+
+/** A service/OAuth token has exactly one org; never widen that scope from database memberships. */
+function scopedOrg(caller: Caller, requested: string | undefined): string | undefined {
+  if (caller.via === "supabase") return requested;
+  const orgId = caller.orgs[0]?.orgId;
+  if (!orgId) throw new Unauthorized("Run armada login.");
+  if (requested !== undefined && requested.trim() !== "" && requested.trim().toLowerCase() !== orgId) {
+    throw new VaultError("forbidden", "This token is scoped to another org.");
   }
-  if (response.status === 401 || response.status === 403) throw new Unauthorized("Run armada login.");
-  if (!response.ok) throw new VaultError("unavailable", "The server could not check your session.");
-  const user: unknown = await response.json().catch(() => null);
-  const id = typeof user === "object" && user !== null && "id" in user ? user.id : undefined;
-  if (typeof id !== "string" || !UUID.test(id)) throw new Unauthorized("Run armada login.");
-  return id.toLowerCase();
+  return orgId;
 }
 
 async function readBody(request: Request): Promise<Record<string, unknown>> {
@@ -382,9 +434,12 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
   const encryptionKey = need(ENCRYPTION_KEY_ENV);
   const githubApp = githubAppFromEnv(env);
   const store = createSqlVaultStore(sql);
+  const authStore = createSqlAuthStore(sql);
+  const supabaseUrl = need("SUPABASE_URL");
+  const anonKey = need("SUPABASE_ANON_KEY");
   return {
-    supabaseUrl: assertSupabaseUrl(need("SUPABASE_URL")),
-    anonKey: need("SUPABASE_ANON_KEY"),
+    authStore,
+    supabase: { supabaseUrl, anonKey },
     encryptionKey,
     github: { app: githubApp },
     store,
