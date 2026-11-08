@@ -83,6 +83,7 @@ function safePath(path: string): boolean {
     path === "auth/email/start" ||
     path === "auth/email/verify" ||
     path === "token/list" ||
+    path === "token/create" ||
     path === "golden/list" ||
     path === "golden/create" ||
     path === "golden/update" ||

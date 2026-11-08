@@ -1,4 +1,4 @@
-import { type AuthStore, createSqlAuthStore, listServiceTokens, refreshSupabaseSession, exchangeSupabaseCode, sendEmailLink, verifyEmailCode, assertEmail, assertEmailCode, supabaseAuthorizeUrl, assertProvider, type Session } from "@armada/auth";
+import { type AuthStore, createSqlAuthStore, createServiceToken, listServiceTokens, refreshSupabaseSession, exchangeSupabaseCode, sendEmailLink, verifyEmailCode, assertEmail, assertEmailCode, supabaseAuthorizeUrl, assertProvider, type Session } from "@armada/auth";
 import {
   addMember,
   connectGolden,
@@ -115,6 +115,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   if (route === "auth/email/start") return emailStartRoute(request, options);
   if (route === "auth/email/verify") return emailVerifyRoute(request, options);
   if (route === "token/list") return tokenListRoute(request, options);
+  if (route === "token/create") return tokenCreateRoute(request, options);
   if (route === "auth/refresh") return refreshRoute(request, options);
   if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
   try {
@@ -132,6 +133,26 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       return fail(503, "unavailable", `Credential encryption is not configured on the server (${ENCRYPTION_KEY_ENV}).`);
     }
     return fail(500, "unavailable", "The server could not complete the request.");
+  }
+}
+
+async function tokenCreateRoute(request: Request, options: ControlOptions): Promise<Response> {
+  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
+  try {
+    const caller = await authenticatedCaller(request, options);
+    const body = await readBody(request);
+    const org = optional(body, "org");
+    if (caller.via === "service") {
+      const scope = caller.orgs[0];
+      if (!scope || !org) return fail(403, "forbidden", "A scoped token cannot create an unscoped token.");
+      const memberships = await options.authStore.memberships(caller.userId);
+      const membership = memberships.find((item) => item.orgId === scope.orgId);
+      if (!membership || membership.name !== org) return fail(403, "forbidden", "This token is scoped to another org.");
+    }
+    const created = await createServiceToken(options.authStore, { userId: caller.userId, ...(org ? { orgName: org } : {}), ...(optional(body, "label") ? { label: optional(body, "label")! } : {}), now: (options.now ?? (() => new Date()))() });
+    return Response.json({ id: created.id, label: created.label, orgName: created.orgName, token: created.token }, { headers: { "cache-control": "no-store" } });
+  } catch {
+    return fail(401, "unauthorized", "Token creation was refused.");
   }
 }
 
