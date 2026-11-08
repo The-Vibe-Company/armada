@@ -11,6 +11,10 @@
         "typescript": "5.9.3",
       },
     },
+    "packages/auth": {
+      "name": "@armada/auth",
+      "version": "2.0.0-alpha.0",
+    },
     "packages/cli": {
       "name": "@armada/cli",
       "version": "2.0.0-alpha.0",
@@ -18,6 +22,7 @@
         "armada": "./src/main.ts",
       },
       "dependencies": {
+        "@armada/auth": "workspace:*",
         "@armada/core": "workspace:*",
         "@armada/provider-boat": "workspace:*",
       },
@@ -30,6 +35,7 @@
       "name": "@armada/mcp-server",
       "version": "2.0.0-alpha.0",
       "dependencies": {
+        "@armada/auth": "workspace:*",
         "@armada/core": "workspace:*",
       },
     },
@@ -43,6 +49,8 @@
     },
   },
   "packages": {
+    "@armada/auth": ["@armada/auth@workspace:packages/auth"],
+
     "@armada/cli": ["@armada/cli@workspace:packages/cli"],
 
     "@armada/core": ["@armada/core@workspace:packages/core"],

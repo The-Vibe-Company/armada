@@ -11,6 +11,8 @@ export type {
   MemberRole,
   NotifyStatus,
   NotifySubscription,
+  OAuthClient,
+  OAuthCode,
   Org,
   Sandbox,
   SandboxStatus,
