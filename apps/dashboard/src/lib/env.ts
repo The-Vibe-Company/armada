@@ -17,7 +17,3 @@ export function isConfigured(): boolean {
 export function mcpUrl(): string | null {
   return process.env.ARMADA_MCP_URL?.trim() || null;
 }
-
-export function masterKey(): string | undefined {
-  return process.env.ARMADA_MASTER_KEY;
-}

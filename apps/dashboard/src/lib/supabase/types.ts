@@ -1,6 +1,6 @@
 import type { Database as Generated, MemberRole, Visibility } from "@armada/core";
 
-/** The generated tables plus the functions of `20261108130000_dashboard_functions.sql`. */
+/** The generated tables plus the functions of `20261108150000_dashboard_functions.sql`. */
 export type Database = Omit<Generated, "public"> & {
   public: Omit<Generated["public"], "Functions"> & {
     Functions: {

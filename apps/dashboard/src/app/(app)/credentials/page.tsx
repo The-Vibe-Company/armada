@@ -1,3 +1,4 @@
+import { encryptionKey } from "@armada/core";
 import type { Metadata } from "next";
 import { removeCredential, saveCredential } from "@/app/actions/credentials";
 import { ActionForm, SubmitButton } from "@/components/action-form";
@@ -11,7 +12,6 @@ import { NativeSelect } from "@/components/ui/native-select";
 import { CREDENTIAL_KINDS } from "@/lib/credentials";
 import { type CredentialRow, listCredentials } from "@/lib/data/credentials";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
-import { masterKey } from "@/lib/env";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Credentials" };
@@ -32,10 +32,10 @@ export default async function CredentialsPage() {
         title="Credentials"
         description="Keys and tokens Armada injects into the sandboxes it launches. Your own come before your org's."
       />
-      {!masterKey() && (
+      {!encryptionKey() && (
         <Alert variant="destructive">
           <AlertDescription>
-            Credential encryption is not configured on this dashboard (ARMADA_MASTER_KEY), so keys cannot be saved yet.
+            Credential encryption is not configured (ARMADA_ENCRYPTION_KEY), so keys cannot be saved yet.
           </AlertDescription>
         </Alert>
       )}

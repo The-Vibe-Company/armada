@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { decryptSecret, encryptSecret, MasterKeyError, toBytea } from "../src/lib/crypto.ts";
+import { decryptSecret, ENCRYPTION_KEY_ENV, EncryptionKeyError, encryptSecret, toBytea } from "../src/crypto.ts";
 
 const KEY = Buffer.alloc(32, 7).toString("base64");
 
@@ -24,11 +24,22 @@ describe("credential encryption", () => {
     await expect(decryptSecret(sealed, Buffer.alloc(32, 8).toString("base64"))).rejects.toThrow();
   });
 
-  test("a missing or malformed master key stops the save with a clear error", async () => {
-    await expect(encryptSecret("value", undefined)).rejects.toThrow(MasterKeyError);
+  test("a missing or malformed key stops the save with a clear error", async () => {
+    await expect(encryptSecret("value", undefined)).rejects.toThrow(EncryptionKeyError);
     await expect(encryptSecret("value", "  ")).rejects.toThrow(/not configured/);
     await expect(encryptSecret("value", "!!!not base64!!!")).rejects.toThrow(/base64/);
     await expect(encryptSecret("value", Buffer.alloc(16).toString("base64"))).rejects.toThrow(/32 bytes/);
+  });
+
+  test("the default key is ARMADA_ENCRYPTION_KEY", async () => {
+    const previous = process.env[ENCRYPTION_KEY_ENV];
+    process.env[ENCRYPTION_KEY_ENV] = KEY;
+    try {
+      expect(await decryptSecret(await encryptSecret("from-env"))).toBe("from-env");
+    } finally {
+      if (previous === undefined) delete process.env[ENCRYPTION_KEY_ENV];
+      else process.env[ENCRYPTION_KEY_ENV] = previous;
+    }
   });
 
   test("bytea is the hex form PostgREST takes", () => {

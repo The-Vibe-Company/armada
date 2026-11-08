@@ -17,9 +17,9 @@
     "build:all": "bun scripts/build.ts --all",
     "verify": "bun run lint && bun run typecheck && bun run test",
     "db:types": "bun scripts/db/render.ts",
-    "dashboard": "bun --cwd apps/dashboard run dev",
-    "dashboard:build": "bun --cwd apps/dashboard run build",
-    "e2e": "bun --cwd apps/dashboard run e2e"
+    "dashboard": "bun run --filter @armada/dashboard dev",
+    "dashboard:build": "bun run --filter @armada/dashboard build",
+    "e2e": "bun run --filter @armada/dashboard e2e"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",

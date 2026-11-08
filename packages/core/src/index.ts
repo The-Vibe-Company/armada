@@ -8,6 +8,14 @@ export {
   redact,
   resolveCredential,
 } from "./credentials.ts";
+export {
+  decryptSecret,
+  ENCRYPTION_KEY_ENV,
+  EncryptionKeyError,
+  encryptionKey,
+  encryptSecret,
+  toBytea,
+} from "./crypto.ts";
 export type {
   Credential,
   CredentialKind,

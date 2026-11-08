@@ -4,6 +4,7 @@ dist/
 .DS_Store
 .env
 .env.*
+!.env.example
 
 # Local agent run artifacts (ship-pr-dev)
 plans/ship-pr-dev/

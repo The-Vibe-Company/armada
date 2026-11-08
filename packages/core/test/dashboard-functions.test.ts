@@ -107,6 +107,27 @@ describe("dashboard functions", () => {
     });
   });
 
+  test("the visibility guard still allows the golden sandbox id, and oauth stays service-only", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      const golden = await insertGolden(db, people, { name: "build", visibility: "private", owner: people.admin });
+      await asUser(db, people.admin, () =>
+        db.query("update goldens set boat_sandbox_id = 'sb_1' where id = $1", [golden]),
+      );
+      const stored = await db.query<{ boat_sandbox_id: string }>("select boat_sandbox_id from goldens where id = $1", [
+        golden,
+      ]);
+      expect(stored.rows[0]?.boat_sandbox_id).toBe("sb_1");
+
+      await expect(asUser(db, people.admin, () => db.query("select id from oauth_clients"))).rejects.toThrow(
+        /permission denied/,
+      );
+      await expect(asUser(db, people.admin, () => db.query("select hash from oauth_codes"))).rejects.toThrow(
+        /permission denied/,
+      );
+    });
+  });
+
   test("a golden stays shared while another member has a sandbox of it", async () => {
     await withDb(async (db) => {
       const people = await fixture(db);

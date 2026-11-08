@@ -3,6 +3,12 @@
 -- and adding members by email (auth.users is not readable by a user), and
 -- changing the visibility of a golden (immutable by a plain update).
 -- Each one checks auth.uid() itself, because security definer bypasses RLS.
+--
+-- Runs after 20261108130000_oauth.sql and 20261108140000_golden_sandbox.sql.
+-- Replacing goldens_guard keeps boat_sandbox_id, name, config and boat_snapshot_id
+-- writable: only id, org, visibility, owner and created_at stay immutable, and
+-- visibility changes only through set_golden_visibility. oauth_clients and
+-- oauth_codes stay service_role only; this migration grants them nothing.
 
 -- Creates an org and makes the caller its first admin.
 create function public.create_org(org_name text)

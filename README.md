@@ -15,7 +15,7 @@ A Bun and TypeScript monorepo (Bun workspaces, strict `tsconfig.json` shared by 
 
 | Package | Name | Role |
 | --- | --- | --- |
-| `packages/core` | `@armada/core` | The contract every other package shares: types, the golden config and workflow, the generated database types, the version. No I/O of its own. |
+| `packages/core` | `@armada/core` | The contract every other package shares: types, the golden config and workflow, AES-256-GCM for `*_enc` columns (`ARMADA_ENCRYPTION_KEY`), the generated database types, the version. |
 | `packages/provider-boat` | `@armada/provider-boat` | The boat.dev placement: the provider adapter over the boat.dev API. |
 | `packages/cli` | `@armada/cli` | The `armada` command; `src/main.ts` is the entry of the compiled binary. |
 | `packages/auth` | `@armada/auth` | Supabase login (GitHub, Google), the MCP OAuth server, service tokens and bearer checks. |
@@ -71,12 +71,12 @@ Until the encrypted credential store lands (#461), credentials come from the env
 | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | build and runtime | The Supabase project. Required. |
 | `NEXT_PUBLIC_AUTH_PROVIDERS` | build and runtime | Social buttons to show, `github,google`. Empty: email sign-in only. |
 | `ARMADA_MCP_URL` | runtime | The Armada MCP server. Without it the dashboard lists sandboxes but cannot read live logs or stop and message them. |
-| `ARMADA_MASTER_KEY` | runtime | 32 random bytes, base64 (`openssl rand -base64 32`). Credentials are sealed with AES-256-GCM before they are stored; without it the dashboard refuses to save one. |
+| `ARMADA_ENCRYPTION_KEY` | build and runtime | 32 random bytes, base64 (`openssl rand -base64 32`). `@armada/core` seals credentials with AES-256-GCM before they are stored. The same name and helper are what credential resolution (#461) should use. Without the key the dashboard refuses to save one. Next.js inlines this name, so set it for the build as well as runtime. |
 
 - **Sign-in.** Email: Supabase sends a link and a one-time code (the dashboard accepts either; the template decides what the email carries). GitHub and Google: enable the provider in Supabase Auth, then list it in `NEXT_PUBLIC_AUTH_PROVIDERS`. Add `<origin>/auth/callback` (production and previews) to the redirect URLs of the Supabase project.
-- **Credentials.** `value_enc` holds `iv (12 bytes) || ciphertext || tag`. Values are write-only: a user JWT cannot read the column and the dashboard never shows one. Resolution order (user, then org) is the launcher's job.
+- **Credentials.** `encryptSecret` / `decryptSecret` in `@armada/core` seal a value under `ARMADA_ENCRYPTION_KEY`. `value_enc` holds `iv (12 bytes) || ciphertext || tag` (`toBytea` is the PostgREST form). Values are write-only: a user JWT cannot read the column and the dashboard never shows one. Resolution order (user, then org) is the launcher's job (#461).
 - **Logs, stop, send.** boat.dev keys stay on the server, so the dashboard asks the Armada MCP server (`logs`, `stop`, `send` tools, over Streamable HTTP, with the user's session token). The logs panel polls every two seconds from the last cursor while the sandbox is active.
-- **Writes row level security cannot express** (creating an org, adding a member by email, changing a golden's visibility) go through the functions of `supabase/migrations/20261108130000_dashboard_functions.sql`, which check `auth.uid()` themselves.
+- **Writes row level security cannot express** (creating an org, adding a member by email, changing a golden's visibility) go through the functions of `supabase/migrations/20261108150000_dashboard_functions.sql`, which check `auth.uid()` themselves. That migration follows the OAuth and golden-sandbox migrations: it does not grant the OAuth tables, and replacing `goldens_guard` still allows `boat_sandbox_id` to change.
 
 ```sh
 cp apps/dashboard/.env.example apps/dashboard/.env.local   # then fill it in

@@ -1,11 +1,10 @@
 "use server";
 
+import { EncryptionKeyError, encryptSecret, toBytea } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { type ActionResult, done, explainDbError, fail, formString, isUuid } from "@/lib/action";
 import { checkSecretValue, credentialKindInfo, isCredentialKind, isCredentialScope } from "@/lib/credentials";
-import { encryptSecret, MasterKeyError, toBytea } from "@/lib/crypto";
 import { requireViewer } from "@/lib/data/viewer";
-import { masterKey } from "@/lib/env";
 import { createClient } from "@/lib/supabase/server";
 
 /** Stores a key, token or secret as ciphertext. It is never read back: setting it again replaces it. */
@@ -23,9 +22,9 @@ export async function saveCredential(_previous: ActionResult | null, data: FormD
 
   let sealed: Uint8Array;
   try {
-    sealed = await encryptSecret(checked.value, masterKey());
+    sealed = await encryptSecret(checked.value);
   } catch (error) {
-    if (error instanceof MasterKeyError) return fail(error.message);
+    if (error instanceof EncryptionKeyError) return fail(error.message);
     throw error;
   }
   const valueEnc = toBytea(sealed);
