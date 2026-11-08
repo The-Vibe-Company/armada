@@ -1,5 +1,5 @@
-import { GOLDEN_ROOT, GoldenError, type GoldenRepo } from "./golden-config.ts";
 import type { Harness } from "./contract.ts";
+import { GOLDEN_ROOT, GoldenError, type GoldenRepo } from "./golden-config.ts";
 
 const DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
 const REPO = /^([^/\s]+)\/([^/\s]+)$/;

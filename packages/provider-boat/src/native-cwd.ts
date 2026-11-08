@@ -15,14 +15,43 @@ export async function installNativeCwdWrapper(
   exec: (request: ExecRequest) => Promise<void>,
   sandboxId: string,
   harness: NativeHarness,
-  command: string,
+  cwd: string,
+  argv: readonly string[] = [],
 ): Promise<void> {
   const path = NATIVE_HARNESS_PATHS[harness];
+  const command = nativeCwdCommand(path, harness, cwd, argv);
   await exec({
     sandboxId,
     timeoutSeconds: 60,
     command: nativeCwdInstallScript(path, command),
   });
+}
+
+/** Builds the VM wrapper command and always invokes the preserved image executable directly. */
+export function nativeCwdCommand(
+  path: string,
+  harness: NativeHarness,
+  cwd: string,
+  argv: readonly string[] = [],
+): string {
+  const safeArgv = harness === "codex" ? stripCodexCwdOverrides(argv) : [...argv];
+  return `cd -- ${quote(cwd)} && exec ${quote(`${path}.armada-original`)}${safeArgv.map((arg) => ` ${quote(arg)}`).join("")}`;
+}
+
+function stripCodexCwdOverrides(argv: readonly string[]): string[] {
+  const result: string[] = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === undefined) continue;
+    if (arg === "--") return [...result, "--", ...argv.slice(index + 1)];
+    if (arg === "-C" || arg === "--cd") {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--cd=")) continue;
+    result.push(arg);
+  }
+  return result;
 }
 
 /** The command runs only inside a Boat sandbox, through its existing VM exec primitive. */

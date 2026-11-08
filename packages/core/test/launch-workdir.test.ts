@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GoldenError, GOLDEN_ROOT } from "../src/golden-config.ts";
+import { GOLDEN_ROOT, GoldenError } from "../src/golden-config.ts";
 import { nativeHarnessWrapper, resolveLaunchWorkdir, resolveLaunchWorkdirAt } from "../src/launch-workdir.ts";
 
 const repos = [

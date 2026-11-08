@@ -1,4 +1,3 @@
-import { ProviderError } from "@armada/core";
 import type {
   CreateGoldenRequest,
   DeleteReceipt,
@@ -12,11 +11,11 @@ import type {
   InterruptRequest,
   ListRequest,
   Page,
+  PrepareNativeHarnessCwdRequest,
   PromptReceipt,
   PromptRequest,
   PromptState,
   Provider,
-  PrepareNativeHarnessCwdRequest,
   SandboxInfo,
   SandboxState,
   SnapshotInfo,
@@ -26,6 +25,7 @@ import type {
   SteerReceipt,
   SteerRequest,
 } from "@armada/core";
+import { ProviderError } from "@armada/core";
 import {
   BoatApi,
   Configuration,
@@ -217,7 +217,7 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
         },
         request.sandboxId,
         request.harness,
-        `cd -- ${JSON.stringify(request.cwd)} && exec ${request.harness} "$@"`,
+        request.cwd,
       );
     },
 

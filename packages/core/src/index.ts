@@ -130,10 +130,10 @@ export {
 } from "./launch.ts";
 export { LaunchError, type LaunchErrorCode } from "./launch-error.ts";
 export {
+  type LaunchWorkdir,
   nativeHarnessWrapper,
   resolveLaunchWorkdir,
   resolveLaunchWorkdirAt,
-  type LaunchWorkdir,
 } from "./launch-workdir.ts";
 export { dedupeEvents, type PromptOutcome, promptOutcome } from "./outcome.ts";
 export {
@@ -151,11 +151,11 @@ export {
   type ListRequest,
   type Page,
   PROMPT_STATUSES,
+  type PrepareNativeHarnessCwdRequest,
   type PromptReceipt,
   type PromptRequest,
   type PromptState,
   type PromptStatus,
-  type PrepareNativeHarnessCwdRequest,
   type Provider,
   ProviderError,
   type ProviderErrorCode,
