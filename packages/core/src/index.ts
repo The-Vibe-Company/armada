@@ -1,3 +1,4 @@
+export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
 export {
   CODEX_AUTH_ENV,

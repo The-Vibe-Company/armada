@@ -1,6 +1,9 @@
+import { CLIENT_CONFIG_PATH } from "@armada/core";
+
 /** Paths a signed-out visitor may open. Everything else needs a session. */
 export function isPublicPath(pathname: string): boolean {
   return (
+    pathname === CLIENT_CONFIG_PATH ||
     pathname === "/login" ||
     pathname.startsWith("/login/") ||
     pathname.startsWith("/auth/") ||

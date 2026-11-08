@@ -20,6 +20,8 @@ import {
   type SessionStore,
 } from "@armada/auth";
 
+import { DEFAULT_ARMADA_URL, discoverClientConfig } from "./client-config.ts";
+
 export interface AuthIo {
   out(text: string): void;
   err(text: string): void;
@@ -33,6 +35,7 @@ export interface AuthIo {
   timeoutMs?: number;
   /** Reads the code typed from a sign-in email. Tests set it; the terminal prompt is the default. */
   readCode?: (signal: AbortSignal) => Promise<string>;
+  readEmail?: () => Promise<string>;
 }
 
 export function defaultSessionPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -52,6 +55,14 @@ export function productionAuthIo(
     open: openBrowser,
     session: fileSessionStore(defaultSessionPath(env)),
     readCode: promptCode,
+    readEmail: () =>
+      new Promise((resolve) => {
+        const lines = createInterface({ input: process.stdin, output: process.stderr });
+        lines.question("Email: ", (answer) => {
+          lines.close();
+          resolve(answer.trim());
+        });
+      }),
   };
 }
 
@@ -74,18 +85,40 @@ function promptCode(signal: AbortSignal): Promise<string> {
 
 export async function loginCommand(
   io: AuthIo,
-  how: { provider?: Provider | undefined; email?: string | undefined } = {},
+  how: { provider?: Provider | undefined; email?: string | undefined; url?: string | undefined } = {},
 ): Promise<void> {
-  const { provider, email } = how;
-  const supabaseUrl = required(io.env, "SUPABASE_URL");
-  const anonKey = required(io.env, "SUPABASE_ANON_KEY");
+  let { provider } = how;
+  let email = how.email;
+  // Explicit legacy settings remain available for local setups without discovery.
+  const legacy = !how.url && !io.env.ARMADA_URL && io.env.SUPABASE_URL && io.env.SUPABASE_ANON_KEY;
+  const config = legacy
+    ? {
+        supabaseUrl: required(io.env, "SUPABASE_URL"),
+        anonKey: required(io.env, "SUPABASE_ANON_KEY"),
+        providers: ["github", "google"],
+      }
+    : await discoverClientConfig(io, how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_URL);
+  const { supabaseUrl, anonKey } = config;
+  const armadaUrl = "controlUrl" in config ? config.controlUrl : undefined;
+  if (provider && !config.providers.includes(provider)) {
+    throw new AuthError(`This server does not enable ${provider} login. Use --email <address>.`, "usage");
+  }
+  if (!provider && email === undefined && config.providers.length === 0) {
+    if (!io.readEmail) throw new AuthError("Sign in with --email <address>.", "usage");
+    email = await io.readEmail();
+  }
+  if (!provider && config.providers.length === 1) provider = config.providers[0] as Provider;
+  const session: SessionStore = {
+    ...io.session,
+    write: (value) => io.session.write({ ...value, anonKey, ...(armadaUrl ? { armadaUrl } : {}) }),
+  };
   if (email !== undefined) {
     const result = await loginWithEmail({
       fetch: io.fetch,
       supabaseUrl,
       anonKey,
       email,
-      session: io.session,
+      session,
       now: io.now,
       ...(io.readCode ? { readCode: io.readCode } : {}),
       ...(io.timeoutMs !== undefined ? { timeoutMs: io.timeoutMs } : {}),
@@ -103,7 +136,7 @@ export async function loginCommand(
     supabaseUrl,
     anonKey,
     open: io.open,
-    session: io.session,
+    session,
     now: io.now,
     ...(provider ? { provider } : {}),
     ...(io.timeoutMs !== undefined ? { timeoutMs: io.timeoutMs } : {}),
@@ -157,19 +190,21 @@ export async function tokenRevoke(io: AuthIo, id: string): Promise<void> {
 
 /** The signed-in session, refreshed when it is about to expire. The one identity every command acts as. */
 export async function signedIn(io: AuthIo): Promise<{ session: Session; anonKey: string }> {
-  const anonKey = required(io.env, "SUPABASE_ANON_KEY");
+  const saved = await io.session.read();
+  if (!saved) throw new AuthError("Run armada login.", "unauthorized");
+  const anonKey = saved.anonKey ?? required(io.env, "SUPABASE_ANON_KEY");
   const session = await ensureFreshSession(io.session, io.now(), (current) => refresh(io, anonKey, current));
   return { session, anonKey };
 }
 
 /** Rotate the saved session after a rejected bearer request. */
 export async function refreshSignedIn(io: AuthIo, rejected: Session): Promise<Session> {
-  const anonKey = required(io.env, "SUPABASE_ANON_KEY");
+  const anonKey = rejected.anonKey ?? required(io.env, "SUPABASE_ANON_KEY");
   return refreshSession(io.session, io.now(), (current) => refresh(io, anonKey, current), rejected);
 }
 
-function refresh(io: AuthIo, anonKey: string, session: Session): Promise<Session> {
-  return refreshSupabaseSession({ fetch: io.fetch, anonKey, session, now: io.now() });
+async function refresh(io: AuthIo, anonKey: string, session: Session): Promise<Session> {
+  return { ...session, ...(await refreshSupabaseSession({ fetch: io.fetch, anonKey, session, now: io.now() })) };
 }
 
 async function userStore(io: AuthIo): Promise<AuthStore> {

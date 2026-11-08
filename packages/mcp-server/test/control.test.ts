@@ -368,7 +368,7 @@ describe("armada org and armada creds against the control API", () => {
       const nobody = cli(STAN, { session: false });
       expect((await nobody.run(["org", "list"])).err).toContain("Run armada login.");
       const lost = cli(STAN, { armadaUrl: false });
-      expect((await lost.run(["org", "list"])).err).toContain("Set ARMADA_URL");
+      expect((await lost.run(["org", "list"])).err).toContain("armada login --url");
       const refused = cli(STAN, { token: "revoked" });
       const result = await refused.run(["org", "list"]);
       expect(result.code).toBe(1);

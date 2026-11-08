@@ -5,7 +5,11 @@ const headers = (values: Record<string, string>) => ({ get: (name: string) => va
 
 describe("routes", () => {
   test("login, auth and the GitHub callback are open to a signed-out visitor", () => {
-    expect(["/login", "/login/", "/auth/callback", "/auth/signout", "/github/callback"].every(isPublicPath)).toBe(true);
+    expect(
+      ["/login", "/login/", "/auth/callback", "/auth/signout", "/github/callback", "/.well-known/armada.json"].every(
+        isPublicPath,
+      ),
+    ).toBe(true);
     expect(
       ["/", "/sandboxes", "/loginx", "/api/sandboxes/1/events", "/authors", "/github/connect"].some(isPublicPath),
     ).toBe(false);

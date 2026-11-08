@@ -5,6 +5,9 @@ import { AuthError } from "./errors.ts";
 /** The CLI's Supabase session. It lives on this machine, never in the database. */
 export interface Session {
   supabaseUrl: string;
+  /** Public discovery settings saved with the login, for later CLI invocations. */
+  anonKey?: string;
+  armadaUrl?: string;
   accessToken: string;
   refreshToken: string;
   expiresAt: string;
@@ -121,7 +124,21 @@ function parseSession(text: string): Session {
   ) {
     throw new AuthError("Run armada login again.", "unauthorized");
   }
-  return { supabaseUrl, accessToken, refreshToken, expiresAt, userId };
+  if (
+    (value.anonKey !== undefined && typeof value.anonKey !== "string") ||
+    (value.armadaUrl !== undefined && typeof value.armadaUrl !== "string")
+  ) {
+    throw new AuthError("Run armada login again.", "unauthorized");
+  }
+  return {
+    supabaseUrl,
+    accessToken,
+    refreshToken,
+    expiresAt,
+    userId,
+    ...(typeof value.anonKey === "string" ? { anonKey: value.anonKey } : {}),
+    ...(typeof value.armadaUrl === "string" ? { armadaUrl: value.armadaUrl } : {}),
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
