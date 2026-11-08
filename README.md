@@ -56,7 +56,7 @@ bun run armada golden connect <name>
 bun run armada golden snapshot <name>
 bun run armada golden list
 bun run armada launch <golden> --agent claude|codex ["prompt"] [--ttl 4h] [--json]
-bun run armada login                 # GitHub or Google in the browser (--provider github|google)
+bun run armada login --url armada.thevibecompany.co # discover settings; email or enabled social login
 bun run armada login --email you@example.com   # a sign-in email: click its link, or type its code
 bun run armada token create --org <name> --label <label>
 bun run armada org create <name>
@@ -81,9 +81,9 @@ Inside the sandbox, git and `gh` act as the person who launched it when they con
 
 ## Identity, orgs and credentials
 
-After `armada login` (`SUPABASE_URL`, `SUPABASE_ANON_KEY`), every command acts as that Supabase session: `armada golden` and `armada launch` read it, and take `--org <name>` when you belong to more than one org. The old `ARMADA_SUPABASE_URL`, `ARMADA_SUPABASE_ANON_KEY`, `ARMADA_ACCESS_TOKEN` and `ARMADA_ORG` are gone, as are `ARMADA_CLAUDE_OAUTH_TOKEN` and `ARMADA_OPENAI_API_KEY`. `armada login --email <address>` sends Supabase's sign-in email: clicking the link signs in through a local page (add `http://127.0.0.1:**` to the project's redirect URLs, as for GitHub and Google), and a code typed at the prompt signs in too when the email template carries `{{ .Token }}`. The CLI never holds a service role key or the encryption key.
+`armada login --url armada.thevibecompany.co` discovers the public authentication settings and the control API address from `/.well-known/armada.json`. The production URL is the default; `ARMADA_URL` selects another deployment. No Supabase configuration is needed on the terminal. On an email-only deployment the CLI asks for your email; `--email <address>` also works directly. Click the email link or enter its code. Social login is available when enabled on the server (`--provider github|google`). The session saves the public settings and control API address, so subsequent commands and token refreshes need no environment variables. Every command acts as that user and takes `--org <name>` when needed. Explicit `SUPABASE_URL` and `SUPABASE_ANON_KEY` remain supported for local legacy setups when neither `--url` nor `ARMADA_URL` is supplied. The CLI never holds a service role key or the encryption key. Configure Supabase redirect URLs to allow `http://127.0.0.1:**` for CLI login callbacks.
 
-`armada org`, `armada creds` and `armada launch` call the server's control API (`handleControlRequest` in `@armada/mcp-server`, mounted by #464; the CLI finds it at `ARMADA_URL`). The server checks the Supabase access token, then uses the service role for what a user JWT cannot do (create an org with its first admin, find a person by email, read and write ciphertext).
+`armada org`, `armada creds` and `armada launch` call the server's control API (`handleControlRequest` in `@armada/mcp-server`, mounted by #464; the CLI discovers and saves its address during login (`ARMADA_URL` remains available for legacy sessions)). The server checks the Supabase access token, then uses the service role for what a user JWT cannot do (create an org with its first admin, find a person by email, read and write ciphertext).
 
 - Server env: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `ARMADA_DATABASE_URL` (a privileged Postgres connection, the Supabase `postgres` role), `ARMADA_ENCRYPTION_KEY` (32 random bytes, base64: `openssl rand -base64 32`), and `GITHUB_APP_CLIENT_ID` and `GITHUB_APP_CLIENT_SECRET` for the user's GitHub identity in sandboxes ([docs/github-app.md](docs/github-app.md)).
 - Credentials are AES-256-GCM ciphertext in `credentials.value_enc` (org boat.dev key: `orgs.boat_api_key_enc`). Values are read from stdin or `--file`, never from an argument, and never shown again. Kinds: `claude-oauth` (the token from `claude setup-token`, injected as `CLAUDE_CODE_OAUTH_TOKEN`), `anthropic` (`ANTHROPIC_API_KEY`), `openai` (`OPENAI_API_KEY`), `codex-auth` (`~/.codex/auth.json`, written into the sandbox), `boat`. OpenCode is deferred.
@@ -161,3 +161,5 @@ This repository used to hold Armada v1, a fleet orchestrator (Linear, merge queu
 ## License
 
 [MIT](LICENSE)
+
+MCP-host CLI discovery defaults to email login. Set the server-only `ARMADA_AUTH_PROVIDERS=github,google` only for social providers enabled in Supabase. The dashboard uses `NEXT_PUBLIC_AUTH_PROVIDERS` for its own discovery document.

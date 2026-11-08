@@ -94,7 +94,7 @@ Usage:
                                            without one the sandbox waits, ready, for the first prompt.
   armada logs <sandbox-id> [--all] [--follow] [--json]
                                            Read agent events; --all drains available pages, --follow waits for new pages until settled
-  armada login [--provider github|google | --email <address>]
+  armada login [--url <url>] [--provider github|google | --email <address>]
                                            --email sends a sign-in link; click it, or type the code it contains
   armada logout
   armada token create [--org <name>] [--label <label>]
@@ -114,8 +114,8 @@ Every command after 'armada login' acts as the user who signed in. golden comman
 when you belong to more than one org.
 
 Environment:
-  SUPABASE_URL, SUPABASE_ANON_KEY          armada login and every signed-in command
-  ARMADA_URL                               The Armada server: armada org, armada creds and armada launch
+  ARMADA_URL                               Login server (default: https://armada.thevibecompany.co)
+  SUPABASE_URL, SUPABASE_ANON_KEY          Optional legacy login settings; discovered automatically otherwise
   BOAT_API_KEY                             golden commands, until the server runs them with the org key
   PORT, ARMADA_DATABASE_URL, SUPABASE_URL, SUPABASE_ANON_KEY,
   ARMADA_AUTH_SECRET, ARMADA_PUBLIC_URL, ARMADA_ENCRYPTION_KEY,
@@ -634,14 +634,14 @@ async function serve(argv: readonly string[], io: Io, deps: Deps): Promise<numbe
 
 async function login(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const parsed = parseAuth(argv);
-  rejectUnknown(parsed.flags, ["provider", "email"]);
+  rejectUnknown(parsed.flags, ["provider", "email", "url"]);
   if (parsed.position.length > 0) throw new AuthError("Run armada login --help.", "usage");
   if (parsed.flags.has("provider") && parsed.flags.has("email")) {
     throw new AuthError("Use --provider or --email, not both.", "usage");
   }
   const provider = parsed.flags.has("provider") ? assertProvider(authFlag(parsed.flags, "provider")) : undefined;
   const email = parsed.flags.has("email") ? authFlag(parsed.flags, "email") : undefined;
-  await loginCommand(authOf(io, deps), { provider, email });
+  await loginCommand(authOf(io, deps), { provider, email, url: parsed.flags.get("url") });
   return 0;
 }
 

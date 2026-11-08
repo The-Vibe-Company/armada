@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { createMemoryAuthStore, memorySessionStore, type Session } from "@armada/auth";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createMemoryAuthStore, fileSessionStore, memorySessionStore, type Session } from "@armada/auth";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
 
@@ -90,6 +93,94 @@ describe("auth commands", () => {
     expect(result.out).toContain(`user: ${USER}`);
     expect(requests).toEqual(["/auth/v1/otp", "/auth/v1/verify"]);
     expect((await auth.session.read())?.userId).toBe(USER);
+  });
+
+  test.each(["flag", "environment", "default"])(
+    "URL-only login (%s) survives a new process and refreshes before a control command",
+    async (source) => {
+      const directory = await mkdtemp(join(tmpdir(), "armada-login-"));
+      try {
+        const auth = io(createMemoryAuthStore());
+        const path = join(directory, "session.json");
+        auth.session = fileSessionStore(path);
+        auth.readCode = async () => "123456";
+        auth.readEmail = async () => "ada@example.com";
+        if (source === "environment") auth.env = { ARMADA_URL: "https://armada.example" };
+        const origin = source === "default" ? "https://armada.thevibecompany.co" : "https://armada.example";
+        const requests: string[] = [];
+        auth.fetch = async (input, init) => {
+          const url = String(input);
+          requests.push(url);
+          if (url === `${origin}/.well-known/armada.json`) {
+            expect(init?.headers).toBeUndefined();
+            return Response.json({
+              version: 1,
+              supabaseUrl: "https://project.supabase.co",
+              anonKey: "public",
+              controlUrl: "https://mcp.example",
+              providers: [],
+            });
+          }
+          if (new URL(url).pathname === "/auth/v1/otp") return Response.json({});
+          if (url.endsWith("/auth/v1/verify"))
+            return Response.json({
+              access_token: "first",
+              refresh_token: "refresh",
+              expires_in: 3600,
+              user: { id: USER },
+            });
+          if (url.endsWith("/auth/v1/token?grant_type=refresh_token")) {
+            expect(new Headers(init?.headers).get("apikey")).toBe("public");
+            return Response.json({
+              access_token: "renewed",
+              refresh_token: "rotated",
+              expires_in: 3600,
+              user: { id: USER },
+            });
+          }
+          if (url === "https://mcp.example/api/v1/org/list") {
+            expect(new Headers(init?.headers).get("authorization")).toBe("Bearer renewed");
+            return Response.json({ orgs: [] });
+          }
+          throw new Error(`Unexpected request: ${url}`);
+        };
+        const result = await capture(
+          source === "flag" ? ["login", "--url", "armada.example", "--email", "ada@example.com"] : ["login"],
+          auth,
+        );
+        expect(result).toMatchObject({ code: 0, out: expect.stringContaining("Logged in.") });
+        const reloaded = {
+          ...auth,
+          session: fileSessionStore(path),
+          env: {},
+          now: () => new Date("2026-11-08T02:00:00Z"),
+        };
+        const { control } = await import("../src/control.ts");
+        expect(await control<{ orgs: unknown[] }>(reloaded, "org/list", {})).toEqual({ orgs: [] });
+        expect(requests).toHaveLength(5);
+        expect((await reloaded.session.read())?.refreshToken).toBe("rotated");
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.each([
+    ["http://armada.example", "HTTPS", false],
+    ["https://user:password@armada.example", "HTTPS", false],
+    ["https://armada.example", "Update the server", true],
+  ])("refuses unsafe or unsupported discovery at %s", async (url, message, contacted) => {
+    const auth = io(createMemoryAuthStore());
+    let calls = 0;
+    auth.fetch = async () => {
+      calls++;
+      return Response.json({ version: 2 });
+    };
+    const result = await capture(["login", "--url", url, "--email", "ada@example.com"], auth);
+    expect(result.code).not.toBe(0);
+    expect(result.err).toContain(message);
+    expect(calls).toBe(contacted ? 1 : 0);
+    expect(await auth.session.read()).toBeNull();
   });
 
   test("login takes --provider or --email, and a real address", async () => {
