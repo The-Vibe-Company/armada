@@ -1,6 +1,7 @@
 import { type CredentialReader, parseCredentialValue } from "./credentials.ts";
 import { encryptSecret } from "./crypto.ts";
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
+import type { GitHubConnectionStore } from "./github.ts";
 import { VaultError } from "./vault-error.ts";
 
 export interface OrgSummary {
@@ -31,7 +32,7 @@ export interface OrgCredentials extends OrgSummary {
  * security that decides who may do what here, so every function below checks the caller first.
  * Only the server holds one of these; the CLI reaches it through the control API.
  */
-export interface VaultStore extends CredentialReader {
+export interface VaultStore extends CredentialReader, GitHubConnectionStore {
   /** Inserts the org and its first admin together. This is the one way an org is created. */
   createOrg(name: string, adminUserId: string): Promise<{ id: string; name: string }>;
   memberships(userId: string): Promise<OrgSummary[]>;

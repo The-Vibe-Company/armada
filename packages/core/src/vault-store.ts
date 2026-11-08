@@ -1,4 +1,5 @@
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
+import type { GitHubUser, StoredGitHubConnection } from "./github.ts";
 import type { Sql } from "./golden-store.ts";
 import type { CredentialInfo, MemberInfo, OrgSummary, VaultStore } from "./vault.ts";
 import { VaultError } from "./vault-error.ts";
@@ -156,6 +157,62 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         [scope, ownerId],
       );
       return result.rows.map((row) => ({ kind: row.kind as CredentialKind, valueEnc: new Uint8Array(row.value_enc) }));
+    },
+
+    async getGitHubConnection(userId): Promise<StoredGitHubConnection | null> {
+      const result = await sql.query<{
+        user_id: string;
+        github_id: string | number;
+        login: string;
+        name: string | null;
+        refresh_token_enc: Uint8Array;
+        refresh_expires_at: string | Date | null;
+        revoked_at: string | Date | null;
+      }>(
+        `select user_id, github_id, login, name, refresh_token_enc, refresh_expires_at, revoked_at
+         from public.github_connections where user_id = $1`,
+        [userId],
+      );
+      const row = result.rows[0];
+      if (!row) return null;
+      return {
+        userId: row.user_id,
+        githubId: Number(row.github_id),
+        login: row.login,
+        name: row.name,
+        refreshTokenEnc: new Uint8Array(row.refresh_token_enc),
+        refreshExpiresAt: row.refresh_expires_at === null ? null : new Date(row.refresh_expires_at),
+        revokedAt: row.revoked_at === null ? null : new Date(row.revoked_at),
+      };
+    },
+
+    async rotateGitHubToken(userId, expected, next) {
+      const result = await sql.query(
+        `update public.github_connections
+         set refresh_token_enc = $3::bytea, refresh_expires_at = $4::timestamptz, updated_at = now()
+         where user_id = $1 and refresh_token_enc = $2::bytea and revoked_at is null
+         returning user_id`,
+        [userId, expected, next.refreshTokenEnc, next.refreshExpiresAt?.toISOString() ?? null],
+      );
+      return result.rows.length > 0;
+    },
+
+    async markGitHubRevoked(userId, expected) {
+      const result = await sql.query(
+        `update public.github_connections set revoked_at = now(), updated_at = now()
+         where user_id = $1 and refresh_token_enc = $2::bytea and revoked_at is null
+         returning user_id`,
+        [userId, expected],
+      );
+      return result.rows.length > 0;
+    },
+
+    async updateGitHubProfile(userId, profile: GitHubUser) {
+      await sql.query(
+        `update public.github_connections set github_id = $2, login = $3, name = $4, updated_at = now()
+         where user_id = $1`,
+        [userId, profile.id, profile.login, profile.name],
+      );
     },
 
     async orgBoatKey(orgId) {

@@ -1,6 +1,16 @@
 import { HARNESSES, type Harness } from "./contract.ts";
 import { CODEX_AUTH_ENV, type HarnessCredentials, redact } from "./credentials.ts";
 import {
+  GH_MISSING_NOTE,
+  GH_PRESENT_MARKER,
+  GITHUB_NOT_CONNECTED,
+  type GitHubAccess,
+  type GitHubStatus,
+  type GitIdentity,
+  githubEnv,
+  gitSetupCommand,
+} from "./github.ts";
+import {
   type GoldenActor,
   type GoldenLimits,
   type GoldenRecord,
@@ -41,9 +51,19 @@ export interface LaunchStores {
   credentials: LaunchCredentialResolver;
 }
 
+/** What a launch did about GitHub. A launch without a connection still succeeds, and says so here. */
+export interface GitHubLaunchInfo {
+  status: GitHubStatus;
+  /** The account git and gh act as in the sandbox. */
+  login?: string;
+  /** Why GitHub is not set up, or what to fix. Never holds a token. */
+  message?: string;
+}
+
 export interface LaunchResult {
   sandbox: SandboxRecord;
   golden: GoldenRecord;
+  github: GitHubLaunchInfo;
   ttlSeconds: number;
   /** When the provider stops the sandbox by itself. */
   expiresAt?: Date;
@@ -85,12 +105,16 @@ export async function launchSandbox(
   const snapshot = golden.boatSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
   const credentials = await stores.credentials.resolve(actor, harness);
+  const github: GitHubAccess = credentials.github ?? { status: "not_connected", message: GITHUB_NOT_CONNECTED };
+  const connected = github.status === "connected" ? github : null;
+  const env = connected ? { ...credentials.env, ...githubEnv(connected.token) } : credentials.env;
+  const secrets = connected ? [...credentials.secrets, connected.token] : credentials.secrets;
 
   const id = (options.newId ?? (() => crypto.randomUUID()))();
   const forked = await provider.fork({
     from: snapshot,
     noEnv: true,
-    env: credentials.env,
+    env,
     ttlSeconds,
     labels: {
       armada: "sandbox",
@@ -121,23 +145,35 @@ export async function launchSandbox(
 
   try {
     const ready = await waitReady(provider, forked.id, options);
-    if (credentials.codexAuthJson) await writeCodexAuth(provider, ready.id, credentials.secrets);
-    await setup(provider, ready.id, golden, credentials.secrets);
+    if (credentials.codexAuthJson) await writeCodexAuth(provider, ready.id, secrets);
+    const launchGithub: GitHubLaunchInfo =
+      github.status === "connected"
+        ? await setupGitHub(provider, ready.id, github.identity, secrets)
+        : { status: github.status, message: github.message };
+    await setup(provider, ready.id, golden, secrets);
     if (prompt === undefined) {
       await stores.sandboxes.update(record.id, { status: "ready" });
-      return finish(record, golden, ttlSeconds, ready.expiresAt ?? forked.expiresAt, "ready", [], undefined);
+      return finish(
+        record,
+        golden,
+        launchGithub,
+        ttlSeconds,
+        ready.expiresAt ?? forked.expiresAt,
+        "ready",
+        [],
+        undefined,
+      );
     }
     const receipt = await provider.prompt({ sandboxId: ready.id, harness, text: prompt }).catch((error: unknown) => {
-      throw new LaunchError(
-        "prompt_failed",
-        `The agent could not be started: ${redact(messageOf(error), credentials.secrets)}`,
-        { cause: error },
-      );
+      throw new LaunchError("prompt_failed", `The agent could not be started: ${redact(messageOf(error), secrets)}`, {
+        cause: error,
+      });
     });
     await stores.sandboxes.update(record.id, { status: "running", conversationIds: [receipt.conversationId] });
     return finish(
       record,
       golden,
+      launchGithub,
       ttlSeconds,
       ready.expiresAt ?? forked.expiresAt,
       "running",
@@ -148,7 +184,7 @@ export async function launchSandbox(
       },
     );
   } catch (error) {
-    const failure = withSandbox(error, record.id, credentials.secrets);
+    const failure = withSandbox(error, record.id, secrets);
     await quietly(() => stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message }));
     await quietly(() => provider.stop({ sandboxId: forked.id }));
     throw failure;
@@ -158,6 +194,7 @@ export async function launchSandbox(
 function finish(
   record: SandboxRecord,
   golden: GoldenRecord,
+  github: GitHubLaunchInfo,
   ttlSeconds: number,
   expiresAt: Date | undefined,
   status: SandboxRecord["status"],
@@ -167,6 +204,7 @@ function finish(
   return {
     sandbox: { ...record, status, conversationIds },
     golden,
+    github,
     ttlSeconds,
     ...(expiresAt ? { expiresAt } : {}),
     ...(prompt ?? {}),
@@ -185,6 +223,30 @@ async function setup(
   for (const [index, command] of golden.config.init.entries()) {
     await run(provider, sandboxId, initCommand(command), `init command ${index + 1}`, secrets);
   }
+}
+
+/** Identity and the credential helper, before any repo is pulled. A failure here is a broken sandbox, so it fails the launch. */
+async function setupGitHub(
+  provider: Provider,
+  sandboxId: string,
+  identity: GitIdentity,
+  secrets: readonly string[],
+): Promise<GitHubLaunchInfo> {
+  const result = await provider.exec({
+    sandboxId,
+    command: gitSetupCommand(identity),
+    cwd: GOLDEN_ROOT,
+    timeoutSeconds: 60,
+  });
+  if (result.detached) throw new LaunchError("start_failed", "GitHub setup started in the background.");
+  if (result.timedOut || result.exitCode !== 0) {
+    throw new LaunchError(
+      "start_failed",
+      `GitHub could not be set up in the sandbox.${output(result.stderr, result.stdout, secrets)}`,
+    );
+  }
+  const present = result.stdout.includes(GH_PRESENT_MARKER);
+  return { status: "connected", login: identity.login, ...(present ? {} : { message: GH_MISSING_NOTE }) };
 }
 
 async function writeCodexAuth(provider: Provider, sandboxId: string, secrets: readonly string[]): Promise<void> {

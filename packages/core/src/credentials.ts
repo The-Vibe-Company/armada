@@ -1,6 +1,7 @@
 import type { Harness, Visibility } from "./contract.ts";
 import { decryptSecret, EncryptionKeyError } from "./crypto.ts";
 import type { CredentialKind, CredentialScope } from "./database.types.ts";
+import type { GitHubAccess } from "./github.ts";
 import type { GoldenActor } from "./golden.ts";
 import { LaunchError } from "./launch-error.ts";
 import { VaultError } from "./vault-error.ts";
@@ -25,6 +26,11 @@ export interface HarnessCredentials {
   secrets: string[];
   /** The harness reads its login from this file, which launch writes from {@link CODEX_AUTH_ENV}. */
   codexAuthJson: boolean;
+  /**
+   * The person's GitHub access, resolved beside the model credentials. Launch puts the token in the
+   * sandbox environment and sets git up with it. Absent means GitHub was not looked up.
+   */
+  github?: GitHubAccess;
 }
 
 /** The user's own credential wins over the org's default. A blank value counts as not set. */
@@ -75,7 +81,7 @@ export async function harnessCredentials(
  * Turns {@link resolveCredentials}'s result into what a launch forks with. A Codex `auth.json` rides
  * along as {@link CODEX_AUTH_ENV}; launch writes it to `~/.codex/auth.json` and never onto the command line.
  */
-export function toHarnessCredentials(resolved: ResolvedCredentials): HarnessCredentials {
+export function toHarnessCredentials(resolved: ResolvedCredentials, github?: GitHubAccess): HarnessCredentials {
   const env = { ...resolved.env };
   const secrets = Object.values(resolved.env);
   const auth = resolved.files[0]?.content;
@@ -83,12 +89,15 @@ export function toHarnessCredentials(resolved: ResolvedCredentials): HarnessCred
     env[CODEX_AUTH_ENV] = auth;
     secrets.push(auth, ...authJsonSecrets(auth));
   }
-  return { env, secrets, codexAuthJson: auth !== undefined };
+  return { env, secrets, codexAuthJson: auth !== undefined, ...(github ? { github } : {}) };
 }
+
+/** GitHub's token formats (`ghu_`, `ghr_`, `ghs_`, `gho_`, `ghp_`, `github_pat_`): masked wherever they appear, known or not. */
+const GITHUB_TOKEN = /\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})/g;
 
 /** Replaces every secret in `text`, so command output and error messages are safe to show. */
 export function redact(text: string, secrets: readonly string[]): string {
-  let out = text;
+  let out = text.replace(GITHUB_TOKEN, "***");
   for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
     if (secret !== "") out = out.split(secret).join("***");
   }

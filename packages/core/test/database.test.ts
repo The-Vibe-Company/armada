@@ -56,6 +56,7 @@ describe("database", () => {
       `);
       expect(tables.rows.map((row) => row.name)).toEqual([
         "credentials",
+        "github_connections",
         "goldens",
         "mcp_tokens",
         "members",
@@ -127,6 +128,7 @@ describe("database", () => {
       }
       expect(ciphertext.sort()).toEqual([
         "credentials.value_enc",
+        "github_connections.refresh_token_enc",
         "notify_subscriptions.secret_enc",
         "orgs.boat_api_key_enc",
       ]);
@@ -427,6 +429,50 @@ describe("database", () => {
           text(db, "select status::text as value from sandboxes where id = $1", [sandbox]),
         ),
       ).toBe("stopped");
+    });
+  });
+
+  test("a GitHub connection is its owner's: nobody else sees it, and a user JWT never reads the ciphertext", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      await asUser(db, people.owner, () =>
+        db.query(
+          `insert into github_connections (user_id, github_id, login, refresh_token_enc)
+           values ($1, 583231, 'octocat', decode('0d', 'hex'))`,
+          [people.owner],
+        ),
+      );
+      await expect(
+        asUser(db, people.member, () =>
+          db.query(
+            `insert into github_connections (user_id, github_id, login, refresh_token_enc)
+             values ($1, 1, 'impostor', decode('0d', 'hex'))`,
+            [people.owner],
+          ),
+        ),
+      ).rejects.toThrow(/row-level security/);
+
+      const login = "select login as value from github_connections where user_id = $1";
+      expect(await asUser(db, people.owner, () => text(db, login, [people.owner]))).toBe("octocat");
+      for (const other of [people.member, people.admin, people.outsider]) {
+        expect(await asUser(db, other, () => db.query(login, [people.owner]))).toMatchObject({ rows: [] });
+      }
+      await expect(
+        asUser(db, people.owner, () => db.query("select refresh_token_enc from github_connections")),
+      ).rejects.toThrow(/permission denied for table github_connections/);
+
+      await asUser(db, people.member, () =>
+        db.query("update github_connections set login = 'taken' where user_id = $1", [people.owner]),
+      );
+      await asUser(db, people.member, () =>
+        db.query("delete from github_connections where user_id = $1", [people.owner]),
+      );
+      expect(await asRole(db, "service_role", () => text(db, login, [people.owner]))).toBe("octocat");
+
+      await asUser(db, people.owner, () =>
+        db.query("delete from github_connections where user_id = $1", [people.owner]),
+      );
+      expect(await asRole(db, "service_role", () => db.query(login, [people.owner]))).toMatchObject({ rows: [] });
     });
   });
 

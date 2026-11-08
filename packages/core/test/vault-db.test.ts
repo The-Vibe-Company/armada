@@ -327,6 +327,71 @@ interface People {
   bob: string;
 }
 
+describe("GitHub connections", () => {
+  test("a rotated refresh token replaces the one it was read with, once", async () => {
+    await withVault(async ({ store, db, people }) => {
+      await db.query(
+        `insert into github_connections (user_id, github_id, login, refresh_token_enc)
+         values ($1, 583231, 'octocat', $2::bytea)`,
+        [people.stan, new Uint8Array([1, 2, 3])],
+      );
+      const read = await store.getGitHubConnection(people.stan);
+      expect(read).toMatchObject({
+        userId: people.stan,
+        githubId: 583231,
+        login: "octocat",
+        name: null,
+        revokedAt: null,
+      });
+      expect([...(read?.refreshTokenEnc ?? [])]).toEqual([1, 2, 3]);
+      expect(await store.getGitHubConnection(people.ada)).toBeNull();
+
+      const expiry = new Date("2027-05-10T12:00:00.000Z");
+      expect(
+        await store.rotateGitHubToken(people.stan, new Uint8Array([1, 2, 3]), {
+          refreshTokenEnc: new Uint8Array([4, 5]),
+          refreshExpiresAt: expiry,
+        }),
+      ).toBe(true);
+      expect(
+        await store.rotateGitHubToken(people.stan, new Uint8Array([1, 2, 3]), {
+          refreshTokenEnc: new Uint8Array([9]),
+          refreshExpiresAt: null,
+        }),
+      ).toBe(false);
+      const rotated = await store.getGitHubConnection(people.stan);
+      expect([...(rotated?.refreshTokenEnc ?? [])]).toEqual([4, 5]);
+      expect(rotated?.refreshExpiresAt?.toISOString()).toBe(expiry.toISOString());
+
+      await store.updateGitHubProfile(people.stan, { id: 583231, login: "octo-renamed", name: "The Octocat" });
+      expect(await store.getGitHubConnection(people.stan)).toMatchObject({
+        login: "octo-renamed",
+        name: "The Octocat",
+      });
+    });
+  });
+
+  test("a revoked connection is flagged only while its token is the one GitHub refused, and is not rotated", async () => {
+    await withVault(async ({ store, db, people }) => {
+      await db.query(
+        `insert into github_connections (user_id, github_id, login, refresh_token_enc)
+         values ($1, 1, 'octocat', $2::bytea)`,
+        [people.stan, new Uint8Array([1])],
+      );
+      expect(await store.markGitHubRevoked(people.stan, new Uint8Array([7]))).toBe(false);
+      expect((await store.getGitHubConnection(people.stan))?.revokedAt).toBeNull();
+      expect(await store.markGitHubRevoked(people.stan, new Uint8Array([1]))).toBe(true);
+      expect((await store.getGitHubConnection(people.stan))?.revokedAt).toBeInstanceOf(Date);
+      expect(
+        await store.rotateGitHubToken(people.stan, new Uint8Array([1]), {
+          refreshTokenEnc: new Uint8Array([2]),
+          refreshExpiresAt: null,
+        }),
+      ).toBe(false);
+    });
+  });
+});
+
 async function withVault(
   run: (ctx: { db: PGlite; store: VaultStore; people: People }) => Promise<void>,
 ): Promise<void> {
