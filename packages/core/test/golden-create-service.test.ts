@@ -184,17 +184,19 @@ test("a snapshot that never becomes ready is never persisted", async () => {
     createGolden: async () => ({ id: "bx" }),
     snapshot: async ({ name }: any) => ({ name, status: "saving" }),
     getSnapshot: async () => ({ status: "failed", error: "disk full" }),
+    deleteSnapshot: async (name: string) => void log.push(`delete:${name}`),
     stop: async () => void log.push("stop"),
   };
   await expect(
     s.create(p, actor, { name: "x", visibility: "org", repos: ["acme/web"] }, { sleep: async () => {} }),
   ).rejects.toThrow("disk full");
-  expect(log).toEqual(["stop"]);
+  expect(log).toEqual(["delete:golden-bx", "stop"]);
 });
 
-test("a persist failure deletes the orphaned ready snapshot and still stops the builder", async () => {
+test("a persist failure deletes only a confirmed unreferenced ready snapshot and still stops the builder", async () => {
   const log: string[] = [];
   const s = new GoldenCreateService({
+    canDiscardSnapshot: async () => true,
     authorize: async () => ({ repos: [repo], token: "caller-token" }),
     ssh: async () => {},
     scan: async () => {},
@@ -314,7 +316,7 @@ test("existing golden denial happens before authorization or provider", async ()
   expect(touched).toBe(false);
 });
 
-test("uses provider snapshot identifier and stable existing-golden snapshot request", async () => {
+test("rejects a provider remapping a unique revision rather than persisting an unrelated artifact", async () => {
   const seen: any[] = [];
   const existing: any = {
     id: "stable-id",
@@ -340,13 +342,15 @@ test("uses provider snapshot identifier and stable existing-golden snapshot requ
     },
     stop: async () => {},
   };
-  const result = await s.create(p, actor, {
-    name: "x",
-    visibility: "private",
-    repos: ["acme/web"],
-    existingGolden: existing,
-  });
-  expect(result.snapshot).toBe("provider-remap");
-  expect(seen[0]).toBe("golden-stable-id");
-  expect(seen[1].snapshot).toBe("provider-remap");
+  await expect(
+    s.create(p, actor, {
+      name: "x",
+      visibility: "private",
+      repos: ["acme/web"],
+      existingGolden: existing,
+    }),
+  ).rejects.toThrow("unexpected snapshot revision");
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).not.toBe("golden-stable-id");
+  expect(seen[0]).toMatch(/^[a-z0-9][a-z0-9-]{0,62}$/);
 });

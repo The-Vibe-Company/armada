@@ -40,6 +40,9 @@ export interface GoldenCreateDeps {
   /** Legacy factory hook; production persistence finalizes atomically itself. */
   finalize?(reservationId: string, goldenId: string): Promise<void>;
   release?(reservationId: string): Promise<void>;
+  /** Confirm after a persistence error that no committed row references this attempt's artifact.
+   * Unknown database outcomes must retain the artifact rather than risk deleting a committed pointer. */
+  canDiscardSnapshot?(snapshot: string): Promise<boolean>;
   /** Persist must atomically finalize a reservation when one was taken. */
   persist(input: {
     actor: GoldenActor;
@@ -93,6 +96,10 @@ export class GoldenCreateService {
     const prepared = requested ? applyRequestedRepos(repos, requested) : withGoldenDirs(repos);
     const reservation = await this.deps.reserve?.(provider, actor, input.existingGolden);
     let persisted = false;
+    let persistAttempted = false;
+    let requestedSnapshot: string | undefined;
+    let ownedSnapshot: string | undefined;
+    let artifactSettled = false;
     let builder: Awaited<ReturnType<Provider["createGolden"]>> | undefined;
     let issued: { token: string; revoke(): Promise<void> } | undefined;
     try {
@@ -112,16 +119,21 @@ export class GoldenCreateService {
         script: goldenScript(prepared, [input.config?.init ?? [], input.setup ? [input.setup] : []].flat()),
       });
       await this.deps.scan(provider, builder.id);
-      const requestedSnapshot = input.existingGolden ? `golden-${input.existingGolden.id}` : `golden-${builder.id}`;
+      requestedSnapshot = input.existingGolden ? `golden-r-${crypto.randomUUID()}` : `golden-${builder.id}`;
       // `snapshot` only starts the save; it is asynchronous, so a brand-new snapshot is normally
       // "saving" here and must be polled, exactly like the original golden flow's own snapshot step.
       const started = await provider.snapshot({ sandboxId: builder.id, name: requestedSnapshot });
+      if (started.name !== requestedSnapshot)
+        throw new GoldenError("snapshot_failed", "Provider returned an unexpected snapshot revision.");
       const snapshot = started.name;
+      ownedSnapshot = snapshot;
       const settled = started.status === "ready" ? started : await waitSnapshot(provider, snapshot, limits);
+      artifactSettled = true;
       if (settled.status !== "ready") {
         throw new GoldenError("snapshot_failed", settled.error ?? `Snapshot '${snapshot}' failed.`);
       }
-      try {
+      persistAttempted = true;
+      {
         const goldenId = await this.deps.persist({
           actor,
           ...(input.existingGolden ? { existingGolden: input.existingGolden } : {}),
@@ -135,14 +147,35 @@ export class GoldenCreateService {
         });
         if (reservation && goldenId && this.deps.finalize) await this.deps.finalize(reservation, goldenId);
         persisted = true;
-      } catch (error) {
-        // A ready snapshot nothing tracks is worse than none: remove it so the name and the
-        // boat.dev snapshot slot are both free to try again.
-        await provider.deleteSnapshot(snapshot).catch(() => {});
-        throw error;
       }
       return { snapshot };
     } finally {
+      if (!persisted && requestedSnapshot && builder) {
+        // A timed-out request may have created an artifact. Only reclaim a settled artifact
+        // with matching source provenance; an in-flight/unknown save is left for reconciliation.
+        if (!artifactSettled) {
+          try {
+            const artifact = await provider.getSnapshot(requestedSnapshot);
+            if (
+              artifact.name === requestedSnapshot &&
+              artifact.sourceSandboxId === builder.id &&
+              artifact.status !== "saving"
+            ) {
+              ownedSnapshot = requestedSnapshot;
+              artifactSettled = true;
+            }
+          } catch {
+            /* Unknown ownership/state: retain. */
+          }
+        }
+        if (
+          ownedSnapshot &&
+          artifactSettled &&
+          (!persistAttempted || (await this.deps.canDiscardSnapshot?.(ownedSnapshot).catch(() => false)))
+        ) {
+          await provider.deleteSnapshot(ownedSnapshot).catch(() => {});
+        }
+      }
       if (!persisted && reservation) await this.deps.release?.(reservation).catch(() => {});
       await issued?.revoke().catch(() => {});
       if (builder) await provider.stop({ sandboxId: builder.id }).catch(() => {});

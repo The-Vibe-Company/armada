@@ -66,6 +66,8 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
     ssh: options.ssh ?? ((provider, input) => sshStdinCheckout(provider, input)),
     scan: (provider, sandboxId) => scanGoldenSandbox(provider, sandboxId),
     async reserve(provider, actor, existingGolden) {
+      if (!options.sql.transaction)
+        throw new GoldenError("conflict", "Atomic golden persistence requires a database transaction.");
       const capacity =
         provider.maxGoldens ?? options.defaultProviderCapacity ?? (provider.id === "boat" ? 1 : undefined);
       if (capacity === undefined) return undefined;
@@ -96,7 +98,14 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
     async release(reservationId) {
       await slots.release(reservationId);
     },
-    async persist({ actor, existingGolden, name, visibility, repos, init, snapshot, builderId, reservationId }) {
+    async canDiscardSnapshot(snapshot) {
+      const result = await options.sql.query<{ used: boolean }>(
+        "select exists(select 1 from public.goldens where provider_snapshot_id=$1) as used",
+        [snapshot],
+      );
+      return result.rows[0]?.used === false;
+    },
+    async persist({ actor, existingGolden, name, visibility, repos, init, snapshot, reservationId }) {
       const config: GoldenConfig = {
         repos: repos.map(
           (repo): GoldenRepo => ({
@@ -120,8 +129,18 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
               modal: null,
               config,
             });
-        if (existingGolden) await transactionalStore.setConfig(inserted.id, config);
-        await transactionalStore.setSandbox(inserted.id, builderId);
+        if (existingGolden) {
+          const current = await sql.query<{ provider_snapshot_id: string | null }>(
+            "select provider_snapshot_id from public.goldens where id=$1 for update",
+            [inserted.id],
+          );
+          if (current.rows[0]?.provider_snapshot_id !== existingGolden.providerSnapshotId)
+            throw new GoldenError("conflict", "Golden changed during rebuild. Retry from its current revision.");
+          await transactionalStore.setConfig(inserted.id, config);
+        }
+        // Null master + ready snapshot is the durable restore-on-connect strategy. Never point
+        // at the disposable builder, which the service always stops after this transaction.
+        await sql.query("update public.goldens set provider_sandbox_id=null where id=$1", [inserted.id]);
         await transactionalStore.setSnapshot(inserted.id, snapshot);
         // This update is inside the same database transaction as the golden metadata. A failed
         // finalize rolls everything back; the service can safely release only the still-pending slot.
@@ -132,7 +151,8 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
           ]);
         return inserted.id;
       };
-      return options.sql.transaction ? await options.sql.transaction(persist) : await persist(options.sql);
+      if (!options.sql.transaction) throw new GoldenError("conflict", "Atomic golden persistence is unavailable.");
+      return options.sql.transaction(persist);
     },
   };
   if (adapter.mint) deps.mint = adapter.mint;
