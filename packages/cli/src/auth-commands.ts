@@ -5,21 +5,18 @@ import {
   AuthError,
   type AuthFetch,
   type AuthStore,
-  createServiceToken,
-  createUserStore,
   ensureFreshSession,
   fileSessionStore,
-  listServiceTokens,
   type Provider,
   refreshSession,
   refreshSupabaseSession,
-  revokeServiceToken,
   type Session,
   type SessionStore,
 } from "@armada/auth";
 
 import { DEFAULT_ARMADA_URL } from "./client-config.ts";
 import { browserLogin } from "./browser-login.ts";
+import { createArmadaApiClient } from "./armada-api.ts";
 
 export interface AuthIo {
   out(text: string): void;
@@ -138,25 +135,20 @@ export async function logoutCommand(io: AuthIo): Promise<void> {
 }
 
 export async function tokenCreate(io: AuthIo, orgName: string | undefined, label: string | undefined): Promise<void> {
-  const store = await userStore(io);
-  const session = await io.session.read();
-  if (!session) throw new AuthError("Run armada login.", "unauthorized");
-  const created = await createServiceToken(store, {
-    userId: session.userId,
-    now: io.now(),
+  const client = await createArmadaApiClient(io);
+  const created = await client.request<{ id: string; label: string; orgName: string; token: string }>("/api/v1/token/create", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
     ...(orgName !== undefined ? { orgName } : {}),
     ...(label !== undefined ? { label } : {}),
-  });
+  }) });
   io.out(
     `Created a service token. Copy it now; Armada stores only its hash.\n\nid: ${created.id}\nlabel: ${created.label}\norg: ${created.orgName}\ntoken: ${created.token}\n`,
   );
 }
 
 export async function tokenList(io: AuthIo): Promise<void> {
-  const store = await userStore(io);
-  const session = await io.session.read();
-  if (!session) throw new AuthError("Run armada login.", "unauthorized");
-  const tokens = await listServiceTokens(store, session.userId);
+  const client = await createArmadaApiClient(io);
+  const { tokens } = await client.request<{ tokens: { id: string; label: string; orgName: string; createdAt: string; revokedAt: string | null }[] }>("/api/v1/token/list", { method: "POST" });
   if (tokens.length === 0) {
     io.out("No service tokens.\n");
     return;
@@ -168,10 +160,8 @@ export async function tokenList(io: AuthIo): Promise<void> {
 }
 
 export async function tokenRevoke(io: AuthIo, id: string): Promise<void> {
-  const store = await userStore(io);
-  const session = await io.session.read();
-  if (!session) throw new AuthError("Run armada login.", "unauthorized");
-  await revokeServiceToken(store, { userId: session.userId, id, now: io.now() });
+  const client = await createArmadaApiClient(io);
+  await client.request("/api/v1/token/revoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id }) });
   io.out(`Revoked ${id}.\n`);
 }
 
@@ -192,20 +182,6 @@ export async function refreshSignedIn(io: AuthIo, rejected: Session): Promise<Se
 
 async function refresh(io: AuthIo, anonKey: string, session: Session): Promise<Session> {
   return { ...session, ...(await refreshSupabaseSession({ fetch: io.fetch, anonKey, session, now: io.now() })) };
-}
-
-async function userStore(io: AuthIo): Promise<AuthStore> {
-  if (io.store) {
-    await ensureFreshSession(io.session, io.now(), async (session) => session);
-    return io.store;
-  }
-  const { session, anonKey } = await signedIn(io);
-  return createUserStore({
-    fetch: io.fetch,
-    supabaseUrl: session.supabaseUrl,
-    anonKey,
-    accessToken: session.accessToken,
-  });
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
