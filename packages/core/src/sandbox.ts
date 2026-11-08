@@ -1,0 +1,172 @@
+import type { Harness } from "./contract.ts";
+import type { SandboxStatus } from "./database.types.ts";
+import type { Sql } from "./golden-store.ts";
+import { type Provider, ProviderError } from "./provider.ts";
+
+/** An Armada sandbox: the metadata of one fork of a golden. The provider keeps the disk and the conversations. */
+export interface SandboxRecord {
+  id: string;
+  /** The provider's own id (`bx_...` on boat). */
+  boatId: string;
+  goldenId: string;
+  orgId: string;
+  ownerId: string;
+  harness: Harness;
+  status: SandboxStatus;
+  conversationIds: string[];
+  createdAt: string;
+  stoppedAt: string | null;
+  deletedAt: string | null;
+}
+
+export interface SandboxPatch {
+  status?: SandboxStatus;
+  conversationIds?: string[];
+  /** ISO timestamp. */
+  stoppedAt?: string | null;
+  /** ISO timestamp. */
+  deletedAt?: string | null;
+}
+
+/**
+ * Sandboxes through a database. The connection's role is the caller: a sandbox is visible
+ * exactly when its golden is, so a private golden's sandboxes are the owner's alone.
+ */
+export interface SandboxStore {
+  insert(input: {
+    id: string;
+    boatId: string;
+    goldenId: string;
+    orgId: string;
+    ownerId: string;
+    harness: Harness;
+    status: SandboxStatus;
+  }): Promise<SandboxRecord>;
+  update(id: string, patch: SandboxPatch): Promise<void>;
+  /** Sandboxes created before `cutoff` (ISO) that are not deleted yet, oldest first. */
+  listBefore(cutoff: string): Promise<SandboxRecord[]>;
+}
+
+/** How long Armada keeps a sandbox before its cleanup deletes it, when nobody says otherwise. */
+export const DEFAULT_SANDBOX_RETENTION_DAYS = 7;
+
+export interface CleanupResult {
+  deleted: string[];
+  failed: { id: string; message: string }[];
+}
+
+/**
+ * Deletes the sandboxes older than `retentionDays` from the provider and marks them `deleted`.
+ * A sandbox the provider no longer has counts as deleted. One failure does not stop the others.
+ */
+export async function cleanupSandboxes(
+  provider: Provider,
+  store: SandboxStore,
+  options: { retentionDays?: number; now?: Date } = {},
+): Promise<CleanupResult> {
+  const days = options.retentionDays ?? DEFAULT_SANDBOX_RETENTION_DAYS;
+  if (!Number.isFinite(days) || days <= 0) throw new RangeError("retentionDays must be a positive number.");
+  const now = options.now ?? new Date();
+  const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString();
+  const result: CleanupResult = { deleted: [], failed: [] };
+  for (const sandbox of await store.listBefore(cutoff)) {
+    try {
+      await provider.delete({ sandboxId: sandbox.boatId });
+    } catch (error) {
+      if (!(error instanceof ProviderError && error.code === "not_found")) {
+        result.failed.push({ id: sandbox.id, message: error instanceof Error ? error.message : String(error) });
+        continue;
+      }
+    }
+    try {
+      await store.update(sandbox.id, { status: "deleted", deletedAt: now.toISOString() });
+      result.deleted.push(sandbox.id);
+    } catch (error) {
+      result.failed.push({ id: sandbox.id, message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return result;
+}
+
+export interface SandboxRow {
+  id: string;
+  boat_id: string;
+  golden_id: string;
+  org_id: string;
+  owner_id: string;
+  harness: string;
+  status: string;
+  conversation_ids: string[];
+  created_at: string | Date;
+  stopped_at: string | Date | null;
+  deleted_at: string | Date | null;
+}
+
+const COLUMNS = `id, boat_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
+  conversation_ids, created_at, stopped_at, deleted_at`;
+
+export function createSqlSandboxStore(sql: Sql): SandboxStore {
+  return {
+    async insert(input): Promise<SandboxRecord> {
+      const result = await sql.query<SandboxRow>(
+        `insert into public.sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status)
+         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status)
+         returning ${COLUMNS}`,
+        [input.id, input.boatId, input.goldenId, input.orgId, input.ownerId, input.harness, input.status],
+      );
+      const row = result.rows[0];
+      if (!row) throw new Error("The sandbox could not be recorded.");
+      return mapSandboxRow(row);
+    },
+
+    async update(id, patch): Promise<void> {
+      const sets: string[] = [];
+      const params: unknown[] = [id];
+      const set = (column: string, value: unknown, cast = "") => {
+        params.push(value);
+        sets.push(`${column} = $${params.length}${cast}`);
+      };
+      if (patch.status !== undefined) set("status", patch.status, "::public.sandbox_status");
+      if (patch.conversationIds !== undefined) set("conversation_ids", patch.conversationIds, "::text[]");
+      if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");
+      if (patch.deletedAt !== undefined) set("deleted_at", patch.deletedAt, "::timestamptz");
+      if (sets.length === 0) return;
+      const result = await sql.query<{ id: string }>(
+        `update public.sandboxes set ${sets.join(", ")} where id = $1 returning id`,
+        params,
+      );
+      if (!result.rows[0]) throw new Error("The sandbox could not be updated.");
+    },
+
+    async listBefore(cutoff): Promise<SandboxRecord[]> {
+      const result = await sql.query<SandboxRow>(
+        `select ${COLUMNS} from public.sandboxes
+         where created_at < $1::timestamptz and status <> 'deleted'
+         order by created_at asc`,
+        [cutoff],
+      );
+      return result.rows.map(mapSandboxRow);
+    },
+  };
+}
+
+export function mapSandboxRow(row: SandboxRow): SandboxRecord {
+  if (row.harness !== "claude" && row.harness !== "codex") throw new Error("Sandbox row harness is invalid.");
+  return {
+    id: row.id,
+    boatId: row.boat_id,
+    goldenId: row.golden_id,
+    orgId: row.org_id,
+    ownerId: row.owner_id,
+    harness: row.harness,
+    status: row.status as SandboxStatus,
+    conversationIds: row.conversation_ids,
+    createdAt: iso(row.created_at),
+    stoppedAt: row.stopped_at === null ? null : iso(row.stopped_at),
+    deletedAt: row.deleted_at === null ? null : iso(row.deleted_at),
+  };
+}
+
+function iso(value: string | Date): string {
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}

@@ -9,9 +9,15 @@ import {
   GoldenError,
   type GoldenRecord,
   type GoldenStore,
+  HARNESSES,
+  type Harness,
+  LaunchError,
+  type LaunchResult,
+  launchSandbox,
   type Provider,
   ProviderError,
   parseGoldenConfig,
+  type SandboxStore,
   snapshotGolden,
   VERSION,
   type Visibility,
@@ -27,6 +33,7 @@ import {
   tokenList,
   tokenRevoke,
 } from "./auth-commands.ts";
+import { envCredentials } from "./credentials.ts";
 import { openSupabaseGoldens } from "./supabase.ts";
 
 export interface Io {
@@ -41,6 +48,7 @@ export interface Deps {
   readFile?: (path: string) => Promise<string>;
   provider?: Provider;
   store?: GoldenStore;
+  sandboxes?: SandboxStore;
   actor?: GoldenActor;
   sandboxPolls?: number;
   snapshotPolls?: number;
@@ -57,6 +65,9 @@ Usage:
   armada golden connect <name>             Open the master sandbox to place .env files
   armada golden snapshot <name>            Freeze the master sandbox
   armada golden list [--json]              Goldens you can see
+  armada launch <golden> --agent claude|codex ["prompt"] [--ttl 4h] [--json]
+                                           Fork a golden into a sandbox. With a prompt the agent starts at once;
+                                           without one the sandbox waits, ready, for the first prompt.
   armada login [--provider github|google]
   armada logout
   armada token create [--org <name>] [--label <label>]
@@ -65,7 +76,10 @@ Usage:
 
 Environment:
   ARMADA_SUPABASE_URL, ARMADA_SUPABASE_ANON_KEY, ARMADA_ACCESS_TOKEN, ARMADA_ORG
-                                           Golden commands, as the signed-in user
+                                           Golden and launch commands, as the signed-in user
+  ARMADA_CLAUDE_OAUTH_TOKEN, ARMADA_OPENAI_API_KEY
+  ARMADA_ORG_CLAUDE_OAUTH_TOKEN, ARMADA_ORG_OPENAI_API_KEY
+                                           Model credentials until the encrypted store lands
   SUPABASE_URL, SUPABASE_ANON_KEY          armada login
 `;
 
@@ -77,6 +91,11 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     if (error instanceof GoldenError) {
       io.err(`armada: ${error.message}\n`);
       return error.code === "invalid_config" ? 2 : 1;
+    }
+    if (error instanceof LaunchError) {
+      io.err(`armada: ${error.message}\n`);
+      if (error.sandboxId) io.err(`Sandbox ${error.sandboxId} is recorded as failed and its machine is stopped.\n`);
+      return error.code === "invalid_request" || error.code === "no_credentials" ? 2 : 1;
     }
     if (error instanceof ProviderError) {
       io.err(`armada: ${error.message}\n`);
@@ -105,6 +124,8 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       return 0;
     case "golden":
       return golden(rest, io, deps);
+    case "launch":
+      return launch(rest, io, deps);
     case "login":
       return login(rest, io, deps);
     case "logout":
@@ -225,6 +246,86 @@ async function list(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Pro
   return 0;
 }
 
+async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
+  const args = parseArgs(argv);
+  const [name, prompt, ...extra] = args.positionals;
+  if (name === undefined || extra.length > 0) {
+    throw new GoldenError("invalid_config", "Give a golden name and at most one prompt.");
+  }
+  const harness = harnessOf(single(args, "--agent"));
+  const ttl = single(args, "--ttl");
+  const ttlSeconds = ttl === undefined ? undefined : parseTtl(ttl);
+  const { provider, store, sandboxes, actor } = await boatContext(deps, true);
+  const env = deps.env ?? process.env;
+  const result = await launchSandbox(
+    provider,
+    { goldens: store, sandboxes, credentials: envCredentials(env) },
+    actor,
+    {
+      golden: name,
+      harness,
+      ...(prompt === undefined ? {} : { prompt }),
+      ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
+    },
+    {
+      ...(deps.sleep ? { sleep: deps.sleep } : {}),
+      ...(deps.sandboxPolls !== undefined ? { sandboxPolls: deps.sandboxPolls } : {}),
+    },
+  );
+  io.out(flag(args, "--json") ? `${JSON.stringify(jsonLaunch(result), null, 2)}\n` : launchText(result));
+  return 0;
+}
+
+function harnessOf(value: string | undefined): Harness {
+  const harness = HARNESSES.find((candidate) => candidate === value);
+  if (!harness) throw new GoldenError("invalid_config", `Pass --agent ${HARNESSES.join(" or ")}.`);
+  return harness;
+}
+
+/** `90`, `90s`, `30m`, `4h` or `2d`. A bare number is seconds. */
+function parseTtl(value: string): number {
+  const match = /^([1-9][0-9]*)([smhd]?)$/.exec(value);
+  const unit = { "": 1, s: 1, m: 60, h: 3600, d: 86_400 }[match?.[2] ?? ""];
+  if (!match?.[1] || unit === undefined) {
+    throw new GoldenError("invalid_config", `--ttl '${value}' is not a duration. Use 90, 30m, 4h or 2d.`);
+  }
+  return Number(match[1]) * unit;
+}
+
+function launchText(result: LaunchResult): string {
+  const { sandbox, golden } = result;
+  const lines = [
+    `Launched ${sandbox.harness} from golden ${golden.name} (${golden.visibility}).`,
+    `Sandbox: ${sandbox.id}`,
+    `Boat sandbox: ${sandbox.boatId}`,
+    `Status: ${sandbox.status}`,
+  ];
+  if (result.conversationId) lines.push(`Conversation: ${result.conversationId}`);
+  else lines.push("No prompt sent: the sandbox is ready for the first prompt.");
+  lines.push(
+    result.expiresAt
+      ? `Stops by itself at ${result.expiresAt.toISOString()} (TTL ${result.ttlSeconds}s).`
+      : `Stops by itself after ${result.ttlSeconds}s.`,
+  );
+  return `${lines.join("\n")}\n`;
+}
+
+function jsonLaunch(result: LaunchResult) {
+  const { sandbox } = result;
+  return {
+    id: sandbox.id,
+    boatId: sandbox.boatId,
+    golden: result.golden.name,
+    visibility: result.golden.visibility,
+    harness: sandbox.harness,
+    status: sandbox.status,
+    conversationIds: sandbox.conversationIds,
+    promptId: result.promptId ?? null,
+    ttlSeconds: result.ttlSeconds,
+    expiresAt: result.expiresAt ? result.expiresAt.toISOString() : null,
+  };
+}
+
 function line(row: GoldenRecord): string {
   const snapshot = row.boatSnapshotId ? "snapshot" : "no snapshot";
   const repos = row.config.repos.length === 1 ? "1 repo" : `${row.config.repos.length} repos`;
@@ -277,15 +378,30 @@ function oneName(positionals: string[]): string {
   return name;
 }
 
-async function session(deps: Deps): Promise<{ store: GoldenStore; actor: GoldenActor }> {
-  if (deps.store && deps.actor) return { store: deps.store, actor: deps.actor };
+async function session(
+  deps: Deps,
+): Promise<{ store: GoldenStore; sandboxes: SandboxStore | undefined; actor: GoldenActor }> {
+  if (deps.store && deps.actor) return { store: deps.store, sandboxes: deps.sandboxes, actor: deps.actor };
   const opened = await openSupabaseGoldens(deps.env ?? process.env, deps.fetch ?? fetch);
-  return { store: deps.store ?? opened.store, actor: deps.actor ?? opened.actor };
+  return {
+    store: deps.store ?? opened.store,
+    sandboxes: deps.sandboxes ?? opened.sandboxes,
+    actor: deps.actor ?? opened.actor,
+  };
 }
 
-async function boatContext(deps: Deps): Promise<{ provider: Provider; store: GoldenStore; actor: GoldenActor }> {
-  const { store, actor } = await session(deps);
+async function boatContext(
+  deps: Deps,
+  withSandboxes: true,
+): Promise<{ provider: Provider; store: GoldenStore; sandboxes: SandboxStore; actor: GoldenActor }>;
+async function boatContext(deps: Deps): Promise<{ provider: Provider; store: GoldenStore; actor: GoldenActor }>;
+async function boatContext(deps: Deps, withSandboxes = false) {
+  const { store, sandboxes, actor } = await session(deps);
   const provider = deps.provider ?? boatProvider(deps.env ?? process.env, deps.fetch ?? fetch, deps.sleep);
+  if (withSandboxes) {
+    if (!sandboxes) throw new GoldenError("invalid_config", "No sandbox store is available.");
+    return { provider, store, sandboxes, actor };
+  }
   return { provider, store, actor };
 }
 

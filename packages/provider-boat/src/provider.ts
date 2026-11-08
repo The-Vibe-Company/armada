@@ -39,7 +39,10 @@ export const DEFAULT_TTL_SECONDS = 3600;
 /** The longest TTL boat accepts: 30 days. */
 export const MAX_TTL_SECONDS = 2_592_000;
 
-/** What boat gives each harness. Claude Code and Codex both take a steer natively, and neither has an approvals API. */
+/**
+ * What boat gives each harness. Neither has an approvals API. Claude Code takes a steer into the running
+ * turn; boat answers a Codex steer with mode `fallback`, which stops the turn and carries on in the same conversation.
+ */
 const BOAT_HARNESS: HarnessCapabilities = {
   steer: "native",
   interrupt: true,
@@ -54,7 +57,7 @@ const BOAT_HARNESS: HarnessCapabilities = {
 
 export const BOAT_CAPABILITIES: Readonly<Record<Harness, HarnessCapabilities>> = {
   claude: BOAT_HARNESS,
-  codex: BOAT_HARNESS,
+  codex: { ...BOAT_HARNESS, steer: "restart" },
 };
 
 const BOAT_PROVIDER_NAME: Record<Harness, PromptRequestProviderEnum> = {

@@ -7,7 +7,7 @@ Armada is a launcher, not an orchestrator: it does not split work, merge pull re
 - **Specification (v0):** [#455](https://github.com/The-Vibe-Company/armada/issues/455)
 - **This scaffold:** [#456](https://github.com/The-Vibe-Company/armada/issues/456)
 
-> **Status:** goldens can be created, connected, snapshotted and listed (`armada golden`). `armada login` and `armada token` sign a person in and mint service tokens. Launch and the MCP tool server are #464: it mounts the OAuth routes and calls `authenticate` from `@armada/auth`.
+> **Status:** goldens can be created, connected, snapshotted and listed (`armada golden`), and a golden can be launched into a sandbox (`armada launch`). `armada login` and `armada token` sign a person in and mint service tokens. Events and the MCP tool server are #464: it mounts the OAuth routes and calls `authenticate` from `@armada/auth`.
 
 ## Layout
 
@@ -45,12 +45,21 @@ bun run armada golden create <name> --repo <url>[@branch] --init "<cmd>" [--priv
 bun run armada golden connect <name>
 bun run armada golden snapshot <name>
 bun run armada golden list
+bun run armada launch <golden> --agent claude|codex ["prompt"] [--ttl 4h] [--json]
+bun run armada login
+bun run armada token create --org <name> --label <label>
 
 bun run build                        # dist/armada for this machine
 bun run build --target linux-arm64   # dist/armada-linux-arm64
 bun run build:all                    # dist/armada-<target> for linux and macOS, x64 and arm64
 ./dist/armada --version
 ```
+
+## Launching
+
+`armada launch` forks a golden's saved snapshot, pulls each repo, runs the init commands and, with a prompt, starts the agent. Without a prompt the sandbox waits, ready, for its first prompt. The fork gets `noEnv`, an explicit TTL (default 4 hours) and Armada's labels, and an environment with only the credentials of the chosen agent (the caller's own, else the org's). Nothing is written to the golden.
+
+Until the encrypted credential store lands (#461), credentials come from the environment: `ARMADA_CLAUDE_OAUTH_TOKEN` (becomes `CLAUDE_CODE_OAUTH_TOKEN`) and `ARMADA_OPENAI_API_KEY` (an OpenAI key, or the content of Codex's `auth.json`), with `ARMADA_ORG_CLAUDE_OAUTH_TOKEN` and `ARMADA_ORG_OPENAI_API_KEY` as the org defaults.
 
 ## CI
 

@@ -190,6 +190,24 @@ export function cloneCommand(repo: GoldenRepo): ShellCommand {
   return { command, cwd: GOLDEN_ROOT, timeoutSeconds: CLONE_TIMEOUT_SECONDS };
 }
 
+/** Brings one checkout up to date with its stored branch. Fast-forward only, and never asks for credentials. */
+export function pullCommand(repo: GoldenRepo): ShellCommand {
+  const command = [
+    "env",
+    "GIT_TERMINAL_PROMPT=0",
+    "git",
+    "-c",
+    "credential.helper=",
+    "pull",
+    "--ff-only",
+    "origin",
+    repo.branch,
+  ]
+    .map(shQuote)
+    .join(" ");
+  return { command, cwd: `${GOLDEN_ROOT}/${repo.dir}`, timeoutSeconds: CLONE_TIMEOUT_SECONDS };
+}
+
 export function initCommand(command: string): ShellCommand {
   return { command, cwd: GOLDEN_ROOT, timeoutSeconds: INIT_TIMEOUT_SECONDS };
 }

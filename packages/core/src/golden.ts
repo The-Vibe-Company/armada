@@ -239,7 +239,7 @@ function assertCanChange(actor: GoldenActor, golden: GoldenRecord): void {
   }
 }
 
-async function waitReady(provider: Provider, sandboxId: string, limits: GoldenLimits): Promise<SandboxInfo> {
+export async function waitReady(provider: Provider, sandboxId: string, limits: GoldenLimits): Promise<SandboxInfo> {
   const sleep = limits.sleep ?? delay;
   const polls = limits.sandboxPolls ?? GOLDEN_SANDBOX_POLLS;
   for (let attempt = 0; attempt < polls; attempt++) {
