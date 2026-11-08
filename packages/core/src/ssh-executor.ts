@@ -67,7 +67,10 @@ export async function sshStdinCheckout(
 function parseEndpoint(v: string) {
   const m = /^\[([^\]]+)\]:(\d+)$/.exec(v) || /^([^:]+):(\d+)$/.exec(v);
   if (!m || Number(m[2] ?? 0) < 1 || Number(m[2] ?? 0) > 65535) throw new Error("Invalid SSH endpoint.");
-  return { host: m[1]!, port: m[2]! };
+  const host = m[1];
+  const port = m[2];
+  if (!host || !port) throw new Error("Invalid SSH endpoint.");
+  return { host, port };
 }
 function knownLine(host: string, port: string, key: string) {
   if (/^\S+\s+(ssh-|ecdsa-|sk-)/.test(key)) return key.endsWith("\n") ? key : `${key}\n`;

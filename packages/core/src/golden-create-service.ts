@@ -43,7 +43,7 @@ export class GoldenCreateService {
     let issued: { token: string; revoke(): Promise<void> } | undefined;
     try {
       issued = await this.deps.mint(
-        repos[0]!.installationId,
+        repos[0]?.installationId ?? 0,
         repos.map((r) => r.id),
       );
       await this.deps.ssh(provider, {
@@ -57,8 +57,6 @@ export class GoldenCreateService {
       if (saved.status !== "ready") throw new GoldenError("snapshot_failed", "Golden snapshot did not become ready.");
       await this.deps.persist({ actor, name, visibility: input.visibility, repos, snapshot });
       return { snapshot };
-    } catch (e) {
-      throw e;
     } finally {
       await issued?.revoke().catch(() => {});
       await provider.stop({ sandboxId: builder.id }).catch(() => {});
@@ -82,7 +80,7 @@ export function goldenScript(repos: AuthorizedRepo[], setup = ""): string {
     setup,
     "if grep -rIlE --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev 'gh[suo]_[A-Za-z0-9_-]+' /home/user >/dev/null; then exit 97; fi",
   ];
-  return lines.filter(Boolean).join("\n") + "\n";
+  return `${lines.filter(Boolean).join("\n")}\n`;
 }
 function safe(v: string) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(v)) throw new GoldenError("invalid_config", "Unsafe repository path.");
