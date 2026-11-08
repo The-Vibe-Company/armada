@@ -118,3 +118,34 @@ test("only an owner can revoke their service token, including for an organizatio
   const serviceDenied = await call("token/revoke", parent.token, { id: bobToken.id });
   expect(serviceDenied.status).toBe(403);
 });
+
+test("session token lists hide another member's tokens even in the same organization", async () => {
+  const { call, store } = makeServer();
+  const alice = await createServiceToken(store, { userId: ALICE, orgName: "Alpha", now: now() });
+  const bob = await createServiceToken(store, { userId: BOB, orgName: "Alpha", now: now() });
+  const list = await call("token/list", jwt(ALICE));
+  expect(list.status).toBe(200);
+  const ids = ((await list.json()) as { tokens: { id: string }[] }).tokens.map((token) => token.id);
+  expect(ids).toContain(alice.id);
+  expect(ids).not.toContain(bob.id);
+});
+
+test("an Alpha-scoped service token cannot list or revoke Alice's Beta token", async () => {
+  const { call, store } = makeServer();
+  const alpha = await createServiceToken(store, { userId: ALICE, orgName: "Alpha", now: now() });
+  const beta = await createServiceToken(store, { userId: ALICE, orgName: "Beta", now: now() });
+  const list = await call("token/list", alpha.token);
+  expect(list.status).toBe(200);
+  const ids = ((await list.json()) as { tokens: { id: string }[] }).tokens.map((token) => token.id);
+  expect(ids).toContain(alpha.id);
+  expect(ids).not.toContain(beta.id);
+  const revoke = await call("token/revoke", alpha.token, { id: beta.id });
+  expect(revoke.status).toBe(403);
+});
+
+test("database organization names are globally unique, preventing duplicate-name scope confusion", () => {
+  const migration = Bun.file("supabase/migrations/20261108160000_orgs_credentials.sql");
+  return migration.text().then((sql) => {
+    expect(sql).toContain("create unique index orgs_name_key on public.orgs (lower(btrim(name)))");
+  });
+});
