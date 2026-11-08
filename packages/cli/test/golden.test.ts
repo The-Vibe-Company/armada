@@ -1,12 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { createMemoryAuthStore, memorySessionStore } from "@armada/auth";
 import {
-  boatSnapshotName,
   createGoldenCreateService,
   createSqlGoldenStore,
   createSqlVaultStore,
   encryptSecret,
-  GOLDEN_ROOT,
   type GoldenActor,
   goldenForLaunch,
   type Provider,
@@ -18,8 +16,6 @@ import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
 
 const WEB = "https://github.com/example/web.git";
-const API = "https://github.com/example/api.git";
-const KEY = "boat_test_key_not_real";
 const ENC_KEY = Buffer.alloc(32, 9).toString("base64");
 
 describe("golden command", () => {
@@ -35,78 +31,95 @@ describe("golden command", () => {
     expect(calls).toEqual([]);
   });
 
-  test("create and snapshot a multi-repo golden without the boat account environment", async () => {
+  test("create builds, scans and snapshots a multi-repo golden on the server, with no boat account environment", async () => {
+    // golden create is server-orchestrated now (no separate connect/snapshot step for a golden
+    // built this way, and no BOAT_API_KEY): the CLI sends the parsed --repo/--init config to
+    // /api/v1/golden/create, which runs the whole disposable-builder flow in one call.
     const db = await openDatabase();
     try {
       await applyMigrations(db);
       const people = await fixture(db);
-      const store = createSqlGoldenStore(db);
-      const owner = actor(people, "owner");
-      const requests: { method: string; path: string; body: unknown }[] = [];
-      const fetchImpl = fakeBoat(requests);
-
-      const created = await asUser(db, people.owner, () =>
-        capture(
-          [
-            "golden",
-            "create",
-            "monorepo",
-            "--private",
-            "--repo",
-            `${WEB}@main`,
-            "--repo",
-            `${API}@dev`,
-            "--init",
-            "pnpm i",
-          ],
-          {
-            actor: owner,
-            store,
-            env: { BOAT_API_KEY: KEY },
-            fetch: fetchImpl,
-            sleep: async () => {},
-            sandboxPolls: 3,
-            snapshotPolls: 5,
+      await db.query(
+        "insert into github_connections (user_id, github_id, login, refresh_token_enc) values ($1, 583231, 'octocat', $2)",
+        [people.owner, await encryptSecret("ghr_refresh_octocat", ENC_KEY)],
+      );
+      await db.query("insert into credentials (scope, owner_id, kind, value_enc) values ('user', $1, 'boat', $2)", [
+        people.owner,
+        await encryptSecret("boat-owner-key", ENC_KEY),
+      ]);
+      const sshCalls: { token: string; script: string }[] = [];
+      const githubFetch = fakeGitHubFetch();
+      const controlOptions: ControlOptions = {
+        authStore: createMemoryAuthStore(),
+        supabase: { supabaseUrl: "https://supabase.test", anonKey: "anon", fetch: fakeSupabaseFetch(people.owner) },
+        store: createSqlVaultStore(db),
+        encryptionKey: ENC_KEY,
+        data: createSqlData(db),
+        providerFor: () => fakeCreateProvider(),
+        goldenCreate: createGoldenCreateService({
+          sql: db,
+          github: {
+            store: createSqlVaultStore(db),
+            encryptionKey: ENC_KEY,
+            app: { clientId: "Iv1.test", clientSecret: "secret" },
+            fetch: githubFetch,
           },
-        ),
+          installationApp: null,
+          fetch: githubFetch,
+          ssh: async (_provider, input) => {
+            sshCalls.push(input);
+          },
+        }),
+      };
+      const routingFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const request = input instanceof Request ? input : new Request(input.toString(), init);
+        if (new URL(request.url).hostname === "armada.test") {
+          return (await handleControlRequest(request, controlOptions)) ?? new Response("{}", { status: 404 });
+        }
+        throw new Error("unexpected host");
+      }) as typeof fetch;
+      const auth = loggedIn(people.owner, routingFetch, {
+        SUPABASE_ANON_KEY: "anon",
+        ARMADA_URL: "https://armada.test",
+      });
+
+      const created = await capture(
+        [
+          "golden",
+          "create",
+          "monorepo",
+          "--private",
+          "--repo",
+          "https://github.com/acme/web.git@main",
+          "--repo",
+          "https://github.com/acme/api.git@dev",
+          "--init",
+          "pnpm i",
+        ],
+        { auth },
       );
       expect(created.code).toBe(0);
       expect(created.err).toBe("");
       expect(created.out).toContain("Created golden monorepo (private).");
-      expect(created.out).toContain("none of the boat account's credentials");
-      const snapshotName = boatSnapshotName({
-        orgId: people.org,
-        ownerId: people.owner,
-        visibility: "private",
-        name: "monorepo",
-      });
-      expect(created.out).toContain(snapshotName);
-      expect(requests[0]).toMatchObject({ method: "POST", path: "/api/v1/sandboxes" });
-      expect(requests[0]?.body).toMatchObject({ noEnv: true, ttlSeconds: 86400 });
-      expect(requests[0]?.body).not.toHaveProperty("env");
-      expect(requests[0]?.body).not.toHaveProperty("environment");
-      expect(JSON.stringify(requests[0]?.body)).not.toContain(KEY);
-      const commands = requests.filter((request) => request.path.endsWith("/commands")).map((request) => request.body);
-      expect(JSON.stringify(commands[0])).toContain(WEB);
-      expect(JSON.stringify(commands[1])).toContain(API);
-      expect(commands[2]).toMatchObject({ command: "pnpm i", cwd: GOLDEN_ROOT });
+      expect(created.out).toContain("golden-bx_1");
+      expect(created.out).toContain("web, api");
+      expect(sshCalls).toHaveLength(1);
+      expect(sshCalls[0]?.token).toBe("ghu_caller_access_token");
+      expect(sshCalls[0]?.script).toContain("pnpm i");
 
-      const snapshotted = await asUser(db, people.owner, () =>
-        capture(["golden", "snapshot", "monorepo"], {
-          actor: owner,
-          store,
-          env: { BOAT_API_KEY: KEY },
-          fetch: fakeBoat(requests, { phase: "snapshot", name: snapshotName }),
-          sleep: async () => {},
-          snapshotPolls: 5,
-        }),
+      const row = await db.query<{ config: { repos: { url: string; branch: string; dir: string }[] } }>(
+        "select config from goldens where name = 'monorepo'",
       );
-      expect(snapshotted.code).toBe(0);
-      expect(snapshotted.out).toContain(`Saved snapshot: ${snapshotName}`);
+      expect(row.rows[0]?.config.repos).toEqual([
+        { url: "https://github.com/acme/web.git", branch: "main", dir: "web" },
+        { url: "https://github.com/acme/api.git", branch: "dev", dir: "api" },
+      ]);
 
       // golden list itself now always goes through the Armada API (golden-api-list.test.ts,
       // packages/mcp-server/test/control.test.ts's "golden/list" case); visibility is checked
       // directly against the store here instead, the same way goldenForLaunch does it at launch.
+      const store = createSqlGoldenStore(db);
+      const owner = actor(people, "owner");
       expect(await asUser(db, people.owner, () => store.findByName(people.org, "monorepo"))).toHaveLength(1);
       expect(await asUser(db, people.member, () => store.findByName(people.org, "monorepo"))).toHaveLength(0);
       await expect(
@@ -114,7 +127,7 @@ describe("golden command", () => {
       ).rejects.toThrow(/No golden named 'monorepo'/);
       expect(await asUser(db, people.owner, () => goldenForLaunch(store, owner, "monorepo"))).toMatchObject({
         name: "monorepo",
-        boatSnapshotId: snapshotName,
+        boatSnapshotId: "golden-bx_1",
       });
     } finally {
       await db.close();
@@ -171,113 +184,6 @@ describe("golden command", () => {
     expect(result.code).toBe(1);
     expect(result.err).toContain("Set ARMADA_TOKEN or run armada login.");
   });
-
-  test("create without a boat key explains that the boat account is not a credential store", async () => {
-    const result = await capture(["golden", "create", "web", "--private", "--repo", WEB], {
-      actor: actorOf("member"),
-      store: failingStore(),
-      env: {},
-    });
-    expect(result.code).toBe(2);
-    expect(result.err).toContain("Set BOAT_API_KEY");
-    expect(result.err).toContain("does not use credentials stored on the boat.dev account");
-  });
-
-  test("golden create --name is server-orchestrated: no BOAT_API_KEY, the caller's own cached GitHub token, and a setup file read locally", async () => {
-    const db = await openDatabase();
-    try {
-      await applyMigrations(db);
-      const people = await fixture(db);
-      await db.query(
-        "insert into github_connections (user_id, github_id, login, refresh_token_enc) values ($1, 583231, 'octocat', $2)",
-        [people.owner, await encryptSecret("ghr_refresh_octocat", ENC_KEY)],
-      );
-      await db.query("insert into credentials (scope, owner_id, kind, value_enc) values ('user', $1, 'boat', $2)", [
-        people.owner,
-        await encryptSecret("boat-owner-key", ENC_KEY),
-      ]);
-      const sshCalls: { token: string; script: string }[] = [];
-      const githubFetch = fakeGitHubFetch();
-      const controlOptions: ControlOptions = {
-        authStore: createMemoryAuthStore(),
-        supabase: { supabaseUrl: "https://supabase.test", anonKey: "anon", fetch: fakeSupabaseFetch(people.owner) },
-        store: createSqlVaultStore(db),
-        encryptionKey: ENC_KEY,
-        providerFor: () => fakeCreateProvider(),
-        goldenCreate: createGoldenCreateService({
-          sql: db,
-          github: {
-            store: createSqlVaultStore(db),
-            encryptionKey: ENC_KEY,
-            app: { clientId: "Iv1.test", clientSecret: "secret" },
-            fetch: githubFetch,
-          },
-          installationApp: null,
-          fetch: githubFetch,
-          ssh: async (_provider, input) => {
-            sshCalls.push(input);
-          },
-        }),
-      };
-      const routingFetch = (async (input: string | URL | Request, init?: RequestInit) => {
-        const request = input instanceof Request ? input : new Request(input.toString(), init);
-        if (new URL(request.url).hostname === "armada.test") {
-          return (await handleControlRequest(request, controlOptions)) ?? new Response("{}", { status: 404 });
-        }
-        throw new Error("unexpected host");
-      }) as typeof fetch;
-      const auth = loggedIn(people.owner, routingFetch, {
-        SUPABASE_ANON_KEY: "anon",
-        ARMADA_URL: "https://armada.test",
-      });
-      const setupPath = "/home/stan/setup.sh";
-
-      const result = await capture(
-        ["golden", "create", "--name", "web", "--repo", "acme/web", "--setup", setupPath, "--private"],
-        {
-          auth,
-          readFile: async (path: string) => {
-            expect(path).toBe(setupPath);
-            return "echo hi\n";
-          },
-        },
-      );
-      expect(result.code).toBe(0);
-      expect(result.err).toBe("");
-      expect(result.out).toContain("Created golden web (private).");
-      expect(result.out).toContain("golden-bx_1");
-      expect(sshCalls).toHaveLength(1);
-      expect(sshCalls[0]?.token).toBe("ghu_caller_access_token");
-      expect(sshCalls[0]?.script).toContain("echo hi");
-
-      const row = await db.query<{ config: { repos: { url: string; branch: string; dir: string }[] } }>(
-        "select config from goldens where name = 'web'",
-      );
-      expect(row.rows[0]?.config).toMatchObject({
-        repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }],
-      });
-    } finally {
-      await db.close();
-    }
-  });
-
-  test("golden create --name rejects the legacy --config and --init flags, and needs at least one --repo", async () => {
-    const noRepo = await capture(["golden", "create", "--name", "web"], { env: {} });
-    expect(noRepo.code).toBe(2);
-    expect(noRepo.err).toContain("Pass --repo owner/repo");
-
-    const mixed = await capture(["golden", "create", "--name", "web", "--repo", "acme/web", "--config", "x.json"], {
-      env: {},
-    });
-    expect(mixed.code).toBe(2);
-    expect(mixed.err).toContain("does not take --config or --init");
-
-    const positional = await capture(["golden", "create", "extra", "--name", "web", "--repo", "acme/web"], {
-      env: {},
-    });
-    expect(positional.code).toBe(2);
-    expect(positional.err).toContain("takes no positional name");
-  });
 });
 
 async function capture(argv: string[], deps: Parameters<typeof run>[2]) {
@@ -285,64 +191,6 @@ async function capture(argv: string[], deps: Parameters<typeof run>[2]) {
   let err = "";
   const code = await run(argv, { out: (text) => (out += text), err: (text) => (err += text) }, deps);
   return { code, out, err };
-}
-
-function fakeBoat(
-  requests: { method: string; path: string; body: unknown }[],
-  mode: { phase: "create" | "snapshot"; name?: string } = { phase: "create" },
-): typeof fetch {
-  let snapshotReads = 0;
-  return (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = new URL(input instanceof Request ? input.url : String(input));
-    const text = typeof init?.body === "string" ? init.body : undefined;
-    requests.push({
-      method: init?.method ?? "GET",
-      path: url.pathname,
-      body: text === undefined ? undefined : JSON.parse(text),
-    });
-    if (url.pathname === "/api/v1/sandboxes" && (init?.method ?? "GET") === "POST") {
-      return Response.json({ ok: true, type: "sandbox.created", sandbox: sandbox("ready") }, { status: 202 });
-    }
-    if (url.pathname.endsWith("/commands")) {
-      return Response.json({
-        ok: true,
-        type: "command.finished",
-        success: true,
-        exitCode: 0,
-        stdout: "",
-        stderr: "",
-        timedOut: false,
-      });
-    }
-    if (url.pathname === "/api/v1/saved-snapshots" && init?.method === "POST") {
-      return Response.json(
-        { ok: true, type: "snapshot.saved.saving", status: "saving", snapshot: { name: mode.name, status: "saving" } },
-        { status: 202 },
-      );
-    }
-    if (url.pathname.startsWith("/api/v1/saved-snapshots/")) {
-      snapshotReads += 1;
-      const status = snapshotReads === 1 ? "saving" : "ready";
-      return Response.json({ ok: true, type: "snapshot.saved.info", snapshot: { name: mode.name, status } });
-    }
-    if (url.pathname.startsWith("/api/v1/sandboxes/")) {
-      return Response.json({ ok: true, type: "sandbox.info", sandbox: sandbox("idle") });
-    }
-    throw new Error(`unexpected ${init?.method} ${url.pathname}`);
-  }) as typeof fetch;
-}
-
-function sandbox(state: string) {
-  return {
-    id: "bx_23456789",
-    name: "monorepo",
-    state,
-    desktopAvailable: false,
-    snapshotAvailable: false,
-    createdAt: "2026-11-08T12:00:00.000Z",
-    archiveAfter: "2026-11-09T12:00:00.000Z",
-    labels: { armada: "golden" },
-  };
 }
 
 function recordingProvider(calls: string[]) {
@@ -491,8 +339,14 @@ function fakeGitHubFetch(): typeof fetch {
         ],
       });
     }
-    if (url === "https://api.github.com/repos/acme/web") {
-      return Response.json({ id: 7, name: "web", default_branch: "main", owner: { login: "acme" } });
+    const repo = /^https:\/\/api\.github\.com\/repos\/acme\/([a-z0-9-]+)$/.exec(url);
+    if (repo?.[1]) {
+      return Response.json({
+        id: repo[1] === "web" ? 7 : 8,
+        name: repo[1],
+        default_branch: repo[1] === "api" ? "dev" : "main",
+        owner: { login: "acme" },
+      });
     }
     throw new Error(`unexpected request to ${url}`);
   }) as typeof fetch;

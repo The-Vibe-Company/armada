@@ -1,12 +1,12 @@
 # Secure, server-orchestrated golden creation
 
-`armada golden create --name` builds a golden from one or more GitHub repositories without the
-caller ever holding a boat.dev key: the server does the whole build in a disposable, no-env
-sandbox and only keeps the result once it has been scanned for leaked tokens. This is a second,
-newer way to create a golden; the original `armada golden create <name> --repo <url>` (direct to
-boat.dev with `BOAT_API_KEY`, a long-lived master sandbox you `connect`/`snapshot` yourself) still
-works unchanged. No database migration is needed: this reuses the `goldens` table and row level
-security exactly as the original flow does.
+`armada golden create` builds a golden from one or more GitHub repositories without the caller
+ever holding a boat.dev key: the server does the whole build in a disposable, no-env sandbox and
+only keeps the result once it has been scanned for leaked tokens. This is now the only way to
+create a golden; `armada golden connect`/`armada golden snapshot` (direct to boat.dev with
+`BOAT_API_KEY`) still work unchanged for placing `.env` files and freezing a golden's master
+sandbox after it exists. No database migration is needed: this reuses the `goldens` table and row
+level security exactly as before.
 
 ## Security model
 
@@ -78,20 +78,15 @@ Errors are `{ "error": { "code", "message" } }` with a `GoldenError` code (`inva
 the usual control API codes (`unauthorized` → 401, `unavailable` → 503 when the server has no
 `goldenCreate`/`providerFor` configured).
 
-## CLI: `armada golden create --name`
+## CLI: `armada golden create`
 
 ```
-armada golden create --name <name> --repo <owner>/<repo> [--repo <owner>/<repo> ...] \
+armada golden create <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...] \
   [--setup <local-file>] [--private] [--org <org>]
 ```
 
-- `--name` is what selects this path over the original `golden create <name> --repo <url>`
-  positional form; the two cannot be mixed (no positional name, and no `--config`/`--init`, with
-  `--name`).
-- `--setup` here is a **local file path**: the CLI reads it and sends its contents to the server,
-  which runs it as a shell script in the builder. (In the original flow `--setup` instead appends a
-  literal command string to `--init`; the two flags share a name but not a meaning, by which path
-  you take.)
+- `--setup` is a **local file path**: the CLI reads it and sends its contents to the server, which
+  runs it as a shell script in the builder, after cloning and before the scan.
 - Needs `ARMADA_URL` and a signed-in session (`armada login`); does **not** need `BOAT_API_KEY`.
 
 ## Server environment

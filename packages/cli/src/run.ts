@@ -74,8 +74,12 @@ const HELP = `armada ${VERSION}: launch coding agents on boat.dev
 Usage:
   armada --version                         Print the version
   armada --help                            Show this help
-  armada golden create <name> (--repo <url>[@branch] ... | --config <file>) [--setup <script>|--init <cmd> ...] [--private]
-                                           Builds and snapshots the golden here, with BOAT_API_KEY.
+  armada golden create <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
+                               [--setup <local-file>] [--private] [--org <org>]
+                                           Server-orchestrated: builds, scans and snapshots the golden on the
+                                           server over your own GitHub connection. No BOAT_API_KEY needed.
+                                           --setup reads a local script and sends its content to run after
+                                           cloning, before the scan.
   armada golden connect <name>             Open the master sandbox to place .env files
   armada golden snapshot <name>            Freeze the master sandbox
   armada golden list [--json]              Goldens you can see
@@ -105,14 +109,14 @@ when you belong to more than one org.
 
 Environment:
   ARMADA_URL                               Login server (default: https://armada.thevibecompany.co). Also the
-                                           Armada server for armada org, armada creds, armada launch and
-                                           golden create --name
+                                           Armada server for armada org, armada creds, armada golden create,
+                                           armada launch and armada logs
   SUPABASE_URL, SUPABASE_ANON_KEY          Optional legacy login settings; discovered automatically otherwise
-  BOAT_API_KEY                             golden commands with a positional name, until the server runs them
-                                           with the org key; golden create --name does not need it
-  GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY    optional on the server: an installation token for golden create
-                                           --name, revoked after each use. Without it, checkout uses the
-                                           caller's own GitHub connection instead.
+  BOAT_API_KEY                             armada golden connect and armada golden snapshot only; golden
+                                           create does not need it
+  GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY    optional on the server: an installation token for golden create,
+                                           revoked after each use. Without it, checkout uses the caller's own
+                                           GitHub connection instead.
   PORT, ARMADA_DATABASE_URL, SUPABASE_URL, SUPABASE_ANON_KEY,
   ARMADA_AUTH_SECRET, ARMADA_PUBLIC_URL, ARMADA_ENCRYPTION_KEY,
   GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET
@@ -479,8 +483,9 @@ function jsonGolden(row: GoldenRecord) {
 async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promise<GoldenConfig> {
   const file = single(args, "--config");
   const repos = values(args, "--repo");
-  const setup = values(args, "--setup");
-  const init = [...values(args, "--init"), ...setup];
+  // --setup is its own field now (create() reads it as a local file and sends its content),
+  // not a legacy alias folded into --init: a value here must not also become a literal init command.
+  const init = values(args, "--init");
   if (file && (repos.length > 0 || init.length > 0)) {
     throw new GoldenError("invalid_config", "Pass either --config or --repo and --init, not both.");
   }
