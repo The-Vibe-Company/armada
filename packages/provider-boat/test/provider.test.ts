@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ProviderError } from "@armada/core";
-import { BOAT_CAPABILITIES } from "../src/provider.ts";
+import { BOAT_CAPABILITIES, createBoatProvider } from "../src/provider.ts";
 import { errorBody, fakeBoat, KEY, sandbox } from "./support.ts";
 
 const ID = "bx_23456789";
@@ -366,4 +366,19 @@ describe("exec", () => {
 test("Claude steers natively, Codex by restarting its turn, and neither can ask for approval", () => {
   expect(BOAT_CAPABILITIES.claude).toMatchObject({ steer: "native", approvals: false, resume: true });
   expect(BOAT_CAPABILITIES.codex).toMatchObject({ steer: "restart", approvals: false, resume: true });
+});
+
+test("Boat supports one independent golden", () => {
+  expect(createBoatProvider({ apiKey: "masked" }).maxGoldens).toBe(1);
+});
+
+test("maps GET /me to a non-secret backend identity", async () => {
+  const provider = createBoatProvider({
+    apiKey: "masked",
+    fetch: (async (input: string | URL | Request) => {
+      expect(String(input)).toContain("/me");
+      return Response.json({ ok: true, type: "user.info", user: { id: "account_123", email: "private@example.test" } });
+    }) as unknown as typeof fetch,
+  });
+  expect(await provider.backendIdentity?.()).toEqual({ id: "account_123" });
 });

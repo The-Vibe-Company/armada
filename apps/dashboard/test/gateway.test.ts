@@ -43,6 +43,7 @@ describe("gateway", () => {
     const sandboxes = sandboxGateway(gateway);
     const args = {
       golden: "web",
+      provider: "boat" as const,
       org: "org-1",
       harness: "codex" as const,
       model: "gpt-6.1-sol",

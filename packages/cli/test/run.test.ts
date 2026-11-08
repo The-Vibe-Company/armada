@@ -23,15 +23,6 @@ describe("run", () => {
     expect(out).toContain("armada token create");
   });
 
-  test("serve without its environment names what is missing and exits 2", async () => {
-    let out = "";
-    let err = "";
-    const code = await run(["serve"], { out: (text) => (out += text), err: (text) => (err += text) }, { env: {} });
-    expect(code).toBe(2);
-    expect(out).toBe("");
-    expect(err).toContain("Set ARMADA_DATABASE_URL");
-  });
-
   test("an unknown command fails with a usage error", async () => {
     const { code, out, err } = await capture(["frobnicate"]);
     expect(code).toBe(2);

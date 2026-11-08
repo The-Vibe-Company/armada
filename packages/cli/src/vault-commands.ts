@@ -98,6 +98,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       const [name] = expect(args.positionals, 1, "armada creds set <kind> [--org <name>] [--file <path>]");
       const kind = parseCredentialKind(name ?? "");
       const value = await readValue(args, io);
+      if (!isCredentialValue(value)) throw usage("Credential values cannot contain whitespace.");
       await control(io.auth, "creds/set", { scope, org, kind: credentialName(kind), value });
       io.auth.out(
         `Stored ${credentialName(kind)} for ${scope === "org" ? `org ${org}` : "you"}, encrypted. It is never shown again.\n`,
@@ -161,4 +162,8 @@ function expect(positionals: string[], count: number, form: string): string[] {
 
 function usage(message: string): VaultError {
   return new VaultError("invalid", message);
+}
+
+function isCredentialValue(value: string): boolean {
+  return value.trim().length > 0 && !/\s/.test(value.trim());
 }

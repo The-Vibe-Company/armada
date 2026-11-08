@@ -84,6 +84,64 @@ export type Database = {
           },
         ];
       };
+      golden_backend_slots: {
+        Row: {
+          id: string;
+          provider: string;
+          backend_id: string;
+          max_goldens: number;
+          org_id: string;
+          owner_id: string;
+          golden_id: string | null;
+          build_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          provider: string;
+          backend_id: string;
+          max_goldens: number;
+          org_id: string;
+          owner_id: string;
+          golden_id?: string | null;
+          build_id?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          provider?: string;
+          backend_id?: string;
+          max_goldens?: number;
+          org_id?: string;
+          owner_id?: string;
+          golden_id?: string | null;
+          build_id?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "golden_backend_slots_golden_id_fkey";
+            columns: ["golden_id"];
+            isOneToOne: false;
+            referencedRelation: "goldens";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_backend_slots_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_backend_slots_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       goldens: {
         Row: {
           id: string;
@@ -95,6 +153,12 @@ export type Database = {
           config: Json;
           created_at: string;
           boat_sandbox_id: string | null;
+          provider: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id: string | null;
+          provider_snapshot_id: string | null;
+          modal_workspace: string | null;
+          modal_environment: string | null;
+          modal_app_id: string | null;
         };
         Insert: {
           id?: string;
@@ -106,6 +170,12 @@ export type Database = {
           config?: Json;
           created_at?: string;
           boat_sandbox_id?: string | null;
+          provider?: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id?: string | null;
+          provider_snapshot_id?: string | null;
+          modal_workspace?: string | null;
+          modal_environment?: string | null;
+          modal_app_id?: string | null;
         };
         Update: {
           id?: string;
@@ -117,6 +187,12 @@ export type Database = {
           config?: Json;
           created_at?: string;
           boat_sandbox_id?: string | null;
+          provider?: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id?: string | null;
+          provider_snapshot_id?: string | null;
+          modal_workspace?: string | null;
+          modal_environment?: string | null;
+          modal_app_id?: string | null;
         };
         Relationships: [
           {
@@ -354,7 +430,7 @@ export type Database = {
       sandboxes: {
         Row: {
           id: string;
-          boat_id: string;
+          boat_id: string | null;
           golden_id: string;
           org_id: string;
           owner_id: string;
@@ -367,10 +443,12 @@ export type Database = {
           status_reason: string | null;
           model: string | null;
           reasoning_effort: string | null;
+          provider: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id: string;
         };
         Insert: {
           id?: string;
-          boat_id: string;
+          boat_id?: string | null;
           golden_id: string;
           org_id: string;
           owner_id: string;
@@ -383,10 +461,12 @@ export type Database = {
           status_reason?: string | null;
           model?: string | null;
           reasoning_effort?: string | null;
+          provider: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id: string;
         };
         Update: {
           id?: string;
-          boat_id?: string;
+          boat_id?: string | null;
           golden_id?: string;
           org_id?: string;
           owner_id?: string;
@@ -399,6 +479,8 @@ export type Database = {
           status_reason?: string | null;
           model?: string | null;
           reasoning_effort?: string | null;
+          provider?: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id?: string;
         };
         Relationships: [
           {
@@ -477,11 +559,12 @@ export type Database = {
       [_ in never]: never;
     };
     Enums: {
-      credential_kind: "anthropic" | "openai" | "claude_oauth" | "boat" | "codex_auth";
+      credential_kind: "anthropic" | "openai" | "claude_oauth" | "boat" | "codex_auth" | "modal";
       credential_scope: "user" | "org";
       harness: "claude" | "codex";
       member_role: "admin" | "member";
       notify_status: "finished" | "failed";
+      sandbox_provider: "boat" | "modal";
       sandbox_status: "starting" | "ready" | "running" | "stopping" | "stopped" | "failed" | "deleted";
       visibility: "org" | "private";
     };
@@ -493,6 +576,7 @@ export type Database = {
 
 export type Credential = Database["public"]["Tables"]["credentials"]["Row"];
 export type GitHubConnection = Database["public"]["Tables"]["github_connections"]["Row"];
+export type GoldenBackendSlot = Database["public"]["Tables"]["golden_backend_slots"]["Row"];
 export type Golden = Database["public"]["Tables"]["goldens"]["Row"];
 export type McpToken = Database["public"]["Tables"]["mcp_tokens"]["Row"];
 export type Member = Database["public"]["Tables"]["members"]["Row"];

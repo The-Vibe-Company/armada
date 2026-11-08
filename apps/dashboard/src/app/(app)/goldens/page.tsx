@@ -137,9 +137,9 @@ function GoldenRow({
         </Badge>
       </TableCell>
       <TableCell>
-        {golden.boat_snapshot_id ? (
-          <span className="font-mono text-xs" title="boat.dev saved snapshot">
-            {golden.boat_snapshot_id}
+        {golden.provider_snapshot_id ? (
+          <span className="font-mono text-xs" title={`${golden.provider} snapshot`}>
+            {golden.provider}: {golden.provider_snapshot_id}
           </span>
         ) : (
           <span className="text-muted-foreground">Not snapshotted</span>
@@ -148,11 +148,11 @@ function GoldenRow({
       <TableCell>{membership?.org.name ?? "Unknown"}</TableCell>
       <TableCell>{displayUser(directory, golden.owner_id, viewerId)}</TableCell>
       <TableCell>
-        {golden.boat_snapshot_id && mcpUrl() !== null ? (
-          <LaunchDialog golden={golden.name} orgId={golden.org_id} catalog={MODEL_CATALOG} />
+        {golden.provider_snapshot_id && mcpUrl() !== null ? (
+          <LaunchDialog golden={golden.name} provider={golden.provider} orgId={golden.org_id} catalog={MODEL_CATALOG} />
         ) : (
           <span className="text-xs text-muted-foreground">
-            {golden.boat_snapshot_id ? "Server not set" : "Snapshot first"}
+            {golden.provider_snapshot_id ? "Server not set" : "Snapshot first"}
           </span>
         )}
       </TableCell>

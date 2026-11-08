@@ -22,7 +22,18 @@ import { Textarea } from "@/components/ui/textarea";
 const HARNESS_LABELS: Record<Harness, string> = { claude: "Claude Code", codex: "Codex" };
 
 /** Launches an agent from a golden: harness, model, reasoning effort and an optional first prompt. */
-export function LaunchDialog({ golden, orgId, catalog }: { golden: string; orgId: string; catalog: ModelCatalog }) {
+export function LaunchDialog({
+  golden,
+  provider,
+  orgId,
+  catalog,
+}: {
+  golden: string;
+  /** The golden's sandbox provider: the same name may exist on another one. */
+  provider: string;
+  orgId: string;
+  catalog: ModelCatalog;
+}) {
   const [harness, setHarness] = useState<Harness>("claude");
   const id = `launch-${golden}`;
   return (
@@ -41,6 +52,7 @@ export function LaunchDialog({ golden, orgId, catalog }: { golden: string; orgId
         </DialogHeader>
         <ActionForm action={launchFromGolden} className="space-y-3">
           <input type="hidden" name="golden" value={golden} />
+          <input type="hidden" name="provider" value={provider} />
           <input type="hidden" name="org" value={orgId} />
           <div className="space-y-2">
             <Label htmlFor={`${id}-harness`}>Agent</Label>

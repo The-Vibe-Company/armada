@@ -121,7 +121,9 @@ function golden(gid: string, name: string, visibility: string, owner: string, sn
     name,
     visibility,
     owner_id: owner,
+    provider: "boat",
     boat_snapshot_id: snapshot,
+    provider_snapshot_id: snapshot,
     config: {},
     created_at: "2026-11-08T10:00:00.000Z",
   };
@@ -138,7 +140,9 @@ function sandbox(
 ): Row {
   return {
     id: sid,
+    provider: "boat",
     boat_id: boat,
+    provider_sandbox_id: boat,
     golden_id: goldenId,
     org_id: ACME,
     owner_id: owner,
@@ -556,7 +560,9 @@ function mcp(message: RpcMessage, userId: string | null): Response {
 }
 
 function launch(args: Row, userId: string, reply: (result: unknown) => Response): Response {
-  const source = visibleRows("goldens", userId).find((row) => row.name === args.golden && row.org_id === args.org);
+  const source = visibleRows("goldens", userId).find(
+    (row) => row.name === args.golden && row.provider === args.provider && row.org_id === args.org,
+  );
   if (!source) return reply({ content: [{ type: "text", text: "No such golden." }], isError: true });
   const row = sandbox(
     crypto.randomUUID(),
@@ -684,6 +690,13 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/auth/v1/")) return auth(request, url, body);
     if (url.pathname.startsWith("/__test/")) return control(url, body);
     if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
+    if (url.pathname.startsWith("/api/v1/")) {
+      const route = url.pathname.slice("/api/v1/".length);
+      if (route === "auth/email/start") return json({ ok: true });
+      if (route === "golden/list")
+        return request.headers.get("authorization") ? json({ goldens: [] }) : json({ error: "Unauthorized." }, 401);
+      return json({ error: "Not found." }, 404);
+    }
     if (url.pathname.startsWith("/github/")) return github(request, url, body);
     if (url.pathname === "/health") return json({ ok: true });
     return json({ message: "not found" }, 404);

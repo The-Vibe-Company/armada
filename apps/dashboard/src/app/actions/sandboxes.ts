@@ -58,6 +58,7 @@ export async function sendToSandbox(_previous: ActionResult | null, data: FormDa
 export async function launchFromGolden(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
   const parsed = launchArgs({
     golden: formString(data, "golden"),
+    provider: formString(data, "provider"),
     org: formString(data, "org"),
     harness: formString(data, "harness"),
     prompt: formString(data, "prompt"),

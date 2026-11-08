@@ -23,18 +23,21 @@ import { LaunchError } from "./launch-error.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import type { Provider } from "./provider.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
+import { assertProviderOf, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
 
 /** Four hours: long enough for an autonomous run, short enough that a forgotten sandbox stops by itself. */
 export const DEFAULT_LAUNCH_TTL_SECONDS = 14_400;
 
-/** The longest TTL boat accepts: 30 days. */
-export const MAX_LAUNCH_TTL_SECONDS = 2_592_000;
+/** The longest TTL any provider accepts (boat's 30 days). Each provider's own limit is in `PROVIDER_LIMITS`. */
+export const MAX_LAUNCH_TTL_SECONDS = Math.max(...Object.values(PROVIDER_LIMITS).map((limits) => limits.maxTtlSeconds));
 
 const OUTPUT_LIMIT = 2000;
 
 export interface LaunchRequest {
   /** The golden's human name. Resolved under the caller's own visibility, never by a provider id. */
   golden: string;
+  /** Needed only when the name exists on several providers. Never a substitute for the golden's own. */
+  provider?: SandboxProviderId;
   harness: Harness;
   /** With a prompt the agent starts at once. Without one the sandbox is left ready for the first `send`. */
   prompt?: string;
@@ -100,15 +103,17 @@ export async function launchSandbox(
   options: LaunchOptions = {},
 ): Promise<LaunchResult> {
   const harness = checkHarness(provider, request.harness);
-  const ttlSeconds = checkTtl(request.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS);
   const prompt = checkPrompt(request.prompt);
   const choice = checkModel(provider, harness, request);
 
-  const golden = await goldenForLaunch(stores.goldens, actor, request.golden);
+  const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
+  // The provider comes from the golden. The one the caller passed must be that backend, never another.
+  assertProviderOf(provider, golden.provider);
+  const ttlSeconds = checkTtl(golden.provider, request.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS);
   if (golden.visibility === "private" && golden.ownerId !== actor.userId) {
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
   }
-  const snapshot = golden.boatSnapshotId;
+  const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
   const credentials = await stores.credentials.resolve(actor, harness);
   const github: GitHubAccess = credentials.github ?? { status: "not_connected", message: GITHUB_NOT_CONNECTED };
@@ -137,7 +142,8 @@ export async function launchSandbox(
   try {
     record = await stores.sandboxes.insert({
       id,
-      boatId: forked.id,
+      provider: golden.provider,
+      providerSandboxId: forked.id,
       goldenId: golden.id,
       orgId: golden.orgId,
       ownerId: actor.userId,
@@ -343,11 +349,13 @@ function checkModel(provider: Provider, harness: Harness, request: LaunchRequest
   return choice;
 }
 
-function checkTtl(ttlSeconds: number): number {
-  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > MAX_LAUNCH_TTL_SECONDS) {
+/** Refused when the golden's provider cannot keep a machine that long: never clamped. */
+function checkTtl(provider: SandboxProviderId, ttlSeconds: number): number {
+  const limits = PROVIDER_LIMITS[provider];
+  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > limits.maxTtlSeconds) {
     throw new LaunchError(
       "invalid_request",
-      `The TTL must be a whole number of seconds from 1 to ${MAX_LAUNCH_TTL_SECONDS} (30 days).`,
+      `The TTL must be a whole number of seconds from 1 to ${limits.maxTtlSeconds} (${limits.maxTtlLabel} on ${provider}).`,
     );
   }
   return ttlSeconds;

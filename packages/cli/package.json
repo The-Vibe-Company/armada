@@ -1,6 +1,6 @@
 {
   "name": "@armada/cli",
-  "version": "2.0.2",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -8,8 +8,9 @@
   },
   "dependencies": {
     "@armada/auth": "workspace:*",
-    "@armada/core": "workspace:*",
-    "@armada/mcp-server": "workspace:*",
-    "@armada/provider-boat": "workspace:*"
+    "@armada/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@armada/mcp-server": "workspace:*"
   }
 }

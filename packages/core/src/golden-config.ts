@@ -1,6 +1,3 @@
-import { createHash } from "node:crypto";
-import type { Visibility } from "./contract.ts";
-
 /** Where a golden's repositories are cloned. Launch pulls the same directories. */
 export const GOLDEN_ROOT = "/home/user";
 
@@ -18,10 +15,6 @@ export const GOLDEN_SNAPSHOT_POLLS = 1800;
 
 const CLONE_TIMEOUT_SECONDS = 600;
 const INIT_TIMEOUT_SECONDS = 600;
-
-/** Boat saved-snapshot names: 1–63 of `[a-z0-9-]`, starting with a letter or digit. Account-wide. */
-const SNAPSHOT_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
-const RESERVED_SNAPSHOTS = new Set(["latest", "tree", "pull", "rm", "save", "current", "self", "new"]);
 
 const BRANCH = /^(?![-/.])(?!.*\.\.)(?!.*@)[A-Za-z0-9._/-]{1,255}$/;
 const DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
@@ -69,30 +62,58 @@ export interface GoldenConfig {
   init: string[];
 }
 
+/** A GitHub-only representation safe to hand to the server's checkout authorization layer. */
+export interface GitHubGoldenConfig {
+  repos: { owner: string; repo: string; branch: string; dir: string }[];
+  init: string[];
+}
+
+/**
+ * Converts an already-validated v2 golden config into GitHub repository identities. This intentionally
+ * accepts no arbitrary git host or credential-bearing URL: checkout authorization owns the token.
+ */
+export function normalizeGitHubGoldenConfig(config: GoldenConfig): GitHubGoldenConfig {
+  return {
+    repos: config.repos.map((repo) => ({ ...githubRepoIdentity(repo.url), branch: repo.branch, dir: repo.dir })),
+    init: [...config.init],
+  };
+}
+
+function githubRepoIdentity(value: string): { owner: string; repo: string } {
+  let path: string;
+  if (/^git@github\.com:[^/]+\/[^/]+(?:\.git)?$/.test(value)) {
+    path = value.slice("git@github.com:".length);
+  } else if (/^[^/@\s]+\/[^/@\s]+(?:\.git)?$/.test(value)) {
+    path = value;
+  } else {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      throw new GoldenError("invalid_config", "Repository must identify a GitHub repository.");
+    }
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "github.com" ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    ) {
+      throw new GoldenError("invalid_config", "Repository must identify a GitHub repository.");
+    }
+    path = url.pathname.replace(/^\//, "");
+  }
+  const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(path);
+  if (!match?.[1] || !match[2])
+    throw new GoldenError("invalid_config", "Repository must identify a GitHub repository.");
+  return { owner: match[1], repo: match[2] };
+}
+
 export interface ShellCommand {
   command: string;
   cwd: string;
   timeoutSeconds: number;
-}
-
-/**
- * Boat snapshot names are one namespace per account, so two orgs (or two owners on one org key)
- * cannot share a human name there. The name is a hash of org, owner, visibility and the human name:
- * two UUIDs do not fit in 63 characters of `[a-z0-9-]`.
- */
-export function boatSnapshotName(input: {
-  orgId: string;
-  ownerId: string;
-  visibility: Visibility;
-  name: string;
-}): string {
-  const material = `${input.orgId.toLowerCase()}\n${input.ownerId.toLowerCase()}\n${input.visibility}\n${input.name}`;
-  const digest = createHash("sha256").update(material).digest("hex");
-  const snapshot = `a${digest.slice(0, 62)}`;
-  if (!SNAPSHOT_NAME.test(snapshot) || RESERVED_SNAPSHOTS.has(snapshot)) {
-    throw new GoldenError("invalid_config", "The boat snapshot name could not be formed.");
-  }
-  return snapshot;
 }
 
 export function parseGoldenName(name: string): string {
@@ -249,7 +270,8 @@ function parseInit(input: unknown): string[] {
   });
 }
 
-function assignDirs(repos: { url: string; branch: string; dir?: string }[]): GoldenRepo[] {
+/** Assigns each repo a single-segment directory: its own `dir`, else the URL's basename, with a `-2`, `-3`, ... suffix on collision. */
+export function assignDirs(repos: { url: string; branch: string; dir?: string }[]): GoldenRepo[] {
   const used = new Set<string>();
   return repos.map((repo) => {
     let dir = repo.dir ?? basename(repo.url);

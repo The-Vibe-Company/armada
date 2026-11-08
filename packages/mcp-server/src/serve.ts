@@ -1,10 +1,15 @@
 import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
-import { createSqlVaultStore, githubAppFromEnv, resolveBoatKey } from "@armada/core";
+import {
+  createGoldenCreateService,
+  createSqlVaultStore,
+  githubAppFromEnv,
+  githubInstallationAppFromEnv,
+} from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { configFromEnv } from "./config.ts";
 import { type ControlOptions, handleControlRequest } from "./control.ts";
 import { createSqlData } from "./data.ts";
-import { createHandler, type Route } from "./http.ts";
+import { createHandler, providerRegistry, type Route } from "./http.ts";
 import { bunSql } from "./sql.ts";
 
 export { bunSql };
@@ -29,23 +34,34 @@ export async function startServer(
   const authStore = createSqlAuthStore(sql);
   const githubApp = githubAppFromEnv(env);
   const data = createSqlData(sql);
+  const providerFor = (apiKey: string) => createBoatProvider({ apiKey });
+  const goldenCreate = createGoldenCreateService({
+    sql,
+    github: { store, encryptionKey: config.encryptionKey, app: githubApp },
+    installationApp: githubInstallationAppFromEnv(env),
+  });
   const control: ControlOptions = {
-    supabaseUrl: config.supabaseUrl,
-    anonKey: config.anonKey,
+    authStore,
+    supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     store,
     encryptionKey: config.encryptionKey,
+    data,
+    vault: store,
     github: { app: githubApp },
-    logs: async (userId, sandboxId) => {
-      const memberships = await authStore.memberships(userId);
-      const scoped = data({ userId, orgs: memberships.map(({ orgId, role }) => ({ orgId, role })), via: "supabase" });
+    providerFor,
+    goldenCreate,
+    providers: providerRegistry({ vault: store, encryptionKey: config.encryptionKey, providerFor }),
+    logs: async (caller, sandboxId) => {
+      const scoped = data(caller);
       const sandbox = await scoped.sandboxes.get(sandboxId);
       if (!sandbox) throw new Error("No such sandbox.");
-      const boat = await resolveBoatKey(store, config.encryptionKey, {
-        userId,
-        orgId: sandbox.orgId,
-        visibility: sandbox.visibility,
-      });
-      return { provider: createBoatProvider({ apiKey: boat.key }), boatId: sandbox.boatId };
+      return {
+        provider: await providerRegistry({ vault: store, encryptionKey: config.encryptionKey, providerFor }).resolve(
+          sandbox,
+          caller,
+        ),
+        providerSandboxId: sandbox.providerSandboxId,
+      };
     },
   };
   const handler = createHandler({
@@ -62,7 +78,8 @@ export async function startServer(
     vault: store,
     encryptionKey: config.encryptionKey,
     github: { store, app: githubApp },
-    providerFor: (apiKey) => createBoatProvider({ apiKey }),
+    goldenCreate,
+    providerFor,
     routes: [(request) => handleControlRequest(request, control), ...(options.routes ?? [])],
     ...(options.logError ? { log: options.logError } : {}),
   });

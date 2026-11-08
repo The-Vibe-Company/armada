@@ -1,6 +1,8 @@
 import {
+  connectGolden,
   DEFAULT_LAUNCH_TTL_SECONDS,
   EncryptionKeyError,
+  type GoldenCreateService,
   GoldenError,
   type GoldenRecord,
   goldenForLaunch,
@@ -10,16 +12,24 @@ import {
   type LaunchOptions,
   launchSandbox,
   MAX_LAUNCH_TTL_SECONDS,
+  type MemberRole,
   MODEL_CATALOG,
   type ModelChoice,
+  PROVIDER_LIMITS,
   type Provider,
   ProviderError,
+  ProviderRoutingError,
+  type ProviderTarget,
   redact,
   resolveModelChoice,
+  SANDBOX_PROVIDERS,
+  type SandboxProviderId,
   type SandboxStatus,
+  scanGoldenSandbox,
+  snapshotGolden,
   VaultError,
   type Visibility,
-} from "@armada/core";
+} from "@armada/core/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
@@ -38,10 +48,13 @@ export interface ToolContext {
   /** The caller's own and one org's model credentials, decrypted, for redacting command output. */
   exposedSecrets(orgId: string): Promise<string[]>;
   /** A provider paying with the boat.dev key of a golden of this org and visibility. The key never leaves the server. */
-  provider(golden: { orgId: string; visibility: Visibility }): Promise<Provider>;
+  /** The provider of a golden's or a sandbox's own backend (see `ProviderRegistry`). Its key never leaves the server. */
+  provider(target: ProviderTarget): Promise<Provider>;
   now(): Date;
   sleep(ms: number): Promise<void>;
   launch?: LaunchOptions;
+  /** Secure, server-orchestrated multi-repo golden creation. Absent: `golden_create` refuses. */
+  goldenCreate?: GoldenCreateService;
   /** Where the real cause of an internal or unavailable tool error goes, redacted. Defaults to stderr. */
   logError?: (line: string) => void;
 }
@@ -51,6 +64,8 @@ export const DEFAULT_WAIT_SECONDS = 60;
 export const MAX_WAIT_SECONDS = 600;
 const OUTPUT_LIMIT = 20_000;
 const MAX_LOG_PAGES = 100;
+/** Mirrors `GoldenCreateService`'s own limit: one GitHub App installation token covers at most this many repos. */
+const MAX_CREATE_REPOS = 16;
 
 export class ToolError extends Error {
   override readonly name = "ToolError";
@@ -80,13 +95,24 @@ const modelOutput = {
   reasoningEffort: z.string().nullable(),
 };
 
+const providerOutput = z.enum(SANDBOX_PROVIDERS).describe("The sandbox provider it runs on, fixed for its life.");
+const compat = (name: string) =>
+  z.string().nullable().describe(`The same as ${name} on a Boat golden or sandbox; null on any other provider.`);
+
 const golden = z.object({
   name: z.string(),
   orgId: z.string(),
   visibility: z.enum(["org", "private"]),
   ownerId: z.string(),
-  boatSnapshotId: z.string().nullable(),
-  boatSandboxId: z.string().nullable(),
+  provider: providerOutput,
+  providerSnapshotId: z.string().nullable(),
+  providerSandboxId: z.string().nullable(),
+  modal: z
+    .object({ workspace: z.string(), environment: z.string(), appId: z.string() })
+    .nullable()
+    .describe("The Modal workspace, environment and App id a Modal golden is pinned to."),
+  boatSnapshotId: compat("providerSnapshotId"),
+  boatSandboxId: compat("providerSandboxId"),
   repos: z.number().int(),
   config: z.object({
     repos: z.array(z.object({ url: z.string(), branch: z.string(), dir: z.string() })),
@@ -96,7 +122,9 @@ const golden = z.object({
 
 const sandbox = z.object({
   id: z.string(),
-  boatId: z.string(),
+  provider: providerOutput,
+  providerSandboxId: z.string(),
+  boatId: compat("providerSandboxId"),
   golden: z.string(),
   visibility: z.enum(["org", "private"]),
   harness: z.enum(HARNESSES),
@@ -212,7 +240,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       title: "List goldens",
       description:
         "The goldens you can launch from: your orgs', and your own private ones. A golden without a " +
-        "boatSnapshotId cannot be launched yet.",
+        "providerSnapshotId cannot be launched yet. The same name may exist on several providers.",
       input: {},
       output: { goldens: z.array(golden) },
       readOnly: true,
@@ -221,6 +249,117 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const goldens: GoldenRecord[] = [];
       for (const orgId of orgIds) goldens.push(...(await data.goldens.list(orgId)));
       return { goldens: goldens.map(goldenJson) };
+    },
+  );
+
+  tool(
+    "golden_create",
+    {
+      title: "Create a golden",
+      description:
+        "Securely builds a golden from one or more GitHub repositories you can access, in a disposable sandbox " +
+        "with none of the boat.dev account's credentials: clones each over your own cached GitHub connection " +
+        "(see `launch`'s `github`), optionally runs a setup script, scans the builder for leaked GitHub tokens, " +
+        "and only saves the snapshot when that scan passes. All repos must share one GitHub App installation.",
+      input: {
+        name: z.string().min(1).describe("The golden's name."),
+        repos: z
+          .array(z.string().min(1))
+          .min(1)
+          .max(MAX_CREATE_REPOS)
+          .describe("owner/repo, repeated, from one GitHub App installation."),
+        org: z
+          .string()
+          .optional()
+          .describe("The orgId to create it in, as in golden_list. Needed only when you belong to more than one."),
+        private: z.boolean().optional().describe("Default false: visible to your whole org. True: only you."),
+        setup: z.string().optional().describe("A shell script run in the builder after cloning, before the snapshot."),
+      },
+      output: { name: z.string(), visibility: z.enum(["org", "private"]), snapshot: z.string() },
+    },
+    async (args) => {
+      if (!context.goldenCreate) {
+        throw new ToolError("unsupported", "Secure golden creation is not configured on this server.");
+      }
+      const visibility: Visibility = args.private ? "private" : "org";
+      const member = resolveCreateOrg(caller.orgs, args.org);
+      const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
+      const provider = await context.provider({ orgId: member.orgId, visibility, provider: "boat", modal: null });
+      const result = await context.goldenCreate.create(
+        provider,
+        actor,
+        {
+          name: args.name,
+          visibility,
+          repos: args.repos,
+          ...(args.setup ? { setup: args.setup } : {}),
+        },
+        context.launch ?? {},
+      );
+      return { name: args.name, visibility, snapshot: result.snapshot };
+    },
+  );
+
+  tool(
+    "golden_update",
+    {
+      title: "Rebuild a golden",
+      description:
+        "Rebuilds an existing golden in place. Private goldens require their owner; org goldens require an org admin.",
+      input: {
+        name: z.string().min(1),
+        org: z.string().optional(),
+        repos: z.array(z.string().min(1)).min(1).max(MAX_CREATE_REPOS),
+        setup: z.string().optional(),
+      },
+      output: { name: z.string(), visibility: z.enum(["org", "private"]), snapshot: z.string() },
+    },
+    async (args) => {
+      if (!context.goldenCreate)
+        throw new ToolError("unsupported", "Secure golden creation is not configured on this server.");
+      const member = resolveCreateOrg(caller.orgs, args.org);
+      const rows = await data.goldens.findByName(member.orgId, args.name);
+      if (rows.length !== 1 || !rows[0]) throw new ToolError("not_found", `No golden named '${args.name}'.`);
+      const existingGolden = rows[0];
+      const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
+      const provider = await context.provider(existingGolden);
+      const result = await context.goldenCreate.create(
+        provider,
+        actor,
+        {
+          name: existingGolden.name,
+          visibility: existingGolden.visibility,
+          repos: args.repos,
+          ...(args.setup ? { setup: args.setup } : {}),
+          existingGolden,
+        },
+        context.launch ?? {},
+      );
+      return { name: existingGolden.name, visibility: existingGolden.visibility, snapshot: result.snapshot };
+    },
+  );
+
+  tool(
+    "golden_snapshot",
+    {
+      title: "Snapshot a golden",
+      description: "Restores the golden master if needed, scans it for leaked GitHub tokens, then saves a snapshot.",
+      input: { name: z.string().min(1), org: z.string().optional() },
+      output: { name: z.string(), snapshot: z.string() },
+    },
+    async (args) => {
+      const member = resolveCreateOrg(caller.orgs, args.org);
+      const rows = await data.goldens.findByName(member.orgId, args.name);
+      if (rows.length !== 1 || !rows[0]) throw new ToolError("not_found", `No golden named '${args.name}'.`);
+      const golden = rows[0];
+      const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
+      const provider = await context.provider(golden);
+      let target = golden;
+      if (!target.providerSandboxId) target = (await connectGolden(provider, data.goldens, actor, target.name)).golden;
+      if (!target.providerSandboxId) throw new ToolError("conflict", `Golden '${target.name}' has no sandbox yet.`);
+      await scanGoldenSandbox(provider, target.providerSandboxId);
+      const saved = await snapshotGolden(provider, data.goldens, actor, target.name, context.launch ?? {});
+      return { name: saved.golden.name, snapshot: saved.snapshotName };
     },
   );
 
@@ -240,6 +379,10 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           .string()
           .optional()
           .describe("The golden's orgId, as in golden_list. Needed only when the name is in several of your orgs."),
+        provider: z
+          .enum(SANDBOX_PROVIDERS)
+          .optional()
+          .describe("The golden's provider. Needed only when the name exists on several providers."),
         harness: z.enum(HARNESSES).describe("claude (Claude Code) or codex."),
         model: modelInput,
         reasoning_effort: effortInput,
@@ -250,11 +393,16 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           .min(1)
           .max(MAX_LAUNCH_TTL_SECONDS)
           .optional()
-          .describe(`Seconds before the machine stops by itself. Default ${DEFAULT_LAUNCH_TTL_SECONDS} (4 hours).`),
+          .describe(
+            `Seconds before the machine stops by itself. Default ${DEFAULT_LAUNCH_TTL_SECONDS} (4 hours). At most ` +
+              `${providerLimitsText}; a longer TTL is refused.`,
+          ),
       },
       output: {
         id: z.string(),
-        boatId: z.string(),
+        provider: providerOutput,
+        providerSandboxId: z.string(),
+        boatId: compat("providerSandboxId"),
         golden: z.string(),
         visibility: z.enum(["org", "private"]),
         harness: z.enum(HARNESSES),
@@ -279,7 +427,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       // Refused before any lookup or allocation.
       resolveModelChoice(args.harness, { model: args.model, reasoningEffort: args.reasoning_effort });
       const actor = await launchActor(args.golden, args.org);
-      const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden);
+      const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
       const provider = await context.provider(chosen);
       const result = await launchSandbox(
         provider,
@@ -287,6 +435,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         actor,
         {
           golden: args.golden,
+          provider: chosen.provider,
           harness: args.harness,
           ...(args.model === undefined ? {} : { model: args.model }),
           ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
@@ -297,7 +446,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       );
       return {
         id: result.sandbox.id,
-        boatId: result.sandbox.boatId,
+        ...sandboxIds(result.sandbox),
         golden: result.golden.name,
         visibility: result.golden.visibility,
         harness: result.sandbox.harness,
@@ -337,7 +486,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       return {
         sandboxes: rows.map((row) => ({
           id: row.id,
-          boatId: row.boatId,
+          ...sandboxIds(row),
           golden: row.golden,
           visibility: row.visibility,
           harness: row.harness,
@@ -415,7 +564,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
-      const page = await readLogs(provider, found.boatId, {
+      const page = await readLogs(provider, found.providerSandboxId, {
         ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
         ...(args.conversation_id ? { conversation_id: args.conversation_id } : {}),
         ...(args.limit ? { limit: args.limit } : {}),
@@ -454,7 +603,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const choice = turnModel(found, { model: args.model, reasoningEffort: args.reasoning_effort });
       const conversation = args.conversation_id ?? found.conversationIds.at(-1);
       const receipt = await provider.prompt({
-        sandboxId: found.boatId,
+        sandboxId: found.providerSandboxId,
         harness: found.harness,
         text: args.prompt,
         ...(conversation ? { conversationId: conversation } : {}),
@@ -500,7 +649,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const delivery = provider.capabilities[found.harness].steer;
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
       const receipt = await provider.steer({
-        sandboxId: found.boatId,
+        sandboxId: found.providerSandboxId,
         text: args.text,
         ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
       });
@@ -528,7 +677,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         throw new ToolError("unsupported", `${found.harness} cannot be interrupted here.`);
       }
       await provider.interrupt({
-        sandboxId: found.boatId,
+        sandboxId: found.providerSandboxId,
         ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
       });
       return { id: found.id, interrupted: true };
@@ -560,7 +709,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
       const result = await provider.exec({
-        sandboxId: found.boatId,
+        sandboxId: found.providerSandboxId,
         command: args.command,
         cwd: args.cwd ?? "/home/user",
         timeoutSeconds: args.timeout_seconds ?? 120,
@@ -595,7 +744,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
-      await provider.stop({ sandboxId: found.boatId });
+      await provider.stop({ sandboxId: found.providerSandboxId });
       const status: SandboxStatus = found.status === "failed" ? "failed" : "stopped";
       await data.sandboxes.update(found.id, { status, stoppedAt: context.now().toISOString() });
       return { id: found.id, status };
@@ -645,8 +794,37 @@ function turnModel(
   return resolveModelChoice(sandbox.harness, requested, stored);
 }
 
+/** A sandbox's ids, with the Boat field of earlier clients kept for Boat sandboxes only. */
+function sandboxIds(row: { provider: SandboxProviderId; providerSandboxId: string }) {
+  return {
+    provider: row.provider,
+    providerSandboxId: row.providerSandboxId,
+    boatId: row.provider === "boat" ? row.providerSandboxId : null,
+  };
+}
+
+const providerLimitsText = Object.entries(PROVIDER_LIMITS)
+  .map(([provider, limits]) => `${limits.maxTtlSeconds} (${limits.maxTtlLabel}) on ${provider}`)
+  .join(", ");
+
 function fail(): never {
   throw new ToolError("internal", "Armada could not complete the call.");
+}
+
+/** The org `golden_create` acts in: the given one, else the caller's only org. There is no existing golden to disambiguate by. */
+function resolveCreateOrg(
+  orgs: readonly { orgId: string; role: MemberRole }[],
+  org: string | undefined,
+): { orgId: string; role: MemberRole } {
+  if (org !== undefined) {
+    const found = orgs.find((item) => item.orgId === org);
+    if (!found) throw new ToolError("not_found", `You are not a member of org '${org}'.`);
+    return found;
+  }
+  const [first] = orgs;
+  if (!first) throw new ToolError("not_found", "You are not a member of any org.");
+  if (orgs.length > 1) throw new ToolError("invalid_request", "You belong to more than one org. Pass org (an orgId).");
+  return first;
 }
 
 function goldenJson(row: GoldenRecord) {
@@ -655,8 +833,12 @@ function goldenJson(row: GoldenRecord) {
     orgId: row.orgId,
     visibility: row.visibility,
     ownerId: row.ownerId,
-    boatSnapshotId: row.boatSnapshotId,
-    boatSandboxId: row.boatSandboxId,
+    provider: row.provider,
+    providerSnapshotId: row.providerSnapshotId,
+    providerSandboxId: row.providerSandboxId,
+    modal: row.modal,
+    boatSnapshotId: row.provider === "boat" ? row.providerSnapshotId : null,
+    boatSandboxId: row.provider === "boat" ? row.providerSandboxId : null,
     repos: row.config.repos.length,
     config: row.config,
   };
@@ -717,6 +899,7 @@ function describe(error: unknown): { code: string; message: string } {
     return { code: error.code, message: `${error.message}${tail}` };
   }
   if (error instanceof GoldenError) return { code: error.code, message: error.message };
+  if (error instanceof ProviderRoutingError) return { code: error.code, message: error.message };
   if (error instanceof ProviderError) {
     if (error.code === "no_running_turn") {
       return { code: error.code, message: "No turn is running. Use send to start one." };

@@ -16,7 +16,7 @@ import {
   parseGoldenConfig,
   type SandboxInfo,
   snapshotGolden,
-} from "../src/index.ts";
+} from "../src/server.ts";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
 const OWNER = "22222222-2222-4222-8222-222222222222";
@@ -129,8 +129,8 @@ describe("golden workflow", () => {
     expect(boat.exec.every((call) => call.cwd === GOLDEN_ROOT)).toBe(true);
     expect(boat.exec[0]?.command).toContain("credential.helper=");
     expect(boat.exec[0]?.command).not.toContain("ANTHROPIC");
-    expect(rows[0]?.boatSandboxId).toBe("bx_23456789");
-    expect(rows[0]?.boatSnapshotId).toBeNull();
+    expect(rows[0]?.providerSandboxId).toBe("bx_23456789");
+    expect(rows[0]?.providerSnapshotId).toBeNull();
   });
 
   test("a failed init leaves the sandbox recorded and does not snapshot", async () => {
@@ -143,7 +143,7 @@ describe("golden workflow", () => {
         config: configFromFlags([WEB], ["pnpm i"]),
       }),
     ).rejects.toMatchObject({ code: "setup_failed" });
-    expect(rows[0]?.boatSandboxId).toBe("bx_23456789");
+    expect(rows[0]?.providerSandboxId).toBe("bx_23456789");
     expect(boat.snapshots).toHaveLength(0);
   });
 
@@ -175,10 +175,10 @@ describe("golden workflow", () => {
       snapshotPolls: 5,
     });
     expect(saved.snapshotName).toBe(created.snapshotName);
-    expect(rows[0]?.boatSnapshotId).toBe(saved.snapshotName);
+    expect(rows[0]?.providerSnapshotId).toBe(saved.snapshotName);
     expect(waits).toBe(1);
     const launch = await goldenForLaunch(store, owner, "web");
-    expect(launch.boatSnapshotId).toBe(saved.snapshotName);
+    expect(launch.providerSnapshotId).toBe(saved.snapshotName);
   });
 
   test("a save already in progress is polled instead of started again", async () => {
@@ -294,8 +294,10 @@ function memory(rows: GoldenRecord[], actor: GoldenActor): GoldenStore {
         name: input.name,
         visibility: input.visibility,
         ownerId: input.ownerId,
-        boatSnapshotId: null,
-        boatSandboxId: null,
+        provider: input.provider,
+        providerSnapshotId: null,
+        providerSandboxId: null,
+        modal: input.modal,
         config: input.config,
         createdAt: "2026-11-08T12:00:00.000Z",
       };
@@ -303,19 +305,19 @@ function memory(rows: GoldenRecord[], actor: GoldenActor): GoldenStore {
       return row;
     },
     async setConfig(id, config) {
-      const row = rows.find((item) => item.id === id && writable(item) && item.boatSandboxId === null);
+      const row = rows.find((item) => item.id === id && writable(item));
       if (!row) throw new GoldenError("forbidden", "The golden could not be updated.");
       row.config = config;
     },
-    async setSandbox(id, boatSandboxId) {
-      const row = rows.find((item) => item.id === id && writable(item) && item.boatSandboxId === null);
-      if (!row) throw new GoldenError("forbidden", "The golden could not be updated.");
-      row.boatSandboxId = boatSandboxId;
-    },
-    async setSnapshot(id, boatSnapshotId) {
+    async setSandbox(id, providerSandboxId) {
       const row = rows.find((item) => item.id === id && writable(item));
       if (!row) throw new GoldenError("forbidden", "The golden could not be updated.");
-      row.boatSnapshotId = boatSnapshotId;
+      row.providerSandboxId = providerSandboxId;
+    },
+    async setSnapshot(id, providerSnapshotId) {
+      const row = rows.find((item) => item.id === id && writable(item));
+      if (!row) throw new GoldenError("forbidden", "The golden could not be updated.");
+      row.providerSnapshotId = providerSnapshotId;
     },
   };
 }
@@ -336,7 +338,7 @@ function scripted(
     labels: {},
   });
   const provider = {
-    id: "fake",
+    id: "boat",
     harnesses: ["claude", "codex"],
     capabilities: { claude: caps(), codex: caps() },
     async createGolden(request: {
@@ -394,3 +396,87 @@ function caps() {
     approvals: false,
   };
 }
+
+describe("GitHub golden normalization", () => {
+  test("keeps branch slash names, custom directories, and init commands", async () => {
+    const { normalizeGitHubGoldenConfig } = await import("../src/server.ts");
+    const config = parseGoldenConfig({
+      repos: [
+        { url: "https://github.com/acme/web.git", branch: "feature/login", dir: "frontend" },
+        { url: "git@github.com:acme/api.git", branch: "release/2026" },
+      ],
+      init: ["pnpm install"],
+    });
+    expect(normalizeGitHubGoldenConfig(config)).toEqual({
+      repos: [
+        { owner: "acme", repo: "web", branch: "feature/login", dir: "frontend" },
+        { owner: "acme", repo: "api", branch: "release/2026", dir: "api" },
+      ],
+      init: ["pnpm install"],
+    });
+  });
+
+  test("refuses non-GitHub or credential-bearing repository URLs without echoing them", async () => {
+    const { normalizeGitHubGoldenConfig } = await import("../src/server.ts");
+    const otherHost = parseGoldenConfig({ repos: [{ url: "https://evil.example/acme/web.git" }] });
+    expect(() => normalizeGitHubGoldenConfig(otherHost)).toThrow("GitHub repository");
+    expect(() => parseGoldenConfig({ repos: [{ url: "https://user:secret@github.com/acme/web.git" }] })).toThrow(
+      "must not contain credentials",
+    );
+    try {
+      parseGoldenConfig({ repos: [{ url: "https://user:secret@github.com/acme/web.git" }] });
+    } catch (error) {
+      expect(String(error)).not.toContain("secret");
+    }
+  });
+});
+
+test("connect restores a stopped master from its saved snapshot", async () => {
+  const row: GoldenRecord = {
+    provider: "boat",
+    modal: null,
+    id: "g",
+    orgId: ORG,
+    name: "web",
+    visibility: "private",
+    ownerId: OWNER,
+    providerSandboxId: "bx_old",
+    providerSnapshotId: "golden-old",
+    config: configFromFlags([WEB], []),
+    createdAt: "now",
+  };
+  const store = memory([row], owner);
+  let forked = false;
+  const provider = {
+    ...scripted().provider,
+    async get(id: string) {
+      return { id, name: "web", state: id === "bx_old" ? "stopped" : "ready", providerState: "", labels: {} };
+    },
+    async fork(input: { from: string; noEnv: boolean }) {
+      forked = input.from === "golden-old" && input.noEnv;
+      return { id: "bx_new", name: "web", state: "starting", providerState: "", labels: {} };
+    },
+  } as unknown as Provider;
+  const connected = await connectGolden(provider, store, owner, "web", { sleep: async () => {} });
+  expect(forked).toBe(true);
+  expect(connected.golden.providerSandboxId).toBe("bx_new");
+});
+
+test("connect fallback still denies a private golden to another member", async () => {
+  const row: GoldenRecord = {
+    provider: "boat",
+    modal: null,
+    id: "g",
+    orgId: ORG,
+    name: "web",
+    visibility: "private",
+    ownerId: OWNER,
+    providerSandboxId: "bx_old",
+    providerSnapshotId: "golden-old",
+    config: configFromFlags([WEB], []),
+    createdAt: "now",
+  };
+  await expect(connectGolden(scripted().provider, memory([row], member), member, "web")).rejects.toMatchObject({
+    code: "not_found",
+  });
+});

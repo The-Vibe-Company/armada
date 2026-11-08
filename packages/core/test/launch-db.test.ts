@@ -61,7 +61,8 @@ describe("launch database", () => {
         asUser(db, people.member, () =>
           sandboxes.insert({
             id: crypto.randomUUID(),
-            boatId: "bx_forged",
+            provider: "boat",
+            providerSandboxId: "bx_forged",
             goldenId: privateGolden.rows[0]?.id ?? "",
             orgId: people.org,
             ownerId: people.member,
@@ -135,7 +136,7 @@ function fakeBoat() {
   let count = 0;
   const info = (id: string): SandboxInfo => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
   const provider = {
-    id: "fake",
+    id: "boat",
     harnesses: ["claude", "codex"],
     capabilities: { claude: { reasoningEffort: true }, codex: { reasoningEffort: true } },
     async fork(request: ForkRequest) {
