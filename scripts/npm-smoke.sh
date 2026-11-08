@@ -12,8 +12,8 @@ tarballs=$(cd "$1" && pwd)
 target=${2:-linux-x64}
 root=$(cd "$(dirname "$0")/.." && pwd)
 expected=$(jq -r .version "$root/packages/core/package.json")
-main="$tarballs/thevibecompany-armada-$expected.tgz"
-platform="$tarballs/thevibecompany-armada-$target-$expected.tgz"
+main="$tarballs/the-vibe-company-armada-$expected.tgz"
+platform="$tarballs/the-vibe-company-armada-$target-$expected.tgz"
 test -f "$main" || { echo "::error::missing $main"; exit 1; }
 test -f "$platform" || { echo "::error::missing $platform"; exit 1; }
 

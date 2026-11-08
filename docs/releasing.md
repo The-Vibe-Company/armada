@@ -1,59 +1,81 @@
 # Releasing the CLI to npm
 
-The `armada` CLI is published to npm as five packages, all at the version of `packages/*/package.json`:
+Armada v2 replaces v1 under the existing public package `@the-vibe-company/armada`.
+Keep that package name: existing users upgrade with `npm install -g @the-vibe-company/armada`.
+The v2 launcher selects one of four optional platform packages, `@the-vibe-company/armada-{linux,darwin}-{x64,arm64}`.
+The workspace packages stay private; the compiled binaries bundle their dependencies.
 
-| Package | Content |
-| --- | --- |
-| `@thevibecompany/armada` | The `armada` bin: a Node launcher (`packages/cli/npm/armada.cjs`) and one optional dependency per platform. |
-| `@thevibecompany/armada-linux-x64`, `-linux-arm64`, `-darwin-x64`, `-darwin-arm64` | The binary compiled by `bun build --compile` for that platform, restricted by `os` and `cpu`. |
+## Normal releases
 
-The CLI uses Bun APIs, so the package does not ship JavaScript for Node to run. npm and Bun install only the platform package that matches the machine, and the launcher runs its binary under Node 18 or later or under Bun. No postinstall script runs. `npx @thevibecompany/armada`, `bun x @thevibecompany/armada` and a global install all work the same way. The workspace packages (`@armada/*`) stay private: the binary bundles them, and `@boatdev/sdk`, the MCP SDK and zod with them.
+1. Merge conventional commits (`feat`, `fix`, breaking changes) into `main`.
+2. The Release workflow runs Release Please and opens or updates `chore(release): <version>`.
+   It updates the root package, every workspace package, the changelog and the release manifest.
+   The workflow also synchronizes Bun's lockfile and explicitly dispatches CI on that PR's branch.
+   This explicit dispatch matters: PRs and pushes created with `GITHUB_TOKEN` do not trigger ordinary CI.
+3. Review the version PR and merge it after all checks pass. Release Please creates `v<version>` and
+   the GitHub release, then the **same workflow** validates, builds and publishes it. It does not
+   rely on a tag-push event from the bot token.
+4. Four native runners compile and smoke-test the binaries. The publisher stages and packs the
+   five npm packages, saves their tarballs and SHA-256 checksums as an Actions artifact, runs the
+   installation smoke test, and publishes platform packages before the main package.
 
-`scripts/npm.ts` stages the packages from compiled binaries into `dist/npm`. `scripts/npm-smoke.sh` installs packed tarballs with npm (local and global) and Bun, then runs `armada --version` and `armada --help` from each install. To try it locally:
+Stable versions go to `latest`; prereleases go to `next`. The initial migration commit uses a
+`Release-As: 2.0.0` footer to promote v2. Future versions follow conventional commits normally.
+Version changes stay in the release PR; do not edit package versions or push release tags by hand
+for the normal flow. All root and workspace versions must match the CLI's version.
 
-```sh
-bun run build --target linux-x64
-bun scripts/npm.ts --binaries dist --target linux-x64
-mkdir -p dist/tarballs
-for dir in dist/npm/*/; do (cd "$dir" && npm pack --pack-destination ../../tarballs); done
-scripts/npm-smoke.sh dist/tarballs linux-x64
-```
+## npm authentication and the first v2 release
 
-CI runs the same steps for each of the four platforms, in the binary job on that platform's own runner.
+Publishing uses npm Trusted Publishing (GitHub OIDC), not a persistent `NPM_TOKEN`.
+Configure each of the five packages to trust GitHub repository `The-Vibe-Company/armada`,
+workflow **`release.yml`**, environment **`npm`**. The existing main package already trusts this
+workflow. Preserve its settings and its requirement for two-factor authentication.
 
-## Cutting a release
-
-1. Bump the version in every `packages/*/package.json`. They must stay equal: a test fails if they drift apart, and `@armada/core` reads its `VERSION` from there. Merge the bump to `main`.
-2. Tag that commit of `main` and push the tag:
-
-   ```sh
-   git tag v2.0.0-alpha.1 <commit of main>
-   git push origin v2.0.0-alpha.1
-   ```
-
-3. `.github/workflows/release.yml` then runs these steps:
-   - It checks that the tag is `v<version>` and points at a commit of `main`, and that every package carries the same version. Then it runs lint, typecheck and tests.
-   - It compiles the binary on each platform's own runner (macOS signs it ad hoc there), then packs, installs and runs it.
-   - It stages all five packages, packs them, runs the smoke test on the linux-x64 tarballs, and publishes those exact tarballs. The platform packages go first and `@thevibecompany/armada` last, so the main package never points at a missing binary. Every package is published with `--provenance`.
-   - A prerelease version (`2.0.0-alpha.1`) goes to the `next` dist-tag and any other version to `latest`. A package already published at that version is skipped, so a failed run can be re-run.
-
-`Actions → Release → Run workflow` (workflow_dispatch) runs the same jobs from any ref and ends with `npm publish --dry-run`. Nothing is published unless the run was started by a tag.
-
-## Prerequisites (one time)
-
-1. **The npm scope.** The `@thevibecompany` scope must exist on npmjs.com as an org (or user) that the publisher can write to. The name `armada` is taken, and Armada v1 shipped as `@the-vibe-company/armada` (up to 0.2.73). Changing the scope means editing `NPM_PACKAGE` in `scripts/npm.ts`, `scripts/npm-smoke.sh` (the tarball names) and the docs.
-2. **The first publication: a token.** npm configures Trusted Publishing per package, and a package must exist before you can configure it. So the first release authenticates with a token:
-   - On npmjs.com, create a **granular access token** with read and write access to the `@thevibecompany` scope (or to its five packages), allowed to bypass two-factor authentication, and with a short expiry.
-   - Store it as the repository secret `NPM_TOKEN` (GitHub, Settings, Secrets and variables, Actions). It can also be set on the `npm` environment. Never write it anywhere else.
-3. **Then Trusted Publishing.** For each of the five packages, on npmjs.com, open Settings, Trusted Publisher, GitHub Actions: organization `The-Vibe-Company`, repository `armada`, workflow `release.yml`, environment `npm`. Then delete the `NPM_TOKEN` secret and revoke the token. The workflow authenticates over GitHub OIDC (`id-token: write`, npm 11.5.1 or later from Node 24) with no secret at all. Optionally set each package to "require two-factor authentication and disallow tokens".
-4. **The `npm` environment.** The publish job runs in the GitHub environment `npm`, and GitHub creates it on the first run. Add required reviewers or a tag rule there (Settings, Environments, npm, deployment branches and tags: `v*`) to gate publication.
-
-## Installing
+The four platform packages are new. npm requires a package to exist before a trusted publisher
+can be configured. Bootstrap them once using the actual platform tarballs built by the verified
+release workflow and an authenticated maintainer session (`npm login`). Publish under `next`
+until the complete release is ready; never upload placeholder binaries. Then configure their
+trusted publishers with npm's settings or npm 11.10+:
 
 ```sh
-npx @thevibecompany/armada@next --help
-bun x @thevibecompany/armada@next --help
-npm install --global @thevibecompany/armada@next
+npm trust github @the-vibe-company/armada-darwin-arm64 \
+  --repo The-Vibe-Company/armada --file release.yml --env npm --allow-publish
 ```
 
-Drop `@next` once a version without a prerelease suffix has been published under `latest`. See docs/dave-onboarding.md for configuration and first use.
+Repeat for the other three platform packages. npm requests the maintainer's 2FA confirmation.
+Do not weaken publishing protections or commit credentials. After all platform packages exist,
+resume the release to publish the main package using OIDC. Subsequent releases need no npm login.
+
+After v2 is published and installation succeeds, deprecate **only** the legacy versions:
+
+```sh
+npm deprecate '@the-vibe-company/armada@<2.0.0' \
+  'Armada v1 is retired. Upgrade with npm install -g @the-vibe-company/armada.'
+```
+
+Keep published historical versions available; do not unpublish them or delete users' v1 config.
+
+## Dry runs and recovery
+
+`Actions → Release → Run workflow` defaults to a dry run from the selected ref. It builds,
+packs and smoke-tests every platform, then runs `npm publish --dry-run`.
+
+To recover a partially published release, run the workflow from `main` with the existing
+`v<version>` tag in **tag** and **publish** enabled. It validates the exact tag, requires it to
+belong to `main`, and pins all builds to that commit. Existing package versions are skipped;
+missing versions are published. A run without an existing version tag cannot publish.
+
+The `npm-tarballs-<version>` Actions artifact contains the exact packed packages and `SHA256SUMS`.
+Do not rebuild or substitute tarballs during a bootstrap or recovery.
+
+## Installation and migration
+
+```sh
+npm install --global @the-vibe-company/armada
+armada --version
+armada login --url armada.thevibecompany.co
+```
+
+Installing v2 under the same package replaces the old global `armada` executable. Verify the
+new version before removing any separate legacy installation. Authentication state from v1
+is not reused by v2; sign in once. See [onboarding](dave-onboarding.md).
