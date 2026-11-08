@@ -7,6 +7,17 @@ export {
   type LaunchCredentialKind,
   redact,
   resolveCredential,
+  CODEX_AUTH_PATH,
+  CREDENTIAL_KINDS,
+  type CredentialReader,
+  credentialName,
+  MAX_AUTH_FILE_LENGTH,
+  MAX_SECRET_LENGTH,
+  parseCredentialKind,
+  parseCredentialValue,
+  type ResolvedCredentials,
+  resolveBoatKey,
+  resolveCredentials,
 } from "./credentials.ts";
 export {
   decryptSecret,
@@ -119,4 +130,25 @@ export {
   type SandboxRow,
   type SandboxStore,
 } from "./sandbox.ts";
+export {
+  addMember,
+  type CredentialInfo,
+  createOrg,
+  listCredentials,
+  listMembers,
+  listOrgs,
+  type MemberInfo,
+  type OrgCredentials,
+  type OrgSummary,
+  parseOrgName,
+  parseRole,
+  removeCredential,
+  removeMember,
+  resolveOrg,
+  setCredential,
+  setMemberRole,
+  type VaultStore,
+} from "./vault.ts";
+export { VaultError, type VaultErrorCode } from "./vault-error.ts";
+export { createSqlVaultStore } from "./vault-store.ts";
 export { VERSION } from "./version.ts";

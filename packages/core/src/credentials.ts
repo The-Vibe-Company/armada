@@ -1,7 +1,9 @@
-import type { Harness } from "./contract.ts";
-import type { CredentialScope } from "./database.types.ts";
+import type { Harness, Visibility } from "./contract.ts";
+import type { CredentialKind, CredentialScope } from "./database.types.ts";
 import type { GoldenActor } from "./golden.ts";
+import { decryptSecret, EncryptionKeyError } from "./crypto.ts";
 import { LaunchError } from "./launch-error.ts";
+import { VaultError } from "./vault-error.ts";
 
 /** The credential kinds a launch injects. Claude Code takes a subscription token, Codex an OpenAI key or `auth.json`. */
 export type LaunchCredentialKind = "claude_oauth" | "openai";
@@ -106,3 +108,154 @@ function authJsonSecrets(value: string): string[] {
   walk(parsed);
   return leaves;
 }
+
+export const MAX_SECRET_LENGTH = 8192;
+export const MAX_AUTH_FILE_LENGTH = 65536;
+
+/** Where Codex reads its login file in a boat.dev sandbox. */
+export const CODEX_AUTH_PATH = "/home/user/.codex/auth.json";
+
+interface KindInfo {
+  /** The name `armada creds set <name>` takes. */
+  name: string;
+  label: string;
+  /** What launch injects it as. A file kind has no variable. */
+  env?: string;
+}
+
+/** OpenCode keys come with OpenCode (v1): the schema has no kind for them yet. */
+export const CREDENTIAL_KINDS: Readonly<Record<CredentialKind, KindInfo>> = {
+  claude_oauth: { name: "claude-oauth", label: "Claude Code OAuth token", env: "CLAUDE_CODE_OAUTH_TOKEN" },
+  anthropic: { name: "anthropic", label: "Anthropic API key", env: "ANTHROPIC_API_KEY" },
+  openai: { name: "openai", label: "OpenAI API key for Codex", env: "OPENAI_API_KEY" },
+  codex_auth: { name: "codex-auth", label: "Codex auth.json" },
+  boat: { name: "boat", label: "boat.dev API key" },
+};
+
+/** Within one scope, the first kind a harness finds wins. The two Claude kinds never reach the sandbox together. */
+const HARNESS_KINDS: Readonly<Record<Harness, readonly CredentialKind[]>> = {
+  claude: ["claude_oauth", "anthropic"],
+  codex: ["openai", "codex_auth"],
+};
+
+export function parseCredentialKind(name: string): CredentialKind {
+  const wanted = name.trim().toLowerCase().replaceAll("_", "-");
+  for (const [kind, info] of Object.entries(CREDENTIAL_KINDS)) {
+    if (info.name === wanted) return kind as CredentialKind;
+  }
+  const known = Object.values(CREDENTIAL_KINDS)
+    .map((info) => info.name)
+    .join(", ");
+  throw new VaultError("invalid", `Unknown credential '${name}'. Use one of: ${known}.`);
+}
+
+export function credentialName(kind: CredentialKind): string {
+  return CREDENTIAL_KINDS[kind].name;
+}
+
+/**
+ * Checks a value before it is encrypted. A token or key is trimmed and has no whitespace inside:
+ * that is almost always a bad paste. An auth.json must be a JSON object. The error never repeats the value.
+ */
+export function parseCredentialValue(kind: CredentialKind, raw: string): string {
+  const value = raw.trim();
+  if (value === "") throw new VaultError("invalid", "The value is empty.");
+  if (kind === "codex_auth") {
+    if (value.length > MAX_AUTH_FILE_LENGTH) throw new VaultError("invalid", "That auth.json is too large.");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      throw new VaultError("invalid", "A Codex auth.json is a JSON file.");
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed) || Object.keys(parsed).length === 0) {
+      throw new VaultError("invalid", "A Codex auth.json is a JSON object.");
+    }
+    return value;
+  }
+  if (value.length > MAX_SECRET_LENGTH) throw new VaultError("invalid", "That value is too long to be a key.");
+  if (/\s/.test(value)) {
+    throw new VaultError("invalid", "A key has no spaces or line breaks. Check what you pasted.");
+  }
+  return value;
+}
+
+/** Ciphertext of the stored credentials. Only the server, as the service role, can read it. */
+export interface CredentialReader {
+  credentials(scope: CredentialScope, ownerId: string): Promise<{ kind: CredentialKind; valueEnc: Uint8Array }[]>;
+  orgBoatKey(orgId: string): Promise<Uint8Array | null>;
+}
+
+export interface ResolvedCredentials {
+  /** Variables to put in the sandbox environment at launch. Never in the golden. */
+  env: Record<string, string>;
+  /** Files to write into the sandbox at launch. */
+  files: { path: string; content: string; mode: number }[];
+  /** Which kind came from which scope. No values. */
+  sources: { kind: CredentialKind; scope: CredentialScope }[];
+}
+
+/**
+ * Model credentials for a launch: the user's own, then the org's default. The first scope that
+ * has a credential this harness can use wins, whole: user and org values are never mixed.
+ */
+export async function resolveCredentials(
+  reader: CredentialReader,
+  encryptionKey: string | undefined,
+  input: { userId: string; orgId: string; harness: Harness },
+): Promise<ResolvedCredentials> {
+  const kinds = HARNESS_KINDS[input.harness];
+  for (const [scope, ownerId] of [
+    ["user", input.userId],
+    ["org", input.orgId],
+  ] as const) {
+    const rows = await reader.credentials(scope, ownerId);
+    for (const kind of kinds) {
+      const row = rows.find((candidate) => candidate.kind === kind);
+      if (!row) continue;
+      const value = await open(row.valueEnc, encryptionKey);
+      return deliver(kind, scope, value);
+    }
+  }
+  throw new VaultError(
+    "missing_credential",
+    `No ${input.harness === "claude" ? "Claude" : "Codex"} credential for you or your org. Run 'armada creds set ${credentialName(kinds[0] ?? "claude_oauth")}'.`,
+  );
+}
+
+/**
+ * The boat.dev key that pays for a golden's sandboxes. A private golden uses its owner's personal
+ * key when there is one; everything else, and the fallback, is the org key. Returns the key itself:
+ * the caller uses it in memory for one provider call and never stores or prints it.
+ */
+export async function resolveBoatKey(
+  reader: CredentialReader,
+  encryptionKey: string | undefined,
+  input: { userId: string; orgId: string; visibility: Visibility },
+): Promise<{ key: string; scope: CredentialScope }> {
+  if (input.visibility === "private") {
+    const personal = (await reader.credentials("user", input.userId)).find((row) => row.kind === "boat");
+    if (personal) return { key: await open(personal.valueEnc, encryptionKey), scope: "user" };
+  }
+  const org = await reader.orgBoatKey(input.orgId);
+  if (org) return { key: await open(org, encryptionKey), scope: "org" };
+  throw new VaultError(
+    "missing_credential",
+    input.visibility === "private"
+      ? "No boat.dev key for you or your org. Run 'armada creds set boat' or ask an org admin to set the org key."
+      : "Your org has no boat.dev key. An org admin sets it with 'armada creds set boat --org <name>'.",
+  );
+}
+
+function open(sealed: Uint8Array, encryptionKey: string | undefined): Promise<string> {
+  return decryptSecret(new Uint8Array(sealed), encryptionKey).catch((error: unknown) => {
+    if (error instanceof EncryptionKeyError) throw error;
+    throw new VaultError("unavailable", "A stored credential could not be decrypted.");
+  });
+}
+
+function deliver(kind: CredentialKind, scope: CredentialScope, value: string): ResolvedCredentials {
+  const source = { kind, scope };
+  const env = CREDENTIAL_KINDS[kind].env;
+  if (env) return { env: { [env]: value }, files: [], sources: [source] };
+  return { env: {}, files: [{ path: CODEX_AUTH_PATH, content: value, mode: 0o600 }], sources: [source] };

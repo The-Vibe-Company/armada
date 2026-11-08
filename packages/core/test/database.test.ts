@@ -80,7 +80,13 @@ describe("database", () => {
       expect(await labels(db, "sandbox_status")).toEqual([...PROVIDER_STATES, "deleted"]);
       expect(await labels(db, "member_role")).toEqual(["admin", "member"]);
       expect(await labels(db, "credential_scope")).toEqual(["user", "org"]);
-      expect(await labels(db, "credential_kind")).toEqual(["anthropic", "openai", "claude_oauth", "boat"]);
+      expect(await labels(db, "credential_kind")).toEqual([
+        "anthropic",
+        "openai",
+        "claude_oauth",
+        "boat",
+        "codex_auth",
+      ]);
       expect(await labels(db, "notify_status")).toEqual(["finished", "failed"]);
     } finally {
       await db.close();
