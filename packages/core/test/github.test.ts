@@ -96,24 +96,43 @@ describe("GitHub access at launch", () => {
     expect(world.github.tokenRequests).toHaveLength(1);
   });
 
-  test("a launch that loses a refresh race retries with the token the winner stored", async () => {
+  test("three concurrent launches serialize one refresh and share the cached access token", async () => {
     const world = await setup({ refresh: REFRESH_1 });
-    world.github.refreshes.push(async () => {
-      // Another launch rotated the token while this one's request was in flight.
-      await world.store.rotateGitHubToken(USER, world.rows.get(USER)?.refreshTokenEnc ?? new Uint8Array(), {
-        refreshTokenEnc: await encryptSecret(REFRESH_2, KEY),
-        refreshExpiresAt: null,
+    world.github.refreshes.push({ access_token: ACCESS_1, refresh_token: REFRESH_2, expires_in: 28_800 });
+    let tail = Promise.resolve();
+    world.store.getGitHubConnectionForRefresh = async (userId) => {
+      const previous = tail;
+      let unlock!: () => void;
+      tail = new Promise<void>((resolve) => {
+        unlock = resolve;
       });
-      return { error: "bad_refresh_token" };
-    });
-    world.github.refreshes.push({ access_token: ACCESS_2, refresh_token: REFRESH_3, expires_in: 28_800 });
-
-    const access = await resolveGitHubAccess(world.deps, USER);
-
-    expect(access).toMatchObject({ status: "connected", token: ACCESS_2 });
-    expect(world.github.refreshTokensSent).toEqual([REFRESH_1, REFRESH_2]);
+      await previous;
+      // The production database transaction holds its advisory lock through rotation. This test
+      // releases the equivalent only after the current microtask has persisted its result.
+      const row = world.rows.get(userId) ?? null;
+      setTimeout(unlock, 0);
+      return row;
+    };
+    const access = await Promise.all([
+      resolveGitHubAccess(world.deps, USER),
+      resolveGitHubAccess(world.deps, USER),
+      resolveGitHubAccess(world.deps, USER),
+    ]);
+    expect(access.map((item) => item.status)).toEqual(["connected", "connected", "connected"]);
+    expect(world.github.refreshTokensSent).toEqual([REFRESH_1]);
     expect(world.rows.get(USER)?.revokedAt).toBeNull();
-    expect(await decryptSecret(new Uint8Array(world.rows.get(USER)?.refreshTokenEnc ?? []), KEY)).toBe(REFRESH_3);
+  });
+
+  test("uses a sealed cached access token until its expiry margin, then refreshes", async () => {
+    const world = await setup({ refresh: REFRESH_1 });
+    world.github.refreshes.push({ access_token: ACCESS_1, refresh_token: REFRESH_2, expires_in: 600 });
+    await resolveGitHubAccess(world.deps, USER);
+    await resolveGitHubAccess(world.deps, USER);
+    expect(world.github.refreshTokensSent).toEqual([REFRESH_1]);
+    world.deps.now = () => new Date(NOW.getTime() + 6 * 60 * 1000);
+    world.github.refreshes.push({ access_token: ACCESS_2, refresh_token: REFRESH_3, expires_in: 28_800 });
+    await resolveGitHubAccess(world.deps, USER);
+    expect(world.github.refreshTokensSent).toEqual([REFRESH_1, REFRESH_2]);
   });
 
   test("a GitHub outage skips GitHub without revoking or rotating anything", async () => {
@@ -327,10 +346,15 @@ async function setup(options: { refresh?: string; login?: string; githubId?: num
       refreshTokenEnc: await encryptSecret(options.refresh, KEY),
       refreshExpiresAt: null,
       revokedAt: options.revoked ? NOW : null,
+      accessTokenEnc: null,
+      accessExpiresAt: null,
     });
   }
   const store: GitHubConnectionStore = {
     async getGitHubConnection(userId) {
+      return rows.get(userId) ?? null;
+    },
+    async getGitHubConnectionForRefresh(userId) {
       return rows.get(userId) ?? null;
     },
     async rotateGitHubToken(userId, expected, next) {

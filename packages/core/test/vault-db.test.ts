@@ -351,12 +351,16 @@ describe("GitHub connections", () => {
         await store.rotateGitHubToken(people.stan, new Uint8Array([1, 2, 3]), {
           refreshTokenEnc: new Uint8Array([4, 5]),
           refreshExpiresAt: expiry,
+          accessTokenEnc: new Uint8Array([6]),
+          accessExpiresAt: expiry,
         }),
       ).toBe(true);
       expect(
         await store.rotateGitHubToken(people.stan, new Uint8Array([1, 2, 3]), {
           refreshTokenEnc: new Uint8Array([9]),
           refreshExpiresAt: null,
+          accessTokenEnc: new Uint8Array([6]),
+          accessExpiresAt: expiry,
         }),
       ).toBe(false);
       const rotated = await store.getGitHubConnection(people.stan);
@@ -386,6 +390,8 @@ describe("GitHub connections", () => {
         await store.rotateGitHubToken(people.stan, new Uint8Array([1]), {
           refreshTokenEnc: new Uint8Array([2]),
           refreshExpiresAt: null,
+          accessTokenEnc: new Uint8Array([6]),
+          accessExpiresAt: new Date("2027-05-10T12:00:00.000Z"),
         }),
       ).toBe(false);
     });

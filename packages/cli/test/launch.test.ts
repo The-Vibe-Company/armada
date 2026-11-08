@@ -319,6 +319,9 @@ describe("launch command", () => {
       async getGitHubConnection() {
         return null;
       },
+      async getGitHubConnectionForRefresh() {
+        return null;
+      },
     } as unknown as VaultStore;
     const result = await capture(["launch", "monorepo", "--agent", "claude", "go"], {
       auth: login(USER_UUID, supabase),

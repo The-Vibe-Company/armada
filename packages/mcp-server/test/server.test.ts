@@ -336,7 +336,7 @@ describe("tools", () => {
 
     const second = await call(mcp, "launch", { golden: "shared", harness: "claude" });
     expect(second.data.github).toMatchObject({ status: "connected" });
-    expect(github.refreshed).toEqual(["ghr_refresh_octocat_0", "ghr_refresh_octocat_1"]);
+    expect(github.refreshed).toEqual(["ghr_refresh_octocat_0"]);
     const stored = await db.query<{ refresh_token_enc: Uint8Array }>(
       "select refresh_token_enc from github_connections",
     );
