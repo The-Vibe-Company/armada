@@ -1,4 +1,5 @@
-import { AuthError, type SessionStore } from "@armada/auth";
+import { AuthError } from "@armada/auth";
+import type { SessionStore } from "./session.ts";
 
 export const DEFAULT_ARMADA_API_URL = "https://armada.thevibecompany.co";
 const DEFAULT_TIMEOUT_MS = 10_000;

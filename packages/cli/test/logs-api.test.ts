@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { memorySessionStore } from "@armada/auth";
+import { memorySessionStore } from "../src/session.ts";
 import { run } from "../src/run.ts";
 
 const token = "armada_sk_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO12";

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { memorySessionStore } from "@armada/auth";
+import { memorySessionStore } from "../src/session.ts";
 import { armadaApiUrl, createArmadaApiClient } from "../src/armada-api.ts";
 
 const token = "secret-token-that-must-not-leak";
@@ -8,11 +8,9 @@ function io(env: NodeJS.ProcessEnv = {}) {
   return {
     env,
     session: memorySessionStore({
-      userId: "user",
       accessToken: "saved-session-token",
       refreshToken: "refresh",
       expiresAt: "2099-01-01T00:00:00.000Z",
-      supabaseUrl: "https://not-an-api.example",
       armadaUrl: "https://saved.armada.test",
     }),
     fetch: (async () => Response.json({ ok: true })) as unknown as typeof fetch,

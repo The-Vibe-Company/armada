@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { memorySessionStore } from "@armada/auth";
+import { memorySessionStore } from "../src/session.ts";
 import { tokenList } from "../src/auth-commands.ts";
 
 test("token list uses the Armada API bearer with a clean HOME token", async () => {

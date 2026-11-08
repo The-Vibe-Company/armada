@@ -6,19 +6,12 @@ import {
   assertEmail,
   createPkce,
   type AuthFetch,
-  type AuthStore,
-  ensureFreshSession,
-  fileSessionStore,
   type Provider,
-  refreshSession,
-  refreshSupabaseSession,
-  type Session,
-  type SessionStore,
 } from "@armada/auth";
 
-import { DEFAULT_ARMADA_URL } from "./client-config.ts";
+import { DEFAULT_ARMADA_API_URL, createArmadaApiClient } from "./armada-api.ts";
 import { browserLogin } from "./browser-login.ts";
-import { createArmadaApiClient } from "./armada-api.ts";
+import { fileSessionStore, type SessionStore } from "./session.ts";
 
 export interface AuthIo {
   out(text: string): void;
@@ -28,8 +21,6 @@ export interface AuthIo {
   now: () => Date;
   open: (url: string) => void;
   session: SessionStore;
-  /** Set by tests. The CLI otherwise talks to PostgREST with the user's JWT. */
-  store?: AuthStore;
   timeoutMs?: number;
   /** Reads the code typed from a sign-in email. Tests set it; the terminal prompt is the default. */
   readCode?: (signal: AbortSignal) => Promise<string>;
@@ -86,7 +77,7 @@ export async function loginCommand(
   how: { provider?: Provider | undefined; email?: string | undefined; url?: string | undefined } = {},
 ): Promise<void> {
   if (how.email !== undefined) {
-    const origin = how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_URL;
+    const origin = how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_API_URL;
     const email = assertEmail(how.email);
     const pkce = await createPkce();
     const state = crypto.randomUUID().replaceAll("-", "");
@@ -101,17 +92,17 @@ export async function loginCommand(
       const response = await io.fetch(new URL("/api/v1/auth/email/verify", origin), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, code }) });
       const value = await response.json().catch(() => null) as { accessToken?: unknown; refreshToken?: unknown; expiresAt?: unknown } | null;
       if (!response.ok || !value || typeof value.accessToken !== "string" || typeof value.refreshToken !== "string" || typeof value.expiresAt !== "string") throw new AuthError("Email code was refused.", "unauthorized");
-      await io.session.write({ supabaseUrl: "", armadaUrl: origin, accessToken: value.accessToken, refreshToken: value.refreshToken, expiresAt: value.expiresAt, userId: "" });
+      await io.session.write({ armadaUrl: origin, accessToken: value.accessToken, refreshToken: value.refreshToken, expiresAt: value.expiresAt });
       io.out("Logged in.\n");
       return;
     } finally {
       await server.stop(false);
     }
   }
-  // Browser login is Armada-hosted: the CLI never discovers or contacts the native provider.
+  // Browser login is Armada-hosted: the CLI never contacts a native provider.
   if (how.email === undefined) {
     const provider = how.provider ?? "github";
-    const origin = how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_URL;
+    const origin = how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_API_URL;
     try {
       const result = await browserLogin({
         origin,
@@ -121,12 +112,10 @@ export async function loginCommand(
         ...(io.timeoutMs === undefined ? {} : { timeoutMs: io.timeoutMs }),
       });
       await io.session.write({
-        supabaseUrl: "",
         armadaUrl: origin,
         accessToken: result.accessToken,
         refreshToken: result.refreshToken,
         expiresAt: result.expiresAt,
-        userId: "",
       });
       io.out("Logged in.\n");
       return;
@@ -173,35 +162,9 @@ export async function tokenRevoke(io: AuthIo, id: string): Promise<void> {
   io.out(`Revoked ${id}.\n`);
 }
 
-/** The signed-in session, refreshed when it is about to expire. The one identity every command acts as. */
-export async function signedIn(io: AuthIo): Promise<{ session: Session; anonKey: string }> {
-  const saved = await io.session.read();
-  if (!saved) throw new AuthError("Run armada login.", "unauthorized");
-  const anonKey = saved.anonKey ?? required(io.env, "SUPABASE_ANON_KEY");
-  const session = await ensureFreshSession(io.session, io.now(), (current) => refresh(io, anonKey, current));
-  return { session, anonKey };
-}
-
-/** Rotate the saved session after a rejected bearer request. */
-export async function refreshSignedIn(io: AuthIo, rejected: Session): Promise<Session> {
-  const anonKey = rejected.anonKey ?? required(io.env, "SUPABASE_ANON_KEY");
-  return refreshSession(io.session, io.now(), (current) => refresh(io, anonKey, current), rejected);
-}
-
-async function refresh(io: AuthIo, anonKey: string, session: Session): Promise<Session> {
-  return { ...session, ...(await refreshSupabaseSession({ fetch: io.fetch, anonKey, session, now: io.now() })) };
-}
-
-function required(env: NodeJS.ProcessEnv, name: string): string {
-  const value = env[name];
-  if (!value) throw new AuthError(`Set ${name}.`, "usage");
-  return value;
-}
 
 function openBrowser(url: string): void {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
   const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
   Bun.spawn([command, ...args], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
 }
-
-export type { Provider };

@@ -51,7 +51,7 @@ export interface Deps {
   provider?: Provider;
   sandboxPolls?: number;
   snapshotPolls?: number;
-  /** Set by auth tests. Otherwise login talks to Supabase and stores the session on this machine. */
+  /** Set by auth tests. Otherwise login stores an Armada API session on this machine. */
   auth?: AuthIo;
   /**
    * The encrypted credential store. Tests inject one. Otherwise `armada launch` asks the server
@@ -105,7 +105,6 @@ Environment:
   ARMADA_URL                               Login server (default: https://armada.thevibecompany.co). Also the
                                            Armada server for armada org, armada creds, armada golden create,
                                            armada launch and armada logs
-  SUPABASE_URL, SUPABASE_ANON_KEY          Optional legacy login settings; discovered automatically otherwise
   BOAT_API_KEY                             armada golden connect and armada golden snapshot only; golden
                                            create does not need it
   GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY    optional on the server: an installation token for golden create,

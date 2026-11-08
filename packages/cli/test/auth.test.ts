@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileSessionStore, memorySessionStore, type Session } from "@armada/auth";
+import { fileSessionStore, memorySessionStore, type Session } from "../src/session.ts";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
 
@@ -12,11 +12,9 @@ const REFRESH = "refresh-token";
 
 function session(overrides: Partial<Session> = {}): Session {
   return {
-    userId: "",
     accessToken: ACCESS,
     refreshToken: REFRESH,
     expiresAt: "2099-01-01T00:00:00.000Z",
-    supabaseUrl: "",
     armadaUrl: ORIGIN,
     ...overrides,
   };
