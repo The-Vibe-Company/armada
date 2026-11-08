@@ -13,6 +13,7 @@ Armada v1 (the fleet orchestrator) is archived at the tag `armada-v1-final`. Its
 - `packages/auth` (`@armada/auth`): Supabase login, the MCP OAuth server, service tokens and bearer verification. Tokens are stored as lowercase sha-256 hex. The CLI keeps the Supabase session on the machine; the MCP server verifies bearers with the service role and does not cache them.
 - `packages/cli` (`@armada/cli`): the `armada` command. `src/run.ts` takes its I/O as arguments; `src/main.ts` wires the process and is the binary's entry. `armada golden` creates, connects, snapshots and lists. `armada launch` forks a golden into a sandbox. Supabase is reached with the user JWT (`src/supabase.ts`), never a service role key. Until credentials land, `BOAT_API_KEY` is the boat key and it is not read from the boat account, and model credentials come from `ARMADA_*`. `armada login` and `armada token` are the auth commands.
 - `packages/mcp-server` (`@armada/mcp-server`): the remote MCP server. It re-exports auth so the tool server (#464) can mount `handleOAuthRequest` and call `authenticate`.
+- `apps/dashboard` (`@armada/dashboard`): the web dashboard (Next.js App Router, Tailwind, shadcn/ui). It acts as the signed-in user over Supabase (RLS applies), never with a service key. Pure logic lives in `src/lib` (tested with `bun test` in `test/`); `e2e/` is Playwright against `e2e/mock-supabase.ts`. Writes RLS cannot express go through the functions of `supabase/migrations/*_dashboard_functions.sql`.
 - `scripts/build.ts`: compiles the binary with `bun build --compile` (linux and macOS, x64 and arm64).
 
 ## Commands
@@ -22,6 +23,7 @@ Armada v1 (the fleet orchestrator) is archived at the tag `armada-v1-final`. Its
 - `bun run format`: apply Biome formatting and safe fixes.
 - `bun run build` (this machine), `bun run build --target <os-arch>`, `bun run build:all`: the binary in `dist/`.
 - `bun run armada <args>`: the CLI from source.
+- `bun run dashboard`, `bun run dashboard:build`, `bun run e2e`: the dashboard (dev, production build, browser tests). `bun run verify` typechecks it and runs its unit tests, not the e2e.
 - `bun run db:types`: regenerate `packages/core/src/database.types.ts` after a migration change.
 
 ## Rules

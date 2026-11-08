@@ -20,6 +20,7 @@ A Bun and TypeScript monorepo (Bun workspaces, strict `tsconfig.json` shared by 
 | `packages/cli` | `@armada/cli` | The `armada` command; `src/main.ts` is the entry of the compiled binary. |
 | `packages/auth` | `@armada/auth` | Supabase login (GitHub, Google), the MCP OAuth server, service tokens and bearer checks. |
 | `packages/mcp-server` | `@armada/mcp-server` | The remote MCP server (hosted on Railway) that orchestrators call. |
+| `apps/dashboard` | `@armada/dashboard` | The web dashboard (Next.js, Tailwind, shadcn/ui) over Supabase: orgs, goldens, credentials, sandboxes. |
 
 `scripts/build.ts` compiles the binary. Every package carries the same version, the one `armada --version` prints (`packages/core/package.json`); a test fails if they drift apart.
 
@@ -61,11 +62,37 @@ bun run build:all                    # dist/armada-<target> for linux and macOS,
 
 Until the encrypted credential store lands (#461), credentials come from the environment: `ARMADA_CLAUDE_OAUTH_TOKEN` (becomes `CLAUDE_CODE_OAUTH_TOKEN`) and `ARMADA_OPENAI_API_KEY` (an OpenAI key, or the content of Codex's `auth.json`), with `ARMADA_ORG_CLAUDE_OAUTH_TOKEN` and `ARMADA_ORG_OPENAI_API_KEY` as the org defaults.
 
+## Dashboard
+
+`apps/dashboard` is a Next.js App Router app (Tailwind v4, shadcn/ui, dark mode). It talks to Supabase as the signed-in user (their JWT from the session cookie, so row level security decides what they see) and never holds a service key.
+
+| Variable | Where | Role |
+| --- | --- | --- |
+| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | build and runtime | The Supabase project. Required. |
+| `NEXT_PUBLIC_AUTH_PROVIDERS` | build and runtime | Social buttons to show, `github,google`. Empty: email sign-in only. |
+| `ARMADA_MCP_URL` | runtime | The Armada MCP server. Without it the dashboard lists sandboxes but cannot read live logs or stop and message them. |
+| `ARMADA_MASTER_KEY` | runtime | 32 random bytes, base64 (`openssl rand -base64 32`). Credentials are sealed with AES-256-GCM before they are stored; without it the dashboard refuses to save one. |
+
+- **Sign-in.** Email: Supabase sends a link and a one-time code (the dashboard accepts either; the template decides what the email carries). GitHub and Google: enable the provider in Supabase Auth, then list it in `NEXT_PUBLIC_AUTH_PROVIDERS`. Add `<origin>/auth/callback` (production and previews) to the redirect URLs of the Supabase project.
+- **Credentials.** `value_enc` holds `iv (12 bytes) || ciphertext || tag`. Values are write-only: a user JWT cannot read the column and the dashboard never shows one. Resolution order (user, then org) is the launcher's job.
+- **Logs, stop, send.** boat.dev keys stay on the server, so the dashboard asks the Armada MCP server (`logs`, `stop`, `send` tools, over Streamable HTTP, with the user's session token). The logs panel polls every two seconds from the last cursor while the sandbox is active.
+- **Writes row level security cannot express** (creating an org, adding a member by email, changing a golden's visibility) go through the functions of `supabase/migrations/20261108130000_dashboard_functions.sql`, which check `auth.uid()` themselves.
+
+```sh
+cp apps/dashboard/.env.example apps/dashboard/.env.local   # then fill it in
+bun run dashboard          # next dev
+bun run dashboard:build    # next build
+bun run e2e                # Playwright against a mock of Supabase and the Armada server
+```
+
+Vercel: project root directory `apps/dashboard` (`vercel.json` there sets the Next.js framework and the Bun install and build). `bunx playwright install chromium` once before the first `bun run e2e`.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every pull request and on `main`:
 
 - **Lint, typecheck and test**: `bun run lint`, `bun run typecheck`, `bun run test`.
+- **Dashboard e2e**: `bun run e2e` (Playwright, Chromium) on a production build of the dashboard.
 - **Binary (linux-x64, linux-arm64, darwin-x64, darwin-arm64)**: each binary is compiled with `bun build --compile` on a runner of its own platform, checked with `armada --version` there, and uploaded as the `armada-<target>` artifact of the run.
 
 ## Armada v1

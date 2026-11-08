@@ -1,0 +1,37 @@
+import { ShipIcon } from "lucide-react";
+import type { Metadata } from "next";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { enabledProviders } from "@/lib/auth-config";
+import { safeNextPath } from "@/lib/routes";
+import { LoginForm } from "./login-form";
+
+export const metadata: Metadata = { title: "Sign in" };
+
+const ERRORS: Record<string, string> = {
+  callback: "That sign-in link is invalid or has expired. Request a new one.",
+  provider: "That sign-in method is not available.",
+};
+
+type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
+
+export default async function LoginPage({ searchParams }: Props) {
+  const params = await searchParams;
+  const next = safeNextPath(typeof params.next === "string" ? params.next : null);
+  const error = typeof params.error === "string" ? ERRORS[params.error] : undefined;
+  const providers = enabledProviders(process.env.NEXT_PUBLIC_AUTH_PROVIDERS);
+
+  return (
+    <main className="flex min-h-dvh items-center justify-center p-4">
+      <Card className="w-full max-w-sm">
+        <CardHeader className="items-center text-center">
+          <ShipIcon className="mb-2 size-8" />
+          <CardTitle className="text-xl">Sign in to Armada</CardTitle>
+          <CardDescription>We email you a sign-in link and a code. No password.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <LoginForm next={next} providers={providers} initialError={error} />
+        </CardContent>
+      </Card>
+    </main>
+  );
+}
