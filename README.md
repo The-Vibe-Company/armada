@@ -47,7 +47,8 @@ bun run armada golden connect <name>
 bun run armada golden snapshot <name>
 bun run armada golden list
 bun run armada launch <golden> --agent claude|codex ["prompt"] [--ttl 4h] [--json]
-bun run armada login
+bun run armada login                 # GitHub or Google in the browser (--provider github|google)
+bun run armada login --email you@example.com   # a sign-in email: click its link, or type its code
 bun run armada token create --org <name> --label <label>
 bun run armada org create <name>
 bun run armada org members add <email> [--role admin|member]
@@ -69,7 +70,7 @@ The credentials and the boat.dev key come from the encrypted store: the caller's
 
 ## Identity, orgs and credentials
 
-After `armada login` (`SUPABASE_URL`, `SUPABASE_ANON_KEY`), every command acts as that Supabase session: `armada golden` and `armada launch` read it, and take `--org <name>` when you belong to more than one org. The old `ARMADA_SUPABASE_URL`, `ARMADA_SUPABASE_ANON_KEY`, `ARMADA_ACCESS_TOKEN` and `ARMADA_ORG` are gone, as are `ARMADA_CLAUDE_OAUTH_TOKEN` and `ARMADA_OPENAI_API_KEY`. The CLI never holds a service role key or the encryption key.
+After `armada login` (`SUPABASE_URL`, `SUPABASE_ANON_KEY`), every command acts as that Supabase session: `armada golden` and `armada launch` read it, and take `--org <name>` when you belong to more than one org. The old `ARMADA_SUPABASE_URL`, `ARMADA_SUPABASE_ANON_KEY`, `ARMADA_ACCESS_TOKEN` and `ARMADA_ORG` are gone, as are `ARMADA_CLAUDE_OAUTH_TOKEN` and `ARMADA_OPENAI_API_KEY`. `armada login --email <address>` sends Supabase's sign-in email: clicking the link signs in through a local page (add `http://127.0.0.1:**` to the project's redirect URLs, as for GitHub and Google), and a code typed at the prompt signs in too when the email template carries `{{ .Token }}`. The CLI never holds a service role key or the encryption key.
 
 `armada org`, `armada creds` and `armada launch` call the server's control API (`handleControlRequest` in `@armada/mcp-server`, mounted by #464; the CLI finds it at `ARMADA_URL`). The server checks the Supabase access token, then uses the service role for what a user JWT cannot do (create an org with its first admin, find a person by email, read and write ciphertext).
 

@@ -70,6 +70,38 @@ describe("auth commands", () => {
     expect(result.code).toBe(2);
     expect(result.err).toContain("github or google");
   });
+
+  test("login --email signs in with the code typed from the email", async () => {
+    const auth = io(createMemoryAuthStore());
+    const requests: string[] = [];
+    auth.env = { SUPABASE_URL: "https://project.supabase.co", SUPABASE_ANON_KEY: "anon" };
+    auth.readCode = async () => "123456";
+    auth.fetch = async (input) => {
+      const path = new URL(String(input)).pathname;
+      requests.push(path);
+      if (path === "/auth/v1/verify") {
+        return Response.json({ access_token: "a", refresh_token: "r", expires_in: 3600, user: { id: USER } });
+      }
+      return Response.json({});
+    };
+    const result = await capture(["login", "--email", "ada@example.com"], auth);
+    expect(result.code).toBe(0);
+    expect(result.err).toContain("Sent a sign-in email to ada@example.com");
+    expect(result.out).toContain(`user: ${USER}`);
+    expect(requests).toEqual(["/auth/v1/otp", "/auth/v1/verify"]);
+    expect((await auth.session.read())?.userId).toBe(USER);
+  });
+
+  test("login takes --provider or --email, and a real address", async () => {
+    const both = await capture(["login", "--provider", "github", "--email", "a@b.co"], io(createMemoryAuthStore()));
+    expect(both.code).toBe(2);
+    expect(both.err).toContain("not both");
+    const bad = io(createMemoryAuthStore());
+    bad.env = { SUPABASE_URL: "https://project.supabase.co", SUPABASE_ANON_KEY: "anon" };
+    const invalid = await capture(["login", "--email", "nobody"], bad);
+    expect(invalid.code).toBe(2);
+    expect(invalid.err).toContain("valid email");
+  });
 });
 
 function io(store: ReturnType<typeof createMemoryAuthStore>): AuthIo {

@@ -87,7 +87,8 @@ Usage:
   armada launch <golden> --agent claude|codex ["prompt"] [--ttl 4h] [--json]
                                            Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt.
-  armada login [--provider github|google]
+  armada login [--provider github|google | --email <address>]
+                                           --email sends a sign-in link; click it, or type the code it contains
   armada logout
   armada token create [--org <name>] [--label <label>]
   armada token list
@@ -532,10 +533,14 @@ async function serve(argv: readonly string[], io: Io, deps: Deps): Promise<numbe
 
 async function login(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const parsed = parseAuth(argv);
-  rejectUnknown(parsed.flags, ["provider"]);
+  rejectUnknown(parsed.flags, ["provider", "email"]);
   if (parsed.position.length > 0) throw new AuthError("Run armada login --help.", "usage");
+  if (parsed.flags.has("provider") && parsed.flags.has("email")) {
+    throw new AuthError("Use --provider or --email, not both.", "usage");
+  }
   const provider = parsed.flags.has("provider") ? assertProvider(authFlag(parsed.flags, "provider")) : undefined;
-  await loginCommand(authOf(io, deps), provider);
+  const email = parsed.flags.has("email") ? authFlag(parsed.flags, "email") : undefined;
+  await loginCommand(authOf(io, deps), { provider, email });
   return 0;
 }
 
