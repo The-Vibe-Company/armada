@@ -16,12 +16,15 @@ export const dynamic = "force-dynamic";
 export default async function GoldensPage() {
   const viewer = await requireViewer();
   const supabase = await createClient();
-  const memberships = await listMemberships(supabase, viewer.id);
-  const [goldens, directory] = await Promise.all([
+  const pending = listMemberships(supabase, viewer.id);
+  const [goldens, memberships, directory] = await Promise.all([
     listGoldens(supabase),
-    memberDirectory(
-      supabase,
-      memberships.map((item) => item.org.id),
+    pending,
+    pending.then((items) =>
+      memberDirectory(
+        supabase,
+        items.map((item) => item.org.id),
+      ),
     ),
   ]);
   const orgs = new Map(memberships.map((item) => [item.org.id, item]));

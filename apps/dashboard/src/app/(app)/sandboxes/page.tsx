@@ -21,13 +21,14 @@ export default async function SandboxesPage({ searchParams }: Props) {
   const viewer = await requireViewer();
   const filters = parseSandboxFilters(await searchParams);
   const supabase = await createClient();
-  const memberships = await listMemberships(supabase, viewer.id);
   const [{ rows, total }, goldens, directory] = await Promise.all([
     listSandboxes(supabase, filters, viewer.id),
     listGoldens(supabase),
-    memberDirectory(
-      supabase,
-      memberships.map((item) => item.org.id),
+    listMemberships(supabase, viewer.id).then((memberships) =>
+      memberDirectory(
+        supabase,
+        memberships.map((item) => item.org.id),
+      ),
     ),
   ]);
   const goldenName = new Map(goldens.map((golden) => [golden.id, golden.name]));

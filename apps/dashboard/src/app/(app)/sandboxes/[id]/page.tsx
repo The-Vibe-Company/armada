@@ -25,17 +25,19 @@ export default async function SandboxPage({ params }: Props) {
   if (!isUuid(id)) notFound();
   const viewer = await requireViewer();
   const supabase = await createClient();
-  const sandbox = await getSandbox(supabase, id);
-  if (!sandbox) notFound();
-
-  const memberships = await listMemberships(supabase, viewer.id);
-  const [goldens, directory] = await Promise.all([
+  const pending = listMemberships(supabase, viewer.id);
+  const [sandbox, goldens, memberships, directory] = await Promise.all([
+    getSandbox(supabase, id),
     listGoldens(supabase),
-    memberDirectory(
-      supabase,
-      memberships.map((item) => item.org.id),
+    pending,
+    pending.then((items) =>
+      memberDirectory(
+        supabase,
+        items.map((item) => item.org.id),
+      ),
     ),
   ]);
+  if (!sandbox) notFound();
   const golden = goldens.find((item) => item.id === sandbox.golden_id);
   const org = memberships.find((item) => item.org.id === sandbox.org_id);
   const configured = mcpUrl() !== null;
