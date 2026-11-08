@@ -18,6 +18,7 @@ const PRIVATE_POST_PATHS = new Set([
   "creds/list",
   "creds/rm",
   "golden/list",
+  "golden/capabilities",
   "golden/create",
   "golden/update",
   "golden/snapshot",

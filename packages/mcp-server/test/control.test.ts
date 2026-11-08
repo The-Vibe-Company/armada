@@ -450,6 +450,63 @@ describe("control API", () => {
     });
   });
 
+  test("golden/capabilities authenticates and denies foreign orgs before provider resolution", async () => {
+    await withServer(async ({ options }) => {
+      const orgA = (await options.store.createOrg("Capabilities A", STAN)).id;
+      const orgB = (await options.store.createOrg("Capabilities B", STAN)).id;
+      options.authStore.addMembership(STAN, { orgId: orgA, name: "Capabilities A", role: "admin" });
+      options.authStore.addMembership(STAN, { orgId: orgB, name: "Capabilities B", role: "admin" });
+      const service = generateToken("service");
+      await options.authStore.insertToken("service", {
+        userId: STAN,
+        orgId: orgA,
+        hash: await sha256Hex(service),
+        label: "capabilities",
+        createdAt: new Date().toISOString(),
+      });
+      const targets: unknown[] = [];
+      let maxGoldens: number | undefined = 9;
+      options.providers = {
+        resolve: async (target) => {
+          targets.push(target);
+          return { ...fakeBoat().provider, ...(maxGoldens === undefined ? {} : { maxGoldens }) };
+        },
+      };
+      const request = (authorization: string, body: object) =>
+        handleControlRequest(
+          new Request("https://armada.test/api/v1/golden/capabilities", {
+            method: "POST",
+            headers: { authorization },
+            body: JSON.stringify(body),
+          }),
+          options,
+        );
+      expect((await request("", { org: orgA }))?.status).toBe(401);
+      expect((await request(`Bearer ${service}`, { org: orgB }))?.status).toBe(403);
+      const session = (id: string) =>
+        `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: id })).replace(/=+$/, "")}.sig`;
+      expect((await request(session(ADA), { org: orgA }))?.status).toBe(403);
+      expect(targets).toEqual([]);
+      const result = await request(`Bearer ${service}`, { org: orgA, provider: "boat" });
+      expect(result?.status).toBe(200);
+      expect(result?.headers.get("cache-control")).toBe("no-store");
+      expect(await result?.json()).toEqual({ provider: "boat", maxGoldens: 9 });
+      maxGoldens = undefined;
+      expect(await (await request(`Bearer ${service}`, {}))?.json()).toEqual({ provider: "boat", maxGoldens: null });
+      expect(await (await request(session(STAN), { org: orgB, provider: "boat" }))?.json()).toEqual({
+        provider: "boat",
+        maxGoldens: null,
+      });
+      expect(targets).toEqual([
+        { orgId: orgA, visibility: "org", provider: "boat", modal: null },
+        { orgId: orgA, visibility: "org", provider: "boat", modal: null },
+        { orgId: orgB, visibility: "org", provider: "boat", modal: null },
+      ]);
+      expect((await request(`Bearer ${service}`, { provider: "invalid" }))?.status).toBe(400);
+      expect(targets).toHaveLength(3);
+    });
+  });
+
   test("golden/list uses MCP visibility rules and service-token org scope", async () => {
     await withServer(async ({ db, options }) => {
       const orgA = (await options.store.createOrg("A", STAN)).id;
