@@ -41,6 +41,7 @@ import {
   loginCommand,
   logoutCommand,
   productionAuthIo,
+  refreshSignedIn,
   signedIn,
   tokenCreate,
   tokenList,
@@ -551,7 +552,16 @@ async function session(
   if (deps.store && deps.actor) return { store: deps.store, sandboxes: deps.sandboxes, actor: deps.actor };
   const auth = authOf(io, deps);
   const { session: login, anonKey } = await signedIn(auth);
-  const identity = { supabaseUrl: login.supabaseUrl, anonKey, accessToken: login.accessToken, userId: login.userId };
+  const identity = {
+    supabaseUrl: login.supabaseUrl,
+    anonKey,
+    accessToken: login.accessToken,
+    userId: login.userId,
+    refresh: async (rejectedAccessToken: string) => {
+      const refreshed = await refreshSignedIn(auth, { ...login, accessToken: rejectedAccessToken });
+      return refreshed.accessToken;
+    },
+  };
   const opened = await openSupabaseGoldens(identity, single(args, "--org"), auth.fetch);
   return {
     store: deps.store ?? opened.store,
