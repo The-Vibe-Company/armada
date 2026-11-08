@@ -10,7 +10,6 @@ import {
   ensureFreshSession,
   fileSessionStore,
   listServiceTokens,
-  loginWithEmail,
   type Provider,
   refreshSession,
   refreshSupabaseSession,
@@ -19,7 +18,7 @@ import {
   type SessionStore,
 } from "@armada/auth";
 
-import { DEFAULT_ARMADA_URL, discoverClientConfig } from "./client-config.ts";
+import { DEFAULT_ARMADA_URL } from "./client-config.ts";
 import { browserLogin } from "./browser-login.ts";
 
 export interface AuthIo {
@@ -87,6 +86,23 @@ export async function loginCommand(
   io: AuthIo,
   how: { provider?: Provider | undefined; email?: string | undefined; url?: string | undefined } = {},
 ): Promise<void> {
+  if (how.email !== undefined) {
+    const origin = how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_URL;
+    const callback = "http://127.0.0.1:1/callback";
+    const state = crypto.randomUUID().replaceAll("-", "");
+    const challenge = "a".repeat(43);
+    const start = await io.fetch(new URL("/api/v1/auth/email/start", origin), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: how.email, redirect_uri: callback, code_challenge: challenge, state }) });
+    if (!start.ok) throw new AuthError("Armada could not start email login.", "unauthorized");
+    io.err(`Sent a sign-in email to ${how.email}. Type the code it contains.\n`);
+    if (!io.readCode) throw new AuthError("Email code input is unavailable.", "usage");
+    const code = await io.readCode(new AbortController().signal);
+    const response = await io.fetch(new URL("/api/v1/auth/email/verify", origin), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: how.email, code }) });
+    const value = await response.json().catch(() => null) as { accessToken?: unknown; refreshToken?: unknown; expiresAt?: unknown } | null;
+    if (!response.ok || !value || typeof value.accessToken !== "string" || typeof value.refreshToken !== "string" || typeof value.expiresAt !== "string") throw new AuthError("Email code was refused.", "unauthorized");
+    await io.session.write({ supabaseUrl: "", armadaUrl: origin, accessToken: value.accessToken, refreshToken: value.refreshToken, expiresAt: value.expiresAt, userId: "" });
+    io.out("Logged in.\n");
+    return;
+  }
   // Browser login is Armada-hosted: the CLI never discovers or contacts the native provider.
   if (how.email === undefined) {
     const provider = how.provider ?? "github";
@@ -112,50 +128,6 @@ export async function loginCommand(
     } catch {
       throw new AuthError("Armada browser login failed.", "unauthorized");
     }
-  }
-  let { provider } = how;
-  let email = how.email;
-  // Explicit legacy settings remain available for local setups without discovery.
-  const legacy = !how.url && !io.env.ARMADA_URL && io.env.SUPABASE_URL && io.env.SUPABASE_ANON_KEY;
-  const config = legacy
-    ? {
-        supabaseUrl: required(io.env, "SUPABASE_URL"),
-        anonKey: required(io.env, "SUPABASE_ANON_KEY"),
-        providers: ["github", "google"],
-      }
-    : await discoverClientConfig(io, how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_URL);
-  const { supabaseUrl, anonKey } = config;
-  const armadaUrl = "controlUrl" in config ? config.controlUrl : undefined;
-  if (provider && !config.providers.includes(provider)) {
-    throw new AuthError(`This server does not enable ${provider} login. Use --email <address>.`, "usage");
-  }
-  if (!provider && email === undefined && config.providers.length === 0) {
-    if (!io.readEmail) throw new AuthError("Sign in with --email <address>.", "usage");
-    email = await io.readEmail();
-  }
-  if (!provider && config.providers.length === 1) provider = config.providers[0] as Provider;
-  const session: SessionStore = {
-    ...io.session,
-    write: (value) => io.session.write({ ...value, anonKey, ...(armadaUrl ? { armadaUrl } : {}) }),
-  };
-  if (email !== undefined) {
-    const result = await loginWithEmail({
-      fetch: io.fetch,
-      supabaseUrl,
-      anonKey,
-      email,
-      session,
-      now: io.now,
-      ...(io.readCode ? { readCode: io.readCode } : {}),
-      ...(io.timeoutMs !== undefined ? { timeoutMs: io.timeoutMs } : {}),
-      onSent: (sent) =>
-        io.err(
-          `Sent a sign-in email to ${sent}. Click the link in it${io.readCode ? ", or type the code it contains" : ""}.\n`,
-        ),
-      onWrongCode: () => io.err("That code was refused. Try again.\n"),
-    });
-    io.out(`Logged in.\nuser: ${result.userId}\n`);
-    return;
   }
   throw new AuthError("Sign in with --provider github or google.", "usage");
 }
