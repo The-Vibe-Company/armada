@@ -44,19 +44,35 @@ describe("logs through the Armada API", () => {
     expect(await calls[0]?.json()).toEqual({ id, all: true, follow: false });
   });
 
-  test("keeps requesting follow until the server reports settled", async () => {
+  test("carries the API cursor across follow batches and emits each event once", async () => {
     const bodies: unknown[] = [];
-    let calls = 0;
+    let out = "";
     let sleeps = 0;
+    const batches = [
+      {
+        events: [{ id: "first", at: 1, kind: "message", text: "first" }],
+        cursor: "one",
+        hasMore: false,
+        settled: false,
+      },
+      {
+        events: [{ id: "second", at: 2, kind: "message", text: "second" }],
+        cursor: "two",
+        hasMore: false,
+        settled: false,
+      },
+      { events: [], cursor: "two", hasMore: false, settled: true },
+    ];
     const code = await run(
-      ["logs", id, "--follow", "--json"],
-      { out: () => undefined, err: () => undefined },
+      ["logs", id, "--follow"],
+      { out: (text) => (out += text), err: () => undefined },
       {
         auth: auth(async (input, init) => {
           const request = input instanceof Request ? input : new Request(String(input), init);
           bodies.push(await request.json());
-          calls += 1;
-          return Response.json({ events: [], cursor: null, hasMore: false, settled: calls === 2 });
+          const batch = batches.shift();
+          if (!batch) throw new Error("unexpected request");
+          return Response.json(batch);
         }),
         sleep: async () => {
           sleeps += 1;
@@ -64,11 +80,50 @@ describe("logs through the Armada API", () => {
       },
     );
     expect(code).toBe(0);
-    expect(calls).toBe(2);
-    expect(sleeps).toBe(1);
+    expect(out).toBe("first\nsecond\n");
+    expect(sleeps).toBe(2);
     expect(bodies).toEqual([
       { id, all: false, follow: true },
-      { id, all: false, follow: true },
+      { id, all: false, follow: true, cursor: "one" },
+      { id, all: false, follow: true, cursor: "two" },
+    ]);
+  });
+
+  test("uses the returned cursor when --all drains server batches", async () => {
+    const bodies: unknown[] = [];
+    let out = "";
+    const batches = [
+      {
+        events: [{ id: "first", at: 1, kind: "message", text: "first" }],
+        cursor: "one",
+        hasMore: true,
+        settled: false,
+      },
+      {
+        events: [{ id: "second", at: 2, kind: "message", text: "second" }],
+        cursor: "two",
+        hasMore: false,
+        settled: true,
+      },
+    ];
+    const code = await run(
+      ["logs", id, "--all"],
+      { out: (text) => (out += text), err: () => undefined },
+      {
+        auth: auth(async (input, init) => {
+          const request = input instanceof Request ? input : new Request(String(input), init);
+          bodies.push(await request.json());
+          const batch = batches.shift();
+          if (!batch) throw new Error("unexpected request");
+          return Response.json(batch);
+        }),
+      },
+    );
+    expect(code).toBe(0);
+    expect(out).toBe("first\nsecond\n");
+    expect(bodies).toEqual([
+      { id, all: true, follow: false },
+      { id, all: true, follow: false, cursor: "one" },
     ]);
   });
 });
