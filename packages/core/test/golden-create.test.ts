@@ -65,11 +65,13 @@ describe("createGoldenCreateService, wired to a real database", () => {
       const row = await db.query<{
         visibility: string;
         boat_snapshot_id: string;
+        boat_sandbox_id: string;
         config: { repos: { url: string; branch: string; dir: string }[]; init: string[] };
-      }>("select visibility, boat_snapshot_id, config from goldens where name = 'web'");
+      }>("select visibility, boat_snapshot_id, boat_sandbox_id, config from goldens where name = 'web'");
       expect(row.rows[0]).toMatchObject({
         visibility: "org",
         boat_snapshot_id: "golden-bx_1",
+        boat_sandbox_id: "bx_1",
         config: { repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] },
       });
     } finally {
