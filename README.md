@@ -30,6 +30,15 @@ A Bun and TypeScript monorepo (Bun workspaces, strict `tsconfig.json` shared by 
 
 `packages/core/src/database.types.ts` is generated from those migrations. After changing them, run `bun run db:types` and commit the result. A test fails if the file drifts. The migrations themselves are checked on a fresh in-memory Postgres, including the row level security rules.
 
+## Install
+
+```sh
+npx @thevibecompany/armada@next --help     # or: bun x @thevibecompany/armada@next --help
+npm install --global @thevibecompany/armada@next
+```
+
+The npm package ships the compiled binary for linux and macOS, x64 and arm64 (one optional dependency per platform), so it needs neither Bun nor a build. Getting started against production: [docs/dave-onboarding.md](docs/dave-onboarding.md). Publishing: [docs/releasing.md](docs/releasing.md).
+
 ## Commands
 
 Requires [Bun](https://bun.sh) 1.4.2 (`packageManager` in `package.json`).
@@ -131,7 +140,9 @@ Vercel: project root directory `apps/dashboard` (`vercel.json` there sets the Ne
 
 - **Lint, typecheck and test**: `bun run lint`, `bun run typecheck`, `bun run test`.
 - **Dashboard e2e**: `bun run e2e` (Playwright, Chromium) on a production build of the dashboard.
-- **Binary (linux-x64, linux-arm64, darwin-x64, darwin-arm64)**: each binary is compiled with `bun build --compile` on a runner of its own platform, checked with `armada --version` there, and uploaded as the `armada-<target>` artifact of the run.
+- **Binary (linux-x64, linux-arm64, darwin-x64, darwin-arm64)**: each binary is compiled with `bun build --compile` on a runner of its own platform, checked with `armada --version` there, staged as npm packages (`scripts/npm.ts`), packed with `npm pack`, installed with npm and Bun and run (`scripts/npm-smoke.sh`), and uploaded as the `armada-<target>` artifact of the run.
+
+`.github/workflows/release.yml` publishes `@thevibecompany/armada` and its platform packages to npm, with provenance, when a `v<version>` tag of `main` is pushed ([docs/releasing.md](docs/releasing.md)).
 
 ## Armada v1
 
@@ -139,7 +150,7 @@ This repository used to hold Armada v1, a fleet orchestrator (Linear, merge queu
 
 - Its last commit is tagged [`armada-v1-final`](https://github.com/The-Vibe-Company/armada/tree/armada-v1-final); its release tags (`v0.1.0` to `v0.2.73`) and the whole history stay in this repository.
 - Its code is not on `main` anymore. Pieces worth keeping (for example the Claude Code and Codex adapters) are brought over by hand, as v2 needs them: `git show armada-v1-final:<path>`.
-- The npm package is not published from this repository anymore; its released versions stay on npm.
+- Its npm package, `@the-vibe-company/armada`, is not published anymore; its released versions stay on npm. v2 is published as `@thevibecompany/armada`.
 
 ## License
 

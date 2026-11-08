@@ -75,6 +75,13 @@ jobs:
           actual=$(./dist/armada-${{ matrix.target }} --version)
           echo "armada --version: $actual"
           test "$actual" = "$expected"
+      # The npm packages of this binary, packed, installed with npm and Bun, then run.
+      - name: npm pack and install
+        run: |
+          bun scripts/npm.ts --binaries dist --target ${{ matrix.target }}
+          mkdir -p dist/tarballs
+          for dir in dist/npm/*/; do (cd "$dir" && npm pack --pack-destination ../../tarballs); done
+          scripts/npm-smoke.sh dist/tarballs ${{ matrix.target }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: armada-${{ matrix.target }}
