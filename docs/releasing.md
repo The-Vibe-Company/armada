@@ -18,6 +18,10 @@ The workspace packages stay private; the compiled binaries bundle their dependen
 4. Four native runners compile and smoke-test the binaries. The publisher stages and packs the
    five npm packages, saves their tarballs and SHA-256 checksums as an Actions artifact, runs the
    installation smoke test, and publishes platform packages before the main package.
+   `scripts/publish-npm.sh` then retrieves each exact platform version from npm before publishing
+   the launcher. Newly uploaded tarballs must match the staged bytes; existing immutable versions
+   are checked for availability without requiring a rebuild to be byte-identical. Registry retries
+   share a five-minute budget (`NPM_PUBLISH_WAIT_SECONDS`, poll interval `NPM_PUBLISH_POLL_SECONDS`).
 
 Stable versions go to `latest`; prereleases go to `next`. The initial migration commit uses a
 `Release-As: 2.0.0` footer to promote v2. Future versions follow conventional commits normally.
@@ -63,7 +67,9 @@ packs and smoke-tests every platform, then runs `npm publish --dry-run`.
 To recover a partially published release, run the workflow from `main` with the existing
 `v<version>` tag in **tag** and **publish** enabled. It validates the exact tag, requires it to
 belong to `main`, and pins all builds to that commit. Existing package versions are skipped;
-missing versions are published. A run without an existing version tag cannot publish.
+missing versions are published. Publication tooling is loaded from the executing workflow's
+revision so tags predating the registry guard can still be recovered; all package artifacts remain
+pinned to the selected release tag. A run without an existing version tag cannot publish.
 
 The `npm-tarballs-<version>` Actions artifact contains the exact packed packages and `SHA256SUMS`.
 Do not rebuild or substitute tarballs during a bootstrap or recovery.
