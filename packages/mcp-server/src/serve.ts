@@ -5,7 +5,7 @@ import {
   githubAppFromEnv,
   githubInstallationAppFromEnv,
   resolveBoatKey,
-} from "@armada/core";
+} from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { configFromEnv } from "./config.ts";
 import { type ControlOptions, handleControlRequest } from "./control.ts";

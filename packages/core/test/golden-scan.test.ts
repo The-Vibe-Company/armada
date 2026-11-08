@@ -3,8 +3,8 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExecRequest, ExecResult, Provider } from "../src/index.ts";
-import { scanGoldenSandbox } from "../src/index.ts";
+import type { ExecRequest, ExecResult, Provider } from "../src/server.ts";
+import { scanGoldenSandbox } from "../src/server.ts";
 
 function provider(result: Partial<ExecResult>, calls: ExecRequest[]): Provider {
   return {

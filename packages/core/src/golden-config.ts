@@ -1,6 +1,3 @@
-import { createHash } from "node:crypto";
-import type { Visibility } from "./contract.ts";
-
 /** Where a golden's repositories are cloned. Launch pulls the same directories. */
 export const GOLDEN_ROOT = "/home/user";
 
@@ -18,10 +15,6 @@ export const GOLDEN_SNAPSHOT_POLLS = 1800;
 
 const CLONE_TIMEOUT_SECONDS = 600;
 const INIT_TIMEOUT_SECONDS = 600;
-
-/** Boat saved-snapshot names: 1–63 of `[a-z0-9-]`, starting with a letter or digit. Account-wide. */
-const SNAPSHOT_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
-const RESERVED_SNAPSHOTS = new Set(["latest", "tree", "pull", "rm", "save", "current", "self", "new"]);
 
 const BRANCH = /^(?![-/.])(?!.*\.\.)(?!.*@)[A-Za-z0-9._/-]{1,255}$/;
 const DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
@@ -73,26 +66,6 @@ export interface ShellCommand {
   command: string;
   cwd: string;
   timeoutSeconds: number;
-}
-
-/**
- * Boat snapshot names are one namespace per account, so two orgs (or two owners on one org key)
- * cannot share a human name there. The name is a hash of org, owner, visibility and the human name:
- * two UUIDs do not fit in 63 characters of `[a-z0-9-]`.
- */
-export function boatSnapshotName(input: {
-  orgId: string;
-  ownerId: string;
-  visibility: Visibility;
-  name: string;
-}): string {
-  const material = `${input.orgId.toLowerCase()}\n${input.ownerId.toLowerCase()}\n${input.visibility}\n${input.name}`;
-  const digest = createHash("sha256").update(material).digest("hex");
-  const snapshot = `a${digest.slice(0, 62)}`;
-  if (!SNAPSHOT_NAME.test(snapshot) || RESERVED_SNAPSHOTS.has(snapshot)) {
-    throw new GoldenError("invalid_config", "The boat snapshot name could not be formed.");
-  }
-  return snapshot;
 }
 
 export function parseGoldenName(name: string): string {

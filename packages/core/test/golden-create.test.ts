@@ -10,7 +10,7 @@ import {
   GoldenError,
   type Provider,
   type SandboxInfo,
-} from "../src/index.ts";
+} from "../src/server.ts";
 
 const KEY = Buffer.alloc(32, 7).toString("base64");
 const APP = { clientId: "Iv1.test", clientSecret: "github-client-secret" };

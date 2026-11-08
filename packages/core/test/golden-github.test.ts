@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { type GitHubInstallationApp, goldenGitHubAdapter } from "../src/index.ts";
+import { type GitHubInstallationApp, goldenGitHubAdapter } from "../src/server.ts";
 
 const actor = { userId: "u", orgId: "o", role: "admin" } as const;
 const app: GitHubInstallationApp = { appId: "1", privateKey: "bad key" };

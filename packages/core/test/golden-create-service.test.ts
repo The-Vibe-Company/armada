@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { GoldenCreateService, goldenScript, withGoldenDirs } from "../src/index.ts";
+import { GoldenCreateService, goldenScript, withGoldenDirs } from "../src/server.ts";
 
 const actor: any = { userId: "u", orgId: "o", role: "admin" };
 const repo = { owner: "acme", repo: "web", id: 1, installationId: 2 };

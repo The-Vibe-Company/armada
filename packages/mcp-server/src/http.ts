@@ -8,7 +8,7 @@ import {
   type Provider,
   resolveBoatKey,
   VERSION,
-} from "@armada/core";
+} from "@armada/core/server";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
   AuthUnavailable,

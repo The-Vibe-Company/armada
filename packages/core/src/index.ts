@@ -84,12 +84,6 @@ export {
   type StoredGitHubConnection,
 } from "./github.ts";
 export {
-  githubAppJwt,
-  type InstallationToken,
-  mintInstallationToken,
-  revokeInstallationToken,
-} from "./github-installation.ts";
-export {
   type CreatedGolden,
   connectGolden,
   createGolden,
@@ -104,7 +98,6 @@ export {
 } from "./golden.ts";
 export {
   assignDirs,
-  boatSnapshotName,
   configFromFlags,
   GOLDEN_BUILD_TTL_SECONDS,
   GOLDEN_POLL_MS,
@@ -121,20 +114,6 @@ export {
   secretKeyPath,
   splitRepoArg,
 } from "./golden-config.ts";
-export {
-  createGoldenCreateService,
-  type GoldenCreateOptions,
-} from "./golden-create.ts";
-export {
-  type AuthorizedRepo,
-  type GoldenCreateDeps,
-  GoldenCreateService,
-  goldenScript,
-  type PreparedRepo,
-  withGoldenDirs,
-} from "./golden-create-service.ts";
-export { type GoldenGitHubAdapterOptions, goldenGitHubAdapter } from "./golden-github.ts";
-export { GITHUB_TOKEN_PATTERN, scanGoldenSandbox } from "./golden-scan.ts";
 export { createSqlGoldenStore, type Sql } from "./golden-store.ts";
 export {
   DEFAULT_LAUNCH_TTL_SECONDS,
@@ -195,7 +174,6 @@ export {
   type SandboxStore,
   statusReasonOf,
 } from "./sandbox.ts";
-export { type SshExecDeps, shellQuote, sshStdinCheckout } from "./ssh-executor.ts";
 export {
   addMember,
   type CredentialInfo,

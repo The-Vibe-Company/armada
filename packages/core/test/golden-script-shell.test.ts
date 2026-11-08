@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GITHUB_TOKEN_PATTERN, goldenScript, withGoldenDirs } from "../src/index.ts";
+import { GITHUB_TOKEN_PATTERN, goldenScript, withGoldenDirs } from "../src/server.ts";
 
 /** Pulls one named line-range out of the generated script, by its start and end markers (both included). */
 function extract(script: string, startMarker: string, endMarker: string): string {

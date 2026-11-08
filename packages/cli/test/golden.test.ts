@@ -10,7 +10,7 @@ import {
   type GoldenActor,
   goldenForLaunch,
   type Provider,
-} from "@armada/core";
+} from "@armada/core/server";
 import { type ControlOptions, handleControlRequest } from "@armada/mcp-server";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";

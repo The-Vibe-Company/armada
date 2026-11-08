@@ -33,7 +33,7 @@ import {
   type VaultErrorCode,
   type VaultStore,
   type Visibility,
-} from "@armada/core";
+} from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { bunSql } from "./sql.ts";
 

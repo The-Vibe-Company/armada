@@ -18,7 +18,7 @@ import {
   type SandboxStatus,
   VaultError,
   type Visibility,
-} from "@armada/core";
+} from "@armada/core/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";

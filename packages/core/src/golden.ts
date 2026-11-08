@@ -1,7 +1,7 @@
+import { boatSnapshotName } from "./boat-snapshot-name.ts";
 import type { Visibility } from "./contract.ts";
 import type { MemberRole } from "./database.types.ts";
 import {
-  boatSnapshotName,
   cloneCommand,
   GOLDEN_BUILD_TTL_SECONDS,
   GOLDEN_POLL_MS,

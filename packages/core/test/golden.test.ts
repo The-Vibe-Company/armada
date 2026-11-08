@@ -16,7 +16,7 @@ import {
   parseGoldenConfig,
   type SandboxInfo,
   snapshotGolden,
-} from "../src/index.ts";
+} from "../src/server.ts";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
 const OWNER = "22222222-2222-4222-8222-222222222222";
