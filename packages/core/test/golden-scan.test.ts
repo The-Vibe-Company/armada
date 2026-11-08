@@ -33,6 +33,13 @@ test("execs one bounded, foreground command in the sandbox", async () => {
   expect(calls[0]?.timeoutSeconds).toBeGreaterThan(0);
 });
 
+test("uses non-interactive sudo for the production scan command", async () => {
+  const script = await capturedScript();
+  expect(script).toContain('id -u');
+  expect(script).toContain('sudo -n bash -c');
+  expect(script).toContain('else exec sudo');
+});
+
 test("a leaked token fails closed without the match ever appearing in the error", async () => {
   const calls: ExecRequest[] = [];
   await expect(scanGoldenSandbox(provider({ exitCode: 97 }, calls), "bx_1")).rejects.toThrow("token-shaped material");
@@ -53,8 +60,12 @@ test("a timeout and a background command both stop the build", async () => {
 
 /** Runs the exact generated script against isolated scratch roots instead of the real filesystem. */
 function runAgainst(script: string, roots: { home: string; root: string; tmp: string }): { status: number } {
-  const isolated = script.replace("roots='/home/user /root /tmp'", `roots='${roots.home} ${roots.root} ${roots.tmp}'`);
-  expect(isolated).not.toBe(script);
+  // Extract the quoted root branch and decode shell quoting before substituting isolated roots.
+  const payload = script.match(/then ('[\s\S]*'); else exec sudo/)?.[1];
+  if (!payload) throw new Error("missing controlled sudo scan payload");
+  const decoded = spawnSync("bash", ["-c", `printf %s ${payload}`], { encoding: "utf8" });
+  if (decoded.status !== 0) throw new Error("could not decode scan payload");
+  const isolated = decoded.stdout.replace("roots='/home/user /root /tmp'", `roots='${roots.home} ${roots.root} ${roots.tmp}'`);
   const result = spawnSync("bash", ["-c", isolated], { encoding: "utf8" });
   return { status: result.status ?? -1 };
 }
