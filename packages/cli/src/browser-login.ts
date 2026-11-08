@@ -19,28 +19,29 @@ export async function browserLogin(options: {
   const pkce = await createPkce();
   const state = crypto.randomUUID().replaceAll("-", "");
   let resolve!: (value: { code?: string; error?: Error }) => void;
-  let resolveReady!: () => void;
-  const ready = new Promise<void>((done) => {
-    resolveReady = done;
-  });
   const code = new Promise<{ code?: string; error?: Error }>((done) => {
     resolve = done;
   });
+  // Mark callback failures as handled immediately. The caller still receives the
+  // same rejection from the awaited race below.
+  void code.then((value) => {
+    if (value.error) throw value.error;
+  }).catch(() => undefined);
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch(request) {
       const url = new URL(request.url);
       if (url.pathname !== "/callback" || url.searchParams.get("state") !== state) {
-        void ready.then(() => resolve({ error: new Error("Login callback was refused.") }));
+        resolve({ error: new Error("Login callback was refused.") });
         return new Response("Login failed", { status: 400 });
       }
       const value = url.searchParams.get("code");
       if (!value || url.searchParams.get("error")) {
-        void ready.then(() => resolve({ error: new Error("Login was declined.") }));
+        resolve({ error: new Error("Login was declined.") });
         return new Response("Login failed", { status: 400 });
       }
-      void ready.then(() => resolve({ code: value }));
+      resolve({ code: value });
       return new Response("Logged in. You can close this window.");
     },
   });
@@ -52,18 +53,16 @@ export async function browserLogin(options: {
     authorize.searchParams.set("code_challenge", pkce.challenge);
     authorize.searchParams.set("state", state);
     options.open(authorize.toString());
-    resolveReady();
-    const timeout = new Promise<never>((_, no) =>
-      setTimeout(() => no(new Error("Login timed out.")), options.timeoutMs ?? 300_000),
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Login timed out.")), options.timeoutMs ?? 300_000),
     );
-    await ready;
-    const outcome = await Promise.race([code, timeout]);
-    if (outcome.error) throw outcome.error;
-    if (!outcome.code) throw new Error("Login callback was refused.");
+    const result = await Promise.race([code, timeout]);
+    if (result.error) throw result.error;
+    if (!result.code) throw new Error("Login callback was refused.");
     const response = await options.fetch(new URL("/api/v1/auth/exchange", origin), {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ code: outcome.code, verifier: pkce.verifier }),
+      body: JSON.stringify({ code: result.code, verifier: pkce.verifier }),
     });
     const dto = (await response.json()) as Partial<SessionDto>;
     if (
