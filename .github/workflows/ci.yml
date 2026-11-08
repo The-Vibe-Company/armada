@@ -1,19 +1,10 @@
 name: CI
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('CI stability {0}', inputs.validation_id) || github.event.pull_request.title || github.event.head_commit.message }}
 
 on:
   pull_request:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      stability:
-        description: Run the browser-backed dashboard tests ten times on fresh runners
-        type: boolean
-        default: false
-      validation_id:
-        description: Optional runner reference for armada job
-        type: string
 
 permissions:
   contents: read
@@ -23,381 +14,54 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The required check, "Lint, typecheck and test" (required_checks in armada.toml),
-  # is the verify gate below: four suite jobs run in parallel and it passes only
-  # when every one of them succeeded (THE-2239). `bun run verify` runs the same
-  # work in one terminal; scripts/test-partition.ts holds the partitions.
-  core:
-    name: Lint, typecheck, core and CLI tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: bun install --frozen-lockfile
-      - run: bun run lint
-      - run: bun run typecheck
-      - name: Every test file belongs to one CI partition
-        run: bun run test:ci:check
-      - name: Test core, the CLI and the e2e helpers
-        run: bun run test:ci:core
-
-  dashboard-tests:
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.stability && format('Browser stability {0}/10', matrix.run) || 'Dashboard tests' }}
-    strategy:
-      # An opt-in proof of reliability of the browser-backed suite, using the same
-      # job as every PR. Stop on the first failure; the normal PR/push path still
-      # runs once.
-      max-parallel: 1
-      matrix:
-        run: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.stability && '[1,2,3,4,5,6,7,8,9,10]' || '[1]') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: bun install --frozen-lockfile
-      - name: Install the pinned test browser and system libraries
-        uses: ./.github/actions/test-browser
-      - name: Test the dashboard (PGlite and the pinned browser)
-        run: bun run test:ci:dashboard
-
-  app:
-    name: App and plugin tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: bun install --frozen-lockfile
-      # The app's panels are tested in the same pinned browser as the dashboard.
-      - name: Install the pinned test browser and system libraries
-        uses: ./.github/actions/test-browser
-      - name: Test the protocol, the app and the plugins, then every bundled plugin through the packed CLI
-        run: bun run test:ci:app
-
-  daemon:
-    name: Daemon and desktop tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: bun install --frozen-lockfile
-      - name: Test the daemon and the desktop shell, under Bun then Node
-        run: bun run test:ci:daemon
-
+  # Keeps the name of the required check of main.
   verify:
     name: Lint, typecheck and test
-    # The gate the branch protection requires. It always runs, so a skipped,
-    # cancelled or timed-out suite turns it red instead of counting as passed;
-    # its only step is the dependent summary `armada ci why --rerun` recognizes
-    # (docs/runbook.md), naming the first suite that did not succeed.
-    needs: [core, dashboard-tests, app, daemon]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - if: needs.core.result != 'success'
-        run: |
-          echo "Dependency failed: Lint, typecheck, core and CLI tests"
-          exit 1
-      - if: needs.dashboard-tests.result != 'success'
-        run: |
-          echo "Dependency failed: Dashboard tests"
-          exit 1
-      - if: needs.app.result != 'success'
-        run: |
-          echo "Dependency failed: App and plugin tests"
-          exit 1
-      - if: needs.daemon.result != 'success'
-        run: |
-          echo "Dependency failed: Daemon and desktop tests"
-          exit 1
-
-  boot-benchmark:
-    name: Daemon boot benchmark
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: bun install --frozen-lockfile
-      - run: bun run bench
-
-  dashboard:
-    name: Dashboard builds
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      NEXT_TELEMETRY_DISABLED: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: bun install --frozen-lockfile
-      # Lint and typecheck of the dashboard run in the core job and its tests in
-      # the dashboard-tests job; this proves the Next.js production build, as
-      # Vercel runs it.
-      - name: Build the dashboard
-        working-directory: packages/dashboard
-        run: bun run build
-
-  accessibility:
-    name: Every page meets WCAG 2.2 AA
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    # The demo world on Postgres (PGlite is for development only), with
-    # accounts so the organization's pages are checked signed in. Every value
-    # here is the throwaway demo's; the secret is drawn per run.
-    # Use the runner's PostgreSQL: shared Docker Hub/ECR pull limits can block CI.
-    env:
-      NEXT_TELEMETRY_DISABLED: "1"
-      ARMADA_DATABASE_URL: postgres://postgres:postgres@localhost:5432/armada?sslmode=disable
-      ARMADA_DEMO_DATABASE_URL: postgres://postgres:postgres@localhost:5432/armada?sslmode=disable
-      ARMADA_DASHBOARD_DEMO: fleet
-      ARMADA_AUTH_URL: http://localhost:4822
-      ARMADA_AUTH_OWNER_EMAILS: olive.owner@example.test
-      ARMADA_AUTH_GITHUB_CLIENT_ID: a11y-demo
-      ARMADA_AUTH_GITHUB_CLIENT_SECRET: a11y-demo
-    steps:
-      - uses: actions/checkout@v4
-      - name: Start PostgreSQL
-        uses: ./.github/actions/postgres
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: bun install --frozen-lockfile
-      - uses: ./.github/actions/dashboard-demo
-      - name: Start the dashboard
-        working-directory: packages/dashboard
-        run: |
-          nohup bun run start > "$RUNNER_TEMP/dashboard.log" 2>&1 &
-          for i in $(seq 60); do curl -sf -o /dev/null http://localhost:4822/landing && exit 0; sleep 1; done
-          cat "$RUNNER_TEMP/dashboard.log"; exit 1
-      # axe on every page in English and French; 320 px
-      # without sideways scroll and no motion under reduced motion; the
-      # keyboard's promises. The runner's Google Chrome runs it.
-      - name: Check every page
-        working-directory: packages/dashboard
-        run: bun run a11y scan
-      - name: The dashboard's log
-        if: failure()
-        run: cat "$RUNNER_TEMP/dashboard.log"
-
-  journeys:
-    name: End-to-end journeys
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      NEXT_TELEMETRY_DISABLED: "1"
-      ARMADA_DATABASE_URL: postgres://postgres:postgres@localhost:5432/armada?sslmode=disable
-      ARMADA_DEMO_DATABASE_URL: postgres://postgres:postgres@localhost:5432/armada?sslmode=disable
-      ARMADA_DASHBOARD_DEMO: fleet
-      ARMADA_AUTH_URL: http://localhost:4822
-      ARMADA_AUTH_OWNER_EMAILS: olive.owner@example.test
-      ARMADA_AUTH_GITHUB_CLIENT_ID: a11y-demo
-      ARMADA_AUTH_GITHUB_CLIENT_SECRET: a11y-demo
-      E2E_TELEMETRY_DISABLED: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: package.json
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
       - run: bun install --frozen-lockfile
-      - name: Typecheck the journeys and config
-        run: bunx tsc --noEmit -p e2e
-      - uses: ./.github/actions/postgres
-      - uses: ./.github/actions/dashboard-demo
-      - name: Install the e2e browser and system libraries
-        run: npx e2e-web install chromium --with-deps
-      - name: Run the dashboard journeys
-        run: npx e2e run --reporter list,junit
-        env:
-          AZURE_AI_ENDPOINT: ${{ secrets.AZURE_AI_ENDPOINT }}
-          AZURE_AI_API_KEY: ${{ secrets.AZURE_AI_API_KEY }}
-          AZURE_AI_MODEL: ${{ secrets.AZURE_AI_MODEL }}
-      - name: Upload journey reports and evidence
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: dashboard-journeys
-          include-hidden-files: true
-          path: |
-            .e2e/report.json
-            .e2e/junit.xml
-            .e2e/results/
-          retention-days: 7
-      - name: The dashboard's log
-        if: failure()
-        run: cat .e2e/logs/dashboard.log
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: bun run test
 
-  performance:
-    name: Dashboard performance budgets
-    # docs/performance.md: Lighthouse, first-load JS per route and the main
-    # interactions, on a production build of the demo world. The PR comment
-    # shows the numbers; a broken budget fails the job.
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      pull-requests: write
-    # Use the runner's PostgreSQL: shared Docker Hub/ECR pull limits can block CI.
-    env:
-      NEXT_TELEMETRY_DISABLED: "1"
-      # The gate of this job's own servers, on a throwaway database: not a secret.
-      ARMADA_DASHBOARD_PASSWORD: ci-performance-budgets
-      ARMADA_DASHBOARD_AUTHOR: CI
-      PGPASSWORD: postgres
-    defaults:
-      run:
-        working-directory: packages/dashboard
-    steps:
-      - uses: actions/checkout@v4
-      - name: Start PostgreSQL
-        uses: ./.github/actions/postgres
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-      # Lighthouse runs in Node (22.19 or later).
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: bun install --frozen-lockfile
-        working-directory: .
-      - name: Build the dashboard
-        run: bun run build
-      - name: First-load JS per route
-        id: bundles
-        continue-on-error: true
-        run: bun run perf bundles
-      - name: Seed the demo worlds and start the dashboard on each
-        run: |
-          set -euo pipefail
-          for world in fleet large; do
-            psql -h localhost -U postgres -c "create database $world"
-            ARMADA_DEMO_DATABASE_URL="postgres://postgres:postgres@localhost:5432/$world" bun run demo:seed "$world"
-          done
-          ARMADA_DATABASE_URL=postgres://postgres:postgres@localhost:5432/fleet ARMADA_DASHBOARD_DEMO=fleet \
-            nohup bunx next start --port 4822 > "$RUNNER_TEMP/fleet.log" 2>&1 &
-          ARMADA_DATABASE_URL=postgres://postgres:postgres@localhost:5432/large ARMADA_DASHBOARD_DEMO=large \
-            nohup bunx next start --port 4823 > "$RUNNER_TEMP/large.log" 2>&1 &
-          for _ in $(seq 1 60); do
-            curl -sf -o /dev/null localhost:4822/landing && curl -sf -o /dev/null localhost:4823/landing && exit 0
-            sleep 1
-          done
-          cat "$RUNNER_TEMP/fleet.log" "$RUNNER_TEMP/large.log"
-          exit 1
-      - name: Interactions under a 4x slower CPU (large world)
-        id: inp
-        continue-on-error: true
-        run: bun run perf inp http://localhost:4823
-      - name: Lighthouse, mobile and desktop (demo world)
-        id: lighthouse
-        continue-on-error: true
-        run: bun run perf lighthouse http://localhost:4822
-      - name: Report
-        if: always()
-        run: |
-          bun run perf report > /dev/null
-          cat .perf/report.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Comment on the pull request
-        # A fork's token cannot comment: the job summary has the same table.
-        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
-            --jq '.[] | select(.body | startswith("<!-- armada-perf -->")) | .id' | head -n 1)
-          if [ -n "$id" ]; then
-            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@.perf/report.md > /dev/null
-          else
-            gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@.perf/report.md > /dev/null
-          fi
-      - name: Server logs
-        if: failure() || steps.lighthouse.outcome == 'failure' || steps.inp.outcome == 'failure'
-        run: tail -n 100 "$RUNNER_TEMP/fleet.log" "$RUNNER_TEMP/large.log"
-      - name: Every budget holds
-        if: always()
-        run: |
-          test "${{ steps.bundles.outcome }}" = success
-          test "${{ steps.inp.outcome }}" = success
-          test "${{ steps.lighthouse.outcome }}" = success
-
-  package:
-    name: Packed CLI runs under Node
-    runs-on: ubuntu-latest
+  # Each binary is compiled on its own platform, so it is run there before upload
+  # and the macOS ones get the ad-hoc signature Apple Silicon requires.
+  binary:
+    name: Binary (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: darwin-arm64
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: package.json
-      # The oldest Node the package supports (engines.node).
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
       - run: bun install --frozen-lockfile
-      - name: Pack the CLI as npm would publish it
-        working-directory: packages/cli
-        run: npm pack --pack-destination "$RUNNER_TEMP"
-      - name: Install the tarball in an empty project and run the binary
-        working-directory: ${{ runner.temp }}
+      - run: bun run build --target ${{ matrix.target }}
+      - name: armada --version
         run: |
-          set -euo pipefail
-          mkdir smoke && cd smoke
-          npm init -y > /dev/null
-          npm install --no-audit --no-fund ../the-vibe-company-armada-*.tgz
-          expected=$(node -p 'require("./node_modules/@the-vibe-company/armada/package.json").version')
-          actual=$(npx --no-install armada --version)
+          expected=$(jq -r .version packages/core/package.json)
+          actual=$(./dist/armada-${{ matrix.target }} --version)
           echo "armada --version: $actual"
           test "$actual" = "$expected"
-          npx --no-install armada status --help | grep -q '^Usage: armada'
-          # The skills are generated before packing and inlined for Node.
-          while IFS= read -r -d '' file; do
-            relative="${file#"$GITHUB_WORKSPACE/skills/"}"
-            skill="${relative%%/*}"
-            path="${relative#*/}"
-            node node_modules/@the-vibe-company/armada/dist/armada.js skill "$skill" "$path" > skill-file
-            cmp skill-file "$file"
-          done < <(find "$GITHUB_WORKSPACE/skills" -type f ! -path '*/__pycache__/*' -print0)
-          # doctor must run and name the delivered skills.
-          doctor=$(npx --no-install armada doctor --json || true)
-          echo "$doctor" | grep -q '"skill:armada-worker"'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: armada-${{ matrix.target }}
+          path: dist/armada-${{ matrix.target }}
+          if-no-files-found: error

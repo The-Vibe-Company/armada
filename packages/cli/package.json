@@ -1,0 +1,12 @@
+{
+  "name": "@armada/cli",
+  "version": "2.0.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "armada": "./src/main.ts"
+  },
+  "dependencies": {
+    "@armada/core": "workspace:*"
+  }
+}
