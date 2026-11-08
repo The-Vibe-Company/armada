@@ -36,7 +36,7 @@ export function goldenGitHubAdapter(options: GoldenGitHubAdapterOptions): Pick<G
         const { owner, repo } = requestedRepo(value);
         const repository = await userRepository(token, owner, repo, fetchImpl);
         const installation = installationFor(repository, installations);
-        if (!installation) {
+        if (!installation && repository.private) {
           throw new GoldenError(
             "forbidden",
             `You cannot create a golden from '${owner}/${repo}' with this GitHub App installation.`,
@@ -46,7 +46,9 @@ export function goldenGitHubAdapter(options: GoldenGitHubAdapterOptions): Pick<G
           owner: repository.owner.login,
           repo: repository.name,
           id: repository.id,
-          installationId: installation.id,
+          // Public repositories are verified through the caller's GitHub request but need no App
+          // installation; zero prevents the scoped issuer from being selected for mixed sets.
+          installationId: installation?.id ?? 0,
           branch: repository.default_branch,
         });
       }
@@ -66,6 +68,7 @@ export function goldenGitHubAdapter(options: GoldenGitHubAdapterOptions): Pick<G
 }
 
 interface UserRepository {
+  private: boolean;
   id: number;
   name: string;
   default_branch: string;
@@ -121,6 +124,7 @@ function isRepository(value: unknown): value is UserRepository {
   if (!value || typeof value !== "object") return false;
   const repo = value as Record<string, unknown>;
   return (
+    typeof repo.private === "boolean" &&
     typeof repo.id === "number" &&
     Number.isSafeInteger(repo.id) &&
     repo.id > 0 &&

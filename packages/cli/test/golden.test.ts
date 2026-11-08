@@ -346,6 +346,7 @@ function fakeGitHubFetch(): typeof fetch {
         name: repo[1],
         default_branch: repo[1] === "api" ? "dev" : "main",
         owner: { login: "acme" },
+        private: false,
       });
     }
     throw new Error(`unexpected request to ${url}`);

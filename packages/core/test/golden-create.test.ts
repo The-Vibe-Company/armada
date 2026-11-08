@@ -274,7 +274,7 @@ function fakeGitHubFetch(revoked: string[] = []): typeof fetch {
       });
     }
     if (url === "https://api.github.com/repos/acme/web") {
-      return Response.json({ id: 7, name: "web", default_branch: "main", owner: { login: "acme" } });
+      return Response.json({ id: 7, name: "web", default_branch: "main", owner: { login: "acme" }, private: false });
     }
     if (url.includes("/access_tokens")) {
       return Response.json({

@@ -1,6 +1,7 @@
 import { type AuthStore, createSqlAuthStore } from "@armada/auth";
 import {
   addMember,
+  connectGolden,
   createGoldenCreateService,
   createOrg,
   createSqlVaultStore,
@@ -184,6 +185,8 @@ async function dispatch(
       return listGoldens(options, caller);
     case "golden/create":
       return createGoldenRoute(options, caller, body);
+    case "golden/connect":
+      return connectGoldenRoute(options, caller, body);
     default:
       return undefined;
   }
@@ -255,6 +258,25 @@ async function createGoldenRoute(
     ...(setup !== undefined ? { setup } : {}),
   });
   return { name, visibility, snapshot: result.snapshot };
+}
+
+async function connectGoldenRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>) {
+  const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
+  if (!options.providerFor) throw new VaultError("unavailable", "Golden connection is not configured on this server.");
+  const name = required(body, "name");
+  const data = options.data?.(caller);
+  if (!data) throw new VaultError("unavailable", "Golden connection is not configured on this server.");
+  const rows = await data.goldens.findByName(org.id, name);
+  const golden = rows[0];
+  if (!golden) throw new GoldenError("not_found", `No golden named '${name}'.`);
+  const boat = await resolveBoatKey(options.store, options.encryptionKey, {
+    userId: caller.userId,
+    orgId: org.id,
+    visibility: golden.visibility,
+  });
+  const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
+  const connected = await connectGolden(options.providerFor(boat.key), data.goldens, actor, name);
+  return { golden: connected.golden.name, sandboxId: connected.sandbox.id, webUrl: null };
 }
 
 async function readLogs(

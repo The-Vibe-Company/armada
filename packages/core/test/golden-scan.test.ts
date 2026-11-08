@@ -127,6 +127,24 @@ test("real shell: a realistically-shaped token in a plain file fails the build",
   }
 });
 
+test("real shell: a token-shaped filename is rejected without printing it", async () => {
+  const script = await capturedScript();
+  const { base, roots } = sandbox();
+  try {
+    const token = `ghp_${"F".repeat(36)}`;
+    writeFileSync(join(roots.tmp, token), "");
+    const isolated = script.replace(
+      "roots='/home/user /root /tmp'",
+      `roots='${roots.home} ${roots.root} ${roots.tmp}'`,
+    );
+    const result = spawnSync("bash", ["-c", isolated], { encoding: "utf8" });
+    expect(result.status).toBe(97);
+    expect(`${result.stdout}${result.stderr}`).not.toContain(token);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test("real shell: a token in .git/config is rejected without printing the token", async () => {
   const script = await capturedScript();
   const { base, roots } = sandbox();
