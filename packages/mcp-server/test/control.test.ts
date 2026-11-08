@@ -14,7 +14,7 @@ import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
-import { type ControlOptions, handleControlRequest } from "../src/index.ts";
+import { type ControlOptions, controlOptionsFromEnv, handleControlRequest } from "../src/index.ts";
 
 const KEY = Buffer.alloc(32, 5).toString("base64");
 const STAN = "11111111-1111-4111-8111-111111111111";
@@ -625,3 +625,22 @@ async function withServer(
     await db.close();
   }
 }
+
+describe("controlOptionsFromEnv", () => {
+  test("wires golden/create and the control API's database to the same transaction-capable adapter armada serve uses", () => {
+    // Bun.SQL connects lazily, so a URL nothing is listening on still constructs without a live database.
+    const options = controlOptionsFromEnv({
+      ARMADA_DATABASE_URL: "postgres://armada:armada@127.0.0.1:1/armada_test_unreachable",
+      SUPABASE_URL: "https://project.supabase.co",
+      SUPABASE_ANON_KEY: "anon",
+      ARMADA_ENCRYPTION_KEY: KEY,
+    });
+    expect(options.goldenCreate).toBeDefined();
+    expect(options.providerFor).toBeDefined();
+    expect(typeof options.providerFor?.("any-key").exec).toBe("function");
+  });
+
+  test("requires every variable it needs", () => {
+    expect(() => controlOptionsFromEnv({})).toThrow("ARMADA_DATABASE_URL");
+  });
+});

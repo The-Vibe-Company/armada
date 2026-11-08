@@ -244,12 +244,17 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const member = resolveCreateOrg(caller.orgs, args.org);
       const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
       const provider = await context.provider({ orgId: member.orgId, visibility });
-      const result = await context.goldenCreate.create(provider, actor, {
-        name: args.name,
-        visibility,
-        repos: args.repos,
-        ...(args.setup ? { setup: args.setup } : {}),
-      });
+      const result = await context.goldenCreate.create(
+        provider,
+        actor,
+        {
+          name: args.name,
+          visibility,
+          repos: args.repos,
+          ...(args.setup ? { setup: args.setup } : {}),
+        },
+        context.launch ?? {},
+      );
       return { name: args.name, visibility, snapshot: result.snapshot };
     },
   );

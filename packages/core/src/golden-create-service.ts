@@ -1,6 +1,8 @@
 import type { Visibility } from "./contract.ts";
-import type { GoldenActor } from "./golden.ts";
+import type { GoldenActor, GoldenLimits } from "./golden.ts";
+import { waitSnapshot } from "./golden.ts";
 import { assignDirs, GOLDEN_ROOT, GoldenError, parseGoldenName } from "./golden-config.ts";
+import { GITHUB_TOKEN_PATTERN } from "./golden-scan.ts";
 import type { Provider } from "./provider.ts";
 
 const MAX_REPOS = 16;
@@ -49,6 +51,7 @@ export class GoldenCreateService {
     provider: Provider,
     actor: GoldenActor,
     input: { name: string; visibility: Visibility; repos: string[]; setup?: string },
+    limits: GoldenLimits = {},
   ): Promise<{ snapshot: string }> {
     if (input.visibility === "org" && actor.role !== "admin")
       throw new GoldenError("forbidden", "Only an admin can create an org golden.");
@@ -78,9 +81,21 @@ export class GoldenCreateService {
       });
       await this.deps.scan(provider, builder.id);
       const snapshot = `golden-${builder.id}`;
-      const saved = await provider.snapshot({ sandboxId: builder.id, name: snapshot });
-      if (saved.status !== "ready") throw new GoldenError("snapshot_failed", "Golden snapshot did not become ready.");
-      await this.deps.persist({ actor, name, visibility: input.visibility, repos: prepared, snapshot });
+      // `snapshot` only starts the save; it is asynchronous, so a brand-new snapshot is normally
+      // "saving" here and must be polled, exactly like the original golden flow's own snapshot step.
+      const started = await provider.snapshot({ sandboxId: builder.id, name: snapshot });
+      const settled = started.status === "ready" ? started : await waitSnapshot(provider, snapshot, limits);
+      if (settled.status !== "ready") {
+        throw new GoldenError("snapshot_failed", settled.error ?? `Snapshot '${snapshot}' failed.`);
+      }
+      try {
+        await this.deps.persist({ actor, name, visibility: input.visibility, repos: prepared, snapshot });
+      } catch (error) {
+        // A ready snapshot nothing tracks is worse than none: remove it so the name and the
+        // boat.dev snapshot slot are both free to try again.
+        await provider.deleteSnapshot(snapshot).catch(() => {});
+        throw error;
+      }
       return { snapshot };
     } finally {
       await issued?.revoke().catch(() => {});
@@ -102,11 +117,71 @@ export function withGoldenDirs(repos: readonly AuthorizedRepo[]): PreparedRepo[]
   return repos.map((repo, index) => ({ ...repo, dir: withDirs[index]?.dir ?? repo.repo }));
 }
 
+/**
+ * The EXIT trap's cleanup: removes only the exact transient public key line (not the file's other
+ * keys), and fails closed instead of risking an empty `authorized_keys`. `grep -Fvx` exits 1 when
+ * the key was the only line (expected: nothing left to keep), which is not an error; anything
+ * stricter than that (a real I/O or permission failure) aborts with 96 and leaves the original
+ * file alone, rather than overwriting it with a tmpfile that may be empty or incomplete.
+ */
+const CLEANUP_TRAP = [
+  "cleanup_armada_key() {",
+  '  if [ -n "${ARMADA_SSH_PUBLIC_KEY:-}" ]; then',
+  '    mkdir -p "$HOME/.ssh"',
+  '    touch "$HOME/.ssh/authorized_keys"',
+  "    set +e",
+  '    grep -Fvx "$ARMADA_SSH_PUBLIC_KEY" "$HOME/.ssh/authorized_keys" > "$HOME/.ssh/authorized_keys.armada.$$"',
+  "    grep_status=$?",
+  "    set -e",
+  '    if [ "$grep_status" -gt 1 ]; then rm -f "$HOME/.ssh/authorized_keys.armada.$$"; exit 96; fi',
+  '    mv "$HOME/.ssh/authorized_keys.armada.$$" "$HOME/.ssh/authorized_keys"',
+  "    unset ARMADA_SSH_PUBLIC_KEY",
+  "  fi",
+  "  unset ARMADA_GIT_TOKEN",
+  "}",
+  "trap 'cleanup_armada_key' EXIT",
+].join("\n");
+
+/**
+ * The #491 baseline (a pinned Bun, a pinned Chromium), generalized across every repo instead of
+ * just the first: the first `package.json` (in clone order) that names a `packageManager`/
+ * `@playwright/test` pin wins. `grep` exits 1 when a file has no such key, which is normal, not an
+ * error (hence `|| true`: a missing pin only means "install the latest", never aborts the build
+ * under `set -e`); this is a best-effort optimization, not a security boundary, so a real read
+ * failure here is tolerated the same way. `claude` and `codex` are actually installed when
+ * missing, not merely checked: boat.dev's golden-builder image is expected to carry them, but a
+ * build must not silently proceed without them if it does not.
+ */
+function baselineSetup(repos: readonly PreparedRepo[]): string {
+  const dirs = repos.map((r) => safe(r.dir)).join(" ");
+  if (!dirs) return "";
+  return [
+    'bun_pin=""',
+    'pw_pin=""',
+    `for dir in ${dirs}; do`,
+    `  pkg=${GOLDEN_ROOT}/$dir/package.json`,
+    '  [ -f "$pkg" ] || continue',
+    '  if [ -z "$bun_pin" ]; then',
+    '    bun_pin=$(grep -o \'"packageManager"[[:space:]]*:[[:space:]]*"bun@[^"]*"\' "$pkg" 2>/dev/null | sed -E \'s/.*"bun@([^"]*)"/\\1/\') || true',
+    "  fi",
+    '  if [ -z "$pw_pin" ]; then',
+    '    pw_pin=$(grep -o \'"@playwright/test"[[:space:]]*:[[:space:]]*"[0-9][^"]*"\' "$pkg" 2>/dev/null | sed -E \'s/.*:[[:space:]]*"([^"]*)"/\\1/\') || true',
+    "  fi",
+    "done",
+    'if [ -n "$bun_pin" ]; then npm install --global --prefix "$HOME/.bun-npm" "bun@$bun_pin"; export PATH="$HOME/.bun-npm/bin:$PATH"; fi',
+    'command -v bun >/dev/null 2>&1 || { curl -fsSL https://bun.sh/install | bash; export PATH="$HOME/.bun/bin:$PATH"; }',
+    "if command -v bun >/dev/null 2>&1; then",
+    '  if [ -n "$pw_pin" ]; then bunx --bun --package "@playwright/test@$pw_pin" playwright install --with-deps chromium; else bunx playwright install --with-deps chromium; fi',
+    "fi",
+    "command -v claude >/dev/null 2>&1 || npm install --global @anthropic-ai/claude-code",
+    "command -v codex >/dev/null 2>&1 || npm install --global @openai/codex",
+  ].join("\n");
+}
+
 export function goldenScript(repos: readonly PreparedRepo[], setup = ""): string {
   const lines = [
     "set -euo pipefail",
-    'cleanup_armada_key() { if [ -n "${ARMADA_SSH_PUBLIC_KEY:-}" ]; then mkdir -p "$HOME/.ssh"; touch "$HOME/.ssh/authorized_keys"; grep -Fvx "$ARMADA_SSH_PUBLIC_KEY" "$HOME/.ssh/authorized_keys" > "$HOME/.ssh/authorized_keys.armada.$$" || true; mv "$HOME/.ssh/authorized_keys.armada.$$" "$HOME/.ssh/authorized_keys"; unset ARMADA_SSH_PUBLIC_KEY; fi; unset ARMADA_GIT_TOKEN; }',
-    "trap 'cleanup_armada_key' EXIT",
+    CLEANUP_TRAP,
     "git config --global credential.helper '!f() { echo username=x-access-token; echo password=$ARMADA_GIT_TOKEN; }; f'",
     ...repos.map(
       (r) =>
@@ -114,20 +189,12 @@ export function goldenScript(repos: readonly PreparedRepo[], setup = ""): string
     ),
     "git config --global --unset credential.helper || true",
     "unset ARMADA_GIT_TOKEN",
-    // #491 baseline, generalized to the first repo: a pinned Bun (from its packageManager) beats
-    // whatever bun.sh last published, and a pinned @playwright/test beats an unpinned "latest" Chromium.
-    repos[0] &&
-      [
-        `primary=${GOLDEN_ROOT}/${safe(repos[0].dir)}`,
-        'bun_pin=$(grep -o \'"packageManager"[[:space:]]*:[[:space:]]*"bun@[^"]*"\' "$primary/package.json" 2>/dev/null | sed -E \'s/.*"bun@([^"]*)"/\\1/\')',
-        'if [ -n "${bun_pin:-}" ]; then npm install --global --prefix "$HOME/.bun-npm" "bun@$bun_pin"; export PATH="$HOME/.bun-npm/bin:$PATH"; fi',
-        'command -v bun >/dev/null 2>&1 || { curl -fsSL https://bun.sh/install | bash; export PATH="$HOME/.bun/bin:$PATH"; }',
-        'if command -v bun >/dev/null 2>&1; then pw_pin=$(grep -o \'"@playwright/test"[[:space:]]*:[[:space:]]*"[0-9][^"]*"\' "$primary/package.json" 2>/dev/null | sed -E \'s/.*:[[:space:]]*"([^"]*)"/\\1/\'); if [ -n "${pw_pin:-}" ]; then bunx --bun --package "@playwright/test@$pw_pin" playwright install --with-deps chromium; else bunx playwright install --with-deps chromium; fi; fi',
-      ].join("\n"),
-    // boat.dev's golden-builder image already carries the claude and codex CLIs; this only confirms it.
-    "command -v claude >/dev/null 2>&1 || true; command -v codex >/dev/null 2>&1 || true",
+    baselineSetup(repos),
     setup,
-    `if grep -rIlE --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev 'gh[suo]_[A-Za-z0-9_-]+' ${GOLDEN_ROOT} >/dev/null; then exit 97; fi`,
+    // A quick, same-session check; the independent, far more thorough scan (working tree, binaries
+    // and every git object, reachable or not) is `scanGoldenSandbox`, run over the provider's own
+    // exec channel after this session closes, and is what actually gates the snapshot.
+    `if grep -rIlE --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev '${GITHUB_TOKEN_PATTERN}' ${GOLDEN_ROOT} >/dev/null 2>/dev/null; then exit 97; fi`,
   ];
   return `${lines.filter(Boolean).join("\n")}\n`;
 }

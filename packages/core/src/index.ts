@@ -99,6 +99,7 @@ export {
   goldenForLaunch,
   type SnapshottedGolden,
   snapshotGolden,
+  waitSnapshot,
 } from "./golden.ts";
 export {
   assignDirs,
@@ -132,7 +133,7 @@ export {
   withGoldenDirs,
 } from "./golden-create-service.ts";
 export { type GoldenGitHubAdapterOptions, goldenGitHubAdapter } from "./golden-github.ts";
-export { scanGoldenSandbox } from "./golden-scan.ts";
+export { GITHUB_TOKEN_PATTERN, scanGoldenSandbox } from "./golden-scan.ts";
 export { createSqlGoldenStore, type Sql } from "./golden-store.ts";
 export {
   DEFAULT_LAUNCH_TTL_SECONDS,

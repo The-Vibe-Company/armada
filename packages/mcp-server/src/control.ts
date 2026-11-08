@@ -35,6 +35,7 @@ import {
   type Visibility,
 } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
+import { bunSql } from "./sql.ts";
 
 export const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = 128 * 1024;
@@ -374,13 +375,10 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     if (!value) throw new Error(`Set ${name}.`);
     return value;
   };
-  const bunSql = new Bun.SQL(need("ARMADA_DATABASE_URL"));
-  const sql = {
-    async query<T>(text: string, params: unknown[] = []) {
-      const rows = (await bunSql.unsafe(text, params as never[])) as unknown as T[];
-      return { rows: Array.from(rows) };
-    },
-  };
+  // The same adapter `armada serve` uses (`sql.ts`'s `bunSql`), not a hand-rolled one: it wires
+  // `.transaction` to `Bun.SQL.begin`, which `withGitHubConnectionRefresh`'s advisory lock (#492)
+  // needs to actually serialize concurrent refreshes. Without it, that lock is silently skipped.
+  const sql = bunSql(need("ARMADA_DATABASE_URL"));
   const encryptionKey = need(ENCRYPTION_KEY_ENV);
   const githubApp = githubAppFromEnv(env);
   const store = createSqlVaultStore(sql);

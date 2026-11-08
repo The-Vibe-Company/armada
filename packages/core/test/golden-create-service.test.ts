@@ -100,3 +100,89 @@ test("withGoldenDirs disambiguates repos that share a name", () => {
   const dirs = withGoldenDirs([repo, other]).map((r) => r.dir);
   expect(dirs).toEqual(["web", "web-2"]);
 });
+
+test("a snapshot that starts out saving is polled until ready before persisting", async () => {
+  const log: string[] = [];
+  const s = new GoldenCreateService({
+    authorize: async () => ({ repos: [repo], token: "caller-token" }),
+    ssh: async () => {},
+    scan: async () => {},
+    persist: async () => {
+      void log.push("persist");
+    },
+  });
+  let getSnapshotCalls = 0;
+  const p: any = {
+    createGolden: async () => ({ id: "bx" }),
+    snapshot: async () => {
+      log.push("snapshot");
+      return { status: "saving" };
+    },
+    getSnapshot: async (name: string) => {
+      getSnapshotCalls += 1;
+      log.push(`getSnapshot:${name}`);
+      return { name, status: getSnapshotCalls < 3 ? "saving" : "ready" };
+    },
+    stop: async () => void log.push("stop"),
+  };
+  const result = await s.create(
+    p,
+    actor,
+    { name: "x", visibility: "org", repos: ["acme/web"] },
+    { sleep: async () => {}, snapshotPolls: 10 },
+  );
+  expect(result.snapshot).toBe("golden-bx");
+  expect(getSnapshotCalls).toBe(3);
+  expect(log).toEqual([
+    "snapshot",
+    "getSnapshot:golden-bx",
+    "getSnapshot:golden-bx",
+    "getSnapshot:golden-bx",
+    "persist",
+    "stop",
+  ]);
+});
+
+test("a snapshot that never becomes ready is never persisted", async () => {
+  const log: string[] = [];
+  const s = new GoldenCreateService({
+    authorize: async () => ({ repos: [repo], token: "caller-token" }),
+    ssh: async () => {},
+    scan: async () => {},
+    persist: async () => {
+      void log.push("persist");
+    },
+  });
+  const p: any = {
+    createGolden: async () => ({ id: "bx" }),
+    snapshot: async () => ({ status: "saving" }),
+    getSnapshot: async () => ({ status: "failed", error: "disk full" }),
+    stop: async () => void log.push("stop"),
+  };
+  await expect(
+    s.create(p, actor, { name: "x", visibility: "org", repos: ["acme/web"] }, { sleep: async () => {} }),
+  ).rejects.toThrow("disk full");
+  expect(log).toEqual(["stop"]);
+});
+
+test("a persist failure deletes the orphaned ready snapshot and still stops the builder", async () => {
+  const log: string[] = [];
+  const s = new GoldenCreateService({
+    authorize: async () => ({ repos: [repo], token: "caller-token" }),
+    ssh: async () => {},
+    scan: async () => {},
+    persist: async () => {
+      throw new Error("database is down");
+    },
+  });
+  const p: any = {
+    createGolden: async () => ({ id: "bx" }),
+    snapshot: async () => ({ status: "ready" }),
+    deleteSnapshot: async (name: string) => void log.push(`delete:${name}`),
+    stop: async () => void log.push("stop"),
+  };
+  await expect(s.create(p, actor, { name: "x", visibility: "org", repos: ["acme/web"] })).rejects.toThrow(
+    "database is down",
+  );
+  expect(log).toEqual(["delete:golden-bx", "stop"]);
+});

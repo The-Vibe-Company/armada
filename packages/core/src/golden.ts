@@ -256,7 +256,8 @@ export async function waitReady(provider: Provider, sandboxId: string, limits: G
   throw new GoldenError("setup_failed", `Sandbox ${sandboxId} is still starting.`);
 }
 
-async function waitSnapshot(
+/** Polls `getSnapshot` until it settles. Shared with the disposable-builder flow (`GoldenCreateService`). */
+export async function waitSnapshot(
   provider: Provider,
   name: string,
   limits: GoldenLimits,
