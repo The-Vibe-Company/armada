@@ -11,6 +11,7 @@ import {
   listCredentials,
   listMembers,
   listOrgs,
+  type Provider,
   parseCredentialKind,
   parseRole,
   removeCredential,
@@ -43,6 +44,8 @@ export interface ControlOptions {
   encryptionKey: string | undefined;
   /** The GitHub App, for `launch/resolve`. Null or absent: GitHub is reported as not set up. */
   github?: { app: GitHubApp | null; fetch?: typeof fetch; now?: () => Date };
+  /** Resolves a visible Armada sandbox to its provider. The Boat key stays on the server. */
+  logs?: (userId: string, sandboxId: string) => Promise<{ provider: Provider; boatId: string }>;
   fetch?: AuthFetch;
 }
 
@@ -134,9 +137,56 @@ async function dispatch(
       return { ok: true };
     case "launch/resolve":
       return resolveLaunch(options, userId, body, org);
+    case "logs/read":
+      return readLogs(options, userId, required(body, "id"), body);
     default:
       return undefined;
   }
+}
+
+async function readLogs(
+  options: ControlOptions,
+  userId: string,
+  id: string,
+  body: Record<string, unknown>,
+): Promise<{
+  events: Awaited<ReturnType<Provider["events"]>>["events"];
+  cursor: string | null;
+  hasMore: boolean;
+  settled: boolean;
+}> {
+  if (!options.logs) throw new VaultError("unavailable", "Sandbox logs are not configured on the server.");
+  const target = await options.logs(userId, id);
+  const all = body.all === true;
+  const follow = body.follow === true;
+  const maxPages = 100;
+  let cursor = optional(body, "cursor");
+  let hasMore = false;
+  const events: Awaited<ReturnType<Provider["events"]>>["events"] = [];
+  for (let pageNumber = 0; pageNumber < (all ? maxPages : 1); pageNumber += 1) {
+    const page = await target.provider.events({ sandboxId: target.boatId, ...(cursor ? { cursor } : {}) });
+    events.push(...page.events);
+    hasMore = page.hasMore;
+    const next = page.cursor ?? cursor;
+    if (!page.hasMore || !next || next === cursor) {
+      cursor = next;
+      break;
+    }
+    cursor = next;
+  }
+  const info = await target.provider.get(target.boatId);
+  return {
+    events: dedupe(events),
+    cursor: cursor ?? null,
+    hasMore,
+    settled: info.state === "stopped" || info.state === "failed" || !follow,
+  };
+}
+
+function dedupe<T extends { id: string }>(events: readonly T[]): T[] {
+  const byId = new Map<string, T>();
+  for (const event of events) byId.set(event.id, event);
+  return [...byId.values()];
 }
 
 async function resolveLaunch(
