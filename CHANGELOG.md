@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.3.0](https://github.com/The-Vibe-Company/armada/compare/v2.2.0...v2.3.0) (2026-11-08)
+
+
+### Features
+
+* **core:** prepare selected repository cwd during launch ([ee060a1](https://github.com/The-Vibe-Company/armada/commit/ee060a1067a9cf3b738c652249f170afb14f8ccc))
+* **launch:** expose selected golden repository across launch surfaces ([e6b48af](https://github.com/The-Vibe-Company/armada/commit/e6b48afdcaddba4d209baee469067c35e51cd36e))
+* **launch:** start native agents in selected golden repository ([dee0078](https://github.com/The-Vibe-Company/armada/commit/dee00781c06adf742b182698fdc6375711c2e955))
+
+
+### Bug Fixes
+
+* **api:** forward CLI and MCP operations through Armada URL ([5e0e001](https://github.com/The-Vibe-Company/armada/commit/5e0e001b4316bf2f3ecc5600a2fcb6d75e6dbcc2))
+* **api:** forward sandbox and MCP operations through dashboard origin ([403e38b](https://github.com/The-Vibe-Company/armada/commit/403e38b460337158fe8239c4eff8e8dd913fd9cb))
+
 ## [2.2.0](https://github.com/The-Vibe-Company/armada/compare/v2.1.0...v2.2.0) (2026-11-08)
 
 
