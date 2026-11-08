@@ -51,6 +51,7 @@ export interface HandlerOptions {
   github?: GitHubLaunchOptions;
   /** Secure, server-orchestrated multi-repo golden creation (`golden_create`). Absent: the tool refuses. */
   goldenCreate?: GoldenCreateService;
+  goldenAdoption?: import("@armada/core/server").GoldenAdoption;
   /** A provider for one boat.dev key. The key is used in this process only. */
   providerFor(apiKey: string): Provider;
   /**
@@ -131,6 +132,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         sleep,
         logError: log,
         ...(options.launch ? { launch: options.launch } : {}),
+        ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         ...(options.goldenCreate ? { goldenCreate: options.goldenCreate } : {}),
       },
       VERSION,

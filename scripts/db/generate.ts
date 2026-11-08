@@ -30,6 +30,7 @@ const ROW_ALIASES: Record<string, string> = {
   credentials: "Credential",
   github_connections: "GitHubConnection",
   golden_backend_slots: "GoldenBackendSlot",
+  golden_adoption_receipts: "GoldenAdoptionReceipt",
   goldens: "Golden",
   mcp_tokens: "McpToken",
   members: "Member",

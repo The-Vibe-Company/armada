@@ -4,6 +4,7 @@ import {
   connectGolden,
   DEFAULT_LAUNCH_TTL_SECONDS,
   EncryptionKeyError,
+  type GoldenAdoption,
   type GoldenCreateService,
   GoldenError,
   type GoldenRecord,
@@ -57,6 +58,7 @@ export interface ToolContext {
   launch?: LaunchOptions;
   /** Secure, server-orchestrated multi-repo golden creation. Absent: `golden_create` refuses. */
   goldenCreate?: GoldenCreateService;
+  goldenAdoption?: GoldenAdoption;
   /** Where the real cause of an internal or unavailable tool error goes, redacted. Defaults to stderr. */
   logError?: (line: string) => void;
 }
@@ -102,6 +104,7 @@ const compat = (name: string) =>
   z.string().nullable().describe(`The same as ${name} on a Boat golden or sandbox; null on any other provider.`);
 
 const golden = z.object({
+  id: z.string(),
   name: z.string(),
   orgId: z.string(),
   visibility: z.enum(["org", "private"]),
@@ -274,6 +277,30 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       });
       assertProviderOf(provider, backend);
       return { provider: backend, maxGoldens: provider.maxGoldens ?? null };
+    },
+  );
+
+  tool(
+    "golden_adopt",
+    {
+      title: "Adopt canonical Boat golden",
+      description:
+        "Dry-run first: select an existing visible golden by id. Confirm with the returned receipt within ten minutes. Preserves all rows and ACLs.",
+      input: { id: z.string().uuid(), confirmation: z.string().uuid().optional() },
+      output: { goldenId: z.string(), dryRun: z.boolean(), confirmation: z.string() },
+    },
+    async (args) => {
+      if (!context.goldenAdoption) throw new ToolError("unsupported", "Canonical adoption is not configured.");
+      let golden: GoldenRecord | undefined;
+      for (const { orgId } of caller.orgs) {
+        golden = (await data.goldens.list(orgId)).find((row) => row.id === args.id);
+        if (golden) break;
+      }
+      if (!golden) throw new ToolError("not_found", "Canonical adoption unavailable.");
+      const member = caller.orgs.find((org) => org.orgId === golden.orgId)!;
+      const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
+      assertGoldenMutation(actor, golden);
+      return context.goldenAdoption(await context.provider(golden), actor, golden, args.confirmation);
     },
   );
 
@@ -866,6 +893,7 @@ function resolveCreateOrg(
 
 function goldenJson(row: GoldenRecord) {
   return {
+    id: row.id,
     name: row.name,
     orgId: row.orgId,
     visibility: row.visibility,

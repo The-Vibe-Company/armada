@@ -18,6 +18,7 @@ import {
   addMember,
   assertGoldenMutation,
   connectGolden,
+  createGoldenAdoption,
   createGoldenCreateService,
   createOrg,
   createSqlVaultStore,
@@ -94,6 +95,7 @@ export interface ControlOptions {
   logs?: (caller: Caller, sandboxId: string) => Promise<{ provider: Provider; providerSandboxId: string }>;
   /** Secure, server-orchestrated multi-repo golden creation (`armada golden create --name`). Absent: the route refuses. */
   goldenCreate?: GoldenCreateService;
+  goldenAdoption?: import("@armada/core/server").GoldenAdoption;
   /** A provider for one boat.dev key, for `golden/create`. The key is used in this process only. */
   providers?: ProviderRegistry;
   providerFor?: (apiKey: string) => Provider;
@@ -408,6 +410,7 @@ async function dispatch(
   const toolName = (
     {
       "golden/capabilities": "golden_capabilities",
+      "golden/adopt": "golden_adopt",
       "sandbox/list": "list",
       "sandbox/detail": "status",
       "sandbox/status": "status",
@@ -435,6 +438,7 @@ async function dispatch(
         : { ...caller, orgs: caller.orgs.filter((o) => o.orgId === scopedOrg(caller, selected)) };
     return callSharedTool(
       {
+        ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         caller: scopedCaller,
         data: options.data(scopedCaller),
         provider: (target) => options.providers!.resolve(target, scopedCaller),
@@ -539,6 +543,7 @@ async function listGoldens(options: ControlOptions, caller: Caller): Promise<{ g
 }
 
 export interface GoldenJson {
+  id: string;
   name: string;
   provider: GoldenRecord["provider"];
   modal: GoldenRecord["modal"];
@@ -555,6 +560,7 @@ export interface GoldenJson {
 
 function goldenJson(row: import("@armada/core/server").GoldenRecord): GoldenJson {
   return {
+    id: row.id,
     name: row.name,
     provider: row.provider,
     modal: row.modal,
@@ -998,6 +1004,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     github: { app: githubApp },
     store,
     providerFor: (apiKey) => createBoatProvider({ apiKey }),
+    goldenAdoption: createGoldenAdoption(sql),
     goldenCreate: createGoldenCreateService({
       sql,
       github: { store, encryptionKey, app: githubApp },

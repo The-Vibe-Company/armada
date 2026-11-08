@@ -84,6 +84,54 @@ export type Database = {
           },
         ];
       };
+      golden_adoption_receipts: {
+        Row: {
+          id: string;
+          user_id: string;
+          golden_id: string;
+          backend_id: string;
+          acl: Json;
+          snapshot_id: string;
+          sandbox_id: string;
+          expires_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          golden_id: string;
+          backend_id: string;
+          acl: Json;
+          snapshot_id: string;
+          sandbox_id: string;
+          expires_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          golden_id?: string;
+          backend_id?: string;
+          acl?: Json;
+          snapshot_id?: string;
+          sandbox_id?: string;
+          expires_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "golden_adoption_receipts_golden_id_fkey";
+            columns: ["golden_id"];
+            isOneToOne: false;
+            referencedRelation: "goldens";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_adoption_receipts_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       golden_backend_slots: {
         Row: {
           id: string;
@@ -576,6 +624,7 @@ export type Database = {
 
 export type Credential = Database["public"]["Tables"]["credentials"]["Row"];
 export type GitHubConnection = Database["public"]["Tables"]["github_connections"]["Row"];
+export type GoldenAdoptionReceipt = Database["public"]["Tables"]["golden_adoption_receipts"]["Row"];
 export type GoldenBackendSlot = Database["public"]["Tables"]["golden_backend_slots"]["Row"];
 export type Golden = Database["public"]["Tables"]["goldens"]["Row"];
 export type McpToken = Database["public"]["Tables"]["mcp_tokens"]["Row"];
