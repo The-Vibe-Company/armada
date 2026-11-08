@@ -17,6 +17,7 @@
       "version": "2.2.0",
       "dependencies": {
         "@armada/core": "workspace:*",
+        "@armada/provider-boat": "workspace:*",
         "@supabase/ssr": "0.12.7",
         "@supabase/supabase-js": "2.119.0",
         "class-variance-authority": "0.7.1",

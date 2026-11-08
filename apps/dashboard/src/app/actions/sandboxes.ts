@@ -4,10 +4,12 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import { viewerGateway } from "@/lib/data/gateway";
+import { listGoldens } from "@/lib/data/goldens";
 import { getSandbox } from "@/lib/data/sandboxes";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { GatewayError } from "@/lib/gateway";
+import { launchRepoOptions } from "@/lib/golden-form";
 import { launchArgs, type ModelFields, sendOverride } from "@/lib/model-choice";
 import { createClient } from "@/lib/supabase/server";
 
@@ -62,6 +64,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     org: formString(data, "org"),
     harness: formString(data, "harness"),
     prompt: formString(data, "prompt"),
+    repo: formString(data, "repo"),
     ...modelFields(data),
   });
   if (!parsed.ok) return fail(parsed.error);
@@ -70,6 +73,15 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
   const viewer = await requireViewer();
   const gateway = viewerGateway(viewer);
   if (!gateway) return fail("The Armada server is not configured for this dashboard.");
+  if (parsed.args.repo !== undefined) {
+    // The server checks this again; refusing here keeps a stale form from starting a sandbox somewhere unexpected.
+    const source = (await listGoldens(await createClient())).find(
+      (row) =>
+        row.name === parsed.args.golden && row.provider === parsed.args.provider && row.org_id === parsed.args.org,
+    );
+    if (!source || !launchRepoOptions(source.config).includes(parsed.args.repo))
+      return fail("That repository is not recorded in this golden. Reload the page and choose again.");
+  }
   let id: string;
   try {
     ({ id } = await gateway.launch(parsed.args));

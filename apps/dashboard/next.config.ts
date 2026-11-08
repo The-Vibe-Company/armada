@@ -1,8 +1,8 @@
 import type { NextConfig } from "next";
 
 const config: NextConfig = {
-  // @armada/core ships TypeScript source, which Next compiles with the app.
-  transpilePackages: ["@armada/core"],
+  // @armada/core and @armada/provider-boat ship TypeScript source, which Next compiles with the app.
+  transpilePackages: ["@armada/core", "@armada/provider-boat"],
   reactStrictMode: true,
   poweredByHeader: false,
   experimental: {

@@ -21,20 +21,28 @@ import { Textarea } from "@/components/ui/textarea";
 
 const HARNESS_LABELS: Record<Harness, string> = { claude: "Claude Code", codex: "Codex" };
 
-/** Launches an agent from a golden: harness, model, reasoning effort and an optional first prompt. */
+/**
+ * Launches an agent from a golden: harness, the repository it starts in, model, reasoning effort and an optional
+ * first prompt. The repository is sent as `repo` to the launch API, which makes it the agent's real initial cwd.
+ */
 export function LaunchDialog({
   golden,
   provider,
   orgId,
   catalog,
+  repos = [],
 }: {
   golden: string;
   /** The golden's sandbox provider: the same name may exist on another one. */
   provider: string;
   orgId: string;
   catalog: ModelCatalog;
+  /** `owner/repo` recorded in the golden. */
+  repos?: readonly string[];
 }) {
   const [harness, setHarness] = useState<Harness>("claude");
+  // One recorded repository: start there. Several: the person picks; leaving it empty keeps the legacy launch.
+  const [repo, setRepo] = useState<string>(repos.length === 1 ? (repos[0] ?? "") : "");
   const id = `launch-${golden}`;
   return (
     <Dialog>
@@ -68,6 +76,31 @@ export function LaunchDialog({
                 </option>
               ))}
             </NativeSelect>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor={`${id}-repo`}>Working directory</Label>
+            <NativeSelect
+              id={`${id}-repo`}
+              name="repo"
+              value={repo}
+              onChange={(event) => setRepo(event.target.value)}
+              disabled={repos.length === 0}
+              aria-describedby={`${id}-repo-hint`}
+            >
+              <option value="">
+                {repos.length === 0 ? "No GitHub repository recorded" : "No repository (default directory)"}
+              </option>
+              {repos.map((value) => (
+                <option key={value} value={value}>
+                  {value}
+                </option>
+              ))}
+            </NativeSelect>
+            <p id={`${id}-repo-hint`} className="text-xs text-muted-foreground">
+              {repos.length === 0
+                ? "This golden records no GitHub repository, so the agent starts in the default directory."
+                : "The agent starts inside this repository's checkout. No repository keeps the previous launch behaviour."}
+            </p>
           </div>
           <ModelFields key={harness} idPrefix={id} harness={harness} catalog={catalog} />
           <div className="space-y-2">
