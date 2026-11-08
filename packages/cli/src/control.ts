@@ -6,13 +6,19 @@ import type { AuthIo } from "./auth-commands.ts";
  * One call to the Armada server's control API, as the signed-in user. The server address is
  * `ARMADA_URL`; the bearer is an Armada session or ARMADA_TOKEN. The CLI holds no provider keys.
  */
-export async function control<T>(auth: AuthIo, route: string, body: Record<string, unknown>): Promise<T> {
+export async function control<T>(
+  auth: AuthIo,
+  route: string,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<T> {
   const client = await createArmadaApiClient(auth);
   try {
     return await client.request<T>(`/api/v1/${route}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
+      ...(signal ? { signal } : {}),
     });
   } catch (error) {
     if (error instanceof VaultError) throw error;

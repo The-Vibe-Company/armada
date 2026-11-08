@@ -1,3 +1,4 @@
+import { MODEL_CATALOG } from "@armada/core";
 import { ArrowLeftIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -50,7 +51,10 @@ export default async function SandboxPage({ params }: Props) {
   const facts: [string, string][] = [
     ["Golden", golden?.name ?? "Unknown"],
     ["Org", org?.org.name ?? "Unknown"],
+    ["Provider", sandbox.provider],
     ["Harness", sandbox.harness],
+    ["Model", sandbox.model ?? "Provider default"],
+    ["Reasoning effort", sandbox.reasoning_effort ?? "Provider default"],
     ["Owner", displayUser(directory, sandbox.owner_id, viewer.id)],
     ["Created", formatDate(sandbox.created_at)],
     ["Stopped", sandbox.stopped_at ? formatDate(sandbox.stopped_at) : "Not stopped"],
@@ -70,10 +74,18 @@ export default async function SandboxPage({ params }: Props) {
         </Button>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="font-mono text-xl font-semibold tracking-tight">{sandbox.boat_id}</h1>
+            <h1 className="font-mono text-xl font-semibold tracking-tight">{sandbox.provider_sandbox_id}</h1>
             <StatusBadge status={sandbox.status} />
           </div>
-          {configured && <SandboxActions sandboxId={sandbox.id} status={sandbox.status} />}
+          {configured && (
+            <SandboxActions
+              sandboxId={sandbox.id}
+              status={sandbox.status}
+              harness={sandbox.harness}
+              catalog={MODEL_CATALOG}
+              launchedModel={sandbox.model}
+            />
+          )}
         </div>
       </div>
 

@@ -22,7 +22,6 @@ import {
   createSqlVaultStore,
   ENCRYPTION_KEY_ENV,
   EncryptionKeyError,
-  type GitHubAccess,
   type GitHubApp,
   type GoldenActor,
   type GoldenCreateService,
@@ -32,14 +31,18 @@ import {
   githubAppFromEnv,
   githubInstallationAppFromEnv,
   goldenForLaunch,
+  LaunchError,
   type LaunchOptions,
   type LaunchResult,
   launchSandbox,
   listCredentials,
   listMembers,
   listOrgs,
+  type ModelChoice,
   normalizeGitHubGoldenConfig,
   type Provider,
+  type ProviderRegistry,
+  ProviderRoutingError,
   parseCredentialKind,
   parseGoldenConfig,
   parseRole,
@@ -47,8 +50,7 @@ import {
   removeCredential,
   removeMember,
   resolveBoatKey,
-  resolveCredentials,
-  resolveGitHubAccess,
+  resolveModelChoice,
   resolveOrg,
   scanGoldenSandbox,
   setCredential,
@@ -62,8 +64,9 @@ import {
 import { createBoatProvider } from "@armada/provider-boat";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
 import type { DataSource, ScopedData } from "./data.ts";
-import { launchCredentials } from "./launch-credentials.ts";
+import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { bunSql } from "./sql.ts";
+import { callSharedTool } from "./tool-api.ts";
 
 export const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = 128 * 1024;
@@ -87,10 +90,11 @@ export interface ControlOptions {
   /** The GitHub App, for `launch/resolve`. Null or absent: GitHub is reported as not set up. */
   github?: { app: GitHubApp | null; fetch?: typeof fetch; now?: () => Date };
   /** Resolves a visible Armada sandbox to its provider. The Boat key stays on the server. */
-  logs?: (caller: Caller, sandboxId: string) => Promise<{ provider: Provider; boatId: string }>;
+  logs?: (caller: Caller, sandboxId: string) => Promise<{ provider: Provider; providerSandboxId: string }>;
   /** Secure, server-orchestrated multi-repo golden creation (`armada golden create --name`). Absent: the route refuses. */
   goldenCreate?: GoldenCreateService;
   /** A provider for one boat.dev key, for `golden/create`. The key is used in this process only. */
+  providers?: ProviderRegistry;
   providerFor?: (apiKey: string) => Provider;
   /** Server-side native-session refresh; never exposed to the CLI. */
   refreshNative?: (refreshToken: string) => Promise<{ accessToken: string; refreshToken: string; expiresAt: string }>;
@@ -146,6 +150,8 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   } catch (error) {
     if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
     if (error instanceof AuthUnavailable) return fail(503, "unavailable", "Authentication is temporarily unavailable.");
+    if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
+    if (error instanceof LaunchError) return fail(400, error.code, error.message);
     if (error instanceof VaultError) return fail(STATUS[error.code], error.code, error.message);
     if (error instanceof GoldenError) return fail(GOLDEN_STATUS[error.code], error.code, error.message);
     if (error instanceof EncryptionKeyError) {
@@ -306,6 +312,8 @@ async function exchangeRoute(request: Request, options: ControlOptions): Promise
       : await nativeExchange(options, code, verifier);
     return Response.json(result, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
+    if (error instanceof LaunchError) return fail(400, error.code, error.message);
     if (error instanceof VaultError) return fail(400, error.code, error.message);
     return fail(401, "unauthorized", "Login exchange was refused.");
   }
@@ -364,6 +372,8 @@ async function refreshRoute(request: Request, options: ControlOptions): Promise<
     const refreshed = options.refreshNative ? await options.refreshNative(token) : await nativeRefresh(options, token);
     return Response.json(refreshed, { headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
+    if (error instanceof LaunchError) return fail(400, error.code, error.message);
     if (error instanceof VaultError) return fail(400, error.code, error.message);
     return fail(401, "unauthorized", "Refresh token was refused.");
   }
@@ -393,6 +403,42 @@ async function dispatch(
   body: Record<string, unknown>,
   options: ControlOptions,
 ): Promise<unknown> {
+  if (route.startsWith("mcp/")) throw new VaultError("unavailable", "MCP registry is not configured on this server.");
+  const toolName = (
+    {
+      "sandbox/list": "list",
+      "sandbox/detail": "status",
+      "sandbox/status": "status",
+      "sandbox/send": "send",
+      "sandbox/stop": "stop",
+      "sandbox/wait": "wait",
+      "sandbox/exec": "exec",
+      "sandbox/steer": "steer",
+      "sandbox/interrupt": "interrupt",
+    } as Record<string, string>
+  )[route];
+  if (toolName) {
+    if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
+    const selected = optional(body, "org");
+    const scopedCaller =
+      selected === undefined
+        ? caller
+        : { ...caller, orgs: caller.orgs.filter((o) => o.orgId === scopedOrg(caller, selected)) };
+    return callSharedTool(
+      {
+        caller: scopedCaller,
+        data: options.data(scopedCaller),
+        provider: (target) => options.providers!.resolve(target, scopedCaller),
+        launchCredentials: launchCredentials(options.store, options.encryptionKey),
+        exposedSecrets: (orgId) =>
+          exposedSecrets(options.store, options.encryptionKey, { userId: caller.userId, orgId }),
+        now: options.now ?? (() => new Date()),
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      },
+      toolName,
+      body,
+    );
+  }
   const { store, encryptionKey } = options;
   const userId = caller.userId;
   const org = scopedOrg(caller, optional(body, "org"));
@@ -441,11 +487,26 @@ async function dispatch(
     case "sandbox/launch":
       return launchRoute(options, caller, body);
     case "launch/resolve":
-      return resolveLaunch(options, caller, body, org);
+      throw new VaultError("unavailable", "Client-side credential resolution is retired; use sandbox/launch.");
     case "logs/read":
       return readLogs(options, caller, required(body, "id"), body);
+    case "golden/visibility": {
+      const visibility = required(body, "visibility");
+      if (visibility !== "org" && visibility !== "private")
+        throw new VaultError("invalid", "Visibility is private or org.");
+      const scopedCaller = org === undefined ? caller : { ...caller, orgs: caller.orgs.filter((o) => o.orgId === org) };
+      const data = options.data?.(scopedCaller);
+      if (!data?.setGoldenVisibility) throw new VaultError("unavailable", "Visibility management is not configured.");
+      await data.setGoldenVisibility(required(body, "id"), visibility);
+      return { ok: true };
+    }
     case "golden/list":
-      return listGoldens(options, caller);
+      return listGoldens(
+        options,
+        optional(body, "org") === undefined
+          ? caller
+          : { ...caller, orgs: caller.orgs.filter((o) => o.orgId === scopedOrg(caller, optional(body, "org"))) },
+      );
     case "golden/create":
       return createGoldenRoute(options, caller, body);
     case "golden/update":
@@ -470,9 +531,13 @@ async function listGoldens(options: ControlOptions, caller: Caller): Promise<{ g
 
 export interface GoldenJson {
   name: string;
+  provider: GoldenRecord["provider"];
+  modal: GoldenRecord["modal"];
   orgId: string;
   visibility: Visibility;
   ownerId: string;
+  providerSnapshotId: string | null;
+  providerSandboxId: string | null;
   boatSnapshotId: string | null;
   boatSandboxId: string | null;
   repos: number;
@@ -482,11 +547,15 @@ export interface GoldenJson {
 function goldenJson(row: import("@armada/core/server").GoldenRecord): GoldenJson {
   return {
     name: row.name,
+    provider: row.provider,
+    modal: row.modal,
     orgId: row.orgId,
     visibility: row.visibility,
     ownerId: row.ownerId,
-    boatSnapshotId: row.boatSnapshotId,
-    boatSandboxId: row.boatSandboxId,
+    providerSnapshotId: row.providerSnapshotId,
+    providerSandboxId: row.providerSandboxId,
+    boatSnapshotId: row.provider === "boat" ? row.providerSnapshotId : null,
+    boatSandboxId: row.provider === "boat" ? row.providerSandboxId : null,
     repos: row.config.repos.length,
     config: row.config,
   };
@@ -507,6 +576,12 @@ async function createGoldenRoute(
   }
   const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
   const visibility: Visibility = requiredBoolean(body, "private", false) ? "private" : "org";
+  if (body.provider !== undefined && body.provider !== "boat")
+    throw new ProviderRoutingError(
+      "provider_not_configured",
+      "modal",
+      "Secure Modal golden creation is not configured.",
+    );
   const name = required(body, "name");
   const config = body.config === undefined ? undefined : normalizeGitHubGoldenConfig(parseGoldenConfig(body.config));
   const repos = config ? [] : requiredStringArray(body, "repos");
@@ -538,9 +613,14 @@ async function updateGoldenRoute(
   const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
   const name = required(body, "name");
   const rows = await options.data(caller).goldens.findByName(org.id, name);
-  if (rows.length !== 1) throw new GoldenError("not_found", `No golden named '${name}'.`);
-  const existingGolden = rows[0];
+  const existingGolden = selectGolden(rows, body);
   if (!existingGolden) throw new GoldenError("not_found", `No golden named '${name}'.`);
+  if (existingGolden.provider !== "boat")
+    throw new ProviderRoutingError(
+      "provider_not_configured",
+      "modal",
+      "Secure Modal golden rebuild is not configured.",
+    );
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
   if (body.config === undefined) throw new VaultError("invalid", "config is required.");
   const config = normalizeGitHubGoldenConfig(parseGoldenConfig(body.config));
@@ -571,23 +651,18 @@ async function snapshotGoldenRoute(
   const name = required(body, "name");
   const data = options.data(caller);
   const rows = await data.goldens.findByName(org.id, name);
-  if (rows.length !== 1 || !rows[0]) throw new GoldenError("not_found", `No golden named '${name}'.`);
-  const golden = rows[0];
+  const golden = selectGolden(rows, body);
+  if (!golden) throw new GoldenError("not_found", `No golden named '${name}'.`);
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
   // Core methods re-check the exact private-owner/org-admin policy before changing anything.
-  const boat = await resolveBoatKey(options.store, options.encryptionKey, {
-    userId: caller.userId,
-    orgId: org.id,
-    visibility: golden.visibility,
-  });
-  const provider = options.providerFor(boat.key);
+  const provider = await providerForGolden(options, caller, golden);
   let target = golden;
-  if (!target.boatSandboxId) {
+  if (!target.providerSandboxId) {
     const restored = await connectGolden(provider, data.goldens, actor, target.name);
     target = restored.golden;
   }
-  if (!target.boatSandboxId) throw new GoldenError("conflict", `Golden '${target.name}' has no sandbox yet.`);
-  await scanGoldenSandbox(provider, target.boatSandboxId);
+  if (!target.providerSandboxId) throw new GoldenError("conflict", `Golden '${target.name}' has no sandbox yet.`);
+  await scanGoldenSandbox(provider, target.providerSandboxId);
   const saved = await snapshotGolden(provider, data.goldens, actor, target.name, options.launch ?? {});
   return { name: saved.golden.name, snapshot: saved.snapshotName };
 }
@@ -599,15 +674,10 @@ async function connectGoldenRoute(options: ControlOptions, caller: Caller, body:
   const data = options.data?.(caller);
   if (!data) throw new VaultError("unavailable", "Golden connection is not configured on this server.");
   const rows = await data.goldens.findByName(org.id, name);
-  const golden = rows[0];
+  const golden = selectGolden(rows, body);
   if (!golden) throw new GoldenError("not_found", `No golden named '${name}'.`);
-  const boat = await resolveBoatKey(options.store, options.encryptionKey, {
-    userId: caller.userId,
-    orgId: org.id,
-    visibility: golden.visibility,
-  });
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
-  const connected = await connectGolden(options.providerFor(boat.key), data.goldens, actor, name);
+  const connected = await connectGolden(await providerForGolden(options, caller, golden), data.goldens, actor, name);
   return { golden: connected.golden.name, sandboxId: connected.sandbox.id, webUrl: null };
 }
 
@@ -631,7 +701,7 @@ async function readLogs(
   let hasMore = false;
   const events: Awaited<ReturnType<Provider["events"]>>["events"] = [];
   for (let pageNumber = 0; pageNumber < (all ? maxPages : 1); pageNumber += 1) {
-    const page = await target.provider.events({ sandboxId: target.boatId, ...(cursor ? { cursor } : {}) });
+    const page = await target.provider.events({ sandboxId: target.providerSandboxId, ...(cursor ? { cursor } : {}) });
     events.push(...page.events);
     hasMore = page.hasMore;
     const next = page.cursor ?? cursor;
@@ -641,10 +711,12 @@ async function readLogs(
     }
     cursor = next;
   }
-  const info = await target.provider.get(target.boatId);
+  const info = await target.provider.get(target.providerSandboxId);
   const latest = latestPrompt(events);
   // A live sandbox with no turn is idle, so following has nothing to wait for.
-  const outcome = latest ? await promptOutcome(target.provider, { sandboxId: target.boatId, promptId: latest }) : null;
+  const outcome = latest
+    ? await promptOutcome(target.provider, { sandboxId: target.providerSandboxId, promptId: latest })
+    : null;
   return {
     events: dedupe(events),
     cursor: cursor ?? null,
@@ -675,12 +747,22 @@ function dedupe<T extends { id: string }>(events: readonly T[]): T[] {
 async function launchRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>): Promise<unknown> {
   if (!options.data || !options.providerFor)
     throw new VaultError("unavailable", "Launching is not configured on this server.");
+  if (body.visibility !== undefined || body.connections !== undefined)
+    throw new VaultError(
+      "unavailable",
+      "Connection binding and independent visibility require the registry service (#520).",
+    );
   const name = required(body, "golden");
   const harness = required(body, "harness");
   if (harness !== "claude" && harness !== "codex") throw new VaultError("invalid", "The agent is claude or codex.");
   const data = options.data(caller);
   const actor = await launchActor(data, caller, name, optional(body, "org"));
-  const golden = await goldenForLaunch(data.goldens, actor, name);
+  const golden = await goldenForLaunch(
+    data.goldens,
+    actor,
+    name,
+    optional(body, "provider") as "boat" | "modal" | undefined,
+  );
   const provider = await providerForGolden(options, caller, golden);
   const result = await launchSandbox(
     provider,
@@ -697,6 +779,8 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
     actor,
     {
       golden: name,
+      provider: golden.provider,
+      ...modelChoice(harness, optional(body, "model"), optional(body, "reasoningEffort")),
       harness,
       ...(optional(body, "prompt") === undefined ? {} : { prompt: required(body, "prompt") }),
       ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: requiredNumber(body, "ttlSeconds") }),
@@ -728,6 +812,9 @@ async function launchActor(
 }
 
 async function providerForGolden(options: ControlOptions, caller: Caller, golden: GoldenRecord): Promise<Provider> {
+  if (options.providers) return options.providers.resolve(golden, caller);
+  if (golden.provider !== "boat")
+    throw new ProviderRoutingError("provider_not_configured", "modal", "Modal is not configured.");
   const key = await resolveBoatKey(options.store, options.encryptionKey, {
     userId: caller.userId,
     orgId: golden.orgId,
@@ -741,8 +828,15 @@ async function providerForGolden(options: ControlOptions, caller: Caller, golden
 
 function launchJson(result: LaunchResult) {
   return {
-    sandbox: result.sandbox,
-    golden: result.golden,
+    sandbox: {
+      ...result.sandbox,
+      boatId: result.sandbox.provider === "boat" ? result.sandbox.providerSandboxId : null,
+    },
+    golden: {
+      ...result.golden,
+      boatSnapshotId: result.golden.provider === "boat" ? result.golden.providerSnapshotId : null,
+      boatSandboxId: result.golden.provider === "boat" ? result.golden.providerSandboxId : null,
+    },
     promptId: result.promptId ?? null,
     conversationId: result.conversationId ?? null,
     ttlSeconds: result.ttlSeconds,
@@ -755,33 +849,17 @@ function launchJson(result: LaunchResult) {
   };
 }
 
-async function resolveLaunch(
-  options: ControlOptions,
-  caller: Caller,
-  body: Record<string, unknown>,
-  orgRef: string | undefined,
-): Promise<{ env: Record<string, string>; codexAuth: string | null; boatKey: string; github: GitHubAccess }> {
-  const { store, encryptionKey } = options;
-  const userId = caller.userId;
-  const org = await resolveOrg(store, userId, scopedOrg(caller, orgRef));
-  const harness = required(body, "harness");
-  if (harness !== "claude" && harness !== "codex") throw new VaultError("invalid", "The agent is claude or codex.");
-  const visibility = required(body, "visibility");
-  if (visibility !== "org" && visibility !== "private")
-    throw new VaultError("invalid", "Visibility is org or private.");
-  const resolved = await resolveCredentials(store, encryptionKey, { userId, orgId: org.id, harness });
-  const boat = await resolveBoatKey(store, encryptionKey, { userId, orgId: org.id, visibility });
-  const github = await resolveGitHubAccess(
-    {
-      store,
-      encryptionKey,
-      app: options.github?.app ?? null,
-      ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
-      ...(options.github?.now ? { now: options.github.now } : {}),
-    },
-    userId,
-  );
-  return { env: resolved.env, codexAuth: resolved.files[0]?.content ?? null, boatKey: boat.key, github };
+function modelChoice(
+  harness: "claude" | "codex",
+  model: string | undefined,
+  reasoningEffort: string | undefined,
+): ModelChoice {
+  try {
+    return resolveModelChoice(harness, { model, reasoningEffort });
+  } catch (error) {
+    if (error instanceof LaunchError) throw new VaultError("invalid", error.message);
+    throw error;
+  }
 }
 
 class Unauthorized extends Error {}
@@ -908,4 +986,14 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       installationApp: githubInstallationAppFromEnv(env),
     }),
   };
+}
+
+function selectGolden(rows: GoldenRecord[], body: Record<string, unknown>): GoldenRecord | undefined {
+  const provider = optional(body, "provider");
+  if (provider !== undefined && provider !== "boat" && provider !== "modal")
+    throw new VaultError("invalid", "Provider is boat or modal.");
+  const selected = rows.filter((row) => provider === undefined || row.provider === provider);
+  if (selected.length > 1)
+    throw new GoldenError("conflict", "Golden exists on boat and modal. Pass --provider boat or modal.");
+  return selected[0];
 }

@@ -67,3 +67,62 @@ test("a message sent from the dashboard reaches the sandbox", async ({ page }) =
   await expect(page.getByText("Sent. The reply appears in the logs.")).toBeVisible();
   await expect(page.getByText("Also update the changelog")).toBeVisible({ timeout: 10_000 });
 });
+
+test("a launch from a golden sends the chosen model and effort, and a send can override them once", async ({
+  page,
+}) => {
+  await signIn(page, "alice@example.com", "/goldens");
+  await page.getByRole("button", { name: "Launch from shared-golden" }).click();
+  await page.screenshot({ path: "test-results/launch-model-desktop.png", animations: "disabled" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("dialog")).toBeInViewport();
+  await page.screenshot({ path: "test-results/launch-model-mobile.png", animations: "disabled" });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await expect(page.getByLabel("Model")).toHaveValue("claude-opus-5-5");
+  await expect(page.getByLabel("Reasoning effort")).toHaveValue("medium");
+  await page.getByLabel("Agent").selectOption("codex");
+  await expect(page.getByLabel("Model")).toHaveValue("gpt-6.1-sol");
+  await page.getByLabel("Model").selectOption("gpt-6-luna");
+  await expect(page.getByLabel("Reasoning effort").locator("option[value=ultra]")).toHaveCount(0);
+  await page.getByLabel("Reasoning effort").selectOption("high");
+  await page.getByRole("button", { name: "Launch", exact: true }).click();
+
+  await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
+  await expect(page.getByText("gpt-6-luna")).toBeVisible();
+  await page.getByRole("button", { name: "Send a message" }).click();
+  await page.getByRole("textbox", { name: "Message" }).fill("Now the docs");
+  await page.getByLabel("Reasoning effort").selectOption("low");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(page.getByText("Sent. The reply appears in the logs.")).toBeVisible();
+
+  await expect(page.getByLabel("Reasoning effort")).toHaveValue("");
+  await page.getByLabel("Model").selectOption("gpt-6-luna");
+  await expect(page.getByLabel("Reasoning effort").locator('option[value=""]')).toHaveText("As launched");
+  await page.getByLabel("Model").selectOption("gpt-6.1-terra");
+  await expect(page.getByLabel("Reasoning effort")).toHaveValue("");
+  await expect(page.getByLabel("Reasoning effort").locator('option[value=""]')).toHaveText(
+    "Default for selected model (medium)",
+  );
+  await page.getByRole("textbox", { name: "Message" }).fill("Continue with model default");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("");
+
+  const { toolCalls } = (await (await fetch(`${MOCK}/__test/state`)).json()) as {
+    toolCalls: { name: string; args: Record<string, unknown> }[];
+  };
+  expect(toolCalls).toEqual([
+    {
+      name: "launch",
+      args: {
+        golden: "shared-golden",
+        provider: "boat",
+        org: expect.any(String),
+        harness: "codex",
+        model: "gpt-6-luna",
+        reasoning_effort: "high",
+      },
+    },
+    { name: "send", args: { id: expect.any(String), prompt: "Now the docs", reasoning_effort: "low" } },
+    { name: "send", args: { id: expect.any(String), prompt: "Continue with model default", model: "gpt-6.1-terra" } },
+  ]);
+});

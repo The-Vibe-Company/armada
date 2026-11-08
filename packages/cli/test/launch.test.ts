@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { GoldenActor } from "@armada/core";
 import { run } from "../src/run.ts";
+import { memorySessionStore } from "../src/session.ts";
 
 // armada launch now does its own credential and provider resolution on the server
 // (POST /api/v1/sandbox/launch), not in the CLI process: the scenarios this file used to cover
@@ -33,6 +34,29 @@ describe("launch command", () => {
     );
     expect((await capture(["launch", "--agent", "claude"], base)).code).toBe(2);
     expect((await capture(["launch", "web", "--agent", "claude", "a", "b"], base)).code).toBe(2);
+    const effort = await capture(["launch", "web", "--agent", "claude", "--reasoning-effort", "ultra"], base);
+    expect(effort.err).toContain("Use one of: low, medium, high, xhigh, max");
+    expect(calls).toEqual([]);
+  });
+
+  test("a provider selection still requires Armada authentication, not local provider credentials", async () => {
+    const calls: string[] = [];
+    const result = await capture(["launch", "web", "--agent", "claude", "--provider", "modal"], {
+      auth: {
+        env: {},
+        session: memorySessionStore(),
+        out: () => undefined,
+        err: () => undefined,
+        now: () => new Date(),
+        open: () => undefined,
+        fetch: async (input) => {
+          calls.push(String(input));
+          throw new Error("no network");
+        },
+      },
+    });
+    expect(result.code).toBe(1);
+    expect(result.err).toContain("Set ARMADA_TOKEN or run armada login.");
     expect(calls).toEqual([]);
   });
 });

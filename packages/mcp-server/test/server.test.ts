@@ -590,6 +590,43 @@ describe("tools", () => {
     expect(listed.data.sandboxes).toMatchObject([{ status: "running", conversationIds: ["conv_1"] }]);
   });
 
+  test("an idle launch keeps its model and effort for every send, across stop, and an override lasts one turn", async () => {
+    const { token, client, people, boat, db } = await start();
+    const mcp = await client(await token(people.member));
+    const refused = await call(mcp, "launch", { golden: "shared", harness: "codex", reasoning_effort: "extreme" });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("Use one of: low, medium, high, xhigh, max, ultra");
+    expect(boat.forks).toHaveLength(0);
+
+    const launched = await call(mcp, "launch", {
+      golden: "shared",
+      harness: "codex",
+      model: "gpt-6.1-terra",
+      reasoning_effort: "high",
+    });
+    expect(launched.data).toMatchObject({ model: "gpt-6.1-terra", reasoningEffort: "high", status: "ready" });
+    expect(boat.prompts).toHaveLength(0);
+
+    await call(mcp, "send", { id: launched.data.id, prompt: "first" });
+    await call(mcp, "stop", { id: launched.data.id });
+    await call(mcp, "send", { id: launched.data.id, prompt: "after stop" });
+    await call(mcp, "send", { id: launched.data.id, prompt: "once", model: "gpt-6-luna", reasoning_effort: "low" });
+    await call(mcp, "send", { id: launched.data.id, prompt: "back" });
+    expect(boat.prompts.map(({ text, model, reasoningEffort }) => ({ text, model, reasoningEffort }))).toEqual([
+      { text: "first", model: "gpt-6.1-terra", reasoningEffort: "high" },
+      { text: "after stop", model: "gpt-6.1-terra", reasoningEffort: "high" },
+      { text: "once", model: "gpt-6-luna", reasoningEffort: "low" },
+      { text: "back", model: "gpt-6.1-terra", reasoningEffort: "high" },
+    ]);
+    const status = await call(mcp, "status", { id: launched.data.id });
+    expect(status.data).toMatchObject({ model: "gpt-6.1-terra", reasoningEffort: "high" });
+
+    // A sandbox recorded before the choice existed keeps the provider's default.
+    await db.query("update sandboxes set model = null, reasoning_effort = null where id = $1", [launched.data.id]);
+    await call(mcp, "send", { id: launched.data.id, prompt: "legacy" });
+    expect(boat.prompts.at(-1)).not.toHaveProperty("model");
+  });
+
   test("steer reports restart for Codex and native for Claude, and asks for send when nothing runs", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));

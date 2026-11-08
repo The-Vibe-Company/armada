@@ -108,7 +108,15 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         const transactionalStore = createSqlGoldenStore(sql);
         const inserted = existingGolden
           ? existingGolden
-          : await transactionalStore.insert({ orgId: actor.orgId, name, visibility, ownerId: actor.userId, config });
+          : await transactionalStore.insert({
+              orgId: actor.orgId,
+              name,
+              visibility,
+              ownerId: actor.userId,
+              provider: "boat",
+              modal: null,
+              config,
+            });
         if (existingGolden) await transactionalStore.setConfig(inserted.id, config);
         await transactionalStore.setSandbox(inserted.id, builderId);
         await transactionalStore.setSnapshot(inserted.id, snapshot);

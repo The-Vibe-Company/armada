@@ -49,8 +49,10 @@ describe("golden command", () => {
       ]);
       const sshCalls: { token: string; script: string }[] = [];
       const githubFetch = fakeGitHubFetch();
+      const authStore = createMemoryAuthStore();
+      authStore.addMembership(people.owner, { orgId: people.org, name: "Example", role: "admin" });
       const controlOptions: ControlOptions = {
-        authStore: createMemoryAuthStore(),
+        authStore,
         supabase: { supabaseUrl: "https://supabase.test", anonKey: "anon", fetch: fakeSupabaseFetch(people.owner) },
         store: createSqlVaultStore(db),
         encryptionKey: ENC_KEY,
@@ -127,8 +129,20 @@ describe("golden command", () => {
       ).rejects.toThrow(/No golden named 'monorepo'/);
       expect(await asUser(db, people.owner, () => goldenForLaunch(store, owner, "monorepo"))).toMatchObject({
         name: "monorepo",
-        boatSnapshotId: "golden-bx_1",
+        providerSnapshotId: "golden-bx_1",
       });
+      await db.query(`insert into goldens
+        (org_id, name, visibility, owner_id, provider, provider_snapshot_id, modal_workspace, modal_environment, modal_app_id, config)
+        select org_id, name, visibility, owner_id, 'modal', 'im-cli', 'ws-cli', 'main', 'ap-cli', config
+        from goldens where provider = 'boat' and name = 'monorepo'`);
+      for (const command of ["connect", "snapshot"]) {
+        const ambiguous = await capture(["golden", command, "monorepo"], { auth });
+        expect(ambiguous.err).toContain("exists on boat and modal");
+      }
+      const modalOnly = await asUser(db, people.owner, () =>
+        capture(["golden", "list", "--provider", "modal", "--json"], { auth }),
+      );
+      expect(JSON.parse(modalOnly.out).map((row: { provider: string }) => row.provider)).toEqual(["modal"]);
     } finally {
       await db.close();
     }
@@ -195,7 +209,7 @@ async function capture(argv: string[], deps: Parameters<typeof run>[2]) {
 
 function recordingProvider(calls: string[]) {
   return {
-    id: "fake",
+    id: "boat",
     harnesses: ["claude", "codex"] as const,
     capabilities: { claude: caps(), codex: caps() },
     createGolden: async () => {

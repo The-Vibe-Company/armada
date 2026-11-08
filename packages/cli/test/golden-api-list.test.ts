@@ -12,11 +12,13 @@ function apiFetch(calls: Request[]) {
       goldens: [
         {
           name: "web",
+          provider: "boat",
+          modal: null,
           orgId: "11111111-1111-4111-8111-111111111111",
           visibility: "org",
           ownerId: "22222222-2222-4222-8222-222222222222",
-          boatSnapshotId: "snapshot",
-          boatSandboxId: null,
+          providerSnapshotId: "snapshot",
+          providerSandboxId: null,
           repos: 1,
           config: { repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] },
         },
@@ -46,7 +48,7 @@ describe("golden list through the Armada API", () => {
       },
     );
     expect(code).toBe(0);
-    expect(out).toContain("web  org  snapshot  1 repo");
+    expect(out).toContain("web  boat  org  snapshot  1 repo");
     expect(err).toBe("");
     expect(calls[0]?.url).toBe("https://armada.thevibecompany.co/api/v1/golden/list");
     expect(calls[0]?.headers.get("authorization")).toBe(`Bearer ${token}`);

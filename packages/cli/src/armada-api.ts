@@ -73,10 +73,10 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         }
       }
       const payload: unknown = await response.json().catch(() => null);
-      if (response.ok) return payload as T;
+      if (response.ok) return normalizeProviderDto(path, payload) as T;
       if (response.status === 401) throw new AuthError("Run armada login or update ARMADA_TOKEN.", "unauthorized");
       if (response.status === 403) throw new AuthError(apiMessage(payload, "Armada refused this request."), "conflict");
-      throw new AuthError(`Armada server request failed (${response.status}).`, "unavailable");
+      throw new AuthError(apiMessage(payload, `Armada server request failed (${response.status}).`), "unavailable");
     },
   };
 }
@@ -152,4 +152,29 @@ function apiMessage(payload: unknown, fallback: string): string {
   const error = (payload as Record<string, unknown>).error;
   const message = typeof error === "object" && error !== null ? (error as Record<string, unknown>).message : undefined;
   return typeof message === "string" && message.length > 0 ? message : fallback;
+}
+
+/** Read pre-provider Boat responses during a rolling server/CLI upgrade. */
+function normalizeProviderDto(path: string, payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  const body = payload as Record<string, unknown>;
+  const identity = (value: unknown, sandbox = false): unknown => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const row = value as Record<string, unknown>;
+    if (row.provider !== undefined) return row;
+    const legacyId = sandbox ? "boatId" : "boatSandboxId";
+    if (!(legacyId in row) && !("boatSnapshotId" in row)) return row;
+    return {
+      ...row,
+      provider: "boat",
+      modal: null,
+      providerSandboxId: row[legacyId] ?? null,
+      ...(!sandbox ? { providerSnapshotId: row.boatSnapshotId ?? null } : {}),
+    };
+  };
+  if (path === "/api/v1/golden/list" && Array.isArray(body.goldens))
+    return { ...body, goldens: body.goldens.map((row) => identity(row)) };
+  if (path === "/api/v1/sandbox/launch")
+    return { ...body, sandbox: identity(body.sandbox, true), golden: identity(body.golden) };
+  return payload;
 }
