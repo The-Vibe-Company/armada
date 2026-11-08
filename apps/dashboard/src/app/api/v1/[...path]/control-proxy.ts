@@ -23,7 +23,26 @@ const PRIVATE_POST_PATHS = new Set([
   "golden/snapshot",
   "golden/connect",
   "sandbox/launch",
-  "launch/resolve",
+  "sandbox/list",
+  "sandbox/detail",
+  "sandbox/status",
+  "sandbox/send",
+  "sandbox/stop",
+  "sandbox/wait",
+  "sandbox/exec",
+  "sandbox/steer",
+  "sandbox/interrupt",
+  "golden/visibility",
+  "mcp/list",
+  "mcp/create",
+  "mcp/update",
+  "mcp/connect",
+  "mcp/status",
+  "mcp/set-enabled",
+  "mcp/sandbox-connections",
+  "mcp/revoke",
+  "mcp/delete",
+  "mcp/oauth/callback",
   "logs/read",
 ]);
 
@@ -55,7 +74,7 @@ export async function forwardControl(
       ...(body ? { body } : {}),
       redirect: "error",
       cache: "no-store",
-      signal: AbortSignal.timeout(300_000),
+      signal: AbortSignal.timeout(660_000),
     });
   } catch {
     return NextResponse.json({ error: "Armada API is unavailable." }, { status: 502 });
