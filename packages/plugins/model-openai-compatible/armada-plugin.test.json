@@ -1,8 +1,0 @@
-{
-  "model": {
-    "openai-compatible": {
-      "baseURL": "${endpoint}/model",
-      "model": "conformance-model"
-    }
-  }
-}
