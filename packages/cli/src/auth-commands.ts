@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import {
   AuthError,
+  assertEmail,
+  createPkce,
   type AuthFetch,
   type AuthStore,
   ensureFreshSession,
@@ -85,20 +87,26 @@ export async function loginCommand(
 ): Promise<void> {
   if (how.email !== undefined) {
     const origin = how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_URL;
-    const callback = "http://127.0.0.1:1/callback";
+    const email = assertEmail(how.email);
+    const pkce = await createPkce();
     const state = crypto.randomUUID().replaceAll("-", "");
-    const challenge = "a".repeat(43);
-    const start = await io.fetch(new URL("/api/v1/auth/email/start", origin), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: how.email, redirect_uri: callback, code_challenge: challenge, state }) });
-    if (!start.ok) throw new AuthError("Armada could not start email login.", "unauthorized");
-    io.err(`Sent a sign-in email to ${how.email}. Type the code it contains.\n`);
-    if (!io.readCode) throw new AuthError("Email code input is unavailable.", "usage");
-    const code = await io.readCode(new AbortController().signal);
-    const response = await io.fetch(new URL("/api/v1/auth/email/verify", origin), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: how.email, code }) });
-    const value = await response.json().catch(() => null) as { accessToken?: unknown; refreshToken?: unknown; expiresAt?: unknown } | null;
-    if (!response.ok || !value || typeof value.accessToken !== "string" || typeof value.refreshToken !== "string" || typeof value.expiresAt !== "string") throw new AuthError("Email code was refused.", "unauthorized");
-    await io.session.write({ supabaseUrl: "", armadaUrl: origin, accessToken: value.accessToken, refreshToken: value.refreshToken, expiresAt: value.expiresAt, userId: "" });
-    io.out("Logged in.\n");
-    return;
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("Not found", { status: 404 }) });
+    const callback = `http://127.0.0.1:${server.port}/callback`;
+    const start = await io.fetch(new URL("/api/v1/auth/email/start", origin), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, redirect_uri: callback, code_challenge: pkce.challenge, state }) });
+    try {
+      if (!start.ok) throw new AuthError("Armada could not start email login.", "unauthorized");
+      io.err(`Sent a sign-in email to ${email}. Type the code it contains.\n`);
+      if (!io.readCode) throw new AuthError("Email code input is unavailable.", "usage");
+      const code = await io.readCode(new AbortController().signal);
+      const response = await io.fetch(new URL("/api/v1/auth/email/verify", origin), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, code }) });
+      const value = await response.json().catch(() => null) as { accessToken?: unknown; refreshToken?: unknown; expiresAt?: unknown } | null;
+      if (!response.ok || !value || typeof value.accessToken !== "string" || typeof value.refreshToken !== "string" || typeof value.expiresAt !== "string") throw new AuthError("Email code was refused.", "unauthorized");
+      await io.session.write({ supabaseUrl: "", armadaUrl: origin, accessToken: value.accessToken, refreshToken: value.refreshToken, expiresAt: value.expiresAt, userId: "" });
+      io.out("Logged in.\n");
+      return;
+    } finally {
+      await server.stop(false);
+    }
   }
   // Browser login is Armada-hosted: the CLI never discovers or contacts the native provider.
   if (how.email === undefined) {

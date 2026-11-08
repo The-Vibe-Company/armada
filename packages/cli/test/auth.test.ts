@@ -94,6 +94,33 @@ describe("auth commands", () => {
     ]);
   });
 
+  test("token create forwards --org to Armada", async () => {
+    const auth = io();
+    auth.env = { ARMADA_URL: ORIGIN };
+    await auth.session.write(session());
+    auth.fetch = async (input, init) => {
+      expect(String(input)).toBe(`${ORIGIN}/api/v1/token/create`);
+      expect(await new Request(String(input), init).json()).toEqual({ orgName: "Example", label: "ci" });
+      return Response.json({ id: "token-id", label: "ci", orgName: "Example", token: "armada_sk_fixture_secret" });
+    };
+    expect((await capture(["token", "create", "--org", "Example", "--label", "ci"], auth)).code).toBe(0);
+  });
+
+  test("ambiguous organization names are rejected by the Armada server", async () => {
+    const auth = io();
+    auth.env = { ARMADA_URL: ORIGIN };
+    await auth.session.write(session());
+    auth.fetch = async (input, init) => {
+      expect(String(input)).toBe(`${ORIGIN}/api/v1/token/create`);
+      expect(await new Request(String(input), init).json()).toEqual({ orgName: "Example" });
+      return Response.json({ error: "ambiguous organization" }, { status: 409 });
+    };
+    const result = await capture(["token", "create", "--org", "Example"], auth);
+    expect(result.code).toBe(1);
+    expect(result.err).toContain("Armada server request failed (409).");
+    expect(result.out).not.toContain("armada_sk_");
+  });
+
   test("token commands without a session ask for login", async () => {
     const result = await capture(["token", "list"], io());
     expect(result.code).toBe(1);
@@ -144,8 +171,9 @@ describe("auth commands", () => {
         expect(init?.method).toBe("POST");
         const body = (await new Request(url, init).json()) as Record<string, string>;
         expect(body.email).toBe("ada@example.com");
-        expect(body.redirect_uri).toBe("http://127.0.0.1:1/callback");
-        expect(body.code_challenge).toBe("a".repeat(43));
+        expect(body.redirect_uri).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/callback$/);
+        expect(body.code_challenge).toMatch(/^[A-Za-z0-9_-]{43,128}$/);
+        expect(body.code_challenge).not.toBe("a".repeat(43));
         expect(body.state).toMatch(/^[a-f0-9]{32}$/);
         return Response.json({});
       }
@@ -225,9 +253,14 @@ describe("auth commands", () => {
     expect(both.code).toBe(2);
     expect(both.err).toContain("not both");
     const invalidAuth = io();
-    invalidAuth.readCode = async () => "123456";
+    let calls = 0;
+    invalidAuth.fetch = async () => {
+      calls++;
+      return Response.json({});
+    };
     const invalid = await capture(["login", "--email", "nobody"], invalidAuth);
-    expect(invalid.code).toBe(1);
-    expect(invalid.err).toContain("Armada could not start email login.");
+    expect(invalid.code).toBe(2);
+    expect(invalid.err).toContain("valid email");
+    expect(calls).toBe(0);
   });
 });
