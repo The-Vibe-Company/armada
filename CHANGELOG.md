@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.2.0](https://github.com/The-Vibe-Company/armada/compare/v2.1.0...v2.2.0) (2026-11-08)
+
+
+### Features
+
+* **sandboxes:** add provider identity and configurable launch models ([f641d78](https://github.com/The-Vibe-Company/armada/commit/f641d7829b3cb730ddf327cbbc751bd5e837e1a5))
+* **sandboxes:** integrate provider identity and model selection with API-only CLI ([6ee1032](https://github.com/The-Vibe-Company/armada/commit/6ee1032210f7fd0ce36b4702f5f6df00522d8795))
+* **sandboxes:** reconcile model and provider changes with current API ([216f0ac](https://github.com/The-Vibe-Company/armada/commit/216f0ac72421a6749bc4edef1638370290efc915))
+
+
+### Bug Fixes
+
+* **api:** allow bearer clients through dashboard middleware ([6573c8e](https://github.com/The-Vibe-Company/armada/commit/6573c8e208071c7318b7b2acfff8b475305de73b))
+* **api:** allow bearer clients through dashboard middleware ([7fc6cfd](https://github.com/The-Vibe-Company/armada/commit/7fc6cfd23424e238071fc62182bce9b52f9ddc29))
+* **cli:** decode launch API wire dates ([d54df7f](https://github.com/The-Vibe-Company/armada/commit/d54df7f2eafd88095073eeb70865f10c4551c48b))
+* **cli:** decode launch API wire dates ([28e0a14](https://github.com/The-Vibe-Company/armada/commit/28e0a14ffcb02a89afb17172fd4b6a7c9f609bfa))
+* **cli:** preserve launch wire decoding during model integration ([f40397c](https://github.com/The-Vibe-Company/armada/commit/f40397c10f72b7160d0d65b33523cc896a7ea2b8))
+* **logs:** carry API cursor across follow requests ([60957ad](https://github.com/The-Vibe-Company/armada/commit/60957ad1160d1e1c57bd99d05492b60b68f5560f))
+* **logs:** carry API cursor across follow requests ([06c1f51](https://github.com/The-Vibe-Company/armada/commit/06c1f515e3f4f04308de7f0d2c43ba96f8d4917d))
+* **logs:** drain follow cursors safely ([c1dcc47](https://github.com/The-Vibe-Company/armada/commit/c1dcc47799f4d4066bb38a9686df8c39052d2c7f))
+* **logs:** retain API cursor across empty batches ([9e61f41](https://github.com/The-Vibe-Company/armada/commit/9e61f41e5d553f98757a7cf8420e3cc23ec1e964))
+
 ## [2.1.0](https://github.com/The-Vibe-Company/armada/compare/v2.0.2...v2.1.0) (2026-11-08)
 
 
