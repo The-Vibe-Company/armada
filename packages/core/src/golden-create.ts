@@ -1,12 +1,13 @@
 import type { GitHubInstallationApp, GitHubResolveDeps } from "./github.ts";
 import { resolveGitHubAccess } from "./github.ts";
-import type { GoldenActor } from "./golden.ts";
+import type { GoldenActor, GoldenRecord } from "./golden.ts";
 import type { GoldenConfig, GoldenRepo } from "./golden-config.ts";
 import { GoldenError } from "./golden-config.ts";
 import { type GoldenCreateDeps, GoldenCreateService } from "./golden-create-service.ts";
 import { goldenGitHubAdapter } from "./golden-github.ts";
 import { scanGoldenSandbox } from "./golden-scan.ts";
 import { createSqlGoldenStore, type Sql } from "./golden-store.ts";
+import type { Provider } from "./provider.ts";
 import { sshStdinCheckout } from "./ssh-executor.ts";
 
 export interface GoldenBackendSlot {
@@ -75,13 +76,15 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
       const identity = await provider.backendIdentity();
       if (!identity?.id)
         throw new GoldenError("forbidden", "Provider returned no backend identity for golden capacity.");
-      if (existingGolden)
+      if (existingGolden) {
+        await assertGoldenBackendBinding(options.sql, existingGolden, provider, identity.id);
         return slots.reserveExisting({
           provider: provider.id,
           backendId: identity.id,
           capacity,
           goldenId: existingGolden.id,
         });
+      }
       return slots.reserve({
         provider: provider.id,
         backendId: identity.id,
@@ -164,4 +167,23 @@ export function sqlGoldenBackendSlots(sql: Sql): GoldenBackendSlot {
       await sql.query("select public.release_golden_backend_slot($1::uuid)", [reservationId]);
     },
   };
+}
+
+/** Fail closed: existing mutations never claim a new account slot or adopt a legacy golden. */
+export async function assertGoldenBackendBinding(
+  sql: Sql,
+  golden: GoldenRecord,
+  provider: Provider,
+  backendId?: string,
+): Promise<void> {
+  if (golden.provider !== "boat" && provider.maxGoldens === undefined) return;
+  const identity = backendId ?? (await provider.backendIdentity?.())?.id;
+  if (!identity) throw new GoldenError("conflict", "Golden backend binding cannot be verified.");
+  const result = await sql.query<{ busy: boolean }>(
+    `select build_id is not null as busy from public.golden_backend_slots
+     where provider = $1 and backend_id = $2 and golden_id = $3::uuid`,
+    [golden.provider, identity, golden.id],
+  );
+  if (result.rows.length !== 1 || result.rows[0]?.busy)
+    throw new GoldenError("conflict", "Golden backend binding is unavailable or busy. Contact an administrator.");
 }

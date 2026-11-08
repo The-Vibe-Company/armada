@@ -1,4 +1,5 @@
 import {
+  assertGoldenMutation,
   assertProviderOf,
   connectGolden,
   DEFAULT_LAUNCH_TTL_SECONDS,
@@ -308,6 +309,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const visibility: Visibility = args.private ? "private" : "org";
       const member = resolveCreateOrg(caller.orgs, args.org);
       const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
+      assertGoldenMutation(actor, { orgId: member.orgId, visibility, ownerId: caller.userId, name: args.name });
       const provider = await context.provider({ orgId: member.orgId, visibility, provider: "boat", modal: null });
       const result = await context.goldenCreate.create(
         provider,
@@ -346,6 +348,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (rows.length !== 1 || !rows[0]) throw new ToolError("not_found", `No golden named '${args.name}'.`);
       const existingGolden = rows[0];
       const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
+      assertGoldenMutation(actor, existingGolden);
       const provider = await context.provider(existingGolden);
       const result = await context.goldenCreate.create(
         provider,
@@ -377,7 +380,9 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (rows.length !== 1 || !rows[0]) throw new ToolError("not_found", `No golden named '${args.name}'.`);
       const golden = rows[0];
       const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
+      assertGoldenMutation(actor, golden);
       const provider = await context.provider(golden);
+      await data.goldens.assertBackendBinding?.(golden, provider);
       let target = golden;
       if (!target.providerSandboxId) target = (await connectGolden(provider, data.goldens, actor, target.name)).golden;
       if (!target.providerSandboxId) throw new ToolError("conflict", `Golden '${target.name}' has no sandbox yet.`);

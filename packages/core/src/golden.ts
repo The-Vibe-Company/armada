@@ -41,6 +41,8 @@ export interface GoldenRecord {
 }
 
 export interface GoldenStore {
+  /** Server-side account binding guard. No adoption of legacy rows. */
+  assertBackendBinding?(golden: GoldenRecord, provider: Provider): Promise<void>;
   list(orgId: string): Promise<GoldenRecord[]>;
   /**
    * Every visible golden of this name, on every provider. An org golden and the caller's private one can
@@ -165,7 +167,8 @@ export async function connectGolden(
   limits: GoldenLimits = {},
 ): Promise<{ golden: GoldenRecord; sandbox: SandboxInfo }> {
   const golden = await oneVisible(store, actor.orgId, parseGoldenName(name), providerIdOf(provider));
-  assertCanChange(actor, golden);
+  assertGoldenMutation(actor, golden);
+  await store.assertBackendBinding?.(golden, provider);
   if (!golden.providerSandboxId) {
     throw new GoldenError("conflict", `Golden '${golden.name}' has no sandbox yet.`);
   }
@@ -197,7 +200,8 @@ export async function snapshotGolden(
   limits: GoldenLimits = {},
 ): Promise<SnapshottedGolden> {
   const golden = await oneVisible(store, actor.orgId, parseGoldenName(name), providerIdOf(provider));
-  assertCanChange(actor, golden);
+  assertGoldenMutation(actor, golden);
+  await store.assertBackendBinding?.(golden, provider);
   if (!golden.providerSandboxId) {
     throw new GoldenError("conflict", `Golden '${golden.name}' has no sandbox yet. Create it first.`);
   }
@@ -257,6 +261,7 @@ async function goldenRow(
   }
   const row = existing[0];
   if (!row) return store.insert({ orgId: actor.orgId, ownerId: actor.userId, ...identity, config });
+  assertGoldenMutation(actor, row);
   if (!sameBinding(row.modal, identity.modal)) {
     throw new GoldenError("conflict", `Golden '${name}' is pinned to another Modal App. Use another name.`);
   }
@@ -307,7 +312,11 @@ function sameBinding(a: ModalBinding | null, b: ModalBinding | null): boolean {
   return a?.workspace === b?.workspace && a?.environment === b?.environment && a?.appId === b?.appId;
 }
 
-function assertCanChange(actor: GoldenActor, golden: GoldenRecord): void {
+export function assertGoldenMutation(
+  actor: GoldenActor,
+  golden: Pick<GoldenRecord, "orgId" | "visibility" | "ownerId" | "name">,
+): void {
+  if (actor.orgId !== golden.orgId) throw new GoldenError("not_found", "No such golden.");
   if (golden.visibility === "private") {
     if (golden.ownerId !== actor.userId) throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
     return;

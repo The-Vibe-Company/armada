@@ -1,6 +1,6 @@
 import type { Visibility } from "./contract.ts";
 import type { GoldenActor, GoldenLimits, GoldenRecord } from "./golden.ts";
-import { waitSnapshot } from "./golden.ts";
+import { assertGoldenMutation, waitSnapshot } from "./golden.ts";
 import { assignDirs, type GitHubGoldenConfig, GOLDEN_ROOT, GoldenError, parseGoldenName } from "./golden-config.ts";
 import { GITHUB_TOKEN_PATTERN } from "./golden-scan.ts";
 import type { Provider } from "./provider.ts";
@@ -74,11 +74,9 @@ export class GoldenCreateService {
       const existing = input.existingGolden;
       if (existing.orgId !== actor.orgId || existing.name !== input.name)
         throw new GoldenError("forbidden", "You cannot rebuild this golden.");
-      if (
-        (existing.visibility === "org" && actor.role !== "admin") ||
-        (existing.visibility === "private" && existing.ownerId !== actor.userId)
-      )
-        throw new GoldenError("forbidden", "You cannot rebuild this golden.");
+      assertGoldenMutation(actor, existing);
+      if (existing.visibility !== input.visibility)
+        throw new GoldenError("forbidden", "You cannot change this golden visibility.");
     }
     if (input.visibility === "org" && actor.role !== "admin")
       throw new GoldenError("forbidden", "Only an admin can create an org golden.");

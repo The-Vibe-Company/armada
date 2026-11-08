@@ -480,3 +480,38 @@ test("connect fallback still denies a private golden to another member", async (
     code: "not_found",
   });
 });
+
+test("core mutations reject an out-of-org row even if a privileged store returns it", async () => {
+  const row: GoldenRecord = {
+    id: "foreign",
+    orgId: "another-org",
+    name: "web",
+    visibility: "org",
+    ownerId: ADMIN,
+    provider: "boat",
+    providerSandboxId: "master",
+    providerSnapshotId: "saved",
+    modal: null,
+    config: configFromFlags([WEB], []),
+    createdAt: "2026-11-08T00:00:00Z",
+  };
+  let effects = 0;
+  const store: GoldenStore = { ...memory([], admin), findByName: async () => [row] };
+  const provider = {
+    ...scripted().provider,
+    get: async () => {
+      effects++;
+      throw new Error("provider touched");
+    },
+    snapshot: async () => {
+      effects++;
+      throw new Error("provider touched");
+    },
+  };
+  await expect(connectGolden(provider, store, admin, "web")).rejects.toMatchObject({ code: "not_found" });
+  await expect(snapshotGolden(provider, store, admin, "web")).rejects.toMatchObject({ code: "not_found" });
+  await expect(
+    createGolden(provider, store, admin, { name: "web", visibility: "org", config: row.config }),
+  ).rejects.toMatchObject({ code: "not_found" });
+  expect(effects).toBe(0);
+});

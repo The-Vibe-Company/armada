@@ -12,7 +12,7 @@ export {
   mintInstallationToken,
   revokeInstallationToken,
 } from "./github-installation.ts";
-export { createGoldenCreateService, type GoldenCreateOptions } from "./golden-create.ts";
+export { assertGoldenBackendBinding, createGoldenCreateService, type GoldenCreateOptions } from "./golden-create.ts";
 export {
   type AuthorizedRepo,
   type GoldenCreateDeps,
