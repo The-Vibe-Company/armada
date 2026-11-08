@@ -14,7 +14,7 @@ import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
-import { type ControlOptions, controlOptionsFromEnv, handleControlRequest } from "../src/index.ts";
+import { type ControlOptions, controlOptionsFromEnv, createSqlData, handleControlRequest } from "../src/index.ts";
 
 const KEY = Buffer.alloc(32, 5).toString("base64");
 const STAN = "11111111-1111-4111-8111-111111111111";
@@ -401,6 +401,53 @@ describe("control API", () => {
     });
   });
 
+  test("golden/list uses MCP visibility rules and service-token org scope", async () => {
+    await withServer(async ({ db, options }) => {
+      const orgA = (await options.store.createOrg("A", STAN)).id;
+      const orgB = (await options.store.createOrg("B", STAN)).id;
+      await db.query("insert into members (org_id, user_id, role) values ($1, $2, 'member')", [orgA, ADA]);
+      options.authStore.addMembership(ADA, { orgId: orgA, name: "A", role: "member" });
+      const config = JSON.stringify({
+        repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }],
+        init: [],
+      });
+      await db.query(
+        `insert into goldens (org_id, name, visibility, owner_id, config) values
+         ($1, 'shared', 'org', $2, $3::jsonb), ($1, 'stan-private', 'private', $2, $3::jsonb),
+         ($1, 'ada-private', 'private', $4, $3::jsonb), ($5, 'other-org', 'org', $2, $3::jsonb)`,
+        [orgA, STAN, config, ADA, orgB],
+      );
+      const session = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: ADA })).replace(/=+$/, "")}.sig`;
+      const list = (authorization: string) =>
+        handleControlRequest(
+          new Request("https://armada.test/api/v1/golden/list", { method: "POST", headers: { authorization } }),
+          options,
+        );
+      const sessionResponse = await list(`Bearer ${session}`);
+      if (!sessionResponse) throw new Error("missing response");
+      expect(sessionResponse.status).toBe(200);
+      expect(
+        ((await sessionResponse.json()) as { goldens: { name: string }[] }).goldens.map((golden) => golden.name),
+      ).toEqual(["ada-private", "shared"]);
+      const service = generateToken("service");
+      options.authStore.addMembership(STAN, { orgId: orgA, name: "A", role: "admin" });
+      await options.authStore.insertToken("service", {
+        userId: STAN,
+        orgId: orgA,
+        hash: await sha256Hex(service),
+        label: "ci",
+        createdAt: new Date().toISOString(),
+      });
+      const serviceResponse = await list(`Bearer ${service}`);
+      if (!serviceResponse) throw new Error("missing response");
+      expect(serviceResponse.status).toBe(200);
+      expect(
+        ((await serviceResponse.json()) as { goldens: { name: string }[] }).goldens.map((golden) => golden.name),
+      ).toEqual(["shared", "stan-private"]);
+      expect((await list(""))?.status).toBe(401);
+    });
+  });
+
   test("accepts a service token but keeps it scoped to its verified org", async () => {
     await withServer(async ({ options }) => {
       await options.store.createOrg("A", STAN);
@@ -629,7 +676,7 @@ async function withServer(
       supabase: { supabaseUrl: "https://supabase.test", anonKey: "anon", fetch: supabase },
       store: createSqlVaultStore(db),
       encryptionKey: KEY,
-      fetch: supabase,
+      data: createSqlData(db),
     };
     const cli = (userId: string, opts: { session?: boolean; armadaUrl?: boolean; token?: string } = {}): Who => {
       const who: Who = {

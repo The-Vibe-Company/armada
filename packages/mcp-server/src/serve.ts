@@ -46,6 +46,7 @@ export async function startServer(
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     store,
     encryptionKey: config.encryptionKey,
+    data,
     github: { app: githubApp },
     providerFor,
     goldenCreate,

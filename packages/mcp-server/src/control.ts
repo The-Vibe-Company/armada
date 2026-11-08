@@ -36,6 +36,7 @@ import {
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
+import type { DataSource } from "./data.ts";
 import { bunSql } from "./sql.ts";
 
 export const CONTROL_PREFIX = "/api/v1/";
@@ -46,6 +47,8 @@ export interface ControlOptions {
   authStore: AuthStore;
   supabase: SupabaseProject;
   now?: () => Date;
+  /** Scoped golden/sandbox queries shared with MCP. */
+  data?: DataSource;
   /** Service-role access: orgs, members and ciphertext. See `createSqlVaultStore`. */
   store: VaultStore;
   /**
@@ -165,11 +168,46 @@ async function dispatch(
       return resolveLaunch(options, caller, body, org);
     case "logs/read":
       return readLogs(options, caller, required(body, "id"), body);
+    case "golden/list":
+      return listGoldens(options, caller);
     case "golden/create":
       return createGoldenRoute(options, caller, body);
     default:
       return undefined;
   }
+}
+
+/** The same visibility-filtered representation returned by MCP golden_list. */
+async function listGoldens(options: ControlOptions, caller: Caller): Promise<{ goldens: GoldenJson[] }> {
+  if (!options.data) throw new VaultError("unavailable", "Golden listing is not configured on this server.");
+  const data = options.data(caller);
+  const goldens = [];
+  for (const { orgId } of caller.orgs) goldens.push(...(await data.goldens.list(orgId)));
+  return { goldens: goldens.map(goldenJson) };
+}
+
+export interface GoldenJson {
+  name: string;
+  orgId: string;
+  visibility: Visibility;
+  ownerId: string;
+  boatSnapshotId: string | null;
+  boatSandboxId: string | null;
+  repos: number;
+  config: { repos: { url: string; branch: string; dir: string }[]; init: string[] };
+}
+
+function goldenJson(row: import("@armada/core/server").GoldenRecord): GoldenJson {
+  return {
+    name: row.name,
+    orgId: row.orgId,
+    visibility: row.visibility,
+    ownerId: row.ownerId,
+    boatSnapshotId: row.boatSnapshotId,
+    boatSandboxId: row.boatSandboxId,
+    repos: row.config.repos.length,
+    config: row.config,
+  };
 }
 
 /**
