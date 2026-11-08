@@ -17,6 +17,7 @@ export interface GoldenBackendSlot {
     orgId: string;
     ownerId: string;
   }): Promise<string>;
+  reserveExisting(input: { provider: string; backendId: string; capacity: number; goldenId: string }): Promise<string>;
   finalize(reservationId: string, goldenId: string): Promise<void>;
   release(reservationId: string): Promise<void>;
 }
@@ -132,6 +133,15 @@ export function sqlGoldenBackendSlots(sql: Sql): GoldenBackendSlot {
         [input.provider, input.backendId, input.capacity, input.orgId, input.ownerId],
       );
       const id = result.rows[0]?.reserve_golden_backend_slot;
+      if (!id) throw new GoldenError("conflict", "This backend has reached its golden capacity.");
+      return id;
+    },
+    async reserveExisting(input) {
+      const result = await sql.query<{ reserve_existing_golden_backend_slot: string }>(
+        "select public.reserve_existing_golden_backend_slot($1, $2, $3, $4::uuid)",
+        [input.provider, input.backendId, input.capacity, input.goldenId],
+      );
+      const id = result.rows[0]?.reserve_existing_golden_backend_slot;
       if (!id) throw new GoldenError("conflict", "This backend has reached its golden capacity.");
       return id;
     },
