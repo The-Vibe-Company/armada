@@ -1,7 +1,7 @@
 import type { Visibility } from "./contract.ts";
 import type { GoldenActor, GoldenLimits } from "./golden.ts";
 import { waitSnapshot } from "./golden.ts";
-import { assignDirs, GOLDEN_ROOT, GoldenError, type GitHubGoldenConfig, parseGoldenName } from "./golden-config.ts";
+import { assignDirs, type GitHubGoldenConfig, GOLDEN_ROOT, GoldenError, parseGoldenName } from "./golden-config.ts";
 import { GITHUB_TOKEN_PATTERN } from "./golden-scan.ts";
 import type { Provider } from "./provider.ts";
 

@@ -371,3 +371,14 @@ test("Claude steers natively, Codex by restarting its turn, and neither can ask 
 test("Boat supports one independent golden", () => {
   expect(createBoatProvider({ apiKey: "masked" }).maxGoldens).toBe(1);
 });
+
+test("maps GET /me to a non-secret backend identity", async () => {
+  const provider = createBoatProvider({
+    apiKey: "masked",
+    fetch: (async (input: string | URL | Request) => {
+      expect(String(input)).toContain("/me");
+      return Response.json({ ok: true, type: "user.info", user: { id: "account_123", email: "private@example.test" } });
+    }) as unknown as typeof fetch,
+  });
+  expect(await provider.backendIdentity?.()).toEqual({ id: "account_123" });
+});

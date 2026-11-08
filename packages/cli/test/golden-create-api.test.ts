@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { memorySessionStore } from "@armada/auth";
 import { run } from "../src/run.ts";
+
 const token = "armada_sk_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO12";
 test("golden create maps positional config to API with token-only auth", async () => {
   const calls: Request[] = [];
