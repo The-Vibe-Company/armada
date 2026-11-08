@@ -15,7 +15,9 @@ describe("golden and snapshots", () => {
     });
     const [request] = boat.requests;
     expect(request).toMatchObject({ method: "POST", path: "/api/v1/sandboxes" });
-    expect(request?.body).toEqual({ ttlSeconds: 3600, name: "web-golden", labels: { armada: "1" } });
+    expect(request?.body).toEqual({ ttlSeconds: 3600, noEnv: true, name: "web-golden", labels: { armada: "1" } });
+    expect(request?.body).not.toHaveProperty("env");
+    expect(request?.body).not.toHaveProperty("environment");
     expect(request?.headers.get("authorization")).toBe(`Bearer ${KEY}`);
     expect(request?.headers.get("idempotency-key")).toBe("key-1");
     expect(info).toMatchObject({ id: ID, state: "starting", providerState: "provisioning", labels: { armada: "1" } });
@@ -60,6 +62,21 @@ describe("golden and snapshots", () => {
     expect(boat.requests[1]?.body).toEqual({ from: "web-golden", ttlSeconds: 3600 });
   });
 
+  test("fork can refuse the account environment and still pass Armada's own env", async () => {
+    const boat = fakeBoat({ status: 202, body: { ok: true, type: "sandbox.created", sandbox: sandbox() } });
+    await boat.provider.fork({
+      from: "web-golden",
+      noEnv: true,
+      env: { ANTHROPIC_API_KEY: "sk-fake" },
+    });
+    expect(boat.requests[0]?.body).toEqual({
+      from: "web-golden",
+      ttlSeconds: 3600,
+      noEnv: true,
+      env: { ANTHROPIC_API_KEY: "sk-fake" },
+    });
+  });
+
   test.each([0, -5, 1.5, 2_592_001])("a TTL of %p is refused before any request", async (ttlSeconds) => {
     const boat = fakeBoat();
     const error = await boat.provider.fork({ from: "g", ttlSeconds }).catch((e: unknown) => e);
@@ -100,6 +117,17 @@ describe("sandboxes", () => {
       "failed",
       "starting",
     ]);
+  });
+
+  test("get reports the ssh endpoint when the machine has no public IPv4", async () => {
+    const boat = fakeBoat({
+      body: {
+        ok: true,
+        type: "sandbox.info",
+        sandbox: sandbox({ state: "idle", sshEndpoint: "ssh.example:2222" }),
+      },
+    });
+    expect(await boat.provider.get(ID)).toMatchObject({ state: "ready", sshEndpoint: "ssh.example:2222" });
   });
 
   test("list filters by labels and states and pages with boat's cursor", async () => {

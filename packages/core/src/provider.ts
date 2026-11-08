@@ -13,7 +13,11 @@ export interface Provider {
   /** What each harness can do here. Callers branch on this, never on the harness name. */
   readonly capabilities: Readonly<Record<Harness, HarnessCapabilities>>;
 
-  /** Starts a blank sandbox to build a golden in. It is not frozen until `snapshot`. */
+  /**
+   * Starts a blank sandbox to build a golden in. It is not frozen until `snapshot`.
+   * The sandbox gets none of the account's secrets or model credentials (`noEnv`).
+   * Callers inject credentials later, per sandbox, through `fork`'s `env`.
+   */
   createGolden(request: CreateGoldenRequest): Promise<SandboxInfo>;
   /** Freezes a sandbox under a name. The save runs after the call returns: poll `getSnapshot` until it settles. */
   snapshot(request: SnapshotRequest): Promise<SnapshotInfo>;
@@ -87,6 +91,8 @@ export interface SandboxInfo {
   stoppedAt?: Date;
   /** When the provider stops it by itself (the TTL). */
   expiresAt?: Date;
+  /** `host:port` of the SSH server when the machine has no public IPv4. */
+  sshEndpoint?: string;
 }
 
 export interface SnapshotInfo {
@@ -124,6 +130,12 @@ export interface ForkRequest {
   labels?: Record<string, string>;
   /** Environment variables of this sandbox only: the way credentials reach it. Values are secrets. */
   env?: Record<string, string>;
+  /**
+   * Give the sandbox none of the account's secrets. A fork of a no-env sandbox stays no-env;
+   * pass this anyway so a snapshot that was saved wrong cannot leak the account.
+   * `env` still applies and is how Armada injects its own credentials.
+   */
+  noEnv?: boolean;
   ttlSeconds?: number;
   idempotencyKey?: string;
 }

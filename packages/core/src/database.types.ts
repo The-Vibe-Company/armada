@@ -41,6 +41,7 @@ export type Database = {
           boat_snapshot_id: string | null;
           config: Json;
           created_at: string;
+          boat_sandbox_id: string | null;
         };
         Insert: {
           id?: string;
@@ -51,6 +52,7 @@ export type Database = {
           boat_snapshot_id?: string | null;
           config?: Json;
           created_at?: string;
+          boat_sandbox_id?: string | null;
         };
         Update: {
           id?: string;
@@ -61,6 +63,7 @@ export type Database = {
           boat_snapshot_id?: string | null;
           config?: Json;
           created_at?: string;
+          boat_sandbox_id?: string | null;
         };
         Relationships: [
           {
