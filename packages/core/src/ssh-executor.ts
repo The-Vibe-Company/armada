@@ -57,6 +57,8 @@ export async function sshStdinCheckout(
         "-p",
         ep.port,
         `user@${ep.host}`,
+        "bash",
+        "-c",
         remote,
       ],
       `${input.token}\n${pub.trim()}\n${input.script}`,
