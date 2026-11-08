@@ -4,9 +4,11 @@ import { isPublicPath, originFromHeaders, safeNextPath } from "../src/lib/routes
 const headers = (values: Record<string, string>) => ({ get: (name: string) => values[name.toLowerCase()] ?? null });
 
 describe("routes", () => {
-  test("only the login and auth paths are open to a signed-out visitor", () => {
-    expect(["/login", "/login/", "/auth/callback", "/auth/signout"].every(isPublicPath)).toBe(true);
-    expect(["/", "/sandboxes", "/loginx", "/api/sandboxes/1/events", "/authors"].some(isPublicPath)).toBe(false);
+  test("login, auth and the GitHub callback are open to a signed-out visitor", () => {
+    expect(["/login", "/login/", "/auth/callback", "/auth/signout", "/github/callback"].every(isPublicPath)).toBe(true);
+    expect(
+      ["/", "/sandboxes", "/loginx", "/api/sandboxes/1/events", "/authors", "/github/connect"].some(isPublicPath),
+    ).toBe(false);
   });
 
   test("a next path is kept only when it stays on this site", () => {

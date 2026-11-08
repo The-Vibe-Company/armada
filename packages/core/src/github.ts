@@ -1,3 +1,4 @@
+import { redact } from "./credentials.ts";
 import { decryptSecret, EncryptionKeyError, encryptSecret } from "./crypto.ts";
 
 /**
@@ -10,7 +11,10 @@ import { decryptSecret, EncryptionKeyError, encryptSecret } from "./crypto.ts";
 export const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
 const GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token";
 const GITHUB_USER_URL = "https://api.github.com/user";
+const GITHUB_INSTALLATIONS_URL = "https://api.github.com/user/installations";
 const REQUEST_TIMEOUT_MS = 15_000;
+const INSTALLATIONS_PER_PAGE = 100;
+const INSTALLATIONS_MAX_PAGES = 10;
 const MAX_ATTEMPTS = 3;
 
 export const GITHUB_CLIENT_ID_ENV = "GITHUB_APP_CLIENT_ID";
@@ -41,10 +45,20 @@ export type GitHubAuthErrorCode =
 export class GitHubAuthError extends Error {
   override readonly name = "GitHubAuthError";
   readonly code: GitHubAuthErrorCode;
+  /** GitHub's `error` code, when the failure was an OAuth error response. Never a token. */
+  readonly oauthError?: string;
+  /** GitHub's `error_description`, with token-shaped text removed. Never a token or client secret. */
+  readonly oauthErrorDescription?: string;
 
-  constructor(code: GitHubAuthErrorCode, message: string, options?: { cause?: unknown }) {
+  constructor(
+    code: GitHubAuthErrorCode,
+    message: string,
+    options?: { cause?: unknown; oauthError?: string; oauthErrorDescription?: string },
+  ) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.code = code;
+    if (options?.oauthError) this.oauthError = options.oauthError;
+    if (options?.oauthErrorDescription) this.oauthErrorDescription = options.oauthErrorDescription;
   }
 }
 
@@ -133,12 +147,13 @@ async function requestTokens(
     throw new GitHubAuthError("unavailable", `GitHub answered ${response.status} without a token.`);
   }
   if (typeof body.error === "string") {
+    const oauth = oauthErrorOptions(body.error, body.error_description, app.clientSecret);
     const code = errors[body.error];
-    if (code) throw new GitHubAuthError(code, `GitHub refused the authorization (${body.error}).`);
+    if (code) throw new GitHubAuthError(code, `GitHub refused the authorization (${body.error}).`, oauth);
     if (body.error === "incorrect_client_credentials" || body.error === "redirect_uri_mismatch") {
-      throw new GitHubAuthError("misconfigured", `The GitHub App is set up wrong (${body.error}).`);
+      throw new GitHubAuthError("misconfigured", `The GitHub App is set up wrong (${body.error}).`, oauth);
     }
-    throw new GitHubAuthError("unavailable", `GitHub refused the request (${body.error}).`);
+    throw new GitHubAuthError("unavailable", `GitHub refused the request (${body.error}).`, oauth);
   }
   const { access_token: accessToken, refresh_token: refreshToken, expires_in: expiresIn } = body;
   if (typeof accessToken !== "string" || accessToken === "") {
@@ -160,6 +175,51 @@ async function requestTokens(
   };
 }
 
+/** One installation of a GitHub App the user can access. `repositorySelection` is all repositories or a chosen set. */
+export interface GitHubInstallation {
+  id: number;
+  appId: number;
+  appSlug: string;
+  accountLogin: string;
+  accountType: "User" | "Organization";
+  repositorySelection: "all" | "selected";
+}
+
+/**
+ * Installations of GitHub Apps the user token can access (`GET /user/installations`).
+ * Pages until a short page or {@link INSTALLATIONS_MAX_PAGES}. An entry that is not one of ours is skipped;
+ * a response that is not the list at all is an outage.
+ */
+export async function fetchGitHubInstallations(
+  accessToken: string,
+  options: { fetch?: typeof fetch } = {},
+): Promise<GitHubInstallation[]> {
+  const fetchImpl = options.fetch ?? fetch;
+  const installations: GitHubInstallation[] = [];
+  for (let page = 1; page <= INSTALLATIONS_MAX_PAGES; page++) {
+    const url = `${GITHUB_INSTALLATIONS_URL}?per_page=${INSTALLATIONS_PER_PAGE}&page=${page}`;
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        headers: githubApiHeaders(accessToken),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      throw new GitHubAuthError("unavailable", "GitHub could not be reached.", { cause: error });
+    }
+    const body: unknown = await response.json().catch(() => null);
+    if (!response.ok || !isRecord(body) || !Array.isArray(body.installations)) {
+      throw new GitHubAuthError("unavailable", `GitHub did not list installations (${response.status}).`);
+    }
+    for (const item of body.installations) {
+      const installation = parseInstallation(item);
+      if (installation) installations.push(installation);
+    }
+    if (body.installations.length < INSTALLATIONS_PER_PAGE) break;
+  }
+  return installations;
+}
+
 /** Who a user access token belongs to. */
 export async function fetchGitHubUser(
   accessToken: string,
@@ -168,12 +228,7 @@ export async function fetchGitHubUser(
   let response: Response;
   try {
     response = await (options.fetch ?? fetch)(GITHUB_USER_URL, {
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${accessToken}`,
-        "user-agent": "armada",
-        "x-github-api-version": "2022-11-28",
-      },
+      headers: githubApiHeaders(accessToken),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
@@ -356,4 +411,60 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function githubApiHeaders(accessToken: string): Record<string, string> {
+  return {
+    accept: "application/vnd.github+json",
+    authorization: `Bearer ${accessToken}`,
+    "user-agent": "armada",
+    "x-github-api-version": "2022-11-28",
+  };
+}
+
+/** Keeps GitHub's OAuth error code and description, and strips anything token-shaped or the client secret. */
+function oauthErrorOptions(
+  error: string,
+  description: unknown,
+  clientSecret: string,
+): { oauthError: string; oauthErrorDescription?: string } {
+  const oauthErrorDescription = oauthErrorText(description, clientSecret);
+  return oauthErrorDescription ? { oauthError: error, oauthErrorDescription } : { oauthError: error };
+}
+
+function oauthErrorText(value: unknown, clientSecret: string): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const cleaned = redact(value, [clientSecret])
+    .replaceAll(/\p{Cc}/gu, " ")
+    .trim()
+    .slice(0, 300);
+  return cleaned || undefined;
+}
+
+function parseInstallation(value: unknown): GitHubInstallation | null {
+  if (!isRecord(value) || !isRecord(value.account)) return null;
+  const id = positiveId(value.id);
+  const appId = positiveId(value.app_id);
+  const appSlug = typeof value.app_slug === "string" ? value.app_slug.trim() : "";
+  const accountLogin = typeof value.account.login === "string" ? value.account.login.trim() : "";
+  const accountType = accountKind(value.account.type) ?? accountKind(value.target_type);
+  const repositorySelection =
+    value.repository_selection === "all" || value.repository_selection === "selected"
+      ? value.repository_selection
+      : null;
+  if (id === null || appId === null || !isGitHubSlug(appSlug) || !isGitHubSlug(accountLogin)) return null;
+  if (!accountType || !repositorySelection) return null;
+  return { id, appId, appSlug, accountLogin, accountType, repositorySelection };
+}
+
+function accountKind(value: unknown): "User" | "Organization" | null {
+  return value === "User" || value === "Organization" ? value : null;
+}
+
+function isGitHubSlug(value: string): boolean {
+  return /^[A-Za-z0-9-]+$/.test(value);
+}
+
+function positiveId(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
 }

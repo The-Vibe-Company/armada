@@ -10,7 +10,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getGitHubConnection } from "@/lib/data/github";
 import { requireViewer } from "@/lib/data/viewer";
-import { GITHUB_RESULT_MESSAGES, githubInstallUrl, isGitHubResult } from "@/lib/github";
+import {
+  GITHUB_RESULT_MESSAGES,
+  githubInstallationManageUrl,
+  githubInstallUrl,
+  isGitHubResult,
+  storedGitHubInstallations,
+} from "@/lib/github";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -24,6 +30,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const installUrl = githubInstallUrl(process.env.GITHUB_APP_SLUG);
   const result = isGitHubResult(params.github) ? GITHUB_RESULT_MESSAGES[params.github] : null;
   const revoked = connection?.revoked_at != null;
+  const installations = connection && !revoked ? storedGitHubInstallations(connection.installations) : [];
 
   return (
     <>
@@ -99,13 +106,74 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             </div>
           )}
 
+          {connection && !revoked && installations.length === 0 && (
+            <Alert variant="destructive" data-github-installations="missing">
+              <AlertDescription>
+                The Armada GitHub App is not installed on an account you can access, so sandboxes cannot push to your
+                repositories.
+                {installUrl ? (
+                  <>
+                    {" "}
+                    <a href={installUrl} className="underline underline-offset-4" target="_blank" rel="noreferrer">
+                      Install the app
+                    </a>
+                    .
+                  </>
+                ) : null}
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {installations.length > 0 && (
+            <ul className="space-y-2" data-github-installations="ready">
+              {installations.map((installation) => {
+                const manage = githubInstallationManageUrl({
+                  id: installation.id,
+                  account: installation.account,
+                  accountType: installation.account_type,
+                });
+                return (
+                  <li
+                    key={installation.id}
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3"
+                    data-github-installation={installation.account}
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <p className="text-sm font-medium">{installation.account}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {installation.account_type === "Organization" ? "Organization" : "Account"} ·{" "}
+                        {installation.repository_selection === "all" ? "All repositories" : "Selected repositories"}
+                      </p>
+                    </div>
+                    {manage && (
+                      <Button variant="outline" size="sm" asChild>
+                        <a href={manage} target="_blank" rel="noreferrer">
+                          Manage installation
+                        </a>
+                      </Button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
           <p className="text-sm text-muted-foreground">
             Armada can only act on repositories where the Armada GitHub App is installed and you have access.
-            {installUrl ? (
+            {installUrl && installations.length === 0 && !(connection && !revoked) ? (
               <>
                 {" "}
                 <a href={installUrl} className="underline underline-offset-4" target="_blank" rel="noreferrer">
                   Install the app on your repositories
+                </a>
+                .
+              </>
+            ) : null}
+            {installUrl && installations.length > 0 ? (
+              <>
+                {" "}
+                <a href={installUrl} className="underline underline-offset-4" target="_blank" rel="noreferrer">
+                  Install it on another account
                 </a>
                 .
               </>

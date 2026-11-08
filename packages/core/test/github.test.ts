@@ -7,8 +7,10 @@ import {
   EncryptionKeyError,
   encryptSecret,
   exchangeGitHubCode,
+  fetchGitHubInstallations,
   GITHUB_NOT_CONNECTED,
   type GitHubApp,
+  GitHubAuthError,
   type GitHubConnectionStore,
   type GitHubResolveDeps,
   githubAppFromEnv,
@@ -174,6 +176,34 @@ describe("GitHub access at launch", () => {
     expect(tokens.refreshExpiresAt).toBeNull();
   });
 
+  test("a refused token keeps GitHub's error code and description, never the secret or a token", async () => {
+    const world = await setup({});
+    const secretInText = `client secret ${APP.clientSecret} and ${ACCESS_1}`;
+    world.github.refreshes.push({
+      error: "incorrect_client_credentials",
+      error_description: secretInText,
+      access_token: ACCESS_1,
+    });
+    const error = await exchangeGitHubCode(
+      APP,
+      { code: "code-1", redirectUri: "https://armada.test/cb" },
+      {
+        fetch: world.github.fetch,
+      },
+    ).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(GitHubAuthError);
+    if (!(error instanceof GitHubAuthError)) return;
+    expect(error.code).toBe("misconfigured");
+    expect(error.oauthError).toBe("incorrect_client_credentials");
+    expect(error.oauthErrorDescription).toBe("client secret *** and ***");
+    expect(error.oauthErrorDescription).not.toContain(APP.clientSecret);
+    expect(error.oauthErrorDescription).not.toContain(ACCESS_1);
+    expect(error.message).not.toContain(APP.clientSecret);
+  });
+
   test("the App comes from two environment variables", () => {
     expect(githubAppFromEnv({ GITHUB_APP_CLIENT_ID: " id ", GITHUB_APP_CLIENT_SECRET: "secret" })).toEqual({
       clientId: "id",
@@ -185,6 +215,61 @@ describe("GitHub access at launch", () => {
   test("GitHub tokens are masked in any output, known or not", () => {
     const text = `GH_TOKEN=${ACCESS_1} and ${REFRESH_1} and github_pat_11AAAAAAAAAAAAAAAAAAAA_bbbbbbbbbbbb`;
     expect(redact(text, [])).toBe("GH_TOKEN=*** and *** and ***");
+  });
+});
+
+describe("installations visible to a user token", () => {
+  const installation = (id: number, slug: string) => ({
+    id,
+    app_id: slug === "armada-tvc" ? 4242 : 7,
+    app_slug: slug,
+    account: { login: id % 2 === 0 ? "acme" : "octocat", type: id % 2 === 0 ? "Organization" : "User" },
+    repository_selection: id % 2 === 0 ? "selected" : "all",
+    target_type: id % 2 === 0 ? "Organization" : "User",
+  });
+
+  test("lists every page and keeps only installations the response describes", async () => {
+    const calls: { url: string; authorization: string }[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      calls.push({ url, authorization: new Headers(init?.headers).get("authorization") ?? "" });
+      const page = Number(new URL(url).searchParams.get("page"));
+      if (page === 1) {
+        return Response.json({
+          installations: [
+            installation(1, "armada-tvc"),
+            { id: 2, app_slug: "broken" },
+            ...Array.from({ length: 99 }, (_, index) => installation(index + 3, "other-app")),
+          ],
+        });
+      }
+      return Response.json({ installations: [installation(200, "armada-tvc")] });
+    }) as typeof fetch;
+
+    const list = await fetchGitHubInstallations(ACCESS_1, { fetch: fetchImpl });
+
+    expect(calls.map((call) => call.authorization)).toEqual([`Bearer ${ACCESS_1}`, `Bearer ${ACCESS_1}`]);
+    expect(calls[0]?.url).toBe("https://api.github.com/user/installations?per_page=100&page=1");
+    expect(calls[1]?.url).toBe("https://api.github.com/user/installations?per_page=100&page=2");
+    expect(list).toHaveLength(101);
+    expect(list[0]).toEqual({
+      id: 1,
+      appId: 4242,
+      appSlug: "armada-tvc",
+      accountLogin: "octocat",
+      accountType: "User",
+      repositorySelection: "all",
+    });
+    expect(list.at(-1)?.id).toBe(200);
+    expect(JSON.stringify(calls)).not.toContain(APP.clientSecret);
+  });
+
+  test("a list GitHub will not give is an outage", async () => {
+    const fetchImpl = (async () =>
+      Response.json({ message: "Bad credentials" }, { status: 401 })) as unknown as typeof fetch;
+    await expect(fetchGitHubInstallations(ACCESS_1, { fetch: fetchImpl })).rejects.toMatchObject({
+      code: "unavailable",
+    });
   });
 });
 

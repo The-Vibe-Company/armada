@@ -50,6 +50,7 @@ export type {
 } from "./database.types.ts";
 export {
   exchangeGitHubCode,
+  fetchGitHubInstallations,
   fetchGitHubUser,
   GH_MISSING_NOTE,
   GITHUB_AUTHORIZE_URL,
@@ -62,6 +63,7 @@ export {
   GitHubAuthError,
   type GitHubAuthErrorCode,
   type GitHubConnectionStore,
+  type GitHubInstallation,
   type GitHubResolveDeps,
   type GitHubStatus,
   type GitHubTokenSet,
