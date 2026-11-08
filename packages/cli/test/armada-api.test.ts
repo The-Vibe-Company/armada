@@ -67,3 +67,32 @@ describe("Armada API client", () => {
     }
   });
 });
+
+describe("API client origin and session safety", () => {
+  test("does not read a malformed saved session when ARMADA_TOKEN is set", async () => {
+    let reads = 0;
+    const client = await createArmadaApiClient({
+      env: { ARMADA_TOKEN: token },
+      session: {
+        read: async () => {
+          reads += 1;
+          throw new Error("stale session must not be read");
+        },
+        write: async () => undefined,
+        clear: async () => undefined,
+      },
+      fetch: async () => Response.json({ ok: true }),
+    });
+    await client.request("/api/v1/golden/list");
+    expect(reads).toBe(0);
+  });
+
+  test("refuses protocol-relative and backslash paths that escape the API origin", async () => {
+    const client = await createArmadaApiClient({
+      ...io({ ARMADA_TOKEN: token }),
+      fetch: async () => Response.json({}),
+    });
+    await expect(client.request("//evil.example/steal")).rejects.toThrow("stay on the Armada origin");
+    await expect(client.request("/\\evil.example/steal")).rejects.toThrow("stay on the Armada origin");
+  });
+});

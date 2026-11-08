@@ -5,13 +5,13 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 
 export interface ArmadaApiIo {
   env: NodeJS.ProcessEnv;
-  fetch: typeof fetch;
+  fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   session: SessionStore;
   timeoutMs?: number;
 }
 
 export interface ArmadaApiOptions {
-  /** The CLI --url value. It takes precedence over ARMADA_URL and a saved session origin. */
+  /** The CLI --url value. It takes precedence over ARMADA_URL and the default origin. */
   url?: string;
 }
 
@@ -27,8 +27,11 @@ export interface ArmadaApiClient {
  * clean HOME. A saved login is the fallback. The token is never retained in thrown errors.
  */
 export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiOptions = {}): Promise<ArmadaApiClient> {
-  const origin = armadaApiUrl(options.url ?? io.env.ARMADA_URL ?? (await io.session.read())?.armadaUrl);
-  const token = io.env.ARMADA_TOKEN || (await io.session.read())?.accessToken;
+  // An explicit environment token needs no HOME/session read and never inherits a stale session origin.
+  const environmentToken = io.env.ARMADA_TOKEN;
+  const saved = environmentToken ? null : await io.session.read();
+  const origin = armadaApiUrl(options.url ?? io.env.ARMADA_URL);
+  const token = environmentToken || saved?.accessToken;
   if (!token) throw new AuthError("Set ARMADA_TOKEN or run armada login.", "unauthorized");
   const timeoutMs = io.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
@@ -74,8 +77,10 @@ export function armadaApiUrl(value: string | undefined): string {
 }
 
 function apiUrl(origin: string, path: string): URL {
-  if (!path.startsWith("/") || path.startsWith("//")) throw new AuthError("API paths must start with '/'.", "usage");
-  return new URL(path, origin);
+  if (!path.startsWith("/")) throw new AuthError("API paths must start with '/'.", "usage");
+  const url = new URL(path, origin);
+  if (url.origin !== origin) throw new AuthError("API paths must stay on the Armada origin.", "usage");
+  return url;
 }
 
 function headers(value: RequestInit["headers"]): Record<string, string> {

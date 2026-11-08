@@ -36,6 +36,7 @@ import {
 import { startServer } from "@armada/mcp-server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { flag, parseArgs, single, values } from "./args.ts";
+import { createArmadaApiClient } from "./armada-api.ts";
 import {
   type AuthIo,
   loginCommand,
@@ -354,8 +355,19 @@ async function snapshot(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps, 
 
 async function list(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Promise<number> {
   if (args.positionals.length > 0) throw new GoldenError("invalid_config", "golden list takes no name.");
-  const { store, actor } = await session(args, io, deps);
-  const rows = await store.list(actor.orgId);
+  const auth = authOf(io, deps);
+  const client = await createArmadaApiClient({
+    env: auth.env,
+    fetch: deps.fetch ?? auth.fetch,
+    session: auth.session,
+    ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
+  });
+  const result = await client.request<{ goldens: GoldenRecord[] }>("/api/v1/golden/list", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }) }),
+  });
+  const rows = result.goldens;
   if (flag(args, "--json")) {
     io.out(`${JSON.stringify(rows.map(jsonGolden), null, 2)}\n`);
     return 0;
