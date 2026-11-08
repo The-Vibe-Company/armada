@@ -40,7 +40,7 @@ export async function scanGoldenSandbox(provider: Provider, sandboxId: string): 
     // covered far more thoroughly, uncompressed, by the object scan below.
     "for root in $roots; do",
     '  [ -d "$root" ] || continue',
-    '  grep -rlaE --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev --exclude-dir=.git "$pattern" "$root" >/dev/null 2>/dev/null',
+    '  grep -rlaE --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev "$pattern" "$root" >/dev/null 2>/dev/null',
     "  status=$?",
     '  if [ "$status" -eq 0 ]; then exit 97; fi',
     '  if [ "$status" -gt 1 ]; then exit 95; fi',
