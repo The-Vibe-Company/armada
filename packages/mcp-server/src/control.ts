@@ -1,4 +1,4 @@
-import { type AuthStore, createSqlAuthStore, refreshSupabaseSession, supabaseAuthorizeUrl, assertProvider, type Session } from "@armada/auth";
+import { type AuthStore, createSqlAuthStore, refreshSupabaseSession, exchangeSupabaseCode, supabaseAuthorizeUrl, assertProvider, type Session } from "@armada/auth";
 import {
   addMember,
   connectGolden,
@@ -79,6 +79,7 @@ export interface ControlOptions {
   providerFor?: (apiKey: string) => Provider;
   /** Server-side native-session refresh; never exposed to the CLI. */
   refreshNative?: (refreshToken: string) => Promise<{ accessToken: string; refreshToken: string; expiresAt: string }>;
+  exchangeNative?: (code: string, verifier: string) => Promise<{ accessToken: string; refreshToken: string; expiresAt: string }>;
 }
 
 const STATUS: Record<VaultErrorCode, number> = {
@@ -110,6 +111,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   if (!url.pathname.startsWith(CONTROL_PREFIX)) return null;
   const route = url.pathname.slice(CONTROL_PREFIX.length);
   if (route === "auth/authorize") return authorizeRoute(request, options);
+  if (route === "auth/exchange") return exchangeRoute(request, options);
   if (route === "auth/refresh") return refreshRoute(request, options);
   if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
   try {
@@ -128,6 +130,35 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     }
     return fail(500, "unavailable", "The server could not complete the request.");
   }
+}
+
+async function exchangeRoute(request: Request, options: ControlOptions): Promise<Response> {
+  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
+  try {
+    const body = await readBody(request);
+    const code = required(body, "code");
+    const verifier = required(body, "verifier");
+    if (code.length > 4096 || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) throw new VaultError("invalid", "Invalid login exchange.");
+    const result = options.exchangeNative
+      ? await options.exchangeNative(code, verifier)
+      : await nativeExchange(options, code, verifier);
+    return Response.json(result, { headers: { "cache-control": "no-store" } });
+  } catch (error) {
+    if (error instanceof VaultError) return fail(400, error.code, error.message);
+    return fail(401, "unauthorized", "Login exchange was refused.");
+  }
+}
+
+async function nativeExchange(options: ControlOptions, code: string, verifier: string) {
+  const session = await exchangeSupabaseCode({
+    fetch: options.supabase.fetch ?? fetch,
+    supabaseUrl: options.supabase.supabaseUrl,
+    anonKey: options.supabase.anonKey,
+    code,
+    verifier,
+    now: options.now?.() ?? new Date(),
+  });
+  return { accessToken: session.accessToken, refreshToken: session.refreshToken, expiresAt: session.expiresAt };
 }
 
 function authorizeRoute(request: Request, options: ControlOptions): Response {

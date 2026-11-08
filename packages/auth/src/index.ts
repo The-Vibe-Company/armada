@@ -20,6 +20,7 @@ export {
   assertEmailCode,
   assertProvider,
   assertSupabaseUrl,
+  exchangeSupabaseCode,
   supabaseAuthorizeUrl,
   type Provider,
   refreshSupabaseSession,
