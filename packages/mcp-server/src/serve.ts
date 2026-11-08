@@ -1,4 +1,4 @@
-import { createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
+import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
 import {
   createGoldenCreateService,
   createSqlVaultStore,
@@ -64,6 +64,11 @@ export async function startServer(
   };
   const handler = createHandler({
     publicUrl: config.publicUrl,
+    loginProviders: (env.ARMADA_AUTH_PROVIDERS ?? "")
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean)
+      .map(assertProvider),
     oauth: oauthOptionsFromEnv({ store: authStore, env: { ...env, ARMADA_PUBLIC_URL: config.publicUrl } }),
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },

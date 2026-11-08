@@ -1,5 +1,7 @@
 import { type AuthStore, handleOAuthRequest, type OAuthServerOptions, oauthChallenge } from "@armada/auth";
 import {
+  CLIENT_CONFIG_PATH,
+  type ClientConfig,
   type CredentialReader,
   type GoldenCreateService,
   type LaunchOptions,
@@ -28,6 +30,8 @@ export type Route = (request: Request) => Promise<Response | null>;
 
 export interface HandlerOptions {
   publicUrl: string;
+  /** Enabled social login providers. Empty by default: email login always works. */
+  loginProviders?: ClientConfig["providers"];
   oauth: OAuthServerOptions;
   /** Token and membership lookup: service role, so it can read a token row by hash. */
   authStore: AuthStore;
@@ -66,6 +70,16 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
 
   return async (request) => {
     const url = new URL(request.url);
+    if (url.pathname === CLIENT_CONFIG_PATH) {
+      const config: ClientConfig = {
+        version: 1,
+        supabaseUrl: options.supabase.supabaseUrl,
+        anonKey: options.supabase.anonKey,
+        controlUrl: new URL(options.publicUrl).origin,
+        providers: options.loginProviders ?? [],
+      };
+      return Response.json(config, { headers: { "cache-control": "no-store" } });
+    }
     if (url.pathname === HEALTH_PATH) {
       return Response.json({ ok: true, version: VERSION }, { headers: { "cache-control": "no-store" } });
     }

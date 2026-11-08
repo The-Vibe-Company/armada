@@ -1,3 +1,4 @@
+import { CLIENT_CONFIG_PATH } from "@armada/core";
 import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 import { supabaseEnv } from "@/lib/env";
@@ -6,6 +7,7 @@ import type { Database } from "@/lib/supabase/types";
 
 /** Refreshes the session cookie on every request and sends signed-out visitors to the login page. */
 export async function proxy(request: NextRequest) {
+  if (request.nextUrl.pathname === CLIENT_CONFIG_PATH) return NextResponse.next();
   const { url, anonKey } = supabaseEnv();
   let response = NextResponse.next({ request });
 

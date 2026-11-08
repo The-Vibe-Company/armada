@@ -3,6 +3,13 @@ import { alert, reset, signIn } from "./helpers";
 
 test.beforeEach(reset);
 
+test("CLI discovery is public and does not create an authentication cookie", async ({ request }) => {
+  const response = await request.get("/.well-known/armada.json", { maxRedirects: 0 });
+  expect(response.status()).toBe(200);
+  expect(response.headers()["set-cookie"]).toBeUndefined();
+  expect(await response.json()).toMatchObject({ version: 1, controlUrl: "http://127.0.0.1:54399" });
+});
+
 test("a signed-out visitor is sent to the login page and back after signing in", async ({ page }) => {
   await page.goto("/credentials");
   await expect(page).toHaveURL(/\/login\?next=%2Fcredentials/);

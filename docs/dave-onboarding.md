@@ -6,44 +6,44 @@ This guide takes a new user from nothing to a coding agent running on boat.dev t
 | --- | --- |
 | Armada server (control API, OAuth, health) | `https://armada-mcp-production.up.railway.app` |
 | MCP endpoint (Streamable HTTP) | `https://armada-mcp-production.up.railway.app/mcp` |
-| npm package | `@thevibecompany/armada` (the `armada` command) |
+| npm package | `@the-vibe-company/armada` (the `armada` command) |
 
 `curl https://armada-mcp-production.up.railway.app/healthz` answers `{"ok":true,"version":"…"}` when the server is up.
 
 ## 1. Install the CLI
 
-The package ships a prebuilt binary for linux and macOS (x64 and arm64), so it needs neither Bun nor a build. Version 2 is a prerelease, published under the `next` dist-tag (docs/releasing.md):
+The package ships a prebuilt binary for linux and macOS (x64 and arm64), so it needs neither Bun nor a build. Version 2 replaces the legacy CLI under the `latest` dist-tag (docs/releasing.md):
 
 ```sh
-npx @thevibecompany/armada@next --help        # run once, with Node 18 or later
-bun x @thevibecompany/armada@next --help      # or with Bun
-npm install --global @thevibecompany/armada@next
+npx @the-vibe-company/armada --help        # run once, with Node 18 or later
+bun x @the-vibe-company/armada --help      # or with Bun
+npm install --global @the-vibe-company/armada
 armada --version
 ```
 
-Do not install with `--omit=optional`: the binary is the optional dependency `@thevibecompany/armada-<os>-<arch>` that matches your machine. If `bun x` says that package is not installed, clear Bun's `bunx` cache (`rm -rf "${TMPDIR:-/tmp}"/bunx-*`) and run it again.
+Do not install with `--omit=optional`: the binary is the optional dependency `@the-vibe-company/armada-<os>-<arch>` that matches your machine. If `bun x` says that package is not installed, clear Bun's `bunx` cache (`rm -rf "${TMPDIR:-/tmp}"/bunx-*`) and run it again.
 
 From a clone of this repository, `bun run armada <args>` runs the same CLI from source.
 
 ## 2. Point the CLI at production
 
-Every signed-in command reads these from the environment. Put them in your shell profile:
+The CLI discovers its public authentication settings from the Armada URL. No Supabase environment variables are needed:
 
 ```sh
-export ARMADA_URL=https://armada-mcp-production.up.railway.app
-export SUPABASE_URL=<the production Supabase project URL>
-export SUPABASE_ANON_KEY=<the production Supabase anon key>
+armada login --url armada.thevibecompany.co
 ```
 
-`SUPABASE_URL` and `SUPABASE_ANON_KEY` are the production project's URL and public anon key (Supabase dashboard, Project Settings, API). Ask an Armada admin for them. Do not commit them to a repository. The CLI never takes a service role key or the encryption key, and it doesn't need them.
+The production URL above is the default for `armada login`. For another deployment use `--url <url>` or `ARMADA_URL`. The URL must use HTTPS, except for localhost during development. Both the dashboard and the MCP server serve `/.well-known/armada.json`; the dashboard advertises its configured `ARMADA_MCP_URL` as the control API origin. Deploy this endpoint before using URL-based login. It exposes only the public Supabase URL, public anon key, enabled login providers and control API origin.
 
 ## 3. Sign in
 
+On an email-only deployment the CLI asks for your email. You can also provide it directly:
+
 ```sh
-armada login --email you@example.com
+armada login --url armada.thevibecompany.co --email you@example.com
 ```
 
-Supabase sends a sign-in email. Either click the link (it signs in through a local page on `127.0.0.1`), or type the code from the email at the prompt. The session is saved in `~/.config/armada/session.json` (`$XDG_CONFIG_HOME/armada` when set) and is refreshed automatically. `armada login` with no flag signs in with GitHub or Google in the browser instead (`--provider github|google`). `armada logout` deletes the session.
+Supabase sends a sign-in email. Click its link or type the code at the prompt. Enabled social providers are available with `--provider github|google`. The session and public discovery settings are saved in `~/.config/armada/session.json` (`$XDG_CONFIG_HOME/armada` when set), with owner-only permissions. Subsequent commands reuse the saved control API address and refresh the session automatically without Supabase variables. `armada logout` deletes the session. Explicit `SUPABASE_URL` and `SUPABASE_ANON_KEY` remain supported for legacy local setups when neither `--url` nor `ARMADA_URL` is supplied.
 
 This first sign-in creates your Armada account. You must do it before anyone can add you to an org.
 

@@ -17,9 +17,9 @@ const CODES: readonly VaultErrorCode[] = [
  * service role key and no encryption key: the server checks who you are and does what needs them.
  */
 export async function control<T>(auth: AuthIo, route: string, body: Record<string, unknown>): Promise<T> {
-  const base = auth.env.ARMADA_URL;
-  if (!base) throw new AuthError("Set ARMADA_URL to the Armada server.", "usage");
   const { session } = await signedIn(auth);
+  const base = session.armadaUrl ?? auth.env.ARMADA_URL;
+  if (!base) throw new AuthError("Run armada login --url <url> to select the Armada server.", "usage");
   let response: Response;
   try {
     response = await auth.fetch(new URL(`/api/v1/${route}`, base), {
