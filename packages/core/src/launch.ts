@@ -20,6 +20,7 @@ import {
 } from "./golden.ts";
 import { GOLDEN_ROOT, GoldenError, initCommand, pullCommand, type ShellCommand } from "./golden-config.ts";
 import { LaunchError } from "./launch-error.ts";
+import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import type { Provider } from "./provider.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
 
@@ -38,6 +39,10 @@ export interface LaunchRequest {
   /** With a prompt the agent starts at once. Without one the sandbox is left ready for the first `send`. */
   prompt?: string;
   ttlSeconds?: number;
+  /** A model of `MODEL_CATALOG` for this harness. Default: the harness's default model. */
+  model?: string;
+  /** An effort the model accepts. Default: the harness's default effort. */
+  reasoningEffort?: string;
 }
 
 /** Resolves what the sandbox receives. `armada launch` builds it from `resolveCredentials`. */
@@ -97,6 +102,7 @@ export async function launchSandbox(
   const harness = checkHarness(provider, request.harness);
   const ttlSeconds = checkTtl(request.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS);
   const prompt = checkPrompt(request.prompt);
+  const choice = checkModel(provider, harness, request);
 
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden);
   if (golden.visibility === "private" && golden.ownerId !== actor.userId) {
@@ -137,6 +143,8 @@ export async function launchSandbox(
       ownerId: actor.userId,
       harness,
       status: "starting",
+      model: choice.model,
+      reasoningEffort: choice.reasoningEffort,
     });
   } catch (error) {
     await quietly(() => provider.delete({ sandboxId: forked.id }));
@@ -164,11 +172,13 @@ export async function launchSandbox(
         undefined,
       );
     }
-    const receipt = await provider.prompt({ sandboxId: ready.id, harness, text: prompt }).catch((error: unknown) => {
-      throw new LaunchError("prompt_failed", `The agent could not be started: ${redact(messageOf(error), secrets)}`, {
-        cause: error,
+    const receipt = await provider
+      .prompt({ sandboxId: ready.id, harness, text: prompt, ...choice })
+      .catch((error: unknown) => {
+        throw new LaunchError("prompt_failed", `The agent could not be started: ${redact(messageOf(error), secrets)}`, {
+          cause: error,
+        });
       });
-    });
     await stores.sandboxes.update(record.id, { status: "running", conversationIds: [receipt.conversationId] });
     return finish(
       record,
@@ -322,6 +332,15 @@ function checkHarness(provider: Provider, harness: string): Harness {
     throw new LaunchError("invalid_request", `Unknown agent '${harness}'. Use one of: ${HARNESSES.join(", ")}.`);
   }
   return harness as Harness;
+}
+
+/** Before anything is allocated: an unknown model or effort is refused, never replaced by another. */
+function checkModel(provider: Provider, harness: Harness, request: LaunchRequest): ModelChoice {
+  const choice = resolveModelChoice(harness, request);
+  if (!provider.capabilities[harness].reasoningEffort) {
+    throw new LaunchError("invalid_request", `${provider.id} cannot set a reasoning effort for ${harness}.`);
+  }
+  return choice;
 }
 
 function checkTtl(ttlSeconds: number): number {

@@ -1,14 +1,16 @@
-import type { Golden } from "@armada/core";
+import { type Golden, MODEL_CATALOG } from "@armada/core";
 import { GlobeIcon, LockIcon } from "lucide-react";
 import type { Metadata } from "next";
 import { setGoldenVisibility } from "@/app/actions/goldens";
 import { ActionForm, SubmitButton } from "@/components/action-form";
+import { LaunchDialog } from "@/components/launch-dialog";
 import { Empty, PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { listGoldens } from "@/lib/data/goldens";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, type Membership, memberDirectory, requireViewer } from "@/lib/data/viewer";
+import { mcpUrl } from "@/lib/env";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Goldens" };
@@ -89,6 +91,7 @@ function Section({ title, description, goldens, orgs, directory, viewerId }: Sec
                 <TableHead>Snapshot</TableHead>
                 <TableHead>Org</TableHead>
                 <TableHead>Owner</TableHead>
+                <TableHead>Launch</TableHead>
                 <TableHead className="text-right">Visibility change</TableHead>
               </TableRow>
             </TableHeader>
@@ -144,6 +147,15 @@ function GoldenRow({
       </TableCell>
       <TableCell>{membership?.org.name ?? "Unknown"}</TableCell>
       <TableCell>{displayUser(directory, golden.owner_id, viewerId)}</TableCell>
+      <TableCell>
+        {golden.boat_snapshot_id && mcpUrl() !== null ? (
+          <LaunchDialog golden={golden.name} orgId={golden.org_id} catalog={MODEL_CATALOG} />
+        ) : (
+          <span className="text-xs text-muted-foreground">
+            {golden.boat_snapshot_id ? "Server not set" : "Snapshot first"}
+          </span>
+        )}
+      </TableCell>
       <TableCell className="text-right">
         {!isOwner ? (
           <span className="text-xs text-muted-foreground">Owner only</span>

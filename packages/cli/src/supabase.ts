@@ -44,7 +44,7 @@ interface RestInit {
 const SELECT = "id,org_id,name,visibility,owner_id,boat_snapshot_id,boat_sandbox_id,config,created_at";
 
 const SANDBOX_SELECT =
-  "id,boat_id,golden_id,org_id,owner_id,harness,status,conversation_ids,created_at,stopped_at,deleted_at";
+  "id,boat_id,golden_id,org_id,owner_id,harness,status,conversation_ids,created_at,stopped_at,deleted_at,model,reasoning_effort";
 
 export interface SupabaseSession {
   store: GoldenStore;
@@ -188,6 +188,8 @@ function supabaseSandboxes(
           owner_id: input.ownerId,
           harness: input.harness,
           status: input.status,
+          model: input.model,
+          reasoning_effort: input.reasoningEffort,
         },
       });
       const row = rows[0];

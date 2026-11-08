@@ -121,6 +121,13 @@ export {
   MAX_LAUNCH_TTL_SECONDS,
 } from "./launch.ts";
 export { LaunchError, type LaunchErrorCode } from "./launch-error.ts";
+export {
+  type HarnessModels,
+  MODEL_CATALOG,
+  type ModelChoice,
+  type ModelOption,
+  resolveModelChoice,
+} from "./models.ts";
 export { dedupeEvents, type PromptOutcome, promptOutcome } from "./outcome.ts";
 export {
   type AgentEvent,

@@ -1,3 +1,4 @@
+import { MODEL_CATALOG } from "@armada/core";
 import { ArrowLeftIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -51,6 +52,8 @@ export default async function SandboxPage({ params }: Props) {
     ["Golden", golden?.name ?? "Unknown"],
     ["Org", org?.org.name ?? "Unknown"],
     ["Harness", sandbox.harness],
+    ["Model", sandbox.model ?? "Provider default"],
+    ["Reasoning effort", sandbox.reasoning_effort ?? "Provider default"],
     ["Owner", displayUser(directory, sandbox.owner_id, viewer.id)],
     ["Created", formatDate(sandbox.created_at)],
     ["Stopped", sandbox.stopped_at ? formatDate(sandbox.stopped_at) : "Not stopped"],
@@ -73,7 +76,15 @@ export default async function SandboxPage({ params }: Props) {
             <h1 className="font-mono text-xl font-semibold tracking-tight">{sandbox.boat_id}</h1>
             <StatusBadge status={sandbox.status} />
           </div>
-          {configured && <SandboxActions sandboxId={sandbox.id} status={sandbox.status} />}
+          {configured && (
+            <SandboxActions
+              sandboxId={sandbox.id}
+              status={sandbox.status}
+              harness={sandbox.harness}
+              catalog={MODEL_CATALOG}
+              launchedModel={sandbox.model}
+            />
+          )}
         </div>
       </div>
 
