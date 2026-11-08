@@ -6,7 +6,7 @@ import { errorBody, fakeBoat, KEY, sandbox } from "./support.ts";
 const ID = "bx_23456789";
 
 describe("golden and snapshots", () => {
-  test("createGolden starts a blank sandbox with an explicit TTL, labels and an idempotency key", async () => {
+  test("createGolden starts a no-env sandbox with an explicit TTL, labels and an idempotency key", async () => {
     const boat = fakeBoat({ status: 202, body: { ok: true, type: "sandbox.created", sandbox: sandbox() } });
     const info = await boat.provider.createGolden({
       name: "web-golden",
@@ -15,7 +15,8 @@ describe("golden and snapshots", () => {
     });
     const [request] = boat.requests;
     expect(request).toMatchObject({ method: "POST", path: "/api/v1/sandboxes" });
-    expect(request?.body).toEqual({ ttlSeconds: 3600, name: "web-golden", labels: { armada: "1" } });
+    expect(request?.body).toEqual({ ttlSeconds: 3600, noEnv: true, name: "web-golden", labels: { armada: "1" } });
+    expect(request?.body).not.toHaveProperty("env");
     expect(request?.headers.get("authorization")).toBe(`Bearer ${KEY}`);
     expect(request?.headers.get("idempotency-key")).toBe("key-1");
     expect(info).toMatchObject({ id: ID, state: "starting", providerState: "provisioning", labels: { armada: "1" } });

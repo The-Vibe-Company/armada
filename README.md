@@ -7,7 +7,7 @@ Armada is a launcher, not an orchestrator: it does not split work, merge pull re
 - **Specification (v0):** [#455](https://github.com/The-Vibe-Company/armada/issues/455)
 - **This scaffold:** [#456](https://github.com/The-Vibe-Company/armada/issues/456)
 
-> **Status:** scaffold. The binary only answers `--version` and `--help`. The commands of the spec land ticket by ticket (see #455).
+> **Status:** scaffold plus golden commands (`armada golden create|connect|snapshot|list`, #459). Launch, auth and the MCP server land in later tickets (see #455).
 
 ## Layout
 
@@ -40,6 +40,7 @@ bun run format           # Biome, with safe fixes applied
 bun run typecheck        # tsc --noEmit, strict
 bun run verify           # lint, typecheck and tests: what CI runs
 bun run armada --help    # the CLI from source
+bun run armada golden list
 
 bun run build                        # dist/armada for this machine
 bun run build --target linux-arm64   # dist/armada-linux-arm64

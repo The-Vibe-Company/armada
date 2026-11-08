@@ -9,7 +9,8 @@ Armada v1 (the fleet orchestrator) is archived at the tag `armada-v1-final`. Its
 - `packages/core` (`@armada/core`): the shared contract (types, the version). No I/O. `src/provider.ts` is the `Provider` interface (goldens, sandboxes, prompts, events by cursor), the common `AgentEvent` stream, per-harness capabilities and `ProviderError`. `src/database.types.ts` is generated from the Supabase migrations (`bun run db:types`).
 - `supabase/migrations`: the Supabase CLI migrations. Schema first, then row level security. A fresh Supabase database already has `auth.users`, `auth.uid()` and the `authenticated` and `service_role` roles.
 - `packages/provider-boat` (`@armada/provider-boat`): the boat.dev provider adapter over `@boatdev/sdk` (`createBoatProvider`; `src/errors.ts` maps boat errors, `src/events.ts` normalizes events). Unit tests run the real SDK against a fake `fetch`; `test/integration.test.ts` is opt-in (`BOAT_API_KEY`).
-- `packages/cli` (`@armada/cli`): the `armada` command. `src/run.ts` takes its I/O as arguments; `src/main.ts` wires the process and is the binary's entry.
+- `packages/cli` (`@armada/cli`): the `armada` command. `src/run.ts` takes its I/O as arguments; `src/main.ts` wires the process and is the binary's entry. Golden commands (`src/golden-command.ts`, store in `src/golden-store.ts`) create, connect, snapshot and list. Until auth lands they read `ARMADA_ORG_ID`, `ARMADA_USER_ID`, `ARMADA_ROLE`, `ARMADA_DATABASE_URL` and `BOAT_API_KEY` from the environment. The boat key calls the API and is never sent into a sandbox.
+- `packages/core/src/golden.ts`: golden config (repos and init, secret-like keys refused), the namespaced boat snapshot name, visibility (a private golden is visible to its owner only) and the create, connect, snapshot, list and resolve operations. `resolveGolden` is what launch uses to refuse a private golden.
 - `packages/mcp-server` (`@armada/mcp-server`): the remote MCP server.
 - `scripts/build.ts`: compiles the binary with `bun build --compile` (linux and macOS, x64 and arm64).
 
@@ -26,7 +27,7 @@ Armada v1 (the fleet orchestrator) is archived at the tag `armada-v1-final`. Its
 
 - **One binary.** The CLI and the MCP server ship as the single `armada` executable from `bun build --compile`. Code in it may use Bun APIs; a dependency must bundle into it.
 - **One version.** Every `packages/*/package.json` carries the same version; `@armada/core` exports it and `armada --version` prints it.
-- **Secrets never in the repository.** Keys come from the environment or Armada's encrypted store; never print one, never write one into a file, a fixture or a log. Goldens hold no secrets. In the database a secret is ciphertext (`bytea`, `*_enc`) or a token hash, and a user JWT cannot read the ciphertext columns.
+- **Secrets never in the repository.** Keys come from the environment or Armada's encrypted store; never print one, never write one into a file, a fixture or a log. Golden config holds repos and init, never a secret. A golden build sandbox is created no-env, so the boat account's model credentials are not part of the snapshot; repo `.env` files placed before snapshot are. In the database a secret is ciphertext (`bytea`, `*_enc`) or a token hash, and a user JWT cannot read the ciphertext columns.
 - **Schema changes are new migrations.** Never edit a migration that has been applied. Row level security is the access rule: members see org resources, a private resource is visible only to its owner, and only an admin changes an org golden, the members or an org key.
 - **Tests earn their place.** One test per behaviour at the cheapest boundary, no network, no wall-clock waits.
 - **English** in code, CLI output, docs and comments.

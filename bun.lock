@@ -19,6 +19,7 @@
       },
       "dependencies": {
         "@armada/core": "workspace:*",
+        "@armada/provider-boat": "workspace:*",
       },
     },
     "packages/core": {

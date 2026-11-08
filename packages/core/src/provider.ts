@@ -13,7 +13,11 @@ export interface Provider {
   /** What each harness can do here. Callers branch on this, never on the harness name. */
   readonly capabilities: Readonly<Record<Harness, HarnessCapabilities>>;
 
-  /** Starts a blank sandbox to build a golden in. It is not frozen until `snapshot`. */
+  /**
+   * Starts a blank sandbox to build a golden in. It is not frozen until `snapshot`.
+   * The sandbox is always no-env: none of the account's secrets (model keys, tokens, secret files) are
+   * attached, and a fork of it stays no-env. Pass credentials on `fork` at launch, never here.
+   */
   createGolden(request: CreateGoldenRequest): Promise<SandboxInfo>;
   /** Freezes a sandbox under a name. The save runs after the call returns: poll `getSnapshot` until it settles. */
   snapshot(request: SnapshotRequest): Promise<SnapshotInfo>;

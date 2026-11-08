@@ -165,9 +165,12 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
     capabilities: BOAT_CAPABILITIES,
 
     async createGolden(request: CreateGoldenRequest): Promise<SandboxInfo> {
+      // noEnv is unconditional: a golden must not inherit the boat account's model credentials.
+      // There is no env field on this request, and a fork of a no-env sandbox stays no-env.
       return start(
         {
           ttlSeconds: ttl(request.ttlSeconds, defaultTtl),
+          noEnv: true,
           ...(request.name ? { name: request.name } : {}),
           ...(request.labels ? { labels: request.labels } : {}),
         },
