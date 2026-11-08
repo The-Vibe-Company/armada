@@ -14,6 +14,7 @@ import {
   removeMember,
   resolveBoatKey,
   resolveCredentials,
+  resolveModalTokens,
   type Sql,
   setCredential,
   setMemberRole,
@@ -278,6 +279,46 @@ describe("boat keys", () => {
       expect(await resolveBoatKey(store, KEY, { ...ada, visibility: "org" })).toEqual({
         key: "boat-org",
         scope: "org",
+      });
+    });
+  });
+
+  test("a Modal token pair is stored whole, resolved from one scope, and never reaches a model environment", async () => {
+    await withVault(async ({ store, people }) => {
+      const org = await createOrg(store, people.stan, "Vibe");
+      await addMember(store, people.stan, { org: "Vibe", email: "ada@example.com", role: "member" });
+      const ada = { userId: people.ada, orgId: org.id };
+      const modal = (scope: "user" | "org", who: string, value: string) =>
+        setCredential(store, KEY, who, { scope, org: scope === "org" ? "Vibe" : undefined, kind: "modal", value });
+
+      // Half a pair, or halves that are not Modal's, are refused before anything is stored, without echoing them.
+      for (const value of ["ak-onlytheid01", '{"token_id":"ak-onlytheid01"}', "as-secret0001 ak-reversed01"]) {
+        const refused = await modal("user", people.ada, value).catch((error: Error) => error);
+        expect(refused).toBeInstanceOf(VaultError);
+        expect((refused as Error).message).not.toContain("onlytheid");
+      }
+      expect((await listCredentials(store, people.ada, undefined)).user).toEqual([]);
+
+      await modal("org", people.stan, '{"token_id":"ak-orgtoken01","token_secret":"as-orgsecret01"}');
+      await modal("user", people.ada, "ak-adatoken01 as-adasecret01");
+      const pair = (tokens: { tokenId: string; tokenSecret: string; scope: string }) => [
+        tokens.tokenId,
+        tokens.tokenSecret,
+        tokens.scope,
+      ];
+      expect(pair(await resolveModalTokens(store, KEY, { ...ada, visibility: "private" }))).toEqual([
+        "ak-adatoken01",
+        "as-adasecret01",
+        "user",
+      ]);
+      expect(pair(await resolveModalTokens(store, KEY, { ...ada, visibility: "org" }))).toEqual([
+        "ak-orgtoken01",
+        "as-orgsecret01",
+        "org",
+      ]);
+      // A management credential: no harness resolves it into the sandbox environment.
+      await expect(resolveCredentials(store, KEY, { ...ada, harness: "claude" })).rejects.toMatchObject({
+        code: "missing_credential",
       });
     });
   });

@@ -129,8 +129,8 @@ describe("golden workflow", () => {
     expect(boat.exec.every((call) => call.cwd === GOLDEN_ROOT)).toBe(true);
     expect(boat.exec[0]?.command).toContain("credential.helper=");
     expect(boat.exec[0]?.command).not.toContain("ANTHROPIC");
-    expect(rows[0]?.boatSandboxId).toBe("bx_23456789");
-    expect(rows[0]?.boatSnapshotId).toBeNull();
+    expect(rows[0]?.providerSandboxId).toBe("bx_23456789");
+    expect(rows[0]?.providerSnapshotId).toBeNull();
   });
 
   test("a failed init leaves the sandbox recorded and does not snapshot", async () => {
@@ -143,7 +143,7 @@ describe("golden workflow", () => {
         config: configFromFlags([WEB], ["pnpm i"]),
       }),
     ).rejects.toMatchObject({ code: "setup_failed" });
-    expect(rows[0]?.boatSandboxId).toBe("bx_23456789");
+    expect(rows[0]?.providerSandboxId).toBe("bx_23456789");
     expect(boat.snapshots).toHaveLength(0);
   });
 
@@ -175,10 +175,10 @@ describe("golden workflow", () => {
       snapshotPolls: 5,
     });
     expect(saved.snapshotName).toBe(created.snapshotName);
-    expect(rows[0]?.boatSnapshotId).toBe(saved.snapshotName);
+    expect(rows[0]?.providerSnapshotId).toBe(saved.snapshotName);
     expect(waits).toBe(1);
     const launch = await goldenForLaunch(store, owner, "web");
-    expect(launch.boatSnapshotId).toBe(saved.snapshotName);
+    expect(launch.providerSnapshotId).toBe(saved.snapshotName);
   });
 
   test("a save already in progress is polled instead of started again", async () => {
@@ -294,8 +294,10 @@ function memory(rows: GoldenRecord[], actor: GoldenActor): GoldenStore {
         name: input.name,
         visibility: input.visibility,
         ownerId: input.ownerId,
-        boatSnapshotId: null,
-        boatSandboxId: null,
+        provider: input.provider,
+        providerSnapshotId: null,
+        providerSandboxId: null,
+        modal: input.modal,
         config: input.config,
         createdAt: "2026-11-08T12:00:00.000Z",
       };
@@ -307,15 +309,15 @@ function memory(rows: GoldenRecord[], actor: GoldenActor): GoldenStore {
       if (!row) throw new GoldenError("forbidden", "The golden could not be updated.");
       row.config = config;
     },
-    async setSandbox(id, boatSandboxId) {
+    async setSandbox(id, providerSandboxId) {
       const row = rows.find((item) => item.id === id && writable(item));
       if (!row) throw new GoldenError("forbidden", "The golden could not be updated.");
-      row.boatSandboxId = boatSandboxId;
+      row.providerSandboxId = providerSandboxId;
     },
-    async setSnapshot(id, boatSnapshotId) {
+    async setSnapshot(id, providerSnapshotId) {
       const row = rows.find((item) => item.id === id && writable(item));
       if (!row) throw new GoldenError("forbidden", "The golden could not be updated.");
-      row.boatSnapshotId = boatSnapshotId;
+      row.providerSnapshotId = providerSnapshotId;
     },
   };
 }
@@ -336,7 +338,7 @@ function scripted(
     labels: {},
   });
   const provider = {
-    id: "fake",
+    id: "boat",
     harnesses: ["claude", "codex"],
     capabilities: { claude: caps(), codex: caps() },
     async createGolden(request: {
@@ -431,13 +433,15 @@ describe("GitHub golden normalization", () => {
 
 test("connect restores a stopped master from its saved snapshot", async () => {
   const row: GoldenRecord = {
+    provider: "boat",
+    modal: null,
     id: "g",
     orgId: ORG,
     name: "web",
     visibility: "private",
     ownerId: OWNER,
-    boatSandboxId: "bx_old",
-    boatSnapshotId: "golden-old",
+    providerSandboxId: "bx_old",
+    providerSnapshotId: "golden-old",
     config: configFromFlags([WEB], []),
     createdAt: "now",
   };
@@ -455,18 +459,20 @@ test("connect restores a stopped master from its saved snapshot", async () => {
   } as unknown as Provider;
   const connected = await connectGolden(provider, store, owner, "web", { sleep: async () => {} });
   expect(forked).toBe(true);
-  expect(connected.golden.boatSandboxId).toBe("bx_new");
+  expect(connected.golden.providerSandboxId).toBe("bx_new");
 });
 
 test("connect fallback still denies a private golden to another member", async () => {
   const row: GoldenRecord = {
+    provider: "boat",
+    modal: null,
     id: "g",
     orgId: ORG,
     name: "web",
     visibility: "private",
     ownerId: OWNER,
-    boatSandboxId: "bx_old",
-    boatSnapshotId: "golden-old",
+    providerSandboxId: "bx_old",
+    providerSnapshotId: "golden-old",
     config: configFromFlags([WEB], []),
     createdAt: "now",
   };

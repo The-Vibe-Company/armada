@@ -8,11 +8,17 @@ import {
   type GoldenStore,
   HARNESSES,
   type Harness,
+  isSandboxProvider,
   LaunchError,
   type LaunchResult,
+  MODEL_CATALOG,
   type Provider,
   ProviderError,
+  ProviderRoutingError,
   parseGoldenConfig,
+  resolveModelChoice,
+  SANDBOX_PROVIDERS,
+  type SandboxProviderId,
   type SandboxStore,
   VaultError,
   type VaultStore,
@@ -30,6 +36,7 @@ import {
   tokenList,
   tokenRevoke,
 } from "./auth-commands.ts";
+import { operation } from "./operations.ts";
 import { credsCommand, orgCommand, type VaultIo } from "./vault-commands.ts";
 
 export interface Io {
@@ -78,9 +85,15 @@ Usage:
   armada golden connect <name>             Open the master sandbox to place .env files
   armada golden snapshot <name>            Freeze the master sandbox
   armada golden list [--json]              Goldens you can see
-  armada launch <golden> --agent claude|codex ["prompt"] [--ttl 4h] [--json]
-                                           Fork a golden into a sandbox. With a prompt the agent starts at once;
-                                           without one the sandbox waits, ready, for the first prompt.
+  armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
+                [--provider boat|modal] [--ttl 4h] [--json]        Fork a golden into a sandbox. With a prompt the agent starts at once;
+                                           without one the sandbox waits, ready, for the first prompt. The model
+                                           and effort apply to every later turn too. Defaults:
+                                           ${modelDefaults()}
+  armada list|detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
+  armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
+  armada golden visibility <golden-id> --visibility private|org [--org UUID]
+  armada mcp list|add|update|connect|status|reconnect|disable|revoke|delete [id] [--org UUID] [--file JSON]
   armada logs <sandbox-id> [--all] [--follow] [--json]
                                            Read agent events; --all drains available pages, --follow waits for new pages until settled
   armada login [--url <url>] [--provider github|google | --email <address>]
@@ -102,14 +115,9 @@ Every command after 'armada login' acts as the user who signed in. golden comman
 when you belong to more than one org.
 
 Environment:
-  ARMADA_URL                               Login server (default: https://armada.thevibecompany.co). Also the
-                                           Armada server for armada org, armada creds, armada golden create,
-                                           armada launch and armada logs
-  BOAT_API_KEY                             armada golden connect and armada golden snapshot only; golden
-                                           create does not need it
-  GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY    optional on the server: an installation token for golden create,
-                                           revoked after each use. Without it, checkout uses the caller's own
-                                           GitHub connection instead.
+  ARMADA_TOKEN                             API token for non-interactive authentication. Takes precedence over
+                                           a saved login session.
+  ARMADA_URL                               Armada API server (default: https://armada.thevibecompany.co).
 `;
 
 /** Runs one command line and returns the process exit code. */
@@ -129,6 +137,10 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     if (error instanceof VaultError) {
       io.err(`armada: ${error.message}\n`);
       return error.code === "invalid" ? 2 : 1;
+    }
+    if (error instanceof ProviderRoutingError) {
+      io.err(`armada: ${error.message}\n`);
+      return 1;
     }
     if (error instanceof ProviderError) {
       io.err(`armada: ${error.message}\n`);
@@ -159,6 +171,24 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       return golden(rest, io, deps);
     case "launch":
       return launch(rest, io, deps);
+    case "list":
+    case "detail":
+    case "status":
+    case "send":
+    case "steer":
+    case "interrupt":
+    case "exec":
+    case "stop":
+    case "wait":
+    case "mcp":
+      return operation(command, rest, authOf(io, deps), (path) =>
+        path
+          ? (deps.readFile ?? ((p) => Bun.file(p).text()))(path)
+          : (
+              deps.readStdin ??
+              (() => (process.stdin.isTTY ? Promise.reject(new Error("stdin required")) : Bun.stdin.text()))
+            )(),
+      );
     case "logs":
       return logs(rest, io, deps);
     case "login":
@@ -184,12 +214,31 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     return subcommand === undefined ? 2 : 0;
   }
   const args = parseArgs(rest);
+  providerFlag(args);
   const limits = {
     ...(deps.sleep ? { sleep: deps.sleep } : {}),
     ...(deps.sandboxPolls !== undefined ? { sandboxPolls: deps.sandboxPolls } : {}),
     ...(deps.snapshotPolls !== undefined ? { snapshotPolls: deps.snapshotPolls } : {}),
   };
   switch (subcommand) {
+    case "visibility": {
+      const visibility = single(args, "--visibility");
+      if (visibility !== "org" && visibility !== "private")
+        throw new GoldenError("invalid_config", "Pass --visibility private|org.");
+      const auth = authOf(io, deps);
+      const client = await createArmadaApiClient({
+        env: auth.env,
+        fetch: deps.fetch ?? auth.fetch,
+        session: auth.session,
+      });
+      const result = await client.request("/api/v1/golden/visibility", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: oneName(args.positionals), visibility, org: single(args, "--org") }),
+      });
+      io.out(`${JSON.stringify(result)}\n`);
+      return 0;
+    }
     case "create":
       return create(args.positionals, args, io, deps, limits);
     case "update":
@@ -227,6 +276,7 @@ async function update(positionals: string[], args: ReturnType<typeof parseArgs>,
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         name,
+        ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
         config,
         ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
         ...(setup === undefined ? {} : { setup }),
@@ -274,6 +324,7 @@ async function create(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         name,
+        ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
         config,
         ...(flag(args, "--private") ? { private: true } : {}),
         ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
@@ -297,7 +348,11 @@ async function connect(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps, _
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name, ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }) }),
+      body: JSON.stringify({
+        name,
+        ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
+        ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+      }),
     },
   );
   if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
@@ -314,7 +369,11 @@ async function snapshot(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps):
   const saved = await client.request<{ name: string; snapshot: string }>("/api/v1/golden/snapshot", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name, ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }) }),
+    body: JSON.stringify({
+      name,
+      ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
+      ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+    }),
     signal: AbortSignal.timeout(10 * 60_000),
   });
   io.out(`Snapshotted golden ${saved.name}.\nSaved snapshot: ${saved.snapshot}\n`);
@@ -335,7 +394,7 @@ async function list(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Pro
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }) }),
   });
-  const rows = result.goldens;
+  const rows = result.goldens.filter((row) => providerFlag(args) === undefined || row.provider === providerFlag(args));
   if (flag(args, "--json")) {
     io.out(`${JSON.stringify(rows.map(jsonGolden), null, 2)}\n`);
     return 0;
@@ -366,6 +425,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     throw new GoldenError("invalid_config", "Give a golden name and at most one prompt.");
   }
   const harness = harnessOf(single(args, "--agent"));
+  resolveModelChoice(harness, { model: single(args, "--model"), reasoningEffort: single(args, "--reasoning-effort") });
   const ttl = single(args, "--ttl");
   const ttlSeconds = ttl === undefined ? undefined : parseTtl(ttl);
   const auth = authOf(io, deps);
@@ -380,13 +440,19 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        ...(single(args, "--visibility") ? { visibility: single(args, "--visibility") } : {}),
+        ...(single(args, "--connections") ? { connections: single(args, "--connections")!.split(",") } : {}),
         golden: name,
+        ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
         harness,
+        ...resolveModelChoice(harness, {
+          model: single(args, "--model"),
+          reasoningEffort: single(args, "--reasoning-effort"),
+        }),
         ...(prompt === undefined ? {} : { prompt }),
         ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
         ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
       }),
-      // Golden setup may take minutes. The request itself still has one bounded timeout.
       signal: AbortSignal.timeout(10 * 60_000),
     }),
   );
@@ -395,6 +461,13 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
 }
 
 const FOLLOW_DELAY_MS = 1_000;
+
+type LogsWireResult = {
+  events: Awaited<ReturnType<Provider["events"]>>["events"];
+  cursor: string | null;
+  hasMore: boolean;
+  settled: boolean;
+};
 
 async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const args = parseArgs(argv);
@@ -409,22 +482,25 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
     ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
   });
   let settled = false;
+  let cursor: string | null = null;
   while (!settled) {
-    const result = await client.request<{
-      events: Awaited<ReturnType<Provider["events"]>>["events"];
-      cursor: string | null;
-      hasMore: boolean;
-      settled: boolean;
-    }>("/api/v1/logs/read", {
+    const result: LogsWireResult = await client.request<LogsWireResult>("/api/v1/logs/read", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id, all, follow }),
+      body: JSON.stringify({ id, all, follow, ...(cursor === null ? {} : { cursor }) }),
       // A server-side follow/read may wait for provider events; keep a bounded, endpoint-specific limit.
       signal: AbortSignal.timeout(10 * 60_000),
     });
     if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
     else for (const event of result.events) io.out(`${eventText(event)}\n`);
-    settled = result.settled;
+    const nextCursor: string | null = result.cursor ?? cursor;
+    const progressed = nextCursor !== cursor;
+    if ((all || follow) && result.hasMore && !progressed) {
+      throw new GoldenError("invalid_config", "Armada logs response has more events but did not advance its cursor.");
+    }
+    cursor = nextCursor;
+    const drain = all || follow;
+    settled = !drain || (!result.hasMore && (!follow || result.settled));
     if (!settled)
       await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(FOLLOW_DELAY_MS);
   }
@@ -457,8 +533,9 @@ function launchText(result: LaunchResult): string {
   const lines = [
     `Launched ${sandbox.harness} from golden ${golden.name} (${golden.visibility}).`,
     `Sandbox: ${sandbox.id}`,
-    `Boat sandbox: ${sandbox.boatId}`,
+    `${sandbox.provider === "boat" ? "Boat" : "Modal"} sandbox: ${sandbox.providerSandboxId}`,
     `Status: ${sandbox.status}`,
+    `Model: ${sandbox.model ?? "provider default"} (reasoning effort ${sandbox.reasoningEffort ?? "default"})`,
   ];
   if (result.conversationId) lines.push(`Conversation: ${result.conversationId}`);
   else lines.push("No prompt sent: the sandbox is ready for the first prompt.");
@@ -466,7 +543,7 @@ function launchText(result: LaunchResult): string {
   if (result.github.status === "connected" && result.github.message) lines.push(`Note: ${result.github.message}`);
   lines.push(
     result.expiresAt
-      ? `Stops by itself at ${result.expiresAt.toISOString()} (TTL ${result.ttlSeconds}s).`
+      ? `Stops by itself at ${new Date(result.expiresAt).toISOString()} (TTL ${result.ttlSeconds}s).`
       : `Stops by itself after ${result.ttlSeconds}s.`,
   );
   return `${lines.join("\n")}\n`;
@@ -482,15 +559,19 @@ function jsonLaunch(result: LaunchResult) {
   const { sandbox } = result;
   return {
     id: sandbox.id,
-    boatId: sandbox.boatId,
+    provider: sandbox.provider,
+    providerSandboxId: sandbox.providerSandboxId,
+    boatId: sandbox.provider === "boat" ? sandbox.providerSandboxId : null,
     golden: result.golden.name,
     visibility: result.golden.visibility,
     harness: sandbox.harness,
+    model: sandbox.model,
+    reasoningEffort: sandbox.reasoningEffort,
     status: sandbox.status,
     conversationIds: sandbox.conversationIds,
     promptId: result.promptId ?? null,
     ttlSeconds: result.ttlSeconds,
-    expiresAt: result.expiresAt ? result.expiresAt.toISOString() : null,
+    expiresAt: result.expiresAt ? new Date(result.expiresAt).toISOString() : null,
     github: {
       status: result.github.status,
       login: result.github.login ?? null,
@@ -500,9 +581,9 @@ function jsonLaunch(result: LaunchResult) {
 }
 
 function line(row: GoldenRecord): string {
-  const snapshot = row.boatSnapshotId ? "snapshot" : "no snapshot";
+  const snapshot = row.providerSnapshotId ? "snapshot" : "no snapshot";
   const repos = row.config.repos.length === 1 ? "1 repo" : `${row.config.repos.length} repos`;
-  return `${row.name}  ${row.visibility}  ${snapshot}  ${repos}`;
+  return `${row.name}  ${row.provider}  ${row.visibility}  ${snapshot}  ${repos}`;
 }
 
 function jsonGolden(row: GoldenRecord) {
@@ -510,8 +591,12 @@ function jsonGolden(row: GoldenRecord) {
     name: row.name,
     visibility: row.visibility,
     ownerId: row.ownerId,
-    boatSnapshotId: row.boatSnapshotId,
-    boatSandboxId: row.boatSandboxId,
+    provider: row.provider,
+    providerSnapshotId: row.providerSnapshotId,
+    providerSandboxId: row.providerSandboxId,
+    modal: row.modal,
+    boatSnapshotId: row.provider === "boat" ? row.providerSnapshotId : null,
+    boatSandboxId: row.provider === "boat" ? row.providerSandboxId : null,
     repos: row.config.repos.length,
     config: row.config,
   };
@@ -655,4 +740,17 @@ function vaultIo(io: Io, deps: Deps): VaultIo {
       deps.readStdin ??
       (() => (process.stdin.isTTY ? Promise.reject(new Error("stdin is a terminal")) : Bun.stdin.text())),
   };
+}
+
+function modelDefaults(): string {
+  return Object.entries(MODEL_CATALOG)
+    .map(([h, e]) => `${h} ${e.defaultModel} ${e.defaultReasoningEffort}`)
+    .join(", ");
+}
+function providerFlag(args: ReturnType<typeof parseArgs>): SandboxProviderId | undefined {
+  const value = single(args, "--provider");
+  if (value === undefined) return undefined;
+  if (!isSandboxProvider(value))
+    throw new GoldenError("invalid_config", `--provider is ${SANDBOX_PROVIDERS.join(" or ")}.`);
+  return value;
 }

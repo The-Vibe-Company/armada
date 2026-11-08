@@ -98,7 +98,7 @@ export async function scanGoldenSandbox(provider: Provider, sandboxId: string): 
     sandboxId,
     // Root-owned image files are part of the snapshot. Non-interactive sudo fails closed when
     // unavailable or unauthorized instead of prompting or silently omitting /root.
-    command: `if [ "$(id -u)" -eq 0 ]; then ${shellQuote(script)}; else exec sudo -n bash -c ${shellQuote(script)}; fi`,
+    command: `if [ "$(id -u)" -eq 0 ]; then exec bash -c ${shellQuote(script)}; else exec sudo -n bash -c ${shellQuote(script)}; fi`,
     cwd: "/home/user",
     timeoutSeconds: TIMEOUT_SECONDS,
   });
