@@ -91,6 +91,7 @@ function sandboxInfo(sandbox: Sandbox): SandboxInfo {
   if (sandbox.createdAt) info.createdAt = sandbox.createdAt;
   if (sandbox.stoppedAt) info.stoppedAt = sandbox.stoppedAt;
   if (sandbox.archiveAfter) info.expiresAt = sandbox.archiveAfter;
+  if (sandbox.sshEndpoint) info.sshEndpoint = sandbox.sshEndpoint;
   return info;
 }
 
@@ -165,9 +166,12 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
     capabilities: BOAT_CAPABILITIES,
 
     async createGolden(request: CreateGoldenRequest): Promise<SandboxInfo> {
+      // noEnv is not optional: a golden must not inherit the boat account's model credentials.
+      // There is no `env` and no `environment` here, so nothing from the account is copied onto the disk.
       return start(
         {
           ttlSeconds: ttl(request.ttlSeconds, defaultTtl),
+          noEnv: true,
           ...(request.name ? { name: request.name } : {}),
           ...(request.labels ? { labels: request.labels } : {}),
         },
@@ -201,6 +205,7 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
           ...(request.name ? { name: request.name } : {}),
           ...(request.labels ? { labels: request.labels } : {}),
           ...(request.env ? { env: request.env } : {}),
+          ...(request.noEnv ? { noEnv: true } : {}),
         },
         request.idempotencyKey,
       );

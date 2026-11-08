@@ -17,6 +17,36 @@ export type {
   ServiceToken,
 } from "./database.types.ts";
 export {
+  type CreatedGolden,
+  connectGolden,
+  createGolden,
+  type GoldenActor,
+  type GoldenLimits,
+  type GoldenRecord,
+  type GoldenStore,
+  goldenForLaunch,
+  type SnapshottedGolden,
+  snapshotGolden,
+} from "./golden.ts";
+export {
+  boatSnapshotName,
+  configFromFlags,
+  GOLDEN_BUILD_TTL_SECONDS,
+  GOLDEN_POLL_MS,
+  GOLDEN_ROOT,
+  GOLDEN_SANDBOX_POLLS,
+  GOLDEN_SNAPSHOT_POLLS,
+  type GoldenConfig,
+  GoldenError,
+  type GoldenErrorCode,
+  type GoldenRepo,
+  parseGoldenConfig,
+  parseGoldenName,
+  secretKeyPath,
+  splitRepoArg,
+} from "./golden-config.ts";
+export { createSqlGoldenStore, type Sql } from "./golden-store.ts";
+export {
   type AgentEvent,
   type CreateGoldenRequest,
   type DeleteReceipt,

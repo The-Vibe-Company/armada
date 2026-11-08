@@ -7,7 +7,7 @@ Armada is a launcher, not an orchestrator: it does not split work, merge pull re
 - **Specification (v0):** [#455](https://github.com/The-Vibe-Company/armada/issues/455)
 - **This scaffold:** [#456](https://github.com/The-Vibe-Company/armada/issues/456)
 
-> **Status:** scaffold. The binary only answers `--version` and `--help`. The commands of the spec land ticket by ticket (see #455).
+> **Status:** goldens can be created, connected, snapshotted and listed (`armada golden`). Launch, auth and the MCP server land in later tickets (see #455).
 
 ## Layout
 
@@ -15,7 +15,7 @@ A Bun and TypeScript monorepo (Bun workspaces, strict `tsconfig.json` shared by 
 
 | Package | Name | Role |
 | --- | --- | --- |
-| `packages/core` | `@armada/core` | The contract every other package shares: types (harnesses, visibility, provider, the generated database types), the version. No I/O. |
+| `packages/core` | `@armada/core` | The contract every other package shares: types, the golden config and workflow, the generated database types, the version. No I/O of its own. |
 | `packages/provider-boat` | `@armada/provider-boat` | The boat.dev placement: the provider adapter over the boat.dev API. |
 | `packages/cli` | `@armada/cli` | The `armada` command; `src/main.ts` is the entry of the compiled binary. |
 | `packages/mcp-server` | `@armada/mcp-server` | The remote MCP server (hosted on Railway) that orchestrators call. |
@@ -40,6 +40,10 @@ bun run format           # Biome, with safe fixes applied
 bun run typecheck        # tsc --noEmit, strict
 bun run verify           # lint, typecheck and tests: what CI runs
 bun run armada --help    # the CLI from source
+bun run armada golden create <name> --repo <url>[@branch] --init "<cmd>" [--private]
+bun run armada golden connect <name>
+bun run armada golden snapshot <name>
+bun run armada golden list
 
 bun run build                        # dist/armada for this machine
 bun run build --target linux-arm64   # dist/armada-linux-arm64
