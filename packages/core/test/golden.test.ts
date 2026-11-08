@@ -303,12 +303,12 @@ function memory(rows: GoldenRecord[], actor: GoldenActor): GoldenStore {
       return row;
     },
     async setConfig(id, config) {
-      const row = rows.find((item) => item.id === id && writable(item) && item.boatSandboxId === null);
+      const row = rows.find((item) => item.id === id && writable(item));
       if (!row) throw new GoldenError("forbidden", "The golden could not be updated.");
       row.config = config;
     },
     async setSandbox(id, boatSandboxId) {
-      const row = rows.find((item) => item.id === id && writable(item) && item.boatSandboxId === null);
+      const row = rows.find((item) => item.id === id && writable(item));
       if (!row) throw new GoldenError("forbidden", "The golden could not be updated.");
       row.boatSandboxId = boatSandboxId;
     },
@@ -426,5 +426,51 @@ describe("GitHub golden normalization", () => {
     } catch (error) {
       expect(String(error)).not.toContain("secret");
     }
+  });
+});
+
+test("connect restores a stopped master from its saved snapshot", async () => {
+  const row: GoldenRecord = {
+    id: "g",
+    orgId: ORG,
+    name: "web",
+    visibility: "private",
+    ownerId: OWNER,
+    boatSandboxId: "bx_old",
+    boatSnapshotId: "golden-old",
+    config: configFromFlags([WEB], []),
+    createdAt: "now",
+  };
+  const store = memory([row], owner);
+  let forked = false;
+  const provider = {
+    ...scripted().provider,
+    async get(id: string) {
+      return { id, name: "web", state: id === "bx_old" ? "stopped" : "ready", providerState: "", labels: {} };
+    },
+    async fork(input: { from: string; noEnv: boolean }) {
+      forked = input.from === "golden-old" && input.noEnv;
+      return { id: "bx_new", name: "web", state: "starting", providerState: "", labels: {} };
+    },
+  } as unknown as Provider;
+  const connected = await connectGolden(provider, store, owner, "web", { sleep: async () => {} });
+  expect(forked).toBe(true);
+  expect(connected.golden.boatSandboxId).toBe("bx_new");
+});
+
+test("connect fallback still denies a private golden to another member", async () => {
+  const row: GoldenRecord = {
+    id: "g",
+    orgId: ORG,
+    name: "web",
+    visibility: "private",
+    ownerId: OWNER,
+    boatSandboxId: "bx_old",
+    boatSnapshotId: "golden-old",
+    config: configFromFlags([WEB], []),
+    createdAt: "now",
+  };
+  await expect(connectGolden(scripted().provider, memory([row], member), member, "web")).rejects.toMatchObject({
+    code: "not_found",
   });
 });

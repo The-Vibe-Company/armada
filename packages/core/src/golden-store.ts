@@ -71,11 +71,10 @@ export function createSqlGoldenStore(sql: Sql): GoldenStore {
     },
 
     async setSandbox(id: string, boatSandboxId: string): Promise<void> {
-      await write(
-        sql,
-        `update public.goldens set boat_sandbox_id = $2 where id = $1 and boat_sandbox_id is null returning id`,
-        [id, boatSandboxId],
-      );
+      await write(sql, `update public.goldens set boat_sandbox_id = $2 where id = $1 returning id`, [
+        id,
+        boatSandboxId,
+      ]);
     },
 
     async setSnapshot(id: string, boatSnapshotId: string): Promise<void> {
