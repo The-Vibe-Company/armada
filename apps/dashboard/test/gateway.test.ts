@@ -38,6 +38,25 @@ describe("gateway", () => {
     expect(calls[2]?.headers["mcp-session-id"]).toBe("session-1");
   });
 
+  test("launch and send carry the chosen model and effort as tool arguments", async () => {
+    const { calls, gateway } = server((call) => rpc(call.body.id, { structuredContent: { id: "sandbox-9" } }));
+    const sandboxes = sandboxGateway(gateway);
+    const args = {
+      golden: "web",
+      org: "org-1",
+      harness: "codex" as const,
+      model: "gpt-6.1-sol",
+      reasoning_effort: "medium",
+    };
+    expect(await sandboxes.launch(args)).toEqual({ id: "sandbox-9" });
+    await sandboxes.send("sandbox-9", "go", { reasoning_effort: "high" });
+    const tools = calls.filter((call) => call.method === "tools/call").map((call) => call.body.params);
+    expect(tools).toEqual([
+      { name: "launch", arguments: args },
+      { name: "send", arguments: { id: "sandbox-9", prompt: "go", reasoning_effort: "high" } },
+    ]);
+  });
+
   test("a reply sent as a server-sent event is read too", async () => {
     const { gateway } = server((call) => {
       const message = { jsonrpc: "2.0", id: call.body.id, result: { structuredContent: { ok: true } } };

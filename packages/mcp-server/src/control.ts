@@ -8,9 +8,11 @@ import {
   type GitHubAccess,
   type GitHubApp,
   githubAppFromEnv,
+  LaunchError,
   listCredentials,
   listMembers,
   listOrgs,
+  type ModelChoice,
   type Provider,
   parseCredentialKind,
   parseRole,
@@ -20,6 +22,7 @@ import {
   resolveBoatKey,
   resolveCredentials,
   resolveGitHubAccess,
+  resolveModelChoice,
   resolveOrg,
   setCredential,
   setMemberRole,
@@ -211,11 +214,20 @@ async function resolveLaunch(
   userId: string,
   body: Record<string, unknown>,
   orgRef: string | undefined,
-): Promise<{ env: Record<string, string>; codexAuth: string | null; boatKey: string; github: GitHubAccess }> {
+): Promise<{
+  env: Record<string, string>;
+  codexAuth: string | null;
+  boatKey: string;
+  github: GitHubAccess;
+  model: string;
+  reasoningEffort: string;
+}> {
   const { store, encryptionKey } = options;
-  const org = await resolveOrg(store, userId, orgRef);
   const harness = required(body, "harness");
   if (harness !== "claude" && harness !== "codex") throw new VaultError("invalid", "The agent is claude or codex.");
+  // Checked before any credential is read, so a launch with a model it cannot run allocates nothing.
+  const choice = modelChoice(harness, optional(body, "model"), optional(body, "reasoning_effort"));
+  const org = await resolveOrg(store, userId, orgRef);
   const visibility = required(body, "visibility");
   if (visibility !== "org" && visibility !== "private")
     throw new VaultError("invalid", "Visibility is org or private.");
@@ -231,7 +243,26 @@ async function resolveLaunch(
     },
     userId,
   );
-  return { env: resolved.env, codexAuth: resolved.files[0]?.content ?? null, boatKey: boat.key, github };
+  return {
+    env: resolved.env,
+    codexAuth: resolved.files[0]?.content ?? null,
+    boatKey: boat.key,
+    github,
+    ...choice,
+  };
+}
+
+function modelChoice(
+  harness: "claude" | "codex",
+  model: string | undefined,
+  reasoningEffort: string | undefined,
+): ModelChoice {
+  try {
+    return resolveModelChoice(harness, { model, reasoningEffort });
+  } catch (error) {
+    if (error instanceof LaunchError) throw new VaultError("invalid", error.message);
+    throw error;
+  }
 }
 
 class Unauthorized extends Error {}

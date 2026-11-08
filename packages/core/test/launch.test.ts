@@ -77,7 +77,15 @@ describe("launch", () => {
     expect(world.execs[0]?.command).toContain("'pull' '--ff-only' 'origin' 'main'");
     expect(world.execs[1]?.command).toContain("'dev'");
     expect(world.execs[2]?.command).toBe("pnpm i");
-    expect(world.prompts).toEqual([{ sandboxId: "bx_1", harness: "claude", text: "Fix the build" }]);
+    expect(world.prompts).toEqual([
+      {
+        sandboxId: "bx_1",
+        harness: "claude",
+        text: "Fix the build",
+        model: "claude-opus-5-5",
+        reasoningEffort: "medium",
+      },
+    ]);
     expect(result).toMatchObject({ conversationId: "conv_1", promptId: "prompt_1", ttlSeconds: 7200 });
     expect(world.rows.get("sbx-1")).toMatchObject({
       boatId: "bx_1",
@@ -94,6 +102,7 @@ describe("launch", () => {
     const result = await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" });
     expect(world.prompts).toEqual([]);
     expect(result.sandbox).toMatchObject({ status: "ready", conversationIds: [] });
+    expect(world.rows.get(result.sandbox.id)).toMatchObject({ model: "claude-opus-5-5", reasoningEffort: "medium" });
     expect(result.conversationId).toBeUndefined();
     expect(result.ttlSeconds).toBe(14_400);
     expect(world.forks[0]?.ttlSeconds).toBe(14_400);
@@ -307,12 +316,37 @@ describe("launch", () => {
       { harness: "claude", ttlSeconds: 2_592_001 },
       { harness: "claude", ttlSeconds: 1.5 },
       { harness: "claude", prompt: "   " },
+      { harness: "claude", reasoningEffort: "ultra" },
+      { harness: "codex", model: "gpt-6-luna", reasoningEffort: "ultra" },
+      { harness: "codex", model: "gpt 6; rm -rf /" },
     ]) {
       await expect(
         launchSandbox(world.provider, world.stores, owner, { golden: "web", ...request } as never),
       ).rejects.toMatchObject({ code: "invalid_request" });
     }
     expect([noSnapshot, none, world].flatMap((entry) => entry.forks)).toEqual([]);
+  });
+
+  test("an explicit model and effort reach the prompt and the record as given, never substituted", async () => {
+    const world = setup({ golden: golden("org") });
+    const result = await launchSandbox(world.provider, world.stores, owner, {
+      golden: "web",
+      harness: "codex",
+      prompt: "Go",
+      model: "gpt-7-preview",
+      reasoningEffort: "ultra",
+    });
+    expect(world.prompts[0]).toMatchObject({ harness: "codex", model: "gpt-7-preview", reasoningEffort: "ultra" });
+    expect(world.rows.get(result.sandbox.id)).toMatchObject({ model: "gpt-7-preview", reasoningEffort: "ultra" });
+  });
+
+  test("a provider that cannot set a reasoning effort is refused before the fork", async () => {
+    const world = setup({ golden: golden("org") });
+    const provider = { ...world.provider, capabilities: { claude: { reasoningEffort: false } } } as never;
+    await expect(
+      launchSandbox(provider, world.stores, owner, { golden: "web", harness: "claude" }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    expect(world.forks).toEqual([]);
   });
 
   test("a sandbox that cannot be recorded is deleted again", async () => {
@@ -447,7 +481,7 @@ interface Setup {
 function setup(options: Setup) {
   const forks: ForkRequest[] = [];
   const execs: { command: string; cwd?: string }[] = [];
-  const prompts: { sandboxId: string; harness: string; text: string }[] = [];
+  const prompts: { sandboxId: string; harness: string; text: string; model?: string; reasoningEffort?: string }[] = [];
   const stopped: string[] = [];
   const deleted: string[] = [];
   const rows = new Map<string, SandboxRecord>();
@@ -462,6 +496,7 @@ function setup(options: Setup) {
   const provider = {
     id: "fake",
     harnesses: ["claude", "codex"],
+    capabilities: { claude: { reasoningEffort: true }, codex: { reasoningEffort: true } },
     async fork(request: ForkRequest) {
       forks.push(request);
       return info("starting");
@@ -474,7 +509,7 @@ function setup(options: Setup) {
       const out = options.exec?.(request.command) ?? { exitCode: 0 };
       return { detached: false as const, stdout: "", stderr: "", timedOut: false, truncated: false, ...out };
     },
-    async prompt(request: { sandboxId: string; harness: string; text: string }) {
+    async prompt(request: (typeof prompts)[number]) {
       if (options.promptError) throw options.promptError;
       prompts.push(request);
       return { promptId: "prompt_1", conversationId: "conv_1", status: "queued" as PromptStatus };
@@ -565,6 +600,8 @@ function sandboxRecord(id: string, boatId: string, createdAt: string): SandboxRe
     stoppedAt: null,
     deletedAt: null,
     statusReason: null,
+    model: null,
+    reasoningEffort: null,
   };
 }
 

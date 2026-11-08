@@ -85,6 +85,17 @@ test("mutation targets cannot escape the selected org even when the viewer admin
   });
   await golden.getByRole("button", { name: "Make private" }).click();
   await expect(alert(page)).toContainText("not available in this scope");
+  await page.reload();
+  await page.getByRole("button", { name: "Launch from zenith-golden" }).click();
+  const launch = page.getByRole("dialog");
+  await launch.locator('input[name="org"]').evaluate((input) => {
+    (input as HTMLInputElement).value = "00000000-0000-4000-8000-000000000010";
+  });
+  await launch.locator('input[name="golden"]').evaluate((input) => {
+    (input as HTMLInputElement).value = "shared-golden";
+  });
+  await launch.getByRole("button", { name: "Launch", exact: true }).click();
+  await expect(launch.getByRole("alert")).toContainText("Switch to that organization first");
   await page.goto("/credentials");
   const personal = page.locator('[data-credentials="user"]');
   await personal.locator('input[name="scope"]').evaluate((input) => {

@@ -132,7 +132,7 @@ export function fakeBoat() {
       throw new ProviderError({ provider: "fake", code: "not_found", message: "No sandbox.", retryable: false });
     return found;
   };
-  const harnessFeatures = { interrupt: true, resume: true, parallelConversations: false, reasoningEffort: false };
+  const harnessFeatures = { interrupt: true, resume: true, parallelConversations: false, reasoningEffort: true };
   const extra = { fast: false, streamsPartials: true, toolEvents: true, approvals: false };
 
   const provider = {

@@ -193,12 +193,17 @@ describe("launch command", () => {
       expect(requests).toEqual([]);
 
       const idle = await asUser(db, people.owner, () =>
-        capture(["launch", "monorepo", "--agent", "codex", "--json"], deps("owner")),
+        capture(
+          ["launch", "monorepo", "--agent", "codex", "--model", "gpt-6-sol", "--reasoning-effort", "xhigh", "--json"],
+          deps("owner"),
+        ),
       );
       expect(idle.code).toBe(0);
       const json = JSON.parse(idle.out);
       expect(json).toMatchObject({
         harness: "codex",
+        model: "gpt-6-sol",
+        reasoningEffort: "xhigh",
         status: "ready",
         conversationIds: [],
         promptId: null,
@@ -207,6 +212,8 @@ describe("launch command", () => {
       const fork = requests.find((request) => request.path === "/api/v1/sandboxes" && request.method === "POST");
       expect(fork?.body).toMatchObject({ noEnv: true, env: { OPENAI_API_KEY: OPENAI_KEY }, ttlSeconds: 14_400 });
       expect(requests.some((request) => request.path.endsWith("/prompt"))).toBe(false);
+      const row = await db.query("select model, reasoning_effort from sandboxes");
+      expect(row.rows).toEqual([{ model: "gpt-6-sol", reasoning_effort: "xhigh" }]);
     } finally {
       await db.close();
     }
@@ -262,6 +269,8 @@ describe("launch command", () => {
     );
     expect((await capture(["launch", "--agent", "claude"], base)).code).toBe(2);
     expect((await capture(["launch", "web", "--agent", "claude", "a", "b"], base)).code).toBe(2);
+    const effort = await capture(["launch", "web", "--agent", "claude", "--reasoning-effort", "ultra"], base);
+    expect(effort.err).toContain("Use one of: low, medium, high, xhigh, max");
     expect(calls).toEqual([]);
   });
 
@@ -345,6 +354,14 @@ describe("launch command", () => {
       owner_id: USER_UUID,
       harness: "claude",
       status: "starting",
+      model: "claude-opus-5-5",
+      reasoning_effort: "medium",
+    });
+    const prompt = seen.find((call) => call.host === "boat.dev" && call.path.endsWith("/prompt"));
+    expect(prompt?.body).toMatchObject({
+      provider: "claude-code",
+      model: "claude-opus-5-5",
+      reasoningEffort: "medium",
     });
     expect(rest.filter((call) => call.method === "PATCH").at(-1)?.body).toEqual({
       status: "running",
