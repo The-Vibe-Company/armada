@@ -31,9 +31,13 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
   const environmentToken = io.env.ARMADA_TOKEN;
   const saved = environmentToken ? null : await io.session.read();
   const origin = armadaApiUrl(options.url ?? io.env.ARMADA_URL);
-  const token = environmentToken || saved?.accessToken;
+  let token = environmentToken || saved?.accessToken;
   if (!token) throw new AuthError("Set ARMADA_TOKEN or run armada login.", "unauthorized");
   const timeoutMs = io.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  if (!environmentToken && saved && Date.parse(saved.expiresAt) - Date.now() <= 60_000) {
+    token = await refresh(origin, io, saved.refreshToken, saved, timeoutMs);
+  }
 
   return {
     async request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -54,6 +58,14 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         throw new AuthError("Armada could not reach the server.", "unavailable");
       }
 
+      if (response.status === 401 && !environmentToken && saved) {
+        token = await refresh(origin, io, saved.refreshToken, saved, timeoutMs);
+        try {
+          response = await io.fetch(url, { ...init, headers: { ...headers(init.headers), authorization: `Bearer ${token}`, accept: "application/json" }, redirect: "error", signal: init.signal ?? AbortSignal.timeout(timeoutMs) });
+        } catch {
+          throw new AuthError("Armada could not reach the server.", "unavailable");
+        }
+      }
       const payload: unknown = await response.json().catch(() => null);
       if (response.ok) return payload as T;
       if (response.status === 401) throw new AuthError("Run armada login or update ARMADA_TOKEN.", "unauthorized");
@@ -61,6 +73,17 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       throw new AuthError(`Armada server request failed (${response.status}).`, "unavailable");
     },
   };
+}
+
+async function refresh(origin: string, io: ArmadaApiIo, refreshToken: string, saved: NonNullable<Awaited<ReturnType<SessionStore["read"]>>>, timeoutMs: number): Promise<string> {
+  let response: Response;
+  try {
+    response = await io.fetch(apiUrl(origin, "/api/v1/auth/refresh"), { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ refreshToken }), redirect: "error", signal: AbortSignal.timeout(timeoutMs) });
+  } catch { throw new AuthError("Armada could not reach the server.", "unavailable"); }
+  const value = await response.json().catch(() => null) as { accessToken?: unknown; refreshToken?: unknown; expiresAt?: unknown } | null;
+  if (!response.ok || !value || typeof value.accessToken !== "string" || typeof value.refreshToken !== "string" || typeof value.expiresAt !== "string") throw new AuthError("Run armada login again.", "unauthorized");
+  await io.session.write({ ...saved, accessToken: value.accessToken, refreshToken: value.refreshToken, expiresAt: value.expiresAt });
+  return value.accessToken;
 }
 
 /** Accept only an HTTP(S) origin; this prevents provider URLs from becoming API targets. */
