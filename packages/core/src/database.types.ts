@@ -31,6 +31,50 @@ export type Database = {
         };
         Relationships: [];
       };
+      github_connections: {
+        Row: {
+          user_id: string;
+          github_id: number;
+          login: string;
+          name: string | null;
+          refresh_token_enc: string;
+          refresh_expires_at: string | null;
+          revoked_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          user_id: string;
+          github_id: number;
+          login: string;
+          name?: string | null;
+          refresh_token_enc: string;
+          refresh_expires_at?: string | null;
+          revoked_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          user_id?: string;
+          github_id?: number;
+          login?: string;
+          name?: string | null;
+          refresh_token_enc?: string;
+          refresh_expires_at?: string | null;
+          revoked_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "github_connections_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: true;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       goldens: {
         Row: {
           id: string;
@@ -433,6 +477,7 @@ export type Database = {
 };
 
 export type Credential = Database["public"]["Tables"]["credentials"]["Row"];
+export type GitHubConnection = Database["public"]["Tables"]["github_connections"]["Row"];
 export type Golden = Database["public"]["Tables"]["goldens"]["Row"];
 export type McpToken = Database["public"]["Tables"]["mcp_tokens"]["Row"];
 export type Member = Database["public"]["Tables"]["members"]["Row"];

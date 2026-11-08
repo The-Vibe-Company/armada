@@ -270,7 +270,73 @@ export interface TestServer {
   /** Makes Supabase unreachable. */
   supabaseDown(down: boolean): void;
   client(token: string): Promise<Client>;
+  github: FakeGitHub;
   close(): Promise<void>;
+}
+
+export const GITHUB_APP = { clientId: "Iv1.test", clientSecret: "github-client-secret-value" };
+
+/** GitHub in memory: the token endpoint (rotating refresh tokens) and `/user`. */
+export interface FakeGitHub {
+  /** Stores a connection for this person, as the dashboard callback does. */
+  connect(userId: string, login: string, githubId: number): Promise<void>;
+  /** Refresh tokens GitHub was asked to refresh, in order. */
+  refreshed: string[];
+  /** The access tokens it handed out. */
+  accessTokens: string[];
+  /** Makes GitHub refuse every refresh token, as after a revocation. */
+  revokeEverything(): void;
+}
+
+function fakeGitHub(db: PGlite) {
+  const refreshed: string[] = [];
+  const accessTokens: string[] = [];
+  const users = new Map<string, { id: number; login: string }>();
+  let revoked = false;
+  const github: FakeGitHub = {
+    async connect(userId, login, githubId) {
+      users.set(`ghu_access_${login}`, { id: githubId, login });
+      await db.query(
+        "insert into github_connections (user_id, github_id, login, refresh_token_enc) values ($1, $2, $3, $4)",
+        [userId, githubId, login, await encryptSecret(`ghr_refresh_${login}_0`, ENCRYPTION_KEY)],
+      );
+    },
+    refreshed,
+    accessTokens,
+    revokeEverything() {
+      revoked = true;
+    },
+  };
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "https://github.com/login/oauth/access_token") {
+      const body = JSON.parse(String(init?.body)) as { refresh_token: string; client_secret: string };
+      if (body.client_secret !== GITHUB_APP.clientSecret)
+        return Response.json({ error: "incorrect_client_credentials" });
+      refreshed.push(body.refresh_token);
+      const login = /^ghr_refresh_(.+)_(\d+)$/.exec(body.refresh_token)?.[1];
+      const turn = Number(/_(\d+)$/.exec(body.refresh_token)?.[1] ?? 0);
+      const expected = refreshed.filter((token) => token.startsWith(`ghr_refresh_${login}_`)).length - 1;
+      if (revoked || !login || turn !== expected) return Response.json({ error: "bad_refresh_token" });
+      const access = `ghu_access_${login}`;
+      accessTokens.push(access);
+      return Response.json({
+        access_token: access,
+        refresh_token: `ghr_refresh_${login}_${turn + 1}`,
+        expires_in: 28_800,
+        refresh_token_expires_in: 15_811_200,
+      });
+    }
+    if (url === "https://api.github.com/user") {
+      const token = new Headers(init?.headers).get("authorization")?.replace(/^Bearer /, "") ?? "";
+      const user = users.get(token);
+      return user
+        ? Response.json({ ...user, name: null })
+        : Response.json({ message: "Bad credentials" }, { status: 401 });
+    }
+    throw new Error(`unexpected request to ${url}`);
+  }) as typeof fetch;
+  return { github, fetch: fetchImpl };
 }
 
 /**
@@ -335,14 +401,17 @@ export async function harness(
     if (!userId) return Response.json({ msg: "invalid JWT" }, { status: 401 });
     return Response.json({ id: userId, aud: "authenticated" });
   };
+  const fakeGit = fakeGitHub(db);
+  const sqlFor = (database: PGlite) => (options.sql ? options.sql(database) : database);
   const handler = createHandler({
     publicUrl: PUBLIC_URL,
     oauth,
     authStore: options.authStore ? options.authStore(db) : auth,
     supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "anon", fetch: supabaseFetch },
     data: createSqlData(options.sql ? options.sql(db) : db),
-    vault: createSqlVaultStore(options.sql ? options.sql(db) : db),
+    vault: createSqlVaultStore(sqlFor(db)),
     encryptionKey: ENCRYPTION_KEY,
+    github: { store: createSqlVaultStore(sqlFor(db)), app: GITHUB_APP, fetch: fakeGit.fetch },
     providerFor: boat.providerFor,
     ...(options.routes ? { routes: options.routes } : {}),
     log: options.log ?? (() => {}),
@@ -364,6 +433,7 @@ export async function harness(
     people,
     boat,
     auth,
+    github: fakeGit.github,
     handler,
     clock,
     async token(userId, orgId = people.org) {

@@ -3,12 +3,15 @@ import {
   configFromFlags,
   connectGolden,
   createGolden,
+  GITHUB_NOT_CONNECTED,
+  type GitHubAccess,
   GOLDEN_ROOT,
   type GoldenActor,
   type GoldenConfig,
   GoldenError,
   type GoldenRecord,
   type GoldenStore,
+  githubAppFromEnv,
   goldenForLaunch,
   HARNESSES,
   type Harness,
@@ -21,6 +24,7 @@ import {
   type ResolvedCredentials,
   resolveBoatKey,
   resolveCredentials,
+  resolveGitHubAccess,
   type SandboxStore,
   snapshotGolden,
   toHarnessCredentials,
@@ -111,7 +115,8 @@ Environment:
   ARMADA_URL                               The Armada server: armada org, armada creds and armada launch
   BOAT_API_KEY                             golden commands, until the server runs them with the org key
   PORT, ARMADA_DATABASE_URL, SUPABASE_URL, SUPABASE_ANON_KEY,
-  ARMADA_AUTH_SECRET, ARMADA_PUBLIC_URL, ARMADA_ENCRYPTION_KEY
+  ARMADA_AUTH_SECRET, ARMADA_PUBLIC_URL, ARMADA_ENCRYPTION_KEY,
+  GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET
                                            armada serve
 `;
 
@@ -304,7 +309,11 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   const provider = deps.provider ?? boatProvider({ BOAT_API_KEY: resolved.boatKey }, deps.fetch ?? fetch, deps.sleep);
   const result = await launchSandbox(
     provider,
-    { goldens: store, sandboxes, credentials: { resolve: async () => toHarnessCredentials(resolved) } },
+    {
+      goldens: store,
+      sandboxes,
+      credentials: { resolve: async () => toHarnessCredentials(resolved, resolved.github) },
+    },
     actor,
     {
       golden: name,
@@ -327,18 +336,28 @@ async function resolveForLaunch(
   actor: GoldenActor,
   harness: Harness,
   visibility: Visibility,
-): Promise<ResolvedCredentials & { boatKey: string }> {
+): Promise<ResolvedCredentials & { boatKey: string; github: GitHubAccess }> {
   const input = { userId: actor.userId, orgId: actor.orgId };
   if (deps.vault) {
     const resolved = await resolveCredentials(deps.vault.store, deps.vault.encryptionKey, { ...input, harness });
     const boat = await resolveBoatKey(deps.vault.store, deps.vault.encryptionKey, { ...input, visibility });
-    return { ...resolved, boatKey: boat.key };
+    const github = await resolveGitHubAccess(
+      {
+        store: deps.vault.store,
+        encryptionKey: deps.vault.encryptionKey,
+        app: githubAppFromEnv(deps.env ?? process.env),
+        ...(deps.fetch ? { fetch: deps.fetch } : {}),
+      },
+      actor.userId,
+    );
+    return { ...resolved, boatKey: boat.key, github };
   }
-  const response = await control<{ env: Record<string, string>; codexAuth: string | null; boatKey: string }>(
-    authOf(io, deps),
-    "launch/resolve",
-    { org: actor.orgId, harness, visibility },
-  );
+  const response = await control<{
+    env: Record<string, string>;
+    codexAuth: string | null;
+    boatKey: string;
+    github?: unknown;
+  }>(authOf(io, deps), "launch/resolve", { org: actor.orgId, harness, visibility });
   return {
     env: response.env,
     files:
@@ -347,7 +366,32 @@ async function resolveForLaunch(
         : [{ path: "/home/user/.codex/auth.json", content: response.codexAuth, mode: 0o600 }],
     sources: [],
     boatKey: response.boatKey,
+    github: githubAccessOf(response.github),
   };
+}
+
+/** The server's `github` answer. An older server sends none, which is the same as not connected. */
+function githubAccessOf(value: unknown): GitHubAccess {
+  const record = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  const identity = record.identity as Record<string, unknown> | undefined;
+  if (
+    record.status === "connected" &&
+    typeof record.token === "string" &&
+    identity &&
+    typeof identity.login === "string" &&
+    typeof identity.id === "number" &&
+    typeof identity.name === "string" &&
+    typeof identity.email === "string"
+  ) {
+    return {
+      status: "connected",
+      token: record.token,
+      identity: { login: identity.login, id: identity.id, name: identity.name, email: identity.email },
+    };
+  }
+  const message = typeof record.message === "string" ? record.message : GITHUB_NOT_CONNECTED;
+  const status = record.status === "revoked" || record.status === "unavailable" ? record.status : "not_connected";
+  return { status, message };
 }
 
 function harnessOf(value: string | undefined): Harness {
@@ -376,12 +420,20 @@ function launchText(result: LaunchResult): string {
   ];
   if (result.conversationId) lines.push(`Conversation: ${result.conversationId}`);
   else lines.push("No prompt sent: the sandbox is ready for the first prompt.");
+  lines.push(githubLine(result));
+  if (result.github.status === "connected" && result.github.message) lines.push(`Note: ${result.github.message}`);
   lines.push(
     result.expiresAt
       ? `Stops by itself at ${result.expiresAt.toISOString()} (TTL ${result.ttlSeconds}s).`
       : `Stops by itself after ${result.ttlSeconds}s.`,
   );
   return `${lines.join("\n")}\n`;
+}
+
+function githubLine(result: LaunchResult): string {
+  const { github } = result;
+  if (github.status === "connected") return `GitHub: git and gh act as ${github.login} (token valid for 8 hours).`;
+  return `GitHub: not set up. ${github.message ?? ""}`.trim();
 }
 
 function jsonLaunch(result: LaunchResult) {
@@ -397,6 +449,11 @@ function jsonLaunch(result: LaunchResult) {
     promptId: result.promptId ?? null,
     ttlSeconds: result.ttlSeconds,
     expiresAt: result.expiresAt ? result.expiresAt.toISOString() : null,
+    github: {
+      status: result.github.status,
+      login: result.github.login ?? null,
+      message: result.github.message ?? null,
+    },
   };
 }
 

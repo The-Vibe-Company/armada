@@ -29,6 +29,7 @@ type State = {
   goldens: Row[];
   sandboxes: Row[];
   credentials: Row[];
+  github_connections: Row[];
   events: Map<string, Row[]>;
   sent: string[];
   otpEmails: string[];
@@ -62,6 +63,7 @@ function seed(): State {
         created_at: now,
       },
     ],
+    github_connections: [],
     events: new Map(),
     sent: [],
     otpEmails: [],
@@ -209,6 +211,8 @@ function visibleRows(table: string, userId: string): Row[] {
       return state.credentials.filter((row) =>
         row.scope === "user" ? row.owner_id === userId : isMember(row.owner_id, userId),
       );
+    case "github_connections":
+      return state.github_connections.filter((row) => row.user_id === userId);
     default:
       return [];
   }
@@ -220,6 +224,8 @@ function writableRow(table: string, row: Row, userId: string): boolean {
       return isAdmin(row.org_id, userId);
     case "credentials":
       return row.scope === "user" ? row.owner_id === userId : isAdmin(row.owner_id, userId);
+    case "github_connections":
+      return row.user_id === userId;
     default:
       return false;
   }
@@ -245,6 +251,11 @@ function project(table: string, row: Row, select: string | null): Row | Fail {
   if (table === "credentials" && (!columns || columns.includes("value_enc"))) {
     if (columns?.includes("value_enc")) {
       return { status: 401, code: "42501", message: "permission denied for table credentials" };
+    }
+  }
+  if (table === "github_connections") {
+    if (!columns || columns.includes("refresh_token_enc")) {
+      return { status: 401, code: "42501", message: "permission denied for table github_connections" };
     }
   }
   if (table === "orgs" && !columns) {
@@ -314,7 +325,7 @@ async function rest(request: Request, url: URL): Promise<Response> {
     const targets = visibleRows(table, userId).filter(
       (row) => matches(row, url.searchParams) && writableRow(table, row, userId),
     );
-    const list = state[table as "members" | "credentials"] as Row[] | undefined;
+    const list = state[table as "members" | "credentials" | "github_connections"] as Row[] | undefined;
     if (!list) return pgError(denied);
     if (request.method === "PATCH") {
       const patch = (await request.json()) as Row;
@@ -520,6 +531,23 @@ function control(url: URL, body: Row): Response {
   }
   if (url.pathname === "/__test/credentials") {
     return json(state.credentials.map((row) => ({ ...row })));
+  }
+  if (url.pathname === "/__test/github-connect") {
+    state.github_connections.push({
+      user_id: String(body.user),
+      github_id: 583231,
+      login: String(body.login),
+      name: "Octo Cat",
+      refresh_token_enc: "\\x0102",
+      refresh_expires_at: null,
+      revoked_at: body.revoked ? "2026-11-08T11:00:00.000Z" : null,
+      created_at: "2026-11-08T10:00:00.000Z",
+      updated_at: "2026-11-08T10:00:00.000Z",
+    });
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/github-connections") {
+    return json(state.github_connections.map((row) => ({ ...row })));
   }
   if (url.pathname === "/__test/state") {
     return json({ otpEmails: state.otpEmails, sent: state.sent });

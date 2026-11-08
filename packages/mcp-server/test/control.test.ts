@@ -4,6 +4,7 @@ import {
   createSqlGoldenStore,
   createSqlSandboxStore,
   createSqlVaultStore,
+  encryptSecret,
   GOLDEN_ROOT,
   resolveBoatKey,
   resolveCredentials,
@@ -142,6 +143,74 @@ describe("armada org and armada creds against the control API", () => {
       const command = (wrote.body as { command: string }).command;
       expect(command).toContain(`${GOLDEN_ROOT}/.codex/auth.json`);
       expect(command).not.toContain("codex-do-not-leak");
+    });
+  });
+
+  test("armada launch carries the user's GitHub identity: token in the fork env, git set up, nothing printed", async () => {
+    await withServer(async ({ db, options, cli }) => {
+      const stan = cli(STAN);
+      await stan.run(["org", "create", "Vibe"]);
+      await stan.run(["creds", "set", "claude-oauth", "--org", "Vibe"], { stdin: TOKEN_SECRET });
+      await stan.run(["creds", "set", "boat", "--org", "Vibe"], { stdin: "boat-org-key" });
+      const org = (await options.store.memberships(STAN))[0];
+      await db.query(
+        `insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config)
+         values ($1, 'web', 'org', $2, $3, $4::jsonb)`,
+        [
+          org?.id,
+          STAN,
+          `a${"b".repeat(62)}`,
+          JSON.stringify({
+            repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
+            init: [],
+          }),
+        ],
+      );
+
+      const without: { method: string; path: string; authorization: string | null; body: unknown }[] = [];
+      const skipped = await launch(["launch", "web", "--agent", "claude", "go"], db, options, STAN, without);
+      expect(skipped.err).toBe("");
+      expect(skipped.code).toBe(0);
+      expect(skipped.out).toContain("GitHub: not set up.");
+      expect(JSON.stringify(without)).not.toContain("GH_TOKEN");
+
+      await db.query("delete from sandboxes");
+      await db.query(
+        "insert into github_connections (user_id, github_id, login, refresh_token_enc) values ($1, 583231, 'octocat', $2)",
+        [STAN, await encryptSecret("ghr_old", KEY)],
+      );
+      const githubFetch = (async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.endsWith("/login/oauth/access_token")) {
+          return Response.json({
+            access_token: "ghu_0123456789abcdefghijABCDEFGHIJ0123",
+            refresh_token: "ghr_new",
+            expires_in: 28_800,
+            refresh_token_expires_in: 15_811_200,
+          });
+        }
+        return Response.json({ id: 583231, login: "octocat", name: null });
+      }) as typeof fetch;
+      const withGitHub: ControlOptions = {
+        ...options,
+        github: { app: { clientId: "Iv1.test", clientSecret: "secret" }, fetch: githubFetch },
+      };
+      const boat: { method: string; path: string; authorization: string | null; body: unknown }[] = [];
+      const launched = await launch(["launch", "web", "--agent", "claude", "go"], db, withGitHub, STAN, boat);
+      expect(launched.code).toBe(0);
+      expect(launched.out).toContain("GitHub: git and gh act as octocat");
+      expect(launched.out + launched.err).not.toContain("ghu_0123456789");
+      const fork = boat.find((call) => call.method === "POST" && call.path === "/api/v1/sandboxes");
+      expect(fork?.body).toMatchObject({
+        noEnv: true,
+        env: {
+          GH_TOKEN: "ghu_0123456789abcdefghijABCDEFGHIJ0123",
+          GITHUB_TOKEN: "ghu_0123456789abcdefghijABCDEFGHIJ0123",
+        },
+      });
+      expect(JSON.stringify(boat.filter((call) => call !== fork))).not.toContain("ghu_0123456789");
+      const setup = boat.find((call) => JSON.stringify(call.body ?? "").includes("users.noreply.github.com"));
+      expect(JSON.stringify(setup?.body)).toContain("583231+octocat@users.noreply.github.com");
     });
   });
 

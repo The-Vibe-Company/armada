@@ -5,6 +5,9 @@ import {
   createSqlVaultStore,
   ENCRYPTION_KEY_ENV,
   EncryptionKeyError,
+  type GitHubAccess,
+  type GitHubApp,
+  githubAppFromEnv,
   listCredentials,
   listMembers,
   listOrgs,
@@ -14,6 +17,7 @@ import {
   removeMember,
   resolveBoatKey,
   resolveCredentials,
+  resolveGitHubAccess,
   resolveOrg,
   setCredential,
   setMemberRole,
@@ -37,6 +41,8 @@ export interface ControlOptions {
    * plaintext to the signed-in user's own machine, which is where the launch runs. Nothing is logged.
    */
   encryptionKey: string | undefined;
+  /** The GitHub App, for `launch/resolve`. Null or absent: GitHub is reported as not set up. */
+  github?: { app: GitHubApp | null; fetch?: typeof fetch; now?: () => Date };
   fetch?: AuthFetch;
 }
 
@@ -127,19 +133,19 @@ async function dispatch(
       });
       return { ok: true };
     case "launch/resolve":
-      return resolveLaunch(store, encryptionKey, userId, body, org);
+      return resolveLaunch(options, userId, body, org);
     default:
       return undefined;
   }
 }
 
 async function resolveLaunch(
-  store: VaultStore,
-  encryptionKey: string | undefined,
+  options: ControlOptions,
   userId: string,
   body: Record<string, unknown>,
   orgRef: string | undefined,
-): Promise<{ env: Record<string, string>; codexAuth: string | null; boatKey: string }> {
+): Promise<{ env: Record<string, string>; codexAuth: string | null; boatKey: string; github: GitHubAccess }> {
+  const { store, encryptionKey } = options;
   const org = await resolveOrg(store, userId, orgRef);
   const harness = required(body, "harness");
   if (harness !== "claude" && harness !== "codex") throw new VaultError("invalid", "The agent is claude or codex.");
@@ -148,7 +154,17 @@ async function resolveLaunch(
     throw new VaultError("invalid", "Visibility is org or private.");
   const resolved = await resolveCredentials(store, encryptionKey, { userId, orgId: org.id, harness });
   const boat = await resolveBoatKey(store, encryptionKey, { userId, orgId: org.id, visibility });
-  return { env: resolved.env, codexAuth: resolved.files[0]?.content ?? null, boatKey: boat.key };
+  const github = await resolveGitHubAccess(
+    {
+      store,
+      encryptionKey,
+      app: options.github?.app ?? null,
+      ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
+      ...(options.github?.now ? { now: options.github.now } : {}),
+    },
+    userId,
+  );
+  return { env: resolved.env, codexAuth: resolved.files[0]?.content ?? null, boatKey: boat.key, github };
 }
 
 class Unauthorized extends Error {}
@@ -228,6 +244,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     supabaseUrl: assertSupabaseUrl(need("SUPABASE_URL")),
     anonKey: need("SUPABASE_ANON_KEY"),
     encryptionKey: need(ENCRYPTION_KEY_ENV),
+    github: { app: githubAppFromEnv(env) },
     store: createSqlVaultStore({
       async query<T>(text: string, params: unknown[] = []) {
         const rows = (await sql.unsafe(text, params as never[])) as unknown as T[];

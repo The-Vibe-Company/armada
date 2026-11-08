@@ -12,6 +12,8 @@ const env = {
   ARMADA_MCP_URL: `${MOCK_URL}/mcp`,
   // 32 zero bytes: a throwaway key for the tests only.
   ARMADA_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  GITHUB_APP_CLIENT_ID: "Iv1.e2e",
+  GITHUB_APP_CLIENT_SECRET: "e2e-client-secret",
   MOCK_PORT: String(MOCK_PORT),
 };
 

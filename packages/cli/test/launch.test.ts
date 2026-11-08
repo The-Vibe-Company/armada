@@ -5,6 +5,7 @@ import {
   createSqlGoldenStore,
   createSqlSandboxStore,
   createSqlVaultStore,
+  decryptSecret,
   encryptSecret,
   GOLDEN_ROOT,
   type GoldenActor,
@@ -93,6 +94,75 @@ describe("launch command", () => {
         "select status::text as status, conversation_ids, owner_id from sandboxes",
       );
       expect(row.rows).toEqual([{ status: "running", conversation_ids: ["conv_1"], owner_id: people.owner }]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  test("a connected GitHub account is refreshed and injected, git is set up first, and the JSON reports it", async () => {
+    const db = await openDatabase();
+    try {
+      await applyMigrations(db);
+      const people = await fixture(db);
+      await seed(db, people, [{ scope: "user", owner: people.owner, kind: "claude_oauth", value: CLAUDE_TOKEN }]);
+      await db.query(
+        "insert into github_connections (user_id, github_id, login, refresh_token_enc) values ($1, 583231, 'octocat', $2)",
+        [people.owner, await encryptSecret("ghr_old_refresh_token", KEY)],
+      );
+      const accessToken = "ghu_0123456789abcdefghijABCDEFGHIJ0123";
+      const requests: Request[] = [];
+      const boat = fakeBoat(requests);
+      const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const url = String(input);
+        if (url === "https://github.com/login/oauth/access_token") {
+          return Response.json({
+            access_token: accessToken,
+            refresh_token: "ghr_new_refresh_token",
+            expires_in: 28_800,
+            refresh_token_expires_in: 15_811_200,
+          });
+        }
+        if (url === "https://api.github.com/user")
+          return Response.json({ id: 583231, login: "octocat", name: "Octo Cat" });
+        return boat(input, init);
+      }) as typeof fetch;
+      const deps = {
+        actor: actor(people, "owner"),
+        store: createSqlGoldenStore(db),
+        sandboxes: createSqlSandboxStore(db),
+        vault: { store: vaultStore(db), encryptionKey: KEY },
+        env: { GITHUB_APP_CLIENT_ID: "Iv1.test", GITHUB_APP_CLIENT_SECRET: "client-secret-value" },
+        fetch: fetchImpl,
+        sleep: async () => {},
+        sandboxPolls: 3,
+      };
+      const result = await asUser(db, people.owner, () =>
+        capture(["launch", "monorepo", "--agent", "claude", "--json", "Fix it"], deps),
+      );
+      expect(result.err).toBe("");
+      expect(result.code).toBe(0);
+      expect(result.out).not.toContain(accessToken);
+      expect(JSON.parse(result.out)).toMatchObject({ github: { status: "connected", login: "octocat" } });
+
+      const fork = requests.find((request) => request.method === "POST" && request.path === "/api/v1/sandboxes");
+      expect(fork?.body).toMatchObject({
+        noEnv: true,
+        env: { CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN, GH_TOKEN: accessToken, GITHUB_TOKEN: accessToken },
+      });
+      const commands = requests.filter((request) => request.path.endsWith("/commands"));
+      expect(JSON.stringify(commands[0]?.body)).toContain("583231+octocat@users.noreply.github.com");
+      expect(JSON.stringify(commands.map((request) => request.body))).not.toContain(accessToken);
+      expect(
+        JSON.stringify(requests.filter((request) => request !== fork).map((request) => request.body)),
+      ).not.toContain(accessToken);
+
+      const stored = await db.query<{ refresh_token_enc: Uint8Array }>(
+        "select refresh_token_enc from github_connections",
+      );
+      expect(stored.rows).toHaveLength(1);
+      expect(await decryptSecret(new Uint8Array(stored.rows[0]?.refresh_token_enc as Uint8Array), KEY)).toBe(
+        "ghr_new_refresh_token",
+      );
     } finally {
       await db.close();
     }
@@ -245,6 +315,9 @@ describe("launch command", () => {
       },
       async orgBoatKey() {
         return boatKey;
+      },
+      async getGitHubConnection() {
+        return null;
       },
     } as unknown as VaultStore;
     const result = await capture(["launch", "monorepo", "--agent", "claude", "go"], {

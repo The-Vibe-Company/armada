@@ -5,6 +5,8 @@ import {
   cleanupSandboxes,
   dedupeEvents,
   type ForkRequest,
+  GH_MISSING_NOTE,
+  type GitHubAccess,
   GOLDEN_ROOT,
   type GoldenActor,
   type GoldenRecord,
@@ -32,6 +34,14 @@ const CLAUDE_TOKEN = "sk-ant-oat01-user-token-value";
 const ORG_CLAUDE_TOKEN = "sk-ant-oat01-org-token-value";
 const OPENAI_KEY = "sk-openai-user-key-value";
 const AUTH_JSON = JSON.stringify({ tokens: { access_token: "codex-access-token-value", account_id: "acct" } });
+
+const GITHUB_TOKEN = "ghu_launch_test_token_aaaaaaaaaaaaaaaaaaaa";
+const IDENTITY = {
+  login: "octocat",
+  id: 583231,
+  name: "The Octocat",
+  email: "583231+octocat@users.noreply.github.com",
+};
 
 const owner: GoldenActor = { userId: OWNER, orgId: ORG, role: "member" };
 const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
@@ -195,6 +205,88 @@ describe("launch", () => {
     expect(world.forks).toEqual([]);
   });
 
+  test("a connected GitHub puts the user's token in the environment and sets git up before any repo is pulled", async () => {
+    const world = setup({
+      golden: golden("org"),
+      github: { status: "connected", token: GITHUB_TOKEN, identity: IDENTITY },
+      exec: (command) =>
+        command.includes("git config") ? { exitCode: 0, stdout: "armada-gh:present\n" } : { exitCode: 0 },
+    });
+
+    const result = await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" });
+
+    expect(world.forks[0]).toMatchObject({
+      noEnv: true,
+      env: { CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN, GH_TOKEN: GITHUB_TOKEN, GITHUB_TOKEN: GITHUB_TOKEN },
+    });
+    expect(world.execs.map((exec) => exec.cwd)).toEqual([
+      GOLDEN_ROOT,
+      `${GOLDEN_ROOT}/web`,
+      `${GOLDEN_ROOT}/api`,
+      GOLDEN_ROOT,
+    ]);
+    expect(world.execs[0]?.command).toContain(
+      "git config --global user.email '583231+octocat@users.noreply.github.com'",
+    );
+    expect(world.execs[0]?.command).toContain("user.name 'The Octocat'");
+    expect(JSON.stringify(world.execs)).not.toContain(GITHUB_TOKEN);
+    expect(result.github).toEqual({ status: "connected", login: "octocat" });
+    expect(result.sandbox.status).toBe("ready");
+  });
+
+  test("a golden without gh still launches, and says so", async () => {
+    const world = setup({
+      golden: golden("org"),
+      github: { status: "connected", token: GITHUB_TOKEN, identity: IDENTITY },
+    });
+    const result = await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" });
+    expect(result.github).toEqual({ status: "connected", login: "octocat", message: GH_MISSING_NOTE });
+  });
+
+  test("a launch without a GitHub connection still succeeds, injects nothing and explains", async () => {
+    for (const github of [
+      undefined,
+      { status: "not_connected", message: "Connect GitHub." } as const,
+      { status: "revoked", message: "Reconnect GitHub." } as const,
+      { status: "unavailable", message: "GitHub is down." } as const,
+    ]) {
+      const world = setup({ golden: golden("org"), ...(github ? { github } : {}) });
+      const result = await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" });
+      expect(world.forks[0]?.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN });
+      expect(world.execs.some((exec) => exec.command.includes("git config"))).toBe(false);
+      expect(result.github.status).toBe(github?.status ?? "not_connected");
+      expect(result.github.login).toBeUndefined();
+      if (github) expect(result.github.message).toBe(github.message);
+      else expect(result.github.message).toContain("not connected");
+    }
+  });
+
+  test("a failed git setup fails the launch, stops the machine and never prints the GitHub token", async () => {
+    const world = setup({
+      golden: golden("org"),
+      github: { status: "connected", token: GITHUB_TOKEN, identity: IDENTITY },
+      exec: (command) =>
+        command.includes("git config")
+          ? { exitCode: 1, stderr: `fatal: could not write config with ${GITHUB_TOKEN}` }
+          : { exitCode: 0 },
+    });
+
+    const error = await launchSandbox(
+      world.provider,
+      world.stores,
+      owner,
+      { golden: "web", harness: "claude" },
+      { newId: () => "sbx-1" },
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(LaunchError);
+    expect((error as LaunchError).message).toContain("GitHub could not be set up");
+    expect((error as LaunchError).message).not.toContain(GITHUB_TOKEN);
+    expect(world.rows.get("sbx-1")?.status).toBe("failed");
+    expect(JSON.stringify(world.rows.get("sbx-1"))).not.toContain(GITHUB_TOKEN);
+    expect(world.stopped).toEqual(["bx_1"]);
+  });
+
   test("a golden without a snapshot, a harness without credentials and bad input start nothing", async () => {
     const noSnapshot = setup({ golden: { ...golden("org"), boatSnapshotId: null } });
     await expect(
@@ -349,6 +441,7 @@ interface Setup {
   insertError?: Error;
   leaky?: boolean;
   actor?: GoldenActor;
+  github?: GitHubAccess;
 }
 
 function setup(options: Setup) {
@@ -419,7 +512,10 @@ function setup(options: Setup) {
     },
   };
   const credentials = {
-    resolve: (actor: GoldenActor, harness: "claude" | "codex") => harnessCredentials(source, actor, harness),
+    resolve: async (actor: GoldenActor, harness: "claude" | "codex") => ({
+      ...(await harnessCredentials(source, actor, harness)),
+      ...(options.github ? { github: options.github } : {}),
+    }),
   };
   const stores: LaunchStores = { goldens, sandboxes: sandboxStore(rows, options.insertError), credentials };
   return { provider, stores, forks, execs, prompts, stopped, deleted, rows };
