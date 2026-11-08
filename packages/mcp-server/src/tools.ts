@@ -47,6 +47,7 @@ export const SANDBOX_STATUSES = ["starting", "ready", "running", "stopping", "st
 export const DEFAULT_WAIT_SECONDS = 60;
 export const MAX_WAIT_SECONDS = 600;
 const OUTPUT_LIMIT = 20_000;
+const MAX_LOG_PAGES = 100;
 
 export class ToolError extends Error {
   override readonly name = "ToolError";
@@ -369,30 +370,28 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       title: "Read events",
       description:
         "The agent's events oldest first: prompts (with status and failure reason), messages and tool calls, " +
-        "steers. Pass the returned cursor as since_cursor to read only what is new. An event read twice has " +
-        "the same id and the newer body; each id appears once per page. hasMore means read again at once.",
+        "steers. The default is one bounded page (100 events). Set all to read every available page (up to " +
+        `${MAX_LOG_PAGES} pages) in one response. Pass the returned cursor as since_cursor to read only what is new. ` +
+        "An event read twice has the same id and the newer body; each id appears once per response.",
       input: {
         id,
         since_cursor: z.string().min(1).optional().describe("The cursor of the previous page."),
         conversation_id: conversationId,
         limit: z.number().int().min(1).max(500).optional(),
+        all: z.boolean().optional().describe("Read all available pages, bounded at 100 pages."),
       },
       output: { events: z.array(event), cursor: z.string().nullable(), hasMore: z.boolean() },
       readOnly: true,
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
-      const page = await provider.events({
-        sandboxId: found.boatId,
-        ...(args.since_cursor ? { cursor: args.since_cursor } : {}),
-        ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
+      const page = await readLogs(provider, found.boatId, {
+        ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
+        ...(args.conversation_id ? { conversation_id: args.conversation_id } : {}),
         ...(args.limit ? { limit: args.limit } : {}),
+        ...(args.all ? { all: true } : {}),
       });
-      return {
-        events: dedupe(page.events).map((item) => ({ ...item })),
-        cursor: page.cursor ?? args.since_cursor ?? null,
-        hasMore: page.hasMore,
-      };
+      return { ...page, events: page.events.map((item) => ({ ...item })) };
     },
   );
 
@@ -615,6 +614,33 @@ function dedupe<T extends { id: string }>(events: readonly T[]): T[] {
   const byId = new Map<string, T>();
   for (const item of events) byId.set(item.id, item);
   return [...byId.values()];
+}
+
+async function readLogs(
+  provider: Provider,
+  sandboxId: string,
+  args: { since_cursor?: string; conversation_id?: string; limit?: number; all?: boolean },
+): Promise<{ events: Awaited<ReturnType<Provider["events"]>>["events"]; cursor: string | null; hasMore: boolean }> {
+  const events: Awaited<ReturnType<Provider["events"]>>["events"] = [];
+  let cursor = args.since_cursor;
+  let hasMore = false;
+  for (let pageNumber = 0; pageNumber < (args.all ? MAX_LOG_PAGES : 1); pageNumber += 1) {
+    const page = await provider.events({
+      sandboxId,
+      ...(cursor ? { cursor } : {}),
+      ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
+      ...(args.limit ? { limit: args.limit } : {}),
+    });
+    events.push(...page.events);
+    hasMore = page.hasMore;
+    const next = page.cursor ?? cursor;
+    if (!page.hasMore || !next || next === cursor) {
+      cursor = next;
+      break;
+    }
+    cursor = next;
+  }
+  return { events: dedupe(events), cursor: cursor ?? null, hasMore };
 }
 
 function errorResult(error: unknown, tool: string, logError: (line: string) => void): CallToolResult {
