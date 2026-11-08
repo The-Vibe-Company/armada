@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,14 +81,17 @@ function knownLine(host: string, port: string, key: string) {
 }
 function command(spawnImpl: typeof spawn, file: string, args: string[], stdin: string, token: string) {
   return new Promise<void>((resolve, reject) => {
-    const c = spawnImpl(file, args, { stdio: ["pipe", "ignore", "pipe"] });
+    // Typed as the base ChildProcess, not the stdio-narrowed overload: which @types/node overload
+    // that resolves to (and whether it still carries EventEmitter's own members) depends on the
+    // exact @types/node version a workspace package without its own pin happens to get hoisted.
+    const c: ChildProcess = spawnImpl(file, args, { stdio: ["pipe", "ignore", "pipe"] });
     let err = "";
     const timer = setTimeout(() => c.kill("SIGKILL"), 600_000);
     c.stderr?.on("data", (d) => {
       if (err.length < 4096) err += String(d);
     });
     c.on("error", reject);
-    c.on("close", (code) => {
+    c.on("close", (code: number | null) => {
       clearTimeout(timer);
       code === 0 ? resolve() : reject(new Error(`${file} failed${err ? `: ${redact(err, token)}` : ""}`));
     });
