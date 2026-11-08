@@ -1,4 +1,4 @@
-import { type AuthStore, createSqlAuthStore, refreshSupabaseSession, exchangeSupabaseCode, sendEmailLink, assertEmail, supabaseAuthorizeUrl, assertProvider, type Session } from "@armada/auth";
+import { type AuthStore, createSqlAuthStore, refreshSupabaseSession, exchangeSupabaseCode, sendEmailLink, verifyEmailCode, assertEmail, assertEmailCode, supabaseAuthorizeUrl, assertProvider, type Session } from "@armada/auth";
 import {
   addMember,
   connectGolden,
@@ -113,6 +113,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   if (route === "auth/authorize") return authorizeRoute(request, options);
   if (route === "auth/exchange") return exchangeRoute(request, options);
   if (route === "auth/email/start") return emailStartRoute(request, options);
+  if (route === "auth/email/verify") return emailVerifyRoute(request, options);
   if (route === "auth/refresh") return refreshRoute(request, options);
   if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
   try {
@@ -130,6 +131,26 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       return fail(503, "unavailable", `Credential encryption is not configured on the server (${ENCRYPTION_KEY_ENV}).`);
     }
     return fail(500, "unavailable", "The server could not complete the request.");
+  }
+}
+
+async function emailVerifyRoute(request: Request, options: ControlOptions): Promise<Response> {
+  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
+  try {
+    const body = await readBody(request);
+    const email = assertEmail(required(body, "email"));
+    const code = assertEmailCode(required(body, "code"));
+    const session = await verifyEmailCode({
+      fetch: options.supabase.fetch ?? fetch,
+      supabaseUrl: options.supabase.supabaseUrl,
+      anonKey: options.supabase.anonKey,
+      email,
+      code,
+      now: options.now?.() ?? new Date(),
+    });
+    return Response.json({ accessToken: session.accessToken, refreshToken: session.refreshToken, expiresAt: session.expiresAt }, { headers: { "cache-control": "no-store" } });
+  } catch {
+    return fail(401, "unauthorized", "Email code was refused.");
   }
 }
 

@@ -22,6 +22,7 @@ export {
   assertSupabaseUrl,
   exchangeSupabaseCode,
   sendEmailLink,
+  verifyEmailCode,
   supabaseAuthorizeUrl,
   type Provider,
   refreshSupabaseSession,
