@@ -23,7 +23,9 @@ describe("launch database", () => {
       const goldens = createSqlGoldenStore(db);
       const sandboxes = createSqlSandboxStore(db);
       const boat = fakeBoat();
-      const credentials = { get: async () => TOKEN };
+      const credentials = {
+        resolve: async () => ({ env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN }, secrets: [TOKEN], codexAuthJson: false }),
+      };
       const stores = { goldens, sandboxes, credentials };
 
       const mine = await asUser(db, people.owner, () =>

@@ -153,7 +153,7 @@ function supabaseStore(fetchImpl: AuthFetch, url: string, anonKey: string, acces
   };
 }
 
-function supabaseSandboxes(fetchImpl: typeof fetch, url: string, anonKey: string, accessToken: string): SandboxStore {
+function supabaseSandboxes(fetchImpl: AuthFetch, url: string, anonKey: string, accessToken: string): SandboxStore {
   const call = <T>(init: RestInit) => rest<T>(fetchImpl, url, anonKey, accessToken, "sandboxes", init);
 
   return {

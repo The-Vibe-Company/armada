@@ -9,6 +9,7 @@ import {
   type GoldenActor,
   type GoldenRecord,
   type GoldenStore,
+  harnessCredentials,
   LaunchError,
   type LaunchStores,
   launchSandbox,
@@ -412,10 +413,13 @@ function setup(options: Setup) {
     async setSnapshot() {},
   };
   const credentialMap = options.credentials ?? { user: { claude_oauth: CLAUDE_TOKEN, openai: OPENAI_KEY } };
-  const credentials: CredentialSource = {
+  const source: CredentialSource = {
     async get(scope, _ownerId, kind) {
       return credentialMap[scope]?.[kind] ?? null;
     },
+  };
+  const credentials = {
+    resolve: (actor: GoldenActor, harness: "claude" | "codex") => harnessCredentials(source, actor, harness),
   };
   const stores: LaunchStores = { goldens, sandboxes: sandboxStore(rows, options.insertError), credentials };
   return { provider, stores, forks, execs, prompts, stopped, deleted, rows };

@@ -1,7 +1,7 @@
 import type { Harness, Visibility } from "./contract.ts";
+import { decryptSecret, EncryptionKeyError } from "./crypto.ts";
 import type { CredentialKind, CredentialScope } from "./database.types.ts";
 import type { GoldenActor } from "./golden.ts";
-import { decryptSecret, EncryptionKeyError } from "./crypto.ts";
 import { LaunchError } from "./launch-error.ts";
 import { VaultError } from "./vault-error.ts";
 
@@ -69,6 +69,21 @@ export async function harnessCredentials(
     return { env: { [CODEX_AUTH_ENV]: value }, secrets: [value, ...leaves], codexAuthJson: true };
   }
   return { env: { OPENAI_API_KEY: value }, secrets: [value], codexAuthJson: false };
+}
+
+/**
+ * Turns {@link resolveCredentials}'s result into what a launch forks with. A Codex `auth.json` rides
+ * along as {@link CODEX_AUTH_ENV}; launch writes it to `~/.codex/auth.json` and never onto the command line.
+ */
+export function toHarnessCredentials(resolved: ResolvedCredentials): HarnessCredentials {
+  const env = { ...resolved.env };
+  const secrets = Object.values(resolved.env);
+  const auth = resolved.files[0]?.content;
+  if (auth !== undefined) {
+    env[CODEX_AUTH_ENV] = auth;
+    secrets.push(auth, ...authJsonSecrets(auth));
+  }
+  return { env, secrets, codexAuthJson: auth !== undefined };
 }
 
 /** Replaces every secret in `text`, so command output and error messages are safe to show. */
@@ -259,3 +274,4 @@ function deliver(kind: CredentialKind, scope: CredentialScope, value: string): R
   const env = CREDENTIAL_KINDS[kind].env;
   if (env) return { env: { [env]: value }, files: [], sources: [source] };
   return { env: {}, files: [{ path: CODEX_AUTH_PATH, content: value, mode: 0o600 }], sources: [source] };
+}

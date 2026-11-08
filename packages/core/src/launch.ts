@@ -1,5 +1,5 @@
 import { HARNESSES, type Harness } from "./contract.ts";
-import { CODEX_AUTH_ENV, type CredentialSource, harnessCredentials, redact } from "./credentials.ts";
+import { CODEX_AUTH_ENV, type HarnessCredentials, redact } from "./credentials.ts";
 import {
   type GoldenActor,
   type GoldenLimits,
@@ -30,10 +30,15 @@ export interface LaunchRequest {
   ttlSeconds?: number;
 }
 
+/** Resolves what the sandbox receives. `armada launch` builds it from `resolveCredentials`. */
+export interface LaunchCredentialResolver {
+  resolve(actor: GoldenActor, harness: Harness): Promise<HarnessCredentials>;
+}
+
 export interface LaunchStores {
   goldens: GoldenStore;
   sandboxes: SandboxStore;
-  credentials: CredentialSource;
+  credentials: LaunchCredentialResolver;
 }
 
 export interface LaunchResult {
@@ -79,7 +84,7 @@ export async function launchSandbox(
   }
   const snapshot = golden.boatSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
-  const credentials = await harnessCredentials(stores.credentials, actor, harness);
+  const credentials = await stores.credentials.resolve(actor, harness);
 
   const id = (options.newId ?? (() => crypto.randomUUID()))();
   const forked = await provider.fork({

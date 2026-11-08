@@ -1,23 +1,24 @@
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
 export {
   CODEX_AUTH_ENV,
-  type CredentialSource,
-  type HarnessCredentials,
-  harnessCredentials,
-  type LaunchCredentialKind,
-  redact,
-  resolveCredential,
   CODEX_AUTH_PATH,
   CREDENTIAL_KINDS,
   type CredentialReader,
+  type CredentialSource,
   credentialName,
+  type HarnessCredentials,
+  harnessCredentials,
+  type LaunchCredentialKind,
   MAX_AUTH_FILE_LENGTH,
   MAX_SECRET_LENGTH,
   parseCredentialKind,
   parseCredentialValue,
   type ResolvedCredentials,
+  redact,
   resolveBoatKey,
+  resolveCredential,
   resolveCredentials,
+  toHarnessCredentials,
 } from "./credentials.ts";
 export {
   decryptSecret,
@@ -79,6 +80,7 @@ export {
 export { createSqlGoldenStore, type Sql } from "./golden-store.ts";
 export {
   DEFAULT_LAUNCH_TTL_SECONDS,
+  type LaunchCredentialResolver,
   type LaunchOptions,
   type LaunchRequest,
   type LaunchResult,

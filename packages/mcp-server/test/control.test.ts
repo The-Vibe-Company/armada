@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { memorySessionStore } from "@armada/auth";
-import { createSqlVaultStore, resolveBoatKey, resolveCredentials, type VaultStore } from "@armada/core";
+import {
+  createSqlGoldenStore,
+  createSqlSandboxStore,
+  createSqlVaultStore,
+  GOLDEN_ROOT,
+  resolveBoatKey,
+  resolveCredentials,
+  type VaultStore,
+} from "@armada/core";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
@@ -97,6 +105,46 @@ describe("armada org and armada creds against the control API", () => {
     });
   });
 
+  test("armada launch asks the server, so the user's credential and the org boat key reach the fork", async () => {
+    await withServer(async ({ db, options, cli }) => {
+      const stan = cli(STAN);
+      expect((await stan.run(["org", "create", "Vibe"])).code).toBe(0);
+      expect((await stan.run(["creds", "set", "claude-oauth", "--org", "Vibe"], { stdin: TOKEN_SECRET })).code).toBe(0);
+      expect((await stan.run(["creds", "set", "boat", "--org", "Vibe"], { stdin: "boat-org-key" })).code).toBe(0);
+      expect((await stan.run(["creds", "set", "codex-auth"], { stdin: AUTH_JSON })).code).toBe(0);
+      const org = (await options.store.memberships(STAN))[0];
+      const snapshot = `a${"b".repeat(62)}`;
+      await db.query(
+        `insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config)
+         values ($1, 'web', 'org', $2, $3, $4::jsonb)`,
+        [
+          org?.id,
+          STAN,
+          snapshot,
+          JSON.stringify({
+            repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
+            init: [],
+          }),
+        ],
+      );
+
+      const boat: { method: string; path: string; authorization: string | null; body: unknown }[] = [];
+      const launched = await launch(["launch", "web", "--agent", "codex", "go"], db, options, STAN, boat);
+      expect(launched.code).toBe(0);
+      expect(launched.out).not.toContain("codex-access");
+      expect(launched.out).not.toContain("boat-org-key");
+      const fork = boat.find((call) => call.method === "POST" && call.path === "/api/v1/sandboxes");
+      expect(fork?.body).toMatchObject({ noEnv: true, from: snapshot, env: { ARMADA_CODEX_AUTH_JSON: AUTH_JSON } });
+      expect(JSON.stringify(fork?.body)).not.toContain(TOKEN_SECRET);
+      expect(fork?.authorization).toBe("Bearer boat-org-key");
+      const wrote = boat.find((call) => JSON.stringify(call.body ?? "").includes("auth.json"));
+      if (!wrote) throw new Error("the launch never wrote auth.json");
+      const command = (wrote.body as { command: string }).command;
+      expect(command).toContain(`${GOLDEN_ROOT}/.codex/auth.json`);
+      expect(command).not.toContain("codex-do-not-leak");
+    });
+  });
+
   test("the CLI needs a login and a server address", async () => {
     await withServer(async ({ cli }) => {
       const nobody = cli(STAN, { session: false });
@@ -159,6 +207,110 @@ interface Who {
   out: string;
   err: string;
   run(argv: string[], input?: { stdin?: string | null; files?: Record<string, string> }): Promise<Result>;
+}
+
+const SNAP_READY = {
+  id: "bx_1",
+  name: "web",
+  state: "idle",
+  desktopAvailable: false,
+  snapshotAvailable: false,
+  createdAt: "2026-11-08T12:00:00.000Z",
+  archiveAfter: "2026-11-08T16:00:00.000Z",
+  labels: { armada: "sandbox" },
+};
+
+async function launch(
+  argv: string[],
+  db: PGlite,
+  options: ControlOptions,
+  userId: string,
+  boat: { method: string; path: string; authorization: string | null; body: unknown }[],
+): Promise<Result> {
+  let out = "";
+  let err = "";
+  const auth: AuthIo = {
+    out: (text) => (out += text),
+    err: (text) => (err += text),
+    env: { SUPABASE_ANON_KEY: "anon", ARMADA_URL: "https://armada.test" },
+    fetch: async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input.toString(), init);
+      const url = new URL(request.url);
+      if (url.hostname === "armada.test")
+        return (await handleControlRequest(request, options)) ?? new Response("{}", { status: 404 });
+      if (url.hostname === "boat.dev") {
+        const text = await request.text();
+        const body = text === "" ? undefined : JSON.parse(text);
+        boat.push({
+          method: request.method,
+          path: url.pathname,
+          authorization: request.headers.get("authorization"),
+          body,
+        });
+        return boatReply(url.pathname, request.method);
+      }
+      throw new Error(`unexpected ${url.hostname}`);
+    },
+    now: () => new Date("2026-11-08T00:00:00.000Z"),
+    open: () => undefined,
+    session: memorySessionStore({
+      userId,
+      accessToken: `token-${userId}`,
+      refreshToken: "refresh",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      supabaseUrl: "https://supabase.test",
+    }),
+  };
+  const code = await run(
+    argv,
+    { out: auth.out, err: auth.err },
+    {
+      auth,
+      fetch: auth.fetch,
+      actor: { userId, orgId: (await options.store.memberships(userId))[0]?.id ?? "", role: "member" },
+      store: createSqlGoldenStore(db),
+      sandboxes: createSqlSandboxStore(db),
+      sleep: async () => {},
+      sandboxPolls: 3,
+    },
+  );
+  return { code, out, err };
+}
+
+function boatReply(path: string, method: string): Response {
+  if (path === "/api/v1/sandboxes" && method === "POST") {
+    return Response.json(
+      { ok: true, type: "sandbox.created", sandbox: { ...SNAP_READY, state: "provisioning" } },
+      { status: 202 },
+    );
+  }
+  if (path.endsWith("/commands")) {
+    return Response.json({
+      ok: true,
+      type: "command.finished",
+      success: true,
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      timedOut: false,
+    });
+  }
+  if (path.endsWith("/prompt")) {
+    return Response.json(
+      {
+        ok: true,
+        type: "prompt.queued",
+        promptId: "prompt_1",
+        conversationId: "conv_1",
+        status: "queued",
+        promptRun: { id: "prompt_1", promptId: "prompt_1", sandboxId: "bx_1", status: "queued", done: false },
+      },
+      { status: 202 },
+    );
+  }
+  if (path.startsWith("/api/v1/sandboxes/"))
+    return Response.json({ ok: true, type: "sandbox.info", sandbox: SNAP_READY });
+  throw new Error(`unexpected ${method} ${path}`);
 }
 
 async function withServer(

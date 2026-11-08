@@ -9,6 +9,7 @@ import {
   GoldenError,
   type GoldenRecord,
   type GoldenStore,
+  goldenForLaunch,
   HARNESSES,
   type Harness,
   LaunchError,
@@ -17,9 +18,14 @@ import {
   type Provider,
   ProviderError,
   parseGoldenConfig,
+  type ResolvedCredentials,
+  resolveBoatKey,
+  resolveCredentials,
   type SandboxStore,
   snapshotGolden,
+  toHarnessCredentials,
   VaultError,
+  type VaultStore,
   VERSION,
   type Visibility,
 } from "@armada/core";
@@ -35,7 +41,7 @@ import {
   tokenList,
   tokenRevoke,
 } from "./auth-commands.ts";
-import { envCredentials } from "./credentials.ts";
+import { control } from "./control.ts";
 import { openSupabaseGoldens } from "./supabase.ts";
 import { credsCommand, orgCommand, type VaultIo } from "./vault-commands.ts";
 
@@ -59,6 +65,11 @@ export interface Deps {
   snapshotPolls?: number;
   /** Set by auth tests. Otherwise login talks to Supabase and stores the session on this machine. */
   auth?: AuthIo;
+  /**
+   * The encrypted credential store. Tests inject one. Otherwise `armada launch` asks the server
+   * (`ARMADA_URL`) to resolve them, since the encryption key stays there.
+   */
+  vault?: { store: VaultStore; encryptionKey: string };
 }
 
 const HELP = `armada ${VERSION}: launch coding agents on boat.dev
@@ -276,11 +287,14 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   const harness = harnessOf(single(args, "--agent"));
   const ttl = single(args, "--ttl");
   const ttlSeconds = ttl === undefined ? undefined : parseTtl(ttl);
-  const { provider, store, sandboxes, actor } = await boatContext(args, io, deps, true);
-  const env = deps.env ?? process.env;
+  const { store, sandboxes, actor } = await session(args, io, deps);
+  if (!sandboxes) throw new GoldenError("invalid_config", "No sandbox store is available.");
+  const golden = await goldenForLaunch(store, actor, name);
+  const resolved = await resolveForLaunch(io, deps, actor, harness, golden.visibility);
+  const provider = deps.provider ?? boatProvider({ BOAT_API_KEY: resolved.boatKey }, deps.fetch ?? fetch, deps.sleep);
   const result = await launchSandbox(
     provider,
-    { goldens: store, sandboxes, credentials: envCredentials(env) },
+    { goldens: store, sandboxes, credentials: { resolve: async () => toHarnessCredentials(resolved) } },
     actor,
     {
       golden: name,
@@ -295,6 +309,35 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   );
   io.out(flag(args, "--json") ? `${JSON.stringify(jsonLaunch(result), null, 2)}\n` : launchText(result));
   return 0;
+}
+
+async function resolveForLaunch(
+  io: Io,
+  deps: Deps,
+  actor: GoldenActor,
+  harness: Harness,
+  visibility: Visibility,
+): Promise<ResolvedCredentials & { boatKey: string }> {
+  const input = { userId: actor.userId, orgId: actor.orgId };
+  if (deps.vault) {
+    const resolved = await resolveCredentials(deps.vault.store, deps.vault.encryptionKey, { ...input, harness });
+    const boat = await resolveBoatKey(deps.vault.store, deps.vault.encryptionKey, { ...input, visibility });
+    return { ...resolved, boatKey: boat.key };
+  }
+  const response = await control<{ env: Record<string, string>; codexAuth: string | null; boatKey: string }>(
+    authOf(io, deps),
+    "launch/resolve",
+    { org: actor.orgId, harness, visibility },
+  );
+  return {
+    env: response.env,
+    files:
+      response.codexAuth === null
+        ? []
+        : [{ path: "/home/user/.codex/auth.json", content: response.codexAuth, mode: 0o600 }],
+    sources: [],
+    boatKey: response.boatKey,
+  };
 }
 
 function harnessOf(value: string | undefined): Harness {

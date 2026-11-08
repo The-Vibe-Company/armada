@@ -4,14 +4,17 @@ import {
   createOrg,
   createSqlVaultStore,
   ENCRYPTION_KEY_ENV,
+  EncryptionKeyError,
   listCredentials,
   listMembers,
   listOrgs,
-  MasterKeyError,
   parseCredentialKind,
   parseRole,
   removeCredential,
   removeMember,
+  resolveBoatKey,
+  resolveCredentials,
+  resolveOrg,
   setCredential,
   setMemberRole,
   VaultError,
@@ -29,7 +32,10 @@ export interface ControlOptions {
   anonKey: string;
   /** Service-role access: orgs, members and ciphertext. See `createSqlVaultStore`. */
   store: VaultStore;
-  /** `ARMADA_ENCRYPTION_KEY`. Read only to encrypt on write; the control API never decrypts. */
+  /**
+   * `ARMADA_ENCRYPTION_KEY`. Writes encrypt with it. `launch/resolve` also decrypts, and returns the
+   * plaintext to the signed-in user's own machine, which is where the launch runs. Nothing is logged.
+   */
   encryptionKey: string | undefined;
   fetch?: AuthFetch;
 }
@@ -63,7 +69,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   } catch (error) {
     if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
     if (error instanceof VaultError) return fail(STATUS[error.code], error.code, error.message);
-    if (error instanceof MasterKeyError) {
+    if (error instanceof EncryptionKeyError) {
       return fail(503, "unavailable", `Credential encryption is not configured on the server (${ENCRYPTION_KEY_ENV}).`);
     }
     return fail(500, "unavailable", "The server could not complete the request.");
@@ -120,9 +126,29 @@ async function dispatch(
         kind: parseCredentialKind(required(body, "kind")),
       });
       return { ok: true };
+    case "launch/resolve":
+      return resolveLaunch(store, encryptionKey, userId, body, org);
     default:
       return undefined;
   }
+}
+
+async function resolveLaunch(
+  store: VaultStore,
+  encryptionKey: string | undefined,
+  userId: string,
+  body: Record<string, unknown>,
+  orgRef: string | undefined,
+): Promise<{ env: Record<string, string>; codexAuth: string | null; boatKey: string }> {
+  const org = await resolveOrg(store, userId, orgRef);
+  const harness = required(body, "harness");
+  if (harness !== "claude" && harness !== "codex") throw new VaultError("invalid", "The agent is claude or codex.");
+  const visibility = required(body, "visibility");
+  if (visibility !== "org" && visibility !== "private")
+    throw new VaultError("invalid", "Visibility is org or private.");
+  const resolved = await resolveCredentials(store, encryptionKey, { userId, orgId: org.id, harness });
+  const boat = await resolveBoatKey(store, encryptionKey, { userId, orgId: org.id, visibility });
+  return { env: resolved.env, codexAuth: resolved.files[0]?.content ?? null, boatKey: boat.key };
 }
 
 class Unauthorized extends Error {}
