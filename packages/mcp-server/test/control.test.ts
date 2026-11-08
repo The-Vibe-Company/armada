@@ -285,6 +285,84 @@ describe("armada org and armada creds against the control API", () => {
     });
   });
 
+  test("logs follow settles for no prompt and each final prompt status", async () => {
+    for (const status of [null, "finished", "failed", "interrupted"] as const) {
+      await withServer(async ({ options }) => {
+        const armadaId = "44444444-4444-4444-8444-444444444444";
+        const prompt = status
+          ? [{ id: `prompt-${status}`, at: 1, kind: "prompt" as const, promptId: "pr_1", text: "go" }]
+          : [];
+        const logs: ControlOptions = {
+          ...options,
+          logs: async () => ({
+            boatId: "bx_follow",
+            provider: {
+              id: "fake",
+              harnesses: ["claude", "codex"],
+              capabilities: {} as never,
+              async events() {
+                return { events: prompt, cursor: status ? "cursor" : undefined, hasMore: false };
+              },
+              async get() {
+                return { id: "bx_follow", name: "x", state: "ready", providerState: "ready", labels: {} };
+              },
+              async getPrompt() {
+                return { promptId: "pr_1", status: status ?? "running", done: status !== null };
+              },
+            } as never,
+          }),
+        };
+        const response = await handleControlRequest(
+          new Request("https://armada.test/api/v1/logs/read", {
+            method: "POST",
+            headers: { authorization: `Bearer token-${STAN}` },
+            body: JSON.stringify({ id: armadaId, follow: true }),
+          }),
+          logs,
+        );
+        expect(response?.status).toBe(200);
+        if (!response) throw new Error("expected response");
+        expect(((await response.json()) as { settled: boolean }).settled).toBe(true);
+      });
+    }
+  });
+
+  test("logs follow settles when an empty page has no prompt and preserves its cursor", async () => {
+    await withServer(async ({ options }) => {
+      const logs: ControlOptions = {
+        ...options,
+        logs: async () => ({
+          boatId: "bx_follow",
+          provider: {
+            id: "fake",
+            harnesses: ["claude", "codex"],
+            capabilities: {} as never,
+            async events() {
+              return { events: [], cursor: undefined, hasMore: false };
+            },
+            async get() {
+              return { id: "bx_follow", name: "x", state: "ready", providerState: "ready", labels: {} };
+            },
+          } as never,
+        }),
+      };
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/logs/read", {
+          method: "POST",
+          headers: { authorization: `Bearer token-${STAN}` },
+          body: JSON.stringify({ id: "44444444-4444-4444-8444-444444444444", follow: true, cursor: "keep" }),
+        }),
+        logs,
+      );
+      expect((await response?.json()) as object).toMatchObject({
+        events: [],
+        cursor: "keep",
+        hasMore: false,
+        settled: true,
+      });
+    });
+  });
+
   test("the CLI needs a login and a server address", async () => {
     await withServer(async ({ cli }) => {
       const nobody = cli(STAN, { session: false });
