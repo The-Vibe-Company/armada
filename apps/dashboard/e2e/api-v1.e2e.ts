@@ -15,7 +15,17 @@ test("API v1 reaches its bearer route without a dashboard cookie", async ({ requ
   expect(privateResponse.status()).toBe(401);
   expect(await privateResponse.json()).toEqual({ error: "Unauthorized." });
 
-  const unknownResponse = await request.post("/api/v1/unknown", { data: {} });
+  const bearerResponse = await request.post("/api/v1/golden/list", {
+    data: {},
+    headers: { authorization: "Bearer e2e-valid-bearer" },
+  });
+  expect(bearerResponse.status()).toBe(200);
+  expect(await bearerResponse.json()).toEqual({ goldens: [] });
+
+  const unknownResponse = await request.post("/api/v1/unknown", {
+    data: {},
+    headers: { authorization: "Bearer e2e-valid-bearer" },
+  });
   expect(unknownResponse.status()).toBe(404);
   expect(await unknownResponse.json()).toEqual({ error: "Not found." });
 
