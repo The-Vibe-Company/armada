@@ -141,7 +141,7 @@ describe("launch", () => {
     expect(failure.message).toContain("init command 1 failed (exit 1)");
     expect(failure.message).toContain("missing lockfile");
     expect(failure.message).not.toContain(CLAUDE_TOKEN);
-    expect(world.rows.get("sbx-2")?.status).toBe("failed");
+    expect(world.rows.get("sbx-2")).toMatchObject({ status: "failed", statusReason: failure.message });
     expect(world.stopped).toEqual(["bx_1"]);
     expect(world.prompts).toEqual([]);
   });
@@ -435,6 +435,7 @@ function sandboxStore(rows: Map<string, SandboxRecord>, insertError?: Error): Sa
         createdAt: "2026-11-08T12:00:00.000Z",
         stoppedAt: null,
         deletedAt: null,
+        statusReason: null,
       };
       rows.set(input.id, record);
       return record;
@@ -467,6 +468,7 @@ function sandboxRecord(id: string, boatId: string, createdAt: string): SandboxRe
     createdAt,
     stoppedAt: null,
     deletedAt: null,
+    statusReason: null,
   };
 }
 

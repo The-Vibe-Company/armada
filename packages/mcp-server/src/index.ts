@@ -11,7 +11,30 @@ import {
 } from "@armada/auth";
 import { VERSION } from "@armada/core";
 
+export {
+  AuthUnavailable,
+  authenticateCaller,
+  bearerToken,
+  type Caller,
+  type CallerResult,
+  type SupabaseProject,
+  verifySupabaseUser,
+} from "./caller.ts";
+export { configFromEnv, DEFAULT_PORT, type ServerConfig } from "./config.ts";
 export { CONTROL_PREFIX, type ControlOptions, controlOptionsFromEnv, handleControlRequest } from "./control.ts";
+export { createSqlData, type DataSource, type SandboxView, type ScopedData } from "./data.ts";
+export { createHandler, type HandlerOptions, HEALTH_PATH, MCP_PATH, type Route } from "./http.ts";
+export { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
+export { bunSql, startServer } from "./serve.ts";
+export { createArmadaServer, DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS, type ToolContext } from "./tools.ts";
+export {
+  latestPrompt,
+  type PromptReport,
+  readStatus,
+  type StatusReport,
+  WAIT_POLL_MS,
+  waitSettled,
+} from "./turns.ts";
 
 /** What the server announces to MCP clients in its `initialize` answer. */
 export const serverInfo = {
@@ -20,12 +43,9 @@ export const serverInfo = {
 } as const;
 
 /**
- * Authentication for #464. Mount `handleOAuthRequest` before the MCP route.
- * Every MCP request calls `authenticate`; a failure answers with `oauthChallenge`.
- * Mount `handleControlRequest` beside it: it serves `/api/v1/` for `armada org` and `armada creds`
- * and answers null for any other path. Launch resolves credentials with `resolveCredentials` and
- * `resolveBoatKey` from `@armada/core`, in process, under the caller's `Principal`.
- * Neither call caches a principal, so a revoked token fails on the next request.
+ * Authentication, re-exported. The server mounts `handleOAuthRequest` before `/mcp`, authenticates every
+ * MCP request with no cache (`authenticateCaller`), and answers a failure with `oauthChallenge`. Mount
+ * `handleControlRequest` beside it for the CLI's `/api/v1/` routes.
  */
 export {
   type AuthResult,

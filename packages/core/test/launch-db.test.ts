@@ -72,12 +72,25 @@ describe("launch database", () => {
       ).rejects.toThrow();
 
       await asUser(db, people.owner, () =>
+        sandboxes.update(mine.sandbox.id, { status: "failed", statusReason: "Weekly limit reached" }),
+      );
+      const failed = await asUser(db, people.owner, () => sandboxes.listBefore("2100-01-01T00:00:00Z"));
+      expect(failed.find((row) => row.id === mine.sandbox.id)).toMatchObject({
+        status: "failed",
+        statusReason: "Weekly limit reached",
+      });
+      await expect(
+        db.query("update sandboxes set status = 'running', stopped_at = null where id = $1", [mine.sandbox.id]),
+      ).rejects.toThrow(/sandboxes_status_reason_chk/);
+
+      await asUser(db, people.owner, () =>
         sandboxes.update(mine.sandbox.id, { status: "stopped", stoppedAt: "2026-11-08T13:00:00.000Z" }),
       );
-      const stopped = await db.query<{ status: string; stopped_at: Date }>(
-        "select status::text as status, stopped_at from sandboxes where id = $1",
+      const stopped = await db.query<{ status: string; stopped_at: Date; status_reason: string | null }>(
+        "select status::text as status, stopped_at, status_reason from sandboxes where id = $1",
         [mine.sandbox.id],
       );
+      expect(stopped.rows[0]?.status_reason).toBeNull();
       expect(stopped.rows[0]?.status).toBe("stopped");
       expect(stopped.rows[0]?.stopped_at.toISOString()).toBe("2026-11-08T13:00:00.000Z");
 
