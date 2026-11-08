@@ -86,6 +86,40 @@ describe("golden and snapshots", () => {
   });
 });
 
+describe("native harness cwd preparation", () => {
+  test("installs the harness wrapper in the forked VM", async () => {
+    const boat = fakeBoat({
+      body: { ok: true, type: "command.finished", success: true, exitCode: 0, stdout: "", stderr: "", timedOut: false },
+    });
+    await boat.provider.prepareNativeHarnessCwd?.({ sandboxId: ID, harness: "codex", cwd: "/work/repo" });
+    expect(boat.requests).toHaveLength(1);
+    expect(boat.requests[0]).toMatchObject({ method: "POST", path: `/api/v1/sandboxes/${ID}/commands` });
+    expect(boat.requests[0]?.body).toMatchObject({ timeoutSeconds: 60 });
+    const command = (boat.requests[0]?.body as { command?: string } | undefined)?.command;
+    expect(command).toContain("/usr/local/bin/codex");
+    expect(command).toContain("/work/repo");
+  });
+
+  test("propagates VM preparation failures", async () => {
+    const boat = fakeBoat({
+      body: {
+        ok: true,
+        type: "command.finished",
+        success: false,
+        exitCode: 1,
+        stdout: "",
+        stderr: "wrapper failed",
+        timedOut: false,
+      },
+    });
+    await expect(
+      boat.provider.prepareNativeHarnessCwd?.({ sandboxId: ID, harness: "claude", cwd: "/work/repo" }),
+    ).rejects.toMatchObject({
+      message: "wrapper failed",
+    });
+  });
+});
+
 describe("sandboxes", () => {
   test("get maps boat's states onto the common ones", async () => {
     const states = [

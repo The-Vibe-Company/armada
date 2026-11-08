@@ -155,6 +155,7 @@ export {
   type PromptRequest,
   type PromptState,
   type PromptStatus,
+  type PrepareNativeHarnessCwdRequest,
   type Provider,
   ProviderError,
   type ProviderErrorCode,
