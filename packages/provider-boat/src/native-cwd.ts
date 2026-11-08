@@ -22,7 +22,8 @@ export async function installNativeCwdWrapper(
   await exec({
     sandboxId,
     timeoutSeconds: 60,
-    command: nativeCwdInstallScript(path, command),
+    command:
+      (harness === "codex" ? "command -v python3 >/dev/null || exit 1; " : "") + nativeCwdInstallScript(path, command),
   });
 }
 
@@ -42,6 +43,11 @@ export function nativeCwdCommand(path: string, harness: NativeHarness, cwd: stri
     '  args+=("$1")',
     "  shift",
     "done",
+    // Boat sends WORK_DIR as cwd in thread/start and thread/resume, overriding process cwd.
+    // Only stdio app-server needs a protocol bridge; CLI invocations keep their normal transport.
+    `if [ "\${args[0]-}" = app-server ]; then`,
+    `  exec python3 -c ${quote(codexCwdBridge)} ${quote(cwd)} ${original} "\${args[@]}"`,
+    "fi",
     `exec ${original} "\${args[@]}"`,
   ].join("\n");
   return `cd -- ${quote(cwd)} && exec /bin/bash -c ${quote(script)} -- "$@"`;
@@ -73,3 +79,53 @@ function nativeCwdInstallPayload(path: string, command: string): string {
 function quote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
+
+/** Input-only bridge: responses, notifications and stderr go directly from Codex to Boat. */
+const codexCwdBridge = `
+import json, os, signal, subprocess, sys, threading
+
+cwd = sys.argv[1]
+args = sys.argv[2:]
+# Boat currently uses stdio://. Do not silently launch an unprotected alternate transport.
+for i, arg in enumerate(args):
+    if arg.startswith("--listen=") and arg != "--listen=stdio://":
+        sys.exit("Armada repository cwd requires Codex stdio transport")
+    if arg == "--listen" and (i + 1 >= len(args) or args[i + 1] != "stdio://"):
+        sys.exit("Armada repository cwd requires Codex stdio transport")
+child = subprocess.Popen(args, stdin=subprocess.PIPE)
+def forward_signal(sig, frame):
+    try:
+        child.send_signal(sig)
+    except ProcessLookupError:
+        pass
+for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(sig, forward_signal)
+def relay():
+    try:
+        for line in sys.stdin.buffer:
+            try:
+                message = json.loads(line)
+            except (ValueError, UnicodeDecodeError):
+                message = None
+            if (isinstance(message, dict)
+                    and message.get("method") in ("thread/start", "thread/resume", "turn/start")
+                    and isinstance(message.get("params"), dict)):
+                message["params"]["cwd"] = cwd
+                line = (json.dumps(message, ensure_ascii=True) + "\\n").encode()
+            child.stdin.write(line)
+            child.stdin.flush()
+    except (BrokenPipeError, OSError):
+        pass
+    finally:
+        try:
+            child.stdin.close()
+        except OSError:
+            pass
+threading.Thread(target=relay, daemon=True).start()
+code = child.wait()
+if code < 0:
+    if -code not in (signal.SIGKILL, signal.SIGSTOP):
+        signal.signal(-code, signal.SIG_DFL)
+    os.kill(os.getpid(), -code)
+sys.exit(code)
+`;
