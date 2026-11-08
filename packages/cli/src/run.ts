@@ -68,7 +68,7 @@ Usage:
   armada golden create <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
                                [--setup <local-file>] [--private] [--org <org>]
                                            Server-orchestrated: builds, scans and snapshots the golden on the
-                                           server over your own GitHub connection. No BOAT_API_KEY needed.
+                                           server over your own GitHub connection.
                                            --setup reads a local script and sends its content to run after
                                            cloning, before the scan.
   armada golden update <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
@@ -102,14 +102,9 @@ Every command after 'armada login' acts as the user who signed in. golden comman
 when you belong to more than one org.
 
 Environment:
-  ARMADA_URL                               Login server (default: https://armada.thevibecompany.co). Also the
-                                           Armada server for armada org, armada creds, armada golden create,
-                                           armada launch and armada logs
-  BOAT_API_KEY                             armada golden connect and armada golden snapshot only; golden
-                                           create does not need it
-  GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY    optional on the server: an installation token for golden create,
-                                           revoked after each use. Without it, checkout uses the caller's own
-                                           GitHub connection instead.
+  ARMADA_TOKEN                             API token for non-interactive authentication. Takes precedence over
+                                           a saved login session.
+  ARMADA_URL                               Armada API server (default: https://armada.thevibecompany.co).
 `;
 
 /** Runs one command line and returns the process exit code. */
@@ -427,8 +422,10 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
     });
     if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
     else for (const event of result.events) io.out(`${eventText(event)}\n`);
-    cursor = result.cursor;
-    settled = result.settled;
+    const nextCursor: string | null = result.cursor ?? cursor;
+    const progressed = nextCursor !== cursor;
+    cursor = nextCursor;
+    settled = (!follow && (!result.hasMore || !progressed)) || (follow && result.settled);
     if (!settled)
       await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(FOLLOW_DELAY_MS);
   }

@@ -97,7 +97,7 @@ describe("logs through the Armada API", () => {
         events: [{ id: "first", at: 1, kind: "message", text: "first" }],
         cursor: "one",
         hasMore: true,
-        settled: false,
+        settled: true,
       },
       {
         events: [{ id: "second", at: 2, kind: "message", text: "second" }],
@@ -124,6 +124,57 @@ describe("logs through the Armada API", () => {
     expect(bodies).toEqual([
       { id, all: true, follow: false },
       { id, all: true, follow: false, cursor: "one" },
+    ]);
+  });
+
+  test("stops a non-follow read when a malformed batch does not advance its cursor", async () => {
+    const bodies: unknown[] = [];
+    const code = await run(
+      ["logs", id, "--all"],
+      { out: () => undefined, err: () => undefined },
+      {
+        auth: auth(async (input, init) => {
+          const request = input instanceof Request ? input : new Request(String(input), init);
+          bodies.push(await request.json());
+          return Response.json({ events: [], cursor: null, hasMore: true, settled: true });
+        }),
+      },
+    );
+    expect(code).toBe(0);
+    expect(bodies).toEqual([{ id, all: true, follow: false }]);
+  });
+
+  test("retains the last cursor through an empty in-progress delta", async () => {
+    const bodies: unknown[] = [];
+    const batches = [
+      {
+        events: [{ id: "first", at: 1, kind: "message", text: "first" }],
+        cursor: "one",
+        hasMore: false,
+        settled: false,
+      },
+      { events: [], cursor: null, hasMore: false, settled: false },
+      { events: [], cursor: "two", hasMore: false, settled: true },
+    ];
+    const code = await run(
+      ["logs", id, "--follow"],
+      { out: () => undefined, err: () => undefined },
+      {
+        auth: auth(async (input, init) => {
+          const request = input instanceof Request ? input : new Request(String(input), init);
+          bodies.push(await request.json());
+          const batch = batches.shift();
+          if (!batch) throw new Error("unexpected request");
+          return Response.json(batch);
+        }),
+        sleep: async () => undefined,
+      },
+    );
+    expect(code).toBe(0);
+    expect(bodies).toEqual([
+      { id, all: false, follow: true },
+      { id, all: false, follow: true, cursor: "one" },
+      { id, all: false, follow: true, cursor: "one" },
     ]);
   });
 });
