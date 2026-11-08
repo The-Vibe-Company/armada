@@ -10,7 +10,6 @@ import {
   ensureFreshSession,
   fileSessionStore,
   listServiceTokens,
-  loginWithBrowser,
   loginWithEmail,
   type Provider,
   refreshSession,
@@ -21,6 +20,7 @@ import {
 } from "@armada/auth";
 
 import { DEFAULT_ARMADA_URL, discoverClientConfig } from "./client-config.ts";
+import { browserLogin } from "./browser-login.ts";
 
 export interface AuthIo {
   out(text: string): void;
@@ -87,6 +87,32 @@ export async function loginCommand(
   io: AuthIo,
   how: { provider?: Provider | undefined; email?: string | undefined; url?: string | undefined } = {},
 ): Promise<void> {
+  // Browser login is Armada-hosted: the CLI never discovers or contacts the native provider.
+  if (how.email === undefined) {
+    const provider = how.provider ?? "github";
+    const origin = how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_URL;
+    try {
+      const result = await browserLogin({
+        origin,
+        provider,
+        fetch: io.fetch as typeof fetch,
+        open: io.open,
+        ...(io.timeoutMs === undefined ? {} : { timeoutMs: io.timeoutMs }),
+      });
+      await io.session.write({
+        supabaseUrl: "",
+        armadaUrl: origin,
+        accessToken: result.accessToken,
+        refreshToken: result.refreshToken,
+        expiresAt: result.expiresAt,
+        userId: "",
+      });
+      io.out("Logged in.\n");
+      return;
+    } catch {
+      throw new AuthError("Armada browser login failed.", "unauthorized");
+    }
+  }
   let { provider } = how;
   let email = how.email;
   // Explicit legacy settings remain available for local setups without discovery.
@@ -131,18 +157,7 @@ export async function loginCommand(
     io.out(`Logged in.\nuser: ${result.userId}\n`);
     return;
   }
-  const result = await loginWithBrowser({
-    fetch: io.fetch,
-    supabaseUrl,
-    anonKey,
-    open: io.open,
-    session,
-    now: io.now,
-    ...(provider ? { provider } : {}),
-    ...(io.timeoutMs !== undefined ? { timeoutMs: io.timeoutMs } : {}),
-    onUrl: (url) => io.err(`Opening a browser. If it does not open, visit ${url}\n`),
-  });
-  io.out(`Logged in.\nuser: ${result.userId}\n`);
+  throw new AuthError("Sign in with --provider github or google.", "usage");
 }
 
 export async function logoutCommand(io: AuthIo): Promise<void> {
