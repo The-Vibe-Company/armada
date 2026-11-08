@@ -169,12 +169,16 @@ export async function connectGolden(
   const golden = await oneVisible(store, actor.orgId, parseGoldenName(name), providerIdOf(provider));
   assertGoldenMutation(actor, golden);
   await store.assertBackendBinding?.(golden, provider);
-  if (!golden.providerSandboxId) {
-    throw new GoldenError("conflict", `Golden '${golden.name}' has no sandbox yet.`);
+  let current: SandboxInfo | undefined;
+  if (golden.providerSandboxId) {
+    try {
+      current = await provider.get(golden.providerSandboxId);
+    } catch (error) {
+      if (!(error instanceof ProviderError) || error.code !== "not_found") throw error;
+    }
   }
-  const current = await provider.get(golden.providerSandboxId);
-  if (current.state !== "stopped") {
-    const sandbox = await waitReady(provider, golden.providerSandboxId, limits);
+  if (current && current.state !== "stopped") {
+    const sandbox = await waitReady(provider, current.id, limits);
     return { golden, sandbox };
   }
   if (!golden.providerSnapshotId) {
@@ -182,8 +186,14 @@ export async function connectGolden(
   }
   const restored = await provider.fork({ from: golden.providerSnapshotId, noEnv: true });
   // setSandbox is intentionally only-once for normal creation. A restored master replaces the stopped id.
-  await store.setSandbox(golden.id, restored.id);
-  const sandbox = await waitReady(provider, restored.id, limits);
+  let sandbox: SandboxInfo;
+  try {
+    sandbox = await waitReady(provider, restored.id, limits);
+    await store.setSandbox(golden.id, restored.id);
+  } catch (error) {
+    await provider.stop({ sandboxId: restored.id }).catch(() => {});
+    throw error;
+  }
   return { golden: { ...golden, providerSandboxId: restored.id }, sandbox };
 }
 

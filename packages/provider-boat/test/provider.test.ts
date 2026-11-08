@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ProviderError } from "@armada/core";
+import { GoldenCreateService, type GoldenRecord } from "@armada/core/server";
 import { BOAT_CAPABILITIES, createBoatProvider } from "../src/provider.ts";
 import { errorBody, fakeBoat, KEY, sandbox } from "./support.ts";
 
@@ -45,6 +46,76 @@ describe("golden and snapshots", () => {
     ]);
     expect(boat.requests[0]?.body).toEqual({ sandboxId: ID, name: "web-golden" });
   });
+
+  test.each(["success", "persist-failure"])(
+    "secure rebuild uses the SDK-returned saved handle, not request label or disk ID (%s)",
+    async (outcome) => {
+      const reference = "provider-revision-123";
+      const saved = { name: reference, status: "saving", sourceSandboxId: ID, createdAt: "2026-11-09T09:05:00Z" };
+      const replies = [
+        { status: 202, body: { ok: true, type: "sandbox.created", sandbox: sandbox() } },
+        { status: 202, body: { ok: true, type: "snapshot.saved.saving", status: "saving", snapshot: saved } },
+        {
+          body: {
+            ok: true,
+            type: "snapshot.saved.info",
+            snapshot: { ...saved, status: "ready", snapshotId: "disk-artifact-456" },
+          },
+        },
+        ...(outcome === "persist-failure" ? [{ body: { ok: true, type: "snapshot.saved.deleted" } }] : []),
+        { body: { ok: true } },
+      ];
+      const boat = fakeBoat(...replies);
+      let persisted = "";
+      const service = new GoldenCreateService({
+        authorize: async () => ({
+          repos: [{ owner: "acme", repo: "web", id: 1, installationId: 2 }],
+          token: "unused-test-token",
+        }),
+        ssh: async () => {},
+        scan: async () => {},
+        canDiscardSnapshot: async () => true,
+        persist: async (input) => {
+          persisted = input.snapshot;
+          if (outcome === "persist-failure") throw new Error("injected persistence failure");
+        },
+      });
+      const operation = service.create(
+        boat.provider,
+        { orgId: "org", userId: "owner", role: "admin" },
+        {
+          name: "web",
+          visibility: "private",
+          repos: ["acme/web"],
+          existingGolden: {
+            id: "logical-golden",
+            orgId: "org",
+            ownerId: "owner",
+            name: "web",
+            visibility: "private",
+            provider: "boat",
+            providerSnapshotId: "last-good",
+          } as GoldenRecord,
+        },
+        { sleep: async () => {} },
+      );
+      if (outcome === "success") expect((await operation).snapshot).toBe(reference);
+      else await expect(operation).rejects.toThrow("injected persistence failure");
+      expect(persisted).toBe(reference);
+      expect(boat.requests[1]?.body).toMatchObject({
+        sandboxId: ID,
+        name: expect.stringMatching(/^golden-r-[a-f0-9-]+$/),
+      });
+      expect(boat.requests.map(({ method, path }) => [method, path])).toEqual([
+        ["POST", "/api/v1/sandboxes"],
+        ["POST", "/api/v1/saved-snapshots"],
+        ["GET", "/api/v1/saved-snapshots/" + reference],
+        ...(outcome === "persist-failure" ? [["DELETE", "/api/v1/saved-snapshots/" + reference]] : []),
+        ["POST", "/api/v1/sandboxes/" + ID + "/stop"],
+      ]);
+      expect(boat.remaining()).toBe(0);
+    },
+  );
 
   test("fork starts from the snapshot with the TTL and the credentials as the sandbox's own env", async () => {
     const boat = fakeBoat(

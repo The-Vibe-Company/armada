@@ -2,13 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import {
+  connectGolden,
   createGoldenCreateService,
+  createSqlGoldenStore,
   createSqlVaultStore,
   encryptSecret,
   type GitHubInstallationApp,
   type GoldenActor,
   GoldenError,
   type Provider,
+  ProviderError,
   type SandboxInfo,
 } from "../src/server.ts";
 
@@ -72,7 +75,7 @@ describe("createGoldenCreateService, wired to a real database", () => {
       expect(row.rows[0]).toMatchObject({
         visibility: "org",
         boat_snapshot_id: "golden-bx_1",
-        boat_sandbox_id: "bx_1",
+        boat_sandbox_id: null,
         config: {
           repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }],
           init: ["echo setup"],
@@ -229,6 +232,148 @@ describe("createGoldenCreateService, wired to a real database", () => {
       await db.close();
     }
   });
+});
+
+test("rebuild retains last-good artifacts/config through scan, snapshot and SQL failures, then restores the committed revision", async () => {
+  const db = await openDatabase();
+  try {
+    await applyMigrations(db);
+    const { actor, userId } = await fixture(db);
+    await connectGitHub(db, userId);
+    let failure = "";
+    let generation = 0;
+    const artifacts = new Map<string, { source: string; content: number; status: "ready" | "failed" }>();
+    const machines = new Map<string, { content: number; stopped: boolean }>();
+    const deleted: string[] = [];
+    let next = 0;
+    const start = (content: number): SandboxInfo => {
+      const id = `machine-${++next}`;
+      machines.set(id, { content, stopped: false });
+      return { id, name: "builder", state: "ready", providerState: "ready", labels: {} };
+    };
+    const provider: Provider = {
+      ...readyProvider(),
+      createGolden: async () => start(++generation),
+      snapshot: async ({ name, sandboxId }) => {
+        artifacts.set(name, {
+          source: sandboxId,
+          content: machines.get(sandboxId)!.content,
+          status: failure === "snapshot" ? "failed" : "ready",
+        });
+        // Request can fail after the remote artifact was created.
+        if (failure === "request") throw new Error("snapshot request lost");
+        return { name, status: artifacts.get(name)!.status, sourceSandboxId: sandboxId };
+      },
+      getSnapshot: async (name) => {
+        const artifact = artifacts.get(name);
+        if (!artifact) throw new Error("absent artifact");
+        return { name, status: artifact.status, sourceSandboxId: artifact.source };
+      },
+      deleteSnapshot: async (name) => {
+        deleted.push(name);
+        artifacts.delete(name);
+      },
+      stop: async ({ sandboxId }) => {
+        machines.get(sandboxId)!.stopped = true;
+      },
+      get: async (id) => {
+        const machine = machines.get(id);
+        if (!machine)
+          throw new ProviderError({ provider: "boat", code: "not_found", message: "absent", retryable: false });
+        return { id, name: "master", state: machine.stopped ? "stopped" : "ready", providerState: "", labels: {} };
+      },
+      fork: async ({ from, noEnv }) => {
+        expect(noEnv).toBe(true);
+        const artifact = artifacts.get(from);
+        if (!artifact || artifact.status !== "ready") throw new Error("unusable snapshot");
+        return start(artifact.content);
+      },
+      exec: async () => ({
+        detached: false,
+        exitCode: failure === "scan" ? 97 : 0,
+        stdout: "",
+        stderr: "",
+        timedOut: false,
+        truncated: false,
+      }),
+    };
+    const transaction = db.transaction.bind(db);
+    db.transaction = (async (work) => {
+      let finalized = false;
+      const result = await transaction(async (tx) => {
+        const query = tx.query.bind(tx);
+        tx.query = (async (sql: string, params?: unknown[]) => {
+          if (sql.includes("finalize_golden_backend_slot")) finalized = true;
+          if (failure === "persist" && sql.includes("finalize_golden_backend_slot"))
+            throw new Error("injected finalize failure");
+          return query(sql, params);
+        }) as typeof tx.query;
+        return work(tx);
+      });
+      if (failure === "ack" && finalized) throw new Error("commit acknowledgement lost");
+      return result;
+    }) as typeof db.transaction;
+    const service = createGoldenCreateService({
+      sql: db,
+      github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
+      installationApp: null,
+      fetch: fakeGitHubFetch(),
+      ssh: async () => {},
+    });
+    const store = createSqlGoldenStore(db);
+    const input = { name: "web", visibility: "org" as const, repos: ["acme/web"], setup: "echo old" };
+    const first = await service.create(provider, actor, input);
+    const before = (await store.findByName(actor.orgId, "web"))[0]!;
+    expect(before.providerSandboxId).toBeNull();
+    expect(machines.get(artifacts.get(first.snapshot)!.source)?.stopped).toBe(true);
+    const unchanged = (await db.query("select * from goldens")).rows;
+    const binding = (await db.query("select golden_id,backend_id,org_id,owner_id from golden_backend_slots")).rows;
+    for (const stage of ["scan", "snapshot", "request", "persist"]) {
+      failure = stage;
+      await expect(
+        service.create(provider, actor, { ...input, setup: "echo new", existingGolden: before }),
+      ).rejects.toThrow();
+      expect((await db.query("select * from goldens")).rows).toEqual(unchanged);
+      expect((await db.query("select golden_id,backend_id,org_id,owner_id from golden_backend_slots")).rows).toEqual(
+        binding,
+      );
+      expect([...artifacts.keys()]).toEqual([first.snapshot]);
+      expect(deleted).not.toContain(first.snapshot);
+      expect([...machines.values()].every((machine) => machine.stopped)).toBe(true);
+    }
+    failure = "";
+    const updated = await service.create(provider, actor, { ...input, setup: "echo new", existingGolden: before });
+    expect(updated.snapshot).not.toBe(first.snapshot);
+    expect(artifacts.has(first.snapshot)).toBe(true);
+    const after = (await store.findByName(actor.orgId, "web"))[0]!;
+    expect(after.id).toBe(before.id);
+    expect(after.providerSnapshotId).toBe(updated.snapshot);
+    expect(after.config.init).toEqual(["echo new"]);
+    expect(after.providerSandboxId).toBeNull();
+    expect((await db.query("select golden_id,backend_id,org_id,owner_id from golden_backend_slots")).rows).toEqual(
+      binding,
+    );
+    const connected = await connectGolden(provider, store, actor, "web");
+    expect(machines.get(connected.sandbox.id)?.content).toBe(artifacts.get(updated.snapshot)?.content);
+    expect(machines.get(connected.sandbox.id)?.stopped).toBe(false);
+    // Stopped masters restore from the new revision, not the cleaned-up builder.
+    await provider.stop({ sandboxId: connected.sandbox.id });
+    const restored = await connectGolden(provider, store, actor, "web");
+    expect(restored.sandbox.id).not.toBe(connected.sandbox.id);
+    expect(machines.get(restored.sandbox.id)?.content).toBe(artifacts.get(updated.snapshot)?.content);
+    // An ambiguous commit error must never delete an artifact the database actually committed.
+    failure = "ack";
+    const current = (await store.findByName(actor.orgId, "web"))[0]!;
+    await expect(service.create(provider, actor, { ...input, existingGolden: current })).rejects.toThrow(
+      "acknowledgement lost",
+    );
+    const committed = (await store.findByName(actor.orgId, "web"))[0]!;
+    expect(committed.providerSnapshotId).not.toBe(updated.snapshot);
+    expect(artifacts.has(committed.providerSnapshotId!)).toBe(true);
+    expect(artifacts.has(updated.snapshot)).toBe(true);
+  } finally {
+    await db.close();
+  }
 });
 
 async function fixture(db: Awaited<ReturnType<typeof openDatabase>>): Promise<{ actor: GoldenActor; userId: string }> {
