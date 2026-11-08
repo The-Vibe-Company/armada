@@ -253,13 +253,13 @@ describe("armada org and armada creds against the control API", () => {
   test("the CLI needs a login and a server address", async () => {
     await withServer(async ({ cli }) => {
       const nobody = cli(STAN, { session: false });
-      expect((await nobody.run(["org", "list"])).err).toContain("Run armada login.");
+      expect((await nobody.run(["org", "list"])).err).toContain("run armada login.");
       const lost = cli(STAN, { armadaUrl: false });
-      expect((await lost.run(["org", "list"])).err).toContain("armada login --url");
+      expect((await lost.run(["org", "list"])).err).toContain("Armada could not reach the server.");
       const refused = cli(STAN, { token: "revoked" });
       const result = await refused.run(["org", "list"]);
       expect(result.code).toBe(1);
-      expect(result.err).toContain("Run armada login.");
+      expect(result.err).toContain("Run armada login again.");
     });
   });
 });
@@ -627,8 +627,7 @@ async function withServer(
             out: (text) => (out += text),
             err: (text) => (err += text),
             env: {
-              SUPABASE_ANON_KEY: "anon",
-              ...(opts.armadaUrl === false ? {} : { ARMADA_URL: "https://armada.test" }),
+              ...(opts.armadaUrl === false ? { ARMADA_URL: "https://missing.armada.test" } : { ARMADA_URL: "https://armada.test" }),
             },
             fetch: async (input, init) => {
               const request = input instanceof Request ? input : new Request(input.toString(), init);
@@ -643,13 +642,11 @@ async function withServer(
               opts.session === false
                 ? null
                 : {
-                    userId,
                     accessToken:
                       opts.token ??
                       `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`,
                     refreshToken: "refresh",
                     expiresAt: "2099-01-01T00:00:00.000Z",
-                    supabaseUrl: "https://supabase.test",
                   },
             ),
           };

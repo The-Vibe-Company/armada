@@ -62,7 +62,12 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       if (response.status === 401 && !environmentToken && saved) {
         token = await refresh(origin, io, saved.refreshToken, saved, timeoutMs);
         try {
-          response = await io.fetch(url, { ...init, headers: { ...headers(init.headers), authorization: `Bearer ${token}`, accept: "application/json" }, redirect: "error", signal: init.signal ?? AbortSignal.timeout(timeoutMs) });
+          response = await io.fetch(url, {
+            ...init,
+            headers: { ...headers(init.headers), authorization: `Bearer ${token}`, accept: "application/json" },
+            redirect: "error",
+            signal: init.signal ?? AbortSignal.timeout(timeoutMs),
+          });
         } catch {
           throw new AuthError("Armada could not reach the server.", "unavailable");
         }
@@ -70,20 +75,50 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       const payload: unknown = await response.json().catch(() => null);
       if (response.ok) return payload as T;
       if (response.status === 401) throw new AuthError("Run armada login or update ARMADA_TOKEN.", "unauthorized");
-      if (response.status === 403) throw new AuthError("Armada refused this request.", "conflict");
+      if (response.status === 403) throw new AuthError(apiMessage(payload, "Armada refused this request."), "conflict");
       throw new AuthError(`Armada server request failed (${response.status}).`, "unavailable");
     },
   };
 }
 
-async function refresh(origin: string, io: ArmadaApiIo, refreshToken: string, saved: NonNullable<Awaited<ReturnType<SessionStore["read"]>>>, timeoutMs: number): Promise<string> {
+async function refresh(
+  origin: string,
+  io: ArmadaApiIo,
+  refreshToken: string,
+  saved: NonNullable<Awaited<ReturnType<SessionStore["read"]>>>,
+  timeoutMs: number,
+): Promise<string> {
   let response: Response;
   try {
-    response = await io.fetch(apiUrl(origin, "/api/v1/auth/refresh"), { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ refreshToken }), redirect: "error", signal: AbortSignal.timeout(timeoutMs) });
-  } catch { throw new AuthError("Armada could not reach the server.", "unavailable"); }
-  const value = await response.json().catch(() => null) as { accessToken?: unknown; refreshToken?: unknown; expiresAt?: unknown } | null;
-  if (!response.ok || !value || typeof value.accessToken !== "string" || typeof value.refreshToken !== "string" || typeof value.expiresAt !== "string") throw new AuthError("Run armada login again.", "unauthorized");
-  await io.session.write({ ...saved, accessToken: value.accessToken, refreshToken: value.refreshToken, expiresAt: value.expiresAt });
+    response = await io.fetch(apiUrl(origin, "/api/v1/auth/refresh"), {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ refreshToken }),
+      redirect: "error",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch {
+    throw new AuthError("Armada could not reach the server.", "unavailable");
+  }
+  const value = (await response.json().catch(() => null)) as {
+    accessToken?: unknown;
+    refreshToken?: unknown;
+    expiresAt?: unknown;
+  } | null;
+  if (
+    !response.ok ||
+    !value ||
+    typeof value.accessToken !== "string" ||
+    typeof value.refreshToken !== "string" ||
+    typeof value.expiresAt !== "string"
+  )
+    throw new AuthError("Run armada login again.", "unauthorized");
+  await io.session.write({
+    ...saved,
+    accessToken: value.accessToken,
+    refreshToken: value.refreshToken,
+    expiresAt: value.expiresAt,
+  });
   return value.accessToken;
 }
 
@@ -110,4 +145,11 @@ function apiUrl(origin: string, path: string): URL {
 function headers(value: RequestInit["headers"]): Record<string, string> {
   if (!value) return {};
   return Object.fromEntries(new Headers(value).entries());
+}
+
+function apiMessage(payload: unknown, fallback: string): string {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return fallback;
+  const error = (payload as Record<string, unknown>).error;
+  const message = typeof error === "object" && error !== null ? (error as Record<string, unknown>).message : undefined;
+  return typeof message === "string" && message.length > 0 ? message : fallback;
 }

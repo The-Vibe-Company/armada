@@ -60,14 +60,24 @@ export class GoldenCreateService {
   async create(
     provider: Provider,
     actor: GoldenActor,
-    input: { name: string; visibility: Visibility; repos: string[]; setup?: string; config?: GitHubGoldenConfig; existingGolden?: GoldenRecord },
+    input: {
+      name: string;
+      visibility: Visibility;
+      repos: string[];
+      setup?: string;
+      config?: GitHubGoldenConfig;
+      existingGolden?: GoldenRecord;
+    },
     limits: GoldenLimits = {},
   ): Promise<{ snapshot: string }> {
     if (input.existingGolden) {
       const existing = input.existingGolden;
       if (existing.orgId !== actor.orgId || existing.name !== input.name)
         throw new GoldenError("forbidden", "You cannot rebuild this golden.");
-      if ((existing.visibility === "org" && actor.role !== "admin") || (existing.visibility === "private" && existing.ownerId !== actor.userId))
+      if (
+        (existing.visibility === "org" && actor.role !== "admin") ||
+        (existing.visibility === "private" && existing.ownerId !== actor.userId)
+      )
         throw new GoldenError("forbidden", "You cannot rebuild this golden.");
     }
     if (input.visibility === "org" && actor.role !== "admin")
@@ -244,7 +254,7 @@ export function goldenScript(repos: readonly PreparedRepo[], setup: readonly str
     "export GIT_ASKPASS=/bin/false",
     "export GIT_CONFIG_COUNT=1",
     "export GIT_CONFIG_KEY_0=credential.helper",
-    "export GIT_CONFIG_VALUE_0='!f() { while IFS= read -r line; do case $line in protocol=https|host=github.com|host=github.com:443) ;; *) exit 1 ;; esac; done; printf \"username=x-access-token\\npassword=%s\\n\" \"$ARMADA_GIT_TOKEN\"; }; f'",
+    'export GIT_CONFIG_VALUE_0=\'!f() { while IFS= read -r line; do case $line in protocol=https|host=github.com|host=github.com:443) ;; *) exit 1 ;; esac; done; printf "username=x-access-token\\npassword=%s\\n" "$ARMADA_GIT_TOKEN"; }; f\'',
     ...repos.map(
       (r) =>
         `git clone --branch ${shellQuote(r.branch ?? "main")} --single-branch https://github.com/${safe(r.owner)}/${safe(r.repo)}.git ${GOLDEN_ROOT}/${safe(r.dir)}`,

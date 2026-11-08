@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileSessionStore, memorySessionStore, type Session } from "../src/session.ts";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
+import { fileSessionStore, memorySessionStore, type Session } from "../src/session.ts";
 
 const ORIGIN = "https://armada.example";
 const ACCESS = "access-token";
@@ -68,7 +68,11 @@ describe("auth commands", () => {
       }
       if (url === `${ORIGIN}/api/v1/token/list`) {
         expect(init?.method).toBe("POST");
-        return Response.json({ tokens: [{ id: "token-id", label: "ci", orgName: "Example", createdAt: "2026-11-08T00:00:00Z", revokedAt: null }] });
+        return Response.json({
+          tokens: [
+            { id: "token-id", label: "ci", orgName: "Example", createdAt: "2026-11-08T00:00:00Z", revokedAt: null },
+          ],
+        });
       }
       if (url === `${ORIGIN}/api/v1/token/revoke`) {
         expect(init?.method).toBe("POST");
@@ -185,7 +189,10 @@ describe("auth commands", () => {
 
     const result = await capture(["login", "--email", "ada@example.com"], auth);
     expect(result).toMatchObject({ code: 0, out: "Logged in.\n", err: expect.stringContaining("Type the code") });
-    expect(calls.map(({ url }) => url)).toEqual([`${ORIGIN}/api/v1/auth/email/start`, `${ORIGIN}/api/v1/auth/email/verify`]);
+    expect(calls.map(({ url }) => url)).toEqual([
+      `${ORIGIN}/api/v1/auth/email/start`,
+      `${ORIGIN}/api/v1/auth/email/verify`,
+    ]);
     expect(await auth.session.read()).toEqual(session());
   });
 
@@ -202,10 +209,15 @@ describe("auth commands", () => {
         const url = String(input);
         calls.push(url);
         if (url === `${ORIGIN}/api/v1/auth/email/start`) return Response.json({});
-        if (url === `${ORIGIN}/api/v1/auth/email/verify`) return Response.json({ accessToken: "first", refreshToken: REFRESH, expiresAt: "2026-11-08T00:00:30.000Z" });
+        if (url === `${ORIGIN}/api/v1/auth/email/verify`)
+          return Response.json({ accessToken: "first", refreshToken: REFRESH, expiresAt: "2026-11-08T00:00:30.000Z" });
         if (url === `${ORIGIN}/api/v1/auth/refresh`) {
           expect(await new Request(url, init).json()).toEqual({ refreshToken: REFRESH });
-          return Response.json({ accessToken: "renewed", refreshToken: "rotated", expiresAt: "2099-01-01T00:00:00.000Z" });
+          return Response.json({
+            accessToken: "renewed",
+            refreshToken: "rotated",
+            expiresAt: "2099-01-01T00:00:00.000Z",
+          });
         }
         if (url === `${ORIGIN}/api/v1/org/list`) {
           expect(authHeader(init)).toBe("Bearer renewed");
@@ -239,7 +251,9 @@ describe("auth commands", () => {
       if (url.endsWith("/email/start")) return Response.json({});
       return Response.json({ accessToken: ACCESS, refreshToken: REFRESH, expiresAt: "2099-01-01T00:00:00.000Z" });
     };
-    expect((await capture(["login", "--url", "https://armada.example", "--email", "ada@example.com"], auth)).code).toBe(0);
+    expect((await capture(["login", "--url", "https://armada.example", "--email", "ada@example.com"], auth)).code).toBe(
+      0,
+    );
     expect(calls).toEqual([
       "https://armada.example/api/v1/auth/email/start",
       "https://armada.example/api/v1/auth/email/verify",

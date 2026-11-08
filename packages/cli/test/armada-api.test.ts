@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { memorySessionStore } from "../src/session.ts";
 import { armadaApiUrl, createArmadaApiClient } from "../src/armada-api.ts";
+import { memorySessionStore } from "../src/session.ts";
 
 const token = "secret-token-that-must-not-leak";
 

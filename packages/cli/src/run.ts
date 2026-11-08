@@ -1,19 +1,19 @@
 import { AuthError, assertProvider } from "@armada/auth";
 import {
   configFromFlags,
-  type GoldenConfig,
   type GoldenActor,
-  type GoldenStore,
+  type GoldenConfig,
   GoldenError,
   type GoldenRecord,
+  type GoldenStore,
   HARNESSES,
   type Harness,
   LaunchError,
   type LaunchResult,
   type Provider,
   ProviderError,
-  type SandboxStore,
   parseGoldenConfig,
+  type SandboxStore,
   VaultError,
   type VaultStore,
   VERSION,
@@ -206,12 +206,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   }
 }
 
-async function update(
-  positionals: string[],
-  args: ReturnType<typeof parseArgs>,
-  io: Io,
-  deps: Deps,
-): Promise<number> {
+async function update(positionals: string[], args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Promise<number> {
   const name = oneName(positionals);
   const config = await readConfig(args, deps);
   const setupFile = single(args, "--setup");
@@ -225,17 +220,20 @@ async function update(
   }
   const auth = authOf(io, deps);
   const client = await createArmadaApiClient({ env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session });
-  const result = await client.request<{ name: string; visibility: Visibility; snapshot: string }>("/api/v1/golden/update", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      name,
-      config,
-      ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-      ...(setup === undefined ? {} : { setup }),
-    }),
-    signal: AbortSignal.timeout(10 * 60_000),
-  });
+  const result = await client.request<{ name: string; visibility: Visibility; snapshot: string }>(
+    "/api/v1/golden/update",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name,
+        config,
+        ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+        ...(setup === undefined ? {} : { setup }),
+      }),
+      signal: AbortSignal.timeout(10 * 60_000),
+    },
+  );
   io.out(
     `Updated golden ${result.name} (${result.visibility}).\nSaved snapshot: ${result.snapshot}\nRepos: ${config.repos.map((repo) => repo.dir).join(", ")}.\n`,
   );
@@ -541,7 +539,6 @@ function oneName(positionals: string[]): string {
   }
   return name;
 }
-
 
 async function login(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const parsed = parseAuth(argv);

@@ -1,6 +1,6 @@
 import { VaultError } from "@armada/core";
-import type { AuthIo } from "./auth-commands.ts";
 import { createArmadaApiClient } from "./armada-api.ts";
+import type { AuthIo } from "./auth-commands.ts";
 
 /**
  * One call to the Armada server's control API, as the signed-in user. The server address is

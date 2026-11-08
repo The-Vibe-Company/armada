@@ -304,8 +304,16 @@ describe("tools", () => {
     for (const tool of tools) expect(tool.outputSchema).toBeDefined();
     const goldenUpdate = tools.find((tool) => tool.name === "golden_update");
     const goldenSnapshot = tools.find((tool) => tool.name === "golden_snapshot");
-    expect(goldenUpdate?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, openWorldHint: true });
-    expect(goldenSnapshot?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, openWorldHint: true });
+    expect(goldenUpdate?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: true,
+    });
+    expect(goldenSnapshot?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: true,
+    });
     expect(goldenUpdate?.inputSchema).toBeDefined();
     expect(goldenUpdate?.outputSchema).toBeDefined();
     expect(goldenSnapshot?.inputSchema).toBeDefined();

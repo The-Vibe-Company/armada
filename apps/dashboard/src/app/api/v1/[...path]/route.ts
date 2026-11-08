@@ -59,9 +59,12 @@ export async function GET(request: Request, context: { params: Promise<{ path: s
   try {
     const response = await fetch(target, { redirect: "manual", cache: "no-store" });
     const location = response.headers.get("location");
-    if (response.status === 302 && location) return new Response(null, { status: 302, headers: { location, "cache-control": "no-store" } });
+    if (response.status === 302 && location)
+      return new Response(null, { status: 302, headers: { location, "cache-control": "no-store" } });
     return new Response(response.body, { status: response.status, headers: { "cache-control": "no-store" } });
-  } catch { return NextResponse.json({ error: "Armada API is unavailable." }, { status: 502 }); }
+  } catch {
+    return NextResponse.json({ error: "Armada API is unavailable." }, { status: 502 });
+  }
 }
 
 function controlOrigin(value: string | undefined): string | null {

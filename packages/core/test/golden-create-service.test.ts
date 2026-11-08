@@ -253,34 +253,99 @@ test("keeps the legacy repo-string API compatible", () => {
 });
 
 test("existing golden context is authorized before provider work and propagated", async () => {
-  const existing: any = { id: "g1", orgId: "o", name: "x", visibility: "private", ownerId: "u", config: { repos: [], init: [] } };
+  const existing: any = {
+    id: "g1",
+    orgId: "o",
+    name: "x",
+    visibility: "private",
+    ownerId: "u",
+    config: { repos: [], init: [] },
+  };
   const seen: any[] = [];
   const s = new GoldenCreateService({
     authorize: async () => ({ repos: [repo], token: "caller" }),
-    reserve: async (_p, _a, value) => { seen.push(value); return undefined; },
-    ssh: async () => {}, scan: async () => {},
-    persist: async (value) => { seen.push(value.existingGolden); },
+    reserve: async (_p, _a, value) => {
+      seen.push(value);
+      return undefined;
+    },
+    ssh: async () => {},
+    scan: async () => {},
+    persist: async (value) => {
+      seen.push(value.existingGolden);
+    },
   });
-  const p: any = { createGolden: async () => ({ id: "bx" }), snapshot: async ({ name }: any) => ({ name, status: "ready" }), stop: async () => {} };
+  const p: any = {
+    createGolden: async () => ({ id: "bx" }),
+    snapshot: async ({ name }: any) => ({ name, status: "ready" }),
+    stop: async () => {},
+  };
   await s.create(p, actor, { name: "x", visibility: "private", repos: ["acme/web"], existingGolden: existing });
   expect(seen).toEqual([existing, existing]);
 });
 
 test("existing golden denial happens before authorization or provider", async () => {
   let touched = false;
-  const s = new GoldenCreateService({ authorize: async () => { touched = true; return { repos: [repo], token: "x" }; }, ssh: async () => {}, scan: async () => {}, persist: async () => {} });
-  const p: any = { createGolden: async () => { touched = true; return { id: "bx" }; } };
-  const existing: any = { id: "g", orgId: "other", name: "x", visibility: "private", ownerId: "u", config: { repos: [], init: [] } };
-  await expect(s.create(p, actor, { name: "x", visibility: "private", repos: ["acme/web"], existingGolden: existing })).rejects.toThrow("cannot rebuild");
+  const s = new GoldenCreateService({
+    authorize: async () => {
+      touched = true;
+      return { repos: [repo], token: "x" };
+    },
+    ssh: async () => {},
+    scan: async () => {},
+    persist: async () => {},
+  });
+  const p: any = {
+    createGolden: async () => {
+      touched = true;
+      return { id: "bx" };
+    },
+  };
+  const existing: any = {
+    id: "g",
+    orgId: "other",
+    name: "x",
+    visibility: "private",
+    ownerId: "u",
+    config: { repos: [], init: [] },
+  };
+  await expect(
+    s.create(p, actor, { name: "x", visibility: "private", repos: ["acme/web"], existingGolden: existing }),
+  ).rejects.toThrow("cannot rebuild");
   expect(touched).toBe(false);
 });
 
 test("uses provider snapshot identifier and stable existing-golden snapshot request", async () => {
   const seen: any[] = [];
-  const existing: any = { id: "stable-id", orgId: "o", name: "x", visibility: "private", ownerId: "u", config: { repos: [], init: [] } };
-  const s = new GoldenCreateService({ authorize: async () => ({ repos: [repo], token: "t" }), ssh: async () => {}, scan: async () => {}, persist: async (x) => { seen.push(x); } });
-  const p: any = { createGolden: async () => ({ id: "builder" }), snapshot: async (x: any) => { seen.push(x.name); return { name: "provider-remap", status: "ready" }; }, stop: async () => {} };
-  const result = await s.create(p, actor, { name: "x", visibility: "private", repos: ["acme/web"], existingGolden: existing });
+  const existing: any = {
+    id: "stable-id",
+    orgId: "o",
+    name: "x",
+    visibility: "private",
+    ownerId: "u",
+    config: { repos: [], init: [] },
+  };
+  const s = new GoldenCreateService({
+    authorize: async () => ({ repos: [repo], token: "t" }),
+    ssh: async () => {},
+    scan: async () => {},
+    persist: async (x) => {
+      seen.push(x);
+    },
+  });
+  const p: any = {
+    createGolden: async () => ({ id: "builder" }),
+    snapshot: async (x: any) => {
+      seen.push(x.name);
+      return { name: "provider-remap", status: "ready" };
+    },
+    stop: async () => {},
+  };
+  const result = await s.create(p, actor, {
+    name: "x",
+    visibility: "private",
+    repos: ["acme/web"],
+    existingGolden: existing,
+  });
   expect(result.snapshot).toBe("provider-remap");
   expect(seen[0]).toBe("golden-stable-id");
   expect(seen[1].snapshot).toBe("provider-remap");

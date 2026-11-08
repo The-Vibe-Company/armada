@@ -30,9 +30,10 @@ test("browser login uses randomized PKCE and state, rejects a bad callback, then
   expect(authorize.searchParams.get("code_challenge")).toMatch(/^[A-Za-z0-9_-]{43,128}$/);
   expect(authorize.searchParams.get("state")).toMatch(/^[a-f0-9]{32}$/);
 
+  const outcome = expect(login).rejects.toThrow("Login callback was refused.");
   const rejected = await fetch(`${callback}?code=wrong&state=wrong`);
   expect(rejected.status).toBe(400);
-  await expect(login).rejects.toThrow("Login callback was refused.");
+  await outcome;
   expect(exchange).toBeUndefined();
 });
 
@@ -66,5 +67,9 @@ test("browser login exchanges a valid state-bound callback code with its PKCE ve
   const response = await fetch(`${callback}?code=authorization-code&state=${authorize.searchParams.get("state")}`);
   expect(response.status).toBe(200);
   await exchanged;
-  await expect(login).resolves.toEqual({ accessToken: "access", refreshToken: "refresh", expiresAt: "2099-01-01T00:00:00.000Z" });
+  await expect(login).resolves.toEqual({
+    accessToken: "access",
+    refreshToken: "refresh",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  });
 });

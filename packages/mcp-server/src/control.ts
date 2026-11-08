@@ -1,9 +1,22 @@
-import { type AuthStore, createSqlAuthStore, createServiceToken, listServiceTokens, revokeServiceToken, refreshSupabaseSession, exchangeSupabaseCode, sendEmailLink, verifyEmailCode, assertEmail, assertEmailCode, supabaseAuthorizeUrl, assertProvider, type Session } from "@armada/auth";
+import {
+  type AuthStore,
+  assertEmail,
+  assertEmailCode,
+  assertProvider,
+  createServiceToken,
+  createSqlAuthStore,
+  exchangeSupabaseCode,
+  listServiceTokens,
+  refreshSupabaseSession,
+  revokeServiceToken,
+  type Session,
+  sendEmailLink,
+  supabaseAuthorizeUrl,
+  verifyEmailCode,
+} from "@armada/auth";
 import {
   addMember,
   connectGolden,
-  snapshotGolden,
-  scanGoldenSandbox,
   createGoldenCreateService,
   createOrg,
   createSqlVaultStore,
@@ -37,8 +50,10 @@ import {
   resolveCredentials,
   resolveGitHubAccess,
   resolveOrg,
+  scanGoldenSandbox,
   setCredential,
   setMemberRole,
+  snapshotGolden,
   VaultError,
   type VaultErrorCode,
   type VaultStore,
@@ -79,7 +94,10 @@ export interface ControlOptions {
   providerFor?: (apiKey: string) => Provider;
   /** Server-side native-session refresh; never exposed to the CLI. */
   refreshNative?: (refreshToken: string) => Promise<{ accessToken: string; refreshToken: string; expiresAt: string }>;
-  exchangeNative?: (code: string, verifier: string) => Promise<{ accessToken: string; refreshToken: string; expiresAt: string }>;
+  exchangeNative?: (
+    code: string,
+    verifier: string,
+  ) => Promise<{ accessToken: string; refreshToken: string; expiresAt: string }>;
 }
 
 const STATUS: Record<VaultErrorCode, number> = {
@@ -151,7 +169,11 @@ async function tokenRevokeRoute(request: Request, options: ControlOptions): Prom
       if (!target || !org || !members.some((member) => member.orgId === org.orgId && member.name === target.orgName))
         return fail(403, "forbidden", "This token is scoped to another org.");
     }
-    await revokeServiceToken(options.authStore, { userId: caller.userId, id, now: (options.now ?? (() => new Date()))() });
+    await revokeServiceToken(options.authStore, {
+      userId: caller.userId,
+      id,
+      now: (options.now ?? (() => new Date()))(),
+    });
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
   } catch {
     return fail(403, "forbidden", "Token revocation was refused.");
@@ -171,8 +193,16 @@ async function tokenCreateRoute(request: Request, options: ControlOptions): Prom
       const membership = memberships.find((item) => item.orgId === scope.orgId);
       if (!membership || membership.name !== org) return fail(403, "forbidden", "This token is scoped to another org.");
     }
-    const created = await createServiceToken(options.authStore, { userId: caller.userId, ...(org ? { orgName: org } : {}), ...(optional(body, "label") ? { label: optional(body, "label")! } : {}), now: (options.now ?? (() => new Date()))() });
-    return Response.json({ id: created.id, label: created.label, orgName: created.orgName, token: created.token }, { headers: { "cache-control": "no-store" } });
+    const created = await createServiceToken(options.authStore, {
+      userId: caller.userId,
+      ...(org ? { orgName: org } : {}),
+      ...(optional(body, "label") ? { label: optional(body, "label")! } : {}),
+      now: (options.now ?? (() => new Date()))(),
+    });
+    return Response.json(
+      { id: created.id, label: created.label, orgName: created.orgName, token: created.token },
+      { headers: { "cache-control": "no-store" } },
+    );
   } catch {
     return fail(401, "unauthorized", "Token creation was refused.");
   }
@@ -185,8 +215,17 @@ async function tokenListRoute(request: Request, options: ControlOptions): Promis
     const tokens = await listServiceTokens(options.authStore, caller.userId);
     const allowed = caller.via === "service" ? new Set(caller.orgs.map((org) => org.orgId)) : null;
     const memberships = allowed ? await options.authStore.memberships(caller.userId) : [];
-    const names = new Set(memberships.filter((membership) => allowed?.has(membership.orgId)).map((membership) => membership.name));
-    return Response.json({ tokens: tokens.filter((token) => !allowed || names.has(token.orgName)).map(({ id, label, orgName, createdAt, revokedAt }) => ({ id, label, orgName, createdAt, revokedAt })) }, { headers: { "cache-control": "no-store" } });
+    const names = new Set(
+      memberships.filter((membership) => allowed?.has(membership.orgId)).map((membership) => membership.name),
+    );
+    return Response.json(
+      {
+        tokens: tokens
+          .filter((token) => !allowed || names.has(token.orgName))
+          .map(({ id, label, orgName, createdAt, revokedAt }) => ({ id, label, orgName, createdAt, revokedAt })),
+      },
+      { headers: { "cache-control": "no-store" } },
+    );
   } catch {
     return fail(401, "unauthorized", "Run armada login.");
   }
@@ -206,7 +245,10 @@ async function emailVerifyRoute(request: Request, options: ControlOptions): Prom
       code,
       now: options.now?.() ?? new Date(),
     });
-    return Response.json({ accessToken: session.accessToken, refreshToken: session.refreshToken, expiresAt: session.expiresAt }, { headers: { "cache-control": "no-store" } });
+    return Response.json(
+      { accessToken: session.accessToken, refreshToken: session.refreshToken, expiresAt: session.expiresAt },
+      { headers: { "cache-control": "no-store" } },
+    );
   } catch {
     return fail(401, "unauthorized", "Email code was refused.");
   }
@@ -221,12 +263,33 @@ async function emailStartRoute(request: Request, options: ControlOptions): Promi
     const challenge = required(body, "code_challenge");
     const state = required(body, "state");
     const callback = new URL(redirectTo);
-    if (callback.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(callback.hostname) || !callback.port || callback.username || callback.password || callback.hash || !/^[A-Za-z0-9._~-]{43,128}$/.test(challenge) || !/^[A-Za-z0-9._~-]{8,512}$/.test(state)) throw new Error();
-    await sendEmailLink({ fetch: options.supabase.fetch ?? fetch, supabaseUrl: options.supabase.supabaseUrl, anonKey: options.supabase.anonKey, email, redirectTo: callback.toString(), challenge });
+    if (
+      callback.protocol !== "http:" ||
+      !["127.0.0.1", "localhost"].includes(callback.hostname) ||
+      !callback.port ||
+      callback.username ||
+      callback.password ||
+      callback.hash ||
+      !/^[A-Za-z0-9._~-]{43,128}$/.test(challenge) ||
+      !/^[A-Za-z0-9._~-]{8,512}$/.test(state)
+    )
+      throw new Error();
+    await sendEmailLink({
+      fetch: options.supabase.fetch ?? fetch,
+      supabaseUrl: options.supabase.supabaseUrl,
+      anonKey: options.supabase.anonKey,
+      email,
+      redirectTo: callback.toString(),
+      challenge,
+    });
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     const status = error instanceof Error && error.message.includes("Too many") ? 429 : 400;
-    return fail(status, status === 429 ? "rate_limited" : "invalid", status === 429 ? "Try again later." : "Invalid email login request.");
+    return fail(
+      status,
+      status === 429 ? "rate_limited" : "invalid",
+      status === 429 ? "Try again later." : "Invalid email login request.",
+    );
   }
 }
 
@@ -236,7 +299,8 @@ async function exchangeRoute(request: Request, options: ControlOptions): Promise
     const body = await readBody(request);
     const code = required(body, "code");
     const verifier = required(body, "verifier");
-    if (code.length > 4096 || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) throw new VaultError("invalid", "Invalid login exchange.");
+    if (code.length > 4096 || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier))
+      throw new VaultError("invalid", "Invalid login exchange.");
     const result = options.exchangeNative
       ? await options.exchangeNative(code, verifier)
       : await nativeExchange(options, code, verifier);
@@ -270,8 +334,22 @@ function authorizeRoute(request: Request, options: ControlOptions): Response {
     assertProvider(provider);
     if (!/^[A-Za-z0-9._~-]{43,128}$/.test(challenge) || !/^[A-Za-z0-9._~-]{8,512}$/.test(state)) throw new Error();
     const callback = new URL(redirectTo);
-    if (callback.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(callback.hostname) || !callback.port || callback.username || callback.password || callback.hash) throw new Error();
-    const location = supabaseAuthorizeUrl({ supabaseUrl: options.supabase.supabaseUrl, anonKey: options.supabase.anonKey, provider: assertProvider(provider), redirectTo: callback.toString(), challenge });
+    if (
+      callback.protocol !== "http:" ||
+      !["127.0.0.1", "localhost"].includes(callback.hostname) ||
+      !callback.port ||
+      callback.username ||
+      callback.password ||
+      callback.hash
+    )
+      throw new Error();
+    const location = supabaseAuthorizeUrl({
+      supabaseUrl: options.supabase.supabaseUrl,
+      anonKey: options.supabase.anonKey,
+      provider: assertProvider(provider),
+      redirectTo: callback.toString(),
+      challenge,
+    });
     return new Response(null, { status: 302, headers: { location, "cache-control": "no-store" } });
   } catch {
     return fail(400, "invalid", "Invalid browser login request.");
@@ -283,9 +361,7 @@ async function refreshRoute(request: Request, options: ControlOptions): Promise<
   try {
     const body = await readBody(request);
     const token = required(body, "refreshToken");
-    const refreshed = options.refreshNative
-      ? await options.refreshNative(token)
-      : await nativeRefresh(options, token);
+    const refreshed = options.refreshNative ? await options.refreshNative(token) : await nativeRefresh(options, token);
     return Response.json(refreshed, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     if (error instanceof VaultError) return fail(400, error.code, error.message);
@@ -302,7 +378,12 @@ async function nativeRefresh(options: ControlOptions, refreshToken: string) {
     expiresAt: new Date(0).toISOString(),
     userId: "",
   };
-  const next = await refreshSupabaseSession({ fetch: options.supabase.fetch ?? fetch, anonKey: options.supabase.anonKey, session, now: options.now?.() ?? new Date() });
+  const next = await refreshSupabaseSession({
+    fetch: options.supabase.fetch ?? fetch,
+    anonKey: options.supabase.anonKey,
+    session,
+    now: options.now?.() ?? new Date(),
+  });
   return { accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt };
 }
 
@@ -484,7 +565,8 @@ async function snapshotGoldenRoute(
   caller: Caller,
   body: Record<string, unknown>,
 ): Promise<{ name: string; snapshot: string }> {
-  if (!options.providerFor || !options.data) throw new VaultError("unavailable", "Golden snapshots are not configured on this server.");
+  if (!options.providerFor || !options.data)
+    throw new VaultError("unavailable", "Golden snapshots are not configured on this server.");
   const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
   const name = required(body, "name");
   const data = options.data(caller);
@@ -494,7 +576,9 @@ async function snapshotGoldenRoute(
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
   // Core methods re-check the exact private-owner/org-admin policy before changing anything.
   const boat = await resolveBoatKey(options.store, options.encryptionKey, {
-    userId: caller.userId, orgId: org.id, visibility: golden.visibility,
+    userId: caller.userId,
+    orgId: org.id,
+    visibility: golden.visibility,
   });
   const provider = options.providerFor(boat.key);
   let target = golden;

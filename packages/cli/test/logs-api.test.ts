@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { memorySessionStore } from "../src/session.ts";
 import { run } from "../src/run.ts";
+import { memorySessionStore } from "../src/session.ts";
 
 const token = "armada_sk_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO12";
 const id = "11111111-1111-4111-8111-111111111111";

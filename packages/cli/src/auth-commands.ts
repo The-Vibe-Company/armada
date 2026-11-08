@@ -1,15 +1,9 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import {
-  AuthError,
-  assertEmail,
-  createPkce,
-  type AuthFetch,
-  type Provider,
-} from "@armada/auth";
+import { AuthError, type AuthFetch, assertEmail, createPkce, type Provider } from "@armada/auth";
 
-import { DEFAULT_ARMADA_API_URL, createArmadaApiClient } from "./armada-api.ts";
+import { createArmadaApiClient, DEFAULT_ARMADA_API_URL } from "./armada-api.ts";
 import { browserLogin } from "./browser-login.ts";
 import { fileSessionStore, type SessionStore } from "./session.ts";
 
@@ -81,18 +75,46 @@ export async function loginCommand(
     const email = assertEmail(how.email);
     const pkce = await createPkce();
     const state = crypto.randomUUID().replaceAll("-", "");
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("Not found", { status: 404 }) });
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response("Not found", { status: 404 }),
+    });
     const callback = `http://127.0.0.1:${server.port}/callback`;
-    const start = await io.fetch(new URL("/api/v1/auth/email/start", origin), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, redirect_uri: callback, code_challenge: pkce.challenge, state }) });
+    const start = await io.fetch(new URL("/api/v1/auth/email/start", origin), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, redirect_uri: callback, code_challenge: pkce.challenge, state }),
+    });
     try {
       if (!start.ok) throw new AuthError("Armada could not start email login.", "unauthorized");
       io.err(`Sent a sign-in email to ${email}. Type the code it contains.\n`);
       if (!io.readCode) throw new AuthError("Email code input is unavailable.", "usage");
       const code = await io.readCode(new AbortController().signal);
-      const response = await io.fetch(new URL("/api/v1/auth/email/verify", origin), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, code }) });
-      const value = await response.json().catch(() => null) as { accessToken?: unknown; refreshToken?: unknown; expiresAt?: unknown } | null;
-      if (!response.ok || !value || typeof value.accessToken !== "string" || typeof value.refreshToken !== "string" || typeof value.expiresAt !== "string") throw new AuthError("Email code was refused.", "unauthorized");
-      await io.session.write({ armadaUrl: origin, accessToken: value.accessToken, refreshToken: value.refreshToken, expiresAt: value.expiresAt });
+      const response = await io.fetch(new URL("/api/v1/auth/email/verify", origin), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email, code }),
+      });
+      const value = (await response.json().catch(() => null)) as {
+        accessToken?: unknown;
+        refreshToken?: unknown;
+        expiresAt?: unknown;
+      } | null;
+      if (
+        !response.ok ||
+        !value ||
+        typeof value.accessToken !== "string" ||
+        typeof value.refreshToken !== "string" ||
+        typeof value.expiresAt !== "string"
+      )
+        throw new AuthError("Email code was refused.", "unauthorized");
+      await io.session.write({
+        armadaUrl: origin,
+        accessToken: value.accessToken,
+        refreshToken: value.refreshToken,
+        expiresAt: value.expiresAt,
+      });
       io.out("Logged in.\n");
       return;
     } finally {
@@ -133,11 +155,17 @@ export async function logoutCommand(io: AuthIo): Promise<void> {
 
 export async function tokenCreate(io: AuthIo, orgName: string | undefined, label: string | undefined): Promise<void> {
   const client = await createArmadaApiClient(io);
-  const created = await client.request<{ id: string; label: string; orgName: string; token: string }>("/api/v1/token/create", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
-    ...(orgName !== undefined ? { orgName } : {}),
-    ...(label !== undefined ? { label } : {}),
-  }) });
+  const created = await client.request<{ id: string; label: string; orgName: string; token: string }>(
+    "/api/v1/token/create",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...(orgName !== undefined ? { orgName } : {}),
+        ...(label !== undefined ? { label } : {}),
+      }),
+    },
+  );
   io.out(
     `Created a service token. Copy it now; Armada stores only its hash.\n\nid: ${created.id}\nlabel: ${created.label}\norg: ${created.orgName}\ntoken: ${created.token}\n`,
   );
@@ -145,7 +173,9 @@ export async function tokenCreate(io: AuthIo, orgName: string | undefined, label
 
 export async function tokenList(io: AuthIo): Promise<void> {
   const client = await createArmadaApiClient(io);
-  const { tokens } = await client.request<{ tokens: { id: string; label: string; orgName: string; createdAt: string; revokedAt: string | null }[] }>("/api/v1/token/list", { method: "POST" });
+  const { tokens } = await client.request<{
+    tokens: { id: string; label: string; orgName: string; createdAt: string; revokedAt: string | null }[];
+  }>("/api/v1/token/list", { method: "POST" });
   if (tokens.length === 0) {
     io.out("No service tokens.\n");
     return;
@@ -158,10 +188,13 @@ export async function tokenList(io: AuthIo): Promise<void> {
 
 export async function tokenRevoke(io: AuthIo, id: string): Promise<void> {
   const client = await createArmadaApiClient(io);
-  await client.request("/api/v1/token/revoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id }) });
+  await client.request("/api/v1/token/revoke", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
   io.out(`Revoked ${id}.\n`);
 }
-
 
 function openBrowser(url: string): void {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";

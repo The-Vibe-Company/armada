@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { memorySessionStore } from "../src/session.ts";
 import { tokenList } from "../src/auth-commands.ts";
+import { memorySessionStore } from "../src/session.ts";
 
 test("token list uses the Armada API bearer with a clean HOME token", async () => {
   let request: Request | undefined;
@@ -10,8 +10,13 @@ test("token list uses the Armada API bearer with a clean HOME token", async () =
   };
   let out = "";
   await tokenList({
-    out: (text) => (out += text), err: () => {}, env: { ARMADA_TOKEN: "test-service-token" },
-    fetch, now: () => new Date(), open: () => {}, session: memorySessionStore(),
+    out: (text) => (out += text),
+    err: () => {},
+    env: { ARMADA_TOKEN: "test-service-token" },
+    fetch,
+    now: () => new Date(),
+    open: () => {},
+    session: memorySessionStore(),
   });
   expect(request?.url).toBe("https://armada.thevibecompany.co/api/v1/token/list");
   expect(request?.headers.get("authorization")).toBe("Bearer test-service-token");

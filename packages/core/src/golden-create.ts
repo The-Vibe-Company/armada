@@ -75,8 +75,20 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
       const identity = await provider.backendIdentity();
       if (!identity?.id)
         throw new GoldenError("forbidden", "Provider returned no backend identity for golden capacity.");
-      if (existingGolden) return slots.reserveExisting({ provider: provider.id, backendId: identity.id, capacity, goldenId: existingGolden.id });
-      return slots.reserve({ provider: provider.id, backendId: identity.id, capacity, orgId: actor.orgId, ownerId: actor.userId });
+      if (existingGolden)
+        return slots.reserveExisting({
+          provider: provider.id,
+          backendId: identity.id,
+          capacity,
+          goldenId: existingGolden.id,
+        });
+      return slots.reserve({
+        provider: provider.id,
+        backendId: identity.id,
+        capacity,
+        orgId: actor.orgId,
+        ownerId: actor.userId,
+      });
     },
     async release(reservationId) {
       await slots.release(reservationId);
