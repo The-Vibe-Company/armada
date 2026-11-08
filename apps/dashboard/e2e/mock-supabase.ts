@@ -327,6 +327,8 @@ async function rest(request: Request, url: URL): Promise<Response> {
     );
     const list = state[table as "members" | "credentials" | "github_connections"] as Row[] | undefined;
     if (!list) return pgError(denied);
+    // A user JWT only selects and deletes its connection; writes go through save_github_connection.
+    if (request.method === "PATCH" && table === "github_connections") return pgError(denied);
     if (request.method === "PATCH") {
       const patch = (await request.json()) as Row;
       for (const row of targets) {
@@ -414,6 +416,23 @@ function rpc(name: string, args: Row, userId: string): Response {
         return pgError({ status: 403, code: "42501", message: "only an org admin shares a golden with the org" });
       }
       row.visibility = args.new_visibility;
+      return new Response(null, { status: 204 });
+    }
+    case "save_github_connection": {
+      const now = new Date().toISOString();
+      const row = {
+        user_id: userId,
+        github_id: args.github_user_id,
+        login: args.github_login,
+        name: args.github_name,
+        refresh_token_enc: args.token_enc,
+        refresh_expires_at: args.token_expires_at,
+        revoked_at: null,
+        updated_at: now,
+      };
+      const existing = state.github_connections.find((item) => item.user_id === userId);
+      if (existing) Object.assign(existing, row);
+      else state.github_connections.push({ ...row, created_at: now });
       return new Response(null, { status: 204 });
     }
     default:
@@ -510,6 +529,28 @@ function mcp(message: RpcMessage, userId: string | null): Response {
   }
 }
 
+/** GitHub's token and user endpoints, reached by the app server through e2e/github-fetch.cjs. */
+function github(request: Request, url: URL, body: Row): Response {
+  if (url.pathname === "/github/login/oauth/access_token") {
+    if (body.client_id !== "Iv1.e2e" || body.client_secret !== "e2e-client-secret") {
+      return json({ error: "incorrect_client_credentials" });
+    }
+    if (body.code !== "good-code") return json({ error: "bad_verification_code" });
+    return json({
+      access_token: "ghu_e2e_access",
+      expires_in: 28_800,
+      refresh_token: "ghr_e2e_refresh",
+      refresh_token_expires_in: 15_897_600,
+    });
+  }
+  if (url.pathname === "/github/user") {
+    if (request.headers.get("authorization") !== "Bearer ghu_e2e_access")
+      return json({ message: "Bad credentials" }, 401);
+    return json({ id: 583231, login: "octocat", name: "Octo Cat" });
+  }
+  return json({ message: "not found" }, 404);
+}
+
 function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     state = seed();
@@ -567,6 +608,7 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/auth/v1/")) return auth(request, url, body);
     if (url.pathname.startsWith("/__test/")) return control(url, body);
     if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
+    if (url.pathname.startsWith("/github/")) return github(request, url, body);
     if (url.pathname === "/health") return json({ ok: true });
     return json({ message: "not found" }, 404);
   },

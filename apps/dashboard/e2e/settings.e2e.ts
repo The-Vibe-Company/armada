@@ -25,6 +25,46 @@ test("without a connection the settings offer Connect GitHub, which starts GitHu
   expect(url.toString()).not.toContain("e2e-client-secret");
 });
 
+test("connecting stores only ciphertext, Disconnect forgets it, and connecting again works", async ({ page }) => {
+  await page.route("https://github.com/**", (route) => route.fulfill({ status: 200, body: "GitHub" }));
+  await signIn(page, "alice@example.com", "/settings");
+  const card = page.locator('[data-settings="github"]');
+  const connections = async () =>
+    (await (await fetch(`${MOCK}/__test/github-connections`)).json()) as {
+      user_id: string;
+      login: string;
+      refresh_token_enc: string;
+    }[];
+
+  const authorize = async (link: string) => {
+    const [request] = await Promise.all([
+      page.waitForRequest((candidate) => candidate.url().startsWith("https://github.com/login/oauth/authorize")),
+      card.getByRole("link", { name: link }).click(),
+    ]);
+    const state = new URL(request.url()).searchParams.get("state");
+    await page.goto(`/github/callback?code=good-code&state=${state}`);
+    await page.waitForURL("**/settings?github=connected");
+  };
+
+  await authorize("Connect GitHub");
+  await expect(card.getByText("@octocat")).toBeVisible();
+  const [first] = await connections();
+  expect(first).toMatchObject({ user_id: IDS.alice, login: "octocat" });
+  expect(first?.refresh_token_enc).toMatch(/^\\x[0-9a-f]+$/);
+  expect(JSON.stringify(first)).not.toContain("ghr_e2e_refresh");
+  expect(await page.content()).not.toContain("refresh_token_enc");
+
+  await page.goto("/settings");
+  await card.getByRole("button", { name: "Disconnect" }).click();
+  await expect(card.getByText("Not connected.")).toBeVisible();
+  expect(await connections()).toEqual([]);
+
+  await authorize("Connect GitHub");
+  const reconnected = await connections();
+  expect(reconnected).toHaveLength(1);
+  expect(reconnected[0]?.refresh_token_enc).not.toBe(first?.refresh_token_enc);
+});
+
 test("a callback with a missing or foreign state connects nothing", async ({ page }) => {
   await signIn(page, "alice@example.com", "/settings");
   await page.goto("/github/callback?code=abc&state=forged");
