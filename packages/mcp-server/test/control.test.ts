@@ -1,20 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { memorySessionStore } from "@armada/auth";
-import {
-  createSqlGoldenStore,
-  createSqlSandboxStore,
-  createSqlVaultStore,
-  encryptSecret,
-  GOLDEN_ROOT,
-  resolveBoatKey,
-  resolveCredentials,
-  type VaultStore,
-} from "@armada/core";
+import { createMemoryAuthStore, generateToken, memorySessionStore, sha256Hex } from "@armada/auth";
+import { createSqlVaultStore, encryptSecret, resolveBoatKey, resolveCredentials, type VaultStore } from "@armada/core";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
-import { type ControlOptions, handleControlRequest } from "../src/index.ts";
+import { type ControlOptions, controlOptionsFromEnv, createSqlData, handleControlRequest } from "../src/index.ts";
 
 const KEY = Buffer.alloc(32, 5).toString("base64");
 const STAN = "11111111-1111-4111-8111-111111111111";
@@ -106,114 +97,6 @@ describe("armada org and armada creds against the control API", () => {
     });
   });
 
-  test("armada launch asks the server, so the user's credential and the org boat key reach the fork", async () => {
-    await withServer(async ({ db, options, cli }) => {
-      const stan = cli(STAN);
-      expect((await stan.run(["org", "create", "Vibe"])).code).toBe(0);
-      expect((await stan.run(["creds", "set", "claude-oauth", "--org", "Vibe"], { stdin: TOKEN_SECRET })).code).toBe(0);
-      expect((await stan.run(["creds", "set", "boat", "--org", "Vibe"], { stdin: "boat-org-key" })).code).toBe(0);
-      expect((await stan.run(["creds", "set", "codex-auth"], { stdin: AUTH_JSON })).code).toBe(0);
-      const org = (await options.store.memberships(STAN))[0];
-      const snapshot = `a${"b".repeat(62)}`;
-      await db.query(
-        `insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config)
-         values ($1, 'web', 'org', $2, $3, $4::jsonb)`,
-        [
-          org?.id,
-          STAN,
-          snapshot,
-          JSON.stringify({
-            repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
-            init: [],
-          }),
-        ],
-      );
-
-      const boat: { method: string; path: string; authorization: string | null; body: unknown }[] = [];
-      const launched = await launch(["launch", "web", "--agent", "codex", "go"], db, options, STAN, boat);
-      expect(launched.code).toBe(0);
-      expect(launched.out).not.toContain("codex-access");
-      expect(launched.out).not.toContain("boat-org-key");
-      const fork = boat.find((call) => call.method === "POST" && call.path === "/api/v1/sandboxes");
-      expect(fork?.body).toMatchObject({ noEnv: true, from: snapshot, env: { ARMADA_CODEX_AUTH_JSON: AUTH_JSON } });
-      expect(JSON.stringify(fork?.body)).not.toContain(TOKEN_SECRET);
-      expect(fork?.authorization).toBe("Bearer boat-org-key");
-      const wrote = boat.find((call) => JSON.stringify(call.body ?? "").includes("auth.json"));
-      if (!wrote) throw new Error("the launch never wrote auth.json");
-      const command = (wrote.body as { command: string }).command;
-      expect(command).toContain(`${GOLDEN_ROOT}/.codex/auth.json`);
-      expect(command).not.toContain("codex-do-not-leak");
-    });
-  });
-
-  test("armada launch carries the user's GitHub identity: token in the fork env, git set up, nothing printed", async () => {
-    await withServer(async ({ db, options, cli }) => {
-      const stan = cli(STAN);
-      await stan.run(["org", "create", "Vibe"]);
-      await stan.run(["creds", "set", "claude-oauth", "--org", "Vibe"], { stdin: TOKEN_SECRET });
-      await stan.run(["creds", "set", "boat", "--org", "Vibe"], { stdin: "boat-org-key" });
-      const org = (await options.store.memberships(STAN))[0];
-      await db.query(
-        `insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config)
-         values ($1, 'web', 'org', $2, $3, $4::jsonb)`,
-        [
-          org?.id,
-          STAN,
-          `a${"b".repeat(62)}`,
-          JSON.stringify({
-            repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
-            init: [],
-          }),
-        ],
-      );
-
-      const without: { method: string; path: string; authorization: string | null; body: unknown }[] = [];
-      const skipped = await launch(["launch", "web", "--agent", "claude", "go"], db, options, STAN, without);
-      expect(skipped.err).toBe("");
-      expect(skipped.code).toBe(0);
-      expect(skipped.out).toContain("GitHub: not set up.");
-      expect(JSON.stringify(without)).not.toContain("GH_TOKEN");
-
-      await db.query("delete from sandboxes");
-      await db.query(
-        "insert into github_connections (user_id, github_id, login, refresh_token_enc) values ($1, 583231, 'octocat', $2)",
-        [STAN, await encryptSecret("ghr_old", KEY)],
-      );
-      const githubFetch = (async (input: string | URL | Request) => {
-        const url = String(input);
-        if (url.endsWith("/login/oauth/access_token")) {
-          return Response.json({
-            access_token: "ghu_0123456789abcdefghijABCDEFGHIJ0123",
-            refresh_token: "ghr_new",
-            expires_in: 28_800,
-            refresh_token_expires_in: 15_811_200,
-          });
-        }
-        return Response.json({ id: 583231, login: "octocat", name: null });
-      }) as typeof fetch;
-      const withGitHub: ControlOptions = {
-        ...options,
-        github: { app: { clientId: "Iv1.test", clientSecret: "secret" }, fetch: githubFetch },
-      };
-      const boat: { method: string; path: string; authorization: string | null; body: unknown }[] = [];
-      const launched = await launch(["launch", "web", "--agent", "claude", "go"], db, withGitHub, STAN, boat);
-      expect(launched.code).toBe(0);
-      expect(launched.out).toContain("GitHub: git and gh act as octocat");
-      expect(launched.out + launched.err).not.toContain("ghu_0123456789");
-      const fork = boat.find((call) => call.method === "POST" && call.path === "/api/v1/sandboxes");
-      expect(fork?.body).toMatchObject({
-        noEnv: true,
-        env: {
-          GH_TOKEN: "ghu_0123456789abcdefghijABCDEFGHIJ0123",
-          GITHUB_TOKEN: "ghu_0123456789abcdefghijABCDEFGHIJ0123",
-        },
-      });
-      expect(JSON.stringify(boat.filter((call) => call !== fork))).not.toContain("ghu_0123456789");
-      const setup = boat.find((call) => JSON.stringify(call.body ?? "").includes("users.noreply.github.com"));
-      expect(JSON.stringify(setup?.body)).toContain("583231+octocat@users.noreply.github.com");
-    });
-  });
-
   test("armada logs resolves an Armada id through the authenticated server, without a local boat key", async () => {
     await withServer(async ({ db, options }) => {
       const org = crypto.randomUUID();
@@ -234,8 +117,8 @@ describe("armada org and armada creds against the control API", () => {
       const calls: { path: string; authorization: string | null }[] = [];
       const logsOptions: ControlOptions = {
         ...options,
-        logs: async (userId, id) => {
-          expect(userId).toBe(STAN);
+        logs: async (caller, id) => {
+          expect(caller.userId).toBe(STAN);
           expect(id).toBe(armadaId);
           return {
             boatId: "bx_server_only",
@@ -272,7 +155,7 @@ describe("armada org and armada creds against the control API", () => {
         open: () => undefined,
         session: memorySessionStore({
           userId: STAN,
-          accessToken: `token-${STAN}`,
+          accessToken: `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
           refreshToken: "r",
           expiresAt: "2099-01-01T00:00:00.000Z",
           supabaseUrl: "https://supabase.test",
@@ -315,7 +198,9 @@ describe("armada org and armada creds against the control API", () => {
         const response = await handleControlRequest(
           new Request("https://armada.test/api/v1/logs/read", {
             method: "POST",
-            headers: { authorization: `Bearer token-${STAN}` },
+            headers: {
+              authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+            },
             body: JSON.stringify({ id: armadaId, follow: true }),
           }),
           logs,
@@ -349,7 +234,9 @@ describe("armada org and armada creds against the control API", () => {
       const response = await handleControlRequest(
         new Request("https://armada.test/api/v1/logs/read", {
           method: "POST",
-          headers: { authorization: `Bearer token-${STAN}` },
+          headers: {
+            authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+          },
           body: JSON.stringify({ id: "44444444-4444-4444-8444-444444444444", follow: true, cursor: "keep" }),
         }),
         logs,
@@ -366,13 +253,13 @@ describe("armada org and armada creds against the control API", () => {
   test("the CLI needs a login and a server address", async () => {
     await withServer(async ({ cli }) => {
       const nobody = cli(STAN, { session: false });
-      expect((await nobody.run(["org", "list"])).err).toContain("Run armada login.");
+      expect((await nobody.run(["org", "list"])).err).toContain("run armada login.");
       const lost = cli(STAN, { armadaUrl: false });
-      expect((await lost.run(["org", "list"])).err).toContain("armada login --url");
+      expect((await lost.run(["org", "list"])).err).toContain("Armada could not reach the server.");
       const refused = cli(STAN, { token: "revoked" });
       const result = await refused.run(["org", "list"]);
       expect(result.code).toBe(1);
-      expect(result.err).toContain("Run armada login.");
+      expect(result.err).toContain("Run armada login again.");
     });
   });
 });
@@ -387,7 +274,9 @@ describe("control API", () => {
       expect((await call("/api/v1/org/list", { method: "POST" }))?.status).toBe(401);
       const bad = await call("/api/v1/org/list", { method: "POST", headers: { authorization: "Bearer revoked" } });
       expect(bad?.status).toBe(401);
-      const headers = { authorization: `Bearer token-${STAN}` };
+      const headers = {
+        authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+      };
       expect((await call("/api/v1/nope", { method: "POST", headers }))?.status).toBe(404);
       expect((await call("/api/v1/org/create", { method: "POST", headers, body: "{" }))?.status).toBe(400);
       expect((await call("/api/v1/org/create", { method: "POST", headers, body: "{}" }))?.status).toBe(400);
@@ -395,9 +284,229 @@ describe("control API", () => {
     });
   });
 
+  test("golden/create accepts a normalized config and rejects malformed config safely", async () => {
+    await withServer(async ({ options }) => {
+      const org = (await options.store.createOrg("Create", STAN)).id;
+      await options.store.setOrgBoatKey(org, await encryptSecret("boat-test", KEY));
+      options.authStore.addMembership(STAN, { orgId: org, name: "Create", role: "admin" });
+      const service = {
+        create: async (_provider: unknown, _actor: unknown, input: unknown) => {
+          expect(input).toMatchObject({
+            repos: [],
+            config: {
+              repos: [{ owner: "acme", repo: "web", branch: "feature/login", dir: "frontend" }],
+              init: ["pnpm install"],
+            },
+          });
+          return { snapshot: "golden-bx" };
+        },
+      } as never;
+      const session = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+      const request = (body: object) =>
+        handleControlRequest(
+          new Request("https://armada.test/api/v1/golden/create", {
+            method: "POST",
+            headers: { authorization: `Bearer ${session}` },
+            body: JSON.stringify(body),
+          }),
+          { ...options, goldenCreate: service, providerFor: () => ({}) as never },
+        );
+      const ok = await request({
+        name: "web",
+        private: true,
+        config: {
+          repos: [{ url: "https://github.com/acme/web.git", branch: "feature/login", dir: "frontend" }],
+          init: ["pnpm install"],
+        },
+      });
+      expect(ok?.status).toBe(200);
+      expect(await ok?.json()).toEqual({ name: "web", visibility: "private", snapshot: "golden-bx" });
+      const bad = await request({ name: "web", config: { repos: [{ url: "https://evil.example/acme/web.git" }] } });
+      expect(bad?.status).toBe(400);
+      expect(await bad?.text()).not.toContain("evil.example");
+    });
+  });
+
+  test("sandbox/launch launches through scoped server credentials and never returns them", async () => {
+    await withServer(async ({ db, options }) => {
+      const org = (await options.store.createOrg("Launch", STAN)).id;
+      options.authStore.addMembership(STAN, { orgId: org, name: "Launch", role: "admin" });
+      const key = await encryptSecret("server-only-boat-key", KEY);
+      await db.query("update orgs set boat_api_key_enc = $1 where id = $2", [key, org]);
+      await db.query(
+        "insert into credentials (scope, owner_id, kind, value_enc) values ('user', $1, 'claude_oauth', $2)",
+        [STAN, await encryptSecret("server-only-model-token", KEY)],
+      );
+      await db.query(
+        "insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config) values ($1, 'web', 'org', $2, $3, $4::jsonb)",
+        [
+          org,
+          STAN,
+          `a${"b".repeat(62)}`,
+          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+        ],
+      );
+      const service = generateToken("service");
+      await options.authStore.insertToken("service", {
+        userId: STAN,
+        orgId: org,
+        hash: await sha256Hex(service),
+        label: "ci",
+        createdAt: new Date().toISOString(),
+      });
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/launch", {
+          method: "POST",
+          headers: { authorization: `Bearer ${service}` },
+          body: JSON.stringify({ golden: "web", harness: "claude" }),
+        }),
+        { ...options, providerFor: () => fakeProvider() },
+      );
+      if (!response) throw new Error("missing response");
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).not.toContain("server-only-boat-key");
+      expect(text).not.toContain("server-only-model-token");
+    });
+  });
+
+  test("sandbox/launch refuses a service token scoped to another org", async () => {
+    await withServer(async ({ db, options }) => {
+      const orgA = (await options.store.createOrg("A", STAN)).id;
+      const orgB = (await options.store.createOrg("B", STAN)).id;
+      options.authStore.addMembership(STAN, { orgId: orgA, name: "A", role: "admin" });
+      await db.query(
+        "insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config) values ($1, 'web', 'org', $2, $3, $4::jsonb)",
+        [
+          orgB,
+          STAN,
+          `a${"b".repeat(62)}`,
+          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+        ],
+      );
+      const service = generateToken("service");
+      await options.authStore.insertToken("service", {
+        userId: STAN,
+        orgId: orgA,
+        hash: await sha256Hex(service),
+        label: "ci",
+        createdAt: new Date().toISOString(),
+      });
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/launch", {
+          method: "POST",
+          headers: { authorization: `Bearer ${service}` },
+          body: JSON.stringify({ golden: "web", org: orgB, harness: "claude" }),
+        }),
+        options,
+      );
+      expect(response?.status).toBe(403);
+    });
+  });
+
+  test("golden/list uses MCP visibility rules and service-token org scope", async () => {
+    await withServer(async ({ db, options }) => {
+      const orgA = (await options.store.createOrg("A", STAN)).id;
+      const orgB = (await options.store.createOrg("B", STAN)).id;
+      await db.query("insert into members (org_id, user_id, role) values ($1, $2, 'member')", [orgA, ADA]);
+      options.authStore.addMembership(ADA, { orgId: orgA, name: "A", role: "member" });
+      const config = JSON.stringify({
+        repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }],
+        init: [],
+      });
+      await db.query(
+        `insert into goldens (org_id, name, visibility, owner_id, config) values
+         ($1, 'shared', 'org', $2, $3::jsonb), ($1, 'stan-private', 'private', $2, $3::jsonb),
+         ($1, 'ada-private', 'private', $4, $3::jsonb), ($5, 'other-org', 'org', $2, $3::jsonb)`,
+        [orgA, STAN, config, ADA, orgB],
+      );
+      const session = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: ADA })).replace(/=+$/, "")}.sig`;
+      const list = (authorization: string) =>
+        handleControlRequest(
+          new Request("https://armada.test/api/v1/golden/list", { method: "POST", headers: { authorization } }),
+          options,
+        );
+      const sessionResponse = await list(`Bearer ${session}`);
+      if (!sessionResponse) throw new Error("missing response");
+      expect(sessionResponse.status).toBe(200);
+      expect(
+        ((await sessionResponse.json()) as { goldens: { name: string }[] }).goldens.map((golden) => golden.name),
+      ).toEqual(["ada-private", "shared"]);
+      const service = generateToken("service");
+      options.authStore.addMembership(STAN, { orgId: orgA, name: "A", role: "admin" });
+      await options.authStore.insertToken("service", {
+        userId: STAN,
+        orgId: orgA,
+        hash: await sha256Hex(service),
+        label: "ci",
+        createdAt: new Date().toISOString(),
+      });
+      const serviceResponse = await list(`Bearer ${service}`);
+      if (!serviceResponse) throw new Error("missing response");
+      expect(serviceResponse.status).toBe(200);
+      expect(
+        ((await serviceResponse.json()) as { goldens: { name: string }[] }).goldens.map((golden) => golden.name),
+      ).toEqual(["shared", "stan-private"]);
+      expect((await list(""))?.status).toBe(401);
+    });
+  });
+
+  test("accepts a service token but keeps it scoped to its verified org", async () => {
+    await withServer(async ({ options }) => {
+      await options.store.createOrg("A", STAN);
+      const orgs = await options.store.memberships(STAN);
+      const actualA = orgs[0]?.id;
+      if (!actualA) throw new Error("missing org");
+      await options.store.createOrg("B", STAN);
+      const actualB = (await options.store.memberships(STAN)).find((org) => org.id !== actualA)?.id;
+      if (!actualB) throw new Error("missing second org");
+      const service = generateToken("service");
+      options.authStore.addMembership(STAN, { orgId: actualA, name: "A", role: "admin" });
+      await options.authStore.insertToken("service", {
+        userId: STAN,
+        orgId: actualA,
+        hash: await sha256Hex(service),
+        label: "ci",
+        createdAt: new Date().toISOString(),
+      });
+      const call = (body: object) =>
+        handleControlRequest(
+          new Request("https://armada.test/api/v1/creds/list", {
+            method: "POST",
+            headers: { authorization: `Bearer ${service}` },
+            body: JSON.stringify(body),
+          }),
+          options,
+        );
+      expect((await call({ org: actualA }))?.status).toBe(200);
+      expect((await call({ org: actualB }))?.status).toBe(403);
+    });
+  });
+
+  test("does not trust a user id supplied in a control body", async () => {
+    await withServer(async ({ options }) => {
+      const headers = {
+        authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+      };
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/org/create", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ name: "Caller only", userId: ADA }),
+        }),
+        options,
+      );
+      expect(response?.status).toBe(200);
+      expect((await options.store.memberships(STAN)).map((org) => org.name)).toContain("Caller only");
+      expect((await options.store.memberships(ADA)).map((org) => org.name)).not.toContain("Caller only");
+    });
+  });
+
   test("without an encryption key a credential is refused and nothing is stored", async () => {
     await withServer(async ({ options }) => {
-      const headers = { authorization: `Bearer token-${STAN}` };
+      const headers = {
+        authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+      };
       const keyless: ControlOptions = { ...options, encryptionKey: undefined };
       const send = (route: string, body: object) =>
         handleControlRequest(
@@ -427,114 +536,48 @@ interface Who {
   run(argv: string[], input?: { stdin?: string | null; files?: Record<string, string> }): Promise<Result>;
 }
 
-const SNAP_READY = {
-  id: "bx_1",
-  name: "web",
-  state: "idle",
-  desktopAvailable: false,
-  snapshotAvailable: false,
-  createdAt: "2026-11-08T12:00:00.000Z",
-  archiveAfter: "2026-11-08T16:00:00.000Z",
-  labels: { armada: "sandbox" },
-};
-
-async function launch(
-  argv: string[],
-  db: PGlite,
-  options: ControlOptions,
-  userId: string,
-  boat: { method: string; path: string; authorization: string | null; body: unknown }[],
-): Promise<Result> {
-  let out = "";
-  let err = "";
-  const auth: AuthIo = {
-    out: (text) => (out += text),
-    err: (text) => (err += text),
-    env: { SUPABASE_ANON_KEY: "anon", ARMADA_URL: "https://armada.test" },
-    fetch: async (input, init) => {
-      const request = input instanceof Request ? input : new Request(input.toString(), init);
-      const url = new URL(request.url);
-      if (url.hostname === "armada.test")
-        return (await handleControlRequest(request, options)) ?? new Response("{}", { status: 404 });
-      if (url.hostname === "boat.dev") {
-        const text = await request.text();
-        const body = text === "" ? undefined : JSON.parse(text);
-        boat.push({
-          method: request.method,
-          path: url.pathname,
-          authorization: request.headers.get("authorization"),
-          body,
-        });
-        return boatReply(url.pathname, request.method);
-      }
-      throw new Error(`unexpected ${url.hostname}`);
+function fakeProvider() {
+  return {
+    id: "fake",
+    harnesses: ["claude", "codex"],
+    capabilities: {} as never,
+    async fork() {
+      return {
+        id: "bx_launch",
+        name: "web",
+        state: "running",
+        desktopAvailable: false,
+        snapshotAvailable: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        archiveAfter: "2026-01-01T01:00:00.000Z",
+        labels: {},
+      };
     },
-    now: () => new Date("2026-11-08T00:00:00.000Z"),
-    open: () => undefined,
-    session: memorySessionStore({
-      userId,
-      accessToken: `token-${userId}`,
-      refreshToken: "refresh",
-      expiresAt: "2099-01-01T00:00:00.000Z",
-      supabaseUrl: "https://supabase.test",
-    }),
-  };
-  const code = await run(
-    argv,
-    { out: auth.out, err: auth.err },
-    {
-      auth,
-      fetch: auth.fetch as unknown as typeof fetch,
-      actor: { userId, orgId: (await options.store.memberships(userId))[0]?.id ?? "", role: "member" },
-      store: createSqlGoldenStore(db),
-      sandboxes: createSqlSandboxStore(db),
-      sleep: async () => {},
-      sandboxPolls: 3,
+    async prompt() {
+      return { promptId: "prompt", conversationId: "conversation" };
     },
-  );
-  return { code, out, err };
-}
-
-function boatReply(path: string, method: string): Response {
-  if (path === "/api/v1/sandboxes" && method === "POST") {
-    return Response.json(
-      { ok: true, type: "sandbox.created", sandbox: { ...SNAP_READY, state: "provisioning" } },
-      { status: 202 },
-    );
-  }
-  if (path.endsWith("/commands")) {
-    return Response.json({
-      ok: true,
-      type: "command.finished",
-      success: true,
-      exitCode: 0,
-      stdout: "",
-      stderr: "",
-      timedOut: false,
-    });
-  }
-  if (path.endsWith("/prompt")) {
-    return Response.json(
-      {
-        ok: true,
-        type: "prompt.queued",
-        promptId: "prompt_1",
-        conversationId: "conv_1",
-        status: "queued",
-        promptRun: { id: "prompt_1", promptId: "prompt_1", sandboxId: "bx_1", status: "queued", done: false },
-      },
-      { status: 202 },
-    );
-  }
-  if (path.startsWith("/api/v1/sandboxes/"))
-    return Response.json({ ok: true, type: "sandbox.info", sandbox: SNAP_READY });
-  throw new Error(`unexpected ${method} ${path}`);
+    async exec() {
+      return { exitCode: 0, stdout: "", stderr: "", timedOut: false, detached: false };
+    },
+    async get() {
+      return {
+        id: "bx_launch",
+        name: "web",
+        state: "running",
+        desktopAvailable: false,
+        snapshotAvailable: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        archiveAfter: "2026-01-01T01:00:00.000Z",
+        labels: {},
+      };
+    },
+  } as never;
 }
 
 async function withServer(
   body: (ctx: {
     db: PGlite;
-    options: ControlOptions & { store: VaultStore };
+    options: ControlOptions & { store: VaultStore; authStore: ReturnType<typeof createMemoryAuthStore> };
     cli: (userId: string, opts?: { session?: boolean; armadaUrl?: boolean; token?: string }) => Who;
   }) => Promise<void>,
 ): Promise<void> {
@@ -547,19 +590,30 @@ async function withServer(
     ]);
     const supabase = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = new URL(input instanceof Request ? input.url : String(input));
-      const authorization = new Headers(init?.headers).get("authorization") ?? "";
-      const match = /^Bearer token-(.+)$/.exec(authorization);
-      if (url.hostname === "supabase.test" && url.pathname === "/auth/v1/user" && match) {
-        return Response.json({ id: match[1] });
+      const authorization =
+        input instanceof Request
+          ? (input.headers.get("authorization") ?? "")
+          : (new Headers(init?.headers).get("authorization") ?? "");
+      const token = authorization.replace(/^Bearer /, "");
+      const payload = token.split(".")[1];
+      let id: unknown;
+      try {
+        id = payload ? JSON.parse(atob(payload))?.sub : undefined;
+      } catch {
+        id = undefined;
+      }
+      if (url.hostname === "supabase.test" && url.pathname === "/auth/v1/user" && typeof id === "string") {
+        return Response.json({ id });
       }
       return new Response("{}", { status: 401 });
     };
+    const authStore = createMemoryAuthStore();
     const options = {
-      supabaseUrl: "https://supabase.test",
-      anonKey: "anon",
+      authStore,
+      supabase: { supabaseUrl: "https://supabase.test", anonKey: "anon", fetch: supabase },
       store: createSqlVaultStore(db),
       encryptionKey: KEY,
-      fetch: supabase,
+      data: createSqlData(db),
     };
     const cli = (userId: string, opts: { session?: boolean; armadaUrl?: boolean; token?: string } = {}): Who => {
       const who: Who = {
@@ -573,8 +627,9 @@ async function withServer(
             out: (text) => (out += text),
             err: (text) => (err += text),
             env: {
-              SUPABASE_ANON_KEY: "anon",
-              ...(opts.armadaUrl === false ? {} : { ARMADA_URL: "https://armada.test" }),
+              ...(opts.armadaUrl === false
+                ? { ARMADA_URL: "https://missing.armada.test" }
+                : { ARMADA_URL: "https://armada.test" }),
             },
             fetch: async (input, init) => {
               const request = input instanceof Request ? input : new Request(input.toString(), init);
@@ -589,11 +644,13 @@ async function withServer(
               opts.session === false
                 ? null
                 : {
-                    userId,
-                    accessToken: opts.token ?? `token-${userId}`,
+                    accessToken:
+                      opts.token ??
+                      `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`,
                     refreshToken: "refresh",
                     expiresAt: "2099-01-01T00:00:00.000Z",
                     supabaseUrl: "https://supabase.test",
+                    userId,
                   },
             ),
           };
@@ -625,3 +682,22 @@ async function withServer(
     await db.close();
   }
 }
+
+describe("controlOptionsFromEnv", () => {
+  test("wires golden/create and the control API's database to the same transaction-capable adapter armada serve uses", () => {
+    // Bun.SQL connects lazily, so a URL nothing is listening on still constructs without a live database.
+    const options = controlOptionsFromEnv({
+      ARMADA_DATABASE_URL: "postgres://armada:armada@127.0.0.1:1/armada_test_unreachable",
+      SUPABASE_URL: "https://project.supabase.co",
+      SUPABASE_ANON_KEY: "anon",
+      ARMADA_ENCRYPTION_KEY: KEY,
+    });
+    expect(options.goldenCreate).toBeDefined();
+    expect(options.providerFor).toBeDefined();
+    expect(typeof options.providerFor?.("any-key").exec).toBe("function");
+  });
+
+  test("requires every variable it needs", () => {
+    expect(() => controlOptionsFromEnv({})).toThrow("ARMADA_DATABASE_URL");
+  });
+});

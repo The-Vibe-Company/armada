@@ -5,6 +5,7 @@ export { ACCESS_TOKEN_TTL_MS, OAUTH_SCOPE, REFRESH_TOKEN_TTL_MS, resourceUrl } f
 export { type EmailLoginOptions, type LoginOptions, loginWithBrowser, loginWithEmail } from "./login.ts";
 export { createMemoryAuthStore, type MemoryAuthStore } from "./memory.ts";
 export { handleOAuthRequest, type OAuthServerOptions, oauthOptionsFromEnv } from "./oauth.ts";
+export { createPkce } from "./pkce.ts";
 export { createServiceToken, listServiceTokens, resolveOrg, revokeServiceToken } from "./service-tokens.ts";
 export {
   ensureFreshSession,
@@ -20,8 +21,12 @@ export {
   assertEmailCode,
   assertProvider,
   assertSupabaseUrl,
+  exchangeSupabaseCode,
   type Provider,
   refreshSupabaseSession,
+  sendEmailLink,
+  supabaseAuthorizeUrl,
+  verifyEmailCode,
 } from "./supabase-auth.ts";
 export type { AuthFetch, AuthStore, ListedToken, Membership, TokenRecord } from "./types.ts";
 export { type AuthResult, authenticate, oauthChallenge, type Principal } from "./verify.ts";

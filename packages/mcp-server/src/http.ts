@@ -3,11 +3,12 @@ import {
   CLIENT_CONFIG_PATH,
   type ClientConfig,
   type CredentialReader,
+  type GoldenCreateService,
   type LaunchOptions,
   type Provider,
   resolveBoatKey,
   VERSION,
-} from "@armada/core";
+} from "@armada/core/server";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
   AuthUnavailable,
@@ -43,6 +44,8 @@ export interface HandlerOptions {
   encryptionKey: string | undefined;
   /** Each caller's GitHub connection, refreshed at launch so git and gh in the sandbox act as them. */
   github?: GitHubLaunchOptions;
+  /** Secure, server-orchestrated multi-repo golden creation (`golden_create`). Absent: the tool refuses. */
+  goldenCreate?: GoldenCreateService;
   /** A provider for one boat.dev key. The key is used in this process only. */
   providerFor(apiKey: string): Provider;
   /** Mounted after the OAuth routes and before `/mcp`, for example #461's control API. */
@@ -123,6 +126,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         sleep,
         logError: log,
         ...(options.launch ? { launch: options.launch } : {}),
+        ...(options.goldenCreate ? { goldenCreate: options.goldenCreate } : {}),
       },
       VERSION,
     );

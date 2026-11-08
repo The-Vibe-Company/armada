@@ -12,6 +12,10 @@ export interface Provider {
   readonly harnesses: readonly Harness[];
   /** What each harness can do here. Callers branch on this, never on the harness name. */
   readonly capabilities: Readonly<Record<Harness, HarnessCapabilities>>;
+  /** Maximum independent goldens supported by this backend; omitted means no backend limit. */
+  readonly maxGoldens?: number;
+  /** Stable non-secret backend account identity, when supported. */
+  backendIdentity?(): Promise<{ id: string }>;
 
   /**
    * Starts a blank sandbox to build a golden in. It is not frozen until `snapshot`.
@@ -38,6 +42,8 @@ export interface Provider {
   /** Stops the running turn of one conversation, or of every conversation when none is named. */
   interrupt(request: InterruptRequest): Promise<void>;
   exec(request: ExecRequest): Promise<ExecResult>;
+  /** Registers a transient public key and returns a pinned SSH endpoint. */
+  sshKey(request: SshKeyRequest): Promise<SshConnection>;
   /** Events oldest first, after `cursor`. Poll with the cursor of the previous page. */
   events(request: EventsRequest): Promise<EventPage>;
 
@@ -196,6 +202,18 @@ export interface SteerReceipt {
 export interface InterruptRequest {
   sandboxId: string;
   conversationId?: string;
+}
+
+export interface SshKeyRequest {
+  sandboxId: string;
+  /** OpenSSH public key only. */
+  key: string;
+}
+
+export interface SshConnection {
+  sshEndpoint: string;
+  /** OpenSSH host key to pin; never use TOFU for golden builders. */
+  hostKey: string;
 }
 
 export interface ExecRequest {
