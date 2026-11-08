@@ -214,6 +214,77 @@ describe("armada org and armada creds against the control API", () => {
     });
   });
 
+  test("armada logs resolves an Armada id through the authenticated server, without a local boat key", async () => {
+    await withServer(async ({ db, options }) => {
+      const org = crypto.randomUUID();
+      await db.query("insert into orgs (id, name) values ($1, 'Logs')", [org]);
+      await db.query("insert into members (org_id, user_id, role) values ($1, $2, 'admin')", [org, STAN]);
+      await db.query(
+        `insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config)
+         values ($1, 'web', 'org', $2, $3, $4::jsonb)`,
+        [org, STAN, `a${"b".repeat(62)}`, JSON.stringify({ repos: [], init: [] })],
+      );
+      const golden = await db.query<{ id: string }>("select id from goldens where name = 'web'");
+      const armadaId = "33333333-3333-4333-8333-333333333333";
+      await db.query(
+        `insert into sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status)
+         values ($1, 'bx_server_only', $2, $3, $4, 'claude', 'ready')`,
+        [armadaId, golden.rows[0]?.id, org, STAN],
+      );
+      const calls: { path: string; authorization: string | null }[] = [];
+      const logsOptions: ControlOptions = {
+        ...options,
+        logs: async (userId, id) => {
+          expect(userId).toBe(STAN);
+          expect(id).toBe(armadaId);
+          return {
+            boatId: "bx_server_only",
+            provider: {
+              id: "fake",
+              harnesses: ["claude", "codex"],
+              capabilities: {} as never,
+              async events(request: { sandboxId: string }) {
+                calls.push({ path: request.sandboxId, authorization: "server-resolved" });
+                return {
+                  events: [{ id: "ev_1", at: 1, kind: "message", text: "from server" }],
+                  cursor: "1",
+                  hasMore: false,
+                };
+              },
+              async get() {
+                return { id: "bx_server_only", name: "x", state: "stopped", providerState: "stopped", labels: {} };
+              },
+            } as never,
+          };
+        },
+      };
+      let out = "";
+      let err = "";
+      const auth: AuthIo = {
+        out: (text) => (out += text),
+        err: (text) => (err += text),
+        env: { ARMADA_URL: "https://armada.test", SUPABASE_ANON_KEY: "anon" },
+        fetch: async (input, init) => {
+          const request = input instanceof Request ? input : new Request(String(input), init);
+          return (await handleControlRequest(request, logsOptions)) ?? new Response("{}", { status: 404 });
+        },
+        now: () => new Date(),
+        open: () => undefined,
+        session: memorySessionStore({
+          userId: STAN,
+          accessToken: `token-${STAN}`,
+          refreshToken: "r",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          supabaseUrl: "https://supabase.test",
+        }),
+      };
+      expect(await run(["logs", armadaId], { out: auth.out, err: auth.err }, { auth })).toBe(0);
+      expect(out).toBe("from server\n");
+      expect(err).toBe("");
+      expect(calls).toEqual([{ path: "bx_server_only", authorization: "server-resolved" }]);
+    });
+  });
+
   test("the CLI needs a login and a server address", async () => {
     await withServer(async ({ cli }) => {
       const nobody = cli(STAN, { session: false });

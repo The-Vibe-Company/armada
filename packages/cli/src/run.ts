@@ -91,6 +91,8 @@ Usage:
   armada launch <golden> --agent claude|codex ["prompt"] [--ttl 4h] [--json]
                                            Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt.
+  armada logs <sandbox-id> [--all] [--follow] [--json]
+                                           Read agent events; --all drains available pages, --follow waits for new pages until settled
   armada login [--provider github|google | --email <address>]
                                            --email sends a sign-in link; click it, or type the code it contains
   armada logout
@@ -167,6 +169,8 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       return golden(rest, io, deps);
     case "launch":
       return launch(rest, io, deps);
+    case "logs":
+      return logs(rest, io, deps);
     case "login":
       return login(rest, io, deps);
     case "serve":
@@ -328,6 +332,36 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   );
   io.out(flag(args, "--json") ? `${JSON.stringify(jsonLaunch(result), null, 2)}\n` : launchText(result));
   return 0;
+}
+
+const FOLLOW_DELAY_MS = 1_000;
+
+async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
+  const args = parseArgs(argv);
+  const id = oneName(args.positionals);
+  const all = flag(args, "--all");
+  const follow = flag(args, "--follow");
+  const auth = authOf(io, deps);
+  let settled = false;
+  while (!settled) {
+    const result = await control<{
+      events: Awaited<ReturnType<Provider["events"]>>["events"];
+      cursor: string | null;
+      hasMore: boolean;
+      settled: boolean;
+    }>(auth, "logs/read", { id, all, follow });
+    if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
+    else for (const event of result.events) io.out(`${eventText(event)}\n`);
+    settled = result.settled;
+    if (!settled)
+      await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(FOLLOW_DELAY_MS);
+  }
+  return 0;
+}
+
+function eventText(event: Awaited<ReturnType<Provider["events"]>>["events"][number]): string {
+  if (event.kind === "message" || event.kind === "prompt" || event.kind === "steer") return event.text;
+  return JSON.stringify(event);
 }
 
 async function resolveForLaunch(

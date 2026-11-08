@@ -510,6 +510,29 @@ describe("tools", () => {
     expect(next.data).toMatchObject({ events: [], cursor: "3" });
   });
 
+  test("logs reads every page only when all is requested and advances the cursor", async () => {
+    const { token, client, people, boat } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "go" });
+    const events = boat.sandbox("bx_1").events;
+    for (let index = 0; index < 205; index += 1) {
+      events.push({
+        id: `ev_${index}`,
+        at: index + 2,
+        kind: "message",
+        text: String(index),
+        partial: false,
+        tools: [],
+      });
+    }
+    const first = await call(mcp, "logs", { id: launched.data.id });
+    expect(first.data.events).toHaveLength(100);
+    expect(first.data).toMatchObject({ cursor: "100", hasMore: true });
+    const all = await call(mcp, "logs", { id: launched.data.id, all: true });
+    expect(all.data.events).toHaveLength(206);
+    expect(all.data).toMatchObject({ cursor: "206", hasMore: false });
+  });
+
   test("send continues the conversation and marks the sandbox running", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));

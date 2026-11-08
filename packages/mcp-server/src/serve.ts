@@ -1,5 +1,5 @@
 import { createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
-import { createSqlVaultStore, githubAppFromEnv } from "@armada/core";
+import { createSqlVaultStore, githubAppFromEnv, resolveBoatKey } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
 import { configFromEnv } from "./config.ts";
 import { type ControlOptions, handleControlRequest } from "./control.ts";
@@ -28,19 +28,32 @@ export async function startServer(
   const store = createSqlVaultStore(sql);
   const authStore = createSqlAuthStore(sql);
   const githubApp = githubAppFromEnv(env);
+  const data = createSqlData(sql);
   const control: ControlOptions = {
     supabaseUrl: config.supabaseUrl,
     anonKey: config.anonKey,
     store,
     encryptionKey: config.encryptionKey,
     github: { app: githubApp },
+    logs: async (userId, sandboxId) => {
+      const memberships = await authStore.memberships(userId);
+      const scoped = data({ userId, orgs: memberships.map(({ orgId, role }) => ({ orgId, role })), via: "supabase" });
+      const sandbox = await scoped.sandboxes.get(sandboxId);
+      if (!sandbox) throw new Error("No such sandbox.");
+      const boat = await resolveBoatKey(store, config.encryptionKey, {
+        userId,
+        orgId: sandbox.orgId,
+        visibility: sandbox.visibility,
+      });
+      return { provider: createBoatProvider({ apiKey: boat.key }), boatId: sandbox.boatId };
+    },
   };
   const handler = createHandler({
     publicUrl: config.publicUrl,
     oauth: oauthOptionsFromEnv({ store: authStore, env: { ...env, ARMADA_PUBLIC_URL: config.publicUrl } }),
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
-    data: createSqlData(sql),
+    data,
     vault: store,
     encryptionKey: config.encryptionKey,
     github: { store, app: githubApp },

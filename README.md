@@ -103,7 +103,7 @@ After `armada login` (`SUPABASE_URL`, `SUPABASE_ANON_KEY`), every command acts a
 The tools are `golden_list`, `launch` (the same rules as `armada launch`: `noEnv`, Armada credentials only, `claude` or `codex`), `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec` and `stop`. A caller sees the org's goldens and sandboxes and its own private ones, never another member's.
 
 - A turn's state comes from `getPrompt`. A turn that ended on a usage limit or an expired login marks the sandbox `failed`, and the reason is recorded in `sandboxes.status_reason` (a failed launch records its error there too).
-- `logs` pages events by cursor and keeps one event per id.
+- `logs` returns one bounded page (100 events) by default and keeps one event per id. Pass its cursor for incremental reads, or `all: true` to fetch available pages (bounded at 100 pages). The dashboard follows cursors automatically.
 - `steer` reports `restart` for Codex (the turn is interrupted and the text sent as a new one) and `native` for Claude Code.
 - The boat key for tools stays on the server: an org golden uses the org's key, a private golden its owner's personal key. `launch/resolve` on the control API returns the boat key to the signed-in CLI, which launches locally (#479's design).
 

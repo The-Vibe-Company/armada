@@ -159,7 +159,8 @@ The tools are `golden_list`, `launch`, `list`, `status`, `wait`, `logs`, `send`,
 // wait: block until the latest turn settles, for at most 600 seconds; call again while timedOut is true
 { "id": "<sandbox id>", "timeout_seconds": 600 }
 
-// logs: events by cursor; pass the returned cursor back to read the next page
+// logs: one bounded page by cursor; pass the returned cursor back to read the next page
+// pass all: true to collect available pages (bounded at 100 pages)
 { "id": "<sandbox id>", "limit": 200 }
 { "id": "<sandbox id>", "since_cursor": "<cursor>" }
 
@@ -170,7 +171,7 @@ The tools are `golden_list`, `launch`, `list`, `status`, `wait`, `logs`, `send`,
 { "id": "<sandbox id>" }
 ```
 
-A typical orchestrator loop is `launch` with a prompt, then `wait` until `settled`, then `logs`, then `send` for a follow-up or `stop`. A turn that ends on a usage limit or an expired login marks the sandbox `failed`, and `statusReason` says why.
+A typical orchestrator loop is `launch` with a prompt, then `wait` until `settled`, then `logs` with `all: true` to collect final output, then `send` for a follow-up or `stop`. A turn that ends on a usage limit or an expired login marks the sandbox `failed`, and `statusReason` says why.
 
 ## Troubleshooting
 
