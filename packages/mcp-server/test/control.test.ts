@@ -627,7 +627,9 @@ async function withServer(
             out: (text) => (out += text),
             err: (text) => (err += text),
             env: {
-              ...(opts.armadaUrl === false ? { ARMADA_URL: "https://missing.armada.test" } : { ARMADA_URL: "https://armada.test" }),
+              ...(opts.armadaUrl === false
+                ? { ARMADA_URL: "https://missing.armada.test" }
+                : { ARMADA_URL: "https://armada.test" }),
             },
             fetch: async (input, init) => {
               const request = input instanceof Request ? input : new Request(input.toString(), init);
@@ -647,6 +649,8 @@ async function withServer(
                       `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`,
                     refreshToken: "refresh",
                     expiresAt: "2099-01-01T00:00:00.000Z",
+                    supabaseUrl: "https://supabase.test",
+                    userId,
                   },
             ),
           };

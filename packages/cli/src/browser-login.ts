@@ -22,23 +22,26 @@ export async function browserLogin(options: {
   const code = new Promise<{ code?: string; error?: Error }>((done) => {
     resolve = done;
   });
-  // Mark callback failures as handled immediately. The caller still receives the
-  // same rejection from the awaited race below.
-  void code.then((value) => {
-    if (value.error) throw value.error;
-  }).catch(() => undefined);
+  let rejectLogin!: (error: Error) => void;
+  const failure = new Promise<never>((_, reject) => {
+    rejectLogin = reject;
+  });
+  // Observe this rejection now, while retaining it for the caller's race below.
+  void failure.catch(() => undefined);
+  const callback = Promise.race([code, failure]);
+  void callback.catch(() => undefined);
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch(request) {
       const url = new URL(request.url);
       if (url.pathname !== "/callback" || url.searchParams.get("state") !== state) {
-        resolve({ error: new Error("Login callback was refused.") });
+        rejectLogin(new Error("Login callback was refused."));
         return new Response("Login failed", { status: 400 });
       }
       const value = url.searchParams.get("code");
       if (!value || url.searchParams.get("error")) {
-        resolve({ error: new Error("Login was declined.") });
+        rejectLogin(new Error("Login was declined."));
         return new Response("Login failed", { status: 400 });
       }
       resolve({ code: value });
@@ -56,8 +59,7 @@ export async function browserLogin(options: {
     const timeout = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error("Login timed out.")), options.timeoutMs ?? 300_000),
     );
-    const result = await Promise.race([code, timeout]);
-    if (result.error) throw result.error;
+    const result = await Promise.race([callback, timeout]);
     if (!result.code) throw new Error("Login callback was refused.");
     const response = await options.fetch(new URL("/api/v1/auth/exchange", origin), {
       method: "POST",
