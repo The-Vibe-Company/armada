@@ -42,8 +42,8 @@ export async function startServer(
     installationApp: githubInstallationAppFromEnv(env),
   });
   const control: ControlOptions = {
-    supabaseUrl: config.supabaseUrl,
-    anonKey: config.anonKey,
+    authStore,
+    supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     store,
     encryptionKey: config.encryptionKey,
     github: { app: githubApp },

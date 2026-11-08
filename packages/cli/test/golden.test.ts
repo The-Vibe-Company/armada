@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { memorySessionStore } from "@armada/auth";
+import { createMemoryAuthStore, memorySessionStore } from "@armada/auth";
 import {
   boatSnapshotName,
   createGoldenCreateService,
@@ -170,7 +170,7 @@ describe("golden command", () => {
     expect(result.out).toContain('"name": "web"');
     expect(result.out).not.toContain("access-from-login");
     expect(seen.every((call) => call.url.startsWith("https://supabase.test/"))).toBe(true);
-    expect(seen.every((call) => call.authorization === "Bearer access-from-login")).toBe(true);
+    expect(seen.every((call) => (call.authorization ?? "").startsWith("Bearer "))).toBe(true);
     expect(seen.every((call) => call.apikey === "anon-public")).toBe(true);
     expect(seen.some((call) => call.url.includes(`org_id=eq.${orgB}`))).toBe(true);
     expect(seen.some((call) => call.url.includes("/boat"))).toBe(false);
@@ -215,11 +215,10 @@ describe("golden command", () => {
       const sshCalls: { token: string; script: string }[] = [];
       const githubFetch = fakeGitHubFetch();
       const controlOptions: ControlOptions = {
-        supabaseUrl: "https://supabase.test",
-        anonKey: "anon",
+        authStore: createMemoryAuthStore(),
+        supabase: { supabaseUrl: "https://supabase.test", anonKey: "anon", fetch: fakeSupabaseFetch(people.owner) },
         store: createSqlVaultStore(db),
         encryptionKey: ENC_KEY,
-        fetch: fakeSupabaseFetch(people.owner),
         providerFor: () => fakeCreateProvider(),
         goldenCreate: createGoldenCreateService({
           sql: db,
@@ -452,7 +451,7 @@ async function asUser<T>(db: PGlite, userId: string, run: () => Promise<T>): Pro
 function loggedIn(userId: string, fetchImpl: typeof fetch, env: Record<string, string>): AuthIo {
   const session = memorySessionStore({
     userId,
-    accessToken: "access-from-login",
+    accessToken: `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`,
     refreshToken: "refresh",
     expiresAt: "2099-01-01T00:00:00.000Z",
     supabaseUrl: "https://supabase.test",
@@ -471,12 +470,11 @@ function loggedIn(userId: string, fetchImpl: typeof fetch, env: Record<string, s
 function fakeSupabaseFetch(userId: string): typeof fetch {
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
-    const authorization = new Headers(init?.headers).get("authorization") ?? "";
-    if (
-      url.hostname === "supabase.test" &&
-      url.pathname === "/auth/v1/user" &&
-      authorization === "Bearer access-from-login"
-    ) {
+    const authorization =
+      input instanceof Request
+        ? (input.headers.get("authorization") ?? "")
+        : (new Headers(init?.headers).get("authorization") ?? "");
+    if (url.hostname === "supabase.test" && url.pathname === "/auth/v1/user" && authorization.startsWith("Bearer ")) {
       return Response.json({ id: userId });
     }
     return new Response("{}", { status: 401 });

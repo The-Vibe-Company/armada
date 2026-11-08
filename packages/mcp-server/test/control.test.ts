@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { memorySessionStore } from "@armada/auth";
+import { createMemoryAuthStore, generateToken, memorySessionStore, sha256Hex } from "@armada/auth";
 import {
   createSqlGoldenStore,
   createSqlSandboxStore,
@@ -272,7 +272,7 @@ describe("armada org and armada creds against the control API", () => {
         open: () => undefined,
         session: memorySessionStore({
           userId: STAN,
-          accessToken: `token-${STAN}`,
+          accessToken: `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
           refreshToken: "r",
           expiresAt: "2099-01-01T00:00:00.000Z",
           supabaseUrl: "https://supabase.test",
@@ -315,7 +315,9 @@ describe("armada org and armada creds against the control API", () => {
         const response = await handleControlRequest(
           new Request("https://armada.test/api/v1/logs/read", {
             method: "POST",
-            headers: { authorization: `Bearer token-${STAN}` },
+            headers: {
+              authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+            },
             body: JSON.stringify({ id: armadaId, follow: true }),
           }),
           logs,
@@ -349,7 +351,9 @@ describe("armada org and armada creds against the control API", () => {
       const response = await handleControlRequest(
         new Request("https://armada.test/api/v1/logs/read", {
           method: "POST",
-          headers: { authorization: `Bearer token-${STAN}` },
+          headers: {
+            authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+          },
           body: JSON.stringify({ id: "44444444-4444-4444-8444-444444444444", follow: true, cursor: "keep" }),
         }),
         logs,
@@ -387,7 +391,9 @@ describe("control API", () => {
       expect((await call("/api/v1/org/list", { method: "POST" }))?.status).toBe(401);
       const bad = await call("/api/v1/org/list", { method: "POST", headers: { authorization: "Bearer revoked" } });
       expect(bad?.status).toBe(401);
-      const headers = { authorization: `Bearer token-${STAN}` };
+      const headers = {
+        authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+      };
       expect((await call("/api/v1/nope", { method: "POST", headers }))?.status).toBe(404);
       expect((await call("/api/v1/org/create", { method: "POST", headers, body: "{" }))?.status).toBe(400);
       expect((await call("/api/v1/org/create", { method: "POST", headers, body: "{}" }))?.status).toBe(400);
@@ -395,9 +401,62 @@ describe("control API", () => {
     });
   });
 
+  test("accepts a service token but keeps it scoped to its verified org", async () => {
+    await withServer(async ({ options }) => {
+      await options.store.createOrg("A", STAN);
+      const orgs = await options.store.memberships(STAN);
+      const actualA = orgs[0]?.id;
+      if (!actualA) throw new Error("missing org");
+      await options.store.createOrg("B", STAN);
+      const actualB = (await options.store.memberships(STAN)).find((org) => org.id !== actualA)?.id;
+      if (!actualB) throw new Error("missing second org");
+      const service = generateToken("service");
+      options.authStore.addMembership(STAN, { orgId: actualA, name: "A", role: "admin" });
+      await options.authStore.insertToken("service", {
+        userId: STAN,
+        orgId: actualA,
+        hash: await sha256Hex(service),
+        label: "ci",
+        createdAt: new Date().toISOString(),
+      });
+      const call = (body: object) =>
+        handleControlRequest(
+          new Request("https://armada.test/api/v1/creds/list", {
+            method: "POST",
+            headers: { authorization: `Bearer ${service}` },
+            body: JSON.stringify(body),
+          }),
+          options,
+        );
+      expect((await call({ org: actualA }))?.status).toBe(200);
+      expect((await call({ org: actualB }))?.status).toBe(403);
+    });
+  });
+
+  test("does not trust a user id supplied in a control body", async () => {
+    await withServer(async ({ options }) => {
+      const headers = {
+        authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+      };
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/org/create", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ name: "Caller only", userId: ADA }),
+        }),
+        options,
+      );
+      expect(response?.status).toBe(200);
+      expect((await options.store.memberships(STAN)).map((org) => org.name)).toContain("Caller only");
+      expect((await options.store.memberships(ADA)).map((org) => org.name)).not.toContain("Caller only");
+    });
+  });
+
   test("without an encryption key a credential is refused and nothing is stored", async () => {
     await withServer(async ({ options }) => {
-      const headers = { authorization: `Bearer token-${STAN}` };
+      const headers = {
+        authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+      };
       const keyless: ControlOptions = { ...options, encryptionKey: undefined };
       const send = (route: string, body: object) =>
         handleControlRequest(
@@ -473,7 +532,7 @@ async function launch(
     open: () => undefined,
     session: memorySessionStore({
       userId,
-      accessToken: `token-${userId}`,
+      accessToken: `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`,
       refreshToken: "refresh",
       expiresAt: "2099-01-01T00:00:00.000Z",
       supabaseUrl: "https://supabase.test",
@@ -534,7 +593,7 @@ function boatReply(path: string, method: string): Response {
 async function withServer(
   body: (ctx: {
     db: PGlite;
-    options: ControlOptions & { store: VaultStore };
+    options: ControlOptions & { store: VaultStore; authStore: ReturnType<typeof createMemoryAuthStore> };
     cli: (userId: string, opts?: { session?: boolean; armadaUrl?: boolean; token?: string }) => Who;
   }) => Promise<void>,
 ): Promise<void> {
@@ -547,16 +606,27 @@ async function withServer(
     ]);
     const supabase = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = new URL(input instanceof Request ? input.url : String(input));
-      const authorization = new Headers(init?.headers).get("authorization") ?? "";
-      const match = /^Bearer token-(.+)$/.exec(authorization);
-      if (url.hostname === "supabase.test" && url.pathname === "/auth/v1/user" && match) {
-        return Response.json({ id: match[1] });
+      const authorization =
+        input instanceof Request
+          ? (input.headers.get("authorization") ?? "")
+          : (new Headers(init?.headers).get("authorization") ?? "");
+      const token = authorization.replace(/^Bearer /, "");
+      const payload = token.split(".")[1];
+      let id: unknown;
+      try {
+        id = payload ? JSON.parse(atob(payload))?.sub : undefined;
+      } catch {
+        id = undefined;
+      }
+      if (url.hostname === "supabase.test" && url.pathname === "/auth/v1/user" && typeof id === "string") {
+        return Response.json({ id });
       }
       return new Response("{}", { status: 401 });
     };
+    const authStore = createMemoryAuthStore();
     const options = {
-      supabaseUrl: "https://supabase.test",
-      anonKey: "anon",
+      authStore,
+      supabase: { supabaseUrl: "https://supabase.test", anonKey: "anon", fetch: supabase },
       store: createSqlVaultStore(db),
       encryptionKey: KEY,
       fetch: supabase,
@@ -590,7 +660,9 @@ async function withServer(
                 ? null
                 : {
                     userId,
-                    accessToken: opts.token ?? `token-${userId}`,
+                    accessToken:
+                      opts.token ??
+                      `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`,
                     refreshToken: "refresh",
                     expiresAt: "2099-01-01T00:00:00.000Z",
                     supabaseUrl: "https://supabase.test",
