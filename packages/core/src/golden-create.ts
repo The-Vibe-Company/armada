@@ -42,12 +42,11 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
       return access.token;
     },
   });
-  const store = createSqlGoldenStore(options.sql);
   const deps: GoldenCreateDeps = {
     authorize: adapter.authorize,
     ssh: options.ssh ?? ((provider, input) => sshStdinCheckout(provider, input)),
     scan: (provider, sandboxId) => scanGoldenSandbox(provider, sandboxId),
-    async persist({ actor, name, visibility, repos, snapshot }) {
+    async persist({ actor, name, visibility, repos, snapshot, builderId }) {
       const config: GoldenConfig = {
         repos: repos.map(
           (repo): GoldenRepo => ({
@@ -58,8 +57,20 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         ),
         init: [],
       };
-      const inserted = await store.insert({ orgId: actor.orgId, name, visibility, ownerId: actor.userId, config });
-      await store.setSnapshot(inserted.id, snapshot);
+      const persist = async (sql: Sql) => {
+        const transactionalStore = createSqlGoldenStore(sql);
+        const inserted = await transactionalStore.insert({
+          orgId: actor.orgId,
+          name,
+          visibility,
+          ownerId: actor.userId,
+          config,
+        });
+        await transactionalStore.setSandbox(inserted.id, builderId);
+        await transactionalStore.setSnapshot(inserted.id, snapshot);
+      };
+      if (options.sql.transaction) await options.sql.transaction(persist);
+      else await persist(options.sql);
     },
   };
   if (adapter.mint) deps.mint = adapter.mint;

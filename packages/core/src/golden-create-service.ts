@@ -41,6 +41,7 @@ export interface GoldenCreateDeps {
     visibility: Visibility;
     repos: PreparedRepo[];
     snapshot: string;
+    builderId: string;
   }): Promise<void>;
 }
 
@@ -92,7 +93,14 @@ export class GoldenCreateService {
         throw new GoldenError("snapshot_failed", settled.error ?? `Snapshot '${snapshot}' failed.`);
       }
       try {
-        await this.deps.persist({ actor, name, visibility: input.visibility, repos: prepared, snapshot });
+        await this.deps.persist({
+          actor,
+          name,
+          visibility: input.visibility,
+          repos: prepared,
+          snapshot,
+          builderId: builder.id,
+        });
       } catch (error) {
         // A ready snapshot nothing tracks is worse than none: remove it so the name and the
         // boat.dev snapshot slot are both free to try again.

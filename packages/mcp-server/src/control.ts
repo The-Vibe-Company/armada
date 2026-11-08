@@ -23,7 +23,9 @@ import {
   listMembers,
   listOrgs,
   type Provider,
+  normalizeGitHubGoldenConfig,
   parseCredentialKind,
+  parseGoldenConfig,
   parseRole,
   promptOutcome,
   removeCredential,
@@ -236,7 +238,8 @@ async function createGoldenRoute(
   const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
   const visibility: Visibility = requiredBoolean(body, "private", false) ? "private" : "org";
   const name = required(body, "name");
-  const repos = requiredStringArray(body, "repos");
+  const config = body.config === undefined ? undefined : normalizeGitHubGoldenConfig(parseGoldenConfig(body.config));
+  const repos = config ? [] : requiredStringArray(body, "repos");
   const setup = optional(body, "setup");
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
   const boat = await resolveBoatKey(options.store, options.encryptionKey, {
@@ -248,6 +251,7 @@ async function createGoldenRoute(
     name,
     visibility,
     repos,
+    ...(config === undefined ? {} : { config }),
     ...(setup !== undefined ? { setup } : {}),
   });
   return { name, visibility, snapshot: result.snapshot };
