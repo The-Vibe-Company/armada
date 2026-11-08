@@ -753,6 +753,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
       "Connection binding and independent visibility require the registry service (#520).",
     );
   const name = required(body, "golden");
+  const repo = body.repo === undefined ? undefined : required(body, "repo");
   const harness = required(body, "harness");
   if (harness !== "claude" && harness !== "codex") throw new VaultError("invalid", "The agent is claude or codex.");
   const data = options.data(caller);
@@ -780,6 +781,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
     {
       golden: name,
       provider: golden.provider,
+      ...(repo === undefined ? {} : { repo }),
       ...modelChoice(harness, optional(body, "model"), optional(body, "reasoningEffort")),
       harness,
       ...(optional(body, "prompt") === undefined ? {} : { prompt: required(body, "prompt") }),

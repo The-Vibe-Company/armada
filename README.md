@@ -56,7 +56,7 @@ bun run armada golden create <name> --repo <url>[@branch] --init "<cmd>" [--setu
 bun run armada golden connect <name>
 bun run armada golden snapshot <name>
 bun run armada golden list
-bun run armada launch <golden> --agent claude|codex ["prompt"] [--ttl 4h] [--json]
+bun run armada launch <golden> --agent claude|codex ["prompt"] [--repo owner/repo] [--ttl 4h] [--json]
 bun run armada login --url armada.thevibecompany.co # discover settings; email or enabled social login
 bun run armada login --email you@example.com   # a sign-in email: click its link, or type its code
 bun run armada token create --org <name> --label <label>
@@ -75,6 +75,24 @@ bun run build:all                    # dist/armada-<target> for linux and macOS,
 ## Launching
 
 `armada launch` forks a golden's saved snapshot, pulls each repo, runs the init commands and, with a prompt, starts the agent. Without a prompt the sandbox waits, ready, for its first prompt. The fork gets `noEnv`, an explicit TTL (default 4 hours) and Armada's labels, and an environment with only the credentials of the chosen agent. Nothing is written to the golden. A Codex `auth.json` is carried in the environment and written to `~/.codex/auth.json` in the sandbox.
+
+To start the native agent in a particular repository already recorded in the golden:
+
+```sh
+armada launch <golden> --agent codex --repo owner/repo "Fix the tests"
+armada launch <golden> --agent claude --repo owner/repo  # idle; prepared for the first send
+```
+
+`--repo owner/repo` is a single manifest selector, not a URL, path, or the repeated
+`golden create --repo <url>[@branch]` option. It establishes the native Claude/Codex process's
+real initial cwd in that repository's recorded directory after pulls and init, before the first
+prompt. Idle launches prepare it immediately for a later send. The API request is
+`POST /api/v1/sandbox/launch` with `{"golden":"my-golden","harness":"codex","repo":"owner/repo"}`;
+the MCP `launch` tool accepts the same optional `repo` string.
+Invalid, unknown, or ambiguous selectors and providers without native cwd preparation are
+rejected before a machine is allocated. Omitting `repo` preserves legacy launch behavior,
+including existing multi-repo workers. Authorization, provider routing, models and TTL are unchanged.
+
 
 The credentials and the boat.dev key come from the encrypted store: the caller's own, else the org's (`resolveCredentials`, `resolveBoatKey`). A private golden uses its owner's personal boat key when there is one. `armada launch` asks the server for them (`ARMADA_URL`); it holds no encryption key and no service role key.
 

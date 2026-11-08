@@ -86,9 +86,11 @@ Usage:
   armada golden snapshot <name>            Freeze the master sandbox
   armada golden list [--json]              Goldens you can see
   armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
-                [--provider boat|modal] [--ttl 4h] [--json]        Fork a golden into a sandbox. With a prompt the agent starts at once;
+                [--repo owner/repo] [--provider boat|modal] [--ttl 4h] [--json]        Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
-                                           and effort apply to every later turn too. Defaults:
+                                           and effort apply to every later turn too. --repo owner/repo selects a recorded
+                                           golden repository as the native agent's real initial cwd (also when idle);
+                                           omit it to keep legacy launch behavior. Defaults:
                                            ${modelDefaults()}
   armada list|detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
@@ -425,6 +427,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     throw new GoldenError("invalid_config", "Give a golden name and at most one prompt.");
   }
   const harness = harnessOf(single(args, "--agent"));
+  const repo = single(args, "--repo");
   resolveModelChoice(harness, { model: single(args, "--model"), reasoningEffort: single(args, "--reasoning-effort") });
   const ttl = single(args, "--ttl");
   const ttlSeconds = ttl === undefined ? undefined : parseTtl(ttl);
@@ -443,6 +446,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         ...(single(args, "--visibility") ? { visibility: single(args, "--visibility") } : {}),
         ...(single(args, "--connections") ? { connections: single(args, "--connections")!.split(",") } : {}),
         golden: name,
+        ...(repo === undefined ? {} : { repo }),
         ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
         harness,
         ...resolveModelChoice(harness, {

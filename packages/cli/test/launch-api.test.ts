@@ -36,51 +36,66 @@ const response = {
 };
 
 describe("launch through the Armada API", () => {
-  test("works with ARMADA_TOKEN and a clean HOME", async () => {
-    const calls: Request[] = [];
-    let out = "";
-    const code = await run(
-      ["launch", "web", "--agent", "codex", "do it", "--ttl", "30m", "--org", "org", "--json"],
-      { out: (text) => (out += text), err: () => undefined },
-      {
-        auth: {
-          out: () => undefined,
-          err: () => undefined,
-          env: { ARMADA_TOKEN: token },
-          fetch: async (input, init) => {
-            const request = input instanceof Request ? input : new Request(String(input), init);
-            calls.push(request);
-            return Response.json(response);
+  for (const repo of [undefined, "ACME/web"]) {
+    test(`works with ARMADA_TOKEN and a clean HOME (repo: ${repo ?? "omitted"})`, async () => {
+      const calls: Request[] = [];
+      let out = "";
+      const code = await run(
+        [
+          "launch",
+          "web",
+          "--agent",
+          "codex",
+          "do it",
+          "--ttl",
+          "30m",
+          "--org",
+          "org",
+          "--json",
+          ...(repo === undefined ? [] : ["--repo", repo]),
+        ],
+        { out: (text) => (out += text), err: () => undefined },
+        {
+          auth: {
+            out: () => undefined,
+            err: () => undefined,
+            env: { ARMADA_TOKEN: token },
+            fetch: async (input, init) => {
+              const request = input instanceof Request ? input : new Request(String(input), init);
+              calls.push(request);
+              return Response.json(response);
+            },
+            now: () => new Date(),
+            open: () => undefined,
+            session: memorySessionStore(),
           },
-          now: () => new Date(),
-          open: () => undefined,
-          session: memorySessionStore(),
         },
-      },
-    );
-    expect(code).toBe(0);
-    expect(JSON.parse(out)).toMatchObject({
-      golden: "web",
-      harness: "codex",
-      promptId: "prompt",
-      provider: "boat",
-      providerSandboxId: "bx_server",
-      boatId: "bx_server",
-      id: "11111111-1111-4111-8111-111111111111",
-      expiresAt: "2026-11-08T16:00:00.000Z",
+      );
+      expect(code).toBe(0);
+      expect(JSON.parse(out)).toMatchObject({
+        golden: "web",
+        harness: "codex",
+        promptId: "prompt",
+        provider: "boat",
+        providerSandboxId: "bx_server",
+        boatId: "bx_server",
+        id: "11111111-1111-4111-8111-111111111111",
+        expiresAt: "2026-11-08T16:00:00.000Z",
+      });
+      expect(calls[0]?.url).toBe("https://armada.thevibecompany.co/api/v1/sandbox/launch");
+      expect(calls[0]?.headers.get("authorization")).toBe(`Bearer ${token}`);
+      expect(await calls[0]?.json()).toEqual({
+        golden: "web",
+        ...(repo === undefined ? {} : { repo }),
+        model: "gpt-6.1-sol",
+        reasoningEffort: "medium",
+        harness: "codex",
+        prompt: "do it",
+        ttlSeconds: 1800,
+        org: "org",
+      });
     });
-    expect(calls[0]?.url).toBe("https://armada.thevibecompany.co/api/v1/sandbox/launch");
-    expect(calls[0]?.headers.get("authorization")).toBe(`Bearer ${token}`);
-    expect(await calls[0]?.json()).toEqual({
-      golden: "web",
-      model: "gpt-6.1-sol",
-      reasoningEffort: "medium",
-      harness: "codex",
-      prompt: "do it",
-      ttlSeconds: 1800,
-      org: "org",
-    });
-  });
+  }
 
   test("decodes serialized expiry for text output without hiding a created sandbox", async () => {
     let out = "";

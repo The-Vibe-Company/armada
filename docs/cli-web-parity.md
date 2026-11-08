@@ -13,7 +13,7 @@ All CLI HTTP requests target Armada. Never supply authentication secrets as comm
 | Wait | `wait ID --timeout SECONDS --prompt-id ID` | sandbox/wait | Shared MCP wait |
 | Shell command | `exec ID -- COMMAND` | sandbox/exec | Shared MCP exec with vault redaction |
 | Steer / interrupt | `steer ID TEXT`, `interrupt ID` | sandbox/steer, sandbox/interrupt | Shared MCP operations |
-| Launch agent/prompt/model/effort/TTL/org/provider | `launch GOLDEN --agent codex --model ID --reasoning-effort medium --ttl 4h --org UUID --provider boat` | sandbox/launch | Server-side routing and resolution |
+| Launch agent/prompt/repo/model/effort/TTL/org/provider | `launch GOLDEN --agent codex --repo owner/repo --model ID --reasoning-effort medium --ttl 4h --org UUID --provider boat` | sandbox/launch | Server-side routing and resolution |
 | Independent privacy / connections | `launch ... --visibility private --connections UUID,UUID` | sandbox/launch | Explicit unavailable pending #520, never silently ignored |
 | Golden list/metadata | `golden list --provider boat --json --org UUID` | golden/list | Provider-neutral metadata and scoped list |
 | Golden create/update repos/init/setup | `golden create/update NAME --repo URL --init CMD --setup FILE` | golden/create, golden/update | Secure server builder retained; Modal creation unavailable |

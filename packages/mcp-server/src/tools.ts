@@ -384,6 +384,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           .optional()
           .describe("The golden's provider. Needed only when the name exists on several providers."),
         harness: z.enum(HARNESSES).describe("claude (Claude Code) or codex."),
+        repo: z
+          .string()
+          .regex(/^[^/\s]+\/[^/\s]+$/, "Repository must be owner/repo.")
+          .optional()
+          .describe(
+            "A repository recorded in the golden, as owner/repo. Sets the native agent's real initial cwd, including idle launches. Omit for legacy launch behavior.",
+          ),
         model: modelInput,
         reasoning_effort: effortInput,
         prompt: z.string().min(1).optional().describe("The first instruction. Leave out for an idle sandbox."),
@@ -437,6 +444,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           golden: args.golden,
           provider: chosen.provider,
           harness: args.harness,
+          ...(args.repo === undefined ? {} : { repo: args.repo }),
           ...(args.model === undefined ? {} : { model: args.model }),
           ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
           ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
