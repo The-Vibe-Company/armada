@@ -1,6 +1,9 @@
 import {
   DEFAULT_LAUNCH_TTL_SECONDS,
   EncryptionKeyError,
+  connectGolden,
+  scanGoldenSandbox,
+  snapshotGolden,
   type GoldenCreateService,
   GoldenError,
   type GoldenRecord,
@@ -288,6 +291,30 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         existingGolden,
       }, context.launch ?? {});
       return { name: existingGolden.name, visibility: existingGolden.visibility, snapshot: result.snapshot };
+    },
+  );
+
+  tool(
+    "golden_snapshot",
+    {
+      title: "Snapshot a golden",
+      description: "Restores the golden master if needed, scans it for leaked GitHub tokens, then saves a snapshot.",
+      input: { name: z.string().min(1), org: z.string().optional() },
+      output: { name: z.string(), snapshot: z.string() },
+    },
+    async (args) => {
+      const member = resolveCreateOrg(caller.orgs, args.org);
+      const rows = await data.goldens.findByName(member.orgId, args.name);
+      if (rows.length !== 1 || !rows[0]) throw new ToolError("not_found", `No golden named '${args.name}'.`);
+      const golden = rows[0];
+      const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
+      const provider = await context.provider({ orgId: golden.orgId, visibility: golden.visibility });
+      let target = golden;
+      if (!target.boatSandboxId) target = (await connectGolden(provider, data.goldens, actor, target.name)).golden;
+      if (!target.boatSandboxId) throw new ToolError("conflict", `Golden '${target.name}' has no sandbox yet.`);
+      await scanGoldenSandbox(provider, target.boatSandboxId);
+      const saved = await snapshotGolden(provider, data.goldens, actor, target.name, context.launch ?? {});
+      return { name: saved.golden.name, snapshot: saved.snapshotName };
     },
   );
 

@@ -66,6 +66,7 @@ function safePath(path: string): boolean {
     path === "golden/list" ||
     path === "golden/create" ||
     path === "golden/update" ||
+    path === "golden/snapshot" ||
     path === "golden/connect" ||
     path === "sandbox/launch" ||
     path === "logs/read"

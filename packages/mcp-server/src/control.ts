@@ -2,6 +2,8 @@ import { type AuthStore, createSqlAuthStore } from "@armada/auth";
 import {
   addMember,
   connectGolden,
+  snapshotGolden,
+  scanGoldenSandbox,
   createGoldenCreateService,
   createOrg,
   createSqlVaultStore,
@@ -187,6 +189,8 @@ async function dispatch(
       return createGoldenRoute(options, caller, body);
     case "golden/update":
       return updateGoldenRoute(options, caller, body);
+    case "golden/snapshot":
+      return snapshotGoldenRoute(options, caller, body);
     case "golden/connect":
       return connectGoldenRoute(options, caller, body);
     default:
@@ -293,6 +297,35 @@ async function updateGoldenRoute(
     existingGolden,
   });
   return { name: existingGolden.name, visibility: existingGolden.visibility, snapshot: result.snapshot };
+}
+
+async function snapshotGoldenRoute(
+  options: ControlOptions,
+  caller: Caller,
+  body: Record<string, unknown>,
+): Promise<{ name: string; snapshot: string }> {
+  if (!options.providerFor || !options.data) throw new VaultError("unavailable", "Golden snapshots are not configured on this server.");
+  const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
+  const name = required(body, "name");
+  const data = options.data(caller);
+  const rows = await data.goldens.findByName(org.id, name);
+  if (rows.length !== 1 || !rows[0]) throw new GoldenError("not_found", `No golden named '${name}'.`);
+  const golden = rows[0];
+  const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
+  // Core methods re-check the exact private-owner/org-admin policy before changing anything.
+  const boat = await resolveBoatKey(options.store, options.encryptionKey, {
+    userId: caller.userId, orgId: org.id, visibility: golden.visibility,
+  });
+  const provider = options.providerFor(boat.key);
+  let target = golden;
+  if (!target.boatSandboxId) {
+    const restored = await connectGolden(provider, data.goldens, actor, target.name);
+    target = restored.golden;
+  }
+  if (!target.boatSandboxId) throw new GoldenError("conflict", `Golden '${target.name}' has no sandbox yet.`);
+  await scanGoldenSandbox(provider, target.boatSandboxId);
+  const saved = await snapshotGolden(provider, data.goldens, actor, target.name, options.launch ?? {});
+  return { name: saved.golden.name, snapshot: saved.snapshotName };
 }
 
 async function connectGoldenRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>) {
