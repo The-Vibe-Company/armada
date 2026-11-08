@@ -406,6 +406,7 @@ async function dispatch(
   if (route.startsWith("mcp/")) throw new VaultError("unavailable", "MCP registry is not configured on this server.");
   const toolName = (
     {
+      "golden/capabilities": "golden_capabilities",
       "sandbox/list": "list",
       "sandbox/detail": "status",
       "sandbox/status": "status",
@@ -420,6 +421,13 @@ async function dispatch(
   if (toolName) {
     if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
     const selected = optional(body, "org");
+    if (
+      route === "golden/capabilities" &&
+      selected !== undefined &&
+      !caller.orgs.some((member) => member.orgId === scopedOrg(caller, selected))
+    ) {
+      throw new VaultError("forbidden", "You are not a member of this org.");
+    }
     const scopedCaller =
       selected === undefined
         ? caller

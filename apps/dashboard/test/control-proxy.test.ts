@@ -48,6 +48,7 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
   const seen: Request[] = [];
   for (const path of [
     ["org", "list"],
+    ["golden", "capabilities"],
     ["creds", "list"],
     ["sandbox", "list"],
     ["sandbox", "wait"],

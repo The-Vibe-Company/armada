@@ -287,6 +287,7 @@ describe("tools", () => {
       [
         "exec",
         "golden_create",
+        "golden_capabilities",
         "golden_list",
         "golden_snapshot",
         "golden_update",
@@ -321,6 +322,30 @@ describe("tools", () => {
     expect(goldenUpdate?.outputSchema).toBeDefined();
     expect(goldenSnapshot?.inputSchema).toBeDefined();
     expect(goldenSnapshot?.outputSchema).toBeDefined();
+  });
+
+  test("golden_capabilities is read-only, scoped before resolution, and reports provider metadata only", async () => {
+    const { token, client, people, boat } = await start();
+    const mcp = await client(await token(people.member));
+    // This user also belongs to otherOrg, but this token must never widen to it.
+    const denied = await call(mcp, "golden_capabilities", { org: people.otherOrg, provider: "boat" });
+    expect(denied.isError).toBe(true);
+    expect(boat.keys).toEqual([]);
+    Object.assign(boat.provider, { maxGoldens: 7 });
+    const result = await call(mcp, "golden_capabilities", { org: people.org, provider: "boat" });
+    expect(result.isError).toBe(false);
+    expect(result.data).toEqual({ provider: "boat", maxGoldens: 7 });
+    Object.assign(boat.provider, { maxGoldens: undefined });
+    expect((await call(mcp, "golden_capabilities")).data).toEqual({ provider: "boat", maxGoldens: null });
+    expect(boat.keys).toHaveLength(2);
+    expect(boat.forks).toEqual([]);
+    expect(boat.execs).toEqual([]);
+    expect(boat.stops).toEqual([]);
+    const listed = await mcp.listTools();
+    expect(listed.tools.find((tool) => tool.name === "golden_capabilities")?.annotations).toMatchObject({
+      readOnlyHint: true,
+      destructiveHint: false,
+    });
   });
 
   test("golden_list shows org goldens and one's own private ones, never another's or another org's", async () => {
