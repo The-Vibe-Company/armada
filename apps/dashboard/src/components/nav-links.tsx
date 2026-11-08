@@ -3,6 +3,7 @@
 import { BoxesIcon, CameraIcon, KeyRoundIcon, UsersIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { LinkPendingIcon } from "@/components/link-pending";
 import { cn } from "@/lib/utils";
 
 const LINKS = [
@@ -24,11 +25,13 @@ export function NavLinks({ className }: { className?: string }) {
             href={href}
             aria-current={active ? "page" : undefined}
             className={cn(
-              "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors hover:bg-accent hover:text-accent-foreground",
+              "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors hover:bg-accent hover:text-accent-foreground has-[[data-pending]]:bg-accent has-[[data-pending]]:text-accent-foreground",
               active ? "bg-accent text-accent-foreground" : "text-muted-foreground",
             )}
           >
-            <Icon className="size-4" />
+            <LinkPendingIcon>
+              <Icon />
+            </LinkPendingIcon>
             {label}
           </Link>
         );

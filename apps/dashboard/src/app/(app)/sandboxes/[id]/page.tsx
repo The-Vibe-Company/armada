@@ -2,6 +2,7 @@ import { ArrowLeftIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { LinkPendingIcon } from "@/components/link-pending";
 import { SandboxActions } from "@/components/sandbox-actions";
 import { SandboxLogs } from "@/components/sandbox-logs";
 import { StatusBadge } from "@/components/status-badge";
@@ -57,7 +58,10 @@ export default async function SandboxPage({ params }: Props) {
       <div className="space-y-3">
         <Button variant="ghost" size="sm" asChild className="-ml-3">
           <Link href="/sandboxes">
-            <ArrowLeftIcon /> Sandboxes
+            <LinkPendingIcon>
+              <ArrowLeftIcon />
+            </LinkPendingIcon>
+            Sandboxes
           </Link>
         </Button>
         <div className="flex flex-wrap items-center justify-between gap-3">

@@ -1,6 +1,7 @@
 import { HARNESSES } from "@armada/core";
 import type { Metadata } from "next";
 import Link from "next/link";
+import { LinkPendingIcon } from "@/components/link-pending";
 import { Empty, PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -115,9 +116,10 @@ export default async function SandboxesPage({ searchParams }: Props) {
                   <TableCell>
                     <Link
                       href={`/sandboxes/${sandbox.id}`}
-                      className="font-mono text-sm underline-offset-4 hover:underline"
+                      className="inline-flex items-center gap-1.5 font-mono text-sm underline-offset-4 hover:underline"
                     >
                       {sandbox.boat_id}
+                      <LinkPendingIcon />
                     </Link>
                   </TableCell>
                   <TableCell>
