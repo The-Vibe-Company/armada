@@ -3,7 +3,7 @@ alter table public.golden_backend_slots drop constraint golden_backend_slots_che
 alter table public.golden_backend_slots add check (golden_id is not null or build_id is not null);
 
 create function public.reserve_existing_golden_backend_slot(provider_name text, backend_identity text, capacity integer, target_golden_id uuid)
-returns uuid language plpgsql security definer set search_path = public, pg_temp as $$
+returns uuid language plpgsql security invoker set search_path = public, pg_temp as $$
 declare reservation uuid := gen_random_uuid(); slot public.golden_backend_slots%rowtype; g record; occupied integer;
 begin
   if capacity < 1 then raise exception 'golden backend capacity must be positive' using errcode='22023'; end if;
@@ -24,12 +24,12 @@ begin
 end;
 $$;
 
-create or replace function public.release_golden_backend_slot(reservation_id uuid) returns void language plpgsql security definer set search_path=public,pg_temp as $$
+create or replace function public.release_golden_backend_slot(reservation_id uuid) returns void language plpgsql security invoker set search_path=public,pg_temp as $$
 begin
   delete from public.golden_backend_slots where build_id=reservation_id and golden_id is null;
   update public.golden_backend_slots set build_id=null where build_id=reservation_id and golden_id is not null;
 end; $$;
-create or replace function public.finalize_golden_backend_slot(reservation_id uuid, target_golden_id uuid) returns void language plpgsql security definer set search_path=public,pg_temp as $$
+create or replace function public.finalize_golden_backend_slot(reservation_id uuid, target_golden_id uuid) returns void language plpgsql security invoker set search_path=public,pg_temp as $$
 begin
   update public.golden_backend_slots set golden_id=target_golden_id, build_id=null where build_id=reservation_id;
   if not found then raise exception 'golden backend reservation not found' using errcode='P0002'; end if;

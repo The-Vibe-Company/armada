@@ -7,7 +7,7 @@ create function public.reserve_golden_backend_slot(
 )
 returns uuid
 language plpgsql
-security definer
+security invoker
 set search_path = public, pg_temp
 as $$
 declare

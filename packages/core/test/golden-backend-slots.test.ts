@@ -13,6 +13,27 @@ test("golden backend slots are service-role only", async () => {
       "select relrowsecurity from pg_class where relname = 'golden_backend_slots'",
     );
     expect(rls.rows[0]?.relrowsecurity).toBe(true);
+    const routines = await db.query<{
+      proname: string;
+      prosecdef: boolean;
+      public_execute: boolean;
+      service_execute: boolean;
+    }>(
+      `select p.proname, p.prosecdef,
+        has_function_privilege('public', p.oid, 'execute') as public_execute,
+        has_function_privilege('service_role', p.oid, 'execute') as service_execute
+       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+       where n.nspname = 'public' and p.proname in (
+         'reserve_golden_backend_slot', 'reserve_existing_golden_backend_slot',
+         'finalize_golden_backend_slot', 'release_golden_backend_slot', 'rebuild_golden_backend_slots'
+       ) order by p.proname`,
+    );
+    expect(routines.rows).toHaveLength(5);
+    for (const routine of routines.rows) {
+      expect(routine.prosecdef).toBe(false);
+      expect(routine.public_execute).toBe(false);
+      expect(routine.service_execute).toBe(true);
+    }
   } finally {
     await db.close();
   }

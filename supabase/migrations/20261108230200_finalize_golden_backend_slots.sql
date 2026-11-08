@@ -4,7 +4,7 @@
 create function public.finalize_golden_backend_slot(reservation_id uuid, target_golden_id uuid)
 returns void
 language plpgsql
-security definer
+security invoker
 set search_path = public, pg_temp
 as $$
 declare
@@ -19,7 +19,7 @@ $$;
 create function public.release_golden_backend_slot(reservation_id uuid)
 returns void
 language plpgsql
-security definer
+security invoker
 set search_path = public, pg_temp
 as $$
 begin
@@ -32,7 +32,7 @@ $$;
 create function public.rebuild_golden_backend_slots(provider_name text, backend_identity text, capacity integer)
 returns integer
 language plpgsql
-security definer
+security invoker
 set search_path = public, pg_temp
 as $$
 declare
