@@ -1,0 +1,362 @@
+import type {
+  CreateGoldenRequest,
+  DeleteReceipt,
+  EventPage,
+  EventsRequest,
+  ExecRequest,
+  ExecResult,
+  ForkRequest,
+  Harness,
+  HarnessCapabilities,
+  InterruptRequest,
+  ListRequest,
+  Page,
+  PromptReceipt,
+  PromptRequest,
+  PromptState,
+  Provider,
+  SandboxInfo,
+  SandboxState,
+  SnapshotInfo,
+  SnapshotRequest,
+  SteerReceipt,
+  SteerRequest,
+} from "@armada/core";
+import {
+  BoatApi,
+  Configuration,
+  type CreateSandboxRequest,
+  type PromptRequestProviderEnum,
+  type Sandbox,
+  type SavedSnapshot,
+} from "@boatdev/sdk";
+import { invalidRequest, PROVIDER_ID, toProviderError, unexpectedAnswer } from "./errors.ts";
+import { eventCursor, normalizeEvent, promptStatus } from "./events.ts";
+
+export const DEFAULT_BASE_URL = "https://boat.dev/api/v1";
+/** boat's own default, sent explicitly so a launch never depends on it. */
+export const DEFAULT_TTL_SECONDS = 3600;
+/** The longest TTL boat accepts: 30 days. */
+export const MAX_TTL_SECONDS = 2_592_000;
+
+/** What boat gives each harness. Claude Code and Codex both take a steer natively, and neither has an approvals API. */
+const BOAT_HARNESS: HarnessCapabilities = {
+  steer: "native",
+  interrupt: true,
+  resume: true,
+  parallelConversations: true,
+  reasoningEffort: true,
+  fast: true,
+  streamsPartials: true,
+  toolEvents: true,
+  approvals: false,
+};
+
+export const BOAT_CAPABILITIES: Readonly<Record<Harness, HarnessCapabilities>> = {
+  claude: BOAT_HARNESS,
+  codex: BOAT_HARNESS,
+};
+
+const BOAT_PROVIDER_NAME: Record<Harness, PromptRequestProviderEnum> = {
+  claude: "claude-code",
+  codex: "codex",
+};
+
+const BOAT_STATES: Record<SandboxState, readonly string[]> = {
+  starting: ["init", "provisioning", "provisioned", "cloning"],
+  ready: ["ready", "idle"],
+  running: ["running"],
+  stopping: ["archiving"],
+  stopped: ["archived"],
+  failed: ["error", "cancelled"],
+};
+
+function sandboxState(providerState: string): SandboxState {
+  for (const [state, names] of Object.entries(BOAT_STATES)) {
+    if (names.includes(providerState)) return state as SandboxState;
+  }
+  // A state boat adds later is not ready for work until this adapter learns it.
+  return "starting";
+}
+
+function sandboxInfo(sandbox: Sandbox): SandboxInfo {
+  const info: SandboxInfo = {
+    id: sandbox.id,
+    name: sandbox.name,
+    state: sandboxState(sandbox.state),
+    providerState: sandbox.state,
+    labels: sandbox.labels ?? {},
+  };
+  if (sandbox.error) info.error = sandbox.error;
+  if (sandbox.createdAt) info.createdAt = sandbox.createdAt;
+  if (sandbox.stoppedAt) info.stoppedAt = sandbox.stoppedAt;
+  if (sandbox.archiveAfter) info.expiresAt = sandbox.archiveAfter;
+  return info;
+}
+
+function snapshotInfo(snapshot: SavedSnapshot): SnapshotInfo {
+  const info: SnapshotInfo = { name: snapshot.name, status: snapshot.status };
+  if (snapshot.error) info.error = snapshot.error;
+  if (snapshot.sourceSandboxId) info.sourceSandboxId = snapshot.sourceSandboxId;
+  if (snapshot.createdAt) info.createdAt = snapshot.createdAt;
+  return info;
+}
+
+export interface BoatProviderOptions {
+  /** The boat API key. It stays in this object: no error or event carries it. */
+  apiKey: string;
+  baseUrl?: string;
+  /** Seconds before boat stops a sandbox by itself, when a call names none. */
+  defaultTtlSeconds?: number;
+  /** For tests; the SDK's own fetch otherwise. */
+  fetch?: typeof fetch;
+  /** For tests: how a command refused while its sandbox restores its disk waits before it is sent again. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** boat refuses a command with this message before running it while a resumed or forked sandbox mounts its disk. */
+const RESTORING = "sandbox_restoring";
+const RESTORE_RETRIES = 5;
+const RESTORE_WAIT_MS = 2000;
+
+function ttl(requested: number | undefined, fallback: number): number {
+  const seconds = requested ?? fallback;
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > MAX_TTL_SECONDS) {
+    throw invalidRequest(`ttlSeconds must be a whole number of seconds from 1 to ${MAX_TTL_SECONDS}.`);
+  }
+  return seconds;
+}
+
+function page<T>(items: T[], pageInfo: { nextCursor: string | null; hasMore: boolean } | undefined): Page<T> {
+  return { items, cursor: pageInfo?.hasMore ? pageInfo.nextCursor : null };
+}
+
+/** The boat.dev placement, over `@boatdev/sdk`. Every failure is a `ProviderError`. */
+export function createBoatProvider(options: BoatProviderOptions): Provider {
+  const defaultTtl = options.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const api = new BoatApi(
+    new Configuration({
+      basePath: options.baseUrl ?? DEFAULT_BASE_URL,
+      accessToken: options.apiKey,
+      ...(options.fetch ? { fetchApi: options.fetch } : {}),
+    }),
+  );
+
+  async function call<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      throw await toProviderError(error);
+    }
+  }
+
+  async function start(body: CreateSandboxRequest, idempotencyKey: string | undefined): Promise<SandboxInfo> {
+    const response = await call(() =>
+      api.create({ createSandboxRequest: body, ...(idempotencyKey ? { idempotencyKey } : {}) }),
+    );
+    if (!response.sandbox?.id) throw unexpectedAnswer("sandbox");
+    return sandboxInfo(response.sandbox);
+  }
+
+  return {
+    id: PROVIDER_ID,
+    harnesses: ["claude", "codex"],
+    capabilities: BOAT_CAPABILITIES,
+
+    async createGolden(request: CreateGoldenRequest): Promise<SandboxInfo> {
+      return start(
+        {
+          ttlSeconds: ttl(request.ttlSeconds, defaultTtl),
+          ...(request.name ? { name: request.name } : {}),
+          ...(request.labels ? { labels: request.labels } : {}),
+        },
+        request.idempotencyKey,
+      );
+    },
+
+    async snapshot(request: SnapshotRequest): Promise<SnapshotInfo> {
+      const response = await call(() =>
+        api.saveSavedSnapshot({ savedSnapshotSaveRequest: { sandboxId: request.sandboxId, name: request.name } }),
+      );
+      if (!response.snapshot?.name) throw unexpectedAnswer("snapshot");
+      return snapshotInfo(response.snapshot);
+    },
+
+    async getSnapshot(name: string): Promise<SnapshotInfo> {
+      const response = await call(() => api.getSavedSnapshot({ name }));
+      if (!response.snapshot?.name) throw unexpectedAnswer("snapshot");
+      return snapshotInfo(response.snapshot);
+    },
+
+    async deleteSnapshot(name: string): Promise<void> {
+      await call(() => api.deleteSavedSnapshot({ name }));
+    },
+
+    async fork(request: ForkRequest): Promise<SandboxInfo> {
+      return start(
+        {
+          from: request.from,
+          ttlSeconds: ttl(request.ttlSeconds, defaultTtl),
+          ...(request.name ? { name: request.name } : {}),
+          ...(request.labels ? { labels: request.labels } : {}),
+          ...(request.env ? { env: request.env } : {}),
+        },
+        request.idempotencyKey,
+      );
+    },
+
+    async get(sandboxId: string): Promise<SandboxInfo> {
+      const response = await call(() => api.get({ sandboxId }));
+      if (!response.sandbox?.id) throw unexpectedAnswer("sandbox");
+      return sandboxInfo(response.sandbox);
+    },
+
+    async list(request: ListRequest = {}): Promise<Page<SandboxInfo>> {
+      const states = request.states?.flatMap((state) => BOAT_STATES[state]);
+      const labels = Object.entries(request.labels ?? {}).map(([key, value]) => `${key}=${value}`);
+      const response = await call(() =>
+        api.sandboxes({
+          sort: "desc",
+          ...(request.limit ? { limit: request.limit } : {}),
+          ...(request.cursor ? { cursor: request.cursor } : {}),
+          ...(states?.length ? { state: states.join(",") } : {}),
+          ...(labels.length ? { label: labels } : {}),
+        }),
+      );
+      return page((response.sandboxes ?? []).map(sandboxInfo), response.pageInfo);
+    },
+
+    async prompt(request: PromptRequest): Promise<PromptReceipt> {
+      if (request.text.trim() === "") throw invalidRequest("A prompt needs text.");
+      const response = await call(() =>
+        api.prompt({
+          sandboxId: request.sandboxId,
+          promptRequest: {
+            provider: BOAT_PROVIDER_NAME[request.harness],
+            prompt: request.text,
+            ...(request.conversationId ? { conversationId: request.conversationId } : { _new: true }),
+            ...(request.model ? { model: request.model } : {}),
+            ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
+            ...(request.fast !== undefined ? { fast: request.fast } : {}),
+          },
+        }),
+      );
+      const conversationId = response.conversationId ?? response.promptRun?.conversationId;
+      if (!response.promptId || !conversationId) throw unexpectedAnswer("prompt receipt");
+      return { promptId: response.promptId, conversationId, status: promptStatus(response.status) ?? "queued" };
+    },
+
+    async getPrompt(request: { sandboxId: string; promptId: string }): Promise<PromptState> {
+      const response = await call(() => api.promptRunStatus(request));
+      const run = response.promptRun;
+      const status = promptStatus(run?.status);
+      if (!run || status === undefined) throw unexpectedAnswer("prompt status");
+      return {
+        promptId: run.promptId,
+        status,
+        done: run.done,
+        ...(run.conversationId ? { conversationId: run.conversationId } : {}),
+      };
+    },
+
+    async steer(request: SteerRequest): Promise<SteerReceipt> {
+      if (request.text.trim() === "") throw invalidRequest("A steer needs text.");
+      const response = await call(() =>
+        api.steer({
+          sandboxId: request.sandboxId,
+          steerRequest: {
+            message: request.text,
+            ...(request.conversationId ? { conversation: request.conversationId } : {}),
+          },
+          ...(request.conversationId ? { conversation: request.conversationId } : {}),
+        }),
+      );
+      return {
+        conversationId: response.conversationId,
+        promptId: response.promptId,
+        ...(response.mode ? { mode: response.mode } : {}),
+      };
+    },
+
+    async interrupt(request: InterruptRequest): Promise<void> {
+      await call(() =>
+        api.interrupt({
+          sandboxId: request.sandboxId,
+          ...(request.conversationId ? { conversation: request.conversationId } : {}),
+        }),
+      );
+    },
+
+    async exec(request: ExecRequest): Promise<ExecResult> {
+      const commandRequest = {
+        command: request.command,
+        ...(request.cwd ? { cwd: request.cwd } : {}),
+        ...(request.timeoutSeconds ? { timeoutSeconds: request.timeoutSeconds } : {}),
+        ...(request.detached ? { detached: true } : {}),
+      };
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const response = await call(() => api.command({ sandboxId: request.sandboxId, commandRequest }));
+          if ("processId" in response) return { detached: true, processId: response.processId };
+          if (!("exitCode" in response)) throw unexpectedAnswer("command result");
+          return {
+            detached: false,
+            exitCode: response.exitCode,
+            stdout: response.stdout,
+            stderr: response.stderr,
+            timedOut: response.timedOut,
+            truncated: response.stdoutTruncated === true || response.stderrTruncated === true,
+          };
+        } catch (error) {
+          const restoring = error instanceof Error && "details" in error && isRestoring(error.details);
+          if (!restoring || attempt >= RESTORE_RETRIES) throw error;
+          await sleep(RESTORE_WAIT_MS);
+        }
+      }
+    },
+
+    async events(request: EventsRequest): Promise<EventPage> {
+      const response = await call(() =>
+        api.events({
+          sandboxId: request.sandboxId,
+          sort: "asc",
+          ...(request.cursor ? { cursor: request.cursor } : {}),
+          ...(request.conversationId ? { conversation: request.conversationId } : {}),
+          ...(request.limit ? { limit: request.limit } : {}),
+        }),
+      );
+      const raw = response.events ?? [];
+      const last = raw.at(-1);
+      const cursor = (last && eventCursor(last)) ?? response.pageInfo?.nextCursor ?? request.cursor;
+      return {
+        events: raw.map(normalizeEvent),
+        ...(cursor ? { cursor } : {}),
+        hasMore: response.pageInfo?.hasMore === true,
+      };
+    },
+
+    async stop(request: { sandboxId: string }): Promise<void> {
+      await call(() => api.stop({ sandboxId: request.sandboxId }));
+    },
+
+    async delete(request: { sandboxId: string }): Promise<DeleteReceipt> {
+      const response = await call(() =>
+        api.deleteSandbox({ sandboxId: request.sandboxId, xAsciiConfirmDelete: request.sandboxId }),
+      );
+      return {
+        status: response.operation?.status ?? "pending",
+        ...(response.operation?.id ? { operationId: response.operation.id } : {}),
+      };
+    },
+  };
+}
+
+function isRestoring(details: unknown): boolean {
+  return (
+    typeof details === "object" &&
+    details !== null &&
+    (details as Record<string, unknown>).retryable === true &&
+    (details as Record<string, unknown>).message === RESTORING
+  );
+}

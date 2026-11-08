@@ -1,0 +1,164 @@
+import { expect, test } from "bun:test";
+import { fakeBoat } from "./support.ts";
+
+const ID = "bx_23456789";
+
+// The shapes boat documents for GET /events (docs.boat.dev, "List sandbox events").
+const prompt = {
+  id: "prompt_123",
+  type: "prompt",
+  timestamp: 1780347055370,
+  taskId: "prompt_123",
+  conversationId: "conv_1",
+  data: { prompt: "Run tests and summarize failures.", status: "running", is_reverted: false },
+};
+const tools = {
+  id: "response_123-tools",
+  type: "response",
+  timestamp: 1780347063427,
+  taskId: "prompt_123",
+  conversationId: "conv_1",
+  data: {
+    content: "",
+    model: "gpt-5.4",
+    tools: [
+      {
+        use: { id: "call_123", type: "tool_use", name: "Bash", input: { command: "npm test" } },
+        result: { type: "tool_result", tool_use_id: "call_123", is_error: false, content: '{"exitCode":0}' },
+      },
+      { use: { id: "call_456", type: "tool_use", name: "Read", input: { path: "a.ts" } } },
+    ],
+  },
+};
+const partial = {
+  id: "response_123",
+  type: "response",
+  timestamp: 1780347065650,
+  taskId: "prompt_123",
+  conversationId: "conv_1",
+  data: { content: "Tests pa", model: "gpt-5.4", is_streaming: true },
+};
+const steered = {
+  id: "steer_1",
+  type: "steer",
+  timestamp: 1780347066000,
+  conversationId: "conv_1",
+  data: { message: "Skip e2e", mode: "native" },
+};
+const future = { id: "x_1", type: "thinking", timestamp: 1780347067000, data: { depth: 2 } };
+const failed = {
+  id: "prompt_123-end",
+  type: "prompt",
+  timestamp: 1780347068000,
+  taskId: "prompt_123",
+  data: { status: "failed", error: "credit balance too low" },
+};
+
+test("events are normalized onto the common stream and never lose an unknown one", async () => {
+  const boat = fakeBoat({
+    body: {
+      ok: true,
+      type: "events.list",
+      id: ID,
+      events: [prompt, tools, partial, steered, future, failed],
+      pageInfo: { nextCursor: null, hasMore: false, limit: 100 },
+    },
+  });
+  const page = await boat.provider.events({ sandboxId: ID });
+  expect(page.events).toEqual([
+    {
+      kind: "prompt",
+      id: "prompt_123",
+      at: 1780347055370,
+      conversationId: "conv_1",
+      promptId: "prompt_123",
+      text: "Run tests and summarize failures.",
+      status: "running",
+    },
+    {
+      kind: "message",
+      id: "response_123-tools",
+      at: 1780347063427,
+      conversationId: "conv_1",
+      promptId: "prompt_123",
+      text: "",
+      partial: false,
+      model: "gpt-5.4",
+      tools: [
+        {
+          id: "call_123",
+          name: "Bash",
+          input: { command: "npm test" },
+          result: { output: '{"exitCode":0}', isError: false },
+        },
+        { id: "call_456", name: "Read", input: { path: "a.ts" } },
+      ],
+    },
+    {
+      kind: "message",
+      id: "response_123",
+      at: 1780347065650,
+      conversationId: "conv_1",
+      promptId: "prompt_123",
+      text: "Tests pa",
+      partial: true,
+      model: "gpt-5.4",
+      tools: [],
+    },
+    { kind: "steer", id: "steer_1", at: 1780347066000, conversationId: "conv_1", text: "Skip e2e", mode: "native" },
+    { kind: "other", id: "x_1", at: 1780347067000, type: "thinking", data: { depth: 2 } },
+    {
+      kind: "prompt",
+      id: "prompt_123-end",
+      at: 1780347068000,
+      promptId: "prompt_123",
+      text: "",
+      status: "failed",
+      reason: "credit balance too low",
+    },
+  ]);
+});
+
+test("events are read oldest first, after the cursor, which anchors on the last event read", async () => {
+  const boat = fakeBoat(
+    {
+      body: {
+        ok: true,
+        type: "events.list",
+        id: ID,
+        events: [prompt, tools],
+        pageInfo: { nextCursor: "server-side", hasMore: true, limit: 2 },
+      },
+    },
+    {
+      body: {
+        ok: true,
+        type: "events.list",
+        id: ID,
+        events: [],
+        pageInfo: { nextCursor: null, hasMore: false, limit: 2 },
+      },
+    },
+  );
+  const first = await boat.provider.events({ sandboxId: ID, conversationId: "conv_1", limit: 2 });
+  expect(first.hasMore).toBe(true);
+  // boat documents the cursor as base64url(`<timestamp>:<id>`) of the last event read.
+  expect(first.cursor).toBe(Buffer.from("1780347063427:response_123-tools").toString("base64url"));
+
+  const idle = await boat.provider.events({ sandboxId: ID, cursor: first.cursor as string });
+  expect(idle.events).toEqual([]);
+  expect(idle.cursor).toBe(first.cursor);
+  expect(idle.hasMore).toBe(false);
+
+  expect(boat.requests[0]).toMatchObject({ method: "GET", path: `/api/v1/sandboxes/${ID}/events` });
+  expect(boat.requests[0]?.query.get("sort")).toBe("asc");
+  expect(boat.requests[0]?.query.get("conversation")).toBe("conv_1");
+  expect(boat.requests[0]?.query.get("limit")).toBe("2");
+  expect(boat.requests[0]?.query.has("cursor")).toBe(false);
+  expect(boat.requests[1]?.query.get("cursor")).toBe(first.cursor as string);
+});
+
+test("a sandbox never prompted has no events and no cursor", async () => {
+  const boat = fakeBoat({ body: { ok: true, type: "events.list", id: ID, events: [] } });
+  expect(await boat.provider.events({ sandboxId: ID })).toEqual({ events: [], hasMore: false });
+});

@@ -6,8 +6,8 @@ Armada v1 (the fleet orchestrator) is archived at the tag `armada-v1-final`. Its
 
 ## Layout
 
-- `packages/core` (`@armada/core`): the shared contract (types, the version). No I/O.
-- `packages/provider-boat` (`@armada/provider-boat`): the boat.dev provider adapter.
+- `packages/core` (`@armada/core`): the shared contract (types, the version). No I/O. `src/provider.ts` is the `Provider` interface (goldens, sandboxes, prompts, events by cursor), the common `AgentEvent` stream, per-harness capabilities and `ProviderError`.
+- `packages/provider-boat` (`@armada/provider-boat`): the boat.dev provider adapter over `@boatdev/sdk` (`createBoatProvider`; `src/errors.ts` maps boat errors, `src/events.ts` normalizes events). Unit tests run the real SDK against a fake `fetch`; `test/integration.test.ts` is opt-in (`BOAT_API_KEY`).
 - `packages/cli` (`@armada/cli`): the `armada` command. `src/run.ts` takes its I/O as arguments; `src/main.ts` wires the process and is the binary's entry.
 - `packages/mcp-server` (`@armada/mcp-server`): the remote MCP server.
 - `scripts/build.ts`: compiles the binary with `bun build --compile` (linux and macOS, x64 and arm64).
