@@ -401,6 +401,49 @@ describe("control API", () => {
     });
   });
 
+  test("golden/create accepts a normalized config and rejects malformed config safely", async () => {
+    await withServer(async ({ options }) => {
+      const org = (await options.store.createOrg("Create", STAN)).id;
+      await options.store.setOrgBoatKey(org, await encryptSecret("boat-test", KEY));
+      options.authStore.addMembership(STAN, { orgId: org, name: "Create", role: "admin" });
+      const service = {
+        create: async (_provider: unknown, _actor: unknown, input: unknown) => {
+          expect(input).toMatchObject({
+            repos: [],
+            config: {
+              repos: [{ owner: "acme", repo: "web", branch: "feature/login", dir: "frontend" }],
+              init: ["pnpm install"],
+            },
+          });
+          return { snapshot: "golden-bx" };
+        },
+      } as never;
+      const session = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+      const request = (body: object) =>
+        handleControlRequest(
+          new Request("https://armada.test/api/v1/golden/create", {
+            method: "POST",
+            headers: { authorization: `Bearer ${session}` },
+            body: JSON.stringify(body),
+          }),
+          { ...options, goldenCreate: service, providerFor: () => ({}) as never },
+        );
+      const ok = await request({
+        name: "web",
+        private: true,
+        config: {
+          repos: [{ url: "https://github.com/acme/web.git", branch: "feature/login", dir: "frontend" }],
+          init: ["pnpm install"],
+        },
+      });
+      expect(ok?.status).toBe(200);
+      expect(await ok?.json()).toEqual({ name: "web", visibility: "private", snapshot: "golden-bx" });
+      const bad = await request({ name: "web", config: { repos: [{ url: "https://evil.example/acme/web.git" }] } });
+      expect(bad?.status).toBe(400);
+      expect(await bad?.text()).not.toContain("evil.example");
+    });
+  });
+
   test("sandbox/launch launches through scoped server credentials and never returns them", async () => {
     await withServer(async ({ db, options }) => {
       const org = (await options.store.createOrg("Launch", STAN)).id;
