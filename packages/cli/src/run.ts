@@ -348,6 +348,17 @@ async function list(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Pro
   return 0;
 }
 
+/** The control API serializes Date fields as ISO strings; convert only at the CLI boundary. */
+type LaunchWireResult = Omit<LaunchResult, "expiresAt"> & { expiresAt?: string | null };
+
+function decodeLaunchResult(result: LaunchWireResult): LaunchResult {
+  const { expiresAt, ...launch } = result;
+  return {
+    ...launch,
+    ...(expiresAt === null || expiresAt === undefined ? {} : { expiresAt: new Date(expiresAt) }),
+  };
+}
+
 async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const args = parseArgs(argv);
   const [name, prompt, ...extra] = args.positionals;
@@ -364,19 +375,21 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     session: auth.session,
     ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
   });
-  const result = await client.request<LaunchResult>("/api/v1/sandbox/launch", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      golden: name,
-      harness,
-      ...(prompt === undefined ? {} : { prompt }),
-      ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
-      ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+  const result = decodeLaunchResult(
+    await client.request<LaunchWireResult>("/api/v1/sandbox/launch", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        golden: name,
+        harness,
+        ...(prompt === undefined ? {} : { prompt }),
+        ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
+        ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+      }),
+      // Golden setup may take minutes. The request itself still has one bounded timeout.
+      signal: AbortSignal.timeout(10 * 60_000),
     }),
-    // Golden setup may take minutes. The request itself still has one bounded timeout.
-    signal: AbortSignal.timeout(10 * 60_000),
-  });
+  );
   io.out(flag(args, "--json") ? `${JSON.stringify(jsonLaunch(result), null, 2)}\n` : launchText(result));
   return 0;
 }
