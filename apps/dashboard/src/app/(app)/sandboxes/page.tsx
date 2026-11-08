@@ -122,7 +122,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
                       href={`/sandboxes/${sandbox.id}`}
                       className="inline-flex items-center gap-1.5 font-mono text-sm underline-offset-4 hover:underline"
                     >
-                      {sandbox.boat_id}
+                      {sandbox.provider_sandbox_id}
                       <LinkPendingIcon />
                     </Link>
                   </TableCell>

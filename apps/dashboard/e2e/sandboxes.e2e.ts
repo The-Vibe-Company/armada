@@ -115,6 +115,7 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
       name: "launch",
       args: {
         golden: "shared-golden",
+        provider: "boat",
         org: expect.any(String),
         harness: "codex",
         model: "gpt-6-luna",

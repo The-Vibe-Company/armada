@@ -1,9 +1,10 @@
 import {
   GoldenError,
-  type GoldenRecord,
+  type GoldenRow,
   type GoldenStore,
+  type ModalBinding,
+  mapGoldenRow,
   mapSandboxRow,
-  parseGoldenConfig,
   type SandboxRecord,
   type SandboxRow,
   type SandboxStatus,
@@ -18,6 +19,8 @@ import type { Caller } from "./caller.ts";
 export interface SandboxView extends SandboxRecord {
   golden: string;
   visibility: Visibility;
+  /** The golden's pinned Modal App, on a Modal sandbox. Routing reaches the sandbox through it. */
+  modal: ModalBinding | null;
 }
 
 export interface ServerSandboxStore extends SandboxStore {
@@ -42,27 +45,23 @@ export type DataSource = (caller: Caller) => ScopedData;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const GOLDEN_COLUMNS = `g.id, g.org_id, g.name, g.visibility::text as visibility, g.owner_id,
-  g.boat_snapshot_id, g.boat_sandbox_id, g.config, g.created_at`;
-const SANDBOX_COLUMNS = `s.id, s.boat_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
+  g.provider::text as provider, g.provider_sandbox_id, g.provider_snapshot_id, g.modal_workspace,
+  g.modal_environment, g.modal_app_id, g.config, g.created_at`;
+const SANDBOX_COLUMNS = `s.id, s.provider::text as provider, s.provider_sandbox_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
   s.status::text as status, s.conversation_ids, s.created_at, s.stopped_at, s.deleted_at, s.status_reason,
-  s.model, s.reasoning_effort, g.name as golden, g.visibility::text as visibility`;
+  s.model, s.reasoning_effort, g.name as golden, g.visibility::text as visibility, g.modal_workspace,
+  g.modal_environment, g.modal_app_id`;
 /** `$1` is the caller's orgs and `$2` the caller. */
 const GOLDEN_VISIBLE = `g.org_id = any($1::uuid[]) and (g.visibility = 'org' or g.owner_id = $2::uuid)`;
 const SANDBOX_VISIBLE = `s.org_id = g.org_id and ${GOLDEN_VISIBLE}`;
 
-interface GoldenRow {
-  id: string;
-  org_id: string;
-  name: string;
+type SandboxViewRow = SandboxRow & {
+  golden: string;
   visibility: string;
-  owner_id: string;
-  boat_snapshot_id: string | null;
-  boat_sandbox_id: string | null;
-  config: unknown;
-  created_at: string | Date;
-}
-
-type SandboxViewRow = SandboxRow & { golden: string; visibility: string };
+  modal_workspace?: string | null;
+  modal_environment?: string | null;
+  modal_app_id?: string | null;
+};
 
 export class DataError extends Error {
   override readonly name = "DataError";
@@ -87,7 +86,7 @@ export function createSqlData(sql: Sql): DataSource {
            order by g.name, g.visibility`,
           [...scope, orgId],
         );
-        return result.rows.map(mapGolden);
+        return result.rows.map(mapGoldenRow);
       },
       async findByName(orgId, name) {
         ownOrg(orgId);
@@ -96,7 +95,7 @@ export function createSqlData(sql: Sql): DataSource {
              and g.name = $4 order by g.visibility`,
           [...scope, orgId, name],
         );
-        return result.rows.map(mapGolden);
+        return result.rows.map(mapGoldenRow);
       },
       insert: readOnly,
       setConfig: readOnly,
@@ -111,21 +110,23 @@ export function createSqlData(sql: Sql): DataSource {
         }
         const result = await sql.query<SandboxViewRow>(
           `with visible as (select g.id from public.goldens g where ${GOLDEN_VISIBLE} and g.id = $3 and g.org_id = $8::uuid)
-           insert into public.sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status, model, reasoning_effort)
+           insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
+             reasoning_effort, provider)
            select $4::uuid, $5::text, visible.id, $8::uuid, $2::uuid, $6::public.harness, $7::public.sandbox_status,
-             $9::text, $10::text from visible
-           returning id, boat_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
+             $9::text, $10::text, $11::public.sandbox_provider from visible
+           returning id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
              conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort`,
           [
             ...scope,
             input.goldenId,
             input.id,
-            input.boatId,
+            input.providerSandboxId,
             input.harness,
             input.status,
             input.orgId,
             input.model,
             input.reasoningEffort,
+            input.provider,
           ],
         );
         const row = result.rows[0];
@@ -190,20 +191,14 @@ export function createSqlData(sql: Sql): DataSource {
 }
 
 function mapView(row: SandboxViewRow): SandboxView {
-  return { ...mapSandboxRow(row), golden: row.golden, visibility: visibility(row.visibility) };
-}
-
-function mapGolden(row: GoldenRow): GoldenRecord {
   return {
-    id: row.id,
-    orgId: row.org_id,
-    name: row.name,
+    ...mapSandboxRow(row),
+    golden: row.golden,
     visibility: visibility(row.visibility),
-    ownerId: row.owner_id,
-    boatSnapshotId: row.boat_snapshot_id,
-    boatSandboxId: row.boat_sandbox_id,
-    config: parseGoldenConfig(row.config),
-    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    modal:
+      row.provider === "modal" && row.modal_workspace && row.modal_environment && row.modal_app_id
+        ? { workspace: row.modal_workspace, environment: row.modal_environment, appId: row.modal_app_id }
+        : null,
   };
 }
 

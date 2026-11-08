@@ -88,7 +88,8 @@ describe("launch", () => {
     ]);
     expect(result).toMatchObject({ conversationId: "conv_1", promptId: "prompt_1", ttlSeconds: 7200 });
     expect(world.rows.get("sbx-1")).toMatchObject({
-      boatId: "bx_1",
+      provider: "boat",
+      providerSandboxId: "bx_1",
       ownerId: OWNER,
       harness: "claude",
       status: "running",
@@ -297,7 +298,7 @@ describe("launch", () => {
   });
 
   test("a golden without a snapshot, a harness without credentials and bad input start nothing", async () => {
-    const noSnapshot = setup({ golden: { ...golden("org"), boatSnapshotId: null } });
+    const noSnapshot = setup({ golden: { ...golden("org"), providerSnapshotId: null } });
     await expect(
       launchSandbox(noSnapshot.provider, noSnapshot.stores, owner, { golden: "web", harness: "claude" }),
     ).rejects.toThrow(/no snapshot yet/);
@@ -425,6 +426,7 @@ describe("cleanup", () => {
     );
     const deleted: string[] = [];
     const provider = {
+      id: "boat",
       async delete({ sandboxId }: { sandboxId: string }) {
         deleted.push(sandboxId);
         if (sandboxId === "bx_gone")
@@ -454,8 +456,10 @@ function golden(visibility: "org" | "private"): GoldenRecord {
     name: "web",
     visibility,
     ownerId: OWNER,
-    boatSnapshotId: SNAPSHOT,
-    boatSandboxId: "bx_builder",
+    provider: "boat",
+    providerSnapshotId: SNAPSHOT,
+    providerSandboxId: "bx_builder",
+    modal: null,
     config: parseGoldenConfig({
       repos: [
         { url: "https://github.com/example/web.git", branch: "main" },
@@ -494,7 +498,7 @@ function setup(options: Setup) {
     expiresAt: new Date("2026-11-08T16:00:00.000Z"),
   });
   const provider = {
-    id: "fake",
+    id: "boat",
     harnesses: ["claude", "codex"],
     capabilities: { claude: { reasoningEffort: true }, codex: { reasoningEffort: true } },
     async fork(request: ForkRequest) {
@@ -586,10 +590,11 @@ function definedOnly(patch: SandboxPatch): Record<string, unknown> {
   return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
 }
 
-function sandboxRecord(id: string, boatId: string, createdAt: string): SandboxRecord {
+function sandboxRecord(id: string, providerSandboxId: string, createdAt: string): SandboxRecord {
   return {
     id,
-    boatId,
+    provider: "boat",
+    providerSandboxId,
     goldenId: "golden-1",
     orgId: ORG,
     ownerId: OWNER,

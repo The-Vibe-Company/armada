@@ -1,17 +1,18 @@
 import { AuthError, type AuthFetch } from "@armada/auth";
 import {
+  GOLDEN_SELECT,
   type GoldenActor,
   type GoldenConfig,
   GoldenError,
   type GoldenRecord,
+  type GoldenRow,
   type GoldenStore,
+  mapGoldenRow,
   mapSandboxRow,
-  parseGoldenConfig,
   type SandboxPatch,
   type SandboxRecord,
   type SandboxRow,
   type SandboxStore,
-  type Visibility,
 } from "@armada/core";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -22,18 +23,6 @@ interface MemberRow {
   orgs?: { name?: string } | null;
 }
 
-interface GoldenRow {
-  id: string;
-  org_id: string;
-  name: string;
-  visibility: string;
-  owner_id: string;
-  boat_snapshot_id: string | null;
-  boat_sandbox_id: string | null;
-  config: unknown;
-  created_at: string;
-}
-
 interface RestInit {
   method: string;
   query?: Record<string, string>;
@@ -41,10 +30,10 @@ interface RestInit {
   body?: unknown;
 }
 
-const SELECT = "id,org_id,name,visibility,owner_id,boat_snapshot_id,boat_sandbox_id,config,created_at";
+const SELECT = GOLDEN_SELECT;
 
 const SANDBOX_SELECT =
-  "id,boat_id,golden_id,org_id,owner_id,harness,status,conversation_ids,created_at,stopped_at,deleted_at,model,reasoning_effort";
+  "id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,conversation_ids,created_at,stopped_at,deleted_at,model,reasoning_effort";
 
 export interface SupabaseSession {
   store: GoldenStore;
@@ -137,11 +126,16 @@ function supabaseStore(
       const rows = await call<GoldenRow[]>("goldens", {
         method: "POST",
         prefer: "return=representation",
+        query: { select: SELECT },
         body: {
           org_id: input.orgId,
           name: input.name,
           visibility: input.visibility,
           owner_id: input.ownerId,
+          provider: input.provider,
+          modal_workspace: input.modal?.workspace ?? null,
+          modal_environment: input.modal?.environment ?? null,
+          modal_app_id: input.modal?.appId ?? null,
           config: input.config,
         },
       });
@@ -151,15 +145,15 @@ function supabaseStore(
     },
 
     setConfig(id: string, config: GoldenConfig): Promise<void> {
-      return patch(call, id, { config }, { boat_sandbox_id: "is.null" });
+      return patch(call, id, { config }, { provider_sandbox_id: "is.null" });
     },
 
-    setSandbox(id: string, boatSandboxId: string): Promise<void> {
-      return patch(call, id, { boat_sandbox_id: boatSandboxId }, { boat_sandbox_id: "is.null" });
+    setSandbox(id: string, providerSandboxId: string): Promise<void> {
+      return patch(call, id, { provider_sandbox_id: providerSandboxId }, { provider_sandbox_id: "is.null" });
     },
 
-    setSnapshot(id: string, boatSnapshotId: string): Promise<void> {
-      return patch(call, id, { boat_snapshot_id: boatSnapshotId }, {});
+    setSnapshot(id: string, providerSnapshotId: string): Promise<void> {
+      return patch(call, id, { provider_snapshot_id: providerSnapshotId }, {});
     },
   };
 }
@@ -182,7 +176,8 @@ function supabaseSandboxes(
         query: { select: SANDBOX_SELECT },
         body: {
           id: input.id,
-          boat_id: input.boatId,
+          provider: input.provider,
+          provider_sandbox_id: input.providerSandboxId,
           golden_id: input.goldenId,
           org_id: input.orgId,
           owner_id: input.ownerId,
@@ -317,21 +312,11 @@ function httpError(status: number, body: unknown, table: string): GoldenError | 
 }
 
 function mapRow(row: GoldenRow): GoldenRecord {
-  if (row.visibility !== "org" && row.visibility !== "private") {
-    throw new GoldenError("forbidden", "A golden row has an unknown visibility.");
+  try {
+    return mapGoldenRow(row);
+  } catch {
+    throw new GoldenError("forbidden", "A golden row could not be read.");
   }
-  const visibility: Visibility = row.visibility === "private" ? "private" : "org";
-  return {
-    id: row.id,
-    orgId: row.org_id,
-    name: row.name,
-    visibility,
-    ownerId: row.owner_id,
-    boatSnapshotId: row.boat_snapshot_id,
-    boatSandboxId: row.boat_sandbox_id,
-    config: parseGoldenConfig(row.config),
-    createdAt: row.created_at,
-  };
 }
 
 function eq(value: string): string {

@@ -1,10 +1,10 @@
 import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
-import { createSqlVaultStore, githubAppFromEnv, resolveBoatKey } from "@armada/core";
+import { createSqlVaultStore, githubAppFromEnv } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
 import { configFromEnv } from "./config.ts";
 import { type ControlOptions, handleControlRequest } from "./control.ts";
 import { createSqlData } from "./data.ts";
-import { createHandler, type Route } from "./http.ts";
+import { createHandler, providerRegistry, type Route } from "./http.ts";
 import { bunSql } from "./sql.ts";
 
 export { bunSql };
@@ -29,6 +29,8 @@ export async function startServer(
   const authStore = createSqlAuthStore(sql);
   const githubApp = githubAppFromEnv(env);
   const data = createSqlData(sql);
+  // No Modal adapter is wired yet (#513): a Modal golden or sandbox is refused as not configured.
+  const providerFor = (apiKey: string) => createBoatProvider({ apiKey });
   const control: ControlOptions = {
     supabaseUrl: config.supabaseUrl,
     anonKey: config.anonKey,
@@ -40,12 +42,12 @@ export async function startServer(
       const scoped = data({ userId, orgs: memberships.map(({ orgId, role }) => ({ orgId, role })), via: "supabase" });
       const sandbox = await scoped.sandboxes.get(sandboxId);
       if (!sandbox) throw new Error("No such sandbox.");
-      const boat = await resolveBoatKey(store, config.encryptionKey, {
-        userId,
-        orgId: sandbox.orgId,
-        visibility: sandbox.visibility,
-      });
-      return { provider: createBoatProvider({ apiKey: boat.key }), boatId: sandbox.boatId };
+      const provider = await providerRegistry({
+        vault: store,
+        encryptionKey: config.encryptionKey,
+        providerFor,
+      }).resolve(sandbox, { userId });
+      return { provider, providerSandboxId: sandbox.providerSandboxId };
     },
   };
   const handler = createHandler({
@@ -62,7 +64,7 @@ export async function startServer(
     vault: store,
     encryptionKey: config.encryptionKey,
     github: { store, app: githubApp },
-    providerFor: (apiKey) => createBoatProvider({ apiKey }),
+    providerFor,
     routes: [(request) => handleControlRequest(request, control), ...(options.routes ?? [])],
     ...(options.logError ? { log: options.logError } : {}),
   });

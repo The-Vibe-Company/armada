@@ -13,6 +13,7 @@ import {
   parseGoldenName,
 } from "./golden-config.ts";
 import { type Provider, ProviderError, type SandboxInfo } from "./provider.ts";
+import { isSandboxProvider, type ModalBinding, SANDBOX_PROVIDERS, type SandboxProviderId } from "./sandbox-provider.ts";
 
 export interface GoldenActor {
   userId: string;
@@ -27,27 +28,39 @@ export interface GoldenRecord {
   name: string;
   visibility: Visibility;
   ownerId: string;
-  boatSnapshotId: string | null;
-  boatSandboxId: string | null;
+  /** The sandbox provider it is built on. Fixed for its whole life. */
+  provider: SandboxProviderId;
+  /** The provider's id of the sandbox it is built in. Null until create starts it. */
+  providerSandboxId: string | null;
+  /** The provider's snapshot reference (a boat saved-snapshot name). Null until snapshot. */
+  providerSnapshotId: string | null;
+  /** Where a Modal golden's images live. Null on any other provider. */
+  modal: ModalBinding | null;
   config: GoldenConfig;
   createdAt: string;
 }
 
 export interface GoldenStore {
   list(orgId: string): Promise<GoldenRecord[]>;
-  /** Every visible golden of this name. An org golden and the caller's private one can share it. */
+  /**
+   * Every visible golden of this name, on every provider. An org golden and the caller's private one can
+   * share it, and so can goldens of different providers.
+   */
   findByName(orgId: string, name: string): Promise<GoldenRecord[]>;
   insert(input: {
     orgId: string;
     name: string;
     visibility: Visibility;
     ownerId: string;
+    provider: SandboxProviderId;
+    /** Required exactly when `provider` is modal. */
+    modal: ModalBinding | null;
     config: GoldenConfig;
   }): Promise<GoldenRecord>;
   /** Replaces the config of a golden whose sandbox has not been recorded yet. */
   setConfig(id: string, config: GoldenConfig): Promise<void>;
-  setSandbox(id: string, boatSandboxId: string): Promise<void>;
-  setSnapshot(id: string, boatSnapshotId: string): Promise<void>;
+  setSandbox(id: string, providerSandboxId: string): Promise<void>;
+  setSnapshot(id: string, providerSnapshotId: string): Promise<void>;
 }
 
 export interface GoldenLimits {
@@ -78,19 +91,37 @@ export async function createGolden(
   provider: Provider,
   store: GoldenStore,
   actor: GoldenActor,
-  input: { name: string; visibility: Visibility; config: GoldenConfig },
+  input: { name: string; visibility: Visibility; config: GoldenConfig; modal?: ModalBinding },
   limits: GoldenLimits = {},
 ): Promise<CreatedGolden> {
   const name = parseGoldenName(input.name);
+  const providerId = providerIdOf(provider);
+  const modal = input.modal ?? null;
+  if ((providerId === "modal") !== (modal !== null)) {
+    throw new GoldenError(
+      "invalid_config",
+      providerId === "modal"
+        ? "A Modal golden needs its Modal workspace, environment and App pinned."
+        : "Only a Modal golden is pinned to a Modal App.",
+    );
+  }
   if (input.visibility === "org" && actor.role !== "admin") {
     throw new GoldenError(
       "forbidden",
       "Only an admin can create an org golden. Pass --private for one only you can see.",
     );
   }
-  const existing = (await store.findByName(actor.orgId, name)).filter((row) => row.visibility === input.visibility);
-  const golden = await goldenRow(store, actor, name, input.visibility, input.config, existing);
-  if (golden.boatSandboxId) {
+  const existing = (await store.findByName(actor.orgId, name)).filter(
+    (row) => row.visibility === input.visibility && row.provider === providerId,
+  );
+  const golden = await goldenRow(
+    store,
+    actor,
+    { name, visibility: input.visibility, provider: providerId, modal },
+    input.config,
+    existing,
+  );
+  if (golden.providerSandboxId) {
     throw new GoldenError(
       "conflict",
       `Golden '${name}' already exists. Run 'armada golden connect ${name}' or 'armada golden snapshot ${name}'.`,
@@ -119,7 +150,7 @@ export async function createGolden(
   const ready = READY.has(sandbox.state) ? sandbox : await waitReady(provider, sandbox.id, limits);
   await setup(provider, ready.id, input.config);
   return {
-    golden: { ...golden, boatSandboxId: sandbox.id },
+    golden: { ...golden, providerSandboxId: sandbox.id },
     sandboxId: sandbox.id,
     snapshotName,
   };
@@ -133,12 +164,12 @@ export async function connectGolden(
   name: string,
   limits: GoldenLimits = {},
 ): Promise<{ golden: GoldenRecord; sandbox: SandboxInfo }> {
-  const golden = await oneVisible(store, actor.orgId, parseGoldenName(name));
+  const golden = await oneVisible(store, actor.orgId, parseGoldenName(name), providerIdOf(provider));
   assertCanChange(actor, golden);
-  if (!golden.boatSandboxId) {
+  if (!golden.providerSandboxId) {
     throw new GoldenError("conflict", `Golden '${golden.name}' has no sandbox yet.`);
   }
-  const sandbox = await waitReady(provider, golden.boatSandboxId, limits);
+  const sandbox = await waitReady(provider, golden.providerSandboxId, limits);
   return { golden, sandbox };
 }
 
@@ -154,9 +185,9 @@ export async function snapshotGolden(
   name: string,
   limits: GoldenLimits = {},
 ): Promise<SnapshottedGolden> {
-  const golden = await oneVisible(store, actor.orgId, parseGoldenName(name));
+  const golden = await oneVisible(store, actor.orgId, parseGoldenName(name), providerIdOf(provider));
   assertCanChange(actor, golden);
-  if (!golden.boatSandboxId) {
+  if (!golden.providerSandboxId) {
     throw new GoldenError("conflict", `Golden '${golden.name}' has no sandbox yet. Create it first.`);
   }
   const snapshotName = boatSnapshotName({
@@ -167,7 +198,7 @@ export async function snapshotGolden(
   });
   let status: "saving" | "ready" | "failed" = "saving";
   try {
-    const started = await provider.snapshot({ sandboxId: golden.boatSandboxId, name: snapshotName });
+    const started = await provider.snapshot({ sandboxId: golden.providerSandboxId, name: snapshotName });
     status = started.status;
   } catch (error) {
     if (!saveInProgress(error)) throw error;
@@ -181,16 +212,22 @@ export async function snapshotGolden(
   }
   if (status === "failed") throw new GoldenError("snapshot_failed", `Snapshot of '${golden.name}' failed.`);
   await store.setSnapshot(golden.id, snapshotName);
-  return { golden: { ...golden, boatSnapshotId: snapshotName }, snapshotName };
+  return { golden: { ...golden, providerSnapshotId: snapshotName }, snapshotName };
 }
 
 /**
  * The golden a launch may fork. A private golden of someone else is absent, same as a missing name.
- * Launch (#462) and the MCP server (#464) call this under the caller's own database role.
+ * Launch (#462) and the MCP server (#464) call this under the caller's own database role. When the name
+ * exists on several providers the caller names one; it is never guessed.
  */
-export async function goldenForLaunch(store: GoldenStore, actor: GoldenActor, name: string): Promise<GoldenRecord> {
-  const golden = await oneVisible(store, actor.orgId, parseGoldenName(name));
-  if (!golden.boatSnapshotId) {
+export async function goldenForLaunch(
+  store: GoldenStore,
+  actor: GoldenActor,
+  name: string,
+  provider?: SandboxProviderId,
+): Promise<GoldenRecord> {
+  const golden = await oneVisible(store, actor.orgId, parseGoldenName(name), provider);
+  if (!golden.providerSnapshotId) {
     throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
   }
   return golden;
@@ -199,27 +236,45 @@ export async function goldenForLaunch(store: GoldenStore, actor: GoldenActor, na
 async function goldenRow(
   store: GoldenStore,
   actor: GoldenActor,
-  name: string,
-  visibility: Visibility,
+  identity: { name: string; visibility: Visibility; provider: SandboxProviderId; modal: ModalBinding | null },
   config: GoldenConfig,
   existing: GoldenRecord[],
 ): Promise<GoldenRecord> {
+  const { name, visibility } = identity;
   if (existing.length > 1) {
     throw new GoldenError("conflict", `More than one ${visibility} golden is named '${name}'.`);
   }
   const row = existing[0];
-  if (!row) return store.insert({ orgId: actor.orgId, name, visibility, ownerId: actor.userId, config });
-  if (!row.boatSandboxId) {
+  if (!row) return store.insert({ orgId: actor.orgId, ownerId: actor.userId, ...identity, config });
+  if (!sameBinding(row.modal, identity.modal)) {
+    throw new GoldenError("conflict", `Golden '${name}' is pinned to another Modal App. Use another name.`);
+  }
+  if (!row.providerSandboxId) {
     await store.setConfig(row.id, config);
     return { ...row, config };
   }
   return row;
 }
 
-async function oneVisible(store: GoldenStore, orgId: string, name: string): Promise<GoldenRecord> {
-  const rows = await store.findByName(orgId, name);
+async function oneVisible(
+  store: GoldenStore,
+  orgId: string,
+  name: string,
+  provider: SandboxProviderId | undefined,
+): Promise<GoldenRecord> {
+  const all = await store.findByName(orgId, name);
+  const rows = provider === undefined ? all : all.filter((row) => row.provider === provider);
   const row = rows[0];
-  if (!row) throw new GoldenError("not_found", `No golden named '${name}'.`);
+  if (!row) {
+    throw new GoldenError("not_found", `No ${provider === undefined ? "" : `${provider} `}golden named '${name}'.`);
+  }
+  const providers = [...new Set(rows.map((item) => item.provider))];
+  if (providers.length > 1) {
+    throw new GoldenError(
+      "conflict",
+      `Golden '${name}' exists on ${providers.join(" and ")}. Name the provider (${SANDBOX_PROVIDERS.join(" or ")}).`,
+    );
+  }
   if (rows.length > 1) {
     throw new GoldenError(
       "conflict",
@@ -227,6 +282,18 @@ async function oneVisible(store: GoldenStore, orgId: string, name: string): Prom
     );
   }
   return row;
+}
+
+/** The provider an adapter is, as a record names it. */
+export function providerIdOf(provider: Provider): SandboxProviderId {
+  if (!isSandboxProvider(provider.id)) {
+    throw new GoldenError("invalid_config", `'${provider.id}' is not a sandbox provider Armada records.`);
+  }
+  return provider.id;
+}
+
+function sameBinding(a: ModalBinding | null, b: ModalBinding | null): boolean {
+  return a?.workspace === b?.workspace && a?.environment === b?.environment && a?.appId === b?.appId;
 }
 
 function assertCanChange(actor: GoldenActor, golden: GoldenRecord): void {

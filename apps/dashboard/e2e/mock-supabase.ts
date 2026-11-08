@@ -121,7 +121,9 @@ function golden(gid: string, name: string, visibility: string, owner: string, sn
     name,
     visibility,
     owner_id: owner,
+    provider: "boat",
     boat_snapshot_id: snapshot,
+    provider_snapshot_id: snapshot,
     config: {},
     created_at: "2026-11-08T10:00:00.000Z",
   };
@@ -138,7 +140,9 @@ function sandbox(
 ): Row {
   return {
     id: sid,
+    provider: "boat",
     boat_id: boat,
+    provider_sandbox_id: boat,
     golden_id: goldenId,
     org_id: ACME,
     owner_id: owner,
@@ -556,7 +560,9 @@ function mcp(message: RpcMessage, userId: string | null): Response {
 }
 
 function launch(args: Row, userId: string, reply: (result: unknown) => Response): Response {
-  const source = visibleRows("goldens", userId).find((row) => row.name === args.golden && row.org_id === args.org);
+  const source = visibleRows("goldens", userId).find(
+    (row) => row.name === args.golden && row.provider === args.provider && row.org_id === args.org,
+  );
   if (!source) return reply({ content: [{ type: "text", text: "No such golden." }], isError: true });
   const row = sandbox(
     crypto.randomUUID(),

@@ -14,6 +14,7 @@ import {
   listOrgs,
   type ModelChoice,
   type Provider,
+  ProviderRoutingError,
   parseCredentialKind,
   parseRole,
   promptOutcome,
@@ -49,7 +50,7 @@ export interface ControlOptions {
   /** The GitHub App, for `launch/resolve`. Null or absent: GitHub is reported as not set up. */
   github?: { app: GitHubApp | null; fetch?: typeof fetch; now?: () => Date };
   /** Resolves a visible Armada sandbox to its provider. The Boat key stays on the server. */
-  logs?: (userId: string, sandboxId: string) => Promise<{ provider: Provider; boatId: string }>;
+  logs?: (userId: string, sandboxId: string) => Promise<{ provider: Provider; providerSandboxId: string }>;
   fetch?: AuthFetch;
 }
 
@@ -82,6 +83,9 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   } catch (error) {
     if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
     if (error instanceof VaultError) return fail(STATUS[error.code], error.code, error.message);
+    if (error instanceof ProviderRoutingError) {
+      return fail(error.code === "provider_not_configured" ? 501 : 409, error.code, error.message);
+    }
     if (error instanceof EncryptionKeyError) {
       return fail(503, "unavailable", `Credential encryption is not configured on the server (${ENCRYPTION_KEY_ENV}).`);
     }
@@ -168,7 +172,7 @@ async function readLogs(
   let hasMore = false;
   const events: Awaited<ReturnType<Provider["events"]>>["events"] = [];
   for (let pageNumber = 0; pageNumber < (all ? maxPages : 1); pageNumber += 1) {
-    const page = await target.provider.events({ sandboxId: target.boatId, ...(cursor ? { cursor } : {}) });
+    const page = await target.provider.events({ sandboxId: target.providerSandboxId, ...(cursor ? { cursor } : {}) });
     events.push(...page.events);
     hasMore = page.hasMore;
     const next = page.cursor ?? cursor;
@@ -178,10 +182,12 @@ async function readLogs(
     }
     cursor = next;
   }
-  const info = await target.provider.get(target.boatId);
+  const info = await target.provider.get(target.providerSandboxId);
   const latest = latestPrompt(events);
   // A live sandbox with no turn is idle, so following has nothing to wait for.
-  const outcome = latest ? await promptOutcome(target.provider, { sandboxId: target.boatId, promptId: latest }) : null;
+  const outcome = latest
+    ? await promptOutcome(target.provider, { sandboxId: target.providerSandboxId, promptId: latest })
+    : null;
   return {
     events: dedupe(events),
     cursor: cursor ?? null,
@@ -223,6 +229,15 @@ async function resolveLaunch(
   reasoningEffort: string;
 }> {
   const { store, encryptionKey } = options;
+  // This route hands the signed-in user's machine the Boat key it launches with. A Modal token pair is a
+  // management credential that never leaves the server, so a Modal launch is refused here, never resolved.
+  const provider = optional(body, "provider") ?? "boat";
+  if (provider !== "boat") {
+    throw new VaultError(
+      "invalid",
+      `A ${provider} golden is launched by the Armada server, not from this machine. Use the MCP launch tool.`,
+    );
+  }
   const harness = required(body, "harness");
   if (harness !== "claude" && harness !== "codex") throw new VaultError("invalid", "The agent is claude or codex.");
   // Checked before any credential is read, so a launch with a model it cannot run allocates nothing.

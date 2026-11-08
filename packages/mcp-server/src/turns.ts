@@ -60,14 +60,14 @@ export async function readStatus(
     return report({ ...sandbox, statusReason: null }, "deleted", null, null, null);
   }
 
-  const info = await provider.get(sandbox.boatId);
+  const info = await provider.get(sandbox.providerSandboxId);
   const target = options.promptId
     ? { promptId: options.promptId, conversationId: null }
-    : await latestPrompt(provider, sandbox.boatId);
+    : await latestPrompt(provider, sandbox.providerSandboxId);
   let prompt: PromptReport | null = null;
   if (target) {
     const outcome = await promptOutcome(provider, {
-      sandboxId: sandbox.boatId,
+      sandboxId: sandbox.providerSandboxId,
       promptId: target.promptId,
       ...(target.conversationId ? { conversationId: target.conversationId } : {}),
     });

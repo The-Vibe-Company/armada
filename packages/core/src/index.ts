@@ -12,13 +12,16 @@ export {
   type LaunchCredentialKind,
   MAX_AUTH_FILE_LENGTH,
   MAX_SECRET_LENGTH,
+  type ModalTokenPair,
   parseCredentialKind,
   parseCredentialValue,
+  parseModalTokenPair,
   type ResolvedCredentials,
   redact,
   resolveBoatKey,
   resolveCredential,
   resolveCredentials,
+  resolveModalTokens,
   toHarnessCredentials,
 } from "./credentials.ts";
 export {
@@ -87,6 +90,7 @@ export {
   type GoldenRecord,
   type GoldenStore,
   goldenForLaunch,
+  providerIdOf,
   type SnapshottedGolden,
   snapshotGolden,
 } from "./golden.ts";
@@ -108,7 +112,7 @@ export {
   secretKeyPath,
   splitRepoArg,
 } from "./golden-config.ts";
-export { createSqlGoldenStore, type Sql } from "./golden-store.ts";
+export { createSqlGoldenStore, GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
 export {
   DEFAULT_LAUNCH_TTL_SECONDS,
   type GitHubLaunchInfo,
@@ -173,6 +177,21 @@ export {
   type SandboxStore,
   statusReasonOf,
 } from "./sandbox.ts";
+export {
+  assertProviderOf,
+  createProviderRegistry,
+  isSandboxProvider,
+  type ModalBinding,
+  PROVIDER_LIMITS,
+  type ProviderFactory,
+  type ProviderLimits,
+  type ProviderRegistry,
+  ProviderRoutingError,
+  type ProviderRoutingErrorCode,
+  type ProviderTarget,
+  SANDBOX_PROVIDERS,
+  type SandboxProviderId,
+} from "./sandbox-provider.ts";
 export {
   addMember,
   type CredentialInfo,

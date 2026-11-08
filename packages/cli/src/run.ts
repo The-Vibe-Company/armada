@@ -3,6 +3,7 @@ import {
   configFromFlags,
   connectGolden,
   createGolden,
+  createProviderRegistry,
   GITHUB_NOT_CONNECTED,
   type GitHubAccess,
   GOLDEN_ROOT,
@@ -15,6 +16,7 @@ import {
   goldenForLaunch,
   HARNESSES,
   type Harness,
+  isSandboxProvider,
   LaunchError,
   type LaunchResult,
   launchSandbox,
@@ -22,12 +24,15 @@ import {
   type ModelChoice,
   type Provider,
   ProviderError,
+  ProviderRoutingError,
   parseGoldenConfig,
   type ResolvedCredentials,
   resolveBoatKey,
   resolveCredentials,
   resolveGitHubAccess,
   resolveModelChoice,
+  SANDBOX_PROVIDERS,
+  type SandboxProviderId,
   type SandboxStore,
   snapshotGolden,
   toHarnessCredentials,
@@ -93,7 +98,7 @@ Usage:
   armada golden snapshot <name>            Freeze the master sandbox
   armada golden list [--json]              Goldens you can see
   armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
-                [--ttl 4h] [--json]        Fork a golden into a sandbox. With a prompt the agent starts at once;
+                [--provider boat|modal] [--ttl 4h] [--json]        Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
                                            and effort apply to every later turn too. Defaults:
                                            ${modelDefaults()}
@@ -145,6 +150,10 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     if (error instanceof VaultError) {
       io.err(`armada: ${error.message}\n`);
       return error.code === "invalid" ? 2 : 1;
+    }
+    if (error instanceof ProviderRoutingError) {
+      io.err(`armada: ${error.message}\n`);
+      return 1;
     }
     if (error instanceof ProviderError) {
       io.err(`armada: ${error.message}\n`);
@@ -202,6 +211,13 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     return subcommand === undefined ? 2 : 0;
   }
   const args = parseArgs(rest);
+  const selectedProvider = providerFlag(args);
+  if (selectedProvider === "modal" && ["create", "connect", "snapshot"].includes(subcommand)) {
+    throw new GoldenError(
+      "invalid_config",
+      "Modal golden commands require the server-side Modal adapter; this CLI cannot run them yet.",
+    );
+  }
   const limits = {
     ...(deps.sleep ? { sleep: deps.sleep } : {}),
     ...(deps.sandboxPolls !== undefined ? { sandboxPolls: deps.sandboxPolls } : {}),
@@ -257,7 +273,7 @@ async function create(
 
 async function connect(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps, limits: Limits): Promise<number> {
   const name = oneName(args.positionals);
-  const { provider, store, actor } = await boatContext(args, io, deps);
+  const { provider, store, actor } = await boatContext(args, io, deps, false, name);
   const { golden: record, sandbox } = await connectGolden(provider, store, actor, name, limits);
   const repos = record.config.repos
     .map((repo) => `  ${repo.dir}  ${GOLDEN_ROOT}/${repo.dir}  ${repo.branch}`)
@@ -281,7 +297,7 @@ async function connect(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps, l
 
 async function snapshot(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps, limits: Limits): Promise<number> {
   const name = oneName(args.positionals);
-  const { provider, store, actor } = await boatContext(args, io, deps);
+  const { provider, store, actor } = await boatContext(args, io, deps, false, name);
   const saved = await snapshotGolden(provider, store, actor, name, limits);
   io.out(`Snapshotted golden ${saved.golden.name}.\nSaved snapshot: ${saved.snapshotName}\n`);
   return 0;
@@ -290,7 +306,8 @@ async function snapshot(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps, 
 async function list(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Promise<number> {
   if (args.positionals.length > 0) throw new GoldenError("invalid_config", "golden list takes no name.");
   const { store, actor } = await session(args, io, deps);
-  const rows = await store.list(actor.orgId);
+  const selected = providerFlag(args);
+  const rows = (await store.list(actor.orgId)).filter((row) => selected === undefined || row.provider === selected);
   if (flag(args, "--json")) {
     io.out(`${JSON.stringify(rows.map(jsonGolden), null, 2)}\n`);
     return 0;
@@ -317,21 +334,31 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   resolveModelChoice(harness, requested);
   const { store, sandboxes, actor } = await session(args, io, deps);
   if (!sandboxes) throw new GoldenError("invalid_config", "No sandbox store is available.");
-  const golden = await goldenForLaunch(store, actor, name);
-  const resolved = await resolveForLaunch(io, deps, actor, harness, golden.visibility, requested);
-  const provider = deps.provider ?? boatProvider({ BOAT_API_KEY: resolved.boatKey }, deps.fetch ?? fetch, deps.sleep);
+  const golden = await goldenForLaunch(store, actor, name, providerFlag(args));
+  // The golden names its backend. The CLI runs Boat sandboxes itself; any other provider is refused here,
+  // before a credential is resolved, never sent to Boat.
+  let resolved: Awaited<ReturnType<typeof resolveForLaunch>> | undefined;
+  const provider = await createProviderRegistry({
+    boat: async () => {
+      resolved = await resolveForLaunch(io, deps, actor, harness, golden.visibility, requested);
+      return deps.provider ?? boatProvider({ BOAT_API_KEY: resolved.boatKey }, deps.fetch ?? fetch, deps.sleep);
+    },
+  }).resolve(golden, actor);
+  if (!resolved) throw new GoldenError("invalid_config", "The launch credentials were not resolved.");
+  const credentials = resolved;
   const result = await launchSandbox(
     provider,
     {
       goldens: store,
       sandboxes,
-      credentials: { resolve: async () => toHarnessCredentials(resolved, resolved.github) },
+      credentials: { resolve: async () => toHarnessCredentials(credentials, credentials.github) },
     },
     actor,
     {
       golden: name,
+      provider: golden.provider,
       harness,
-      ...(resolved.choice ?? {
+      ...(credentials.choice ?? {
         ...(requested.model === undefined ? {} : { model: requested.model }),
         ...(requested.reasoningEffort === undefined ? {} : { reasoningEffort: requested.reasoningEffort }),
       }),
@@ -409,6 +436,7 @@ async function resolveForLaunch(
     reasoningEffort?: unknown;
   }>(authOf(io, deps), "launch/resolve", {
     org: actor.orgId,
+    provider: "boat",
     harness,
     visibility,
     ...(requested.model === undefined ? {} : { model: requested.model }),
@@ -462,6 +490,15 @@ function modelDefaults(): string {
     .join(", ");
 }
 
+function providerFlag(args: ReturnType<typeof parseArgs>): SandboxProviderId | undefined {
+  const value = single(args, "--provider");
+  if (value === undefined) return undefined;
+  if (!isSandboxProvider(value)) {
+    throw new GoldenError("invalid_config", `--provider is ${SANDBOX_PROVIDERS.join(" or ")}.`);
+  }
+  return value;
+}
+
 function harnessOf(value: string | undefined): Harness {
   const harness = HARNESSES.find((candidate) => candidate === value);
   if (!harness) throw new GoldenError("invalid_config", `Pass --agent ${HARNESSES.join(" or ")}.`);
@@ -483,7 +520,7 @@ function launchText(result: LaunchResult): string {
   const lines = [
     `Launched ${sandbox.harness} from golden ${golden.name} (${golden.visibility}).`,
     `Sandbox: ${sandbox.id}`,
-    `Boat sandbox: ${sandbox.boatId}`,
+    `${sandbox.provider === "boat" ? "Boat" : "Modal"} sandbox: ${sandbox.providerSandboxId}`,
     `Status: ${sandbox.status}`,
     `Model: ${sandbox.model ?? "provider default"} (reasoning effort ${sandbox.reasoningEffort ?? "default"})`,
   ];
@@ -509,7 +546,9 @@ function jsonLaunch(result: LaunchResult) {
   const { sandbox } = result;
   return {
     id: sandbox.id,
-    boatId: sandbox.boatId,
+    provider: sandbox.provider,
+    providerSandboxId: sandbox.providerSandboxId,
+    boatId: sandbox.provider === "boat" ? sandbox.providerSandboxId : null,
     golden: result.golden.name,
     visibility: result.golden.visibility,
     harness: sandbox.harness,
@@ -529,9 +568,9 @@ function jsonLaunch(result: LaunchResult) {
 }
 
 function line(row: GoldenRecord): string {
-  const snapshot = row.boatSnapshotId ? "snapshot" : "no snapshot";
+  const snapshot = row.providerSnapshotId ? "snapshot" : "no snapshot";
   const repos = row.config.repos.length === 1 ? "1 repo" : `${row.config.repos.length} repos`;
-  return `${row.name}  ${row.visibility}  ${snapshot}  ${repos}`;
+  return `${row.name}  ${row.provider}  ${row.visibility}  ${snapshot}  ${repos}`;
 }
 
 function jsonGolden(row: GoldenRecord) {
@@ -539,8 +578,12 @@ function jsonGolden(row: GoldenRecord) {
     name: row.name,
     visibility: row.visibility,
     ownerId: row.ownerId,
-    boatSnapshotId: row.boatSnapshotId,
-    boatSandboxId: row.boatSandboxId,
+    provider: row.provider,
+    providerSnapshotId: row.providerSnapshotId,
+    providerSandboxId: row.providerSandboxId,
+    modal: row.modal,
+    boatSnapshotId: row.provider === "boat" ? row.providerSnapshotId : null,
+    boatSandboxId: row.provider === "boat" ? row.providerSandboxId : null,
     repos: row.config.repos.length,
     config: row.config,
   };
@@ -611,14 +654,42 @@ async function boatContext(
   io: Io,
   deps: Deps,
   withSandboxes: true,
+  existingName?: string,
 ): Promise<{ provider: Provider; store: GoldenStore; sandboxes: SandboxStore; actor: GoldenActor }>;
 async function boatContext(
   args: ReturnType<typeof parseArgs>,
   io: Io,
   deps: Deps,
+  withSandboxes?: false,
+  existingName?: string,
 ): Promise<{ provider: Provider; store: GoldenStore; actor: GoldenActor }>;
-async function boatContext(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps, withSandboxes = false) {
+async function boatContext(
+  args: ReturnType<typeof parseArgs>,
+  io: Io,
+  deps: Deps,
+  withSandboxes = false,
+  existingName?: string,
+) {
   const { store, sandboxes, actor } = await session(args, io, deps);
+  if (existingName !== undefined) {
+    const selected = providerFlag(args);
+    const matches = (await store.findByName(actor.orgId, existingName.trim())).filter(
+      (row) => selected === undefined || row.provider === selected,
+    );
+    const providers = [...new Set(matches.map((row) => row.provider))];
+    if (providers.length > 1) {
+      throw new GoldenError(
+        "conflict",
+        `Golden '${existingName}' exists on boat and modal. Pass --provider boat or --provider modal.`,
+      );
+    }
+    if (providers[0] === "modal") {
+      throw new GoldenError(
+        "invalid_config",
+        "Modal golden commands require the server-side Modal adapter; this CLI cannot run them yet.",
+      );
+    }
+  }
   const provider = deps.provider ?? boatProvider(deps.env ?? process.env, deps.fetch ?? fetch, deps.sleep);
   if (withSandboxes) {
     if (!sandboxes) throw new GoldenError("invalid_config", "No sandbox store is available.");

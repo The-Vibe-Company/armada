@@ -36,7 +36,7 @@ describe("golden database", () => {
       );
       const launched = await asUser(db, people.member, () => goldenForLaunch(store, actor(people, "member"), "shared"));
       expect(launched.visibility).toBe("org");
-      expect(launched.boatSnapshotId).toHaveLength(63);
+      expect(launched.providerSnapshotId).toHaveLength(63);
 
       await asUser(db, people.owner, () =>
         createGolden(boat, store, actor(people, "owner"), {
@@ -61,8 +61,8 @@ describe("golden database", () => {
       await expect(asUser(db, people.admin, () => store.setSnapshot(owned.id, "bbbbbbbbbb"))).rejects.toThrow(
         /could not be updated|cannot change this golden/,
       );
-      expect((await asUser(db, people.owner, () => store.findByName(people.org, "kept")))[0]?.boatSnapshotId).toBe(
-        owned.boatSnapshotId,
+      expect((await asUser(db, people.owner, () => store.findByName(people.org, "kept")))[0]?.providerSnapshotId).toBe(
+        owned.providerSnapshotId,
       );
     } finally {
       await db.close();
@@ -81,6 +81,8 @@ describe("golden database", () => {
           name: "shared",
           visibility: "org",
           ownerId: people.admin,
+          provider: "boat",
+          modal: null,
           config: configFromFlags([WEB], []),
         }),
       );
@@ -91,6 +93,8 @@ describe("golden database", () => {
             name: "nope",
             visibility: "org",
             ownerId: people.member,
+            provider: "boat",
+            modal: null,
             config: configFromFlags([WEB], []),
           }),
         ),
@@ -130,7 +134,7 @@ function readyProvider(): Provider {
   });
   const ok = { detached: false as const, exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
   return {
-    id: "fake",
+    id: "boat",
     harnesses: ["claude", "codex"],
     capabilities: { claude: caps(), codex: caps() },
     createGolden: async () => sandbox(),

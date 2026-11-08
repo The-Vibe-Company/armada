@@ -1,4 +1,11 @@
-import { HARNESSES, type Harness, LaunchError, resolveModelChoice } from "@armada/core";
+import {
+  HARNESSES,
+  type Harness,
+  isSandboxProvider,
+  LaunchError,
+  resolveModelChoice,
+  type SandboxProviderId,
+} from "@armada/core";
 
 /** The select value that means "a model id typed in the field next to it". */
 export const OTHER_MODEL = "other";
@@ -7,6 +14,8 @@ export type ModelFields = { model: string; otherModel: string; reasoningEffort: 
 
 export type LaunchArgs = {
   golden: string;
+  /** The golden's provider, so a same-name golden of another provider is never launched instead. */
+  provider: SandboxProviderId;
   org: string;
   harness: Harness;
   model: string;
@@ -25,6 +34,7 @@ type Parsed<T> = { ok: true; args: T } | { ok: false; error: string };
 export function launchArgs(
   fields: {
     golden: string;
+    provider: string;
     org: string;
     harness: string;
     prompt: string;
@@ -32,7 +42,10 @@ export function launchArgs(
 ): Parsed<LaunchArgs> {
   const harness = HARNESSES.find((candidate) => candidate === fields.harness);
   if (!harness) return { ok: false, error: "Choose Claude Code or Codex." };
-  if (!fields.golden.trim() || !fields.org.trim()) return { ok: false, error: "That request is not valid." };
+  if (!fields.golden.trim() || !fields.org.trim() || !isSandboxProvider(fields.provider)) {
+    return { ok: false, error: "That request is not valid." };
+  }
+  const provider = fields.provider;
   const choice = checked(harness, chosenModel(fields), fields.reasoningEffort.trim() || undefined);
   if (!choice.ok) return choice;
   const prompt = fields.prompt.trim();
@@ -40,6 +53,7 @@ export function launchArgs(
     ok: true,
     args: {
       golden: fields.golden,
+      provider,
       org: fields.org,
       harness,
       model: choice.args.model,

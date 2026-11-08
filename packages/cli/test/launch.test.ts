@@ -274,6 +274,35 @@ describe("launch command", () => {
     expect(calls).toEqual([]);
   });
 
+  test("a Modal golden is refused before any credential is asked for: its token never comes to this machine", async () => {
+    const calls: string[] = [];
+    const modal = {
+      id: "33333333-3333-4333-8333-333333333333",
+      orgId: ORG_UUID,
+      name: "web",
+      visibility: "org",
+      ownerId: USER_UUID,
+      provider: "modal",
+      providerSandboxId: null,
+      providerSnapshotId: "im-modal",
+      modal: { workspace: "ws-acme", environment: "main", appId: "ap-pinned" },
+      config: { repos: [], init: [] },
+      createdAt: "2026-11-08T12:00:00.000Z",
+    };
+    const result = await capture(["launch", "web", "--agent", "claude", "--provider", "modal"], {
+      actor: { userId: USER_UUID, orgId: ORG_UUID, role: "member" } as GoldenActor,
+      store: { list: async () => [], findByName: async () => [modal] } as never,
+      sandboxes: {} as never,
+      fetch: (async (input: string | URL | Request) => {
+        calls.push(String(input));
+        throw new Error("no network");
+      }) as unknown as typeof fetch,
+    });
+    expect(result.code).toBe(1);
+    expect(result.err).toContain("cannot run modal sandboxes");
+    expect(calls).toEqual([]);
+  });
+
   test("over Supabase it reads the golden and records the sandbox as the signed-in user", async () => {
     const seen: { host: string; method: string; path: string; authorization: string | null; body: unknown }[] = [];
     const golden = {
@@ -282,8 +311,12 @@ describe("launch command", () => {
       name: "monorepo",
       visibility: "org",
       owner_id: USER_UUID,
-      boat_snapshot_id: SNAPSHOT,
-      boat_sandbox_id: "bx_builder",
+      provider: "boat",
+      provider_snapshot_id: SNAPSHOT,
+      provider_sandbox_id: "bx_builder",
+      modal_workspace: null,
+      modal_environment: null,
+      modal_app_id: null,
       config: JSON.parse(CONFIG),
       created_at: "2026-11-08T12:00:00.000Z",
     };
@@ -348,7 +381,8 @@ describe("launch command", () => {
     expect(rest.every((call) => call.authorization === "Bearer access-from-login")).toBe(true);
     const insert = rest.find((call) => call.method === "POST");
     expect(insert?.body).toMatchObject({
-      boat_id: "bx_1",
+      provider: "boat",
+      provider_sandbox_id: "bx_1",
       golden_id: golden.id,
       org_id: ORG_UUID,
       owner_id: USER_UUID,

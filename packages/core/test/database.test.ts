@@ -87,6 +87,7 @@ describe("database", () => {
         "claude_oauth",
         "boat",
         "codex_auth",
+        "modal",
       ]);
       expect(await labels(db, "notify_status")).toEqual(["finished", "failed"]);
     } finally {
@@ -146,7 +147,7 @@ describe("database", () => {
         "goldens DELETE",
         "goldens INSERT",
         "goldens SELECT",
-        "goldens UPDATE(boat_sandbox_id,boat_snapshot_id,config,name)",
+        "goldens UPDATE(boat_sandbox_id,boat_snapshot_id,config,name,provider_sandbox_id,provider_snapshot_id)",
         "mcp_tokens DELETE",
         "mcp_tokens SELECT(created_at,id,label,org_id,revoked_at,user_id)",
         "mcp_tokens UPDATE(revoked_at)",

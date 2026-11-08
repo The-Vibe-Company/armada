@@ -155,6 +155,12 @@ describe("armada org and armada creds against the control API", () => {
           }),
           options,
         );
+      // A Modal launch is the server's: this machine never receives a Modal (or any) management key for it.
+      const modal = await resolve({ provider: "modal" });
+      expect(modal?.status).toBe(400);
+      const modalBody = JSON.stringify(await modal?.json());
+      expect(modalBody).toContain("launched by the Armada server");
+      expect(modalBody).not.toContain("boat-org-key");
       const refused = await resolve({ model: "gpt-6-luna", reasoning_effort: "ultra" });
       expect(refused?.status).toBe(400);
       expect(JSON.stringify(await refused?.json())).toContain("Use one of: low, medium, high, xhigh, max");
@@ -255,9 +261,9 @@ describe("armada org and armada creds against the control API", () => {
           expect(userId).toBe(STAN);
           expect(id).toBe(armadaId);
           return {
-            boatId: "bx_server_only",
+            providerSandboxId: "bx_server_only",
             provider: {
-              id: "fake",
+              id: "boat",
               harnesses: ["claude", "codex"],
               capabilities: {} as never,
               async events(request: { sandboxId: string }) {
@@ -312,9 +318,9 @@ describe("armada org and armada creds against the control API", () => {
         const logs: ControlOptions = {
           ...options,
           logs: async () => ({
-            boatId: "bx_follow",
+            providerSandboxId: "bx_follow",
             provider: {
-              id: "fake",
+              id: "boat",
               harnesses: ["claude", "codex"],
               capabilities: {} as never,
               async events() {
@@ -349,9 +355,9 @@ describe("armada org and armada creds against the control API", () => {
       const logs: ControlOptions = {
         ...options,
         logs: async () => ({
-          boatId: "bx_follow",
+          providerSandboxId: "bx_follow",
           provider: {
-            id: "fake",
+            id: "boat",
             harnesses: ["claude", "codex"],
             capabilities: {} as never,
             async events() {

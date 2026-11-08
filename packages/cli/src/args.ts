@@ -12,6 +12,7 @@ const VALUE = new Set([
   "--file",
   "--model",
   "--reasoning-effort",
+  "--provider",
 ]);
 
 export interface Args {

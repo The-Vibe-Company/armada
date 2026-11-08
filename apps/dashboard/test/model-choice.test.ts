@@ -2,13 +2,20 @@ import { describe, expect, test } from "bun:test";
 import { launchArgs, OTHER_MODEL, sendOverride } from "../src/lib/model-choice.ts";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
-const form = { golden: "web", org: ORG, prompt: "", model: "", otherModel: "", reasoningEffort: "" };
+const form = { golden: "web", provider: "boat", org: ORG, prompt: "", model: "", otherModel: "", reasoningEffort: "" };
 
 describe("model choice from the dashboard forms", () => {
   test("a launch always names the model and effort, the harness defaults when nothing is chosen", () => {
     expect(launchArgs({ ...form, harness: "claude" })).toEqual({
       ok: true,
-      args: { golden: "web", org: ORG, harness: "claude", model: "claude-opus-5-5", reasoning_effort: "medium" },
+      args: {
+        golden: "web",
+        provider: "boat",
+        org: ORG,
+        harness: "claude",
+        model: "claude-opus-5-5",
+        reasoning_effort: "medium",
+      },
     });
     expect(launchArgs({ ...form, harness: "codex", prompt: "  Fix it " })).toMatchObject({
       args: { model: "gpt-6.1-sol", reasoning_effort: "medium", prompt: "Fix it" },
@@ -29,6 +36,7 @@ describe("model choice from the dashboard forms", () => {
     expect(refused).toMatchObject({ ok: false });
     expect(refused.ok ? "" : refused.error).toContain("low, medium, high, xhigh, max");
     expect(launchArgs({ ...form, harness: "opencode" })).toMatchObject({ ok: false });
+    expect(launchArgs({ ...form, harness: "claude", provider: "elsewhere" })).toMatchObject({ ok: false });
   });
 
   test("a send keeps the launch choice unless a field is set, and an effort alone applies to the launch model", () => {

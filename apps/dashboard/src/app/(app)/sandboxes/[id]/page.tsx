@@ -51,6 +51,7 @@ export default async function SandboxPage({ params }: Props) {
   const facts: [string, string][] = [
     ["Golden", golden?.name ?? "Unknown"],
     ["Org", org?.org.name ?? "Unknown"],
+    ["Provider", sandbox.provider],
     ["Harness", sandbox.harness],
     ["Model", sandbox.model ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoning_effort ?? "Provider default"],
@@ -73,7 +74,7 @@ export default async function SandboxPage({ params }: Props) {
         </Button>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="font-mono text-xl font-semibold tracking-tight">{sandbox.boat_id}</h1>
+            <h1 className="font-mono text-xl font-semibold tracking-tight">{sandbox.provider_sandbox_id}</h1>
             <StatusBadge status={sandbox.status} />
           </div>
           {configured && (
