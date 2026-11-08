@@ -45,36 +45,19 @@ export async function scanGoldenSandbox(provider: Provider, sandboxId: string): 
     '  if [ "$status" -eq 0 ]; then exit 97; fi',
     '  if [ "$status" -gt 1 ]; then exit 95; fi',
     "done",
-    // Git history, reachable and unreachable objects alike: a token committed, then amended or reset
-    // away, still exists as a loose object until a `git gc` that this flow never runs. `--batch-all-
-    // objects` lists every object in the database directly, not just what `git log` can reach from a
-    // ref. Each blob is read into its own file (never piped straight into grep, so git's exit code and
-    // grep's are never conflated) and removed right after it is checked.
+    // Git history, reachable and unreachable, is enumerated directly. Each object is streamed
+    // through grep; no expanded plaintext object is ever written to a temporary file.
     "for gitdir in $(find $roots -maxdepth 8 -type d -name .git 2>/dev/null); do",
     '  repo=$(dirname "$gitdir")',
-    "  objects_file=$(mktemp)",
-    '  git -C "$repo" cat-file --batch-all-objects --batch-check="%(objectname) %(objecttype)" >"$objects_file" 2>/dev/null',
-    "  list_status=$?",
-    '  if [ "$list_status" -ne 0 ]; then rm -f "$objects_file"; exit 95; fi',
     '  while IFS=" " read -r sha kind; do',
-    '    case "$kind" in',
-    "      blob) ;;",
-    "      tree|commit|tag) continue ;;",
-    // git itself could not account for this object (reported as e.g. "missing" on a corrupted
-    // database): a scan that cannot inspect every object cannot say the builder is clean.
-    '      *) rm -f "$objects_file"; exit 95 ;;',
-    "    esac",
-    "    blob_file=$(mktemp)",
-    '    git -C "$repo" cat-file -p "$sha" >"$blob_file" 2>/dev/null',
-    "    git_status=$?",
-    '    if [ "$git_status" -ne 0 ]; then rm -f "$blob_file" "$objects_file"; exit 95; fi',
-    '    grep -qaE "$pattern" "$blob_file"',
-    "    grep_status=$?",
-    '    rm -f "$blob_file"',
-    '    if [ "$grep_status" -eq 0 ]; then rm -f "$objects_file"; exit 97; fi',
-    '    if [ "$grep_status" -gt 1 ]; then rm -f "$objects_file"; exit 95; fi',
-    '  done <"$objects_file"',
-    '  rm -f "$objects_file"',
+    '    case "$kind" in blob|tree|commit|tag) ;; *) exit 95 ;; esac',
+    '    git -C "$repo" cat-file -p "$sha" | grep -aEq "$pattern"',
+    '    statuses=("${PIPESTATUS[@]}")',
+    '    [ "${statuses[0]}" -eq 0 ] || exit 95',
+    '    [ "${statuses[1]}" -eq 0 ] && exit 97',
+    '    [ "${statuses[1]}" -eq 1 ] || exit 95',
+    '  done < <(git -C "$repo" cat-file --batch-all-objects --batch-check="%(objectname) %(objecttype)")',
+    '  [ "${PIPESTATUS[0]:-0}" -eq 0 ] || exit 95',
     "done",
     "exit 0",
   ].join("\n");

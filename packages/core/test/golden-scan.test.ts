@@ -121,6 +121,22 @@ test("real shell: a token in .git/config is rejected without printing the token"
   } finally { rmSync(base, { recursive: true, force: true }); }
 });
 
+test("real shell: a token in a commit message is rejected without printing it", async () => {
+  const script = await capturedScript();
+  const { base, roots } = sandbox();
+  try {
+    const repo = join(roots.home, "repo"); mkdirSync(repo); git(repo, "init", "-q");
+    git(repo, "config", "user.email", "a@b.com"); git(repo, "config", "user.name", "a");
+    writeFileSync(join(repo, "f"), "ok\n"); git(repo, "add", "f");
+    const token = `gho_${"D".repeat(36)}`;
+    git(repo, "commit", "-qm", `message ${token}`);
+    const isolated = script.replace("roots='/home/user /root /tmp'", `roots='${roots.home} ${roots.root} ${roots.tmp}'`);
+    const result = spawnSync("bash", ["-c", isolated], { encoding: "utf8" });
+    expect(result.status).toBe(97);
+    expect(`${result.stdout}${result.stderr}`).not.toContain(token);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
 test("real shell: a token in a dangling (amended-away, not yet gc'd) git blob still fails the build", async () => {
   const script = await capturedScript();
   const { base, roots } = sandbox();
