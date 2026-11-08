@@ -1,4 +1,4 @@
-import { type AuthStore, createSqlAuthStore } from "@armada/auth";
+import { type AuthStore, createSqlAuthStore, refreshSupabaseSession, type Session } from "@armada/auth";
 import {
   addMember,
   connectGolden,
@@ -77,6 +77,8 @@ export interface ControlOptions {
   goldenCreate?: GoldenCreateService;
   /** A provider for one boat.dev key, for `golden/create`. The key is used in this process only. */
   providerFor?: (apiKey: string) => Provider;
+  /** Server-side native-session refresh; never exposed to the CLI. */
+  refreshNative?: (refreshToken: string) => Promise<{ accessToken: string; refreshToken: string; expiresAt: string }>;
 }
 
 const STATUS: Record<VaultErrorCode, number> = {
@@ -107,6 +109,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   const url = new URL(request.url);
   if (!url.pathname.startsWith(CONTROL_PREFIX)) return null;
   const route = url.pathname.slice(CONTROL_PREFIX.length);
+  if (route === "auth/refresh") return refreshRoute(request, options);
   if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
   try {
     const caller = await authenticatedCaller(request, options);
@@ -124,6 +127,34 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     }
     return fail(500, "unavailable", "The server could not complete the request.");
   }
+}
+
+async function refreshRoute(request: Request, options: ControlOptions): Promise<Response> {
+  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
+  try {
+    const body = await readBody(request);
+    const token = required(body, "refreshToken");
+    const refreshed = options.refreshNative
+      ? await options.refreshNative(token)
+      : await nativeRefresh(options, token);
+    return Response.json(refreshed, { headers: { "cache-control": "no-store" } });
+  } catch (error) {
+    if (error instanceof VaultError) return fail(400, error.code, error.message);
+    return fail(401, "unauthorized", "Refresh token was refused.");
+  }
+}
+
+async function nativeRefresh(options: ControlOptions, refreshToken: string) {
+  const session: Session = {
+    supabaseUrl: options.supabase.supabaseUrl,
+    anonKey: options.supabase.anonKey,
+    accessToken: "expired",
+    refreshToken,
+    expiresAt: new Date(0).toISOString(),
+    userId: "",
+  };
+  const next = await refreshSupabaseSession({ fetch: options.supabase.fetch ?? fetch, anonKey: options.supabase.anonKey, session, now: options.now?.() ?? new Date() });
+  return { accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt };
 }
 
 async function dispatch(

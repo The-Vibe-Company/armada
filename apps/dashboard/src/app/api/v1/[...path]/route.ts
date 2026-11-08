@@ -63,6 +63,7 @@ function controlOrigin(value: string | undefined): string | null {
 
 function safePath(path: string): boolean {
   return (
+    path === "auth/refresh" ||
     path === "golden/list" ||
     path === "golden/create" ||
     path === "golden/update" ||
