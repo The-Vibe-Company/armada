@@ -73,7 +73,10 @@ describe("createGoldenCreateService, wired to a real database", () => {
         visibility: "org",
         boat_snapshot_id: "golden-bx_1",
         boat_sandbox_id: "bx_1",
-        config: { repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: ["echo setup"] },
+        config: {
+          repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }],
+          init: ["echo setup"],
+        },
       });
       const slots = await db.query("select golden_id, build_id from golden_backend_slots");
       expect(slots.rows).toHaveLength(1);
@@ -89,16 +92,28 @@ describe("createGoldenCreateService, wired to a real database", () => {
       await applyMigrations(db);
       const { actor, userId } = await fixture(db);
       await connectGitHub(db, userId);
-      const options = { sql: db, github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() }, installationApp: null, fetch: fakeGitHubFetch(), ssh: async () => {} };
+      const options = {
+        sql: db,
+        github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
+        installationApp: null,
+        fetch: fakeGitHubFetch(),
+        ssh: async () => {},
+      };
       const service = createGoldenCreateService(options);
       const noIdentity = readyProvider();
       delete noIdentity.backendIdentity;
-      await expect(service.create(noIdentity, actor, { name: "missing-id", visibility: "org", repos: ["acme/web"] })).rejects.toThrow("backend identity");
+      await expect(
+        service.create(noIdentity, actor, { name: "missing-id", visibility: "org", repos: ["acme/web"] }),
+      ).rejects.toThrow("backend identity");
       await service.create(readyProvider(), actor, { name: "one", visibility: "org", repos: ["acme/web"] });
       const anotherFactory = createGoldenCreateService(options);
-      await expect(anotherFactory.create(readyProvider(), actor, { name: "two", visibility: "org", repos: ["acme/web"] })).rejects.toThrow("capacity");
+      await expect(
+        anotherFactory.create(readyProvider(), actor, { name: "two", visibility: "org", repos: ["acme/web"] }),
+      ).rejects.toThrow("capacity");
       expect((await db.query("select 1 from goldens")).rows).toHaveLength(1);
-    } finally { await db.close(); }
+    } finally {
+      await db.close();
+    }
   });
 
   test("with GITHUB_APP_PRIVATE_KEY configured, checkout uses a scoped installation token and revokes it", async () => {

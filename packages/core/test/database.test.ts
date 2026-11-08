@@ -57,6 +57,7 @@ describe("database", () => {
       expect(tables.rows.map((row) => row.name)).toEqual([
         "credentials",
         "github_connections",
+        "golden_backend_slots",
         "goldens",
         "mcp_tokens",
         "members",
