@@ -14,6 +14,7 @@ import {
   type Provider,
   parseCredentialKind,
   parseRole,
+  promptOutcome,
   removeCredential,
   removeMember,
   resolveBoatKey,
@@ -175,12 +176,28 @@ async function readLogs(
     cursor = next;
   }
   const info = await target.provider.get(target.boatId);
+  const latest = latestPrompt(events);
+  // A live sandbox with no turn is idle, so following has nothing to wait for.
+  const outcome = latest ? await promptOutcome(target.provider, { sandboxId: target.boatId, promptId: latest }) : null;
   return {
     events: dedupe(events),
     cursor: cursor ?? null,
     hasMore,
-    settled: info.state === "stopped" || info.state === "failed" || !follow,
+    settled:
+      !follow ||
+      info.state === "stopped" ||
+      info.state === "failed" ||
+      (latest === null ? info.state !== "running" && info.state !== "starting" : outcome?.state !== "running"),
   };
+}
+
+function latestPrompt(events: Awaited<ReturnType<Provider["events"]>>["events"]): string | null {
+  let latest: (typeof events)[number] | undefined;
+  for (const event of events) {
+    if (event.kind !== "prompt" || !event.promptId) continue;
+    if (!latest || event.at >= latest.at) latest = event;
+  }
+  return latest?.promptId ?? null;
 }
 
 function dedupe<T extends { id: string }>(events: readonly T[]): T[] {
