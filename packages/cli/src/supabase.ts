@@ -4,7 +4,12 @@ import {
   GoldenError,
   type GoldenRecord,
   type GoldenStore,
+  mapSandboxRow,
   parseGoldenConfig,
+  type SandboxPatch,
+  type SandboxRecord,
+  type SandboxRow,
+  type SandboxStore,
   type Visibility,
 } from "@armada/core";
 
@@ -36,8 +41,12 @@ interface RestInit {
 
 const SELECT = "id,org_id,name,visibility,owner_id,boat_snapshot_id,boat_sandbox_id,config,created_at";
 
+const SANDBOX_SELECT =
+  "id,boat_id,golden_id,org_id,owner_id,harness,status,conversation_ids,created_at,stopped_at,deleted_at";
+
 export interface SupabaseSession {
   store: GoldenStore;
+  sandboxes: SandboxStore;
   actor: GoldenActor;
 }
 
@@ -71,7 +80,8 @@ export async function openSupabaseGoldens(
   }
   const actor: GoldenActor = { userId, orgId: member.org_id, role: member.role };
   const store = supabaseStore(fetchImpl, url, anonKey, accessToken);
-  return { actor, store };
+  const sandboxes = supabaseSandboxes(fetchImpl, url, anonKey, accessToken);
+  return { actor, store, sandboxes };
 }
 
 function chooseMember(members: MemberRow[], orgWasSet: boolean): MemberRow {
@@ -137,6 +147,56 @@ function supabaseStore(fetchImpl: typeof fetch, url: string, anonKey: string, ac
   };
 }
 
+function supabaseSandboxes(fetchImpl: typeof fetch, url: string, anonKey: string, accessToken: string): SandboxStore {
+  const call = <T>(init: RestInit) => rest<T>(fetchImpl, url, anonKey, accessToken, "sandboxes", init);
+
+  return {
+    async insert(input): Promise<SandboxRecord> {
+      const rows = await call<SandboxRow[]>({
+        method: "POST",
+        prefer: "return=representation",
+        query: { select: SANDBOX_SELECT },
+        body: {
+          id: input.id,
+          boat_id: input.boatId,
+          golden_id: input.goldenId,
+          org_id: input.orgId,
+          owner_id: input.ownerId,
+          harness: input.harness,
+          status: input.status,
+        },
+      });
+      const row = rows[0];
+      if (!row) throw new GoldenError("forbidden", "The sandbox could not be recorded.");
+      return mapSandboxRow(row);
+    },
+
+    async update(id: string, patch: SandboxPatch): Promise<void> {
+      const body: Record<string, unknown> = {};
+      if (patch.status !== undefined) body.status = patch.status;
+      if (patch.conversationIds !== undefined) body.conversation_ids = patch.conversationIds;
+      if (patch.stoppedAt !== undefined) body.stopped_at = patch.stoppedAt;
+      if (patch.deletedAt !== undefined) body.deleted_at = patch.deletedAt;
+      if (Object.keys(body).length === 0) return;
+      const rows = await call<{ id: string }[]>({
+        method: "PATCH",
+        prefer: "return=representation",
+        query: { id: eq(id), select: "id" },
+        body,
+      });
+      if (!rows[0]) throw new GoldenError("forbidden", "The sandbox could not be updated.");
+    },
+
+    async listBefore(cutoff: string): Promise<SandboxRecord[]> {
+      const rows = await call<SandboxRow[]>({
+        method: "GET",
+        query: { select: SANDBOX_SELECT, created_at: `lt.${cutoff}`, status: "neq.deleted", order: "created_at.asc" },
+      });
+      return rows.map(mapSandboxRow);
+    },
+  };
+}
+
 async function patch(
   call: <T>(table: string, init: RestInit) => Promise<T>,
   id: string,
@@ -187,11 +247,11 @@ async function rest<T>(
       throw new GoldenError("forbidden", `Supabase answered ${response.status}.`);
     }
   }
-  if (!response.ok) throw httpError(response.status, body);
+  if (!response.ok) throw httpError(response.status, body, table);
   return body as T;
 }
 
-function httpError(status: number, body: unknown): GoldenError {
+function httpError(status: number, body: unknown, table: string): GoldenError {
   const message = isRecord(body) && typeof body.message === "string" ? body.message : "";
   const code = isRecord(body) && typeof body.code === "string" ? body.code : "";
   if (status === 401) return new GoldenError("forbidden", "The Supabase session was refused.");
@@ -202,7 +262,10 @@ function httpError(status: number, body: unknown): GoldenError {
     return new GoldenError("conflict", "A golden with this name already exists.");
   }
   if (status === 403 || message.includes("row-level security")) {
-    return new GoldenError("forbidden", "You cannot change this golden.");
+    return new GoldenError(
+      "forbidden",
+      table === "sandboxes" ? "You cannot launch or change this sandbox." : "You cannot change this golden.",
+    );
   }
   return new GoldenError("forbidden", "The Supabase request failed.");
 }

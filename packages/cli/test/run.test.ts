@@ -18,12 +18,13 @@ describe("run", () => {
     const { code, out } = await capture([]);
     expect(code).toBe(0);
     expect(out).toContain("armada golden create");
+    expect(out).toContain("armada launch <golden> --agent claude|codex");
   });
 
   test("an unknown command fails with a usage error", async () => {
-    const { code, out, err } = await capture(["launch"]);
+    const { code, out, err } = await capture(["frobnicate"]);
     expect(code).toBe(2);
     expect(out).toBe("");
-    expect(err).toContain("unknown command 'launch'");
+    expect(err).toContain("unknown command 'frobnicate'");
   });
 });

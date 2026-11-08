@@ -363,8 +363,7 @@ describe("exec", () => {
   });
 });
 
-test("both harnesses can steer natively and none can ask for approval", () => {
-  for (const harness of ["claude", "codex"] as const) {
-    expect(BOAT_CAPABILITIES[harness]).toMatchObject({ steer: "native", approvals: false, resume: true });
-  }
+test("Claude steers natively, Codex by restarting its turn, and neither can ask for approval", () => {
+  expect(BOAT_CAPABILITIES.claude).toMatchObject({ steer: "native", approvals: false, resume: true });
+  expect(BOAT_CAPABILITIES.codex).toMatchObject({ steer: "restart", approvals: false, resume: true });
 });

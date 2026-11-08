@@ -1,4 +1,13 @@
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
+export {
+  CODEX_AUTH_ENV,
+  type CredentialSource,
+  type HarnessCredentials,
+  harnessCredentials,
+  type LaunchCredentialKind,
+  redact,
+  resolveCredential,
+} from "./credentials.ts";
 export type {
   Credential,
   CredentialKind,
@@ -42,10 +51,22 @@ export {
   type GoldenRepo,
   parseGoldenConfig,
   parseGoldenName,
+  pullCommand,
   secretKeyPath,
   splitRepoArg,
 } from "./golden-config.ts";
 export { createSqlGoldenStore, type Sql } from "./golden-store.ts";
+export {
+  DEFAULT_LAUNCH_TTL_SECONDS,
+  type LaunchOptions,
+  type LaunchRequest,
+  type LaunchResult,
+  type LaunchStores,
+  launchSandbox,
+  MAX_LAUNCH_TTL_SECONDS,
+} from "./launch.ts";
+export { LaunchError, type LaunchErrorCode } from "./launch-error.ts";
+export { dedupeEvents, type PromptOutcome, promptOutcome } from "./outcome.ts";
 export {
   type AgentEvent,
   type CreateGoldenRequest,
@@ -77,4 +98,15 @@ export {
   type SteerRequest,
   type ToolCall,
 } from "./provider.ts";
+export {
+  type CleanupResult,
+  cleanupSandboxes,
+  createSqlSandboxStore,
+  DEFAULT_SANDBOX_RETENTION_DAYS,
+  mapSandboxRow,
+  type SandboxPatch,
+  type SandboxRecord,
+  type SandboxRow,
+  type SandboxStore,
+} from "./sandbox.ts";
 export { VERSION } from "./version.ts";

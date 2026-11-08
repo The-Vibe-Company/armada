@@ -1,0 +1,505 @@
+import { describe, expect, test } from "bun:test";
+import {
+  type AgentEvent,
+  type CredentialSource,
+  cleanupSandboxes,
+  dedupeEvents,
+  type ForkRequest,
+  GOLDEN_ROOT,
+  type GoldenActor,
+  type GoldenRecord,
+  type GoldenStore,
+  LaunchError,
+  type LaunchStores,
+  launchSandbox,
+  type PromptStatus,
+  type Provider,
+  ProviderError,
+  parseGoldenConfig,
+  promptOutcome,
+  type SandboxInfo,
+  type SandboxPatch,
+  type SandboxRecord,
+  type SandboxStore,
+} from "../src/index.ts";
+
+const ORG = "11111111-1111-4111-8111-111111111111";
+const OWNER = "22222222-2222-4222-8222-222222222222";
+const OTHER = "33333333-3333-4333-8333-333333333333";
+const SNAPSHOT = `a${"1".repeat(62)}`;
+const CLAUDE_TOKEN = "sk-ant-oat01-user-token-value";
+const ORG_CLAUDE_TOKEN = "sk-ant-oat01-org-token-value";
+const OPENAI_KEY = "sk-openai-user-key-value";
+const AUTH_JSON = JSON.stringify({ tokens: { access_token: "codex-access-token-value", account_id: "acct" } });
+
+const owner: GoldenActor = { userId: OWNER, orgId: ORG, role: "member" };
+const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
+
+describe("launch", () => {
+  test("forks the stored snapshot with only this harness's credentials, pulls and inits, then prompts", async () => {
+    const world = setup({ golden: golden("org") });
+    const result = await launchSandbox(
+      world.provider,
+      world.stores,
+      owner,
+      { golden: "web", harness: "claude", prompt: "Fix the build", ttlSeconds: 7200 },
+      { newId: () => "sbx-1" },
+    );
+
+    expect(world.forks).toHaveLength(1);
+    expect(world.forks[0]).toEqual({
+      from: SNAPSHOT,
+      noEnv: true,
+      env: { CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN },
+      ttlSeconds: 7200,
+      labels: {
+        armada: "sandbox",
+        sandbox: "sbx-1",
+        org: ORG,
+        owner: OWNER,
+        golden: "web",
+        visibility: "org",
+        harness: "claude",
+      },
+    });
+    expect(world.execs.map((exec) => exec.cwd)).toEqual([`${GOLDEN_ROOT}/web`, `${GOLDEN_ROOT}/api`, GOLDEN_ROOT]);
+    expect(world.execs[0]?.command).toContain("'pull' '--ff-only' 'origin' 'main'");
+    expect(world.execs[1]?.command).toContain("'dev'");
+    expect(world.execs[2]?.command).toBe("pnpm i");
+    expect(world.prompts).toEqual([{ sandboxId: "bx_1", harness: "claude", text: "Fix the build" }]);
+    expect(result).toMatchObject({ conversationId: "conv_1", promptId: "prompt_1", ttlSeconds: 7200 });
+    expect(world.rows.get("sbx-1")).toMatchObject({
+      boatId: "bx_1",
+      ownerId: OWNER,
+      harness: "claude",
+      status: "running",
+      conversationIds: ["conv_1"],
+    });
+    expect(JSON.stringify(world.execs)).not.toContain(CLAUDE_TOKEN);
+  });
+
+  test("without a prompt the sandbox is ready, has no conversation and no prompt was sent", async () => {
+    const world = setup({ golden: golden("org") });
+    const result = await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" });
+    expect(world.prompts).toEqual([]);
+    expect(result.sandbox).toMatchObject({ status: "ready", conversationIds: [] });
+    expect(result.conversationId).toBeUndefined();
+    expect(result.ttlSeconds).toBe(14_400);
+    expect(world.forks[0]?.ttlSeconds).toBe(14_400);
+    expect([...world.rows.values()][0]).toMatchObject({ status: "ready", conversationIds: [] });
+  });
+
+  test("the user's own credential wins over the org's, and the org's is the fallback", async () => {
+    const own = setup({
+      golden: golden("org"),
+      credentials: { user: { claude_oauth: CLAUDE_TOKEN }, org: { claude_oauth: ORG_CLAUDE_TOKEN } },
+    });
+    await launchSandbox(own.provider, own.stores, owner, { golden: "web", harness: "claude" });
+    expect(own.forks[0]?.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN });
+
+    const fallback = setup({ golden: golden("org"), credentials: { org: { claude_oauth: ORG_CLAUDE_TOKEN } } });
+    await launchSandbox(fallback.provider, fallback.stores, owner, { golden: "web", harness: "claude" });
+    expect(fallback.forks[0]?.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: ORG_CLAUDE_TOKEN });
+  });
+
+  test("Codex gets OPENAI_API_KEY, or writes auth.json from the environment and never from the command line", async () => {
+    const key = setup({
+      golden: golden("org"),
+      credentials: { user: { openai: OPENAI_KEY, claude_oauth: CLAUDE_TOKEN } },
+    });
+    await launchSandbox(key.provider, key.stores, owner, { golden: "web", harness: "codex", prompt: "go" });
+    expect(key.forks[0]).toMatchObject({ noEnv: true, env: { OPENAI_API_KEY: OPENAI_KEY } });
+    expect(key.prompts[0]?.harness).toBe("codex");
+
+    const login = setup({ golden: golden("org"), credentials: { org: { openai: AUTH_JSON } } });
+    await launchSandbox(login.provider, login.stores, owner, { golden: "web", harness: "codex" });
+    expect(login.forks[0]?.env).toEqual({ ARMADA_CODEX_AUTH_JSON: AUTH_JSON });
+    expect(login.execs[0]?.command).toContain('"$ARMADA_CODEX_AUTH_JSON" > /home/user/.codex/auth.json');
+    expect(JSON.stringify(login.execs)).not.toContain("codex-access-token-value");
+  });
+
+  test("a failed init is recorded as failed with its output, the machine is stopped and no secret is shown", async () => {
+    const world = setup({
+      golden: golden("org"),
+      exec: (command) =>
+        command === "pnpm i"
+          ? { exitCode: 1, stderr: `ERR_PNPM token ${CLAUDE_TOKEN} rejected\nmissing lockfile`, stdout: "" }
+          : { exitCode: 0 },
+    });
+    const error = await launchSandbox(
+      world.provider,
+      world.stores,
+      owner,
+      { golden: "web", harness: "claude", prompt: "go" },
+      { newId: () => "sbx-2" },
+    ).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(LaunchError);
+    const failure = error as LaunchError;
+    expect(failure.code).toBe("init_failed");
+    expect(failure.sandboxId).toBe("sbx-2");
+    expect(failure.message).toContain("init command 1 failed (exit 1)");
+    expect(failure.message).toContain("missing lockfile");
+    expect(failure.message).not.toContain(CLAUDE_TOKEN);
+    expect(world.rows.get("sbx-2")?.status).toBe("failed");
+    expect(world.stopped).toEqual(["bx_1"]);
+    expect(world.prompts).toEqual([]);
+  });
+
+  test("a failed git pull stops the launch before init", async () => {
+    const world = setup({
+      golden: golden("org"),
+      exec: (command) =>
+        command.includes("'pull'") ? { exitCode: 128, stderr: "fatal: not possible to fast-forward" } : { exitCode: 0 },
+    });
+    await expect(
+      launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
+    ).rejects.toThrow(/git pull of web failed \(exit 128\)\.\nfatal: not possible to fast-forward/);
+    expect(world.execs.some((exec) => exec.command === "pnpm i")).toBe(false);
+  });
+
+  test("a refused first prompt leaves a failed sandbox and says so", async () => {
+    const world = setup({
+      golden: golden("org"),
+      promptError: new ProviderError({
+        provider: "boat",
+        code: "provider_not_configured",
+        message: "No Claude login on the account",
+        retryable: false,
+      }),
+    });
+    await expect(
+      launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude", prompt: "go" }),
+    ).rejects.toMatchObject({
+      code: "prompt_failed",
+      message: expect.stringContaining("No Claude login on the account"),
+    });
+    expect([...world.rows.values()][0]?.status).toBe("failed");
+    expect(world.stopped).toEqual(["bx_1"]);
+  });
+
+  test("a private golden of someone else is refused as missing, and nothing starts", async () => {
+    const world = setup({ golden: golden("private"), actor: other });
+    await expect(
+      launchSandbox(world.provider, world.stores, other, { golden: "web", harness: "claude" }),
+    ).rejects.toThrow(/No golden named 'web'/);
+    expect(world.forks).toEqual([]);
+    expect(world.rows.size).toBe(0);
+  });
+
+  test("a store that leaks a private golden is still refused", async () => {
+    const world = setup({ golden: golden("private"), leaky: true, actor: other });
+    await expect(
+      launchSandbox(world.provider, world.stores, other, { golden: "web", harness: "claude" }),
+    ).rejects.toThrow(/No golden named 'web'/);
+    expect(world.forks).toEqual([]);
+  });
+
+  test("a golden without a snapshot, a harness without credentials and bad input start nothing", async () => {
+    const noSnapshot = setup({ golden: { ...golden("org"), boatSnapshotId: null } });
+    await expect(
+      launchSandbox(noSnapshot.provider, noSnapshot.stores, owner, { golden: "web", harness: "claude" }),
+    ).rejects.toThrow(/no snapshot yet/);
+
+    const none = setup({ golden: golden("org"), credentials: { user: { claude_oauth: CLAUDE_TOKEN } } });
+    await expect(
+      launchSandbox(none.provider, none.stores, owner, { golden: "web", harness: "codex" }),
+    ).rejects.toMatchObject({
+      code: "no_credentials",
+    });
+
+    const world = setup({ golden: golden("org") });
+    for (const request of [
+      { harness: "opencode", ttlSeconds: undefined },
+      { harness: "claude", ttlSeconds: 0 },
+      { harness: "claude", ttlSeconds: 2_592_001 },
+      { harness: "claude", ttlSeconds: 1.5 },
+      { harness: "claude", prompt: "   " },
+    ]) {
+      await expect(
+        launchSandbox(world.provider, world.stores, owner, { golden: "web", ...request } as never),
+      ).rejects.toMatchObject({ code: "invalid_request" });
+    }
+    expect([noSnapshot, none, world].flatMap((entry) => entry.forks)).toEqual([]);
+  });
+
+  test("a sandbox that cannot be recorded is deleted again", async () => {
+    const world = setup({ golden: golden("org"), insertError: new Error("row-level security") });
+    await expect(
+      launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
+    ).rejects.toThrow(/row-level security/);
+    expect(world.deleted).toEqual(["bx_1"]);
+  });
+});
+
+describe("prompt outcome", () => {
+  test("finished with a usage limit or an expired login is a failure, even though boat says finished", async () => {
+    const limit = other_event("usage_limit", { message: "Weekly limit reached" });
+    const expired = other_event("auth_expiry", {});
+    const fine = events([prompt("finished")]);
+    const ok = await promptOutcome(outcomeProvider("finished", fine), { sandboxId: "bx_1", promptId: "p1" });
+    expect(ok).toEqual({ state: "finished" });
+
+    const limited = await promptOutcome(outcomeProvider("finished", events([prompt("finished"), limit])), {
+      sandboxId: "bx_1",
+      promptId: "p1",
+    });
+    expect(limited).toEqual({ state: "failed", reason: "Weekly limit reached" });
+
+    const login = await promptOutcome(outcomeProvider("finished", events([expired])), {
+      sandboxId: "bx_1",
+      promptId: "p1",
+    });
+    expect(login).toEqual({ state: "failed", reason: "The agent's login expired." });
+
+    const otherTurn = await promptOutcome(
+      outcomeProvider("finished", events([{ ...limit, promptId: "p2" } as AgentEvent])),
+      { sandboxId: "bx_1", promptId: "p1" },
+    );
+    expect(otherTurn).toEqual({ state: "finished" });
+  });
+
+  test("the status comes from getPrompt, so a running turn is running whatever its events say", async () => {
+    const provider = outcomeProvider("running", events([prompt("finished")]));
+    expect(await promptOutcome(provider, { sandboxId: "bx_1", promptId: "p1" })).toEqual({ state: "running" });
+    expect(
+      await promptOutcome(outcomeProvider("failed", events([prompt("failed", "out of credit")])), {
+        sandboxId: "bx_1",
+        promptId: "p1",
+      }),
+    ).toEqual({ state: "failed", reason: "out of credit" });
+    expect(
+      await promptOutcome(outcomeProvider("interrupted", events([])), { sandboxId: "bx_1", promptId: "p1" }),
+    ).toEqual({
+      state: "interrupted",
+    });
+  });
+
+  test("an event read twice keeps its newest body and its first position", () => {
+    const first = message("m1", "Hel", true);
+    const second = message("m2", "Done", false);
+    const again = message("m1", "Hello", false);
+    expect(dedupeEvents([first, second, again])).toEqual([again, second]);
+  });
+});
+
+describe("cleanup", () => {
+  test("deletes sandboxes older than the retention from the provider, tolerates a missing one and reports failures", async () => {
+    const now = new Date("2026-11-20T00:00:00.000Z");
+    const rows = new Map<string, SandboxRecord>(
+      [
+        ["old", "bx_old", "2026-11-10T00:00:00.000Z"],
+        ["gone", "bx_gone", "2026-11-11T00:00:00.000Z"],
+        ["stuck", "bx_stuck", "2026-11-12T00:00:00.000Z"],
+        ["fresh", "bx_fresh", "2026-11-19T00:00:00.000Z"],
+      ].map(([id, boatId, createdAt]) => [
+        id as string,
+        sandboxRecord(id as string, boatId as string, createdAt as string),
+      ]),
+    );
+    const deleted: string[] = [];
+    const provider = {
+      async delete({ sandboxId }: { sandboxId: string }) {
+        deleted.push(sandboxId);
+        if (sandboxId === "bx_gone")
+          throw new ProviderError({ provider: "boat", code: "not_found", message: "gone", retryable: false });
+        if (sandboxId === "bx_stuck")
+          throw new ProviderError({ provider: "boat", code: "unavailable", message: "boat is down", retryable: true });
+        return { status: "pending" };
+      },
+    } as unknown as Provider;
+    const store = sandboxStore(rows);
+
+    const result = await cleanupSandboxes(provider, store, { retentionDays: 7, now });
+    expect(deleted).toEqual(["bx_old", "bx_gone", "bx_stuck"]);
+    expect(result.deleted).toEqual(["old", "gone"]);
+    expect(result.failed).toEqual([{ id: "stuck", message: "boat is down" }]);
+    expect(rows.get("old")).toMatchObject({ status: "deleted", deletedAt: now.toISOString() });
+    expect(rows.get("stuck")?.status).toBe("ready");
+    expect(rows.get("fresh")?.status).toBe("ready");
+    await expect(cleanupSandboxes(provider, store, { retentionDays: 0 })).rejects.toThrow(RangeError);
+  });
+});
+
+function golden(visibility: "org" | "private"): GoldenRecord {
+  return {
+    id: "golden-1",
+    orgId: ORG,
+    name: "web",
+    visibility,
+    ownerId: OWNER,
+    boatSnapshotId: SNAPSHOT,
+    boatSandboxId: "bx_builder",
+    config: parseGoldenConfig({
+      repos: [
+        { url: "https://github.com/example/web.git", branch: "main" },
+        { url: "https://github.com/example/api.git", branch: "dev" },
+      ],
+      init: ["pnpm i"],
+    }),
+    createdAt: "2026-11-08T12:00:00.000Z",
+  };
+}
+
+interface Setup {
+  golden: GoldenRecord;
+  credentials?: { user?: Record<string, string>; org?: Record<string, string> };
+  exec?: (command: string) => { exitCode: number; stderr?: string; stdout?: string };
+  promptError?: Error;
+  insertError?: Error;
+  leaky?: boolean;
+  actor?: GoldenActor;
+}
+
+function setup(options: Setup) {
+  const forks: ForkRequest[] = [];
+  const execs: { command: string; cwd?: string }[] = [];
+  const prompts: { sandboxId: string; harness: string; text: string }[] = [];
+  const stopped: string[] = [];
+  const deleted: string[] = [];
+  const rows = new Map<string, SandboxRecord>();
+  const info = (state: SandboxInfo["state"]): SandboxInfo => ({
+    id: "bx_1",
+    name: "web",
+    state,
+    providerState: state,
+    labels: {},
+    expiresAt: new Date("2026-11-08T16:00:00.000Z"),
+  });
+  const provider = {
+    id: "fake",
+    harnesses: ["claude", "codex"],
+    async fork(request: ForkRequest) {
+      forks.push(request);
+      return info("starting");
+    },
+    async get() {
+      return info("ready");
+    },
+    async exec(request: { command: string; cwd?: string }) {
+      execs.push({ command: request.command, ...(request.cwd ? { cwd: request.cwd } : {}) });
+      const out = options.exec?.(request.command) ?? { exitCode: 0 };
+      return { detached: false as const, stdout: "", stderr: "", timedOut: false, truncated: false, ...out };
+    },
+    async prompt(request: { sandboxId: string; harness: string; text: string }) {
+      if (options.promptError) throw options.promptError;
+      prompts.push(request);
+      return { promptId: "prompt_1", conversationId: "conv_1", status: "queued" as PromptStatus };
+    },
+    async stop({ sandboxId }: { sandboxId: string }) {
+      stopped.push(sandboxId);
+    },
+    async delete({ sandboxId }: { sandboxId: string }) {
+      deleted.push(sandboxId);
+      return { status: "pending" };
+    },
+  } as unknown as Provider;
+
+  const caller = options.actor ?? owner;
+  const goldens: GoldenStore = {
+    async list() {
+      return [];
+    },
+    async findByName(_org, name) {
+      const row = options.golden;
+      const visible = options.leaky || row.visibility === "org" || row.ownerId === caller.userId;
+      return row.name === name && visible ? [row] : [];
+    },
+    async insert() {
+      throw new Error("unused");
+    },
+    async setConfig() {},
+    async setSandbox() {},
+    async setSnapshot() {},
+  };
+  const credentialMap = options.credentials ?? { user: { claude_oauth: CLAUDE_TOKEN, openai: OPENAI_KEY } };
+  const credentials: CredentialSource = {
+    async get(scope, _ownerId, kind) {
+      return credentialMap[scope]?.[kind] ?? null;
+    },
+  };
+  const stores: LaunchStores = { goldens, sandboxes: sandboxStore(rows, options.insertError), credentials };
+  return { provider, stores, forks, execs, prompts, stopped, deleted, rows };
+}
+
+function sandboxStore(rows: Map<string, SandboxRecord>, insertError?: Error): SandboxStore {
+  return {
+    async insert(input) {
+      if (insertError) throw insertError;
+      const record: SandboxRecord = {
+        ...input,
+        conversationIds: [],
+        createdAt: "2026-11-08T12:00:00.000Z",
+        stoppedAt: null,
+        deletedAt: null,
+      };
+      rows.set(input.id, record);
+      return record;
+    },
+    async update(id, patch) {
+      const row = rows.get(id);
+      if (!row) throw new Error("missing sandbox");
+      rows.set(id, { ...row, ...definedOnly(patch) });
+    },
+    async listBefore(cutoff) {
+      return [...rows.values()].filter((row) => row.createdAt < cutoff && row.status !== "deleted");
+    },
+  };
+}
+
+function definedOnly(patch: SandboxPatch): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
+}
+
+function sandboxRecord(id: string, boatId: string, createdAt: string): SandboxRecord {
+  return {
+    id,
+    boatId,
+    goldenId: "golden-1",
+    orgId: ORG,
+    ownerId: OWNER,
+    harness: "claude",
+    status: "ready",
+    conversationIds: [],
+    createdAt,
+    stoppedAt: null,
+    deletedAt: null,
+  };
+}
+
+function prompt(status: PromptStatus, reason?: string): AgentEvent {
+  return {
+    id: `prompt-${status}`,
+    at: 1,
+    promptId: "p1",
+    kind: "prompt",
+    text: "go",
+    status,
+    ...(reason ? { reason } : {}),
+  };
+}
+
+function message(id: string, text: string, partial: boolean): AgentEvent {
+  return { id, at: 2, promptId: "p1", kind: "message", text, partial, tools: [] };
+}
+
+function other_event(type: string, data: unknown): AgentEvent {
+  return { id: `e-${type}`, at: 3, promptId: "p1", kind: "other", type, data };
+}
+
+function events(list: AgentEvent[]): AgentEvent[][] {
+  return [list.slice(0, 1), list.slice(1)].filter((page) => page.length > 0);
+}
+
+function outcomeProvider(status: PromptStatus, pages: AgentEvent[][]): Provider {
+  return {
+    async getPrompt() {
+      return { promptId: "p1", status, done: status !== "running" && status !== "queued" };
+    },
+    async events({ cursor }: { cursor?: string }) {
+      const index = cursor ? Number(cursor) : 0;
+      const page = pages[index] ?? [];
+      const more = index + 1 < pages.length;
+      return { events: page, cursor: String(index + 1), hasMore: more };
+    },
+  } as unknown as Provider;
+}
