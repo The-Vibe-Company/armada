@@ -123,9 +123,19 @@ export class GoldenCreateService {
       // `snapshot` only starts the save; it is asynchronous, so a brand-new snapshot is normally
       // "saving" here and must be polled, exactly like the original golden flow's own snapshot step.
       const started = await provider.snapshot({ sandboxId: builder.id, name: requestedSnapshot });
-      if (started.name !== requestedSnapshot)
-        throw new GoldenError("snapshot_failed", "Provider returned an unexpected snapshot revision.");
       const snapshot = started.name;
+      // The provider's reference is authoritative, not necessarily the requested label.
+      // A remap needs source correlation before we may publish or reclaim that artifact.
+      // Never accept the previous pointer, even if a provider reports matching provenance.
+      if (!snapshot || snapshot === input.existingGolden?.providerSnapshotId)
+        throw new GoldenError("snapshot_failed", "Provider returned an unsafe snapshot reference.");
+      if (snapshot !== requestedSnapshot) {
+        const provenance = started.sourceSandboxId === undefined ? await provider.getSnapshot(snapshot) : started;
+        if (provenance.name !== snapshot || provenance.sourceSandboxId !== builder.id)
+          throw new GoldenError("snapshot_failed", "Snapshot source could not be verified.");
+      } else if (started.sourceSandboxId !== undefined && started.sourceSandboxId !== builder.id) {
+        throw new GoldenError("snapshot_failed", "Snapshot source could not be verified.");
+      }
       ownedSnapshot = snapshot;
       const settled = started.status === "ready" ? started : await waitSnapshot(provider, snapshot, limits);
       artifactSettled = true;
@@ -155,13 +165,15 @@ export class GoldenCreateService {
         // with matching source provenance; an in-flight/unknown save is left for reconciliation.
         if (!artifactSettled) {
           try {
-            const artifact = await provider.getSnapshot(requestedSnapshot);
+            const candidate = ownedSnapshot ?? requestedSnapshot;
+            const artifact = await provider.getSnapshot(candidate);
             if (
-              artifact.name === requestedSnapshot &&
+              candidate !== input.existingGolden?.providerSnapshotId &&
+              artifact.name === candidate &&
               artifact.sourceSandboxId === builder.id &&
               artifact.status !== "saving"
             ) {
-              ownedSnapshot = requestedSnapshot;
+              ownedSnapshot = candidate;
               artifactSettled = true;
             }
           } catch {

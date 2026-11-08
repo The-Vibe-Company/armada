@@ -316,41 +316,109 @@ test("existing golden denial happens before authorization or provider", async ()
   expect(touched).toBe(false);
 });
 
-test("rejects a provider remapping a unique revision rather than persisting an unrelated artifact", async () => {
-  const seen: any[] = [];
+test.each(["returned", "lookup"])("uses provider snapshot identifier with builder provenance from %s", async (mode) => {
+  const seen: string[] = [];
+  let persisted = "";
+  let requested = "";
   const existing: any = {
     id: "stable-id",
     orgId: "o",
     name: "x",
     visibility: "private",
     ownerId: "u",
+    providerSnapshotId: "last-good",
     config: { repos: [], init: [] },
   };
-  const s = new GoldenCreateService({
+  const service = new GoldenCreateService({
     authorize: async () => ({ repos: [repo], token: "t" }),
     ssh: async () => {},
     scan: async () => {},
-    persist: async (x) => {
-      seen.push(x);
+    persist: async (input) => {
+      persisted = input.snapshot;
     },
   });
-  const p: any = {
+  const provider: any = {
     createGolden: async () => ({ id: "builder" }),
-    snapshot: async (x: any) => {
-      seen.push(x.name);
-      return { name: "provider-remap", status: "ready" };
+    snapshot: async ({ name }: { name: string }) => {
+      requested = name;
+      return {
+        name: "opaque-provider-reference",
+        status: "saving",
+        ...(mode === "returned" ? { sourceSandboxId: "builder" } : {}),
+      };
+    },
+    getSnapshot: async (name: string) => {
+      seen.push(name);
+      return { name, status: "ready", sourceSandboxId: "builder" };
     },
     stop: async () => {},
   };
-  await expect(
-    s.create(p, actor, {
+  const result = await service.create(
+    provider,
+    actor,
+    {
       name: "x",
       visibility: "private",
       repos: ["acme/web"],
       existingGolden: existing,
-    }),
-  ).rejects.toThrow("unexpected snapshot revision");
-  expect(seen).toHaveLength(1);
-  expect(seen[0]).not.toBe("golden-stable-id");
-  expect(seen[0]).toMatch(/^[a-z0-9][a-z0-9-]{0,62}$/);
+    },
+    { sleep: async () => {} },
+  );
+  expect(result.snapshot).toBe("opaque-provider-reference");
+  expect(persisted).toBe(result.snapshot);
+  expect(requested).toMatch(/^golden-r-[a-f0-9-]+$/);
+  expect(seen).toEqual(
+    mode === "returned" ? ["opaque-provider-reference"] : ["opaque-provider-reference", "opaque-provider-reference"],
+  );
 });
+
+test.each(["missing", "wrong", "last-good"])(
+  "unverified remap (%s) never publishes or deletes an unrelated artifact",
+  async (mode) => {
+    const effects: string[] = [];
+    const service = new GoldenCreateService({
+      authorize: async () => ({ repos: [repo], token: "t" }),
+      ssh: async () => {},
+      scan: async () => {},
+      persist: async () => {
+        effects.push("persist");
+      },
+    });
+    const reference = mode === "last-good" ? "last-good" : "unrelated";
+    const provider: any = {
+      createGolden: async () => ({ id: "builder" }),
+      snapshot: async () => ({
+        name: reference,
+        status: "ready",
+        ...(mode === "last-good" ? { sourceSandboxId: "builder" } : {}),
+      }),
+      getSnapshot: async (name: string) => ({
+        name,
+        status: "ready",
+        ...(mode === "wrong" ? { sourceSandboxId: "another-builder" } : {}),
+      }),
+      deleteSnapshot: async () => {
+        effects.push("delete");
+      },
+      stop: async () => {
+        effects.push("stop");
+      },
+    };
+    await expect(
+      service.create(provider, actor, {
+        name: "x",
+        visibility: "private",
+        repos: ["acme/web"],
+        existingGolden: {
+          id: "g",
+          orgId: "o",
+          name: "x",
+          visibility: "private",
+          ownerId: "u",
+          providerSnapshotId: "last-good",
+        } as any,
+      }),
+    ).rejects.toThrow();
+    expect(effects).toEqual(["stop"]);
+  },
+);

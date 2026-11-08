@@ -23,7 +23,8 @@ export interface Provider {
    * Callers inject credentials later, per sandbox, through `fork`'s `env`.
    */
   createGolden(request: CreateGoldenRequest): Promise<SandboxInfo>;
-  /** Freezes a sandbox under a name. The save runs after the call returns: poll `getSnapshot` until it settles. */
+  /** Freezes a sandbox using a requested label. SnapshotInfo.name is the authoritative provider
+   * reference (it may differ from the label); use it for polling, fork and deletion. */
   snapshot(request: SnapshotRequest): Promise<SnapshotInfo>;
   getSnapshot(name: string): Promise<SnapshotInfo>;
   /** Removes a snapshot. Sandboxes already started from it are not affected. */
@@ -104,9 +105,11 @@ export interface SandboxInfo {
 }
 
 export interface SnapshotInfo {
+  /** Authoritative provider reference, not necessarily the requested label or underlying disk artifact ID. */
   name: string;
   status: "saving" | "ready" | "failed";
   error?: string;
+  /** Source correlation returned by the provider; required to safely accept a remapped reference in secure builds. */
   sourceSandboxId?: string;
   createdAt?: Date;
 }
