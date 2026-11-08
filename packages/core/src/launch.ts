@@ -148,9 +148,10 @@ export async function launchSandbox(
       },
     );
   } catch (error) {
-    await quietly(() => stores.sandboxes.update(record.id, { status: "failed" }));
+    const failure = withSandbox(error, record.id, credentials.secrets);
+    await quietly(() => stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message }));
     await quietly(() => provider.stop({ sandboxId: forked.id }));
-    throw withSandbox(error, record.id, credentials.secrets);
+    throw failure;
   }
 }
 

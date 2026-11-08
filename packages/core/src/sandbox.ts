@@ -17,6 +17,8 @@ export interface SandboxRecord {
   createdAt: string;
   stoppedAt: string | null;
   deletedAt: string | null;
+  /** Why it failed (a usage limit, an expired login, a launch error). Null unless the status is failed. */
+  statusReason: string | null;
 }
 
 export interface SandboxPatch {
@@ -26,6 +28,8 @@ export interface SandboxPatch {
   stoppedAt?: string | null;
   /** ISO timestamp. */
   deletedAt?: string | null;
+  /** Only with the failed status; any other status clears it. */
+  statusReason?: string | null;
 }
 
 /**
@@ -100,10 +104,14 @@ export interface SandboxRow {
   created_at: string | Date;
   stopped_at: string | Date | null;
   deleted_at: string | Date | null;
+  status_reason: string | null;
 }
 
+/** The longest failure reason kept; a longer one is cut. */
+export const MAX_STATUS_REASON_LENGTH = 2000;
+
 const COLUMNS = `id, boat_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-  conversation_ids, created_at, stopped_at, deleted_at`;
+  conversation_ids, created_at, stopped_at, deleted_at, status_reason`;
 
 export function createSqlSandboxStore(sql: Sql): SandboxStore {
   return {
@@ -130,6 +138,8 @@ export function createSqlSandboxStore(sql: Sql): SandboxStore {
       if (patch.conversationIds !== undefined) set("conversation_ids", patch.conversationIds, "::text[]");
       if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");
       if (patch.deletedAt !== undefined) set("deleted_at", patch.deletedAt, "::timestamptz");
+      const reason = statusReasonOf(patch);
+      if (reason !== undefined) set("status_reason", reason, "::text");
       if (sets.length === 0) return;
       const result = await sql.query<{ id: string }>(
         `update public.sandboxes set ${sets.join(", ")} where id = $1 returning id`,
@@ -164,7 +174,19 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
     createdAt: iso(row.created_at),
     stoppedAt: row.stopped_at === null ? null : iso(row.stopped_at),
     deletedAt: row.deleted_at === null ? null : iso(row.deleted_at),
+    statusReason: row.status_reason ?? null,
   };
+}
+
+/**
+ * The `status_reason` a patch writes: its reason with the failed status (cut to the limit), null with
+ * any other status, and undefined (left as it is) when the patch does not touch either.
+ */
+export function statusReasonOf(patch: SandboxPatch): string | null | undefined {
+  if (patch.status !== undefined && patch.status !== "failed") return null;
+  if (patch.statusReason === undefined) return undefined;
+  if (patch.statusReason === null || patch.statusReason.trim() === "") return null;
+  return patch.statusReason.slice(0, MAX_STATUS_REASON_LENGTH);
 }
 
 function iso(value: string | Date): string {

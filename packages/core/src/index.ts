@@ -126,11 +126,13 @@ export {
   cleanupSandboxes,
   createSqlSandboxStore,
   DEFAULT_SANDBOX_RETENTION_DAYS,
+  MAX_STATUS_REASON_LENGTH,
   mapSandboxRow,
   type SandboxPatch,
   type SandboxRecord,
   type SandboxRow,
   type SandboxStore,
+  statusReasonOf,
 } from "./sandbox.ts";
 export {
   addMember,
