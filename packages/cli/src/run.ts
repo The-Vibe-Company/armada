@@ -1,27 +1,25 @@
 import { AuthError, assertProvider } from "@armada/auth";
 import {
   configFromFlags,
-  type GoldenActor,
   type GoldenConfig,
+  type GoldenActor,
+  type GoldenStore,
   GoldenError,
   type GoldenRecord,
-  type GoldenStore,
   HARNESSES,
   type Harness,
   LaunchError,
   type LaunchResult,
   type Provider,
   ProviderError,
-  parseGoldenConfig,
   type SandboxStore,
-  snapshotGolden,
+  parseGoldenConfig,
   VaultError,
   type VaultStore,
   VERSION,
   type Visibility,
 } from "@armada/core";
 import { startServer } from "@armada/mcp-server";
-import { createBoatProvider } from "@armada/provider-boat";
 import { flag, parseArgs, single, values } from "./args.ts";
 import { createArmadaApiClient } from "./armada-api.ts";
 import {
@@ -29,13 +27,10 @@ import {
   loginCommand,
   logoutCommand,
   productionAuthIo,
-  refreshSignedIn,
-  signedIn,
   tokenCreate,
   tokenList,
   tokenRevoke,
 } from "./auth-commands.ts";
-import { openSupabaseGoldens } from "./supabase.ts";
 import { credsCommand, orgCommand, type VaultIo } from "./vault-commands.ts";
 
 export interface Io {
@@ -50,10 +45,11 @@ export interface Deps {
   readFile?: (path: string) => Promise<string>;
   /** The secret for `armada creds set`. By default stdin, and only when it is piped. */
   readStdin?: () => Promise<string>;
-  provider?: Provider;
+  /** Legacy test seam; commands use the Armada API rather than direct stores. */
+  actor?: GoldenActor;
   store?: GoldenStore;
   sandboxes?: SandboxStore;
-  actor?: GoldenActor;
+  provider?: Provider;
   sandboxPolls?: number;
   snapshotPolls?: number;
   /** Set by auth tests. Otherwise login talks to Supabase and stores the session on this machine. */
@@ -212,7 +208,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     case "connect":
       return connect(args, io, deps, limits);
     case "snapshot":
-      return snapshot(args, io, deps, limits);
+      return snapshot(args, io, deps);
     case "list":
       return list(args, io, deps);
     default:
@@ -324,11 +320,17 @@ async function connect(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps, _
     );
   return 0;
 }
-async function snapshot(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps, limits: Limits): Promise<number> {
+async function snapshot(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Promise<number> {
   const name = oneName(args.positionals);
-  const { provider, store, actor } = await boatContext(args, io, deps);
-  const saved = await snapshotGolden(provider, store, actor, name, limits);
-  io.out(`Snapshotted golden ${saved.golden.name}.\nSaved snapshot: ${saved.snapshotName}\n`);
+  const auth = authOf(io, deps);
+  const client = await createArmadaApiClient({ env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session });
+  const saved = await client.request<{ name: string; snapshot: string }>("/api/v1/golden/snapshot", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }) }),
+    signal: AbortSignal.timeout(10 * 60_000),
+  });
+  io.out(`Snapshotted golden ${saved.name}.\nSaved snapshot: ${saved.snapshot}\n`);
   return 0;
 }
 
@@ -551,71 +553,6 @@ function oneName(positionals: string[]): string {
   return name;
 }
 
-async function session(
-  args: ReturnType<typeof parseArgs>,
-  io: Io,
-  deps: Deps,
-): Promise<{ store: GoldenStore; sandboxes: SandboxStore | undefined; actor: GoldenActor }> {
-  if (deps.store && deps.actor) return { store: deps.store, sandboxes: deps.sandboxes, actor: deps.actor };
-  const auth = authOf(io, deps);
-  const { session: login, anonKey } = await signedIn(auth);
-  const identity = {
-    supabaseUrl: login.supabaseUrl,
-    anonKey,
-    accessToken: login.accessToken,
-    userId: login.userId,
-    refresh: async (rejectedAccessToken: string) => {
-      const refreshed = await refreshSignedIn(auth, { ...login, accessToken: rejectedAccessToken });
-      return refreshed.accessToken;
-    },
-  };
-  const opened = await openSupabaseGoldens(identity, single(args, "--org"), auth.fetch);
-  return {
-    store: deps.store ?? opened.store,
-    sandboxes: deps.sandboxes ?? opened.sandboxes,
-    actor: deps.actor ?? opened.actor,
-  };
-}
-
-async function boatContext(
-  args: ReturnType<typeof parseArgs>,
-  io: Io,
-  deps: Deps,
-  withSandboxes: true,
-): Promise<{ provider: Provider; store: GoldenStore; sandboxes: SandboxStore; actor: GoldenActor }>;
-async function boatContext(
-  args: ReturnType<typeof parseArgs>,
-  io: Io,
-  deps: Deps,
-): Promise<{ provider: Provider; store: GoldenStore; actor: GoldenActor }>;
-async function boatContext(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps, withSandboxes = false) {
-  const { store, sandboxes, actor } = await session(args, io, deps);
-  const provider = deps.provider ?? boatProvider(deps.env ?? process.env, deps.fetch ?? fetch, deps.sleep);
-  if (withSandboxes) {
-    if (!sandboxes) throw new GoldenError("invalid_config", "No sandbox store is available.");
-    return { provider, store, sandboxes, actor };
-  }
-  return { provider, store, actor };
-}
-
-function boatProvider(
-  env: Record<string, string | undefined>,
-  fetchImpl: typeof fetch,
-  sleep?: (ms: number) => Promise<void>,
-): Provider {
-  const apiKey = env.BOAT_API_KEY;
-  if (!apiKey) {
-    throw new GoldenError(
-      "invalid_config",
-      "Set BOAT_API_KEY. Armada does not use credentials stored on the boat.dev account.",
-    );
-  }
-  return createBoatProvider({
-    apiKey,
-    fetch: fetchImpl,
-    ...(sleep ? { sleep } : {}),
-  });
-}
 
 async function serve(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   if (argv.length > 0) {
