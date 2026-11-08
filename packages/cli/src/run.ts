@@ -3,31 +3,21 @@ import {
   configFromFlags,
   connectGolden,
   createGolden,
-  GITHUB_NOT_CONNECTED,
-  type GitHubAccess,
   GOLDEN_ROOT,
   type GoldenActor,
   type GoldenConfig,
   GoldenError,
   type GoldenRecord,
   type GoldenStore,
-  githubAppFromEnv,
-  goldenForLaunch,
   HARNESSES,
   type Harness,
   LaunchError,
   type LaunchResult,
-  launchSandbox,
   type Provider,
   ProviderError,
   parseGoldenConfig,
-  type ResolvedCredentials,
-  resolveBoatKey,
-  resolveCredentials,
-  resolveGitHubAccess,
   type SandboxStore,
   snapshotGolden,
-  toHarnessCredentials,
   VaultError,
   type VaultStore,
   VERSION,
@@ -389,30 +379,26 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   const harness = harnessOf(single(args, "--agent"));
   const ttl = single(args, "--ttl");
   const ttlSeconds = ttl === undefined ? undefined : parseTtl(ttl);
-  const { store, sandboxes, actor } = await session(args, io, deps);
-  if (!sandboxes) throw new GoldenError("invalid_config", "No sandbox store is available.");
-  const golden = await goldenForLaunch(store, actor, name);
-  const resolved = await resolveForLaunch(io, deps, actor, harness, golden.visibility);
-  const provider = deps.provider ?? boatProvider({ BOAT_API_KEY: resolved.boatKey }, deps.fetch ?? fetch, deps.sleep);
-  const result = await launchSandbox(
-    provider,
-    {
-      goldens: store,
-      sandboxes,
-      credentials: { resolve: async () => toHarnessCredentials(resolved, resolved.github) },
-    },
-    actor,
-    {
+  const auth = authOf(io, deps);
+  const client = await createArmadaApiClient({
+    env: auth.env,
+    fetch: deps.fetch ?? auth.fetch,
+    session: auth.session,
+    ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
+  });
+  const result = await client.request<LaunchResult>("/api/v1/sandbox/launch", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
       golden: name,
       harness,
       ...(prompt === undefined ? {} : { prompt }),
       ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
-    },
-    {
-      ...(deps.sleep ? { sleep: deps.sleep } : {}),
-      ...(deps.sandboxPolls !== undefined ? { sandboxPolls: deps.sandboxPolls } : {}),
-    },
-  );
+      ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+    }),
+    // Golden setup may take minutes. The request itself still has one bounded timeout.
+    signal: AbortSignal.timeout(10 * 60_000),
+  });
   io.out(flag(args, "--json") ? `${JSON.stringify(jsonLaunch(result), null, 2)}\n` : launchText(result));
   return 0;
 }
@@ -445,70 +431,6 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
 function eventText(event: Awaited<ReturnType<Provider["events"]>>["events"][number]): string {
   if (event.kind === "message" || event.kind === "prompt" || event.kind === "steer") return event.text;
   return JSON.stringify(event);
-}
-
-async function resolveForLaunch(
-  io: Io,
-  deps: Deps,
-  actor: GoldenActor,
-  harness: Harness,
-  visibility: Visibility,
-): Promise<ResolvedCredentials & { boatKey: string; github: GitHubAccess }> {
-  const input = { userId: actor.userId, orgId: actor.orgId };
-  if (deps.vault) {
-    const resolved = await resolveCredentials(deps.vault.store, deps.vault.encryptionKey, { ...input, harness });
-    const boat = await resolveBoatKey(deps.vault.store, deps.vault.encryptionKey, { ...input, visibility });
-    const github = await resolveGitHubAccess(
-      {
-        store: deps.vault.store,
-        encryptionKey: deps.vault.encryptionKey,
-        app: githubAppFromEnv(deps.env ?? process.env),
-        ...(deps.fetch ? { fetch: deps.fetch } : {}),
-      },
-      actor.userId,
-    );
-    return { ...resolved, boatKey: boat.key, github };
-  }
-  const response = await control<{
-    env: Record<string, string>;
-    codexAuth: string | null;
-    boatKey: string;
-    github?: unknown;
-  }>(authOf(io, deps), "launch/resolve", { org: actor.orgId, harness, visibility });
-  return {
-    env: response.env,
-    files:
-      response.codexAuth === null
-        ? []
-        : [{ path: "/home/user/.codex/auth.json", content: response.codexAuth, mode: 0o600 }],
-    sources: [],
-    boatKey: response.boatKey,
-    github: githubAccessOf(response.github),
-  };
-}
-
-/** The server's `github` answer. An older server sends none, which is the same as not connected. */
-function githubAccessOf(value: unknown): GitHubAccess {
-  const record = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
-  const identity = record.identity as Record<string, unknown> | undefined;
-  if (
-    record.status === "connected" &&
-    typeof record.token === "string" &&
-    identity &&
-    typeof identity.login === "string" &&
-    typeof identity.id === "number" &&
-    typeof identity.name === "string" &&
-    typeof identity.email === "string"
-  ) {
-    return {
-      status: "connected",
-      token: record.token,
-      identity: { login: identity.login, id: identity.id, name: identity.name, email: identity.email },
-    };
-  }
-  const message = typeof record.message === "string" ? record.message : GITHUB_NOT_CONNECTED;
-  const status = record.status === "revoked" || record.status === "unavailable" ? record.status : "not_connected";
-  return { status, message };
 }
 
 function harnessOf(value: string | undefined): Harness {
