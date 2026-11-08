@@ -1,22 +1,22 @@
 name: Release
 
-# Publishes the armada CLI to npm when a version tag is pushed (docs/releasing.md):
-# @thevibecompany/armada-<target> (one compiled binary each), then @thevibecompany/armada
-# (the `armada` bin). The tag must be v<version of packages/*/package.json> and point at a
-# commit of main. A prerelease version is published under the `next` dist-tag, any other
-# under `latest`.
-#
-# Authentication: npm Trusted Publishing (GitHub OIDC) once it is configured on npmjs.com
-# for each package, with this file name, release.yml, and the `npm` environment. Until then
-# the NPM_TOKEN secret (a granular automation token) is used. Either way the packages carry
-# npm provenance. No token lives in the repository.
-#
-# `workflow_dispatch` runs everything up to `npm publish --dry-run`, from any ref.
-
+# Release Please opens the version PR on main. Merging it creates the release tag and
+# publishes in this same workflow: GITHUB_TOKEN-created tags do not trigger tag workflows.
+# Tag pushes also work; manual runs are dry runs unless a tag and publish=true are supplied.
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing v<version> tag (empty: dry-run the selected ref)"
+        type: string
+        default: ""
+      publish:
+        description: "Publish/recover the existing tag instead of a dry run"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -26,40 +26,89 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-please:
+    name: Prepare the version PR or GitHub release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: write # Explicitly dispatch CI for bot-authored release PRs.
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@8b8fd2cc23b2e18957157a9d923d75aa0c6f6ad5 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: steps.release.outputs.prs_created == 'true'
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+      - uses: ./.github/actions/setup-bun
+        if: steps.release.outputs.prs_created == 'true'
+      - name: Sync Bun's workspace versions and run release PR checks
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+        run: |
+          set -euo pipefail
+          bun install --lockfile-only --ignore-scripts
+          if ! git diff --quiet -- bun.lock; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add bun.lock
+            git commit -m "chore(release): synchronize Bun workspace versions"
+            git push origin "HEAD:$RELEASE_BRANCH"
+          fi
+          # Neither PR creation nor this bot push triggers pull_request/push CI.
+          gh workflow run ci.yml --ref "$RELEASE_BRANCH"
+
   check:
     name: Check the version and the tests
+    needs: release-please
+    if: ${{ !cancelled() && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || needs.release-please.outputs.release_created == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
       version: ${{ steps.version.outputs.version }}
       dist_tag: ${{ steps.version.outputs.dist_tag }}
       publish: ${{ steps.version.outputs.publish }}
+      sha: ${{ steps.version.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          ref: ${{ needs.release-please.outputs.tag_name || inputs.tag || github.ref }}
       - id: version
         name: The tag, the version and the dist-tag
         env:
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
+          SHOULD_PUBLISH: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'push' && github.ref_type == 'tag') || inputs.publish }}
         run: |
           set -euo pipefail
           version=$(jq -r .version packages/core/package.json)
-          for file in packages/*/package.json; do
+          for file in package.json packages/*/package.json apps/*/package.json; do
             test "$(jq -r .version "$file")" = "$version" || { echo "::error::$file is not at $version"; exit 1; }
           done
-          if [ "$REF_TYPE" = tag ]; then
-            test "$REF_NAME" = "v$version" || { echo "::error::tag $REF_NAME is not v$version"; exit 1; }
-            git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
-              || { echo "::error::$REF_NAME is not a commit of main"; exit 1; }
-            publish=true
-          else
-            publish=false
+          publish=false
+          if [ -n "$RELEASE_TAG" ]; then
+            test "$RELEASE_TAG" = "v$version" || { echo "::error::tag is not v$version"; exit 1; }
+            test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" \
+              || { echo "::error::checkout is not the release tag"; exit 1; }
+            git merge-base --is-ancestor HEAD origin/main \
+              || { echo "::error::tag is not a commit of main"; exit 1; }
+            if [ "$SHOULD_PUBLISH" = true ]; then publish=true; fi
+          elif [ "$SHOULD_PUBLISH" = true ]; then
+            echo "::error::Publishing requires an existing version tag."
+            exit 1
           fi
           case "$version" in *-*) dist_tag=next ;; *) dist_tag=latest ;; esac
           echo "Version $version, dist-tag $dist_tag, publish $publish."
           {
+            echo "sha=$(git rev-parse HEAD)"
             echo "version=$version"
             echo "dist_tag=$dist_tag"
             echo "publish=$publish"
@@ -74,8 +123,9 @@ jobs:
   binary:
     name: Binary (${{ matrix.target }})
     needs: check
+    if: ${{ !cancelled() && needs.check.result == 'success' }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - target: linux-x64
@@ -90,6 +140,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - run: bun run build --target ${{ matrix.target }}
@@ -104,10 +156,12 @@ jobs:
           name: armada-${{ matrix.target }}
           path: dist/armada-${{ matrix.target }}
           if-no-files-found: error
+          overwrite: true
 
   publish:
     name: Publish to npm
     needs: [check, binary]
+    if: ${{ !cancelled() && needs.check.result == 'success' && needs.binary.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: npm
@@ -120,12 +174,13 @@ jobs:
       PUBLISH: ${{ needs.check.outputs.publish }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
       - uses: ./.github/actions/setup-bun
-      # Trusted Publishing needs npm 11.5.1 or later; Node 24 ships npm 11.
+      # npm 11 supports Trusted Publishing. CI never needs a long-lived npm token.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
       - run: npm --version
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -138,13 +193,16 @@ jobs:
           bun scripts/npm.ts --binaries dist
           mkdir -p dist/tarballs
           for dir in dist/npm/*/; do (cd "$dir" && npm pack --pack-destination ../../tarballs); done
-          ls -l dist/tarballs
+          sha256sum dist/tarballs/*.tgz > dist/tarballs/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-tarballs-${{ needs.check.outputs.version }}
+          path: dist/tarballs
+          if-no-files-found: error
+          overwrite: true
       - name: Install the tarballs that are published
         run: scripts/npm-smoke.sh dist/tarballs linux-x64
       - name: npm publish
-        env:
-          # Empty when the secret is not set: npm then authenticates with Trusted Publishing.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           dry=()

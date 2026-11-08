@@ -6,22 +6,22 @@ This guide takes a new user from nothing to a coding agent running on boat.dev t
 | --- | --- |
 | Armada server (control API, OAuth, health) | `https://armada-mcp-production.up.railway.app` |
 | MCP endpoint (Streamable HTTP) | `https://armada-mcp-production.up.railway.app/mcp` |
-| npm package | `@thevibecompany/armada` (the `armada` command) |
+| npm package | `@the-vibe-company/armada` (the `armada` command) |
 
 `curl https://armada-mcp-production.up.railway.app/healthz` answers `{"ok":true,"version":"…"}` when the server is up.
 
 ## 1. Install the CLI
 
-The package ships a prebuilt binary for linux and macOS (x64 and arm64), so it needs neither Bun nor a build. Version 2 is a prerelease, published under the `next` dist-tag (docs/releasing.md):
+The package ships a prebuilt binary for linux and macOS (x64 and arm64), so it needs neither Bun nor a build. Version 2 replaces the legacy CLI under the `latest` dist-tag (docs/releasing.md):
 
 ```sh
-npx @thevibecompany/armada@next --help        # run once, with Node 18 or later
-bun x @thevibecompany/armada@next --help      # or with Bun
-npm install --global @thevibecompany/armada@next
+npx @the-vibe-company/armada --help        # run once, with Node 18 or later
+bun x @the-vibe-company/armada --help      # or with Bun
+npm install --global @the-vibe-company/armada
 armada --version
 ```
 
-Do not install with `--omit=optional`: the binary is the optional dependency `@thevibecompany/armada-<os>-<arch>` that matches your machine. If `bun x` says that package is not installed, clear Bun's `bunx` cache (`rm -rf "${TMPDIR:-/tmp}"/bunx-*`) and run it again.
+Do not install with `--omit=optional`: the binary is the optional dependency `@the-vibe-company/armada-<os>-<arch>` that matches your machine. If `bun x` says that package is not installed, clear Bun's `bunx` cache (`rm -rf "${TMPDIR:-/tmp}"/bunx-*`) and run it again.
 
 From a clone of this repository, `bun run armada <args>` runs the same CLI from source.
 

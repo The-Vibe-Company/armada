@@ -33,8 +33,8 @@ A Bun and TypeScript monorepo (Bun workspaces, strict `tsconfig.json` shared by 
 ## Install
 
 ```sh
-npx @thevibecompany/armada@next --help     # or: bun x @thevibecompany/armada@next --help
-npm install --global @thevibecompany/armada@next
+npx @the-vibe-company/armada --help     # or: bun x @the-vibe-company/armada --help
+npm install --global @the-vibe-company/armada
 ```
 
 The npm package ships the compiled binary for linux and macOS, x64 and arm64 (one optional dependency per platform), so it needs neither Bun nor a build. Getting started against production: [docs/dave-onboarding.md](docs/dave-onboarding.md). Publishing: [docs/releasing.md](docs/releasing.md).
@@ -148,7 +148,7 @@ Vercel: project root directory `apps/dashboard` (`vercel.json` there sets the Ne
 - **Dashboard e2e**: `bun run e2e` (Playwright, Chromium) on a production build of the dashboard.
 - **Binary (linux-x64, linux-arm64, darwin-x64, darwin-arm64)**: each binary is compiled with `bun build --compile` on a runner of its own platform, checked with `armada --version` there, staged as npm packages (`scripts/npm.ts`), packed with `npm pack`, installed with npm and Bun and run (`scripts/npm-smoke.sh`), and uploaded as the `armada-<target>` artifact of the run.
 
-`.github/workflows/release.yml` publishes `@thevibecompany/armada` and its platform packages to npm, with provenance, when a `v<version>` tag of `main` is pushed ([docs/releasing.md](docs/releasing.md)).
+Release Please opens the version PR from conventional commits. Merging it runs `.github/workflows/release.yml` to publish `@the-vibe-company/armada` and its platform packages to npm with provenance ([release and recovery guide](docs/releasing.md)).
 
 ## Armada v1
 
@@ -156,7 +156,7 @@ This repository used to hold Armada v1, a fleet orchestrator (Linear, merge queu
 
 - Its last commit is tagged [`armada-v1-final`](https://github.com/The-Vibe-Company/armada/tree/armada-v1-final); its release tags (`v0.1.0` to `v0.2.73`) and the whole history stay in this repository.
 - Its code is not on `main` anymore. Pieces worth keeping (for example the Claude Code and Codex adapters) are brought over by hand, as v2 needs them: `git show armada-v1-final:<path>`.
-- Its npm package, `@the-vibe-company/armada`, is not published anymore; its released versions stay on npm. v2 is published as `@thevibecompany/armada`.
+- v1 versions remain on npm as history. v2 replaces them under the same `@the-vibe-company/armada` package; installing its latest version upgrades the global CLI.
 
 ## License
 

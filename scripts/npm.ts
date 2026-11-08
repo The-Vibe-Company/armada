@@ -4,8 +4,8 @@
  *   bun scripts/npm.ts --binaries dist                      every target, to dist/npm
  *   bun scripts/npm.ts --binaries dist --target linux-x64   one platform package (smoke tests)
  *
- * `@thevibecompany/armada` holds the `armada` bin, a Node launcher (packages/cli/npm/armada.cjs),
- * and lists one optional dependency per target. `@thevibecompany/armada-<target>` holds that
+ * `@the-vibe-company/armada` holds the `armada` bin, a Node launcher (packages/cli/npm/armada.cjs),
+ * and lists one optional dependency per target. `@the-vibe-company/armada-<target>` holds that
  * target's binary, restricted by `os` and `cpu`, so npm and Bun install only the one that runs.
  * Platform packages are returned first: they are published before the package that needs them.
  */
@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { TARGETS, type Target } from "./build.ts";
 
-export const NPM_PACKAGE = "@thevibecompany/armada";
+export const NPM_PACKAGE = "@the-vibe-company/armada";
 
 const ROOT = join(import.meta.dir, "..");
 const VERSION: string = (await Bun.file(join(ROOT, "packages/core/package.json")).json()).version;
