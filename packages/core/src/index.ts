@@ -135,7 +135,6 @@ export {
 export { LaunchError, type LaunchErrorCode } from "./launch-error.ts";
 export {
   type LaunchWorkdir,
-  nativeHarnessWrapper,
   resolveLaunchWorkdir,
   resolveLaunchWorkdirAt,
 } from "./launch-workdir.ts";

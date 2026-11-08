@@ -110,6 +110,127 @@ describe("launch", () => {
     expect([...world.rows.values()][0]).toMatchObject({ status: "ready", conversationIds: [] });
   });
 
+  test("explicit selectors are validated after authorization and before allocation", async () => {
+    const manifest = golden("org");
+    for (const [repo, record, prepare, message] of [
+      ["example/missing", manifest, true, "no repository"],
+      [
+        "example/web",
+        {
+          ...manifest,
+          config: {
+            ...manifest.config,
+            repos: [
+              ...manifest.config.repos,
+              { url: "https://github.com/example/web.git", branch: "main", dir: "copy" },
+            ],
+          },
+        },
+        true,
+        "ambiguous",
+      ],
+      ["invalid", manifest, true, "owner/repo"],
+      ["example/web", manifest, false, "cannot prepare"],
+    ] satisfies [string, GoldenRecord, boolean, string][]) {
+      const world = setup({ golden: record, prepare });
+      await expect(
+        launchSandbox(world.provider, world.stores, owner, {
+          golden: "web",
+          harness: "claude",
+          repo,
+        }),
+      ).rejects.toThrow(message);
+      expect(world.forks).toEqual([]);
+      expect(world.rows.size).toBe(0);
+      expect(world.order).toEqual([]);
+    }
+    const hidden = setup({ golden: golden("private"), leaky: true, actor: other, prepare: true });
+    await expect(
+      launchSandbox(hidden.provider, hidden.stores, other, {
+        golden: "web",
+        harness: "claude",
+        repo: "example/missing",
+      }),
+    ).rejects.toThrow("No golden named 'web'");
+    expect(hidden.order).toEqual([]);
+  });
+
+  for (const harness of ["codex", "claude"] as const) {
+    test(`explicit repo prepares ${harness} after setup and before its first prompt`, async () => {
+      const world = setup({
+        golden: golden("org"),
+        prepare: true,
+        credentials: { user: { openai: AUTH_JSON, claude_oauth: CLAUDE_TOKEN } },
+        github: { status: "connected", token: GITHUB_TOKEN, identity: IDENTITY },
+      });
+      await launchSandbox(world.provider, world.stores, owner, {
+        golden: "web",
+        harness,
+        repo: "example/api",
+        prompt: "Go",
+        ttlSeconds: 7200,
+      });
+      expect(world.preparations).toEqual([{ sandboxId: "bx_1", harness, cwd: `${GOLDEN_ROOT}/api` }]);
+      expect(world.order).toEqual([
+        "credentials",
+        "fork",
+        "ready",
+        ...(harness === "codex" ? ["exec"] : []),
+        "exec",
+        "exec",
+        "exec",
+        "exec",
+        "prepare",
+        "prompt",
+      ]);
+      expect(world.forks[0]?.ttlSeconds).toBe(7200);
+      expect([...world.rows.values()][0]?.status).toBe("running");
+    });
+  }
+
+  test("idle explicit repo is prepared before launch returns and a later native send", async () => {
+    const world = setup({ golden: golden("org"), prepare: true });
+    const result = await launchSandbox(world.provider, world.stores, owner, {
+      golden: "web",
+      harness: "claude",
+      repo: "example/web",
+    });
+    expect(result.sandbox.status).toBe("ready");
+    expect(world.prompts).toEqual([]);
+    expect(world.order).toEqual(["credentials", "fork", "ready", "exec", "exec", "exec", "prepare"]);
+    await world.provider.prompt({ sandboxId: result.sandbox.providerSandboxId, harness: "claude", text: "Later" });
+    expect(world.order.slice(-2)).toEqual(["prepare", "prompt"]);
+    expect(world.preparations).toHaveLength(1);
+  });
+
+  test("preparation failure stops and records the sandbox, redacts errors, and never prompts", async () => {
+    const world = setup({
+      golden: golden("org"),
+      prepare: true,
+      preparationError: new Error(`failed ${CLAUDE_TOKEN}`),
+    });
+    const failure = (await launchSandbox(world.provider, world.stores, owner, {
+      golden: "web",
+      harness: "claude",
+      repo: "example/web",
+      prompt: "Go",
+    }).catch((error: unknown) => error)) as LaunchError;
+    expect(failure).toBeInstanceOf(LaunchError);
+    expect(failure.code).toBe("start_failed");
+    expect(failure.message).not.toContain(CLAUDE_TOKEN);
+    expect(world.rows.get(failure.sandboxId ?? "")).toMatchObject({ status: "failed", statusReason: failure.message });
+    expect(world.stopped).toEqual(["bx_1"]);
+    expect(world.prompts).toEqual([]);
+    expect(world.order.at(-1)).toBe("prepare");
+  });
+
+  test("without a selector even a provider with a hook keeps the legacy multi-repo launch", async () => {
+    const world = setup({ golden: golden("org"), prepare: true });
+    await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude", prompt: "Go" });
+    expect(world.preparations).toEqual([]);
+    expect(world.order).toEqual(["credentials", "fork", "ready", "exec", "exec", "exec", "prompt"]);
+  });
+
   test("the user's own credential wins over the org's, and the org's is the fallback", async () => {
     const own = setup({
       golden: golden("org"),
@@ -480,9 +601,13 @@ interface Setup {
   leaky?: boolean;
   actor?: GoldenActor;
   github?: GitHubAccess;
+  prepare?: boolean;
+  preparationError?: Error;
 }
 
 function setup(options: Setup) {
+  const order: string[] = [];
+  const preparations: { sandboxId: string; harness: string; cwd: string }[] = [];
   const forks: ForkRequest[] = [];
   const execs: { command: string; cwd?: string }[] = [];
   const prompts: { sandboxId: string; harness: string; text: string; model?: string; reasoningEffort?: string }[] = [];
@@ -502,18 +627,22 @@ function setup(options: Setup) {
     harnesses: ["claude", "codex"],
     capabilities: { claude: { reasoningEffort: true }, codex: { reasoningEffort: true } },
     async fork(request: ForkRequest) {
+      order.push("fork");
       forks.push(request);
       return info("starting");
     },
     async get() {
+      order.push("ready");
       return info("ready");
     },
     async exec(request: { command: string; cwd?: string }) {
+      order.push("exec");
       execs.push({ command: request.command, ...(request.cwd ? { cwd: request.cwd } : {}) });
       const out = options.exec?.(request.command) ?? { exitCode: 0 };
       return { detached: false as const, stdout: "", stderr: "", timedOut: false, truncated: false, ...out };
     },
     async prompt(request: (typeof prompts)[number]) {
+      order.push("prompt");
       if (options.promptError) throw options.promptError;
       prompts.push(request);
       return { promptId: "prompt_1", conversationId: "conv_1", status: "queued" as PromptStatus };
@@ -526,6 +655,14 @@ function setup(options: Setup) {
       return { status: "pending" };
     },
   } as unknown as Provider;
+
+  if (options.prepare) {
+    provider.prepareNativeHarnessCwd = async (request) => {
+      order.push("prepare");
+      preparations.push(request);
+      if (options.preparationError) throw options.preparationError;
+    };
+  }
 
   const caller = options.actor ?? owner;
   const goldens: GoldenStore = {
@@ -551,13 +688,16 @@ function setup(options: Setup) {
     },
   };
   const credentials = {
-    resolve: async (actor: GoldenActor, harness: "claude" | "codex") => ({
-      ...(await harnessCredentials(source, actor, harness)),
-      ...(options.github ? { github: options.github } : {}),
-    }),
+    resolve: async (actor: GoldenActor, harness: "claude" | "codex") => {
+      order.push("credentials");
+      return {
+        ...(await harnessCredentials(source, actor, harness)),
+        ...(options.github ? { github: options.github } : {}),
+      };
+    },
   };
   const stores: LaunchStores = { goldens, sandboxes: sandboxStore(rows, options.insertError), credentials };
-  return { provider, stores, forks, execs, prompts, stopped, deleted, rows };
+  return { provider, stores, forks, execs, prompts, stopped, deleted, rows, order, preparations };
 }
 
 function sandboxStore(rows: Map<string, SandboxRecord>, insertError?: Error): SandboxStore {

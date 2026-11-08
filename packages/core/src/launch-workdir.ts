@@ -1,4 +1,3 @@
-import type { Harness } from "./contract.ts";
 import { GOLDEN_ROOT, GoldenError, type GoldenRepo } from "./golden-config.ts";
 
 const DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
@@ -30,23 +29,13 @@ export function resolveLaunchWorkdirAt(repos: readonly GoldenRepo[], selector: s
   return { repo, cwd: `${root}/${repo.dir}` };
 }
 
-/**
- * Builds an Armada-side shell wrapper that establishes the recorded directory before native agent exec.
- * Codex receives no caller cwd override: `-C`/`--cd` are stripped through `--`, while Claude uses shell cd.
- */
-export function nativeHarnessWrapper(harness: Harness, workdir: LaunchWorkdir, argv: readonly string[]): string {
-  const executable = harness === "codex" ? "codex" : "claude";
-  const safeArgv = harness === "codex" ? stripCodexWorkdirOverrides(argv) : [...argv];
-  return `cd -- ${quote(workdir.cwd)} && exec ${quote(executable)}${safeArgv.map((arg) => ` ${quote(arg)}`).join("")}`;
-}
-
 function isRoot(value: string): boolean {
   return value.startsWith("/") && !value.endsWith("/") && !value.includes("\0");
 }
 
 function parseSelector(value: string): string {
   const match = REPO.exec(value);
-  if (!match || !match[1] || !match[2]) throw new GoldenError("invalid_config", "Repository must be owner/repo.");
+  if (!match?.[1] || !match[2]) throw new GoldenError("invalid_config", "Repository must be owner/repo.");
   return `${match[1].toLowerCase()}/${match[2].toLowerCase()}`;
 }
 
@@ -60,24 +49,4 @@ function repositoryIdentity(url: string): string | null {
   }
   const match = /^\/?([^/]+)\/([^/]+?)(?:\.git)?$/.exec(path);
   return match?.[1] && match[2] ? `${match[1].toLowerCase()}/${match[2].toLowerCase()}` : null;
-}
-
-function stripCodexWorkdirOverrides(argv: readonly string[]): string[] {
-  const result: string[] = [];
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (arg === undefined) continue;
-    if (arg === "--") return [...result, "--", ...argv.slice(index + 1)];
-    if (arg === "-C" || arg === "--cd") {
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith("--cd=")) continue;
-    result.push(arg);
-  }
-  return result;
-}
-
-function quote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }
