@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { memorySessionStore } from "@armada/auth";
 import { boatSnapshotName, createSqlGoldenStore, GOLDEN_ROOT, type GoldenActor, goldenForLaunch } from "@armada/core";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
 
 const WEB = "https://github.com/example/web.git";
@@ -108,10 +110,10 @@ describe("golden command", () => {
     }
   });
 
-  test("list reads Supabase as the user and does not call boat", async () => {
-    const org = "11111111-1111-4111-8111-111111111111";
+  test("golden commands act as the logged-in user and --org picks the org", async () => {
+    const orgA = "11111111-1111-4111-8111-111111111111";
+    const orgB = "44444444-4444-4444-8444-444444444444";
     const user = "22222222-2222-4222-8222-222222222222";
-    const token = jwt(user);
     const seen: { url: string; authorization: string | null; apikey: string | null }[] = [];
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
@@ -119,13 +121,16 @@ describe("golden command", () => {
       seen.push({ url: url.toString(), authorization: headers.get("authorization"), apikey: headers.get("apikey") });
       if (url.hostname !== "supabase.test") throw new Error(`unexpected host ${url.hostname}`);
       if (url.pathname.endsWith("/members")) {
-        return Response.json([{ org_id: org, role: "member" }]);
+        return Response.json([
+          { org_id: orgA, role: "member", orgs: { name: "Alpha" } },
+          { org_id: orgB, role: "admin", orgs: { name: "Beta" } },
+        ]);
       }
       if (url.pathname.endsWith("/goldens")) {
         return Response.json([
           {
             id: "33333333-3333-4333-8333-333333333333",
-            org_id: org,
+            org_id: url.searchParams.get("org_id")?.replace("eq.", ""),
             name: "web",
             visibility: "org",
             owner_id: user,
@@ -138,23 +143,37 @@ describe("golden command", () => {
       }
       throw new Error(`unexpected ${url.pathname}`);
     }) as typeof fetch;
-
-    const result = await capture(["golden", "list", "--json"], {
-      env: {
-        ARMADA_SUPABASE_URL: "https://supabase.test",
-        ARMADA_SUPABASE_ANON_KEY: "anon-public",
-        ARMADA_ACCESS_TOKEN: token,
-      },
-      fetch: fetchImpl,
+    const auth = loggedIn(user, fetchImpl, {
+      SUPABASE_ANON_KEY: "anon-public",
+      ARMADA_ACCESS_TOKEN: "stale-env-identity",
+      ARMADA_SUPABASE_URL: "https://elsewhere.test",
     });
+
+    const ambiguous = await capture(["golden", "list"], { auth });
+    expect(ambiguous.code).toBe(2);
+    expect(ambiguous.err).toContain("Name the org with --org. You belong to 2 orgs.");
+
+    const result = await capture(["golden", "list", "--json", "--org", "beta"], { auth });
     expect(result.code).toBe(0);
     expect(result.out).toContain('"name": "web"');
-    expect(result.out).not.toContain(token);
-    expect(result.out).not.toContain("anon-public");
+    expect(result.out).not.toContain("access-from-login");
     expect(seen.every((call) => call.url.startsWith("https://supabase.test/"))).toBe(true);
-    expect(seen.every((call) => call.authorization === `Bearer ${token}`)).toBe(true);
+    expect(seen.every((call) => call.authorization === "Bearer access-from-login")).toBe(true);
     expect(seen.every((call) => call.apikey === "anon-public")).toBe(true);
+    expect(seen.some((call) => call.url.includes(`org_id=eq.${orgB}`))).toBe(true);
     expect(seen.some((call) => call.url.includes("/boat"))).toBe(false);
+
+    const outsider = await capture(["golden", "list", "--org", "Gamma"], { auth });
+    expect(outsider.code).toBe(1);
+    expect(outsider.err).toContain("You are not a member of that org.");
+  });
+
+  test("golden commands without a login ask for one", async () => {
+    const auth = loggedIn("22222222-2222-4222-8222-222222222222", fetch, { SUPABASE_ANON_KEY: "anon" });
+    await auth.session.clear();
+    const result = await capture(["golden", "list"], { auth });
+    expect(result.code).toBe(1);
+    expect(result.err).toContain("Run armada login.");
   });
 
   test("create without a boat key explains that the boat account is not a credential store", async () => {
@@ -271,12 +290,6 @@ function actorOf(role: "admin" | "member"): GoldenActor {
   };
 }
 
-function jwt(sub: string): string {
-  const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
-  const body = Buffer.from(JSON.stringify({ sub })).toString("base64url");
-  return `${header}.${body}.sig`;
-}
-
 function caps() {
   return {
     steer: "none" as const,
@@ -325,4 +338,23 @@ async function asUser<T>(db: PGlite, userId: string, run: () => Promise<T>): Pro
     await db.exec("rollback");
     throw error;
   }
+}
+
+function loggedIn(userId: string, fetchImpl: typeof fetch, env: Record<string, string>): AuthIo {
+  const session = memorySessionStore({
+    userId,
+    accessToken: "access-from-login",
+    refreshToken: "refresh",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    supabaseUrl: "https://supabase.test",
+  });
+  return {
+    out: () => undefined,
+    err: () => undefined,
+    env,
+    fetch: fetchImpl,
+    now: () => new Date("2026-11-08T00:00:00.000Z"),
+    open: () => undefined,
+    session,
+  };
 }

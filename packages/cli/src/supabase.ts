@@ -1,3 +1,4 @@
+import type { AuthFetch } from "@armada/auth";
 import {
   type GoldenActor,
   type GoldenConfig,
@@ -18,6 +19,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 interface MemberRow {
   org_id: string;
   role: string;
+  orgs?: { name?: string } | null;
 }
 
 interface GoldenRow {
@@ -50,31 +52,31 @@ export interface SupabaseSession {
   actor: GoldenActor;
 }
 
+/** The signed-in user: the session `armada login` saved. The anon key identifies the project. */
+export interface Identity {
+  supabaseUrl: string;
+  anonKey: string;
+  accessToken: string;
+  userId: string;
+}
+
 /**
- * Goldens over Supabase PostgREST, as the signed-in user. The anon key identifies the project.
- * The access token is the user JWT, so row level security applies. No service role key is read.
+ * Goldens over Supabase PostgREST, as the signed-in user. The access token is the user JWT, so row
+ * level security applies. No service role key is read. `orgRef` is an org name or id; without it the
+ * caller's only org is used.
  */
 export async function openSupabaseGoldens(
-  env: Record<string, string | undefined>,
-  fetchImpl: typeof fetch,
+  identity: Identity,
+  orgRef: string | undefined,
+  fetchImpl: AuthFetch,
 ): Promise<SupabaseSession> {
-  const url = required(env, "ARMADA_SUPABASE_URL").replace(/\/$/, "");
-  const anonKey = required(env, "ARMADA_SUPABASE_ANON_KEY");
-  const accessToken = required(env, "ARMADA_ACCESS_TOKEN");
-  const userId = jwtSubject(accessToken);
-  const requestedOrg = env.ARMADA_ORG;
-  if (requestedOrg !== undefined && requestedOrg !== "" && !UUID.test(requestedOrg)) {
-    throw new GoldenError("invalid_config", "ARMADA_ORG must be an org id.");
-  }
+  const url = identity.supabaseUrl.replace(/\/$/, "");
+  const { anonKey, accessToken, userId } = identity;
   const members = await rest<MemberRow[]>(fetchImpl, url, anonKey, accessToken, "members", {
     method: "GET",
-    query: {
-      select: "org_id,role",
-      user_id: eq(userId),
-      ...(requestedOrg ? { org_id: eq(requestedOrg) } : {}),
-    },
+    query: { select: "org_id,role,orgs(name)", user_id: eq(userId) },
   });
-  const member = chooseMember(members, requestedOrg !== undefined && requestedOrg !== "");
+  const member = chooseMember(members, orgRef);
   if (member.role !== "admin" && member.role !== "member") {
     throw new GoldenError("forbidden", "Your membership role is not one Armada knows.");
   }
@@ -84,19 +86,23 @@ export async function openSupabaseGoldens(
   return { actor, store, sandboxes };
 }
 
-function chooseMember(members: MemberRow[], orgWasSet: boolean): MemberRow {
+function chooseMember(members: MemberRow[], orgRef: string | undefined): MemberRow {
+  if (orgRef !== undefined && orgRef.trim() !== "") {
+    const wanted = orgRef.trim().toLowerCase();
+    const found = members.filter((member) =>
+      UUID.test(wanted) ? member.org_id === wanted : (member.orgs?.name ?? "").trim().toLowerCase() === wanted,
+    );
+    const only = found[0];
+    if (only && found.length === 1) return only;
+    throw new GoldenError("forbidden", "You are not a member of that org.");
+  }
   const member = members[0];
   if (members.length === 1 && member) return member;
-  if (members.length === 0) {
-    throw new GoldenError(
-      "forbidden",
-      orgWasSet ? "You are not a member of that org." : "You are not a member of an org.",
-    );
-  }
-  throw new GoldenError("invalid_config", `Set ARMADA_ORG. You belong to ${members.length} orgs.`);
+  if (members.length === 0) throw new GoldenError("forbidden", "You are not a member of an org.");
+  throw new GoldenError("invalid_config", `Name the org with --org. You belong to ${members.length} orgs.`);
 }
 
-function supabaseStore(fetchImpl: typeof fetch, url: string, anonKey: string, accessToken: string): GoldenStore {
+function supabaseStore(fetchImpl: AuthFetch, url: string, anonKey: string, accessToken: string): GoldenStore {
   const call = <T>(table: string, init: RestInit) => rest<T>(fetchImpl, url, anonKey, accessToken, table, init);
 
   return {
@@ -213,7 +219,7 @@ async function patch(
 }
 
 async function rest<T>(
-  fetchImpl: typeof fetch,
+  fetchImpl: AuthFetch,
   base: string,
   anonKey: string,
   accessToken: string,
@@ -288,30 +294,9 @@ function mapRow(row: GoldenRow): GoldenRecord {
   };
 }
 
-function jwtSubject(token: string): string {
-  const part = token.split(".")[1];
-  if (!part) throw new GoldenError("invalid_config", "ARMADA_ACCESS_TOKEN is not a JWT.");
-  let payload: unknown;
-  try {
-    payload = JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
-  } catch {
-    throw new GoldenError("invalid_config", "ARMADA_ACCESS_TOKEN is not a JWT.");
-  }
-  if (!isRecord(payload) || typeof payload.sub !== "string" || !UUID.test(payload.sub)) {
-    throw new GoldenError("invalid_config", "ARMADA_ACCESS_TOKEN has no user id.");
-  }
-  return payload.sub;
-}
-
 function eq(value: string): string {
   if (/^[A-Za-z0-9_.-]+$/.test(value)) return `eq.${value}`;
   return `eq."${value.replaceAll('"', '""')}"`;
-}
-
-function required(env: Record<string, string | undefined>, name: string): string {
-  const value = env[name];
-  if (!value) throw new GoldenError("invalid_config", `Set ${name}.`);
-  return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
