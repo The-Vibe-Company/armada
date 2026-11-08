@@ -186,3 +186,41 @@ test("a persist failure deletes the orphaned ready snapshot and still stops the 
   );
   expect(log).toEqual(["delete:golden-bx", "stop"]);
 });
+
+test("uses normalized branches, directories, and init commands after canonical authorization", async () => {
+  let script = "";
+  let authorized: string[] = [];
+  const service = new GoldenCreateService({
+    authorize: async (_actor, _visibility, repos) => {
+      authorized = repos;
+      return { repos: [repo], token: "caller" };
+    },
+    ssh: async (_provider, input) => {
+      script = input.script;
+    },
+    scan: async () => {},
+    persist: async () => {},
+  });
+  const provider: any = {
+    createGolden: async () => ({ id: "bx" }),
+    snapshot: async () => ({ status: "ready" }),
+    stop: async () => {},
+  };
+  await service.create(provider, actor, {
+    name: "x",
+    visibility: "org",
+    repos: [],
+    config: {
+      repos: [{ owner: "acme", repo: "web", branch: "feature/login", dir: "frontend" }],
+      init: ["pnpm install"],
+    },
+  });
+  expect(authorized).toEqual(["acme/web"]);
+  expect(script).toContain("--branch 'feature/login'");
+  expect(script).toContain("/home/user/frontend");
+  expect(script).toContain("pnpm install");
+});
+
+test("keeps the legacy repo-string API compatible", () => {
+  expect(goldenScript(withGoldenDirs([repo]), ["echo setup"])).toContain("echo setup");
+});

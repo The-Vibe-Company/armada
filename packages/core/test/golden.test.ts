@@ -394,3 +394,37 @@ function caps() {
     approvals: false,
   };
 }
+
+describe("GitHub golden normalization", () => {
+  test("keeps branch slash names, custom directories, and init commands", async () => {
+    const { normalizeGitHubGoldenConfig } = await import("../src/server.ts");
+    const config = parseGoldenConfig({
+      repos: [
+        { url: "https://github.com/acme/web.git", branch: "feature/login", dir: "frontend" },
+        { url: "git@github.com:acme/api.git", branch: "release/2026" },
+      ],
+      init: ["pnpm install"],
+    });
+    expect(normalizeGitHubGoldenConfig(config)).toEqual({
+      repos: [
+        { owner: "acme", repo: "web", branch: "feature/login", dir: "frontend" },
+        { owner: "acme", repo: "api", branch: "release/2026", dir: "api" },
+      ],
+      init: ["pnpm install"],
+    });
+  });
+
+  test("refuses non-GitHub or credential-bearing repository URLs without echoing them", async () => {
+    const { normalizeGitHubGoldenConfig } = await import("../src/server.ts");
+    const otherHost = parseGoldenConfig({ repos: [{ url: "https://evil.example/acme/web.git" }] });
+    expect(() => normalizeGitHubGoldenConfig(otherHost)).toThrow("GitHub repository");
+    expect(() => parseGoldenConfig({ repos: [{ url: "https://user:secret@github.com/acme/web.git" }] })).toThrow(
+      "must not contain credentials",
+    );
+    try {
+      parseGoldenConfig({ repos: [{ url: "https://user:secret@github.com/acme/web.git" }] });
+    } catch (error) {
+      expect(String(error)).not.toContain("secret");
+    }
+  });
+});

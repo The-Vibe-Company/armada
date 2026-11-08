@@ -62,6 +62,54 @@ export interface GoldenConfig {
   init: string[];
 }
 
+/** A GitHub-only representation safe to hand to the server's checkout authorization layer. */
+export interface GitHubGoldenConfig {
+  repos: { owner: string; repo: string; branch: string; dir: string }[];
+  init: string[];
+}
+
+/**
+ * Converts an already-validated v2 golden config into GitHub repository identities. This intentionally
+ * accepts no arbitrary git host or credential-bearing URL: checkout authorization owns the token.
+ */
+export function normalizeGitHubGoldenConfig(config: GoldenConfig): GitHubGoldenConfig {
+  return {
+    repos: config.repos.map((repo) => ({ ...githubRepoIdentity(repo.url), branch: repo.branch, dir: repo.dir })),
+    init: [...config.init],
+  };
+}
+
+function githubRepoIdentity(value: string): { owner: string; repo: string } {
+  let path: string;
+  if (/^git@github\.com:[^/]+\/[^/]+(?:\.git)?$/.test(value)) {
+    path = value.slice("git@github.com:".length);
+  } else if (/^[^/@\s]+\/[^/@\s]+(?:\.git)?$/.test(value)) {
+    path = value;
+  } else {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      throw new GoldenError("invalid_config", "Repository must identify a GitHub repository.");
+    }
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "github.com" ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    ) {
+      throw new GoldenError("invalid_config", "Repository must identify a GitHub repository.");
+    }
+    path = url.pathname.replace(/^\//, "");
+  }
+  const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(path);
+  if (!match?.[1] || !match[2])
+    throw new GoldenError("invalid_config", "Repository must identify a GitHub repository.");
+  return { owner: match[1], repo: match[2] };
+}
+
 export interface ShellCommand {
   command: string;
   cwd: string;
