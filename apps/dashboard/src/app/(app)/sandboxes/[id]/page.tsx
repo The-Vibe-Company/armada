@@ -2,6 +2,7 @@ import { ArrowLeftIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { LinkPendingIcon } from "@/components/link-pending";
 import { SandboxActions } from "@/components/sandbox-actions";
 import { SandboxLogs } from "@/components/sandbox-logs";
 import { StatusBadge } from "@/components/status-badge";
@@ -25,17 +26,19 @@ export default async function SandboxPage({ params }: Props) {
   if (!isUuid(id)) notFound();
   const viewer = await requireViewer();
   const supabase = await createClient();
-  const sandbox = await getSandbox(supabase, id);
-  if (!sandbox) notFound();
-
-  const memberships = await listMemberships(supabase, viewer.id);
-  const [goldens, directory] = await Promise.all([
+  const pending = listMemberships(supabase, viewer.id);
+  const [sandbox, goldens, memberships, directory] = await Promise.all([
+    getSandbox(supabase, id),
     listGoldens(supabase),
-    memberDirectory(
-      supabase,
-      memberships.map((item) => item.org.id),
+    pending,
+    pending.then((items) =>
+      memberDirectory(
+        supabase,
+        items.map((item) => item.org.id),
+      ),
     ),
   ]);
+  if (!sandbox) notFound();
   const golden = goldens.find((item) => item.id === sandbox.golden_id);
   const org = memberships.find((item) => item.org.id === sandbox.org_id);
   const configured = mcpUrl() !== null;
@@ -55,7 +58,10 @@ export default async function SandboxPage({ params }: Props) {
       <div className="space-y-3">
         <Button variant="ghost" size="sm" asChild className="-ml-3">
           <Link href="/sandboxes">
-            <ArrowLeftIcon /> Sandboxes
+            <LinkPendingIcon>
+              <ArrowLeftIcon />
+            </LinkPendingIcon>
+            Sandboxes
           </Link>
         </Button>
         <div className="flex flex-wrap items-center justify-between gap-3">

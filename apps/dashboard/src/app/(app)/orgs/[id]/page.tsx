@@ -25,11 +25,13 @@ export default async function OrgPage({ params }: Props) {
   if (!isUuid(id)) notFound();
   const viewer = await requireViewer();
   const supabase = await createClient();
-  const membership = (await listMemberships(supabase, viewer.id)).find((item) => item.org.id === id);
+  const [memberships, roster] = await Promise.all([
+    listMemberships(supabase, viewer.id),
+    supabase.rpc("org_members", { target_org: id }),
+  ]);
+  const membership = memberships.find((item) => item.org.id === id);
   if (!membership) notFound();
   const isAdmin = membership.role === "admin";
-
-  const roster = await supabase.rpc("org_members", { target_org: id });
   if (roster.error) throw new Error(roster.error.message);
 
   return (

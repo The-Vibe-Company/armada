@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { createOrg } from "@/app/actions/orgs";
 import { ActionForm, SubmitButton } from "@/components/action-form";
+import { LinkPendingIcon } from "@/components/link-pending";
 import { Empty, PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -33,7 +34,9 @@ export default async function OrgsPage() {
                 <span className="font-medium">{org.name}</span>
                 <span className="flex items-center gap-2">
                   <Badge variant={role === "admin" ? "default" : "secondary"}>{role}</Badge>
-                  <ChevronRightIcon className="size-4 text-muted-foreground" />
+                  <LinkPendingIcon className="text-muted-foreground">
+                    <ChevronRightIcon />
+                  </LinkPendingIcon>
                 </span>
               </Link>
             </li>
