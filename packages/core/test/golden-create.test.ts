@@ -57,6 +57,7 @@ describe("createGoldenCreateService, wired to a real database", () => {
         name: "web",
         visibility: "org",
         repos: ["acme/web"],
+        setup: "echo setup",
       });
       expect(result.snapshot).toBe("golden-bx_1");
       expect(sshCalls).toHaveLength(1);
@@ -72,11 +73,32 @@ describe("createGoldenCreateService, wired to a real database", () => {
         visibility: "org",
         boat_snapshot_id: "golden-bx_1",
         boat_sandbox_id: "bx_1",
-        config: { repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] },
+        config: { repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: ["echo setup"] },
       });
+      const slots = await db.query("select golden_id, build_id from golden_backend_slots");
+      expect(slots.rows).toHaveLength(1);
+      expect((slots.rows[0] as { golden_id: string; build_id: string | null }).build_id).toBeNull();
     } finally {
       await db.close();
     }
+  });
+
+  test("Boat capacity requires a backend identity and a second factory build is refused globally", async () => {
+    const db = await openDatabase();
+    try {
+      await applyMigrations(db);
+      const { actor, userId } = await fixture(db);
+      await connectGitHub(db, userId);
+      const options = { sql: db, github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() }, installationApp: null, fetch: fakeGitHubFetch(), ssh: async () => {} };
+      const service = createGoldenCreateService(options);
+      const noIdentity = readyProvider();
+      delete noIdentity.backendIdentity;
+      await expect(service.create(noIdentity, actor, { name: "missing-id", visibility: "org", repos: ["acme/web"] })).rejects.toThrow("backend identity");
+      await service.create(readyProvider(), actor, { name: "one", visibility: "org", repos: ["acme/web"] });
+      const anotherFactory = createGoldenCreateService(options);
+      await expect(anotherFactory.create(readyProvider(), actor, { name: "two", visibility: "org", repos: ["acme/web"] })).rejects.toThrow("capacity");
+      expect((await db.query("select 1 from goldens")).rows).toHaveLength(1);
+    } finally { await db.close(); }
   });
 
   test("with GITHUB_APP_PRIVATE_KEY configured, checkout uses a scoped installation token and revokes it", async () => {
@@ -221,7 +243,9 @@ function readyProvider(): Provider {
   });
   const ok = { detached: false as const, exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
   return {
-    id: "fake",
+    id: "boat",
+    maxGoldens: 1,
+    backendIdentity: async () => ({ id: "boat-account" }),
     harnesses: ["claude", "codex"],
     capabilities: { claude: caps(), codex: caps() },
     createGolden: async () => sandbox(),

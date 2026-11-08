@@ -84,6 +84,42 @@ export type Database = {
           },
         ];
       };
+      golden_backend_slots: {
+        Row: {
+          id: string;
+          provider: string;
+          backend_id: string;
+          max_goldens: number;
+          org_id: string;
+          owner_id: string;
+          golden_id: string | null;
+          build_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          provider: string;
+          backend_id: string;
+          max_goldens: number;
+          org_id: string;
+          owner_id: string;
+          golden_id?: string | null;
+          build_id?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          provider?: string;
+          backend_id?: string;
+          max_goldens?: number;
+          org_id?: string;
+          owner_id?: string;
+          golden_id?: string | null;
+          build_id?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
       goldens: {
         Row: {
           id: string;

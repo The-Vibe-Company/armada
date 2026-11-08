@@ -169,6 +169,12 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
     id: PROVIDER_ID,
     harnesses: ["claude", "codex"],
     capabilities: BOAT_CAPABILITIES,
+    maxGoldens: 1,
+    async backendIdentity() {
+      const response = await call(() => api.me());
+      if (!response.user.id) throw unexpectedAnswer("account identity");
+      return { id: response.user.id };
+    },
 
     async createGolden(request: CreateGoldenRequest): Promise<SandboxInfo> {
       // noEnv is not optional: a golden must not inherit the boat account's model credentials.

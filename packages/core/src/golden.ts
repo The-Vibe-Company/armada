@@ -138,8 +138,19 @@ export async function connectGolden(
   if (!golden.boatSandboxId) {
     throw new GoldenError("conflict", `Golden '${golden.name}' has no sandbox yet.`);
   }
-  const sandbox = await waitReady(provider, golden.boatSandboxId, limits);
-  return { golden, sandbox };
+  const current = await provider.get(golden.boatSandboxId);
+  if (current.state !== "stopped") {
+    const sandbox = await waitReady(provider, golden.boatSandboxId, limits);
+    return { golden, sandbox };
+  }
+  if (!golden.boatSnapshotId) {
+    throw new GoldenError("conflict", `Golden '${golden.name}' has no saved snapshot to restore.`);
+  }
+  const restored = await provider.fork({ from: golden.boatSnapshotId, noEnv: true });
+  // setSandbox is intentionally only-once for normal creation. A restored master replaces the stopped id.
+  await store.setSandbox(golden.id, restored.id);
+  const sandbox = await waitReady(provider, restored.id, limits);
+  return { golden: { ...golden, boatSandboxId: restored.id }, sandbox };
 }
 
 /**

@@ -35,14 +35,19 @@ export interface GoldenCreateDeps {
   ssh(provider: Provider, input: { sandboxId: string; token: string; script: string }): Promise<void>;
   /** Fail-closed secret scan of the builder, before it may be snapshotted. */
   scan(provider: Provider, sandboxId: string): Promise<void>;
+  /** Reserve capacity before any builder starts. Returns an opaque server-only reservation. */
+  reserve?(provider: Provider, actor: GoldenActor): Promise<string | undefined>;
+  finalize?(reservationId: string, goldenId: string): Promise<void>;
+  release?(reservationId: string): Promise<void>;
   persist(input: {
     actor: GoldenActor;
     name: string;
     visibility: Visibility;
     repos: PreparedRepo[];
+    init: string[];
     snapshot: string;
     builderId: string;
-  }): Promise<void>;
+  }): Promise<string | void>;
 }
 
 /** Coordinates a disposable no-env builder; only a fully scanned, ready snapshot is persisted. */
@@ -69,9 +74,12 @@ export class GoldenCreateService {
     if (installations.size !== 1)
       throw new GoldenError("invalid_config", "Repositories must belong to one GitHub App installation.");
     const prepared = requested ? applyRequestedRepos(repos, requested) : withGoldenDirs(repos);
-    const builder = await provider.createGolden({ name, ttlSeconds: 86400, labels: { armada: "golden-builder" } });
+    const reservation = await this.deps.reserve?.(provider, actor);
+    let persisted = false;
+    let builder: Awaited<ReturnType<Provider["createGolden"]>> | undefined;
     let issued: { token: string; revoke(): Promise<void> } | undefined;
     try {
+      builder = await provider.createGolden({ name, ttlSeconds: 86400, labels: { armada: "golden-builder" } });
       issued = this.deps.mint
         ? await this.deps.mint(
             repos[0]?.installationId ?? 0,
@@ -93,14 +101,17 @@ export class GoldenCreateService {
         throw new GoldenError("snapshot_failed", settled.error ?? `Snapshot '${snapshot}' failed.`);
       }
       try {
-        await this.deps.persist({
+        const goldenId = await this.deps.persist({
           actor,
           name,
           visibility: input.visibility,
           repos: prepared,
+          init: [input.config?.init ?? [], input.setup ? [input.setup] : []].flat(),
           snapshot,
           builderId: builder.id,
         });
+        if (reservation && goldenId) await this.deps.finalize?.(reservation, goldenId);
+        persisted = true;
       } catch (error) {
         // A ready snapshot nothing tracks is worse than none: remove it so the name and the
         // boat.dev snapshot slot are both free to try again.
@@ -109,8 +120,9 @@ export class GoldenCreateService {
       }
       return { snapshot };
     } finally {
+      if (!persisted && reservation) await this.deps.release?.(reservation).catch(() => {});
       await issued?.revoke().catch(() => {});
-      await provider.stop({ sandboxId: builder.id }).catch(() => {});
+      if (builder) await provider.stop({ sandboxId: builder.id }).catch(() => {});
     }
   }
 }

@@ -9,6 +9,12 @@ import { scanGoldenSandbox } from "./golden-scan.ts";
 import { createSqlGoldenStore, type Sql } from "./golden-store.ts";
 import { sshStdinCheckout } from "./ssh-executor.ts";
 
+export interface GoldenBackendSlot {
+  reserve(input: { provider: string; backendId: string; capacity: number; orgId: string; ownerId: string }): Promise<string>;
+  finalize(reservationId: string, goldenId: string): Promise<void>;
+  release(reservationId: string): Promise<void>;
+}
+
 export interface GoldenCreateOptions {
   /** The privileged database connection the server already holds (shared with the control API). */
   sql: Sql;
@@ -24,6 +30,10 @@ export interface GoldenCreateOptions {
   fetch?: typeof fetch;
   /** For tests: overrides the pinned SSH stdin transport, which otherwise spawns real `ssh-keygen`/`ssh`. */
   ssh?: GoldenCreateDeps["ssh"];
+  /** Server-only global backend capacity. Omit for providers without a backend limit. */
+  backendSlot?: GoldenBackendSlot;
+  /** Boat is the secure-create default: one logical golden per backend account. */
+  defaultProviderCapacity?: number;
 }
 
 /**
@@ -42,11 +52,25 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
       return access.token;
     },
   });
+  const slots: GoldenBackendSlot = options.backendSlot ?? sqlGoldenBackendSlots(options.sql);
   const deps: GoldenCreateDeps = {
     authorize: adapter.authorize,
     ssh: options.ssh ?? ((provider, input) => sshStdinCheckout(provider, input)),
     scan: (provider, sandboxId) => scanGoldenSandbox(provider, sandboxId),
-    async persist({ actor, name, visibility, repos, snapshot, builderId }) {
+    async reserve(provider, actor) {
+      const capacity = provider.maxGoldens ?? options.defaultProviderCapacity ?? (provider.id === "boat" ? 1 : undefined);
+      if (capacity === undefined) return undefined;
+      if (!Number.isInteger(capacity) || capacity < 1)
+        throw new GoldenError("invalid_config", "Provider golden capacity must be a positive integer.");
+      if (!provider.backendIdentity)
+        throw new GoldenError("forbidden", "Provider cannot verify its backend identity for golden capacity.");
+      const identity = await provider.backendIdentity();
+      if (!identity?.id) throw new GoldenError("forbidden", "Provider returned no backend identity for golden capacity.");
+      return slots.reserve({ provider: provider.id, backendId: identity.id, capacity, orgId: actor.orgId, ownerId: actor.userId });
+    },
+    async finalize(reservationId, goldenId) { await slots.finalize(reservationId, goldenId); },
+    async release(reservationId) { await slots.release(reservationId); },
+    async persist({ actor, name, visibility, repos, init, snapshot, builderId }) {
       const config: GoldenConfig = {
         repos: repos.map(
           (repo): GoldenRepo => ({
@@ -55,7 +79,7 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
             dir: repo.dir,
           }),
         ),
-        init: [],
+        init,
       };
       const persist = async (sql: Sql) => {
         const transactionalStore = createSqlGoldenStore(sql);
@@ -68,11 +92,33 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         });
         await transactionalStore.setSandbox(inserted.id, builderId);
         await transactionalStore.setSnapshot(inserted.id, snapshot);
+        return inserted.id;
       };
-      if (options.sql.transaction) await options.sql.transaction(persist);
-      else await persist(options.sql);
+      return options.sql.transaction ? await options.sql.transaction(persist) : await persist(options.sql);
     },
   };
   if (adapter.mint) deps.mint = adapter.mint;
   return new GoldenCreateService(deps);
+}
+
+
+/** Service-role wrapper around the database reservation functions. */
+export function sqlGoldenBackendSlots(sql: Sql): GoldenBackendSlot {
+  return {
+    async reserve(input) {
+      const result = await sql.query<{ reserve_golden_backend_slot: string }>(
+        "select public.reserve_golden_backend_slot($1, $2, $3, $4::uuid, $5::uuid)",
+        [input.provider, input.backendId, input.capacity, input.orgId, input.ownerId],
+      );
+      const id = result.rows[0]?.reserve_golden_backend_slot;
+      if (!id) throw new GoldenError("conflict", "This backend has reached its golden capacity.");
+      return id;
+    },
+    async finalize(reservationId, goldenId) {
+      await sql.query("select public.finalize_golden_backend_slot($1::uuid, $2::uuid)", [reservationId, goldenId]);
+    },
+    async release(reservationId) {
+      await sql.query("select public.release_golden_backend_slot($1::uuid)", [reservationId]);
+    },
+  };
 }

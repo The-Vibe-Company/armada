@@ -12,6 +12,10 @@ export interface Provider {
   readonly harnesses: readonly Harness[];
   /** What each harness can do here. Callers branch on this, never on the harness name. */
   readonly capabilities: Readonly<Record<Harness, HarnessCapabilities>>;
+  /** Maximum independent goldens supported by this backend; omitted means no backend limit. */
+  readonly maxGoldens?: number;
+  /** Stable non-secret backend account identity, when supported. */
+  backendIdentity?(): Promise<{ id: string }>;
 
   /**
    * Starts a blank sandbox to build a golden in. It is not frozen until `snapshot`.
