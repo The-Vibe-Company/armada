@@ -5,8 +5,9 @@ COPY . .
 RUN bun install --frozen-lockfile && bun run build
 
 FROM debian:bookworm-slim
+# openssh-client: golden create's pinned SSH stdin checkout transport shells out to ssh-keygen and ssh.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates \
+  && apt-get install -y --no-install-recommends ca-certificates openssh-client \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/dist/armada /usr/local/bin/armada
 USER nobody

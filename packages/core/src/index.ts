@@ -101,6 +101,7 @@ export {
   snapshotGolden,
 } from "./golden.ts";
 export {
+  assignDirs,
   boatSnapshotName,
   configFromFlags,
   GOLDEN_BUILD_TTL_SECONDS,
@@ -119,12 +120,19 @@ export {
   splitRepoArg,
 } from "./golden-config.ts";
 export {
+  createGoldenCreateService,
+  type GoldenCreateOptions,
+} from "./golden-create.ts";
+export {
   type AuthorizedRepo,
   type GoldenCreateDeps,
   GoldenCreateService,
   goldenScript,
+  type PreparedRepo,
+  withGoldenDirs,
 } from "./golden-create-service.ts";
 export { type GoldenGitHubAdapterOptions, goldenGitHubAdapter } from "./golden-github.ts";
+export { scanGoldenSandbox } from "./golden-scan.ts";
 export { createSqlGoldenStore, type Sql } from "./golden-store.ts";
 export {
   DEFAULT_LAUNCH_TTL_SECONDS,
@@ -185,7 +193,7 @@ export {
   type SandboxStore,
   statusReasonOf,
 } from "./sandbox.ts";
-export { type SshExecDeps, sshStdinCheckout } from "./ssh-executor.ts";
+export { type SshExecDeps, shellQuote, sshStdinCheckout } from "./ssh-executor.ts";
 export {
   addMember,
   type CredentialInfo,

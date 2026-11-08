@@ -101,6 +101,7 @@ function redact(v: string, t: string) {
     .replace(/gh[suo]_[A-Za-z0-9_-]+/g, "[redacted]")
     .slice(0, 4096);
 }
-function shellQuote(value: string) {
-  return `'${value.replaceAll("'", "'\\\"'\\\"'")}'`;
+/** Single-quotes a shell word: close the quote, an escaped literal quote, reopen it. */
+export function shellQuote(value: string) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }

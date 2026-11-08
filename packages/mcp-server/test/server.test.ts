@@ -271,7 +271,20 @@ describe("tools", () => {
     const mcp = await client(await token(people.member));
     const { tools } = await mcp.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual(
-      ["exec", "golden_list", "interrupt", "launch", "list", "logs", "send", "status", "steer", "stop", "wait"].sort(),
+      [
+        "exec",
+        "golden_create",
+        "golden_list",
+        "interrupt",
+        "launch",
+        "list",
+        "logs",
+        "send",
+        "status",
+        "steer",
+        "stop",
+        "wait",
+      ].sort(),
     );
     for (const tool of tools) expect(tool.outputSchema).toBeDefined();
   });

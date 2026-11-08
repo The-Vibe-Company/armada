@@ -249,7 +249,8 @@ function parseInit(input: unknown): string[] {
   });
 }
 
-function assignDirs(repos: { url: string; branch: string; dir?: string }[]): GoldenRepo[] {
+/** Assigns each repo a single-segment directory: its own `dir`, else the URL's basename, with a `-2`, `-3`, ... suffix on collision. */
+export function assignDirs(repos: { url: string; branch: string; dir?: string }[]): GoldenRepo[] {
   const used = new Set<string>();
   return repos.map((repo) => {
     let dir = repo.dir ?? basename(repo.url);

@@ -1,8 +1,13 @@
 import { expect, test } from "bun:test";
+import { generateKeyPairSync } from "node:crypto";
 import { type GitHubInstallationApp, goldenGitHubAdapter } from "../src/index.ts";
 
 const actor = { userId: "u", orgId: "o", role: "admin" } as const;
 const app: GitHubInstallationApp = { appId: "1", privateKey: "bad key" };
+const signingKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
+  .privateKey.export({ type: "pkcs8", format: "pem" })
+  .toString();
+const signedApp: GitHubInstallationApp = { appId: "1", privateKey: signingKey };
 
 function installation(id = 9, account = "acme") {
   return {
@@ -17,7 +22,7 @@ function repo(id = 7, branch = "trunk", owner = "acme") {
   return { id, name: "web", default_branch: branch, owner: { login: owner } };
 }
 
-test("authorizes each requested repository with the caller token and returns IDs and default branches", async () => {
+test("authorizes each requested repository with the caller token and returns IDs, default branches and the token", async () => {
   const calls: string[] = [];
   const adapter = goldenGitHubAdapter({
     app,
@@ -29,9 +34,10 @@ test("authorizes each requested repository with the caller token and returns IDs
       return Response.json(repo());
     }) as typeof fetch,
   });
-  await expect(adapter.authorize(actor, "org", ["acme/web"])).resolves.toEqual([
-    { owner: "acme", repo: "web", id: 7, installationId: 9, branch: "trunk" },
-  ]);
+  await expect(adapter.authorize(actor, "org", ["acme/web"])).resolves.toEqual({
+    repos: [{ owner: "acme", repo: "web", id: 7, installationId: 9, branch: "trunk" }],
+    token: "user-token",
+  });
   expect(calls).toContain("https://api.github.com/repos/acme/web");
 });
 
@@ -73,10 +79,42 @@ test("installation pagination is honored before authorization", async () => {
       });
     }) as typeof fetch,
   });
-  await expect(adapter.authorize(actor, "org", ["acme/web"])).resolves.toHaveLength(1);
+  const result = await adapter.authorize(actor, "org", ["acme/web"]);
+  expect(result.repos).toHaveLength(1);
 });
 
-test("missing App server credentials refuse minting explicitly", async () => {
-  const adapter = goldenGitHubAdapter({ app: null, accessToken: async () => "user-token" });
-  await expect(adapter.mint(9, [7])).rejects.toThrow("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY");
+test("without an App no mint is offered: checkout falls back to the caller's own token", async () => {
+  const adapter = goldenGitHubAdapter({
+    app: null,
+    accessToken: async () => "user-token",
+    fetch: (async (input: string | URL | Request) =>
+      String(input).includes("/user/installations")
+        ? Response.json({ installations: [installation()] })
+        : Response.json(repo())) as typeof fetch,
+  });
+  expect(adapter.mint).toBeUndefined();
+  await expect(adapter.authorize(actor, "org", ["acme/web"])).resolves.toMatchObject({ token: "user-token" });
+});
+
+test("with an App, mint issues a scoped token independent of the caller's own, and revoke calls GitHub", async () => {
+  const calls: string[] = [];
+  const adapter = goldenGitHubAdapter({
+    app: signedApp,
+    accessToken: async () => "user-token",
+    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(`${init?.method ?? "GET"} ${url}`);
+      if (url.includes("/access_tokens")) {
+        return Response.json({ token: "ghs_scoped", expires_at: new Date(Date.now() + 3_600_000).toISOString() });
+      }
+      if (url.includes("/installation/token") && init?.method === "DELETE") return new Response(null, { status: 204 });
+      return new Response(null, { status: 500 });
+    }) as typeof fetch,
+  });
+  expect(adapter.mint).toBeDefined();
+  const issued = await adapter.mint?.(9, [7]);
+  expect(issued?.token).toBe("ghs_scoped");
+  expect(issued?.token).not.toBe("user-token");
+  await issued?.revoke();
+  expect(calls).toContain("DELETE https://api.github.com/installation/token");
 });

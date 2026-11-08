@@ -7,7 +7,7 @@ Armada is a launcher, not an orchestrator: it does not split work, merge pull re
 - **Specification (v0):** [#455](https://github.com/The-Vibe-Company/armada/issues/455)
 - **This scaffold:** [#456](https://github.com/The-Vibe-Company/armada/issues/456)
 
-> **Status:** goldens can be created, connected, snapshotted and listed (`armada golden`), and a golden can be launched into a sandbox (`armada launch`). `armada login` and `armada token` sign a person in and mint service tokens. `armada org` and `armada creds` manage orgs, members and encrypted credentials (#461). `armada serve` runs the remote MCP server (#464): orchestrators list goldens, launch, and then drive the agent (status, wait, logs, send, steer, interrupt, exec, stop).
+> **Status:** goldens can be created, connected, snapshotted and listed (`armada golden`), and a golden can be launched into a sandbox (`armada launch`). `armada golden create --name` builds a multi-repo golden entirely on the server, over the caller's own GitHub connection, with no boat.dev key needed locally. `armada login` and `armada token` sign a person in and mint service tokens. `armada org` and `armada creds` manage orgs, members and encrypted credentials (#461). `armada serve` runs the remote MCP server (#464): orchestrators list and create goldens, launch, and then drive the agent (status, wait, logs, send, steer, interrupt, exec, stop).
 
 ## Layout
 
@@ -52,6 +52,7 @@ bun run typecheck        # tsc --noEmit, strict
 bun run verify           # lint, typecheck and tests: what CI runs
 bun run armada --help    # the CLI from source
 bun run armada golden create <name> --repo <url>[@branch] --init "<cmd>" [--private]
+bun run armada golden create --name <name> --repo <owner>/<repo> [--setup <file>] [--private]   # server-orchestrated, no BOAT_API_KEY
 bun run armada golden connect <name>
 bun run armada golden snapshot <name>
 bun run armada golden list
@@ -78,6 +79,8 @@ bun run build:all                    # dist/armada-<target> for linux and macOS,
 The credentials and the boat.dev key come from the encrypted store: the caller's own, else the org's (`resolveCredentials`, `resolveBoatKey`). A private golden uses its owner's personal boat key when there is one. `armada launch` asks the server for them (`ARMADA_URL`); it holds no encryption key and no service role key.
 
 Inside the sandbox, git and `gh` act as the person who launched it when they connected GitHub in the dashboard (Settings): the launch refreshes their GitHub App user token, injects `GH_TOKEN` and `GITHUB_TOKEN` (never into a golden), sets the git identity to `<id>+<login>@users.noreply.github.com` and configures git to use the token. Without a connection the launch still works and says `GitHub: not set up.` How it works, its limits and how to create the GitHub App: [docs/github-app.md](docs/github-app.md).
+
+`armada golden create --name` (and the MCP tool `golden_create`) builds a golden from one or more `owner/repo`s entirely on the server: a disposable, no-env sandbox clones them over the caller's own cached GitHub connection, runs an optional setup script, and is scanned for leaked tokens before anything is saved. No `BOAT_API_KEY` is needed for this path. Details, its security model and the exact MCP/control API/CLI contracts: [docs/golden-create.md](docs/golden-create.md).
 
 ## Identity, orgs and credentials
 

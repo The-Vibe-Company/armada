@@ -15,7 +15,7 @@ const TIMEOUT = 15_000;
 export interface GoldenGitHubAdapterOptions {
   /** Resolves the caller's cached OAuth access token. It must be the caller's token, never an app token. */
   accessToken(actor: GoldenActor): Promise<string>;
-  /** The GitHub App's server-only signing credentials; absent credentials are a configuration error. */
+  /** The GitHub App's server-only signing credentials. Null: checkout falls back to the caller's own token. */
   app: GitHubInstallationApp | null;
   fetch?: typeof fetch;
 }
@@ -27,11 +27,11 @@ export interface GoldenGitHubAdapterOptions {
  */
 export function goldenGitHubAdapter(options: GoldenGitHubAdapterOptions): Pick<GoldenCreateDeps, "authorize" | "mint"> {
   const fetchImpl = options.fetch ?? fetch;
-  return {
+  const adapter: Pick<GoldenCreateDeps, "authorize" | "mint"> = {
     async authorize(actor, _visibility, requested) {
       const token = await options.accessToken(actor);
       const installations = await fetchGitHubInstallations(token, { fetch: fetchImpl });
-      const result: AuthorizedRepo[] = [];
+      const repos: AuthorizedRepo[] = [];
       for (const value of requested) {
         const { owner, repo } = requestedRepo(value);
         const repository = await userRepository(token, owner, repo, fetchImpl);
@@ -42,7 +42,7 @@ export function goldenGitHubAdapter(options: GoldenGitHubAdapterOptions): Pick<G
             `You cannot create a golden from '${owner}/${repo}' with this GitHub App installation.`,
           );
         }
-        result.push({
+        repos.push({
           owner: repository.owner.login,
           repo: repository.name,
           id: repository.id,
@@ -50,19 +50,19 @@ export function goldenGitHubAdapter(options: GoldenGitHubAdapterOptions): Pick<G
           branch: repository.default_branch,
         });
       }
-      return result;
-    },
-    async mint(installationId, repoIds) {
-      if (!options.app) {
-        throw new GitHubAuthError(
-          "misconfigured",
-          "Secure golden checkout requires GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY; OAuth client credentials cannot mint installation tokens.",
-        );
-      }
-      const issued = await mintInstallationToken(options.app, installationId, repoIds, { fetch: fetchImpl });
-      return { token: issued.token, revoke: () => revokeInstallationToken(issued.token, { fetch: fetchImpl }) };
+      return { repos, token };
     },
   };
+  // Without the App's signing key, checkout falls back to the caller's own token from `authorize`,
+  // which `GoldenCreateService` never rotates or revokes. Only present `mint` when it can act.
+  if (options.app) {
+    const app = options.app;
+    adapter.mint = async (installationId, repoIds) => {
+      const issued = await mintInstallationToken(app, installationId, repoIds, { fetch: fetchImpl });
+      return { token: issued.token, revoke: () => revokeInstallationToken(issued.token, { fetch: fetchImpl }) };
+    };
+  }
+  return adapter;
 }
 
 interface UserRepository {

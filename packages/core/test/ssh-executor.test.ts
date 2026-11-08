@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { sshStdinCheckout } from "../src/index.ts";
+import { shellQuote, sshStdinCheckout } from "../src/index.ts";
 
 const provider: any = { sshKey: async () => ({ sshEndpoint: "ssh.test:2222", hostKey: "ssh-ed25519 AAAAPINNED" }) };
 describe("SSH stdin checkout", () =>
@@ -81,4 +81,11 @@ test("the argv-joined remote shell reads the secret first line instead of execut
   expect(result.status).toBe(0);
   expect(result.stdout).not.toContain("SHOULD_NOT_RUN");
   expect(result.stderr).not.toContain("+ ");
+});
+
+test("shellQuote round-trips a value containing single quotes through a real shell", () => {
+  const value = "it's a trap' ; rm -rf / #";
+  const result = spawnSync("bash", ["-c", `printf '%s' ${shellQuote(value)}`], { encoding: "utf8" });
+  expect(result.status).toBe(0);
+  expect(result.stdout).toBe(value);
 });

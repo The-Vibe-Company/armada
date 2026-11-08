@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { GoldenCreateService, goldenScript } from "../src/index.ts";
+import { GoldenCreateService, goldenScript, withGoldenDirs } from "../src/index.ts";
 
 const actor: any = { userId: "u", orgId: "o", role: "admin" };
 const repo = { owner: "acme", repo: "web", id: 1, installationId: 2 };
@@ -19,7 +19,7 @@ test("coordinates only scanned golden lifecycle", async () => {
     },
   };
   const s = new GoldenCreateService({
-    authorize: async () => [repo],
+    authorize: async () => ({ repos: [repo], token: "caller-token" }),
     mint: async () => ({
       token: "secret",
       revoke: async () => {
@@ -42,7 +42,7 @@ test("coordinates only scanned golden lifecycle", async () => {
 test("scan failure never snapshots or persists and cleans up", async () => {
   const log: string[] = [];
   const s = new GoldenCreateService({
-    authorize: async () => [repo],
+    authorize: async () => ({ repos: [repo], token: "caller-token" }),
     mint: async () => ({ token: "x", revoke: async () => void log.push("revoke") }),
     ssh: async () => {},
     scan: async () => {
@@ -63,9 +63,40 @@ test("scan failure never snapshots or persists and cleans up", async () => {
   await expect(s.create(p, actor, { name: "x", visibility: "private", repos: ["a"] })).rejects.toThrow("secret");
   expect(log).toEqual(["revoke", "stop"]);
 });
-test("script has canonical paths and unsets token", () => {
-  const x = goldenScript([repo]);
-  expect(x).toContain("/home/user/acme/web");
+test("falls back to the caller's own token and never mints when no App is configured", async () => {
+  const log: string[] = [];
+  const s = new GoldenCreateService({
+    authorize: async () => ({ repos: [repo], token: "caller-token" }),
+    ssh: async (_p, x) => {
+      log.push(x.token);
+    },
+    scan: async () => {
+      void log.push("scan");
+    },
+    persist: async () => {
+      void log.push("persist");
+    },
+  });
+  const p: any = {
+    createGolden: async () => ({ id: "bx" }),
+    snapshot: async () => ({ status: "ready" }),
+    stop: async () => {},
+  };
+  await s.create(p, actor, { name: "x", visibility: "org", repos: ["acme/web"] });
+  expect(log).toEqual(["caller-token", "scan", "persist"]);
+});
+
+test("script has canonical single-segment paths and unsets token", () => {
+  const prepared = withGoldenDirs([repo]);
+  const x = goldenScript(prepared);
+  expect(x).toContain("/home/user/web");
+  expect(x).not.toContain("/home/user/acme/web");
   expect(x).toContain("unset ARMADA_GIT_TOKEN");
-  expect(() => goldenScript([{ ...repo, owner: "../x" }])).toThrow("Unsafe");
+  expect(() => goldenScript(withGoldenDirs([{ ...repo, owner: "../x" }]))).toThrow("Unsafe");
+});
+
+test("withGoldenDirs disambiguates repos that share a name", () => {
+  const other = { owner: "other", repo: "web", id: 9, installationId: 2 };
+  const dirs = withGoldenDirs([repo, other]).map((r) => r.dir);
+  expect(dirs).toEqual(["web", "web-2"]);
 });

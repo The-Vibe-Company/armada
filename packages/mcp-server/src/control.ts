@@ -1,13 +1,19 @@
 import { type AuthFetch, assertSupabaseUrl } from "@armada/auth";
 import {
   addMember,
+  createGoldenCreateService,
   createOrg,
   createSqlVaultStore,
   ENCRYPTION_KEY_ENV,
   EncryptionKeyError,
   type GitHubAccess,
   type GitHubApp,
+  type GoldenActor,
+  type GoldenCreateService,
+  GoldenError,
+  type GoldenErrorCode,
   githubAppFromEnv,
+  githubInstallationAppFromEnv,
   listCredentials,
   listMembers,
   listOrgs,
@@ -26,7 +32,9 @@ import {
   VaultError,
   type VaultErrorCode,
   type VaultStore,
+  type Visibility,
 } from "@armada/core";
+import { createBoatProvider } from "@armada/provider-boat";
 
 export const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = 128 * 1024;
@@ -47,6 +55,10 @@ export interface ControlOptions {
   github?: { app: GitHubApp | null; fetch?: typeof fetch; now?: () => Date };
   /** Resolves a visible Armada sandbox to its provider. The Boat key stays on the server. */
   logs?: (userId: string, sandboxId: string) => Promise<{ provider: Provider; boatId: string }>;
+  /** Secure, server-orchestrated multi-repo golden creation (`armada golden create --name`). Absent: the route refuses. */
+  goldenCreate?: GoldenCreateService;
+  /** A provider for one boat.dev key, for `golden/create`. The key is used in this process only. */
+  providerFor?: (apiKey: string) => Provider;
   fetch?: AuthFetch;
 }
 
@@ -57,6 +69,15 @@ const STATUS: Record<VaultErrorCode, number> = {
   missing_credential: 404,
   conflict: 409,
   unavailable: 503,
+};
+
+const GOLDEN_STATUS: Record<GoldenErrorCode, number> = {
+  invalid_config: 400,
+  forbidden: 403,
+  not_found: 404,
+  conflict: 409,
+  setup_failed: 502,
+  snapshot_failed: 502,
 };
 
 /**
@@ -79,6 +100,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   } catch (error) {
     if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
     if (error instanceof VaultError) return fail(STATUS[error.code], error.code, error.message);
+    if (error instanceof GoldenError) return fail(GOLDEN_STATUS[error.code], error.code, error.message);
     if (error instanceof EncryptionKeyError) {
       return fail(503, "unavailable", `Credential encryption is not configured on the server (${ENCRYPTION_KEY_ENV}).`);
     }
@@ -140,9 +162,40 @@ async function dispatch(
       return resolveLaunch(options, userId, body, org);
     case "logs/read":
       return readLogs(options, userId, required(body, "id"), body);
+    case "golden/create":
+      return createGoldenRoute(options, userId, body);
     default:
       return undefined;
   }
+}
+
+/**
+ * `armada golden create --name`: securely builds a golden from one or more GitHub repositories in a
+ * disposable, no-env builder, over the caller's own cached GitHub connection, and persists it only
+ * once a fail-closed secret scan and the snapshot both succeed. The caller needs no boat.dev key.
+ */
+async function createGoldenRoute(
+  options: ControlOptions,
+  userId: string,
+  body: Record<string, unknown>,
+): Promise<{ name: string; visibility: Visibility; snapshot: string }> {
+  if (!options.goldenCreate || !options.providerFor) {
+    throw new VaultError("unavailable", "Secure golden creation is not configured on this server.");
+  }
+  const org = await resolveOrg(options.store, userId, optional(body, "org"));
+  const visibility: Visibility = requiredBoolean(body, "private", false) ? "private" : "org";
+  const name = required(body, "name");
+  const repos = requiredStringArray(body, "repos");
+  const setup = optional(body, "setup");
+  const actor: GoldenActor = { userId, orgId: org.id, role: org.role };
+  const boat = await resolveBoatKey(options.store, options.encryptionKey, { userId, orgId: org.id, visibility });
+  const result = await options.goldenCreate.create(options.providerFor(boat.key), actor, {
+    name,
+    visibility,
+    repos,
+    ...(setup !== undefined ? { setup } : {}),
+  });
+  return { name, visibility, snapshot: result.snapshot };
 }
 
 async function readLogs(
@@ -285,6 +338,21 @@ function required(body: Record<string, unknown>, key: string): string {
   return value;
 }
 
+function requiredStringArray(body: Record<string, unknown>, key: string): string[] {
+  const value = body[key];
+  if (!Array.isArray(value) || value.length === 0 || !value.every((item) => typeof item === "string" && item !== "")) {
+    throw new VaultError("invalid", `${key} must be a non-empty array of non-empty strings.`);
+  }
+  return value;
+}
+
+function requiredBoolean(body: Record<string, unknown>, key: string, fallback: boolean): boolean {
+  const value = body[key];
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== "boolean") throw new VaultError("invalid", `${key} must be a boolean.`);
+  return value;
+}
+
 function scope(body: Record<string, unknown>): "user" | "org" {
   const value = required(body, "scope");
   if (value === "user" || value === "org") return value;
@@ -306,17 +374,27 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     if (!value) throw new Error(`Set ${name}.`);
     return value;
   };
-  const sql = new Bun.SQL(need("ARMADA_DATABASE_URL"));
+  const bunSql = new Bun.SQL(need("ARMADA_DATABASE_URL"));
+  const sql = {
+    async query<T>(text: string, params: unknown[] = []) {
+      const rows = (await bunSql.unsafe(text, params as never[])) as unknown as T[];
+      return { rows: Array.from(rows) };
+    },
+  };
+  const encryptionKey = need(ENCRYPTION_KEY_ENV);
+  const githubApp = githubAppFromEnv(env);
+  const store = createSqlVaultStore(sql);
   return {
     supabaseUrl: assertSupabaseUrl(need("SUPABASE_URL")),
     anonKey: need("SUPABASE_ANON_KEY"),
-    encryptionKey: need(ENCRYPTION_KEY_ENV),
-    github: { app: githubAppFromEnv(env) },
-    store: createSqlVaultStore({
-      async query<T>(text: string, params: unknown[] = []) {
-        const rows = (await sql.unsafe(text, params as never[])) as unknown as T[];
-        return { rows: Array.from(rows) };
-      },
+    encryptionKey,
+    github: { app: githubApp },
+    store,
+    providerFor: (apiKey) => createBoatProvider({ apiKey }),
+    goldenCreate: createGoldenCreateService({
+      sql,
+      github: { store, encryptionKey, app: githubApp },
+      installationApp: githubInstallationAppFromEnv(env),
     }),
   };
 }

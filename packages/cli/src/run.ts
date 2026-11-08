@@ -86,6 +86,11 @@ Usage:
   armada --version                         Print the version
   armada --help                            Show this help
   armada golden create <name> (--repo <url>[@branch] ... | --config <file>) [--setup <script>|--init <cmd> ...] [--private]
+                                           Builds and snapshots the golden here, with BOAT_API_KEY.
+  armada golden create --name <name> --repo <owner>/<repo> ... [--setup <file>] [--private] [--org <org>]
+                                           Server-orchestrated: no BOAT_API_KEY needed. Clones each repo over
+                                           your own cached GitHub connection (armada login) in a disposable
+                                           sandbox, scans it for leaked tokens, and persists only a ready snapshot.
   armada golden connect <name>             Open the master sandbox to place .env files
   armada golden snapshot <name>            Freeze the master sandbox
   armada golden list [--json]              Goldens you can see
@@ -115,8 +120,11 @@ when you belong to more than one org.
 
 Environment:
   SUPABASE_URL, SUPABASE_ANON_KEY          armada login and every signed-in command
-  ARMADA_URL                               The Armada server: armada org, armada creds and armada launch
-  GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY    required by the server for secure private golden checkout
+  ARMADA_URL                               The Armada server: armada org, armada creds, armada launch and
+                                           golden create --name
+  GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY    optional on the server: an installation token for golden create
+                                           --name, revoked after each use. Without it, checkout uses the
+                                           caller's own GitHub connection instead.
   PORT, ARMADA_DATABASE_URL, SUPABASE_URL, SUPABASE_ANON_KEY,
   ARMADA_AUTH_SECRET, ARMADA_PUBLIC_URL, ARMADA_ENCRYPTION_KEY,
   GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET
@@ -230,11 +238,13 @@ async function create(
   deps: Deps,
   limits: Limits,
 ): Promise<number> {
-  const name = oneName(positionals);
+  const name = single(args, "--name");
+  if (name !== undefined) return createSecure(name, positionals, args, io, deps);
+  const legacyName = oneName(positionals);
   const config = await readConfig(args, deps);
   const visibility: Visibility = flag(args, "--private") ? "private" : "org";
   const { provider, store, actor } = await boatContext(args, io, deps);
-  const created = await createGolden(provider, store, actor, { name, visibility, config }, limits);
+  const created = await createGolden(provider, store, actor, { name: legacyName, visibility, config }, limits);
   const dirs = created.golden.config.repos.map((repo) => repo.dir).join(", ");
   io.out(
     [
@@ -244,6 +254,63 @@ async function create(
       `Repos: ${dirs} in ${GOLDEN_ROOT}.`,
       `The sandbox has none of the boat account's credentials.`,
       `Place .env files with 'armada golden connect ${created.golden.name}', then 'armada golden snapshot ${created.golden.name}'.`,
+      "",
+    ].join("\n"),
+  );
+  return 0;
+}
+
+/**
+ * The secure, server-orchestrated path: the server builds in a disposable, no-env sandbox over the
+ * caller's own GitHub connection and persists only a scanned, ready snapshot. No BOAT_API_KEY needed
+ * here: the control API resolves the org's boat.dev key on the server.
+ */
+async function createSecure(
+  name: string,
+  positionals: string[],
+  args: ReturnType<typeof parseArgs>,
+  io: Io,
+  deps: Deps,
+): Promise<number> {
+  if (positionals.length > 0) {
+    throw new GoldenError("invalid_config", "golden create --name takes no positional name.");
+  }
+  if (values(args, "--config").length > 0 || values(args, "--init").length > 0) {
+    throw new GoldenError(
+      "invalid_config",
+      "--name does not take --config or --init. Use --setup <file> for a setup script.",
+    );
+  }
+  const repos = values(args, "--repo");
+  if (repos.length === 0) throw new GoldenError("invalid_config", "Pass --repo owner/repo at least once.");
+  const setupFile = single(args, "--setup");
+  let setup: string | undefined;
+  if (setupFile !== undefined) {
+    const read = deps.readFile ?? ((path: string) => Bun.file(path).text());
+    try {
+      setup = await read(setupFile);
+    } catch {
+      throw new GoldenError("invalid_config", `Could not read setup file '${setupFile}'.`);
+    }
+  }
+  const org = single(args, "--org");
+  const result = await control<{ name: string; visibility: Visibility; snapshot: string }>(
+    authOf(io, deps),
+    "golden/create",
+    {
+      name,
+      repos,
+      ...(flag(args, "--private") ? { private: true } : {}),
+      ...(org !== undefined ? { org } : {}),
+      ...(setup !== undefined ? { setup } : {}),
+    },
+  );
+  io.out(
+    [
+      `Created golden ${result.name} (${result.visibility}).`,
+      `Saved snapshot: ${result.snapshot}`,
+      `Repos: ${repos.join(", ")}.`,
+      "The sandbox had none of the boat.dev account's credentials, and was scanned for leaked tokens before saving.",
       "",
     ].join("\n"),
   );

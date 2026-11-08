@@ -1,6 +1,7 @@
 import {
   DEFAULT_LAUNCH_TTL_SECONDS,
   EncryptionKeyError,
+  type GoldenCreateService,
   GoldenError,
   type GoldenRecord,
   goldenForLaunch,
@@ -10,6 +11,7 @@ import {
   type LaunchOptions,
   launchSandbox,
   MAX_LAUNCH_TTL_SECONDS,
+  type MemberRole,
   type Provider,
   ProviderError,
   redact,
@@ -39,6 +41,8 @@ export interface ToolContext {
   now(): Date;
   sleep(ms: number): Promise<void>;
   launch?: LaunchOptions;
+  /** Secure, server-orchestrated multi-repo golden creation. Absent: `golden_create` refuses. */
+  goldenCreate?: GoldenCreateService;
   /** Where the real cause of an internal or unavailable tool error goes, redacted. Defaults to stderr. */
   logError?: (line: string) => void;
 }
@@ -48,6 +52,8 @@ export const DEFAULT_WAIT_SECONDS = 60;
 export const MAX_WAIT_SECONDS = 600;
 const OUTPUT_LIMIT = 20_000;
 const MAX_LOG_PAGES = 100;
+/** Mirrors `GoldenCreateService`'s own limit: one GitHub App installation token covers at most this many repos. */
+const MAX_CREATE_REPOS = 16;
 
 export class ToolError extends Error {
   override readonly name = "ToolError";
@@ -202,6 +208,49 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const goldens: GoldenRecord[] = [];
       for (const orgId of orgIds) goldens.push(...(await data.goldens.list(orgId)));
       return { goldens: goldens.map(goldenJson) };
+    },
+  );
+
+  tool(
+    "golden_create",
+    {
+      title: "Create a golden",
+      description:
+        "Securely builds a golden from one or more GitHub repositories you can access, in a disposable sandbox " +
+        "with none of the boat.dev account's credentials: clones each over your own cached GitHub connection " +
+        "(see `launch`'s `github`), optionally runs a setup script, scans the builder for leaked GitHub tokens, " +
+        "and only saves the snapshot when that scan passes. All repos must share one GitHub App installation.",
+      input: {
+        name: z.string().min(1).describe("The golden's name."),
+        repos: z
+          .array(z.string().min(1))
+          .min(1)
+          .max(MAX_CREATE_REPOS)
+          .describe("owner/repo, repeated, from one GitHub App installation."),
+        org: z
+          .string()
+          .optional()
+          .describe("The orgId to create it in, as in golden_list. Needed only when you belong to more than one."),
+        private: z.boolean().optional().describe("Default false: visible to your whole org. True: only you."),
+        setup: z.string().optional().describe("A shell script run in the builder after cloning, before the snapshot."),
+      },
+      output: { name: z.string(), visibility: z.enum(["org", "private"]), snapshot: z.string() },
+    },
+    async (args) => {
+      if (!context.goldenCreate) {
+        throw new ToolError("unsupported", "Secure golden creation is not configured on this server.");
+      }
+      const visibility: Visibility = args.private ? "private" : "org";
+      const member = resolveCreateOrg(caller.orgs, args.org);
+      const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
+      const provider = await context.provider({ orgId: member.orgId, visibility });
+      const result = await context.goldenCreate.create(provider, actor, {
+        name: args.name,
+        visibility,
+        repos: args.repos,
+        ...(args.setup ? { setup: args.setup } : {}),
+      });
+      return { name: args.name, visibility, snapshot: result.snapshot };
     },
   );
 
@@ -594,6 +643,22 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
 
 function fail(): never {
   throw new ToolError("internal", "Armada could not complete the call.");
+}
+
+/** The org `golden_create` acts in: the given one, else the caller's only org. There is no existing golden to disambiguate by. */
+function resolveCreateOrg(
+  orgs: readonly { orgId: string; role: MemberRole }[],
+  org: string | undefined,
+): { orgId: string; role: MemberRole } {
+  if (org !== undefined) {
+    const found = orgs.find((item) => item.orgId === org);
+    if (!found) throw new ToolError("not_found", `You are not a member of org '${org}'.`);
+    return found;
+  }
+  const [first] = orgs;
+  if (!first) throw new ToolError("not_found", "You are not a member of any org.");
+  if (orgs.length > 1) throw new ToolError("invalid_request", "You belong to more than one org. Pass org (an orgId).");
+  return first;
 }
 
 function goldenJson(row: GoldenRecord) {
