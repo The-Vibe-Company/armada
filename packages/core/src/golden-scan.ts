@@ -40,6 +40,11 @@ export async function scanGoldenSandbox(provider: Provider, sandboxId: string): 
     // covered far more thoroughly, uncompressed, by the object scan below.
     "for root in $roots; do",
     '  [ -d "$root" ] || continue',
+    // Paths can themselves leak a token; test NUL-separated names without ever printing one.
+    '  find "$root" -print0 2>/dev/null | grep -zEa "$pattern" >/dev/null 2>/dev/null',
+    "  path_status=$?",
+    '  if [ "$path_status" -eq 0 ]; then exit 97; fi',
+    '  if [ "$path_status" -gt 1 ]; then exit 95; fi',
     '  grep -rlaE --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev "$pattern" "$root" >/dev/null 2>/dev/null',
     "  status=$?",
     '  if [ "$status" -eq 0 ]; then exit 97; fi',
