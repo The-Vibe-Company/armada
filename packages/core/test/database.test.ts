@@ -1,0 +1,643 @@
+import { describe, expect, test } from "bun:test";
+import { readdirSync } from "node:fs";
+import type { PGlite } from "@electric-sql/pglite";
+import { applyMigrations, migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
+import { generateDatabaseTypes } from "../../../scripts/db/generate.ts";
+import { HARNESSES, type SandboxState, type Visibility } from "../src/index.ts";
+
+const PROVIDER_STATES = [
+  "starting",
+  "ready",
+  "running",
+  "stopping",
+  "stopped",
+  "failed",
+] as const satisfies readonly SandboxState[];
+const VISIBILITIES = ["org", "private"] as const satisfies readonly Visibility[];
+
+/** Fails to compile when SandboxState gains a state the schema test does not know. */
+function assertStatesCovered(_missing: Exclude<SandboxState, (typeof PROVIDER_STATES)[number]>): void {
+  void _missing;
+}
+
+assertStatesCovered(undefined as never);
+
+const HASH = "ab".repeat(32);
+const PLAIN_CONFIG = {
+  repos: [{ url: "https://example.com/app.git", branch: "main" }],
+  init: ["pnpm i"],
+};
+
+type Fixture = {
+  org: string;
+  owner: string;
+  member: string;
+  admin: string;
+  outsider: string;
+};
+
+describe("database", () => {
+  test("migrations apply on a fresh database", async () => {
+    const files = readdirSync(migrationsDir)
+      .filter((name) => name.endsWith(".sql"))
+      .sort();
+    expect(files.every((name) => /^\d{14}_[a-z0-9_]+\.sql$/.test(name))).toBe(true);
+
+    const db = await openDatabase();
+    try {
+      expect(await applyMigrations(db)).toEqual(files);
+
+      const tables = await db.query<{ name: string }>(`
+        select c.relname as name
+        from pg_class c
+        join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public' and c.relkind = 'r'
+        order by 1
+      `);
+      expect(tables.rows.map((row) => row.name)).toEqual([
+        "credentials",
+        "goldens",
+        "mcp_tokens",
+        "members",
+        "notify_subscriptions",
+        "orgs",
+        "sandboxes",
+        "service_tokens",
+      ]);
+
+      const unlocked = await db.query<{ name: string }>(`
+        select c.relname as name
+        from pg_class c
+        join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity
+      `);
+      expect(unlocked.rows).toEqual([]);
+
+      expect(await labels(db, "harness")).toEqual([...HARNESSES]);
+      expect(await labels(db, "visibility")).toEqual([...VISIBILITIES]);
+      expect(await labels(db, "sandbox_status")).toEqual([...PROVIDER_STATES, "deleted"]);
+      expect(await labels(db, "member_role")).toEqual(["admin", "member"]);
+      expect(await labels(db, "credential_scope")).toEqual(["user", "org"]);
+      expect(await labels(db, "credential_kind")).toEqual(["anthropic", "openai", "claude_oauth", "boat"]);
+      expect(await labels(db, "notify_status")).toEqual(["finished", "failed"]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  test("generated types match the migrations", async () => {
+    const generated = await generateDatabaseTypes();
+    const committed = await Bun.file(new URL("../src/database.types.ts", import.meta.url)).text();
+    expect(committed).toBe(generated);
+  });
+
+  test("no column stores a secret in plaintext", async () => {
+    await withDb(async (db) => {
+      const columns = await db.query<{ table_name: string; column_name: string; data_type: string }>(`
+        select table_name, column_name, data_type
+        from information_schema.columns
+        where table_schema = 'public'
+      `);
+      const secretName = /secret|password|passwd|token|api_key|apikey|credential|private_key/i;
+      const ciphertext: string[] = [];
+      for (const column of columns.rows) {
+        const id = `${column.table_name}.${column.column_name}`;
+        if (column.column_name.endsWith("_enc")) {
+          expect({ id, type: column.data_type }).toEqual({ id, type: "bytea" });
+          ciphertext.push(id);
+        }
+        if (!secretName.test(column.column_name)) continue;
+        if (column.column_name === "hash") {
+          expect(column.data_type).toBe("text");
+          continue;
+        }
+        expect({ id, encrypted: column.column_name.endsWith("_enc"), type: column.data_type }).toEqual({
+          id,
+          encrypted: true,
+          type: "bytea",
+        });
+      }
+      expect(ciphertext.sort()).toEqual([
+        "credentials.value_enc",
+        "notify_subscriptions.secret_enc",
+        "orgs.boat_api_key_enc",
+      ]);
+
+      const checks = await db.query<{ def: string }>(`
+        select pg_get_constraintdef(oid) as def
+        from pg_constraint
+        where conname in ('service_tokens_hash_chk', 'mcp_tokens_hash_chk')
+      `);
+      expect(checks.rows).toHaveLength(2);
+      for (const row of checks.rows) expect(row.def).toContain("^[0-9a-f]{64}$");
+
+      const people = await fixture(db);
+      await db.query("insert into service_tokens (user_id, org_id, hash, label) values ($1, $2, $3, 'worker')", [
+        people.owner,
+        people.org,
+        HASH,
+      ]);
+      await expect(
+        db.query("insert into mcp_tokens (user_id, org_id, hash, label) values ($1, $2, 'plaintext-token', 'worker')", [
+          people.owner,
+          people.org,
+        ]),
+      ).rejects.toThrow(/mcp_tokens_hash_chk/);
+
+      await db.query(
+        `insert into goldens (org_id, name, visibility, owner_id, config)
+         values ($1, 'plain', 'org', $2, $3::jsonb)`,
+        [people.org, people.owner, JSON.stringify(PLAIN_CONFIG)],
+      );
+      await expect(
+        db.query(
+          `insert into goldens (org_id, name, visibility, owner_id, config)
+           values ($1, 'leaky', 'org', $2, '{"api_key":"nope"}'::jsonb)`,
+          [people.org, people.owner],
+        ),
+      ).rejects.toThrow(/must not contain secrets/);
+      await expect(
+        db.query(
+          `insert into goldens (org_id, name, visibility, owner_id, config)
+           values ($1, 'nested', 'org', $2, '{"env":{"token":"nope"}}'::jsonb)`,
+          [people.org, people.owner],
+        ),
+      ).rejects.toThrow(/must not contain secrets/);
+
+      await db.query("update orgs set boat_api_key_enc = decode('0102', 'hex') where id = $1", [people.org]);
+      const visible = await asUser(db, people.member, () => ids(db, "select id from orgs where id = $1", [people.org]));
+      expect(visible).toEqual([people.org]);
+      // Column grants refuse the ciphertext. Postgres reports that as a table denial.
+      await expect(
+        asUser(db, people.member, () => db.query("select boat_api_key_enc from orgs where id = $1", [people.org])),
+      ).rejects.toThrow(/permission denied for table orgs/);
+      await expect(asUser(db, people.owner, () => db.query("select value_enc from credentials"))).rejects.toThrow(
+        /permission denied for table credentials/,
+      );
+      await expect(
+        asUser(db, people.owner, () => db.query("select secret_enc from notify_subscriptions")),
+      ).rejects.toThrow(/permission denied for table notify_subscriptions/);
+
+      const stored = await asRole(db, "service_role", async () => {
+        const result = await db.query<{ hex: string | null }>(
+          "select encode(boat_api_key_enc, 'hex') as hex from orgs where id = $1",
+          [people.org],
+        );
+        return result.rows[0]?.hex ?? null;
+      });
+      expect(stored).toBe("0102");
+    });
+  });
+
+  test("a member does not see another member's private golden", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      const shared = await insertGolden(db, people, { name: "shared", visibility: "org", owner: people.admin });
+      expect(await asUser(db, people.member, () => ids(db, "select id from goldens where id = $1", [shared]))).toEqual([
+        shared,
+      ]);
+
+      const hidden = await asUser(db, people.owner, () =>
+        insertGolden(db, people, { name: "kept", visibility: "private", owner: people.owner }),
+      );
+      expect(await asUser(db, people.owner, () => ids(db, "select id from goldens where id = $1", [hidden]))).toEqual([
+        hidden,
+      ]);
+      expect(await asUser(db, people.member, () => ids(db, "select id from goldens where id = $1", [hidden]))).toEqual(
+        [],
+      );
+
+      const sandbox = await asUser(db, people.owner, () => insertSandbox(db, people, hidden, people.owner));
+      expect(
+        await asUser(db, people.owner, () => ids(db, "select id from sandboxes where id = $1", [sandbox])),
+      ).toEqual([sandbox]);
+      expect(
+        await asUser(db, people.member, () => ids(db, "select id from sandboxes where id = $1", [sandbox])),
+      ).toEqual([]);
+    });
+  });
+
+  test("an admin does not see another member's private golden", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      const shared = await insertGolden(db, people, { name: "shared", visibility: "org", owner: people.admin });
+      expect(await asUser(db, people.admin, () => ids(db, "select id from goldens where id = $1", [shared]))).toEqual([
+        shared,
+      ]);
+
+      const hidden = await insertGolden(db, people, { name: "kept", visibility: "private", owner: people.owner });
+      expect(await asUser(db, people.owner, () => ids(db, "select id from goldens where id = $1", [hidden]))).toEqual([
+        hidden,
+      ]);
+      expect(await asUser(db, people.admin, () => ids(db, "select id from goldens where id = $1", [hidden]))).toEqual(
+        [],
+      );
+
+      await asUser(db, people.admin, () => db.query("update goldens set name = 'taken' where id = $1", [hidden]));
+      expect(
+        await asUser(db, people.owner, () => text(db, "select name as value from goldens where id = $1", [hidden])),
+      ).toBe("kept");
+
+      const sandbox = await insertSandbox(db, people, hidden, people.owner);
+      expect(
+        await asUser(db, people.owner, () => ids(db, "select id from sandboxes where id = $1", [sandbox])),
+      ).toEqual([sandbox]);
+      expect(
+        await asUser(db, people.admin, () => ids(db, "select id from sandboxes where id = $1", [sandbox])),
+      ).toEqual([]);
+      await asUser(db, people.admin, () =>
+        db.query("update sandboxes set status = 'stopped', stopped_at = now() where id = $1", [sandbox]),
+      );
+      expect(
+        await asUser(db, people.owner, () =>
+          text(db, "select status::text as value from sandboxes where id = $1", [sandbox]),
+        ),
+      ).toBe("ready");
+    });
+  });
+
+  test("a non-member sees nothing of an org", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      const other = crypto.randomUUID();
+      await db.query("insert into orgs (id, name) values ($1, 'Other Org')", [other]);
+      await db.query("insert into members (org_id, user_id, role) values ($1, $2, 'admin')", [other, people.outsider]);
+
+      const golden = await insertGolden(db, people, { name: "shared", visibility: "org", owner: people.admin });
+      const sandbox = await insertSandbox(db, people, golden, people.member);
+      await db.query(
+        "insert into credentials (scope, owner_id, kind, value_enc) values ('org', $1, 'boat', decode('0b', 'hex'))",
+        [people.org],
+      );
+      await db.query(
+        "insert into notify_subscriptions (sandbox_id, url, secret_enc) values ($1, 'https://example.com/hooks/armada', decode('0c', 'hex'))",
+        [sandbox],
+      );
+      await db.query("insert into service_tokens (user_id, org_id, hash, label) values ($1, $2, $3, 'worker')", [
+        people.member,
+        people.org,
+        HASH,
+      ]);
+
+      expect(await asUser(db, people.member, () => ids(db, "select id from orgs where id = $1", [people.org]))).toEqual(
+        [people.org],
+      );
+      expect(await asUser(db, people.member, () => ids(db, "select id from goldens where id = $1", [golden]))).toEqual([
+        golden,
+      ]);
+      expect(
+        await asUser(db, people.member, () => ids(db, "select id from sandboxes where id = $1", [sandbox])),
+      ).toEqual([sandbox]);
+      expect(
+        await asUser(db, people.member, () =>
+          ids(db, "select user_id as id from members where org_id = $1 and user_id = $2", [people.org, people.owner]),
+        ),
+      ).toEqual([people.owner]);
+      const credential = await asUser(db, people.member, () =>
+        ids(db, "select id from credentials where scope = 'org' and owner_id = $1", [people.org]),
+      );
+      expect(credential).toHaveLength(1);
+      expect(
+        await asUser(db, people.member, () =>
+          ids(db, "select sandbox_id as id from notify_subscriptions where sandbox_id = $1", [sandbox]),
+        ),
+      ).toEqual([sandbox]);
+
+      expect(await asUser(db, people.outsider, () => ids(db, "select id from orgs where id = $1", [other]))).toEqual([
+        other,
+      ]);
+      expect(
+        await asUser(db, people.outsider, () => ids(db, "select id from orgs where id = $1", [people.org])),
+      ).toEqual([]);
+      expect(
+        await asUser(db, people.outsider, () => ids(db, "select id from goldens where org_id = $1", [people.org])),
+      ).toEqual([]);
+      expect(
+        await asUser(db, people.outsider, () => ids(db, "select id from sandboxes where org_id = $1", [people.org])),
+      ).toEqual([]);
+      expect(
+        await asUser(db, people.outsider, () =>
+          ids(db, "select user_id as id from members where org_id = $1", [people.org]),
+        ),
+      ).toEqual([]);
+      expect(
+        await asUser(db, people.outsider, () =>
+          ids(db, "select id from credentials where owner_id = $1", [people.org]),
+        ),
+      ).toEqual([]);
+      expect(
+        await asUser(db, people.outsider, () =>
+          ids(db, "select sandbox_id as id from notify_subscriptions where sandbox_id = $1", [sandbox]),
+        ),
+      ).toEqual([]);
+      expect(
+        await asUser(db, people.outsider, () =>
+          ids(db, "select id from service_tokens where org_id = $1", [people.org]),
+        ),
+      ).toEqual([]);
+    });
+  });
+
+  test("only an admin changes an org golden, its members and its org key", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      const golden = await insertGolden(db, people, { name: "shared", visibility: "org", owner: people.admin });
+      expect(
+        await asUser(db, people.member, () => text(db, "select name as value from goldens where id = $1", [golden])),
+      ).toBe("shared");
+
+      await asUser(db, people.member, () => db.query("update goldens set name = 'nope' where id = $1", [golden]));
+      expect(
+        await asUser(db, people.member, () => text(db, "select name as value from goldens where id = $1", [golden])),
+      ).toBe("shared");
+      await asUser(db, people.admin, () => db.query("update goldens set name = 'renamed' where id = $1", [golden]));
+      expect(
+        await asUser(db, people.member, () => text(db, "select name as value from goldens where id = $1", [golden])),
+      ).toBe("renamed");
+
+      await expect(
+        asUser(db, people.member, () =>
+          db.query("insert into members (org_id, user_id, role) values ($1, $2, 'member')", [
+            people.org,
+            people.outsider,
+          ]),
+        ),
+      ).rejects.toThrow(/row-level security/);
+      await asUser(db, people.admin, () =>
+        db.query("insert into members (org_id, user_id, role) values ($1, $2, 'member')", [
+          people.org,
+          people.outsider,
+        ]),
+      );
+      expect(
+        await asUser(db, people.outsider, () => ids(db, "select id from orgs where id = $1", [people.org])),
+      ).toEqual([people.org]);
+
+      await expect(
+        asUser(db, people.member, () =>
+          db.query(
+            "insert into credentials (scope, owner_id, kind, value_enc) values ('org', $1, 'boat', decode('0a', 'hex'))",
+            [people.org],
+          ),
+        ),
+      ).rejects.toThrow(/row-level security/);
+      const credential = await asUser(db, people.admin, async () => {
+        const result = await db.query<{ id: string }>(
+          `insert into credentials (scope, owner_id, kind, value_enc)
+           values ('org', $1, 'boat', decode('0a', 'hex'))
+           returning id`,
+          [people.org],
+        );
+        const id = result.rows[0]?.id;
+        if (!id) throw new Error("org credential insert returned no id");
+        return id;
+      });
+      expect(
+        await asUser(db, people.member, () =>
+          text(db, "select kind::text as value from credentials where id = $1", [credential]),
+        ),
+      ).toBe("boat");
+      await asUser(db, people.member, () =>
+        db.query("update credentials set value_enc = decode('ff', 'hex') where id = $1", [credential]),
+      );
+      expect(await ciphertext(db, credential)).toBe("0a");
+      await asUser(db, people.admin, () =>
+        db.query("update credentials set value_enc = decode('0b', 'hex') where id = $1", [credential]),
+      );
+      expect(await ciphertext(db, credential)).toBe("0b");
+
+      await expect(
+        asUser(db, people.admin, () => db.query("insert into orgs (name) values ('Second Org')")),
+      ).rejects.toThrow(/permission denied/);
+
+      const sandbox = await insertSandbox(db, people, golden, people.member);
+      await asUser(db, people.member, () =>
+        db.query("update sandboxes set status = 'stopped', stopped_at = now() where id = $1", [sandbox]),
+      );
+      expect(
+        await asUser(db, people.member, () =>
+          text(db, "select status::text as value from sandboxes where id = $1", [sandbox]),
+        ),
+      ).toBe("stopped");
+    });
+  });
+
+  test("only the owner sees a user credential or a token", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      const credential = await asUser(db, people.owner, async () => {
+        const result = await db.query<{ id: string }>(
+          `insert into credentials (scope, owner_id, kind, value_enc)
+           values ('user', $1, 'anthropic', decode('0d', 'hex'))
+           returning id`,
+          [people.owner],
+        );
+        const id = result.rows[0]?.id;
+        if (!id) throw new Error("user credential insert returned no id");
+        return id;
+      });
+      expect(
+        await asUser(db, people.owner, () =>
+          text(db, "select kind::text as value from credentials where id = $1", [credential]),
+        ),
+      ).toBe("anthropic");
+      expect(
+        await asUser(db, people.admin, () => ids(db, "select id from credentials where id = $1", [credential])),
+      ).toEqual([]);
+      expect(
+        await asUser(db, people.member, () => ids(db, "select id from credentials where id = $1", [credential])),
+      ).toEqual([]);
+
+      const serviceToken = await asUser(db, people.owner, () =>
+        insertToken(db, "service_tokens", people.owner, people.org, HASH),
+      );
+      const mcpToken = await asUser(db, people.owner, () =>
+        insertToken(db, "mcp_tokens", people.owner, people.org, "cd".repeat(32)),
+      );
+      expect(
+        await asUser(db, people.owner, () => ids(db, "select id from service_tokens where id = $1", [serviceToken])),
+      ).toEqual([serviceToken]);
+      expect(
+        await asUser(db, people.owner, () => ids(db, "select id from mcp_tokens where id = $1", [mcpToken])),
+      ).toEqual([mcpToken]);
+      expect(
+        await asUser(db, people.admin, () => ids(db, "select id from service_tokens where id = $1", [serviceToken])),
+      ).toEqual([]);
+      expect(
+        await asUser(db, people.member, () => ids(db, "select id from mcp_tokens where id = $1", [mcpToken])),
+      ).toEqual([]);
+
+      await asUser(db, people.owner, () =>
+        db.query("update service_tokens set revoked_at = now() where id = $1", [serviceToken]),
+      );
+      expect(
+        await asUser(db, people.owner, () =>
+          text(db, "select revoked_at::text as value from service_tokens where id = $1", [serviceToken]),
+        ),
+      ).not.toBeNull();
+      await asUser(db, people.admin, () =>
+        db.query("update service_tokens set revoked_at = null where id = $1", [serviceToken]),
+      );
+      expect(
+        await asUser(db, people.owner, () =>
+          text(db, "select revoked_at::text as value from service_tokens where id = $1", [serviceToken]),
+        ),
+      ).not.toBeNull();
+    });
+  });
+
+  test("an org keeps at least one admin", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      const second = crypto.randomUUID();
+      await db.query("insert into auth.users (id) values ($1)", [second]);
+      await db.query("insert into members (org_id, user_id, role) values ($1, $2, 'admin')", [people.org, second]);
+
+      await db.query("update members set role = 'member' where org_id = $1 and user_id = $2", [people.org, second]);
+      expect(await text(db, "select role::text as value from members where user_id = $1", [people.admin])).toBe(
+        "admin",
+      );
+      expect(await text(db, "select role::text as value from members where user_id = $1", [second])).toBe("member");
+
+      await expect(
+        db.query("update members set role = 'member' where org_id = $1 and user_id = $2", [people.org, people.admin]),
+      ).rejects.toThrow(/at least one admin/);
+      await expect(
+        db.query("delete from members where org_id = $1 and user_id = $2", [people.org, people.admin]),
+      ).rejects.toThrow(/at least one admin/);
+      expect(await text(db, "select role::text as value from members where user_id = $1", [people.admin])).toBe(
+        "admin",
+      );
+    });
+  });
+});
+
+async function withDb(run: (db: PGlite) => Promise<void>): Promise<void> {
+  const db = await openDatabase();
+  try {
+    await applyMigrations(db);
+    await run(db);
+  } finally {
+    await db.close();
+  }
+}
+
+async function fixture(db: PGlite): Promise<Fixture> {
+  const row: Fixture = {
+    org: crypto.randomUUID(),
+    owner: crypto.randomUUID(),
+    member: crypto.randomUUID(),
+    admin: crypto.randomUUID(),
+    outsider: crypto.randomUUID(),
+  };
+  for (const user of [row.owner, row.member, row.admin, row.outsider]) {
+    await db.query("insert into auth.users (id) values ($1)", [user]);
+  }
+  await db.query("insert into orgs (id, name) values ($1, 'Example Org')", [row.org]);
+  await db.query(
+    `insert into members (org_id, user_id, role) values
+      ($1, $2, 'member'), ($1, $3, 'member'), ($1, $4, 'admin')`,
+    [row.org, row.owner, row.member, row.admin],
+  );
+  return row;
+}
+
+async function insertGolden(
+  db: PGlite,
+  people: Fixture,
+  input: { name: string; visibility: Visibility; owner: string },
+): Promise<string> {
+  const result = await db.query<{ id: string }>(
+    `insert into goldens (org_id, name, visibility, owner_id, config)
+     values ($1, $2, $3::public.visibility, $4, $5::jsonb)
+     returning id`,
+    [people.org, input.name, input.visibility, input.owner, JSON.stringify(PLAIN_CONFIG)],
+  );
+  const golden = result.rows[0]?.id;
+  if (!golden) throw new Error("golden insert returned no id");
+  return golden;
+}
+
+async function insertSandbox(db: PGlite, people: Fixture, golden: string, owner: string): Promise<string> {
+  const sandbox = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status)
+     values ($1, $2, $3, $4, $5, 'claude', 'ready')`,
+    [sandbox, `bx_${sandbox}`, golden, people.org, owner],
+  );
+  return sandbox;
+}
+
+async function insertToken(
+  db: PGlite,
+  table: "service_tokens" | "mcp_tokens",
+  user: string,
+  org: string,
+  hash: string,
+) {
+  const result = await db.query<{ id: string }>(
+    `insert into ${table} (user_id, org_id, hash, label) values ($1, $2, $3, 'worker') returning id`,
+    [user, org, hash],
+  );
+  const token = result.rows[0]?.id;
+  if (!token) throw new Error("token insert returned no id");
+  return token;
+}
+
+async function asUser<T>(db: PGlite, userId: string, run: () => Promise<T>): Promise<T> {
+  await db.exec("begin");
+  try {
+    await db.query("select set_config('request.jwt.claim.sub', $1, true)", [userId]);
+    await db.exec("set local role authenticated");
+    const value = await run();
+    await db.exec("commit");
+    return value;
+  } catch (error) {
+    await db.exec("rollback");
+    throw error;
+  }
+}
+
+async function asRole<T>(db: PGlite, role: "service_role", run: () => Promise<T>): Promise<T> {
+  await db.exec("begin");
+  try {
+    await db.exec(`set local role ${role}`);
+    const value = await run();
+    await db.exec("commit");
+    return value;
+  } catch (error) {
+    await db.exec("rollback");
+    throw error;
+  }
+}
+
+async function ids(db: PGlite, sql: string, params: unknown[] = []): Promise<string[]> {
+  const result = await db.query<{ id: string }>(sql, params);
+  return result.rows.map((row) => row.id);
+}
+
+async function text(db: PGlite, sql: string, params: unknown[]): Promise<string | null> {
+  const result = await db.query<{ value: string | null }>(sql, params);
+  return result.rows[0]?.value ?? null;
+}
+
+async function ciphertext(db: PGlite, credential: string): Promise<string | null> {
+  const result = await db.query<{ hex: string | null }>(
+    "select encode(value_enc, 'hex') as hex from credentials where id = $1",
+    [credential],
+  );
+  return result.rows[0]?.hex ?? null;
+}
+
+async function labels(db: PGlite, name: string): Promise<string[]> {
+  const result = await db.query<{ label: string }>(
+    `select e.enumlabel as label
+     from pg_type t
+     join pg_enum e on e.enumtypid = t.oid
+     join pg_namespace n on n.oid = t.typnamespace
+     where n.nspname = 'public' and t.typname = $1
+     order by e.enumsortorder`,
+    [name],
+  );
+  return result.rows.map((row) => row.label);
+}
