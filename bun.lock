@@ -53,6 +53,9 @@
         "@armada/auth": "workspace:*",
         "@armada/core": "workspace:*",
       },
+      "devDependencies": {
+        "@armada/mcp-server": "workspace:*",
+      },
     },
     "packages/core": {
       "name": "@armada/core",
