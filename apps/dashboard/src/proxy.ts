@@ -7,7 +7,8 @@ import type { Database } from "@/lib/supabase/types";
 
 /** Refreshes the session cookie on every request and sends signed-out visitors to the login page. */
 export async function proxy(request: NextRequest) {
-  if (request.nextUrl.pathname === CLIENT_CONFIG_PATH) return NextResponse.next();
+  if (request.nextUrl.pathname === CLIENT_CONFIG_PATH || request.nextUrl.pathname.startsWith("/api/v1/"))
+    return NextResponse.next();
   const { url, anonKey } = supabaseEnv();
   let response = NextResponse.next({ request });
 

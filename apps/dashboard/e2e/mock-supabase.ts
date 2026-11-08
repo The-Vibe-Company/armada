@@ -690,6 +690,13 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/auth/v1/")) return auth(request, url, body);
     if (url.pathname.startsWith("/__test/")) return control(url, body);
     if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
+    if (url.pathname.startsWith("/api/v1/")) {
+      const route = url.pathname.slice("/api/v1/".length);
+      if (route === "auth/email/start") return json({ ok: true });
+      if (route === "golden/list")
+        return request.headers.get("authorization") ? json({ goldens: [] }) : json({ error: "Unauthorized." }, 401);
+      return json({ error: "Not found." }, 404);
+    }
     if (url.pathname.startsWith("/github/")) return github(request, url, body);
     if (url.pathname === "/health") return json({ ok: true });
     return json({ message: "not found" }, 404);
