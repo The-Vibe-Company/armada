@@ -131,6 +131,66 @@ test("real shell: a token in a dangling (amended-away, not yet gc'd) git blob st
   }
 });
 
+function canDropToNobody(): boolean {
+  return spawnSync("sudo", ["-n", "-u", "nobody", "true"], { encoding: "utf8" }).status === 0;
+}
+
+test.skipIf(!canDropToNobody())(
+  "real shell: a root the sandbox user has no access to at all is skipped, not a false failure",
+  async () => {
+    const script = await capturedScript();
+    const { base, roots } = sandbox();
+    try {
+      // A secret genuinely unreachable from the scan's own privilege: owned by root, closed to
+      // everyone else, exactly like the real /root under an ordinary, unprivileged builder user.
+      writeFileSync(join(roots.root, "shadow.env"), `GH_TOKEN=ghp_${"D".repeat(36)}\n`);
+      spawnSync("sudo", ["chown", "-R", "root:root", roots.root]);
+      spawnSync("sudo", ["chmod", "700", roots.root]);
+      const isolated = script.replace(
+        "roots='/home/user /root /tmp'",
+        `roots='${roots.home} ${roots.root} ${roots.tmp}'`,
+      );
+      const result = spawnSync("sudo", ["-u", "nobody", "bash", "-c", isolated], { encoding: "utf8" });
+      expect(result.status).toBe(0);
+    } finally {
+      spawnSync("sudo", ["rm", "-rf", roots.root]);
+      rmSync(base, { recursive: true, force: true });
+    }
+  },
+);
+
+test("real shell: a token in .git/config (a credential URL, say) fails the build", async () => {
+  const script = await capturedScript();
+  const { base, roots } = sandbox();
+  try {
+    const repo = join(roots.home, "repo");
+    mkdirSync(repo);
+    git(repo, "init", "-q");
+    git(repo, "config", "test.leak", `https://x-access-token:ghs_${"E".repeat(36)}@github.com/acme/web.git`);
+    expect(runAgainst(script, roots).status).toBe(97);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("real shell: a token in a commit message fails the build even though it is reachable, not just dangling", async () => {
+  const script = await capturedScript();
+  const { base, roots } = sandbox();
+  try {
+    const repo = join(roots.home, "repo");
+    mkdirSync(repo);
+    git(repo, "init", "-q");
+    git(repo, "config", "user.email", "a@b.com");
+    git(repo, "config", "user.name", "a");
+    writeFileSync(join(repo, "f.txt"), "hello\n");
+    git(repo, "add", "f.txt");
+    git(repo, "commit", "-qm", `oops GH_TOKEN=ghu_${"F".repeat(36)} in the message`);
+    expect(runAgainst(script, roots).status).toBe(97);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test("real shell: a corrupted git object fails closed instead of being silently skipped", async () => {
   const script = await capturedScript();
   const { base, roots } = sandbox();
