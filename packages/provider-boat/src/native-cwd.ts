@@ -16,10 +16,9 @@ export async function installNativeCwdWrapper(
   sandboxId: string,
   harness: NativeHarness,
   cwd: string,
-  argv: readonly string[] = [],
 ): Promise<void> {
   const path = NATIVE_HARNESS_PATHS[harness];
-  const command = nativeCwdCommand(path, harness, cwd, argv);
+  const command = nativeCwdCommand(path, harness, cwd);
   await exec({
     sandboxId,
     timeoutSeconds: 60,
@@ -28,30 +27,24 @@ export async function installNativeCwdWrapper(
 }
 
 /** Builds the VM wrapper command and always invokes the preserved image executable directly. */
-export function nativeCwdCommand(
-  path: string,
-  harness: NativeHarness,
-  cwd: string,
-  argv: readonly string[] = [],
-): string {
-  const safeArgv = harness === "codex" ? stripCodexCwdOverrides(argv) : [...argv];
-  return `cd -- ${quote(cwd)} && exec ${quote(`${path}.armada-original`)}${safeArgv.map((arg) => ` ${quote(arg)}`).join("")}`;
-}
-
-function stripCodexCwdOverrides(argv: readonly string[]): string[] {
-  const result: string[] = [];
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (arg === undefined) continue;
-    if (arg === "--") return [...result, "--", ...argv.slice(index + 1)];
-    if (arg === "-C" || arg === "--cd") {
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith("--cd=")) continue;
-    result.push(arg);
-  }
-  return result;
+export function nativeCwdCommand(path: string, harness: NativeHarness, cwd: string): string {
+  const original = quote(`${path}.armada-original`);
+  if (harness === "claude") return `cd -- ${quote(cwd)} && exec ${original} "$@"`;
+  // Bash arrays preserve arbitrary runtime arguments without eval or shell re-parsing.
+  const script = [
+    "args=()",
+    'while [ "$#" -gt 0 ]; do',
+    '  case "$1" in',
+    '    --) args+=("$@"); break ;;',
+    '    -C|--cd) shift; if [ "$#" -gt 0 ]; then shift; fi; continue ;;',
+    "    --cd=*) shift; continue ;;",
+    "  esac",
+    '  args+=("$1")',
+    "  shift",
+    "done",
+    `exec ${original} "\${args[@]}"`,
+  ].join("\n");
+  return `cd -- ${quote(cwd)} && exec /bin/bash -c ${quote(script)} -- "$@"`;
 }
 
 /** The command runs only inside a Boat sandbox, through its existing VM exec primitive. */
