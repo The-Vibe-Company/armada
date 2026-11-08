@@ -21,7 +21,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import type { Caller } from "./caller.ts";
+import { describeFailure } from "./caller.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
+import { redactForLog } from "./log.ts";
 import { readStatus, type StatusReport, waitSettled } from "./turns.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
@@ -37,6 +39,8 @@ export interface ToolContext {
   now(): Date;
   sleep(ms: number): Promise<void>;
   launch?: LaunchOptions;
+  /** Where the real cause of an internal or unavailable tool error goes, redacted. Defaults to stderr. */
+  logError?: (line: string) => void;
 }
 
 export const SANDBOX_STATUSES = ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"] as const;
@@ -157,7 +161,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             content: [{ type: "text", text: JSON.stringify(result) }],
           };
         } catch (error) {
-          return errorResult(error);
+          return errorResult(error, name, context.logError ?? ((line) => console.error(line)));
         }
       }) as never,
     );
@@ -598,8 +602,11 @@ function dedupe<T extends { id: string }>(events: readonly T[]): T[] {
   return [...byId.values()];
 }
 
-function errorResult(error: unknown): CallToolResult {
+function errorResult(error: unknown, tool: string, logError: (line: string) => void): CallToolResult {
   const { code, message } = describe(error);
+  if (code === "internal" || code === "unavailable") {
+    logError(redactForLog(`armada serve: tool ${tool} failed (${code}): ${describeFailure(error)}`));
+  }
   return {
     isError: true,
     content: [

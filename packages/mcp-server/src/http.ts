@@ -10,6 +10,7 @@ import {
 } from "./caller.ts";
 import type { DataSource } from "./data.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
+import { redactForLog } from "./log.ts";
 import { createArmadaServer } from "./tools.ts";
 
 export const MCP_PATH = "/mcp";
@@ -75,7 +76,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       });
     } catch (error) {
       if (!(error instanceof AuthUnavailable)) throw error;
-      log(`armada serve: /mcp authentication unavailable: ${describeFailure(error)}`);
+      log(redactForLog(`armada serve: /mcp authentication unavailable: ${describeFailure(error)}`));
       return Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "retry-after": "5" } });
     }
     if (!auth.ok) return oauthChallenge(options.publicUrl);
@@ -98,6 +99,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         },
         now,
         sleep,
+        logError: log,
         ...(options.launch ? { launch: options.launch } : {}),
       },
       VERSION,

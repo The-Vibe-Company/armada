@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createServiceStore, createSqlAuthStore } from "@armada/auth";
-import { call, harness, PUBLIC_URL, SECRETS, type TestServer } from "./support.ts";
+import { bunLikeSql, call, harness, PUBLIC_URL, SECRETS, type TestServer } from "./support.ts";
 
 let server: TestServer | undefined;
 
@@ -206,6 +206,62 @@ describe("when the auth lookup fails", () => {
     const content = listed.result?.structuredContent as { goldens: { name: string }[] };
     const names = content.goldens.map((g) => g.name);
     expect(names.sort()).toEqual(["elsewhere", "shared"]);
+  });
+});
+
+describe("on the database client production uses", () => {
+  test("a Supabase session drives every tool when the driver refuses raw array parameters", async () => {
+    const { session, client, boat, people } = await start({
+      sql: (db) => bunLikeSql(db),
+      authStore: (db) => createSqlAuthStore(bunLikeSql(db)),
+    });
+    const mcp = await client(session(people.member, []));
+
+    const goldens = await call(mcp, "golden_list");
+    expect(goldens.isError).toBe(false);
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "go" });
+    expect(launched.isError).toBe(false);
+
+    const listed = await call(mcp, "list");
+    expect(listed.isError).toBe(false);
+    expect(listed.data.sandboxes).toHaveLength(1);
+    expect((await call(mcp, "list", { status: ["ready", "running"] })).isError).toBe(false);
+    expect((await call(mcp, "status", { id: launched.data.id })).isError).toBe(false);
+    expect((await call(mcp, "logs", { id: launched.data.id })).isError).toBe(false);
+    boat.finish("bx_1", "prompt_1", "finished");
+    const waited = await call(mcp, "wait", { id: launched.data.id, timeoutSeconds: 5 });
+    expect(waited.isError).toBe(false);
+    expect((await call(mcp, "send", { id: launched.data.id, prompt: "and the tests" })).isError).toBe(false);
+    const stopped = await call(mcp, "stop", { id: launched.data.id });
+    expect(stopped.isError).toBe(false);
+    expect(stopped.data).toMatchObject({ status: "stopped" });
+  });
+
+  test("an internal tool error answers generically and logs its real cause, redacted", async () => {
+    const lines: string[] = [];
+    const bearer = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.signature-part";
+    const { client, token, people } = await start({
+      log: (line) => lines.push(line),
+      sql: (db) => ({
+        async query<T>(text: string, params?: unknown[]) {
+          if (text.includes("from public.sandboxes")) {
+            throw new Error(
+              `connection to postgres://postgres:hunter2@db.example.com:5432/postgres failed for Bearer ${bearer}`,
+            );
+          }
+          return (await db.query(text, params)) as unknown as { rows: T[] };
+        },
+      }),
+    });
+    const failed = await call(await client(await token(people.member)), "list");
+    expect(failed.isError).toBe(true);
+    expect(failed.text).toContain("Armada could not complete the call.");
+    expect(failed.text).toContain("error code: internal");
+    expect(failed.text).not.toContain("hunter2");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("tool list failed (internal): Error: connection to postgres://***@db.example.com");
+    expect(lines[0]).not.toContain("hunter2");
+    expect(lines[0]).not.toContain(bearer);
   });
 });
 
