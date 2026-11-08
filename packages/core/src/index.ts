@@ -129,6 +129,12 @@ export {
   MAX_LAUNCH_TTL_SECONDS,
 } from "./launch.ts";
 export { LaunchError, type LaunchErrorCode } from "./launch-error.ts";
+export {
+  nativeHarnessWrapper,
+  resolveLaunchWorkdir,
+  resolveLaunchWorkdirAt,
+  type LaunchWorkdir,
+} from "./launch-workdir.ts";
 export { dedupeEvents, type PromptOutcome, promptOutcome } from "./outcome.ts";
 export {
   type AgentEvent,

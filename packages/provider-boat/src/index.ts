@@ -8,3 +8,5 @@ export {
   DEFAULT_TTL_SECONDS,
   MAX_TTL_SECONDS,
 } from "./provider.ts";
+
+export { installNativeCwdWrapper, nativeCwdInstallScript, NATIVE_HARNESS_PATHS } from "./native-cwd.ts";
