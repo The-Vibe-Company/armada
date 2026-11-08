@@ -5,6 +5,8 @@ import { type GoldenConfig, GoldenError, parseGoldenConfig } from "./golden-conf
 /** The slice of a database client the golden store needs. Postgres `$1` parameters. */
 export interface Sql {
   query<T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
+  /** Runs all queries issued through the callback on one transaction/connection. */
+  transaction?<T>(work: (sql: Sql) => Promise<T>): Promise<T>;
 }
 
 interface GoldenRow {

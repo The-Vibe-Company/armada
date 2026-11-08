@@ -3,6 +3,7 @@ import type { Sql } from "@armada/core";
 /** The one method of Bun's Postgres client the server uses. */
 export interface SqlDriver {
   unsafe(text: string, params: never[]): PromiseLike<unknown>;
+  begin?<T>(work: (driver: SqlDriver) => Promise<T>): Promise<T>;
 }
 
 /**
@@ -21,16 +22,26 @@ export function pgArray(items: readonly unknown[]): string {
 
 /** `Sql` over a Bun-style driver: array parameters become array literals, everything else goes through as is. */
 export function sqlOver(driver: SqlDriver): Sql {
+  const query = async <T>(text: string, params: unknown[] = []) => {
+    const sent = params.map((param) => (Array.isArray(param) ? pgArray(param) : param));
+    const rows = (await driver.unsafe(text, sent as never[])) as unknown as T[];
+    return { rows: Array.from(rows) };
+  };
+  const transaction = driver.begin;
   return {
-    async query<T>(text: string, params: unknown[] = []) {
-      const sent = params.map((param) => (Array.isArray(param) ? pgArray(param) : param));
-      const rows = (await driver.unsafe(text, sent as never[])) as unknown as T[];
-      return { rows: Array.from(rows) };
-    },
+    query,
+    ...(transaction
+      ? { transaction: <T>(work: (sql: Sql) => Promise<T>) => transaction(async (tx) => work(sqlOver(tx))) }
+      : {}),
   };
 }
 
 /** `Sql` over Bun's Postgres client, for the privileged `ARMADA_DATABASE_URL` connection. */
 export function bunSql(url: string): Sql {
-  return sqlOver(new Bun.SQL(url));
+  const client = new Bun.SQL(url);
+  return sqlOver({
+    unsafe: (text, params) => client.unsafe(text, params),
+    begin: (work) =>
+      client.begin((transaction) => work({ unsafe: (text, params) => transaction.unsafe(text, params) })),
+  });
 }

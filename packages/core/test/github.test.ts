@@ -99,20 +99,6 @@ describe("GitHub access at launch", () => {
   test("three concurrent launches serialize one refresh and share the cached access token", async () => {
     const world = await setup({ refresh: REFRESH_1 });
     world.github.refreshes.push({ access_token: ACCESS_1, refresh_token: REFRESH_2, expires_in: 28_800 });
-    let tail = Promise.resolve();
-    world.store.getGitHubConnectionForRefresh = async (userId) => {
-      const previous = tail;
-      let unlock!: () => void;
-      tail = new Promise<void>((resolve) => {
-        unlock = resolve;
-      });
-      await previous;
-      // The production database transaction holds its advisory lock through rotation. This test
-      // releases the equivalent only after the current microtask has persisted its result.
-      const row = world.rows.get(userId) ?? null;
-      setTimeout(unlock, 0);
-      return row;
-    };
     const access = await Promise.all([
       resolveGitHubAccess(world.deps, USER),
       resolveGitHubAccess(world.deps, USER),
@@ -350,12 +336,23 @@ async function setup(options: { refresh?: string; login?: string; githubId?: num
       accessExpiresAt: null,
     });
   }
+  let refreshTail = Promise.resolve();
   const store: GitHubConnectionStore = {
     async getGitHubConnection(userId) {
       return rows.get(userId) ?? null;
     },
-    async getGitHubConnectionForRefresh(userId) {
-      return rows.get(userId) ?? null;
+    async withGitHubConnectionRefresh(userId, work) {
+      const previous = refreshTail;
+      let release!: () => void;
+      refreshTail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await previous;
+      try {
+        return await work(store, rows.get(userId) ?? null);
+      } finally {
+        release();
+      }
     },
     async rotateGitHubToken(userId, expected, next) {
       const row = rows.get(userId);

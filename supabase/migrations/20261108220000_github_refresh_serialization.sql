@@ -6,31 +6,6 @@ alter table public.github_connections
 
 comment on column public.github_connections.access_token_enc is 'Ciphertext. Never a raw token.';
 
-create or replace function public.github_connection_for_refresh(p_user_id uuid)
-returns table (
-  user_id uuid,
-  github_id bigint,
-  login text,
-  name text,
-  refresh_token_enc bytea,
-  refresh_expires_at timestamptz,
-  access_token_enc bytea,
-  access_expires_at timestamptz,
-  revoked_at timestamptz
-)
-language plpgsql
-security definer
-set search_path = public
-as $$
-begin
-  perform pg_advisory_xact_lock(hashtextextended(p_user_id::text, 0));
-  return query
-    select c.user_id, c.github_id, c.login, c.name, c.refresh_token_enc, c.refresh_expires_at,
-      c.access_token_enc, c.access_expires_at, c.revoked_at
-    from public.github_connections c
-    where c.user_id = p_user_id;
-end;
-$$;
-
-revoke all on function public.github_connection_for_refresh(uuid) from public, anon, authenticated;
-grant execute on function public.github_connection_for_refresh(uuid) to service_role;
+-- The service process takes `pg_advisory_xact_lock(hashtextextended(user_id::text, 0))`
+-- inside one transaction which encloses the read, GitHub request, and cache write. Do not expose
+-- a helper that returns ciphertext: anon and authenticated retain no access to this table or helper.
