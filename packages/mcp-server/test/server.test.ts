@@ -287,6 +287,7 @@ describe("tools", () => {
       [
         "exec",
         "golden_create",
+        "golden_adopt",
         "golden_capabilities",
         "golden_list",
         "golden_snapshot",

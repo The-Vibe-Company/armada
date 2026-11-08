@@ -1,5 +1,6 @@
 import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
 import {
+  createGoldenAdoption,
   createGoldenCreateService,
   createSqlVaultStore,
   githubAppFromEnv,
@@ -35,6 +36,7 @@ export async function startServer(
   const githubApp = githubAppFromEnv(env);
   const data = createSqlData(sql);
   const providerFor = (apiKey: string) => createBoatProvider({ apiKey });
+  const goldenAdoption = createGoldenAdoption(sql);
   const goldenCreate = createGoldenCreateService({
     sql,
     github: { store, encryptionKey: config.encryptionKey, app: githubApp },
@@ -50,6 +52,7 @@ export async function startServer(
     github: { app: githubApp },
     providerFor,
     goldenCreate,
+    goldenAdoption,
     providers: providerRegistry({ vault: store, encryptionKey: config.encryptionKey, providerFor }),
     logs: async (caller, sandboxId) => {
       const scoped = data(caller);
@@ -79,6 +82,7 @@ export async function startServer(
     encryptionKey: config.encryptionKey,
     github: { store, app: githubApp },
     goldenCreate,
+    goldenAdoption,
     providerFor,
     routes: [(request) => handleControlRequest(request, control), ...(options.routes ?? [])],
     ...(options.logError ? { log: options.logError } : {}),

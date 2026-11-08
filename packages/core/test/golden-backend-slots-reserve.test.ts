@@ -10,7 +10,7 @@ test("reserve enforces backend capacity across pending slots", async () => {
     await db.query("insert into auth.users (id,email) values ($1,'x@test.dev')", [owner]);
     await db.query("insert into orgs (id,name) values ($1,'x')", [org]);
     const reserve = (max: number) =>
-      db.query<{ build: string }>("select public.reserve_golden_backend_slot('boat','account', $1,$2,$3) as build", [
+      db.query<{ build: string }>("select public.reserve_golden_backend_slot('test','account', $1,$2,$3) as build", [
         max,
         org,
         owner,
