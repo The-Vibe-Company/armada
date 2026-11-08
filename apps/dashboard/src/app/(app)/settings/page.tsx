@@ -99,9 +99,48 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             </div>
           )}
 
+          {/* Without a slug configured, Armada never checks installations: say nothing rather than guess. */}
+          {installUrl && connection && !revoked && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
+              {connection.installation_id != null ? (
+                <>
+                  <div className="min-w-0 space-y-1">
+                    <p className="text-sm font-medium">App installed</p>
+                    <p className="text-xs text-muted-foreground">
+                      Armada can act on the repositories this installation covers.
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" asChild>
+                    <a
+                      href={`https://github.com/settings/installations/${connection.installation_id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Manage installation
+                    </a>
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <div className="min-w-0 space-y-1">
+                    <p className="text-sm font-medium">Not installed anywhere you can reach yet</p>
+                    <p className="text-xs text-muted-foreground">
+                      Armada can connect as you, but cannot act on any repository until the app is installed.
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" asChild>
+                    <a href={installUrl} target="_blank" rel="noreferrer">
+                      Install the app
+                    </a>
+                  </Button>
+                </>
+              )}
+            </div>
+          )}
+
           <p className="text-sm text-muted-foreground">
             Armada can only act on repositories where the Armada GitHub App is installed and you have access.
-            {installUrl ? (
+            {installUrl && !connection ? (
               <>
                 {" "}
                 <a href={installUrl} className="underline underline-offset-4" target="_blank" rel="noreferrer">

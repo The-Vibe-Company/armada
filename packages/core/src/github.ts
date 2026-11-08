@@ -10,8 +10,11 @@ import { decryptSecret, EncryptionKeyError, encryptSecret } from "./crypto.ts";
 export const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
 const GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token";
 const GITHUB_USER_URL = "https://api.github.com/user";
+const GITHUB_INSTALLATIONS_URL = "https://api.github.com/user/installations";
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_ATTEMPTS = 3;
+const INSTALLATIONS_PER_PAGE = 100;
+const MAX_INSTALLATION_PAGES = 10;
 
 export const GITHUB_CLIENT_ID_ENV = "GITHUB_APP_CLIENT_ID";
 export const GITHUB_CLIENT_SECRET_ENV = "GITHUB_APP_CLIENT_SECRET";
@@ -188,6 +191,58 @@ export async function fetchGitHubUser(
     throw new GitHubAuthError("unavailable", "GitHub answered with an account Armada cannot read.");
   }
   return { id, login, name: typeof name === "string" && name.trim() !== "" ? name : null };
+}
+
+/** One GitHub App installation a person can reach, as GitHub reports it: never trusted from a query string. */
+export interface GitHubInstallation {
+  id: number;
+  appSlug: string | null;
+  account: { login: string; type: string } | null;
+}
+
+/**
+ * Every App installation the token's owner can reach, across every account. The only reliable way
+ * to tell whether the Armada GitHub App is installed anywhere for this person, and the only way to
+ * corroborate an installation_id a callback claims: GitHub is the source of truth, never the query string.
+ */
+export async function fetchGitHubInstallations(
+  accessToken: string,
+  options: { fetch?: typeof fetch } = {},
+): Promise<GitHubInstallation[]> {
+  const installations: GitHubInstallation[] = [];
+  for (let page = 1; page <= MAX_INSTALLATION_PAGES; page++) {
+    let response: Response;
+    try {
+      response = await (options.fetch ?? fetch)(
+        `${GITHUB_INSTALLATIONS_URL}?per_page=${INSTALLATIONS_PER_PAGE}&page=${page}`,
+        {
+          headers: {
+            accept: "application/vnd.github+json",
+            authorization: `Bearer ${accessToken}`,
+            "user-agent": "armada",
+            "x-github-api-version": "2022-11-28",
+          },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        },
+      );
+    } catch (error) {
+      throw new GitHubAuthError("unavailable", "GitHub could not be reached.", { cause: error });
+    }
+    const body: unknown = await response.json().catch(() => null);
+    if (!response.ok || !isRecord(body) || !Array.isArray(body.installations)) {
+      throw new GitHubAuthError("unavailable", `GitHub did not list installations (${response.status}).`);
+    }
+    for (const item of body.installations) {
+      if (!isRecord(item) || typeof item.id !== "number") continue;
+      const account =
+        isRecord(item.account) && typeof item.account.login === "string"
+          ? { login: item.account.login, type: typeof item.account.type === "string" ? item.account.type : "User" }
+          : null;
+      installations.push({ id: item.id, appSlug: typeof item.app_slug === "string" ? item.app_slug : null, account });
+    }
+    if (body.installations.length < INSTALLATIONS_PER_PAGE) break;
+  }
+  return installations;
 }
 
 /** The stored connection of one person, with the refresh token still sealed. */

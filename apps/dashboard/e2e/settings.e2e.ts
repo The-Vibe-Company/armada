@@ -106,3 +106,117 @@ test("a revoked connection asks to reconnect", async ({ page }) => {
   await expect(card.getByText("GitHub access for @octocat was revoked or expired.")).toBeVisible();
   await expect(card.getByRole("link", { name: "Reconnect GitHub" })).toBeVisible();
 });
+
+test("a connection with an installation on file shows Manage installation", async ({ page }) => {
+  await fetch(`${MOCK}/__test/github-connect`, {
+    method: "POST",
+    body: JSON.stringify({ user: IDS.alice, login: "octocat", installationId: 9001 }),
+  });
+  await signIn(page, "alice@example.com", "/settings");
+  const card = page.locator('[data-settings="github"]');
+  await expect(card.getByText("App installed")).toBeVisible();
+  const manage = card.getByRole("link", { name: "Manage installation" });
+  await expect(manage).toHaveAttribute("href", "https://github.com/settings/installations/9001");
+});
+
+test("a connection without an installation on file offers to install it", async ({ page }) => {
+  await fetch(`${MOCK}/__test/github-connect`, {
+    method: "POST",
+    body: JSON.stringify({ user: IDS.alice, login: "octocat" }),
+  });
+  await signIn(page, "alice@example.com", "/settings");
+  const card = page.locator('[data-settings="github"]');
+  await expect(card.getByText("Not installed anywhere you can reach yet")).toBeVisible();
+  const install = card.getByRole("link", { name: "Install the app" });
+  await expect(install).toHaveAttribute("href", "https://github.com/apps/armada-e2e/installations/new");
+});
+
+test("Connect GitHub with no installation anywhere routes on to install it, and the return finishes the connection", async ({
+  page,
+}) => {
+  await fetch(`${MOCK}/__test/github-installations`, { method: "POST", body: JSON.stringify({ installations: [] }) });
+  await page.route("https://github.com/**", (route) => route.fulfill({ status: 200, body: "GitHub" }));
+  await signIn(page, "alice@example.com", "/settings");
+  const card = page.locator('[data-settings="github"]');
+
+  const [authorize] = await Promise.all([
+    page.waitForRequest((candidate) => candidate.url().startsWith("https://github.com/login/oauth/authorize")),
+    card.getByRole("link", { name: "Connect GitHub" }).click(),
+  ]);
+  const oauthState = new URL(authorize.url()).searchParams.get("state");
+
+  const [install] = await Promise.all([
+    page.waitForRequest((candidate) =>
+      candidate.url().startsWith("https://github.com/apps/armada-e2e/installations/new"),
+    ),
+    page.goto(`/github/callback?code=good-code&state=${oauthState}`),
+  ]);
+  const installUrl = new URL(install.url());
+  expect(installUrl.pathname).toBe("/apps/armada-e2e/installations/new");
+  const installState = installUrl.searchParams.get("state");
+  expect(installState).toMatch(/^[0-9a-f]{48}$/);
+  // Connect GitHub already saved the connection before routing to install.
+  expect(await (await fetch(`${MOCK}/__test/github-connections`)).json()).toMatchObject([
+    { login: "octocat", installation_id: null },
+  ]);
+
+  await fetch(`${MOCK}/__test/github-installations`, {
+    method: "POST",
+    body: JSON.stringify({ installations: [{ id: 9001, app_slug: "armada-e2e", account: { login: "octocat" } }] }),
+  });
+  await page.goto(`/github/callback?setup_action=install&installation_id=9001&code=good-code&state=${installState}`);
+  await page.waitForURL("**/settings?github=connected");
+  await expect(card.getByText("App installed")).toBeVisible();
+  expect(await (await fetch(`${MOCK}/__test/github-connections`)).json()).toMatchObject([
+    { login: "octocat", installation_id: 9001 },
+  ]);
+});
+
+test("an installation return with no state cookie still finishes the connection, once GitHub confirms it", async ({
+  page,
+}) => {
+  await fetch(`${MOCK}/__test/github-installations`, {
+    method: "POST",
+    body: JSON.stringify({ installations: [{ id: 9001, app_slug: "armada-e2e", account: { login: "octocat" } }] }),
+  });
+  await signIn(page, "alice@example.com", "/settings");
+  // No visit to /github/connect or the install link happened: there is no state cookie at all,
+  // the way a GitHub-initiated installation return can arrive. See docs/github-app.md.
+  await page.goto("/github/callback?setup_action=install&installation_id=9001&code=good-code");
+  await page.waitForURL("**/settings?github=connected");
+  const card = page.locator('[data-settings="github"]');
+  await expect(card.getByText("@octocat")).toBeVisible();
+  await expect(card.getByText("App installed")).toBeVisible();
+});
+
+test("an installation return claiming an installation GitHub does not list for the app is refused", async ({
+  page,
+}) => {
+  await fetch(`${MOCK}/__test/github-installations`, {
+    method: "POST",
+    body: JSON.stringify({ installations: [{ id: 9001, app_slug: "armada-e2e", account: { login: "octocat" } }] }),
+  });
+  await signIn(page, "alice@example.com", "/settings");
+  await page.goto("/github/callback?setup_action=install&installation_id=4242&code=good-code");
+  await page.waitForURL("**/settings?github=install_mismatch");
+  expect(await (await fetch(`${MOCK}/__test/github-connections`)).json()).toEqual([]);
+});
+
+test("an installation return with no state cookie never switches an already-connected person to a different GitHub account", async ({
+  page,
+}) => {
+  await fetch(`${MOCK}/__test/github-connect`, {
+    method: "POST",
+    body: JSON.stringify({ user: IDS.alice, login: "someone-else", githubId: 1 }),
+  });
+  await fetch(`${MOCK}/__test/github-installations`, {
+    method: "POST",
+    body: JSON.stringify({ installations: [{ id: 9001, app_slug: "armada-e2e", account: { login: "octocat" } }] }),
+  });
+  await signIn(page, "alice@example.com", "/settings");
+  await page.goto("/github/callback?setup_action=install&installation_id=9001&code=good-code");
+  await page.waitForURL("**/settings?github=mismatch");
+  expect(await (await fetch(`${MOCK}/__test/github-connections`)).json()).toMatchObject([
+    { login: "someone-else", github_id: 1 },
+  ]);
+});

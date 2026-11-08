@@ -21,6 +21,7 @@ export type Database = Omit<Generated, "public"> & {
           github_name: string | null;
           token_enc: string;
           token_expires_at: string | null;
+          installation_id: number | null;
         };
         Returns: undefined;
       };

@@ -30,6 +30,7 @@ type State = {
   sandboxes: Row[];
   credentials: Row[];
   github_connections: Row[];
+  github_installations: Row[];
   events: Map<string, Row[]>;
   sent: string[];
   otpEmails: string[];
@@ -64,6 +65,9 @@ function seed(): State {
       },
     ],
     github_connections: [],
+    // The octocat/octo-cat fixture has the Armada e2e App installed by default, so a plain
+    // Connect GitHub lands straight on "connected" unless a test says otherwise.
+    github_installations: [{ id: 9001, app_slug: "armada-e2e", account: { login: "octocat", type: "User" } }],
     events: new Map(),
     sent: [],
     otpEmails: [],
@@ -427,6 +431,7 @@ function rpc(name: string, args: Row, userId: string): Response {
         name: args.github_name,
         refresh_token_enc: args.token_enc,
         refresh_expires_at: args.token_expires_at,
+        installation_id: args.installation_id ?? null,
         revoked_at: null,
         updated_at: now,
       };
@@ -548,6 +553,12 @@ function github(request: Request, url: URL, body: Row): Response {
       return json({ message: "Bad credentials" }, 401);
     return json({ id: 583231, login: "octocat", name: "Octo Cat" });
   }
+  if (url.pathname === "/github/user/installations") {
+    if (request.headers.get("authorization") !== "Bearer ghu_e2e_access")
+      return json({ message: "Bad credentials" }, 401);
+    if ((url.searchParams.get("page") ?? "1") !== "1") return json({ installations: [] });
+    return json({ installations: state.github_installations });
+  }
   return json({ message: "not found" }, 404);
 }
 
@@ -576,11 +587,12 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/github-connect") {
     state.github_connections.push({
       user_id: String(body.user),
-      github_id: 583231,
+      github_id: Number(body.githubId ?? 583231),
       login: String(body.login),
       name: "Octo Cat",
       refresh_token_enc: "\\x0102",
       refresh_expires_at: null,
+      installation_id: body.installationId == null ? null : Number(body.installationId),
       revoked_at: body.revoked ? "2026-11-08T11:00:00.000Z" : null,
       created_at: "2026-11-08T10:00:00.000Z",
       updated_at: "2026-11-08T10:00:00.000Z",
@@ -589,6 +601,10 @@ function control(url: URL, body: Row): Response {
   }
   if (url.pathname === "/__test/github-connections") {
     return json(state.github_connections.map((row) => ({ ...row })));
+  }
+  if (url.pathname === "/__test/github-installations") {
+    state.github_installations = (body.installations as Row[] | undefined) ?? [];
+    return json({ ok: true });
   }
   if (url.pathname === "/__test/state") {
     return json({ otpEmails: state.otpEmails, sent: state.sent });

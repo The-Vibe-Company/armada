@@ -142,7 +142,7 @@ describe("database", () => {
         "credentials SELECT(created_at,id,kind,owner_id,scope)",
         "credentials UPDATE(value_enc)",
         "github_connections DELETE",
-        "github_connections SELECT(created_at,github_id,login,name,refresh_expires_at,revoked_at,updated_at,user_id)",
+        "github_connections SELECT(created_at,github_id,installation_id,login,name,refresh_expires_at,revoked_at,updated_at,user_id)",
         "goldens DELETE",
         "goldens INSERT",
         "goldens SELECT",
@@ -521,14 +521,21 @@ describe("database", () => {
   test("a GitHub connection is its owner's: nobody else sees it, and a user JWT never reads the ciphertext", async () => {
     await withDb(async (db) => {
       const people = await fixture(db);
-      const save = "select public.save_github_connection($1, $2, null, decode($3, 'hex'), null)";
-      await asUser(db, people.owner, () => db.query(save, [1, "first", "0c"]));
-      await asUser(db, people.owner, () => db.query(save, [583231, "octocat", "0d"]));
+      const save = "select public.save_github_connection($1, $2, null, decode($3, 'hex'), null, $4)";
+      await asUser(db, people.owner, () => db.query(save, [1, "first", "0c", null]));
+      await asUser(db, people.owner, () => db.query(save, [583231, "octocat", "0d", 42]));
       expect(
         await asRole(db, "service_role", () =>
-          db.query("select github_id, encode(refresh_token_enc, 'hex') as enc from github_connections"),
+          db.query(
+            "select github_id, installation_id, encode(refresh_token_enc, 'hex') as enc from github_connections",
+          ),
         ),
-      ).toMatchObject({ rows: [{ github_id: 583231, enc: "0d" }] });
+      ).toMatchObject({ rows: [{ github_id: 583231, installation_id: 42, enc: "0d" }] });
+      expect(
+        await asUser(db, people.owner, () =>
+          text(db, "select installation_id::text as value from github_connections where user_id = $1", [people.owner]),
+        ),
+      ).toBe("42");
 
       // A user JWT writes no column directly: connecting goes through save_github_connection.
       await expect(

@@ -7,8 +7,10 @@ import {
   EncryptionKeyError,
   encryptSecret,
   exchangeGitHubCode,
+  fetchGitHubInstallations,
   GITHUB_NOT_CONNECTED,
   type GitHubApp,
+  GitHubAuthError,
   type GitHubConnectionStore,
   type GitHubResolveDeps,
   githubAppFromEnv,
@@ -185,6 +187,60 @@ describe("GitHub access at launch", () => {
   test("GitHub tokens are masked in any output, known or not", () => {
     const text = `GH_TOKEN=${ACCESS_1} and ${REFRESH_1} and github_pat_11AAAAAAAAAAAAAAAAAAAA_bbbbbbbbbbbb`;
     expect(redact(text, [])).toBe("GH_TOKEN=*** and *** and ***");
+  });
+});
+
+describe("the person's App installations", () => {
+  test("lists every installation across pages, with the app slug GitHub reports for each", async () => {
+    const pageOne = Array.from({ length: 100 }, (_, index) => ({
+      id: index + 1,
+      app_slug: "armada",
+      account: { login: "acme", type: "Organization" },
+    }));
+    const calls: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      calls.push(url.toString());
+      if (url.searchParams.get("page") === "2") {
+        return Response.json({ installations: [{ id: 101, app_slug: "other-app", account: null }] });
+      }
+      return Response.json({ installations: pageOne });
+    }) as typeof fetch;
+
+    const installations = await fetchGitHubInstallations(ACCESS_1, { fetch: fetchImpl });
+
+    expect(installations).toHaveLength(101);
+    expect(installations[0]).toEqual({ id: 1, appSlug: "armada", account: { login: "acme", type: "Organization" } });
+    expect(installations[100]).toEqual({ id: 101, appSlug: "other-app", account: null });
+    expect(calls).toHaveLength(2);
+  });
+
+  test("an outage or a malformed reply is unavailable, not a thrown surprise", async () => {
+    const down = (async (..._args: Parameters<typeof fetch>): Promise<Response> => {
+      throw new TypeError("connect ECONNREFUSED");
+    }) as typeof fetch;
+    await expect(fetchGitHubInstallations(ACCESS_1, { fetch: down })).rejects.toBeInstanceOf(GitHubAuthError);
+
+    const malformed = (async (..._args: Parameters<typeof fetch>) =>
+      Response.json({ not: "installations" })) as typeof fetch;
+    await expect(fetchGitHubInstallations(ACCESS_1, { fetch: malformed })).rejects.toMatchObject({
+      code: "unavailable",
+    });
+
+    const refused = (async (..._args: Parameters<typeof fetch>) => new Response("", { status: 401 })) as typeof fetch;
+    await expect(fetchGitHubInstallations(ACCESS_1, { fetch: refused })).rejects.toMatchObject({
+      code: "unavailable",
+    });
+  });
+
+  test("an item without a numeric id is skipped rather than guessed at", async () => {
+    const fetchImpl = (async (..._args: Parameters<typeof fetch>) =>
+      Response.json({
+        installations: [{ app_slug: "armada" }, { id: 7, app_slug: "armada", account: null }],
+      })) as typeof fetch;
+    expect(await fetchGitHubInstallations(ACCESS_1, { fetch: fetchImpl })).toEqual([
+      { id: 7, appSlug: "armada", account: null },
+    ]);
   });
 });
 

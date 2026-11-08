@@ -5,9 +5,15 @@ const routes = {
   "https://github.com/login/oauth/access_token": `${mock}/github/login/oauth/access_token`,
   "https://api.github.com/user": `${mock}/github/user`,
 };
+const prefixes = {
+  "https://api.github.com/user/installations": `${mock}/github/user/installations`,
+};
 const original = globalThis.fetch;
 globalThis.fetch = (input, init) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-  const target = routes[url];
-  return original(target ?? input, init);
+  if (routes[url]) return original(routes[url], init);
+  for (const [prefix, target] of Object.entries(prefixes)) {
+    if (url.startsWith(prefix)) return original(target + url.slice(prefix.length), init);
+  }
+  return original(input, init);
 };
