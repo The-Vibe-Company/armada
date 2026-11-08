@@ -83,9 +83,13 @@ export class GoldenCreateService {
       builder = await provider.createGolden({ name, ttlSeconds: 86400, labels: { armada: "golden-builder" } });
       // A scoped installation token can cover only one installation. Multiple already-authorized
       // repos use the caller's cached user token, which is never revoked or rotated here.
-      issued = this.deps.mint && installations.size === 1
-        ? await this.deps.mint(repos[0]?.installationId ?? 0, repos.map((r) => r.id))
-        : { token: callerToken, revoke: () => Promise.resolve() };
+      issued =
+        this.deps.mint && installations.size === 1
+          ? await this.deps.mint(
+              repos[0]?.installationId ?? 0,
+              repos.map((r) => r.id),
+            )
+          : { token: callerToken, revoke: () => Promise.resolve() };
       await this.deps.ssh(provider, {
         sandboxId: builder.id,
         token: issued.token,

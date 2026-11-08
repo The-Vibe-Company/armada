@@ -89,13 +89,26 @@ test("falls back to the caller's own token and never mints when no App is config
 test("authorized repositories across installations use the caller token and do not revoke it", async () => {
   const log: string[] = [];
   const s = new GoldenCreateService({
-    authorize: async () => ({ repos: [repo, { owner: "other", repo: "api", id: 2, installationId: 3 }], token: "caller-token" }),
-    mint: async () => { throw new Error("installation mint must not run"); },
-    ssh: async (_p, input) => { log.push(input.token); },
+    authorize: async () => ({
+      repos: [repo, { owner: "other", repo: "api", id: 2, installationId: 3 }],
+      token: "caller-token",
+    }),
+    mint: async () => {
+      throw new Error("installation mint must not run");
+    },
+    ssh: async (_p, input) => {
+      log.push(input.token);
+    },
     scan: async () => {},
-    persist: async () => { log.push("persist"); },
+    persist: async () => {
+      log.push("persist");
+    },
   });
-  const p: any = { createGolden: async () => ({ id: "bx" }), snapshot: async () => ({ status: "ready" }), stop: async () => {} };
+  const p: any = {
+    createGolden: async () => ({ id: "bx" }),
+    snapshot: async () => ({ status: "ready" }),
+    stop: async () => {},
+  };
   await s.create(p, actor, { name: "many", visibility: "org", repos: ["acme/web", "other/api"] });
   expect(log).toEqual(["caller-token", "persist"]);
 });
