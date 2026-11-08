@@ -1,5 +1,5 @@
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
-import type { GitHubUser, StoredGitHubConnection } from "./github.ts";
+import type { GitHubConnectionStore, GitHubUser, StoredGitHubConnection } from "./github.ts";
 import type { Sql } from "./golden-store.ts";
 import type { CredentialInfo, MemberInfo, OrgSummary, VaultStore } from "./vault.ts";
 import { VaultError } from "./vault-error.ts";
@@ -160,39 +160,32 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
     },
 
     async getGitHubConnection(userId): Promise<StoredGitHubConnection | null> {
-      const result = await sql.query<{
-        user_id: string;
-        github_id: string | number;
-        login: string;
-        name: string | null;
-        refresh_token_enc: Uint8Array;
-        refresh_expires_at: string | Date | null;
-        revoked_at: string | Date | null;
-      }>(
-        `select user_id, github_id, login, name, refresh_token_enc, refresh_expires_at, revoked_at
-         from public.github_connections where user_id = $1`,
-        [userId],
-      );
-      const row = result.rows[0];
-      if (!row) return null;
-      return {
-        userId: row.user_id,
-        githubId: Number(row.github_id),
-        login: row.login,
-        name: row.name,
-        refreshTokenEnc: new Uint8Array(row.refresh_token_enc),
-        refreshExpiresAt: row.refresh_expires_at === null ? null : new Date(row.refresh_expires_at),
-        revokedAt: row.revoked_at === null ? null : new Date(row.revoked_at),
-      };
+      return readGitHubConnection(sql, userId);
+    },
+
+    async withGitHubConnectionRefresh(userId, work) {
+      if (!sql.transaction) return work(refreshStore(sql), await readGitHubConnection(sql, userId));
+      return sql.transaction(async (transaction) => {
+        await transaction.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [userId]);
+        return work(refreshStore(transaction), await readGitHubConnection(transaction, userId));
+      });
     },
 
     async rotateGitHubToken(userId, expected, next) {
       const result = await sql.query(
         `update public.github_connections
-         set refresh_token_enc = $3::bytea, refresh_expires_at = $4::timestamptz, updated_at = now()
+         set refresh_token_enc = $3::bytea, refresh_expires_at = $4::timestamptz,
+           access_token_enc = $5::bytea, access_expires_at = $6::timestamptz, updated_at = now()
          where user_id = $1 and refresh_token_enc = $2::bytea and revoked_at is null
          returning user_id`,
-        [userId, expected, next.refreshTokenEnc, next.refreshExpiresAt?.toISOString() ?? null],
+        [
+          userId,
+          expected,
+          next.refreshTokenEnc,
+          next.refreshExpiresAt?.toISOString() ?? null,
+          next.accessTokenEnc,
+          next.accessExpiresAt.toISOString(),
+        ],
       );
       return result.rows.length > 0;
     },
@@ -250,4 +243,81 @@ function mapWriteError(error: unknown): Error {
     return new VaultError("not_found", "No Armada account has that user id.");
   }
   return new VaultError("unavailable", "The database refused the change.");
+}
+
+type GitHubConnectionRow = {
+  user_id: string;
+  github_id: string | number;
+  login: string;
+  name: string | null;
+  refresh_token_enc: Uint8Array;
+  refresh_expires_at: string | Date | null;
+  access_token_enc: Uint8Array | null;
+  access_expires_at: string | Date | null;
+  revoked_at: string | Date | null;
+};
+
+async function readGitHubConnection(sql: Sql, userId: string): Promise<StoredGitHubConnection | null> {
+  const result = await sql.query<GitHubConnectionRow>(
+    `select user_id, github_id, login, name, refresh_token_enc, refresh_expires_at,
+      access_token_enc, access_expires_at, revoked_at
+     from public.github_connections where user_id = $1`,
+    [userId],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    userId: row.user_id,
+    githubId: Number(row.github_id),
+    login: row.login,
+    name: row.name,
+    refreshTokenEnc: new Uint8Array(row.refresh_token_enc),
+    refreshExpiresAt: row.refresh_expires_at === null ? null : new Date(row.refresh_expires_at),
+    accessTokenEnc: row.access_token_enc === null ? null : new Uint8Array(row.access_token_enc),
+    accessExpiresAt: row.access_expires_at === null ? null : new Date(row.access_expires_at),
+    revokedAt: row.revoked_at === null ? null : new Date(row.revoked_at),
+  };
+}
+
+function refreshStore(sql: Sql): GitHubConnectionStore {
+  return {
+    getGitHubConnection: (userId) => readGitHubConnection(sql, userId),
+    withGitHubConnectionRefresh: async () => {
+      throw new Error("Nested GitHub refresh transactions are not supported.");
+    },
+    async rotateGitHubToken(userId, expected, next) {
+      const result = await sql.query(
+        `update public.github_connections
+         set refresh_token_enc = $3::bytea, refresh_expires_at = $4::timestamptz,
+           access_token_enc = $5::bytea, access_expires_at = $6::timestamptz, updated_at = now()
+         where user_id = $1 and refresh_token_enc = $2::bytea and revoked_at is null
+         returning user_id`,
+        [
+          userId,
+          expected,
+          next.refreshTokenEnc,
+          next.refreshExpiresAt?.toISOString() ?? null,
+          next.accessTokenEnc,
+          next.accessExpiresAt.toISOString(),
+        ],
+      );
+      return result.rows.length > 0;
+    },
+    async markGitHubRevoked(userId, expected) {
+      const result = await sql.query(
+        `update public.github_connections set revoked_at = now(), updated_at = now()
+         where user_id = $1 and refresh_token_enc = $2::bytea and revoked_at is null
+         returning user_id`,
+        [userId, expected],
+      );
+      return result.rows.length > 0;
+    },
+    async updateGitHubProfile(userId, profile) {
+      await sql.query(
+        `update public.github_connections set github_id = $2, login = $3, name = $4, updated_at = now()
+         where user_id = $1`,
+        [userId, profile.id, profile.login, profile.name],
+      );
+    },
+  };
 }

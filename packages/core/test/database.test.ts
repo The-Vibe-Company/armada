@@ -214,6 +214,7 @@ describe("database", () => {
       }
       expect(ciphertext.sort()).toEqual([
         "credentials.value_enc",
+        "github_connections.access_token_enc",
         "github_connections.refresh_token_enc",
         "notify_subscriptions.secret_enc",
         "orgs.boat_api_key_enc",
@@ -553,6 +554,9 @@ describe("database", () => {
       }
       await expect(
         asUser(db, people.owner, () => db.query("select refresh_token_enc from github_connections")),
+      ).rejects.toThrow(/permission denied for table github_connections/);
+      await expect(
+        asUser(db, people.owner, () => db.query("select access_token_enc from github_connections")),
       ).rejects.toThrow(/permission denied for table github_connections/);
 
       await asUser(db, people.member, () =>
