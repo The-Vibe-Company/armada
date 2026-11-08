@@ -1,8 +1,6 @@
 import { AuthError, assertProvider } from "@armada/auth";
 import {
   configFromFlags,
-  connectGolden,
-  GOLDEN_ROOT,
   type GoldenActor,
   type GoldenConfig,
   GoldenError,
@@ -261,30 +259,18 @@ async function create(
   return 0;
 }
 
-async function connect(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps, limits: Limits): Promise<number> {
+async function connect(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps, _limits: Limits): Promise<number> {
   const name = oneName(args.positionals);
-  const { provider, store, actor } = await boatContext(args, io, deps);
-  const { golden: record, sandbox } = await connectGolden(provider, store, actor, name, limits);
-  const repos = record.config.repos
-    .map((repo) => `  ${repo.dir}  ${GOLDEN_ROOT}/${repo.dir}  ${repo.branch}`)
-    .join("\n");
-  const shell = sandbox.sshEndpoint
-    ? `SSH: ssh -p ${portOf(sandbox.sshEndpoint)} user@${hostOf(sandbox.sshEndpoint)}\nboat ssh ${sandbox.id}`
-    : `Shell: boat ssh ${sandbox.id}`;
-  io.out(
-    [
-      `Golden ${record.name} (${record.visibility}) is ready for setup.`,
-      `Sandbox: ${sandbox.id}`,
-      shell,
-      "Repos:",
-      repos,
-      "The sandbox has none of the boat account's credentials. Put .env files in the repo directories, then snapshot.",
-      "",
-    ].join("\n"),
-  );
+  const auth = authOf(io, deps);
+  const client = await createArmadaApiClient({ env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session });
+  const result = await client.request<{ golden: string; sandboxId: string; webUrl: string | null }>("/api/v1/golden/connect", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }) }),
+  });
+  if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
+  else io.out(`Golden ${result.golden} is ready for setup.\nSandbox: ${result.sandboxId}${result.webUrl ? `\nURL: ${result.webUrl}` : ""}\n`);
   return 0;
 }
-
 async function snapshot(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps, limits: Limits): Promise<number> {
   const name = oneName(args.positionals);
   const { provider, store, actor } = await boatContext(args, io, deps);
@@ -575,14 +561,6 @@ function boatProvider(
     fetch: fetchImpl,
     ...(sleep ? { sleep } : {}),
   });
-}
-
-function hostOf(endpoint: string): string {
-  return endpoint.slice(0, endpoint.lastIndexOf(":"));
-}
-
-function portOf(endpoint: string): string {
-  return endpoint.slice(endpoint.lastIndexOf(":") + 1);
 }
 
 async function serve(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
