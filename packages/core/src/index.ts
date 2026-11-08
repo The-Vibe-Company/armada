@@ -87,6 +87,7 @@ export {
   type StoredGitHubConnection,
 } from "./github.ts";
 export {
+  assertGoldenMutation,
   type CreatedGolden,
   connectGolden,
   createGolden,

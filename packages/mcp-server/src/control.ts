@@ -16,6 +16,7 @@ import {
 } from "@armada/auth";
 import {
   addMember,
+  assertGoldenMutation,
   connectGolden,
   createGoldenCreateService,
   createOrg,
@@ -595,6 +596,7 @@ async function createGoldenRoute(
   const repos = config ? [] : requiredStringArray(body, "repos");
   const setup = optional(body, "setup");
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
+  assertGoldenMutation(actor, { orgId: org.id, visibility, ownerId: caller.userId, name });
   const boat = await resolveBoatKey(options.store, options.encryptionKey, {
     userId: caller.userId,
     orgId: org.id,
@@ -630,6 +632,7 @@ async function updateGoldenRoute(
       "Secure Modal golden rebuild is not configured.",
     );
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
+  assertGoldenMutation(actor, existingGolden);
   if (body.config === undefined) throw new VaultError("invalid", "config is required.");
   const config = normalizeGitHubGoldenConfig(parseGoldenConfig(body.config));
   const boat = await resolveBoatKey(options.store, options.encryptionKey, {
@@ -662,8 +665,10 @@ async function snapshotGoldenRoute(
   const golden = selectGolden(rows, body);
   if (!golden) throw new GoldenError("not_found", `No golden named '${name}'.`);
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
+  assertGoldenMutation(actor, golden);
   // Core methods re-check the exact private-owner/org-admin policy before changing anything.
   const provider = await providerForGolden(options, caller, golden);
+  await data.goldens.assertBackendBinding?.(golden, provider);
   let target = golden;
   if (!target.providerSandboxId) {
     const restored = await connectGolden(provider, data.goldens, actor, target.name);
@@ -685,7 +690,10 @@ async function connectGoldenRoute(options: ControlOptions, caller: Caller, body:
   const golden = selectGolden(rows, body);
   if (!golden) throw new GoldenError("not_found", `No golden named '${name}'.`);
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
-  const connected = await connectGolden(await providerForGolden(options, caller, golden), data.goldens, actor, name);
+  assertGoldenMutation(actor, golden);
+  const provider = await providerForGolden(options, caller, golden);
+  await data.goldens.assertBackendBinding?.(golden, provider);
+  const connected = await connectGolden(provider, data.goldens, actor, name);
   return { golden: connected.golden.name, sandboxId: connected.sandbox.id, webUrl: null };
 }
 

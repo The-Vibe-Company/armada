@@ -13,6 +13,7 @@ import {
   statusReasonOf,
   type Visibility,
 } from "@armada/core";
+import { assertGoldenBackendBinding } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 
 /** A sandbox with what the caller needs to know about its golden. */
@@ -79,7 +80,17 @@ export function createSqlData(sql: Sql): DataSource {
       throw new GoldenError("forbidden", "Goldens are created and snapshotted with the armada CLI.");
     };
 
+    const writeGolden = async (id: string, column: "provider_sandbox_id" | "provider_snapshot_id", value: string) => {
+      const admins = caller.orgs.filter((org) => org.role === "admin").map((org) => org.orgId);
+      const result = await sql.query<{ id: string }>(
+        `update public.goldens set ${column} = $1 where id = $2::uuid and org_id = any($3::uuid[])
+         and ((visibility = 'private' and owner_id = $4::uuid) or (visibility = 'org' and org_id = any($5::uuid[]))) returning id`,
+        [value, id, orgIds, caller.userId, admins],
+      );
+      if (!result.rows.length) throw new GoldenError("forbidden", "You cannot change this golden.");
+    };
     const goldens: GoldenStore = {
+      assertBackendBinding: (golden, provider) => assertGoldenBackendBinding(sql, golden, provider),
       async list(orgId) {
         ownOrg(orgId);
         const result = await sql.query<GoldenRow>(
@@ -100,8 +111,8 @@ export function createSqlData(sql: Sql): DataSource {
       },
       insert: readOnly,
       setConfig: readOnly,
-      setSandbox: readOnly,
-      setSnapshot: readOnly,
+      setSandbox: (id, value) => writeGolden(id, "provider_sandbox_id", value),
+      setSnapshot: (id, value) => writeGolden(id, "provider_snapshot_id", value),
     };
 
     const sandboxes: ServerSandboxStore = {
