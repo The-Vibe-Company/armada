@@ -196,3 +196,4 @@ export { createSqlVaultStore } from "./vault-store.ts";
 export { VERSION } from "./version.ts";
 
 export { githubAppJwt, mintInstallationToken, type InstallationToken } from "./github-installation.ts";
+export { sshStdinCheckout, type SshExecDeps } from "./ssh-executor.ts";
