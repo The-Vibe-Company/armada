@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { controlOrigin, forwardControl } from "./control-proxy.ts";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 export async function POST(request: Request, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;

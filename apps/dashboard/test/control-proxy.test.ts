@@ -43,12 +43,17 @@ test("forwards anonymous public auth routes without a bearer", async () => {
   expect(output).not.toContain("ARMADA_MCP_URL");
 });
 
-test("forwards org and credential control routes only with a bearer", async () => {
+test("forwards authenticated CLI operations and MCP control routes", async () => {
   process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
   const seen: Request[] = [];
   for (const path of [
     ["org", "list"],
     ["creds", "list"],
+    ["sandbox", "list"],
+    ["sandbox", "wait"],
+    ["sandbox", "exec"],
+    ["mcp", "set-enabled"],
+    ["mcp", "sandbox-connections"],
   ]) {
     const response = await forwardControl(
       new Request("https://dashboard.test", { method: "POST", headers: { authorization: "Bearer masked" } }),
@@ -59,8 +64,9 @@ test("forwards org and credential control routes only with a bearer", async () =
       },
     );
     expect(response.status).toBe(200);
+    expect(seen.at(-1)?.headers.get("authorization")).toBe("Bearer masked");
+    expect(seen.at(-1)?.url).toBe(`https://armada.test/api/v1/${path.join("/")}`);
   }
-  expect(seen.map((request) => request.headers.get("authorization"))).toEqual(["Bearer masked", "Bearer masked"]);
   expect(
     (await forwardControl(new Request("https://dashboard.test", { method: "POST" }), ["org", "list"])).status,
   ).toBe(401);
