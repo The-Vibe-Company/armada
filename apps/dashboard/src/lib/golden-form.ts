@@ -6,6 +6,7 @@ import {
   parseGoldenConfig,
   parseGoldenName,
 } from "@armada/core";
+import type { GoldenCapabilities } from "./control.ts";
 
 /** One repository row of the golden form, as typed. */
 export type RepoRow = { url: string; branch: string; dir: string };
@@ -209,17 +210,21 @@ export function goldenRowState(
 }
 
 export type CapacityState =
+  | { kind: "unavailable"; reason: string }
   | { kind: "unknown" }
   | { kind: "available"; capacity: number; used: number }
   | { kind: "full"; capacity: number; used: number }
   | { kind: "legacy"; capacity: number; used: number };
 
 /**
- * The Boat golden count this viewer can see against the provider's per-account capacity. The count is of
- * visible rows only (another member's private golden or another org's is not seen), so this is guidance;
- * the server reserves the backend slot and is the authority.
+ * The Boat golden count this viewer can see against the limit the Armada server read from the selected org's
+ * provider. The count is of visible rows only (another member's private golden or another org's is not seen),
+ * so this is guidance; the server reserves the backend slot and is the authority. A failed read is
+ * `unavailable` and a null limit `unknown`: neither invents a number.
  */
-export function boatCapacity(goldens: readonly Pick<Golden, "provider">[], capacity: number | null): CapacityState {
+export function boatCapacity(goldens: readonly Pick<Golden, "provider">[], read: GoldenCapabilities): CapacityState {
+  if (!read.ok) return { kind: "unavailable", reason: read.reason };
+  const capacity = read.maxGoldens;
   if (capacity === null) return { kind: "unknown" };
   const used = goldens.filter((golden) => golden.provider === "boat").length;
   if (used > capacity) return { kind: "legacy", capacity, used };

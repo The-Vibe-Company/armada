@@ -38,7 +38,11 @@ type State = {
   /** Every control API golden build, as the dashboard's server sent it (never a token: only whether one came). */
   goldenCalls: { route: string; body: Row; authorized: boolean }[];
   /** When set, a golden build waits until `/__test/golden-release`: the browser test sees the pending state. */
-  goldenGate: { hold: boolean; fail: { status: number; code: string; message: string } | null };
+  goldenGate: { hold: boolean; fail: { status: number; code?: string; message: string } | null };
+  /** Every `golden/capabilities` read (never a token: only whether one came). */
+  capabilityCalls: { body: Row; authorized: boolean }[];
+  /** What the selected provider reports, or how the read fails (no provider credential, an older server). */
+  capabilities: { maxGoldens: number | null; fail: { status: number; code?: string; message: string } | null };
   otpEmails: string[];
 };
 
@@ -94,6 +98,8 @@ function seed(): State {
     toolCalls: [],
     goldenCalls: [],
     goldenGate: { hold: false, fail: null },
+    capabilityCalls: [],
+    capabilities: { maxGoldens: 1, fail: null },
     otpEmails: [],
   };
   // The org golden records two repositories, so its launch form offers a working directory.
@@ -613,7 +619,11 @@ async function goldenBuild(route: string, body: Row, request: Request): Promise<
   if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
   if (state.goldenGate.hold) await released;
   const failure = state.goldenGate.fail;
-  if (failure) return json({ error: { code: failure.code, message: failure.message } }, failure.status);
+  // A failure without a code is a gateway's own answer (a timeout in front of the server), not the server's.
+  if (failure)
+    return failure.code
+      ? json({ error: { code: failure.code, message: failure.message } }, failure.status)
+      : new Response(failure.message, { status: failure.status, headers: { "content-type": "text/plain" } });
   const org = String(body.org);
   if (!isMember(org, userId)) return json({ error: { code: "forbidden", message: "Not a member." } }, 403);
   const config = body.config as Row;
@@ -636,6 +646,22 @@ async function goldenBuild(route: string, body: Row, request: Request): Promise<
   target.provider_snapshot_id = snapshot;
   target.boat_snapshot_id = snapshot;
   return json({ name, visibility: target.visibility, snapshot });
+}
+
+/** `golden/capabilities`: the server's scoped read of the selected org's provider limit. */
+function goldenCapabilities(body: Row, request: Request): Response {
+  const userId = viewer(request);
+  state.capabilityCalls.push({ body, authorized: Boolean(userId) });
+  if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
+  if (!isMember(body.org, userId))
+    return json({ error: { code: "forbidden", message: "You are not a member of this org." } }, 403);
+  const failure = state.capabilities.fail;
+  if (failure)
+    return json(
+      failure.code ? { error: { code: failure.code, message: failure.message } } : { error: failure.message },
+      failure.status,
+    );
+  return json({ provider: "boat", maxGoldens: state.capabilities.maxGoldens }, 200, { "cache-control": "no-store" });
 }
 
 /** GitHub's token and user endpoints, reached by the app server through e2e/github-fetch.cjs. */
@@ -697,7 +723,14 @@ function control(url: URL, body: Row): Response {
     if (body.hold === true) closeGate();
     state.goldenGate = {
       hold: body.hold === true,
-      fail: body.fail ? (body.fail as { status: number; code: string; message: string }) : null,
+      fail: body.fail ? (body.fail as { status: number; code?: string; message: string }) : null,
+    };
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/capabilities") {
+    state.capabilities = {
+      maxGoldens: body.maxGoldens === null ? null : Number(body.maxGoldens ?? 1),
+      fail: body.fail ? (body.fail as { status: number; code?: string; message: string }) : null,
     };
     return json({ ok: true });
   }
@@ -757,6 +790,7 @@ function control(url: URL, body: Row): Response {
       sent: state.sent,
       toolCalls: state.toolCalls,
       goldenCalls: state.goldenCalls,
+      capabilityCalls: state.capabilityCalls,
     });
   }
   return json({ message: "not found" }, 404);
@@ -778,6 +812,7 @@ const server = Bun.serve({
       const route = url.pathname.slice("/api/v1/".length);
       if (route === "auth/email/start") return json({ ok: true });
       if (route === "golden/create" || route === "golden/update") return goldenBuild(route, body, request);
+      if (route === "golden/capabilities") return goldenCapabilities(body, request);
       if (route === "golden/list")
         return request.headers.get("authorization") ? json({ goldens: [] }) : json({ error: "Unauthorized." }, 401);
       return json({ error: "Not found." }, 404);

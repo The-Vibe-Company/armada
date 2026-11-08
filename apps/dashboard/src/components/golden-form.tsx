@@ -26,6 +26,9 @@ type Props = {
 
 type KeyedRow = RepoRow & { key: number };
 
+const BUILD_OUTCOME_UNKNOWN =
+  "The dashboard lost track of this build before the Armada server answered. It may still finish: refresh the page before trying again.";
+
 /**
  * The golden form: a name, one or more GitHub repositories (branch and directory optional), init commands,
  * a one-off setup script and who sees it. It submits once to the server's secure builder and shows that one
@@ -34,7 +37,14 @@ type KeyedRow = RepoRow & { key: number };
 export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, defaults }: Props) {
   const id = useId();
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(async (previous, data) => {
-    const result = await buildGolden(previous, data);
+    let result: ActionResult;
+    try {
+      result = await buildGolden(previous, data);
+    } catch {
+      // The action's function ended without an answer (its time budget, a deploy, the network): the server may
+      // still be building. Say so, and send nothing again.
+      return { ok: false, error: BUILD_OUTCOME_UNKNOWN };
+    }
     // A new golden was built: clear the create form. A rebuild keeps showing what the golden now records.
     if (mode === "create" && result.ok) {
       setGoldenName("");

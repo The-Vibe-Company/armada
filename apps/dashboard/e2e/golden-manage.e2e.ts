@@ -3,6 +3,7 @@ import { MOCK, reset, signIn } from "./helpers";
 
 type GoldenCall = { route: string; body: Record<string, unknown>; authorized: boolean };
 type ToolCall = { name: string; args: Record<string, unknown> };
+type CapabilityCall = { body: Record<string, unknown>; authorized: boolean };
 
 async function post(path: string, body: unknown = {}): Promise<Response> {
   const response = await fetch(`${MOCK}${path}`, { method: "POST", body: JSON.stringify(body) });
@@ -10,7 +11,11 @@ async function post(path: string, body: unknown = {}): Promise<Response> {
   return response;
 }
 
-async function mockState(): Promise<{ goldenCalls: GoldenCall[]; toolCalls: ToolCall[] }> {
+async function mockState(): Promise<{
+  goldenCalls: GoldenCall[];
+  toolCalls: ToolCall[];
+  capabilityCalls: CapabilityCall[];
+}> {
   return (await post("/__test/state")).json();
 }
 
@@ -101,6 +106,74 @@ test("a refused build shows the server's reason, keeps the form and is not retri
   await expect(form.getByRole("textbox", { name: "Repository 1", exact: true })).toHaveValue("acme/web");
   await expect(form.getByRole("button", { name: "Build golden" })).toBeEnabled();
   expect((await mockState()).goldenCalls).toHaveLength(1);
+});
+
+test("a build whose gateway gives up says it may still finish, and is not retried", async ({ page }) => {
+  await post("/__test/reset", { novaOrg: true });
+  await post("/__test/golden-gate", { fail: { status: 504, message: "upstream request timeout" } });
+  await signIn(page, "carol@example.com", "/goldens");
+  const form = createForm(page);
+  await form.getByLabel("Name").fill("slow");
+  await form.getByRole("textbox", { name: "Repository 1", exact: true }).fill("acme/web");
+  await form.getByRole("button", { name: "Build golden" }).click();
+
+  await expect(form.getByRole("alert")).toContainText("may still finish: refresh before trying again");
+  await expect(form.getByLabel("Name")).toHaveValue("slow");
+  expect((await mockState()).goldenCalls).toHaveLength(1);
+});
+
+test("the capacity is the number the server reads for the selected org, fetched with the session only", async ({
+  page,
+}) => {
+  await post("/__test/reset", { novaOrg: true });
+  await post("/__test/capabilities", { maxGoldens: 3 });
+  await signIn(page, "carol@example.com", "/goldens");
+  const card = page.locator('[data-capacity="available"]');
+  await expect(card).toContainText("holds 3 goldens");
+  await expect(card).toContainText("0 of 3");
+
+  const { capabilityCalls } = await mockState();
+  expect(capabilityCalls.length).toBeGreaterThan(0);
+  for (const call of capabilityCalls)
+    expect(call).toEqual({ authorized: true, body: { org: "00000000-0000-4000-8000-000000000012", provider: "boat" } });
+  // Only the number reached the browser: no provider SDK, no token, no raw answer.
+  const html = await page.content();
+  expect(html).not.toMatch(/maxGoldens|boatdev|BOAT_API_KEY/);
+});
+
+test("a capacity the server cannot read is shown as unavailable, with no invented limit or legacy claim", async ({
+  page,
+}) => {
+  // Alice sees two Boat goldens; a hardcoded limit of one would call them legacy.
+  await post("/__test/capabilities", {
+    fail: { status: 503, code: "unavailable", message: "No Boat credential is configured for this org." },
+  });
+  await signIn(page, "alice@example.com", "/goldens");
+  const card = page.locator('[data-capacity="unavailable"]');
+  await expect(card).toContainText("Capacity unavailable");
+  await expect(card.locator("[data-capacity-reason]")).toHaveText("No Boat credential is configured for this org.");
+  await expect(card).not.toContainText(/\d+ of \d+/);
+  await expect(page.locator("[data-legacy-conflict]")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Create a golden" })).toBeVisible();
+
+  // The server denies a foreign org before resolving a provider: also unavailable, never a number.
+  await post("/__test/capabilities", {
+    fail: { status: 403, code: "forbidden", message: "You are not a member of this org." },
+  });
+  await page.reload();
+  await expect(page.locator('[data-capacity="unavailable"] [data-capacity-reason]')).toHaveText(
+    "You are not a member of this org.",
+  );
+  await expect(page.locator("[data-legacy-conflict]")).toHaveCount(0);
+
+  // A null limit is "none reported", not zero and not one.
+  await post("/__test/capabilities", { maxGoldens: null });
+  await page.reload();
+  const unknown = page.locator('[data-capacity="unknown"]');
+  await expect(unknown).toContainText("reports no golden limit");
+  await expect(unknown).not.toContainText(/\d+ of \d+/);
+  await expect(page.locator("[data-legacy-conflict]")).toHaveCount(0);
+  expect((await mockState()).goldenCalls).toHaveLength(0);
 });
 
 test("a form the server would refuse is stopped before any request", async ({ page }) => {

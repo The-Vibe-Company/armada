@@ -89,5 +89,8 @@ function explainBuildError(error: ControlError): string {
     return `${error.message} A Boat account holds one golden: rebuild the existing golden instead of creating another.`;
   if (error.status === 404 && error.code === undefined)
     return "This Armada server does not offer secure golden builds yet.";
+  // A gateway in front of the server gave up, not the server: the build may still be running.
+  if ((error.status === 502 || error.status === 504) && error.code === undefined)
+    return "The Armada server did not answer in time. The build may still finish: refresh before trying again.";
   return error.message;
 }

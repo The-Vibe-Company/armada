@@ -129,12 +129,17 @@ describe("what the page offers", () => {
     expect(state).toMatchObject({ duplicateName: true, canRebuild: false });
   });
 
-  test("capacity compares visible Boat rows with the provider's own number", () => {
+  test("capacity compares visible Boat rows with the limit the server read, and never invents one", () => {
     const boat = { provider: "boat" as const };
     const modal = { provider: "modal" as const };
-    expect(boatCapacity([], 1)).toEqual({ kind: "available", capacity: 1, used: 0 });
-    expect(boatCapacity([boat, modal], 1)).toEqual({ kind: "full", capacity: 1, used: 1 });
-    expect(boatCapacity([boat, boat], 1)).toEqual({ kind: "legacy", capacity: 1, used: 2 });
-    expect(boatCapacity([boat], null)).toEqual({ kind: "unknown" });
+    const one = { ok: true, maxGoldens: 1 } as const;
+    expect(boatCapacity([], one)).toEqual({ kind: "available", capacity: 1, used: 0 });
+    expect(boatCapacity([boat, modal], one)).toEqual({ kind: "full", capacity: 1, used: 1 });
+    expect(boatCapacity([boat, boat], one)).toEqual({ kind: "legacy", capacity: 1, used: 2 });
+    expect(boatCapacity([boat], { ok: true, maxGoldens: null })).toEqual({ kind: "unknown" });
+    expect(boatCapacity([boat, boat], { ok: false, reason: "No Boat credential." })).toEqual({
+      kind: "unavailable",
+      reason: "No Boat credential.",
+    });
   });
 });

@@ -19,8 +19,13 @@ import { Empty, PageHeader } from "@/components/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  CAPABILITIES_TIMEOUT_MS,
+  createControlClient,
+  type GoldenCapabilities,
+  readGoldenCapabilities,
+} from "@/lib/control";
 import { getGitHubConnection } from "@/lib/data/github";
-import { boatGoldenCapacity } from "@/lib/data/golden-capacity";
 import { listGoldens } from "@/lib/data/goldens";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, type Membership, memberDirectory, requireViewer } from "@/lib/data/viewer";
@@ -38,6 +43,9 @@ import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Goldens" };
 export const dynamic = "force-dynamic";
+// The create and rebuild server actions run in this route's function and wait for the server's build (up to
+// GOLDEN_BUILD_TIMEOUT_MS). This is the same bound as `/api/v1/*`, so the fetch times out before the function.
+export const maxDuration = 800;
 
 export default async function GoldensPage() {
   const viewer = await requireViewer();
@@ -46,7 +54,8 @@ export default async function GoldensPage() {
   const pending = listMemberships(supabase, viewer.id).then((items) =>
     items.filter((item) => item.org.id === selected?.org.id),
   );
-  const [goldens, memberships, directory, github] = await Promise.all([
+  const serverUrl = mcpUrl();
+  const [goldens, memberships, directory, github, capabilities] = await Promise.all([
     listGoldens(supabase),
     pending,
     pending.then((items) =>
@@ -56,13 +65,14 @@ export default async function GoldensPage() {
       ),
     ),
     getGitHubConnection(supabase).catch(() => null),
+    selected ? goldenCapabilities(serverUrl, viewer.token, selected.org.id) : null,
   ]);
   const orgs = new Map(memberships.map((item) => [item.org.id, item]));
   const mine = goldens.filter((golden) => golden.visibility === "private");
   const shared = goldens.filter((golden) => golden.visibility === "org");
-  // Server-only: the Boat adapter's own per-account capacity, passed on as a number.
-  const capacity = boatCapacity(goldens, boatGoldenCapacity());
-  const serverReady = mcpUrl() !== null;
+  // Read on the server with the session; only the resulting number (or why it is missing) reaches the page.
+  const capacity = capabilities ? boatCapacity(goldens, capabilities) : null;
+  const serverReady = serverUrl !== null;
   const githubConnected = Boolean(github && !github.revoked_at);
   const context: RowContext = {
     orgs,
@@ -78,7 +88,7 @@ export default async function GoldensPage() {
         title="Goldens"
         description="A golden is a saved snapshot of your repositories, built once on the Armada server. Every sandbox starts from one."
       />
-      {selected ? (
+      {selected && capacity ? (
         <>
           <CapacityCard state={capacity} />
           {capacity.kind === "legacy" && <LegacyConflict goldens={goldens.filter((g) => g.provider === "boat")} />}
@@ -110,6 +120,16 @@ export default async function GoldensPage() {
   );
 }
 
+/** The selected org's Boat golden limit, from the Armada server's `golden/capabilities`. Never retried. */
+async function goldenCapabilities(
+  serverUrl: string | null,
+  token: string | null,
+  org: string,
+): Promise<GoldenCapabilities> {
+  if (!serverUrl || !token) return { ok: false, reason: "The Armada server is not configured for this dashboard." };
+  return readGoldenCapabilities(createControlClient({ serverUrl, token, timeoutMs: CAPABILITIES_TIMEOUT_MS }), org);
+}
+
 function CapacityCard({ state }: { state: CapacityState }) {
   return (
     <Card className="gap-3 py-4" aria-labelledby="boat-capacity-title" data-capacity={state.kind}>
@@ -118,12 +138,21 @@ function CapacityCard({ state }: { state: CapacityState }) {
           <ServerIcon className="size-4" /> Boat golden capacity
         </CardTitle>
         <CardDescription>
-          {state.kind === "unknown"
-            ? "The Boat provider reports no golden limit to this dashboard."
-            : `A Boat account holds ${state.capacity === 1 ? "one golden" : `${state.capacity} goldens`}. The Armada server reserves that slot when it builds; this page only reflects it.`}
+          {state.kind === "unavailable"
+            ? "Capacity unavailable: the Armada server could not report this organization's Boat golden limit. The server still checks it when it builds."
+            : state.kind === "unknown"
+              ? "The Armada server reports no golden limit for this organization's Boat backend."
+              : `The Armada server reports that this organization's Boat backend holds ${state.capacity === 1 ? "one golden" : `${state.capacity} goldens`}. The server checks that limit when it builds; this page only reflects it.`}
         </CardDescription>
       </CardHeader>
-      {state.kind !== "unknown" && (
+      {state.kind === "unavailable" && (
+        <CardContent className="px-4 text-sm">
+          <p className="text-muted-foreground" data-capacity-reason>
+            {state.reason}
+          </p>
+        </CardContent>
+      )}
+      {state.kind !== "unavailable" && state.kind !== "unknown" && (
         <CardContent className="px-4 text-sm">
           <p>
             <span className="font-medium">
