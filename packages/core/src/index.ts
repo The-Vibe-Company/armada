@@ -1,4 +1,21 @@
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
+export type {
+  Credential,
+  CredentialKind,
+  CredentialScope,
+  Database,
+  Golden,
+  Json,
+  McpToken,
+  Member,
+  MemberRole,
+  NotifyStatus,
+  NotifySubscription,
+  Org,
+  Sandbox,
+  SandboxStatus,
+  ServiceToken,
+} from "./database.types.ts";
 export {
   type AgentEvent,
   type CreateGoldenRequest,

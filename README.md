@@ -15,12 +15,18 @@ A Bun and TypeScript monorepo (Bun workspaces, strict `tsconfig.json` shared by 
 
 | Package | Name | Role |
 | --- | --- | --- |
-| `packages/core` | `@armada/core` | The contract every other package shares: types (harnesses, visibility, provider), the version. No I/O. |
+| `packages/core` | `@armada/core` | The contract every other package shares: types (harnesses, visibility, provider, the generated database types), the version. No I/O. |
 | `packages/provider-boat` | `@armada/provider-boat` | The boat.dev placement: the provider adapter over the boat.dev API. |
 | `packages/cli` | `@armada/cli` | The `armada` command; `src/main.ts` is the entry of the compiled binary. |
 | `packages/mcp-server` | `@armada/mcp-server` | The remote MCP server (hosted on Railway) that orchestrators call. |
 
 `scripts/build.ts` compiles the binary. Every package carries the same version, the one `armada --version` prints (`packages/core/package.json`); a test fails if they drift apart.
+
+## Database
+
+`supabase/migrations` is the schema, applied by the [Supabase CLI](https://supabase.com/docs/guides/cli) (`supabase db reset` on a local project, or `supabase migration up`). It assumes a fresh Supabase database: Auth's `auth.users` and `auth.uid()`, and the `authenticated` and `service_role` roles.
+
+`packages/core/src/database.types.ts` is generated from those migrations. After changing them, run `bun run db:types` and commit the result. A test fails if the file drifts. The migrations themselves are checked on a fresh in-memory Postgres, including the row level security rules.
 
 ## Commands
 

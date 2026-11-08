@@ -6,7 +6,8 @@ Armada v1 (the fleet orchestrator) is archived at the tag `armada-v1-final`. Its
 
 ## Layout
 
-- `packages/core` (`@armada/core`): the shared contract (types, the version). No I/O. `src/provider.ts` is the `Provider` interface (goldens, sandboxes, prompts, events by cursor), the common `AgentEvent` stream, per-harness capabilities and `ProviderError`.
+- `packages/core` (`@armada/core`): the shared contract (types, the version). No I/O. `src/provider.ts` is the `Provider` interface (goldens, sandboxes, prompts, events by cursor), the common `AgentEvent` stream, per-harness capabilities and `ProviderError`. `src/database.types.ts` is generated from the Supabase migrations (`bun run db:types`).
+- `supabase/migrations`: the Supabase CLI migrations. Schema first, then row level security. A fresh Supabase database already has `auth.users`, `auth.uid()` and the `authenticated` and `service_role` roles.
 - `packages/provider-boat` (`@armada/provider-boat`): the boat.dev provider adapter over `@boatdev/sdk` (`createBoatProvider`; `src/errors.ts` maps boat errors, `src/events.ts` normalizes events). Unit tests run the real SDK against a fake `fetch`; `test/integration.test.ts` is opt-in (`BOAT_API_KEY`).
 - `packages/cli` (`@armada/cli`): the `armada` command. `src/run.ts` takes its I/O as arguments; `src/main.ts` wires the process and is the binary's entry.
 - `packages/mcp-server` (`@armada/mcp-server`): the remote MCP server.
@@ -19,12 +20,14 @@ Armada v1 (the fleet orchestrator) is archived at the tag `armada-v1-final`. Its
 - `bun run format`: apply Biome formatting and safe fixes.
 - `bun run build` (this machine), `bun run build --target <os-arch>`, `bun run build:all`: the binary in `dist/`.
 - `bun run armada <args>`: the CLI from source.
+- `bun run db:types`: regenerate `packages/core/src/database.types.ts` after a migration change.
 
 ## Rules
 
 - **One binary.** The CLI and the MCP server ship as the single `armada` executable from `bun build --compile`. Code in it may use Bun APIs; a dependency must bundle into it.
 - **One version.** Every `packages/*/package.json` carries the same version; `@armada/core` exports it and `armada --version` prints it.
-- **Secrets never in the repository.** Keys come from the environment or Armada's encrypted store; never print one, never write one into a file, a fixture or a log. Goldens hold no secrets.
+- **Secrets never in the repository.** Keys come from the environment or Armada's encrypted store; never print one, never write one into a file, a fixture or a log. Goldens hold no secrets. In the database a secret is ciphertext (`bytea`, `*_enc`) or a token hash, and a user JWT cannot read the ciphertext columns.
+- **Schema changes are new migrations.** Never edit a migration that has been applied. Row level security is the access rule: members see org resources, a private resource is visible only to its owner, and only an admin changes an org golden, the members or an org key.
 - **Tests earn their place.** One test per behaviour at the cheapest boundary, no network, no wall-clock waits.
 - **English** in code, CLI output, docs and comments.
 - Pull request titles follow Commitizen, for example `feat(cli): launch an agent from a golden`.

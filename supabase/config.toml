@@ -1,0 +1,11 @@
+# Supabase CLI project. The schema lives in ./migrations (apply with
+# `supabase db reset` or `supabase migration up`). A fresh Supabase database
+# already has Auth (`auth.users`, `auth.uid()`) and the `authenticated` and
+# `service_role` roles; the migrations assume them.
+project_id = "armada"
+
+[db]
+major_version = 15
+
+[db.migrations]
+enabled = true
