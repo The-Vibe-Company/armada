@@ -266,7 +266,7 @@ async function launch(
     { out: auth.out, err: auth.err },
     {
       auth,
-      fetch: auth.fetch,
+      fetch: auth.fetch as unknown as typeof fetch,
       actor: { userId, orgId: (await options.store.memberships(userId))[0]?.id ?? "", role: "member" },
       store: createSqlGoldenStore(db),
       sandboxes: createSqlSandboxStore(db),
