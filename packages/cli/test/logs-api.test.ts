@@ -127,21 +127,69 @@ describe("logs through the Armada API", () => {
     ]);
   });
 
-  test("stops a non-follow read when a malformed batch does not advance its cursor", async () => {
-    const bodies: unknown[] = [];
+  test("makes one default request even when the server has more events", async () => {
+    const calls: Request[] = [];
     const code = await run(
-      ["logs", id, "--all"],
+      ["logs", id],
       { out: () => undefined, err: () => undefined },
       {
         auth: auth(async (input, init) => {
           const request = input instanceof Request ? input : new Request(String(input), init);
-          bodies.push(await request.json());
-          return Response.json({ events: [], cursor: null, hasMore: true, settled: true });
+          calls.push(request);
+          return Response.json({ events: [], cursor: "one", hasMore: true, settled: true });
         }),
       },
     );
     expect(code).toBe(0);
-    expect(bodies).toEqual([{ id, all: true, follow: false }]);
+    expect(calls).toHaveLength(1);
+    expect(await calls[0]?.json()).toEqual({ id, all: false, follow: false });
+  });
+
+  test("drains follow backlog before accepting a terminal settled response", async () => {
+    const bodies: unknown[] = [];
+    let out = "";
+    const batches = [
+      { events: [{ id: "first", at: 1, kind: "message", text: "first" }], cursor: "one", hasMore: true, settled: true },
+      {
+        events: [{ id: "second", at: 2, kind: "message", text: "second" }],
+        cursor: "two",
+        hasMore: false,
+        settled: true,
+      },
+    ];
+    const code = await run(
+      ["logs", id, "--follow"],
+      { out: (text) => (out += text), err: () => undefined },
+      {
+        auth: auth(async (input, init) => {
+          const request = input instanceof Request ? input : new Request(String(input), init);
+          bodies.push(await request.json());
+          const batch = batches.shift();
+          if (!batch) throw new Error("unexpected request");
+          return Response.json(batch);
+        }),
+        sleep: async () => undefined,
+      },
+    );
+    expect(code).toBe(0);
+    expect(out).toBe("first\nsecond\n");
+    expect(bodies).toEqual([
+      { id, all: false, follow: true },
+      { id, all: false, follow: true, cursor: "one" },
+    ]);
+  });
+
+  test("rejects a draining response that has more events without a new cursor", async () => {
+    let err = "";
+    const code = await run(
+      ["logs", id, "--all"],
+      { out: () => undefined, err: (text) => (err += text) },
+      {
+        auth: auth(async () => Response.json({ events: [], cursor: null, hasMore: true, settled: true })),
+      },
+    );
+    expect(code).toBe(2);
+    expect(err).toContain("did not advance its cursor");
   });
 
   test("retains the last cursor through an empty in-progress delta", async () => {

@@ -424,8 +424,12 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
     else for (const event of result.events) io.out(`${eventText(event)}\n`);
     const nextCursor: string | null = result.cursor ?? cursor;
     const progressed = nextCursor !== cursor;
+    if ((all || follow) && result.hasMore && !progressed) {
+      throw new GoldenError("invalid_config", "Armada logs response has more events but did not advance its cursor.");
+    }
     cursor = nextCursor;
-    settled = (!follow && (!result.hasMore || !progressed)) || (follow && result.settled);
+    const drain = all || follow;
+    settled = !drain || (!result.hasMore && (!follow || result.settled));
     if (!settled)
       await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(FOLLOW_DELAY_MS);
   }
