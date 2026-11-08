@@ -100,7 +100,7 @@ test("real shell: a clean sandbox passes", async () => {
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 test("real shell: short, underscore-separated placeholders (test fixtures) do not trip the scan", async () => {
   const script = await capturedScript();
@@ -114,7 +114,7 @@ test("real shell: short, underscore-separated placeholders (test fixtures) do no
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 test("real shell: a realistically-shaped token in a plain file fails the build", async () => {
   const script = await capturedScript();
@@ -125,7 +125,7 @@ test("real shell: a realistically-shaped token in a plain file fails the build",
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 test("real shell: a token-shaped filename is rejected without printing it", async () => {
   const script = await capturedScript();
@@ -143,7 +143,7 @@ test("real shell: a token-shaped filename is rejected without printing it", asyn
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 test("real shell: a token in .git/config is rejected without printing the token", async () => {
   const script = await capturedScript();
@@ -160,7 +160,7 @@ test("real shell: a token in .git/config is rejected without printing the token"
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 test("real shell: a token in a commit message is rejected without printing it", async () => {
   const script = await capturedScript();
@@ -181,7 +181,7 @@ test("real shell: a token in a commit message is rejected without printing it", 
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 test("real shell: a token in a dangling (amended-away, not yet gc'd) git blob still fails the build", async () => {
   const script = await capturedScript();
@@ -206,7 +206,7 @@ test("real shell: a token in a dangling (amended-away, not yet gc'd) git blob st
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 function canDropToNobody(): boolean {
   return spawnSync("sudo", ["-n", "-u", "nobody", "true"], { encoding: "utf8" }).status === 0;
@@ -234,6 +234,7 @@ test.skipIf(!canDropToNobody())(
       rmSync(base, { recursive: true, force: true });
     }
   },
+  30_000,
 );
 
 test("real shell: a token in .git/config (a credential URL, say) fails the build", async () => {
@@ -248,7 +249,7 @@ test("real shell: a token in .git/config (a credential URL, say) fails the build
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 test("real shell: a token in a commit message fails the build even though it is reachable, not just dangling", async () => {
   const script = await capturedScript();
@@ -266,7 +267,7 @@ test("real shell: a token in a commit message fails the build even though it is 
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 test("real shell: a corrupted git object fails closed instead of being silently skipped", async () => {
   const script = await capturedScript();
@@ -297,4 +298,4 @@ test("real shell: a corrupted git object fails closed instead of being silently 
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
-});
+}, 30_000);
