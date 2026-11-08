@@ -1,7 +1,7 @@
 import type { Visibility } from "./contract.ts";
 import type { GoldenActor, GoldenLimits } from "./golden.ts";
 import { waitSnapshot } from "./golden.ts";
-import { assignDirs, GOLDEN_ROOT, GoldenError, parseGoldenName } from "./golden-config.ts";
+import { assignDirs, GOLDEN_ROOT, GoldenError, type GitHubGoldenConfig, parseGoldenName } from "./golden-config.ts";
 import { GITHUB_TOKEN_PATTERN } from "./golden-scan.ts";
 import type { Provider } from "./provider.ts";
 
@@ -50,21 +50,24 @@ export class GoldenCreateService {
   async create(
     provider: Provider,
     actor: GoldenActor,
-    input: { name: string; visibility: Visibility; repos: string[]; setup?: string },
+    input: { name: string; visibility: Visibility; repos: string[]; setup?: string; config?: GitHubGoldenConfig },
     limits: GoldenLimits = {},
   ): Promise<{ snapshot: string }> {
     if (input.visibility === "org" && actor.role !== "admin")
       throw new GoldenError("forbidden", "Only an admin can create an org golden.");
     const name = parseGoldenName(input.name);
-    if (input.repos.length < 1 || input.repos.length > MAX_REPOS) {
+    const requested = input.config?.repos;
+    const requestedCount = requested?.length ?? input.repos.length;
+    if (requestedCount < 1 || requestedCount > MAX_REPOS) {
       throw new GoldenError("invalid_config", `A golden needs 1 to ${MAX_REPOS} repositories.`);
     }
-    const { repos, token: callerToken } = await this.deps.authorize(actor, input.visibility, input.repos);
+    const authorizationRepos = requested ? requested.map(({ owner, repo }) => `${owner}/${repo}`) : input.repos;
+    const { repos, token: callerToken } = await this.deps.authorize(actor, input.visibility, authorizationRepos);
     if (!repos.length) throw new GoldenError("invalid_config", "A golden needs at least one authorized repository.");
     const installations = new Set(repos.map((r) => r.installationId));
     if (installations.size !== 1)
       throw new GoldenError("invalid_config", "Repositories must belong to one GitHub App installation.");
-    const prepared = withGoldenDirs(repos);
+    const prepared = requested ? applyRequestedRepos(repos, requested) : withGoldenDirs(repos);
     const builder = await provider.createGolden({ name, ttlSeconds: 86400, labels: { armada: "golden-builder" } });
     let issued: { token: string; revoke(): Promise<void> } | undefined;
     try {
@@ -77,7 +80,7 @@ export class GoldenCreateService {
       await this.deps.ssh(provider, {
         sandboxId: builder.id,
         token: issued.token,
-        script: goldenScript(prepared, input.setup ?? ""),
+        script: goldenScript(prepared, [input.config?.init ?? [], input.setup ? [input.setup] : []].flat()),
       });
       await this.deps.scan(provider, builder.id);
       const snapshot = `golden-${builder.id}`;
@@ -115,6 +118,22 @@ export function withGoldenDirs(repos: readonly AuthorizedRepo[]): PreparedRepo[]
     repos.map((r) => ({ url: `https://github.com/${r.owner}/${r.repo}.git`, branch: r.branch ?? "main" })),
   );
   return repos.map((repo, index) => ({ ...repo, dir: withDirs[index]?.dir ?? repo.repo }));
+}
+
+/** Apply validated requested branch/directory metadata only after authorization resolved canonical GitHub repos. */
+export function applyRequestedRepos(
+  repos: readonly AuthorizedRepo[],
+  requested: readonly GitHubGoldenConfig["repos"][number][],
+): PreparedRepo[] {
+  if (repos.length !== requested.length)
+    throw new GoldenError("invalid_config", "Authorized repositories did not match the request.");
+  return repos.map((repo, index) => {
+    const wanted = requested[index];
+    if (!wanted || repo.owner !== wanted.owner || repo.repo !== wanted.repo) {
+      throw new GoldenError("invalid_config", "Authorized repositories did not match the request.");
+    }
+    return { ...repo, branch: wanted.branch, dir: wanted.dir };
+  });
 }
 
 /**
@@ -178,19 +197,19 @@ function baselineSetup(repos: readonly PreparedRepo[]): string {
   ].join("\n");
 }
 
-export function goldenScript(repos: readonly PreparedRepo[], setup = ""): string {
+export function goldenScript(repos: readonly PreparedRepo[], setup: readonly string[] = []): string {
   const lines = [
     "set -euo pipefail",
     CLEANUP_TRAP,
     "git config --global credential.helper '!f() { echo username=x-access-token; echo password=$ARMADA_GIT_TOKEN; }; f'",
     ...repos.map(
       (r) =>
-        `git clone --branch ${safe(r.branch ?? "main")} --single-branch https://github.com/${safe(r.owner)}/${safe(r.repo)}.git ${GOLDEN_ROOT}/${safe(r.dir)}`,
+        `git clone --branch ${shellQuote(r.branch ?? "main")} --single-branch https://github.com/${safe(r.owner)}/${safe(r.repo)}.git ${GOLDEN_ROOT}/${safe(r.dir)}`,
     ),
     "git config --global --unset credential.helper || true",
     "unset ARMADA_GIT_TOKEN",
     baselineSetup(repos),
-    setup,
+    ...setup,
     // A quick, same-session check; the independent, far more thorough scan (working tree, binaries
     // and every git object, reachable or not) is `scanGoldenSandbox`, run over the provider's own
     // exec channel after this session closes, and is what actually gates the snapshot.
@@ -198,6 +217,10 @@ export function goldenScript(repos: readonly PreparedRepo[], setup = ""): string
   ];
   return `${lines.filter(Boolean).join("\n")}\n`;
 }
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 function safe(v: string) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(v)) throw new GoldenError("invalid_config", "Unsafe repository path.");
   return v;
