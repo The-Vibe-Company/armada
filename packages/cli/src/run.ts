@@ -78,6 +78,10 @@ Usage:
                                            server over your own GitHub connection. No BOAT_API_KEY needed.
                                            --setup reads a local script and sends its content to run after
                                            cloning, before the scan.
+  armada golden update <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
+                               [--setup <local-file>] [--org <org>]
+                                           Rebuild the existing golden in place. One boat golden may contain
+                                           many repositories; visibility and ownership stay unchanged.
   armada golden connect <name>             Open the master sandbox to place .env files
   armada golden snapshot <name>            Freeze the master sandbox
   armada golden list [--json]              Goldens you can see
@@ -203,6 +207,8 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   switch (subcommand) {
     case "create":
       return create(args.positionals, args, io, deps, limits);
+    case "update":
+      return update(args.positionals, args, io, deps);
     case "connect":
       return connect(args, io, deps, limits);
     case "snapshot":
@@ -213,6 +219,42 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       io.err(`armada: unknown command 'golden ${subcommand}'. Run 'armada --help'.\n`);
       return 2;
   }
+}
+
+async function update(
+  positionals: string[],
+  args: ReturnType<typeof parseArgs>,
+  io: Io,
+  deps: Deps,
+): Promise<number> {
+  const name = oneName(positionals);
+  const config = await readConfig(args, deps);
+  const setupFile = single(args, "--setup");
+  let setup: string | undefined;
+  if (setupFile !== undefined) {
+    try {
+      setup = await (deps.readFile ?? ((path: string) => Bun.file(path).text()))(setupFile);
+    } catch {
+      throw new GoldenError("invalid_config", `Could not read setup file '${setupFile}'.`);
+    }
+  }
+  const auth = authOf(io, deps);
+  const client = await createArmadaApiClient({ env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session });
+  const result = await client.request<{ name: string; visibility: Visibility; snapshot: string }>("/api/v1/golden/update", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      name,
+      config,
+      ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+      ...(setup === undefined ? {} : { setup }),
+    }),
+    signal: AbortSignal.timeout(10 * 60_000),
+  });
+  io.out(
+    `Updated golden ${result.name} (${result.visibility}).\nSaved snapshot: ${result.snapshot}\nRepos: ${config.repos.map((repo) => repo.dir).join(", ")}.\n`,
+  );
+  return 0;
 }
 
 type Limits = {
