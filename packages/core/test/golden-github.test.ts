@@ -19,7 +19,7 @@ function installation(id = 9, account = "acme") {
   };
 }
 function repo(id = 7, branch = "trunk", owner = "acme") {
-  return { id, name: "web", default_branch: branch, owner: { login: owner } };
+  return { private: true, id, name: "web", default_branch: branch, owner: { login: owner } };
 }
 
 test("authorizes each requested repository with the caller token and returns IDs, default branches and the token", async () => {
@@ -62,6 +62,18 @@ test("refuses a caller-visible repository without a caller-visible installation"
         ? Response.json({ installations: [installation(9, "elsewhere")] })
         : Response.json(repo())) as typeof fetch,
   });
+  await expect(adapter.authorize(actor, "org", ["acme/web"])).rejects.toThrow("GitHub App installation");
+});
+
+test("permits caller-verified public repository without an App installation", async () => {
+  const adapter = goldenGitHubAdapter({ app, accessToken: async () => "user-token", fetch: (async (input: string | URL | Request) =>
+    String(input).includes("/user/installations") ? Response.json({ installations: [] }) : Response.json({ ...repo(), private: false })) as typeof fetch });
+  await expect(adapter.authorize(actor, "org", ["octocat/Hello-World"])).resolves.toMatchObject({ repos: [{ installationId: 0 }], token: "user-token" });
+});
+
+test("still refuses caller-visible private repository without installation", async () => {
+  const adapter = goldenGitHubAdapter({ app, accessToken: async () => "user-token", fetch: (async (input: string | URL | Request) =>
+    String(input).includes("/user/installations") ? Response.json({ installations: [] }) : Response.json(repo())) as typeof fetch });
   await expect(adapter.authorize(actor, "org", ["acme/web"])).rejects.toThrow("GitHub App installation");
 });
 
