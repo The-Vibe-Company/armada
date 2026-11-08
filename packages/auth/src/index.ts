@@ -20,6 +20,7 @@ export {
   assertEmailCode,
   assertProvider,
   assertSupabaseUrl,
+  supabaseAuthorizeUrl,
   type Provider,
   refreshSupabaseSession,
 } from "./supabase-auth.ts";

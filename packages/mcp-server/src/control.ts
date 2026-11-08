@@ -1,4 +1,4 @@
-import { type AuthStore, createSqlAuthStore, refreshSupabaseSession, type Session } from "@armada/auth";
+import { type AuthStore, createSqlAuthStore, refreshSupabaseSession, supabaseAuthorizeUrl, assertProvider, type Session } from "@armada/auth";
 import {
   addMember,
   connectGolden,
@@ -109,6 +109,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   const url = new URL(request.url);
   if (!url.pathname.startsWith(CONTROL_PREFIX)) return null;
   const route = url.pathname.slice(CONTROL_PREFIX.length);
+  if (route === "auth/authorize") return authorizeRoute(request, options);
   if (route === "auth/refresh") return refreshRoute(request, options);
   if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
   try {
@@ -126,6 +127,25 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       return fail(503, "unavailable", `Credential encryption is not configured on the server (${ENCRYPTION_KEY_ENV}).`);
     }
     return fail(500, "unavailable", "The server could not complete the request.");
+  }
+}
+
+function authorizeRoute(request: Request, options: ControlOptions): Response {
+  if (request.method !== "GET") return fail(405, "invalid", "Use GET.");
+  const url = new URL(request.url);
+  const provider = url.searchParams.get("provider") ?? "";
+  const redirectTo = url.searchParams.get("redirect_uri") ?? "";
+  const challenge = url.searchParams.get("code_challenge") ?? "";
+  const state = url.searchParams.get("state") ?? "";
+  try {
+    assertProvider(provider);
+    if (!/^[A-Za-z0-9._~-]{43,128}$/.test(challenge) || !/^[A-Za-z0-9._~-]{8,512}$/.test(state)) throw new Error();
+    const callback = new URL(redirectTo);
+    if (callback.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(callback.hostname) || !callback.port || callback.username || callback.password || callback.hash) throw new Error();
+    const location = supabaseAuthorizeUrl({ supabaseUrl: options.supabase.supabaseUrl, anonKey: options.supabase.anonKey, provider: assertProvider(provider), redirectTo: callback.toString(), challenge });
+    return new Response(null, { status: 302, headers: { location, "cache-control": "no-store" } });
+  } catch {
+    return fail(400, "invalid", "Invalid browser login request.");
   }
 }
 
