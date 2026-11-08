@@ -21,6 +21,7 @@ export {
   assertProvider,
   assertSupabaseUrl,
   exchangeSupabaseCode,
+  sendEmailLink,
   supabaseAuthorizeUrl,
   type Provider,
   refreshSupabaseSession,

@@ -80,6 +80,7 @@ function safePath(path: string): boolean {
   return (
     path === "auth/refresh" ||
     path === "auth/exchange" ||
+    path === "auth/email/start" ||
     path === "golden/list" ||
     path === "golden/create" ||
     path === "golden/update" ||

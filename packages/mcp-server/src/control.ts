@@ -1,4 +1,4 @@
-import { type AuthStore, createSqlAuthStore, refreshSupabaseSession, exchangeSupabaseCode, supabaseAuthorizeUrl, assertProvider, type Session } from "@armada/auth";
+import { type AuthStore, createSqlAuthStore, refreshSupabaseSession, exchangeSupabaseCode, sendEmailLink, assertEmail, supabaseAuthorizeUrl, assertProvider, type Session } from "@armada/auth";
 import {
   addMember,
   connectGolden,
@@ -112,6 +112,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   const route = url.pathname.slice(CONTROL_PREFIX.length);
   if (route === "auth/authorize") return authorizeRoute(request, options);
   if (route === "auth/exchange") return exchangeRoute(request, options);
+  if (route === "auth/email/start") return emailStartRoute(request, options);
   if (route === "auth/refresh") return refreshRoute(request, options);
   if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
   try {
@@ -129,6 +130,24 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       return fail(503, "unavailable", `Credential encryption is not configured on the server (${ENCRYPTION_KEY_ENV}).`);
     }
     return fail(500, "unavailable", "The server could not complete the request.");
+  }
+}
+
+async function emailStartRoute(request: Request, options: ControlOptions): Promise<Response> {
+  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
+  try {
+    const body = await readBody(request);
+    const email = assertEmail(required(body, "email"));
+    const redirectTo = required(body, "redirect_uri");
+    const challenge = required(body, "code_challenge");
+    const state = required(body, "state");
+    const callback = new URL(redirectTo);
+    if (callback.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(callback.hostname) || !callback.port || callback.username || callback.password || callback.hash || !/^[A-Za-z0-9._~-]{43,128}$/.test(challenge) || !/^[A-Za-z0-9._~-]{8,512}$/.test(state)) throw new Error();
+    await sendEmailLink({ fetch: options.supabase.fetch ?? fetch, supabaseUrl: options.supabase.supabaseUrl, anonKey: options.supabase.anonKey, email, redirectTo: callback.toString(), challenge });
+    return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
+  } catch (error) {
+    const status = error instanceof Error && error.message.includes("Too many") ? 429 : 400;
+    return fail(status, status === 429 ? "rate_limited" : "invalid", status === 429 ? "Try again later." : "Invalid email login request.");
   }
 }
 
