@@ -161,7 +161,7 @@ async function tokenRevokeRoute(request: Request, options: ControlOptions): Prom
     const caller = await authenticatedCaller(request, options);
     const body = await readBody(request);
     const id = required(body, "id");
-    if (caller.via === "service") {
+    if (caller.via !== "supabase") {
       const visible = await listServiceTokens(options.authStore, caller.userId);
       const target = visible.find((token) => token.id === id);
       const members = await options.authStore.memberships(caller.userId);
@@ -186,7 +186,7 @@ async function tokenCreateRoute(request: Request, options: ControlOptions): Prom
     const caller = await authenticatedCaller(request, options);
     const body = await readBody(request);
     const org = optional(body, "org");
-    if (caller.via === "service") {
+    if (caller.via !== "supabase") {
       const scope = caller.orgs[0];
       if (!scope || !org) return fail(403, "forbidden", "A scoped token cannot create an unscoped token.");
       const memberships = await options.authStore.memberships(caller.userId);
@@ -213,7 +213,7 @@ async function tokenListRoute(request: Request, options: ControlOptions): Promis
   try {
     const caller = await authenticatedCaller(request, options);
     const tokens = await listServiceTokens(options.authStore, caller.userId);
-    const allowed = caller.via === "service" ? new Set(caller.orgs.map((org) => org.orgId)) : null;
+    const allowed = caller.via !== "supabase" ? new Set(caller.orgs.map((org) => org.orgId)) : null;
     const memberships = allowed ? await options.authStore.memberships(caller.userId) : [];
     const names = new Set(
       memberships.filter((membership) => allowed?.has(membership.orgId)).map((membership) => membership.name),

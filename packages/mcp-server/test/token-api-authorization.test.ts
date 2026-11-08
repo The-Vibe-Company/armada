@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createMemoryAuthStore, createServiceToken } from "@armada/auth";
+import { createMemoryAuthStore, createServiceToken, generateToken, sha256Hex } from "@armada/auth";
 import type { VaultStore } from "@armada/core";
 import { type ControlOptions, createHandler, handleControlRequest } from "../src/index.ts";
 
@@ -11,6 +11,18 @@ const now = () => new Date("2026-11-08T00:00:00.000Z");
 
 function jwt(userId: string) {
   return `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: userId })).replace(/=+$/, "")}.sig`;
+}
+
+async function oauthAccess(store: ReturnType<typeof createMemoryAuthStore>, orgId: string) {
+  const token = generateToken("access");
+  await store.insertToken("mcp", {
+    userId: ALICE,
+    orgId,
+    hash: await sha256Hex(token),
+    label: "access",
+    createdAt: now().toISOString(),
+  });
+  return token;
 }
 
 function makeServer() {
@@ -148,4 +160,23 @@ test("database organization names are globally unique, preventing duplicate-name
   return migration.text().then((sql) => {
     expect(sql).toContain("create unique index orgs_name_key on public.orgs (lower(btrim(name)))");
   });
+});
+
+test("MCP OAuth access tokens are restricted to their Alpha scope on every token route", async () => {
+  const { call, store } = makeServer();
+  const access = await oauthAccess(store, ORG_A);
+  const alpha = await createServiceToken(store, { userId: ALICE, orgName: "Alpha", now: now() });
+  const beta = await createServiceToken(store, { userId: ALICE, orgName: "Beta", now: now() });
+
+  const unscoped = await call("token/create", access, { label: "child" });
+  expect(unscoped.status).toBe(403);
+  const betaChild = await call("token/create", access, { org: "Beta", label: "child" });
+  expect(betaChild.status).toBe(403);
+  const list = await call("token/list", access);
+  expect(list.status).toBe(200);
+  const ids = ((await list.json()) as { tokens: { id: string }[] }).tokens.map((token) => token.id);
+  expect(ids).toContain(alpha.id);
+  expect(ids).not.toContain(beta.id);
+  const revoke = await call("token/revoke", access, { id: beta.id });
+  expect(revoke.status).toBe(403);
 });
