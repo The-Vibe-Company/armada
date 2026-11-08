@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.4.0](https://github.com/The-Vibe-Company/armada/compare/v2.3.0...v2.4.0) (2026-11-08)
+
+
+### Features
+
+* **dashboard:** manage multi-repo golden and launch workdir ([40f5a6d](https://github.com/The-Vibe-Company/armada/commit/40f5a6db6ec3b3fbc84770d54c7b37758b2c863b))
+* **dashboard:** manage multi-repo golden and launch workdir ([fc76b05](https://github.com/The-Vibe-Company/armada/commit/fc76b055851ee24ebd21a6cb9693dc588b811aef))
+* **golden:** expose authenticated backend capabilities ([59abcab](https://github.com/The-Vibe-Company/armada/commit/59abcab5d9512eea519f8587003933331171afaf))
+* **golden:** expose authenticated backend capabilities ([d725371](https://github.com/The-Vibe-Company/armada/commit/d725371c79f30b68ce6a8b8e852a2baed63cb9f9))
+
+
+### Bug Fixes
+
+* **dashboard:** read golden capacity from the control API, not the Boat adapter ([f5cbca3](https://github.com/The-Vibe-Company/armada/commit/f5cbca3acbfb7350ad88fe9a5bd39426dcf2827d))
+* **goldens:** execute SSH stdin setup through bash ([d68402f](https://github.com/The-Vibe-Company/armada/commit/d68402f2745e8143e9876e76ee15ce3564dfb9f3))
+* **launch:** enforce selected repo in native harness session ([3508106](https://github.com/The-Vibe-Company/armada/commit/350810668cbbd0de554ab860af4a03e8ce550053))
+* **launch:** enforce selected repo in native harness session ([37e7015](https://github.com/The-Vibe-Company/armada/commit/37e701518fdd78b334b626adb28be3dd851b5190))
+
 ## [2.3.0](https://github.com/The-Vibe-Company/armada/compare/v2.2.0...v2.3.0) (2026-11-08)
 
 
