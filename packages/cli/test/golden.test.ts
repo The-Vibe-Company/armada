@@ -11,7 +11,7 @@ import {
   goldenForLaunch,
   type Provider,
 } from "@armada/core/server";
-import { type ControlOptions, handleControlRequest } from "@armada/mcp-server";
+import { type ControlOptions, createSqlData, handleControlRequest } from "@armada/mcp-server";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import type { AuthIo } from "../src/auth-commands.ts";
@@ -104,12 +104,11 @@ describe("golden command", () => {
       expect(snapshotted.code).toBe(0);
       expect(snapshotted.out).toContain(`Saved snapshot: ${snapshotName}`);
 
-      const listed = await asUser(db, people.owner, () => capture(["golden", "list"], { actor: owner, store }));
-      expect(listed.out).toContain("monorepo  private  snapshot  2 repos");
-      const hidden = await asUser(db, people.member, () =>
-        capture(["golden", "list", "--json"], { actor: actor(people, "member"), store }),
-      );
-      expect(hidden.out).toBe("[]\n");
+      // golden list itself now always goes through the Armada API (golden-api-list.test.ts,
+      // packages/mcp-server/test/control.test.ts's "golden/list" case); visibility is checked
+      // directly against the store here instead, the same way goldenForLaunch does it at launch.
+      expect(await asUser(db, people.owner, () => store.findByName(people.org, "monorepo"))).toHaveLength(1);
+      expect(await asUser(db, people.member, () => store.findByName(people.org, "monorepo"))).toHaveLength(0);
       await expect(
         asUser(db, people.member, () => goldenForLaunch(store, actor(people, "member"), "monorepo")),
       ).rejects.toThrow(/No golden named 'monorepo'/);
@@ -122,62 +121,47 @@ describe("golden command", () => {
     }
   });
 
-  test("golden commands act as the logged-in user and --org picks the org", async () => {
-    const orgA = "11111111-1111-4111-8111-111111111111";
-    const orgB = "44444444-4444-4444-8444-444444444444";
+  test("golden list acts as the logged-in user too, not only ARMADA_TOKEN (golden-api-list.test.ts covers that)", async () => {
+    const org = "11111111-1111-4111-8111-111111111111";
     const user = "22222222-2222-4222-8222-222222222222";
-    const seen: { url: string; authorization: string | null; apikey: string | null }[] = [];
-    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-      const url = new URL(input instanceof Request ? input.url : String(input));
-      const headers = new Headers(init?.headers);
-      seen.push({ url: url.toString(), authorization: headers.get("authorization"), apikey: headers.get("apikey") });
-      if (url.hostname !== "supabase.test") throw new Error(`unexpected host ${url.hostname}`);
-      if (url.pathname.endsWith("/members")) {
-        return Response.json([
-          { org_id: orgA, role: "member", orgs: { name: "Alpha" } },
-          { org_id: orgB, role: "admin", orgs: { name: "Beta" } },
-        ]);
-      }
-      if (url.pathname.endsWith("/goldens")) {
-        return Response.json([
-          {
-            id: "33333333-3333-4333-8333-333333333333",
-            org_id: url.searchParams.get("org_id")?.replace("eq.", ""),
-            name: "web",
-            visibility: "org",
-            owner_id: user,
-            boat_snapshot_id: null,
-            boat_sandbox_id: "bx_1",
-            config: { repos: [{ url: WEB, branch: "main", dir: "web" }], init: [] },
-            created_at: "2026-11-08T12:00:00.000Z",
-          },
-        ]);
-      }
-      throw new Error(`unexpected ${url.pathname}`);
-    }) as typeof fetch;
-    const auth = loggedIn(user, fetchImpl, {
-      SUPABASE_ANON_KEY: "anon-public",
-      ARMADA_ACCESS_TOKEN: "stale-env-identity",
-      ARMADA_SUPABASE_URL: "https://elsewhere.test",
-    });
+    const db = await openDatabase();
+    try {
+      await applyMigrations(db);
+      await db.query("insert into auth.users (id) values ($1)", [user]);
+      await db.query("insert into orgs (id, name) values ($1, 'Example')", [org]);
+      await db.query("insert into members (org_id, user_id, role) values ($1, $2, 'member')", [org, user]);
+      await db.query(
+        "insert into goldens (org_id, name, visibility, owner_id, config) values ($1, 'web', 'org', $2, $3::jsonb)",
+        [org, user, JSON.stringify({ repos: [{ url: WEB, branch: "main", dir: "web" }], init: [] })],
+      );
+      const authStore = createMemoryAuthStore();
+      authStore.addMembership(user, { orgId: org, name: "Example", role: "member" });
+      const controlOptions: ControlOptions = {
+        authStore,
+        supabase: { supabaseUrl: "https://supabase.test", anonKey: "anon-public", fetch: fakeSupabaseFetch(user) },
+        store: createSqlVaultStore(db),
+        encryptionKey: ENC_KEY,
+        data: createSqlData(db),
+      };
+      const routingFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const request = input instanceof Request ? input : new Request(input.toString(), init);
+        if (new URL(request.url).hostname === "armada.test") {
+          return (await handleControlRequest(request, controlOptions)) ?? new Response("{}", { status: 404 });
+        }
+        throw new Error(`unexpected host ${new URL(request.url).hostname}`);
+      }) as typeof fetch;
+      const auth = loggedIn(user, routingFetch, {
+        SUPABASE_ANON_KEY: "anon-public",
+        ARMADA_URL: "https://armada.test",
+      });
 
-    const ambiguous = await capture(["golden", "list"], { auth });
-    expect(ambiguous.code).toBe(2);
-    expect(ambiguous.err).toContain("Name the org with --org. You belong to 2 orgs.");
-
-    const result = await capture(["golden", "list", "--json", "--org", "beta"], { auth });
-    expect(result.code).toBe(0);
-    expect(result.out).toContain('"name": "web"');
-    expect(result.out).not.toContain("access-from-login");
-    expect(seen.every((call) => call.url.startsWith("https://supabase.test/"))).toBe(true);
-    expect(seen.every((call) => (call.authorization ?? "").startsWith("Bearer "))).toBe(true);
-    expect(seen.every((call) => call.apikey === "anon-public")).toBe(true);
-    expect(seen.some((call) => call.url.includes(`org_id=eq.${orgB}`))).toBe(true);
-    expect(seen.some((call) => call.url.includes("/boat"))).toBe(false);
-
-    const outsider = await capture(["golden", "list", "--org", "Gamma"], { auth });
-    expect(outsider.code).toBe(1);
-    expect(outsider.err).toContain("You are not a member of that org.");
+      const result = await capture(["golden", "list", "--json"], { auth });
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('"name": "web"');
+      expect(result.out).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+    } finally {
+      await db.close();
+    }
   });
 
   test("golden commands without a login ask for one", async () => {
@@ -185,7 +169,7 @@ describe("golden command", () => {
     await auth.session.clear();
     const result = await capture(["golden", "list"], { auth });
     expect(result.code).toBe(1);
-    expect(result.err).toContain("Run armada login.");
+    expect(result.err).toContain("Set ARMADA_TOKEN or run armada login.");
   });
 
   test("create without a boat key explains that the boat account is not a credential store", async () => {
