@@ -288,6 +288,8 @@ describe("tools", () => {
         "exec",
         "golden_create",
         "golden_list",
+        "golden_snapshot",
+        "golden_update",
         "interrupt",
         "launch",
         "list",
@@ -300,6 +302,14 @@ describe("tools", () => {
       ].sort(),
     );
     for (const tool of tools) expect(tool.outputSchema).toBeDefined();
+    const goldenUpdate = tools.find((tool) => tool.name === "golden_update");
+    const goldenSnapshot = tools.find((tool) => tool.name === "golden_snapshot");
+    expect(goldenUpdate?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, openWorldHint: true });
+    expect(goldenSnapshot?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, openWorldHint: true });
+    expect(goldenUpdate?.inputSchema).toBeDefined();
+    expect(goldenUpdate?.outputSchema).toBeDefined();
+    expect(goldenSnapshot?.inputSchema).toBeDefined();
+    expect(goldenSnapshot?.outputSchema).toBeDefined();
   });
 
   test("golden_list shows org goldens and one's own private ones, never another's or another org's", async () => {

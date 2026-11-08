@@ -13,6 +13,7 @@ export type Target = (typeof TARGETS)[number];
 
 const ROOT = join(import.meta.dir, "..");
 const ENTRY = join(ROOT, "packages/cli/src/main.ts");
+const SERVER_ENTRY = join(ROOT, "packages/mcp-server/src/main.ts");
 
 export function hostTarget(): Target {
   const target = `${process.platform}-${process.arch}`;
@@ -21,13 +22,17 @@ export function hostTarget(): Target {
 }
 
 /** Compiles one target to `outfile` and returns its path. */
-export function compile(target: Target, outfile: string): string {
+export function compile(target: Target, outfile: string, entry = ENTRY): string {
   const result = Bun.spawnSync(
-    [process.execPath, "build", ENTRY, "--compile", "--minify", `--target=bun-${target}`, `--outfile=${outfile}`],
+    [process.execPath, "build", entry, "--compile", "--minify", `--target=bun-${target}`, `--outfile=${outfile}`],
     { cwd: ROOT, stdout: "inherit", stderr: "inherit" },
   );
   if (result.exitCode !== 0) throw new Error(`bun build --compile failed for ${target}.`);
   return outfile;
+}
+
+export function compileServer(target: Target, outfile: string): string {
+  return compile(target, outfile, SERVER_ENTRY);
 }
 
 if (import.meta.main) {
@@ -36,13 +41,20 @@ if (import.meta.main) {
   });
   const dist = join(ROOT, "dist");
   if (values.all) {
-    for (const target of TARGETS) compile(target, join(dist, `armada-${target}`));
+    for (const target of TARGETS) {
+      compile(target, join(dist, `armada-${target}`));
+      compileServer(target, join(dist, `armada-server-${target}`));
+    }
   } else if (values.target) {
     if (!(TARGETS as readonly string[]).includes(values.target)) {
       throw new Error(`Unknown target ${values.target}; expected one of ${TARGETS.join(", ")}.`);
     }
-    compile(values.target as Target, join(dist, `armada-${values.target}`));
+    const target = values.target as Target;
+    compile(target, join(dist, `armada-${target}`));
+    compileServer(target, join(dist, `armada-server-${target}`));
   } else {
-    compile(hostTarget(), join(dist, "armada"));
+    const target = hostTarget();
+    compile(target, join(dist, "armada"));
+    compileServer(target, join(dist, "armada-server"));
   }
 }

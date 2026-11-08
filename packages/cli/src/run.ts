@@ -19,7 +19,6 @@ import {
   VERSION,
   type Visibility,
 } from "@armada/core";
-import { startServer } from "@armada/mcp-server";
 import { flag, parseArgs, single, values } from "./args.ts";
 import { createArmadaApiClient } from "./armada-api.ts";
 import {
@@ -59,8 +58,6 @@ export interface Deps {
    * (`ARMADA_URL`) to resolve them, since the encryption key stays there.
    */
   vault?: { store: VaultStore; encryptionKey: string };
-  /** Set by tests. Otherwise `armada serve` listens on PORT. */
-  serve?: typeof startServer;
 }
 
 const HELP = `armada ${VERSION}: launch coding agents on boat.dev
@@ -92,7 +89,6 @@ Usage:
   armada token create [--org <name>] [--label <label>]
   armada token list
   armada token revoke <id>
-  armada serve                             Run the remote MCP server (Streamable HTTP on /mcp, /healthz)
   armada org create <name>                 Create an org; you are its first admin
   armada org list
   armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
@@ -115,10 +111,6 @@ Environment:
   GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY    optional on the server: an installation token for golden create,
                                            revoked after each use. Without it, checkout uses the caller's own
                                            GitHub connection instead.
-  PORT, ARMADA_DATABASE_URL, SUPABASE_URL, SUPABASE_ANON_KEY,
-  ARMADA_AUTH_SECRET, ARMADA_PUBLIC_URL, ARMADA_ENCRYPTION_KEY,
-  GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET
-                                           armada serve
 `;
 
 /** Runs one command line and returns the process exit code. */
@@ -172,8 +164,6 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       return logs(rest, io, deps);
     case "login":
       return login(rest, io, deps);
-    case "serve":
-      return serve(rest, io, deps);
     case "logout":
       return logout(rest, io, deps);
     case "org":
@@ -553,20 +543,6 @@ function oneName(positionals: string[]): string {
   return name;
 }
 
-
-async function serve(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  if (argv.length > 0) {
-    io.err("armada: serve takes no arguments. Configure it with the environment (armada --help).\n");
-    return 2;
-  }
-  try {
-    await (deps.serve ?? startServer)(deps.env ?? process.env, { log: (line) => io.out(`${line}\n`) });
-  } catch (error) {
-    io.err(`armada: ${error instanceof Error ? error.message : String(error)}\n`);
-    return 2;
-  }
-  return 0;
-}
 
 async function login(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const parsed = parseAuth(argv);
