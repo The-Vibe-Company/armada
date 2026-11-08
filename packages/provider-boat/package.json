@@ -7,6 +7,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@armada/core": "workspace:*"
+    "@armada/core": "workspace:*",
+    "@boatdev/sdk": "^1.13.0"
   }
 }
