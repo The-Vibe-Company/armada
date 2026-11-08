@@ -74,8 +74,6 @@ export class GoldenCreateService {
     const { repos, token: callerToken } = await this.deps.authorize(actor, input.visibility, authorizationRepos);
     if (!repos.length) throw new GoldenError("invalid_config", "A golden needs at least one authorized repository.");
     const installations = new Set(repos.map((r) => r.installationId));
-    if (installations.size !== 1)
-      throw new GoldenError("invalid_config", "Repositories must belong to one GitHub App installation.");
     const prepared = requested ? applyRequestedRepos(repos, requested) : withGoldenDirs(repos);
     const reservation = await this.deps.reserve?.(provider, actor);
     let persisted = false;
@@ -83,11 +81,10 @@ export class GoldenCreateService {
     let issued: { token: string; revoke(): Promise<void> } | undefined;
     try {
       builder = await provider.createGolden({ name, ttlSeconds: 86400, labels: { armada: "golden-builder" } });
-      issued = this.deps.mint
-        ? await this.deps.mint(
-            repos[0]?.installationId ?? 0,
-            repos.map((r) => r.id),
-          )
+      // A scoped installation token can cover only one installation. Multiple already-authorized
+      // repos use the caller's cached user token, which is never revoked or rotated here.
+      issued = this.deps.mint && installations.size === 1
+        ? await this.deps.mint(repos[0]?.installationId ?? 0, repos.map((r) => r.id))
         : { token: callerToken, revoke: () => Promise.resolve() };
       await this.deps.ssh(provider, {
         sandboxId: builder.id,

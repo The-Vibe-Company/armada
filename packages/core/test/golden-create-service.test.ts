@@ -86,6 +86,20 @@ test("falls back to the caller's own token and never mints when no App is config
   expect(log).toEqual(["caller-token", "scan", "persist"]);
 });
 
+test("authorized repositories across installations use the caller token and do not revoke it", async () => {
+  const log: string[] = [];
+  const s = new GoldenCreateService({
+    authorize: async () => ({ repos: [repo, { owner: "other", repo: "api", id: 2, installationId: 3 }], token: "caller-token" }),
+    mint: async () => { throw new Error("installation mint must not run"); },
+    ssh: async (_p, input) => { log.push(input.token); },
+    scan: async () => {},
+    persist: async () => { log.push("persist"); },
+  });
+  const p: any = { createGolden: async () => ({ id: "bx" }), snapshot: async () => ({ status: "ready" }), stop: async () => {} };
+  await s.create(p, actor, { name: "many", visibility: "org", repos: ["acme/web", "other/api"] });
+  expect(log).toEqual(["caller-token", "persist"]);
+});
+
 test("script has canonical single-segment paths and unsets token", () => {
   const prepared = withGoldenDirs([repo]);
   const x = goldenScript(prepared);
