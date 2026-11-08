@@ -50,7 +50,81 @@ export async function exchangeSupabaseCode(options: {
   verifier: string;
   now: Date;
 }): Promise<Session> {
-  return requestSession(options, { auth_code: options.code, code_verifier: options.verifier }, "pkce");
+  return requestSession(
+    options,
+    { auth_code: options.code, code_verifier: options.verifier },
+    "/auth/v1/token?grant_type=pkce",
+  );
+}
+
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_CODE = /^\d{6,10}$/;
+
+export function assertEmail(value: string): string {
+  const email = value.trim();
+  if (email.length > 254 || !EMAIL.test(email)) throw new AuthError("Give a valid email address.", "usage");
+  return email;
+}
+
+/** The digits of the code in the sign-in email, without the spaces some clients add. */
+export function assertEmailCode(value: string): string {
+  const code = value.replace(/\s+/g, "");
+  if (!EMAIL_CODE.test(code)) throw new AuthError("The code is the 6 to 10 digits in the email.", "usage");
+  return code;
+}
+
+/**
+ * Asks Supabase to email a sign-in link (and a one-time code, when the template carries one). The link
+ * comes back to `redirectTo` with a PKCE code. An address that has not signed in yet gets an account,
+ * as on the dashboard.
+ */
+export async function sendEmailLink(options: {
+  fetch: AuthFetch;
+  supabaseUrl: string;
+  anonKey: string;
+  email: string;
+  redirectTo: string;
+  challenge: string;
+}): Promise<void> {
+  let response: Response;
+  try {
+    response = await options.fetch(
+      `${options.supabaseUrl}/auth/v1/otp?redirect_to=${encodeURIComponent(options.redirectTo)}`,
+      {
+        method: "POST",
+        headers: { apikey: options.anonKey, "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          email: options.email,
+          create_user: true,
+          code_challenge: options.challenge,
+          code_challenge_method: "s256",
+        }),
+      },
+    );
+  } catch (error) {
+    throw new AuthError("Armada could not reach Supabase.", "unavailable", error);
+  }
+  if (response.status === 429)
+    throw new AuthError("Too many sign-in emails. Wait a minute and try again.", "unavailable");
+  if (!response.ok) {
+    throw new AuthError(
+      "Supabase could not send the sign-in email.",
+      "unavailable",
+      new Error(`HTTP ${response.status}`),
+    );
+  }
+}
+
+/** Trades the one-time code of a sign-in email for a session. */
+export async function verifyEmailCode(options: {
+  fetch: AuthFetch;
+  supabaseUrl: string;
+  anonKey: string;
+  email: string;
+  code: string;
+  now: Date;
+}): Promise<Session> {
+  return requestSession(options, { type: "email", email: options.email, token: options.code }, "/auth/v1/verify");
 }
 
 export async function refreshSupabaseSession(options: {
@@ -67,18 +141,18 @@ export async function refreshSupabaseSession(options: {
       now: options.now,
     },
     { refresh_token: options.session.refreshToken },
-    "refresh_token",
+    "/auth/v1/token?grant_type=refresh_token",
   );
 }
 
 async function requestSession(
   options: { fetch: AuthFetch; supabaseUrl: string; anonKey: string; now: Date },
   body: Record<string, string>,
-  grant: "pkce" | "refresh_token",
+  path: string,
 ): Promise<Session> {
   let response: Response;
   try {
-    response = await options.fetch(`${options.supabaseUrl}/auth/v1/token?grant_type=${grant}`, {
+    response = await options.fetch(`${options.supabaseUrl}${path}`, {
       method: "POST",
       headers: { apikey: options.anonKey, "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify(body),

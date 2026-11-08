@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import {
   AuthError,
   type AuthFetch,
@@ -10,6 +11,7 @@ import {
   fileSessionStore,
   listServiceTokens,
   loginWithBrowser,
+  loginWithEmail,
   type Provider,
   refreshSupabaseSession,
   revokeServiceToken,
@@ -28,6 +30,8 @@ export interface AuthIo {
   /** Set by tests. The CLI otherwise talks to PostgREST with the user's JWT. */
   store?: AuthStore;
   timeoutMs?: number;
+  /** Reads the code typed from a sign-in email. Tests set it; the terminal prompt is the default. */
+  readCode?: (signal: AbortSignal) => Promise<string>;
 }
 
 export function defaultSessionPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -46,12 +50,53 @@ export function productionAuthIo(
     now: () => new Date(),
     open: openBrowser,
     session: fileSessionStore(defaultSessionPath(env)),
+    readCode: promptCode,
   };
 }
 
-export async function loginCommand(io: AuthIo, provider: Provider | undefined): Promise<void> {
+/** One line from the terminal, so a code can be typed while the link is also waiting. */
+function promptCode(signal: AbortSignal): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const lines = createInterface({ input: process.stdin, output: process.stderr });
+    const stop = () => {
+      lines.close();
+      reject(new Error("Stopped reading the code."));
+    };
+    signal.addEventListener("abort", stop, { once: true });
+    lines.question("Code from the email (or click its link): ", (answer) => {
+      signal.removeEventListener("abort", stop);
+      lines.close();
+      resolve(answer);
+    });
+  });
+}
+
+export async function loginCommand(
+  io: AuthIo,
+  how: { provider?: Provider | undefined; email?: string | undefined } = {},
+): Promise<void> {
+  const { provider, email } = how;
   const supabaseUrl = required(io.env, "SUPABASE_URL");
   const anonKey = required(io.env, "SUPABASE_ANON_KEY");
+  if (email !== undefined) {
+    const result = await loginWithEmail({
+      fetch: io.fetch,
+      supabaseUrl,
+      anonKey,
+      email,
+      session: io.session,
+      now: io.now,
+      ...(io.readCode ? { readCode: io.readCode } : {}),
+      ...(io.timeoutMs !== undefined ? { timeoutMs: io.timeoutMs } : {}),
+      onSent: (sent) =>
+        io.err(
+          `Sent a sign-in email to ${sent}. Click the link in it${io.readCode ? ", or type the code it contains" : ""}.\n`,
+        ),
+      onWrongCode: () => io.err("That code was refused. Try again.\n"),
+    });
+    io.out(`Logged in.\nuser: ${result.userId}\n`);
+    return;
+  }
   const result = await loginWithBrowser({
     fetch: io.fetch,
     supabaseUrl,

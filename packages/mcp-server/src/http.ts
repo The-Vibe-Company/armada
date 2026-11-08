@@ -1,7 +1,13 @@
 import { type AuthStore, handleOAuthRequest, type OAuthServerOptions, oauthChallenge } from "@armada/auth";
 import { type CredentialReader, type LaunchOptions, type Provider, resolveBoatKey, VERSION } from "@armada/core";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { AuthUnavailable, authenticateCaller, type CallerResult, type SupabaseProject } from "./caller.ts";
+import {
+  AuthUnavailable,
+  authenticateCaller,
+  type CallerResult,
+  describeFailure,
+  type SupabaseProject,
+} from "./caller.ts";
 import type { DataSource } from "./data.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { createArmadaServer } from "./tools.ts";
@@ -31,6 +37,8 @@ export interface HandlerOptions {
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   launch?: LaunchOptions;
+  /** Where the real cause of a 503 goes. Defaults to stderr. Never given a token or a key. */
+  log?: (line: string) => void;
 }
 
 /**
@@ -42,6 +50,7 @@ export interface HandlerOptions {
 export function createHandler(options: HandlerOptions): (request: Request) => Promise<Response> {
   const now = options.now ?? (() => new Date());
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const log = options.log ?? ((line: string) => console.error(line));
 
   return async (request) => {
     const url = new URL(request.url);
@@ -66,6 +75,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       });
     } catch (error) {
       if (!(error instanceof AuthUnavailable)) throw error;
+      log(`armada serve: /mcp authentication unavailable: ${describeFailure(error)}`);
       return Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "retry-after": "5" } });
     }
     if (!auth.ok) return oauthChallenge(options.publicUrl);

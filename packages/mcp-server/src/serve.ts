@@ -1,4 +1,4 @@
-import { createServiceStore, oauthOptionsFromEnv } from "@armada/auth";
+import { createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
 import { createSqlVaultStore, type Sql } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
 import { configFromEnv } from "./config.ts";
@@ -19,16 +19,22 @@ export function bunSql(url: string): Sql {
 
 /**
  * Starts the server from the environment (see `configFromEnv`). The control API (`/api/v1/`, for the
- * CLI) and `/mcp` share one database connection. Logs no token, key or request body.
+ * CLI), the token and membership lookups of `/mcp` and its tools all share one database connection,
+ * so no second credential (a PostgREST key) can fail on its own. Logs no token, key or request body.
  */
 export async function startServer(
   env: Record<string, string | undefined>,
-  options: { routes?: readonly Route[]; log?: (line: string) => void } = {},
+  options: {
+    routes?: readonly Route[];
+    log?: (line: string) => void;
+    /** Failures the server absorbs, such as an unavailable auth lookup. Defaults to stderr. */
+    logError?: (line: string) => void;
+  } = {},
 ) {
   const config = configFromEnv(env);
   const sql = bunSql(config.databaseUrl);
   const store = createSqlVaultStore(sql);
-  const authStore = createServiceStore({ env: { ...env, SUPABASE_URL: config.supabaseUrl } });
+  const authStore = createSqlAuthStore(sql);
   const control: ControlOptions = {
     supabaseUrl: config.supabaseUrl,
     anonKey: config.anonKey,
@@ -45,6 +51,7 @@ export async function startServer(
     encryptionKey: config.encryptionKey,
     providerFor: (apiKey) => createBoatProvider({ apiKey }),
     routes: [(request) => handleControlRequest(request, control), ...(options.routes ?? [])],
+    ...(options.logError ? { log: options.logError } : {}),
   });
   const server = Bun.serve({ port: config.port, hostname: "0.0.0.0", fetch: handler });
   (options.log ?? console.log)(`armada serve: listening on port ${server.port}, public URL ${config.publicUrl}`);
