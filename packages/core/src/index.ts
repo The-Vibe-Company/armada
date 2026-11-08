@@ -202,3 +202,9 @@ export {
   type InstallationToken,
 } from "./github-installation.ts";
 export { sshStdinCheckout, type SshExecDeps } from "./ssh-executor.ts";
+export {
+  GoldenCreateService,
+  goldenScript,
+  type AuthorizedRepo,
+  type GoldenCreateDeps,
+} from "./golden-create-service.ts";
