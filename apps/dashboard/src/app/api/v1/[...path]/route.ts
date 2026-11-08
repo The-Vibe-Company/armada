@@ -62,5 +62,5 @@ function controlOrigin(value: string | undefined): string | null {
 }
 
 function safePath(path: string): boolean {
-  return path === "golden/list" || path === "golden/create" || path === "sandbox/launch" || path === "logs/read";
+  return path === "golden/list" || path === "golden/create" || path === "golden/connect" || path === "sandbox/launch" || path === "logs/read";
 }
