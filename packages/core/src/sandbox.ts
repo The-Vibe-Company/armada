@@ -19,6 +19,10 @@ export interface SandboxRecord {
   deletedAt: string | null;
   /** Why it failed (a usage limit, an expired login, a launch error). Null unless the status is failed. */
   statusReason: string | null;
+  /** The model its turns run with. Null only for sandboxes launched before the choice was recorded. */
+  model: string | null;
+  /** The reasoning effort its turns run with. Null exactly when `model` is. */
+  reasoningEffort: string | null;
 }
 
 export interface SandboxPatch {
@@ -45,6 +49,8 @@ export interface SandboxStore {
     ownerId: string;
     harness: Harness;
     status: SandboxStatus;
+    model: string;
+    reasoningEffort: string;
   }): Promise<SandboxRecord>;
   update(id: string, patch: SandboxPatch): Promise<void>;
   /** Sandboxes created before `cutoff` (ISO) that are not deleted yet, oldest first. */
@@ -105,22 +111,34 @@ export interface SandboxRow {
   stopped_at: string | Date | null;
   deleted_at: string | Date | null;
   status_reason: string | null;
+  model: string | null;
+  reasoning_effort: string | null;
 }
 
 /** The longest failure reason kept; a longer one is cut. */
 export const MAX_STATUS_REASON_LENGTH = 2000;
 
 const COLUMNS = `id, boat_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-  conversation_ids, created_at, stopped_at, deleted_at, status_reason`;
+  conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort`;
 
 export function createSqlSandboxStore(sql: Sql): SandboxStore {
   return {
     async insert(input): Promise<SandboxRecord> {
       const result = await sql.query<SandboxRow>(
-        `insert into public.sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status)
-         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status)
+        `insert into public.sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status, model, reasoning_effort)
+         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9)
          returning ${COLUMNS}`,
-        [input.id, input.boatId, input.goldenId, input.orgId, input.ownerId, input.harness, input.status],
+        [
+          input.id,
+          input.boatId,
+          input.goldenId,
+          input.orgId,
+          input.ownerId,
+          input.harness,
+          input.status,
+          input.model,
+          input.reasoningEffort,
+        ],
       );
       const row = result.rows[0];
       if (!row) throw new Error("The sandbox could not be recorded.");
@@ -175,6 +193,8 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
     stoppedAt: row.stopped_at === null ? null : iso(row.stopped_at),
     deletedAt: row.deleted_at === null ? null : iso(row.deleted_at),
     statusReason: row.status_reason ?? null,
+    model: row.model ?? null,
+    reasoningEffort: row.reasoning_effort ?? null,
   };
 }
 

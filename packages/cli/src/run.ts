@@ -18,6 +18,8 @@ import {
   LaunchError,
   type LaunchResult,
   launchSandbox,
+  MODEL_CATALOG,
+  type ModelChoice,
   type Provider,
   ProviderError,
   parseGoldenConfig,
@@ -25,6 +27,7 @@ import {
   resolveBoatKey,
   resolveCredentials,
   resolveGitHubAccess,
+  resolveModelChoice,
   type SandboxStore,
   snapshotGolden,
   toHarnessCredentials,
@@ -89,9 +92,11 @@ Usage:
   armada golden connect <name>             Open the master sandbox to place .env files
   armada golden snapshot <name>            Freeze the master sandbox
   armada golden list [--json]              Goldens you can see
-  armada launch <golden> --agent claude|codex ["prompt"] [--ttl 4h] [--json]
-                                           Fork a golden into a sandbox. With a prompt the agent starts at once;
-                                           without one the sandbox waits, ready, for the first prompt.
+  armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
+                [--ttl 4h] [--json]        Fork a golden into a sandbox. With a prompt the agent starts at once;
+                                           without one the sandbox waits, ready, for the first prompt. The model
+                                           and effort apply to every later turn too. Defaults:
+                                           ${modelDefaults()}
   armada logs <sandbox-id> [--all] [--follow] [--json]
                                            Read agent events; --all drains available pages, --follow waits for new pages until settled
   armada login [--url <url>] [--provider github|google | --email <address>]
@@ -307,10 +312,13 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   const harness = harnessOf(single(args, "--agent"));
   const ttl = single(args, "--ttl");
   const ttlSeconds = ttl === undefined ? undefined : parseTtl(ttl);
+  const requested = { model: single(args, "--model"), reasoningEffort: single(args, "--reasoning-effort") };
+  // Refused here, before signing in or allocating anything.
+  resolveModelChoice(harness, requested);
   const { store, sandboxes, actor } = await session(args, io, deps);
   if (!sandboxes) throw new GoldenError("invalid_config", "No sandbox store is available.");
   const golden = await goldenForLaunch(store, actor, name);
-  const resolved = await resolveForLaunch(io, deps, actor, harness, golden.visibility);
+  const resolved = await resolveForLaunch(io, deps, actor, harness, golden.visibility, requested);
   const provider = deps.provider ?? boatProvider({ BOAT_API_KEY: resolved.boatKey }, deps.fetch ?? fetch, deps.sleep);
   const result = await launchSandbox(
     provider,
@@ -323,6 +331,10 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     {
       golden: name,
       harness,
+      ...(resolved.choice ?? {
+        ...(requested.model === undefined ? {} : { model: requested.model }),
+        ...(requested.reasoningEffort === undefined ? {} : { reasoningEffort: requested.reasoningEffort }),
+      }),
       ...(prompt === undefined ? {} : { prompt }),
       ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
     },
@@ -371,7 +383,8 @@ async function resolveForLaunch(
   actor: GoldenActor,
   harness: Harness,
   visibility: Visibility,
-): Promise<ResolvedCredentials & { boatKey: string; github: GitHubAccess }> {
+  requested: { model: string | undefined; reasoningEffort: string | undefined },
+): Promise<ResolvedCredentials & { boatKey: string; github: GitHubAccess; choice?: ModelChoice }> {
   const input = { userId: actor.userId, orgId: actor.orgId };
   if (deps.vault) {
     const resolved = await resolveCredentials(deps.vault.store, deps.vault.encryptionKey, { ...input, harness });
@@ -392,7 +405,20 @@ async function resolveForLaunch(
     codexAuth: string | null;
     boatKey: string;
     github?: unknown;
-  }>(authOf(io, deps), "launch/resolve", { org: actor.orgId, harness, visibility });
+    model?: unknown;
+    reasoningEffort?: unknown;
+  }>(authOf(io, deps), "launch/resolve", {
+    org: actor.orgId,
+    harness,
+    visibility,
+    ...(requested.model === undefined ? {} : { model: requested.model }),
+    ...(requested.reasoningEffort === undefined ? {} : { reasoning_effort: requested.reasoningEffort }),
+  });
+  // The server checks the choice too; an older server answers without one, and the local check stands.
+  const choice =
+    typeof response.model === "string" && typeof response.reasoningEffort === "string"
+      ? { model: response.model, reasoningEffort: response.reasoningEffort }
+      : undefined;
   return {
     env: response.env,
     files:
@@ -402,6 +428,7 @@ async function resolveForLaunch(
     sources: [],
     boatKey: response.boatKey,
     github: githubAccessOf(response.github),
+    ...(choice ? { choice } : {}),
   };
 }
 
@@ -429,6 +456,12 @@ function githubAccessOf(value: unknown): GitHubAccess {
   return { status, message };
 }
 
+function modelDefaults(): string {
+  return Object.entries(MODEL_CATALOG)
+    .map(([harness, entry]) => `${harness} ${entry.defaultModel} ${entry.defaultReasoningEffort}`)
+    .join(", ");
+}
+
 function harnessOf(value: string | undefined): Harness {
   const harness = HARNESSES.find((candidate) => candidate === value);
   if (!harness) throw new GoldenError("invalid_config", `Pass --agent ${HARNESSES.join(" or ")}.`);
@@ -452,6 +485,7 @@ function launchText(result: LaunchResult): string {
     `Sandbox: ${sandbox.id}`,
     `Boat sandbox: ${sandbox.boatId}`,
     `Status: ${sandbox.status}`,
+    `Model: ${sandbox.model ?? "provider default"} (reasoning effort ${sandbox.reasoningEffort ?? "default"})`,
   ];
   if (result.conversationId) lines.push(`Conversation: ${result.conversationId}`);
   else lines.push("No prompt sent: the sandbox is ready for the first prompt.");
@@ -479,6 +513,8 @@ function jsonLaunch(result: LaunchResult) {
     golden: result.golden.name,
     visibility: result.golden.visibility,
     harness: sandbox.harness,
+    model: sandbox.model,
+    reasoningEffort: sandbox.reasoningEffort,
     status: sandbox.status,
     conversationIds: sandbox.conversationIds,
     promptId: result.promptId ?? null,

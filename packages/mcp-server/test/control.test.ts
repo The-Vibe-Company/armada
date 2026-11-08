@@ -143,6 +143,23 @@ describe("armada org and armada creds against the control API", () => {
       const command = (wrote.body as { command: string }).command;
       expect(command).toContain(`${GOLDEN_ROOT}/.codex/auth.json`);
       expect(command).not.toContain("codex-do-not-leak");
+      const prompt = boat.find((call) => call.path.endsWith("/prompt"));
+      expect(prompt?.body).toMatchObject({ provider: "codex", model: "gpt-6.1-sol", reasoningEffort: "medium" });
+
+      const resolve = (body: Record<string, unknown>) =>
+        handleControlRequest(
+          new Request("https://armada.test/api/v1/launch/resolve", {
+            method: "POST",
+            headers: { authorization: `Bearer token-${STAN}` },
+            body: JSON.stringify({ org: org?.id, harness: "codex", visibility: "org", ...body }),
+          }),
+          options,
+        );
+      const refused = await resolve({ model: "gpt-6-luna", reasoning_effort: "ultra" });
+      expect(refused?.status).toBe(400);
+      expect(JSON.stringify(await refused?.json())).toContain("Use one of: low, medium, high, xhigh, max");
+      const chosen = (await (await resolve({ model: "gpt-6-luna" }))?.json()) as Record<string, unknown>;
+      expect(chosen).toMatchObject({ model: "gpt-6-luna", reasoningEffort: "medium" });
     });
   });
 

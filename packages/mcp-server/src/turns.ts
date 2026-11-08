@@ -28,6 +28,9 @@ export interface StatusReport {
   golden: string;
   visibility: SandboxView["visibility"];
   harness: SandboxView["harness"];
+  /** What its turns run with. Null for a sandbox launched before the choice was recorded. */
+  model: string | null;
+  reasoningEffort: string | null;
   /** Armada's status, after this read. */
   status: SandboxStatus;
   /** Why it failed, as recorded. Null unless the status is failed. */
@@ -122,6 +125,8 @@ function report(
     golden: sandbox.golden,
     visibility: sandbox.visibility,
     harness: sandbox.harness,
+    model: sandbox.model,
+    reasoningEffort: sandbox.reasoningEffort,
     status,
     statusReason: status === "failed" ? sandbox.statusReason : null,
     providerState: info?.providerState ?? null,

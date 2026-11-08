@@ -45,7 +45,7 @@ const GOLDEN_COLUMNS = `g.id, g.org_id, g.name, g.visibility::text as visibility
   g.boat_snapshot_id, g.boat_sandbox_id, g.config, g.created_at`;
 const SANDBOX_COLUMNS = `s.id, s.boat_id, s.golden_id, s.org_id, s.owner_id, s.harness::text as harness,
   s.status::text as status, s.conversation_ids, s.created_at, s.stopped_at, s.deleted_at, s.status_reason,
-  g.name as golden, g.visibility::text as visibility`;
+  s.model, s.reasoning_effort, g.name as golden, g.visibility::text as visibility`;
 /** `$1` is the caller's orgs and `$2` the caller. */
 const GOLDEN_VISIBLE = `g.org_id = any($1::uuid[]) and (g.visibility = 'org' or g.owner_id = $2::uuid)`;
 const SANDBOX_VISIBLE = `s.org_id = g.org_id and ${GOLDEN_VISIBLE}`;
@@ -111,11 +111,22 @@ export function createSqlData(sql: Sql): DataSource {
         }
         const result = await sql.query<SandboxViewRow>(
           `with visible as (select g.id from public.goldens g where ${GOLDEN_VISIBLE} and g.id = $3 and g.org_id = $8::uuid)
-           insert into public.sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status)
-           select $4::uuid, $5::text, visible.id, $8::uuid, $2::uuid, $6::public.harness, $7::public.sandbox_status from visible
+           insert into public.sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status, model, reasoning_effort)
+           select $4::uuid, $5::text, visible.id, $8::uuid, $2::uuid, $6::public.harness, $7::public.sandbox_status,
+             $9::text, $10::text from visible
            returning id, boat_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-             conversation_ids, created_at, stopped_at, deleted_at, status_reason`,
-          [...scope, input.goldenId, input.id, input.boatId, input.harness, input.status, input.orgId],
+             conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort`,
+          [
+            ...scope,
+            input.goldenId,
+            input.id,
+            input.boatId,
+            input.harness,
+            input.status,
+            input.orgId,
+            input.model,
+            input.reasoningEffort,
+          ],
         );
         const row = result.rows[0];
         if (!row) throw new DataError("The sandbox could not be recorded.");
