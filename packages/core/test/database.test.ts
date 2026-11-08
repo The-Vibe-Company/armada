@@ -100,6 +100,88 @@ describe("database", () => {
     expect(committed).toBe(generated);
   });
 
+  test("anon holds nothing, and a user JWT has only the intended grants and never reads a secret", async () => {
+    await withDb(async (db) => {
+      const anon = await db.query<{ object: string }>(`
+        select c.relname as object
+        from pg_class c join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public' and c.relkind in ('r', 'v', 'S')
+          and (has_table_privilege('anon', c.oid, 'select, insert, update, delete, truncate, references, trigger')
+            or has_any_column_privilege('anon', c.oid, 'select, insert, update, references'))
+        union all
+        select p.oid::regprocedure::text
+        from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'public' and has_function_privilege('anon', p.oid, 'execute')
+      `);
+      expect(anon.rows).toEqual([]);
+
+      // Every privilege authenticated holds on a public table: what the migrations grant, and nothing
+      // Supabase's default privileges add.
+      const granted = await db.query<{ grant: string }>(`
+        select format('%s %s%s', c.relname, p.privilege, coalesce('(' || p.columns || ')', '')) as grant
+        from pg_class c
+        join pg_namespace n on n.oid = c.relnamespace
+        cross join lateral (
+          select t.privilege, null::text as columns
+          from unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) as t(privilege)
+          where has_table_privilege('authenticated', c.oid, t.privilege)
+          union all
+          select t.privilege, string_agg(a.attname, ',' order by a.attname)
+          from unnest(array['SELECT', 'INSERT', 'UPDATE']) as t(privilege)
+          join pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped
+          where not has_table_privilege('authenticated', c.oid, t.privilege)
+            and has_column_privilege('authenticated', c.oid, a.attnum, t.privilege)
+          group by t.privilege
+        ) p
+        where n.nspname = 'public' and c.relkind = 'r'
+        order by 1
+      `);
+      expect(granted.rows.map((row) => row.grant)).toEqual([
+        "credentials DELETE",
+        "credentials INSERT(created_at,id,kind,owner_id,scope,value_enc)",
+        "credentials SELECT(created_at,id,kind,owner_id,scope)",
+        "credentials UPDATE(value_enc)",
+        "github_connections DELETE",
+        "github_connections SELECT(created_at,github_id,login,name,refresh_expires_at,revoked_at,updated_at,user_id)",
+        "goldens DELETE",
+        "goldens INSERT",
+        "goldens SELECT",
+        "goldens UPDATE(boat_sandbox_id,boat_snapshot_id,config,name)",
+        "mcp_tokens DELETE",
+        "mcp_tokens SELECT",
+        "mcp_tokens UPDATE(revoked_at)",
+        "members DELETE",
+        "members INSERT(created_at,org_id,role,user_id)",
+        "members SELECT",
+        "members UPDATE(role)",
+        "notify_subscriptions DELETE",
+        "notify_subscriptions INSERT(created_at,last_cursor,last_status,sandbox_id,secret_enc,url)",
+        "notify_subscriptions SELECT(created_at,last_cursor,last_status,sandbox_id,url)",
+        "notify_subscriptions UPDATE(last_cursor,last_status,secret_enc,url)",
+        "orgs DELETE",
+        "orgs SELECT(created_at,id,name)",
+        "orgs UPDATE(boat_api_key_enc,name)",
+        "sandboxes INSERT",
+        "sandboxes SELECT",
+        "sandboxes UPDATE(conversation_ids,deleted_at,status,status_reason,stopped_at)",
+        "service_tokens DELETE",
+        "service_tokens INSERT",
+        "service_tokens SELECT",
+        "service_tokens UPDATE(revoked_at)",
+      ]);
+
+      // A table or function created by a later migration starts with nothing for anon or a user JWT.
+      await db.exec("create table public.later (id int primary key, value_enc bytea)");
+      await db.exec("create function public.later_fn() returns int language sql as 'select 1'");
+      const later = await db.query<{ any: boolean }>(
+        `select has_table_privilege('authenticated', 'public.later', 'select, insert, update, delete, truncate')
+            or has_table_privilege('anon', 'public.later', 'select, insert, update, delete, truncate')
+            or has_function_privilege('anon', 'public.later_fn()', 'execute') as any`,
+      );
+      expect(later.rows[0]?.any).toBe(false);
+    });
+  });
+
   test("no column stores a secret in plaintext", async () => {
     await withDb(async (db) => {
       const columns = await db.query<{ table_name: string; column_name: string; data_type: string }>(`
@@ -435,22 +517,30 @@ describe("database", () => {
   test("a GitHub connection is its owner's: nobody else sees it, and a user JWT never reads the ciphertext", async () => {
     await withDb(async (db) => {
       const people = await fixture(db);
-      await asUser(db, people.owner, () =>
-        db.query(
-          `insert into github_connections (user_id, github_id, login, refresh_token_enc)
-           values ($1, 583231, 'octocat', decode('0d', 'hex'))`,
-          [people.owner],
+      const save = "select public.save_github_connection($1, $2, null, decode($3, 'hex'), null)";
+      await asUser(db, people.owner, () => db.query(save, [1, "first", "0c"]));
+      await asUser(db, people.owner, () => db.query(save, [583231, "octocat", "0d"]));
+      expect(
+        await asRole(db, "service_role", () =>
+          db.query("select github_id, encode(refresh_token_enc, 'hex') as enc from github_connections"),
         ),
-      );
+      ).toMatchObject({ rows: [{ github_id: 583231, enc: "0d" }] });
+
+      // A user JWT writes no column directly: connecting goes through save_github_connection.
       await expect(
         asUser(db, people.member, () =>
           db.query(
             `insert into github_connections (user_id, github_id, login, refresh_token_enc)
              values ($1, 1, 'impostor', decode('0d', 'hex'))`,
-            [people.owner],
+            [people.member],
           ),
         ),
-      ).rejects.toThrow(/row-level security/);
+      ).rejects.toThrow(/permission denied for table github_connections/);
+      await expect(
+        asUser(db, people.owner, () =>
+          db.query("update github_connections set refresh_token_enc = decode('0e', 'hex')"),
+        ),
+      ).rejects.toThrow(/permission denied for table github_connections/);
 
       const login = "select login as value from github_connections where user_id = $1";
       expect(await asUser(db, people.owner, () => text(db, login, [people.owner]))).toBe("octocat");
@@ -461,9 +551,6 @@ describe("database", () => {
         asUser(db, people.owner, () => db.query("select refresh_token_enc from github_connections")),
       ).rejects.toThrow(/permission denied for table github_connections/);
 
-      await asUser(db, people.member, () =>
-        db.query("update github_connections set login = 'taken' where user_id = $1", [people.owner]),
-      );
       await asUser(db, people.member, () =>
         db.query("delete from github_connections where user_id = $1", [people.owner]),
       );

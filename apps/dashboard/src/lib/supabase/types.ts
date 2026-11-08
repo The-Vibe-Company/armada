@@ -1,6 +1,9 @@
 import type { Database as Generated, MemberRole, Visibility } from "@armada/core";
 
-/** The generated tables plus the functions of `20261108150000_dashboard_functions.sql`. */
+/**
+ * The generated tables plus the functions of `20261108150000_dashboard_functions.sql` and
+ * `save_github_connection` (`20261108190000_revoke_default_grants.sql`).
+ */
 export type Database = Omit<Generated, "public"> & {
   public: Omit<Generated["public"], "Functions"> & {
     Functions: {
@@ -11,6 +14,16 @@ export type Database = Omit<Generated, "public"> & {
       };
       add_org_member: { Args: { target_org: string; member_email: string; member_role: MemberRole }; Returns: string };
       set_golden_visibility: { Args: { target_golden: string; new_visibility: Visibility }; Returns: undefined };
+      save_github_connection: {
+        Args: {
+          github_user_id: number;
+          github_login: string;
+          github_name: string | null;
+          token_enc: string;
+          token_expires_at: string | null;
+        };
+        Returns: undefined;
+      };
     };
   };
 };

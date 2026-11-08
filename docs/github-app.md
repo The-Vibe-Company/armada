@@ -4,7 +4,7 @@ Inside every sandbox Armada launches, `git commit`, `git push` and the `gh` CLI 
 
 ## How it works
 
-1. **Connect GitHub** (dashboard, Settings). The person authorizes the Armada GitHub App. GitHub calls back `<origin>/github/callback` with a one-time code. The dashboard trades it for a user access token (8 hours) and a refresh token (6 months), asks GitHub who the person is, and stores the refresh token sealed with `ARMADA_ENCRYPTION_KEY` in `github_connections`, with the GitHub id and login. The access token is dropped. A user JWT cannot read the ciphertext column; row level security keeps each row to its owner.
+1. **Connect GitHub** (dashboard, Settings). The person authorizes the Armada GitHub App. GitHub calls back `<origin>/github/callback` with a one-time code. The dashboard trades it for a user access token (8 hours) and a refresh token (6 months), asks GitHub who the person is, and stores the refresh token sealed with `ARMADA_ENCRYPTION_KEY` in `github_connections` through `save_github_connection`, with the GitHub id and login. The access token is dropped. A user JWT cannot read the ciphertext column or write the table directly (it only selects the other columns and deletes its row); row level security keeps each row to its owner.
 2. **Launch** (`armada launch`, the MCP `launch` tool). The server reads the caller's row, refreshes to get a fresh access token, stores the rotated refresh token (compare-and-swap, so two launches racing cannot lose the new token) and:
    - puts `GH_TOKEN` and `GITHUB_TOKEN` in the fork's environment (never in a golden; forks stay `noEnv` apart from the credentials Armada injects);
    - sets the global git identity to `<name or login>` and `<id>+<login>@users.noreply.github.com`;
@@ -59,6 +59,6 @@ The App ID and a private key are **not** needed: nothing uses installation token
 | `GITHUB_APP_SLUG` | optional: adds an "Install the app on your repositories" link in Settings | no |
 | `ARMADA_ENCRYPTION_KEY` | already set (seals the refresh token) | already set (opens it) |
 
-The two services must hold the same client id and secret and the same `ARMADA_ENCRYPTION_KEY`. Apply the migration `supabase/migrations/20261108180000_github_connections.sql` to the Supabase project. If either variable is missing, Settings says GitHub is not configured and launches report GitHub as `unavailable`.
+The two services must hold the same client id and secret and the same `ARMADA_ENCRYPTION_KEY`. Apply the migrations `supabase/migrations/20261108180000_github_connections.sql` and `20261108190000_revoke_default_grants.sql` to the Supabase project; the second removes Supabase's default table grants, without which a user JWT can read `refresh_token_enc`. If either variable is missing, Settings says GitHub is not configured and launches report GitHub as `unavailable`.
 
 Nothing is printed or logged: tokens are masked in command output (`gh[pousr]_...`), kept out of goldens, and the refresh token only ever exists as ciphertext.

@@ -39,7 +39,7 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
     },
     {
-      command: `bunx next build && bunx next start -p ${APP_PORT} -H 127.0.0.1`,
+      command: `bunx next build && NODE_OPTIONS=--require=./e2e/github-fetch.cjs bunx next start -p ${APP_PORT} -H 127.0.0.1`,
       url: `http://127.0.0.1:${APP_PORT}/login`,
       env,
       timeout: 240_000,

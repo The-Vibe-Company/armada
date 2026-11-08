@@ -16,10 +16,11 @@ export const dynamic = "force-dynamic";
 
 /**
  * GitHub sends the person back here with a one-time code. The refresh token is sealed with
- * ARMADA_ENCRYPTION_KEY and stored as the signed-in person, so row level security keeps it theirs.
+ * ARMADA_ENCRYPTION_KEY and stored by save_github_connection for the signed-in person: a user JWT
+ * writes no column of github_connections directly and never reads the ciphertext back.
  */
 export async function GET(request: NextRequest) {
-  const viewer = await requireViewer();
+  await requireViewer();
   const origin = originFromHeaders(request.headers, request.url);
   const { searchParams } = request.nextUrl;
 
@@ -42,27 +43,14 @@ export async function GET(request: NextRequest) {
       app,
       encrypt: (plaintext) => encryptSecret(plaintext),
       async save({ user, refreshTokenEnc, refreshExpiresAt }) {
-        const row = {
-          github_id: user.id,
-          login: user.login,
-          name: user.name,
-          refresh_token_enc: toBytea(refreshTokenEnc),
-          refresh_expires_at: refreshExpiresAt?.toISOString() ?? null,
-          revoked_at: null,
-          updated_at: new Date().toISOString(),
-        };
-        const existing = await supabase.from("github_connections").select("user_id").maybeSingle();
-        if (existing.error) return false;
-        if (existing.data) {
-          const updated = await supabase
-            .from("github_connections")
-            .update(row)
-            .eq("user_id", viewer.id)
-            .select("user_id");
-          return !updated.error && updated.data.length > 0;
-        }
-        const inserted = await supabase.from("github_connections").insert({ user_id: viewer.id, ...row });
-        return !inserted.error;
+        const { error } = await supabase.rpc("save_github_connection", {
+          github_user_id: user.id,
+          github_login: user.login,
+          github_name: user.name,
+          token_enc: toBytea(refreshTokenEnc),
+          token_expires_at: refreshExpiresAt?.toISOString() ?? null,
+        });
+        return !error;
       },
     },
     { code, redirectUri: githubCallbackUrl(origin) },
