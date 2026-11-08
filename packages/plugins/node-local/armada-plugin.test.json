@@ -1,7 +1,0 @@
-{
-  "node": {
-    "local": {
-      "workspaceRoot": "${directory}/workspaces"
-    }
-  }
-}
