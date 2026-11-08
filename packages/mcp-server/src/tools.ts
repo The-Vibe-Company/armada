@@ -1,4 +1,5 @@
 import {
+  assertProviderOf,
   connectGolden,
   DEFAULT_LAUNCH_TTL_SECONDS,
   EncryptionKeyError,
@@ -249,6 +250,29 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const goldens: GoldenRecord[] = [];
       for (const orgId of orgIds) goldens.push(...(await data.goldens.list(orgId)));
       return { goldens: goldens.map(goldenJson) };
+    },
+  );
+
+  tool(
+    "golden_capabilities",
+    {
+      title: "Golden backend capabilities",
+      description: "Read the selected backend's golden limit. Does not inspect slots or reconcile existing goldens.",
+      input: { org: z.string().optional(), provider: z.enum(SANDBOX_PROVIDERS).optional() },
+      output: { provider: z.enum(SANDBOX_PROVIDERS), maxGoldens: z.number().nullable() },
+      readOnly: true,
+    },
+    async (args) => {
+      const member = resolveCreateOrg(caller.orgs, args.org);
+      const backend = args.provider ?? "boat";
+      const provider = await context.provider({
+        orgId: member.orgId,
+        visibility: "org",
+        provider: backend,
+        modal: null,
+      });
+      assertProviderOf(provider, backend);
+      return { provider: backend, maxGoldens: provider.maxGoldens ?? null };
     },
   );
 
