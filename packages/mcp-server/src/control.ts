@@ -1,4 +1,4 @@
-import { type AuthStore, createSqlAuthStore, createServiceToken, listServiceTokens, refreshSupabaseSession, exchangeSupabaseCode, sendEmailLink, verifyEmailCode, assertEmail, assertEmailCode, supabaseAuthorizeUrl, assertProvider, type Session } from "@armada/auth";
+import { type AuthStore, createSqlAuthStore, createServiceToken, listServiceTokens, revokeServiceToken, refreshSupabaseSession, exchangeSupabaseCode, sendEmailLink, verifyEmailCode, assertEmail, assertEmailCode, supabaseAuthorizeUrl, assertProvider, type Session } from "@armada/auth";
 import {
   addMember,
   connectGolden,
@@ -116,6 +116,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   if (route === "auth/email/verify") return emailVerifyRoute(request, options);
   if (route === "token/list") return tokenListRoute(request, options);
   if (route === "token/create") return tokenCreateRoute(request, options);
+  if (route === "token/revoke") return tokenRevokeRoute(request, options);
   if (route === "auth/refresh") return refreshRoute(request, options);
   if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
   try {
@@ -133,6 +134,27 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       return fail(503, "unavailable", `Credential encryption is not configured on the server (${ENCRYPTION_KEY_ENV}).`);
     }
     return fail(500, "unavailable", "The server could not complete the request.");
+  }
+}
+
+async function tokenRevokeRoute(request: Request, options: ControlOptions): Promise<Response> {
+  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
+  try {
+    const caller = await authenticatedCaller(request, options);
+    const body = await readBody(request);
+    const id = required(body, "id");
+    if (caller.via === "service") {
+      const visible = await listServiceTokens(options.authStore, caller.userId);
+      const target = visible.find((token) => token.id === id);
+      const members = await options.authStore.memberships(caller.userId);
+      const org = caller.orgs[0];
+      if (!target || !org || !members.some((member) => member.orgId === org.orgId && member.name === target.orgName))
+        return fail(403, "forbidden", "This token is scoped to another org.");
+    }
+    await revokeServiceToken(options.authStore, { userId: caller.userId, id, now: (options.now ?? (() => new Date()))() });
+    return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
+  } catch {
+    return fail(403, "forbidden", "Token revocation was refused.");
   }
 }
 
