@@ -35,9 +35,9 @@ test("execs one bounded, foreground command in the sandbox", async () => {
 
 test("uses non-interactive sudo for the production scan command", async () => {
   const script = await capturedScript();
-  expect(script).toContain('id -u');
-  expect(script).toContain('sudo -n bash -c');
-  expect(script).toContain('else exec sudo');
+  expect(script).toContain("id -u");
+  expect(script).toContain("sudo -n bash -c");
+  expect(script).toContain("else exec sudo");
 });
 
 test("a leaked token fails closed without the match ever appearing in the error", async () => {
@@ -58,15 +58,25 @@ test("a timeout and a background command both stop the build", async () => {
   ).rejects.toThrow("background");
 });
 
-/** Runs the exact generated script against isolated scratch roots instead of the real filesystem. */
-function runAgainst(script: string, roots: { home: string; root: string; tmp: string }): { status: number } {
-  // Extract the quoted root branch and decode shell quoting before substituting isolated roots.
+/** Extracts and shell-unquotes the inner scan script from the "run as root, else sudo -n" wrapper. */
+function innerScript(script: string): string {
   const payload = script.match(/then ('[\s\S]*'); else exec sudo/)?.[1];
   if (!payload) throw new Error("missing controlled sudo scan payload");
   const decoded = spawnSync("bash", ["-c", `printf %s ${payload}`], { encoding: "utf8" });
   if (decoded.status !== 0) throw new Error("could not decode scan payload");
-  const isolated = decoded.stdout.replace("roots='/home/user /root /tmp'", `roots='${roots.home} ${roots.root} ${roots.tmp}'`);
-  const result = spawnSync("bash", ["-c", isolated], { encoding: "utf8" });
+  return decoded.stdout;
+}
+
+function withIsolatedRoots(script: string, roots: { home: string; root: string; tmp: string }): string {
+  return innerScript(script).replace(
+    "roots='/home/user /root /tmp'",
+    `roots='${roots.home} ${roots.root} ${roots.tmp}'`,
+  );
+}
+
+/** Runs the exact generated script against isolated scratch roots instead of the real filesystem. */
+function runAgainst(script: string, roots: { home: string; root: string; tmp: string }): { status: number } {
+  const result = spawnSync("bash", ["-c", withIsolatedRoots(script, roots)], { encoding: "utf8" });
   return { status: result.status ?? -1 };
 }
 
@@ -126,11 +136,7 @@ test("real shell: a token in .git/config is rejected without printing the token"
     git(repo, "init", "-q");
     const token = `ghp_${"C".repeat(36)}`;
     writeFileSync(join(repo, ".git", "config"), `[core]\nrepositoryformatversion = 0\n# ${token}\n`);
-    const result = spawnSync(
-      "bash",
-      ["-c", script.replace("roots='/home/user /root /tmp'", `roots='${roots.home} ${roots.root} ${roots.tmp}'`)],
-      { encoding: "utf8" },
-    );
+    const result = spawnSync("bash", ["-c", withIsolatedRoots(script, roots)], { encoding: "utf8" });
     expect(result.status).toBe(97);
     expect(`${result.stdout}${result.stderr}`).not.toContain(token);
   } finally {
@@ -151,11 +157,7 @@ test("real shell: a token in a commit message is rejected without printing it", 
     git(repo, "add", "f");
     const token = `gho_${"D".repeat(36)}`;
     git(repo, "commit", "-qm", `message ${token}`);
-    const isolated = script.replace(
-      "roots='/home/user /root /tmp'",
-      `roots='${roots.home} ${roots.root} ${roots.tmp}'`,
-    );
-    const result = spawnSync("bash", ["-c", isolated], { encoding: "utf8" });
+    const result = spawnSync("bash", ["-c", withIsolatedRoots(script, roots)], { encoding: "utf8" });
     expect(result.status).toBe(97);
     expect(`${result.stdout}${result.stderr}`).not.toContain(token);
   } finally {
@@ -203,11 +205,11 @@ test.skipIf(!canDropToNobody())(
       writeFileSync(join(roots.root, "shadow.env"), `GH_TOKEN=ghp_${"D".repeat(36)}\n`);
       spawnSync("sudo", ["chown", "-R", "root:root", roots.root]);
       spawnSync("sudo", ["chmod", "700", roots.root]);
-      const isolated = script.replace(
-        "roots='/home/user /root /tmp'",
-        `roots='${roots.home} ${roots.root} ${roots.tmp}'`,
-      );
-      const result = spawnSync("sudo", ["-u", "nobody", "bash", "-c", isolated], { encoding: "utf8" });
+      // Runs the inner script directly as "nobody", bypassing the production sudo wrapper: this
+      // tests the inner script's own fail-open-on-no-access property in isolation.
+      const result = spawnSync("sudo", ["-u", "nobody", "bash", "-c", withIsolatedRoots(script, roots)], {
+        encoding: "utf8",
+      });
       expect(result.status).toBe(0);
     } finally {
       spawnSync("sudo", ["rm", "-rf", roots.root]);

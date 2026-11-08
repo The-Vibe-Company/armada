@@ -51,10 +51,6 @@ export async function scanGoldenSandbox(provider: Provider, sandboxId: string): 
     // root outright when we cannot even read or search it, the same way a missing one is skipped.
     "for root in $roots; do",
     '  [ -d "$root" ] || continue',
-    // The ordinary case for `/root` under the sandbox's own unprivileged user is no access to it at
-    // all; grep would then exit 2 for "permission denied" on the directory itself, which is not the
-    // same as a hidden file inside a root we do own, and must not fail the scan closed: skip a root
-    // outright when we cannot even read or search it, the same way a missing one is skipped.
     '  [ -r "$root" ] && [ -x "$root" ] || continue',
     '  grep -rlaE --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev "$pattern" "$root" >/dev/null 2>/dev/null',
     "  status=$?",
@@ -114,4 +110,6 @@ export async function scanGoldenSandbox(provider: Provider, sandboxId: string): 
   }
 }
 
-function shellQuote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
