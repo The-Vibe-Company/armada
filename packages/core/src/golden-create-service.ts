@@ -104,10 +104,11 @@ export class GoldenCreateService {
         script: goldenScript(prepared, [input.config?.init ?? [], input.setup ? [input.setup] : []].flat()),
       });
       await this.deps.scan(provider, builder.id);
-      const snapshot = `golden-${builder.id}`;
+      const requestedSnapshot = input.existingGolden ? `golden-${input.existingGolden.id}` : `golden-${builder.id}`;
       // `snapshot` only starts the save; it is asynchronous, so a brand-new snapshot is normally
       // "saving" here and must be polled, exactly like the original golden flow's own snapshot step.
-      const started = await provider.snapshot({ sandboxId: builder.id, name: snapshot });
+      const started = await provider.snapshot({ sandboxId: builder.id, name: requestedSnapshot });
+      const snapshot = started.name;
       const settled = started.status === "ready" ? started : await waitSnapshot(provider, snapshot, limits);
       if (settled.status !== "ready") {
         throw new GoldenError("snapshot_failed", settled.error ?? `Snapshot '${snapshot}' failed.`);

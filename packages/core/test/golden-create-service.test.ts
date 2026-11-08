@@ -12,7 +12,7 @@ test("coordinates only scanned golden lifecycle", async () => {
     },
     snapshot: async () => {
       log.push("snapshot");
-      return { status: "ready" };
+      return { name: "golden-bx", status: "ready" };
     },
     stop: async () => {
       void log.push("stop");
@@ -56,7 +56,7 @@ test("scan failure never snapshots or persists and cleans up", async () => {
     createGolden: async () => ({ id: "bx" }),
     snapshot: async () => {
       log.push("snapshot");
-      return { status: "ready" };
+      return { name: "golden-bx", status: "ready" };
     },
     stop: async () => void log.push("stop"),
   };
@@ -79,7 +79,7 @@ test("falls back to the caller's own token and never mints when no App is config
   });
   const p: any = {
     createGolden: async () => ({ id: "bx" }),
-    snapshot: async () => ({ status: "ready" }),
+    snapshot: async ({ name }: any) => ({ name, status: "ready" }),
     stop: async () => {},
   };
   await s.create(p, actor, { name: "x", visibility: "org", repos: ["acme/web"] });
@@ -106,7 +106,7 @@ test("authorized repositories across installations use the caller token and do n
   });
   const p: any = {
     createGolden: async () => ({ id: "bx" }),
-    snapshot: async () => ({ status: "ready" }),
+    snapshot: async ({ name }: any) => ({ name, status: "ready" }),
     stop: async () => {},
   };
   await s.create(p, actor, { name: "many", visibility: "org", repos: ["acme/web", "other/api"] });
@@ -141,9 +141,9 @@ test("a snapshot that starts out saving is polled until ready before persisting"
   let getSnapshotCalls = 0;
   const p: any = {
     createGolden: async () => ({ id: "bx" }),
-    snapshot: async () => {
+    snapshot: async ({ name }: any) => {
       log.push("snapshot");
-      return { status: "saving" };
+      return { name, status: "saving" };
     },
     getSnapshot: async (name: string) => {
       getSnapshotCalls += 1;
@@ -182,7 +182,7 @@ test("a snapshot that never becomes ready is never persisted", async () => {
   });
   const p: any = {
     createGolden: async () => ({ id: "bx" }),
-    snapshot: async () => ({ status: "saving" }),
+    snapshot: async ({ name }: any) => ({ name, status: "saving" }),
     getSnapshot: async () => ({ status: "failed", error: "disk full" }),
     stop: async () => void log.push("stop"),
   };
@@ -204,7 +204,7 @@ test("a persist failure deletes the orphaned ready snapshot and still stops the 
   });
   const p: any = {
     createGolden: async () => ({ id: "bx" }),
-    snapshot: async () => ({ status: "ready" }),
+    snapshot: async ({ name }: any) => ({ name, status: "ready" }),
     deleteSnapshot: async (name: string) => void log.push(`delete:${name}`),
     stop: async () => void log.push("stop"),
   };
@@ -230,7 +230,7 @@ test("uses normalized branches, directories, and init commands after canonical a
   });
   const provider: any = {
     createGolden: async () => ({ id: "bx" }),
-    snapshot: async () => ({ status: "ready" }),
+    snapshot: async ({ name }: any) => ({ name, status: "ready" }),
     stop: async () => {},
   };
   await service.create(provider, actor, {
@@ -261,7 +261,7 @@ test("existing golden context is authorized before provider work and propagated"
     ssh: async () => {}, scan: async () => {},
     persist: async (value) => { seen.push(value.existingGolden); },
   });
-  const p: any = { createGolden: async () => ({ id: "bx" }), snapshot: async () => ({ status: "ready" }), stop: async () => {} };
+  const p: any = { createGolden: async () => ({ id: "bx" }), snapshot: async ({ name }: any) => ({ name, status: "ready" }), stop: async () => {} };
   await s.create(p, actor, { name: "x", visibility: "private", repos: ["acme/web"], existingGolden: existing });
   expect(seen).toEqual([existing, existing]);
 });
@@ -273,4 +273,15 @@ test("existing golden denial happens before authorization or provider", async ()
   const existing: any = { id: "g", orgId: "other", name: "x", visibility: "private", ownerId: "u", config: { repos: [], init: [] } };
   await expect(s.create(p, actor, { name: "x", visibility: "private", repos: ["acme/web"], existingGolden: existing })).rejects.toThrow("cannot rebuild");
   expect(touched).toBe(false);
+});
+
+test("uses provider snapshot identifier and stable existing-golden snapshot request", async () => {
+  const seen: any[] = [];
+  const existing: any = { id: "stable-id", orgId: "o", name: "x", visibility: "private", ownerId: "u", config: { repos: [], init: [] } };
+  const s = new GoldenCreateService({ authorize: async () => ({ repos: [repo], token: "t" }), ssh: async () => {}, scan: async () => {}, persist: async (x) => { seen.push(x); } });
+  const p: any = { createGolden: async () => ({ id: "builder" }), snapshot: async (x: any) => { seen.push(x.name); return { name: "provider-remap", status: "ready" }; }, stop: async () => {} };
+  const result = await s.create(p, actor, { name: "x", visibility: "private", repos: ["acme/web"], existingGolden: existing });
+  expect(result.snapshot).toBe("provider-remap");
+  expect(seen[0]).toBe("golden-stable-id");
+  expect(seen[1].snapshot).toBe("provider-remap");
 });
