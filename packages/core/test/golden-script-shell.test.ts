@@ -18,7 +18,17 @@ function fakeBin(dir: string, names: readonly string[]): void {
   mkdirSync(dir, { recursive: true });
   for (const name of names) {
     const path = join(dir, name);
-    writeFileSync(path, `#!/bin/sh\necho "FAKE ${name} called with: $*"\nexit 0\n`, { mode: 0o755 });
+    const body = name === "npm"
+      ? `#!/bin/sh
+if [ "$1" = "install" ] && [ "$2" = "--global" ] && [ "$3" = "--prefix" ]; then mkdir -p "$4/bin"; printf '#!/bin/sh\necho PINNED\n' > "$4/bin/bun"; chmod +x "$4/bin/bun"; fi
+echo "FAKE npm called with: $*"
+exit 0
+`
+      : `#!/bin/sh
+echo "FAKE ${name} called with: $*"
+exit 0
+`;
+    writeFileSync(path, body, { mode: 0o755 });
   }
 }
 
@@ -77,7 +87,9 @@ test("real shell: pinned Bun persists for a fresh shell", () => {
     const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2, branch: "main" }]);
     const block = extract(goldenScript(prepared).replace(/\/home\/user/g, home), 'bun_pin=""', "npm install --global @openai/codex");
     expect(spawnSync("/bin/bash", ["-euo", "pipefail", "-c", block], { env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home }, encoding: "utf8" }).status).toBe(0);
-    const fresh = spawnSync("/bin/sh", ["-c", 'bun'], { env: { PATH: `${home}/.local/bin:${home}/.bun/bin:/usr/bin:/bin`, HOME: home }, encoding: "utf8" });
+    // An old system Bun comes first, matching provider native exec PATH precedence.
+    const old = bin;
+    const fresh = spawnSync("/bin/sh", ["-c", 'bun'], { env: { PATH: `${old}:${home}/.local/bin:${home}/.bun/bin:/usr/bin:/bin`, HOME: home }, encoding: "utf8" });
     expect(fresh.status).toBe(0); expect(fresh.stdout).toContain("PINNED");
   } finally { rmSync(base, { recursive: true, force: true }); }
 });
