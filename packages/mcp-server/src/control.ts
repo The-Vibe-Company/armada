@@ -1,4 +1,4 @@
-import { type AuthStore, createSqlAuthStore, refreshSupabaseSession, exchangeSupabaseCode, sendEmailLink, verifyEmailCode, assertEmail, assertEmailCode, supabaseAuthorizeUrl, assertProvider, type Session } from "@armada/auth";
+import { type AuthStore, createSqlAuthStore, listServiceTokens, refreshSupabaseSession, exchangeSupabaseCode, sendEmailLink, verifyEmailCode, assertEmail, assertEmailCode, supabaseAuthorizeUrl, assertProvider, type Session } from "@armada/auth";
 import {
   addMember,
   connectGolden,
@@ -114,6 +114,7 @@ export async function handleControlRequest(request: Request, options: ControlOpt
   if (route === "auth/exchange") return exchangeRoute(request, options);
   if (route === "auth/email/start") return emailStartRoute(request, options);
   if (route === "auth/email/verify") return emailVerifyRoute(request, options);
+  if (route === "token/list") return tokenListRoute(request, options);
   if (route === "auth/refresh") return refreshRoute(request, options);
   if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
   try {
@@ -131,6 +132,20 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       return fail(503, "unavailable", `Credential encryption is not configured on the server (${ENCRYPTION_KEY_ENV}).`);
     }
     return fail(500, "unavailable", "The server could not complete the request.");
+  }
+}
+
+async function tokenListRoute(request: Request, options: ControlOptions): Promise<Response> {
+  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
+  try {
+    const caller = await authenticatedCaller(request, options);
+    const tokens = await listServiceTokens(options.authStore, caller.userId);
+    const allowed = caller.via === "service" ? new Set(caller.orgs.map((org) => org.orgId)) : null;
+    const memberships = allowed ? await options.authStore.memberships(caller.userId) : [];
+    const names = new Set(memberships.filter((membership) => allowed?.has(membership.orgId)).map((membership) => membership.name));
+    return Response.json({ tokens: tokens.filter((token) => !allowed || names.has(token.orgName)).map(({ id, label, orgName, createdAt, revokedAt }) => ({ id, label, orgName, createdAt, revokedAt })) }, { headers: { "cache-control": "no-store" } });
+  } catch {
+    return fail(401, "unauthorized", "Run armada login.");
   }
 }
 
