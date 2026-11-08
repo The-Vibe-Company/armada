@@ -1,12 +1,28 @@
 import { describe, expect, test } from "bun:test";
-import { createSqlGoldenStore, createSqlSandboxStore, GOLDEN_ROOT, type GoldenActor } from "@armada/core";
+import { memorySessionStore } from "@armada/auth";
+import {
+  type CredentialKind,
+  createSqlGoldenStore,
+  createSqlSandboxStore,
+  createSqlVaultStore,
+  encryptSecret,
+  GOLDEN_ROOT,
+  type GoldenActor,
+  type VaultStore,
+} from "@armada/core";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
 
 const BOAT_KEY = "boat_test_key_not_real";
+const PERSONAL_BOAT_KEY = "boat_personal_key_not_real";
 const CLAUDE_TOKEN = "sk-ant-oat01-cli-test-token";
+const ORG_CLAUDE_TOKEN = "sk-ant-oat01-org-token";
+const ANTHROPIC_KEY = "sk-ant-api03-cli-test-key";
 const OPENAI_KEY = "sk-cli-test-openai-key";
+const AUTH_JSON = '{"tokens":{"access_token":"codex-access-do-not-leak"}}';
+const KEY = Buffer.alloc(32, 4).toString("base64");
 const ORG_UUID = "11111111-1111-4111-8111-111111111111";
 const USER_UUID = "22222222-2222-4222-8222-222222222222";
 const SNAPSHOT = `a${"1".repeat(62)}`;
@@ -24,17 +40,17 @@ describe("launch command", () => {
     try {
       await applyMigrations(db);
       const people = await fixture(db);
+      await seed(db, people, [
+        { scope: "user", owner: people.owner, kind: "claude_oauth", value: CLAUDE_TOKEN },
+        { scope: "org", owner: people.org, kind: "openai", value: OPENAI_KEY },
+      ]);
       const requests: Request[] = [];
       const result = await asUser(db, people.owner, () =>
         capture(["launch", "monorepo", "--agent", "claude", "--ttl", "2h", "Fix the build"], {
           actor: actor(people, "owner"),
           store: createSqlGoldenStore(db),
           sandboxes: createSqlSandboxStore(db),
-          env: {
-            BOAT_API_KEY: BOAT_KEY,
-            ARMADA_CLAUDE_OAUTH_TOKEN: CLAUDE_TOKEN,
-            ARMADA_ORG_OPENAI_API_KEY: OPENAI_KEY,
-          },
+          vault: { store: vaultStore(db), encryptionKey: KEY },
           fetch: fakeBoat(requests),
           sleep: async () => {},
           sandboxPolls: 3,
@@ -61,6 +77,8 @@ describe("launch command", () => {
         }),
       });
       expect(JSON.stringify(fork?.body)).not.toContain(OPENAI_KEY);
+      expect(fork?.authorization).toBe(`Bearer ${BOAT_KEY}`);
+      expect(JSON.stringify(fork?.body)).not.toContain(BOAT_KEY);
       const commands = requests.filter((request) => request.path.endsWith("/commands")).map((request) => request.body);
       expect(commands).toMatchObject([
         { cwd: `${GOLDEN_ROOT}/web` },
@@ -85,12 +103,13 @@ describe("launch command", () => {
     try {
       await applyMigrations(db);
       const people = await fixture(db);
+      await seed(db, people, [{ scope: "user", owner: people.owner, kind: "openai", value: OPENAI_KEY }]);
       const requests: Request[] = [];
       const deps = (who: "owner" | "member") => ({
         actor: actor(people, who),
         store: createSqlGoldenStore(db),
         sandboxes: createSqlSandboxStore(db),
-        env: { BOAT_API_KEY: BOAT_KEY, ARMADA_OPENAI_API_KEY: OPENAI_KEY },
+        vault: { store: vaultStore(db), encryptionKey: KEY },
         fetch: fakeBoat(requests),
         sleep: async () => {},
         sandboxPolls: 3,
@@ -128,13 +147,14 @@ describe("launch command", () => {
     try {
       await applyMigrations(db);
       const people = await fixture(db);
+      await seed(db, people, [{ scope: "user", owner: people.owner, kind: "claude_oauth", value: CLAUDE_TOKEN }]);
       const requests: Request[] = [];
       const result = await asUser(db, people.owner, async () => {
         const out = await capture(["launch", "monorepo", "--agent", "claude", "go"], {
           actor: actor(people, "owner"),
           store: createSqlGoldenStore(db),
           sandboxes: createSqlSandboxStore(db),
-          env: { BOAT_API_KEY: BOAT_KEY, ARMADA_CLAUDE_OAUTH_TOKEN: CLAUDE_TOKEN },
+          vault: { store: vaultStore(db), encryptionKey: KEY },
           fetch: fakeBoat(requests, { failing: "pnpm i" }),
           sleep: async () => {},
           sandboxPolls: 3,
@@ -165,20 +185,18 @@ describe("launch command", () => {
         throw new Error("no network");
       }) as unknown as typeof fetch,
     };
-    const env = { BOAT_API_KEY: BOAT_KEY };
-    expect((await capture(["launch", "web"], { ...base, env })).err).toContain("Pass --agent claude or codex");
-    expect((await capture(["launch", "web", "--agent", "opencode"], { ...base, env })).code).toBe(2);
-    expect((await capture(["launch", "web", "--agent", "claude", "--ttl", "soon"], { ...base, env })).err).toContain(
+    expect((await capture(["launch", "web"], base)).err).toContain("Pass --agent claude or codex");
+    expect((await capture(["launch", "web", "--agent", "opencode"], base)).code).toBe(2);
+    expect((await capture(["launch", "web", "--agent", "claude", "--ttl", "soon"], base)).err).toContain(
       "is not a duration",
     );
-    expect((await capture(["launch", "--agent", "claude"], { ...base, env })).code).toBe(2);
-    expect((await capture(["launch", "web", "--agent", "claude", "a", "b"], { ...base, env })).code).toBe(2);
+    expect((await capture(["launch", "--agent", "claude"], base)).code).toBe(2);
+    expect((await capture(["launch", "web", "--agent", "claude", "a", "b"], base)).code).toBe(2);
     expect(calls).toEqual([]);
   });
 
   test("over Supabase it reads the golden and records the sandbox as the signed-in user", async () => {
-    const seen: { method: string; path: string; authorization: string | null; body: unknown }[] = [];
-    const token = jwt(USER_UUID);
+    const seen: { host: string; method: string; path: string; authorization: string | null; body: unknown }[] = [];
     const golden = {
       id: "33333333-3333-4333-8333-333333333333",
       org_id: ORG_UUID,
@@ -196,6 +214,7 @@ describe("launch command", () => {
       const text = typeof init?.body === "string" ? init.body : undefined;
       const body = text === undefined ? undefined : JSON.parse(text);
       seen.push({
+        host: url.hostname,
         method: init?.method ?? "GET",
         path: url.pathname,
         authorization: new Headers(init?.headers).get("authorization"),
@@ -218,14 +237,19 @@ describe("launch command", () => {
       throw new Error(`unexpected ${init?.method} ${url.pathname}`);
     }) as typeof fetch;
 
-    const result = await capture(["launch", "monorepo", "--agent", "claude", "go"], {
-      env: {
-        ARMADA_SUPABASE_URL: "https://supabase.test",
-        ARMADA_SUPABASE_ANON_KEY: "anon-public",
-        ARMADA_ACCESS_TOKEN: token,
-        BOAT_API_KEY: BOAT_KEY,
-        ARMADA_ORG_CLAUDE_OAUTH_TOKEN: CLAUDE_TOKEN,
+    const orgKey = await encryptSecret(CLAUDE_TOKEN, KEY);
+    const boatKey = await encryptSecret(BOAT_KEY, KEY);
+    const stored: VaultStore = {
+      async credentials(scope: string) {
+        return scope === "org" ? [{ kind: "claude_oauth" as const, valueEnc: orgKey }] : [];
       },
+      async orgBoatKey() {
+        return boatKey;
+      },
+    } as unknown as VaultStore;
+    const result = await capture(["launch", "monorepo", "--agent", "claude", "go"], {
+      auth: login(USER_UUID, supabase),
+      vault: { store: stored, encryptionKey: KEY },
       fetch: supabase,
       sleep: async () => {},
       sandboxPolls: 3,
@@ -233,7 +257,7 @@ describe("launch command", () => {
     expect(result.err).toBe("");
     expect(result.code).toBe(0);
     const rest = seen.filter((call) => call.path.startsWith("/rest/v1/"));
-    expect(rest.every((call) => call.authorization === `Bearer ${token}`)).toBe(true);
+    expect(rest.every((call) => call.authorization === "Bearer access-from-login")).toBe(true);
     const insert = rest.find((call) => call.method === "POST");
     expect(insert?.body).toMatchObject({
       boat_id: "bx_1",
@@ -247,6 +271,102 @@ describe("launch command", () => {
       status: "running",
       conversation_ids: ["conv_1"],
     });
+    const boat = seen.filter((call) => call.host === "boat.dev");
+    expect(boat.length).toBeGreaterThan(0);
+    expect(boat.every((call) => call.authorization === `Bearer ${BOAT_KEY}`)).toBe(true);
+    expect(result.out).not.toContain(CLAUDE_TOKEN);
+  });
+
+  test("the user's credential wins over the org's, and a private golden uses the owner's boat key", async () => {
+    const db = await openDatabase();
+    try {
+      await applyMigrations(db);
+      const people = await fixture(db);
+      await seed(db, people, [
+        { scope: "user", owner: people.owner, kind: "anthropic", value: ANTHROPIC_KEY },
+        { scope: "org", owner: people.org, kind: "claude_oauth", value: ORG_CLAUDE_TOKEN },
+        { scope: "user", owner: people.owner, kind: "boat", value: PERSONAL_BOAT_KEY },
+      ]);
+      const requests: Request[] = [];
+      const result = await asUser(db, people.owner, () =>
+        capture(["launch", "monorepo", "--agent", "claude", "go"], {
+          actor: actor(people, "owner"),
+          store: createSqlGoldenStore(db),
+          sandboxes: createSqlSandboxStore(db),
+          vault: { store: vaultStore(db), encryptionKey: KEY },
+          fetch: fakeBoat(requests),
+          sleep: async () => {},
+          sandboxPolls: 3,
+        }),
+      );
+      expect(result.code).toBe(0);
+      const fork = requests.find((request) => request.method === "POST" && request.path === "/api/v1/sandboxes");
+      expect(fork?.body).toMatchObject({ noEnv: true, env: { ANTHROPIC_API_KEY: ANTHROPIC_KEY } });
+      expect(JSON.stringify(fork?.body)).not.toContain(ORG_CLAUDE_TOKEN);
+      expect(fork?.authorization).toBe(`Bearer ${PERSONAL_BOAT_KEY}`);
+      expect(result.out).not.toContain(ANTHROPIC_KEY);
+      expect(result.out).not.toContain(PERSONAL_BOAT_KEY);
+    } finally {
+      await db.close();
+    }
+  });
+
+  test("a Codex auth.json is written into the sandbox from the environment, never the command line", async () => {
+    const db = await openDatabase();
+    try {
+      await applyMigrations(db);
+      const people = await fixture(db);
+      await seed(db, people, [{ scope: "user", owner: people.owner, kind: "codex_auth", value: AUTH_JSON }]);
+      const requests: Request[] = [];
+      const result = await asUser(db, people.owner, () =>
+        capture(["launch", "monorepo", "--agent", "codex"], {
+          actor: actor(people, "owner"),
+          store: createSqlGoldenStore(db),
+          sandboxes: createSqlSandboxStore(db),
+          vault: { store: vaultStore(db), encryptionKey: KEY },
+          fetch: fakeBoat(requests),
+          sleep: async () => {},
+          sandboxPolls: 3,
+        }),
+      );
+      expect(result.code).toBe(0);
+      const fork = requests.find((request) => request.method === "POST" && request.path === "/api/v1/sandboxes");
+      expect(fork?.body).toMatchObject({ env: { ARMADA_CODEX_AUTH_JSON: AUTH_JSON } });
+      const wrote = requests.find((request) => JSON.stringify(request.body ?? "").includes("auth.json"));
+      if (!wrote) throw new Error("the launch never wrote auth.json");
+      const command = (wrote.body as { command: string }).command;
+      expect(command).toContain('"$ARMADA_CODEX_AUTH_JSON" > /home/user/.codex/auth.json');
+      expect(command).not.toContain("codex-access-do-not-leak");
+      expect(result.out).not.toContain("codex-access-do-not-leak");
+    } finally {
+      await db.close();
+    }
+  });
+
+  test("a launch with no credential fails before any sandbox starts", async () => {
+    const db = await openDatabase();
+    try {
+      await applyMigrations(db);
+      const people = await fixture(db);
+      await seed(db, people, []);
+      const requests: Request[] = [];
+      const result = await asUser(db, people.owner, () =>
+        capture(["launch", "monorepo", "--agent", "claude", "go"], {
+          actor: actor(people, "owner"),
+          store: createSqlGoldenStore(db),
+          sandboxes: createSqlSandboxStore(db),
+          vault: { store: vaultStore(db), encryptionKey: KEY },
+          fetch: fakeBoat(requests),
+          sleep: async () => {},
+          sandboxPolls: 3,
+        }),
+      );
+      expect(result.code).toBe(1);
+      expect(result.err).toContain("armada creds set claude-oauth");
+      expect(requests).toEqual([]);
+    } finally {
+      await db.close();
+    }
   });
 });
 
@@ -254,6 +374,7 @@ interface Request {
   method: string;
   path: string;
   body: unknown;
+  authorization: string | null;
 }
 
 async function capture(argv: string[], deps: Parameters<typeof run>[2]) {
@@ -268,7 +389,12 @@ function fakeBoat(requests: Request[], options: { failing?: string } = {}): type
     const url = new URL(input instanceof globalThis.Request ? input.url : String(input));
     const text = typeof init?.body === "string" ? init.body : undefined;
     const body = text === undefined ? undefined : JSON.parse(text);
-    requests.push({ method: init?.method ?? "GET", path: url.pathname, body });
+    requests.push({
+      method: init?.method ?? "GET",
+      path: url.pathname,
+      body,
+      authorization: new Headers(init?.headers).get("authorization"),
+    });
     return boatReply(url, init?.method ?? "GET", body, options);
   }) as typeof fetch;
 }
@@ -331,9 +457,49 @@ function actor(people: { org: string; owner: string; member: string }, who: "own
   return { userId: people[who], orgId: people.org, role: "member" };
 }
 
-function jwt(sub: string): string {
-  const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
-  return `${header}.${Buffer.from(JSON.stringify({ sub })).toString("base64url")}.sig`;
+function vaultStore(db: PGlite): VaultStore {
+  // Resolution runs inside the caller's transaction, where the role is `authenticated` and ciphertext
+  // is unreadable. Reading it means briefly becoming the superuser again, then restoring the role.
+  return createSqlVaultStore({
+    async query(sql, params = []) {
+      await db.exec("reset role");
+      try {
+        return await db.query(sql, params as never[]);
+      } finally {
+        await db.exec("set local role authenticated");
+      }
+    },
+  });
+}
+
+async function seed(
+  db: PGlite,
+  people: { org: string },
+  rows: { scope: "user" | "org"; owner: string; kind: CredentialKind; value: string }[],
+): Promise<void> {
+  const store = createSqlVaultStore(db);
+  await store.setOrgBoatKey(people.org, await encryptSecret(BOAT_KEY, KEY));
+  for (const row of rows) {
+    await store.upsertCredential(row.scope, row.owner, row.kind, await encryptSecret(row.value, KEY));
+  }
+}
+
+function login(userId: string, fetchImpl: typeof fetch): AuthIo {
+  return {
+    out: () => undefined,
+    err: () => undefined,
+    env: { SUPABASE_ANON_KEY: "anon-public" },
+    fetch: fetchImpl,
+    now: () => new Date("2026-11-08T00:00:00.000Z"),
+    open: () => undefined,
+    session: memorySessionStore({
+      userId,
+      accessToken: "access-from-login",
+      refreshToken: "refresh",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      supabaseUrl: "https://supabase.test",
+    }),
+  };
 }
 
 async function fixture(db: PGlite) {

@@ -13,6 +13,7 @@ import {
   type Provider,
   refreshSupabaseSession,
   revokeServiceToken,
+  type Session,
   type SessionStore,
 } from "@armada/auth";
 
@@ -108,15 +109,25 @@ export async function tokenRevoke(io: AuthIo, id: string): Promise<void> {
   io.out(`Revoked ${id}.\n`);
 }
 
+/** The signed-in session, refreshed when it is about to expire. The one identity every command acts as. */
+export async function signedIn(io: AuthIo): Promise<{ session: Session; anonKey: string }> {
+  const session = await ensureFreshSession(io.session, io.now(), (current) =>
+    refreshSupabaseSession({
+      fetch: io.fetch,
+      anonKey: required(io.env, "SUPABASE_ANON_KEY"),
+      session: current,
+      now: io.now(),
+    }),
+  );
+  return { session, anonKey: required(io.env, "SUPABASE_ANON_KEY") };
+}
+
 async function userStore(io: AuthIo): Promise<AuthStore> {
   if (io.store) {
     await ensureFreshSession(io.session, io.now(), async (session) => session);
     return io.store;
   }
-  const anonKey = required(io.env, "SUPABASE_ANON_KEY");
-  const session = await ensureFreshSession(io.session, io.now(), (current) =>
-    refreshSupabaseSession({ fetch: io.fetch, anonKey, session: current, now: io.now() }),
-  );
+  const { session, anonKey } = await signedIn(io);
   return createUserStore({
     fetch: io.fetch,
     supabaseUrl: session.supabaseUrl,

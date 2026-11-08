@@ -1,12 +1,24 @@
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
 export {
   CODEX_AUTH_ENV,
+  CODEX_AUTH_PATH,
+  CREDENTIAL_KINDS,
+  type CredentialReader,
   type CredentialSource,
+  credentialName,
   type HarnessCredentials,
   harnessCredentials,
   type LaunchCredentialKind,
+  MAX_AUTH_FILE_LENGTH,
+  MAX_SECRET_LENGTH,
+  parseCredentialKind,
+  parseCredentialValue,
+  type ResolvedCredentials,
   redact,
+  resolveBoatKey,
   resolveCredential,
+  resolveCredentials,
+  toHarnessCredentials,
 } from "./credentials.ts";
 export {
   decryptSecret,
@@ -68,6 +80,7 @@ export {
 export { createSqlGoldenStore, type Sql } from "./golden-store.ts";
 export {
   DEFAULT_LAUNCH_TTL_SECONDS,
+  type LaunchCredentialResolver,
   type LaunchOptions,
   type LaunchRequest,
   type LaunchResult,
@@ -119,4 +132,25 @@ export {
   type SandboxRow,
   type SandboxStore,
 } from "./sandbox.ts";
+export {
+  addMember,
+  type CredentialInfo,
+  createOrg,
+  listCredentials,
+  listMembers,
+  listOrgs,
+  type MemberInfo,
+  type OrgCredentials,
+  type OrgSummary,
+  parseOrgName,
+  parseRole,
+  removeCredential,
+  removeMember,
+  resolveOrg,
+  setCredential,
+  setMemberRole,
+  type VaultStore,
+} from "./vault.ts";
+export { VaultError, type VaultErrorCode } from "./vault-error.ts";
+export { createSqlVaultStore } from "./vault-store.ts";
 export { VERSION } from "./version.ts";

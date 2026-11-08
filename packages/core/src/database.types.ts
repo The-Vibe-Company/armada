@@ -415,7 +415,7 @@ export type Database = {
       [_ in never]: never;
     };
     Enums: {
-      credential_kind: "anthropic" | "openai" | "claude_oauth" | "boat";
+      credential_kind: "anthropic" | "openai" | "claude_oauth" | "boat" | "codex_auth";
       credential_scope: "user" | "org";
       harness: "claude" | "codex";
       member_role: "admin" | "member";

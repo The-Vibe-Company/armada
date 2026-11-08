@@ -7,7 +7,7 @@ Armada is a launcher, not an orchestrator: it does not split work, merge pull re
 - **Specification (v0):** [#455](https://github.com/The-Vibe-Company/armada/issues/455)
 - **This scaffold:** [#456](https://github.com/The-Vibe-Company/armada/issues/456)
 
-> **Status:** goldens can be created, connected, snapshotted and listed (`armada golden`), and a golden can be launched into a sandbox (`armada launch`). `armada login` and `armada token` sign a person in and mint service tokens. Events and the MCP tool server are #464: it mounts the OAuth routes and calls `authenticate` from `@armada/auth`.
+> **Status:** goldens can be created, connected, snapshotted and listed (`armada golden`), and a golden can be launched into a sandbox (`armada launch`). `armada login` and `armada token` sign a person in and mint service tokens. `armada org` and `armada creds` manage orgs, members and encrypted credentials (#461). Events and the MCP tool server are #464: it mounts the OAuth routes and calls `authenticate` from `@armada/auth`.
 
 ## Layout
 
@@ -49,6 +49,10 @@ bun run armada golden list
 bun run armada launch <golden> --agent claude|codex ["prompt"] [--ttl 4h] [--json]
 bun run armada login
 bun run armada token create --org <name> --label <label>
+bun run armada org create <name>
+bun run armada org members add <email> [--role admin|member]
+pbpaste | bun run armada creds set claude-oauth [--org <name>]   # also anthropic, openai, codex-auth (--file), boat
+bun run armada creds list
 
 bun run build                        # dist/armada for this machine
 bun run build --target linux-arm64   # dist/armada-linux-arm64
@@ -58,9 +62,19 @@ bun run build:all                    # dist/armada-<target> for linux and macOS,
 
 ## Launching
 
-`armada launch` forks a golden's saved snapshot, pulls each repo, runs the init commands and, with a prompt, starts the agent. Without a prompt the sandbox waits, ready, for its first prompt. The fork gets `noEnv`, an explicit TTL (default 4 hours) and Armada's labels, and an environment with only the credentials of the chosen agent (the caller's own, else the org's). Nothing is written to the golden.
+`armada launch` forks a golden's saved snapshot, pulls each repo, runs the init commands and, with a prompt, starts the agent. Without a prompt the sandbox waits, ready, for its first prompt. The fork gets `noEnv`, an explicit TTL (default 4 hours) and Armada's labels, and an environment with only the credentials of the chosen agent. Nothing is written to the golden. A Codex `auth.json` is carried in the environment and written to `~/.codex/auth.json` in the sandbox.
 
-Until the encrypted credential store lands (#461), credentials come from the environment: `ARMADA_CLAUDE_OAUTH_TOKEN` (becomes `CLAUDE_CODE_OAUTH_TOKEN`) and `ARMADA_OPENAI_API_KEY` (an OpenAI key, or the content of Codex's `auth.json`), with `ARMADA_ORG_CLAUDE_OAUTH_TOKEN` and `ARMADA_ORG_OPENAI_API_KEY` as the org defaults.
+The credentials and the boat.dev key come from the encrypted store: the caller's own, else the org's (`resolveCredentials`, `resolveBoatKey`). A private golden uses its owner's personal boat key when there is one. `armada launch` asks the server for them (`ARMADA_URL`); it holds no encryption key and no service role key.
+
+## Identity, orgs and credentials
+
+After `armada login` (`SUPABASE_URL`, `SUPABASE_ANON_KEY`), every command acts as that Supabase session: `armada golden` and `armada launch` read it, and take `--org <name>` when you belong to more than one org. The old `ARMADA_SUPABASE_URL`, `ARMADA_SUPABASE_ANON_KEY`, `ARMADA_ACCESS_TOKEN` and `ARMADA_ORG` are gone, as are `ARMADA_CLAUDE_OAUTH_TOKEN` and `ARMADA_OPENAI_API_KEY`. The CLI never holds a service role key or the encryption key.
+
+`armada org`, `armada creds` and `armada launch` call the server's control API (`handleControlRequest` in `@armada/mcp-server`, mounted by #464; the CLI finds it at `ARMADA_URL`). The server checks the Supabase access token, then uses the service role for what a user JWT cannot do (create an org with its first admin, find a person by email, read and write ciphertext).
+
+- Server env: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `ARMADA_DATABASE_URL` (a privileged Postgres connection, the Supabase `postgres` role), `ARMADA_ENCRYPTION_KEY` (32 random bytes, base64: `openssl rand -base64 32`).
+- Credentials are AES-256-GCM ciphertext in `credentials.value_enc` (org boat.dev key: `orgs.boat_api_key_enc`). Values are read from stdin or `--file`, never from an argument, and never shown again. Kinds: `claude-oauth` (the token from `claude setup-token`, injected as `CLAUDE_CODE_OAUTH_TOKEN`), `anthropic` (`ANTHROPIC_API_KEY`), `openai` (`OPENAI_API_KEY`), `codex-auth` (`~/.codex/auth.json`, written into the sandbox), `boat`. OpenCode is deferred.
+- Members are people who already signed in once. There are no pending invitations.
 
 ## Dashboard
 
@@ -71,10 +85,10 @@ Until the encrypted credential store lands (#461), credentials come from the env
 | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | build and runtime | The Supabase project. Required. |
 | `NEXT_PUBLIC_AUTH_PROVIDERS` | build and runtime | Social buttons to show, `github,google`. Empty: email sign-in only. |
 | `ARMADA_MCP_URL` | runtime | The Armada MCP server. Without it the dashboard lists sandboxes but cannot read live logs or stop and message them. |
-| `ARMADA_ENCRYPTION_KEY` | build and runtime | 32 random bytes, base64 (`openssl rand -base64 32`). `@armada/core` seals credentials with AES-256-GCM before they are stored. The same name and helper are what credential resolution (#461) should use. Without the key the dashboard refuses to save one. Next.js inlines this name, so set it for the build as well as runtime. |
+| `ARMADA_ENCRYPTION_KEY` | build and runtime | 32 random bytes, base64 (`openssl rand -base64 32`). `@armada/core` seals credentials with AES-256-GCM before they are stored. The same name and helper are what credential resolution (#461) uses. Without the key the dashboard refuses to save one. Next.js inlines this name, so set it for the build as well as runtime. |
 
 - **Sign-in.** Email: Supabase sends a link and a one-time code (the dashboard accepts either; the template decides what the email carries). GitHub and Google: enable the provider in Supabase Auth, then list it in `NEXT_PUBLIC_AUTH_PROVIDERS`. Add `<origin>/auth/callback` (production and previews) to the redirect URLs of the Supabase project.
-- **Credentials.** `encryptSecret` / `decryptSecret` in `@armada/core` seal a value under `ARMADA_ENCRYPTION_KEY`. `value_enc` holds `iv (12 bytes) || ciphertext || tag` (`toBytea` is the PostgREST form). Values are write-only: a user JWT cannot read the column and the dashboard never shows one. Resolution order (user, then org) is the launcher's job (#461).
+- **Credentials.** `encryptSecret` / `decryptSecret` in `@armada/core` seal a value under `ARMADA_ENCRYPTION_KEY`. `value_enc` holds `iv (12 bytes) || ciphertext || tag` (`toBytea` is the PostgREST form). Values are write-only: a user JWT cannot read the column and the dashboard never shows one. Resolution order (the caller's own, then the org's) is `resolveCredentials` in the launcher.
 - **Logs, stop, send.** boat.dev keys stay on the server, so the dashboard asks the Armada MCP server (`logs`, `stop`, `send` tools, over Streamable HTTP, with the user's session token). The logs panel polls every two seconds from the last cursor while the sandbox is active.
 - **Writes row level security cannot express** (creating an org, adding a member by email, changing a golden's visibility) go through the functions of `supabase/migrations/20261108150000_dashboard_functions.sql`, which check `auth.uid()` themselves. That migration follows the OAuth and golden-sandbox migrations: it does not grant the OAuth tables, and replacing `goldens_guard` still allows `boat_sandbox_id` to change.
 
