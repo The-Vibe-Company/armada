@@ -2,10 +2,10 @@ import { githubAppFromEnv } from "@armada/core";
 import { type NextRequest, NextResponse } from "next/server";
 import { requireViewer } from "@/lib/data/viewer";
 import {
-  GITHUB_CALLBACK_PATH,
   GITHUB_STATE_COOKIE,
   githubAuthorizeUrl,
   githubCallbackUrl,
+  githubStateCookieOptions,
   newGitHubState,
 } from "@/lib/github";
 import { originFromHeaders } from "@/lib/routes";
@@ -21,12 +21,6 @@ export async function GET(request: NextRequest) {
 
   const state = newGitHubState();
   const response = NextResponse.redirect(githubAuthorizeUrl(app, { redirectUri: githubCallbackUrl(origin), state }));
-  response.cookies.set(GITHUB_STATE_COOKIE, state, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: origin.startsWith("https://"),
-    maxAge: 600,
-    path: GITHUB_CALLBACK_PATH,
-  });
+  response.cookies.set(GITHUB_STATE_COOKIE, state, githubStateCookieOptions(origin));
   return response;
 }

@@ -2,6 +2,7 @@ import { ShipIcon } from "lucide-react";
 import type { Metadata } from "next";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { enabledProviders } from "@/lib/auth-config";
+import { GITHUB_RESULT_MESSAGES } from "@/lib/github";
 import { safeNextPath } from "@/lib/routes";
 import { LoginForm } from "./login-form";
 
@@ -10,6 +11,7 @@ export const metadata: Metadata = { title: "Sign in" };
 const ERRORS: Record<string, string> = {
   callback: "That sign-in link is invalid or has expired. Request a new one.",
   provider: "That sign-in method is not available.",
+  github_install: GITHUB_RESULT_MESSAGES.sign_in.text,
 };
 
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };

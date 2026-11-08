@@ -1,6 +1,12 @@
 /** Paths a signed-out visitor may open. Everything else needs a session. */
 export function isPublicPath(pathname: string): boolean {
-  return pathname === "/login" || pathname.startsWith("/login/") || pathname.startsWith("/auth/");
+  return (
+    pathname === "/login" ||
+    pathname.startsWith("/login/") ||
+    pathname.startsWith("/auth/") ||
+    // The GitHub App can send the person here before this browser has an Armada session.
+    pathname === "/github/callback"
+  );
 }
 
 /**

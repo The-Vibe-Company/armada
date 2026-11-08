@@ -13,21 +13,28 @@ export type Membership = { org: Pick<Org, "id" | "name" | "created_at">; role: M
 
 /**
  * The signed-in user, from the session cookie's access token once its signature and expiry check out against
- * the project's signing keys (cached, so no Auth round trip per render). Sends a signed-out visitor to the login page.
+ * the project's signing keys (cached, so no Auth round trip per render). Null when there is no session.
  */
-export const requireViewer = cache(async (): Promise<Viewer> => {
+export const readViewer = cache(async (): Promise<Viewer | null> => {
   const supabase = await createClient();
   const { data: stored } = await supabase.auth.getSession();
   const token = stored.session?.access_token;
-  if (!token) redirect("/login");
+  if (!token) return null;
   const { data, error } = await supabase.auth.getClaims(token);
   const claims = data?.claims;
-  if (error || !claims?.sub) redirect("/login");
+  if (error || !claims?.sub) return null;
   return {
     id: claims.sub,
     email: typeof claims.email === "string" ? claims.email : "",
     token,
   };
+});
+
+/** {@link readViewer}, sending a signed-out visitor to the login page. */
+export const requireViewer = cache(async (): Promise<Viewer> => {
+  const viewer = await readViewer();
+  if (!viewer) redirect("/login");
+  return viewer;
 });
 
 export const listMemberships = cache(async (supabase: Supabase, userId: string): Promise<Membership[]> => {

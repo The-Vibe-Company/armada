@@ -142,7 +142,7 @@ describe("database", () => {
         "credentials SELECT(created_at,id,kind,owner_id,scope)",
         "credentials UPDATE(value_enc)",
         "github_connections DELETE",
-        "github_connections SELECT(created_at,github_id,login,name,refresh_expires_at,revoked_at,updated_at,user_id)",
+        "github_connections SELECT(created_at,github_id,installations,login,name,refresh_expires_at,revoked_at,updated_at,user_id)",
         "goldens DELETE",
         "goldens INSERT",
         "goldens SELECT",
@@ -564,6 +564,36 @@ describe("database", () => {
         db.query("delete from github_connections where user_id = $1", [people.owner]),
       );
       expect(await asRole(db, "service_role", () => db.query(login, [people.owner]))).toMatchObject({ rows: [] });
+    });
+  });
+
+  test("a connection records which accounts have the GitHub App installed, and that list is not a secret", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      const save = "select public.save_github_connection($1, $2, null, decode($3, 'hex'), null, $4::jsonb)";
+      const list = JSON.stringify([
+        { id: 7, account: "acme", account_type: "Organization", repository_selection: "selected" },
+      ]);
+      await asUser(db, people.owner, () => db.query(save, [583231, "octocat", "0d", list]));
+      const stored = await asUser(db, people.owner, () =>
+        text(db, "select installations::text as value from github_connections", []),
+      );
+      expect(JSON.parse(stored ?? "null")).toEqual(JSON.parse(list));
+      expect(
+        await asUser(db, people.member, () =>
+          text(db, "select installations::text as value from github_connections", []),
+        ),
+      ).toBeNull();
+      await expect(
+        asUser(db, people.owner, () =>
+          db.query("select public.save_github_connection($1, $2, null, decode($3, 'hex'), null, $4::jsonb)", [
+            583231,
+            "octocat",
+            "0d",
+            "{}",
+          ]),
+        ),
+      ).rejects.toThrow(/github_connections_installations_chk/);
     });
   });
 

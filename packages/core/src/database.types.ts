@@ -42,6 +42,7 @@ export type Database = {
           revoked_at: string | null;
           created_at: string;
           updated_at: string;
+          installations: Json | null;
         };
         Insert: {
           user_id: string;
@@ -53,6 +54,7 @@ export type Database = {
           revoked_at?: string | null;
           created_at?: string;
           updated_at?: string;
+          installations?: Json | null;
         };
         Update: {
           user_id?: string;
@@ -64,6 +66,7 @@ export type Database = {
           revoked_at?: string | null;
           created_at?: string;
           updated_at?: string;
+          installations?: Json | null;
         };
         Relationships: [
           {

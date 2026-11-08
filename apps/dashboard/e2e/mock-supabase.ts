@@ -30,6 +30,7 @@ type State = {
   sandboxes: Row[];
   credentials: Row[];
   github_connections: Row[];
+  githubInstallations: Row[];
   events: Map<string, Row[]>;
   sent: string[];
   otpEmails: string[];
@@ -64,6 +65,24 @@ function seed(): State {
       },
     ],
     github_connections: [],
+    githubInstallations: [
+      {
+        id: 4242,
+        app_id: 8675309,
+        app_slug: "armada-tvc",
+        account: { login: "octocat", type: "User" },
+        repository_selection: "all",
+        target_type: "User",
+      },
+      {
+        id: 9999,
+        app_id: 1,
+        app_slug: "someone-else",
+        account: { login: "other", type: "Organization" },
+        repository_selection: "selected",
+        target_type: "Organization",
+      },
+    ],
     events: new Map(),
     sent: [],
     otpEmails: [],
@@ -427,6 +446,7 @@ function rpc(name: string, args: Row, userId: string): Response {
         name: args.github_name,
         refresh_token_enc: args.token_enc,
         refresh_expires_at: args.token_expires_at,
+        installations: args.installation_list ?? null,
         revoked_at: null,
         updated_at: now,
       };
@@ -548,6 +568,11 @@ function github(request: Request, url: URL, body: Row): Response {
       return json({ message: "Bad credentials" }, 401);
     return json({ id: 583231, login: "octocat", name: "Octo Cat" });
   }
+  if (url.pathname === "/github/user/installations") {
+    if (request.headers.get("authorization") !== "Bearer ghu_e2e_access")
+      return json({ message: "Bad credentials" }, 401);
+    return json({ total_count: state.githubInstallations.length, installations: state.githubInstallations });
+  }
   return json({ message: "not found" }, 404);
 }
 
@@ -581,10 +606,15 @@ function control(url: URL, body: Row): Response {
       name: "Octo Cat",
       refresh_token_enc: "\\x0102",
       refresh_expires_at: null,
+      installations: body.installations ?? null,
       revoked_at: body.revoked ? "2026-11-08T11:00:00.000Z" : null,
       created_at: "2026-11-08T10:00:00.000Z",
       updated_at: "2026-11-08T10:00:00.000Z",
     });
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/github-installations") {
+    state.githubInstallations = Array.isArray(body.installations) ? (body.installations as Row[]) : [];
     return json({ ok: true });
   }
   if (url.pathname === "/__test/github-connections") {
