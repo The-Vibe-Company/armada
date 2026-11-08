@@ -13,6 +13,7 @@ import {
   loginWithBrowser,
   loginWithEmail,
   type Provider,
+  refreshSession,
   refreshSupabaseSession,
   revokeServiceToken,
   type Session,
@@ -156,15 +157,19 @@ export async function tokenRevoke(io: AuthIo, id: string): Promise<void> {
 
 /** The signed-in session, refreshed when it is about to expire. The one identity every command acts as. */
 export async function signedIn(io: AuthIo): Promise<{ session: Session; anonKey: string }> {
-  const session = await ensureFreshSession(io.session, io.now(), (current) =>
-    refreshSupabaseSession({
-      fetch: io.fetch,
-      anonKey: required(io.env, "SUPABASE_ANON_KEY"),
-      session: current,
-      now: io.now(),
-    }),
-  );
-  return { session, anonKey: required(io.env, "SUPABASE_ANON_KEY") };
+  const anonKey = required(io.env, "SUPABASE_ANON_KEY");
+  const session = await ensureFreshSession(io.session, io.now(), (current) => refresh(io, anonKey, current));
+  return { session, anonKey };
+}
+
+/** Rotate the saved session after a rejected bearer request. */
+export async function refreshSignedIn(io: AuthIo, rejected: Session): Promise<Session> {
+  const anonKey = required(io.env, "SUPABASE_ANON_KEY");
+  return refreshSession(io.session, io.now(), (current) => refresh(io, anonKey, current), rejected);
+}
+
+function refresh(io: AuthIo, anonKey: string, session: Session): Promise<Session> {
+  return refreshSupabaseSession({ fetch: io.fetch, anonKey, session, now: io.now() });
 }
 
 async function userStore(io: AuthIo): Promise<AuthStore> {

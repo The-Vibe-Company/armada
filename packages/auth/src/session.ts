@@ -1,5 +1,5 @@
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { AuthError } from "./errors.ts";
 
 /** The CLI's Supabase session. It lives on this machine, never in the database. */
@@ -47,8 +47,15 @@ export function fileSessionStore(path: string): SessionStore {
       const directory = dirname(path);
       await mkdir(directory, { recursive: true });
       await chmod(directory, 0o700);
-      await writeFile(path, `${JSON.stringify(session)}\n`);
-      await chmod(path, 0o600);
+      const temporary = join(directory, `.${basename(path)}.${crypto.randomUUID()}.tmp`);
+      try {
+        await writeFile(temporary, `${JSON.stringify(session)}\n`, { mode: 0o600 });
+        await chmod(temporary, 0o600);
+        await rename(temporary, path);
+      } catch (error) {
+        await rm(temporary, { force: true }).catch(() => undefined);
+        throw error;
+      }
     },
     async clear() {
       await rm(path, { force: true });
@@ -67,11 +74,33 @@ export async function ensureFreshSession(
 ): Promise<Session> {
   const session = await store.read();
   if (!session) throw new AuthError("Run armada login.", "unauthorized");
-  const expires = Date.parse(session.expiresAt);
-  if (!Number.isNaN(expires) && expires - now.getTime() > 60_000) return session;
-  const next = await refresh(session);
+  if (isFresh(session, now)) return session;
+  return refreshSession(store, now, refresh, session);
+}
+
+/**
+ * Refresh a saved session after a rejected request. If another CLI invocation has already rotated
+ * the refresh token, use its saved session instead of attempting to consume the stale token.
+ */
+export async function refreshSession(
+  store: SessionStore,
+  _now: Date,
+  refresh: (session: Session) => Promise<Session>,
+  rejected?: Session,
+): Promise<Session> {
+  const current = await store.read();
+  if (!current) throw new AuthError("Run armada login.", "unauthorized");
+  if (rejected && current.refreshToken !== rejected.refreshToken) return current;
+  const next = await refresh(current);
+  const latest = await store.read();
+  if (latest && latest.refreshToken !== current.refreshToken) return latest;
   await store.write(next);
   return next;
+}
+
+export function isFresh(session: Session, now: Date): boolean {
+  const expires = Date.parse(session.expiresAt);
+  return !Number.isNaN(expires) && expires - now.getTime() > 60_000;
 }
 
 function parseSession(text: string): Session {

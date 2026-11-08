@@ -1,4 +1,4 @@
-import type { AuthFetch } from "@armada/auth";
+import { AuthError, type AuthFetch } from "@armada/auth";
 import {
   type GoldenActor,
   type GoldenConfig,
@@ -58,6 +58,8 @@ export interface Identity {
   anonKey: string;
   accessToken: string;
   userId: string;
+  /** Refreshes the bearer once after a rejected read-only request. */
+  refresh?: (rejectedAccessToken: string) => Promise<string>;
 }
 
 /**
@@ -72,7 +74,9 @@ export async function openSupabaseGoldens(
 ): Promise<SupabaseSession> {
   const url = identity.supabaseUrl.replace(/\/$/, "");
   const { anonKey, accessToken, userId } = identity;
-  const members = await rest<MemberRow[]>(fetchImpl, url, anonKey, accessToken, "members", {
+  const call = <T>(table: string, init: RestInit) =>
+    authenticatedRest<T>(fetchImpl, url, anonKey, accessToken, table, init, identity.refresh);
+  const members = await call<MemberRow[]>("members", {
     method: "GET",
     query: { select: "org_id,role,orgs(name)", user_id: eq(userId) },
   });
@@ -81,8 +85,8 @@ export async function openSupabaseGoldens(
     throw new GoldenError("forbidden", "Your membership role is not one Armada knows.");
   }
   const actor: GoldenActor = { userId, orgId: member.org_id, role: member.role };
-  const store = supabaseStore(fetchImpl, url, anonKey, accessToken);
-  const sandboxes = supabaseSandboxes(fetchImpl, url, anonKey, accessToken);
+  const store = supabaseStore(fetchImpl, url, anonKey, accessToken, identity.refresh);
+  const sandboxes = supabaseSandboxes(fetchImpl, url, anonKey, accessToken, identity.refresh);
   return { actor, store, sandboxes };
 }
 
@@ -102,8 +106,15 @@ function chooseMember(members: MemberRow[], orgRef: string | undefined): MemberR
   throw new GoldenError("invalid_config", `Name the org with --org. You belong to ${members.length} orgs.`);
 }
 
-function supabaseStore(fetchImpl: AuthFetch, url: string, anonKey: string, accessToken: string): GoldenStore {
-  const call = <T>(table: string, init: RestInit) => rest<T>(fetchImpl, url, anonKey, accessToken, table, init);
+function supabaseStore(
+  fetchImpl: AuthFetch,
+  url: string,
+  anonKey: string,
+  accessToken: string,
+  refresh?: Identity["refresh"],
+): GoldenStore {
+  const call = <T>(table: string, init: RestInit) =>
+    authenticatedRest<T>(fetchImpl, url, anonKey, accessToken, table, init, refresh);
 
   return {
     async list(orgId): Promise<GoldenRecord[]> {
@@ -153,8 +164,15 @@ function supabaseStore(fetchImpl: AuthFetch, url: string, anonKey: string, acces
   };
 }
 
-function supabaseSandboxes(fetchImpl: AuthFetch, url: string, anonKey: string, accessToken: string): SandboxStore {
-  const call = <T>(init: RestInit) => rest<T>(fetchImpl, url, anonKey, accessToken, "sandboxes", init);
+function supabaseSandboxes(
+  fetchImpl: AuthFetch,
+  url: string,
+  anonKey: string,
+  accessToken: string,
+  refresh?: Identity["refresh"],
+): SandboxStore {
+  const call = <T>(init: RestInit) =>
+    authenticatedRest<T>(fetchImpl, url, anonKey, accessToken, "sandboxes", init, refresh);
 
   return {
     async insert(input): Promise<SandboxRecord> {
@@ -218,6 +236,26 @@ async function patch(
   if (!rows[0]) throw new GoldenError("forbidden", "The golden could not be updated.");
 }
 
+async function authenticatedRest<T>(
+  fetchImpl: AuthFetch,
+  url: string,
+  anonKey: string,
+  accessToken: string,
+  table: string,
+  init: RestInit,
+  refresh?: Identity["refresh"],
+): Promise<T> {
+  try {
+    return await rest<T>(fetchImpl, url, anonKey, accessToken, table, init);
+  } catch (error) {
+    if (!refresh || !(error instanceof AuthError) || error.code !== "unauthorized" || init.method !== "GET") {
+      throw error;
+    }
+    const token = await refresh(accessToken);
+    return rest<T>(fetchImpl, url, anonKey, token, table, init);
+  }
+}
+
 async function rest<T>(
   fetchImpl: AuthFetch,
   base: string,
@@ -257,10 +295,10 @@ async function rest<T>(
   return body as T;
 }
 
-function httpError(status: number, body: unknown, table: string): GoldenError {
+function httpError(status: number, body: unknown, table: string): GoldenError | AuthError {
   const message = isRecord(body) && typeof body.message === "string" ? body.message : "";
   const code = isRecord(body) && typeof body.code === "string" ? body.code : "";
-  if (status === 401) return new GoldenError("forbidden", "The Supabase session was refused.");
+  if (status === 401) return new AuthError("Run armada login.", "unauthorized");
   if (message.includes("must not contain secrets")) {
     return new GoldenError("invalid_config", "Golden config must not contain secrets.");
   }

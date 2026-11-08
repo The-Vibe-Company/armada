@@ -10,6 +10,7 @@ export {
   ensureFreshSession,
   fileSessionStore,
   memorySessionStore,
+  refreshSession,
   type Session,
   type SessionStore,
 } from "./session.ts";

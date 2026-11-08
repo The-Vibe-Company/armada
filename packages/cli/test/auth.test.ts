@@ -129,3 +129,33 @@ async function capture(argv: string[], auth: AuthIo) {
   const code = await run(argv, { out: auth.out, err: auth.err }, { auth });
   return { code, out, err };
 }
+
+describe("authenticated request refresh", () => {
+  test("retries one rejected read with a refreshed bearer", async () => {
+    const { openSupabaseGoldens } = await import("../src/supabase.ts");
+    const requests: string[] = [];
+    let refreshes = 0;
+    const opened = await openSupabaseGoldens(
+      {
+        supabaseUrl: "https://project.supabase.co",
+        anonKey: "anon",
+        accessToken: "old",
+        userId: USER,
+        refresh: async () => {
+          refreshes++;
+          return "new";
+        },
+      },
+      undefined,
+      async (_input, init) => {
+        const token = new Headers(init?.headers).get("authorization") ?? "";
+        requests.push(token);
+        if (token === "Bearer old") return new Response("", { status: 401 });
+        return Response.json([{ org_id: ORG, role: "admin", orgs: { name: "Example" } }]);
+      },
+    );
+    expect(opened.actor.orgId).toBe(ORG);
+    expect(refreshes).toBe(1);
+    expect(requests).toEqual(["Bearer old", "Bearer new"]);
+  });
+});
