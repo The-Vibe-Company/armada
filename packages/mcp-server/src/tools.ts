@@ -260,6 +260,38 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   );
 
   tool(
+    "golden_update",
+    {
+      title: "Rebuild a golden",
+      description: "Rebuilds an existing golden in place. Private goldens require their owner; org goldens require an org admin.",
+      input: {
+        name: z.string().min(1),
+        org: z.string().optional(),
+        repos: z.array(z.string().min(1)).min(1).max(MAX_CREATE_REPOS),
+        setup: z.string().optional(),
+      },
+      output: { name: z.string(), visibility: z.enum(["org", "private"]), snapshot: z.string() },
+    },
+    async (args) => {
+      if (!context.goldenCreate) throw new ToolError("unsupported", "Secure golden creation is not configured on this server.");
+      const member = resolveCreateOrg(caller.orgs, args.org);
+      const rows = await data.goldens.findByName(member.orgId, args.name);
+      if (rows.length !== 1 || !rows[0]) throw new ToolError("not_found", `No golden named '${args.name}'.`);
+      const existingGolden = rows[0];
+      const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
+      const provider = await context.provider({ orgId: existingGolden.orgId, visibility: existingGolden.visibility });
+      const result = await context.goldenCreate.create(provider, actor, {
+        name: existingGolden.name,
+        visibility: existingGolden.visibility,
+        repos: args.repos,
+        ...(args.setup ? { setup: args.setup } : {}),
+        existingGolden,
+      }, context.launch ?? {});
+      return { name: existingGolden.name, visibility: existingGolden.visibility, snapshot: result.snapshot };
+    },
+  );
+
+  tool(
     "launch",
     {
       title: "Launch an agent",

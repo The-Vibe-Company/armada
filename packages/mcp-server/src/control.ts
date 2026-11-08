@@ -185,6 +185,8 @@ async function dispatch(
       return listGoldens(options, caller);
     case "golden/create":
       return createGoldenRoute(options, caller, body);
+    case "golden/update":
+      return updateGoldenRoute(options, caller, body);
     case "golden/connect":
       return connectGoldenRoute(options, caller, body);
     default:
@@ -258,6 +260,39 @@ async function createGoldenRoute(
     ...(setup !== undefined ? { setup } : {}),
   });
   return { name, visibility, snapshot: result.snapshot };
+}
+
+/** Rebuild an existing visible golden in place. The row, owner and visibility come from storage, never the body. */
+async function updateGoldenRoute(
+  options: ControlOptions,
+  caller: Caller,
+  body: Record<string, unknown>,
+): Promise<{ name: string; visibility: Visibility; snapshot: string }> {
+  if (!options.goldenCreate || !options.providerFor || !options.data)
+    throw new VaultError("unavailable", "Secure golden creation is not configured on this server.");
+  const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
+  const name = required(body, "name");
+  const rows = await options.data(caller).goldens.findByName(org.id, name);
+  if (rows.length !== 1) throw new GoldenError("not_found", `No golden named '${name}'.`);
+  const existingGolden = rows[0];
+  if (!existingGolden) throw new GoldenError("not_found", `No golden named '${name}'.`);
+  const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
+  if (body.config === undefined) throw new VaultError("invalid", "config is required.");
+  const config = normalizeGitHubGoldenConfig(parseGoldenConfig(body.config));
+  const boat = await resolveBoatKey(options.store, options.encryptionKey, {
+    userId: caller.userId,
+    orgId: org.id,
+    visibility: existingGolden.visibility,
+  });
+  const result = await options.goldenCreate.create(options.providerFor(boat.key), actor, {
+    name: existingGolden.name,
+    visibility: existingGolden.visibility,
+    repos: [],
+    config,
+    ...(optional(body, "setup") === undefined ? {} : { setup: optional(body, "setup")! }),
+    existingGolden,
+  });
+  return { name: existingGolden.name, visibility: existingGolden.visibility, snapshot: result.snapshot };
 }
 
 async function connectGoldenRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>) {
