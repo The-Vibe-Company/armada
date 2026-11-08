@@ -57,3 +57,18 @@ describe("model choice from the dashboard forms", () => {
     });
   });
 });
+
+describe("the launch repository", () => {
+  test("a chosen owner/repo is sent as repo; none keeps the legacy launch", () => {
+    expect(launchArgs({ ...form, harness: "claude", repo: " acme/web " })).toMatchObject({
+      ok: true,
+      args: { repo: "acme/web" },
+    });
+    const legacy = launchArgs({ ...form, harness: "claude", repo: "" });
+    expect(legacy.ok && "repo" in legacy.args).toBe(false);
+    expect(launchArgs({ ...form, harness: "claude", repo: "acme/web; rm -rf /" })).toMatchObject({ ok: false });
+    expect(launchArgs({ ...form, harness: "claude", repo: "https://github.com/acme/web" })).toMatchObject({
+      ok: false,
+    });
+  });
+});

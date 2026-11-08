@@ -1,0 +1,148 @@
+/**
+ * The dashboard's server-side client of the Armada control API (`/api/v1/*`), for the operations only the
+ * server can do (a golden build needs the encrypted Boat key and the caller's GitHub connection; the golden
+ * limit is read from the provider the server resolves). It runs in server components and server actions with
+ * the signed-in user's session token; the token is a request header only and never appears in an error, a
+ * result or a log. One request per call: a failure is reported, never retried.
+ */
+export class ControlError extends Error {
+  override readonly name = "ControlError";
+  readonly status: number | undefined;
+  readonly code: string | undefined;
+  constructor(message: string, status?: number, code?: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+type Options = {
+  /** `ARMADA_MCP_URL`; only its origin is used. */
+  serverUrl: string;
+  token: string;
+  fetch?: typeof fetch;
+  /** Defaults to `GOLDEN_BUILD_TIMEOUT_MS`; a short read passes its own. */
+  timeoutMs?: number;
+};
+
+/**
+ * A golden build clones, scans and snapshots; it can take minutes. This is the same bound as the same-origin
+ * proxy's, and it must stay below `maxDuration` of the route that runs the request (800 s, the `/goldens` page
+ * whose server action calls it, and `/api/v1/*`), so the dashboard reports a timeout before the function is cut.
+ */
+export const GOLDEN_BUILD_TIMEOUT_MS = 660_000;
+
+/** A capacity read is metadata: a page render does not wait on it for long. */
+export const CAPABILITIES_TIMEOUT_MS = 10_000;
+
+export type ControlClient = {
+  post<T>(route: string, body: Record<string, unknown>): Promise<T>;
+};
+
+export function createControlClient(options: Options): ControlClient {
+  const origin = originOf(options.serverUrl);
+  const doFetch = options.fetch ?? fetch;
+  return {
+    async post<T>(route: string, body: Record<string, unknown>): Promise<T> {
+      if (!origin) throw new ControlError("The Armada server is not configured for this dashboard.");
+      let response: Response;
+      try {
+        response = await doFetch(new URL(`/api/v1/${route}`, origin), {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${options.token}`,
+            "content-type": "application/json",
+            accept: "application/json",
+          },
+          body: JSON.stringify(body),
+          redirect: "error",
+          cache: "no-store",
+          signal: AbortSignal.timeout(options.timeoutMs ?? GOLDEN_BUILD_TIMEOUT_MS),
+        });
+      } catch (error) {
+        if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError"))
+          throw new ControlError(
+            "The Armada server did not answer in time. The build may still finish: refresh before trying again.",
+          );
+        throw new ControlError("The Armada server is unreachable.");
+      }
+      const parsed = await readJson(response);
+      if (response.status === 401)
+        throw new ControlError("The Armada server refused this session. Sign in again.", 401);
+      if (!response.ok) {
+        const failure = isRecord(parsed) ? parsed.error : undefined;
+        if (isRecord(failure) && typeof failure.message === "string")
+          throw new ControlError(
+            failure.message,
+            response.status,
+            typeof failure.code === "string" ? failure.code : undefined,
+          );
+        if (typeof failure === "string") throw new ControlError(failure, response.status);
+        throw new ControlError(`The Armada server answered ${response.status}.`, response.status);
+      }
+      return parsed as T;
+    },
+  };
+}
+
+function originOf(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    if (url.username || url.password) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export type GoldenBuildResult = { name: string; visibility: "org" | "private"; snapshot: string };
+
+export function isGoldenBuildResult(value: unknown): value is GoldenBuildResult {
+  return (
+    isRecord(value) &&
+    typeof value.name === "string" &&
+    typeof value.snapshot === "string" &&
+    (value.visibility === "org" || value.visibility === "private")
+  );
+}
+
+/**
+ * The selected backend's golden limit, as the Armada server reads it from the provider it resolves for that
+ * org (`golden/capabilities`). `maxGoldens` null means the server reports no limit (unbounded or unknown),
+ * which is not zero. `unavailable` is a failed read (no access, no provider credentials, an older server, an
+ * unexpected answer): the limit is then not known here, and the server still checks it when it builds.
+ */
+export type GoldenCapabilities = { ok: true; maxGoldens: number | null } | { ok: false; reason: string };
+
+export async function readGoldenCapabilities(client: ControlClient, org: string): Promise<GoldenCapabilities> {
+  let result: unknown;
+  try {
+    result = await client.post("golden/capabilities", { org, provider: "boat" });
+  } catch (error) {
+    if (!(error instanceof ControlError)) throw error;
+    if (error.status === 404 && error.code === undefined)
+      return { ok: false, reason: "This Armada server does not report golden capacity yet." };
+    return { ok: false, reason: error.message };
+  }
+  if (
+    isRecord(result) &&
+    result.provider === "boat" &&
+    (result.maxGoldens === null ||
+      (typeof result.maxGoldens === "number" && Number.isInteger(result.maxGoldens) && result.maxGoldens > 0))
+  )
+    return { ok: true, maxGoldens: result.maxGoldens };
+  return { ok: false, reason: "The Armada server sent an unexpected answer." };
+}

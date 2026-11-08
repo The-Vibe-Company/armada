@@ -35,6 +35,14 @@ type State = {
   sent: string[];
   /** The arguments of every launch and send, as the dashboard serialized them. */
   toolCalls: { name: string; args: Row }[];
+  /** Every control API golden build, as the dashboard's server sent it (never a token: only whether one came). */
+  goldenCalls: { route: string; body: Row; authorized: boolean }[];
+  /** When set, a golden build waits until `/__test/golden-release`: the browser test sees the pending state. */
+  goldenGate: { hold: boolean; fail: { status: number; code?: string; message: string } | null };
+  /** Every `golden/capabilities` read (never a token: only whether one came). */
+  capabilityCalls: { body: Row; authorized: boolean }[];
+  /** What the selected provider reports, or how the read fails (no provider credential, an older server). */
+  capabilities: { maxGoldens: number | null; fail: { status: number; code?: string; message: string } | null };
   otpEmails: string[];
 };
 
@@ -88,8 +96,22 @@ function seed(): State {
     events: new Map(),
     sent: [],
     toolCalls: [],
+    goldenCalls: [],
+    goldenGate: { hold: false, fail: null },
+    capabilityCalls: [],
+    capabilities: { maxGoldens: 1, fail: null },
     otpEmails: [],
   };
+  // The org golden records two repositories, so its launch form offers a working directory.
+  const shared = state.goldens[0];
+  if (shared)
+    shared.config = {
+      repos: [
+        { url: "https://github.com/acme/web.git", branch: "main", dir: "web" },
+        { url: "https://github.com/acme/api.git", branch: "develop", dir: "api" },
+      ],
+      init: ["bun install"],
+    };
   state.events.set(id(30), [
     { id: "e1", at: 1_762_596_300_000, kind: "prompt", text: "Fix the failing test", status: "running" },
     {
@@ -582,6 +604,66 @@ function launch(args: Row, userId: string, reply: (result: unknown) => Response)
   });
 }
 
+/** Opened by `/__test/golden-release`; a build that arrives after it does not wait. */
+let release: (() => void) | null = null;
+let released: Promise<void> = Promise.resolve();
+
+function closeGate(): void {
+  released = new Promise<void>((resolve) => (release = resolve));
+}
+
+/** `golden/create` and `golden/update` of the control API, with the server's owner/admin rules. */
+async function goldenBuild(route: string, body: Row, request: Request): Promise<Response> {
+  const userId = viewer(request);
+  state.goldenCalls.push({ route, body, authorized: Boolean(userId) });
+  if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
+  if (state.goldenGate.hold) await released;
+  const failure = state.goldenGate.fail;
+  // A failure without a code is a gateway's own answer (a timeout in front of the server), not the server's.
+  if (failure)
+    return failure.code
+      ? json({ error: { code: failure.code, message: failure.message } }, failure.status)
+      : new Response(failure.message, { status: failure.status, headers: { "content-type": "text/plain" } });
+  const org = String(body.org);
+  if (!isMember(org, userId)) return json({ error: { code: "forbidden", message: "Not a member." } }, 403);
+  const config = body.config as Row;
+  const name = String(body.name);
+  const snapshot = `golden-${++sequence}`;
+  if (route === "golden/create") {
+    const visibility = body.private ? "private" : "org";
+    if (visibility === "org" && !isAdmin(org, userId))
+      return json({ error: { code: "forbidden", message: "Only an admin can create an org golden." } }, 403);
+    const row = { ...golden(id(++sequence), name, visibility, userId, snapshot), org_id: org, config };
+    state.goldens.push(row);
+    return json({ name, visibility, snapshot });
+  }
+  const rows = visibleRows("goldens", userId).filter((row) => row.org_id === org && row.name === name);
+  const target = rows[0];
+  if (rows.length !== 1 || !target) return json({ error: { code: "not_found", message: "No golden." } }, 404);
+  const allowed = target.visibility === "private" ? target.owner_id === userId : isAdmin(org, userId);
+  if (!allowed) return json({ error: { code: "forbidden", message: "You cannot rebuild this golden." } }, 403);
+  target.config = config;
+  target.provider_snapshot_id = snapshot;
+  target.boat_snapshot_id = snapshot;
+  return json({ name, visibility: target.visibility, snapshot });
+}
+
+/** `golden/capabilities`: the server's scoped read of the selected org's provider limit. */
+function goldenCapabilities(body: Row, request: Request): Response {
+  const userId = viewer(request);
+  state.capabilityCalls.push({ body, authorized: Boolean(userId) });
+  if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
+  if (!isMember(body.org, userId))
+    return json({ error: { code: "forbidden", message: "You are not a member of this org." } }, 403);
+  const failure = state.capabilities.fail;
+  if (failure)
+    return json(
+      failure.code ? { error: { code: failure.code, message: failure.message } } : { error: failure.message },
+      failure.status,
+    );
+  return json({ provider: "boat", maxGoldens: state.capabilities.maxGoldens }, 200, { "cache-control": "no-store" });
+}
+
 /** GitHub's token and user endpoints, reached by the app server through e2e/github-fetch.cjs. */
 function github(request: Request, url: URL, body: Row): Response {
   if (url.pathname === "/github/login/oauth/access_token") {
@@ -627,8 +709,38 @@ function control(url: URL, body: Row): Response {
         created_at: now,
       });
     }
+    if (body.novaOrg) {
+      // An org with no golden yet, administered by carol.
+      state.orgs.push({ id: id(12), name: "Nova", created_at: "2026-11-08T10:00:00.000Z" });
+      state.members.push({ org_id: id(12), user_id: id(3), role: "admin", created_at: "2026-11-08T10:00:00.000Z" });
+    }
+    release?.();
+    release = null;
     sessions.clear();
     return json({ ok: true });
+  }
+  if (url.pathname === "/__test/golden-gate") {
+    if (body.hold === true) closeGate();
+    state.goldenGate = {
+      hold: body.hold === true,
+      fail: body.fail ? (body.fail as { status: number; code?: string; message: string }) : null,
+    };
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/capabilities") {
+    state.capabilities = {
+      maxGoldens: body.maxGoldens === null ? null : Number(body.maxGoldens ?? 1),
+      fail: body.fail ? (body.fail as { status: number; code?: string; message: string }) : null,
+    };
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/golden-release") {
+    release?.();
+    release = null;
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/goldens") {
+    return json(state.goldens.map((row) => ({ ...row })));
   }
   if (url.pathname === "/__test/remove-zenith-membership") {
     state.members = state.members.filter((row) => row.org_id !== id(11));
@@ -673,7 +785,13 @@ function control(url: URL, body: Row): Response {
     return json(state.github_connections.map((row) => ({ ...row })));
   }
   if (url.pathname === "/__test/state") {
-    return json({ otpEmails: state.otpEmails, sent: state.sent, toolCalls: state.toolCalls });
+    return json({
+      otpEmails: state.otpEmails,
+      sent: state.sent,
+      toolCalls: state.toolCalls,
+      goldenCalls: state.goldenCalls,
+      capabilityCalls: state.capabilityCalls,
+    });
   }
   return json({ message: "not found" }, 404);
 }
@@ -693,6 +811,8 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
       if (route === "auth/email/start") return json({ ok: true });
+      if (route === "golden/create" || route === "golden/update") return goldenBuild(route, body, request);
+      if (route === "golden/capabilities") return goldenCapabilities(body, request);
       if (route === "golden/list")
         return request.headers.get("authorization") ? json({ goldens: [] }) : json({ error: "Unauthorized." }, 401);
       return json({ error: "Not found." }, 404);

@@ -18,10 +18,14 @@ export type LaunchArgs = {
   provider: SandboxProviderId;
   org: string;
   harness: Harness;
+  /** `owner/repo` recorded in the golden: the agent's real initial working directory. Omitted: legacy behaviour. */
+  repo?: string;
   model: string;
   reasoning_effort: string;
   prompt?: string;
 };
+
+const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 export type SendArgs = { model?: string; reasoning_effort?: string };
 
@@ -38,6 +42,7 @@ export function launchArgs(
     org: string;
     harness: string;
     prompt: string;
+    repo?: string;
   } & ModelFields,
 ): Parsed<LaunchArgs> {
   const harness = HARNESSES.find((candidate) => candidate === fields.harness);
@@ -46,6 +51,8 @@ export function launchArgs(
     return { ok: false, error: "That request is not valid." };
   }
   const provider = fields.provider;
+  const repo = fields.repo?.trim() ?? "";
+  if (repo && !REPO.test(repo)) return { ok: false, error: "Choose a repository recorded in the golden." };
   const choice = checked(harness, chosenModel(fields), fields.reasoningEffort.trim() || undefined);
   if (!choice.ok) return choice;
   const prompt = fields.prompt.trim();
@@ -56,6 +63,7 @@ export function launchArgs(
       provider,
       org: fields.org,
       harness,
+      ...(repo ? { repo } : {}),
       model: choice.args.model,
       reasoning_effort: choice.args.reasoningEffort,
       ...(prompt ? { prompt } : {}),
