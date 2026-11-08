@@ -66,3 +66,17 @@ export async function mintInstallationToken(
   }
   return { token: data.token, expiresAt, installationId };
 }
+
+/** Installation tokens are explicitly revoked as soon as checkout finishes. */
+export async function revokeInstallationToken(token: string, options: { fetch?: typeof fetch } = {}): Promise<void> {
+  try {
+    const response = await (options.fetch ?? fetch)(`${API}/installation/token`, {
+      method: "DELETE",
+      headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "user-agent": "armada" },
+      signal: AbortSignal.timeout(TIMEOUT),
+    });
+    if (!response.ok && response.status !== 404) throw new Error(`status ${response.status}`);
+  } catch (cause) {
+    throw new GitHubAuthError("unavailable", "GitHub could not revoke the installation token.", { cause });
+  }
+}

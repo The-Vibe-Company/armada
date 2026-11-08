@@ -54,7 +54,7 @@ export async function sshStdinCheckout(
     ];
     // Static remote prelude consumes secret line; it does not echo, export, or retain it after checkout.
     const prelude =
-      "set +x; IFS= read -r ARMADA_GIT_TOKEN; export ARMADA_GIT_TOKEN; bash -s; unset ARMADA_GIT_TOKEN; rm -f ~/.ssh/authorized_keys\n";
+      "set +x; IFS= read -r ARMADA_GIT_TOKEN; export ARMADA_GIT_TOKEN; bash -s; unset ARMADA_GIT_TOKEN; history -c 2>/dev/null || true\n";
     await command(run, "ssh", args, `${input.token}\n${prelude}${input.script}`);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
