@@ -124,6 +124,7 @@ export {
   GoldenCreateService,
   goldenScript,
 } from "./golden-create-service.ts";
+export { type GoldenGitHubAdapterOptions, goldenGitHubAdapter } from "./golden-github.ts";
 export { createSqlGoldenStore, type Sql } from "./golden-store.ts";
 export {
   DEFAULT_LAUNCH_TTL_SECONDS,
