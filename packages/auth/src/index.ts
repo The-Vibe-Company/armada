@@ -15,6 +15,7 @@ export {
   type SessionStore,
 } from "./session.ts";
 export { createSqlAuthStore, type SqlQuery } from "./sql.ts";
+export { createPkce } from "./pkce.ts";
 export {
   assertEmail,
   assertEmailCode,
