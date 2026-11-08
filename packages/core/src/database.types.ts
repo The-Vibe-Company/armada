@@ -43,6 +43,8 @@ export type Database = {
           created_at: string;
           updated_at: string;
           installations: Json | null;
+          access_token_enc: string | null;
+          access_expires_at: string | null;
         };
         Insert: {
           user_id: string;
@@ -55,6 +57,8 @@ export type Database = {
           created_at?: string;
           updated_at?: string;
           installations?: Json | null;
+          access_token_enc?: string | null;
+          access_expires_at?: string | null;
         };
         Update: {
           user_id?: string;
@@ -67,6 +71,8 @@ export type Database = {
           created_at?: string;
           updated_at?: string;
           installations?: Json | null;
+          access_token_enc?: string | null;
+          access_expires_at?: string | null;
         };
         Relationships: [
           {

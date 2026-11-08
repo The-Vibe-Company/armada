@@ -14,6 +14,7 @@ import {
   removeMember,
   resolveBoatKey,
   resolveCredentials,
+  type Sql,
   setCredential,
   setMemberRole,
   VaultError,
@@ -351,12 +352,16 @@ describe("GitHub connections", () => {
         await store.rotateGitHubToken(people.stan, new Uint8Array([1, 2, 3]), {
           refreshTokenEnc: new Uint8Array([4, 5]),
           refreshExpiresAt: expiry,
+          accessTokenEnc: new Uint8Array([6]),
+          accessExpiresAt: expiry,
         }),
       ).toBe(true);
       expect(
         await store.rotateGitHubToken(people.stan, new Uint8Array([1, 2, 3]), {
           refreshTokenEnc: new Uint8Array([9]),
           refreshExpiresAt: null,
+          accessTokenEnc: new Uint8Array([6]),
+          accessExpiresAt: expiry,
         }),
       ).toBe(false);
       const rotated = await store.getGitHubConnection(people.stan);
@@ -386,8 +391,64 @@ describe("GitHub connections", () => {
         await store.rotateGitHubToken(people.stan, new Uint8Array([1]), {
           refreshTokenEnc: new Uint8Array([2]),
           refreshExpiresAt: null,
+          accessTokenEnc: new Uint8Array([6]),
+          accessExpiresAt: new Date("2027-05-10T12:00:00.000Z"),
         }),
       ).toBe(false);
+    });
+  });
+
+  test("a refresh transaction holds its scoped callback until work settles and releases after errors", async () => {
+    await withVault(async ({ db, people }) => {
+      let tail = Promise.resolve();
+      const serialSql: Sql = {
+        query: db.query.bind(db),
+        transaction: async <T>(work: (sql: Sql) => Promise<T>) => {
+          const previous = tail;
+          let release!: () => void;
+          tail = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          await previous;
+          try {
+            return await work(serialSql);
+          } finally {
+            release();
+          }
+        },
+      };
+      const first = createSqlVaultStore(serialSql);
+      const second = createSqlVaultStore(serialSql);
+      let releaseFirst!: () => void;
+      const held = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let firstEntered!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        firstEntered = resolve;
+      });
+      const firstRun = first.withGitHubConnectionRefresh(people.stan, async () => {
+        firstEntered();
+        await held;
+      });
+      await entered;
+      let secondEntered = false;
+      const secondRun = second.withGitHubConnectionRefresh(people.stan, async () => {
+        secondEntered = true;
+      });
+      await Promise.resolve();
+      expect(secondEntered).toBe(false);
+      releaseFirst();
+      await Promise.all([firstRun, secondRun]);
+      expect(secondEntered).toBe(true);
+      await expect(
+        first.withGitHubConnectionRefresh(people.stan, async () => {
+          throw new Error("abort");
+        }),
+      ).rejects.toThrow("abort");
+      await second.withGitHubConnectionRefresh(people.stan, async () => {
+        secondEntered = true;
+      });
     });
   });
 });

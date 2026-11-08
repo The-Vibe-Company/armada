@@ -15,7 +15,7 @@ const GITHUB_INSTALLATIONS_URL = "https://api.github.com/user/installations";
 const REQUEST_TIMEOUT_MS = 15_000;
 const INSTALLATIONS_PER_PAGE = 100;
 const INSTALLATIONS_MAX_PAGES = 10;
-const MAX_ATTEMPTS = 3;
+const ACCESS_TOKEN_EXPIRY_MARGIN_MS = 5 * 60 * 1000;
 
 export const GITHUB_CLIENT_ID_ENV = "GITHUB_APP_CLIENT_ID";
 export const GITHUB_CLIENT_SECRET_ENV = "GITHUB_APP_CLIENT_SECRET";
@@ -254,6 +254,8 @@ export interface StoredGitHubConnection {
   refreshTokenEnc: Uint8Array;
   refreshExpiresAt: Date | null;
   revokedAt: Date | null;
+  accessTokenEnc: Uint8Array | null;
+  accessExpiresAt: Date | null;
 }
 
 /**
@@ -261,6 +263,11 @@ export interface StoredGitHubConnection {
  * ciphertext. The dashboard writes the first token as the person, under row level security.
  */
 export interface GitHubConnectionStore {
+  /** Keeps a per-user transaction lock held until the callback settles. */
+  withGitHubConnectionRefresh<T>(
+    userId: string,
+    work: (store: GitHubConnectionStore, connection: StoredGitHubConnection | null) => Promise<T>,
+  ): Promise<T>;
   getGitHubConnection(userId: string): Promise<StoredGitHubConnection | null>;
   /**
    * Replaces the refresh token only while it still is `expected`, so two launches that refresh at once
@@ -269,7 +276,12 @@ export interface GitHubConnectionStore {
   rotateGitHubToken(
     userId: string,
     expected: Uint8Array,
-    next: { refreshTokenEnc: Uint8Array; refreshExpiresAt: Date | null },
+    next: {
+      refreshTokenEnc: Uint8Array;
+      refreshExpiresAt: Date | null;
+      accessTokenEnc: Uint8Array;
+      accessExpiresAt: Date;
+    },
   ): Promise<boolean>;
   /** Marks the connection revoked, only while the refresh token still is `expected`. */
   markGitHubRevoked(userId: string, expected: Uint8Array): Promise<boolean>;
@@ -308,17 +320,37 @@ export interface GitHubResolveDeps {
  */
 export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: string): Promise<GitHubAccess> {
   const request = { ...(deps.fetch ? { fetch: deps.fetch } : {}), ...(deps.now ? { now: deps.now } : {}) };
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    const connection = await deps.store.getGitHubConnection(userId);
+  const now = (deps.now ?? (() => new Date()))();
+  return deps.store.withGitHubConnectionRefresh(userId, async (store, connection) => {
     if (!connection) return { status: "not_connected", message: GITHUB_NOT_CONNECTED };
     if (connection.revokedAt) return { status: "revoked", message: GITHUB_REVOKED };
-    if (!deps.app) {
+    if (!deps.app)
       return {
         status: "unavailable",
         message: `The server has no GitHub App configured (${GITHUB_CLIENT_ID_ENV} and ${GITHUB_CLIENT_SECRET_ENV}), so GitHub was not set up in this sandbox.`,
       };
+    if (
+      connection.accessTokenEnc &&
+      connection.accessExpiresAt &&
+      connection.accessExpiresAt.getTime() > now.getTime() + ACCESS_TOKEN_EXPIRY_MARGIN_MS
+    ) {
+      try {
+        return connectedFromToken(
+          connection,
+          await decryptSecret(new Uint8Array(connection.accessTokenEnc), deps.encryptionKey),
+          request,
+          deps,
+          userId,
+        );
+      } catch (error) {
+        if (error instanceof EncryptionKeyError) throw error;
+        return {
+          status: "unavailable",
+          message:
+            "The stored GitHub connection could not be decrypted. Reconnect GitHub in the dashboard under Settings.",
+        };
+      }
     }
-
     let refreshToken: string;
     try {
       refreshToken = await decryptSecret(new Uint8Array(connection.refreshTokenEnc), deps.encryptionKey);
@@ -330,7 +362,6 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
           "The stored GitHub connection could not be decrypted. Reconnect GitHub in the dashboard under Settings.",
       };
     }
-
     let tokens: GitHubTokenSet;
     try {
       tokens = await refreshGitHubToken(deps.app, refreshToken, request);
@@ -338,37 +369,38 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
       if (!(error instanceof GitHubAuthError)) throw error;
       if (error.code !== "revoked")
         return { status: "unavailable", message: `${error.message} GitHub was not set up in this sandbox.` };
-      const current = await deps.store.getGitHubConnection(userId);
-      if (current && !current.revokedAt && !sameBytes(current.refreshTokenEnc, connection.refreshTokenEnc)) continue;
-      await deps.store.markGitHubRevoked(userId, connection.refreshTokenEnc);
+      await store.markGitHubRevoked(userId, connection.refreshTokenEnc);
       return { status: "revoked", message: GITHUB_REVOKED };
     }
+    const next = {
+      refreshTokenEnc: await encryptSecret(tokens.refreshToken, deps.encryptionKey),
+      refreshExpiresAt: tokens.refreshExpiresAt,
+      accessTokenEnc: await encryptSecret(tokens.accessToken, deps.encryptionKey),
+      accessExpiresAt: tokens.accessExpiresAt,
+    };
+    if (!(await store.rotateGitHubToken(userId, connection.refreshTokenEnc, next)))
+      throw new Error("GitHub connection changed while its refresh lock was held.");
+    return connectedFromToken(connection, tokens.accessToken, request, deps, userId);
+  });
+}
 
-    const sealed = await encryptSecret(tokens.refreshToken, deps.encryptionKey);
-    const next = { refreshTokenEnc: sealed, refreshExpiresAt: tokens.refreshExpiresAt };
-    try {
-      await deps.store.rotateGitHubToken(userId, connection.refreshTokenEnc, next);
-    } catch {
-      // GitHub already retired the old refresh token: one more try, and if the database still refuses, say so.
-      await deps.store.rotateGitHubToken(userId, connection.refreshTokenEnc, next);
-    }
-
-    let user: GitHubUser;
-    try {
-      user = await fetchGitHubUser(tokens.accessToken, request);
-    } catch (error) {
-      if (!(error instanceof GitHubAuthError)) throw error;
-      return { status: "unavailable", message: `${error.message} GitHub was not set up in this sandbox.` };
-    }
-    if (user.id !== connection.githubId || user.login !== connection.login || user.name !== connection.name) {
-      await deps.store.updateGitHubProfile(userId, user).catch(() => {});
-    }
-    return { status: "connected", token: tokens.accessToken, identity: gitIdentity(user) };
+async function connectedFromToken(
+  connection: StoredGitHubConnection,
+  accessToken: string,
+  request: TokenRequestOptions,
+  deps: GitHubResolveDeps,
+  userId: string,
+): Promise<GitHubAccess> {
+  let user: GitHubUser;
+  try {
+    user = await fetchGitHubUser(accessToken, request);
+  } catch (error) {
+    if (!(error instanceof GitHubAuthError)) throw error;
+    return { status: "unavailable", message: `${error.message} GitHub was not set up in this sandbox.` };
   }
-  return {
-    status: "unavailable",
-    message: "GitHub could not be refreshed because another launch was refreshing it. Try again.",
-  };
+  if (user.id !== connection.githubId || user.login !== connection.login || user.name !== connection.name)
+    await deps.store.updateGitHubProfile(userId, user).catch(() => {});
+  return { status: "connected", token: accessToken, identity: gitIdentity(user) };
 }
 
 /** The environment variables `gh` and most tools read. */
@@ -403,10 +435,6 @@ export const GH_MISSING_NOTE =
 
 function shQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
-  return a.length === b.length && a.every((byte, index) => byte === b[index]);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
