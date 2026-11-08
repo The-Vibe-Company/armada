@@ -1,6 +1,6 @@
 "use client";
 
-import { BoxesIcon, CameraIcon, KeyRoundIcon, UsersIcon } from "lucide-react";
+import { BoxesIcon, CameraIcon, KeyRoundIcon, SettingsIcon, UsersIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -10,6 +10,7 @@ const LINKS = [
   { href: "/goldens", label: "Goldens", icon: CameraIcon },
   { href: "/credentials", label: "Credentials", icon: KeyRoundIcon },
   { href: "/orgs", label: "Organizations", icon: UsersIcon },
+  { href: "/settings", label: "Settings", icon: SettingsIcon },
 ] as const;
 
 export function NavLinks({ className }: { className?: string }) {
