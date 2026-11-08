@@ -1,0 +1,161 @@
+name: Release
+
+# Publishes the armada CLI to npm when a version tag is pushed (docs/releasing.md):
+# @thevibecompany/armada-<target> (one compiled binary each), then @thevibecompany/armada
+# (the `armada` bin). The tag must be v<version of packages/*/package.json> and point at a
+# commit of main. A prerelease version is published under the `next` dist-tag, any other
+# under `latest`.
+#
+# Authentication: npm Trusted Publishing (GitHub OIDC) once it is configured on npmjs.com
+# for each package, with this file name, release.yml, and the `npm` environment. Until then
+# the NPM_TOKEN secret (a granular automation token) is used. Either way the packages carry
+# npm provenance. No token lives in the repository.
+#
+# `workflow_dispatch` runs everything up to `npm publish --dry-run`, from any ref.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check the version and the tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      dist_tag: ${{ steps.version.outputs.dist_tag }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - id: version
+        name: The tag, the version and the dist-tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(jq -r .version packages/core/package.json)
+          for file in packages/*/package.json; do
+            test "$(jq -r .version "$file")" = "$version" || { echo "::error::$file is not at $version"; exit 1; }
+          done
+          if [ "$REF_TYPE" = tag ]; then
+            test "$REF_NAME" = "v$version" || { echo "::error::tag $REF_NAME is not v$version"; exit 1; }
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+              || { echo "::error::$REF_NAME is not a commit of main"; exit 1; }
+            publish=true
+          else
+            publish=false
+          fi
+          case "$version" in *-*) dist_tag=next ;; *) dist_tag=latest ;; esac
+          echo "Version $version, dist-tag $dist_tag, publish $publish."
+          {
+            echo "version=$version"
+            echo "dist_tag=$dist_tag"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: bun run test
+
+  # As in CI, each binary is compiled and run on its own platform (macOS signs it ad hoc there).
+  binary:
+    name: Binary (${{ matrix.target }})
+    needs: check
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: darwin-arm64
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - run: bun run build --target ${{ matrix.target }}
+      - name: npm pack and install
+        run: |
+          bun scripts/npm.ts --binaries dist --target ${{ matrix.target }}
+          mkdir -p dist/tarballs
+          for dir in dist/npm/*/; do (cd "$dir" && npm pack --pack-destination ../../tarballs); done
+          scripts/npm-smoke.sh dist/tarballs ${{ matrix.target }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: armada-${{ matrix.target }}
+          path: dist/armada-${{ matrix.target }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish to npm
+    needs: [check, binary]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # npm Trusted Publishing and provenance
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      DIST_TAG: ${{ needs.check.outputs.dist_tag }}
+      PUBLISH: ${{ needs.check.outputs.publish }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: ./.github/actions/setup-bun
+      # Trusted Publishing needs npm 11.5.1 or later; Node 24 ships npm 11.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm --version
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: armada-*
+          path: dist
+          merge-multiple: true
+      - name: Stage and pack every package
+        run: |
+          set -euo pipefail
+          bun scripts/npm.ts --binaries dist
+          mkdir -p dist/tarballs
+          for dir in dist/npm/*/; do (cd "$dir" && npm pack --pack-destination ../../tarballs); done
+          ls -l dist/tarballs
+      - name: Install the tarballs that are published
+        run: scripts/npm-smoke.sh dist/tarballs linux-x64
+      - name: npm publish
+        env:
+          # Empty when the secret is not set: npm then authenticates with Trusted Publishing.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          dry=()
+          if [ "$PUBLISH" != true ]; then dry=(--dry-run); fi
+          # Platform packages first: the main package must never resolve to a missing binary.
+          for dir in dist/npm/armada-*/ dist/npm/armada/; do
+            name=$(jq -r .name "$dir/package.json")
+            tarball="dist/tarballs/$(echo "${name#@}" | tr / -)-$VERSION.tgz"
+            if [ "$PUBLISH" = true ] && npm view "$name@$VERSION" version > /dev/null 2>&1; then
+              echo "$name@$VERSION is already published."
+              continue
+            fi
+            npm publish "$tarball" --access public --tag "$DIST_TAG" --provenance "${dry[@]}"
+          done
