@@ -148,7 +148,7 @@ describe("database", () => {
         "goldens SELECT",
         "goldens UPDATE(boat_sandbox_id,boat_snapshot_id,config,name)",
         "mcp_tokens DELETE",
-        "mcp_tokens SELECT",
+        "mcp_tokens SELECT(created_at,id,label,org_id,revoked_at,user_id)",
         "mcp_tokens UPDATE(revoked_at)",
         "members DELETE",
         "members INSERT(created_at,org_id,role,user_id)",
@@ -166,9 +166,13 @@ describe("database", () => {
         "sandboxes UPDATE(conversation_ids,deleted_at,status,status_reason,stopped_at)",
         "service_tokens DELETE",
         "service_tokens INSERT",
-        "service_tokens SELECT",
+        "service_tokens SELECT(created_at,id,label,org_id,revoked_at,user_id)",
         "service_tokens UPDATE(revoked_at)",
       ]);
+
+      // Whatever else is granted, no SELECT grant of a user JWT names a secret column.
+      const secretSelects = granted.rows.filter((row) => /SELECT\(.*\b(hash|\w+_enc)\b/.test(row.grant));
+      expect(secretSelects).toEqual([]);
 
       // A table or function created by a later migration starts with nothing for anon or a user JWT.
       await db.exec("create table public.later (id int primary key, value_enc bytea)");
@@ -610,6 +614,33 @@ describe("database", () => {
       expect(
         await asUser(db, people.member, () => ids(db, "select id from mcp_tokens where id = $1", [mcpToken])),
       ).toEqual([]);
+
+      // The hash is a lookup key for the server: a user JWT mints and lists tokens, and cannot read,
+      // filter or star its way to one.
+      for (const table of ["service_tokens", "mcp_tokens"]) {
+        for (const query of [
+          `select hash from ${table}`,
+          `select * from ${table}`,
+          `select id from ${table} where hash = '${HASH}'`,
+          `select id from ${table} order by hash`,
+          `select t.hash from ${table} t`,
+          `select to_jsonb(t) from ${table} t where t.hash is not null`,
+        ]) {
+          await expect(asUser(db, people.owner, () => db.query(query))).rejects.toThrow(
+            new RegExp(`permission denied for table ${table}`),
+          );
+        }
+      }
+      expect(
+        await asUser(db, people.owner, () =>
+          db.query("select id, user_id, org_id, label, revoked_at, created_at from service_tokens"),
+        ),
+      ).toMatchObject({ rows: [{ id: serviceToken, label: "worker" }] });
+      expect(
+        await asRole(db, "service_role", () =>
+          text(db, "select hash as value from mcp_tokens where id = $1", [mcpToken]),
+        ),
+      ).toBe("cd".repeat(32));
 
       await asUser(db, people.owner, () =>
         db.query("update service_tokens set revoked_at = now() where id = $1", [serviceToken]),

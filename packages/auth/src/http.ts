@@ -77,16 +77,14 @@ export function createHttpAuthStore(options: HttpStoreOptions): AuthStore {
   return {
     async findTokenByHash(kind, hash) {
       assertHash(hash);
-      const rows = await call<TokenRow[]>(
-        `${table(kind)}?hash=eq.${hash}&select=id,user_id,org_id,label,revoked_at,created_at&limit=1`,
-      );
+      const rows = await call<TokenRow[]>(`${table(kind)}?hash=eq.${hash}&select=${TOKEN_COLUMNS}&limit=1`);
       return mapToken(rows[0]);
     },
     async insertToken(kind, input) {
       assertHash(input.hash);
       assertUuid(input.userId);
       assertUuid(input.orgId);
-      const rows = await call<TokenRow[]>(table(kind), {
+      const rows = await call<TokenRow[]>(`${table(kind)}?select=${TOKEN_COLUMNS}`, {
         method: "POST",
         body: {
           user_id: input.userId,
@@ -104,7 +102,7 @@ export function createHttpAuthStore(options: HttpStoreOptions): AuthStore {
       assertUuid(input.id);
       assertUuid(input.userId);
       const rows = await call<TokenRow[]>(
-        `${table(kind)}?id=eq.${input.id}&user_id=eq.${input.userId}&revoked_at=is.null&select=id,user_id,org_id,label,revoked_at,created_at`,
+        `${table(kind)}?id=eq.${input.id}&user_id=eq.${input.userId}&revoked_at=is.null&select=${TOKEN_COLUMNS}`,
         { method: "PATCH", body: { revoked_at: input.revokedAt } },
       );
       return mapToken(rows[0]);
@@ -219,6 +217,12 @@ export function createServiceStore(options: { fetch?: AuthFetch; env?: NodeJS.Pr
     authorization: serviceRoleKey,
   });
 }
+
+/**
+ * Every token read names its columns: a user JWT cannot select `hash`, so a bare insert (which
+ * returns `*`) or `select=*` would be refused. Only the service role looks a token up by hash.
+ */
+const TOKEN_COLUMNS = "id,user_id,org_id,label,revoked_at,created_at";
 
 function table(kind: TokenTable): string {
   return kind === "service" ? "service_tokens" : "mcp_tokens";
