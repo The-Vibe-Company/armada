@@ -9,6 +9,7 @@ import { NativeSelect } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { listGoldens } from "@/lib/data/goldens";
 import { listSandboxes } from "@/lib/data/sandboxes";
+import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { filtersToSearch, PAGE_SIZE, parseSandboxFilters, SANDBOX_STATUSES } from "@/lib/sandbox-filters";
 import { createClient } from "@/lib/supabase/server";
@@ -22,15 +23,18 @@ export default async function SandboxesPage({ searchParams }: Props) {
   const viewer = await requireViewer();
   const filters = parseSandboxFilters(await searchParams);
   const supabase = await createClient();
+  const selected = await selectedOrganization();
   const [{ rows, total }, goldens, directory] = await Promise.all([
     listSandboxes(supabase, filters, viewer.id),
     listGoldens(supabase),
-    listMemberships(supabase, viewer.id).then((memberships) =>
-      memberDirectory(
-        supabase,
-        memberships.map((item) => item.org.id),
+    listMemberships(supabase, viewer.id)
+      .then((items) => items.filter((item) => item.org.id === selected?.org.id))
+      .then((memberships) =>
+        memberDirectory(
+          supabase,
+          memberships.map((item) => item.org.id),
+        ),
       ),
-    ),
   ]);
   const goldenName = new Map(goldens.map((golden) => [golden.id, golden.name]));
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));

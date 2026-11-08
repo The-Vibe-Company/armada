@@ -4,6 +4,8 @@ import { EncryptionKeyError, encryptSecret, toBytea } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { type ActionResult, done, explainDbError, fail, formString, isUuid } from "@/lib/action";
 import { checkSecretValue, credentialKindInfo, isCredentialKind, isCredentialScope } from "@/lib/credentials";
+import { listCredentials } from "@/lib/data/credentials";
+import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { createClient } from "@/lib/supabase/server";
 
@@ -17,6 +19,7 @@ export async function saveCredential(_previous: ActionResult | null, data: FormD
   const owner = scope === "user" ? viewer.id : formString(data, "owner");
   if (!isUuid(owner)) return fail("That request is not valid.");
 
+  if (scope === "org" && !(await isSelectedOrganization(owner))) return fail("Switch to that organization first.");
   const checked = checkSecretValue(data.get("value"));
   if (!checked.ok) return fail(checked.error);
 
@@ -60,6 +63,8 @@ export async function removeCredential(_previous: ActionResult | null, data: For
   const id = formString(data, "id");
   if (!isUuid(id)) return fail("That request is not valid.");
   const supabase = await createClient();
+  if (!(await listCredentials(supabase)).some((row) => row.id === id))
+    return fail("That credential is not available in this scope.");
   const { data: rows, error } = await supabase.from("credentials").delete().eq("id", id).select("id");
   if (error) return fail(explainDbError(error));
   if (rows.length === 0) return fail("You are not allowed to do that.");

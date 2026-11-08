@@ -7,6 +7,7 @@ import { Empty, PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { listGoldens } from "@/lib/data/goldens";
+import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, type Membership, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { createClient } from "@/lib/supabase/server";
 
@@ -16,7 +17,10 @@ export const dynamic = "force-dynamic";
 export default async function GoldensPage() {
   const viewer = await requireViewer();
   const supabase = await createClient();
-  const pending = listMemberships(supabase, viewer.id);
+  const selected = await selectedOrganization();
+  const pending = listMemberships(supabase, viewer.id).then((items) =>
+    items.filter((item) => item.org.id === selected?.org.id),
+  );
   const [goldens, memberships, directory] = await Promise.all([
     listGoldens(supabase),
     pending,

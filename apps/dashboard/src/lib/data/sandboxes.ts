@@ -1,6 +1,7 @@
 import type { Sandbox } from "@armada/core";
 import { PAGE_SIZE, type SandboxFilters } from "@/lib/sandbox-filters";
 import type { Supabase } from "@/lib/supabase/server";
+import { selectedOrganization } from "./selected-org";
 
 export type SandboxPage = { rows: Sandbox[]; total: number };
 
@@ -10,7 +11,9 @@ export async function listSandboxes(
   filters: SandboxFilters,
   viewerId: string,
 ): Promise<SandboxPage> {
-  let query = supabase.from("sandboxes").select("*", { count: "exact" });
+  const selected = await selectedOrganization();
+  if (!selected) return { rows: [], total: 0 };
+  let query = supabase.from("sandboxes").select("*", { count: "exact" }).eq("org_id", selected.org.id);
   if (filters.status) query = query.eq("status", filters.status);
   else query = query.neq("status", "deleted");
   if (filters.harness) query = query.eq("harness", filters.harness);
@@ -25,7 +28,14 @@ export async function listSandboxes(
 }
 
 export async function getSandbox(supabase: Supabase, id: string): Promise<Sandbox | null> {
-  const { data, error } = await supabase.from("sandboxes").select("*").eq("id", id).maybeSingle();
+  const selected = await selectedOrganization();
+  if (!selected) return null;
+  const { data, error } = await supabase
+    .from("sandboxes")
+    .select("*")
+    .eq("id", id)
+    .eq("org_id", selected.org.id)
+    .maybeSingle();
   if (error) throw new Error(error.message);
   return data;
 }

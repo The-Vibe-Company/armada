@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { CREDENTIAL_KINDS } from "@/lib/credentials";
 import { type CredentialRow, listCredentials } from "@/lib/data/credentials";
+import { selectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
 import { createClient } from "@/lib/supabase/server";
 
@@ -20,8 +21,9 @@ export const dynamic = "force-dynamic";
 export default async function CredentialsPage() {
   const viewer = await requireViewer();
   const supabase = await createClient();
+  const selected = await selectedOrganization();
   const [memberships, credentials] = await Promise.all([
-    listMemberships(supabase, viewer.id),
+    listMemberships(supabase, viewer.id).then((items) => items.filter((item) => item.org.id === selected?.org.id)),
     listCredentials(supabase),
   ]);
   const personal = credentials.filter((item) => item.scope === "user" && item.owner_id === viewer.id);

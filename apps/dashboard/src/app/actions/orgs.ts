@@ -1,8 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, explainDbError, fail, formString, isUuid } from "@/lib/action";
+import { isSelectedOrganization, SELECTED_ORG_COOKIE } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { createClient } from "@/lib/supabase/server";
 
@@ -13,6 +15,13 @@ export async function createOrg(_previous: ActionResult | null, data: FormData):
   const supabase = await createClient();
   const { data: id, error } = await supabase.rpc("create_org", { org_name: name });
   if (error) return fail(explainDbError(error));
+  (await cookies()).set(SELECTED_ORG_COOKIE, id, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 31536000,
+  });
   revalidatePath("/", "layout");
   redirect(`/orgs/${id}`);
 }
@@ -24,6 +33,7 @@ export async function addMember(_previous: ActionResult | null, data: FormData):
   const role = formString(data, "role");
   if (!isUuid(org) || (role !== "admin" && role !== "member")) return fail("That request is not valid.");
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail("Enter the email address of their account.");
+  if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
   const supabase = await createClient();
   const { error } = await supabase.rpc("add_org_member", { target_org: org, member_email: email, member_role: role });
   if (error) return fail(explainDbError(error));
@@ -39,6 +49,7 @@ export async function changeMemberRole(_previous: ActionResult | null, data: For
   if (!isUuid(org) || !isUuid(user) || (role !== "admin" && role !== "member"))
     return fail("That request is not valid.");
   const supabase = await createClient();
+  if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
   const { data: rows, error } = await supabase
     .from("members")
     .update({ role })
@@ -57,6 +68,7 @@ export async function removeMember(_previous: ActionResult | null, data: FormDat
   const user = formString(data, "user");
   if (!isUuid(org) || !isUuid(user)) return fail("That request is not valid.");
   const supabase = await createClient();
+  if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
   const { data: rows, error } = await supabase
     .from("members")
     .delete()
