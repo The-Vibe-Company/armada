@@ -75,8 +75,9 @@ test("the argv-joined remote shell reads the secret first line instead of execut
     } as any,
   );
   const ssh = calls[1]!;
-  const remote = ssh.args.at(-1)!;
-  const joined = `bash -c ${remote}`;
+  const destination = ssh.args.indexOf("user@ssh.test");
+  expect(destination).toBeGreaterThanOrEqual(0);
+  const joined = ssh.args.slice(destination + 1).join(" ");
   const result = spawnSync("bash", ["-c", joined], { input: ssh.stdin, encoding: "utf8" });
   expect(result.status).toBe(0);
   expect(result.stdout).not.toContain("SHOULD_NOT_RUN");
