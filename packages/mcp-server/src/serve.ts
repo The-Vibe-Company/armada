@@ -1,21 +1,13 @@
 import { createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
-import { createSqlVaultStore, type Sql } from "@armada/core";
+import { createSqlVaultStore } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
 import { configFromEnv } from "./config.ts";
 import { type ControlOptions, handleControlRequest } from "./control.ts";
 import { createSqlData } from "./data.ts";
 import { createHandler, type Route } from "./http.ts";
+import { bunSql } from "./sql.ts";
 
-/** `Sql` over Bun's Postgres client, for the privileged `ARMADA_DATABASE_URL` connection. */
-export function bunSql(url: string): Sql {
-  const sql = new Bun.SQL(url);
-  return {
-    async query<T>(text: string, params: unknown[] = []) {
-      const rows = (await sql.unsafe(text, params as never[])) as unknown as T[];
-      return { rows: Array.from(rows) };
-    },
-  };
-}
+export { bunSql };
 
 /**
  * Starts the server from the environment (see `configFromEnv`). The control API (`/api/v1/`, for the
@@ -27,7 +19,7 @@ export async function startServer(
   options: {
     routes?: readonly Route[];
     log?: (line: string) => void;
-    /** Failures the server absorbs, such as an unavailable auth lookup. Defaults to stderr. */
+    /** Failures the server absorbs (an unavailable auth lookup, a tool that failed inside). Redacted. Defaults to stderr. */
     logError?: (line: string) => void;
   } = {},
 ) {

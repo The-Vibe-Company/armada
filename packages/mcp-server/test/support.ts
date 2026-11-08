@@ -20,13 +20,14 @@ import type {
   SandboxState,
   SteerRequest,
 } from "@armada/core";
-import { createSqlVaultStore, encryptSecret, ProviderError } from "@armada/core";
+import { createSqlVaultStore, encryptSecret, ProviderError, type Sql } from "@armada/core";
 import type { PGlite } from "@electric-sql/pglite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { createSqlData } from "../src/data.ts";
 import { createHandler, type Route } from "../src/http.ts";
+import { sqlOver } from "../src/sql.ts";
 
 export const PUBLIC_URL = "https://armada.example.com";
 export const ENCRYPTION_KEY = btoa(String.fromCharCode(...new Uint8Array(32).map((_, index) => index + 1)));
@@ -272,8 +273,29 @@ export interface TestServer {
   close(): Promise<void>;
 }
 
+/**
+ * PGlite behind the server's `Sql` adapter, with the one behaviour of production PGlite hides: Bun's
+ * client does not turn a JS array into a Postgres array, so the database refuses it (22P02) unless the
+ * adapter sent an array literal. Run the server on this and a raw array parameter fails as it did on Railway.
+ */
+export function bunLikeSql(db: PGlite, onQuery?: (text: string) => void): Sql {
+  return sqlOver({
+    async unsafe(text, params) {
+      onQuery?.(text);
+      if (params.some((param) => Array.isArray(param))) {
+        throw new Error(
+          'invalid input syntax for type uuid[]: Array value must start with "{" or dimension information.',
+        );
+      }
+      return (await db.query(text, params as unknown[])).rows;
+    },
+  });
+}
+
 export async function harness(
   options: {
+    /** The `Sql` the data, the credentials and the auth lookups run on. Default: PGlite as is. */
+    sql?: (db: PGlite) => Sql;
     routes?: readonly Route[];
     /** The store `/mcp` authenticates against. Default: the in-memory one the helpers fill. */
     authStore?: (db: PGlite) => AuthStore;
@@ -318,8 +340,8 @@ export async function harness(
     oauth,
     authStore: options.authStore ? options.authStore(db) : auth,
     supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "anon", fetch: supabaseFetch },
-    data: createSqlData(db),
-    vault: createSqlVaultStore(db),
+    data: createSqlData(options.sql ? options.sql(db) : db),
+    vault: createSqlVaultStore(options.sql ? options.sql(db) : db),
     encryptionKey: ENCRYPTION_KEY,
     providerFor: boat.providerFor,
     ...(options.routes ? { routes: options.routes } : {}),
