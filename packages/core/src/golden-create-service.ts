@@ -1,5 +1,5 @@
 import type { Visibility } from "./contract.ts";
-import type { GoldenActor, GoldenLimits } from "./golden.ts";
+import type { GoldenActor, GoldenLimits, GoldenRecord } from "./golden.ts";
 import { waitSnapshot } from "./golden.ts";
 import { assignDirs, type GitHubGoldenConfig, GOLDEN_ROOT, GoldenError, parseGoldenName } from "./golden-config.ts";
 import { GITHUB_TOKEN_PATTERN } from "./golden-scan.ts";
@@ -36,13 +36,14 @@ export interface GoldenCreateDeps {
   /** Fail-closed secret scan of the builder, before it may be snapshotted. */
   scan(provider: Provider, sandboxId: string): Promise<void>;
   /** Reserve capacity before any builder starts. Returns an opaque server-only reservation. */
-  reserve?(provider: Provider, actor: GoldenActor): Promise<string | undefined>;
+  reserve?(provider: Provider, actor: GoldenActor, existingGolden?: GoldenRecord): Promise<string | undefined>;
   /** Legacy factory hook; production persistence finalizes atomically itself. */
   finalize?(reservationId: string, goldenId: string): Promise<void>;
   release?(reservationId: string): Promise<void>;
   /** Persist must atomically finalize a reservation when one was taken. */
   persist(input: {
     actor: GoldenActor;
+    existingGolden?: GoldenRecord;
     name: string;
     visibility: Visibility;
     repos: PreparedRepo[];
@@ -59,9 +60,16 @@ export class GoldenCreateService {
   async create(
     provider: Provider,
     actor: GoldenActor,
-    input: { name: string; visibility: Visibility; repos: string[]; setup?: string; config?: GitHubGoldenConfig },
+    input: { name: string; visibility: Visibility; repos: string[]; setup?: string; config?: GitHubGoldenConfig; existingGolden?: GoldenRecord },
     limits: GoldenLimits = {},
   ): Promise<{ snapshot: string }> {
+    if (input.existingGolden) {
+      const existing = input.existingGolden;
+      if (existing.orgId !== actor.orgId || existing.name !== input.name)
+        throw new GoldenError("forbidden", "You cannot rebuild this golden.");
+      if ((existing.visibility === "org" && actor.role !== "admin") || (existing.visibility === "private" && existing.ownerId !== actor.userId))
+        throw new GoldenError("forbidden", "You cannot rebuild this golden.");
+    }
     if (input.visibility === "org" && actor.role !== "admin")
       throw new GoldenError("forbidden", "Only an admin can create an org golden.");
     const name = parseGoldenName(input.name);
@@ -75,7 +83,7 @@ export class GoldenCreateService {
     if (!repos.length) throw new GoldenError("invalid_config", "A golden needs at least one authorized repository.");
     const installations = new Set(repos.map((r) => r.installationId));
     const prepared = requested ? applyRequestedRepos(repos, requested) : withGoldenDirs(repos);
-    const reservation = await this.deps.reserve?.(provider, actor);
+    const reservation = await this.deps.reserve?.(provider, actor, input.existingGolden);
     let persisted = false;
     let builder: Awaited<ReturnType<Provider["createGolden"]>> | undefined;
     let issued: { token: string; revoke(): Promise<void> } | undefined;
@@ -107,6 +115,7 @@ export class GoldenCreateService {
       try {
         const goldenId = await this.deps.persist({
           actor,
+          ...(input.existingGolden ? { existingGolden: input.existingGolden } : {}),
           name,
           visibility: input.visibility,
           repos: prepared,

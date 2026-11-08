@@ -251,3 +251,26 @@ test("uses normalized branches, directories, and init commands after canonical a
 test("keeps the legacy repo-string API compatible", () => {
   expect(goldenScript(withGoldenDirs([repo]), ["echo setup"])).toContain("echo setup");
 });
+
+test("existing golden context is authorized before provider work and propagated", async () => {
+  const existing: any = { id: "g1", orgId: "o", name: "x", visibility: "private", ownerId: "u", config: { repos: [], init: [] } };
+  const seen: any[] = [];
+  const s = new GoldenCreateService({
+    authorize: async () => ({ repos: [repo], token: "caller" }),
+    reserve: async (_p, _a, value) => { seen.push(value); return undefined; },
+    ssh: async () => {}, scan: async () => {},
+    persist: async (value) => { seen.push(value.existingGolden); },
+  });
+  const p: any = { createGolden: async () => ({ id: "bx" }), snapshot: async () => ({ status: "ready" }), stop: async () => {} };
+  await s.create(p, actor, { name: "x", visibility: "private", repos: ["acme/web"], existingGolden: existing });
+  expect(seen).toEqual([existing, existing]);
+});
+
+test("existing golden denial happens before authorization or provider", async () => {
+  let touched = false;
+  const s = new GoldenCreateService({ authorize: async () => { touched = true; return { repos: [repo], token: "x" }; }, ssh: async () => {}, scan: async () => {}, persist: async () => {} });
+  const p: any = { createGolden: async () => { touched = true; return { id: "bx" }; } };
+  const existing: any = { id: "g", orgId: "other", name: "x", visibility: "private", ownerId: "u", config: { repos: [], init: [] } };
+  await expect(s.create(p, actor, { name: "x", visibility: "private", repos: ["acme/web"], existingGolden: existing })).rejects.toThrow("cannot rebuild");
+  expect(touched).toBe(false);
+});
