@@ -2,24 +2,38 @@ import {
   type CredentialKind,
   type CredentialReader,
   decryptSecret,
+  type GitHubApp,
+  type GitHubConnectionStore,
   type GoldenActor,
   type Harness,
   type HarnessCredentials,
   type LaunchCredentialResolver,
   resolveCredentials,
+  resolveGitHubAccess,
   toHarnessCredentials,
 } from "@armada/core";
 
 /** The stored kinds whose value must never reach a command's output. */
 const SECRET_KINDS: readonly CredentialKind[] = ["claude_oauth", "anthropic", "openai", "codex_auth"];
 
+/** The GitHub App and the connections it refreshes. Without it a launch reports GitHub as not connected. */
+export interface GitHubLaunchOptions {
+  store: GitHubConnectionStore;
+  /** Null when the server has no GitHub App configured. */
+  app: GitHubApp | null;
+  fetch?: typeof fetch;
+  now?: () => Date;
+}
+
 /**
  * What a launch hands to the sandbox, resolved in this process with the same rules as `armada launch`:
  * the caller's own credential for the harness, else the org's of the golden. The org is the actor's.
+ * GitHub is the caller's own connection only: it is who the commits are by.
  */
 export function launchCredentials(
   reader: CredentialReader,
   encryptionKey: string | undefined,
+  github?: GitHubLaunchOptions,
 ): LaunchCredentialResolver {
   return {
     async resolve(actor: GoldenActor, harness: Harness): Promise<HarnessCredentials> {
@@ -28,7 +42,8 @@ export function launchCredentials(
         orgId: actor.orgId,
         harness,
       });
-      return toHarnessCredentials(resolved);
+      const access = github ? await resolveGitHubAccess({ ...github, encryptionKey }, actor.userId) : undefined;
+      return toHarnessCredentials(resolved, access);
     },
   };
 }

@@ -24,7 +24,7 @@ export { configFromEnv, DEFAULT_PORT, type ServerConfig } from "./config.ts";
 export { CONTROL_PREFIX, type ControlOptions, controlOptionsFromEnv, handleControlRequest } from "./control.ts";
 export { createSqlData, type DataSource, type SandboxView, type ScopedData } from "./data.ts";
 export { createHandler, type HandlerOptions, HEALTH_PATH, MCP_PATH, type Route } from "./http.ts";
-export { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
+export { exposedSecrets, type GitHubLaunchOptions, launchCredentials } from "./launch-credentials.ts";
 export { startServer } from "./serve.ts";
 export { bunSql, pgArray, type SqlDriver, sqlOver } from "./sql.ts";
 export { createArmadaServer, DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS, type ToolContext } from "./tools.ts";

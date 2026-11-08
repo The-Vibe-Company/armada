@@ -304,6 +304,70 @@ describe("tools", () => {
     expectNoSecret(launched.text);
   });
 
+  test("launch reports GitHub as not connected, without failing, when the caller never connected it", async () => {
+    const { token, client, people, boat } = await start();
+    const launched = await call(await client(await token(people.member)), "launch", {
+      golden: "shared",
+      harness: "claude",
+    });
+    expect(launched.isError).toBe(false);
+    expect(launched.data.github).toMatchObject({ status: "not_connected", login: null });
+    expect(boat.forks[0]?.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: SECRETS.orgClaude });
+  });
+
+  test("launch with a connected GitHub acts as the caller: fresh token in the env, git set up, refresh token rotated", async () => {
+    const { token, client, people, boat, github, db } = await start();
+    await github.connect(people.member, "octocat", 583231);
+    const mcp = await client(await token(people.member));
+
+    const first = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    expect(first.data.github).toEqual({
+      status: "connected",
+      login: "octocat",
+      message: expect.stringContaining("gh"),
+    });
+    expect(boat.forks[0]?.env).toEqual({
+      CLAUDE_CODE_OAUTH_TOKEN: SECRETS.orgClaude,
+      GH_TOKEN: "ghu_access_octocat",
+      GITHUB_TOKEN: "ghu_access_octocat",
+    });
+    expect(boat.execs[0]?.command).toContain("user.email '583231+octocat@users.noreply.github.com'");
+    expect(first.text).not.toContain("ghu_access_octocat");
+
+    const second = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    expect(second.data.github).toMatchObject({ status: "connected" });
+    expect(github.refreshed).toEqual(["ghr_refresh_octocat_0", "ghr_refresh_octocat_1"]);
+    const stored = await db.query<{ refresh_token_enc: Uint8Array }>(
+      "select refresh_token_enc from github_connections",
+    );
+    expect(stored.rows).toHaveLength(1);
+  });
+
+  test("a revoked GitHub grant is reported once as revoked, then skipped, and the launch still succeeds", async () => {
+    const { token, client, people, boat, github } = await start();
+    await github.connect(people.member, "octocat", 583231);
+    github.revokeEverything();
+    const mcp = await client(await token(people.member));
+
+    const first = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    expect(first.isError).toBe(false);
+    expect(first.data.github).toMatchObject({ status: "revoked", login: null });
+    expect((first.data.github as { message: string }).message).toContain("Reconnect GitHub");
+    expect(boat.forks[0]?.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: SECRETS.orgClaude });
+
+    await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    expect(github.refreshed).toHaveLength(1);
+  });
+
+  test("exec output masks a GitHub token the sandbox prints", async () => {
+    const { token, client, people, boat } = await start();
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude" });
+    boat.setExecOutput({ stdout: "GH_TOKEN=ghu_0123456789abcdefghijABCDEFGHIJ0123" });
+    const ran = await call(mcp, "exec", { id: launched.data.id, command: "env" });
+    expect(ran.data.stdout).toBe("GH_TOKEN=***");
+  });
+
   test("launch of a private golden uses its owner's own credential and personal boat key", async () => {
     const { token, client, people, boat } = await start();
     const launched = await call(await client(await token(people.owner)), "launch", {

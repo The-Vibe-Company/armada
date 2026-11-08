@@ -1,5 +1,5 @@
 import { createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
-import { createSqlVaultStore } from "@armada/core";
+import { createSqlVaultStore, githubAppFromEnv } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
 import { configFromEnv } from "./config.ts";
 import { type ControlOptions, handleControlRequest } from "./control.ts";
@@ -27,11 +27,13 @@ export async function startServer(
   const sql = bunSql(config.databaseUrl);
   const store = createSqlVaultStore(sql);
   const authStore = createSqlAuthStore(sql);
+  const githubApp = githubAppFromEnv(env);
   const control: ControlOptions = {
     supabaseUrl: config.supabaseUrl,
     anonKey: config.anonKey,
     store,
     encryptionKey: config.encryptionKey,
+    github: { app: githubApp },
   };
   const handler = createHandler({
     publicUrl: config.publicUrl,
@@ -41,6 +43,7 @@ export async function startServer(
     data: createSqlData(sql),
     vault: store,
     encryptionKey: config.encryptionKey,
+    github: { store, app: githubApp },
     providerFor: (apiKey) => createBoatProvider({ apiKey }),
     routes: [(request) => handleControlRequest(request, control), ...(options.routes ?? [])],
     ...(options.logError ? { log: options.logError } : {}),

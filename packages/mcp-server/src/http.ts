@@ -9,7 +9,7 @@ import {
   type SupabaseProject,
 } from "./caller.ts";
 import type { DataSource } from "./data.ts";
-import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
+import { exposedSecrets, type GitHubLaunchOptions, launchCredentials } from "./launch-credentials.ts";
 import { redactForLog } from "./log.ts";
 import { createArmadaServer } from "./tools.ts";
 
@@ -31,6 +31,8 @@ export interface HandlerOptions {
   vault: CredentialReader;
   /** `ARMADA_ENCRYPTION_KEY`. Decrypted values stay in this process: no tool returns one. */
   encryptionKey: string | undefined;
+  /** Each caller's GitHub connection, refreshed at launch so git and gh in the sandbox act as them. */
+  github?: GitHubLaunchOptions;
   /** A provider for one boat.dev key. The key is used in this process only. */
   providerFor(apiKey: string): Provider;
   /** Mounted after the OAuth routes and before `/mcp`, for example #461's control API. */
@@ -86,7 +88,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       {
         caller,
         data: options.data(caller),
-        launchCredentials: launchCredentials(options.vault, options.encryptionKey),
+        launchCredentials: launchCredentials(options.vault, options.encryptionKey, options.github),
         exposedSecrets: (orgId) =>
           exposedSecrets(options.vault, options.encryptionKey, { userId: caller.userId, orgId }),
         async provider(golden) {

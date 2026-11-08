@@ -212,7 +212,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. " +
         "With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready " +
         "and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada " +
-        "credentials for this agent, never the boat.dev account's. Setup can take a few minutes.",
+        "credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in " +
+        "the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes.",
       input: {
         golden: z.string().min(1).describe("The golden's name, as in golden_list."),
         org: z
@@ -240,6 +241,15 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         promptId: z.string().nullable(),
         ttlSeconds: z.number().int(),
         expiresAt: z.string().nullable(),
+        github: z
+          .object({
+            status: z.enum(["connected", "not_connected", "revoked", "unavailable"]),
+            login: z.string().nullable(),
+            message: z.string().nullable(),
+          })
+          .describe(
+            "Whether git and gh in the sandbox act as the caller. Anything but connected means they are not signed in; message says how to fix it.",
+          ),
       },
     },
     async (args) => {
@@ -269,6 +279,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         promptId: result.promptId ?? null,
         ttlSeconds: result.ttlSeconds,
         expiresAt: result.expiresAt ? result.expiresAt.toISOString() : null,
+        github: {
+          status: result.github.status,
+          login: result.github.login ?? null,
+          message: result.github.message ?? null,
+        },
       };
     },
   );
