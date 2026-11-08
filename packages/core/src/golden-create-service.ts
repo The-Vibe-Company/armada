@@ -44,6 +44,7 @@ export interface GoldenCreateDeps {
     name: string;
     visibility: Visibility;
     repos: PreparedRepo[];
+    init: string[];
     snapshot: string;
     builderId: string;
   }): Promise<string | void>;
@@ -105,6 +106,7 @@ export class GoldenCreateService {
           name,
           visibility: input.visibility,
           repos: prepared,
+          init: [input.config?.init ?? [], input.setup ? [input.setup] : []].flat(),
           snapshot,
           builderId: builder.id,
         });

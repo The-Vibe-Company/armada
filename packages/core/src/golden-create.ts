@@ -32,7 +32,8 @@ export interface GoldenCreateOptions {
   ssh?: GoldenCreateDeps["ssh"];
   /** Server-only global backend capacity. Omit for providers without a backend limit. */
   backendSlot?: GoldenBackendSlot;
-  provider?: { id: string; maxGoldens?: number; backendIdentity?(): Promise<{ id: string }> };
+  /** Boat is the secure-create default: one logical golden per backend account. */
+  defaultProviderCapacity?: number;
 }
 
 /**
@@ -56,15 +57,20 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
     authorize: adapter.authorize,
     ssh: options.ssh ?? ((provider, input) => sshStdinCheckout(provider, input)),
     scan: (provider, sandboxId) => scanGoldenSandbox(provider, sandboxId),
-    async reserve(_provider, actor) {
-      const capacity = options.provider?.maxGoldens;
-      if (!capacity || !options.provider?.backendIdentity) return undefined;
-      const identity = await options.provider.backendIdentity();
-      return slots.reserve({ provider: options.provider.id, backendId: identity.id, capacity, orgId: actor.orgId, ownerId: actor.userId });
+    async reserve(provider, actor) {
+      const capacity = provider.maxGoldens ?? options.defaultProviderCapacity ?? (provider.id === "boat" ? 1 : undefined);
+      if (capacity === undefined) return undefined;
+      if (!Number.isInteger(capacity) || capacity < 1)
+        throw new GoldenError("invalid_config", "Provider golden capacity must be a positive integer.");
+      if (!provider.backendIdentity)
+        throw new GoldenError("forbidden", "Provider cannot verify its backend identity for golden capacity.");
+      const identity = await provider.backendIdentity();
+      if (!identity?.id) throw new GoldenError("forbidden", "Provider returned no backend identity for golden capacity.");
+      return slots.reserve({ provider: provider.id, backendId: identity.id, capacity, orgId: actor.orgId, ownerId: actor.userId });
     },
     async finalize(reservationId, goldenId) { await slots.finalize(reservationId, goldenId); },
     async release(reservationId) { await slots.release(reservationId); },
-    async persist({ actor, name, visibility, repos, snapshot, builderId }) {
+    async persist({ actor, name, visibility, repos, init, snapshot, builderId }) {
       const config: GoldenConfig = {
         repos: repos.map(
           (repo): GoldenRepo => ({
@@ -73,7 +79,7 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
             dir: repo.dir,
           }),
         ),
-        init: [],
+        init,
       };
       const persist = async (sql: Sql) => {
         const transactionalStore = createSqlGoldenStore(sql);
@@ -88,8 +94,7 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         await transactionalStore.setSnapshot(inserted.id, snapshot);
         return inserted.id;
       };
-      if (options.sql.transaction) await options.sql.transaction(persist);
-      else await persist(options.sql);
+      return options.sql.transaction ? await options.sql.transaction(persist) : await persist(options.sql);
     },
   };
   if (adapter.mint) deps.mint = adapter.mint;
