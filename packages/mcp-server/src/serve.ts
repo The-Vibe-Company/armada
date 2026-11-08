@@ -47,16 +47,16 @@ export async function startServer(
     store,
     encryptionKey: config.encryptionKey,
     data,
+    vault: store,
     github: { app: githubApp },
     providerFor,
     goldenCreate,
-    logs: async (userId, sandboxId) => {
-      const memberships = await authStore.memberships(userId);
-      const scoped = data({ userId, orgs: memberships.map(({ orgId, role }) => ({ orgId, role })), via: "supabase" });
+    logs: async (caller, sandboxId) => {
+      const scoped = data(caller);
       const sandbox = await scoped.sandboxes.get(sandboxId);
       if (!sandbox) throw new Error("No such sandbox.");
       const boat = await resolveBoatKey(store, config.encryptionKey, {
-        userId,
+        userId: caller.userId,
         orgId: sandbox.orgId,
         visibility: sandbox.visibility,
       });

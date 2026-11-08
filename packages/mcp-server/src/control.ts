@@ -12,8 +12,13 @@ import {
   type GoldenCreateService,
   GoldenError,
   type GoldenErrorCode,
+  type GoldenRecord,
   githubAppFromEnv,
   githubInstallationAppFromEnv,
+  goldenForLaunch,
+  type LaunchOptions,
+  type LaunchResult,
+  launchSandbox,
   listCredentials,
   listMembers,
   listOrgs,
@@ -36,7 +41,8 @@ import {
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
-import type { DataSource } from "./data.ts";
+import type { DataSource, ScopedData } from "./data.ts";
+import { launchCredentials } from "./launch-credentials.ts";
 import { bunSql } from "./sql.ts";
 
 export const CONTROL_PREFIX = "/api/v1/";
@@ -49,6 +55,8 @@ export interface ControlOptions {
   now?: () => Date;
   /** Scoped golden/sandbox queries shared with MCP. */
   data?: DataSource;
+  vault?: VaultStore;
+  launch?: LaunchOptions;
   /** Service-role access: orgs, members and ciphertext. See `createSqlVaultStore`. */
   store: VaultStore;
   /**
@@ -59,7 +67,7 @@ export interface ControlOptions {
   /** The GitHub App, for `launch/resolve`. Null or absent: GitHub is reported as not set up. */
   github?: { app: GitHubApp | null; fetch?: typeof fetch; now?: () => Date };
   /** Resolves a visible Armada sandbox to its provider. The Boat key stays on the server. */
-  logs?: (userId: string, sandboxId: string) => Promise<{ provider: Provider; boatId: string }>;
+  logs?: (caller: Caller, sandboxId: string) => Promise<{ provider: Provider; boatId: string }>;
   /** Secure, server-orchestrated multi-repo golden creation (`armada golden create --name`). Absent: the route refuses. */
   goldenCreate?: GoldenCreateService;
   /** A provider for one boat.dev key, for `golden/create`. The key is used in this process only. */
@@ -164,6 +172,8 @@ async function dispatch(
         kind: parseCredentialKind(required(body, "kind")),
       });
       return { ok: true };
+    case "sandbox/launch":
+      return launchRoute(options, caller, body);
     case "launch/resolve":
       return resolveLaunch(options, caller, body, org);
     case "logs/read":
@@ -255,7 +265,7 @@ async function readLogs(
   settled: boolean;
 }> {
   if (!options.logs) throw new VaultError("unavailable", "Sandbox logs are not configured on the server.");
-  const target = await options.logs(caller.userId, id);
+  const target = await options.logs(caller, id);
   const all = body.all === true;
   const follow = body.follow === true;
   const maxPages = 100;
@@ -302,6 +312,89 @@ function dedupe<T extends { id: string }>(events: readonly T[]): T[] {
   const byId = new Map<string, T>();
   for (const event of events) byId.set(event.id, event);
   return [...byId.values()];
+}
+
+async function launchRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>): Promise<unknown> {
+  if (!options.data || !options.providerFor)
+    throw new VaultError("unavailable", "Launching is not configured on this server.");
+  const name = required(body, "golden");
+  const harness = required(body, "harness");
+  if (harness !== "claude" && harness !== "codex") throw new VaultError("invalid", "The agent is claude or codex.");
+  const data = options.data(caller);
+  const actor = await launchActor(data, caller, name, optional(body, "org"));
+  const golden = await goldenForLaunch(data.goldens, actor, name);
+  const provider = await providerForGolden(options, caller, golden);
+  const result = await launchSandbox(
+    provider,
+    {
+      goldens: data.goldens,
+      sandboxes: data.sandboxes,
+      credentials: launchCredentials(options.store, options.encryptionKey, {
+        store: options.store,
+        app: options.github?.app ?? null,
+        ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
+        ...(options.github?.now ? { now: options.github.now } : {}),
+      }),
+    },
+    actor,
+    {
+      golden: name,
+      harness,
+      ...(optional(body, "prompt") === undefined ? {} : { prompt: required(body, "prompt") }),
+      ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: requiredNumber(body, "ttlSeconds") }),
+    },
+    options.launch ?? {},
+  );
+  return launchJson(result);
+}
+
+async function launchActor(
+  data: ScopedData,
+  caller: Caller,
+  name: string,
+  org: string | undefined,
+): Promise<GoldenActor> {
+  const selected = org === undefined ? undefined : scopedOrg(caller, org);
+  if (selected !== undefined) {
+    const member = caller.orgs.find((item) => item.orgId === selected);
+    if (!member) throw new VaultError("forbidden", "This token is scoped to another org.");
+    return { userId: caller.userId, orgId: member.orgId, role: member.role };
+  }
+  const holders: string[] = [];
+  for (const member of caller.orgs)
+    if ((await data.goldens.findByName(member.orgId, name)).length > 0) holders.push(member.orgId);
+  if (holders.length > 1) throw new VaultError("invalid", "Name the org for this golden.");
+  const member = caller.orgs.find((item) => item.orgId === (holders[0] ?? caller.orgs[0]?.orgId));
+  if (!member) throw new VaultError("not_found", "You are not a member of an org.");
+  return { userId: caller.userId, orgId: member.orgId, role: member.role };
+}
+
+async function providerForGolden(options: ControlOptions, caller: Caller, golden: GoldenRecord): Promise<Provider> {
+  const key = await resolveBoatKey(options.store, options.encryptionKey, {
+    userId: caller.userId,
+    orgId: golden.orgId,
+    visibility: golden.visibility,
+  });
+  return (
+    options.providerFor?.(key.key) ??
+    Promise.reject(new VaultError("unavailable", "Launching is not configured on this server."))
+  );
+}
+
+function launchJson(result: LaunchResult) {
+  return {
+    sandbox: result.sandbox,
+    golden: result.golden,
+    promptId: result.promptId ?? null,
+    conversationId: result.conversationId ?? null,
+    ttlSeconds: result.ttlSeconds,
+    expiresAt: result.expiresAt?.toISOString() ?? null,
+    github: {
+      status: result.github.status,
+      login: result.github.login ?? null,
+      message: result.github.message ?? null,
+    },
+  };
 }
 
 async function resolveLaunch(
@@ -396,6 +489,13 @@ function requiredStringArray(body: Record<string, unknown>, key: string): string
   if (!Array.isArray(value) || value.length === 0 || !value.every((item) => typeof item === "string" && item !== "")) {
     throw new VaultError("invalid", `${key} must be a non-empty array of non-empty strings.`);
   }
+  return value;
+}
+
+function requiredNumber(body: Record<string, unknown>, key: string): number {
+  const value = body[key];
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1)
+    throw new VaultError("invalid", `${key} must be a positive integer.`);
   return value;
 }
 

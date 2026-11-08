@@ -234,8 +234,8 @@ describe("armada org and armada creds against the control API", () => {
       const calls: { path: string; authorization: string | null }[] = [];
       const logsOptions: ControlOptions = {
         ...options,
-        logs: async (userId, id) => {
-          expect(userId).toBe(STAN);
+        logs: async (caller, id) => {
+          expect(caller.userId).toBe(STAN);
           expect(id).toBe(armadaId);
           return {
             boatId: "bx_server_only",
@@ -401,6 +401,83 @@ describe("control API", () => {
     });
   });
 
+  test("sandbox/launch launches through scoped server credentials and never returns them", async () => {
+    await withServer(async ({ db, options }) => {
+      const org = (await options.store.createOrg("Launch", STAN)).id;
+      options.authStore.addMembership(STAN, { orgId: org, name: "Launch", role: "admin" });
+      const key = await encryptSecret("server-only-boat-key", KEY);
+      await db.query("update orgs set boat_api_key_enc = $1 where id = $2", [key, org]);
+      await db.query(
+        "insert into credentials (scope, owner_id, kind, value_enc) values ('user', $1, 'claude_oauth', $2)",
+        [STAN, await encryptSecret("server-only-model-token", KEY)],
+      );
+      await db.query(
+        "insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config) values ($1, 'web', 'org', $2, $3, $4::jsonb)",
+        [
+          org,
+          STAN,
+          `a${"b".repeat(62)}`,
+          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+        ],
+      );
+      const service = generateToken("service");
+      await options.authStore.insertToken("service", {
+        userId: STAN,
+        orgId: org,
+        hash: await sha256Hex(service),
+        label: "ci",
+        createdAt: new Date().toISOString(),
+      });
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/launch", {
+          method: "POST",
+          headers: { authorization: `Bearer ${service}` },
+          body: JSON.stringify({ golden: "web", harness: "claude" }),
+        }),
+        { ...options, providerFor: () => fakeProvider() },
+      );
+      if (!response) throw new Error("missing response");
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).not.toContain("server-only-boat-key");
+      expect(text).not.toContain("server-only-model-token");
+    });
+  });
+
+  test("sandbox/launch refuses a service token scoped to another org", async () => {
+    await withServer(async ({ db, options }) => {
+      const orgA = (await options.store.createOrg("A", STAN)).id;
+      const orgB = (await options.store.createOrg("B", STAN)).id;
+      options.authStore.addMembership(STAN, { orgId: orgA, name: "A", role: "admin" });
+      await db.query(
+        "insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config) values ($1, 'web', 'org', $2, $3, $4::jsonb)",
+        [
+          orgB,
+          STAN,
+          `a${"b".repeat(62)}`,
+          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
+        ],
+      );
+      const service = generateToken("service");
+      await options.authStore.insertToken("service", {
+        userId: STAN,
+        orgId: orgA,
+        hash: await sha256Hex(service),
+        label: "ci",
+        createdAt: new Date().toISOString(),
+      });
+      const response = await handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/launch", {
+          method: "POST",
+          headers: { authorization: `Bearer ${service}` },
+          body: JSON.stringify({ golden: "web", org: orgB, harness: "claude" }),
+        }),
+        options,
+      );
+      expect(response?.status).toBe(403);
+    });
+  });
+
   test("golden/list uses MCP visibility rules and service-token org scope", async () => {
     await withServer(async ({ db, options }) => {
       const orgA = (await options.store.createOrg("A", STAN)).id;
@@ -536,7 +613,7 @@ interface Who {
 const SNAP_READY = {
   id: "bx_1",
   name: "web",
-  state: "idle",
+  state: "running",
   desktopAvailable: false,
   snapshotAvailable: false,
   createdAt: "2026-11-08T12:00:00.000Z",
@@ -635,6 +712,44 @@ function boatReply(path: string, method: string): Response {
   if (path.startsWith("/api/v1/sandboxes/"))
     return Response.json({ ok: true, type: "sandbox.info", sandbox: SNAP_READY });
   throw new Error(`unexpected ${method} ${path}`);
+}
+
+function fakeProvider() {
+  return {
+    id: "fake",
+    harnesses: ["claude", "codex"],
+    capabilities: {} as never,
+    async fork() {
+      return {
+        id: "bx_launch",
+        name: "web",
+        state: "running",
+        desktopAvailable: false,
+        snapshotAvailable: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        archiveAfter: "2026-01-01T01:00:00.000Z",
+        labels: {},
+      };
+    },
+    async prompt() {
+      return { promptId: "prompt", conversationId: "conversation" };
+    },
+    async exec() {
+      return { exitCode: 0, stdout: "", stderr: "", timedOut: false, detached: false };
+    },
+    async get() {
+      return {
+        id: "bx_launch",
+        name: "web",
+        state: "running",
+        desktopAvailable: false,
+        snapshotAvailable: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        archiveAfter: "2026-01-01T01:00:00.000Z",
+        labels: {},
+      };
+    },
+  } as never;
 }
 
 async function withServer(
