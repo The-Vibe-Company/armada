@@ -411,14 +411,26 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
   const all = flag(args, "--all");
   const follow = flag(args, "--follow");
   const auth = authOf(io, deps);
+  const client = await createArmadaApiClient({
+    env: auth.env,
+    fetch: deps.fetch ?? auth.fetch,
+    session: auth.session,
+    ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
+  });
   let settled = false;
   while (!settled) {
-    const result = await control<{
+    const result = await client.request<{
       events: Awaited<ReturnType<Provider["events"]>>["events"];
       cursor: string | null;
       hasMore: boolean;
       settled: boolean;
-    }>(auth, "logs/read", { id, all, follow });
+    }>("/api/v1/logs/read", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id, all, follow }),
+      // A server-side follow/read may wait for provider events; keep a bounded, endpoint-specific limit.
+      signal: AbortSignal.timeout(10 * 60_000),
+    });
     if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
     else for (const event of result.events) io.out(`${eventText(event)}\n`);
     settled = result.settled;
