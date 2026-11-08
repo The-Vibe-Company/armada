@@ -38,6 +38,8 @@ export interface Provider {
   /** Stops the running turn of one conversation, or of every conversation when none is named. */
   interrupt(request: InterruptRequest): Promise<void>;
   exec(request: ExecRequest): Promise<ExecResult>;
+  /** Registers a transient public key and returns a pinned SSH endpoint. */
+  sshKey(request: SshKeyRequest): Promise<SshConnection>;
   /** Events oldest first, after `cursor`. Poll with the cursor of the previous page. */
   events(request: EventsRequest): Promise<EventPage>;
 
@@ -196,6 +198,18 @@ export interface SteerReceipt {
 export interface InterruptRequest {
   sandboxId: string;
   conversationId?: string;
+}
+
+export interface SshKeyRequest {
+  sandboxId: string;
+  /** OpenSSH public key only. */
+  key: string;
+}
+
+export interface SshConnection {
+  sshEndpoint: string;
+  /** OpenSSH host key to pin; never use TOFU for golden builders. */
+  hostKey: string;
 }
 
 export interface ExecRequest {

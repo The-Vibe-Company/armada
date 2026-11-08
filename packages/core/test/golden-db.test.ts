@@ -144,6 +144,7 @@ function readyProvider(): Provider {
     getPrompt: async () => ({ promptId: "p", status: "finished", done: true }),
     steer: async () => ({ conversationId: "c", promptId: "p" }),
     interrupt: async () => {},
+    sshKey: async () => ({ sshEndpoint: "ssh.test:22", hostKey: "ssh-ed25519 AAAA" }),
     exec: async () => ok,
     events: async () => ({ events: [], hasMore: false }),
     stop: async () => {},

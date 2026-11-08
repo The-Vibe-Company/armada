@@ -18,6 +18,8 @@ import type {
   SandboxInfo,
   SandboxState,
   SnapshotInfo,
+  SshConnection,
+  SshKeyRequest,
   SnapshotRequest,
   SteerReceipt,
   SteerRequest,
@@ -180,6 +182,14 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
         },
         request.idempotencyKey,
       );
+    },
+
+    async sshKey(request: SshKeyRequest): Promise<SshConnection> {
+      const response = await call(() =>
+        api.sshKey({ sandboxId: request.sandboxId, sshKeyRequest: { key: request.key } }),
+      );
+      if (!response.sshEndpoint || !response.hostKey) throw unexpectedAnswer("SSH connection");
+      return { sshEndpoint: response.sshEndpoint, hostKey: response.hostKey };
     },
 
     async snapshot(request: SnapshotRequest): Promise<SnapshotInfo> {

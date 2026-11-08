@@ -153,6 +153,8 @@ export {
   type SandboxState,
   type SnapshotInfo,
   type SnapshotRequest,
+  type SshConnection,
+  type SshKeyRequest,
   type SteerReceipt,
   type SteerRequest,
   type ToolCall,
