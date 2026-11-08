@@ -34,6 +34,12 @@ describe("launch command", () => {
     );
     expect((await capture(["launch", "--agent", "claude"], base)).code).toBe(2);
     expect((await capture(["launch", "web", "--agent", "claude", "a", "b"], base)).code).toBe(2);
+    const repeatedRepo = await capture(
+      ["launch", "web", "--agent", "claude", "--repo", "acme/web", "--repo", "acme/api"],
+      base,
+    );
+    expect(repeatedRepo.code).toBe(2);
+    expect(repeatedRepo.err).toContain("--repo can only be set once.");
     const effort = await capture(["launch", "web", "--agent", "claude", "--reasoning-effort", "ultra"], base);
     expect(effort.err).toContain("Use one of: low, medium, high, xhigh, max");
     expect(calls).toEqual([]);

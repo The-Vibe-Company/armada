@@ -7,6 +7,8 @@ import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
 import { type ControlOptions, controlOptionsFromEnv, createSqlData, handleControlRequest } from "../src/index.ts";
 
+import { fakeBoat } from "./support.ts";
+
 const KEY = Buffer.alloc(32, 5).toString("base64");
 const STAN = "11111111-1111-4111-8111-111111111111";
 const ADA = "22222222-2222-4222-8222-222222222222";
@@ -344,53 +346,75 @@ describe("control API", () => {
     });
   });
 
-  test("sandbox/launch launches through scoped server credentials and never returns them", async () => {
-    await withServer(async ({ db, options }) => {
-      const org = (await options.store.createOrg("Launch", STAN)).id;
-      options.authStore.addMembership(STAN, { orgId: org, name: "Launch", role: "admin" });
-      const key = await encryptSecret("server-only-boat-key", KEY);
-      await db.query("update orgs set boat_api_key_enc = $1 where id = $2", [key, org]);
-      await db.query(
-        "insert into credentials (scope, owner_id, kind, value_enc) values ('user', $1, 'claude_oauth', $2)",
-        [STAN, await encryptSecret("server-only-model-token", KEY)],
-      );
-      await db.query(
-        "insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config) values ($1, 'web', 'org', $2, $3, $4::jsonb)",
-        [
-          org,
-          STAN,
-          `a${"b".repeat(62)}`,
-          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
-        ],
-      );
-      const service = generateToken("service");
-      await options.authStore.insertToken("service", {
-        userId: STAN,
-        orgId: org,
-        hash: await sha256Hex(service),
-        label: "ci",
-        createdAt: new Date().toISOString(),
+  for (const repo of [undefined, "ACME/web"]) {
+    test(`sandbox/launch uses scoped credentials and forwards repo (${repo ?? "omitted"})`, async () => {
+      await withServer(async ({ db, options }) => {
+        const org = (await options.store.createOrg("Launch", STAN)).id;
+        options.authStore.addMembership(STAN, { orgId: org, name: "Launch", role: "admin" });
+        const key = await encryptSecret("server-only-boat-key", KEY);
+        await db.query("update orgs set boat_api_key_enc = $1 where id = $2", [key, org]);
+        await db.query(
+          "insert into credentials (scope, owner_id, kind, value_enc) values ('user', $1, 'claude_oauth', $2)",
+          [STAN, await encryptSecret("server-only-model-token", KEY)],
+        );
+        await db.query(
+          "insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config) values ($1, 'web', 'org', $2, $3, $4::jsonb)",
+          [
+            org,
+            STAN,
+            `a${"b".repeat(62)}`,
+            JSON.stringify({
+              repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }],
+              init: [],
+            }),
+          ],
+        );
+        const service = generateToken("service");
+        await options.authStore.insertToken("service", {
+          userId: STAN,
+          orgId: org,
+          hash: await sha256Hex(service),
+          label: "ci",
+          createdAt: new Date().toISOString(),
+        });
+        const boat = fakeBoat();
+        const launch = (body: Record<string, unknown>) =>
+          handleControlRequest(
+            new Request("https://armada.test/api/v1/sandbox/launch", {
+              method: "POST",
+              headers: { authorization: `Bearer ${service}` },
+              body: JSON.stringify({ golden: "web", harness: "claude", ...body }),
+            }),
+            { ...options, providerFor: () => boat.provider },
+          );
+        if (repo !== undefined) {
+          for (const invalid of ["bad", "https://github.com/acme/web", "", 42, null, ["acme/web"]]) {
+            expect((await launch({ repo: invalid }))?.status).toBe(400);
+            expect(boat.forks).toHaveLength(0);
+          }
+          const unknown = await launch({ repo: "acme/missing" });
+          expect(unknown?.status).toBe(404);
+          expect(boat.forks).toHaveLength(0);
+          expect(boat.preparations).toEqual([]);
+        }
+        const response = await launch(repo === undefined ? {} : { repo });
+        if (!response) throw new Error("missing response");
+        expect(response.status).toBe(200);
+        const text = await response.text();
+        expect(JSON.parse(text).sandbox).toMatchObject({
+          provider: "boat",
+          boatId: "bx_1",
+          providerSandboxId: "bx_1",
+        });
+        expect(boat.forks).toHaveLength(1);
+        expect(boat.preparations).toEqual(
+          repo === undefined ? [] : [{ sandboxId: "bx_1", harness: "claude", cwd: "/home/user/web" }],
+        );
+        expect(text).not.toContain("server-only-boat-key");
+        expect(text).not.toContain("server-only-model-token");
       });
-      const response = await handleControlRequest(
-        new Request("https://armada.test/api/v1/sandbox/launch", {
-          method: "POST",
-          headers: { authorization: `Bearer ${service}` },
-          body: JSON.stringify({ golden: "web", harness: "claude" }),
-        }),
-        { ...options, providerFor: () => fakeProvider() },
-      );
-      if (!response) throw new Error("missing response");
-      expect(response.status).toBe(200);
-      const text = await response.text();
-      expect(JSON.parse(text).sandbox).toMatchObject({
-        provider: "boat",
-        boatId: "bx_launch",
-        providerSandboxId: "bx_launch",
-      });
-      expect(text).not.toContain("server-only-boat-key");
-      expect(text).not.toContain("server-only-model-token");
     });
-  });
+  }
 
   test("sandbox/launch refuses a service token scoped to another org", async () => {
     await withServer(async ({ db, options }) => {

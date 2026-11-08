@@ -80,10 +80,16 @@ The org's boat.dev key (`armada creds set boat --org <org>`, admin only) pays fo
 
 ```sh
 armada launch <golden> --agent claude "Fix the flaky test in packages/core" --org <org>
-armada launch <golden> --agent codex --ttl 2h --json       # no prompt: the sandbox waits, ready
+armada launch <golden> --agent codex --repo owner/repo --ttl 2h --json       # no prompt: the sandbox waits, ready
 ```
 
-`armada launch` asks the server for your credentials and the boat.dev key, then forks the golden from your machine. It prints the sandbox id (`--json` prints the full record). Status, wait, logs, send and stop are MCP tools, so drive the sandbox from an MCP client (below) or the dashboard.
+`armada launch` asks the server to resolve credentials and fork the golden. It prints the sandbox id
+(`--json` prints the full record). Optional `--repo owner/repo` selects one repository already
+recorded in the golden and sets the native agent's real initial cwd before its first prompt.
+It also prepares idle launches now for a later send. This is not a URL or path, and unlike
+`golden create --repo <url>[@branch]`, it may be supplied only once. Unknown or ambiguous
+selectors are rejected before allocation. Omit it to keep legacy launch behavior. MCP `launch`
+and `POST /api/v1/sandbox/launch` accept the same optional `repo` string.
 
 ## 7. Connect an MCP client
 

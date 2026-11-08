@@ -20,6 +20,7 @@ import {
 } from "./golden.ts";
 import { GOLDEN_ROOT, GoldenError, initCommand, pullCommand, type ShellCommand } from "./golden-config.ts";
 import { LaunchError } from "./launch-error.ts";
+import { resolveLaunchWorkdir } from "./launch-workdir.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import type { Provider } from "./provider.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
@@ -39,6 +40,8 @@ export interface LaunchRequest {
   /** Needed only when the name exists on several providers. Never a substitute for the golden's own. */
   provider?: SandboxProviderId;
   harness: Harness;
+  /** Optional owner/repo from the golden manifest; prepares the native agent before any prompt. */
+  repo?: string;
   /** With a prompt the agent starts at once. Without one the sandbox is left ready for the first `send`. */
   prompt?: string;
   ttlSeconds?: number;
@@ -113,6 +116,11 @@ export async function launchSandbox(
   if (golden.visibility === "private" && golden.ownerId !== actor.userId) {
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
   }
+  const workdir = request.repo === undefined ? undefined : resolveLaunchWorkdir(golden.config.repos, request.repo);
+  const prepareNativeCwd = provider.prepareNativeHarnessCwd?.bind(provider);
+  if (workdir && !prepareNativeCwd) {
+    throw new LaunchError("invalid_request", `${provider.id} cannot prepare a native repository working directory.`);
+  }
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
   const credentials = await stores.credentials.resolve(actor, harness);
@@ -165,6 +173,9 @@ export async function launchSandbox(
         ? await setupGitHub(provider, ready.id, github.identity, secrets)
         : { status: github.status, message: github.message };
     await setup(provider, ready.id, golden, secrets);
+    if (workdir && prepareNativeCwd) {
+      await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: workdir.cwd });
+    }
     if (prompt === undefined) {
       await stores.sandboxes.update(record.id, { status: "ready" });
       return finish(

@@ -302,6 +302,9 @@ describe("tools", () => {
       ].sort(),
     );
     for (const tool of tools) expect(tool.outputSchema).toBeDefined();
+    const launch = tools.find((tool) => tool.name === "launch");
+    expect(launch?.inputSchema.properties?.repo).toMatchObject({ type: "string", pattern: "^[^/\\s]+\\/[^/\\s]+$" });
+    expect(launch?.inputSchema.required ?? []).not.toContain("repo");
     const goldenUpdate = tools.find((tool) => tool.name === "golden_update");
     const goldenSnapshot = tools.find((tool) => tool.name === "golden_snapshot");
     expect(goldenUpdate?.annotations).toMatchObject({
@@ -588,6 +591,34 @@ describe("tools", () => {
     expect(boat.prompts[1]).toMatchObject({ conversationId: "conv_1", text: "Now add tests", harness: "claude" });
     const listed = await call(mcp, "list");
     expect(listed.data.sandboxes).toMatchObject([{ status: "running", conversationIds: ["conv_1"] }]);
+  });
+
+  test("launch validates repo selectors before fork and forwards a recorded repo to native preparation", async () => {
+    const { token, client, people, boat } = await start();
+    const mcp = await client(await token(people.member));
+    for (const repo of ["bad", "https://github.com/example/web", "", 42, null, ["example/web"]]) {
+      const refused = await call(mcp, "launch", { golden: "shared", harness: "codex", repo });
+      expect(refused.isError).toBe(true);
+      expect(boat.forks).toHaveLength(0);
+    }
+    const missing = await call(mcp, "launch", { golden: "shared", harness: "codex", repo: "example/missing" });
+    expect(missing.isError).toBe(true);
+    expect(missing.text).toContain("no repository");
+    expect(boat.forks).toHaveLength(0);
+    expect(boat.preparations).toEqual([]);
+    const launched = await call(mcp, "launch", {
+      golden: "shared",
+      harness: "codex",
+      repo: "EXAMPLE/web",
+      model: "gpt-6.1-terra",
+      reasoning_effort: "high",
+    });
+    expect(launched.isError).not.toBe(true);
+    expect(launched.data).toMatchObject({ status: "ready", model: "gpt-6.1-terra", reasoningEffort: "high" });
+    expect(boat.preparations).toEqual([{ sandboxId: "bx_1", harness: "codex", cwd: "/home/user/web" }]);
+    expect(boat.prompts).toHaveLength(0);
+    await call(mcp, "send", { id: launched.data.id, prompt: "Later" });
+    expect(boat.prompts[0]).toMatchObject({ harness: "codex", model: "gpt-6.1-terra", reasoningEffort: "high" });
   });
 
   test("an idle launch keeps its model and effort for every send, across stop, and an override lasts one turn", async () => {

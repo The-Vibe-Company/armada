@@ -13,6 +13,7 @@ import type {
   ExecResult,
   ForkRequest,
   Harness,
+  PrepareNativeHarnessCwdRequest,
   PromptRequest,
   PromptStatus,
   Provider,
@@ -119,6 +120,7 @@ export function fakeBoat() {
   const sandboxes = new Map<string, FakeSandbox>();
   const keys: string[] = [];
   const forks: ForkRequest[] = [];
+  const preparations: PrepareNativeHarnessCwdRequest[] = [];
   const prompts: PromptRequest[] = [];
   const steers: SteerRequest[] = [];
   const execs: ExecRequest[] = [];
@@ -141,6 +143,9 @@ export function fakeBoat() {
     capabilities: {
       claude: { steer: "native", ...harnessFeatures, ...extra },
       codex: { steer: "restart", ...harnessFeatures, ...extra },
+    },
+    async prepareNativeHarnessCwd(request: PrepareNativeHarnessCwdRequest) {
+      preparations.push(request);
     },
     async fork(request: ForkRequest) {
       forks.push(request);
@@ -230,6 +235,7 @@ export function fakeBoat() {
     provider,
     keys,
     forks,
+    preparations,
     prompts,
     steers,
     execs,

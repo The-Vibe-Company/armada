@@ -42,6 +42,8 @@ export interface Provider {
   /** Stops the running turn of one conversation, or of every conversation when none is named. */
   interrupt(request: InterruptRequest): Promise<void>;
   exec(request: ExecRequest): Promise<ExecResult>;
+  /** Prepares a forked VM's native harness executable to start in a recorded working directory. */
+  prepareNativeHarnessCwd?(request: PrepareNativeHarnessCwdRequest): Promise<void>;
   /** Registers a transient public key and returns a pinned SSH endpoint. */
   sshKey(request: SshKeyRequest): Promise<SshConnection>;
   /** Events oldest first, after `cursor`. Poll with the cursor of the previous page. */
@@ -214,6 +216,12 @@ export interface SshConnection {
   sshEndpoint: string;
   /** OpenSSH host key to pin; never use TOFU for golden builders. */
   hostKey: string;
+}
+
+export interface PrepareNativeHarnessCwdRequest {
+  sandboxId: string;
+  harness: Harness;
+  cwd: string;
 }
 
 export interface ExecRequest {

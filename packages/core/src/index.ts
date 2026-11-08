@@ -134,6 +134,11 @@ export {
 } from "./launch.ts";
 export { LaunchError, type LaunchErrorCode } from "./launch-error.ts";
 export {
+  type LaunchWorkdir,
+  resolveLaunchWorkdir,
+  resolveLaunchWorkdirAt,
+} from "./launch-workdir.ts";
+export {
   type HarnessModels,
   MODEL_CATALOG,
   type ModelChoice,
@@ -156,6 +161,7 @@ export {
   type ListRequest,
   type Page,
   PROMPT_STATUSES,
+  type PrepareNativeHarnessCwdRequest,
   type PromptReceipt,
   type PromptRequest,
   type PromptState,

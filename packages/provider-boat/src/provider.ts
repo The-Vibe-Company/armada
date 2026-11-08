@@ -11,6 +11,7 @@ import type {
   InterruptRequest,
   ListRequest,
   Page,
+  PrepareNativeHarnessCwdRequest,
   PromptReceipt,
   PromptRequest,
   PromptState,
@@ -24,6 +25,7 @@ import type {
   SteerReceipt,
   SteerRequest,
 } from "@armada/core";
+import { ProviderError } from "@armada/core";
 import {
   BoatApi,
   Configuration,
@@ -34,6 +36,7 @@ import {
 } from "@boatdev/sdk";
 import { invalidRequest, PROVIDER_ID, toProviderError, unexpectedAnswer } from "./errors.ts";
 import { eventCursor, normalizeEvent, promptStatus } from "./events.ts";
+import { installNativeCwdWrapper } from "./native-cwd.ts";
 
 export const DEFAULT_BASE_URL = "https://boat.dev/api/v1";
 /** boat's own default, sent explicitly so a launch never depends on it. */
@@ -187,6 +190,34 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
           ...(request.labels ? { labels: request.labels } : {}),
         },
         request.idempotencyKey,
+      );
+    },
+
+    async prepareNativeHarnessCwd(request: PrepareNativeHarnessCwdRequest): Promise<void> {
+      await installNativeCwdWrapper(
+        async (execRequest) => {
+          const response = await call(() =>
+            api.command({
+              sandboxId: execRequest.sandboxId,
+              commandRequest: {
+                command: execRequest.command,
+                ...(execRequest.timeoutSeconds === undefined ? {} : { timeoutSeconds: execRequest.timeoutSeconds }),
+              },
+            }),
+          );
+          if ("processId" in response || !("exitCode" in response)) throw unexpectedAnswer("command result");
+          if (response.exitCode !== 0) {
+            throw new ProviderError({
+              provider: PROVIDER_ID,
+              code: "unknown",
+              message: response.stderr || "Native harness preparation failed.",
+              retryable: false,
+            });
+          }
+        },
+        request.sandboxId,
+        request.harness,
+        request.cwd,
       );
     },
 
