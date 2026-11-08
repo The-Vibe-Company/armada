@@ -60,6 +60,8 @@ describe("database", () => {
         "mcp_tokens",
         "members",
         "notify_subscriptions",
+        "oauth_clients",
+        "oauth_codes",
         "orgs",
         "sandboxes",
         "service_tokens",
@@ -126,9 +128,9 @@ describe("database", () => {
       const checks = await db.query<{ def: string }>(`
         select pg_get_constraintdef(oid) as def
         from pg_constraint
-        where conname in ('service_tokens_hash_chk', 'mcp_tokens_hash_chk')
+        where conname in ('service_tokens_hash_chk', 'mcp_tokens_hash_chk', 'oauth_codes_hash_chk')
       `);
-      expect(checks.rows).toHaveLength(2);
+      expect(checks.rows).toHaveLength(3);
       for (const row of checks.rows) expect(row.def).toContain("^[0-9a-f]{64}$");
 
       const people = await fixture(db);
@@ -451,7 +453,10 @@ describe("database", () => {
       const serviceToken = await asUser(db, people.owner, () =>
         insertToken(db, "service_tokens", people.owner, people.org, HASH),
       );
-      const mcpToken = await asUser(db, people.owner, () =>
+      await expect(
+        asUser(db, people.owner, () => insertToken(db, "mcp_tokens", people.owner, people.org, "cd".repeat(32))),
+      ).rejects.toThrow(/permission denied/);
+      const mcpToken = await asRole(db, "service_role", () =>
         insertToken(db, "mcp_tokens", people.owner, people.org, "cd".repeat(32)),
       );
       expect(

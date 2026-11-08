@@ -198,6 +198,85 @@ export type Database = {
           },
         ];
       };
+      oauth_clients: {
+        Row: {
+          id: string;
+          name: string;
+          redirect_uris: string[];
+          created_at: string;
+        };
+        Insert: {
+          id: string;
+          name: string;
+          redirect_uris: string[];
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          name?: string;
+          redirect_uris?: string[];
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      oauth_codes: {
+        Row: {
+          hash: string;
+          client_id: string;
+          redirect_uri: string;
+          code_challenge: string;
+          user_id: string;
+          org_id: string;
+          expires_at: string;
+          used_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          hash: string;
+          client_id: string;
+          redirect_uri: string;
+          code_challenge: string;
+          user_id: string;
+          org_id: string;
+          expires_at: string;
+          used_at?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          hash?: string;
+          client_id?: string;
+          redirect_uri?: string;
+          code_challenge?: string;
+          user_id?: string;
+          org_id?: string;
+          expires_at?: string;
+          used_at?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "oauth_codes_client_id_fkey";
+            columns: ["client_id"];
+            isOneToOne: false;
+            referencedRelation: "oauth_clients";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "oauth_codes_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "oauth_codes_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       orgs: {
         Row: {
           id: string;
@@ -355,6 +434,8 @@ export type Golden = Database["public"]["Tables"]["goldens"]["Row"];
 export type McpToken = Database["public"]["Tables"]["mcp_tokens"]["Row"];
 export type Member = Database["public"]["Tables"]["members"]["Row"];
 export type NotifySubscription = Database["public"]["Tables"]["notify_subscriptions"]["Row"];
+export type OAuthClient = Database["public"]["Tables"]["oauth_clients"]["Row"];
+export type OAuthCode = Database["public"]["Tables"]["oauth_codes"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
 export type Sandbox = Database["public"]["Tables"]["sandboxes"]["Row"];
 export type ServiceToken = Database["public"]["Tables"]["service_tokens"]["Row"];

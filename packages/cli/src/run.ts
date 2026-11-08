@@ -1,3 +1,4 @@
+import { AuthError, assertProvider } from "@armada/auth";
 import {
   configFromFlags,
   connectGolden,
@@ -23,6 +24,15 @@ import {
 } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
 import { flag, parseArgs, single, values } from "./args.ts";
+import {
+  type AuthIo,
+  loginCommand,
+  logoutCommand,
+  productionAuthIo,
+  tokenCreate,
+  tokenList,
+  tokenRevoke,
+} from "./auth-commands.ts";
 import { envCredentials } from "./credentials.ts";
 import { openSupabaseGoldens } from "./supabase.ts";
 
@@ -42,6 +52,8 @@ export interface Deps {
   actor?: GoldenActor;
   sandboxPolls?: number;
   snapshotPolls?: number;
+  /** Set by auth tests. Otherwise login talks to Supabase and stores the session on this machine. */
+  auth?: AuthIo;
 }
 
 const HELP = `armada ${VERSION}: launch coding agents on boat.dev
@@ -56,6 +68,19 @@ Usage:
   armada launch <golden> --agent claude|codex ["prompt"] [--ttl 4h] [--json]
                                            Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt.
+  armada login [--provider github|google]
+  armada logout
+  armada token create [--org <name>] [--label <label>]
+  armada token list
+  armada token revoke <id>
+
+Environment:
+  ARMADA_SUPABASE_URL, ARMADA_SUPABASE_ANON_KEY, ARMADA_ACCESS_TOKEN, ARMADA_ORG
+                                           Golden and launch commands, as the signed-in user
+  ARMADA_CLAUDE_OAUTH_TOKEN, ARMADA_OPENAI_API_KEY
+  ARMADA_ORG_CLAUDE_OAUTH_TOKEN, ARMADA_ORG_OPENAI_API_KEY
+                                           Model credentials until the encrypted store lands
+  SUPABASE_URL, SUPABASE_ANON_KEY          armada login
 `;
 
 /** Runs one command line and returns the process exit code. */
@@ -75,6 +100,10 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     if (error instanceof ProviderError) {
       io.err(`armada: ${error.message}\n`);
       return 1;
+    }
+    if (error instanceof AuthError) {
+      io.err(`armada: ${error.message}\n`);
+      return error.code === "usage" ? 2 : 1;
     }
     throw error;
   }
@@ -97,6 +126,12 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       return golden(rest, io, deps);
     case "launch":
       return launch(rest, io, deps);
+    case "login":
+      return login(rest, io, deps);
+    case "logout":
+      return logout(rest, io, deps);
+    case "token":
+      return tokenCommand(parseAuth(rest), authOf(io, deps));
     default:
       io.err(`armada: unknown command '${command}'. Run 'armada --help'.\n`);
       return 2;
@@ -395,4 +430,94 @@ function hostOf(endpoint: string): string {
 
 function portOf(endpoint: string): string {
   return endpoint.slice(endpoint.lastIndexOf(":") + 1);
+}
+
+async function login(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
+  const parsed = parseAuth(argv);
+  rejectUnknown(parsed.flags, ["provider"]);
+  if (parsed.position.length > 0) throw new AuthError("Run armada login --help.", "usage");
+  const provider = parsed.flags.has("provider") ? assertProvider(authFlag(parsed.flags, "provider")) : undefined;
+  await loginCommand(authOf(io, deps), provider);
+  return 0;
+}
+
+async function logout(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
+  const parsed = parseAuth(argv);
+  rejectUnknown(parsed.flags, []);
+  if (parsed.position.length > 0) throw new AuthError("Run armada logout.", "usage");
+  await logoutCommand(authOf(io, deps));
+  return 0;
+}
+
+async function tokenCommand(parsed: AuthArgs, auth: AuthIo): Promise<number> {
+  const sub = parsed.position[0];
+  const extra = parsed.position[1];
+  switch (sub) {
+    case "create":
+      rejectUnknown(parsed.flags, ["org", "label"]);
+      if (extra !== undefined) throw new AuthError("Run armada token create --org <name> --label <label>.", "usage");
+      await tokenCreate(auth, parsed.flags.get("org"), parsed.flags.get("label"));
+      return 0;
+    case "list":
+      rejectUnknown(parsed.flags, []);
+      if (extra !== undefined) throw new AuthError("Run armada token list.", "usage");
+      await tokenList(auth);
+      return 0;
+    case "revoke":
+      rejectUnknown(parsed.flags, []);
+      if (!extra || parsed.position.length > 2) throw new AuthError("Run armada token revoke <id>.", "usage");
+      await tokenRevoke(auth, extra);
+      return 0;
+    default:
+      throw new AuthError("Run armada token create, list, or revoke.", "usage");
+  }
+}
+
+interface AuthArgs {
+  position: string[];
+  flags: Map<string, string>;
+}
+
+function parseAuth(argv: readonly string[]): AuthArgs {
+  const position: string[] = [];
+  const flags = new Map<string, string>();
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === undefined) continue;
+    if (arg === "--") {
+      position.push(...argv.slice(index + 1));
+      break;
+    }
+    if (!arg.startsWith("--")) {
+      position.push(arg);
+      continue;
+    }
+    const eq = arg.indexOf("=");
+    const name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
+    if (name.length === 0) throw new AuthError("Unknown flag.", "usage");
+    const value = eq === -1 ? argv[index + 1] : arg.slice(eq + 1);
+    if (eq === -1) {
+      if (value === undefined || value.startsWith("--")) throw new AuthError(`Missing value for --${name}.`, "usage");
+      index += 1;
+    }
+    if (value === undefined) throw new AuthError(`Missing value for --${name}.`, "usage");
+    flags.set(name, value);
+  }
+  return { position, flags };
+}
+
+function authFlag(flags: Map<string, string>, name: string): string {
+  const value = flags.get(name);
+  if (value === undefined) throw new AuthError(`Missing value for --${name}.`, "usage");
+  return value;
+}
+
+function rejectUnknown(flags: Map<string, string>, allowed: readonly string[]): void {
+  for (const name of flags.keys()) {
+    if (!allowed.includes(name)) throw new AuthError(`Unknown flag --${name}.`, "usage");
+  }
+}
+
+function authOf(io: Io, deps: Deps): AuthIo {
+  return deps.auth ?? productionAuthIo(io, deps.env ?? process.env);
 }

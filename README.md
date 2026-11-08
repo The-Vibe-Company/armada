@@ -7,7 +7,7 @@ Armada is a launcher, not an orchestrator: it does not split work, merge pull re
 - **Specification (v0):** [#455](https://github.com/The-Vibe-Company/armada/issues/455)
 - **This scaffold:** [#456](https://github.com/The-Vibe-Company/armada/issues/456)
 
-> **Status:** goldens can be created, connected, snapshotted and listed (`armada golden`), and a golden can be launched into a sandbox (`armada launch`). Auth, events and the MCP server land in later tickets (see #455).
+> **Status:** goldens can be created, connected, snapshotted and listed (`armada golden`), and a golden can be launched into a sandbox (`armada launch`). `armada login` and `armada token` sign a person in and mint service tokens. Events and the MCP tool server are #464: it mounts the OAuth routes and calls `authenticate` from `@armada/auth`.
 
 ## Layout
 
@@ -18,6 +18,7 @@ A Bun and TypeScript monorepo (Bun workspaces, strict `tsconfig.json` shared by 
 | `packages/core` | `@armada/core` | The contract every other package shares: types, the golden config and workflow, the generated database types, the version. No I/O of its own. |
 | `packages/provider-boat` | `@armada/provider-boat` | The boat.dev placement: the provider adapter over the boat.dev API. |
 | `packages/cli` | `@armada/cli` | The `armada` command; `src/main.ts` is the entry of the compiled binary. |
+| `packages/auth` | `@armada/auth` | Supabase login (GitHub, Google), the MCP OAuth server, service tokens and bearer checks. |
 | `packages/mcp-server` | `@armada/mcp-server` | The remote MCP server (hosted on Railway) that orchestrators call. |
 
 `scripts/build.ts` compiles the binary. Every package carries the same version, the one `armada --version` prints (`packages/core/package.json`); a test fails if they drift apart.
@@ -45,6 +46,8 @@ bun run armada golden connect <name>
 bun run armada golden snapshot <name>
 bun run armada golden list
 bun run armada launch <golden> --agent claude|codex ["prompt"] [--ttl 4h] [--json]
+bun run armada login
+bun run armada token create --org <name> --label <label>
 
 bun run build                        # dist/armada for this machine
 bun run build --target linux-arm64   # dist/armada-linux-arm64
