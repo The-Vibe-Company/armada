@@ -154,6 +154,7 @@ export const CREDENTIAL_KINDS: Readonly<Record<CredentialKind, KindInfo>> = {
   openai: { name: "openai", label: "OpenAI API key for Codex", env: "OPENAI_API_KEY" },
   codex_auth: { name: "codex-auth", label: "Codex auth.json" },
   boat: { name: "boat", label: "boat.dev API key" },
+  modal: { name: "modal", label: "Modal token pair (id and secret)" },
 };
 
 /** Within one scope, the first kind a harness finds wins. The two Claude kinds never reach the sandbox together. */
@@ -184,6 +185,7 @@ export function credentialName(kind: CredentialKind): string {
 export function parseCredentialValue(kind: CredentialKind, raw: string): string {
   const value = raw.trim();
   if (value === "") throw new VaultError("invalid", "The value is empty.");
+  if (kind === "modal") return JSON.stringify(modalPairJson(parseModalTokenPair(value)));
   if (kind === "codex_auth") {
     if (value.length > MAX_AUTH_FILE_LENGTH) throw new VaultError("invalid", "That auth.json is too large.");
     let parsed: unknown;
@@ -202,6 +204,92 @@ export function parseCredentialValue(kind: CredentialKind, raw: string): string 
     throw new VaultError("invalid", "A key has no spaces or line breaks. Check what you pasted.");
   }
   return value;
+}
+
+/** A Modal token: its id and its secret, which only work together. Stored as one row, so never mixed. */
+export interface ModalTokenPair {
+  tokenId: string;
+  tokenSecret: string;
+}
+
+const MODAL_TOKEN_ID = /^ak-[A-Za-z0-9]{8,200}$/;
+const MODAL_TOKEN_SECRET = /^as-[A-Za-z0-9]{8,200}$/;
+
+/**
+ * Reads a Modal token pair: `{"token_id": "ak-...", "token_secret": "as-..."}` (the keys of `modal.toml`) or
+ * the id and the secret separated by whitespace. Both halves are required and checked together. The error
+ * never repeats a value.
+ */
+export function parseModalTokenPair(raw: string): ModalTokenPair {
+  const value = raw.trim();
+  if (value.length > MAX_SECRET_LENGTH) throw new VaultError("invalid", "That value is too long to be a token pair.");
+  let id: unknown;
+  let secret: unknown;
+  if (value.startsWith("{")) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      throw new VaultError("invalid", "A Modal token pair in JSON is an object with token_id and token_secret.");
+    }
+    const record = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+    id = record.token_id ?? record.tokenId;
+    secret = record.token_secret ?? record.tokenSecret;
+  } else {
+    const parts = value.split(/\s+/);
+    if (parts.length === 2) [id, secret] = parts;
+  }
+  if (typeof id !== "string" || typeof secret !== "string") {
+    throw new VaultError(
+      "invalid",
+      "A Modal token pair needs both the token id (ak-...) and the token secret (as-...).",
+    );
+  }
+  if (!MODAL_TOKEN_ID.test(id) || !MODAL_TOKEN_SECRET.test(secret)) {
+    throw new VaultError("invalid", "That is not a Modal token pair: the id starts with ak- and the secret with as-.");
+  }
+  return { tokenId: id, tokenSecret: secret };
+}
+
+function modalPairJson(pair: ModalTokenPair): { token_id: string; token_secret: string } {
+  return { token_id: pair.tokenId, token_secret: pair.tokenSecret };
+}
+
+/**
+ * The Modal token that manages a golden's sandboxes, from one scope whole. A private golden uses its
+ * owner's own pair when there is one; everything else, and the fallback, is the org's. It is a management
+ * credential: it stays on the server and never reaches a sandbox or a model environment.
+ */
+export async function resolveModalTokens(
+  reader: CredentialReader,
+  encryptionKey: string | undefined,
+  input: { userId: string; orgId: string; visibility: Visibility },
+): Promise<ModalTokenPair & { scope: CredentialScope }> {
+  const scopes: [CredentialScope, string][] =
+    input.visibility === "private"
+      ? [
+          ["user", input.userId],
+          ["org", input.orgId],
+        ]
+      : [["org", input.orgId]];
+  for (const [scope, ownerId] of scopes) {
+    const row = (await reader.credentials(scope, ownerId)).find((candidate) => candidate.kind === "modal");
+    if (!row) continue;
+    const opened = await open(row.valueEnc, encryptionKey);
+    let pair: ModalTokenPair;
+    try {
+      pair = parseModalTokenPair(opened);
+    } catch {
+      throw new VaultError("unavailable", `The stored ${scope} Modal token pair is not valid. Set it again.`);
+    }
+    return { ...pair, scope };
+  }
+  throw new VaultError(
+    "missing_credential",
+    input.visibility === "private"
+      ? "No Modal token pair for you or your org. Run 'armada creds set modal' or ask an org admin to set the org's."
+      : "Your org has no Modal token pair. An org admin sets it with 'armada creds set modal --org <name>'.",
+  );
 }
 
 /** Ciphertext of the stored credentials. Only the server, as the service role, can read it. */

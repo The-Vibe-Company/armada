@@ -28,6 +28,9 @@ export interface StatusReport {
   golden: string;
   visibility: SandboxView["visibility"];
   harness: SandboxView["harness"];
+  /** What its turns run with. Null for a sandbox launched before the choice was recorded. */
+  model: string | null;
+  reasoningEffort: string | null;
   /** Armada's status, after this read. */
   status: SandboxStatus;
   /** Why it failed, as recorded. Null unless the status is failed. */
@@ -57,14 +60,14 @@ export async function readStatus(
     return report({ ...sandbox, statusReason: null }, "deleted", null, null, null);
   }
 
-  const info = await provider.get(sandbox.boatId);
+  const info = await provider.get(sandbox.providerSandboxId);
   const target = options.promptId
     ? { promptId: options.promptId, conversationId: null }
-    : await latestPrompt(provider, sandbox.boatId);
+    : await latestPrompt(provider, sandbox.providerSandboxId);
   let prompt: PromptReport | null = null;
   if (target) {
     const outcome = await promptOutcome(provider, {
-      sandboxId: sandbox.boatId,
+      sandboxId: sandbox.providerSandboxId,
       promptId: target.promptId,
       ...(target.conversationId ? { conversationId: target.conversationId } : {}),
     });
@@ -122,6 +125,8 @@ function report(
     golden: sandbox.golden,
     visibility: sandbox.visibility,
     harness: sandbox.harness,
+    model: sandbox.model,
+    reasoningEffort: sandbox.reasoningEffort,
     status,
     statusReason: status === "failed" ? sandbox.statusReason : null,
     providerState: info?.providerState ?? null,

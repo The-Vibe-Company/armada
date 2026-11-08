@@ -1,11 +1,14 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import { viewerGateway } from "@/lib/data/gateway";
 import { getSandbox } from "@/lib/data/sandboxes";
+import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { GatewayError } from "@/lib/gateway";
+import { launchArgs, type ModelFields, sendOverride } from "@/lib/model-choice";
 import { createClient } from "@/lib/supabase/server";
 
 async function gatewayFor(id: string) {
@@ -40,12 +43,48 @@ export async function sendToSandbox(_previous: ActionResult | null, data: FormDa
   if (!prompt) return fail("Write the message to send.");
   const target = await gatewayFor(id);
   if (target.error) return target.error;
+  const override = sendOverride(target.sandbox.harness, modelFields(data), target.sandbox.model);
+  if (!override.ok) return fail(override.error);
   try {
-    await target.gateway.send(id, prompt);
+    await target.gateway.send(id, prompt, override.args);
   } catch (error) {
     if (error instanceof GatewayError) return fail(error.message);
     throw error;
   }
   revalidatePath(`/sandboxes/${id}`);
   return done("Sent. The reply appears in the logs.");
+}
+
+export async function launchFromGolden(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  const parsed = launchArgs({
+    golden: formString(data, "golden"),
+    provider: formString(data, "provider"),
+    org: formString(data, "org"),
+    harness: formString(data, "harness"),
+    prompt: formString(data, "prompt"),
+    ...modelFields(data),
+  });
+  if (!parsed.ok) return fail(parsed.error);
+  if (!isUuid(parsed.args.org)) return fail("That request is not valid.");
+  if (!(await isSelectedOrganization(parsed.args.org))) return fail("Switch to that organization first.");
+  const viewer = await requireViewer();
+  const gateway = viewerGateway(viewer);
+  if (!gateway) return fail("The Armada server is not configured for this dashboard.");
+  let id: string;
+  try {
+    ({ id } = await gateway.launch(parsed.args));
+  } catch (error) {
+    if (error instanceof GatewayError) return fail(error.message);
+    throw error;
+  }
+  revalidatePath("/sandboxes");
+  redirect(`/sandboxes/${id}`);
+}
+
+function modelFields(data: FormData): ModelFields {
+  return {
+    model: formString(data, "model"),
+    otherModel: formString(data, "other_model"),
+    reasoningEffort: formString(data, "reasoning_effort"),
+  };
 }

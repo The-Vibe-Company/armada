@@ -32,5 +32,5 @@ test("a member who is not an admin cannot share a golden", async ({ page }) => {
   await signIn(page, "bob@example.com", "/goldens");
   const row = page.locator('[data-golden="bob-private"]');
   await expect(row.getByText("Org admins share goldens")).toBeVisible();
-  await expect(row.getByRole("button")).toHaveCount(0);
+  await expect(row.getByRole("button", { name: /Share with org|Make private/ })).toHaveCount(0);
 });

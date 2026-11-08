@@ -26,7 +26,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { createSqlData } from "../src/data.ts";
-import { createHandler, type Route } from "../src/http.ts";
+import { createHandler, type HandlerOptions, type Route } from "../src/http.ts";
 import { sqlOver } from "../src/sql.ts";
 
 export const PUBLIC_URL = "https://armada.example.com";
@@ -132,11 +132,11 @@ export function fakeBoat() {
       throw new ProviderError({ provider: "fake", code: "not_found", message: "No sandbox.", retryable: false });
     return found;
   };
-  const harnessFeatures = { interrupt: true, resume: true, parallelConversations: false, reasoningEffort: false };
+  const harnessFeatures = { interrupt: true, resume: true, parallelConversations: false, reasoningEffort: true };
   const extra = { fast: false, streamsPartials: true, toolEvents: true, approvals: false };
 
   const provider = {
-    id: "fake",
+    id: "boat",
     harnesses: ["claude", "codex"] as Harness[],
     capabilities: {
       claude: { steer: "native", ...harnessFeatures, ...extra },
@@ -366,6 +366,8 @@ export async function harness(
     /** The store `/mcp` authenticates against. Default: the in-memory one the helpers fill. */
     authStore?: (db: PGlite) => AuthStore;
     log?: (line: string) => void;
+    /** The Modal adapter, when a test configures one. Default: none, as on a server before #513. */
+    modalProviderFor?: HandlerOptions["modalProviderFor"];
   } = {},
 ): Promise<TestServer> {
   const { db, people } = await database();
@@ -413,6 +415,7 @@ export async function harness(
     encryptionKey: ENCRYPTION_KEY,
     github: { store: createSqlVaultStore(sqlFor(db)), app: GITHUB_APP, fetch: fakeGit.fetch },
     providerFor: boat.providerFor,
+    ...(options.modalProviderFor ? { modalProviderFor: options.modalProviderFor } : {}),
     ...(options.routes ? { routes: options.routes } : {}),
     log: options.log ?? (() => {}),
     now: () => clock.now,

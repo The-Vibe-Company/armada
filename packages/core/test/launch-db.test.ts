@@ -61,12 +61,15 @@ describe("launch database", () => {
         asUser(db, people.member, () =>
           sandboxes.insert({
             id: crypto.randomUUID(),
-            boatId: "bx_forged",
+            provider: "boat",
+            providerSandboxId: "bx_forged",
             goldenId: privateGolden.rows[0]?.id ?? "",
             orgId: people.org,
             ownerId: people.member,
             harness: "claude",
             status: "starting",
+            model: "claude-opus-5-5",
+            reasoningEffort: "medium",
           }),
         ),
       ).rejects.toThrow();
@@ -94,6 +97,20 @@ describe("launch database", () => {
       expect(stopped.rows[0]?.status).toBe("stopped");
       expect(stopped.rows[0]?.stopped_at.toISOString()).toBe("2026-11-08T13:00:00.000Z");
 
+      // SQL CHECK must reject a half-recorded choice rather than accept SQL UNKNOWN.
+      for (const [model, effort] of [
+        ["claude-opus-5-5", null],
+        [null, "medium"],
+      ]) {
+        await expect(
+          db.query("update sandboxes set model = $2, reasoning_effort = $3 where id = $1", [
+            mine.sandbox.id,
+            model,
+            effort,
+          ]),
+        ).rejects.toThrow(/sandboxes_model_chk/);
+      }
+
       const cleaned = await cleanupSandboxes(boat.provider, sandboxes, {
         retentionDays: 7,
         now: new Date(Date.now() + 8 * 86_400_000),
@@ -119,8 +136,9 @@ function fakeBoat() {
   let count = 0;
   const info = (id: string): SandboxInfo => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
   const provider = {
-    id: "fake",
+    id: "boat",
     harnesses: ["claude", "codex"],
+    capabilities: { claude: { reasoningEffort: true }, codex: { reasoningEffort: true } },
     async fork(request: ForkRequest) {
       forks.push(request);
       count += 1;

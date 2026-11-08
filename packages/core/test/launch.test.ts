@@ -77,10 +77,19 @@ describe("launch", () => {
     expect(world.execs[0]?.command).toContain("'pull' '--ff-only' 'origin' 'main'");
     expect(world.execs[1]?.command).toContain("'dev'");
     expect(world.execs[2]?.command).toBe("pnpm i");
-    expect(world.prompts).toEqual([{ sandboxId: "bx_1", harness: "claude", text: "Fix the build" }]);
+    expect(world.prompts).toEqual([
+      {
+        sandboxId: "bx_1",
+        harness: "claude",
+        text: "Fix the build",
+        model: "claude-opus-5-5",
+        reasoningEffort: "medium",
+      },
+    ]);
     expect(result).toMatchObject({ conversationId: "conv_1", promptId: "prompt_1", ttlSeconds: 7200 });
     expect(world.rows.get("sbx-1")).toMatchObject({
-      boatId: "bx_1",
+      provider: "boat",
+      providerSandboxId: "bx_1",
       ownerId: OWNER,
       harness: "claude",
       status: "running",
@@ -94,6 +103,7 @@ describe("launch", () => {
     const result = await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" });
     expect(world.prompts).toEqual([]);
     expect(result.sandbox).toMatchObject({ status: "ready", conversationIds: [] });
+    expect(world.rows.get(result.sandbox.id)).toMatchObject({ model: "claude-opus-5-5", reasoningEffort: "medium" });
     expect(result.conversationId).toBeUndefined();
     expect(result.ttlSeconds).toBe(14_400);
     expect(world.forks[0]?.ttlSeconds).toBe(14_400);
@@ -288,7 +298,7 @@ describe("launch", () => {
   });
 
   test("a golden without a snapshot, a harness without credentials and bad input start nothing", async () => {
-    const noSnapshot = setup({ golden: { ...golden("org"), boatSnapshotId: null } });
+    const noSnapshot = setup({ golden: { ...golden("org"), providerSnapshotId: null } });
     await expect(
       launchSandbox(noSnapshot.provider, noSnapshot.stores, owner, { golden: "web", harness: "claude" }),
     ).rejects.toThrow(/no snapshot yet/);
@@ -307,12 +317,37 @@ describe("launch", () => {
       { harness: "claude", ttlSeconds: 2_592_001 },
       { harness: "claude", ttlSeconds: 1.5 },
       { harness: "claude", prompt: "   " },
+      { harness: "claude", reasoningEffort: "ultra" },
+      { harness: "codex", model: "gpt-6-luna", reasoningEffort: "ultra" },
+      { harness: "codex", model: "gpt 6; rm -rf /" },
     ]) {
       await expect(
         launchSandbox(world.provider, world.stores, owner, { golden: "web", ...request } as never),
       ).rejects.toMatchObject({ code: "invalid_request" });
     }
     expect([noSnapshot, none, world].flatMap((entry) => entry.forks)).toEqual([]);
+  });
+
+  test("an explicit model and effort reach the prompt and the record as given, never substituted", async () => {
+    const world = setup({ golden: golden("org") });
+    const result = await launchSandbox(world.provider, world.stores, owner, {
+      golden: "web",
+      harness: "codex",
+      prompt: "Go",
+      model: "gpt-7-preview",
+      reasoningEffort: "ultra",
+    });
+    expect(world.prompts[0]).toMatchObject({ harness: "codex", model: "gpt-7-preview", reasoningEffort: "ultra" });
+    expect(world.rows.get(result.sandbox.id)).toMatchObject({ model: "gpt-7-preview", reasoningEffort: "ultra" });
+  });
+
+  test("a provider that cannot set a reasoning effort is refused before the fork", async () => {
+    const world = setup({ golden: golden("org") });
+    const provider = { ...world.provider, capabilities: { claude: { reasoningEffort: false } } } as never;
+    await expect(
+      launchSandbox(provider, world.stores, owner, { golden: "web", harness: "claude" }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    expect(world.forks).toEqual([]);
   });
 
   test("a sandbox that cannot be recorded is deleted again", async () => {
@@ -391,6 +426,7 @@ describe("cleanup", () => {
     );
     const deleted: string[] = [];
     const provider = {
+      id: "boat",
       async delete({ sandboxId }: { sandboxId: string }) {
         deleted.push(sandboxId);
         if (sandboxId === "bx_gone")
@@ -420,8 +456,10 @@ function golden(visibility: "org" | "private"): GoldenRecord {
     name: "web",
     visibility,
     ownerId: OWNER,
-    boatSnapshotId: SNAPSHOT,
-    boatSandboxId: "bx_builder",
+    provider: "boat",
+    providerSnapshotId: SNAPSHOT,
+    providerSandboxId: "bx_builder",
+    modal: null,
     config: parseGoldenConfig({
       repos: [
         { url: "https://github.com/example/web.git", branch: "main" },
@@ -447,7 +485,7 @@ interface Setup {
 function setup(options: Setup) {
   const forks: ForkRequest[] = [];
   const execs: { command: string; cwd?: string }[] = [];
-  const prompts: { sandboxId: string; harness: string; text: string }[] = [];
+  const prompts: { sandboxId: string; harness: string; text: string; model?: string; reasoningEffort?: string }[] = [];
   const stopped: string[] = [];
   const deleted: string[] = [];
   const rows = new Map<string, SandboxRecord>();
@@ -460,8 +498,9 @@ function setup(options: Setup) {
     expiresAt: new Date("2026-11-08T16:00:00.000Z"),
   });
   const provider = {
-    id: "fake",
+    id: "boat",
     harnesses: ["claude", "codex"],
+    capabilities: { claude: { reasoningEffort: true }, codex: { reasoningEffort: true } },
     async fork(request: ForkRequest) {
       forks.push(request);
       return info("starting");
@@ -474,7 +513,7 @@ function setup(options: Setup) {
       const out = options.exec?.(request.command) ?? { exitCode: 0 };
       return { detached: false as const, stdout: "", stderr: "", timedOut: false, truncated: false, ...out };
     },
-    async prompt(request: { sandboxId: string; harness: string; text: string }) {
+    async prompt(request: (typeof prompts)[number]) {
       if (options.promptError) throw options.promptError;
       prompts.push(request);
       return { promptId: "prompt_1", conversationId: "conv_1", status: "queued" as PromptStatus };
@@ -551,10 +590,11 @@ function definedOnly(patch: SandboxPatch): Record<string, unknown> {
   return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
 }
 
-function sandboxRecord(id: string, boatId: string, createdAt: string): SandboxRecord {
+function sandboxRecord(id: string, providerSandboxId: string, createdAt: string): SandboxRecord {
   return {
     id,
-    boatId,
+    provider: "boat",
+    providerSandboxId,
     goldenId: "golden-1",
     orgId: ORG,
     ownerId: OWNER,
@@ -565,6 +605,8 @@ function sandboxRecord(id: string, boatId: string, createdAt: string): SandboxRe
     stoppedAt: null,
     deletedAt: null,
     statusReason: null,
+    model: null,
+    reasoningEffort: null,
   };
 }
 
