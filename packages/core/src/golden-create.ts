@@ -82,13 +82,10 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         ownerId: actor.userId,
       });
     },
-    async finalize(reservationId, goldenId) {
-      await slots.finalize(reservationId, goldenId);
-    },
     async release(reservationId) {
       await slots.release(reservationId);
     },
-    async persist({ actor, name, visibility, repos, init, snapshot, builderId }) {
+    async persist({ actor, name, visibility, repos, init, snapshot, builderId, reservationId }) {
       const config: GoldenConfig = {
         repos: repos.map(
           (repo): GoldenRepo => ({
@@ -110,6 +107,13 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         });
         await transactionalStore.setSandbox(inserted.id, builderId);
         await transactionalStore.setSnapshot(inserted.id, snapshot);
+        // This update is inside the same database transaction as the golden metadata. A failed
+        // finalize rolls everything back; the service can safely release only the still-pending slot.
+        if (reservationId)
+          await sql.query("select public.finalize_golden_backend_slot($1::uuid, $2::uuid)", [
+            reservationId,
+            inserted.id,
+          ]);
         return inserted.id;
       };
       return options.sql.transaction ? await options.sql.transaction(persist) : await persist(options.sql);

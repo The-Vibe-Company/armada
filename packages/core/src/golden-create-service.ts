@@ -37,8 +37,10 @@ export interface GoldenCreateDeps {
   scan(provider: Provider, sandboxId: string): Promise<void>;
   /** Reserve capacity before any builder starts. Returns an opaque server-only reservation. */
   reserve?(provider: Provider, actor: GoldenActor): Promise<string | undefined>;
+  /** Legacy factory hook; production persistence finalizes atomically itself. */
   finalize?(reservationId: string, goldenId: string): Promise<void>;
   release?(reservationId: string): Promise<void>;
+  /** Persist must atomically finalize a reservation when one was taken. */
   persist(input: {
     actor: GoldenActor;
     name: string;
@@ -47,6 +49,7 @@ export interface GoldenCreateDeps {
     init: string[];
     snapshot: string;
     builderId: string;
+    reservationId?: string;
   }): Promise<string | void>;
 }
 
@@ -109,8 +112,9 @@ export class GoldenCreateService {
           init: [input.config?.init ?? [], input.setup ? [input.setup] : []].flat(),
           snapshot,
           builderId: builder.id,
+          ...(reservation ? { reservationId: reservation } : {}),
         });
-        if (reservation && goldenId) await this.deps.finalize?.(reservation, goldenId);
+        if (reservation && goldenId && this.deps.finalize) await this.deps.finalize(reservation, goldenId);
         persisted = true;
       } catch (error) {
         // A ready snapshot nothing tracks is worse than none: remove it so the name and the

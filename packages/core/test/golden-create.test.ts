@@ -116,6 +116,49 @@ describe("createGoldenCreateService, wired to a real database", () => {
     }
   });
 
+  test("factory rolls back golden and retains no slot when atomic finalize fails", async () => {
+    const db = await openDatabase();
+    try {
+      await applyMigrations(db);
+      const { actor, userId } = await fixture(db);
+      await connectGitHub(db, userId);
+      const original = db.query.bind(db);
+      const originalTransaction = db.transaction?.bind(db);
+      // Failure injection through the transaction client used by the real factory SQL path.
+      db.transaction = (async (work) =>
+        originalTransaction!(async (tx) => {
+          const originalTx = tx.query.bind(tx);
+          tx.query = (async (text: string, params?: unknown[]) => {
+            if (text.includes("finalize_golden_backend_slot")) throw new Error("finalize exploded");
+            return originalTx(text, params);
+          }) as typeof tx.query;
+          return work(tx);
+        })) as typeof db.transaction;
+      const deleted: string[] = [];
+      const provider = {
+        ...readyProvider(),
+        deleteSnapshot: async (name: string) => {
+          deleted.push(name);
+        },
+      };
+      const service = createGoldenCreateService({
+        sql: db,
+        github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
+        installationApp: null,
+        fetch: fakeGitHubFetch(),
+        ssh: async () => {},
+      });
+      await expect(
+        service.create(provider, actor, { name: "bad-finalize", visibility: "org", repos: ["acme/web"] }),
+      ).rejects.toThrow("finalize exploded");
+      expect((await original("select 1 from goldens")).rows).toHaveLength(0);
+      expect((await original("select 1 from golden_backend_slots")).rows).toHaveLength(0);
+      expect(deleted).toEqual(["golden-bx_1"]);
+    } finally {
+      await db.close();
+    }
+  });
+
   test("with GITHUB_APP_PRIVATE_KEY configured, checkout uses a scoped installation token and revokes it", async () => {
     const db = await openDatabase();
     try {
