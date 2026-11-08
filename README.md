@@ -7,7 +7,7 @@ Armada is a launcher, not an orchestrator: it does not split work, merge pull re
 - **Specification (v0):** [#455](https://github.com/The-Vibe-Company/armada/issues/455)
 - **This scaffold:** [#456](https://github.com/The-Vibe-Company/armada/issues/456)
 
-> **Status:** goldens can be created, connected, snapshotted and listed (`armada golden`), and a golden can be launched into a sandbox (`armada launch`). `armada login` and `armada token` sign a person in and mint service tokens. `armada org` and `armada creds` manage orgs, members and encrypted credentials (#461). Events and the MCP tool server are #464: it mounts the OAuth routes and calls `authenticate` from `@armada/auth`.
+> **Status:** goldens can be created, connected, snapshotted and listed (`armada golden`), and a golden can be launched into a sandbox (`armada launch`). `armada login` and `armada token` sign a person in and mint service tokens. `armada org` and `armada creds` manage orgs, members and encrypted credentials (#461). `armada serve` runs the remote MCP server (#464): orchestrators list goldens, launch, and then drive the agent (status, wait, logs, send, steer, interrupt, exec, stop).
 
 ## Layout
 
@@ -53,6 +53,7 @@ bun run armada org create <name>
 bun run armada org members add <email> [--role admin|member]
 pbpaste | bun run armada creds set claude-oauth [--org <name>]   # also anthropic, openai, codex-auth (--file), boat
 bun run armada creds list
+bun run armada serve     # the remote MCP server and the control API, configured by the environment below
 
 bun run build                        # dist/armada for this machine
 bun run build --target linux-arm64   # dist/armada-linux-arm64
@@ -75,6 +76,28 @@ After `armada login` (`SUPABASE_URL`, `SUPABASE_ANON_KEY`), every command acts a
 - Server env: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `ARMADA_DATABASE_URL` (a privileged Postgres connection, the Supabase `postgres` role), `ARMADA_ENCRYPTION_KEY` (32 random bytes, base64: `openssl rand -base64 32`).
 - Credentials are AES-256-GCM ciphertext in `credentials.value_enc` (org boat.dev key: `orgs.boat_api_key_enc`). Values are read from stdin or `--file`, never from an argument, and never shown again. Kinds: `claude-oauth` (the token from `claude setup-token`, injected as `CLAUDE_CODE_OAUTH_TOKEN`), `anthropic` (`ANTHROPIC_API_KEY`), `openai` (`OPENAI_API_KEY`), `codex-auth` (`~/.codex/auth.json`, written into the sandbox), `boat`. OpenCode is deferred.
 - Members are people who already signed in once. There are no pending invitations.
+
+## The MCP server
+
+`armada serve` listens on `PORT` (default 8080) and answers:
+
+- `/healthz`: `{"ok": true, "version": …}`, without a token.
+- The OAuth routes of `@armada/auth` (`/.well-known/*`, `/authorize`, `/token`, `/register`, …), mounted first.
+- The control API (`/api/v1/`, see above), which the CLI reaches at `ARMADA_URL`.
+- `/mcp`: MCP over Streamable HTTP (stateless, JSON responses). Every request is authenticated again, with no cache; a failure answers 401 with the OAuth challenge. The bearer is one of:
+  - an Armada service token or an OAuth access token, bound to one org;
+  - a Supabase access token of the project (the dashboard's session), checked by Supabase (`/auth/v1/user`) on each request: the person acts in every org they belong to, and `launch` takes `org` when a golden name is in several.
+
+The tools are `golden_list`, `launch` (the same rules as `armada launch`: `noEnv`, Armada credentials only, `claude` or `codex`), `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec` and `stop`. A caller sees the org's goldens and sandboxes and its own private ones, never another member's.
+
+- A turn's state comes from `getPrompt`. A turn that ended on a usage limit or an expired login marks the sandbox `failed`, and the reason is recorded in `sandboxes.status_reason` (a failed launch records its error there too).
+- `logs` pages events by cursor and keeps one event per id.
+- `steer` reports `restart` for Codex (the turn is interrupted and the text sent as a new one) and `native` for Claude Code.
+- The boat key for tools stays on the server: an org golden uses the org's key, a private golden its owner's personal key. `launch/resolve` on the control API returns the boat key to the signed-in CLI, which launches locally (#479's design).
+
+Environment: `PORT`, `ARMADA_DATABASE_URL` (the Postgres connection string, server-side only), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `ARMADA_AUTH_SECRET`, `ARMADA_PUBLIC_URL` (the origin clients reach) and `ARMADA_ENCRYPTION_KEY` (32 bytes in base64, the key of the encrypted credentials).
+
+`Dockerfile` builds the binary and runs `armada serve`; `railway.json` deploys it on Railway from this repository, with `/healthz` as the health check.
 
 ## Dashboard
 
