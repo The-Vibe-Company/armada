@@ -115,9 +115,9 @@ Every command after 'armada login' acts as the user who signed in. golden comman
 when you belong to more than one org.
 
 Environment:
-  ARMADA_URL                               Login server (default: https://armada.thevibecompany.co). Also the
-                                           Armada server for armada org, armada creds, armada golden create,
-                                           armada launch and armada logs
+  ARMADA_TOKEN                             API token for non-interactive authentication. Takes precedence over
+                                           a saved login session.
+  ARMADA_URL                               Armada API server (default: https://armada.thevibecompany.co).
 `;
 
 /** Runs one command line and returns the process exit code. */
@@ -462,6 +462,13 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
 
 const FOLLOW_DELAY_MS = 1_000;
 
+type LogsWireResult = {
+  events: Awaited<ReturnType<Provider["events"]>>["events"];
+  cursor: string | null;
+  hasMore: boolean;
+  settled: boolean;
+};
+
 async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const args = parseArgs(argv);
   const id = oneName(args.positionals);
@@ -475,24 +482,25 @@ async function logs(argv: readonly string[], io: Io, deps: Deps): Promise<number
     ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
   });
   let settled = false;
-  let cursor: string | undefined;
+  let cursor: string | null = null;
   while (!settled) {
-    const result = await client.request<{
-      events: Awaited<ReturnType<Provider["events"]>>["events"];
-      cursor: string | null;
-      hasMore: boolean;
-      settled: boolean;
-    }>("/api/v1/logs/read", {
+    const result: LogsWireResult = await client.request<LogsWireResult>("/api/v1/logs/read", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id, all, follow, ...(cursor ? { cursor } : {}) }),
+      body: JSON.stringify({ id, all, follow, ...(cursor === null ? {} : { cursor }) }),
       // A server-side follow/read may wait for provider events; keep a bounded, endpoint-specific limit.
       signal: AbortSignal.timeout(10 * 60_000),
     });
     if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
     else for (const event of result.events) io.out(`${eventText(event)}\n`);
-    cursor = result.cursor ?? cursor;
-    settled = result.settled;
+    const nextCursor: string | null = result.cursor ?? cursor;
+    const progressed = nextCursor !== cursor;
+    if ((all || follow) && result.hasMore && !progressed) {
+      throw new GoldenError("invalid_config", "Armada logs response has more events but did not advance its cursor.");
+    }
+    cursor = nextCursor;
+    const drain = all || follow;
+    settled = !drain || (!result.hasMore && (!follow || result.settled));
     if (!settled)
       await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(FOLLOW_DELAY_MS);
   }
