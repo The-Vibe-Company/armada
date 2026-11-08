@@ -24,8 +24,9 @@ const SCAN_ROOTS = "/home/user /root /tmp";
  * token found, `95` is the scan itself failing to run (a permission or I/O error, or git refusing
  * to answer), and anything else (a crash) is also treated as a failure. A real error is never
  * confused with "nothing found": `grep` exits 1 for no match and 2+ for a real failure, and only
- * the latter stops the scan itself; `git`'s own exit code is always checked on its own, never
- * conflated with grep's by piping the two together. A root we were never granted any access to at
+ * the latter stops the scan itself; `git`'s own exit code is always checked on its own (via
+ * `PIPESTATUS` where `cat-file` is piped straight into `grep`, or a dedicated exit check where it
+ * is not), never conflated with grep's. A root we were never granted any access to at
  * all (the ordinary case for `/root` under the sandbox's own unprivileged user) is skipped, not an
  * error: there is nothing a process with no access to a tree could have put there, or could have
  * hidden from this scan by chmod-ing one file inside a tree we *do* otherwise own. Only filenames
@@ -50,6 +51,10 @@ export async function scanGoldenSandbox(provider: Provider, sandboxId: string): 
     // root outright when we cannot even read or search it, the same way a missing one is skipped.
     "for root in $roots; do",
     '  [ -d "$root" ] || continue',
+    // The ordinary case for `/root` under the sandbox's own unprivileged user is no access to it at
+    // all; grep would then exit 2 for "permission denied" on the directory itself, which is not the
+    // same as a hidden file inside a root we do own, and must not fail the scan closed: skip a root
+    // outright when we cannot even read or search it, the same way a missing one is skipped.
     '  [ -r "$root" ] && [ -x "$root" ] || continue',
     '  grep -rlaE --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev "$pattern" "$root" >/dev/null 2>/dev/null',
     "  status=$?",
@@ -59,10 +64,11 @@ export async function scanGoldenSandbox(provider: Provider, sandboxId: string): 
     // Git history, reachable and unreachable objects alike: a token committed, then amended or reset
     // away, still exists as a loose object until a `git gc` that this flow never runs. `--batch-all-
     // objects` lists every object in the database directly, not just what `git log` can reach from a
-    // ref. Blobs (file content), commits and tags (their messages) are all read as text; only trees
-    // (directory listings of other objects' hashes and names, never file content) are skipped. Each
-    // object is read into its own 0600 temp file, removed right after it is checked — never piped
-    // straight into grep, so git's exit code and grep's are never conflated by one combined status.
+    // ref, written to its own temp file so the listing command's own exit code is checked on its own.
+    // Blobs, commits and tags are all read as text (trees are skipped: they list other objects' hashes
+    // and names, never file content); each is streamed straight from `cat-file -p` into `grep` over a
+    // pipe, so no expanded plaintext object ever touches disk, and `PIPESTATUS` keeps git's exit code
+    // and grep's distinct rather than conflating them into one combined status.
     "for gitdir in $(find $roots -maxdepth 8 -type d -name .git 2>/dev/null); do",
     '  repo=$(dirname "$gitdir")',
     "  objects_file=$(mktemp)",
@@ -77,15 +83,11 @@ export async function scanGoldenSandbox(provider: Provider, sandboxId: string): 
     // database): a scan that cannot inspect every object cannot say the builder is clean.
     '      *) rm -f "$objects_file"; exit 95 ;;',
     "    esac",
-    "    object_file=$(mktemp)",
-    '    git -C "$repo" cat-file -p "$sha" >"$object_file" 2>/dev/null',
-    "    git_status=$?",
-    '    if [ "$git_status" -ne 0 ]; then rm -f "$object_file" "$objects_file"; exit 95; fi',
-    '    grep -qaE "$pattern" "$object_file"',
-    "    grep_status=$?",
-    '    rm -f "$object_file"',
-    '    if [ "$grep_status" -eq 0 ]; then rm -f "$objects_file"; exit 97; fi',
-    '    if [ "$grep_status" -gt 1 ]; then rm -f "$objects_file"; exit 95; fi',
+    '    git -C "$repo" cat-file -p "$sha" | grep -aEq "$pattern"',
+    '    statuses=("${PIPESTATUS[@]}")',
+    '    if [ "${statuses[0]}" -ne 0 ]; then rm -f "$objects_file"; exit 95; fi',
+    '    if [ "${statuses[1]}" -eq 0 ]; then rm -f "$objects_file"; exit 97; fi',
+    '    if [ "${statuses[1]}" -gt 1 ]; then rm -f "$objects_file"; exit 95; fi',
     '  done <"$objects_file"',
     '  rm -f "$objects_file"',
     "done",
