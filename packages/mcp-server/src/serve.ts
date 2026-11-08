@@ -4,13 +4,12 @@ import {
   createSqlVaultStore,
   githubAppFromEnv,
   githubInstallationAppFromEnv,
-  resolveBoatKey,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { configFromEnv } from "./config.ts";
 import { type ControlOptions, handleControlRequest } from "./control.ts";
 import { createSqlData } from "./data.ts";
-import { createHandler, type Route } from "./http.ts";
+import { createHandler, providerRegistry, type Route } from "./http.ts";
 import { bunSql } from "./sql.ts";
 
 export { bunSql };
@@ -51,16 +50,18 @@ export async function startServer(
     github: { app: githubApp },
     providerFor,
     goldenCreate,
+    providers: providerRegistry({ vault: store, encryptionKey: config.encryptionKey, providerFor }),
     logs: async (caller, sandboxId) => {
       const scoped = data(caller);
       const sandbox = await scoped.sandboxes.get(sandboxId);
       if (!sandbox) throw new Error("No such sandbox.");
-      const boat = await resolveBoatKey(store, config.encryptionKey, {
-        userId: caller.userId,
-        orgId: sandbox.orgId,
-        visibility: sandbox.visibility,
-      });
-      return { provider: providerFor(boat.key), boatId: sandbox.boatId };
+      return {
+        provider: await providerRegistry({ vault: store, encryptionKey: config.encryptionKey, providerFor }).resolve(
+          sandbox,
+          caller,
+        ),
+        providerSandboxId: sandbox.providerSandboxId,
+      };
     },
   };
   const handler = createHandler({

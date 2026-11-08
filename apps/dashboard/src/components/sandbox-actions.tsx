@@ -1,10 +1,11 @@
 "use client";
 
-import type { SandboxStatus } from "@armada/core";
+import type { Harness, SandboxStatus } from "@armada/core";
 import { SquareIcon } from "lucide-react";
 import { useActionState } from "react";
 import { sendToSandbox, stopSandbox } from "@/app/actions/sandboxes";
 import { ActionForm, SubmitButton } from "@/components/action-form";
+import { type ModelCatalog, ModelFields } from "@/components/model-fields";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,7 +31,19 @@ import { Textarea } from "@/components/ui/textarea";
 const CAN_STOP: readonly SandboxStatus[] = ["starting", "ready", "running"];
 const CAN_SEND: readonly SandboxStatus[] = ["ready", "running"];
 
-export function SandboxActions({ sandboxId, status }: { sandboxId: string; status: SandboxStatus }) {
+export function SandboxActions({
+  sandboxId,
+  status,
+  harness,
+  catalog,
+  launchedModel,
+}: {
+  sandboxId: string;
+  status: SandboxStatus;
+  harness: Harness;
+  catalog: ModelCatalog;
+  launchedModel: string | null;
+}) {
   return (
     <div className="flex gap-2">
       {CAN_SEND.includes(status) && (
@@ -48,6 +61,13 @@ export function SandboxActions({ sandboxId, status }: { sandboxId: string; statu
             <ActionForm action={sendToSandbox} resetOnSuccess className="space-y-3">
               <input type="hidden" name="sandbox" value={sandboxId} />
               <Textarea name="prompt" rows={5} required placeholder="What should the agent do?" aria-label="Message" />
+              <ModelFields
+                idPrefix={`send-${sandboxId}`}
+                harness={harness}
+                catalog={catalog}
+                keepLabel="As launched"
+                launchedModel={launchedModel}
+              />
               <SubmitButton>Send</SubmitButton>
             </ActionForm>
           </DialogContent>

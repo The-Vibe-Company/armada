@@ -153,6 +153,12 @@ export type Database = {
           config: Json;
           created_at: string;
           boat_sandbox_id: string | null;
+          provider: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id: string | null;
+          provider_snapshot_id: string | null;
+          modal_workspace: string | null;
+          modal_environment: string | null;
+          modal_app_id: string | null;
         };
         Insert: {
           id?: string;
@@ -164,6 +170,12 @@ export type Database = {
           config?: Json;
           created_at?: string;
           boat_sandbox_id?: string | null;
+          provider?: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id?: string | null;
+          provider_snapshot_id?: string | null;
+          modal_workspace?: string | null;
+          modal_environment?: string | null;
+          modal_app_id?: string | null;
         };
         Update: {
           id?: string;
@@ -175,6 +187,12 @@ export type Database = {
           config?: Json;
           created_at?: string;
           boat_sandbox_id?: string | null;
+          provider?: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id?: string | null;
+          provider_snapshot_id?: string | null;
+          modal_workspace?: string | null;
+          modal_environment?: string | null;
+          modal_app_id?: string | null;
         };
         Relationships: [
           {
@@ -412,7 +430,7 @@ export type Database = {
       sandboxes: {
         Row: {
           id: string;
-          boat_id: string;
+          boat_id: string | null;
           golden_id: string;
           org_id: string;
           owner_id: string;
@@ -423,10 +441,14 @@ export type Database = {
           stopped_at: string | null;
           deleted_at: string | null;
           status_reason: string | null;
+          model: string | null;
+          reasoning_effort: string | null;
+          provider: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id: string;
         };
         Insert: {
           id?: string;
-          boat_id: string;
+          boat_id?: string | null;
           golden_id: string;
           org_id: string;
           owner_id: string;
@@ -437,10 +459,14 @@ export type Database = {
           stopped_at?: string | null;
           deleted_at?: string | null;
           status_reason?: string | null;
+          model?: string | null;
+          reasoning_effort?: string | null;
+          provider: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id: string;
         };
         Update: {
           id?: string;
-          boat_id?: string;
+          boat_id?: string | null;
           golden_id?: string;
           org_id?: string;
           owner_id?: string;
@@ -451,6 +477,10 @@ export type Database = {
           stopped_at?: string | null;
           deleted_at?: string | null;
           status_reason?: string | null;
+          model?: string | null;
+          reasoning_effort?: string | null;
+          provider?: Database["public"]["Enums"]["sandbox_provider"];
+          provider_sandbox_id?: string;
         };
         Relationships: [
           {
@@ -529,11 +559,12 @@ export type Database = {
       [_ in never]: never;
     };
     Enums: {
-      credential_kind: "anthropic" | "openai" | "claude_oauth" | "boat" | "codex_auth";
+      credential_kind: "anthropic" | "openai" | "claude_oauth" | "boat" | "codex_auth" | "modal";
       credential_scope: "user" | "org";
       harness: "claude" | "codex";
       member_role: "admin" | "member";
       notify_status: "finished" | "failed";
+      sandbox_provider: "boat" | "modal";
       sandbox_status: "starting" | "ready" | "running" | "stopping" | "stopped" | "failed" | "deleted";
       visibility: "org" | "private";
     };

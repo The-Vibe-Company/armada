@@ -59,18 +59,22 @@ describe("launch through the Armada API", () => {
       },
     );
     expect(code).toBe(0);
-    const launched = JSON.parse(out);
-    expect(launched).toMatchObject({
-      id: "11111111-1111-4111-8111-111111111111",
+    expect(JSON.parse(out)).toMatchObject({
       golden: "web",
       harness: "codex",
       promptId: "prompt",
+      provider: "boat",
+      providerSandboxId: "bx_server",
+      boatId: "bx_server",
+      id: "11111111-1111-4111-8111-111111111111",
       expiresAt: "2026-11-08T16:00:00.000Z",
     });
     expect(calls[0]?.url).toBe("https://armada.thevibecompany.co/api/v1/sandbox/launch");
     expect(calls[0]?.headers.get("authorization")).toBe(`Bearer ${token}`);
     expect(await calls[0]?.json()).toEqual({
       golden: "web",
+      model: "gpt-6.1-sol",
+      reasoningEffort: "medium",
       harness: "codex",
       prompt: "do it",
       ttlSeconds: 1800,

@@ -2,12 +2,15 @@ import type { Harness } from "./contract.ts";
 import type { SandboxStatus } from "./database.types.ts";
 import type { Sql } from "./golden-store.ts";
 import { type Provider, ProviderError } from "./provider.ts";
+import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts";
 
 /** An Armada sandbox: the metadata of one fork of a golden. The provider keeps the disk and the conversations. */
 export interface SandboxRecord {
   id: string;
-  /** The provider's own id (`bx_...` on boat). */
-  boatId: string;
+  /** Its golden's provider: where it runs, for good. */
+  provider: SandboxProviderId;
+  /** The provider's own id (`bx_...` on boat). Unique per provider only. */
+  providerSandboxId: string;
   goldenId: string;
   orgId: string;
   ownerId: string;
@@ -19,6 +22,10 @@ export interface SandboxRecord {
   deletedAt: string | null;
   /** Why it failed (a usage limit, an expired login, a launch error). Null unless the status is failed. */
   statusReason: string | null;
+  /** The model its turns run with. Null only for sandboxes launched before the choice was recorded. */
+  model: string | null;
+  /** The reasoning effort its turns run with. Null exactly when `model` is. */
+  reasoningEffort: string | null;
 }
 
 export interface SandboxPatch {
@@ -39,12 +46,16 @@ export interface SandboxPatch {
 export interface SandboxStore {
   insert(input: {
     id: string;
-    boatId: string;
+    /** Must be the golden's provider: the database refuses another. */
+    provider: SandboxProviderId;
+    providerSandboxId: string;
     goldenId: string;
     orgId: string;
     ownerId: string;
     harness: Harness;
     status: SandboxStatus;
+    model: string;
+    reasoningEffort: string;
   }): Promise<SandboxRecord>;
   update(id: string, patch: SandboxPatch): Promise<void>;
   /** Sandboxes created before `cutoff` (ISO) that are not deleted yet, oldest first. */
@@ -60,7 +71,7 @@ export interface CleanupResult {
 }
 
 /**
- * Deletes the sandboxes older than `retentionDays` from the provider and marks them `deleted`.
+ * Deletes this provider's sandboxes older than `retentionDays` from it and marks them `deleted`.
  * A sandbox the provider no longer has counts as deleted. One failure does not stop the others.
  */
 export async function cleanupSandboxes(
@@ -74,8 +85,10 @@ export async function cleanupSandboxes(
   const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString();
   const result: CleanupResult = { deleted: [], failed: [] };
   for (const sandbox of await store.listBefore(cutoff)) {
+    // Another provider's sandboxes are that provider's cleanup to delete.
+    if (sandbox.provider !== provider.id) continue;
     try {
-      await provider.delete({ sandboxId: sandbox.boatId });
+      await provider.delete({ sandboxId: sandbox.providerSandboxId });
     } catch (error) {
       if (!(error instanceof ProviderError && error.code === "not_found")) {
         result.failed.push({ id: sandbox.id, message: error instanceof Error ? error.message : String(error) });
@@ -94,7 +107,8 @@ export async function cleanupSandboxes(
 
 export interface SandboxRow {
   id: string;
-  boat_id: string;
+  provider: string;
+  provider_sandbox_id: string;
   golden_id: string;
   org_id: string;
   owner_id: string;
@@ -105,22 +119,36 @@ export interface SandboxRow {
   stopped_at: string | Date | null;
   deleted_at: string | Date | null;
   status_reason: string | null;
+  model: string | null;
+  reasoning_effort: string | null;
 }
 
 /** The longest failure reason kept; a longer one is cut. */
 export const MAX_STATUS_REASON_LENGTH = 2000;
 
-const COLUMNS = `id, boat_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-  conversation_ids, created_at, stopped_at, deleted_at, status_reason`;
+const COLUMNS = `id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
+  conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort`;
 
 export function createSqlSandboxStore(sql: Sql): SandboxStore {
   return {
     async insert(input): Promise<SandboxRecord> {
       const result = await sql.query<SandboxRow>(
-        `insert into public.sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status)
-         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status)
+        `insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
+           reasoning_effort, provider)
+         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider)
          returning ${COLUMNS}`,
-        [input.id, input.boatId, input.goldenId, input.orgId, input.ownerId, input.harness, input.status],
+        [
+          input.id,
+          input.providerSandboxId,
+          input.goldenId,
+          input.orgId,
+          input.ownerId,
+          input.harness,
+          input.status,
+          input.model,
+          input.reasoningEffort,
+          input.provider,
+        ],
       );
       const row = result.rows[0];
       if (!row) throw new Error("The sandbox could not be recorded.");
@@ -162,9 +190,11 @@ export function createSqlSandboxStore(sql: Sql): SandboxStore {
 
 export function mapSandboxRow(row: SandboxRow): SandboxRecord {
   if (row.harness !== "claude" && row.harness !== "codex") throw new Error("Sandbox row harness is invalid.");
+  if (!isSandboxProvider(row.provider)) throw new Error("Sandbox row provider is invalid.");
   return {
     id: row.id,
-    boatId: row.boat_id,
+    provider: row.provider,
+    providerSandboxId: row.provider_sandbox_id,
     goldenId: row.golden_id,
     orgId: row.org_id,
     ownerId: row.owner_id,
@@ -175,6 +205,8 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
     stoppedAt: row.stopped_at === null ? null : iso(row.stopped_at),
     deletedAt: row.deleted_at === null ? null : iso(row.deleted_at),
     statusReason: row.status_reason ?? null,
+    model: row.model ?? null,
+    reasoningEffort: row.reasoning_effort ?? null,
   };
 }
 

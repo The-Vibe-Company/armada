@@ -60,7 +60,7 @@ test("a timeout and a background command both stop the build", async () => {
 
 /** Extracts and shell-unquotes the inner scan script from the "run as root, else sudo -n" wrapper. */
 function innerScript(script: string): string {
-  const payload = script.match(/then ('[\s\S]*'); else exec sudo/)?.[1];
+  const payload = script.match(/then (?:exec bash -c )?('[\s\S]*'); else exec sudo/)?.[1];
   if (!payload) throw new Error("missing controlled sudo scan payload");
   const decoded = spawnSync("bash", ["-c", `printf %s ${payload}`], { encoding: "utf8" });
   if (decoded.status !== 0) throw new Error("could not decode scan payload");
@@ -133,11 +133,15 @@ test("real shell: a token-shaped filename is rejected without printing it", asyn
   try {
     const token = `ghp_${"F".repeat(36)}`;
     writeFileSync(join(roots.tmp, token), "");
-    const isolated = script.replace(
-      "roots='/home/user /root /tmp'",
-      `roots='${roots.home} ${roots.root} ${roots.tmp}'`,
-    );
-    const result = spawnSync("bash", ["-c", isolated], { encoding: "utf8" });
+    const quoted = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    const isolated = script.replaceAll(quoted(innerScript(script)), quoted(withIsolatedRoots(script, roots)));
+    const bin = join(base, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "id"), "#!/bin/sh\necho 0\n", { mode: 0o700 });
+    const result = spawnSync("bash", ["-c", isolated], {
+      encoding: "utf8",
+      env: { PATH: `${bin}:${process.env.PATH}`, HOME: roots.home },
+    });
     expect(result.status).toBe(97);
     expect(`${result.stdout}${result.stderr}`).not.toContain(token);
   } finally {

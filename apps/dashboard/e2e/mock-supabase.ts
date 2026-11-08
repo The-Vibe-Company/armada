@@ -33,6 +33,8 @@ type State = {
   githubInstallations: Row[];
   events: Map<string, Row[]>;
   sent: string[];
+  /** The arguments of every launch and send, as the dashboard serialized them. */
+  toolCalls: { name: string; args: Row }[];
   otpEmails: string[];
 };
 
@@ -85,6 +87,7 @@ function seed(): State {
     ],
     events: new Map(),
     sent: [],
+    toolCalls: [],
     otpEmails: [],
   };
   state.events.set(id(30), [
@@ -118,7 +121,9 @@ function golden(gid: string, name: string, visibility: string, owner: string, sn
     name,
     visibility,
     owner_id: owner,
+    provider: "boat",
     boat_snapshot_id: snapshot,
+    provider_snapshot_id: snapshot,
     config: {},
     created_at: "2026-11-08T10:00:00.000Z",
   };
@@ -135,7 +140,9 @@ function sandbox(
 ): Row {
   return {
     id: sid,
+    provider: "boat",
     boat_id: boat,
+    provider_sandbox_id: boat,
     golden_id: goldenId,
     org_id: ACME,
     owner_id: owner,
@@ -515,6 +522,9 @@ function mcp(message: RpcMessage, userId: string | null): Response {
   if (message.method !== "tools/call") return reply({});
 
   const args = (message.params?.arguments ?? {}) as Row;
+  const name = String(message.params?.name);
+  if (name === "launch" || name === "send") state.toolCalls.push({ name, args });
+  if (name === "launch") return launch(args, userId, reply);
   const target = state.sandboxes.find((row) => row.id === args.id);
   const visible = visibleRows("sandboxes", userId).some((row) => row === target);
   const text = (value: unknown, isError = false) =>
@@ -547,6 +557,29 @@ function mcp(message: RpcMessage, userId: string | null): Response {
     default:
       return text("unknown tool", true);
   }
+}
+
+function launch(args: Row, userId: string, reply: (result: unknown) => Response): Response {
+  const source = visibleRows("goldens", userId).find(
+    (row) => row.name === args.golden && row.provider === args.provider && row.org_id === args.org,
+  );
+  if (!source) return reply({ content: [{ type: "text", text: "No such golden." }], isError: true });
+  const row = sandbox(
+    crypto.randomUUID(),
+    `bx_launched_${++sequence}`,
+    String(source.id),
+    userId,
+    String(args.harness),
+    args.prompt ? "running" : "ready",
+    new Date().toISOString(),
+  );
+  row.model = args.model;
+  row.reasoning_effort = args.reasoning_effort;
+  state.sandboxes.unshift(row);
+  return reply({
+    structuredContent: { id: row.id },
+    content: [{ type: "text", text: JSON.stringify({ id: row.id }) }],
+  });
 }
 
 /** GitHub's token and user endpoints, reached by the app server through e2e/github-fetch.cjs. */
@@ -640,7 +673,7 @@ function control(url: URL, body: Row): Response {
     return json(state.github_connections.map((row) => ({ ...row })));
   }
   if (url.pathname === "/__test/state") {
-    return json({ otpEmails: state.otpEmails, sent: state.sent });
+    return json({ otpEmails: state.otpEmails, sent: state.sent, toolCalls: state.toolCalls });
   }
   return json({ message: "not found" }, 404);
 }

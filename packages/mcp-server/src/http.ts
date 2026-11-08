@@ -3,10 +3,15 @@ import {
   CLIENT_CONFIG_PATH,
   type ClientConfig,
   type CredentialReader,
+  createProviderRegistry,
   type GoldenCreateService,
   type LaunchOptions,
+  type ModalBinding,
+  type ModalTokenPair,
   type Provider,
+  type ProviderRegistry,
   resolveBoatKey,
+  resolveModalTokens,
   VERSION,
 } from "@armada/core/server";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -48,6 +53,13 @@ export interface HandlerOptions {
   goldenCreate?: GoldenCreateService;
   /** A provider for one boat.dev key. The key is used in this process only. */
   providerFor(apiKey: string): Provider;
+  /**
+   * The Modal provider for a Modal golden or sandbox, given the caller's resolved Modal token pair and the
+   * golden's pinned binding. Absent until the Modal adapter (#513): a Modal record then gets a typed
+   * `provider_not_configured`, never a Boat provider. The adapter must refuse tokens of another workspace
+   * than `binding.workspace`, so a rotated or replaced token pair cannot redirect a pinned golden.
+   */
+  modalProviderFor?: (tokens: ModalTokenPair, binding: ModalBinding) => Provider;
   /** Mounted after the OAuth routes and before `/mcp`, for example #461's control API. */
   routes?: readonly Route[];
   now?: () => Date;
@@ -114,14 +126,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         launchCredentials: launchCredentials(options.vault, options.encryptionKey, options.github),
         exposedSecrets: (orgId) =>
           exposedSecrets(options.vault, options.encryptionKey, { userId: caller.userId, orgId }),
-        async provider(golden) {
-          const { key } = await resolveBoatKey(options.vault, options.encryptionKey, {
-            userId: caller.userId,
-            orgId: golden.orgId,
-            visibility: golden.visibility,
-          });
-          return options.providerFor(key);
-        },
+        provider: (target) => providerRegistry(options).resolve(target, caller),
         now,
         sleep,
         logError: log,
@@ -138,4 +143,37 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       await server.close();
     }
   };
+}
+
+/**
+ * Routes a record to its own provider with the caller's management credential for it: the boat.dev key for
+ * Boat, the Modal token pair for Modal. Neither ever leaves this process.
+ */
+export function providerRegistry(
+  options: Pick<HandlerOptions, "vault" | "encryptionKey" | "providerFor" | "modalProviderFor">,
+): ProviderRegistry {
+  const modal = options.modalProviderFor;
+  return createProviderRegistry({
+    boat: async (target, caller) => {
+      const { key } = await resolveBoatKey(options.vault, options.encryptionKey, {
+        userId: caller.userId,
+        orgId: target.orgId,
+        visibility: target.visibility,
+      });
+      return options.providerFor(key);
+    },
+    ...(modal
+      ? {
+          modal: async (target, caller) => {
+            if (!target.modal) throw new Error("A Modal target carries its binding.");
+            const tokens = await resolveModalTokens(options.vault, options.encryptionKey, {
+              userId: caller.userId,
+              orgId: target.orgId,
+              visibility: target.visibility,
+            });
+            return modal({ tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret }, target.modal);
+          },
+        }
+      : {}),
+  });
 }

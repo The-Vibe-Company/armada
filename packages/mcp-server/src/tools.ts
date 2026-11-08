@@ -13,9 +13,17 @@ import {
   launchSandbox,
   MAX_LAUNCH_TTL_SECONDS,
   type MemberRole,
+  MODEL_CATALOG,
+  type ModelChoice,
+  PROVIDER_LIMITS,
   type Provider,
   ProviderError,
+  ProviderRoutingError,
+  type ProviderTarget,
   redact,
+  resolveModelChoice,
+  SANDBOX_PROVIDERS,
+  type SandboxProviderId,
   type SandboxStatus,
   scanGoldenSandbox,
   snapshotGolden,
@@ -40,7 +48,8 @@ export interface ToolContext {
   /** The caller's own and one org's model credentials, decrypted, for redacting command output. */
   exposedSecrets(orgId: string): Promise<string[]>;
   /** A provider paying with the boat.dev key of a golden of this org and visibility. The key never leaves the server. */
-  provider(golden: { orgId: string; visibility: Visibility }): Promise<Provider>;
+  /** The provider of a golden's or a sandbox's own backend (see `ProviderRegistry`). Its key never leaves the server. */
+  provider(target: ProviderTarget): Promise<Provider>;
   now(): Date;
   sleep(ms: number): Promise<void>;
   launch?: LaunchOptions;
@@ -72,13 +81,38 @@ export const serverInfo = { name: "armada" } as const;
 const id = z.string().describe("Armada's sandbox id (a uuid, as returned by launch and list).");
 const conversationId = z.string().min(1).optional().describe("A conversation of the sandbox. Default: the latest.");
 
+const modelCatalogText = Object.entries(MODEL_CATALOG)
+  .map(
+    ([harness, entry]) =>
+      `${harness}: ${entry.models.map((option) => `${option.id} (${option.reasoningEfforts.join("|")})`).join(", ")}; ` +
+      `default ${entry.defaultModel} ${entry.defaultReasoningEffort}`,
+  )
+  .join(". ");
+const modelInput = z.string().min(1).optional().describe(`The model, by id. ${modelCatalogText}.`);
+const effortInput = z.string().min(1).optional().describe("The reasoning effort; one the model accepts (see model).");
+const modelOutput = {
+  model: z.string().nullable().describe("The model its turns run with. Null: launched before Armada recorded it."),
+  reasoningEffort: z.string().nullable(),
+};
+
+const providerOutput = z.enum(SANDBOX_PROVIDERS).describe("The sandbox provider it runs on, fixed for its life.");
+const compat = (name: string) =>
+  z.string().nullable().describe(`The same as ${name} on a Boat golden or sandbox; null on any other provider.`);
+
 const golden = z.object({
   name: z.string(),
   orgId: z.string(),
   visibility: z.enum(["org", "private"]),
   ownerId: z.string(),
-  boatSnapshotId: z.string().nullable(),
-  boatSandboxId: z.string().nullable(),
+  provider: providerOutput,
+  providerSnapshotId: z.string().nullable(),
+  providerSandboxId: z.string().nullable(),
+  modal: z
+    .object({ workspace: z.string(), environment: z.string(), appId: z.string() })
+    .nullable()
+    .describe("The Modal workspace, environment and App id a Modal golden is pinned to."),
+  boatSnapshotId: compat("providerSnapshotId"),
+  boatSandboxId: compat("providerSandboxId"),
   repos: z.number().int(),
   config: z.object({
     repos: z.array(z.object({ url: z.string(), branch: z.string(), dir: z.string() })),
@@ -88,10 +122,13 @@ const golden = z.object({
 
 const sandbox = z.object({
   id: z.string(),
-  boatId: z.string(),
+  provider: providerOutput,
+  providerSandboxId: z.string(),
+  boatId: compat("providerSandboxId"),
   golden: z.string(),
   visibility: z.enum(["org", "private"]),
   harness: z.enum(HARNESSES),
+  ...modelOutput,
   status: z.enum(SANDBOX_STATUSES),
   statusReason: z.string().nullable(),
   orgId: z.string(),
@@ -113,6 +150,7 @@ const status = {
   golden: z.string(),
   visibility: z.enum(["org", "private"]),
   harness: z.enum(HARNESSES),
+  ...modelOutput,
   status: z.enum(SANDBOX_STATUSES),
   statusReason: z.string().nullable(),
   providerState: z.string().nullable(),
@@ -202,7 +240,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       title: "List goldens",
       description:
         "The goldens you can launch from: your orgs', and your own private ones. A golden without a " +
-        "boatSnapshotId cannot be launched yet.",
+        "providerSnapshotId cannot be launched yet. The same name may exist on several providers.",
       input: {},
       output: { goldens: z.array(golden) },
       readOnly: true,
@@ -246,7 +284,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const visibility: Visibility = args.private ? "private" : "org";
       const member = resolveCreateOrg(caller.orgs, args.org);
       const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
-      const provider = await context.provider({ orgId: member.orgId, visibility });
+      const provider = await context.provider({ orgId: member.orgId, visibility, provider: "boat", modal: null });
       const result = await context.goldenCreate.create(
         provider,
         actor,
@@ -284,7 +322,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (rows.length !== 1 || !rows[0]) throw new ToolError("not_found", `No golden named '${args.name}'.`);
       const existingGolden = rows[0];
       const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
-      const provider = await context.provider({ orgId: existingGolden.orgId, visibility: existingGolden.visibility });
+      const provider = await context.provider(existingGolden);
       const result = await context.goldenCreate.create(
         provider,
         actor,
@@ -315,11 +353,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (rows.length !== 1 || !rows[0]) throw new ToolError("not_found", `No golden named '${args.name}'.`);
       const golden = rows[0];
       const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
-      const provider = await context.provider({ orgId: golden.orgId, visibility: golden.visibility });
+      const provider = await context.provider(golden);
       let target = golden;
-      if (!target.boatSandboxId) target = (await connectGolden(provider, data.goldens, actor, target.name)).golden;
-      if (!target.boatSandboxId) throw new ToolError("conflict", `Golden '${target.name}' has no sandbox yet.`);
-      await scanGoldenSandbox(provider, target.boatSandboxId);
+      if (!target.providerSandboxId) target = (await connectGolden(provider, data.goldens, actor, target.name)).golden;
+      if (!target.providerSandboxId) throw new ToolError("conflict", `Golden '${target.name}' has no sandbox yet.`);
+      await scanGoldenSandbox(provider, target.providerSandboxId);
       const saved = await snapshotGolden(provider, data.goldens, actor, target.name, context.launch ?? {});
       return { name: saved.golden.name, snapshot: saved.snapshotName };
     },
@@ -341,7 +379,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           .string()
           .optional()
           .describe("The golden's orgId, as in golden_list. Needed only when the name is in several of your orgs."),
+        provider: z
+          .enum(SANDBOX_PROVIDERS)
+          .optional()
+          .describe("The golden's provider. Needed only when the name exists on several providers."),
         harness: z.enum(HARNESSES).describe("claude (Claude Code) or codex."),
+        model: modelInput,
+        reasoning_effort: effortInput,
         prompt: z.string().min(1).optional().describe("The first instruction. Leave out for an idle sandbox."),
         ttl_seconds: z
           .number()
@@ -349,14 +393,20 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           .min(1)
           .max(MAX_LAUNCH_TTL_SECONDS)
           .optional()
-          .describe(`Seconds before the machine stops by itself. Default ${DEFAULT_LAUNCH_TTL_SECONDS} (4 hours).`),
+          .describe(
+            `Seconds before the machine stops by itself. Default ${DEFAULT_LAUNCH_TTL_SECONDS} (4 hours). At most ` +
+              `${providerLimitsText}; a longer TTL is refused.`,
+          ),
       },
       output: {
         id: z.string(),
-        boatId: z.string(),
+        provider: providerOutput,
+        providerSandboxId: z.string(),
+        boatId: compat("providerSandboxId"),
         golden: z.string(),
         visibility: z.enum(["org", "private"]),
         harness: z.enum(HARNESSES),
+        ...modelOutput,
         status: z.enum(SANDBOX_STATUSES),
         conversationIds: z.array(z.string()),
         promptId: z.string().nullable(),
@@ -374,8 +424,10 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       },
     },
     async (args) => {
+      // Refused before any lookup or allocation.
+      resolveModelChoice(args.harness, { model: args.model, reasoningEffort: args.reasoning_effort });
       const actor = await launchActor(args.golden, args.org);
-      const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden);
+      const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
       const provider = await context.provider(chosen);
       const result = await launchSandbox(
         provider,
@@ -383,7 +435,10 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         actor,
         {
           golden: args.golden,
+          provider: chosen.provider,
           harness: args.harness,
+          ...(args.model === undefined ? {} : { model: args.model }),
+          ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
           ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
           ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
         },
@@ -391,10 +446,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       );
       return {
         id: result.sandbox.id,
-        boatId: result.sandbox.boatId,
+        ...sandboxIds(result.sandbox),
         golden: result.golden.name,
         visibility: result.golden.visibility,
         harness: result.sandbox.harness,
+        model: result.sandbox.model,
+        reasoningEffort: result.sandbox.reasoningEffort,
         status: result.sandbox.status,
         conversationIds: result.sandbox.conversationIds,
         promptId: result.promptId ?? null,
@@ -429,10 +486,12 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       return {
         sandboxes: rows.map((row) => ({
           id: row.id,
-          boatId: row.boatId,
+          ...sandboxIds(row),
           golden: row.golden,
           visibility: row.visibility,
           harness: row.harness,
+          model: row.model,
+          reasoningEffort: row.reasoningEffort,
           status: row.status,
           statusReason: row.statusReason,
           orgId: row.orgId,
@@ -505,7 +564,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
-      const page = await readLogs(provider, found.boatId, {
+      const page = await readLogs(provider, found.providerSandboxId, {
         ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
         ...(args.conversation_id ? { conversation_id: args.conversation_id } : {}),
         ...(args.limit ? { limit: args.limit } : {}),
@@ -522,11 +581,14 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       description:
         "Gives the agent its next instruction as a new turn. Without conversation_id the first send of an idle " +
         "sandbox opens a conversation and later sends continue the latest one. To redirect a turn that is " +
-        "still running, use steer.",
+        "still running, use steer. The turn runs with the model and effort chosen at launch; model and " +
+        "reasoning_effort override them for this turn only.",
       input: {
         id,
         prompt: z.string().min(1).describe("The instruction."),
         conversation_id: conversationId,
+        model: modelInput,
+        reasoning_effort: effortInput,
       },
       output: {
         id: z.string(),
@@ -538,12 +600,14 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
       if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
+      const choice = turnModel(found, { model: args.model, reasoningEffort: args.reasoning_effort });
       const conversation = args.conversation_id ?? found.conversationIds.at(-1);
       const receipt = await provider.prompt({
-        sandboxId: found.boatId,
+        sandboxId: found.providerSandboxId,
         harness: found.harness,
         text: args.prompt,
         ...(conversation ? { conversationId: conversation } : {}),
+        ...(choice ?? {}),
       });
       const conversationIds = found.conversationIds.includes(receipt.conversationId)
         ? found.conversationIds
@@ -585,7 +649,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const delivery = provider.capabilities[found.harness].steer;
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
       const receipt = await provider.steer({
-        sandboxId: found.boatId,
+        sandboxId: found.providerSandboxId,
         text: args.text,
         ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
       });
@@ -613,7 +677,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         throw new ToolError("unsupported", `${found.harness} cannot be interrupted here.`);
       }
       await provider.interrupt({
-        sandboxId: found.boatId,
+        sandboxId: found.providerSandboxId,
         ...(args.conversation_id ? { conversationId: args.conversation_id } : {}),
       });
       return { id: found.id, interrupted: true };
@@ -645,7 +709,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
       const result = await provider.exec({
-        sandboxId: found.boatId,
+        sandboxId: found.providerSandboxId,
         command: args.command,
         cwd: args.cwd ?? "/home/user",
         timeoutSeconds: args.timeout_seconds ?? 120,
@@ -680,7 +744,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
-      await provider.stop({ sandboxId: found.boatId });
+      await provider.stop({ sandboxId: found.providerSandboxId });
       const status: SandboxStatus = found.status === "failed" ? "failed" : "stopped";
       await data.sandboxes.update(found.id, { status, stoppedAt: context.now().toISOString() });
       return { id: found.id, status };
@@ -712,6 +776,37 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   return server;
 }
 
+/**
+ * What a send runs with: an override, else the sandbox's recorded choice. A sandbox launched before the
+ * choice was recorded keeps the provider's default unless the send names a model or an effort. An override
+ * applies to this turn only.
+ */
+function turnModel(
+  sandbox: SandboxView,
+  requested: { model?: string | undefined; reasoningEffort?: string | undefined },
+): ModelChoice | undefined {
+  const stored =
+    sandbox.model !== null && sandbox.reasoningEffort !== null
+      ? { model: sandbox.model, reasoningEffort: sandbox.reasoningEffort }
+      : undefined;
+  // The recorded choice was checked at launch; it is sent as is, even if the catalog has moved on since.
+  if (requested.model === undefined && requested.reasoningEffort === undefined) return stored;
+  return resolveModelChoice(sandbox.harness, requested, stored);
+}
+
+/** A sandbox's ids, with the Boat field of earlier clients kept for Boat sandboxes only. */
+function sandboxIds(row: { provider: SandboxProviderId; providerSandboxId: string }) {
+  return {
+    provider: row.provider,
+    providerSandboxId: row.providerSandboxId,
+    boatId: row.provider === "boat" ? row.providerSandboxId : null,
+  };
+}
+
+const providerLimitsText = Object.entries(PROVIDER_LIMITS)
+  .map(([provider, limits]) => `${limits.maxTtlSeconds} (${limits.maxTtlLabel}) on ${provider}`)
+  .join(", ");
+
 function fail(): never {
   throw new ToolError("internal", "Armada could not complete the call.");
 }
@@ -738,8 +833,12 @@ function goldenJson(row: GoldenRecord) {
     orgId: row.orgId,
     visibility: row.visibility,
     ownerId: row.ownerId,
-    boatSnapshotId: row.boatSnapshotId,
-    boatSandboxId: row.boatSandboxId,
+    provider: row.provider,
+    providerSnapshotId: row.providerSnapshotId,
+    providerSandboxId: row.providerSandboxId,
+    modal: row.modal,
+    boatSnapshotId: row.provider === "boat" ? row.providerSnapshotId : null,
+    boatSandboxId: row.provider === "boat" ? row.providerSandboxId : null,
     repos: row.config.repos.length,
     config: row.config,
   };
@@ -800,6 +899,7 @@ function describe(error: unknown): { code: string; message: string } {
     return { code: error.code, message: `${error.message}${tail}` };
   }
   if (error instanceof GoldenError) return { code: error.code, message: error.message };
+  if (error instanceof ProviderRoutingError) return { code: error.code, message: error.message };
   if (error instanceof ProviderError) {
     if (error.code === "no_running_turn") {
       return { code: error.code, message: "No turn is running. Use send to start one." };

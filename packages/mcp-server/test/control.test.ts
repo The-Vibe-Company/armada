@@ -78,6 +78,23 @@ describe("armada org and armada creds against the control API", () => {
     });
   });
 
+  test("CLI sandbox list shares the MCP scoped operation and rejects unavailable registry features", async () => {
+    await withServer(async ({ options, cli }) => {
+      const stan = cli(STAN);
+      await stan.run(["org", "create", "SandboxScope"]);
+      options.providers = { resolve: async () => fakeProvider() };
+      const listed = await stan.run(["list", "--json"]);
+      expect(listed.code).toBe(0);
+      expect(JSON.parse(listed.out)).toEqual({ sandboxes: [] });
+      const missing = await stan.run(["status", "33333333-3333-4333-8333-333333333333"]);
+      expect(missing.code).not.toBe(0);
+      expect(missing.out).toBe("");
+      const mcp = await stan.run(["mcp", "list"]);
+      expect(mcp.code).not.toBe(0);
+      expect(mcp.out).toBe("");
+    });
+  });
+
   test("a value is read from stdin or a file, never from an argument", async () => {
     await withServer(async ({ cli }) => {
       const stan = cli(STAN);
@@ -121,11 +138,11 @@ describe("armada org and armada creds against the control API", () => {
           expect(caller.userId).toBe(STAN);
           expect(id).toBe(armadaId);
           return {
-            boatId: "bx_server_only",
+            providerSandboxId: "bx_server_only",
             provider: {
-              id: "fake",
+              id: "boat",
               harnesses: ["claude", "codex"],
-              capabilities: {} as never,
+              capabilities: { claude: { reasoningEffort: true }, codex: { reasoningEffort: true } } as never,
               async events(request: { sandboxId: string }) {
                 calls.push({ path: request.sandboxId, authorization: "server-resolved" });
                 return {
@@ -178,11 +195,11 @@ describe("armada org and armada creds against the control API", () => {
         const logs: ControlOptions = {
           ...options,
           logs: async () => ({
-            boatId: "bx_follow",
+            providerSandboxId: "bx_follow",
             provider: {
-              id: "fake",
+              id: "boat",
               harnesses: ["claude", "codex"],
-              capabilities: {} as never,
+              capabilities: { claude: { reasoningEffort: true }, codex: { reasoningEffort: true } } as never,
               async events() {
                 return { events: prompt, cursor: status ? "cursor" : undefined, hasMore: false };
               },
@@ -217,11 +234,11 @@ describe("armada org and armada creds against the control API", () => {
       const logs: ControlOptions = {
         ...options,
         logs: async () => ({
-          boatId: "bx_follow",
+          providerSandboxId: "bx_follow",
           provider: {
-            id: "fake",
+            id: "boat",
             harnesses: ["claude", "codex"],
-            capabilities: {} as never,
+            capabilities: { claude: { reasoningEffort: true }, codex: { reasoningEffort: true } } as never,
             async events() {
               return { events: [], cursor: undefined, hasMore: false };
             },
@@ -365,6 +382,11 @@ describe("control API", () => {
       if (!response) throw new Error("missing response");
       expect(response.status).toBe(200);
       const text = await response.text();
+      expect(JSON.parse(text).sandbox).toMatchObject({
+        provider: "boat",
+        boatId: "bx_launch",
+        providerSandboxId: "bx_launch",
+      });
       expect(text).not.toContain("server-only-boat-key");
       expect(text).not.toContain("server-only-model-token");
     });
@@ -538,9 +560,9 @@ interface Who {
 
 function fakeProvider() {
   return {
-    id: "fake",
+    id: "boat",
     harnesses: ["claude", "codex"],
-    capabilities: {} as never,
+    capabilities: { claude: { reasoningEffort: true }, codex: { reasoningEffort: true } } as never,
     async fork() {
       return {
         id: "bx_launch",
