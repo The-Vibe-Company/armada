@@ -14,7 +14,7 @@
     },
     "apps/dashboard": {
       "name": "@armada/dashboard",
-      "version": "2.1.0",
+      "version": "2.2.0",
       "dependencies": {
         "@armada/core": "workspace:*",
         "@supabase/ssr": "0.12.7",
@@ -41,11 +41,11 @@
     },
     "packages/auth": {
       "name": "@armada/auth",
-      "version": "2.1.0",
+      "version": "2.2.0",
     },
     "packages/cli": {
       "name": "@armada/cli",
-      "version": "2.1.0",
+      "version": "2.2.0",
       "bin": {
         "armada": "./src/main.ts",
       },
@@ -59,11 +59,11 @@
     },
     "packages/core": {
       "name": "@armada/core",
-      "version": "2.1.0",
+      "version": "2.2.0",
     },
     "packages/mcp-server": {
       "name": "@armada/mcp-server",
-      "version": "2.1.0",
+      "version": "2.2.0",
       "dependencies": {
         "@armada/auth": "workspace:*",
         "@armada/core": "workspace:*",
@@ -74,7 +74,7 @@
     },
     "packages/provider-boat": {
       "name": "@armada/provider-boat",
-      "version": "2.1.0",
+      "version": "2.2.0",
       "dependencies": {
         "@armada/core": "workspace:*",
         "@boatdev/sdk": "^1.13.0",
