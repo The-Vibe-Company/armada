@@ -68,13 +68,15 @@ bun run build:all                    # dist/armada-<target> for linux and macOS,
 
 The credentials and the boat.dev key come from the encrypted store: the caller's own, else the org's (`resolveCredentials`, `resolveBoatKey`). A private golden uses its owner's personal boat key when there is one. `armada launch` asks the server for them (`ARMADA_URL`); it holds no encryption key and no service role key.
 
+Inside the sandbox, git and `gh` act as the person who launched it when they connected GitHub in the dashboard (Settings): the launch refreshes their GitHub App user token, injects `GH_TOKEN` and `GITHUB_TOKEN` (never into a golden), sets the git identity to `<id>+<login>@users.noreply.github.com` and configures git to use the token. Without a connection the launch still works and says `GitHub: not set up.` How it works, its limits and how to create the GitHub App: [docs/github-app.md](docs/github-app.md).
+
 ## Identity, orgs and credentials
 
 After `armada login` (`SUPABASE_URL`, `SUPABASE_ANON_KEY`), every command acts as that Supabase session: `armada golden` and `armada launch` read it, and take `--org <name>` when you belong to more than one org. The old `ARMADA_SUPABASE_URL`, `ARMADA_SUPABASE_ANON_KEY`, `ARMADA_ACCESS_TOKEN` and `ARMADA_ORG` are gone, as are `ARMADA_CLAUDE_OAUTH_TOKEN` and `ARMADA_OPENAI_API_KEY`. `armada login --email <address>` sends Supabase's sign-in email: clicking the link signs in through a local page (add `http://127.0.0.1:**` to the project's redirect URLs, as for GitHub and Google), and a code typed at the prompt signs in too when the email template carries `{{ .Token }}`. The CLI never holds a service role key or the encryption key.
 
 `armada org`, `armada creds` and `armada launch` call the server's control API (`handleControlRequest` in `@armada/mcp-server`, mounted by #464; the CLI finds it at `ARMADA_URL`). The server checks the Supabase access token, then uses the service role for what a user JWT cannot do (create an org with its first admin, find a person by email, read and write ciphertext).
 
-- Server env: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `ARMADA_DATABASE_URL` (a privileged Postgres connection, the Supabase `postgres` role), `ARMADA_ENCRYPTION_KEY` (32 random bytes, base64: `openssl rand -base64 32`).
+- Server env: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `ARMADA_DATABASE_URL` (a privileged Postgres connection, the Supabase `postgres` role), `ARMADA_ENCRYPTION_KEY` (32 random bytes, base64: `openssl rand -base64 32`), and `GITHUB_APP_CLIENT_ID` and `GITHUB_APP_CLIENT_SECRET` for the user's GitHub identity in sandboxes ([docs/github-app.md](docs/github-app.md)).
 - Credentials are AES-256-GCM ciphertext in `credentials.value_enc` (org boat.dev key: `orgs.boat_api_key_enc`). Values are read from stdin or `--file`, never from an argument, and never shown again. Kinds: `claude-oauth` (the token from `claude setup-token`, injected as `CLAUDE_CODE_OAUTH_TOKEN`), `anthropic` (`ANTHROPIC_API_KEY`), `openai` (`OPENAI_API_KEY`), `codex-auth` (`~/.codex/auth.json`, written into the sandbox), `boat`. OpenCode is deferred.
 - Members are people who already signed in once. There are no pending invitations.
 
@@ -96,7 +98,7 @@ The tools are `golden_list`, `launch` (the same rules as `armada launch`: `noEnv
 - `steer` reports `restart` for Codex (the turn is interrupted and the text sent as a new one) and `native` for Claude Code.
 - The boat key for tools stays on the server: an org golden uses the org's key, a private golden its owner's personal key. `launch/resolve` on the control API returns the boat key to the signed-in CLI, which launches locally (#479's design).
 
-Environment: `PORT`, `ARMADA_DATABASE_URL` (the Postgres connection string, server-side only; token, membership and credential lookups all use it, so the server holds no service role key), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `ARMADA_AUTH_SECRET`, `ARMADA_PUBLIC_URL` (the origin clients reach) and `ARMADA_ENCRYPTION_KEY` (32 bytes in base64, the key of the encrypted credentials).
+Environment: `PORT`, `ARMADA_DATABASE_URL` (the Postgres connection string, server-side only; token, membership and credential lookups all use it, so the server holds no service role key), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `ARMADA_AUTH_SECRET`, `ARMADA_PUBLIC_URL` (the origin clients reach), `ARMADA_ENCRYPTION_KEY` (32 bytes in base64, the key of the encrypted credentials) and `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET` (the GitHub App, to refresh a launching user's token; see [docs/github-app.md](docs/github-app.md)).
 
 `Dockerfile` builds the binary and runs `armada serve`; `railway.json` deploys it on Railway from this repository, with `/healthz` as the health check.
 
@@ -110,9 +112,12 @@ Environment: `PORT`, `ARMADA_DATABASE_URL` (the Postgres connection string, serv
 | `NEXT_PUBLIC_AUTH_PROVIDERS` | build and runtime | Social buttons to show, `github,google`. Empty: email sign-in only. |
 | `ARMADA_MCP_URL` | runtime | The Armada MCP server. Without it the dashboard lists sandboxes but cannot read live logs or stop and message them. |
 | `ARMADA_ENCRYPTION_KEY` | build and runtime | 32 random bytes, base64 (`openssl rand -base64 32`). `@armada/core` seals credentials with AES-256-GCM before they are stored. The same name and helper are what credential resolution (#461) uses. Without the key the dashboard refuses to save one. Next.js inlines this name, so set it for the build as well as runtime. |
+| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` | runtime | The Armada GitHub App, for Connect GitHub in Settings. Without them Settings says GitHub is not configured. |
+| `GITHUB_APP_SLUG` | runtime | Optional. Adds an "Install the app on your repositories" link. |
 
 - **Sign-in.** Email: Supabase sends a link and a one-time code (the dashboard accepts either; the template decides what the email carries). GitHub and Google: enable the provider in Supabase Auth, then list it in `NEXT_PUBLIC_AUTH_PROVIDERS`. Add `<origin>/auth/callback` (production and previews) to the redirect URLs of the Supabase project.
 - **Credentials.** `encryptSecret` / `decryptSecret` in `@armada/core` seal a value under `ARMADA_ENCRYPTION_KEY`. `value_enc` holds `iv (12 bytes) || ciphertext || tag` (`toBytea` is the PostgREST form). Values are write-only: a user JWT cannot read the column and the dashboard never shows one. Resolution order (the caller's own, then the org's) is `resolveCredentials` in the launcher.
+- **GitHub.** Settings has Connect GitHub: the dashboard sends the person to the GitHub App's authorization page (`/github/connect`, with a state cookie), and `/github/callback` stores the sealed refresh token as them. Create the App with [docs/github-app.md](docs/github-app.md).
 - **Logs, stop, send.** boat.dev keys stay on the server, so the dashboard asks the Armada MCP server (`logs`, `stop`, `send` tools, over Streamable HTTP, with the user's session token). The logs panel polls every two seconds from the last cursor while the sandbox is active.
 - **Writes row level security cannot express** (creating an org, adding a member by email, changing a golden's visibility) go through the functions of `supabase/migrations/20261108150000_dashboard_functions.sql`, which check `auth.uid()` themselves. That migration follows the OAuth and golden-sandbox migrations: it does not grant the OAuth tables, and replacing `goldens_guard` still allows `boat_sandbox_id` to change.
 
