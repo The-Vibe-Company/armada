@@ -31,7 +31,7 @@ const response = {
   promptId: "prompt",
   conversationId: "conversation",
   ttlSeconds: 1800,
-  expiresAt: null,
+  expiresAt: "2026-11-08T16:00:00.000Z",
   github: { status: "not_connected", login: null, message: "Connect GitHub." },
 };
 
@@ -66,6 +66,8 @@ describe("launch through the Armada API", () => {
       provider: "boat",
       providerSandboxId: "bx_server",
       boatId: "bx_server",
+      id: "11111111-1111-4111-8111-111111111111",
+      expiresAt: "2026-11-08T16:00:00.000Z",
     });
     expect(calls[0]?.url).toBe("https://armada.thevibecompany.co/api/v1/sandbox/launch");
     expect(calls[0]?.headers.get("authorization")).toBe(`Bearer ${token}`);
@@ -78,5 +80,27 @@ describe("launch through the Armada API", () => {
       ttlSeconds: 1800,
       org: "org",
     });
+  });
+
+  test("decodes serialized expiry for text output without hiding a created sandbox", async () => {
+    let out = "";
+    const code = await run(
+      ["launch", "web", "--agent", "codex", "do it", "--ttl", "30m"],
+      { out: (text) => (out += text), err: () => undefined },
+      {
+        auth: {
+          out: () => undefined,
+          err: () => undefined,
+          env: { ARMADA_TOKEN: token },
+          fetch: async () => Response.json(response),
+          now: () => new Date(),
+          open: () => undefined,
+          session: memorySessionStore(),
+        },
+      },
+    );
+    expect(code).toBe(0);
+    expect(out).toContain("Sandbox: 11111111-1111-4111-8111-111111111111");
+    expect(out).toContain("Stops by itself at 2026-11-08T16:00:00.000Z (TTL 1800s).");
   });
 });
