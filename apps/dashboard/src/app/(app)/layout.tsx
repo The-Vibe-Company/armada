@@ -1,12 +1,17 @@
 import { LogOutIcon, ShipIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { NavLinks } from "@/components/nav-links";
+import { OrgSwitcher } from "@/components/org-switcher";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { requireViewer } from "@/lib/data/viewer";
+import { selectedOrganization } from "@/lib/data/selected-org";
+import { listMemberships, requireViewer } from "@/lib/data/viewer";
+import { createClient } from "@/lib/supabase/server";
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const viewer = await requireViewer();
+  const memberships = await listMemberships(await createClient(), viewer.id);
+  const selected = await selectedOrganization();
   return (
     <div className="flex min-h-dvh flex-col md:flex-row">
       <aside className="border-b md:sticky md:top-0 md:h-dvh md:w-60 md:shrink-0 md:border-r md:border-b-0">
@@ -20,6 +25,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
             <SignOut compact />
           </div>
         </div>
+        <OrgSwitcher memberships={memberships} selected={selected?.org.id ?? null} />
         <NavLinks className="flex gap-1 overflow-x-auto px-3 pb-3 md:flex-col md:overflow-visible md:pb-0" />
         <div className="mt-auto hidden flex-col gap-2 border-t p-3 md:absolute md:inset-x-0 md:bottom-0 md:flex">
           <p className="truncate px-1 text-xs text-muted-foreground" title={viewer.email}>

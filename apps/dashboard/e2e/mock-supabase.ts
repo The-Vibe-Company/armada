@@ -579,7 +579,26 @@ function github(request: Request, url: URL, body: Row): Response {
 function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     state = seed();
+    if (body.multiOrg) {
+      const now = "2026-11-08T10:00:00.000Z";
+      state.orgs.push({ id: id(11), name: "Zenith", created_at: now });
+      state.members.push({ org_id: id(11), user_id: ALICE, role: "member", created_at: now });
+      state.goldens.push({ ...golden(id(23), "zenith-golden", "org", ALICE, "snap-zenith"), org_id: id(11) });
+      state.sandboxes.push({ ...sandbox(id(33), "bx_zenith", id(23), ALICE, "codex", "ready", now), org_id: id(11) });
+      state.credentials.push({
+        id: id(41),
+        scope: "org",
+        owner_id: id(11),
+        kind: "boat",
+        value_enc: "\\x0102",
+        created_at: now,
+      });
+    }
     sessions.clear();
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/remove-zenith-membership") {
+    state.members = state.members.filter((row) => row.org_id !== id(11));
     return json({ ok: true });
   }
   if (url.pathname === "/__test/append-event") {

@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { isUuid } from "@/lib/action";
 import { listGoldens } from "@/lib/data/goldens";
 import { getSandbox } from "@/lib/data/sandboxes";
+import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
 import { isActiveStatus } from "@/lib/events";
@@ -26,7 +27,10 @@ export default async function SandboxPage({ params }: Props) {
   if (!isUuid(id)) notFound();
   const viewer = await requireViewer();
   const supabase = await createClient();
-  const pending = listMemberships(supabase, viewer.id);
+  const selected = await selectedOrganization();
+  const pending = listMemberships(supabase, viewer.id).then((items) =>
+    items.filter((item) => item.org.id === selected?.org.id),
+  );
   const [sandbox, goldens, memberships, directory] = await Promise.all([
     getSandbox(supabase, id),
     listGoldens(supabase),

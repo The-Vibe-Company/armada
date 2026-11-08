@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { addMember, changeMemberRole, removeMember } from "@/app/actions/orgs";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { PageHeader } from "@/components/page-header";
@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { isUuid } from "@/lib/action";
+import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
 import { createClient } from "@/lib/supabase/server";
 
@@ -23,6 +24,7 @@ type Props = { params: Promise<{ id: string }> };
 export default async function OrgPage({ params }: Props) {
   const { id } = await params;
   if (!isUuid(id)) notFound();
+  if (!(await isSelectedOrganization(id))) redirect("/orgs");
   const viewer = await requireViewer();
   const supabase = await createClient();
   const [memberships, roster] = await Promise.all([
