@@ -64,7 +64,7 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
     authorize: adapter.authorize,
     ssh: options.ssh ?? ((provider, input) => sshStdinCheckout(provider, input)),
     scan: (provider, sandboxId) => scanGoldenSandbox(provider, sandboxId),
-    async reserve(provider, actor) {
+    async reserve(provider, actor, existingGolden) {
       const capacity =
         provider.maxGoldens ?? options.defaultProviderCapacity ?? (provider.id === "boat" ? 1 : undefined);
       if (capacity === undefined) return undefined;
@@ -75,18 +75,13 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
       const identity = await provider.backendIdentity();
       if (!identity?.id)
         throw new GoldenError("forbidden", "Provider returned no backend identity for golden capacity.");
-      return slots.reserve({
-        provider: provider.id,
-        backendId: identity.id,
-        capacity,
-        orgId: actor.orgId,
-        ownerId: actor.userId,
-      });
+      if (existingGolden) return slots.reserveExisting({ provider: provider.id, backendId: identity.id, capacity, goldenId: existingGolden.id });
+      return slots.reserve({ provider: provider.id, backendId: identity.id, capacity, orgId: actor.orgId, ownerId: actor.userId });
     },
     async release(reservationId) {
       await slots.release(reservationId);
     },
-    async persist({ actor, name, visibility, repos, init, snapshot, builderId, reservationId }) {
+    async persist({ actor, existingGolden, name, visibility, repos, init, snapshot, builderId, reservationId }) {
       const config: GoldenConfig = {
         repos: repos.map(
           (repo): GoldenRepo => ({
@@ -99,13 +94,10 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
       };
       const persist = async (sql: Sql) => {
         const transactionalStore = createSqlGoldenStore(sql);
-        const inserted = await transactionalStore.insert({
-          orgId: actor.orgId,
-          name,
-          visibility,
-          ownerId: actor.userId,
-          config,
-        });
+        const inserted = existingGolden
+          ? existingGolden
+          : await transactionalStore.insert({ orgId: actor.orgId, name, visibility, ownerId: actor.userId, config });
+        if (existingGolden) await transactionalStore.setConfig(inserted.id, config);
         await transactionalStore.setSandbox(inserted.id, builderId);
         await transactionalStore.setSnapshot(inserted.id, snapshot);
         // This update is inside the same database transaction as the golden metadata. A failed
