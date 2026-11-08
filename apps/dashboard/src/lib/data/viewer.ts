@@ -11,20 +11,26 @@ export type Viewer = {
 
 export type Membership = { org: Pick<Org, "id" | "name" | "created_at">; role: MemberRole };
 
-/** The signed-in user, verified with the Auth server. Sends a signed-out visitor to the login page. */
+/**
+ * The signed-in user, from the session cookie's access token once its signature and expiry check out against
+ * the project's signing keys (cached, so no Auth round trip per render). Sends a signed-out visitor to the login page.
+ */
 export const requireViewer = cache(async (): Promise<Viewer> => {
   const supabase = await createClient();
-  const { data, error } = await supabase.auth.getUser();
-  if (error || !data.user) redirect("/login");
-  const session = await supabase.auth.getSession();
+  const { data: stored } = await supabase.auth.getSession();
+  const token = stored.session?.access_token;
+  if (!token) redirect("/login");
+  const { data, error } = await supabase.auth.getClaims(token);
+  const claims = data?.claims;
+  if (error || !claims?.sub) redirect("/login");
   return {
-    id: data.user.id,
-    email: data.user.email ?? "",
-    token: session.data.session?.access_token ?? null,
+    id: claims.sub,
+    email: typeof claims.email === "string" ? claims.email : "",
+    token,
   };
 });
 
-export async function listMemberships(supabase: Supabase, userId: string): Promise<Membership[]> {
+export const listMemberships = cache(async (supabase: Supabase, userId: string): Promise<Membership[]> => {
   const [orgs, members] = await Promise.all([
     supabase.from("orgs").select("id, name, created_at").order("name"),
     supabase.from("members").select("org_id, role").eq("user_id", userId),
@@ -36,7 +42,7 @@ export async function listMemberships(supabase: Supabase, userId: string): Promi
     const role = roles.get(org.id);
     return role ? [{ org, role }] : [];
   });
-}
+});
 
 /** user id -> email, for everyone who shares an org with the viewer. */
 export async function memberDirectory(supabase: Supabase, orgIds: string[]): Promise<Map<string, string>> {
