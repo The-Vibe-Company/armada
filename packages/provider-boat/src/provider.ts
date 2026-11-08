@@ -18,9 +18,9 @@ import type {
   SandboxInfo,
   SandboxState,
   SnapshotInfo,
+  SnapshotRequest,
   SshConnection,
   SshKeyRequest,
-  SnapshotRequest,
   SteerReceipt,
   SteerRequest,
 } from "@armada/core";

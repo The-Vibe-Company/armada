@@ -53,13 +53,10 @@ export {
   fetchGitHubInstallations,
   fetchGitHubUser,
   GH_MISSING_NOTE,
-  GITHUB_AUTHORIZE_URL,
-  GITHUB_CLIENT_ID_ENV,
   GITHUB_APP_ID_ENV,
   GITHUB_APP_PRIVATE_KEY_ENV,
-  githubInstallationAppFromEnv,
-  requireGitHubInstallationApp,
-  type GitHubInstallationApp,
+  GITHUB_AUTHORIZE_URL,
+  GITHUB_CLIENT_ID_ENV,
   GITHUB_CLIENT_SECRET_ENV,
   GITHUB_NOT_CONNECTED,
   GITHUB_REVOKED,
@@ -69,6 +66,7 @@ export {
   type GitHubAuthErrorCode,
   type GitHubConnectionStore,
   type GitHubInstallation,
+  type GitHubInstallationApp,
   type GitHubResolveDeps,
   type GitHubStatus,
   type GitHubTokenSet,
@@ -76,12 +74,20 @@ export {
   type GitIdentity,
   githubAppFromEnv,
   githubEnv,
+  githubInstallationAppFromEnv,
   gitIdentity,
   gitSetupCommand,
   refreshGitHubToken,
+  requireGitHubInstallationApp,
   resolveGitHubAccess,
   type StoredGitHubConnection,
 } from "./github.ts";
+export {
+  githubAppJwt,
+  type InstallationToken,
+  mintInstallationToken,
+  revokeInstallationToken,
+} from "./github-installation.ts";
 export {
   type CreatedGolden,
   connectGolden,
@@ -112,6 +118,12 @@ export {
   secretKeyPath,
   splitRepoArg,
 } from "./golden-config.ts";
+export {
+  type AuthorizedRepo,
+  type GoldenCreateDeps,
+  GoldenCreateService,
+  goldenScript,
+} from "./golden-create-service.ts";
 export { createSqlGoldenStore, type Sql } from "./golden-store.ts";
 export {
   DEFAULT_LAUNCH_TTL_SECONDS,
@@ -172,6 +184,7 @@ export {
   type SandboxStore,
   statusReasonOf,
 } from "./sandbox.ts";
+export { type SshExecDeps, sshStdinCheckout } from "./ssh-executor.ts";
 export {
   addMember,
   type CredentialInfo,
@@ -194,17 +207,3 @@ export {
 export { VaultError, type VaultErrorCode } from "./vault-error.ts";
 export { createSqlVaultStore } from "./vault-store.ts";
 export { VERSION } from "./version.ts";
-
-export {
-  githubAppJwt,
-  mintInstallationToken,
-  revokeInstallationToken,
-  type InstallationToken,
-} from "./github-installation.ts";
-export { sshStdinCheckout, type SshExecDeps } from "./ssh-executor.ts";
-export {
-  GoldenCreateService,
-  goldenScript,
-  type AuthorizedRepo,
-  type GoldenCreateDeps,
-} from "./golden-create-service.ts";

@@ -500,7 +500,10 @@ function positiveId(value: unknown): number | null {
 /** Server-only credentials used to mint a one-hour installation token. OAuth credentials cannot do this. */
 export const GITHUB_APP_ID_ENV = "GITHUB_APP_ID";
 export const GITHUB_APP_PRIVATE_KEY_ENV = "GITHUB_APP_PRIVATE_KEY";
-export interface GitHubInstallationApp { appId: string; privateKey: string }
+export interface GitHubInstallationApp {
+  appId: string;
+  privateKey: string;
+}
 export function githubInstallationAppFromEnv(env: Record<string, string | undefined>): GitHubInstallationApp | null {
   const appId = env[GITHUB_APP_ID_ENV]?.trim();
   const privateKey = env[GITHUB_APP_PRIVATE_KEY_ENV]?.replace(/\\n/g, "\n").trim();
@@ -509,6 +512,10 @@ export function githubInstallationAppFromEnv(env: Record<string, string | undefi
 /** Refuse to silently use a user OAuth token where an installation token is required. */
 export function requireGitHubInstallationApp(env: Record<string, string | undefined>): GitHubInstallationApp {
   const app = githubInstallationAppFromEnv(env);
-  if (!app) throw new GitHubAuthError("misconfigured", "Secure golden checkout requires GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY; OAuth client credentials cannot mint installation tokens.");
+  if (!app)
+    throw new GitHubAuthError(
+      "misconfigured",
+      "Secure golden checkout requires GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY; OAuth client credentials cannot mint installation tokens.",
+    );
   return app;
 }

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { githubAppJwt, mintInstallationToken } from "../src/index.ts";
+
 const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
   .privateKey.export({ type: "pkcs8", format: "pem" })
   .toString();
@@ -22,7 +23,8 @@ describe("GitHub installation token", () => {
   });
   test("rejects missing scope and impossible expiry", async () => {
     await expect(mintInstallationToken(app, 0, [])).rejects.toThrow("valid installation");
-    const fake = (async () => Response.json({ token: "x", expires_at: "2099-01-01T00:00:00Z" })) as unknown as typeof fetch;
+    const fake = (async () =>
+      Response.json({ token: "x", expires_at: "2099-01-01T00:00:00Z" })) as unknown as typeof fetch;
     await expect(mintInstallationToken(app, 1, [2], { fetch: fake })).rejects.toThrow(
       "invalid installation token lifetime",
     );

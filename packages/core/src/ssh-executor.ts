@@ -1,7 +1,7 @@
-import { mkdtemp, rm, writeFile, chmod } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
 import type { Provider } from "./provider.ts";
 export interface SshExecDeps {
   mkdtemp?: typeof mkdtemp;

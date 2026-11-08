@@ -1,7 +1,7 @@
-import type { GoldenActor } from "./golden.ts";
-import type { Provider } from "./provider.ts";
 import type { Visibility } from "./contract.ts";
+import type { GoldenActor } from "./golden.ts";
 import { GoldenError, parseGoldenName } from "./golden-config.ts";
+import type { Provider } from "./provider.ts";
 
 export interface AuthorizedRepo {
   owner: string;
@@ -29,7 +29,7 @@ export class GoldenCreateService {
   async create(
     provider: Provider,
     actor: GoldenActor,
-    input: { name: string; visibility: Visibility; repos: string[] },
+    input: { name: string; visibility: Visibility; repos: string[]; setup?: string },
   ): Promise<{ snapshot: string }> {
     if (input.visibility === "org" && actor.role !== "admin")
       throw new GoldenError("forbidden", "Only an admin can create an org golden.");
@@ -46,11 +46,15 @@ export class GoldenCreateService {
         repos[0]!.installationId,
         repos.map((r) => r.id),
       );
-      await this.deps.ssh(provider, { sandboxId: builder.id, token: issued.token, script: goldenScript(repos) });
+      await this.deps.ssh(provider, {
+        sandboxId: builder.id,
+        token: issued.token,
+        script: goldenScript(repos, input.setup ?? ""),
+      });
       await this.deps.scan(builder.id);
       const snapshot = `golden-${builder.id}`;
       const saved = await provider.snapshot({ sandboxId: builder.id, name: snapshot });
-      if (saved.status === "failed") throw new GoldenError("snapshot_failed", "Golden snapshot failed.");
+      if (saved.status !== "ready") throw new GoldenError("snapshot_failed", "Golden snapshot did not become ready.");
       await this.deps.persist({ actor, name, visibility: input.visibility, repos, snapshot });
       return { snapshot };
     } catch (e) {
@@ -61,7 +65,7 @@ export class GoldenCreateService {
     }
   }
 }
-export function goldenScript(repos: AuthorizedRepo[]): string {
+export function goldenScript(repos: AuthorizedRepo[], setup = ""): string {
   const lines = [
     "set -euo pipefail",
     "git config --global credential.helper '!f() { echo username=x-access-token; echo password=$ARMADA_GIT_TOKEN; }; f'",
@@ -72,11 +76,13 @@ export function goldenScript(repos: AuthorizedRepo[]): string {
     "git config --global --unset credential.helper || true",
     "unset ARMADA_GIT_TOKEN",
     "export PATH=$HOME/.bun/bin:$PATH",
-    "command -v bun >/dev/null || curl -fsSL https://bun.sh/install | bash",
-    "command -v playwright >/dev/null 2>&1 || true",
-    "find /home/user -type f -not -path '*/.git/*' -print0 | xargs -0 grep -IlE 'gh[su]_[A-Za-z0-9_-]+' >/dev/null && exit 97 || true",
+    'if [ -f /home/user/package.json ] && grep -q \'"packageManager": "bun@\' /home/user/package.json; then curl -fsSL https://bun.sh/install | bash; fi',
+    "if command -v bun >/dev/null 2>&1; then bunx playwright install chromium; fi",
+    "command -v claude >/dev/null 2>&1 || true; command -v codex >/dev/null 2>&1 || true",
+    setup,
+    "if grep -rIlE --exclude-dir=proc --exclude-dir=sys --exclude-dir=dev 'gh[suo]_[A-Za-z0-9_-]+' /home/user >/dev/null; then exit 97; fi",
   ];
-  return lines.join("\n") + "\n";
+  return lines.filter(Boolean).join("\n") + "\n";
 }
 function safe(v: string) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(v)) throw new GoldenError("invalid_config", "Unsafe repository path.");

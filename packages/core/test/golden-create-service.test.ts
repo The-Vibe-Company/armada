@@ -1,5 +1,6 @@
-import { test, expect } from "bun:test";
+import { expect, test } from "bun:test";
 import { GoldenCreateService, goldenScript } from "../src/index.ts";
+
 const actor: any = { userId: "u", orgId: "o", role: "admin" };
 const repo = { owner: "acme", repo: "web", id: 1, installationId: 2 };
 test("coordinates only scanned golden lifecycle", async () => {
@@ -28,8 +29,12 @@ test("coordinates only scanned golden lifecycle", async () => {
     ssh: async (_p, x) => {
       log.push(x.script.includes("unset ARMADA_GIT_TOKEN") ? "ssh" : "bad");
     },
-    scan: async () => { void log.push("scan"); },
-    persist: async () => { void log.push("persist"); },
+    scan: async () => {
+      void log.push("scan");
+    },
+    persist: async () => {
+      void log.push("persist");
+    },
   });
   await s.create(p, actor, { name: "x", visibility: "org", repos: ["acme/web"] });
   expect(log).toEqual(["create", "ssh", "scan", "snapshot", "persist", "revoke", "stop"]);
@@ -43,7 +48,9 @@ test("scan failure never snapshots or persists and cleans up", async () => {
     scan: async () => {
       throw Error("secret");
     },
-    persist: async () => { void log.push("persist"); },
+    persist: async () => {
+      void log.push("persist");
+    },
   });
   const p: any = {
     createGolden: async () => ({ id: "bx" }),

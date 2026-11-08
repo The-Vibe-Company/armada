@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { sshStdinCheckout } from "../src/index.ts";
+
 const provider: any = { sshKey: async () => ({ sshEndpoint: "ssh.test:2222", hostKey: "ssh-ed25519 AAAAPINNED" }) };
 describe("SSH stdin checkout", () =>
   test("pins host and keeps token out of argv/files", async () => {
