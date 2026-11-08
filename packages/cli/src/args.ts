@@ -1,7 +1,7 @@
 import { GoldenError } from "@armada/core";
 
 const BOOLEAN = new Set(["--private", "--json", "--all", "--follow"]);
-const VALUE = new Set(["--repo", "--init", "--config", "--agent", "--ttl", "--org", "--role", "--file"]);
+const VALUE = new Set(["--repo", "--init", "--config", "--agent", "--ttl", "--org", "--role", "--file", "--workdir"]);
 
 export interface Args {
   positionals: string[];

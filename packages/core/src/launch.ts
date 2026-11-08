@@ -37,6 +37,8 @@ export interface LaunchRequest {
   harness: Harness;
   /** With a prompt the agent starts at once. Without one the sandbox is left ready for the first `send`. */
   prompt?: string;
+  /** Directory of a configured golden repository in which to start the agent. */
+  repo?: string;
   ttlSeconds?: number;
 }
 
@@ -99,6 +101,7 @@ export async function launchSandbox(
   const prompt = checkPrompt(request.prompt);
 
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden);
+  const cwd = launchCwd(golden, request.repo);
   if (golden.visibility === "private" && golden.ownerId !== actor.userId) {
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
   }
@@ -164,11 +167,17 @@ export async function launchSandbox(
         undefined,
       );
     }
-    const receipt = await provider.prompt({ sandboxId: ready.id, harness, text: prompt }).catch((error: unknown) => {
-      throw new LaunchError("prompt_failed", `The agent could not be started: ${redact(messageOf(error), secrets)}`, {
-        cause: error,
+    const receipt = await provider
+      .prompt({
+        sandboxId: ready.id,
+        harness,
+        text: cwd === GOLDEN_ROOT ? prompt : `Work in ${cwd}.\n\n${prompt}`,
+      })
+      .catch((error: unknown) => {
+        throw new LaunchError("prompt_failed", `The agent could not be started: ${redact(messageOf(error), secrets)}`, {
+          cause: error,
+        });
       });
-    });
     await stores.sandboxes.update(record.id, { status: "running", conversationIds: [receipt.conversationId] });
     return finish(
       record,
@@ -189,6 +198,17 @@ export async function launchSandbox(
     await quietly(() => provider.stop({ sandboxId: forked.id }));
     throw failure;
   }
+}
+
+function launchCwd(golden: GoldenRecord, repo: string | undefined): string {
+  if (repo === undefined) return GOLDEN_ROOT;
+  const found = golden.config.repos.find((item) => item.dir === repo);
+  if (!found)
+    throw new LaunchError(
+      "invalid_request",
+      `No repository directory '${repo}' is configured for golden '${golden.name}'.`,
+    );
+  return `${GOLDEN_ROOT}/${found.dir}`;
 }
 
 function finish(

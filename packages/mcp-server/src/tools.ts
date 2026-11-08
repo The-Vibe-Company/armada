@@ -223,6 +223,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           .describe("The golden's orgId, as in golden_list. Needed only when the name is in several of your orgs."),
         harness: z.enum(HARNESSES).describe("claude (Claude Code) or codex."),
         prompt: z.string().min(1).optional().describe("The first instruction. Leave out for an idle sandbox."),
+        repo: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Configured golden repository directory from golden_list.config.repos[].dir. The agent starts there.",
+          ),
         ttl_seconds: z
           .number()
           .int()
@@ -265,6 +272,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           golden: args.golden,
           harness: args.harness,
           ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
+          ...(args.repo === undefined ? {} : { repo: args.repo }),
           ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
         },
         context.launch ?? {},

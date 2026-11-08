@@ -99,6 +99,32 @@ describe("launch command", () => {
     }
   });
 
+  test("selects a configured repository for a multi-repo launch", async () => {
+    const db = await openDatabase();
+    try {
+      await applyMigrations(db);
+      const people = await fixture(db);
+      await seed(db, people, [{ scope: "user", owner: people.owner, kind: "claude_oauth", value: CLAUDE_TOKEN }]);
+      const requests: Request[] = [];
+      const result = await asUser(db, people.owner, () =>
+        capture(["launch", "monorepo", "--agent", "claude", "--repo", "api", "Fix it"], {
+          actor: actor(people, "owner"),
+          store: createSqlGoldenStore(db),
+          sandboxes: createSqlSandboxStore(db),
+          vault: { store: vaultStore(db), encryptionKey: KEY },
+          fetch: fakeBoat(requests),
+          sleep: async () => {},
+          sandboxPolls: 3,
+        }),
+      );
+      expect(result.code).toBe(0);
+      const prompt = requests.find((request) => request.path.endsWith("/prompt"));
+      expect(prompt?.body).toMatchObject({ prompt: `Work in ${GOLDEN_ROOT}/api.\n\nFix it` });
+    } finally {
+      await db.close();
+    }
+  });
+
   test("a connected GitHub account is refreshed and injected, git is set up first, and the JSON reports it", async () => {
     const db = await openDatabase();
     try {

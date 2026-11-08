@@ -89,7 +89,7 @@ Usage:
   armada golden connect <name>             Open the master sandbox to place .env files
   armada golden snapshot <name>            Freeze the master sandbox
   armada golden list [--json]              Goldens you can see
-  armada launch <golden> --agent claude|codex ["prompt"] [--ttl 4h] [--json]
+  armada launch <golden> --agent claude|codex ["prompt"] [--repo <dir>] [--ttl 4h] [--json]
                                            Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt.
   armada logs <sandbox-id> [--all] [--follow] [--json]
@@ -307,6 +307,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   const harness = harnessOf(single(args, "--agent"));
   const ttl = single(args, "--ttl");
   const ttlSeconds = ttl === undefined ? undefined : parseTtl(ttl);
+  const repo = single(args, "--repo");
   const { store, sandboxes, actor } = await session(args, io, deps);
   if (!sandboxes) throw new GoldenError("invalid_config", "No sandbox store is available.");
   const golden = await goldenForLaunch(store, actor, name);
@@ -324,6 +325,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       golden: name,
       harness,
       ...(prompt === undefined ? {} : { prompt }),
+      ...(repo === undefined ? {} : { repo }),
       ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
     },
     {

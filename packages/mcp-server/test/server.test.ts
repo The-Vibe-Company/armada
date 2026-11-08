@@ -304,6 +304,30 @@ describe("tools", () => {
     expectNoSecret(launched.text);
   });
 
+  test("launch selects a configured repository in a multi-repo golden", async () => {
+    const { db, token, client, people, boat } = await start();
+    await db.query(`update goldens set config = $1::jsonb where name = 'shared'`, [
+      JSON.stringify({
+        repos: [
+          { url: "https://github.com/example/web.git", branch: "main", dir: "web" },
+          { url: "https://github.com/example/api.git", branch: "main", dir: "api" },
+        ],
+        init: ["bun install"],
+      }),
+    ]);
+    const mcp = await client(await token(people.member));
+    const launched = await call(mcp, "launch", {
+      golden: "shared",
+      harness: "claude",
+      repo: "api",
+      prompt: "Fix it",
+    });
+    expect(launched.isError).toBe(false);
+    expect(boat.prompts[0]).toMatchObject({ text: "Work in /home/user/api.\n\nFix it" });
+    const refused = await call(mcp, "launch", { golden: "shared", harness: "claude", repo: "../api" });
+    expect(refused.isError).toBe(true);
+  });
+
   test("launch reports GitHub as not connected, without failing, when the caller never connected it", async () => {
     const { token, client, people, boat } = await start();
     const launched = await call(await client(await token(people.member)), "launch", {

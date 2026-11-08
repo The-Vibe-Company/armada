@@ -89,6 +89,29 @@ describe("launch", () => {
     expect(JSON.stringify(world.execs)).not.toContain(CLAUDE_TOKEN);
   });
 
+  test("a multi-repo launch starts the agent in the selected configured repository", async () => {
+    const world = setup({ golden: golden("org") });
+    await launchSandbox(world.provider, world.stores, owner, {
+      golden: "web",
+      harness: "claude",
+      repo: "api",
+      prompt: "Update the API",
+    });
+    expect(world.prompts).toEqual([
+      { sandboxId: "bx_1", harness: "claude", text: `Work in ${GOLDEN_ROOT}/api.\n\nUpdate the API` },
+    ]);
+  });
+
+  test("a launch rejects an unknown or unsafe repository directory before forking", async () => {
+    for (const repo of ["missing", "../api", `${GOLDEN_ROOT}/api`]) {
+      const world = setup({ golden: golden("org") });
+      await expect(
+        launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude", repo }),
+      ).rejects.toMatchObject({ code: "invalid_request" });
+      expect(world.forks).toEqual([]);
+    }
+  });
+
   test("without a prompt the sandbox is ready, has no conversation and no prompt was sent", async () => {
     const world = setup({ golden: golden("org") });
     const result = await launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" });
