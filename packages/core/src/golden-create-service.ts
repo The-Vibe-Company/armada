@@ -211,7 +211,7 @@ function baselineSetup(repos: readonly PreparedRepo[]): string {
     '    pw_pin=$(grep -o \'"@playwright/test"[[:space:]]*:[[:space:]]*"[0-9][^"]*"\' "$pkg" 2>/dev/null | sed -E \'s/.*:[[:space:]]*"([^"]*)"/\\1/\') || true',
     "  fi",
     "done",
-    'if [ -n "$bun_pin" ]; then npm install --global --prefix "$HOME/.bun-npm" "bun@$bun_pin"; export PATH="$HOME/.bun-npm/bin:$PATH"; fi',
+    'if [ -n "$bun_pin" ]; then npm install --global --prefix "$HOME/.bun-npm" "bun@$bun_pin"; mkdir -p "$HOME/.local/bin" "$HOME/.bun/bin"; ln -sf "$HOME/.bun-npm/bin/bun" "$HOME/.local/bin/bun"; ln -sf "$HOME/.bun-npm/bin/bun" "$HOME/.bun/bin/bun"; export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"; fi',
     'command -v bun >/dev/null 2>&1 || { curl -fsSL https://bun.sh/install | bash; export PATH="$HOME/.bun/bin:$PATH"; }',
     "if command -v bun >/dev/null 2>&1; then",
     '  if [ -n "$pw_pin" ]; then bunx --bun --package "@playwright/test@$pw_pin" playwright install --with-deps chromium; else bunx playwright install --with-deps chromium; fi',
