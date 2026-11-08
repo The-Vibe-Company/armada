@@ -32,6 +32,8 @@ const ROW_ALIASES: Record<string, string> = {
   mcp_tokens: "McpToken",
   members: "Member",
   notify_subscriptions: "NotifySubscription",
+  oauth_clients: "OAuthClient",
+  oauth_codes: "OAuthCode",
   orgs: "Org",
   sandboxes: "Sandbox",
   service_tokens: "ServiceToken",

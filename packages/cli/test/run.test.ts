@@ -18,6 +18,8 @@ describe("run", () => {
     const { code, out } = await capture([]);
     expect(code).toBe(0);
     expect(out).toContain("armada golden create");
+    expect(out).toContain("armada login");
+    expect(out).toContain("armada token create");
   });
 
   test("an unknown command fails with a usage error", async () => {
