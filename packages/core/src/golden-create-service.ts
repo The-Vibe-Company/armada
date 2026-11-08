@@ -236,12 +236,20 @@ export function goldenScript(repos: readonly PreparedRepo[], setup: readonly str
   const lines = [
     "set -euo pipefail",
     CLEANUP_TRAP,
-    "git config --global credential.helper '!f() { echo username=x-access-token; echo password=$ARMADA_GIT_TOKEN; }; f'",
+    // Keep credentials process-local.  The helper accepts only Git's HTTPS credential
+    // protocol for github.com, and no global/system configuration can leak into a clone.
+    "export GIT_CONFIG_NOSYSTEM=1",
+    "export GIT_CONFIG_GLOBAL=/dev/null",
+    "export GIT_TERMINAL_PROMPT=0",
+    "export GIT_ASKPASS=/bin/false",
+    "export GIT_CONFIG_COUNT=1",
+    "export GIT_CONFIG_KEY_0=credential.helper",
+    "export GIT_CONFIG_VALUE_0='!f() { while IFS= read -r line; do case $line in protocol=https|host=github.com|host=github.com:443) ;; *) exit 1 ;; esac; done; printf \"username=x-access-token\\npassword=%s\\n\" \"$ARMADA_GIT_TOKEN\"; }; f'",
     ...repos.map(
       (r) =>
         `git clone --branch ${shellQuote(r.branch ?? "main")} --single-branch https://github.com/${safe(r.owner)}/${safe(r.repo)}.git ${GOLDEN_ROOT}/${safe(r.dir)}`,
     ),
-    "git config --global --unset credential.helper || true",
+    "unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_TERMINAL_PROMPT GIT_ASKPASS",
     "unset ARMADA_GIT_TOKEN",
     baselineSetup(repos),
     ...setup,

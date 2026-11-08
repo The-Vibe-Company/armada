@@ -202,3 +202,18 @@ test("real shell: a genuine cleanup failure fails closed and never overwrites au
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+test("clone helper only serves github HTTPS and leaves no token config", () => {
+  const token = "ghp_" + "Z".repeat(36);
+  const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2, branch: "main" }]);
+  const script = goldenScript(prepared);
+  const helper = script.match(/export GIT_CONFIG_VALUE_0='([^']+)'/)?.[1];
+  expect(helper).toBeDefined();
+  const accepted = helper?.includes("protocol=https") && helper.includes("host=github.com");
+  const denied = helper?.includes("*) exit 1");
+  expect(accepted).toBe(true);
+  expect(denied).toBe(true);
+  expect(helper).not.toContain(token);
+  expect(script).not.toContain("git config --global credential.helper");
+  expect(script).toContain("unset GIT_CONFIG_COUNT");
+});
