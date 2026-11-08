@@ -95,7 +95,9 @@ export async function scanGoldenSandbox(provider: Provider, sandboxId: string): 
   ].join("\n");
   const result = await provider.exec({
     sandboxId,
-    command: script,
+    // Root-owned image files are part of the snapshot. Non-interactive sudo fails closed when
+    // unavailable or unauthorized instead of prompting or silently omitting /root.
+    command: `if [ "$(id -u)" -eq 0 ]; then ${shellQuote(script)}; else exec sudo -n bash -c ${shellQuote(script)}; fi`,
     cwd: "/home/user",
     timeoutSeconds: TIMEOUT_SECONDS,
   });
@@ -111,3 +113,5 @@ export async function scanGoldenSandbox(provider: Provider, sandboxId: string): 
     throw new GoldenError("setup_failed", "The secret scan could not run to completion; the golden was not saved.");
   }
 }
+
+function shellQuote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
