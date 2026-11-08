@@ -27,6 +27,25 @@ jobs:
       - run: bun run typecheck
       - run: bun run test
 
+  # The dashboard runs as a production build against a mock of Supabase and the Armada server.
+  e2e:
+    name: Dashboard e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright install --with-deps chromium
+        working-directory: apps/dashboard
+      - run: bun run e2e
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: dashboard-e2e-results
+          path: apps/dashboard/test-results
+          if-no-files-found: ignore
+
   # Each binary is compiled on its own platform, so it is run there before upload
   # and the macOS ones get the ad-hoc signature Apple Silicon requires.
   binary:

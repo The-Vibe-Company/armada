@@ -4,18 +4,22 @@
   "type": "module",
   "packageManager": "bun@1.4.2",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "apps/*"
   ],
   "scripts": {
     "armada": "bun packages/cli/src/main.ts",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p apps/dashboard",
     "test": "bun test",
     "build": "bun scripts/build.ts",
     "build:all": "bun scripts/build.ts --all",
     "verify": "bun run lint && bun run typecheck && bun run test",
-    "db:types": "bun scripts/db/render.ts"
+    "db:types": "bun scripts/db/render.ts",
+    "dashboard": "bun run --filter @armada/dashboard dev",
+    "dashboard:build": "bun run --filter @armada/dashboard build",
+    "e2e": "bun run --filter @armada/dashboard e2e"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
