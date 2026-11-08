@@ -11,7 +11,7 @@ export interface SshExecDeps {
   readPublicKey?: (path: string) => Promise<string>;
   spawn?: typeof spawn;
 }
-/** Token is first stdin line. Remote static bash -c reads it before exec'ing bash -s. */
+/** Token is first stdin line. The one quoted remote command reads it before running the script. */
 export async function sshStdinCheckout(
   provider: Provider,
   input: { sandboxId: string; token: string; script: string },
@@ -34,8 +34,12 @@ export async function sshStdinCheckout(
     const c = await provider.sshKey({ sandboxId: input.sandboxId, key: pub.trim() });
     const ep = parseEndpoint(c.sshEndpoint);
     await fs.writeFile(known, knownLine(ep.host, ep.port, c.hostKey), { mode: 0o600 });
-    const remote =
-      "set +x; IFS= read -r ARMADA_GIT_TOKEN; export ARMADA_GIT_TOKEN; trap 'unset ARMADA_GIT_TOKEN; history -c 2>/dev/null || true' EXIT; exec bash -s";
+    // ssh joins its command argv with spaces before the remote shell parses it. Keep this one
+    // shell-quoted argument so semicolons cannot escape bash -c and turn `set +x` into a command.
+    // The checkout script itself carries the cleanup trap; do not exec, which would discard it.
+    const remote = shellQuote(
+      "set +x; IFS= read -r ARMADA_GIT_TOKEN; IFS= read -r ARMADA_SSH_PUBLIC_KEY; export ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY; bash -s; status=$?; unset ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY; history -c 2>/dev/null || true; exit $status",
+    );
     await command(
       run,
       "ssh",
@@ -53,11 +57,9 @@ export async function sshStdinCheckout(
         "-p",
         ep.port,
         `user@${ep.host}`,
-        "bash",
-        "-c",
         remote,
       ],
-      `${input.token}\n${input.script}`,
+      `${input.token}\n${pub.trim()}\n${input.script}`,
       input.token,
     );
   } finally {
@@ -96,6 +98,9 @@ function command(spawnImpl: typeof spawn, file: string, args: string[], stdin: s
 function redact(v: string, t: string) {
   return v
     .replaceAll(t, "[redacted]")
-    .replace(/gh[su]_[A-Za-z0-9_-]+/g, "[redacted]")
+    .replace(/gh[suo]_[A-Za-z0-9_-]+/g, "[redacted]")
     .slice(0, 4096);
+}
+function shellQuote(value: string) {
+  return `'${value.replaceAll("'", "'\\\"'\\\"'")}'`;
 }

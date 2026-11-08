@@ -66,6 +66,8 @@ export class GoldenCreateService {
 export function goldenScript(repos: AuthorizedRepo[], setup = ""): string {
   const lines = [
     "set -euo pipefail",
+    'cleanup_armada_key() { if [ -n "${ARMADA_SSH_PUBLIC_KEY:-}" ]; then mkdir -p "$HOME/.ssh"; touch "$HOME/.ssh/authorized_keys"; grep -Fvx "$ARMADA_SSH_PUBLIC_KEY" "$HOME/.ssh/authorized_keys" > "$HOME/.ssh/authorized_keys.armada.$$" || true; mv "$HOME/.ssh/authorized_keys.armada.$$" "$HOME/.ssh/authorized_keys"; unset ARMADA_SSH_PUBLIC_KEY; fi; unset ARMADA_GIT_TOKEN; }',
+    "trap 'cleanup_armada_key' EXIT",
     "git config --global credential.helper '!f() { echo username=x-access-token; echo password=$ARMADA_GIT_TOKEN; }; f'",
     ...repos.map(
       (r) =>
