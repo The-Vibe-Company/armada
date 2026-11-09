@@ -23,4 +23,5 @@ playwright-report/
 .aeom/runs/
 .aeom/captures/
 .aeom/reports/
+.aeom/review/
 .aeom-worktrees/
