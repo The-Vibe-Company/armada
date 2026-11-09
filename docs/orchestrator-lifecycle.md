@@ -10,7 +10,7 @@ A synthetic test is not provider-native conformance.
 The child service consumes `OrchestratorAuthority.admit` from #661, both for the
 atomic receipt reservation and again immediately before dispatch. The inspected
 candidate's authority, operation and migration208 bytes match committed #673
-`026babbf165a11148f5e274e20d7f2941b73e253`. The current delivery base is origin/main `1eaaf07d5fa9b6380587dec79e98453fc09a2ea0`, which contains #673, named-account #612 and sizing #658.
+`79472bf3f68f83ab53692a6655c484c9f9431a23`. The current delivery base is origin/main `e5fc554fd778e021f6c84984e8cee8ac4837ec09`, which contains #673, named-account #612 and sizing #658.
 `generation` in this consumer means SQL `lifecycle_generation`, **not** the
 provider's native `physicalGeneration`. Stop receipts bind both independently.
 The producer's outstanding native/SQL generation binding mismatch must be fixed
@@ -136,15 +136,16 @@ Current disabled/missing adapters must fail; no passing run is claimed here.
 ## Current shared wiring boundary
 
 The rebased delivery branch inherits reviewed producers from actual `origin/main`
-`1eaaf07d5fa9b6380587dec79e98453fc09a2ea0`; no producer ownership is copied as a
+`e5fc554fd778e021f6c84984e8cee8ac4837ec09`; no producer ownership is copied as a
 feature change. Exact #673 head also has its own detached committed checkout under
-`.git/663-dependencies/committed-673`. Runtime #662 remains an isolated source
+`.git/663-dependencies/committed-673-ready`. Runtime #662 remains an isolated source
 contract, not main integration. Private combinations merge only its actual deltas
 onto current main; wholesale old shared files must not erase sizing, invitations
 or snapshot-retirement contracts.
 
 `startServerWorkers` preserves main's fourth snapshot-retirement argument;
-optional managed lifecycle lanes are the **fifth** argument. `startServer`'s
+main's fifth maintenance argument is also preserved; optional managed lifecycle
+lanes are the **sixth** argument. `startServer`'s
 trusted orchestrator factory receives the same SQL/provider registry and supplies
 `runtime`, `lifecycleWorker`, and `childWorker`. No environment flag enables it.
 
@@ -219,3 +220,28 @@ use actual `/api/v1/sandbox/launch-sized-v1` with `sizePolicyVersion: 1` wheneve
 sizing/policy semantics matter, and must fail on 404 rather than retry legacy
 launch. No selected repository means no repository default. Actual #658 source
 `ea501bd2a7187fa788b96914c23aa1fe68b4d8b3` remains the sizing contract.
+
+
+## Corrected historical reader integration (#674 / PR675)
+
+The normal main ancestry now includes
+`1fd430a500dcaccf95d9d27f0984918f0dab831e` (source
+`42e24a2474e0ebf12b4ad40284a112855573ae4a`). This branch does not modify the
+provider reader, sort or deduplicate orchestrator input to conceal its behavior,
+or synthesize prompt completion. Raw corrected provider pages remain the input
+to the actual runtime publisher.
+
+The integrator reports a read-only production postflight on an existing stopped
+Modal Codex fixture: 106 events / 106 unique IDs, pages 100@132 and 6@138,
+queued -> running -> finished, `getPrompt` finished, provider stopped, settled
+true; receipt `R/modal675-production-postflight.json`. This is root-reported
+reader evidence, not a provider operation or independently performed native
+conformance by this worker. No VM/model was created and the old App stays
+stopped.
+
+Only the historical-reader dependency is cleared. Private grant ACK/scrub,
+long-running native turns, stop/restore with the same native conversation,
+physical-generation binding, and the remaining 203/runtime/auth integrations
+remain activation blockers. Any new actual conformance still requires a newly
+owned operator fixture. The implementer does not reuse the old App or enable
+production operations from this receipt.
