@@ -58,9 +58,13 @@ test.skipIf(!url)(
       await creating;
       // Rolled-back adoption consumed neither receipt nor golden.
       expect((await a.unsafe("select 1 from golden_adoption_receipts where id=$1", [receipt])).length).toBe(1);
-      expect((await a.unsafe("select golden_id from golden_backend_slots"))[0].golden_id).toBeNull();
+      expect(
+        (await a.unsafe("select golden_id from golden_backend_slots where backend_id=$1", ["account"]))[0].golden_id,
+      ).toBeNull();
       await expect(adopt(a, "account", receipt)).rejects.toThrow();
-      await a.unsafe("select release_golden_backend_slot(build_id) from golden_backend_slots");
+      await a.unsafe("select release_golden_backend_slot(build_id) from golden_backend_slots where backend_id=$1", [
+        "account",
+      ]);
 
       const second = (await adopt(b, "other-account", null))[0].receipt as string;
       await a.unsafe("begin");
@@ -74,9 +78,11 @@ test.skipIf(!url)(
       await blocked();
       await a.unsafe("commit");
       expect(await outcome).toBe("conflict");
-      expect(Array.from(await a.unsafe("select golden_id,backend_id from golden_backend_slots"))).toMatchObject([
-        { golden_id: golden, backend_id: "account" },
-      ]);
+      expect(
+        Array.from(
+          await a.unsafe("select golden_id,backend_id from golden_backend_slots where backend_id=$1", ["account"]),
+        ),
+      ).toMatchObject([{ golden_id: golden, backend_id: "account" }]);
       expect(Array.from(await a.unsafe("select name,visibility from goldens where id=$1", [golden]))).toMatchObject([
         { name: "legacy", visibility: "org" },
       ]);
@@ -128,7 +134,14 @@ test.skipIf(!url)(
         (await a.unsafe("select build_id from golden_backend_slots where backend_id=$1", [input.backendId])).length,
       ).toBe(1);
       await slotsA.release(winner);
-      expect((await a.unsafe("select build_id from golden_backend_slots where build_id is not null")).length).toBe(0);
+      expect(
+        (
+          await a.unsafe("select build_id from golden_backend_slots where build_id is not null and org_id in ($1,$2)", [
+            org,
+            otherOrg,
+          ])
+        ).length,
+      ).toBe(0);
     } finally {
       await a.unsafe("rollback");
       await a.close();

@@ -74,6 +74,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
+      - run: bun scripts/prepare-runtime.ts
       - name: Apply migrations to disposable PostgreSQL
         env:
           PGHOST: 127.0.0.1
