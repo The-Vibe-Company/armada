@@ -26,6 +26,11 @@ export type LaunchArgs = {
   connections?: string[];
   /** Repository context: a golden `repos[].dir` used as the native initial cwd. Absent: the default, none. */
   repo?: string;
+  /**
+   * The model account the sandbox runs on and keeps for every later message. Absent only on a server older than
+   * named accounts, which resolves its own.
+   */
+  credentialId?: string;
   /** An explicit machine size; absent, the server resolves the repository, then golden default (`@armada/core`). */
   size?: MachineSize;
   /** The golden has size defaults the server must resolve: the launch needs the versioned sized route. */
