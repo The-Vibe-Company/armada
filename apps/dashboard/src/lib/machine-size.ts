@@ -39,8 +39,10 @@ function cores(count: number): string {
 export function sizeSpec(provider: SandboxProviderId, size: MachineSize): string {
   const capacity = machineCapacity(provider, size);
   if (provider === "modal") {
-    // A Modal physical core is two vCPU; the request and the limit are the same, so there is no burst above them.
-    return `${cores(capacity.cpuPhysicalCores ?? capacity.vcpus / 2)} (${capacity.vcpus} vCPU) · ${gib(capacity.memoryMiB)}, capped`;
+    // A Modal physical core is two vCPU. "Capped" only when the contract sets the limits equal to the request.
+    const capped =
+      capacity.cpuLimitPhysicalCores === capacity.cpuPhysicalCores && capacity.memoryLimitMiB === capacity.memoryMiB;
+    return `${cores(capacity.cpuPhysicalCores ?? capacity.vcpus / 2)} (${capacity.vcpus} vCPU) · ${gib(capacity.memoryMiB)}${capped ? ", capped" : ""}`;
   }
   return `${capacity.vcpus} vCPU · ${gib(capacity.memoryMiB)} · ${MACHINE_SIZE_CATALOG[size].boatDiskGB} GB disk`;
 }
@@ -65,7 +67,9 @@ export function launchDefault(
   policy: MachineSizePolicy | null,
   repositoryDir: string,
 ): MachineSizeEvidence {
-  return resolveMachineSize(provider, undefined, repositoryDir || null, policy);
+  // A policy parsed from JSON is a plain object: a directory named like a prototype key must find no default.
+  const own = policy && { ...policy, repositories: Object.assign(Object.create(null), policy.repositories) };
+  return resolveMachineSize(provider, undefined, repositoryDir || null, own);
 }
 
 /** Where the default comes from, said plainly. A legacy default has no recorded size, so none is invented. */
@@ -83,7 +87,7 @@ export function defaultOptionLabel(provider: SandboxProviderId, evidence: Machin
 }
 
 /**
- * What the person should know before launching with this choice. Boat may refuse a size its plan does not include
+ * What the person should know before launching with this size, whether chosen or the default. Boat may refuse a size its plan does not include
  * or whose disk cannot hold the golden; neither is upgraded or replaced silently, so the launch fails and says why.
  */
 export function sizeCaveat(provider: SandboxProviderId, chosen: MachineSize | null): string | null {

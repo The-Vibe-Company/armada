@@ -35,7 +35,7 @@ export function MachineSizeField({
   const group = useRef<HTMLDivElement>(null);
   const resolved = launchDefault(provider, policy, repositoryDir);
   const chosen = override || resolved.effective;
-  const caveat = sizeCaveat(provider, override || null);
+  const caveat = sizeCaveat(provider, chosen);
 
   // Native reset after a launch attempt empties the DOM; the controlled state must follow it.
   useEffect(() => {
