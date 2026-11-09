@@ -27,7 +27,29 @@ describe("launch database", () => {
       const credentials = {
         resolve: async () => ({ env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN }, secrets: [TOKEN], codexAuthJson: false }),
       };
-      const stores = { goldens, sandboxes, credentials };
+      // Keep golden visibility and subsequent sandbox reads under the user role,
+      // but model physical registration through the trusted server connection.
+      const stores = {
+        goldens,
+        credentials,
+        sandboxes: {
+          ...sandboxes,
+          async insert(input: Parameters<typeof sandboxes.insert>[0]) {
+            await db.exec("savepoint server_registration");
+            try {
+              await db.exec("set local role service_role");
+              const row = await sandboxes.insert(input);
+              await db.exec("release savepoint server_registration");
+              return row;
+            } catch (error) {
+              await db.exec("rollback to savepoint server_registration; release savepoint server_registration");
+              throw error;
+            } finally {
+              await db.exec("set local role authenticated");
+            }
+          },
+        },
+      };
 
       const mine = await asUser(db, people.owner, () =>
         launchSandbox(boat.provider, stores, actor(people, "owner"), {
