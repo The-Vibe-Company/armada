@@ -1,4 +1,5 @@
 import type { AuthStore } from "@armada/auth";
+import { MCP_CATALOG } from "@armada/core";
 import {
   createSqlMcpGrantPort,
   createSqlMcpInvalidationPort,
@@ -551,6 +552,23 @@ export function createMcpHttpIntegration(options: {
         if (!org || !actor.orgs.some((o) => o.orgId === org))
           throw new GatewayError("denied", "This request is not scoped to that organization.");
         const id = String(body.id ?? body.connectionId ?? "");
+        if (action === "catalog")
+          return Response.json(
+            {
+              services: MCP_CATALOG.map((service) => ({
+                ...service,
+                availability: service.id === "slack" ? "setup_required" : "available",
+                ...(service.id === "slack"
+                  ? {
+                      setupMessage: "Registered confidential OAuth client required; not configured on this deployment.",
+                    }
+                  : {}),
+              })),
+            },
+            { headers },
+          );
+        if (action === "metadata")
+          return Response.json({ connection: await registry.metadata(actor.userId, org, id, body) }, { headers });
         if (action === "list")
           return Response.json({ connections: await registry.list(actor.userId, org) }, { headers });
         if (action === "create" || action === "update") {

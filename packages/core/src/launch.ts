@@ -64,6 +64,7 @@ export interface LaunchStores {
   sandboxes: SandboxStore;
   credentials: LaunchCredentialResolver;
   connections?: {
+    defaults?(actor: GoldenActor, visibility: "private" | "org"): Promise<string[]>;
     validate(actor: GoldenActor, ids: string[], visibility: "private" | "org"): Promise<void>;
     bind(sandboxId: string, ids: string[]): Promise<void>;
     /** After init, before any first prompt (including an idle launch). */
@@ -132,7 +133,9 @@ export async function launchSandbox(
   const visibility = request.visibility ?? golden.visibility;
   if (golden.visibility === "private" && visibility === "org")
     throw new LaunchError("invalid_request", "A private golden cannot launch an org sandbox.");
-  const connectionIds = [...new Set(request.connections ?? [])];
+  const connectionIds = [
+    ...new Set(request.connections ?? (await stores.connections?.defaults?.(actor, visibility)) ?? []),
+  ];
   if (connectionIds.length && !stores.connections)
     throw new LaunchError("invalid_request", "MCP launch connections are not configured.");
   await stores.connections?.validate(actor, connectionIds, visibility);
