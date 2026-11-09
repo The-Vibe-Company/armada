@@ -81,7 +81,11 @@ test("compiled launch preserves account selection and owner defaults without all
           ...selection,
         ],
         {
-          env: { ARMADA_URL: `http://127.0.0.1:${server.port}`, ARMADA_TOKEN: "fixture", XDG_CONFIG_HOME: join(dir, "config") },
+          env: {
+            ARMADA_URL: `http://127.0.0.1:${server.port}`,
+            ARMADA_TOKEN: "fixture",
+            XDG_CONFIG_HOME: join(dir, "config"),
+          },
           stdout: "pipe",
           stderr: "pipe",
         },

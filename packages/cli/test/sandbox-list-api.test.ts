@@ -75,7 +75,12 @@ test("safe sandbox list renders metadata-only access without interior lookups an
     if (mode === "json")
       expect(JSON.parse(out)).toEqual({ sandboxes: [row, boat, JSON.parse(JSON.stringify(unknown))] });
     else if (mode === "page-info")
-      expect(JSON.parse(out)).toMatchObject({ sandboxes: [row, boat, JSON.parse(JSON.stringify(unknown))], total: 1, page: 1, hasMore: false });
+      expect(JSON.parse(out)).toMatchObject({
+        sandboxes: [row, boat, JSON.parse(JSON.stringify(unknown))],
+        total: 1,
+        page: 1,
+        hasMore: false,
+      });
     else {
       expect(out).toContain("Modal  —  running  2h  teammate  metadata only");
       expect(out).toContain(row.id);
