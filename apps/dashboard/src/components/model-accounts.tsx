@@ -468,8 +468,10 @@ function RenameDialog({
 }
 
 /**
- * A new token for the same account: its id, name and default stay. A sandbox is pinned to the account version it
- * launched with (#612), so sandboxes already running on it stop accepting messages; new launches use the new token.
+ * A new token for the same account: its id, name and default stay. This explicit replacement increments the account
+ * version (#612). Sandboxes pinned to the earlier version keep their files and conversations, but the server refuses
+ * new messages to them; a new launch uses the new version. A routine native auth refresh keeps its own revision and
+ * does not change the account version.
  */
 function ReplaceDialog({
   account,
@@ -506,8 +508,9 @@ function ReplaceDialog({
           <DialogDescription>{info.hint}</DialogDescription>
         </DialogHeader>
         <p className="text-sm text-muted-foreground" data-replace-effect>
-          Sandboxes already running on {account.name} stop accepting messages; new launches use the new{" "}
-          {info.valueLabel}.
+          Saving a new {info.valueLabel} creates a new version of {account.name}. Sandboxes launched with the current
+          version keep their files and conversations, but new messages to them are refused. Launch a new sandbox to use
+          the new version.
         </p>
         <form key={generation} action={formAction} className="space-y-4">
           <TargetFields account={account} orgId={orgId} />
@@ -548,7 +551,8 @@ function RemoveDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Remove {account.name}?</AlertDialogTitle>
           <AlertDialogDescription>
-            New launches can no longer use it, and sandboxes running on it stop accepting messages.
+            New launches can no longer use it. Sandboxes launched with it keep their files and conversations, but new
+            messages to them are refused; a new launch needs another usable account.
             {account.isDefault
               ? " It is the default: until you choose another, launches without an explicit account fail rather than bill a different one."
               : ""}

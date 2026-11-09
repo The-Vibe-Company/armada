@@ -122,7 +122,7 @@ test("rename and default keep the account's id; removing the default leaves the 
 
   await claude.locator('[data-account="Side project"]').getByRole("button", { name: "Remove Side project" }).click();
   await expect(page.getByRole("alertdialog")).toContainText(
-    "New launches can no longer use it, and sandboxes running on it stop accepting messages.",
+    "New launches can no longer use it. Sandboxes launched with it keep their files and conversations, but new messages to them are refused; a new launch needs another usable account.",
   );
   await page.getByRole("alertdialog").getByRole("button", { name: "Remove account" }).click();
   await expect(claude.locator('[data-account="Side project"]')).toHaveCount(0);
@@ -187,7 +187,7 @@ test("replacing a token keeps the account and names the version seen; a replacem
     const dialog = on.getByRole("dialog");
     // #612 pins a sandbox to the account version it launched with: replacing the token ends those conversations.
     await expect(dialog.locator("[data-replace-effect]")).toHaveText(
-      "Sandboxes already running on Work stop accepting messages; new launches use the new OAuth token.",
+      "Saving a new OAuth token creates a new version of Work. Sandboxes launched with the current version keep their files and conversations, but new messages to them are refused. Launch a new sandbox to use the new version.",
     );
     await dialog.getByLabel("OAuth token").fill(token);
     await dialog.getByRole("button", { name: "Save OAuth token" }).click();
