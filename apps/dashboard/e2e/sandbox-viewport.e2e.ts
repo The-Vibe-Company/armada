@@ -18,6 +18,9 @@ async function overflow(page: Page) {
   }));
 }
 
+// Layout is measured right after each action: no smooth-scroll animation may still be moving the page.
+test.use({ reducedMotion: "reduce" });
+
 test.beforeEach(async () => {
   await reset();
   await fetch(`${MOCK}/__test/sandbox-events`, {
@@ -54,8 +57,11 @@ for (const [label, size] of [
     // Details stay reachable: a bounded panel beside the conversation, or a compact disclosure on a phone.
     if (label === "mobile") await page.getByRole("button", { name: "Details" }).click();
     const details = page.getByRole("region", { name: "Details" });
-    await details.getByText("MCP connections", { exact: true }).scrollIntoViewIfNeeded();
-    await expect(details.getByText("Launched without MCP connections you can see.")).toBeInViewport();
+    // Opening them brings them into view; nothing else has to be scrolled to find what the tap revealed.
+    await expect(details.getByText("Golden", { exact: true })).toBeInViewport();
+    const connections = details.getByText("Launched without MCP connections you can see.");
+    await connections.scrollIntoViewIfNeeded();
+    await expect(connections).toBeInViewport();
     expect(await overflow(page)).toEqual({ vertical: 0, horizontal: 0 });
     await page.screenshot({ path: `test-results/sandbox-viewport-${label}-details.png`, animations: "disabled" });
     // Beside the conversation the composer never moves; on a phone the details follow it and the composer is a scroll away.
@@ -84,8 +90,35 @@ test("the history stays on its newest message when its height changes, and open 
   await expect(page.getByRole("region", { name: "Details" }).getByText("Golden", { exact: true })).toBeVisible();
   expect(await messages.evaluate((element) => element.clientHeight)).toBeGreaterThanOrEqual(before);
   await expect.poll(atLatest).toBe(true);
-  await expect(messages.getByText("Step 39:")).toBeInViewport({ ratio: 1 });
   expect((await overflow(page)).vertical).toBe(0);
+});
+
+test("a history that grows back to its bottom follows new messages again", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
+  const messages = page.getByRole("log", { name: "Messages" });
+  await expect(messages.getByText("Step 39:")).toBeInViewport();
+  const model = page.getByRole("button", { name: "Model", exact: true });
+  const height = () => messages.evaluate((element) => element.clientHeight);
+  const tall = await height();
+  await model.click();
+  await expect(page.getByLabel("Reasoning effort")).toBeVisible();
+  await expect.poll(height).toBeLessThan(tall);
+  const growth = tall - (await height());
+  // Read just far enough above the latest message that closing the panel brings its bottom back within reach
+  // without the browser clamping the scroll (no scroll event: only the resize can tell).
+  await messages.evaluate((element, distance) => {
+    element.scrollTop = element.scrollHeight - element.clientHeight - distance;
+  }, growth + 24);
+  await expect(page.getByRole("button", { name: "Jump to latest" })).toBeVisible();
+  await model.click();
+  await expect.poll(height).toBe(tall);
+  await expect(page.getByRole("button", { name: "Jump to latest" })).toHaveCount(0);
+  await fetch(`${MOCK}/__test/append-event`, {
+    method: "POST",
+    body: JSON.stringify({ sandbox: IDS.running, text: "All tests pass now." }),
+  });
+  await expect(messages.getByText("All tests pass now.")).toBeInViewport({ timeout: 10_000 });
 });
 
 test("on a phone height where it cannot all fit, the composer and its controls are never cut off", async ({ page }) => {

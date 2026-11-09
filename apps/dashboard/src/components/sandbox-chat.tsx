@@ -299,8 +299,15 @@ function Transcript({
     const element = scroller.current;
     if (!element || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
-      if (pinned.current) element.scrollTop = element.scrollHeight;
-      else setAtBottom(element.scrollHeight - element.scrollTop - element.clientHeight <= PINNED_PX);
+      if (pinned.current) {
+        element.scrollTop = element.scrollHeight;
+        return;
+      }
+      // Grown back within reach of the bottom without a scroll: it follows new messages again, as a scroll would.
+      const bottom = isAtBottom(element);
+      pinned.current = bottom;
+      setAtBottom(bottom);
+      if (bottom) setUnseen(false);
     });
     observer.observe(element);
     return () => observer.disconnect();
@@ -309,7 +316,7 @@ function Transcript({
   function onScroll() {
     const element = scroller.current;
     if (!element) return;
-    const bottom = element.scrollHeight - element.scrollTop - element.clientHeight <= PINNED_PX;
+    const bottom = isAtBottom(element);
     pinned.current = bottom;
     setAtBottom(bottom);
     if (bottom) setUnseen(false);
@@ -399,6 +406,10 @@ function Transcript({
       )}
     </div>
   );
+}
+
+function isAtBottom(element: HTMLElement): boolean {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= PINNED_PX;
 }
 
 type Group = { kind: "item"; item: ChatItem } | { kind: "tools"; key: string; tools: ToolActivity[] };
