@@ -23,6 +23,13 @@ describe("run", () => {
     expect(out).toContain("armada token create");
   });
 
+  test("launch help needs no login or server request", async () => {
+    const { code, out, err } = await capture(["launch", "--help"]);
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    expect(out).toContain("armada launch <golden>");
+  });
+
   test("an unknown command fails with a usage error", async () => {
     const { code, out, err } = await capture(["frobnicate"]);
     expect(code).toBe(2);

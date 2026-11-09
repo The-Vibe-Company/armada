@@ -10,7 +10,7 @@ export type ModelCatalog = Readonly<Record<Harness, HarnessModels>>;
 
 /** Must match `OTHER_MODEL` in `@/lib/model-choice`, which reads the form on the server. */
 const OTHER_MODEL = "other";
-const EFFORT_LABEL: Record<string, string> = {
+export const EFFORT_LABEL: Record<string, string> = {
   low: "Low",
   medium: "Medium",
   high: "High",
@@ -30,12 +30,15 @@ export function ModelFields({
   catalog,
   keepLabel,
   launchedModel,
+  onChoice,
 }: {
   idPrefix: string;
   harness: Harness;
   catalog: ModelCatalog;
   keepLabel?: string;
   launchedModel?: string | null;
+  /** The model id and effort that will be sent, as they change: what a compact summary shows. */
+  onChoice?: (choice: { model: string; effort: string }) => void;
 }) {
   const entry = catalog[harness];
   const initialModel = keepLabel ? "" : entry.defaultModel;
@@ -51,6 +54,8 @@ export function ModelFields({
     !model || selectedModel === launchedModel
       ? keepLabel
       : `Default for selected model (${entry.defaultReasoningEffort})`;
+
+  useEffect(() => onChoice?.({ model: selectedModel ?? "", effort }), [onChoice, selectedModel, effort]);
 
   // Native reset changes DOM fields; the controlled state must reset with them.
   useEffect(() => {

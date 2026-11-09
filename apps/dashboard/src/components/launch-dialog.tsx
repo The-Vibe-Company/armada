@@ -1,14 +1,14 @@
 "use client";
 
-import type { Harness, MachineSizePolicy, SandboxProviderId } from "@armada/core";
-import { CircleAlertIcon, GlobeIcon, LockIcon, RocketIcon } from "lucide-react";
+import type { Harness, MachineSize, MachineSizePolicy, SandboxProviderId } from "@armada/core";
+import { ChevronDownIcon, CircleAlertIcon, RocketIcon } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useId, useRef, useState } from "react";
 import { launchFromGolden } from "@/app/actions/sandboxes";
 import { ActionForm, SubmitButton } from "@/components/action-form";
-import { ChoiceCard, ConnectionStatusBadge } from "@/components/connections";
+import { ConnectionStatusBadge } from "@/components/connections";
 import { MachineSizeField } from "@/components/machine-size-field";
-import { type ModelCatalog, ModelFields } from "@/components/model-fields";
+import { EFFORT_LABEL, type ModelCatalog, ModelFields } from "@/components/model-fields";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -30,6 +30,7 @@ import {
 } from "@/lib/connections";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
+import { MACHINE_SIZE_LABELS } from "@/lib/machine-size";
 import {
   accountProblem,
   accountsFor,
@@ -49,21 +50,7 @@ export type LaunchConnections = { connections: McpConnection[] } | { unavailable
  */
 export type LaunchSizing = { policy: MachineSizePolicy | null };
 
-/**
- * Launches an agent from a golden: harness, model, reasoning effort, who sees the sandbox, the MCP
- * connections it gets and an optional first prompt.
- */
-export function LaunchDialog({
-  golden,
-  provider,
-  orgId,
-  catalog,
-  goldenVisibility,
-  connections,
-  accounts,
-  repositories,
-  sizing,
-}: {
+type LaunchProps = {
   golden: string;
   provider: SandboxProviderId;
   orgId: string;
@@ -75,96 +62,247 @@ export function LaunchDialog({
   /** The golden config's `repos[].dir`, in order. */
   repositories: readonly string[];
   sizing?: LaunchSizing;
-}) {
-  const initialRepository = repositories.length === 1 ? (repositories[0] ?? "") : "";
-  const [repository, setRepository] = useState(initialRepository);
-  const [harness, setHarness] = useState<Harness>("claude");
-  // A default that is not connected holds the launch until the person reconnects it or goes on without it.
-  const [held, setHeld] = useState(false);
-  const id = useId();
+};
+
+/**
+ * Launches an agent from a golden. The task comes first, then the agent and, for a golden with several
+ * repositories, the project. Everything else starts on its configured default and is summarized on the collapsed
+ * Advanced area, where it can be overridden.
+ */
+export function LaunchDialog(props: LaunchProps) {
   return (
-    // The form unmounts on close; the repository it reported must go with it, so reopening starts from the default.
-    <Dialog onOpenChange={(open) => !open && setRepository(initialRepository)}>
+    <Dialog>
       <DialogTrigger asChild>
-        <Button size="sm" aria-label={`Launch from ${golden} on ${PROVIDER_LABELS[provider]}`}>
+        <Button size="sm" aria-label={`Launch from ${props.golden} on ${PROVIDER_LABELS[props.provider]}`}>
           <RocketIcon /> Launch
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Launch from {golden}</DialogTitle>
-          <DialogDescription>Model and reasoning effort apply to every message.</DialogDescription>
-        </DialogHeader>
-        <ActionForm action={launchFromGolden} className="space-y-4">
-          <input type="hidden" name="golden" value={golden} />
-          <input type="hidden" name="provider" value={provider} />
-          <input type="hidden" name="org" value={orgId} />
-          <div className="space-y-2">
-            <Label htmlFor={`${id}-harness`}>Agent</Label>
-            <NativeSelect
-              id={`${id}-harness`}
-              name="harness"
-              value={harness}
-              onChange={(event) => setHarness(event.target.value as Harness)}
-            >
-              {(Object.keys(catalog) as Harness[]).map((value) => (
-                <option key={value} value={value}>
-                  {HARNESS_LABELS[value]}
-                </option>
-              ))}
-            </NativeSelect>
-          </div>
-          <AccountField
-            key={JSON.stringify(["account", orgId, harness])}
-            idPrefix={id}
-            harness={harness}
-            accounts={accounts}
-          />
-          <ModelFields
-            key={JSON.stringify([orgId, provider, golden, harness])}
-            idPrefix={id}
-            harness={harness}
-            catalog={catalog}
-          />
-          {/* Each keyed field has its own key: equal sibling keys make React duplicate fields when the agent changes. */}
-          <RepositoryField
-            key={JSON.stringify(["repository", orgId, provider, golden])}
-            idPrefix={id}
-            repositories={repositories}
-            initial={initialRepository}
-            onChange={setRepository}
-          />
-          {sizing && (
-            <MachineSizeField
-              key={JSON.stringify(["size", orgId, provider, golden])}
-              idPrefix={id}
-              provider={provider}
-              policy={sizing.policy}
-              repositoryDir={repository}
-            />
-          )}
-          <AccessFields idPrefix={id} goldenVisibility={goldenVisibility} connections={connections} onHeld={setHeld} />
-          <div className="space-y-2">
-            <Label htmlFor={`${id}-prompt`}>First prompt</Label>
-            <Textarea
-              id={`${id}-prompt`}
-              name="prompt"
-              rows={4}
-              placeholder="Optional. Leave empty for a sandbox that waits for the first message."
-            />
-          </div>
-          {/* Only set when held: SubmitButton's own pending lock must not be overridden by `disabled={false}`. */}
-          <SubmitButton {...(held ? { disabled: true } : {})}>Launch</SubmitButton>
-        </ActionForm>
+      {/* Header and footer stay put; only the fields scroll, so Launch is always on screen. */}
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0">
+        <LaunchForm {...props} />
       </DialogContent>
     </Dialog>
   );
 }
 
+/** Mounted with the dialog, so every opening starts from the defaults. */
+function LaunchForm({
+  golden,
+  provider,
+  orgId,
+  catalog,
+  goldenVisibility,
+  connections,
+  accounts,
+  repositories,
+  sizing,
+}: LaunchProps) {
+  const id = useId();
+  const [harness, setHarness] = useState<Harness>("claude");
+  const [choice, setChoice] = useState({
+    model: catalog.claude.defaultModel,
+    effort: catalog.claude.defaultReasoningEffort,
+  });
+  const access = useLaunchAccess(goldenVisibility, connections);
+  const root = useRef<HTMLDivElement>(null);
+  const advanced = useRef<HTMLDetailsElement>(null);
+  useVisibleViewport(root);
+
+  useEffect(() => {
+    const node = root.current;
+    const details = advanced.current;
+    if (!node || !details) return;
+    // React resets a form after its action returns. A failed launch must keep the task and the choices that were
+    // made, so the person fixes the cause and launches again; a successful one navigates away.
+    const keep = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    // A field the browser refuses to submit (an empty custom model id) must be visible to be focused and explained.
+    const reveal = () => {
+      details.open = true;
+    };
+    node.addEventListener("reset", keep, true);
+    details.addEventListener("invalid", reveal, true);
+    return () => {
+      node.removeEventListener("reset", keep, true);
+      details.removeEventListener("invalid", reveal, true);
+    };
+  }, []);
+
+  // Going on without an unready default enables Launch: that is the next step, so focus follows.
+  const focusLaunch = useRef(false);
+  useEffect(() => {
+    if (!focusLaunch.current || access.held) return;
+    focusLaunch.current = false;
+    root.current?.querySelector<HTMLButtonElement>('button[type="submit"]')?.focus();
+  }, [access.held]);
+
+  // The selected project: the machine size default follows it, and a single repository's choice is summarized.
+  const [project, setProject] = useState(repositories.length === 1 ? (repositories[0] ?? "") : "");
+  // The size that will be requested, null while the provider decides.
+  const [size, setSize] = useState<MachineSize | null>(null);
+  const onChoice = useCallback((next: { model: string; effort: string }) => setChoice(next), []);
+  const entry = catalog[harness];
+  const modelLabel = entry.models.find((option) => option.id === choice.model)?.label ?? (choice.model || "Model id");
+  const summary = [
+    modelLabel,
+    EFFORT_LABEL[choice.effort] ?? choice.effort,
+    // A single repository is chosen in Advanced, so its choice is summarized with the other overrides.
+    repositories.length === 1 ? project || "Default directory" : null,
+    sizing ? sizeFact(size) : null,
+    access.visibility === "org" ? "Org" : "Private",
+    mcpFact(access),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <div ref={root} className="flex min-h-0 flex-1 flex-col">
+      <DialogHeader className="px-6 pt-6 pb-4 pr-12">
+        <DialogTitle className="truncate">Launch from {golden}</DialogTitle>
+        <DialogDescription>On {PROVIDER_LABELS[provider]}</DialogDescription>
+      </DialogHeader>
+      <ActionForm
+        action={launchFromGolden}
+        className="flex min-h-0 flex-1 flex-col"
+        focusError
+        footerClassName="space-y-2 border-t px-6 py-4"
+        footer={
+          <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
+            {access.held && (
+              <p id={`${id}-held`} className="mr-auto text-xs text-warning">
+                Decide on the MCP default first.
+              </p>
+            )}
+            {/* Only set when held: SubmitButton's own pending lock must not be overridden by `disabled={false}`. */}
+            <SubmitButton
+              className="w-full sm:w-auto"
+              {...(access.held ? { disabled: true, "aria-describedby": `${id}-held` } : {})}
+            >
+              <RocketIcon /> Launch
+            </SubmitButton>
+          </div>
+        }
+      >
+        <input type="hidden" name="golden" value={golden} />
+        <input type="hidden" name="provider" value={provider} />
+        <input type="hidden" name="org" value={orgId} />
+        <input type="hidden" name="visibility" value={access.visibility} />
+        <div data-launch-fields className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 pb-4">
+          <div className="space-y-2 pt-1">
+            <Label htmlFor={`${id}-prompt`}>Task</Label>
+            <Textarea
+              id={`${id}-prompt`}
+              name="prompt"
+              rows={4}
+              className="max-h-[40dvh] min-h-24"
+              placeholder="What should the agent do? Leave empty to start idle."
+            />
+          </div>
+          <div className={cn("grid gap-4", repositories.length > 1 && "sm:grid-cols-2")}>
+            <Segmented
+              legend="Agent"
+              name="harness"
+              value={harness}
+              onChange={setHarness}
+              options={(Object.keys(catalog) as Harness[]).map((value) => ({ value, label: HARNESS_LABELS[value] }))}
+            />
+            {repositories.length > 1 && (
+              <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />
+            )}
+          </div>
+          {/* Who is billed stays in view: it is never a collapsed default. */}
+          <AccountField key={harness} idPrefix={id} harness={harness} accounts={accounts} />
+          {access.alerts(() => {
+            focusLaunch.current = true;
+          })}
+          <details ref={advanced} data-launch-advanced className="group rounded-md border">
+            {/* On a phone the summary wraps under the label: every default stays readable, none is cut off. */}
+            <summary className="flex cursor-pointer list-none items-center gap-3 rounded-md px-3 py-2.5 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-center sm:gap-3">
+                <span className="font-medium">Advanced</span>
+                <span data-launch-summary className="min-w-0 text-xs text-muted-foreground sm:flex-1 sm:text-right">
+                  {summary}
+                </span>
+              </span>
+              <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+            </summary>
+            <div className="space-y-4 border-t p-3">
+              <ModelFields key={harness} idPrefix={id} harness={harness} catalog={catalog} onChoice={onChoice} />
+              {repositories.length === 1 && (
+                <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />
+              )}
+              {sizing && (
+                <MachineSizeField
+                  idPrefix={id}
+                  provider={provider}
+                  policy={sizing.policy}
+                  repositoryDir={project}
+                  onSize={setSize}
+                />
+              )}
+              {access.fields(id)}
+            </div>
+          </details>
+        </div>
+      </ActionForm>
+    </div>
+  );
+}
+
+/**
+ * Keeps the dialog inside what the phone actually shows. An on-screen keyboard shrinks the visual viewport, while
+ * `dvh` (iOS) still measures the layout viewport, so a centered dialog would put Launch under the keyboard. While
+ * part of the layout viewport is hidden, the dialog is centered in the visible part and capped to its height, and
+ * the focused field is scrolled into the fields' own region. Nothing changes while the whole viewport is visible.
+ */
+function useVisibleViewport(root: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const content = root.current?.closest<HTMLElement>('[data-slot="dialog-content"]');
+    const fields = root.current?.querySelector<HTMLElement>("[data-launch-fields]");
+    if (!viewport || !content || !fields) return;
+    const release = () => {
+      content.style.removeProperty("top");
+      content.style.removeProperty("max-height");
+      content.style.removeProperty("transition-property");
+      delete content.dataset.visibleViewport;
+    };
+    const fit = () => {
+      // A pinch zoom also shrinks the visual viewport; only a keyboard does so at scale 1.
+      if (viewport.scale > 1 || (window.innerHeight - viewport.height < 1 && viewport.offsetTop < 1)) return release();
+      // No easing: the bounds apply now, so the focused field below is measured where it will stay.
+      content.style.transitionProperty = "none";
+      content.style.top = `${viewport.offsetTop + viewport.height / 2}px`;
+      content.style.maxHeight = `${Math.max(viewport.height - 16, 0)}px`;
+      content.dataset.visibleViewport = "";
+      // Only the fields scroll: bring the focused one into their region, never the page behind the dialog.
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || !fields.contains(active)) return;
+      const box = active.getBoundingClientRect();
+      const region = fields.getBoundingClientRect();
+      if (box.bottom > region.bottom) fields.scrollTop += Math.min(box.bottom - region.bottom, box.top - region.top);
+      else if (box.top < region.top) fields.scrollTop -= region.top - box.top;
+    };
+    fit();
+    viewport.addEventListener("resize", fit);
+    viewport.addEventListener("scroll", fit);
+    fields.addEventListener("focusin", fit);
+    return () => {
+      viewport.removeEventListener("resize", fit);
+      viewport.removeEventListener("scroll", fit);
+      fields.removeEventListener("focusin", fit);
+      release();
+    };
+  }, [root]);
+}
+
 /**
  * Which account the agent runs on, and so who is billed. The resolved default is preselected and sent as an
  * explicit id, so what the person saw is what runs; with several accounts and no default the person chooses.
- * The sandbox keeps this account for every later message, whatever the defaults become.
+ * The sandbox keeps this account for every later message, whatever the defaults become. The launch form is never
+ * reset after a refused launch, so a retry bills the account the person picked.
  */
 function AccountField({
   idPrefix,
@@ -176,22 +314,6 @@ function AccountField({
   accounts: LaunchAccounts;
 }) {
   const label = HARNESS_LABELS[harness];
-  const select = useRef<HTMLSelectElement>(null);
-  // The person's billing choice, kept across the form reset React performs after every action, a refusal included:
-  // a retry after a refused size must bill the account the person picked, never fall back to the default unseen.
-  const choice = useRef<string | null>(null);
-  useEffect(() => {
-    const node = select.current;
-    const form = node?.closest("form");
-    if (!node || !form) return;
-    const keep = () => {
-      const value = choice.current;
-      // `reset` fires before the form resets its fields: re-apply the choice once the reset is done.
-      if (value !== null) setTimeout(() => (node.value = value));
-    };
-    form.addEventListener("reset", keep);
-    return () => form.removeEventListener("reset", keep);
-  }, []);
   if (accounts.state === "legacy") return null;
   if (accounts.state === "unavailable")
     return (
@@ -220,12 +342,8 @@ function AccountField({
       <Label htmlFor={`${idPrefix}-account`}>Account</Label>
       <NativeSelect
         id={`${idPrefix}-account`}
-        ref={select}
         name="credential"
         defaultValue={preset}
-        onChange={(event) => {
-          choice.current = event.target.value;
-        }}
         required
         aria-describedby={`${idPrefix}-account-hint`}
       >
@@ -269,53 +387,82 @@ function optionLabel(account: ModelAccount, now: number, orgName: string): strin
   return notes.length ? `${account.name} (${notes.join(", ")})` : account.name;
 }
 
+/** A compact radio group: every option visible, one choice, arrow keys move between them. */
+function Segmented<T extends string>({
+  legend,
+  name,
+  value,
+  options,
+  onChange,
+  hint,
+}: {
+  legend: string;
+  name: string;
+  value: T;
+  options: { value: T; label: string; disabled?: boolean }[];
+  onChange: (value: T) => void;
+  hint?: { id: string; text: string };
+}) {
+  return (
+    <fieldset className="min-w-0 space-y-2" aria-describedby={hint?.id}>
+      <legend className="text-sm leading-none font-medium">{legend}</legend>
+      <div className="grid h-9 auto-cols-fr grid-flow-col gap-0.5 rounded-md border border-input p-0.5 dark:bg-input/30">
+        {options.map((option) => (
+          <label
+            key={option.value}
+            className="relative flex min-w-0 cursor-pointer items-center justify-center rounded-sm px-2 text-sm whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground has-[:checked]:bg-accent has-[:checked]:font-medium has-[:checked]:text-foreground has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50 has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50"
+          >
+            <input
+              type="radio"
+              name={name}
+              value={option.value}
+              checked={value === option.value}
+              disabled={option.disabled}
+              onChange={() => onChange(option.value)}
+              className="absolute inset-0 size-full cursor-pointer appearance-none rounded-sm opacity-0 disabled:cursor-not-allowed"
+            />
+            {option.label}
+          </label>
+        ))}
+      </div>
+      {hint && (
+        <p id={hint.id} className="text-xs text-muted-foreground">
+          {hint.text}
+        </p>
+      )}
+    </fieldset>
+  );
+}
+
 /**
- * The selected configured checkout. Uncontrolled, so the native reset after a launch attempt restores the default
- * option; the reported selection follows it to the same default.
+ * The configured checkout the agent starts in. A golden with one repository starts there; with several, in the
+ * default directory until one is chosen. Every repository stays available either way.
  */
 function RepositoryField({
   idPrefix,
   repositories,
-  initial,
   onChange,
 }: {
   idPrefix: string;
   repositories: readonly string[];
-  initial: string;
-  onChange: (dir: string) => void;
+  onChange?: (dir: string) => void;
 }) {
-  const group = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const form = group.current?.closest("form");
-    const reset = () => onChange(initial);
-    form?.addEventListener("reset", reset);
-    return () => form?.removeEventListener("reset", reset);
-  }, [initial, onChange]);
   return (
-    <div ref={group} className="space-y-2">
-      <Label htmlFor={`${idPrefix}-repo`}>Working directory</Label>
+    <div className="min-w-0 space-y-2">
+      <Label htmlFor={`${idPrefix}-repo`}>Project</Label>
       <NativeSelect
         id={`${idPrefix}-repo`}
         name="repo"
-        defaultValue={initial}
-        onChange={(event) => onChange(event.target.value)}
-        disabled={repositories.length === 0}
-        aria-describedby={`${idPrefix}-repo-hint`}
+        defaultValue={repositories.length === 1 ? repositories[0] : ""}
+        onChange={(event) => onChange?.(event.target.value)}
       >
-        <option value="">
-          {repositories.length === 0 ? "No repository recorded" : "No repository (default directory)"}
-        </option>
+        <option value="">Default directory</option>
         {repositories.map((dir) => (
           <option key={dir} value={dir}>
             {dir}
           </option>
         ))}
       </NativeSelect>
-      <p id={`${idPrefix}-repo-hint`} className="text-xs text-muted-foreground">
-        {repositories.length === 0
-          ? "No repository recorded: the agent starts in the default directory."
-          : "Where the agent starts. All repositories stay available."}
-      </p>
     </div>
   );
 }
@@ -327,18 +474,10 @@ function RepositoryField({
  * silently: it holds the launch until it is reconnected or the person chooses to continue without it, as the server
  * does for a launch that names no connections. A personal connection carries its owner's identity, so it can only
  * go into a private sandbox: it is not selectable while Org is chosen, and choosing Org drops it.
+ *
+ * The alerts render outside the collapsed Advanced area, so nothing that holds or limits a launch is hidden.
  */
-function AccessFields({
-  idPrefix,
-  goldenVisibility,
-  connections,
-  onHeld,
-}: {
-  idPrefix: string;
-  goldenVisibility: SandboxVisibility;
-  connections: LaunchConnections;
-  onHeld: (held: boolean) => void;
-}) {
+function useLaunchAccess(goldenVisibility: SandboxVisibility, connections: LaunchConnections) {
   const [visibility, setVisibility] = useState<SandboxVisibility>(goldenVisibility);
   // Null until the person changes the selection: the defaults for the current visibility apply until then.
   const [picked, setPicked] = useState<string[] | null>(null);
@@ -347,150 +486,142 @@ function AccessFields({
   // By id, so a default that only becomes eligible later (switching to Private) is held again, not waived unseen.
   const [waived, setWaived] = useState<readonly string[]>([]);
   const [notice, setNotice] = useState("");
-  const group = useRef<HTMLDivElement>(null);
   const list = "connections" in connections ? connections.connections : [];
   const chosen = picked ?? launchDefaults(list, visibility);
-  const setChosen = (next: string[]) => setPicked(next);
   const unready = unreadyDefaults(list, visibility).filter((connection) => !waived.includes(connection.id));
-  useEffect(() => onHeld(unready.length > 0), [unready.length, onHeld]);
-
-  /** Goes on without the unready defaults; the notice and its button leave, so focus moves to the connection list. */
-  function continueWithout() {
-    setWaived([...waived, ...unready.map((connection) => connection.id)]);
-    setPicked(chosen);
-    group.current?.querySelector<HTMLInputElement>('input[name="connections"]:not(:disabled)')?.focus();
-  }
-
-  // Native reset after a launch attempt empties the DOM; the controlled state must follow it.
-  useEffect(() => {
-    const form = group.current?.closest("form");
-    const reset = () => {
-      setVisibility(goldenVisibility);
-      setPicked(null);
-      setWaived([]);
-      setNotice("");
-    };
-    form?.addEventListener("reset", reset);
-    return () => form?.removeEventListener("reset", reset);
-  }, [goldenVisibility]);
 
   function choose(next: SandboxVisibility) {
     setVisibility(next);
     if (next !== "org" || picked === null) return setNotice("");
     const personal = chosen.filter((item) => list.find((connection) => connection.id === item)?.scope === "personal");
     if (personal.length === 0) return setNotice("");
-    setChosen(chosen.filter((item) => !personal.includes(item)));
+    setPicked(chosen.filter((item) => !personal.includes(item)));
     setNotice(
       `${personal.length === 1 ? "A personal connection was" : `${personal.length} personal connections were`} unselected: an org sandbox only gets org connections.`,
     );
   }
 
   function toggle(connectionId: string, on: boolean) {
-    setChosen(on ? [...chosen, connectionId] : chosen.filter((item) => item !== connectionId));
+    setPicked(on ? [...chosen, connectionId] : chosen.filter((item) => item !== connectionId));
   }
 
-  const personal = list.filter((item) => item.scope === "personal");
-  const shared = list.filter((item) => item.scope === "org");
+  const selected = list.filter(
+    (connection) => chosen.includes(connection.id) && launchBlocker(connection, visibility) === null,
+  ).length;
 
-  return (
-    <div ref={group} className="space-y-4">
-      <fieldset className="space-y-2">
-        <legend className="text-sm font-medium">Who sees the sandbox</legend>
-        <input type="hidden" name="visibility" value={visibility} />
-        <div className="grid gap-2 sm:grid-cols-2">
-          <ChoiceCard
-            name={`${idPrefix}-visibility`}
-            checked={visibility === "private"}
-            onChange={() => choose("private")}
-            icon={<LockIcon />}
-            title="Private"
-            hint="Only you."
-          />
-          <ChoiceCard
-            name={`${idPrefix}-visibility`}
-            checked={visibility === "org"}
-            onChange={() => choose("org")}
-            disabled={goldenVisibility === "private"}
-            icon={<GlobeIcon />}
-            title="Org"
-            hint={goldenVisibility === "private" ? "Not for a private golden." : "Every member can open and stop it."}
-          />
-        </div>
-      </fieldset>
-
-      <fieldset
-        className="space-y-2"
-        aria-describedby={visibility === "org" ? `${idPrefix}-connections-hint` : undefined}
-      >
-        <legend className="text-sm font-medium">MCP connections</legend>
-        {visibility === "org" && (
-          <p id={`${idPrefix}-connections-hint`} className="text-xs text-muted-foreground">
-            Org connections only. Choose Private to use your own.
-          </p>
-        )}
-        {unready.length > 0 && (
-          <div
-            role="alert"
-            data-unready-defaults
-            className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs"
-          >
-            <CircleAlertIcon className="size-4 shrink-0 text-warning" />
-            <span className="min-w-48 flex-1">
-              {unready.map((connection) => connection.name).join(", ")}{" "}
-              {unready.length === 1 ? "is a default but is" : "are defaults but are"} not connected.{" "}
-              <Link href="/connections" className="underline">
-                Reconnect
-              </Link>{" "}
-              or continue without {unready.length === 1 ? "it" : "them"}.
-            </span>
-            <Button type="button" variant="outline" size="xs" onClick={continueWithout}>
-              Continue without {unready.length === 1 ? "it" : "them"}
-            </Button>
-          </div>
-        )}
-        {"unavailable" in connections ? (
-          <p role="alert" className="rounded-md border border-destructive/40 p-3 text-sm text-destructive">
-            Connections could not be loaded: {connections.unavailable} You can still launch without them.
-          </p>
-        ) : list.length === 0 ? (
-          <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
-            No connections.{" "}
+  const alerts = (onContinue: () => void): ReactNode => (
+    <>
+      {unready.length > 0 && (
+        <div
+          role="alert"
+          data-unready-defaults
+          className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs"
+        >
+          <CircleAlertIcon className="size-4 shrink-0 text-warning" />
+          <span className="min-w-48 flex-1">
+            {unready.map((connection) => connection.name).join(", ")}{" "}
+            {unready.length === 1 ? "is a default but is" : "are defaults but are"} not connected.{" "}
             <Link href="/connections" className="underline">
-              Add one
-            </Link>
-          </p>
-        ) : (
-          <div className="space-y-3">
-            {[
-              ["Your personal connections", personal],
-              ["Org connections", shared],
-            ].map(([title, items]) =>
-              (items as McpConnection[]).length === 0 ? null : (
-                <div key={title as string} className="space-y-1">
-                  <p className="text-xs font-medium text-muted-foreground">{title as string}</p>
-                  <ul className="divide-y rounded-md border">
-                    {(items as McpConnection[]).map((connection) => (
-                      <ConnectionOption
-                        key={connection.id}
-                        idPrefix={idPrefix}
-                        connection={connection}
-                        blocker={launchBlocker(connection, visibility)}
-                        checked={chosen.includes(connection.id)}
-                        onChange={(on) => toggle(connection.id, on)}
-                      />
-                    ))}
-                  </ul>
-                </div>
-              ),
-            )}
-          </div>
-        )}
-        <p role="status" className="text-xs text-warning">
-          {notice}
+              Reconnect
+            </Link>{" "}
+            or continue without {unready.length === 1 ? "it" : "them"}.
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            onClick={() => {
+              setWaived([...waived, ...unready.map((connection) => connection.id)]);
+              setPicked(chosen);
+              onContinue();
+            }}
+          >
+            Continue without {unready.length === 1 ? "it" : "them"}
+          </Button>
+        </div>
+      )}
+      {"unavailable" in connections && (
+        <p role="alert" className="rounded-md border border-destructive/40 p-3 text-sm text-destructive">
+          Connections could not be loaded: {connections.unavailable} You can still launch without them.
         </p>
-      </fieldset>
-    </div>
+      )}
+    </>
   );
+
+  const fields = (idPrefix: string): ReactNode => {
+    const personal = list.filter((item) => item.scope === "personal");
+    const shared = list.filter((item) => item.scope === "org");
+    return (
+      <>
+        <Segmented
+          legend="Access"
+          name={`${idPrefix}-visibility`}
+          value={visibility}
+          onChange={choose}
+          options={[
+            { value: "org", label: "Org", disabled: goldenVisibility === "private" },
+            { value: "private", label: "Private" },
+          ]}
+          hint={{
+            id: `${idPrefix}-visibility-hint`,
+            text: accessHint(visibility, goldenVisibility),
+          }}
+        />
+        {"connections" in connections && (
+          <fieldset className="min-w-0 space-y-2">
+            <legend className="text-sm leading-none font-medium">MCP connections</legend>
+            {list.length === 0 ? (
+              <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+                No connections.{" "}
+                <Link href="/connections" className="underline">
+                  Add one
+                </Link>
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {(
+                  [
+                    ["Personal", personal],
+                    ["Org", shared],
+                  ] as const
+                ).map(([title, items]) =>
+                  items.length === 0 ? null : (
+                    <div key={title} className="space-y-1">
+                      <p className="text-xs font-medium text-muted-foreground">{title}</p>
+                      <ul className="divide-y rounded-md border">
+                        {items.map((connection) => (
+                          <ConnectionOption
+                            key={connection.id}
+                            idPrefix={idPrefix}
+                            connection={connection}
+                            blocker={launchBlocker(connection, visibility)}
+                            checked={chosen.includes(connection.id)}
+                            onChange={(on) => toggle(connection.id, on)}
+                          />
+                        ))}
+                      </ul>
+                    </div>
+                  ),
+                )}
+              </div>
+            )}
+            <p role="status" className="text-xs text-warning empty:hidden">
+              {notice}
+            </p>
+          </fieldset>
+        )}
+      </>
+    );
+  };
+
+  return {
+    visibility,
+    selected,
+    held: unready.length > 0,
+    unavailable: "unavailable" in connections,
+    alerts,
+    fields,
+  };
 }
 
 function ConnectionOption({
@@ -507,8 +638,20 @@ function ConnectionOption({
   onChange: (on: boolean) => void;
 }) {
   const inputId = `${idPrefix}-connection-${connection.id}`;
+  const hint =
+    blocker ??
+    [
+      connection.accountLabel ? `As ${connection.accountLabel}` : null,
+      connection.transport === "stdio"
+        ? "Starts inside the sandbox"
+        : connection.toolCount !== undefined
+          ? `${connection.toolCount} tools`
+          : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
   return (
-    <li className={cn("flex items-start gap-3 p-3", blocker && "opacity-70")}>
+    <li className={cn("flex items-start gap-3 px-3 py-2.5", blocker && "opacity-70")}>
       <input
         id={inputId}
         type="checkbox"
@@ -517,7 +660,7 @@ function ConnectionOption({
         checked={checked && !blocker}
         disabled={blocker !== null}
         onChange={(event) => onChange(event.target.checked)}
-        aria-describedby={`${inputId}-hint`}
+        aria-describedby={hint ? `${inputId}-hint` : undefined}
         className="mt-0.5 size-4 shrink-0 accent-primary"
       />
       <div className="min-w-0 flex-1 space-y-0.5">
@@ -532,20 +675,29 @@ function ConnectionOption({
             </span>
           )}
         </div>
-        <p id={`${inputId}-hint`} className="text-xs text-muted-foreground">
-          {blocker ??
-            [
-              connection.accountLabel ? `As ${connection.accountLabel}` : null,
-              connection.transport === "stdio"
-                ? "Starts inside the sandbox"
-                : connection.toolCount !== undefined
-                  ? `${connection.toolCount} tools`
-                  : null,
-            ]
-              .filter(Boolean)
-              .join(" · ")}
-        </p>
+        {hint && (
+          <p id={`${inputId}-hint`} className="text-xs text-muted-foreground">
+            {hint}
+          </p>
+        )}
       </div>
     </li>
   );
+}
+
+/** What the chosen access means; a private golden says why Org is not offered. */
+function accessHint(visibility: SandboxVisibility, goldenVisibility: SandboxVisibility): string {
+  if (visibility === "org") return "Org members can open and stop it.";
+  return goldenVisibility === "private" ? "Only you: a private golden launches private sandboxes." : "Only you.";
+}
+
+/** The MCP connections a launch gets, as one summary fact. */
+function mcpFact(access: { unavailable: boolean; selected: number }): string {
+  if (access.unavailable) return "MCP unavailable";
+  return access.selected === 0 ? "No MCP" : `${access.selected} MCP`;
+}
+
+/** The machine size a launch requests, as one summary fact named apart from effort; without one the provider decides. */
+function sizeFact(size: MachineSize | null): string {
+  return `${size ? MACHINE_SIZE_LABELS[size] : "Default"} machine`;
 }

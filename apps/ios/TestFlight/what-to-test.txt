@@ -1,0 +1,11 @@
+Armada private beta — candidate checklist (publish only after root validates the build)
+
+Check sign-in, refresh and sign-out using your authorized Armada account.
+Check organization selection and that private resources stay private.
+Check orchestrator listing and chat only where enabled by the real backend.
+Check loading, empty, permission-denied, offline and retry states.
+Check readability, keyboard/composer behavior and accessibility on iPhone and iPad.
+
+Report the app version/build, device/iOS version, steps and expected versus actual
+result. Never include credentials, verification codes or private conversation data.
+Native runtime features remain unavailable until operator conformance is approved.

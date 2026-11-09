@@ -1,0 +1,5 @@
+PRODUCT_BUNDLE_IDENTIFIER = co.thevibecompany.armada
+ARMADA_API_URL = https:/$()/armada.thevibecompany.co
+SWIFT_COMPILATION_MODE = wholemodule
+SWIFT_OPTIMIZATION_LEVEL = -O
+VALIDATE_PRODUCT = YES
