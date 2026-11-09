@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.0](https://github.com/The-Vibe-Company/armada/compare/v2.6.0...v2.7.0) (2026-11-09)
+
+
+### Features
+
+* **golden:** retire goldens while preserving sandbox history ([#567](https://github.com/The-Vibe-Company/armada/issues/567)) ([1c9549b](https://github.com/The-Vibe-Company/armada/commit/1c9549b3581524cf7f8223ffec59b213a4f0af12))
+
 ## [2.6.0](https://github.com/The-Vibe-Company/armada/compare/v2.5.0...v2.6.0) (2026-11-09)
 
 
