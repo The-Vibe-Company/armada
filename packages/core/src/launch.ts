@@ -20,6 +20,7 @@ import {
 } from "./golden.ts";
 import { GOLDEN_ROOT, GoldenError, initCommand, pullCommand, type ShellCommand } from "./golden-config.ts";
 import { LaunchError } from "./launch-error.ts";
+import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import { isNonMutatingProviderRefusal, type Provider } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
@@ -36,6 +37,7 @@ export const MAX_LAUNCH_TTL_SECONDS = Math.max(...Object.values(PROVIDER_LIMITS)
 const OUTPUT_LIMIT = 2000;
 
 export interface LaunchRequest {
+  size?: MachineSize;
   /** The golden's human name. Resolved under the caller's own visibility, never by a provider id. */
   golden: string;
   visibility?: "private" | "org";
@@ -153,6 +155,7 @@ export async function launchSandbox(
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
   }
   const repositoryDir = resolveRepositoryDir(golden, request.repo);
+  const machineSize = resolveMachineSize(golden.provider, request.size, repositoryDir, golden.sizePolicy);
   const prepareNativeCwd = provider.prepareNativeHarnessCwd?.bind(provider);
   if (repositoryDir !== null && !prepareNativeCwd)
     throw new LaunchError("invalid_request", `${provider.id} cannot prepare a native repository working directory.`);
@@ -174,7 +177,11 @@ export async function launchSandbox(
   const secrets = connected ? [...credentials.secrets, connected.token] : credentials.secrets;
 
   const id = (options.newId ?? (() => crypto.randomUUID()))();
-  const releaseOperation = await stores.goldens.beginOperation?.(golden.id);
+  const releaseOperation = await stores.goldens.beginOperation?.(golden.id, {
+    kind: "launch",
+    snapshotId: golden.providerSnapshotId,
+    sandboxId: golden.providerSandboxId,
+  });
   let childRecorded = false;
   let noAllocation = true;
   let failed = false;
@@ -184,6 +191,7 @@ export async function launchSandbox(
     const forked = await provider
       .fork({
         from: snapshot,
+        ...(machineSize.effective ? { size: machineSize.effective } : {}),
         noEnv: true,
         env,
         ttlSeconds,
@@ -216,6 +224,7 @@ export async function launchSandbox(
         status: "starting",
         ...(activityLeaseId ? { activityLeaseId } : {}),
         repositoryDir,
+        machineSize,
         ...(request.ttlSeconds === undefined ? {} : { requestedTtlSeconds: request.ttlSeconds }),
         effectiveTtlSeconds: ttlSeconds,
         model: choice.model,

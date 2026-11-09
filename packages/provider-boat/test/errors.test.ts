@@ -98,6 +98,27 @@ describe("boat errors become typed errors", () => {
     expect((error as Error).message).toContain("fetch failed");
   });
 
+  test.each([
+    [403, "machine_class_plan_required", "xlarge"],
+    [400, "type_too_small", "small"],
+  ] as const)(
+    "size refusal %s %s preserves provider evidence and never retries another size",
+    async (status, providerCode, size) => {
+      const boat = fakeBoat(errorBody(status, providerCode, "Requested size cannot be allocated"));
+      await expect(boat.provider.fork({ from: "source", size })).rejects.toMatchObject({
+        providerCode,
+        status,
+        retryable: false,
+      });
+      expect(boat.requests).toHaveLength(1);
+      expect(boat.requests[0]).toMatchObject({
+        method: "POST",
+        path: "/api/v1/sandboxes",
+        body: { from: "source", type: size },
+      });
+    },
+  );
+
   test("neither the API key nor an injected credential appears in an error", async () => {
     const boat = fakeBoat(errorBody(409, "fork_failed", "Fork failed"));
     const error = (await boat.provider

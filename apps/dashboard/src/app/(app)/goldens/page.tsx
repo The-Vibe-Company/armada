@@ -203,9 +203,10 @@ export default async function GoldensPage({ searchParams }: Props) {
           <AlertTitle>Provider status unavailable</AlertTitle>
           <AlertDescription>
             <p>{setup.message}</p>
-            <Link className="underline underline-offset-4" href="/goldens" prefetch={false}>
+            {/* A document request, not a client navigation: the router would reuse its cached render (staleTimes). */}
+            <a className="underline underline-offset-4" href="/goldens">
               Check again
-            </Link>
+            </a>
           </AlertDescription>
         </Alert>
       )}

@@ -183,12 +183,24 @@ export function providerRegistry(
   const modal = options.modalProviderFor;
   return createProviderRegistry({
     boat: async (target, caller) => {
-      const { key } = await resolveBoatKey(options.vault, options.encryptionKey, {
+      const { key, scope } = await resolveBoatKey(options.vault, options.encryptionKey, {
         userId: caller.userId,
         orgId: target.orgId,
         visibility: target.sourceGoldenVisibility ?? target.visibility,
       });
-      return options.providerFor(key, { userId: caller.userId, orgId: target.orgId });
+      const provider = options.providerFor(key, { userId: caller.userId, orgId: target.orgId });
+      const authority = Object.freeze({ scope, ownerId: scope === "org" ? target.orgId : caller.userId });
+      // Keep source authority immutable even if a provider factory caches a shared client.
+      return new Proxy(provider, {
+        get(instance, property) {
+          if (property === "managementIdentity") return async () => authority;
+          const value = Reflect.get(instance, property, instance);
+          return typeof value === "function" ? value.bind(instance) : value;
+        },
+        set(instance, property, value) {
+          return property !== "managementIdentity" && Reflect.set(instance, property, value, instance);
+        },
+      });
     },
     ...(modal
       ? {

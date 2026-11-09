@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import type { CreateGoldenRequest, ForkRequest, Provider, SandboxInfo, SnapshotInfo } from "@armada/core";
-import { resolveModelChoice } from "@armada/core";
+import { machineCapacity, parseMachineSize, resolveModelChoice } from "@armada/core";
 import type { App, Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { type ModalConnection, modalConnection } from "./client.ts";
@@ -89,6 +89,16 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     // Public SDK exposes App ID/environment, not authenticated workspace identity. Globally unique
     // App ID reached by an explicit token is authoritative; workspace label is never authentication.
     return app;
+  }
+  async function snapshotBackend() {
+    try {
+      await bound();
+    } catch (error) {
+      const failure = modalError(error);
+      if (failure.code === "not_found")
+        throw refusal("provider_not_configured", "Snapshot backend authority cannot be verified.");
+      throw failure;
+    }
   }
   function assertMachineSource(row: Machine) {
     assertAuthority(row);
@@ -201,7 +211,16 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       row.phase = "creating";
       row.grantExpiresAt = Date.now() + row.ttlSeconds * 1000;
       await save(row);
+      const capacity = row.size === undefined ? null : machineCapacity("modal", row.size);
       sb = await client.sandboxes.create(app, image, {
+        ...(capacity
+          ? {
+              cpu: capacity.vcpus / 2,
+              cpuLimit: capacity.vcpus / 2,
+              memoryMiB: capacity.memoryMiB,
+              memoryLimitMiB: capacity.memoryMiB,
+            }
+          : {}),
         name: row.physicalName,
         tags: ownershipTags(row),
         timeoutMs: row.ttlSeconds * 1000,
@@ -265,6 +284,14 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     return sandboxInfo(row);
   }
   async function launch(request: CreateGoldenRequest | ForkRequest, golden: boolean): Promise<SandboxInfo> {
+    let size: Machine["size"];
+    if ("size" in request && request.size !== undefined) {
+      try {
+        size = parseMachineSize(request.size);
+      } catch {
+        throw refusal("invalid_request", "Size must be small, medium, large or xlarge.");
+      }
+    }
     await bound();
     const ttl = request.ttlSeconds ?? 3600;
     if (!Number.isInteger(ttl) || ttl < 1 || ttl > 86400)
@@ -297,6 +324,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       phase: "reserved",
       golden,
       ttlSeconds: ttl,
+      ...(size === undefined ? {} : { size }),
       physicalName: `armada-${createHash("sha256").update(id).digest("hex").slice(0, 32)}-1`,
       ...(imageId ? { imageId } : {}),
       ...(sourceImage ? { sourceImage } : {}),
@@ -305,6 +333,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     try {
       if (
         row.golden !== golden ||
+        row.size !== size ||
         row.imageId !== imageId ||
         row.sourceImage?.scopeKey !== sourceImage?.scopeKey ||
         row.sourceImage?.name !== sourceImage?.name
@@ -465,6 +494,20 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   const provider: ModalProvider = {
     id: "modal",
+    backendIdentity: async () => {
+      await bound();
+      return {
+        id: JSON.stringify([
+          source.scope.binding.workspace,
+          source.scope.binding.environment,
+          source.scope.binding.appId,
+        ]),
+      };
+    },
+    managementIdentity: async () => ({
+      scope: managementAuthority.credentialScope,
+      ownerId: managementAuthority.credentialOwnerId,
+    }),
     harnesses: ["claude", "codex"],
     capabilities: distribution.capabilities,
     createGolden: (r) => {
@@ -473,6 +516,13 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       return launch(r, true);
     },
     async fork(r) {
+      if (r.size !== undefined) {
+        try {
+          parseMachineSize(r.size);
+        } catch {
+          throw refusal("invalid_request", "Size must be small, medium, large or xlarge.");
+        }
+      }
       const snapshot = await source.store.image(r.from);
       assertAuthority(snapshot);
       return source.store.lease(snapshot.sourceId, async () => launch(r, false));
@@ -769,6 +819,10 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
             name: r.name,
             status: "saving",
             sourceSandboxId: r.sandboxId,
+            managementAuthority: {
+              scope: managementAuthority.credentialScope,
+              ownerId: managementAuthority.credentialOwnerId,
+            },
             createdAt: new Date(),
           };
           await store.saveImage({ info, sourceId: r.sandboxId, managementAuthority: { ...managementAuthority } });
@@ -785,6 +839,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           row.snapshotImages = [...(row.snapshotImages ?? []), { name: r.name, imageId: image.imageId }];
           await save(row);
           info.status = "ready";
+          info.artifactId = image.imageId;
           await store.saveImage({
             info,
             sourceId: r.sandboxId,
@@ -803,10 +858,25 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       }
     },
     async getSnapshot(name) {
-      await bound();
+      await snapshotBackend();
       const image = await source.store.image(name);
       assertAuthority(image);
-      return image.info;
+      // Only canonical saved-image fields are provenance; cached optional info is not
+      // a substitute when an older/partial receipt lacks its artifact or authority.
+      const { artifactId: _artifact, managementAuthority: _authority, sourceSandboxId: _source, ...info } = image.info;
+      return {
+        ...info,
+        sourceSandboxId: image.sourceId,
+        ...(image.imageId ? { artifactId: image.imageId } : {}),
+        ...(image.managementAuthority
+          ? {
+              managementAuthority: {
+                scope: image.managementAuthority.credentialScope,
+                ownerId: image.managementAuthority.credentialOwnerId,
+              },
+            }
+          : {}),
+      };
     },
     async deleteSnapshot(name) {
       if (scopeKey(source.scope) !== scopeKey(options.scope))
@@ -814,7 +884,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           "forbidden",
           "Snapshot mutation requires the golden-source provider scope, not a private-fork adapter.",
         );
-      await bound();
+      await snapshotBackend();
       let image: SavedImage;
       try {
         image = await store.image(name);

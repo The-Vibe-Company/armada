@@ -83,6 +83,48 @@ describe("launch", () => {
     expect(world.prompts).toEqual([]);
   });
 
+  test("size precedence is override, selected repository, golden, then unchanged legacy fork", async () => {
+    for (const [size, repo, policy, effective, source] of [
+      ["small", "web", { version: 1, golden: "large", repositories: { web: "xlarge" } }, "small", "override"],
+      [
+        undefined,
+        "example/web",
+        { version: 1, golden: "large", repositories: { web: "xlarge" } },
+        "xlarge",
+        "repository",
+      ],
+      [undefined, undefined, { version: 1, golden: "large", repositories: { web: "xlarge" } }, "large", "golden"],
+      [undefined, undefined, null, null, "legacy"],
+    ] as const) {
+      const manifest = golden("org");
+      manifest.sizePolicy = policy;
+      const world = setup({ golden: manifest, prepare: true });
+      const insert = world.stores.sandboxes.insert;
+      let evidence: unknown;
+      world.stores.sandboxes.insert = async (input) => {
+        evidence = input.machineSize;
+        return { ...(await insert(input)), machineSize: input.machineSize ?? null };
+      };
+      await launchSandbox(world.provider, world.stores, owner, {
+        golden: "web",
+        harness: "claude",
+        ...(size ? { size } : {}),
+        ...(repo ? { repo } : {}),
+      });
+      expect(world.forks[0]?.size).toBe(effective ?? undefined);
+      expect(evidence).toMatchObject({ version: 1, requested: size ?? null, effective, source });
+    }
+    const world = setup({ golden: golden("org") });
+    await expect(
+      launchSandbox(world.provider, world.stores, owner, {
+        golden: "web",
+        harness: "claude",
+        size: "invalid" as never,
+      }),
+    ).rejects.toThrow("Size must");
+    expect(world.forks).toHaveLength(0);
+  });
+
   test("MCP prepare runs after binding and init, before first prompt, including idle launches", async () => {
     for (const prompt of [undefined, "start"]) {
       const world = setup({ golden: golden("org") });
