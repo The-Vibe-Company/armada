@@ -615,21 +615,15 @@ private struct MarkdownLinkedTextView: UIViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, UITextViewDelegate {
+        /// A tap opens an allowed link through `MessageLinkActions`; the long-press menu and preview
+        /// keep UIKit's defaults. Replaces the iOS 17-deprecated `shouldInteractWith` delegate.
         func textView(
             _ textView: UITextView,
-            shouldInteractWith url: URL,
-            in characterRange: NSRange,
-            interaction: UITextItemInteraction
-        ) -> Bool {
-            switch interaction {
-            case .invokeDefaultAction:
-                MessageLinkActions.open(url)
-                return false
-            case .presentActions, .preview:
-                return true
-            @unknown default:
-                return false
-            }
+            primaryActionFor textItem: UITextItem,
+            defaultAction: UIAction
+        ) -> UIAction? {
+            guard case .link(let url) = textItem.content else { return defaultAction }
+            return UIAction { _ in MessageLinkActions.open(url) }
         }
     }
 }
