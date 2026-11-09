@@ -374,21 +374,19 @@ test("live history advertises provider backlog when a full owner page exactly fi
       modelAccountId: crypto.randomUUID(),
     };
     const created = await store.create({ ownerId: p.owner, configuration, key: "create", skillRevision: revision });
-    const sandbox = await foundation
-      .createSqlSandboxStore(sql)
-      .insert({
-        id: crypto.randomUUID(),
-        provider: "boat",
-        providerSandboxId: "page-native",
-        goldenId: golden.id,
-        orgId: p.org,
-        ownerId: p.owner,
-        harness: "claude",
-        model: "m",
-        reasoningEffort: "high",
-        status: "running",
-        visibility: "private",
-      });
+    const sandbox = await foundation.createSqlSandboxStore(sql).insert({
+      id: crypto.randomUUID(),
+      provider: "boat",
+      providerSandboxId: "page-native",
+      goldenId: golden.id,
+      orgId: p.org,
+      ownerId: p.owner,
+      harness: "claude",
+      model: "m",
+      reasoningEffort: "high",
+      status: "running",
+      visibility: "private",
+    });
     await db.query("update orchestrators set sandbox_id=$2 where id=$1", [created.identity.id, sandbox.id]);
     created.identity = await store.preparing(created);
     await store.complete(created, { state: "succeeded", conversationId: "native" });
