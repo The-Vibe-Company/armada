@@ -127,3 +127,44 @@ nativeTest(
     }
   },
 );
+
+nativeTest.each(["reported", "unavailable"])(
+  "native account snapshot %s stays private and never blocks the coding turn",
+  async (mode) => {
+    const driver = new CodexDriver({
+      executable: `${import.meta.dir}/fixtures/app-server.ts`,
+      cwd: import.meta.dir,
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        CODEX_HOME: import.meta.dir,
+        ...(mode === "unavailable" ? { ARMADA_QUOTA_UNAVAILABLE: "1" } : {}),
+      },
+    });
+    const events: DriverEvent[] = [];
+    try {
+      const turn = driver.start({
+        request: { sandboxId: "s", harness: "codex", text: "redirect" },
+        signal: AbortSignal.timeout(3000),
+        session: () => {},
+        emit: (event) => {
+          events.push(event);
+        },
+      });
+      expect(await turn.done).toBe("finished");
+      const snapshot = events.find((event) => event.kind === "other" && event.type === "account/rateLimits/read");
+      if (mode === "reported")
+        expect(snapshot).toMatchObject({
+          data: {
+            rateLimits: { credits: { hasCredits: false, unlimited: false, balance: "0" } },
+            rateLimitsByLimitId: { review: { credits: { balance: "12.3400" } } },
+          },
+        });
+      else expect(snapshot).toBeUndefined();
+      expect(events.filter((event) => event.kind === "message").every((event) => !event.text.includes("12.3400"))).toBe(
+        true,
+      );
+    } finally {
+      await driver.close();
+    }
+  },
+);

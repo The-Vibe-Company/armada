@@ -1,6 +1,7 @@
 import type { AgentEvent, Provider, Sql } from "@armada/core";
 import { VaultError } from "@armada/core";
 import type { Caller } from "./caller.ts";
+import { codexReading } from "./model-usage-codex.ts";
 
 /** These native records belong to the credential owner, not the sandbox audience. */
 export function isPrivateModelEvent(event: AgentEvent): boolean {
@@ -8,13 +9,21 @@ export function isPrivateModelEvent(event: AgentEvent): boolean {
     return true;
   return (
     event.kind === "other" &&
-    ["usage_report", "rate_limit_event", "account/rateLimits/updated", "account/updated", "auth_status"].includes(
-      event.type,
-    )
+    [
+      "usage_report",
+      "rate_limit_event",
+      "account/rateLimits/updated",
+      "account/rateLimits/read",
+      "account/updated",
+      "auth_status",
+    ].includes(event.type)
   );
 }
 
-interface Window {
+export interface Window {
+  sourceId?: string | null;
+  observedAt?: string;
+  windowDurationMins?: number;
   id: string;
   label: string;
   kind: string;
@@ -26,7 +35,25 @@ interface Window {
   model?: string;
   surface?: string;
 }
+export interface NativeCredits {
+  hasCredits: boolean;
+  unlimited: boolean;
+  balance: string | null;
+}
+export interface UsageBucket {
+  sourceId: string | null;
+  label: string;
+  windows: Window[];
+  credits?: NativeCredits;
+  creditsObservedAt?: string;
+}
 export interface ModelUsage {
+  credits?: NativeCredits;
+  creditsObservedAt?: string;
+  creditsSourceId?: string | null;
+  compatibilitySourceId?: string | null;
+  buckets?: UsageBucket[];
+  compatibility?: UsageBucket;
   accountId: string;
   version: number;
   status: "fresh" | "stale" | "unavailable" | "error";
@@ -67,7 +94,22 @@ function majorUnits(value: number | null, currency: unknown): number | null {
     return null;
   }
 }
-function reading(event: AgentEvent): (Pick<ModelUsage, "windows" | "extraUsage"> & { unavailable?: boolean }) | null {
+function reading(
+  event: AgentEvent,
+  previous: ModelUsage,
+):
+  | (Pick<
+      ModelUsage,
+      | "windows"
+      | "extraUsage"
+      | "credits"
+      | "creditsObservedAt"
+      | "creditsSourceId"
+      | "compatibilitySourceId"
+      | "buckets"
+      | "compatibility"
+    > & { unavailable?: boolean })
+  | null {
   if (event.kind !== "other") return null;
   const data = object(event.data);
   if (event.type === "usage_report") {
@@ -123,24 +165,8 @@ function reading(event: AgentEvent): (Pick<ModelUsage, "windows" | "extraUsage">
   }
   // Header rate_limit_event remains private diagnostic data, not a profile
   // quota refresh: model-only setup tokens cannot read profile allowance.
-  if (event.type === "account/rateLimits/updated") {
-    const limits = object(data.rateLimits);
-    const windows = ["primary", "secondary"].flatMap((key) => {
-      const row = object(limits[key]);
-      return Object.keys(row).length
-        ? [
-            {
-              id: key,
-              label: key,
-              kind: key,
-              usedPercent: percent(row.usedPercent),
-              resetsAt: instant(row.resetsAt),
-            },
-          ]
-        : [];
-    });
-    return windows.length ? { windows } : null;
-  }
+  if (event.type === "account/rateLimits/updated" || event.type === "account/rateLimits/read")
+    return codexReading(data, new Date(event.at).toISOString(), event.type === "account/rateLimits/updated", previous);
   return null;
 }
 
@@ -227,15 +253,27 @@ export function createModelUsageApi(
         observedAt: null,
         windows: [],
       };
-      const fresh = (result: ModelUsage): ModelUsage => ({
-        ...result,
-        status:
-          result.observedAt && (result.status === "fresh" || result.status === "stale")
-            ? now().getTime() - Date.parse(result.observedAt) <= 60_000
-              ? "fresh"
-              : "stale"
-            : result.status,
-      });
+      const fresh = (result: ModelUsage): ModelUsage => {
+        const stamps = [
+          result.observedAt,
+          result.creditsObservedAt,
+          ...result.windows.map((window) => window.observedAt),
+          ...(result.buckets ?? []).flatMap((bucket) => [
+            bucket.creditsObservedAt,
+            ...bucket.windows.map((window) => window.observedAt),
+          ]),
+        ].filter((stamp): stamp is string => typeof stamp === "string");
+        const stale = stamps.some((stamp) => now().getTime() - Date.parse(stamp) > 60_000);
+        return {
+          ...result,
+          status:
+            result.observedAt && (result.status === "fresh" || result.status === "stale")
+              ? stale
+                ? "stale"
+                : "fresh"
+              : result.status,
+        };
+      };
       if (prior && time >= prior.checked && time - prior.checked < 15_000) return fresh(value);
       const pending = inFlight.get(key);
       if (pending) {
@@ -265,7 +303,8 @@ export function createModelUsageApi(
             );
             if (page.events.length > 100) throw Error("usage_read_page_exceeded");
             for (const event of page.events) {
-              const usage = reading(event);
+              if (!Number.isFinite(event.at) || event.at > now().getTime()) continue;
+              const usage = reading(event, nextValue);
               if (
                 usage &&
                 Number.isFinite(event.at) &&
@@ -279,6 +318,14 @@ export function createModelUsageApi(
                   observedAt: new Date(event.at).toISOString(),
                   windows: usage.windows,
                   ...(usage.extraUsage ? { extraUsage: usage.extraUsage } : {}),
+                  ...(usage.credits ? { credits: usage.credits } : {}),
+                  ...(usage.creditsObservedAt !== undefined ? { creditsObservedAt: usage.creditsObservedAt } : {}),
+                  ...(usage.creditsSourceId !== undefined ? { creditsSourceId: usage.creditsSourceId } : {}),
+                  ...(usage.compatibilitySourceId !== undefined
+                    ? { compatibilitySourceId: usage.compatibilitySourceId }
+                    : {}),
+                  ...(usage.buckets ? { buckets: usage.buckets } : {}),
+                  ...(usage.compatibility ? { compatibility: usage.compatibility } : {}),
                 };
             }
             const next = page.cursor;

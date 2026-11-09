@@ -1053,7 +1053,14 @@ test("public sandbox logs omit account-private native quota and auth records", a
     await stan.run(["org", "create", "Quota privacy"]);
     const boat = fakeBoat();
     boat.provider.get = async (id) => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
-    const types = ["usage_report", "rate_limit_event", "account/rateLimits/updated", "account/updated", "auth_status"];
+    const types = [
+      "usage_report",
+      "rate_limit_event",
+      "account/rateLimits/updated",
+      "account/rateLimits/read",
+      "account/updated",
+      "auth_status",
+    ];
     boat.provider.events = async () => ({
       events: [
         ...types.map((type) => ({

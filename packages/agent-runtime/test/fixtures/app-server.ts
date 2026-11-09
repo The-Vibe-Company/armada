@@ -37,6 +37,33 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       throw Error("invalid API-key login");
     loggedIn = true;
     reply({ type: "apiKey" });
+  } else if (m.method === "account/rateLimits/read") {
+    if (process.env.ARMADA_QUOTA_UNAVAILABLE === "1") {
+      send({ id: m.id, error: { code: -32000, message: "Synthetic quota unavailable" } });
+      return;
+    }
+    reply({
+      ordinaryUsageAllowed: true,
+      rateLimits: {
+        limitId: "codex",
+        primary: { usedPercent: 25, resetsAt: 1794268800 },
+        secondary: null,
+        credits: { hasCredits: false, unlimited: false, balance: "0" },
+      },
+      rateLimitsByLimitId: {
+        codex: {
+          limitId: "codex",
+          primary: { usedPercent: 25, resetsAt: 1794268800 },
+          credits: { hasCredits: false, unlimited: false, balance: "0" },
+        },
+        review: {
+          limitId: "review",
+          primary: { usedPercent: 42, resetsAt: null },
+          credits: { hasCredits: true, unlimited: false, balance: "12.3400" },
+        },
+      },
+      accountId: "synthetic-upstream-account",
+    });
   } else if (m.method === "thread/start" || m.method === "thread/resume") {
     if (process.env.OPENAI_API_KEY && !loggedIn) throw Error("API-key login must precede thread operations");
     if (m.method === "thread/resume") thread = m.params.threadId;

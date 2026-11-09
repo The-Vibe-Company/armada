@@ -64,6 +64,53 @@ terminal capability fields are produced separately by #604:
 
 The terminal value is a base command; #618 adds its quoted --name itself.
 
+## Native credits and metered buckets (v3)
+
+Native Codex credit counts are separate from Claude extra-usage money:
+
+    "credits": {"hasCredits": false, "unlimited": false, "balance": "0"}
+
+The credits object appears only for a valid native source snapshot: exact boolean
+flags and a decimal balance string or null. Zero, trailing decimal zeros and
+large decimal precision are preserved as strings, never coerced to numbers.
+Unlimited is the reported boolean, not an inferred balance. Missing/malformed
+credit metadata is omitted; no USD, monetary unit or fake zero is supplied.
+Credit-only native data is valid even with no percentage windows.
+
+Every actual rateLimitsByLimitId entry is retained in buckets, including a meter
+that reports only credits:
+
+    {
+      "sourceId": "review",
+      "label": "Review",
+      "windows": [{"id": "primary", "kind": "primary", "sourceId": "review",
+                   "label": "primary", "usedPercent": 42, "resetsAt": null,
+                   "observedAt": "2026-11-09T12:00:00.000Z"}],
+      "credits": {"hasCredits": true, "unlimited": false, "balance": "12.3400"},
+      "creditsObservedAt": "2026-11-09T12:00:00.000Z"
+    }
+
+The sourceId is the actual native meter-map key; compatibility snapshots without
+an ID use null, not an invented identity. Bucket balances are not summed.
+Top-level credits is the compatibility alias, with creditsSourceId and
+creditsObservedAt; consumers can render each bucket independently. The sanitized
+compatibility object preserves the original single-bucket view. Flat windows
+retain primary/secondary IDs and namespace additional meter IDs, while buckets
+preserve every map view even if it differs from compatibility.
+
+Sparse native updates retain previously observed nullable account metadata and
+other meter buckets with their original timestamps. They do not promote an old
+balance/window to a new observation. Aggregate status is stale if a retained
+component is stale. A full native snapshot is authoritative for its current set.
+Earned rate-limit-reset credits are a different protocol object, not a workspace
+balance, and are not substituted for native credits.
+
+Within an already-running eligible native ChatGPT app-server, the collector can
+read account/rateLimits/read without inference. This does not start a process or
+prompt just for an API usage request. The optional read is bounded and cannot
+kill a coding turn on quota failure. Its full response and account notifications
+are private; only allowlisted normalized metadata reaches this API.
+
 ## Native sources and privacy
 
 - Claude SDK 0.3.319 usage_report retains provider rows, ISO resets and optional
@@ -71,7 +118,7 @@ The terminal value is a base command; #618 adds its quoted --name itself.
   than preserving a fake fresh value. A model-only setup token reports unavailable.
 - Native rate_limit_event remains private diagnostic data. Header utilization is
   not promoted to a profile reading that a model-only token cannot query.
-- Codex 0.167.0 account/rateLimits/updated is account-scoped, not thread-scoped.
+- Codex 0.167.0 account/rateLimits/updated and account/rateLimits/read are account-scoped, not thread-scoped.
   Its windows use native 0–100 percentages and Unix-second reset timestamps.
 - Structured reports, account limits, native auth status and system
   local_command_output are omitted from general API/MCP logs. Claude /usage
