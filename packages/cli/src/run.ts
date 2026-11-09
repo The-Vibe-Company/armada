@@ -102,7 +102,8 @@ Usage:
                                            Goldens you can see
   armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
                 [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
-                [--visibility private|org] [--connections <id,...> | --no-connections] [--org <org>]
+                [--connections <id,...> | --no-connections] [--org <org>]
+                Omit connections to use owner defaults; --no-connections opts out.
                                            Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
                                            and effort apply to every later turn too. --repo owner/repo selects a recorded
@@ -698,6 +699,20 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   const args = parseArgs(argv);
   if (flag(args, "--no-connections") && single(args, "--connections") !== undefined)
     throw new GoldenError("invalid_config", "Use --connections or --no-connections, not both.");
+  const legacyVisibility = single(args, "--visibility");
+  if (legacyVisibility !== undefined) {
+    if (legacyVisibility !== "private" && legacyVisibility !== "org")
+      throw new GoldenError("invalid_config", "Legacy --visibility must be private or org.");
+    io.err(
+      "Warning: --visibility is deprecated and ignored. Sandbox interior access requires the owner or an org admin; omitted connections use owner defaults.\n",
+    );
+  }
+  const connections = single(args, "--connections");
+  if (connections !== undefined && connections.split(",").some((id) => !id.trim()))
+    throw new GoldenError(
+      "invalid_config",
+      "--connections needs a comma-separated list of nonempty IDs; use --no-connections to opt out.",
+    );
   const [name, prompt, ...extra] = args.positionals;
   if (name === undefined || extra.length > 0) {
     throw new GoldenError("invalid_config", "Give a golden name and at most one prompt.");
@@ -719,9 +734,8 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        ...(single(args, "--visibility") ? { visibility: single(args, "--visibility") } : {}),
         ...(flag(args, "--no-connections") ? { connections: [] } : {}),
-        ...(single(args, "--connections") ? { connections: single(args, "--connections")!.split(",") } : {}),
+        ...(connections === undefined ? {} : { connections: connections.split(",") }),
         golden: name,
         ...(repo === undefined ? {} : { repo }),
         ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
@@ -813,7 +827,8 @@ function parseTtl(value: string): number {
 function launchText(result: LaunchResult): string {
   const { sandbox, golden } = result;
   const lines = [
-    `Launched ${sandbox.harness} sandbox (${sandbox.visibility ?? golden.visibility}) from golden ${golden.name}.`,
+    `Launched ${sandbox.harness} sandbox from golden ${golden.name}.`,
+    "Access: org members see safe metadata; only the owner or an org admin can open or manage the sandbox.",
     `Sandbox: ${sandbox.id}`,
     `${sandbox.provider === "boat" ? "Boat" : "Modal"} sandbox: ${sandbox.providerSandboxId}`,
     `Status: ${sandbox.status}`,
@@ -848,7 +863,6 @@ function jsonLaunch(result: LaunchResult) {
     providerSandboxId: sandbox.providerSandboxId,
     boatId: sandbox.provider === "boat" ? sandbox.providerSandboxId : null,
     golden: result.golden.name,
-    visibility: sandbox.visibility ?? result.golden.visibility,
     repositoryDir: sandbox.repositoryDir ?? null,
     harness: sandbox.harness,
     model: sandbox.model,

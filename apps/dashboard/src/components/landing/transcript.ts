@@ -9,7 +9,7 @@ export const TRANSCRIPT: TerminalCommand[] = [
   {
     command: 'armada launch widgets --agent codex "Fix the flaky checkout test in widgets" --ttl 4h',
     output:
-      "Launched codex sandbox (org) from golden widgets.\nSandbox: 6f1c2a9e-4b7d-4e2a-9c51-3d8e0f7a2b14\nBoat sandbox: bx_7k2m9q\nStatus: running\nModel: gpt-6.1-sol (reasoning effort medium)\nConversation: conversation-1\nGitHub: git and gh act as lea-acme (token valid for 8 hours).\nStops by itself at 2026-11-09T13:30:00.000Z (TTL 14400s).",
+      "Launched codex sandbox from golden widgets.\nAccess: org members see safe metadata; only the owner or an org admin can open or manage the sandbox.\nSandbox: 6f1c2a9e-4b7d-4e2a-9c51-3d8e0f7a2b14\nBoat sandbox: bx_7k2m9q\nStatus: running\nModel: gpt-6.1-sol (reasoning effort medium)\nConversation: conversation-1\nGitHub: git and gh act as lea-acme (token valid for 8 hours).\nStops by itself at 2026-11-09T13:30:00.000Z (TTL 14400s).",
   },
   {
     command: "armada logs 6f1c2a9e-4b7d-4e2a-9c51-3d8e0f7a2b14",

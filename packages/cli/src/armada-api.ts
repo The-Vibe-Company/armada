@@ -79,6 +79,18 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       }
       const payload: unknown = await response.json().catch(() => null);
       if (response.ok) return normalizeProviderDto(path, payload) as T;
+      // Interior responses may contain provider failures or guest secrets. Never relay raw text.
+      if (isSandboxInteriorPath(path) && response.status !== 401) {
+        const denied = response.status === 403;
+        throw new AuthError(
+          denied
+            ? "Sandbox interior access requires current organization membership and the owner or an org admin."
+            : response.status === 404
+              ? "Sandbox not found or not accessible."
+              : `Sandbox operation failed (${response.status}). Check access and sandbox status before retrying.`,
+          denied || response.status === 404 ? "conflict" : "unavailable",
+        );
+      }
       // Invitation tokens can be present in a rejected body. Never trust server error text here.
       if (path.startsWith("/api/v1/org/invitations/")) {
         const messages: Record<number, string> = {
@@ -238,4 +250,12 @@ function invitationReasonMessage(payload: unknown): string | undefined {
       ? ` Retry after ${retryAfterSeconds} seconds.`
       : "";
   return `${messages[reason]}${retry}`;
+}
+
+function isSandboxInteriorPath(path: string): boolean {
+  return (
+    /^\/api\/v1\/sandbox\/(?:detail|status|send|steer|interrupt|exec|stop|wait)$/.test(path) ||
+    path === "/api/v1/logs/read" ||
+    path === "/api/v1/mcp/sandbox-connections"
+  );
 }

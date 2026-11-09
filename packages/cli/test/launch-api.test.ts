@@ -119,3 +119,57 @@ describe("launch through the Armada API", () => {
     expect(out).toContain("Stops by itself at 2026-11-08T16:00:00.000Z (TTL 1800s).");
   });
 });
+
+// The parser must preserve producer-owned defaults: omitted, explicit and empty are distinct.
+for (const visibility of [undefined, "private", "org"]) {
+  for (const selection of [undefined, "selected", "none"]) {
+    test(`launch keeps connection selection ${selection ?? "default"} with legacy visibility ${visibility ?? "omitted"}`, async () => {
+      let body: Record<string, unknown> = {};
+      let out = "",
+        err = "";
+      const code = await run(
+        [
+          "launch",
+          "web",
+          "--agent",
+          "codex",
+          "--json",
+          ...(visibility ? ["--visibility", visibility] : []),
+          ...(selection === "selected"
+            ? ["--connections", "connection-a,connection-b"]
+            : selection === "none"
+              ? ["--no-connections"]
+              : []),
+        ],
+        {
+          out: (text) => {
+            out += text;
+          },
+          err: (text) => {
+            err += text;
+          },
+        },
+        {
+          auth: {
+            out: () => undefined,
+            err: () => undefined,
+            env: { ARMADA_TOKEN: token },
+            fetch: async (_input, init) => {
+              body = JSON.parse(String(init?.body));
+              return Response.json(response);
+            },
+            now: () => new Date(),
+            open: () => undefined,
+            session: memorySessionStore(),
+          },
+        },
+      );
+      expect(code).toBe(0);
+      expect(body).not.toHaveProperty("visibility");
+      if (selection === undefined) expect(body).not.toHaveProperty("connections");
+      else expect(body.connections).toEqual(selection === "none" ? [] : ["connection-a", "connection-b"]);
+      expect(JSON.parse(out)).not.toHaveProperty("visibility");
+      expect(err.includes("deprecated and ignored")).toBe(visibility !== undefined);
+    });
+  }
+}
