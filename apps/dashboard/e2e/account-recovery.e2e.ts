@@ -211,3 +211,50 @@ test("only the owner chooses; no usable account points to Credentials; Boat and 
   await expect(section(page)).toHaveCount(0);
   expect((await mockState()).bindCalls).toEqual([]);
 });
+
+test("on a short phone the chooser stays inside the viewport, and once bound the conversation fits it again (#629)", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 664 });
+  await legacy({ status: "stopped" });
+  await post("sandbox-events", {
+    sandbox: IDS.running,
+    events: Array.from({ length: 40 }, (_, index) => ({
+      id: `h${index}`,
+      at: 1_762_596_300_000 + index * 1000,
+      kind: "message",
+      text: `Step ${index}: checked another parser fixture.`,
+      partial: false,
+      tools: [],
+      conversationId: "conv-a",
+    })),
+  });
+  await post("accounts", { user: [WORK, API] });
+  await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
+  const overflow = () =>
+    page.evaluate(() => ({
+      vertical: document.documentElement.scrollHeight - window.innerHeight,
+      horizontal: document.documentElement.scrollWidth - window.innerWidth,
+    }));
+  const send = page.getByRole("button", { name: "Send", exact: true });
+  // The chooser takes room above the conversation; the shell scrolls, the document never does.
+  await expect(section(page).getByRole("radio")).toHaveCount(2);
+  expect(await overflow()).toEqual({ vertical: 0, horizontal: 0 });
+  await send.scrollIntoViewIfNeeded();
+  await expect(send).toBeInViewport({ ratio: 1 });
+  await page.screenshot({ path: "test-results/account-choice-short-mobile.png", animations: "disabled" });
+
+  await section(page)
+    .getByRole("radio", { name: /API billing/ })
+    .check();
+  await section(page).getByRole("button", { name: "Use this account" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Bind account" }).click();
+  await expect(section(page)).toHaveCount(0);
+  // Bound: the conversation fits the viewport again and only its history scrolls.
+  await expect(send).toBeInViewport({ ratio: 1 });
+  expect(await overflow()).toEqual({ vertical: 0, horizontal: 0 });
+  const messages = page.getByRole("log", { name: "Messages" });
+  expect(await messages.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  expect(await page.evaluate(() => document.querySelector("main")?.scrollTop ?? 0)).toBe(0);
+  await page.screenshot({ path: "test-results/account-choice-short-mobile-bound.png", animations: "disabled" });
+});
