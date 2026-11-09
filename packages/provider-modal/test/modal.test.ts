@@ -539,6 +539,71 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       await expect(f.store.lease(row.id, async () => undefined)).rejects.toMatchObject({ code: "conflict" });
     });
   });
+  test("HTTP ingest retains message semantics through SQL replay, pagination and conversation filtering", async () => {
+    const f = fixture();
+    const row = await f.provider.createGolden({});
+    const handler = createModalIngestHandler({
+      sql: db,
+      verifyGrant: async () => ({
+        scope,
+        claims: { sandboxId: row.id, generation: "1", expiresAt: Date.now() + 60000 },
+      }),
+    });
+    const events = [
+      {
+        id: "delta",
+        at: 1,
+        kind: "message" as const,
+        conversationId: "a",
+        promptId: "p",
+        messageId: "native",
+        textMode: "delta" as const,
+        text: "Hi",
+        partial: true,
+        tools: [],
+      },
+      {
+        id: "legacy",
+        at: 2,
+        kind: "message" as const,
+        conversationId: "b",
+        promptId: "q",
+        text: "Historical",
+        partial: false,
+        tools: [],
+      },
+      {
+        id: "final",
+        at: 3,
+        kind: "message" as const,
+        conversationId: "a",
+        promptId: "p",
+        messageId: "native",
+        textMode: "snapshot" as const,
+        text: "Hi there",
+        partial: false,
+        tools: [],
+      },
+    ];
+    const request = () =>
+      new Request("https://example/ingest", {
+        method: "POST",
+        body: JSON.stringify({
+          sandboxId: row.id,
+          generation: "1",
+          events: events.map((event, i) => ({ sequence: i + 1, event })),
+        }),
+      });
+    expect((await handler(request())).status).toBe(200);
+    expect((await handler(request())).status).toBe(200);
+    const first = await f.provider.events({ sandboxId: row.id, conversationId: "a", limit: 1 });
+    expect(first.events).toEqual(events.slice(0, 1));
+    expect(first.hasMore).toBe(true);
+    expect(
+      (await f.provider.events({ sandboxId: row.id, conversationId: "a", cursor: first.cursor ?? "0" })).events,
+    ).toEqual(events.slice(2));
+    expect((await f.provider.events({ sandboxId: row.id, conversationId: "b" })).events).toEqual(events.slice(1, 2));
+  });
   test("events dedupe, acknowledge only contiguous commit and fence old generation", async () => {
     const f = fixture();
     const row = await f.provider.createGolden({});

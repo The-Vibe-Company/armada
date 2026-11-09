@@ -162,3 +162,26 @@ test("a sandbox never prompted has no events and no cursor", async () => {
   const boat = fakeBoat({ body: { ok: true, type: "events.list", id: ID, events: [] } });
   expect(await boat.provider.events({ sandboxId: ID })).toEqual({ events: [], hasMore: false });
 });
+
+// Provider normalization must not mistake a journal ID or streaming flag for message semantics.
+test("Boat preserves supplied message semantics and leaves historical responses unidentified", async () => {
+  const boat = fakeBoat({
+    body: {
+      ok: true,
+      type: "events.list",
+      id: ID,
+      events: [
+        { ...partial, data: { ...partial.data, message_id: "native-a", text_mode: "delta" } },
+        { ...partial, id: "final", data: { content: "Tests pass", messageId: "native-a", textMode: "snapshot" } },
+        partial,
+      ],
+      pageInfo: { nextCursor: null, hasMore: false, limit: 100 },
+    },
+  });
+  const page = await boat.provider.events({ sandboxId: ID });
+  expect(page.events.map((e) => e.kind === "message" && [e.messageId, e.textMode])).toEqual([
+    ["native-a", "delta"],
+    ["native-a", "snapshot"],
+    [undefined, undefined],
+  ]);
+});
