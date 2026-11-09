@@ -36,11 +36,18 @@ export function launchCredentials(
   github?: GitHubLaunchOptions,
 ): LaunchCredentialResolver {
   return {
-    async resolve(actor: GoldenActor, harness: Harness): Promise<HarnessCredentials> {
+    async resolve(
+      actor: GoldenActor,
+      harness: Harness,
+      credentialId?: string,
+      credentialVersion?: number,
+    ): Promise<HarnessCredentials> {
       const resolved = await resolveCredentials(reader, encryptionKey, {
         userId: actor.userId,
         orgId: actor.orgId,
         harness,
+        ...(credentialVersion !== undefined ? { credentialVersion } : {}),
+        ...(credentialId !== undefined ? { credentialId } : {}),
       });
       const access = github ? await resolveGitHubAccess({ ...github, encryptionKey }, actor.userId) : undefined;
       return toHarnessCredentials(resolved, access);

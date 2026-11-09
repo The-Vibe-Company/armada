@@ -15,8 +15,7 @@ export function sandboxListText(rows: unknown[], now: Date): string {
     if (!value || typeof value !== "object") throw new GoldenError("invalid_config", "Invalid safe sandbox metadata.");
     const row = value as Record<string, unknown>;
     const created = Date.parse(text(row.createdAt));
-    if (!Number.isFinite(created) || typeof row.canOpen !== "boolean" || typeof row.canManage !== "boolean")
-      throw new GoldenError("invalid_config", "Invalid safe sandbox metadata.");
+    if (!Number.isFinite(created)) throw new GoldenError("invalid_config", "Invalid safe sandbox metadata.");
     const minutes = Math.max(0, Math.floor((now.getTime() - created) / 60_000));
     const age =
       minutes < 60 ? `${minutes}m` : minutes < 1440 ? `${Math.floor(minutes / 60)}h` : `${Math.floor(minutes / 1440)}d`;
@@ -29,7 +28,13 @@ export function sandboxListText(rows: unknown[], now: Date): string {
       text(row.status),
       age,
       text(row.ownerId),
-      row.canOpen ? (row.canManage ? "open/manage" : "open") : "metadata only",
+      typeof row.canOpen !== "boolean" || typeof row.canManage !== "boolean"
+        ? "UNKNOWN (server reauthorizes)"
+        : row.canOpen
+          ? row.canManage
+            ? "open/manage"
+            : "open"
+          : "metadata only",
     ].join("  ");
   });
   return `ID  LABEL  PROVIDER  PROVIDER ID  STATUS  AGE  OWNER  ACCESS\n${lines.join("\n")}\n`;

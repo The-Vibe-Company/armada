@@ -27,7 +27,7 @@ import {
 } from "@armada/core";
 import { accountCommand } from "./account-commands.ts";
 import { flag, parseArgs, single, values } from "./args.ts";
-import { armadaApiUrl, createArmadaApiClient } from "./armada-api.ts";
+import { ArmadaApiError, armadaApiUrl, createArmadaApiClient } from "./armada-api.ts";
 import {
   type AuthIo,
   loginCommand,
@@ -38,6 +38,7 @@ import {
   tokenRevoke,
 } from "./auth-commands.ts";
 import { operation } from "./operations.ts";
+import { orchestratorCommand } from "./orchestrator-commands.ts";
 import { skillCommand } from "./skill-install.ts";
 import { credsCommand, orgCommand, type VaultIo } from "./vault-commands.ts";
 
@@ -72,6 +73,7 @@ export interface Deps {
 const HELP = `armada ${VERSION}: launch coding agents in Boat and Modal sandboxes
 
 Usage:
+  armada orchestrator --help               Persistent coordinator create/list/detail/send/steer/stop/resume/events/capabilities
   armada --version                         Print the version
   armada --help                            Show this help
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
@@ -106,7 +108,8 @@ Usage:
                 Omit connections to use owner defaults; --no-connections opts out.
                                            Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
-                                           and effort apply to every later turn too. --repo owner/repo selects a recorded
+                                           and effort apply to every later turn too. --credential-id UUID selects a model account;
+                                           otherwise use your personal or organization default. --repo owner/repo selects a recorded
                                            golden repository as the native agent's real initial cwd (also when idle);
                                            omit it to keep legacy launch behavior. Defaults:
                                            ${modelDefaults()}
@@ -158,7 +161,10 @@ Usage:
                                            grants membership immediately and does not send an invitation.
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
-  armada creds list [--org <name>]         Kinds and dates, never values
+                                           Model accounts: --name NAME creates; --id UUID --expected-version N replaces
+  armada creds list [--org <name>]         Account IDs, names, defaults and safe metadata; never values
+  armada creds rename <id> <name> [--org <name>]
+  armada creds default|remove <id> [--org <name>]
   armada creds rm <kind> [--org <name>]
                                            kinds: claude-oauth, anthropic, openai, codex-auth, boat, modal
 
@@ -185,7 +191,9 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         error instanceof ProviderError ||
         error instanceof AuthError)
     ) {
-      io.err(`${JSON.stringify({ error: { code: error.code, message: error.message } })}\n`);
+      io.err(
+        `${JSON.stringify({ error: { code: error instanceof ArmadaApiError ? error.serverCode : error.code, message: error.message } })}\n`,
+      );
       return ["invalid_config", "invalid_request", "invalid", "usage", "no_credentials"].includes(error.code) ? 2 : 1;
     }
     if (error instanceof GoldenError) {
@@ -220,6 +228,14 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
 async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const [command, ...original] = argv;
   if (command === "skill") return skillCommand(original, io);
+  if (command === "orchestrator") {
+    const auth = authOf(io, deps);
+    return orchestratorCommand(original, {
+      ...auth,
+      fetch: deps.fetch ?? auth.fetch,
+      ...(deps.sleep ? { sleep: deps.sleep } : {}),
+    });
+  }
   let rest = original;
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
@@ -736,6 +752,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       body: JSON.stringify({
         ...(flag(args, "--no-connections") ? { connections: [] } : {}),
         ...(connections === undefined ? {} : { connections: connections.split(",") }),
+        credentialId: single(args, "--credential-id"),
         golden: name,
         ...(repo === undefined ? {} : { repo }),
         ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
@@ -837,6 +854,8 @@ function launchText(result: LaunchResult): string {
       : []),
     `Model: ${sandbox.model ?? "provider default"} (reasoning effort ${sandbox.reasoningEffort ?? "default"})`,
   ];
+  if (sandbox.credentialId)
+    lines.push(`Credential account: ${sandbox.credentialId} (revision ${sandbox.credentialVersion}).`);
   if (result.conversationId) lines.push(`Conversation: ${result.conversationId}`);
   else lines.push("No prompt sent: the sandbox is ready for the first prompt.");
   lines.push(githubLine(result));
@@ -867,6 +886,8 @@ function jsonLaunch(result: LaunchResult) {
     harness: sandbox.harness,
     model: sandbox.model,
     reasoningEffort: sandbox.reasoningEffort,
+    credentialId: sandbox.credentialId ?? null,
+    credentialVersion: sandbox.credentialVersion ?? null,
     status: sandbox.status,
     conversationIds: sandbox.conversationIds,
     promptId: result.promptId ?? null,

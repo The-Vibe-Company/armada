@@ -34,6 +34,7 @@ test("safe sandbox list renders metadata-only access without interior lookups an
     canOpen: true,
     canManage: true,
   };
+  const unknown = { ...row, canOpen: undefined, canManage: undefined };
   for (const mode of ["text", "json", "page-info"]) {
     let out = "";
     const paths: string[] = [];
@@ -55,7 +56,7 @@ test("safe sandbox list renders metadata-only access without interior lookups an
           fetch: async (input) => {
             paths.push(new URL(String(input)).pathname);
             return Response.json({
-              sandboxes: [row, boat],
+              sandboxes: [row, boat, unknown],
               total: 1,
               page: 1,
               limit: 25,
@@ -71,12 +72,14 @@ test("safe sandbox list renders metadata-only access without interior lookups an
     );
     expect(code).toBe(0);
     expect(paths).toEqual(["/api/v1/sandbox/list"]);
-    if (mode === "json") expect(JSON.parse(out)).toEqual({ sandboxes: [row, boat] });
+    if (mode === "json")
+      expect(JSON.parse(out)).toEqual({ sandboxes: [row, boat, JSON.parse(JSON.stringify(unknown))] });
     else if (mode === "page-info")
-      expect(JSON.parse(out)).toMatchObject({ sandboxes: [row, boat], total: 1, page: 1, hasMore: false });
+      expect(JSON.parse(out)).toMatchObject({ sandboxes: [row, boat, JSON.parse(JSON.stringify(unknown))], total: 1, page: 1, hasMore: false });
     else {
       expect(out).toContain("Modal  —  running  2h  teammate  metadata only");
       expect(out).toContain(row.id);
+      expect(out).toContain("UNKNOWN (server reauthorizes)");
       expect(out).toContain("Boat  bx_display  running  2h  teammate  open/manage");
     }
   }

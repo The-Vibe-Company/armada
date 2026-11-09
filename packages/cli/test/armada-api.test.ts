@@ -143,3 +143,40 @@ for (const path of [
     });
   }
 }
+test("a long-lived client uses the rotated refresh token on later requests and preserves retry keys", async () => {
+  const session = memorySessionStore({
+    accessToken: "access-0",
+    refreshToken: "refresh-0",
+    expiresAt: "2000-01-01T00:00:00Z",
+  });
+  const refreshes: string[] = [];
+  const keys: (string | null)[] = [];
+  let reads = 0;
+  const client = await createArmadaApiClient({
+    env: {},
+    session,
+    fetch: async (_input, init) => {
+      if (String(_input).endsWith("/api/v1/auth/refresh")) {
+        refreshes.push(JSON.parse(String(init?.body)).refreshToken);
+        const n = refreshes.length;
+        return Response.json({
+          accessToken: `access-${n}`,
+          refreshToken: `refresh-${n}`,
+          expiresAt: "2099-01-01T00:00:00Z",
+        });
+      }
+      keys.push(new Headers(init?.headers).get("idempotency-key"));
+      return ++reads === 1 ? Response.json({}, { status: 401 }) : Response.json({ ok: true });
+    },
+  });
+  expect(
+    await client.request<{ ok: boolean }>("/api/v1/orchestrators/id/resume", {
+      method: "POST",
+      headers: { "idempotency-key": "original" },
+      body: "{}",
+    }),
+  ).toEqual({ ok: true });
+  expect(refreshes).toEqual(["refresh-0", "refresh-1"]);
+  expect(keys).toEqual(["original", "original"]);
+  expect((await session.read())?.refreshToken).toBe("refresh-2");
+});

@@ -15,6 +15,18 @@ export interface ArmadaApiIo {
 export interface ArmadaApiOptions {
   /** The CLI --url value. It takes precedence over ARMADA_URL and the default origin. */
   url?: string;
+  /** Retain safe server error codes for versioned API clients. */
+  preserveServerErrors?: boolean;
+}
+
+export class ArmadaApiError extends AuthError {
+  constructor(
+    readonly serverCode: string,
+    readonly status: number,
+    message: string,
+  ) {
+    super(message, status === 400 ? "usage" : status === 409 || status === 403 ? "conflict" : "unavailable");
+  }
 }
 
 /** A deliberately small client for Armada's HTTP API. It never contacts an auth/database provider. */
@@ -31,14 +43,15 @@ export interface ArmadaApiClient {
 export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiOptions = {}): Promise<ArmadaApiClient> {
   // An explicit environment token needs no HOME/session read and never inherits a stale session origin.
   const environmentToken = io.env.ARMADA_TOKEN;
-  const saved = environmentToken ? null : await io.session.read();
+  let saved = environmentToken ? null : await io.session.read();
   const origin = armadaApiUrl(options.url ?? io.env.ARMADA_URL);
   let token = environmentToken || saved?.accessToken;
   if (!token) throw new AuthError("Set ARMADA_TOKEN or run armada login.", "unauthorized");
   const timeoutMs = io.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   if (!environmentToken && saved && Date.parse(saved.expiresAt) - Date.now() <= 60_000) {
-    token = await refresh(origin, io, saved.refreshToken, saved, timeoutMs);
+    saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs);
+    token = saved.accessToken;
   }
 
   return {
@@ -64,7 +77,8 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       }
 
       if (response.status === 401 && !environmentToken && saved) {
-        token = await refresh(origin, io, saved.refreshToken, saved, timeoutMs);
+        saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs);
+        token = saved.accessToken;
         try {
           response = await io.fetch(url, {
             ...init,
@@ -115,6 +129,17 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         );
       }
       if (response.status === 401) throw new AuthError("Run armada login or update ARMADA_TOKEN.", "unauthorized");
+      if (options.preserveServerErrors) {
+        const code =
+          payload && typeof payload === "object" && "error" in payload
+            ? (payload as { error?: { code?: unknown } }).error?.code
+            : undefined;
+        throw new ArmadaApiError(
+          typeof code === "string" && /^[a-z][a-z0-9_]{0,79}$/.test(code) ? code : "unavailable",
+          response.status,
+          apiMessage(payload, `Armada server request failed (${response.status}).`),
+        );
+      }
       if (response.status === 403) throw new AuthError(apiMessage(payload, "Armada refused this request."), "conflict");
       throw new AuthError(apiMessage(payload, `Armada server request failed (${response.status}).`), "unavailable");
     },
@@ -127,7 +152,7 @@ async function refresh(
   refreshToken: string,
   saved: NonNullable<Awaited<ReturnType<SessionStore["read"]>>>,
   timeoutMs: number,
-): Promise<string> {
+): Promise<NonNullable<Awaited<ReturnType<SessionStore["read"]>>>> {
   let response: Response;
   try {
     response = await io.fetch(apiUrl(origin, "/api/v1/auth/refresh"), {
@@ -153,13 +178,14 @@ async function refresh(
     typeof value.expiresAt !== "string"
   )
     throw new AuthError("Run armada login again.", "unauthorized");
-  await io.session.write({
+  const updated = {
     ...saved,
     accessToken: value.accessToken,
     refreshToken: value.refreshToken,
     expiresAt: value.expiresAt,
-  });
-  return value.accessToken;
+  };
+  await io.session.write(updated);
+  return updated;
 }
 
 /** Accept only an HTTP(S) origin; this prevents provider URLs from becoming API targets. */
