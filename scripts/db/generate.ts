@@ -27,6 +27,11 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  orchestrator_activity: "OrchestratorActivity",
+  orchestrator_child_operations: "OrchestratorChildOperation",
+  orchestrator_lifecycle: "OrchestratorLifecycle",
+  orchestrator_lifecycle_mutations: "OrchestratorLifecycleMutation",
+  orchestrator_waits: "OrchestratorWait",
   modal_events: "ModalEventRow",
   modal_images: "ModalImageRow",
   modal_machines: "ModalMachineRow",

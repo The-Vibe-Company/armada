@@ -6,6 +6,8 @@ import {
   GoldenSnapshotRetirements,
   githubAppFromEnv,
   githubInstallationAppFromEnv,
+  type ProviderRegistry,
+  type Sql,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { configFromEnv } from "./config.ts";
@@ -21,6 +23,7 @@ import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModelUsageApi } from "./model-usage.ts";
+import type { OrchestratorServiceBundle } from "./orchestrator-services.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneResourceObservations } from "./resource-store.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
@@ -38,6 +41,11 @@ export async function startServer(
   env: Record<string, string | undefined>,
   options: {
     routes?: readonly Route[];
+    /** Reviewed native adapters only; absent by default, with no environment enablement shortcut. */
+    orchestrators?: (context: {
+      sql: Sql;
+      providers: ProviderRegistry;
+    }) => OrchestratorServiceBundle | Promise<OrchestratorServiceBundle>;
     log?: (line: string) => void;
     /** Failures the server absorbs (an unavailable auth lookup, a tool that failed inside). Redacted. Defaults to stderr. */
     logError?: (line: string) => void;
@@ -121,11 +129,13 @@ export async function startServer(
     encryptionKey: config.encryptionKey,
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
+  const orchestrators = await options.orchestrators?.({ sql, providers });
   const control: ConfiguredControlOptions = {
     credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey),
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),
+    ...(orchestrators ? { orchestrators: orchestrators.runtime } : {}),
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
@@ -160,6 +170,7 @@ export async function startServer(
     },
   };
   const handler = createHandler({
+    ...(orchestrators ? { orchestrators: orchestrators.runtime } : {}),
     publicUrl: config.publicUrl,
     loginProviders: (env.ARMADA_AUTH_PROVIDERS ?? "")
       .split(",")
@@ -188,8 +199,13 @@ export async function startServer(
     workerDone: Promise.resolve(),
   });
   const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers));
-  const workers = startServerWorkers(goldenBuilds, lifecycle, options.logError, goldenRetirements, () =>
-    pruneResourceObservations(sql, new Date()),
+  const workers = startServerWorkers(
+    goldenBuilds,
+    lifecycle,
+    options.logError,
+    goldenRetirements,
+    () => pruneResourceObservations(sql, new Date()),
+    orchestrators ? [orchestrators.lifecycleWorker, orchestrators.childWorker] : [],
   );
   const invitationWorker =
     env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations

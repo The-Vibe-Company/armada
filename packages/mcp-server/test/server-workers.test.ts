@@ -178,3 +178,52 @@ test("retention maintenance runs independently and shutdown tracks an in-flight 
     await workers.done;
   }
 });
+
+test("managed reconciliation shares the existing lane fairly and shutdown drains every admitted SDK operation", async () => {
+  const seen: string[] = [];
+  const progressed = deferred<void>();
+  const retained = deferred<void>();
+  let stop = () => {};
+  const lane = (name: string, drain: () => Promise<void>) => ({
+    async reconcileOne() {
+      seen.push(name);
+      if (seen.length === 3) {
+        stop();
+        progressed.resolve();
+      }
+      return true;
+    },
+    drain,
+  });
+  const workers = startServerWorkers(
+    {
+      async runOne() {
+        return false;
+      },
+      async reconcileOne() {},
+    },
+    lane("ordinary", async () => {}),
+    () => {},
+    undefined,
+    undefined,
+    [lane("parent", async () => {}), lane("child-receipt", () => retained.promise)],
+  );
+  stop = () => workers.stop();
+  try {
+    await progressed.promise;
+    expect(seen).toEqual(["ordinary", "parent", "child-receipt"]);
+    let done = false;
+    workers.done.then(() => {
+      done = true;
+    });
+    await Promise.resolve();
+    expect(done).toBe(false);
+    retained.resolve();
+    await workers.done;
+    expect(done).toBe(true);
+  } finally {
+    workers.stop();
+    retained.resolve();
+    await workers.done;
+  }
+});

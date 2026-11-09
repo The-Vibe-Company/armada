@@ -1,18 +1,23 @@
 import type { GoldenBuildJobs } from "@armada/core/server";
 import { startGoldenWorker } from "./golden-worker.ts";
 
+export interface ServerLifecycleLane {
+  reconcileOne(signal: AbortSignal): Promise<boolean>;
+  drain(): Promise<void>;
+}
+
 /** Independent tracked lanes: a golden build can legitimately take an hour. */
 export function startServerWorkers(
   goldens: Pick<GoldenBuildJobs, "runOne" | "reconcileOne">,
-  lifecycle: {
-    reconcileOne(signal: AbortSignal): Promise<boolean>;
-    drain(): Promise<void>;
-  },
+  lifecycle: ServerLifecycleLane,
   log: (line: string) => void = console.error,
   retirements?: { runOne(signal: AbortSignal): Promise<boolean> },
   maintenance?: () => Promise<void>,
+  managed: readonly ServerLifecycleLane[] = [],
 ) {
   const goldenWorker = startGoldenWorker(goldens, log);
+  const lanes = [lifecycle, ...managed];
+  let nextLane = 0;
   const shutdown = new AbortController();
   let wake: (() => void) | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -23,7 +28,17 @@ export function startServerWorkers(
       timeout.unref();
       try {
         // Drain a ready backlog without waiting for another build or an idle tick.
-        if (await lifecycle.reconcileOne(AbortSignal.any([shutdown.signal, item.signal]))) continue;
+        let processed = false;
+        for (let count = 0; count < lanes.length; count++) {
+          const lane = lanes[nextLane];
+          nextLane = (nextLane + 1) % lanes.length;
+          if (!lane) throw new Error("Lifecycle scheduling lane unavailable.");
+          if (await lane.reconcileOne(AbortSignal.any([shutdown.signal, item.signal]))) {
+            processed = true;
+            break;
+          }
+        }
+        if (processed) continue;
       } catch {
         log("armada: sandbox lifecycle tick unavailable; durable leases remain fenced.");
       } finally {
@@ -38,7 +53,7 @@ export function startServerWorkers(
     }
     // SDKs may not support cancellation after a request has reached the provider. Keep
     // those operations tracked through shutdown; cancellation forbids subsequent actions.
-    await lifecycle.drain();
+    await Promise.all(lanes.map((lane) => lane.drain()));
   })();
   const retirementPending = new Set<Promise<boolean>>();
   const retirementDone = (async () => {
