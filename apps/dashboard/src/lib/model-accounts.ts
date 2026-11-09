@@ -265,12 +265,14 @@ export type LaunchAccounts =
  * (the read failed). `version` is the secret version the report was observed under.
  */
 export const USAGE_STATUSES = ["fresh", "stale", "unavailable", "error"] as const;
+/** A report the server sent but this dashboard cannot read (a newer shape): never a server status. */
+export type UsageReadStatus = (typeof USAGE_STATUSES)[number] | "unreadable";
 export type UsageStatus = (typeof USAGE_STATUSES)[number];
 export type UsageWindow = { id: string; label: string; usedPercent: number | null; resetsAt: string | null };
 export interface AccountUsage {
   accountId: string;
   version: number;
-  status: UsageStatus;
+  status: UsageReadStatus;
   observedAt: string | null;
   windows: UsageWindow[];
   extraUsage: { used: number; limit: number | null; currency: string } | null;
@@ -326,6 +328,11 @@ function extraUsage(extra: unknown): AccountUsage["extraUsage"] {
   return { used: major(used), limit: limit === null ? null : major(limit), currency };
 }
 
+/** The report for an account the server answered but in a shape this dashboard cannot read. */
+export function unreadableUsage(accountId: string): AccountUsage {
+  return { accountId, version: 0, status: "unreadable", observedAt: null, windows: [], extraUsage: null };
+}
+
 /**
  * How an account's usage reads. Numbers are shown only for a report with windows: as current when fresh and
  * observed under the account's current secret, otherwise as last known. Everything else is said in words, never
@@ -333,10 +340,12 @@ function extraUsage(extra: unknown): AccountUsage["extraUsage"] {
  */
 export type UsageView =
   | { kind: "fresh" | "stale"; windows: UsageWindow[]; observedAt: string; extra: AccountUsage["extraUsage"] }
-  | { kind: "unknown" | "unavailable" | "error"; reason: string };
+  | { kind: "unknown" | "unavailable" | "error" | "unreadable"; reason: string };
 
 export function usageView(usage: AccountUsage | null, account: Pick<ModelAccount, "version">): UsageView {
   if (!usage) return { kind: "unknown", reason: "Not reported by this server." };
+  if (usage.status === "unreadable")
+    return { kind: "unreadable", reason: "This server reports usage in a form this dashboard cannot read yet." };
   if (usage.status === "error") return { kind: "error", reason: "The last read failed. Reload the page to try again." };
   if (usage.status === "unavailable" || !usage.observedAt || usage.windows.length === 0)
     return { kind: "unavailable", reason: "This account does not report its allowance." };

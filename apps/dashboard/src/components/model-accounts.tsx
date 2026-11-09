@@ -153,7 +153,12 @@ export function UsagePanel({
 }) {
   const view: UsageView = usageView(usage, account);
   if ("reason" in view) {
-    const label = { unknown: "Usage unknown", unavailable: "Usage unavailable", error: "Usage not read" }[view.kind];
+    const label = {
+      unknown: "Usage unknown",
+      unavailable: "Usage unavailable",
+      error: "Usage not read",
+      unreadable: "Usage not shown",
+    }[view.kind];
     return (
       <p
         className={cn("text-xs", view.kind === "error" ? "text-warning" : "text-muted-foreground")}

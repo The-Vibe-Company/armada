@@ -8,6 +8,7 @@ import {
   parseAccount,
   parseAuthCapabilities,
   parseUsage,
+  unreadableUsage,
 } from "./model-accounts.ts";
 
 function isModelKind(kind: unknown): boolean {
@@ -125,9 +126,13 @@ export function createAccountControl(options: ArmadaApiOptions) {
         if (error instanceof ControlError && error.message === NOT_OFFERED) return null;
         throw error;
       }
-      const parsed = parseUsage(payload.usage ?? payload);
-      if (!parsed || parsed.accountId !== id) throw new ControlError("The Armada server sent unexpected usage.");
-      return parsed;
+      const report = payload.usage ?? payload;
+      const parsed = parseUsage(report);
+      if (parsed?.accountId === id) return parsed;
+      // A report for this account that the dashboard cannot read: the server's read worked, so it is not a failure.
+      const named = typeof report === "object" && report !== null && (report as { accountId?: unknown }).accountId;
+      if (!parsed && named === id) return unreadableUsage(id);
+      throw new ControlError("The Armada server sent unexpected usage.");
     },
   };
 }

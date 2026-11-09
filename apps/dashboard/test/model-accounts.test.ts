@@ -170,6 +170,16 @@ describe("usage", () => {
         fetch: (async () => Response.json({ error: { message } }, { status })) as unknown as typeof fetch,
       });
     expect(await answer(404, "Unknown route.").usage(uuid(1))).toBeNull();
+    // The server's read worked but its window is not one this dashboard reads: not a failure, not "no allowance".
+    const unreadable = createAccountControl({
+      serverUrl: "https://armada.test/mcp",
+      token: "session",
+      fetch: (async () =>
+        Response.json({
+          usage: { accountId: uuid(1), version: 1, status: "fresh", observedAt: null, windows: [{ kind: "5h" }] },
+        })) as unknown as typeof fetch,
+    });
+    expect(usageView(await unreadable.usage(uuid(1)), { version: 1 }).kind).toBe("unreadable");
     await expect(answer(404, "No such account.").usage(uuid(1))).rejects.toThrow("No such account.");
   });
 });
