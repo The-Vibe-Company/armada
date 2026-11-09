@@ -185,7 +185,8 @@ test("replacing a token keeps the account and names the version seen; a replacem
   const replace = async (on: Page, token: string) => {
     await on.getByRole("button", { name: "Replace token, Work" }).click();
     const dialog = on.getByRole("dialog");
-    // #612 pins a sandbox to the account version it launched with: replacing the token ends those conversations.
+    // #612 pins a sandbox to the account version it launched with: a replacement refuses new messages to those
+    // sandboxes and keeps their files and conversations.
     await expect(dialog.locator("[data-replace-effect]")).toHaveText(
       "Saving a new OAuth token creates a new version of Work. Sandboxes launched with the current version keep their files and conversations, but new messages to them are refused. Launch a new sandbox to use the new version.",
     );
