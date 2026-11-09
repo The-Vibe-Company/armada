@@ -322,6 +322,38 @@ export function createModelAuthOwnership(
         throw new VaultError("not_found", "No native publication binding.");
       const row = result.rows[0],
         actor: GoldenActor = { userId: scope.userId, orgId: scope.orgId, role: "member" };
+      // Removed owners may finish ONLY the already-dispatched native checkpoint.
+      // This cannot hydrate or claim a model account and is not a general member bypass.
+      const authorizeCleanup = async (tx: Sql) => {
+        const permitted = await tx.query(
+          `select s.id from public.sandboxes s
+           join public.orchestrators o on o.sandbox_id=s.id and o.owner_id=s.owner_id and o.org_id=s.org_id
+           join public.orchestrator_operations p on p.orchestrator_id=o.id and p.revision=o.revision
+           join public.modal_machines native on native.scope=$1 and native.id=s.provider_sandbox_id
+             and native.org_id=s.org_id and native.owner_id=s.owner_id and native.record->>'generation'=$2
+           where s.id=$3::uuid and s.credential_id=$4::uuid and s.credential_version=$5 and s.deleted_at is null
+           and s.owner_id=$6::uuid and s.org_id=$7::uuid and s.provider='modal'
+           and s.orchestrator_native_generation=$2 and o.state in ('stopping','blocked')
+           and p.action='stop' and p.actor_id=o.owner_id and p.state in ('pending','uncertain')
+           and p.runtime_result->>'state'='uncertain' and p.runtime_result->>'operationId'=p.id::text
+           and p.runtime_result->>'orchestratorId'=o.id::text and p.runtime_result->>'sandboxId'=s.id::text
+           and p.runtime_result->>'providerSandboxId'=s.provider_sandbox_id
+           and p.runtime_result->>'generation'=s.lifecycle_generation::text
+           and p.runtime_result->>'physicalGeneration'=$2
+           for update of s,o,p,native`,
+          [
+            scopeKey(scope),
+            claims.generation,
+            row.id,
+            row.credential_id,
+            row.credential_version,
+            scope.userId,
+            scope.orgId,
+          ],
+        );
+        if (!permitted.rows.length || claims.expiresAt <= now())
+          throw new VaultError("forbidden", "Native checkpoint cleanup is fenced.");
+      };
       if (
         row.current_version !== row.credential_version ||
         row.current_status !== "active" ||
@@ -330,6 +362,14 @@ export function createModelAuthOwnership(
       ) {
         if (!sql.transaction) throw new VaultError("unavailable", "Native cleanup requires transactions.");
         await sql.transaction(async (tx) => {
+          const member = await tx.query(`select 1 from public.members where org_id=$1 and user_id=$2 for share`, [
+            scope.orgId,
+            scope.userId,
+          ]);
+          if (!member.rows.length) {
+            await authorizeCleanup(tx);
+            return;
+          }
           const permitted = await tx.query(
             `select s.id from public.sandboxes s
              join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
@@ -342,6 +382,9 @@ export function createModelAuthOwnership(
           if (!permitted.rows.length || claims.expiresAt <= now())
             throw new VaultError("forbidden", "Native cleanup source is no longer authorized.");
         });
+        // The revoked/replaced binding cannot accept usable auth state. ACK only
+        // permits private checkpoint scrubbing; the runtime has registered these
+        // leaves before emission and sanitizes its journal before snapshotting.
         return { authRevision: expectedRevision, committed: true, discarded: true };
       }
       try {
@@ -353,6 +396,7 @@ export function createModelAuthOwnership(
           generation: `modal:${claims.generation}`,
           expectedRevision,
           authJson,
+          cleanupAuthorization: authorizeCleanup,
           verifySource: async (tx) => {
             const pinned = await tx.query(
               "select id from public.sandboxes where id=$1::uuid and credential_id=$2::uuid and credential_version=$3 and deleted_at is null for update",
@@ -371,8 +415,14 @@ export function createModelAuthOwnership(
         return { authRevision: revision, committed: true };
       } catch (error) {
         if (!(error instanceof VaultError) || error.code !== "conflict") throw error;
-        const current = await state.read(actor, row.credential_id, row.credential_version, row.id);
-        return { authRevision: current?.revision ?? 0, committed: false };
+        const revision = await state.publicationRevision(
+          actor,
+          row.credential_id,
+          row.credential_version,
+          row.id,
+          authorizeCleanup,
+        );
+        return { authRevision: revision, committed: false };
       }
     },
     /** Must run after resolution, BEFORE provider fork/credential hydration. */

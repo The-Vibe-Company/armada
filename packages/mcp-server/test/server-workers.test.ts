@@ -147,6 +147,67 @@ test("cancelled SDK observation stays tracked but cannot starve the next item or
   }
 });
 
+test("a ready ordinary backlog cannot starve orchestrator work and shutdown drains both", async () => {
+  const ordinarySecond = deferred<"ordinary">(),
+    orchEntered = deferred<"orchestrator">();
+  const held = deferred<boolean>(),
+    ordinaryDrain = deferred<void>(),
+    orchDrain = deferred<void>();
+  let calls = 0,
+    drains = 0;
+  const workers = startServerWorkers(
+    { runOne: async () => false, reconcileOne: async () => {} },
+    {
+      reconcileOne: async () => {
+        if (++calls === 1) return true;
+        ordinarySecond.resolve("ordinary");
+        return held.promise;
+      },
+      drain: async () => {
+        drains++;
+        await ordinaryDrain.promise;
+      },
+    },
+    () => {},
+    undefined,
+    undefined,
+    {
+      reconcileOne: async () => {
+        orchEntered.resolve("orchestrator");
+        return true;
+      },
+      drain: async () => {
+        drains++;
+        await orchDrain.promise;
+      },
+    },
+  );
+  try {
+    expect(await Promise.race([ordinarySecond.promise, orchEntered.promise])).toBe("orchestrator");
+    workers.stop();
+    held.resolve(false);
+    await Promise.resolve();
+    await Promise.resolve();
+    let stopped = false;
+    workers.done.then(() => {
+      stopped = true;
+    });
+    ordinaryDrain.resolve();
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    orchDrain.resolve();
+    await workers.done;
+    expect(drains).toBe(2);
+    expect(stopped).toBe(true);
+  } finally {
+    workers.stop();
+    held.resolve(false);
+    ordinaryDrain.resolve();
+    orchDrain.resolve();
+    await workers.done;
+  }
+});
+
 test("retention maintenance runs independently and shutdown tracks an in-flight cleanup", async () => {
   const entered = deferred<void>(),
     release = deferred<void>();

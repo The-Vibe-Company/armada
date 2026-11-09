@@ -1,4 +1,5 @@
 import type { Harness } from "./contract.ts";
+import type { MachineSize } from "./machine-size.ts";
 import type { AgentEvent } from "./provider.ts";
 import type { SandboxProviderId } from "./sandbox-provider.ts";
 
@@ -27,6 +28,8 @@ export interface OrchestratorCreate {
   provider: SandboxProviderId;
   harness: Harness;
   repo?: string;
+  /** Optional override; absent still uses the selected repository/golden policy. */
+  size?: MachineSize;
   model: string;
   reasoningEffort?: string;
   /** Opaque authorized model-account reference; not a credential or MCP connection ID. */

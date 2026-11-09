@@ -51,6 +51,43 @@ export interface Provider {
     };
   }): Promise<void | { revision: string }>;
 
+  /** Private runner control, not exec/prompt/client-visible credential configuration.
+   * Optional until the backend provides native physical-incarnation fencing and ACK. */
+  installOrchestratorEpoch?(request: {
+    sandboxId: string;
+    token: string;
+    binding: { epoch: string; physicalGeneration: string };
+    url: string;
+  }): Promise<{ acknowledged: boolean }>;
+  /** Read-only native work observation. Missing port is unavailable, never log-silence quiescence. */
+  observeOrchestrator?(request: { sandboxId: string; physicalGeneration: string; conversationId?: string }): Promise<{
+    physicalGeneration: string;
+    state: "active" | "quiescent" | "unknown";
+    evidence: string;
+    eventWatermark: number;
+    acknowledgedSequence: number;
+    nativeSessionId: string | null;
+  }>;
+  /** Private no-text native handshake on an ALREADY active incarnation. This does
+   * not restore compute or prove a checkpoint. Unsupported harnesses must refuse. */
+  verifyOrchestratorSession?(request: {
+    sandboxId: string;
+    physicalGeneration: string;
+    conversationId: string;
+    nativeSessionId: string;
+    harness: Harness;
+    model: string;
+    reasoningEffort?: string;
+    cwd?: string;
+  }): Promise<{ physicalGeneration: string; conversationId: string; nativeSessionId: string; verified: true }>;
+  /** Private active-incarnation interrupt; never activates stopped compute. */
+  quiesceOrchestrator?(request: { sandboxId: string; physicalGeneration: string }): Promise<{ acknowledged: boolean }>;
+  scrubOrchestratorEpoch?(request: {
+    sandboxId: string;
+    physicalGeneration: string;
+    tokenHash?: string;
+  }): Promise<{ acknowledged: boolean }>;
+
   /**
    * Starts a blank sandbox to build a golden in. It is not frozen until `snapshot`.
    * The sandbox gets none of the account's secrets or model credentials (`noEnv`).

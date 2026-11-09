@@ -17,6 +17,21 @@ export interface ConfigureMcpRequest {
 export interface ConfigureMcpResult {
   revision: string;
 }
+/** Trusted private control only; never a model tool or a public owner DTO. */
+export interface OrchestratorEpochBinding {
+  epoch: string;
+  physicalGeneration: string;
+}
+export interface InstallOrchestratorEpochRequest {
+  op: "installOrchestratorEpoch";
+  token: string;
+  binding: OrchestratorEpochBinding;
+  url: string;
+}
+export interface ScrubOrchestratorEpochRequest {
+  op: "scrubOrchestratorEpoch";
+  tokenHash?: string;
+}
 export interface Grant {
   token: string;
   sandboxId: string;
@@ -63,7 +78,14 @@ export interface Turn {
   interrupt(): Promise<void>;
   steer(text: string): Promise<void>;
 }
+/** Native handshake only; there is deliberately no user text in this input. */
+export type DriverResumeContext = Omit<DriverContext, "request" | "session" | "emit" | "sessionId"> & {
+  request: Omit<RuntimePromptRequest, "text">;
+  sessionId: string;
+};
 export interface Driver {
+  /** Optional only when the native SDK can verify an existing session without a turn. */
+  resumeSession?(context: DriverResumeContext): Promise<{ sessionId: string }>;
   start(context: DriverContext): Turn;
   close(): Promise<void>;
 }
@@ -76,9 +98,18 @@ export interface IngestClient {
 }
 export type RunnerRequest = { version: 1; requestId: string; sandboxId: string } & (
   | { op: "health" }
+  | { op: "observeOrchestrator"; conversationId?: string }
+  | {
+      op: "resumeNativeSession";
+      conversationId: string;
+      expectedSessionId: string;
+      input: Omit<RuntimePromptRequest, "text">;
+    }
   | { op: "configureGitHub"; configuration: GitHubBrokerConfiguration | null }
   | { op: "resourceObservation" }
   | ConfigureMcpRequest
+  | InstallOrchestratorEpochRequest
+  | ScrubOrchestratorEpochRequest
   | { op: "prompt"; input: RuntimePromptRequest }
   | { op: "getPrompt"; promptId: string }
   | { op: "steer"; conversationId: string; text: string }

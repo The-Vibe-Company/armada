@@ -64,7 +64,22 @@ export class Journal {
     )?.session;
   }
   saveSession(conversation: string, harness: string, session: string) {
-    this.db.query("INSERT OR REPLACE INTO sessions VALUES(?,?,?)").run(conversation, harness, session);
+    if (
+      !conversation ||
+      conversation.length > 256 ||
+      !session ||
+      session.length > 256 ||
+      !["claude", "codex"].includes(harness) ||
+      this.redact(conversation) !== conversation ||
+      this.redact(session) !== session
+    )
+      throw Error("invalid_native_session_identity");
+    const saved = this.db
+      .query(`INSERT INTO sessions VALUES(?,?,?) ON CONFLICT(conversation) DO UPDATE SET
+      harness=excluded.harness,session=excluded.session
+      WHERE sessions.harness=excluded.harness AND sessions.session=excluded.session RETURNING session`)
+      .get(conversation, harness, session);
+    if (!saved) throw Error("native_session_identity_changed");
   }
   events(after = 0, limit = 100, conversation?: string) {
     const rows = this.db

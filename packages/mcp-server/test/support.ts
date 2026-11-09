@@ -377,6 +377,7 @@ export async function harness(
     routes?: readonly Route[];
     buildSsh?: GoldenCreateOptions["ssh"];
     goldenAdoption?: HandlerOptions["goldenAdoption"];
+    orchestrators?: HandlerOptions["orchestrators"];
     /** The store `/mcp` authenticates against. Default: the in-memory one the helpers fill. */
     authStore?: (db: PGlite) => AuthStore;
     log?: (line: string) => void;
@@ -449,6 +450,7 @@ export async function harness(
     providerFor: boat.providerFor,
     ...(options.modelAuth ? { modelAuth: options.modelAuth(db) } : {}),
     ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
+    ...(options.orchestrators ? { orchestrators: options.orchestrators } : {}),
     ...(options.modalProviderFor ? { modalProviderFor: options.modalProviderFor } : {}),
     ...(options.routes ? { routes: options.routes } : {}),
     log: options.log ?? (() => {}),
