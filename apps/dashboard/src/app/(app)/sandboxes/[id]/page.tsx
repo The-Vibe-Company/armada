@@ -5,14 +5,17 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ConnectionStatusBadge, ScopeBadge } from "@/components/connections";
 import { LinkPendingIcon } from "@/components/link-pending";
+import { SandboxAccountChoice } from "@/components/sandbox-account-choice";
 import { SandboxActions } from "@/components/sandbox-actions";
 import { SandboxChat } from "@/components/sandbox-chat";
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { needsAccountChoice } from "@/lib/account-recovery";
 import { isUuid } from "@/lib/action";
 import { sandboxVisibility } from "@/lib/connections";
+import { readAccountChoices } from "@/lib/data/account-recovery";
 import { listSandboxConnections, type SandboxConnections } from "@/lib/data/connections";
 import { listGoldenHistory } from "@/lib/data/goldens";
 import { getSandbox } from "@/lib/data/sandboxes";
@@ -60,6 +63,9 @@ export default async function SandboxPage({ params }: Props) {
   const repositoryDir = sandboxRepositoryDir(sandbox);
   const lifecycle = readLifecycle(sandbox);
   const life = lifecycleView(sandbox.status, lifecycle, new Date());
+  const recovery = needsAccountChoice(sandbox);
+  const owner = sandbox.owner_id === viewer.id;
+  const choices = recovery && owner ? await readAccountChoices(viewer, sandbox.harness, sandbox.org_id) : undefined;
 
   const facts: [string, string][] = [
     ["Golden", golden ? `${golden.name}${golden.removed_at ? " (removed)" : ""}` : "Unknown"],
@@ -124,7 +130,16 @@ export default async function SandboxPage({ params }: Props) {
       )}
 
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <div className="min-w-0">
+        <div className="min-w-0 space-y-6">
+          {recovery && (
+            <SandboxAccountChoice
+              sandboxId={sandbox.id}
+              status={sandbox.status}
+              owner={owner}
+              {...(choices ? { choices } : {})}
+              harnessLabel={HARNESS_LABELS[sandbox.harness] ?? sandbox.harness}
+            />
+          )}
           <SandboxChat
             sandboxId={sandbox.id}
             initialStatus={sandbox.status}

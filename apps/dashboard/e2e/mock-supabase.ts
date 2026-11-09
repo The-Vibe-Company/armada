@@ -39,6 +39,11 @@ type State = {
   toolCalls: { name: string; args: Row }[];
   /** The next send, steer or interrupt fails with this message, once. */
   failNextTool: string | null;
+  /** Named model accounts (#603) as `creds/list` returns them: safe metadata, never a value. */
+  accounts: { user: Row[]; org: Row[] };
+  /** Every `sandbox/bind-credential` body, and the next refusal to answer with, once. */
+  bindCalls: Row[];
+  failNextBind: { status: number; code: string; message: string } | null;
   /** Every CLI GitHub callback the dashboard relayed, with the credentials headers it carried (none expected). */
   githubCliCalls: { body: Row; authorization: string | null; cookie: string | null }[];
   /** Every `POST /api/v1/sandbox/launch` body, as the dashboard sent it. */
@@ -142,6 +147,9 @@ function seed(): State {
     sent: [],
     toolCalls: [],
     failNextTool: null,
+    accounts: { user: [], org: [] },
+    bindCalls: [],
+    failNextBind: null,
     launches: [],
     goldenCalls: [],
     goldenRemoveCalls: [],
@@ -684,6 +692,16 @@ function mcp(message: RpcMessage, userId: string | null): Response {
     state.failNextTool = null;
     return reply({ content: [{ type: "text", text: failure }], isError: true });
   }
+  if (name === "send" && target.provider === "modal" && target.credential_id === null) {
+    // As #603's server answers a legacy unbound Modal sandbox: a typed refusal, never a silent default account.
+    return reply({
+      content: [
+        { type: "text", text: "This sandbox needs an account binding before it can resume." },
+        { type: "text", text: "error code: credential_binding_required" },
+      ],
+      isError: true,
+    });
+  }
   const events = state.events.get(String(target.id)) ?? [];
   state.events.set(String(target.id), events);
   const conversations = (target.conversation_ids ?? []) as string[];
@@ -744,6 +762,30 @@ function mcp(message: RpcMessage, userId: string | null): Response {
     default:
       return text("unknown tool", true);
   }
+}
+
+/**
+ * `POST /api/v1/sandbox/bind-credential`, with the checks #603's server makes: the owner, a stopped Modal sandbox
+ * still unbound, and one of the caller's compatible accounts. The binding is a compare-and-set; nothing restarts.
+ */
+function bindCredential(body: Row, userId: string | null): Response {
+  if (!userId) return json({ error: "Unauthorized." }, 401);
+  state.bindCalls.push({ ...body });
+  const refuse = (status: number, code: string, message: string) => json({ error: { code, message } }, status);
+  if (state.failNextBind) {
+    const failure = state.failNextBind;
+    state.failNextBind = null;
+    return refuse(failure.status, failure.code, failure.message);
+  }
+  const target = state.sandboxes.find((row) => row.id === body.id);
+  if (!target || target.owner_id !== userId) return refuse(403, "forbidden", "Only the owner can bind an account.");
+  if (target.credential_id !== null) return refuse(409, "conflict", "The sandbox is already bound.");
+  if (target.status !== "stopped") return refuse(409, "credential_binding_unsafe", "The sandbox is not stopped.");
+  const account = [...state.accounts.user, ...state.accounts.org].find((row) => row.id === body.credentialId);
+  if (!account) return refuse(400, "invalid_request", "That account cannot be used for this sandbox.");
+  target.credential_id = account.id;
+  target.credential_version = account.version;
+  return json({ id: target.id, credentialId: account.id, credentialVersion: account.version });
 }
 
 /**
@@ -1582,6 +1624,14 @@ function control(url: URL, body: Row): Response {
     state.events.set(String(body.sandbox), (body.events as Row[]) ?? []);
     return json({ ok: true });
   }
+  if (url.pathname === "/__test/accounts") {
+    state.accounts = { user: (body.user as Row[]) ?? [], org: (body.org as Row[]) ?? [] };
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/fail-next-bind") {
+    state.failNextBind = body as State["failNextBind"];
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/fail-next-tool") {
     state.failNextTool = String(body.message);
     return json({ ok: true });
@@ -1596,6 +1646,7 @@ function control(url: URL, body: Row): Response {
       otpEmails: state.otpEmails,
       sent: state.sent,
       toolCalls: state.toolCalls,
+      bindCalls: state.bindCalls,
       launches: state.launches,
       goldenCalls: state.goldenCalls,
       goldenStatusCalls: state.goldenStatusCalls,
@@ -1640,6 +1691,11 @@ const server = Bun.serve({
       if (route === "golden/remove") return goldenRemove(body, request);
       if (route === "org/provider/status" || route === "org/provider/connect" || route === "org/provider/disconnect")
         return orgProvider(route, body, request);
+      if (route === "creds/list") {
+        if (!viewer(request)) return json({ error: "Unauthorized." }, 401);
+        return json({ user: state.accounts.user, orgs: [{ id: ACME, name: "Acme", credentials: state.accounts.org }] });
+      }
+      if (route === "sandbox/bind-credential") return bindCredential(body, viewer(request));
       if (route === "golden/list")
         return request.headers.get("authorization") ? json({ goldens: [] }) : json({ error: "Unauthorized." }, 401);
       return json({ error: "Not found." }, 404);

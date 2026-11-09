@@ -55,7 +55,9 @@ import { cn } from "@/lib/utils";
 const POLL_MS = 2000;
 /** Within this distance of the bottom the view follows new messages; further up it stays where the person is. */
 const PINNED_PX = 48;
-const CAN_SEND: readonly SandboxStatus[] = ["ready", "running"];
+/** A stopped sandbox takes a message too: the server's `send` restores the same machine, disk and conversation. */
+const LIVE: readonly SandboxStatus[] = ["starting", "ready", "running"];
+const CAN_SEND: readonly SandboxStatus[] = ["ready", "running", "stopped"];
 
 type Props = {
   sandboxId: string;
@@ -158,6 +160,8 @@ export function SandboxChat(props: Props) {
   const selected = chosen && conversations.includes(chosen) ? chosen : (conversations.at(-1) ?? null);
   const shownConversation = conversations.length > 1 ? selected : null;
   const chat = useMemo(() => projectChat(eventsOf(events, shownConversation)), [events, shownConversation]);
+  // A stopped or failed machine runs no turn, whatever its last prompt event said before it stopped.
+  const turnRunning = chat.running && LIVE.includes(status);
   const failure = [...chat.items].reverse().find((item) => item.kind === "outcome" && item.status === "failed");
   const reason = failure?.kind === "outcome" ? failure.reason : undefined;
 
@@ -186,7 +190,7 @@ export function SandboxChat(props: Props) {
         <Transcript
           key={selected ?? "all"}
           items={chat.items}
-          running={chat.running}
+          running={turnRunning}
           loaded={loaded}
           poll={poll}
           hasMore={hasMore}
@@ -198,7 +202,7 @@ export function SandboxChat(props: Props) {
             {...props}
             status={status}
             conversation={selected && props.conversations.includes(selected) ? selected : null}
-            running={chat.running}
+            running={turnRunning}
             onDone={() => {
               router.refresh();
               void tick();
@@ -708,7 +712,13 @@ function Composer({
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={onKeyDown}
-        placeholder={running ? "Steer the running turn, or send the next one" : "What should the agent do next?"}
+        placeholder={
+          running
+            ? "Steer the running turn, or send the next one"
+            : status === "stopped"
+              ? "Send a message to resume the sandbox"
+              : "What should the agent do next?"
+        }
         className="max-h-60 min-h-20 resize-y bg-background"
       />
       <div id={`${fieldId}-model`} hidden={!showModel}>

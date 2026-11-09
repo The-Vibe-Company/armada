@@ -61,6 +61,8 @@ export async function sendToSandbox(_previous: ActionResult | null, data: FormDa
   try {
     await target.gateway.send(id, prompt, override.args, conversation.id);
   } catch (error) {
+    if (error instanceof GatewayError && error.code === "credential_binding_required")
+      return fail("This sandbox needs an account before it can resume. Choose one above.");
     if (error instanceof GatewayError) return fail(error.message);
     throw error;
   }
