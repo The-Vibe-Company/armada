@@ -1,0 +1,44 @@
+{
+  "url": "http://127.0.0.1:4317",
+  "start": "bash scripts/aeom/landing-app.sh",
+  "pages": [
+    "/"
+  ],
+  "public": [
+    "/"
+  ],
+  "protected": [
+    "apps/dashboard/src/app/(app)/**",
+    "apps/dashboard/src/app/api/**",
+    "apps/dashboard/src/app/auth/**",
+    "apps/dashboard/src/app/login/**",
+    "apps/dashboard/src/app/actions/**",
+    "apps/dashboard/src/app/favicon.ico",
+    "apps/dashboard/src/app/icon.svg",
+    "apps/dashboard/src/app/apple-icon.png",
+    "apps/dashboard/src/app/github/**",
+    "apps/dashboard/src/app/layout.tsx",
+    "apps/dashboard/src/app/page.tsx",
+    "apps/dashboard/src/app/globals.css",
+    "apps/dashboard/src/app/landing/page.tsx",
+    "apps/dashboard/src/app/landing/fonts.ts",
+    "apps/dashboard/src/app/landing/fonts/**",
+    "apps/dashboard/src/components/landing/Hero.tsx",
+    "apps/dashboard/src/components/landing/Sky.tsx",
+    "apps/dashboard/src/components/landing/flock.ts",
+    "apps/dashboard/src/components/landing/frames.ts",
+    "apps/dashboard/src/components/landing/Mark.tsx",
+    "apps/dashboard/src/components/landing/transcript.ts",
+    "apps/dashboard/src/components/ui/**",
+    "apps/dashboard/src/components/*.tsx",
+    "apps/dashboard/src/lib/**",
+    "apps/dashboard/src/proxy.ts",
+    "apps/dashboard/next.config.ts",
+    "apps/dashboard/package.json",
+    "packages/**",
+    "supabase/**",
+    "scripts/**",
+    "bun.lock",
+    "package.json"
+  ]
+}
