@@ -137,6 +137,19 @@ export {
 } from "./launch.ts";
 export { LaunchError, type LaunchErrorCode } from "./launch-error.ts";
 export { type LaunchWorkdir, resolveLaunchWorkdir, resolveLaunchWorkdirAt } from "./launch-workdir.ts";
+export {
+  MACHINE_SIZE_CATALOG,
+  MACHINE_SIZE_VERSION,
+  MACHINE_SIZES,
+  type MachineCapacity,
+  type MachineSize,
+  type MachineSizeEvidence,
+  type MachineSizePolicy,
+  machineCapacity,
+  parseMachineSize,
+  parseMachineSizePolicy,
+  resolveMachineSize,
+} from "./machine-size.ts";
 export { MCP_CATALOG, type McpCatalogId } from "./mcp-catalog.ts";
 export {
   MCP_STDIO_EXECUTABLES,
