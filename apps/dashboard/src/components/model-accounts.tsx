@@ -467,7 +467,10 @@ function RenameDialog({
   );
 }
 
-/** A new token for the same account: its id, name and default stay; running sandboxes keep the one they have. */
+/**
+ * A new token for the same account: its id, name and default stay. A sandbox is pinned to the account version it
+ * launched with (#612), so sandboxes already running on it stop accepting messages; new launches use the new token.
+ */
 function ReplaceDialog({
   account,
   orgId,
@@ -502,6 +505,10 @@ function ReplaceDialog({
           </DialogTitle>
           <DialogDescription>{info.hint}</DialogDescription>
         </DialogHeader>
+        <p className="text-sm text-muted-foreground" data-replace-effect>
+          Sandboxes already running on {account.name} stop accepting messages; new launches use the new{" "}
+          {info.valueLabel}.
+        </p>
         <form key={generation} action={formAction} className="space-y-4">
           <TargetFields account={account} orgId={orgId} />
           <input type="hidden" name="kind" value={account.kind} />
@@ -541,7 +548,7 @@ function RemoveDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Remove {account.name}?</AlertDialogTitle>
           <AlertDialogDescription>
-            New launches can no longer use it.
+            New launches can no longer use it, and sandboxes running on it stop accepting messages.
             {account.isDefault
               ? " It is the default: until you choose another, launches without an explicit account fail rather than bill a different one."
               : ""}
