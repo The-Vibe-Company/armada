@@ -684,7 +684,8 @@ async function dispatch(
       return options.credentialBindingRecovery(caller, {
         id: required(body, "id"),
         credentialId: required(body, "credentialId"),
-        ...(org ? { org } : {}),
+        // An org name or ID, resolved against fresh memberships like every other sandbox route.
+        ...(org ? { org: (await resolveOrg(store, userId, org)).id } : {}),
       });
     case "sandbox/launch":
       return launchRoute(options, caller, body);

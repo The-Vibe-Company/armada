@@ -37,15 +37,15 @@ export function createCredentialBindingRecovery(
         status: string;
         credential_id: string | null;
         credential_version: number | null;
-        activity_lease_id: string | null;
-        reconcile_lease: string | null;
-        activity_until: string | null;
-        reconcile_lease_until: string | null;
+        /** An activity or reconciliation lease that has not expired; an expired one is released, as everywhere else. */
+        leased: boolean;
         modal_workspace: string;
         modal_environment: string;
         modal_app_id: string;
       }>(
-        `select s.*,g.modal_workspace,g.modal_environment,g.modal_app_id from public.sandboxes s join public.goldens g on g.id=s.golden_id
+        `select s.*,g.modal_workspace,g.modal_environment,g.modal_app_id,
+        coalesce(s.activity_until>=now(),false) or coalesce(s.reconcile_lease_until>=now(),false) as leased
+        from public.sandboxes s join public.goldens g on g.id=s.golden_id
         where s.id=$1 and s.owner_id=$2 and s.provider='modal' and s.org_id=any($3::uuid[])
         and ($4::uuid is null or s.org_id=$4::uuid) for update of s`,
         [input.id, caller.userId, caller.orgs.map((m) => m.orgId), input.org ?? null],
@@ -63,14 +63,13 @@ export function createCredentialBindingRecovery(
         scope: string;
         owner_id: string;
         record: Machine;
-        lease_id: string | null;
-        lease_until: string | null;
+        leased: boolean;
         harness: Harness;
         credential_id: string | null;
         credential_version: number | null;
       }>(
         `
-        select m.scope,m.owner_id,m.record,m.lease_id,m.lease_until,h.harness,h.credential_id,h.credential_version
+        select m.scope,m.owner_id,m.record,coalesce(m.lease_until>=now(),false) as leased,h.harness,h.credential_id,h.credential_version
         from public.modal_machines m join public.modal_server_harnesses h on h.scope=m.scope and h.machine_id=m.id
         join public.modal_server_scopes c on c.scope=m.scope
         where m.id=$1 and m.org_id=$2 and c.context->'binding'->>'workspace'=$3
@@ -99,12 +98,8 @@ export function createCredentialBindingRecovery(
         throw new VaultError("conflict", "The Modal workspace is already bound; its account cannot change.");
       if (
         sandbox.status !== "stopped" ||
-        sandbox.activity_lease_id !== null ||
-        sandbox.reconcile_lease !== null ||
-        sandbox.activity_until !== null ||
-        sandbox.reconcile_lease_until !== null ||
-        policy.lease_id !== null ||
-        policy.lease_until !== null ||
+        sandbox.leased ||
+        policy.leased ||
         machine.golden ||
         machine.phase !== "stopped" ||
         machine.info.state !== "stopped" ||

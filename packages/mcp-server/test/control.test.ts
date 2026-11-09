@@ -1162,7 +1162,12 @@ test("owner explicitly recovers a stopped legacy Modal binding once, retaining i
         new Request(`https://armada.test/api/v1/sandbox/${action}`, {
           method: "POST",
           headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
-          body: JSON.stringify({ id, org: org.id, ...(action === "bind-credential" ? { credentialId } : extra) }),
+          body: JSON.stringify({
+            id,
+            org: org.id,
+            ...(action === "bind-credential" ? { credentialId } : {}),
+            ...extra,
+          }),
         }),
         options,
       ))!;
@@ -1212,7 +1217,9 @@ test("owner explicitly recovers a stopped legacy Modal binding once, retaining i
     });
     expect(incompatible.status).toBe(503);
     await options.store.removeMember(org.id, ADA);
-    expect((await post(ADA, chosen)).status).toBe(403);
+    expect((await post(ADA, chosen)).status).toBe(404); // The named org is resolved against fresh memberships.
+    // Without --org, the bearer's org list may be stale: the transaction checks membership again.
+    expect((await post(ADA, chosen, "bind-credential", { org: undefined })).status).toBe(403);
     await options.store.addMember(org.id, ADA, "member");
     for (const phase of ["active", "checkpoint", "snapshot", "terminate"]) {
       await db.query("update modal_machines set record=$3::jsonb where scope=$1 and id=$2", [
@@ -1233,11 +1240,27 @@ test("owner explicitly recovers a stopped legacy Modal binding once, retaining i
       key,
       machineId,
     ]);
+    await db.query("update sandboxes set activity_lease_id=$2,activity_until=now()+interval '1 minute' where id=$1", [
+      id,
+      crypto.randomUUID(),
+    ]);
+    expect((await post(ADA, chosen)).status).toBe(409);
+    // Expired leases are released everywhere else; a failed send or a reconciler stop can leave them behind.
+    await db.query("update modal_machines set lease_until=now()-interval '1 minute' where scope=$1 and id=$2", [
+      key,
+      machineId,
+    ]);
+    await db.query(
+      "update sandboxes set activity_lease_id=$2,activity_until=now()-interval '1 minute',reconcile_lease=$3,reconcile_lease_until=now()-interval '1 minute' where id=$1",
+      [id, crypto.randomUUID(), crypto.randomUUID()],
+    );
     const attempts = await Promise.all([
       owner.run(["bind-credential", id, "--credential-id", chosen, "--org", org.id, "--json"]),
-      owner.run(["bind-credential", id, "--credential-id", alternate, "--org", org.id, "--json"]),
+      owner.run(["bind-credential", id, "--credential-id", alternate, "--org", "Recovery", "--json"]),
     ]);
     expect(attempts.map((result) => result.code).sort()).toEqual([0, 1]);
+    // The loser lost the compare-and-swap; it was not refused for its org name.
+    expect(attempts.find((result) => result.code === 1)!.err).toContain("bound");
     const winner = JSON.parse(attempts.find((result) => result.code === 0)!.out);
     expect([chosen, alternate]).toContain(winner.credentialId);
     expect(winner).toMatchObject({ id, credentialVersion: 1, harness: "claude", status: "bound" });

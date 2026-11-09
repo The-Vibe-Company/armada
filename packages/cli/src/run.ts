@@ -221,6 +221,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     "golden",
     "launch",
     "list",
+    "bind-credential",
     "detail",
     "status",
     "send",
