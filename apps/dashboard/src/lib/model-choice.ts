@@ -27,6 +27,11 @@ export type LaunchArgs = {
   connections: string[];
   /** Repository context: a golden `repos[].dir` used as the native initial cwd. Absent: the default, none. */
   repo?: string;
+  /**
+   * The model account the sandbox runs on and keeps for every later message. Absent only on a server older than
+   * named accounts, which resolves its own.
+   */
+  credentialId?: string;
   prompt?: string;
 };
 

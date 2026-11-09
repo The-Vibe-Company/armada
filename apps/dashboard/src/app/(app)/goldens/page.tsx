@@ -33,6 +33,7 @@ import {
 import { listSelectedConnections } from "@/lib/data/connections";
 import { getGitHubConnection } from "@/lib/data/github";
 import { findRemovedGolden, type GoldenRow, listGoldenHistory, listGoldens } from "@/lib/data/goldens";
+import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts";
 import { readProviderSetup } from "@/lib/data/provider-setup";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, type Membership, memberDirectory, requireViewer } from "@/lib/data/viewer";
@@ -48,6 +49,7 @@ import {
   PROVIDER_LABELS,
   providerCapacity,
 } from "@/lib/golden-form";
+import type { LaunchAccounts } from "@/lib/model-accounts";
 import { isSetupProvider, providerSetupPath, SETUP_PROVIDER_INFO } from "@/lib/provider-setup";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
@@ -86,7 +88,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     items.filter((item) => item.org.id === selected?.org.id),
   );
   const serverUrl = mcpUrl();
-  const [goldens, history, memberships, directory, github, capabilities, listed] = await Promise.all([
+  const [goldens, history, memberships, directory, github, capabilities, listed, accountList] = await Promise.all([
     listGoldens(supabase),
     listGoldenHistory(supabase),
     pending,
@@ -99,11 +101,13 @@ export default async function GoldensPage({ searchParams }: Props) {
     getGitHubConnection(supabase).catch(() => null),
     selected ? allCapabilities(serverUrl, viewer.token, selected.org.id) : null,
     listSelectedConnections(),
+    listSelectedAccounts(),
   ]);
   const connections: LaunchConnections =
     listed.state === "ready"
       ? { connections: listed.connections }
       : { unavailable: listed.state === "error" ? listed.message : "The Armada server is not configured." };
+  const accounts = launchAccounts(accountList, Date.now());
   const createTracked = selected !== null && tracked(`create.${selected.org.id}`);
   const rebuildsTracked = new Set(
     goldens.filter((golden) => tracked(`rebuild.${golden.id}`)).map((golden) => golden.id),
@@ -139,6 +143,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     canStart,
     rebuildsTracked,
     connections,
+    accounts,
   };
 
   // Without a confirmed provider the create form is shown only to follow a build this page already tracks.
@@ -456,6 +461,7 @@ type RowContext = {
   /** Goldens whose rebuild this page tracks in its URL: their form stays to follow the job, even without a provider. */
   rebuildsTracked: Set<string>;
   connections: LaunchConnections;
+  accounts: LaunchAccounts;
 };
 
 function Section({
@@ -562,6 +568,7 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
               repositories={goldenRepositoryDirs(golden.config)}
               goldenVisibility={golden.visibility}
               connections={context.connections}
+              accounts={context.accounts}
             />
           ) : (
             <span className="text-xs text-muted-foreground">

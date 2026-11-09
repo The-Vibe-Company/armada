@@ -5,15 +5,15 @@ test.beforeEach(reset);
 
 const ACME = "00000000-0000-4000-8000-000000000010";
 
-const SECRET = "sk-ant-oat01-super-secret-token";
+const SECRET = "boat-personal-super-secret-key";
 
-test("a token is stored encrypted and never shown again", async ({ page }) => {
+test("a personal hosting key is stored encrypted and never shown again", async ({ page }) => {
   await signIn(page, "alice@example.com", "/credentials");
   const mine = page.locator('[data-credentials="user"]');
-  await mine.getByLabel("Kind").selectOption("claude_oauth");
+  await mine.getByLabel("Kind").selectOption("boat");
   await mine.getByLabel("Value", { exact: true }).fill(SECRET);
   await mine.getByRole("button", { name: "Save credential" }).click();
-  await expect(mine.getByText("Claude Code OAuth token saved.")).toBeVisible();
+  await expect(mine.getByText("boat.dev API key saved.")).toBeVisible();
 
   await expect(mine.getByRole("img", { name: "Value hidden" })).toHaveCount(1);
   await page.reload();
@@ -21,14 +21,14 @@ test("a token is stored encrypted and never shown again", async ({ page }) => {
   await expect(mine.getByLabel("Value", { exact: true })).toHaveValue("");
 
   const stored = (await (await fetch(`${MOCK}/__test/credentials`)).json()) as { kind: string; value_enc: string }[];
-  const row = stored.find((item) => item.kind === "claude_oauth");
+  const row = stored.find((item) => item.kind === "boat");
   expect(row?.value_enc.startsWith("\\x")).toBe(true);
   // iv (12) + token + tag (16) bytes, as hex, and not the token itself.
   expect(row?.value_enc.length).toBe(2 + 2 * (12 + SECRET.length + 16));
   expect(row?.value_enc).not.toContain(Buffer.from(SECRET).toString("hex"));
 
-  await mine.getByRole("button", { name: "Remove Claude Code OAuth token" }).click();
-  await expect(mine.getByRole("button", { name: "Remove Claude Code OAuth token" })).toHaveCount(0);
+  await mine.getByRole("button", { name: "Remove boat.dev API key" }).click();
+  await expect(mine.getByRole("button", { name: "Remove boat.dev API key" })).toHaveCount(0);
 });
 
 test("a value with spaces is refused before anything is stored", async ({ page }) => {
@@ -84,7 +84,8 @@ test("the org Boat key is the one launches use: shown, removed and saved through
   await signIn(page, "bob@example.com", "/credentials");
   const bobsOrg = page.locator('[data-credentials="Acme (org)"]');
   await expect(bobsOrg.getByText("Only an admin changes them.")).toBeVisible();
-  await expect(bobsOrg.getByRole("img", { name: "Value hidden" })).toHaveCount(2);
+  // The org's Anthropic key is a named model account now, listed with the accounts, not as a hosting key.
+  await expect(bobsOrg.getByRole("img", { name: "Value hidden" })).toHaveCount(1);
   await expect(bobsOrg.getByLabel("Value", { exact: true })).toHaveCount(0);
   await expect(bobsOrg.getByRole("button", { name: /Remove/ })).toHaveCount(0);
   expect(await page.content()).not.toContain("boat-org-key-123");
@@ -109,7 +110,6 @@ test("a Modal token is saved from its two fields as one encrypted pair, never sh
 
   const row = mine.locator("li", { hasText: "Modal token" });
   await expect(row.getByRole("img", { name: "Value hidden" })).toBeVisible();
-  await expect(row).toContainText("Hosting");
   await page.reload();
   const html = await page.content();
   expect(html).not.toContain(MODAL_ID);

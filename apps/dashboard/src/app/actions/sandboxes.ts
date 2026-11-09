@@ -1,5 +1,6 @@
 "use server";
 
+import type { Harness } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
@@ -8,6 +9,7 @@ import { ControlError } from "@/lib/control";
 import { listSelectedConnections } from "@/lib/data/connections";
 import { viewerGateway } from "@/lib/data/gateway";
 import { listGoldens } from "@/lib/data/goldens";
+import { listSelectedAccounts } from "@/lib/data/model-accounts";
 import { newWorkBlocker } from "@/lib/data/provider-setup";
 import { getSandbox } from "@/lib/data/sandboxes";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
@@ -15,6 +17,7 @@ import { requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
 import { GatewayError } from "@/lib/gateway";
 import { launchSandbox } from "@/lib/launch";
+import { accountProblem, accountsFor } from "@/lib/model-accounts";
 import { launchArgs, type ModelFields, sendOverride } from "@/lib/model-choice";
 import { goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
@@ -110,12 +113,19 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     matches.flatMap((golden) => goldenRepositoryDirs(golden.config)),
   );
   if (!repository.ok) return fail(repository.error);
+  const account = await accountChoice(parsed.args.harness, formString(data, "credential"));
+  if (!account.ok) return fail(account.error);
 
   let id: string;
   try {
     ({ id } = await launchSandbox(
       { serverUrl, token: viewer.token },
-      { ...parsed.args, ...selection.value, ...(repository.repo === undefined ? {} : { repo: repository.repo }) },
+      {
+        ...parsed.args,
+        ...selection.value,
+        ...(repository.repo === undefined ? {} : { repo: repository.repo }),
+        ...(account.id === undefined ? {} : { credentialId: account.id }),
+      },
     ));
   } catch (error) {
     if (error instanceof ControlError) return fail(error.message);
@@ -131,4 +141,35 @@ function modelFields(data: FormData): ModelFields {
     otherModel: formString(data, "other_model"),
     reasoningEffort: formString(data, "reasoning_effort"),
   };
+}
+
+/**
+ * The model account a launch bills, checked against what the viewer may use now. With compatible accounts listed
+ * the person must have chosen one; it is sent as an explicit id, never left for the server to pick. A server older
+ * than named accounts gets none and resolves its own. Accounts that cannot be read block the launch.
+ */
+async function accountChoice(
+  harness: Harness,
+  requested: string,
+): Promise<{ ok: true; id: string | undefined } | { ok: false; error: string }> {
+  if (requested && !isUuid(requested)) return { ok: false, error: "That request is not valid." };
+  const list = await listSelectedAccounts();
+  if (list.state === "legacy") return { ok: true, id: undefined };
+  if (list.state !== "ready")
+    return {
+      ok: false,
+      error: `Model accounts could not be loaded${list.state === "error" ? `: ${list.message}` : "."} Reload and try again.`,
+    };
+  const compatible = accountsFor(list.accounts, harness);
+  if (compatible.length === 0) {
+    return requested
+      ? { ok: false, error: "That account is not available for this agent." }
+      : { ok: true, id: undefined };
+  }
+  if (!requested) return { ok: false, error: "Choose which account the agent runs on." };
+  const chosen = compatible.find((item) => item.id === requested);
+  if (!chosen) return { ok: false, error: "That account is not available for this agent. Reload and choose again." };
+  const problem = accountProblem(chosen, Date.now());
+  if (problem) return { ok: false, error: `${chosen.name} is ${problem}. Replace its token or choose another.` };
+  return { ok: true, id: chosen.id };
 }

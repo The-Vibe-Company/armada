@@ -8,14 +8,12 @@ import {
 } from "../src/lib/credentials.ts";
 
 describe("credentials", () => {
-  test("model keys name the variable a sandbox gets; hosting credentials name none", () => {
-    expect(CREDENTIAL_KINDS.map((item) => item.kind)).toEqual(["claude_oauth", "anthropic", "openai", "boat", "modal"]);
-    expect(credentialKindInfo("claude_oauth").env).toBe("CLAUDE_CODE_OAUTH_TOKEN");
-    expect(credentialKindInfo("openai").env).toBe("OPENAI_API_KEY");
-    // Hosting credentials stay on the server: no sandbox gets them as a variable.
-    expect(credentialKindInfo("boat")).toMatchObject({ use: "hosting", env: null });
-    expect(credentialKindInfo("modal")).toMatchObject({ use: "hosting", env: null });
-    expect(isCredentialKind("opencode")).toBe(false);
+  test("only hosting kinds are written directly: a model credential is a named account on the server", () => {
+    expect(CREDENTIAL_KINDS.map((item) => item.kind)).toEqual(["boat", "modal"]);
+    for (const kind of ["claude_oauth", "anthropic", "openai", "codex_auth", "opencode"]) {
+      expect(isCredentialKind(kind)).toBe(false);
+    }
+    expect(credentialKindInfo("modal").label).toBe("Modal token");
   });
 
   test("a pasted value is trimmed, and an empty or spaced one is refused", () => {

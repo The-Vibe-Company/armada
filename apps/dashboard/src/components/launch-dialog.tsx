@@ -23,6 +23,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { launchBlocker, type McpConnection, type SandboxVisibility } from "@/lib/connections";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
+import {
+  accountProblem,
+  accountsFor,
+  kindNote,
+  type LaunchAccounts,
+  launchDefault,
+  type ModelAccount,
+} from "@/lib/model-accounts";
 import { cn } from "@/lib/utils";
 
 /** The selected org's connections for the launch dialog, or why they are not listed. */
@@ -39,6 +47,7 @@ export function LaunchDialog({
   catalog,
   goldenVisibility,
   connections,
+  accounts,
   repositories,
 }: {
   golden: string;
@@ -47,6 +56,8 @@ export function LaunchDialog({
   catalog: ModelCatalog;
   goldenVisibility: SandboxVisibility;
   connections: LaunchConnections;
+  /** The model accounts the viewer may launch with, or why none are listed. */
+  accounts: LaunchAccounts;
   /** The golden config's `repos[].dir`, in order. */
   repositories: readonly string[];
 }) {
@@ -83,6 +94,7 @@ export function LaunchDialog({
               ))}
             </NativeSelect>
           </div>
+          <AccountField key={JSON.stringify([orgId, harness])} idPrefix={id} harness={harness} accounts={accounts} />
           <ModelFields
             key={JSON.stringify([orgId, provider, golden, harness])}
             idPrefix={id}
@@ -105,6 +117,88 @@ export function LaunchDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+/**
+ * Which account the agent runs on, and so who is billed. The resolved default is preselected and sent as an
+ * explicit id, so what the person saw is what runs; with several accounts and no default the person chooses.
+ * The sandbox keeps this account for every later message, whatever the defaults become.
+ */
+function AccountField({
+  idPrefix,
+  harness,
+  accounts,
+}: {
+  idPrefix: string;
+  harness: Harness;
+  accounts: LaunchAccounts;
+}) {
+  const label = HARNESS_LABELS[harness];
+  if (accounts.state === "legacy") return null;
+  if (accounts.state === "unavailable")
+    return (
+      <p role="alert" className="rounded-md border border-destructive/40 p-3 text-sm text-destructive">
+        Model accounts could not be loaded: {accounts.reason} Reload to launch with a chosen account.
+      </p>
+    );
+  const compatible = accountsFor(accounts.accounts, harness);
+  if (compatible.length === 0)
+    return (
+      <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground" data-account-field="none">
+        No {label} account.{" "}
+        <Link href="/credentials" className="underline">
+          Add one
+        </Link>
+      </p>
+    );
+  const resolved = launchDefault(accounts.accounts, harness, accounts.now);
+  const preset = resolved.state === "resolved" ? resolved.account.id : "";
+  const groups: [string, ModelAccount[]][] = [
+    ["Yours", compatible.filter((account) => account.scope === "user")],
+    [accounts.orgName, compatible.filter((account) => account.scope === "org")],
+  ];
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={`${idPrefix}-account`}>Account</Label>
+      <NativeSelect
+        id={`${idPrefix}-account`}
+        name="credential"
+        defaultValue={preset}
+        required
+        aria-describedby={`${idPrefix}-account-hint`}
+      >
+        {preset === "" && (
+          <option value="" disabled>
+            Choose an account
+          </option>
+        )}
+        {groups.map(([group, rows]) =>
+          rows.length === 0 ? null : (
+            <optgroup key={group} label={group}>
+              {rows.map((account) => (
+                <option key={account.id} value={account.id} disabled={accountProblem(account, accounts.now) !== null}>
+                  {optionLabel(account, accounts.now)}
+                </option>
+              ))}
+            </optgroup>
+          ),
+        )}
+      </NativeSelect>
+      <p id={`${idPrefix}-account-hint`} className="text-xs text-muted-foreground" data-account-field={resolved.state}>
+        {resolved.state === "unusable"
+          ? `${resolved.account.name} would be used, but it is ${accountProblem(resolved.account, accounts.now)}. Choose another account.`
+          : resolved.state === "ambiguous"
+            ? "No default for this agent: choose who is billed."
+            : "Billed for this sandbox, now and for every later message."}
+      </p>
+    </div>
+  );
+}
+
+/** "Work (Claude subscription, default)": the name, then only the notes that add something. */
+function optionLabel(account: ModelAccount, now: number): string {
+  const notes = [kindNote(account), account.isDefault ? "default" : null, accountProblem(account, now)].filter(Boolean);
+  return notes.length ? `${account.name} (${notes.join(", ")})` : account.name;
 }
 
 /** The selected configured checkout. Native reset restores the launch default without stale controlled state. */

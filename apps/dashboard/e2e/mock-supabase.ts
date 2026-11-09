@@ -64,6 +64,12 @@ type State = {
   otpEmails: string[];
   /** The registry's connections. `authentication` is the write-only value; no response ever includes it. */
   connections: Row[];
+  /** Every `creds/list` and `creds/accounts/*` call. A pasted value is recorded as sent, never stored as text. */
+  accountCalls: { route: string; body: Row }[];
+  /** When set, `creds/list` answers as a server older than named accounts: kinds and dates only. */
+  legacyAccounts: boolean;
+  /** `creds/accounts/usage` per account id: a report, or a failure. An account with none: the route is unknown. */
+  usage: Record<string, Row | { fail: number }>;
   /** Every control API call, with its operation and body, for the tests to check what the dashboard sent. */
   controlCalls: { operation: string; body: Row }[];
   /** Every `org/provider/*` call (#576): its route, the body as sent and whether it carried a session. */
@@ -111,6 +117,13 @@ function seed(): State {
         kind: "anthropic",
         value_enc: "\\x0102",
         created_at: now,
+        // #603 migrates every model row to a named account; its kind's label is its first name.
+        name: "Anthropic API key",
+        is_default: false,
+        version: 1,
+        status: "active",
+        expires_at: null,
+        updated_at: now,
       },
     ],
     github_connections: [],
@@ -136,6 +149,9 @@ function seed(): State {
     sent: [],
     toolCalls: [],
     launches: [],
+    accountCalls: [],
+    legacyAccounts: false,
+    usage: {},
     goldenCalls: [],
     goldenRemoveCalls: [],
     goldenStatusCalls: [],
@@ -711,6 +727,15 @@ function launchRoute(body: Row, userId: string | null): Response {
   if (body.repo !== undefined && !dirs.includes(String(body.repo))) {
     return controlFail(400, "invalid", "That repository is not in the golden.");
   }
+  if (body.credentialId !== undefined) {
+    const account = state.credentials.find(
+      (row) =>
+        row.id === body.credentialId &&
+        ((row.scope === "user" && row.owner_id === userId) || (row.scope === "org" && row.owner_id === body.org)),
+    );
+    if (!account || MODEL_KINDS[String(account.kind)] !== body.harness)
+      return controlFail(400, "invalid", "That account cannot run this agent.");
+  }
   const ids = Array.isArray(body.connections) ? body.connections.map(String) : [];
   for (const cid of ids) {
     const connection = visibleConnections(String(body.org), userId).find((row) => row.id === cid);
@@ -1260,6 +1285,108 @@ function orgProvider(route: string, body: Row, request: Request): Response {
   );
 }
 
+/* Named model accounts (#603): creds/list and creds/accounts/{set,rename,default,remove}, user JWT as the bearer. */
+
+const MODEL_KINDS: Record<string, "claude" | "codex"> = {
+  claude_oauth: "claude",
+  anthropic: "claude",
+  openai: "codex",
+  codex_auth: "codex",
+};
+
+/** The safe DTO: never `value_enc`, never the owner. Scope is where the row sits in `creds/list`. */
+function accountDto(row: Row): Row {
+  if (state.legacyAccounts) return { kind: row.kind, createdAt: row.created_at };
+  return {
+    id: row.id,
+    kind: row.kind,
+    name: row.name,
+    isDefault: row.is_default === true,
+    status: row.status ?? "active",
+    expiresAt: row.expires_at ?? null,
+    updatedAt: row.updated_at ?? row.created_at,
+    version: row.version ?? 1,
+  };
+}
+
+function accounts(route: string, body: Row, request: Request): Response {
+  const userId = viewer(request);
+  state.accountCalls.push({ route, body: { ...body, ...(body.value === undefined ? {} : { value: "[sent]" }) } });
+  if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
+  const model = (row: Row) => String(row.kind) in MODEL_KINDS;
+  if (route === "creds/list") {
+    const org = state.orgs.find((row) => row.id === body.org && isMember(row.id, userId));
+    const rows = (scope: string, owner: unknown) =>
+      state.credentials.filter((row) => row.scope === scope && row.owner_id === owner && model(row)).map(accountDto);
+    return json({
+      user: rows("user", userId),
+      orgs: org ? [{ id: org.id, name: org.name, credentials: rows("org", org.id) }] : [],
+    });
+  }
+  if (route === "creds/accounts/usage") {
+    const report = state.usage[String(body.id)];
+    if (!report) return json({ error: { code: undefined, message: "Unknown route." } }, 404);
+    if ("fail" in report) return controlFail(Number(report.fail), "unavailable", "Usage could not be read.");
+    return json({ usage: report });
+  }
+  const scope = body.scope === "org" ? "org" : body.scope === "user" ? "user" : null;
+  if (!scope) return controlFail(400, "invalid", "Scope is user or org.");
+  if (scope === "org" && !isAdmin(body.org, userId))
+    return controlFail(403, "forbidden", "Only an org admin can do that.");
+  const owner = scope === "org" ? body.org : userId;
+  const mine = (row: Row) => row.scope === scope && row.owner_id === owner && model(row);
+  const target = body.id === undefined ? undefined : state.credentials.find((row) => row.id === body.id && mine(row));
+  if (body.id !== undefined && !target) return controlFail(404, "not_found", "No such account.");
+  const stale = body.expectedVersion !== undefined && target && body.expectedVersion !== target.version;
+  if (stale) return controlFail(409, "conflict", "This account changed.");
+  const now = new Date().toISOString();
+  if (route === "creds/accounts/set") {
+    if (!(String(body.kind) in MODEL_KINDS)) return controlFail(400, "invalid", "Unknown kind.");
+    const sealed = `\\x${Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("hex")}`;
+    if (target) {
+      Object.assign(target, {
+        value_enc: sealed,
+        version: Number(target.version) + 1,
+        updated_at: now,
+        status: "active",
+      });
+      return json({ account: accountDto(target) });
+    }
+    const row: Row = {
+      id: crypto.randomUUID(),
+      scope,
+      owner_id: owner,
+      kind: body.kind,
+      value_enc: sealed,
+      created_at: now,
+      name: String(body.name),
+      is_default: false,
+      version: 1,
+      status: "active",
+      expires_at: null,
+      updated_at: now,
+    };
+    state.credentials.push(row);
+    return json({ account: accountDto(row) });
+  }
+  if (!target) return controlFail(400, "invalid", "Name the account.");
+  if (route === "creds/accounts/rename") {
+    Object.assign(target, { name: String(body.name), updated_at: now });
+    return json({ account: accountDto(target) });
+  }
+  if (route === "creds/accounts/default") {
+    const harness = MODEL_KINDS[String(target.kind)];
+    for (const row of state.credentials.filter((item) => mine(item) && MODEL_KINDS[String(item.kind)] === harness))
+      row.is_default = row === target;
+    return json({ account: accountDto(target) });
+  }
+  if (route === "creds/accounts/remove") {
+    state.credentials = state.credentials.filter((row) => row !== target);
+    return json({ ok: true });
+  }
+  return json({ error: "Not found." }, 404);
+}
+
 /** `creds/rm` for the org Boat key, as the Armada API serves it: admin-only, it clears the org's column. */
 function removeOrgCredential(body: Row, request: Request): Response {
   const userId = viewer(request);
@@ -1387,6 +1514,12 @@ function control(url: URL, body: Row): Response {
     state.events.set(String(body.sandbox), events);
     return json({ ok: true });
   }
+  if (url.pathname === "/__test/accounts") {
+    if (body.legacy !== undefined) state.legacyAccounts = body.legacy === true;
+    Object.assign(state.usage, (body.usage as Record<string, Row> | undefined) ?? {});
+    for (const row of (body.seed as Row[] | undefined) ?? []) state.credentials.push(row);
+    return json({ calls: state.accountCalls });
+  }
   if (url.pathname === "/__test/credentials") {
     return json(state.credentials.map((row) => ({ ...row })));
   }
@@ -1482,6 +1615,7 @@ const server = Bun.serve({
       if (route === "golden/remove") return goldenRemove(body, request);
       if (route === "org/provider/status" || route === "org/provider/connect") return orgProvider(route, body, request);
       if (route === "creds/rm") return removeOrgCredential(body, request);
+      if (route === "creds/list" || route.startsWith("creds/accounts/")) return accounts(route, body, request);
       if (route === "golden/list")
         return request.headers.get("authorization") ? json({ goldens: [] }) : json({ error: "Unauthorized." }, 401);
       return json({ error: "Not found." }, 404);
