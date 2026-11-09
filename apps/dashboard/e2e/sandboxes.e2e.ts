@@ -13,10 +13,12 @@ test("the list shows the sandboxes a member may see and filters them", async ({ 
   const row = (name: string) => page.getByRole("row").filter({ has: page.getByRole("link", { name }) });
   await expect(row("bx_alice_running").getByRole("cell", { name: "Boat", exact: true })).toBeVisible();
   await expect(row("bx_alice_failed").getByRole("cell", { name: "Modal", exact: true })).toBeVisible();
+  await expect(row("bx_alice_failed").locator("[data-provider-mark]").filter({ visible: true })).toHaveCount(1);
   await page.screenshot({ path: "test-results/sandbox-providers-desktop.png", animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(row("bx_alice_failed").getByText("Modal", { exact: true }).filter({ visible: true })).toBeVisible();
   await expect(row("bx_alice_running").getByText("Boat", { exact: true }).filter({ visible: true })).toBeVisible();
+  await expect(row("bx_alice_running").locator("[data-provider-mark]").filter({ visible: true })).toHaveCount(1);
   await page.screenshot({ path: "test-results/sandbox-providers-mobile.png", fullPage: true, animations: "disabled" });
   await page.setViewportSize({ width: 1280, height: 720 });
 

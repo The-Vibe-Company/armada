@@ -165,7 +165,8 @@ export default async function SandboxesPage({ searchParams }: Props) {
                     <p className="flex items-center gap-1 text-xs text-muted-foreground sm:hidden">
                       <ProviderName provider={sandbox.provider} className="shrink-0 gap-1" />
                       <span className="truncate">
-                        · {goldenName.get(sandbox.golden_id) ?? "Unknown golden"}, {HARNESS_LABELS[sandbox.harness]}
+                        <span aria-hidden="true">·</span> {goldenName.get(sandbox.golden_id) ?? "Unknown golden"},{" "}
+                        {HARNESS_LABELS[sandbox.harness]}
                       </span>
                     </p>
                   </TableCell>
