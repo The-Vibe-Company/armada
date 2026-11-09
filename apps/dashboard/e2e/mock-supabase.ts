@@ -723,6 +723,8 @@ function mcp(message: RpcMessage, userId: string | null): Response {
           : (conversations.at(-1) ?? `conv-${events.length}`);
       if (!conversations.includes(conversationId)) target.conversation_ids = [...conversations, conversationId];
       target.status = "running";
+      // A send to a stopped sandbox restores it: the server clears its stop time.
+      target.stopped_at = null;
       const promptId = `sent-${events.length}`;
       events.push({
         id: promptId,
