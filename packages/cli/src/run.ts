@@ -180,6 +180,8 @@ Usage:
   armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
                                            Direct membership administration; add requires an existing account,
                                            grants membership immediately and does not send an invitation.
+  armada creds login codex --name <name> [--org <name>]\n                                           Native local device login; five-minute expiry, Ctrl-C cancels\n  armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
+                                           Import a locally obtained native token/auth.json; never pass secrets as arguments
   armada creds set <kind> [--org <name>] [--file <path>]
                                            Store a credential, encrypted; the value is read from stdin or a file
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces

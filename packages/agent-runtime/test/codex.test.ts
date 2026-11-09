@@ -128,6 +128,53 @@ nativeTest(
   },
 );
 
+nativeTest.each([true, false])(
+  "native renewable writer admission is exclusive only when managed (%s)",
+  async (exclusiveAuth) => {
+    const driver = new CodexDriver({
+      executable: `${import.meta.dir}/fixtures/app-server.ts`,
+      cwd: import.meta.dir,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      exclusiveAuth,
+    });
+    const turns: Turn[] = [];
+    const start = () => {
+      let ready!: () => void;
+      const partial = new Promise<void>((resolve) => {
+        ready = resolve;
+      });
+      const turn = driver.start({
+        request: { sandboxId: "s", harness: "codex", text: "initial" },
+        signal: new AbortController().signal,
+        session() {},
+        emit(event) {
+          if (event.kind === "message") ready();
+        },
+      });
+      turns.push(turn);
+      return { turn, partial };
+    };
+    try {
+      const first = start();
+      await first.partial;
+      if (exclusiveAuth) expect(start).toThrow("native_auth_writer_busy");
+      else await start().partial;
+      await Promise.all(
+        turns.map(async (turn) => {
+          await turn.interrupt();
+          await turn.done;
+        }),
+      );
+      const next = start();
+      await next.partial;
+      await next.turn.interrupt();
+      expect(await next.turn.done).toBe("interrupted");
+    } finally {
+      await driver.close();
+    }
+  },
+);
+
 nativeTest.each(["reported", "unavailable"])(
   "native account snapshot %s stays private and never blocks the coding turn",
   async (mode) => {
