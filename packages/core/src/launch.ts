@@ -59,6 +59,13 @@ export interface LaunchCredentialResolver {
   resolve(actor: GoldenActor, harness: Harness): Promise<HarnessCredentials>;
   /** Server-owned native credential admission, before provider allocation/hydration. */
   admit?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<void>;
+  hydrateNative?(
+    actor: GoldenActor,
+    credentials: HarnessCredentials,
+    sandboxId: string,
+    provider: Provider,
+    providerSandboxId: string,
+  ): Promise<boolean>;
   releaseUnallocated?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<void>;
   /** Validate the pinned native owner without rehydrating imported auth state. */
   assertTurn?(actor: GoldenActor, sandboxId: string, resuming: boolean): Promise<void>;
@@ -224,7 +231,11 @@ export async function launchSandbox(
       }
       await stores.connections?.bind(record.id, connectionIds);
       const ready = await waitReady(provider, forked.id, options);
-      if (credentials.codexAuthJson) await writeCodexAuth(provider, ready.id, secrets);
+      if (
+        credentials.codexAuthJson &&
+        !(await stores.credentials.hydrateNative?.(actor, credentials, id, provider, ready.id))
+      )
+        await writeCodexAuth(provider, ready.id, secrets);
       const launchGithub: GitHubLaunchInfo =
         github.status === "connected"
           ? await setupGitHub(provider, ready.id, github.identity, secrets)

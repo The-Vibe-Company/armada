@@ -13,6 +13,7 @@ import {
   toHarnessCredentials,
 } from "@armada/core";
 
+import { sshHydrateAuthState } from "@armada/core/server";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 
 /** The stored kinds whose value must never reach a command's output. */
@@ -59,6 +60,18 @@ export function launchCredentials(
       )
         return; // Unknown legacy bindings are not silently claimed or rehydrated.
       await ownership.claim(actor, binding.credentialId, binding.credentialVersion, sandboxId);
+    },
+    async hydrateNative(actor, credentials, sandboxId, provider, providerSandboxId) {
+      const binding =
+        "binding" in credentials
+          ? (credentials.binding as { credentialId: string; credentialVersion: number } | undefined)
+          : undefined;
+      if (!ownership || !binding || !(await ownership.managed(sandboxId))) return false;
+      const saved = await ownership.bootstrap(actor, binding.credentialId, binding.credentialVersion, sandboxId);
+      if (!saved?.authJson) throw new Error("Native hydration state is unavailable.");
+      if (provider.id === "boat") await sshHydrateAuthState(provider, providerSandboxId, saved.authJson);
+      // Modal already hydrates this exact sealed state in its private stdin bootstrap.
+      return true;
     },
     async releaseUnallocated(_actor, credentials, sandboxId) {
       const binding =

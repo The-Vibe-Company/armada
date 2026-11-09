@@ -21,6 +21,63 @@ export async function sshStdinCheckout(
   await sshExchange(provider, input, deps, false);
 }
 
+/** Private fixed-path hydration; no auth value enters exec argv or command journals. */
+export async function sshHydrateAuthState(
+  provider: Provider,
+  sandboxId: string,
+  authJson: string,
+  deps: SshExecDeps = {},
+): Promise<void> {
+  const path =
+    provider.id === "boat"
+      ? "/home/user/.codex/auth.json"
+      : provider.id === "modal"
+        ? "/home/user/.armada-runtime/codex/auth.json"
+        : undefined;
+  if (!path || Buffer.byteLength(authJson) > 65536) throw Error("Private native hydration is unavailable.");
+  try {
+    const value = JSON.parse(authJson);
+    if (
+      !value.tokens ||
+      typeof value.tokens.refresh_token !== "string" ||
+      typeof value.tokens.access_token !== "string" ||
+      typeof value.tokens.account_id !== "string"
+    )
+      throw Error();
+    const script = [
+      "set +x",
+      "node <<'ARMADA_PRIVATE_HYDRATE'",
+      "const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');",
+      "const target=" + JSON.stringify(path) + ";",
+      "let fd,tmp;",
+      "try {",
+      " const text=JSON.parse(process.env.ARMADA_GIT_TOKEN).authJson; delete process.env.ARMADA_GIT_TOKEN;",
+      " if(typeof text!=='string'||Buffer.byteLength(text)>65536)throw Error('invalid'); JSON.parse(text);",
+      " const home=fs.lstatSync('/home/user'); if(home.isSymbolicLink()||!home.isDirectory())throw Error('unsafe');",
+      " const parts=path.dirname(target).split('/').filter(Boolean);",
+      " for(let n=1;n<=parts.length;n++){const dir='/'+parts.slice(0,n).join('/');",
+      "  try{const st=fs.lstatSync(dir);if(st.isSymbolicLink()||!st.isDirectory())throw Error('unsafe');}",
+      "  catch(e){if(e.code!=='ENOENT')throw e;fs.mkdirSync(dir,{mode:0o700});fs.chownSync(dir,home.uid,home.gid);}}",
+      " try{const st=fs.lstatSync(target);if(st.isSymbolicLink()||!st.isFile())throw Error('unsafe');}catch(e){if(e.code!=='ENOENT')throw e;}",
+      " tmp=path.join(path.dirname(target),'.armada-auth-'+crypto.randomUUID());",
+      " fd=fs.openSync(tmp,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600);",
+      " fs.writeFileSync(fd,text);fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;",
+      " fs.chownSync(tmp,home.uid,home.gid);fs.renameSync(tmp,target);tmp=undefined;",
+      " const dir=fs.openSync(path.dirname(target),fs.constants.O_RDONLY|fs.constants.O_DIRECTORY);try{fs.fsyncSync(dir);}finally{fs.closeSync(dir);}",
+      "}catch{process.exitCode=1;}finally{",
+      " if(fd!==undefined)fs.closeSync(fd);if(tmp)try{fs.unlinkSync(tmp);}catch{}",
+      " const pub=process.env.ARMADA_SSH_PUBLIC_KEY;if(pub)for(const home of ['/home/user','/root']){try{",
+      "  const file=home+'/.ssh/authorized_keys',st=fs.lstatSync(file);if(st.isSymbolicLink()||!st.isFile())continue;",
+      "  fs.writeFileSync(file,fs.readFileSync(file,'utf8').split('\\n').filter(line=>line.trim()!==pub.trim()).join('\\n'),{mode:0o600});",
+      " }catch{}}}",
+      "ARMADA_PRIVATE_HYDRATE",
+    ].join("\n");
+    await sshExchange(provider, { sandboxId, token: JSON.stringify({ authJson }), script }, deps, false, 30000);
+  } catch {
+    throw Error("Private native auth hydration failed.");
+  }
+}
+
 /** Private server-only capture. No caller-selected path, command, or public exec journal. */
 export async function sshPrivateAuthState(
   provider: Provider,
@@ -82,6 +139,7 @@ async function sshExchange(
   input: { sandboxId: string; token: string; script: string },
   deps: SshExecDeps,
   capture: boolean,
+  timeoutMs = capture ? 30_000 : 600_000,
 ): Promise<string> {
   const fs = {
     mkdtemp: deps.mkdtemp ?? mkdtemp,
@@ -94,7 +152,7 @@ async function sshExchange(
   const key = join(dir, "key"),
     known = join(dir, "known_hosts");
   try {
-    await command(run, "ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], "");
+    await command(run, "ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], "", false, timeoutMs);
     await fs.chmod(key, 0o600);
     const pub = await (deps.readPublicKey ?? ((p: string) => Bun.file(p).text()))(`${key}.pub`);
     const c = await provider.sshKey({ sandboxId: input.sandboxId, key: pub.trim() });
@@ -141,6 +199,7 @@ async function sshExchange(
       ],
       `${input.token}\n${pub.trim()}\n${input.script}`,
       capture,
+      timeoutMs,
     );
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
@@ -159,7 +218,14 @@ function knownLine(host: string, port: string, key: string) {
   if (!/^(ssh-|ecdsa-|sk-)/.test(key)) throw new Error("Invalid SSH host key.");
   return `[${host}]:${port} ${key}\n`;
 }
-function command(spawnImpl: typeof spawn, file: string, args: string[], stdin: string, capture = false) {
+function command(
+  spawnImpl: typeof spawn,
+  file: string,
+  args: string[],
+  stdin: string,
+  capture = false,
+  timeoutMs = capture ? 30_000 : 600_000,
+) {
   return new Promise<string>((resolve, reject) => {
     // Typed as the base ChildProcess, not the stdio-narrowed overload: which @types/node overload
     // that resolves to (and whether it still carries EventEmitter's own members) depends on the
@@ -180,13 +246,10 @@ function command(spawnImpl: typeof spawn, file: string, args: string[], stdin: s
         c.kill("SIGKILL");
       } else if (!overflow) output.push(Buffer.from(chunk));
     });
-    const timer = setTimeout(
-      () => {
-        timedOut = true;
-        c.kill("SIGKILL");
-      },
-      capture ? 30_000 : 600_000,
-    );
+    const timer = setTimeout(() => {
+      timedOut = true;
+      c.kill("SIGKILL");
+    }, timeoutMs);
     c.stderr?.on("data", (d) => {
       if (capture) return;
       // Stream only fixed protocol records; discard all tool stderr, including arbitrary secrets.
