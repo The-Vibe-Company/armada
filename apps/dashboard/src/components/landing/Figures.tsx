@@ -39,11 +39,17 @@ const REPOS = [
   { name: "acme/ui", branch: "release" },
 ];
 
+/** One build per provider: a golden saved on Boat does not move to Modal; it is built there again. */
+const PROVIDERS = [
+  { name: "Boat", tone: "is-sky", y: 16 },
+  { name: "Modal", tone: "is-orange", y: 280 },
+];
+
 export function GoldenFigure() {
   return (
     <Figure
       view="0 0 640 540"
-      label="Three repositories are cloned over your GitHub connection, set up and scanned in one golden, then saved as a snapshot on Boat and another on Modal."
+      label="Three repositories feed two separate builds: a golden built and saved on Boat, and another built and saved on Modal. Each build clones as you, runs the setup, scans for tokens and saves its own snapshot."
     >
       {REPOS.map((r, k) => {
         const y = 24 + k * 132;
@@ -57,37 +63,29 @@ export function GoldenFigure() {
             <text className="lp-fig-s" x={62} y={y + 74}>
               {r.branch}
             </text>
-            <path className="lp-fig-wire" d={`M264 ${y + 50}C300 ${y + 50} 290 190 322 190`} />
+            <path className="lp-fig-wire" d={`M264 ${y + 50}C284 ${y + 50} 280 206 296 206`} />
           </g>
         );
       })}
-      <rect className="lp-fig-ink" x={322} y={60} width={310} height={262} rx={26} />
-      <text className="lp-fig-t is-on-ink is-big" x={350} y={112}>
-        golden widgets
-      </text>
-      {["cloned as you", "setup script run", "no tokens found"].map((t, k) => (
-        <g key={t}>
-          <Check x={364} y={162 + k * 50} />
-          <text className="lp-fig-s is-on-ink" x={390} y={169 + k * 50}>
-            {t}
+      <path className="lp-fig-wire" d="M296 206C312 206 304 138 322 138M296 206C312 206 304 402 322 402" />
+      <circle className="lp-fig-node" cx={296} cy={206} r={8} />
+      {PROVIDERS.map((p) => (
+        <g key={p.name}>
+          <rect className={`lp-fig-card ${p.tone}`} x={322} y={p.y} width={310} height={244} rx={26} />
+          <text className="lp-fig-t is-big" x={346} y={p.y + 48}>
+            Built on {p.name}
           </text>
+          <rect className="lp-fig-ink" x={338} y={p.y + 68} width={278} height={160} rx={16} />
+          {["cloned as you", "set up, scanned", "snapshot saved"].map((t, k) => (
+            <g key={t}>
+              <Check x={366} y={p.y + 104 + k * 46} />
+              <text className="lp-fig-s is-on-ink" x={392} y={p.y + 112 + k * 46}>
+                {t}
+              </text>
+            </g>
+          ))}
         </g>
       ))}
-      <path className="lp-fig-wire" d="M410 322V404M544 322V404" />
-      <rect className="lp-fig-card is-sky" x={322} y={404} width={146} height={112} rx={20} />
-      <rect className="lp-fig-card is-orange" x={486} y={404} width={146} height={112} rx={20} />
-      <text className="lp-fig-t is-big" x={395} y={458} textAnchor="middle">
-        Boat
-      </text>
-      <text className="lp-fig-s" x={395} y={490} textAnchor="middle">
-        snapshot
-      </text>
-      <text className="lp-fig-t is-big" x={559} y={458} textAnchor="middle">
-        Modal
-      </text>
-      <text className="lp-fig-s" x={559} y={490} textAnchor="middle">
-        snapshot
-      </text>
     </Figure>
   );
 }

@@ -60,19 +60,14 @@ function Chapter({
 export function Story() {
   return (
     <>
-      <Chapter
-        id="method"
-        tone="lime"
-        title="Build the workspace once."
-        command={STORY.golden}
-        figure={<GoldenFigure />}
-      >
+      <Chapter id="method" tone="lime" title="Set up your repos once." command={STORY.golden} figure={<GoldenFigure />}>
         <p>
           A golden is your repositories, cloned over your own GitHub connection, set up by your script and saved as a
-          snapshot on Boat or on Modal. Every agent starts there, already set up, instead of from a cold clone.
+          snapshot on the provider you build it for, Boat or Modal. Every agent starts there, already set up, instead of
+          from a cold clone.
         </p>
         <p>
-          Armada scans the working tree and the Git history for tokens before it saves anything. Share a golden with
+          Armada scans the working tree and the Git history for tokens before it saves a snapshot. Share a golden with
           your org or keep it private.
         </p>
       </Chapter>
@@ -106,7 +101,7 @@ export function Story() {
         id="resume"
         tone="orange"
         flip
-        title="Stop the machine. Keep the conversation."
+        title="Stop the machine. Keep the thread."
         command={STORY.resume}
         figure={<ResumeFigure />}
       >

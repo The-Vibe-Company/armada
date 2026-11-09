@@ -902,8 +902,8 @@ html:has(> body .lp) {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-width: 34em;
-  font-size: clamp(17px, 1.42vw, 20px);
+  max-width: 32em;
+  font-size: clamp(17px, 1.6vw, 22px);
   line-height: 1.5;
   font-weight: 450;
   letter-spacing: -0.008em;
@@ -917,6 +917,8 @@ html:has(> body .lp) {
   color: var(--ch-fg);
 }
 .lp-ch-body code {
+  /* A flag is one word: never broken between its hyphens. */
+  white-space: nowrap;
   padding: 1px 6px;
   border-radius: 6px;
   background: color-mix(in srgb, var(--ch-fg) 9%, transparent);
@@ -1246,8 +1248,19 @@ html:has(> body .lp) {
   .lp-ch.is-flip .lp-ch-words {
     order: 0;
   }
+  /* On a phone a diagram takes the whole width, and its words grow, so they read at arm's length. */
+  .lp-ch-figure {
+    margin-inline: calc(8px - var(--lp-pad));
+  }
+  .lp-fig-s {
+    font-size: 24px;
+  }
+  .lp-fig-xs {
+    font-size: 21px;
+  }
+  /* 12 px: a sandbox's UUID fits on one line of the chip. */
   .lp-ch .lp-copy {
-    font-size: 12.5px;
+    font-size: 12px;
   }
   .lp-terminal-body {
     height: 440px;
