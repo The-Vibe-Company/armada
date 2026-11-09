@@ -604,20 +604,40 @@ function launch(args: Row, userId: string, reply: (result: unknown) => Response)
   });
 }
 
-/** Opened by `/__test/golden-release`; a build that arrives after it does not wait. */
-let release: (() => void) | null = null;
-let released: Promise<void> = Promise.resolve();
-
-function closeGate(): void {
-  released = new Promise<void>((resolve) => (release = resolve));
+const goldenJobs = new Map<string, { route: string; body: Row; owner: string; response?: Row }>();
+async function goldenBuild(route: string, body: Row, request: Request): Promise<Response> {
+  if (!state.goldenGate.hold || state.goldenGate.fail) return executeGoldenBuild(route, body, request);
+  const owner = viewer(request);
+  if (!owner || !isMember(body.org, owner))
+    return json({ error: { code: "forbidden", message: "Not a member." } }, 403);
+  const jobId = id(++sequence);
+  goldenJobs.set(jobId, { route, body, owner });
+  state.goldenCalls.push({ route, body, authorized: true });
+  return json({ jobId, state: "queued", phase: "queued", errorCode: null, result: null }, 202);
+}
+async function goldenJobStatus(body: Row, request: Request): Promise<Response> {
+  const jobId = String(body.jobId);
+  const job = goldenJobs.get(jobId);
+  if (!job || viewer(request) !== job.owner || !isMember(job.body.org, job.owner))
+    return json({ error: { code: "not_found", message: "No such build." } }, 404);
+  if (job.response) return json(job.response);
+  if (state.goldenGate.hold)
+    return json({ jobId, state: "running", phase: "checkout_baseline", errorCode: null, result: null });
+  const response = await executeGoldenBuild(job.route, job.body, request);
+  const result = (await response.json()) as Row;
+  job.response = response.ok
+    ? { ...result, jobId }
+    : { jobId, state: "failed", phase: "checkout_baseline", errorCode: "build_failed", result: null };
+  return json(job.response);
 }
 
 /** `golden/create` and `golden/update` of the control API, with the server's owner/admin rules. */
-async function goldenBuild(route: string, body: Row, request: Request): Promise<Response> {
+async function executeGoldenBuild(route: string, body: Row, request: Request): Promise<Response> {
   const userId = viewer(request);
-  state.goldenCalls.push({ route, body, authorized: Boolean(userId) });
+  if (!Array.from(goldenJobs.values()).some((job) => job.body === body))
+    state.goldenCalls.push({ route, body, authorized: Boolean(userId) });
   if (!userId) return json({ error: { code: "unauthorized", message: "Sign in." } }, 401);
-  if (state.goldenGate.hold) await released;
+
   const failure = state.goldenGate.fail;
   // A failure without a code is a gateway's own answer (a timeout in front of the server), not the server's.
   if (failure)
@@ -635,7 +655,16 @@ async function goldenBuild(route: string, body: Row, request: Request): Promise<
       return json({ error: { code: "forbidden", message: "Only an admin can create an org golden." } }, 403);
     const row = { ...golden(id(++sequence), name, visibility, userId, snapshot), org_id: org, config };
     state.goldens.push(row);
-    return json({ name, visibility, snapshot });
+    return json(
+      {
+        jobId: id(++sequence),
+        state: "succeeded",
+        phase: "complete",
+        errorCode: null,
+        result: { name, visibility, snapshot },
+      },
+      202,
+    );
   }
   const rows = visibleRows("goldens", userId).filter((row) => row.org_id === org && row.name === name);
   const target = rows[0];
@@ -645,7 +674,16 @@ async function goldenBuild(route: string, body: Row, request: Request): Promise<
   target.config = config;
   target.provider_snapshot_id = snapshot;
   target.boat_snapshot_id = snapshot;
-  return json({ name, visibility: target.visibility, snapshot });
+  return json(
+    {
+      jobId: id(++sequence),
+      state: "succeeded",
+      phase: "complete",
+      errorCode: null,
+      result: { name, visibility: target.visibility, snapshot },
+    },
+    202,
+  );
 }
 
 /** `golden/capabilities`: the server's scoped read of the selected org's provider limit. */
@@ -714,13 +752,11 @@ function control(url: URL, body: Row): Response {
       state.orgs.push({ id: id(12), name: "Nova", created_at: "2026-11-08T10:00:00.000Z" });
       state.members.push({ org_id: id(12), user_id: id(3), role: "admin", created_at: "2026-11-08T10:00:00.000Z" });
     }
-    release?.();
-    release = null;
     sessions.clear();
+    goldenJobs.clear();
     return json({ ok: true });
   }
   if (url.pathname === "/__test/golden-gate") {
-    if (body.hold === true) closeGate();
     state.goldenGate = {
       hold: body.hold === true,
       fail: body.fail ? (body.fail as { status: number; code?: string; message: string }) : null,
@@ -735,8 +771,7 @@ function control(url: URL, body: Row): Response {
     return json({ ok: true });
   }
   if (url.pathname === "/__test/golden-release") {
-    release?.();
-    release = null;
+    state.goldenGate.hold = false;
     return json({ ok: true });
   }
   if (url.pathname === "/__test/goldens") {
@@ -811,6 +846,7 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
       if (route === "auth/email/start") return json({ ok: true });
+      if (route === "golden/build/status") return goldenJobStatus(body, request);
       if (route === "golden/create" || route === "golden/update") return goldenBuild(route, body, request);
       if (route === "golden/capabilities") return goldenCapabilities(body, request);
       if (route === "golden/list")

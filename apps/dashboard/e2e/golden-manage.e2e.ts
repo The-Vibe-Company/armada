@@ -48,14 +48,17 @@ test("an admin builds a multi-repo golden: one locked request, a clear result, n
   await form.getByLabel("Setup script").fill("echo ready");
 
   await form.getByRole("button", { name: "Build golden" }).click();
-  const busy = form.getByRole("button", { name: "Building…" });
+  const busy = form.getByRole("button", { name: "Build golden", exact: true });
+  await expect(form.getByRole("status")).toContainText(/Build .*: (queued|running)/);
   await expect(busy).toBeDisabled();
-  await expect(form.getByRole("status")).toContainText("cloning, scanning and snapshotting");
-  await expect(form.getByRole("textbox", { name: "Repository 1", exact: true })).toBeDisabled();
+  await expect(page).toHaveURL(/build=/);
   await busy.click({ force: true });
 
-  // The one request is held on the server while the page shows it pending; the forced second click sent nothing.
+  // Admission has returned with a durable ID. Polling never resubmits the build.
   await expect.poll(async () => (await mockState()).goldenCalls.length).toBe(1);
+  await page.reload();
+  await expect(form.getByRole("status")).toContainText(/Build .*: (queued|running)/);
+  expect((await mockState()).goldenCalls).toHaveLength(1);
   await post("/__test/golden-release");
   await expect(form.getByRole("status")).toContainText(/Built golden 'nova-web' and saved snapshot golden-\d+\./);
   await expect(form.getByLabel("Name")).toHaveValue("");
@@ -67,6 +70,7 @@ test("an admin builds a multi-repo golden: one locked request, a clear result, n
     authorized: true,
     body: {
       name: "nova-web",
+      idempotencyKey: expect.stringMatching(/^[0-9a-f-]{36}$/),
       org: "00000000-0000-4000-8000-000000000012",
       private: false,
       provider: "boat",
@@ -223,6 +227,7 @@ test("an admin edits and rebuilds the existing golden from what it records", asy
   expect(goldenCalls[0]?.route).toBe("golden/update");
   expect(goldenCalls[0]?.body).toEqual({
     name: "shared-golden",
+    idempotencyKey: expect.stringMatching(/^[0-9a-f-]{36}$/),
     org: "00000000-0000-4000-8000-000000000010",
     provider: "boat",
     config: {

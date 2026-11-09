@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createSqlVaultStore } from "@armada/core";
-import { GoldenCreateService, type Sql } from "@armada/core/server";
+import type { Sql } from "@armada/core/server";
 import { sqlGoldenBackendSlots } from "../../core/src/golden-create.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -8,25 +8,10 @@ import { call, ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";
 
 test("HTTP and MCP report real capacity, pending, busy and binding conflicts without allocating or leaking", async () => {
   let sql: Sql;
-  let capacity = 1;
   let allocations = 0;
   const account = "backend-hidden-account";
-  const service = new GoldenCreateService({
-    authorize: async () => ({ repos: [{ owner: "acme", repo: "web", id: 1, installationId: 1 }], token: "unused" }),
-    ssh: async () => {},
-    scan: async () => {},
-    persist: async () => {
-      throw new Error("must not persist");
-    },
-    reserve: async (provider, actor, existing) => {
-      const backendId = (await provider.backendIdentity!()).id;
-      const slots = sqlGoldenBackendSlots(sql);
-      return existing
-        ? slots.reserveExisting({ provider: "boat", backendId, capacity, goldenId: existing.id })
-        : slots.reserve({ provider: "boat", backendId, capacity, orgId: actor.orgId, ownerId: actor.userId });
-    },
-  });
-  const server = await harness({ goldenCreate: service });
+
+  const server = await harness();
   sql = server.db;
   try {
     const { db, people, boat } = server;
@@ -42,7 +27,7 @@ test("HTTP and MCP report real capacity, pending, busy and binding conflicts wit
       encryptionKey: ENCRYPTION_KEY,
       data: createSqlData(db),
       providerFor: boat.providerFor,
-      goldenCreate: service,
+      goldenBuilds: server.builds,
     };
     const rows = await db.query<{ id: string; name: string }>("select id,name from goldens");
     const shared = rows.rows.find((row) => row.name === "shared")!;
@@ -54,6 +39,7 @@ test("HTTP and MCP report real capacity, pending, busy and binding conflicts wit
       const name = operation === "update" ? "shared" : "quota-probe";
       const body = {
         name,
+        idempotencyKey: crypto.randomUUID(),
         org,
         private: isPrivate,
         repos: ["acme/web"],
@@ -101,10 +87,10 @@ test("HTTP and MCP report real capacity, pending, busy and binding conflicts wit
       await request(user, org, privateFlag);
     expect((await db.query("select * from golden_backend_slots")).rows).toEqual(ready);
     // The database unique-account constraint, not just the count guard.
-    capacity = 2;
+    Object.defineProperty(boat.provider, "maxGoldens", { value: 2, configurable: true });
     await request(people.admin, people.org, false);
     expect((await db.query("select * from golden_backend_slots")).rows).toEqual(ready);
-    capacity = 1;
+    Object.defineProperty(boat.provider, "maxGoldens", { value: 1, configurable: true });
     await db.query("delete from golden_backend_slots");
     const pending = await sqlGoldenBackendSlots(sql).reserve({
       provider: "boat",
@@ -147,6 +133,7 @@ test("unexpected SQL and provider failures stay server errors rather than becomi
   let failure = "raise";
   let allocations = 0;
   const sql: Sql = {
+    transaction: (work) => work(sql),
     query: async (query, params) => {
       if (failure === "raise")
         return underlying.query("do $$ begin raise exception 'unexpected database failure'; end $$");
@@ -155,24 +142,13 @@ test("unexpected SQL and provider failures stay server errors rather than becomi
       return underlying.query(query, params);
     },
   };
-  const service = new GoldenCreateService({
-    authorize: async () => ({ repos: [{ owner: "acme", repo: "web", id: 1, installationId: 1 }], token: "unused" }),
-    ssh: async () => {},
-    scan: async () => {},
-    persist: async () => {},
-    reserve: async (provider, actor) => {
-      const backendId = (await provider.backendIdentity!()).id;
-      return sqlGoldenBackendSlots(sql).reserve({
-        provider: "boat",
-        backendId,
-        capacity: 1,
-        orgId: actor.orgId,
-        ownerId: actor.userId,
-      });
+
+  const server = await harness({
+    sql: (db) => {
+      underlying = db;
+      return sql;
     },
   });
-  const server = await harness({ goldenCreate: service });
-  underlying = server.db;
   try {
     const { db, boat, people } = server;
     boat.provider.createGolden = async () => {
@@ -192,10 +168,10 @@ test("unexpected SQL and provider failures stay server errors rather than becomi
       store: createSqlVaultStore(db),
       encryptionKey: ENCRYPTION_KEY,
       providerFor: boat.providerFor,
-      goldenCreate: service,
+      goldenBuilds: server.builds,
     };
     for (failure of ["raise", "unique", "sql", "provider"]) {
-      const body = { name: "quota-probe", org: people.org, repos: ["acme/web"] };
+      const body = { idempotencyKey: crypto.randomUUID(), name: "quota-probe", org: people.org, repos: ["acme/web"] };
       const response = await handleControlRequest(
         new Request(PUBLIC_URL + "/api/v1/golden/create", {
           method: "POST",

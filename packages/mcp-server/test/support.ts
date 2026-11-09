@@ -22,6 +22,7 @@ import type {
   SteerRequest,
 } from "@armada/core";
 import { createSqlVaultStore, encryptSecret, ProviderError, type Sql } from "@armada/core";
+import { GoldenBuildJobs, type GoldenCreateOptions } from "@armada/core/server";
 import type { PGlite } from "@electric-sql/pglite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -139,6 +140,7 @@ export function fakeBoat() {
 
   const provider = {
     id: "boat",
+    backendIdentity: async () => ({ id: "test-boat-account" }),
     harnesses: ["claude", "codex"] as Harness[],
     capabilities: {
       claude: { steer: "native", ...harnessFeatures, ...extra },
@@ -259,6 +261,7 @@ export function fakeBoat() {
 export type FakeBoat = ReturnType<typeof fakeBoat>;
 
 export interface TestServer {
+  builds: GoldenBuildJobs;
   db: PGlite;
   people: People;
   boat: FakeBoat;
@@ -340,6 +343,9 @@ function fakeGitHub(db: PGlite) {
         ? Response.json({ ...user, name: null })
         : Response.json({ message: "Bad credentials" }, { status: 401 });
     }
+    if (url.startsWith("https://api.github.com/user/installations")) return Response.json({ installations: [] });
+    if (url === "https://api.github.com/repos/acme/web")
+      return Response.json({ id: 77, name: "web", owner: { login: "acme" }, private: false, default_branch: "main" });
     throw new Error(`unexpected request to ${url}`);
   }) as typeof fetch;
   return { github, fetch: fetchImpl };
@@ -369,7 +375,7 @@ export async function harness(
     /** The `Sql` the data, the credentials and the auth lookups run on. Default: PGlite as is. */
     sql?: (db: PGlite) => Sql;
     routes?: readonly Route[];
-    goldenCreate?: HandlerOptions["goldenCreate"];
+    buildSsh?: GoldenCreateOptions["ssh"];
     goldenAdoption?: HandlerOptions["goldenAdoption"];
     /** The store `/mcp` authenticates against. Default: the in-memory one the helpers fill. */
     authStore?: (db: PGlite) => AuthStore;
@@ -413,8 +419,25 @@ export async function harness(
   };
   const fakeGit = fakeGitHub(db);
   const sqlFor = (database: PGlite) => (options.sql ? options.sql(database) : database);
+  const builds = new GoldenBuildJobs({
+    sql: sqlFor(db),
+    encryptionKey: ENCRYPTION_KEY,
+    service: {
+      github: {
+        store: createSqlVaultStore(sqlFor(db)),
+        encryptionKey: ENCRYPTION_KEY,
+        app: GITHUB_APP,
+        fetch: fakeGit.fetch,
+      },
+      installationApp: null,
+      fetch: fakeGit.fetch,
+      ssh: options.buildSsh ?? (async () => {}),
+    },
+    provider: async () => boat.provider,
+  });
   const handler = createHandler({
     publicUrl: PUBLIC_URL,
+    goldenBuilds: builds,
     oauth,
     authStore: options.authStore ? options.authStore(db) : auth,
     supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "anon", fetch: supabaseFetch },
@@ -424,7 +447,6 @@ export async function harness(
     github: { store: createSqlVaultStore(sqlFor(db)), app: GITHUB_APP, fetch: fakeGit.fetch },
     providerFor: boat.providerFor,
     ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
-    ...(options.goldenCreate ? { goldenCreate: options.goldenCreate } : {}),
     ...(options.modalProviderFor ? { modalProviderFor: options.modalProviderFor } : {}),
     ...(options.routes ? { routes: options.routes } : {}),
     log: options.log ?? (() => {}),
@@ -442,6 +464,7 @@ export async function harness(
     auth.addMembership(userId, { orgId, name: "Example", role: roles.get(userId) ?? "member" });
   };
   return {
+    builds,
     db,
     people,
     boat,

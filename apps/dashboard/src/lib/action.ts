@@ -1,4 +1,6 @@
-export type ActionResult = { ok: true; message: string } | { ok: false; error: string };
+import type { GoldenBuildStatus } from "@armada/core";
+
+export type ActionResult = { ok: true; message: string; build?: GoldenBuildStatus } | { ok: false; error: string };
 
 export const done = (message: string): ActionResult => ({ ok: true, message });
 export const fail = (error: string): ActionResult => ({ ok: false, error });

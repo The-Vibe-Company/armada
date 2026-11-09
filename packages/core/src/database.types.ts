@@ -190,6 +190,97 @@ export type Database = {
           },
         ];
       };
+      golden_build_jobs: {
+        Row: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          name: string;
+          visibility: string;
+          idempotency_key: string;
+          request_hash: string;
+          payload_enc: string;
+          reservation_id: string;
+          state: string;
+          phase: string;
+          fence: string | null;
+          lease_until: string | null;
+          deadline: string | null;
+          builder_id: string | null;
+          snapshot: string | null;
+          golden_id: string | null;
+          error_code: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id: string;
+          org_id: string;
+          owner_id: string;
+          name: string;
+          visibility: string;
+          idempotency_key: string;
+          request_hash: string;
+          payload_enc: string;
+          reservation_id: string;
+          state?: string;
+          phase?: string;
+          fence?: string | null;
+          lease_until?: string | null;
+          deadline?: string | null;
+          builder_id?: string | null;
+          snapshot?: string | null;
+          golden_id?: string | null;
+          error_code?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          org_id?: string;
+          owner_id?: string;
+          name?: string;
+          visibility?: string;
+          idempotency_key?: string;
+          request_hash?: string;
+          payload_enc?: string;
+          reservation_id?: string;
+          state?: string;
+          phase?: string;
+          fence?: string | null;
+          lease_until?: string | null;
+          deadline?: string | null;
+          builder_id?: string | null;
+          snapshot?: string | null;
+          golden_id?: string | null;
+          error_code?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "golden_build_jobs_golden_id_fkey";
+            columns: ["golden_id"];
+            isOneToOne: false;
+            referencedRelation: "goldens";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_build_jobs_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_build_jobs_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       goldens: {
         Row: {
           id: string;
@@ -626,6 +717,7 @@ export type Credential = Database["public"]["Tables"]["credentials"]["Row"];
 export type GitHubConnection = Database["public"]["Tables"]["github_connections"]["Row"];
 export type GoldenAdoptionReceipt = Database["public"]["Tables"]["golden_adoption_receipts"]["Row"];
 export type GoldenBackendSlot = Database["public"]["Tables"]["golden_backend_slots"]["Row"];
+export type GoldenBuildJob = Database["public"]["Tables"]["golden_build_jobs"]["Row"];
 export type Golden = Database["public"]["Tables"]["goldens"]["Row"];
 export type McpToken = Database["public"]["Tables"]["mcp_tokens"]["Row"];
 export type Member = Database["public"]["Tables"]["members"]["Row"];

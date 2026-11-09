@@ -174,7 +174,7 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
     capabilities: BOAT_CAPABILITIES,
     maxGoldens: 1,
     async backendIdentity() {
-      const response = await call(() => api.me());
+      const response = await call(() => api.me({ signal: AbortSignal.timeout(10_000) }));
       if (!response.user.id) throw unexpectedAnswer("account identity");
       return { id: response.user.id };
     },

@@ -309,7 +309,7 @@ describe("control API", () => {
       await options.store.setOrgBoatKey(org, await encryptSecret("boat-test", KEY));
       options.authStore.addMembership(STAN, { orgId: org, name: "Create", role: "admin" });
       const service = {
-        create: async (_provider: unknown, _actor: unknown, input: unknown) => {
+        admit: async (_provider: unknown, _actor: unknown, input: unknown) => {
           expect(input).toMatchObject({
             repos: [],
             config: {
@@ -317,7 +317,7 @@ describe("control API", () => {
               init: ["pnpm install"],
             },
           });
-          return { snapshot: "golden-bx" };
+          return { jobId: "build-1", state: "queued", phase: "queued", errorCode: null, result: null };
         },
       } as never;
       const session = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
@@ -328,18 +328,19 @@ describe("control API", () => {
             headers: { authorization: `Bearer ${session}` },
             body: JSON.stringify(body),
           }),
-          { ...options, goldenCreate: service, providerFor: () => ({}) as never },
+          { ...options, goldenBuilds: service, providerFor: () => ({}) as never },
         );
       const ok = await request({
         name: "web",
+        idempotencyKey: crypto.randomUUID(),
         private: true,
         config: {
           repos: [{ url: "https://github.com/acme/web.git", branch: "feature/login", dir: "frontend" }],
           init: ["pnpm install"],
         },
       });
-      expect(ok?.status).toBe(200);
-      expect(await ok?.json()).toEqual({ name: "web", visibility: "private", snapshot: "golden-bx" });
+      expect(ok?.status).toBe(202);
+      expect(await ok?.json()).toMatchObject({ jobId: "build-1", state: "queued" });
       const bad = await request({ name: "web", config: { repos: [{ url: "https://evil.example/acme/web.git" }] } });
       expect(bad?.status).toBe(400);
       expect(await bad?.text()).not.toContain("evil.example");
@@ -795,7 +796,7 @@ describe("controlOptionsFromEnv", () => {
       SUPABASE_ANON_KEY: "anon",
       ARMADA_ENCRYPTION_KEY: KEY,
     });
-    expect(options.goldenCreate).toBeDefined();
+    expect(options.goldenBuilds).toBeDefined();
     expect(options.providerFor).toBeDefined();
     expect(typeof options.providerFor?.("any-key").exec).toBe("function");
   });

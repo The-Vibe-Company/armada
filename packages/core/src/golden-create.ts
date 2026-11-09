@@ -24,6 +24,16 @@ export interface GoldenBackendSlot {
 }
 
 export interface GoldenCreateOptions {
+  /** Server-only execution fence for a previously admitted durable job. */
+  job?: {
+    id: string;
+    cleaned(safe: boolean): void;
+    reservationId: string;
+    phase(phase: string): Promise<void>;
+    builder(id: string): Promise<void>;
+    lock(sql: Sql): Promise<void>;
+    complete(sql: Sql, goldenId: string, snapshot: string): Promise<void>;
+  };
   /** The privileged database connection the server already holds (shared with the control API). */
   sql: Sql;
   /** How the caller's own cached OAuth access token (#492) is resolved for checkout; never an App token. */
@@ -66,37 +76,25 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
     ssh: options.ssh ?? ((provider, input) => sshStdinCheckout(provider, input)),
     scan: (provider, sandboxId) => scanGoldenSandbox(provider, sandboxId),
     async reserve(provider, actor, existingGolden) {
+      if (options.job) {
+        await options.job.phase("authorization");
+        if (existingGolden) {
+          const identity = await provider.backendIdentity?.();
+          if (!identity) throw new GoldenError("forbidden", "Provider cannot verify backend identity.");
+          const binding = await options.sql.query(
+            "select id from public.golden_backend_slots where provider=$1 and backend_id=$2 and golden_id=$3 and build_id=$4",
+            [provider.id, identity.id, existingGolden.id, options.job.reservationId],
+          );
+          if (!binding.rows.length) throw new GoldenError("conflict", "Build backend binding changed.");
+        }
+        return options.job.reservationId;
+      }
       if (!options.sql.transaction)
         throw new GoldenError("conflict", "Atomic golden persistence requires a database transaction.");
-      const capacity =
-        provider.maxGoldens ?? options.defaultProviderCapacity ?? (provider.id === "boat" ? 1 : undefined);
-      if (capacity === undefined) return undefined;
-      if (!Number.isInteger(capacity) || capacity < 1)
-        throw new GoldenError("invalid_config", "Provider golden capacity must be a positive integer.");
-      if (!provider.backendIdentity)
-        throw new GoldenError("forbidden", "Provider cannot verify its backend identity for golden capacity.");
-      const identity = await provider.backendIdentity();
-      if (!identity?.id)
-        throw new GoldenError("forbidden", "Provider returned no backend identity for golden capacity.");
-      if (existingGolden) {
-        await assertGoldenBackendBinding(options.sql, existingGolden, provider, identity.id);
-        return slots.reserveExisting({
-          provider: provider.id,
-          backendId: identity.id,
-          capacity,
-          goldenId: existingGolden.id,
-        });
-      }
-      return slots.reserve({
-        provider: provider.id,
-        backendId: identity.id,
-        capacity,
-        orgId: actor.orgId,
-        ownerId: actor.userId,
-      });
+      return reserveGoldenBuild(options.sql, provider, actor, existingGolden, slots, options.defaultProviderCapacity);
     },
     async release(reservationId) {
-      await slots.release(reservationId);
+      if (!options.job) await slots.release(reservationId);
     },
     async canDiscardSnapshot(snapshot) {
       const result = await options.sql.query<{ used: boolean }>(
@@ -117,6 +115,7 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         init,
       };
       const persist = async (sql: Sql) => {
+        await options.job?.lock(sql);
         const transactionalStore = createSqlGoldenStore(sql);
         const inserted = existingGolden
           ? existingGolden
@@ -130,11 +129,20 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
               config,
             });
         if (existingGolden) {
-          const current = await sql.query<{ provider_snapshot_id: string | null }>(
-            "select provider_snapshot_id from public.goldens where id=$1 for update",
-            [inserted.id],
-          );
-          if (current.rows[0]?.provider_snapshot_id !== existingGolden.providerSnapshotId)
+          const current = await sql.query<{
+            provider_snapshot_id: string | null;
+            owner_id: string;
+            visibility: string;
+            org_id: string;
+          }>("select provider_snapshot_id,owner_id,visibility,org_id from public.goldens where id=$1 for update", [
+            inserted.id,
+          ]);
+          if (
+            current.rows[0]?.provider_snapshot_id !== existingGolden.providerSnapshotId ||
+            current.rows[0]?.owner_id !== existingGolden.ownerId ||
+            current.rows[0]?.visibility !== existingGolden.visibility ||
+            current.rows[0]?.org_id !== existingGolden.orgId
+          )
             throw new GoldenError("conflict", "Golden changed during rebuild. Retry from its current revision.");
           await transactionalStore.setConfig(inserted.id, config);
         }
@@ -145,14 +153,56 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         // This update is inside the same database transaction as the golden metadata. A failed
         // finalize rolls everything back; the service can safely release only the still-pending slot.
         if (reservationId) await sqlGoldenBackendSlots(sql).finalize(reservationId, inserted.id);
+        await options.job?.complete(sql, inserted.id, snapshot);
         return inserted.id;
       };
       if (!options.sql.transaction) throw new GoldenError("conflict", "Atomic golden persistence is unavailable.");
       return options.sql.transaction(persist);
     },
   };
+  if (options.job)
+    deps.execution = {
+      id: options.job.id,
+      phase: options.job.phase,
+      builder: options.job.builder,
+      cleaned: options.job.cleaned,
+    };
   if (adapter.mint) deps.mint = adapter.mint;
   return new GoldenCreateService(deps);
+}
+
+/** Reserve on the caller's transaction so durable admission and capacity commit together. */
+export async function reserveGoldenBuild(
+  sql: Sql,
+  provider: Provider,
+  actor: GoldenActor,
+  existingGolden?: GoldenRecord,
+  slots: GoldenBackendSlot = sqlGoldenBackendSlots(sql),
+  defaultCapacity?: number,
+): Promise<string | undefined> {
+  const capacity = provider.maxGoldens ?? defaultCapacity ?? (provider.id === "boat" ? 1 : undefined);
+  if (capacity === undefined) return undefined;
+  if (!Number.isInteger(capacity) || capacity < 1)
+    throw new GoldenError("invalid_config", "Provider golden capacity must be a positive integer.");
+  if (!provider.backendIdentity) throw new GoldenError("forbidden", "Provider cannot verify its backend identity.");
+  const identity = await provider.backendIdentity();
+  if (!identity?.id) throw new GoldenError("forbidden", "Provider returned no backend identity.");
+  if (existingGolden) {
+    await assertGoldenBackendBinding(sql, existingGolden, provider, identity.id);
+    return slots.reserveExisting({
+      provider: provider.id,
+      backendId: identity.id,
+      capacity,
+      goldenId: existingGolden.id,
+    });
+  }
+  return slots.reserve({
+    provider: provider.id,
+    backendId: identity.id,
+    capacity,
+    orgId: actor.orgId,
+    ownerId: actor.userId,
+  });
 }
 
 const BACKEND_CONFLICT_MESSAGE =

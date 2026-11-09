@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { createMemoryAuthStore, memorySessionStore } from "@armada/auth";
 import {
-  createGoldenCreateService,
   createSqlGoldenStore,
   createSqlVaultStore,
   encryptSecret,
   type GoldenActor,
+  GoldenBuildJobs,
   goldenForLaunch,
   type Provider,
 } from "@armada/core/server";
@@ -58,18 +58,22 @@ describe("golden command", () => {
         encryptionKey: ENC_KEY,
         data: createSqlData(db),
         providerFor: () => fakeCreateProvider(),
-        goldenCreate: createGoldenCreateService({
+        goldenBuilds: new GoldenBuildJobs({
           sql: db,
-          github: {
-            store: createSqlVaultStore(db),
-            encryptionKey: ENC_KEY,
-            app: { clientId: "Iv1.test", clientSecret: "secret" },
+          encryptionKey: ENC_KEY,
+          provider: async () => fakeCreateProvider(),
+          service: {
+            github: {
+              store: createSqlVaultStore(db),
+              encryptionKey: ENC_KEY,
+              app: { clientId: "Iv1.test", clientSecret: "secret" },
+              fetch: githubFetch,
+            },
+            installationApp: null,
             fetch: githubFetch,
-          },
-          installationApp: null,
-          fetch: githubFetch,
-          ssh: async (_provider, input) => {
-            sshCalls.push(input);
+            ssh: async (_provider, input) => {
+              sshCalls.push(input);
+            },
           },
         }),
       };
@@ -98,10 +102,15 @@ describe("golden command", () => {
           "--init",
           "pnpm i",
         ],
-        { auth },
+        {
+          auth,
+          sleep: async () => {
+            await controlOptions.goldenBuilds!.runOne();
+          },
+        },
       );
       expect(created.code).toBe(0);
-      expect(created.err).toBe("");
+      expect(created.err).toContain("Build admission key:");
       expect(created.out).toContain("Created golden monorepo (private).");
       expect(created.out).toContain("golden-bx_1");
       expect(created.out).toContain("web, api");
@@ -370,7 +379,9 @@ function fakeGitHubFetch(): typeof fetch {
 function fakeCreateProvider(): Provider {
   const ok = { detached: false as const, exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
   return {
-    id: "fake",
+    id: "boat",
+    maxGoldens: 1,
+    backendIdentity: async () => ({ id: "cli-boat-account" }),
     harnesses: ["claude", "codex"],
     capabilities: { claude: caps(), codex: caps() },
     createGolden: async () => ({ id: "bx_1", name: "box", state: "ready", providerState: "ready", labels: {} }),

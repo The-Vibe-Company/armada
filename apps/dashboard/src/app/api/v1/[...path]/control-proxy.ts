@@ -20,6 +20,7 @@ const PRIVATE_POST_PATHS = new Set([
   "golden/list",
   "golden/capabilities",
   "golden/create",
+  "golden/build/status",
   "golden/update",
   "golden/snapshot",
   "golden/connect",
@@ -75,7 +76,9 @@ export async function forwardControl(
       ...(body ? { body } : {}),
       redirect: "error",
       cache: "no-store",
-      signal: AbortSignal.timeout(660_000),
+      signal: AbortSignal.timeout(
+        ["golden/create", "golden/update", "golden/build/status"].includes(relative) ? 15_000 : 660_000,
+      ),
     });
   } catch {
     return NextResponse.json({ error: "Armada API is unavailable." }, { status: 502 });
