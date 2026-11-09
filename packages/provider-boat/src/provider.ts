@@ -34,6 +34,11 @@ import {
   type Sandbox,
   type SavedSnapshot,
 } from "@boatdev/sdk";
+import {
+  parseVmResourceFiles,
+  VM_RESOURCE_MAX_FILE_BYTES,
+  VM_RESOURCE_PATHS,
+} from "../../core/src/vm-resource-reading.ts";
 import { invalidRequest, PROVIDER_ID, toProviderError, unexpectedAnswer } from "./errors.ts";
 import { eventCursor, normalizeEvent, promptStatus } from "./events.ts";
 import { installNativeCwdWrapper } from "./native-cwd.ts";
@@ -283,6 +288,45 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
       );
     },
 
+    async observeResources(sandboxId) {
+      // Fixed supported file reads, never commands, model prompts or account-wide OTLP.
+      const signal = AbortSignal.timeout(5000);
+      const before = await api.get({ sandboxId }, { signal });
+      if (!before.sandbox || !["ready", "running"].includes(sandboxInfo(before.sandbox).state)) return null;
+      const files: (string | null)[] = [];
+      for (const path of VM_RESOURCE_PATHS) {
+        try {
+          const response = await api.readFile({ sandboxId, path, encoding: "utf8" }, { signal });
+          files.push(
+            response.ok &&
+              response.success &&
+              response.path === path &&
+              response.encoding === "utf8" &&
+              typeof response.content === "string" &&
+              Buffer.byteLength(response.content) < VM_RESOURCE_MAX_FILE_BYTES
+              ? response.content
+              : null,
+          );
+        } catch {
+          files.push(null);
+        }
+        if (signal.aborted) return null;
+      }
+      const reading = parseVmResourceFiles(files);
+      if (!reading) return null;
+      const after = await api.get({ sandboxId }, { signal });
+      if (!after.sandbox || !["ready", "running"].includes(sandboxInfo(after.sandbox).state)) return null;
+      return {
+        version: 1 as const,
+        providerSandboxId: sandboxId,
+        physicalId: `${sandboxId}/${reading.bootId}`,
+        generation: reading.bootId,
+        scope: "dedicated-vm" as const,
+        runtimeProvenance: "boat-dedicated-vm" as const,
+        reading,
+        limitations: ["sampled-memory-not-peak", "hypervisor-throttling-unavailable"] as const,
+      };
+    },
     async get(sandboxId: string, requestOptions?: { signal?: AbortSignal }): Promise<SandboxInfo> {
       const response = await call(() =>
         api.get(

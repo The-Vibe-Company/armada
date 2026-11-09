@@ -27,7 +27,7 @@ import {
 } from "@armada/core";
 import { accountCommand } from "./account-commands.ts";
 import { flag, parseArgs, single, values } from "./args.ts";
-import { armadaApiUrl, createArmadaApiClient } from "./armada-api.ts";
+import { ArmadaApiError, armadaApiUrl, createArmadaApiClient } from "./armada-api.ts";
 import {
   type AuthIo,
   loginCommand,
@@ -38,6 +38,7 @@ import {
   tokenRevoke,
 } from "./auth-commands.ts";
 import { operation } from "./operations.ts";
+import { orchestratorCommand } from "./orchestrator-commands.ts";
 import { skillCommand } from "./skill-install.ts";
 import { credsCommand, orgCommand, type VaultIo } from "./vault-commands.ts";
 
@@ -72,6 +73,7 @@ export interface Deps {
 const HELP = `armada ${VERSION}: launch coding agents in Boat and Modal sandboxes
 
 Usage:
+  armada orchestrator --help               Persistent coordinator create/list/detail/send/steer/stop/resume/events/capabilities
   armada --version                         Print the version
   armada --help                            Show this help
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
@@ -116,6 +118,8 @@ Usage:
                                            Default page size 25; --json keeps {sandboxes:[...]}; --page-info adds exact totals
   armada mcp sandbox-connections <sandbox-uuid> [--org UUID] [--json]
                                            Read actual bound connection metadata, never mutate bindings
+  armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
+                                           Owner-only legacy Modal binding recovery; stop safely first; no restart
   armada detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
   armada golden retirement dry-run|reconcile <golden-id> [--limit 1-50] [--org UUID]
@@ -190,7 +194,9 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         error instanceof ProviderError ||
         error instanceof AuthError)
     ) {
-      io.err(`${JSON.stringify({ error: { code: error.code, message: error.message } })}\n`);
+      io.err(
+        `${JSON.stringify({ error: { code: error instanceof ArmadaApiError ? error.serverCode : error.code, message: error.message } })}\n`,
+      );
       return ["invalid_config", "invalid_request", "invalid", "usage", "no_credentials"].includes(error.code) ? 2 : 1;
     }
     if (error instanceof GoldenError) {
@@ -225,6 +231,14 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
 async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const [command, ...original] = argv;
   if (command === "skill") return skillCommand(original, io);
+  if (command === "orchestrator") {
+    const auth = authOf(io, deps);
+    return orchestratorCommand(original, {
+      ...auth,
+      fetch: deps.fetch ?? auth.fetch,
+      ...(deps.sleep ? { sleep: deps.sleep } : {}),
+    });
+  }
   let rest = original;
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
@@ -232,6 +246,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     "golden",
     "launch",
     "list",
+    "bind-credential",
     "detail",
     "status",
     "send",
@@ -275,6 +290,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "launch":
       return launch(rest, io, deps);
     case "list":
+    case "bind-credential":
     case "detail":
     case "status":
     case "send":
