@@ -69,7 +69,7 @@ const SANDBOX_COLUMNS = `s.id, s.provider::text as provider, s.provider_sandbox_
 /** `$1` is the caller's orgs and `$2` the caller. */
 const GOLDEN_VISIBLE = `g.org_id = any($1::uuid[]) and (g.visibility = 'org' or g.owner_id = $2::uuid)
   and exists(select 1 from public.members m where m.org_id=g.org_id and m.user_id=$2::uuid)`;
-const SANDBOX_VISIBLE = `s.org_id = g.org_id and s.org_id=any($1::uuid[]) and (s.visibility='org' or s.access_owner_id=$2::uuid)
+const SANDBOX_VISIBLE = `not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id) and s.org_id = g.org_id and s.org_id=any($1::uuid[]) and (s.visibility='org' or s.access_owner_id=$2::uuid)
   and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid)`;
 
 type SandboxViewRow = SandboxRow & {
