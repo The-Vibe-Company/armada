@@ -227,7 +227,7 @@ export function createModelUsageApi(
              and ($2::uuid is null or s.id=$2::uuid)
              and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$3::uuid)
              and s.org_id=any($4::uuid[])
-             and (s.visibility='org' or s.access_owner_id=$3::uuid)
+             and (s.owner_id=$3::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$3::uuid and m.role='admin'))
              order by s.created_at desc,s.id limit 1
            ) visible on true
            where c.id=$1::uuid and c.status='active'

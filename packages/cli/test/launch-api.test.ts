@@ -38,95 +38,103 @@ const response = {
 };
 
 describe("launch through the Armada API", () => {
-  for (const repo of [undefined, "ACME/web", "defaults-only"]) {
-    test(`works with ARMADA_TOKEN and a clean HOME (repo: ${repo ?? "omitted"})`, async () => {
-      const machineSize =
-        repo === undefined
-          ? null
-          : {
-              version: 1,
-              requested: "large",
-              effective: "large",
-              source: "override",
-              repositoryDir: "web",
-              capacity: null,
-            };
-      const calls: Request[] = [];
-      let out = "";
-      const code = await run(
-        [
-          "launch",
-          "web",
-          "--agent",
-          "codex",
-          "do it",
-          "--ttl",
-          "30m",
-          "--org",
-          "org",
-          "--json",
-          ...(repo === undefined ? ["--credential-id", "33333333-3333-4333-8333-333333333333"] : []),
-          ...(repo === undefined ? [] : repo === "defaults-only" ? ["--sized"] : ["--repo", repo, "--size", "large"]),
-        ],
-        { out: (text) => (out += text), err: () => undefined },
-        {
-          auth: {
-            out: () => undefined,
-            err: () => undefined,
-            env: { ARMADA_TOKEN: token },
-            fetch: async (input, init) => {
-              const request = input instanceof Request ? input : new Request(String(input), init);
-              calls.push(request);
-              return Response.json({
-                ...response,
-                sandbox: {
-                  ...response.sandbox,
-                  machineSize,
-                  ...(repo === undefined ? {} : { provider: "boat", providerSandboxId: "bx_server" }),
-                },
-              });
+  for (const selection of [undefined, [], ["chosen"]] as const) {
+    for (const repo of [undefined, "ACME/web", "defaults-only"]) {
+      test(`works with ARMADA_TOKEN and a clean HOME (repo: ${repo ?? "omitted"}, selection: ${JSON.stringify(selection)})`, async () => {
+        const machineSize =
+          repo === undefined
+            ? null
+            : {
+                version: 1,
+                requested: "large",
+                effective: "large",
+                source: "override",
+                repositoryDir: "web",
+                capacity: null,
+              };
+        const calls: Request[] = [];
+        let out = "";
+        const code = await run(
+          [
+            "launch",
+            "web",
+            "--agent",
+            "codex",
+            "do it",
+            "--ttl",
+            "30m",
+            "--org",
+            "org",
+            "--json",
+            ...(repo === undefined ? ["--credential-id", "33333333-3333-4333-8333-333333333333"] : []),
+            ...(repo === undefined ? [] : repo === "defaults-only" ? ["--sized"] : ["--repo", repo, "--size", "large"]),
+            ...(selection === undefined
+              ? []
+              : selection.length
+                ? ["--connections", selection.join(",")]
+                : ["--no-connections"]),
+          ],
+          { out: (text) => (out += text), err: () => undefined },
+          {
+            auth: {
+              out: () => undefined,
+              err: () => undefined,
+              env: { ARMADA_TOKEN: token },
+              fetch: async (input, init) => {
+                const request = input instanceof Request ? input : new Request(String(input), init);
+                calls.push(request);
+                return Response.json({
+                  ...response,
+                  sandbox: {
+                    ...response.sandbox,
+                    machineSize,
+                    ...(repo === undefined ? {} : { provider: "boat", providerSandboxId: "bx_server" }),
+                  },
+                });
+              },
+              now: () => new Date(),
+              open: () => undefined,
+              session: memorySessionStore(),
             },
-            now: () => new Date(),
-            open: () => undefined,
-            session: memorySessionStore(),
           },
-        },
-      );
-      expect(code).toBe(0);
-      expect(JSON.parse(out)).toMatchObject({
-        machineSize,
-        golden: "web",
-        credentialId: "33333333-3333-4333-8333-333333333333",
-        credentialVersion: 7,
-        harness: "codex",
-        promptId: "prompt",
-        provider: "boat",
-        providerSandboxId: "bx_server",
-        boatId: "bx_server",
-        id: "11111111-1111-4111-8111-111111111111",
-        expiresAt: "2026-11-08T16:00:00.000Z",
+        );
+        expect(code).toBe(0);
+        expect(JSON.parse(out)).toMatchObject({
+          machineSize,
+          golden: "web",
+          credentialId: "33333333-3333-4333-8333-333333333333",
+          credentialVersion: 7,
+          harness: "codex",
+          promptId: "prompt",
+          provider: "boat",
+          providerSandboxId: "bx_server",
+          boatId: "bx_server",
+          id: "11111111-1111-4111-8111-111111111111",
+          expiresAt: "2026-11-08T16:00:00.000Z",
+        });
+        expect(calls).toHaveLength(1);
+        const launchRequest = calls.at(-1);
+        expect(launchRequest?.url).toBe(
+          `https://armada.thevibecompany.co/api/v1/sandbox/${repo === undefined ? "launch" : "launch-sized-v1"}`,
+        );
+        expect(launchRequest?.headers.get("authorization")).toBe(`Bearer ${token}`);
+        expect(await launchRequest?.json()).toEqual({
+          golden: "web",
+          ...(repo === undefined
+            ? { credentialId: "33333333-3333-4333-8333-333333333333" }
+            : repo === "defaults-only"
+              ? { sizePolicyVersion: 1 }
+              : { repo, size: "large", sizePolicyVersion: 1 }),
+          ...(selection === undefined ? {} : { connections: [...selection] }),
+          model: "gpt-6.1-sol",
+          reasoningEffort: "medium",
+          harness: "codex",
+          prompt: "do it",
+          ttlSeconds: 1800,
+          org: "org",
+        });
       });
-      expect(calls).toHaveLength(1);
-      const launchRequest = calls.at(-1);
-      expect(launchRequest?.url).toBe(
-        `https://armada.thevibecompany.co/api/v1/sandbox/${repo === undefined ? "launch" : "launch-sized-v1"}`,
-      );
-      expect(launchRequest?.headers.get("authorization")).toBe(`Bearer ${token}`);
-      expect(await launchRequest?.json()).toEqual({
-        golden: "web",
-        ...(repo === undefined
-          ? { credentialId: "33333333-3333-4333-8333-333333333333" }
-          : repo === "defaults-only"
-            ? { sizePolicyVersion: 1 }
-            : { repo, size: "large", sizePolicyVersion: 1 }),
-        model: "gpt-6.1-sol",
-        reasoningEffort: "medium",
-        harness: "codex",
-        prompt: "do it",
-        ttlSeconds: 1800,
-        org: "org",
-      });
-    });
+    }
   }
 
   test("decodes serialized expiry for text output without hiding a created sandbox", async () => {

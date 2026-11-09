@@ -24,6 +24,7 @@ import {
 } from "../../mcp-gateway/src/index.ts";
 import { AuthUnavailable, authenticateCaller, bearerToken, type SupabaseProject } from "./caller.ts";
 import { dashboardOrigin } from "./config.ts";
+import { createSqlData } from "./data.ts";
 import { SLACK_OAUTH_BINDING } from "./mcp-catalog-client.ts";
 import { createMcpOAuthStore, createMcpSecretBox } from "./mcp-integration.ts";
 import { createMcpLifecycle } from "./mcp-lifecycle.ts";
@@ -726,8 +727,11 @@ export function createMcpHttpIntegration(options: {
             { headers },
           );
         }
-        if (action === "sandbox-connections")
+        if (action === "sandbox-connections") {
+          const sandbox = await createSqlData(sql)(actor).sandboxes.get(id);
+          if (!sandbox || sandbox.orgId !== org) throw new GatewayError("denied", "No such sandbox.");
           return Response.json({ connections: await registry.sandboxConnections(actor.userId, org, id) }, { headers });
+        }
         await registry.get(actor.userId, org, id);
         if (action === "revoke" || action === "delete") {
           await registry.revoke(actor.userId, org, id, action === "delete");

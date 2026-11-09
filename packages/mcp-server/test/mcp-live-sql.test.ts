@@ -150,6 +150,7 @@ test("SQL gateway delivers MCP objects and native configuration survives concurr
     });
     const launch = createSqlMcpLaunchPort(db, service.registry);
     await launch.validate({ userId: user, orgId: org }, [id], "private");
+    await db.query("update sandboxes set visibility='org' where id=$1", [sandbox]);
     await launch.bind(sandbox, [id]);
     const leases = createSqlMcpLeasePort(db);
     const issue = async () => {

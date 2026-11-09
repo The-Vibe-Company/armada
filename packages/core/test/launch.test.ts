@@ -153,21 +153,16 @@ describe("launch", () => {
     }
   });
 
-  test("a legacy store that drops independent private visibility cannot start an agent", async () => {
+  test("deprecated sandbox visibility does not change source authority or prevent launch", async () => {
     const world = setup({ golden: golden("org") });
-    const insert = world.stores.sandboxes.insert.bind(world.stores.sandboxes);
-    world.stores.sandboxes.insert = async (input) => ({ ...(await insert(input)), visibility: "org" });
-    await expect(
-      launchSandbox(world.provider, world.stores, owner, {
-        golden: "web",
-        harness: "claude",
-        visibility: "private",
-        prompt: "work",
-      }),
-    ).rejects.toThrow("did not persist");
-    expect(world.deleted).toEqual(["bx_1"]);
-    expect(world.prompts).toHaveLength(0);
-    expect(world.stopped).toEqual(["bx_1"]);
+    const result = await launchSandbox(world.provider, world.stores, owner, {
+      golden: "web",
+      harness: "claude",
+      visibility: "private",
+      prompt: "work",
+    });
+    expect(result.sandbox.visibility).toBe("org");
+    expect(world.prompts).toHaveLength(1);
   });
 
   test("forks the stored snapshot with only this harness's credentials, pulls and inits, then prompts", async () => {
