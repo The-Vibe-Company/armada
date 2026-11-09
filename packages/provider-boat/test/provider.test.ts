@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ProviderError } from "@armada/core";
-import { GoldenCreateService, type GoldenRecord } from "@armada/core/server";
+import { GoldenCreateService, type GoldenRecord, scanGoldenSandbox } from "@armada/core/server";
 import { BOAT_CAPABILITIES, createBoatProvider } from "../src/provider.ts";
 import { errorBody, fakeBoat, KEY, sandbox } from "./support.ts";
 
@@ -486,4 +486,30 @@ test("maps GET /me to a non-secret backend identity", async () => {
     }) as unknown as typeof fetch,
   });
   expect(await provider.backendIdentity?.()).toEqual({ id: "account_123" });
+});
+
+// Contract source: @boatdev/sdk 1.13.0 CommandRequest and Boat's public
+// POST /sandboxes/{sandboxId}/commands OpenAPI (integer, minimum 1, maximum 600).
+test("the real golden scan passes Boat's command timeout validation", async () => {
+  let calls = 0;
+  const provider = createBoatProvider({
+    apiKey: KEY,
+    fetch: (async (_input, init) => {
+      calls++;
+      const body = JSON.parse(String(init?.body));
+      if (!Number.isInteger(body.timeoutSeconds) || body.timeoutSeconds < 1 || body.timeoutSeconds > 600)
+        return Response.json({ error: { code: "invalid_timeout", message: "Invalid timeout" } }, { status: 400 });
+      return Response.json({
+        ok: true,
+        type: "command.finished",
+        success: true,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        timedOut: false,
+      });
+    }) as typeof fetch,
+  });
+  await scanGoldenSandbox(provider, ID);
+  expect(calls).toBe(1);
 });

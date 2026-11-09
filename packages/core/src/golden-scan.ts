@@ -12,8 +12,11 @@ import type { Provider } from "./provider.ts";
  */
 export const GITHUB_TOKEN_PATTERN = "gh[oprsu]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9]{20,}_[A-Za-z0-9]{36,}";
 
-/** More thorough than a quick in-session check: reading every git object can take a while. */
-const TIMEOUT_SECONDS = 900;
+/**
+ * Boat's synchronous command API accepts only 1–600 seconds (SDK CommandRequest).
+ * Use its full budget; timeout still fails closed, never snapshots a partial scan.
+ */
+const TIMEOUT_SECONDS = 600;
 
 /** Where a token could land: the repos' working trees, root's home (some tooling runs as root) and /tmp. */
 const SCAN_ROOTS = "/home/user /root /tmp";
