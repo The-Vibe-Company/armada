@@ -82,6 +82,7 @@ export async function startServer(
   const githubApp = githubAppFromEnv(env);
   const data = createSqlData(sql);
   const mcp = createMcpHttpIntegration({
+    githubRuntimeEnabled: config.githubRuntimeEnabled,
     github: { store, app: githubApp, encryptionKey: config.encryptionKey },
     catalogAuthentication,
     sql,
