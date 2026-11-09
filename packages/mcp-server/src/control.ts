@@ -79,6 +79,7 @@ import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject 
 import { createSqlData, type DataSource, type ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
 import { providerRegistry } from "./http.ts";
+import { InvitationError, type Invitations, invitationsFromEnv } from "./invitations.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createModalIntegration } from "./modal-integration.ts";
@@ -99,6 +100,7 @@ const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
+  invitations?: Invitations;
   providerValidator?: ProviderValidator;
   githubAccount?: GitHubAccountApi;
   mcp?: { registry: McpRegistry; broker?: McpBrokerPort };
@@ -200,7 +202,17 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       if (!response.ok) throw new VaultError("unavailable", "The account session could not be signed out.");
       return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
     }
-    const result = await dispatch(route, caller, body, options);
+    const invitationAction = route.startsWith("org/invitations/") ? route.slice("org/invitations/".length) : null;
+    let result: unknown;
+    if (invitationAction) {
+      if (!options.invitations) throw new VaultError("unavailable", "Invitations unavailable.");
+      result =
+        invitationAction === "preview"
+          ? await options.invitations.preview(caller, body.token)
+          : invitationAction === "accept"
+            ? await options.invitations.accept(caller, body.token)
+            : await options.invitations.manage(invitationAction, caller, required(body, "org"), body);
+    } else result = await dispatch(route, caller, body, options);
     if (result === undefined) return fail(404, "not_found", "Unknown route.");
     return Response.json(result, {
       status:
@@ -250,6 +262,18 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     }
     if (error instanceof ProviderRoutingError) return fail(503, error.code, error.message);
     if (error instanceof LaunchError) return fail(400, error.code, error.message);
+    if (error instanceof InvitationError)
+      return Response.json(
+        {
+          error: {
+            code: error.code,
+            message: error.message,
+            reason: error.reason,
+            ...(error.retryAfterSeconds ? { retryAfterSeconds: error.retryAfterSeconds } : {}),
+          },
+        },
+        { status: STATUS[error.code], headers: { "cache-control": "no-store" } },
+      );
     if (error instanceof VaultError) return fail(STATUS[error.code], error.code, error.message);
     if (error instanceof GoldenError) return fail(GOLDEN_STATUS[error.code], error.code, error.message);
     if (error instanceof EncryptionKeyError) {
@@ -1234,6 +1258,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       (await modalIntegration()).modalProviderFor(tokens, binding, context),
   });
   return {
+    invitations: invitationsFromEnv(sql, env),
     mcp: { registry },
     connections: createSqlMcpLaunchPort(sql, registry),
     authStore,
