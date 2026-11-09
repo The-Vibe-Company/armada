@@ -310,7 +310,7 @@ export function KeysFigure() {
   return (
     <Figure
       view="0 0 640 540"
-      label={`The vault seals each key with ${CIPHER}. A sandbox receives only its agent's key and a GitHub token valid for ${GITHUB_TOKEN_HOURS} hours; a golden receives no key.`}
+      label={`The vault seals each key with ${CIPHER}. Of the stored keys, a sandbox receives only its agent's, plus a GitHub token valid for ${GITHUB_TOKEN_HOURS} hours; a golden receives no key.`}
     >
       <rect className="lp-fig-card is-lime" x={8} y={170} width={236} height={200} rx={26} />
       <rect className="lp-fig-ink" x={96} y={204} width={60} height={50} rx={10} />
@@ -330,7 +330,7 @@ export function KeysFigure() {
       </text>
       <rect className="lp-fig-pill is-key" x={370} y={92} width={236} height={36} rx={18} />
       <text className="lp-fig-xs" x={488} y={116} textAnchor="middle">
-        its agent's key only
+        its agent's key
       </text>
       <rect className="lp-fig-pill is-key" x={370} y={140} width={236} height={36} rx={18} />
       <text className="lp-fig-xs" x={488} y={164} textAnchor="middle">

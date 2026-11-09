@@ -40,31 +40,40 @@ function reach(start: string, seen = new Set<string>()): Set<string> {
 const PAGE = join(ROOT, "src/app/landing/page.tsx");
 const modules = [...reach(PAGE)];
 
-/** `armada --help`: what it prints, and the commands it documents (`golden <sub>` for goldens, the first word otherwise). */
-async function help(): Promise<{ text: string; commands: Set<string> }> {
+/**
+ * `armada --help`, one usage block per line that starts `  armada `: the commands it documents (`golden <sub>`
+ * for goldens, the first word otherwise) and, for each, the text of its blocks, where its flags are.
+ */
+async function help(): Promise<Map<string, string>> {
   let text = "";
   expect(await run(["--help"], { out: (chunk) => (text += chunk), err: () => undefined })).toBe(0);
-  const commands = new Set<string>();
-  for (const [, first = "", second = ""] of text.matchAll(/^ {2}armada ([a-z][a-z|-]*)(?: ([a-z][a-z|-]*))?/gm))
-    for (const word of first.split("|"))
-      for (const sub of word === "golden" ? second.split("|") : [""]) commands.add(sub ? `golden ${sub}` : word);
-  return { text, commands };
+  const usage = new Map<string, string>();
+  for (const block of text.split(/\n(?= {2}armada )/)) {
+    const [, first = "", second = ""] = block.match(/^ {2}armada ([a-z][a-z|-]*)(?: ([a-z][a-z|-]*))?/) ?? [];
+    for (const word of first.split("|").filter(Boolean))
+      for (const sub of word === "golden" ? second.split("|") : [""]) {
+        const name = sub ? `golden ${sub}` : word;
+        usage.set(name, `${usage.get(name) ?? ""}${block}\n`);
+      }
+  }
+  return usage;
 }
 
 describe("what the landing says", () => {
-  test("shows only commands and flags armada --help documents", async () => {
-    const { text, commands } = await help();
-    expect(commands.size).toBeGreaterThan(10);
+  test("shows only commands armada --help documents, each with flags its own usage lists", async () => {
+    const usage = await help();
+    expect(usage.size).toBeGreaterThan(10);
     const shown = [...Object.values(STORY), ...SETUP.map((s) => s.command)].filter((c) => c.startsWith("armada "));
     expect(shown.length).toBeGreaterThan(5);
     const unknown = shown.flatMap((line) => {
       const [, first = "", second = ""] = line.split(" ");
       const command = first === "golden" ? `golden ${second}` : first;
+      const own = usage.get(command);
+      if (own === undefined) return [`${line}: no command ${command}`];
       const flags = line.match(/(?<=\s)--[a-z][a-z-]*/g) ?? [];
-      return [
-        ...(commands.has(command) ? [] : [`${line}: no command ${command}`]),
-        ...flags.filter((flag) => !text.includes(`${flag} `)).map((flag) => `${line}: no flag ${flag}`),
-      ];
+      return flags
+        .filter((flag) => !new RegExp(`${flag}(?![a-z-])`).test(own))
+        .map((flag) => `${line}: no flag ${flag}`);
     });
     expect(unknown).toEqual([]);
   });

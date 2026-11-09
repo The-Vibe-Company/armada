@@ -67,8 +67,8 @@ export function Story() {
           from a cold clone.
         </p>
         <p>
-          Armada scans the working tree and the Git history for tokens before it saves a snapshot. Share a golden with
-          your org or keep it private.
+          Armada scans the working tree and the Git history for GitHub tokens before it saves a snapshot. Share a golden
+          with your org or keep it private.
         </p>
       </Chapter>
 
@@ -81,8 +81,8 @@ export function Story() {
         figure={<FleetFigure />}
       >
         <p>
-          Each launch forks the golden into a sandbox of its own: its own machine, its own files, only its agent's keys.
-          Run four fixes at once and none of them touches another's checkout.
+          Each launch forks the golden into a sandbox of its own: its own machine, its own files, and of your stored
+          keys only its agent's. Run four fixes at once and none of them touches another's checkout.
         </p>
         <p>
           Choose Claude Code or Codex, the model and the reasoning effort for each launch. Every later turn keeps them.
@@ -143,8 +143,9 @@ export function Story() {
           never an argument, and no page or command shows it again. Terminals hold only their Armada session.
         </p>
         <p>
-          A sandbox gets its agent's key and nothing else. Git and gh act as you through the GitHub App, with a token
-          that lasts {GITHUB_TOKEN_HOURS} hours. A golden gets no key: a GitHub token found in one stops its snapshot.
+          Of your stored keys, a sandbox gets only its agent's. Git and gh act as you through the GitHub App, with a
+          token that lasts {GITHUB_TOKEN_HOURS} hours. A golden gets no key: a GitHub token found in one stops its
+          snapshot.
         </p>
       </Chapter>
 
@@ -164,7 +165,7 @@ function Install() {
           <div className="lp-ch-body">
             <p>
               Sign in, connect Boat or Modal to your org, store your agent's key and connect GitHub. Then build a golden
-              and launch. The setup guide walks through each step.
+              and launch.
             </p>
           </div>
           <div className="lp-try-actions">

@@ -979,6 +979,16 @@ html:has(> body .lp) {
   }
 }
 
+/* Where container units are missing, titles size by the viewport: a little smaller, never 16 px. */
+@supports not (font-size: 1cqi) {
+  .lp-ch-title {
+    font-size: clamp(40px, 6.4vw, 104px);
+  }
+  .lp-ch.is-wide .lp-ch-title {
+    font-size: clamp(40px, 7.6vw, 120px);
+  }
+}
+
 /* ------------------------------------------------------------- diagrams */
 
 .lp-ch-figure {
@@ -1209,6 +1219,10 @@ html:has(> body .lp) {
 }
 
 /* --------------------------------------------------------------- footer */
+
+.lp-dim {
+  color: var(--lp-dim);
+}
 
 .lp-footer {
   padding: 32px var(--lp-pad) 40px;
