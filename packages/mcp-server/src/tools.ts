@@ -916,6 +916,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const { sandbox: found, provider } = await live(args.id);
       const delivery = provider.capabilities[found.harness].steer;
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
+      if (delivery === "restart" && found.credentialId)
+        await context.launchCredentials.resolve(
+          { userId: found.ownerId, orgId: found.orgId, role: "member" },
+          found.harness,
+          found.credentialId,
+          found.credentialVersion ?? undefined,
+        );
       const receipt = await provider.steer({
         sandboxId: found.providerSandboxId,
         text: args.text,
