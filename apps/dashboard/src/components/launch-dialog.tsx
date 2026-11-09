@@ -1,12 +1,13 @@
 "use client";
 
-import type { Harness, SandboxProviderId } from "@armada/core";
+import type { Harness, MachineSize, MachineSizePolicy, SandboxProviderId } from "@armada/core";
 import { ChevronDownIcon, CircleAlertIcon, RocketIcon } from "lucide-react";
 import Link from "next/link";
 import { type ReactNode, type RefObject, useCallback, useEffect, useId, useRef, useState } from "react";
 import { launchFromGolden } from "@/app/actions/sandboxes";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { ConnectionStatusBadge } from "@/components/connections";
+import { MachineSizeField } from "@/components/machine-size-field";
 import { EFFORT_LABEL, type ModelCatalog, ModelFields } from "@/components/model-fields";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,10 +30,17 @@ import {
 } from "@/lib/connections";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
+import { MACHINE_SIZE_LABELS } from "@/lib/machine-size";
 import { cn } from "@/lib/utils";
 
 /** The selected org's connections for the launch dialog, or why they are not listed. */
 export type LaunchConnections = { connections: McpConnection[] } | { unavailable: string };
+
+/**
+ * The golden's machine size policy (`@armada/core` contract version 1), `null` when none is set. Absent while the
+ * server cannot take a size for this launch: the dialog then shows no size and launches as before.
+ */
+export type LaunchSizing = { policy: MachineSizePolicy | null };
 
 type LaunchProps = {
   golden: string;
@@ -43,6 +51,7 @@ type LaunchProps = {
   connections: LaunchConnections;
   /** The golden config's `repos[].dir`, in order. */
   repositories: readonly string[];
+  sizing?: LaunchSizing;
 };
 
 /**
@@ -67,7 +76,16 @@ export function LaunchDialog(props: LaunchProps) {
 }
 
 /** Mounted with the dialog, so every opening starts from the defaults. */
-function LaunchForm({ golden, provider, orgId, catalog, goldenVisibility, connections, repositories }: LaunchProps) {
+function LaunchForm({
+  golden,
+  provider,
+  orgId,
+  catalog,
+  goldenVisibility,
+  connections,
+  repositories,
+  sizing,
+}: LaunchProps) {
   const id = useId();
   const [harness, setHarness] = useState<Harness>("claude");
   const [choice, setChoice] = useState({
@@ -109,7 +127,10 @@ function LaunchForm({ golden, provider, orgId, catalog, goldenVisibility, connec
     root.current?.querySelector<HTMLButtonElement>('button[type="submit"]')?.focus();
   }, [access.held]);
 
+  // The selected project: the machine size default follows it, and a single repository's choice is summarized.
   const [project, setProject] = useState(repositories.length === 1 ? (repositories[0] ?? "") : "");
+  // The size that will be requested, null while the provider decides.
+  const [size, setSize] = useState<MachineSize | null>(null);
   const onChoice = useCallback((next: { model: string; effort: string }) => setChoice(next), []);
   const entry = catalog[harness];
   const modelLabel = entry.models.find((option) => option.id === choice.model)?.label ?? (choice.model || "Model id");
@@ -118,6 +139,7 @@ function LaunchForm({ golden, provider, orgId, catalog, goldenVisibility, connec
     EFFORT_LABEL[choice.effort] ?? choice.effort,
     // A single repository is chosen in Advanced, so its choice is summarized with the other overrides.
     repositories.length === 1 ? project || "Default directory" : null,
+    sizing ? sizeFact(size) : null,
     access.visibility === "org" ? "Org" : "Private",
     mcpFact(access),
   ]
@@ -175,7 +197,9 @@ function LaunchForm({ golden, provider, orgId, catalog, goldenVisibility, connec
               onChange={setHarness}
               options={(Object.keys(catalog) as Harness[]).map((value) => ({ value, label: HARNESS_LABELS[value] }))}
             />
-            {repositories.length > 1 && <RepositoryField idPrefix={id} repositories={repositories} />}
+            {repositories.length > 1 && (
+              <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />
+            )}
           </div>
           {access.alerts(() => {
             focusLaunch.current = true;
@@ -195,6 +219,15 @@ function LaunchForm({ golden, provider, orgId, catalog, goldenVisibility, connec
               <ModelFields key={harness} idPrefix={id} harness={harness} catalog={catalog} onChoice={onChoice} />
               {repositories.length === 1 && (
                 <RepositoryField idPrefix={id} repositories={repositories} onChange={setProject} />
+              )}
+              {sizing && (
+                <MachineSizeField
+                  idPrefix={id}
+                  provider={provider}
+                  policy={sizing.policy}
+                  repositoryDir={project}
+                  onSize={setSize}
+                />
               )}
               {access.fields(id)}
             </div>
@@ -560,4 +593,9 @@ function accessHint(visibility: SandboxVisibility, goldenVisibility: SandboxVisi
 function mcpFact(access: { unavailable: boolean; selected: number }): string {
   if (access.unavailable) return "MCP unavailable";
   return access.selected === 0 ? "No MCP" : `${access.selected} MCP`;
+}
+
+/** The machine size a launch requests, as one summary fact; without one the provider decides. */
+function sizeFact(size: MachineSize | null): string {
+  return size ? MACHINE_SIZE_LABELS[size] : "Default size";
 }
