@@ -86,3 +86,31 @@ child environment are not transparently replayed; future invocations acquire fre
 5. After deployment, the integrator may use an already-owned worker for reviewed read-only `gh api
    user` and `git ls-remote` checks from an authorized repository directory (or set `GH_REPO`). An authorized exec prepares the private broker without replacing
    the VM or native session. Do not allocate/restart a VM or copy manager credentials as a workaround.
+
+### Incident #719: enablement smoke checklist
+
+Do not enable the managed runtime until the default-off server gate from #718 is merged
+and the runtime repair in #719 passes process-level regression coverage. A successful
+broker bootstrap or an isolated `gh auth status` is not sufficient evidence: neither
+exercises Git inside a native harness process tree.
+
+Before enabling it for general use, an authorized operator must run this smoke in a
+non-production environment with disposable repositories and credentials:
+
+1. With the setting off, launch both Claude and Codex and confirm stock Git/gh behavior.
+2. With the setting on, launch a fresh sandbox for each harness. In the first turn run
+   `git status -sb`, `git ls-remote origin HEAD`, and a push to a uniquely named scratch
+   branch in an explicitly authorized disposable repository.
+3. Run `git status -sb` and `git ls-remote origin HEAD` through authorized exec, then
+   run them again in a second agent turn. Confirm the original harness remains usable.
+4. Exercise access-token expiry/renewal without replacing the VM or native session;
+   repeat the remote operation and verify it uses renewed authorization.
+5. Stop, stall, and restart the private broker. Local Git must continue to work;
+   authenticated network operations may fail with a sanitized, bounded error, but
+   neither harness may exit. Repeat exec and a second turn after recovery.
+6. Remove scratch branches and stop disposable sandboxes. Do not copy personal or
+   manager credentials into the guest, print tokens, or enable production as a test.
+
+Record the server/runtime revision, gate setting, provider, harness, operation exit
+statuses, renewal outcome, and harness survival. Keep token values and private socket
+responses out of the evidence. A failure in either harness blocks enablement.
