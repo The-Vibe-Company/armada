@@ -167,7 +167,7 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
       const result = await sql.query(
         `select 1 where exists(select 1 from public.modal_images i where i.record->>'imageId'=$1 and (i.record->>'deleted') is distinct from 'true')
         or exists(select 1 from public.modal_machines m where m.record->>'phase' is distinct from 'deleted' and (
-          m.record->>'imageId'=$1 or m.record->>'recoveryImageId'=$1 or m.record->'sourceImage'->>'imageId'=$1
+          m.record->>'imageId'=$1 or m.record->>'recoveryImageId'=$1 or m.record->'sourceImage'->>'imageId'=$1 or (m.record->'retainedRecoveryIds') ? $1
         )) limit 1`,
         [imageId],
       );

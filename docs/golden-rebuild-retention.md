@@ -67,11 +67,14 @@ are not publication/retirement proof, and become proven only in the successful
 publication transaction.
 
 Modal uses its existing saved-image tombstone, `collectImages` and durable
-`imageReferenced` checks, including stopped-child recovery and cross-visibility
+`imageReferenced` checks, including stopped-child recovery, every retained recovery ID and cross-visibility
 source-image references. Removing a saved label does not erase recovery references
 or authorize raw Image deletion. Other live saved handles sharing the same
 underlying artifact are references too; retiring one alias cannot reclaim the
-current alias's artifact. No provider-specific raw deletion is added.
+current alias's artifact. Reference protection uses the exact physical image ID
+across tenant/binding scopes; deletion authorization remains source-scoped, and
+no foreign reference metadata is exposed. An unavailable App/binding is never
+reported as an absent saved handle. No provider-specific raw deletion is added.
 
 ## Independent retry and shutdown
 
@@ -126,7 +129,11 @@ Historical reconstruction starts at the canonical current handle and follows
 singleton succeeded job chains. Decrypted successor `existingGolden` must name
 the exact predecessor/target; both producer `snapshot` + `builder_id`, matching
 account/binding and live artifact/source fingerprints are mandatory. Ambiguous,
-missing or conflicting history is deferred. A producer job alone, an unused
+missing or conflicting history is deferred. An immutable publication witness can prove an already-retired intermediate
+replacement: it is historical evidence, not a permanent live artifact dependency.
+Current last-good and the actual candidate still require live verified readback.
+This lets a later bounded batch reconcile an older predecessor safely after a
+previous batch has retired the intermediate handle. A producer job alone, an unused
 handle, missing slot, old name, age, or stopped child proves no ownership.
 
 Legacy org builds have a provable org-only management selection. Legacy private
@@ -175,7 +182,10 @@ A health/version response alone does not prove writer/schema compatibility.
    user VMs must not be stopped, interrupted or deleted to obtain quiescence.
 2. Drain/stop **old Armada application writer and worker replicas**, not provider
    VMs. Positively settle their in-flight SQL/provider requests or retain their
-   unresolved durable ownership. Stop new queue claims/reconciliation ticks.
+   unresolved durable ownership. A dead process or expired lease alone is not
+   proof that an old provider request can no longer complete. If in-flight writer
+   settlement/quiescence cannot be established, retain the records and keep the
+   hold rather than declaring drain complete. Stop new queue claims/reconciliation ticks.
    Inventory queued/running/recovery work read-only; preserve every legacy unknown
    fence/job/reservation. Neither lease age nor expiry is settlement evidence.
    Do not clear/quarantine records merely to make the rollout appear drained.
@@ -183,8 +193,10 @@ A health/version response alone does not prove writer/schema compatibility.
 3. Keep worker scheduling held through validation of the new writer. `armada
    serve` starts background lanes alongside HTTP: **an ingress hold alone is not
    a worker hold or writer-only mode**. The integration owner must use an approved
-   process/deployment hold or prove there is no runnable allocation/recovery work
-   during boot/postflight. If that cannot be established, keep the hold and defer
+   process/deployment hold or prove there is no runnable allocation or
+   provider-mutating recovery/retirement work during boot/postflight. Read-only
+   retained-disposition discovery (such as the already-pinned unknown 014 job)
+   must remain read-only and protective, not become disposal or image GC. If that cannot be established, keep the hold and defer
    cutover; do not manufacture quiescence with DB clearing or VM lifecycle calls.
 4. Record the approved code SHA and SHA-256 of the exact reviewed
    `20261110120400_golden_snapshot_retirement.sql`; apply those exact bytes with

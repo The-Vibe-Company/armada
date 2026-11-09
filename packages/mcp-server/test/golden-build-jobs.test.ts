@@ -158,6 +158,15 @@ test("MCP admission and rebuild failure retain last-good config/pointer and rele
       });
       expect(admitted.status).toBe(202);
       const job = (await admitted.json()) as GoldenBuildStatus;
+      expect(
+        (await s.db.query("select expected_snapshot_id,revision_known from golden_build_jobs where id=$1", [job.jobId]))
+          .rows,
+      ).toEqual([
+        {
+          expected_snapshot_id: (before as { provider_snapshot_id: string }).provider_snapshot_id,
+          revision_known: true,
+        },
+      ]);
       await s.builds.runOne();
       expect(await s.builds.status(s.people.admin, job.jobId)).toMatchObject({
         state: "failed",

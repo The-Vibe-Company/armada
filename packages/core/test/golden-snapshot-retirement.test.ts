@@ -22,7 +22,7 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
   const user = crypto.randomUUID(),
     org = crypto.randomUUID();
   await sql.query("insert into auth.users(id) values($1)", [user]);
-  await sql.query("insert into orgs(id,name) values($1,'retirement')", [org]);
+  await sql.query("insert into orgs(id,name) values($1,$2)", [org, "retirement-" + org]);
   await sql.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [org, user]);
   const actor = { userId: user, orgId: org, role: "admin" as const };
   const store = createSqlGoldenStore(sql);
@@ -735,3 +735,43 @@ test("historical reconciliation uses immutable publication witnesses after an in
     await db.close();
   }
 });
+
+test.skipIf(!postgres)(
+  "PostgreSQL image reference predicate preserves retained recovery IDs through the production SQL adapter",
+  async () => {
+    const client = new SQL(postgres!, { max: 2 });
+    const { sqlOver } = await import("../../mcp-server/src/sql.ts");
+    const { createSqlModalStore } = await import("../../provider-modal/src/store.ts");
+    const sql = sqlOver(client);
+    try {
+      const f = await fixture(sql),
+        id = "logical-ref-" + crypto.randomUUID(),
+        retained = "im_retained_" + crypto.randomUUID();
+      const images = createSqlModalStore(sql, {
+        orgId: f.actor.orgId,
+        userId: f.actor.userId,
+        visibility: "private",
+        binding: { workspace: "local-test", environment: "main", appId: "ap_local_ref" },
+      });
+      await images.reserve("ref-" + crypto.randomUUID(), {
+        info: { id, name: id, state: "stopped", providerState: "stopped", labels: {} },
+        generation: 3,
+        phase: "stopped",
+        golden: false,
+        ttlSeconds: 60,
+        physicalName: "metadata-only-fixture",
+        imageId: "im_current_" + id,
+        recoveryImageId: "im_current_recovery_" + id,
+        retainedRecoveryIds: [retained],
+      });
+      expect(await images.imageReferenced(retained)).toBe(true);
+      await images.lease(id, async (row, save) => {
+        row.retainedRecoveryIds = [];
+        await save(row);
+      });
+      expect(await images.imageReferenced(retained)).toBe(false);
+    } finally {
+      await client.close();
+    }
+  },
+);
