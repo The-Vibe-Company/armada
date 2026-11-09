@@ -153,7 +153,7 @@ describe("createGoldenCreateService, wired to a real database", () => {
       });
       await expect(
         service.create(provider, actor, { name: "bad-finalize", visibility: "org", repos: ["acme/web"] }),
-      ).rejects.toThrow("finalize exploded");
+      ).rejects.toMatchObject({ code: "build_failed" });
       expect((await original("select 1 from goldens")).rows).toHaveLength(0);
       expect((await original("select 1 from golden_backend_slots")).rows).toHaveLength(0);
       expect(deleted).toEqual(["golden-bx_1"]);
@@ -364,9 +364,9 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
     // An ambiguous commit error must never delete an artifact the database actually committed.
     failure = "ack";
     const current = (await store.findByName(actor.orgId, "web"))[0]!;
-    await expect(service.create(provider, actor, { ...input, existingGolden: current })).rejects.toThrow(
-      "acknowledgement lost",
-    );
+    await expect(service.create(provider, actor, { ...input, existingGolden: current })).rejects.toMatchObject({
+      code: "build_failed",
+    });
     const committed = (await store.findByName(actor.orgId, "web"))[0]!;
     expect(committed.providerSnapshotId).not.toBe(updated.snapshot);
     expect(artifacts.has(committed.providerSnapshotId!)).toBe(true);

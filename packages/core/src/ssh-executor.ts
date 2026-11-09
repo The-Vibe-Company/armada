@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { GoldenError } from "./golden-config.ts";
 import type { Provider } from "./provider.ts";
 export interface SshExecDeps {
   mkdtemp?: typeof mkdtemp;
@@ -28,7 +29,7 @@ export async function sshStdinCheckout(
   const key = join(dir, "key"),
     known = join(dir, "known_hosts");
   try {
-    await command(run, "ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], "", input.token);
+    await command(run, "ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], "");
     await fs.chmod(key, 0o600);
     const pub = await (deps.readPublicKey ?? ((p: string) => Bun.file(p).text()))(`${key}.pub`);
     const c = await provider.sshKey({ sandboxId: input.sandboxId, key: pub.trim() });
@@ -49,6 +50,14 @@ export async function sshStdinCheckout(
         "-o",
         "IdentitiesOnly=yes",
         "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=30",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=4",
+        "-o",
         "StrictHostKeyChecking=yes",
         "-o",
         `UserKnownHostsFile=${known}`,
@@ -62,7 +71,6 @@ export async function sshStdinCheckout(
         remote,
       ],
       `${input.token}\n${pub.trim()}\n${input.script}`,
-      input.token,
     );
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
@@ -81,30 +89,56 @@ function knownLine(host: string, port: string, key: string) {
   if (!/^(ssh-|ecdsa-|sk-)/.test(key)) throw new Error("Invalid SSH host key.");
   return `[${host}]:${port} ${key}\n`;
 }
-function command(spawnImpl: typeof spawn, file: string, args: string[], stdin: string, token: string) {
+function command(spawnImpl: typeof spawn, file: string, args: string[], stdin: string) {
   return new Promise<void>((resolve, reject) => {
     // Typed as the base ChildProcess, not the stdio-narrowed overload: which @types/node overload
     // that resolves to (and whether it still carries EventEmitter's own members) depends on the
     // exact @types/node version a workspace package without its own pin happens to get hoisted.
     const c: ChildProcess = spawnImpl(file, args, { stdio: ["pipe", "ignore", "pipe"] });
-    let err = "";
-    const timer = setTimeout(() => c.kill("SIGKILL"), 600_000);
+    let pending = "";
+    let phase = "ssh";
+    let exitCode: string | undefined;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      c.kill("SIGKILL");
+    }, 600_000);
     c.stderr?.on("data", (d) => {
-      if (err.length < 4096) err += String(d);
+      // Stream only fixed protocol records; discard all tool stderr, including arbitrary secrets.
+      pending += String(d);
+      const lines = pending.split("\n");
+      pending = (lines.pop() ?? "").slice(-256);
+      for (const line of lines) {
+        const match = /^ARMADA_BUILD_FAILURE (checkout|bun|chromium|harness|init|inline_scan) ([0-9]{1,3})$/.exec(line);
+        if (match) {
+          phase = match[1]!;
+          exitCode = match[2];
+        }
+      }
     });
-    c.on("error", reject);
+    c.on("error", () => {
+      clearTimeout(timer);
+      reject(new GoldenError("build_failed", `${file} could not start. Check server SSH tooling.`));
+    });
+    c.stdin?.on?.("error", () => {
+      /* Close/error owns the sanitized failure. */
+    });
     c.on("close", (code: number | null) => {
       clearTimeout(timer);
-      code === 0 ? resolve() : reject(new Error(`${file} failed${err ? `: ${redact(err, token)}` : ""}`));
+      if (code === 0) resolve();
+      else {
+        const reason = timedOut ? "timeout" : `exit_${exitCode ?? code ?? "signal"}`;
+        console.error(JSON.stringify({ event: "golden_ssh_failed", phase, code: reason }));
+        reject(
+          new GoldenError(
+            "build_failed",
+            `Golden build failed during ${phase} (${reason}). Check builder connectivity, permissions and package availability; retry after correction. The previous golden is retained.`,
+          ),
+        );
+      }
     });
     c.stdin?.end(stdin);
   });
-}
-function redact(v: string, t: string) {
-  return v
-    .replaceAll(t, "[redacted]")
-    .replace(/gh[suo]_[A-Za-z0-9_-]+/g, "[redacted]")
-    .slice(0, 4096);
 }
 /** Single-quotes a shell word: close the quote, an escaped literal quote, reopen it. */
 export function shellQuote(value: string) {

@@ -100,7 +100,7 @@ describe("golden and snapshots", () => {
         { sleep: async () => {} },
       );
       if (outcome === "success") expect((await operation).snapshot).toBe(reference);
-      else await expect(operation).rejects.toThrow("injected persistence failure");
+      else await expect(operation).rejects.toMatchObject({ code: "build_failed" });
       expect(persisted).toBe(reference);
       expect(boat.requests[1]?.body).toMatchObject({
         sandboxId: ID,

@@ -37,7 +37,8 @@ export type GoldenErrorCode =
   | "not_found"
   | "conflict"
   | "setup_failed"
-  | "snapshot_failed";
+  | "snapshot_failed"
+  | "build_failed";
 
 export class GoldenError extends Error {
   override readonly name = "GoldenError";
