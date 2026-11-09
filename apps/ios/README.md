@@ -2,8 +2,10 @@
 
 Build configuration for #689; #690 owns ArmadaKit and its behavior tests, #691
 owns `Armada/` including the single SwiftUI `@main` entrypoint and app icon.
-There is deliberately no fallback app/package. This lane is not build-ready
-until those real sources are integrated. Do not copy the Companion API client.
+The real app and a source-bound ArmadaKit dependency are integrated; there is
+deliberately no fallback app/package. Native quality validates this exact source,
+not final product enablement or TestFlight readiness. Do not copy the Companion
+API client.
 
 Reference inspected read-only: The-Vibe-Company/companion-v2 at
 `8e01b20970c36efa8779d29a1a2c02f45e20b338`, especially
