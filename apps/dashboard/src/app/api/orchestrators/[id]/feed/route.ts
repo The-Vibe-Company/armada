@@ -9,6 +9,8 @@ type Context = { params: Promise<{ id: string }> };
 /** Pages read in one poll before the browser asks again: a long backlog arrives over a few polls, never in one. */
 const MAX_PAGES = 10;
 
+const STATUS: Partial<Record<string, number>> = { session: 401, rejected: 404 };
+
 /**
  * One poll of an orchestrator: its current detail (state, revision, waits, children) and its events after `cursor`.
  * Both come from the Armada server as the viewer; the server decides visibility, so an orchestrator of someone else
@@ -30,13 +32,24 @@ export async function GET(request: Request, context: Context) {
     const detail = await api.detail(org, id);
     const events: OrchestratorFeedEvent[] = [];
     let hasMore = false;
-    for (let page = 0; page < MAX_PAGES; page += 1) {
-      const read = await api.events(org, id, cursor);
-      events.push(...read.events);
-      hasMore = read.hasMore;
-      const moved = read.cursor !== null && read.cursor !== cursor;
-      if (read.cursor) cursor = read.cursor;
-      if (!read.hasMore || !moved) break;
+    const start = cursor;
+    try {
+      for (let page = 0; page < MAX_PAGES; page += 1) {
+        const read = await api.events(org, id, cursor);
+        events.push(...read.events);
+        hasMore = read.hasMore;
+        const moved = read.cursor !== null && read.cursor !== cursor;
+        if (read.cursor) cursor = read.cursor;
+        if (!read.hasMore || !moved) break;
+      }
+    } catch (error) {
+      const failed = readFailure(error);
+      if (failed.failure === "session" || failed.failure === "rejected") throw error;
+      // The orchestrator itself was read: its state and controls stay current while its events are retried.
+      return NextResponse.json(
+        { detail, events: [], cursor: start, hasMore: false, eventsError: failed.message },
+        { headers: { "cache-control": "no-store" } },
+      );
     }
     return NextResponse.json({ detail, events, cursor, hasMore }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
@@ -53,7 +66,7 @@ export async function GET(request: Request, context: Context) {
         );
     }
     const { failure, message } = read;
-    const status = failure === "session" ? 401 : failure === "rejected" ? 404 : 502;
+    const status = STATUS[failure] ?? 502;
     return NextResponse.json({ error: message, failure }, { status, headers: { "cache-control": "no-store" } });
   }
 }

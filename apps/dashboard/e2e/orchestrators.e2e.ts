@@ -297,3 +297,15 @@ test("an open chat stops reading and says why once orchestrators are turned off"
   });
   await expect(page.getByText("Reconnecting…")).toHaveCount(0);
 });
+
+test("while its events cannot be read, the orchestrator's state and controls stay current", async ({ page }) => {
+  await signIn(page, "alice@example.com", DETAIL);
+  await expect(messages(page).getByText("Launched two workers.")).toBeVisible();
+  await testControl("offline");
+  await testControl("patch", { id: ALICE_ORCHESTRATOR, patch: { state: "stopped" } });
+  // At rest the page reads every 10 seconds.
+  await expect(page.getByText("Reconnecting…")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("[data-orchestrator-state]")).toHaveText("Stopped");
+  await expect(page.getByRole("button", { name: "Resume" })).toBeVisible();
+  await expect(messages(page).getByText("Launched two workers.")).toBeVisible();
+});

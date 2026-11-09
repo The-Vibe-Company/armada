@@ -151,6 +151,13 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
       setConnection({ state: "ok" });
       latest.current = next;
       setDetail(next);
+      // The detail is current even when the events could not be read: say so, and read them again with backoff.
+      if (typeof body.eventsError === "string") {
+        failures.current += 1;
+        setConnection({ state: "reconnecting", message: body.eventsError });
+        setLoaded(true);
+        return Math.min(MAX_BACKOFF_MS, ACTIVE_MS * 2 ** failures.current);
+      }
       if (page.cursor) cursor.current = page.cursor;
       if (page.events.length > 0) setFeed((shown) => mergeFeed(shown, page.events));
       setHasMore(page.hasMore);
@@ -630,9 +637,7 @@ function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: Orche
               <p className="font-medium">
                 {WAIT_LABELS[wait.kind]}: {wait.reason || wait.reference}
               </p>
-              <p className="text-muted-foreground">
-                Renews {timeUntil(wait.expiresAt, now) ?? "now"}, ends {timeUntil(wait.deadline, now) ?? "now"}
-              </p>
+              <p className="text-muted-foreground">{waitExpiry(wait.expiresAt, wait.deadline, now)}</p>
             </li>
           ))}
         </ul>
@@ -731,4 +736,12 @@ function Fold({
 /** When the current delegated grant ends, or that it has: it is bounded and never renewed in place. */
 function grantEnd(until: string | null): string {
   return until ? `This grant ends ${until}.` : "This grant has ended.";
+}
+
+/** A wait lasts until its expiry unless new evidence renews it, never past its deadline (#663). */
+function waitExpiry(expiresAt: string, deadline: string, now: number): string {
+  const expires = timeUntil(expiresAt, now);
+  if (!expires) return "Expired.";
+  const ends = timeUntil(deadline, now);
+  return `Expires ${expires} unless renewed with new evidence${ends ? `; at the latest ${ends}` : ""}.`;
 }

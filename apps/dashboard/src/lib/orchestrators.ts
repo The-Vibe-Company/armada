@@ -395,7 +395,8 @@ function notice(orchestrator: Orchestrator): OrchestratorControls["notice"] {
       title: "Needs attention",
       text: orchestrator.blockedReason ?? "Armada stopped admitting work until this is reconciled.",
     };
-  if (orchestrator.continuity === "unverified")
+  // Only where it changes what can be done: a stopped orchestrator whose conversation cannot be resumed.
+  if (orchestrator.continuity === "unverified" && orchestrator.state === "stopped")
     return {
       tone: "warning",
       title: "Conversation not verified",

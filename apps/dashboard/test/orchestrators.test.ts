@@ -469,3 +469,9 @@ test("no command is offered while an operation is unsettled, and only a verified
   expect(unverified.composerNote).toContain("could not verify");
   expect(orchestratorControls(detail({ state: "stopped", continuity: "native" }), false).can.resume).toBe(true);
 });
+
+test("an unverified conversation is flagged only once it is stopped, where it explains the missing resume", () => {
+  expect(orchestratorControls(detail({ continuity: "unverified" }), false).notice).toBeNull();
+  const stopped = orchestratorControls(detail({ state: "stopped", continuity: "unverified" }), false);
+  expect(stopped.notice?.title).toBe("Conversation not verified");
+});
