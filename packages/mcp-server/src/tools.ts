@@ -303,7 +303,6 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             z.object({
               goldenId: z.string().uuid(),
               relation: z.enum(["current_backend", "other_backend", "unbound"]),
-              busy: z.boolean(),
             }),
           )
           .optional(),

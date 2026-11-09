@@ -147,7 +147,7 @@ test("HTTP and MCP read Modal capacity before any App exists without provisionin
     expect(await (await request({ provider: "boat" })).json()).toEqual({
       provider: "boat",
       maxGoldens: 1,
-      bindings: [{ goldenId: expect.any(String), relation: "unbound", busy: false }],
+      bindings: [{ goldenId: expect.any(String), relation: "unbound" }],
     });
     // A personal pair is deliberately not an org credential fallback for this read.
     await db.query("delete from credentials where scope='org' and owner_id=$1 and kind='modal'", [people.org]);
@@ -226,22 +226,13 @@ test("Boat bindings disclose only visible requested-org goldens, including remov
           goldenId,
           relation:
             i === 0 ? ("current_backend" as const) : i === 4 ? ("other_backend" as const) : ("unbound" as const),
-          busy: false,
         }))
         .sort((a, b) => a.goldenId.localeCompare(b.goldenId)),
     );
-    await db.query("update golden_backend_slots set build_id=$1 where golden_id=$2", [crypto.randomUUID(), ids[0]]);
-    const retired = await metadata({ orgId: people.org, provider: "boat" }, caller);
-    expect(retired.bindings?.find((b) => b.goldenId === ids[0])).toEqual({
-      goldenId: ids[0]!,
-      relation: "current_backend",
-      busy: true,
-    });
-    await db.query("update golden_backend_slots set build_id=null where golden_id=$1", [ids[0]]);
     await db.query("update goldens set removed_at=now() where id=$1", [ids[0]]);
     expect(
       (await metadata({ orgId: people.org, provider: "boat" }, caller)).bindings?.find((b) => b.goldenId === ids[0]),
-    ).toEqual({ goldenId: ids[0]!, relation: "current_backend", busy: false });
+    ).toEqual({ goldenId: ids[0]!, relation: "current_backend" });
     await expect(metadata({ orgId: people.otherOrg, provider: "boat" }, caller)).rejects.toThrow("scoped");
     await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.member]);
     await expect(metadata({ orgId: people.org, provider: "boat" }, caller)).rejects.toThrow("membership");

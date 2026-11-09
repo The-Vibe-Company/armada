@@ -14,7 +14,7 @@ export interface GoldenProviderMetadata {
   provider: SandboxProviderId;
   /** Adapter capacity, not a live workspace quota or a claim of provider connectivity. */
   maxGoldens: number | null;
-  bindings?: { goldenId: string; relation: "current_backend" | "other_backend" | "unbound"; busy: boolean }[];
+  bindings?: { goldenId: string; relation: "current_backend" | "other_backend" | "unbound" }[];
 }
 export type ProviderMetadataFor = (
   selection: { orgId: string; provider: SandboxProviderId },
@@ -54,12 +54,10 @@ export function createProviderMetadata(options: {
     const bindings = await options.sql.query<{
       goldenId: string;
       relation: "current_backend" | "other_backend" | "unbound";
-      busy: boolean;
     }>(
       `select g.id as "goldenId",
         case when s.golden_id is null then 'unbound'
-             when s.backend_id=$3 then 'current_backend' else 'other_backend' end as relation,
-        coalesce(s.build_id is not null, false) as busy
+             when s.backend_id=$3 then 'current_backend' else 'other_backend' end as relation
        from public.goldens g
        left join public.golden_backend_slots s on s.golden_id=g.id and s.provider=g.provider::text
        where g.org_id=$1 and g.provider=$4

@@ -151,9 +151,9 @@ describe("what the page offers", () => {
       ok: true,
       maxGoldens: 1,
       bindings: [
-        { goldenId: "kept", relation: "current_backend", busy: false },
-        { goldenId: "prod-smoke", relation: "unbound", busy: false },
-        { goldenId: "elsewhere", relation: "other_backend", busy: true },
+        { goldenId: "kept", relation: "current_backend" },
+        { goldenId: "prod-smoke", relation: "unbound" },
+        { goldenId: "elsewhere", relation: "other_backend" },
       ],
     } as const;
     expect(providerCapacity([boat, boat, boat], one, "boat")).toEqual({ kind: "full", capacity: 1, used: 1 });

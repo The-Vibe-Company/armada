@@ -135,7 +135,6 @@ export function isGoldenBuildResult(value: unknown): value is GoldenBuildResult 
 export type GoldenBinding = {
   goldenId: string;
   relation: "current_backend" | "other_backend" | "unbound";
-  busy: boolean;
 };
 export type GoldenCapabilities =
   | { ok: true; maxGoldens: number | null; bindings?: readonly GoldenBinding[] }
@@ -168,8 +167,7 @@ export async function readGoldenCapabilities(
           (binding: unknown) =>
             isRecord(binding) &&
             typeof binding.goldenId === "string" &&
-            ["current_backend", "other_backend", "unbound"].includes(String(binding.relation)) &&
-            typeof binding.busy === "boolean",
+            ["current_backend", "other_backend", "unbound"].includes(String(binding.relation)),
         ))
     )
       return { ok: false, reason: "The Armada server sent unexpected binding metadata." };

@@ -1161,7 +1161,7 @@ function goldenCapabilities(body: Row, request: Request): Response {
                     g.provider === provider &&
                     (g.visibility === "org" || g.owner_id === userId),
                 )
-                .map((g) => ({ goldenId: g.id, relation: "current_backend", busy: false })),
+                .map((g) => ({ goldenId: g.id, relation: "current_backend" })),
           }),
     },
     200,

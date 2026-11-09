@@ -386,7 +386,7 @@ describe("tools", () => {
     expect(result.result?.structuredContent).toEqual({
       provider: "boat",
       maxGoldens: 7,
-      bindings: [{ goldenId: expect.any(String), relation: "unbound", busy: false }],
+      bindings: [{ goldenId: expect.any(String), relation: "unbound" }],
     });
     Object.assign(boat.provider, { maxGoldens: undefined });
     expect((await request.tool("golden_capabilities", {})).result?.structuredContent).toEqual({

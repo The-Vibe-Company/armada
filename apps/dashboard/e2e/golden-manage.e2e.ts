@@ -203,8 +203,8 @@ test("a form the server would refuse is stopped before any request", async ({ pa
 test("live unbound rows require reconciliation without automatic rebuild guidance", async ({ page }) => {
   await post("/__test/capabilities", {
     bindings: [
-      { goldenId: "00000000-0000-4000-8000-000000000020", relation: "unbound", busy: false },
-      { goldenId: "00000000-0000-4000-8000-000000000021", relation: "other_backend", busy: false },
+      { goldenId: "00000000-0000-4000-8000-000000000020", relation: "unbound" },
+      { goldenId: "00000000-0000-4000-8000-000000000021", relation: "other_backend" },
     ],
   });
   await signIn(page, "alice@example.com", "/goldens");
@@ -691,8 +691,8 @@ test("removed unbound history is not a slot or a reconciliation warning; old met
   await expect(page.locator("[data-golden-removed]")).toBeVisible();
   await post("/__test/capabilities", {
     bindings: [
-      { goldenId: "00000000-0000-4000-8000-000000000020", relation: "unbound", busy: false },
-      { goldenId: "00000000-0000-4000-8000-000000000021", relation: "current_backend", busy: false },
+      { goldenId: "00000000-0000-4000-8000-000000000020", relation: "unbound" },
+      { goldenId: "00000000-0000-4000-8000-000000000021", relation: "current_backend" },
     ],
   });
   await page.reload();
