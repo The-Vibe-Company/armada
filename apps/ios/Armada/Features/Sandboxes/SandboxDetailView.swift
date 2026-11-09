@@ -189,7 +189,8 @@ struct SandboxConversationView: View {
                 ? "The running turn ends. The machine stops; its disk and conversation are kept, and the next prompt resumes it."
                 : "The machine stops; its disk and conversation are kept, and the next prompt resumes it.")
         }
-        .task(id: model.sandboxID) { await model.follow() }
+        // Restarts when a refresh revives a stopped follow, and ends once the sandbox is deleted.
+        .task(id: "\(model.sandboxID):\(model.followGeneration):\(model.isDeleted)") { await model.follow() }
         .task(id: model.sandboxID) { await model.watchState() }
         .onChange(of: model.feed.conversation.items) { _, _ in model.streamChanged() }
     }
@@ -199,6 +200,9 @@ struct SandboxConversationView: View {
         VStack(spacing: 8) {
             if case .reconnecting = model.feed.connection {
                 InlineBanner(text: "Reconnecting… The conversation continues from where it stopped.", style: .info)
+            }
+            if case .stopped = model.feed.connection, !model.isDeleted {
+                InlineBanner(text: "Live updates paused. Pull to refresh to resume.", style: .warning)
             }
             if model.stopping {
                 InlineBanner(text: "Stopping… The disk and conversation are kept.", style: .info)

@@ -27,6 +27,8 @@ final class SandboxConversationModel {
     private(set) var notice: (text: String, isError: Bool)?
     /// A background read that failed after the conversation was shown; cleared by the next success.
     private(set) var readIssue: String?
+    /// Bumped when live follow must start again (after it stopped, or the sandbox was deleted).
+    private(set) var followGeneration = 0
     var draft = ""
     let feed = ConversationFeed()
 
@@ -90,6 +92,8 @@ final class SandboxConversationModel {
             try await feed.refresh(fetch)
             readIssue = nil
             reconcilePending()
+            // A follow that the server stopped resumes once a read succeeds again.
+            if case .stopped = feed.connection { followGeneration += 1 }
         } catch {
             handleReadFailure(error)
         }

@@ -88,6 +88,7 @@ private func detail(status: String, settled: Bool, prompt: String? = nil) -> Str
         // The provider accepted the prompt but its receipt was malformed: still a 400.
         .init(status: 400, body: #"{"error":{"code":"unknown","message":"unexpected answer"}}"#),
         .init(status: 400, body: #"{"error":{"code":"sandbox_not_ready","message":"not ready"}}"#),
+        .init(status: 400, body: #"{"error":{"code":"missing_credential","message":"no key"}}"#),
         .init(status: 409, body: #"{"error":{"code":"conflict","message":"deleted"}}"#),
         .init(status: 200, body: #"{"id":"\#(sandboxID)","status":"stopping"}"#)
     ])
@@ -99,16 +100,18 @@ private func detail(status: String, settled: Bool, prompt: String? = nil) -> Str
     catch { #expect(SandboxMutationFailure.classify(error) == .unconfirmed) }
     do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Early"); Issue.record("Expected a refusal") }
     catch { #expect(SandboxMutationFailure.classify(error) == .refused) }
+    do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "No key"); Issue.record("Expected a refusal") }
+    catch { #expect(SandboxMutationFailure.classify(error) == .refused) }
     do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Later"); Issue.record("Expected a refusal") }
     catch { #expect(SandboxMutationFailure.classify(error) == .refused) }
     await #expect(throws: ArmadaError.invalidRequest) { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "  \n") }
     #expect(try await client.stopSandbox(id: sandboxID).status == "stopping")
 
     let requests = Array(await transport.requests.dropFirst(2))
-    #expect(requests.map { $0.url!.path } == Array(repeating: "/api/v1/sandbox/send", count: 5) + ["/api/v1/sandbox/stop"])
+    #expect(requests.map { $0.url!.path } == Array(repeating: "/api/v1/sandbox/send", count: 6) + ["/api/v1/sandbox/stop"])
     #expect(requests.allSatisfy { $0.value(forHTTPHeaderField: "Idempotency-Key") == nil })
     #expect(try body(requests[0]) == ["id": sandboxID, "org": "org-a", "prompt": "Add tests"])
-    #expect(try body(requests[5]) == ["id": sandboxID, "org": "org-a"])
+    #expect(try body(requests[6]) == ["id": sandboxID, "org": "org-a"])
 }
 
 @Test func mutationFailuresClassifyConservatively() {

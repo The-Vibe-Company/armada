@@ -190,6 +190,7 @@ public actor ArmadaClient {
     /// 400 never proves that a prompt was not delivered.
     static let sandboxRefusalCodes: Set<String> = [
         "invalid", "invalid_request", "sandbox_not_ready", "unsupported", "payment_required", "rate_limited",
+        "missing_credential", "unauthorized",
     ]
     private func request<Response: Decodable & Sendable>(
         _ route: String, method: String, query: [URLQueryItem] = [], body: Data?, token: String?, key: String? = nil
