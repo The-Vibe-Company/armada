@@ -67,3 +67,22 @@ test("a stale session cookie on / is still the landing; a write to / still goes 
   expect(write.headers.get("x-middleware-rewrite")).toBeNull();
   expect(write.status).toBe(307);
 });
+
+test("only exact GET/HEAD stats reads bypass the session gate", async () => {
+  delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+  delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  for (const method of ["GET", "HEAD"]) {
+    const response = await proxy(request("/api/stats?daily=1", method));
+    expect(response.headers.get("x-middleware-next")).toBe("1");
+  }
+  setSupabaseEnvironment();
+  for (const [path, method] of [
+    ["/api/stats", "POST"],
+    ["/api/stats/extra", "GET"],
+    ["/api/sandboxes", "GET"],
+  ]) {
+    const response = await proxy(request(path, method));
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "Sign in again." });
+  }
+});

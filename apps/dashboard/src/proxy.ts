@@ -23,6 +23,8 @@ function landing(request: NextRequest, carry?: NextResponse): NextResponse {
 export async function proxy(request: NextRequest) {
   if (request.nextUrl.pathname === CLIENT_CONFIG_PATH || request.nextUrl.pathname.startsWith("/api/v1/"))
     return NextResponse.next();
+  // Stats authenticates its own bearer; only this exact read endpoint bypasses the session gate.
+  if (request.nextUrl.pathname === "/api/stats" && ["GET", "HEAD"].includes(request.method)) return NextResponse.next();
   // The landing reads no session and no data: it shows without a session lookup. A visitor with no
   // session cookie is signed out, so their `/` is the landing without reading Supabase's settings either.
   if (isLanding(request)) return NextResponse.next();
