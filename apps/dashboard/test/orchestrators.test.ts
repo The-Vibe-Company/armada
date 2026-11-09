@@ -332,3 +332,9 @@ test("after an unknown outcome the same request is repeated with its original re
   expect(unsettledAfter(first, { ok: false, failure: "stale" })).toBeNull();
   expect(unsettledAfter(first, { ok: true })).toBeNull();
 });
+
+test("a configuration carrying the withdrawn daily start quota is still read, and the quota is not kept", () => {
+  const read = detail({ configuration: { ...orchestrator().configuration, maxChildStartsPerDay: 10 } });
+  expect(read.orchestrator.configuration).not.toHaveProperty("maxChildStartsPerDay");
+  expect(read.orchestrator.configuration.idleSeconds).toBe(7200);
+});

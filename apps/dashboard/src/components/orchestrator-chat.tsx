@@ -647,7 +647,7 @@ function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: Orche
             <p>
               {delegation.revokedAt
                 ? "Revoked."
-                : `Launches, reads, messages and stops its own workers only. Renews ${timeUntil(delegation.expiresAt, now) ?? "at the next turn"}.`}
+                : `Launches, reads, messages and stops its own workers only. This grant ends ${timeUntil(delegation.expiresAt, now) ?? "now"}; Armada replaces it between turns.`}
             </p>
             <p className="text-muted-foreground">Configured by Armada; nothing to copy or paste.</p>
           </div>

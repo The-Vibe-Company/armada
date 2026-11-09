@@ -64,14 +64,13 @@ function parseConfiguration(value: unknown): OrchestratorCreate | null {
     modelAccountId,
     idleSeconds,
     maxActiveChildren,
-    maxChildStartsPerDay,
   } = value;
   if (!str(orgId) || !str(name) || !str(goldenId) || !str(model) || !str(modelAccountId)) return null;
   if (!isSandboxProvider(provider) || !oneOf(HARNESSES, harness)) return null;
   if (repo !== undefined && !str(repo)) return null;
   if (reasoningEffort !== undefined && !str(reasoningEffort)) return null;
-  for (const limit of [idleSeconds, maxActiveChildren, maxChildStartsPerDay])
-    if (limit !== undefined && !count(limit)) return null;
+  // Fields the contract does not define (such as the withdrawn daily start quota) are ignored, never shown.
+  for (const limit of [idleSeconds, maxActiveChildren]) if (limit !== undefined && !count(limit)) return null;
   return {
     version: ORCHESTRATOR_CONTRACT_VERSION,
     orgId,
@@ -85,7 +84,6 @@ function parseConfiguration(value: unknown): OrchestratorCreate | null {
     ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
     ...(idleSeconds === undefined ? {} : { idleSeconds: idleSeconds as number }),
     ...(maxActiveChildren === undefined ? {} : { maxActiveChildren: maxActiveChildren as number }),
-    ...(maxChildStartsPerDay === undefined ? {} : { maxChildStartsPerDay: maxChildStartsPerDay as number }),
   };
 }
 

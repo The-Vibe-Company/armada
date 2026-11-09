@@ -159,7 +159,8 @@ function detail(row: Orchestrator): Row {
       ownerId: row.ownerId,
       orgId: ACME,
       scopes: ["worker:launch", "worker:read", "worker:message", "worker:stop"],
-      expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+      // A bounded epoch grant: at most 24 hours (ORCHESTRATOR_DEFAULTS.delegationSeconds).
+      expiresAt: new Date(Date.now() + 20 * 3_600_000).toISOString(),
       revokedAt: null,
       childPolicy: "owned_children",
     },
