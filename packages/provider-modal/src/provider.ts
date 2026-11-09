@@ -794,9 +794,14 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       });
     },
     async events(r) {
+      r.signal?.throwIfAborted();
       await bound();
+      r.signal?.throwIfAborted();
       await store.get(r.sandboxId);
-      return store.events(r);
+      r.signal?.throwIfAborted();
+      const page = await store.events(r);
+      r.signal?.throwIfAborted();
+      return page;
     },
     async snapshot(r) {
       await bound();
