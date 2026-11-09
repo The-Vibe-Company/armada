@@ -1,7 +1,10 @@
 # Interrupted Modal golden builders
 
 A build may enter `recovery_required` during SDK creation before the job can save
-its builder ID. Modal already has a durable logical reservation keyed by the
+its builder ID. `creating` is the durable boundary before entering the SDK; the
+SDK may await a lazy image build before issuing its sandbox-create RPC. It is not
+proof that the RPC was issued, nor that allocation is absent. Modal already has a
+durable logical reservation keyed by the
 build job UUID. Losing the SDK response is not permission to issue another create.
 
 The server resolves the job's sealed immutable provider target and current,
@@ -27,7 +30,8 @@ Recovery disposal rechecks authority and snapshot/recovery retention under the
 existing Modal lifecycle lease, including after remote observation. It uses the
 existing exact App/environment/name lookup with all three ownership tags and
 `includeTerminated: true`, even when a physical ID was previously persisted. A
-named ID differing from that recorded physical ID is never adopted. NotFound, timeout, missing reservation, mismatched tags
+named ID differing from that recorded physical ID is never adopted. NotFound,
+timeout, missing reservation, mismatched tags
 or uncertain termination leave recovery pending; they never cause a replacement
 create, build-command replay, reservation deletion or capacity release. Repeated
 and concurrent ticks remain fail-closed. Recovery disposal does not collect or
@@ -42,3 +46,24 @@ endpoint, schema migration or automatic operator action is added.
 Tests use actual migrations/PGlite and a synthetic SDK. Production diagnostics,
 resource decisions, credentials and job operations belong to the integration
 owner; do not copy payloads, machine records or upstream SDK errors into logs.
+
+## Controlled control-plane deployment (integration owner only)
+
+Do not run old and new recovery workers concurrently. Before a new worker can
+publish discovered builder IDs, drain the old API deployment and remove/drain
+**all old recovery worker processes and replicas**. An old binary sees the newly
+persisted non-null ID but does not implement the retention protocol; it could call
+generic deletion and remove a source or recovery image that the new worker must
+retain. A rolling overlap is unsafe even though no schema migration is needed.
+
+The integration owner accepted a controlled API/control-plane drain. This is
+**not a provider VM stop**: do not stop, recreate or otherwise alter any provider
+sandbox/VM as part of this deployment instruction. Confirm the old controllers
+are gone, then start the compatible API/recovery workers. Existing provider
+resources and unresolved source/proof/capacity remain untouched. The integration
+owner alone performs the actual resource matrix, diagnostics and operator work.
+
+Do not use SDK/image-build timings or named NotFound to infer no allocation or to
+replay an operator create. Preparing images eagerly before the provider-create
+boundary is a separate potential improvement, not part of this fix. No migration,
+production resource call or actual job mutation is authorized by this document.
