@@ -63,7 +63,7 @@ Those production adapters are not composed here yet. No daily cap or synthetic
 Boat quota is added. An optional child concurrency bound is owner-selected.
 
 Proposed additive migration `20261110121000_orchestrator_runtime.sql` depends on
-208 and requires integrator slot confirmation. It owns runtime configuration,
+208 and has confirmed exclusive ownership for #662. It owns runtime configuration,
 create receipts, durable native events and provider-cursor ingestion. Publication
 locks and compares logical revision **and the actual sandbox generation row**.
 History reads after stop never activate a provider. Event payloads retain native
@@ -113,8 +113,8 @@ implementation. A concrete opt-in fixture runner cannot claim success until
 those real ports and the private authority transport are supplied and reviewed.
 This document is a conformance requirement, not a passing conformance report.
 
-Deploy account migration 202, reviewed foundation 208, then confirmed runtime
-migration 210 (and #663's independently owned migration if needed), regenerate
+Deploy account migration 202, reviewed foundation 208, then runtime
+migration 210 (confirmed exclusively #662) (and #663's independently owned migration if needed), regenerate
 combined types, deploy with feature off, and only then review operator proof.
 Rollback disables admission/revokes epochs and retains identity/history/native
 state. No migration, grant, allocation or deployment is performed by this work.
@@ -195,3 +195,34 @@ checkpoint. An interrupt ACK alone is not quiescence proof. This avoids asking
 an active native client to hot-reload/scrub credentials or accidentally restoring
 stopped compute through the generic interrupt path. Unknown observations retain
 an uncertain receipt and clear the native hint; no checkpoint is claimed.
+
+## Actual lifecycle composition
+
+`createOrchestratorServices` binds actual #663 configure/activity/detail/worker
+callbacks and constructs one runtime/store/managed lifecycle bundle. Initial
+configuration runs inside identity creation **before** the #208 receipt is
+reserved; its actual revision increment is read and respected, never rewound.
+Native activity and history/cursor ACK share one transaction, so a callback failure
+rolls back both. Replayed event IDs do not become fresh activity. Public activity
+metadata reads the actual #209 policy/state; no second lifecycle policy is added.
+
+The optional trusted factory in `startServer` supplies that exact runtime to HTTP
+and MCP and adds its `reconcileOne`/`drain` to the existing fair lifecycle lane.
+No factory means unchanged ordinary workers and feature off; no new poller or
+startup grant is introduced. Migration210 is now confirmed exclusively #662;
+208/#661 and209/#663 source files remain outside delivery ownership.
+
+The delivered #663 v1 exports no detail projector; the actual separately delivered
+v2 `lifecycleDetail` is the projection used for integration. Its v1 stop worker
+also supplies a lease UUID without inserting the actual208 stop operation required
+by the managed controller. #663 must supply its repaired reservation/publication
+implementation before stop-lane enablement; the controller will not synthesize
+that lifecycle decision or silently accept a nonexistent operation.
+
+Owner message/steer completion delegates to the actual separately delivered #663
+v2 `LifecycleRuntimeStore.complete` method through a bound assembly adapter.
+Its transaction commits the operation/event and authoritative #209 owner activity
+together, even when no provider events are polled. No new owner-activity policy
+or callback implementation is invented; the v1 artifact alone lacks that hook.
+The composition interface requires this actual method as well as the v2 detail
+projection before constructing a service bundle.

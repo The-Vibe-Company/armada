@@ -63,6 +63,27 @@ export function orchestratorRequestDigest(input: {
   return createHash("sha256").update(canonical(input)).digest("hex");
 }
 
+/** Exact configure/activity consumer signatures from actual #663 candidate v1. */
+export interface RuntimeLifecycleHooks {
+  /** Bound actual #663 v2 LifecycleRuntimeStore.complete; owns authoritative owner activity. */
+  completeOwner?: OrchestratorRuntimeStore["complete"];
+  configure(
+    sql: Sql,
+    input: {
+      orchestratorId: string;
+      ownerId: string;
+      expectedRevision: number;
+      idleSeconds: number;
+      maxActiveChildren: number | null;
+    },
+  ): Promise<void>;
+  recordActivity(
+    sql: Sql,
+    machine: { orchestratorId: string; sandboxId: string; providerSandboxId: string; generation: string },
+    event: AgentEvent,
+  ): Promise<boolean>;
+}
+
 /** Runtime storage extends, never replaces, #661's identity and receipt relations.
  * All external effects happen after a committed reservation; ambiguous COMMIT must
  * propagate and must never authorize an allocation or automatic replay. */
@@ -70,6 +91,7 @@ export class OrchestratorRuntimeStore {
   constructor(
     private readonly sql: Sql,
     private readonly reserveOrchestratorOperation: OrchestratorRuntimeFoundation["reserveOperation"],
+    private readonly lifecycle?: RuntimeLifecycleHooks,
   ) {}
 
   private transaction<T>(work: (sql: Sql) => Promise<T>): Promise<T> {
@@ -118,6 +140,34 @@ export class OrchestratorRuntimeStore {
       if (!current) throw new OrchestratorRuntimeError("conflict");
       row.lifecycle_generation = current.lifecycle_generation;
       row.provider_sandbox_id = current.provider_sandbox_id;
+    }
+    if (this.lifecycle) {
+      // A read projection of actual209 state, not another inactivity/admission policy.
+      const policy = (
+        await sql.query<{
+          last_activity_at: Date | string;
+          idle_seconds: number;
+          max_active_children: number | null;
+          observation_state: string;
+          reason: string;
+        }>(
+          `select last_activity_at,idle_seconds,max_active_children,observation_state,reason from public.orchestrator_lifecycle where orchestrator_id=$1`,
+          [id],
+        )
+      ).rows[0];
+      if (!policy) throw new OrchestratorRuntimeError("unavailable");
+      row.last_activity_at = policy.last_activity_at;
+      row.idle_deadline =
+        policy.observation_state === "quiescent"
+          ? new Date(new Date(policy.last_activity_at).getTime() + policy.idle_seconds * 1000)
+          : null;
+      row.blocked_reason = row.blocked_reason ?? (row.state === "blocked" ? policy.reason : null);
+      const { maxActiveChildren: _oldLimit, ...configuration } = row.configuration;
+      row.configuration = {
+        ...configuration,
+        idleSeconds: policy.idle_seconds,
+        ...(policy.max_active_children === null ? {} : { maxActiveChildren: policy.max_active_children }),
+      };
     }
     return {
       id: row.id,
@@ -183,9 +233,32 @@ export class OrchestratorRuntimeStore {
           [ownerId, configuration.orgId, key, digest, id],
         );
       }
+      if (!old && this.lifecycle) {
+        await this.lifecycle.configure(
+          { query: tx.query.bind(tx), transaction: async (work) => work(tx) },
+          {
+            orchestratorId: id,
+            ownerId,
+            expectedRevision: 0,
+            idleSeconds: configuration.idleSeconds ?? 7200,
+            maxActiveChildren: configuration.maxActiveChildren ?? null,
+          },
+        );
+      }
+      const currentRevision = (
+        await tx.query<{ revision: string | number }>(`select revision from public.orchestrators where id=$1`, [id])
+      ).rows[0];
+      if (!currentRevision) throw new OrchestratorRuntimeError("conflict");
       const receipt = await this.reserveOrchestratorOperation(
         { query: tx.query.bind(tx), transaction: async (work) => work(tx) },
-        { orchestratorId: id, actorId: ownerId, action: "create", key, digest, expectedRevision: 0 },
+        {
+          orchestratorId: id,
+          actorId: ownerId,
+          action: "create",
+          key,
+          digest,
+          expectedRevision: Number(currentRevision.revision),
+        },
       );
       const identity = await this.read(ownerId, configuration.orgId, id, tx);
       const persisted = await tx.query<{ error_code: string | null }>(
@@ -369,6 +442,20 @@ export class OrchestratorRuntimeStore {
           ],
         );
       }
+      if (this.lifecycle && identity.sandboxId && identity.providerSandboxId && identity.generation !== null) {
+        const scoped: Sql = { query: tx.query.bind(tx), transaction: async (work) => work(tx) };
+        for (const event of page.events)
+          await this.lifecycle.recordActivity(
+            scoped,
+            {
+              orchestratorId: identity.id,
+              sandboxId: identity.sandboxId,
+              providerSandboxId: identity.providerSandboxId,
+              generation: String(identity.generation),
+            },
+            event,
+          );
+      }
       // Cursor moves only in the transaction which durably mirrored every event.
       await tx.query(`update public.orchestrator_runtime set provider_cursor=$2 where orchestrator_id=$1`, [
         identity.id,
@@ -489,6 +576,8 @@ export class OrchestratorRuntimeStore {
       continuity?: OrchestratorContinuity;
     },
   ): Promise<boolean> {
+    if (this.lifecycle?.completeOwner && ["message", "steer"].includes(reservation.operation.kind))
+      return this.lifecycle.completeOwner(reservation, result);
     return this.transaction(async (tx) => {
       const { identity, operation } = reservation;
       let current: RuntimeIdentity;

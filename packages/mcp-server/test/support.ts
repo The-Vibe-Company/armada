@@ -377,6 +377,7 @@ export async function harness(
     routes?: readonly Route[];
     buildSsh?: GoldenCreateOptions["ssh"];
     goldenAdoption?: HandlerOptions["goldenAdoption"];
+    orchestrators?: HandlerOptions["orchestrators"];
     /** The store `/mcp` authenticates against. Default: the in-memory one the helpers fill. */
     authStore?: (db: PGlite) => AuthStore;
     log?: (line: string) => void;
@@ -447,6 +448,7 @@ export async function harness(
     github: { store: createSqlVaultStore(sqlFor(db)), app: GITHUB_APP, fetch: fakeGit.fetch },
     providerFor: boat.providerFor,
     ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
+    ...(options.orchestrators ? { orchestrators: options.orchestrators } : {}),
     ...(options.modalProviderFor ? { modalProviderFor: options.modalProviderFor } : {}),
     ...(options.routes ? { routes: options.routes } : {}),
     log: options.log ?? (() => {}),

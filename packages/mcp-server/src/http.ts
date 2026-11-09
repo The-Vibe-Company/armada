@@ -36,7 +36,10 @@ export const HEALTH_PATH = "/healthz";
 /** A handler for some paths: null for every other one. */
 export type Route = (request: Request) => Promise<Response | null>;
 
+import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
+
 export interface HandlerOptions {
+  orchestrators?: OrchestratorRuntime;
   publicUrl: string;
   /** Enabled social login providers. Empty by default: email login always works. */
   loginProviders?: ClientConfig["providers"];
@@ -158,6 +161,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         ...(options.launch ? { launch: options.launch } : {}),
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
         ...(options.goldenBuilds ? { goldenBuilds: options.goldenBuilds } : {}),
+        ...(options.orchestrators ? { orchestrators: options.orchestrators } : {}),
       },
       VERSION,
     );
