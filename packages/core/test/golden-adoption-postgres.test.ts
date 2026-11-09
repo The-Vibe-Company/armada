@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { SQL } from "bun";
+import { sqlGoldenBackendSlots } from "../src/golden-create.ts";
+import type { Sql } from "../src/golden-store.ts";
 
 // Dedicated disposable database with migrations applied; never point this at production.
 const url = process.env.ARMADA_TEST_POSTGRES_URL;
@@ -9,6 +11,16 @@ test.skipIf(!url)(
     const a = new SQL(url!, { max: 1 });
     const b = new SQL(url!, { max: 1 });
     const observer = new SQL(url!, { max: 1 });
+    const slotsFor = (client: SQL) => {
+      const sql: Sql = {
+        query: async <T>(query: string, params: unknown[] = []) => ({
+          rows: Array.from(await client.unsafe(query, params as never[])) as T[],
+        }),
+      };
+      return sqlGoldenBackendSlots(sql);
+    };
+    const slotsA = slotsFor(a);
+    const slotsB = slotsFor(b);
     const org = "11111111-1111-4111-8111-111111111111";
     const owner = "22222222-2222-4222-8222-222222222222";
     const golden = "44444444-4444-4444-8444-444444444444";
@@ -72,8 +84,51 @@ test.skipIf(!url)(
       const otherOrg = "55555555-5555-4555-8555-555555555555";
       await a.unsafe("insert into orgs(id,name) values ($1,'other-org')", [otherOrg]);
       await expect(
-        Promise.resolve(b.unsafe("select reserve_golden_backend_slot('boat','account',2,$1,$2)", [otherOrg, owner])),
-      ).rejects.toThrow();
+        slotsB.reserve({ provider: "boat", backendId: "account", capacity: 2, orgId: otherOrg, ownerId: owner }),
+      ).rejects.toMatchObject({ code: "conflict" });
+      await expect(
+        slotsB.reserveExisting({ provider: "boat", backendId: "other-account", capacity: 1, goldenId: golden }),
+      ).rejects.toMatchObject({ code: "conflict" });
+      const conflictingFinalize = await slotsA.reserve({
+        provider: "boat",
+        backendId: "finalize-conflict",
+        capacity: 1,
+        orgId: org,
+        ownerId: owner,
+      });
+      await expect(slotsA.finalize(conflictingFinalize, golden)).rejects.toMatchObject({ code: "conflict" });
+      await slotsA.release(conflictingFinalize);
+      const rebuild = await slotsA.reserveExisting({
+        provider: "boat",
+        backendId: "account",
+        capacity: 1,
+        goldenId: golden,
+      });
+      await expect(
+        slotsB.reserveExisting({ provider: "boat", backendId: "account", capacity: 1, goldenId: golden }),
+      ).rejects.toMatchObject({ code: "conflict" });
+      await slotsA.release(rebuild);
+
+      // Actual competing transactions: one pending build wins, the loser receives the typed
+      // capacity conflict from Bun's errno-shaped PostgreSQL exception, not a generic server error.
+      const input = { provider: "boat", backendId: "reservation-race", capacity: 1, orgId: org, ownerId: owner };
+      await a.unsafe("begin");
+      const winner = await slotsA.reserve(input);
+      const loser = slotsB.reserve({ ...input, orgId: otherOrg }).then(
+        () => ({ code: "unexpected-success", message: "" }),
+        (error) => ({ code: error.code, message: error.message }),
+      );
+      await blocked();
+      await a.unsafe("commit");
+      const conflict = await loser;
+      expect(conflict.code).toBe("conflict");
+      expect(conflict.message).toContain("Use an existing golden you can access");
+      expect(conflict.message).not.toContain(input.backendId);
+      expect(
+        (await a.unsafe("select build_id from golden_backend_slots where backend_id=$1", [input.backendId])).length,
+      ).toBe(1);
+      await slotsA.release(winner);
+      expect((await a.unsafe("select build_id from golden_backend_slots where build_id is not null")).length).toBe(0);
     } finally {
       await a.unsafe("rollback");
       await a.close();

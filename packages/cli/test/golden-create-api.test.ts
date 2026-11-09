@@ -54,3 +54,41 @@ test("golden create maps positional config to API with token-only auth", async (
     },
   });
 });
+
+test("token-only golden create prints an actionable API conflict and exits nonzero", async () => {
+  const message =
+    "Golden capacity or binding is unavailable or busy. Use an existing golden you can access, retry after any active build finishes, or ask an administrator to check the binding.";
+  let errorOutput = "";
+  let output = "";
+  let requests = 0;
+  const code = await run(
+    ["golden", "create", "quota-probe", "--repo", "https://github.com/acme/web", "--json"],
+    {
+      out: (text) => {
+        output += text;
+      },
+      err: (text) => {
+        errorOutput += text;
+      },
+    },
+    {
+      auth: {
+        out: () => {},
+        err: () => {},
+        env: { ARMADA_TOKEN: token },
+        fetch: async () => {
+          requests++;
+          return Response.json({ error: { code: "conflict", message } }, { status: 409 });
+        },
+        now: () => new Date(),
+        open: () => {},
+        session: memorySessionStore(),
+      },
+    },
+  );
+  expect(code).toBe(1);
+  expect(errorOutput).toContain(message);
+  expect(errorOutput).not.toContain(token);
+  expect(output).toBe("");
+  expect(requests).toBe(1);
+});
