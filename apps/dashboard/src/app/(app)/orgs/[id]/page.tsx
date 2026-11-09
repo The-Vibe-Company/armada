@@ -86,8 +86,8 @@ export default async function OrgPage({ params, searchParams }: Props) {
               Invite a teammate
             </h2>
             <p className="text-sm text-muted-foreground">
-              Armada emails that address a secure sign-in link. They review the organization and join only if they
-              accept.
+              Armada emails them a link to this invitation. They sign in with that address, review the organization and
+              join only if they accept.
             </p>
           </div>
           <InviteForm org={id} action={inviteMember} />

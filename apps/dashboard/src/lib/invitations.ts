@@ -185,10 +185,6 @@ export function parsePreview(value: unknown): RecipientPreview | null {
 export type RecipientState =
   | { kind: "missing" }
   | { kind: "sign_in" }
-  /** Signed out, with the email's own sign-in (`token_hash`): continuing verifies it and signs in as its address. */
-  | { kind: "link_sign_in" }
-  /** That link, verified and bound to the invitation: the person now types the address they expect to sign in as. */
-  | { kind: "link_confirm" }
   | { kind: "unavailable"; message: string; signInAgain: boolean }
   | { kind: "preview"; preview: RecipientPreview; signedInAs: string };
 
@@ -254,56 +250,10 @@ export const invitationCookieOptions = (secure: boolean) => ({
 });
 
 /**
- * The email's own sign-in (#640 asks GoTrue for an email OTP, without a PKCE challenge from this browser). It arrives in
- * one of two shapes, both on the invitation link:
- * - GoTrue's default confirmation redirects with the session in the URL fragment (`#access_token=…&refresh_token=…`),
- *   or `#error=…` when the link is spent. The fragment never reaches a server; the page's bridge reads it once,
- *   removes it from the address bar and keeps it in memory only.
- * - A template that sends `token_hash` and `type` instead: the proxy moves them into {@link INVITATION_LINK_COOKIE}
- *   with the invitation token, and they are verified server-side only when the person chooses to continue.
- * Either way, signing in is its own explicit step, separate from joining, and never replaces another account silently.
+ * The invitation email's own sign-in is never used. #649 sends its link through a GoTrue email OTP that this browser did
+ * not start (no PKCE challenge), so its credentials (a session in the URL fragment, or a `token_hash`) could belong to
+ * anyone who forwarded the link. They are discarded unread: the proxy drops the query (keeping only the invitation
+ * token, in its cookie), and this script, inlined first in the page, removes the fragment from the address bar and
+ * history before any other script runs. The recipient then signs in from this browser, as on the login page.
  */
-export const INVITATION_LINK_COOKIE = "armada_invitation_link";
-/** The session a verified `token_hash` minted, waiting for the explicit "continue as …" (path: the acceptance page). */
-export const INVITATION_LINK_SESSION_COOKIE = "armada_invitation_link_session";
-/** A confirmation link is short-lived at GoTrue too; this only bounds how long the browser keeps it. */
-export const INVITATION_LINK_MAX_AGE = 10 * 60;
-
-const EMAIL_LINK_TYPES = ["magiclink", "email", "signup", "invite"] as const;
-export type EmailLinkType = (typeof EMAIL_LINK_TYPES)[number];
-export const isEmailLinkType = (value: unknown): value is EmailLinkType =>
-  EMAIL_LINK_TYPES.includes(value as EmailLinkType);
-
-/** `type:token_hash` as the cookie stores it, or null when either part is malformed. */
-export function encodeEmailLink(type: string | null, tokenHash: string | null): string | null {
-  if (!isEmailLinkType(type) || !tokenHash || !/^[A-Za-z0-9._~-]{8,512}$/.test(tokenHash)) return null;
-  return `${type}:${tokenHash}`;
-}
-
-export function decodeEmailLink(value: string | undefined): { type: EmailLinkType; tokenHash: string } | null {
-  if (!value) return null;
-  const [type, tokenHash, ...rest] = value.split(":");
-  return rest.length === 0 && encodeEmailLink(type ?? null, tokenHash ?? null)
-    ? { type: type as EmailLinkType, tokenHash: tokenHash as string }
-    : null;
-}
-
-const JWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
-
-export type EmailLinkFragment =
-  | { kind: "session"; accessToken: string; refreshToken: string }
-  | { kind: "error"; expired: boolean };
-
-/** The session or the error GoTrue put in the URL fragment, or null when the fragment is neither. */
-export function parseEmailLinkFragment(hash: string): EmailLinkFragment | null {
-  const params = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
-  if (params.has("error") || params.has("error_code"))
-    return { kind: "error", expired: params.get("error_code") === "otp_expired" };
-  const accessToken = params.get("access_token");
-  const refreshToken = params.get("refresh_token");
-  if (!accessToken && !refreshToken) return null;
-  if (!accessToken || !refreshToken || !JWT.test(accessToken) || accessToken.length > 8192)
-    return { kind: "error", expired: false };
-  if (!/^[A-Za-z0-9._~-]{1,512}$/.test(refreshToken)) return { kind: "error", expired: false };
-  return { kind: "session", accessToken, refreshToken };
-}
+export const DISCARD_LINK_CREDENTIALS_SCRIPT = `(function(){if(location.hash)history.replaceState(history.state,"",location.pathname)})()`;

@@ -81,7 +81,7 @@ test("the recipient signs in from the link, sees the org and joins only by accep
   await page.goto(`/invitations/accept?token=${TOKEN}`);
   // The token leaves the address bar at once; the page itself never shows it.
   await expect(page).toHaveURL(/\/invitations\/accept$/);
-  await expect(page.getByRole("heading", { name: "You are invited to an organization on Armada" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in to review your invitation" })).toBeVisible();
   await expect(page.locator("body")).not.toContainText(TOKEN);
 
   await page.getByRole("link", { name: "Sign in to continue" }).click();

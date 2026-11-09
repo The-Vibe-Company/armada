@@ -119,7 +119,7 @@ export function InvitationList({ org, invitations, now, resend, revoke }: ListPr
   );
 }
 
-export const INVITATION_LOGIN_HREF = `/login?next=${encodeURIComponent(INVITATION_ACCEPT_PATH)}`;
+const INVITATION_LOGIN_HREF = `/login?next=${encodeURIComponent(INVITATION_ACCEPT_PATH)}`;
 const article = (role: string) => (role === "admin" ? "an admin" : "a member");
 
 /** Signs out and returns to this invitation's sign-in, keeping the link: "use another account". */
@@ -141,15 +141,9 @@ const SignedInAs = ({ email }: { email: string }) => (
 );
 
 /** The recipient's page. It only explains; joining is the explicit button of the `ready` preview. */
-type AcceptProps = {
-  state: RecipientState;
-  accept: Action;
-  /** The `token_hash` link's two explicit steps, and "not now". */
-  link: { verify: Action; adopt: Action; discard: Action };
-  now: Date;
-};
+type AcceptProps = { state: RecipientState; accept: Action; now: Date };
 
-export function AcceptInvitation({ state, accept, link, now }: AcceptProps) {
+export function AcceptInvitation({ state, accept, now }: AcceptProps) {
   switch (state.kind) {
     case "missing":
       return (
@@ -162,47 +156,17 @@ export function AcceptInvitation({ state, accept, link, now }: AcceptProps) {
       );
     case "sign_in":
       return (
-        <InvitationShell title="You are invited to an organization on Armada">
+        <InvitationShell title="Sign in to review your invitation">
           <p>
-            Armada sent a secure sign-in link with this invitation. Sign in with the address it was sent to, review the
-            organization, then choose whether to join. Nothing is joined before you do.
+            Sign in here with the email address the invitation was sent to. You then see the organization and choose
+            whether to join; nothing is joined before you do.
+          </p>
+          <p>
+            A sign-in link inside the invitation email is not used on this page, so you may be asked for a new code.
           </p>
           <Button asChild className="w-full sm:w-auto">
             <Link href={INVITATION_LOGIN_HREF}>Sign in to continue</Link>
           </Button>
-        </InvitationShell>
-      );
-    case "link_sign_in":
-      return (
-        <InvitationShell title="Sign in to review your invitation">
-          <p>
-            This link includes a secure sign-in for the address the invitation was sent to. Continue to sign in with it,
-            then review the organization. Signing in does not join it.
-          </p>
-          <ActionForm action={link.verify} className="flex flex-col gap-2">
-            <SubmitButton className="w-full sm:w-auto">Check this link</SubmitButton>
-          </ActionForm>
-          <p className="text-xs">
-            <Link href={INVITATION_LOGIN_HREF} className="underline underline-offset-4">
-              Sign in with your email address instead
-            </Link>
-          </p>
-        </InvitationShell>
-      );
-    case "link_confirm":
-      return (
-        <InvitationShell title="Confirm your email address">
-          <IntendedEmailIntro />
-          <ActionForm action={link.adopt} className="flex flex-col gap-3">
-            <IntendedEmailField />
-            <SubmitButton className="w-full">Sign in with this link</SubmitButton>
-          </ActionForm>
-          <ActionForm action={link.discard} className="flex flex-col gap-2">
-            <SubmitButton variant="outline" className="w-full">
-              Not now
-            </SubmitButton>
-          </ActionForm>
-          <OwnSignIn />
         </InvitationShell>
       );
     case "unavailable":
@@ -301,56 +265,7 @@ export function AcceptInvitation({ state, accept, link, now }: AcceptProps) {
   }
 }
 
-/**
- * The person's own statement of who they are signing in as: typed, never pre-filled or suggested from the link, its
- * session or the org (an attacker controls all three). The server compares it with the link's verified account.
- */
-export function IntendedEmailField() {
-  return (
-    <div className="space-y-2">
-      <Label htmlFor="intended-email">Your email address</Label>
-      <Input
-        id="intended-email"
-        name="email"
-        type="email"
-        autoComplete="off"
-        spellCheck={false}
-        required
-        placeholder="you@company.com"
-      />
-    </div>
-  );
-}
-
-export function IntendedEmailIntro() {
-  return (
-    <p>
-      This link from your invitation email can sign you in. Type the email address you use, the one the invitation was
-      sent to. If it is not this link&apos;s address, nothing changes. Signing in does not join the organization.
-    </p>
-  );
-}
-
-/** The ordinary sign-in from this browser, back to the invitation afterwards. */
-export function OwnSignIn() {
-  return (
-    <p className="text-xs">
-      <Link href={INVITATION_LOGIN_HREF} className="underline underline-offset-4">
-        Sign in with your email address instead
-      </Link>
-    </p>
-  );
-}
-
-export function InvitationShell({
-  title,
-  alert = false,
-  children,
-}: {
-  title: string;
-  alert?: boolean;
-  children: ReactNode;
-}) {
+function InvitationShell({ title, alert = false, children }: { title: string; alert?: boolean; children: ReactNode }) {
   return (
     <main className="flex min-h-dvh items-center justify-center p-4">
       <section className="w-full max-w-md space-y-4 rounded-lg border p-6" aria-labelledby="invitation-title">

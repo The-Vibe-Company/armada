@@ -23,8 +23,6 @@ const users = new Map<string, { id: string; email: string }>([
   [ALICE, { id: ALICE, email: "alice@example.com" }],
   [BOB, { id: BOB, email: "bob@example.com" }],
   [id(3), { id: id(3), email: "carol@example.com" }],
-  // An attacker's own account on a lookalike address (a digit 1 for the l), for the email-link tests.
-  [id(4), { id: id(4), email: "carol@examp1e.com" }],
 ]);
 
 type State = {
@@ -311,11 +309,6 @@ function sandbox(
 let state = seed();
 let sequence = 100;
 const sessions = new Map<string, string>();
-/** GoTrue's one-time email OTP hashes (`token_hash`), as an email template would carry them: hash -> user id. */
-const otpHashes = new Map<string, string>();
-
-/** When GoTrue says the address was confirmed: never for an account the test marked unverified. */
-const confirmedAt = (email: string) => (state.unverifiedEmails.includes(email) ? null : "2026-11-08T10:00:00.000Z");
 
 function b64url(value: object): string {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -341,7 +334,6 @@ function session(userId: string) {
       aud: "authenticated",
       role: "authenticated",
       email: user.email,
-      email_confirmed_at: confirmedAt(user.email),
       app_metadata: {},
       user_metadata: {},
       created_at: "2026-11-08T10:00:00.000Z",
@@ -646,14 +638,6 @@ function auth(request: Request, url: URL, body: Row): Response {
     state.otpEmails.push(String(body.email));
     return json({});
   }
-  if (path === "/verify" && typeof body.token_hash === "string") {
-    // The server-side confirmation of a template that sends `token_hash`: single use, like GoTrue.
-    const owner = otpHashes.get(body.token_hash);
-    otpHashes.delete(body.token_hash);
-    return owner
-      ? json(session(owner))
-      : json({ code: 403, error_code: "otp_expired", msg: "Email link is invalid or has expired" }, 403);
-  }
   if (path === "/verify") {
     const email = String(body.email ?? "").toLowerCase();
     const user = [...users.values()].find((candidate) => candidate.email === email);
@@ -674,7 +658,6 @@ function auth(request: Request, url: URL, body: Row): Response {
       aud: "authenticated",
       role: "authenticated",
       email: user.email,
-      email_confirmed_at: confirmedAt(user.email),
       app_metadata: {},
       user_metadata: {},
       created_at: "2026-11-08T10:00:00.000Z",
@@ -1554,7 +1537,6 @@ function orgProvider(route: string, body: Row, request: Request): Response {
 function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     state = seed();
-    otpHashes.clear();
     pendingOAuth.clear();
     githubCliFlows.clear();
     failSandboxConnections = false;
@@ -1733,20 +1715,13 @@ function control(url: URL, body: Row): Response {
     return json({ ok: true });
   }
   /**
-   * What GoTrue's `/verify` hands the browser for an email OTP sent without a PKCE challenge (#640): a session for the
-   * address, which the redirect puts in the URL fragment. No email is sent; the test builds the incoming URL.
+   * What GoTrue's `/verify` hands the browser for #649's email OTP (sent without a PKCE challenge): a live session for
+   * the address, which the redirect puts in the URL fragment. The tests build the incoming URL from it to prove the
+   * dashboard never uses it. No email is sent.
    */
   if (url.pathname === "/__test/email-link-session") {
     const user = [...users.values()].find((candidate) => candidate.email === body.email);
     return user ? json(session(user.id)) : json({ error: "unknown user" }, 404);
-  }
-  /** The `token_hash` an email template would put in the link instead, for the server-side confirmation. */
-  if (url.pathname === "/__test/email-link-hash") {
-    const user = [...users.values()].find((candidate) => candidate.email === body.email);
-    if (!user) return json({ error: "unknown user" }, 404);
-    const hash = `pkce_mock_${++sequence}_0123456789abcdef`;
-    otpHashes.set(hash, user.id);
-    return json({ token_hash: hash });
   }
   if (url.pathname === "/__test/unverified-email") {
     state.unverifiedEmails.push(String(body.email));

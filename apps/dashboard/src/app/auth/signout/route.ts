@@ -1,10 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
-import {
-  INVITATION_ACCEPT_PATH,
-  INVITATION_COOKIE,
-  INVITATION_LINK_COOKIE,
-  INVITATION_LINK_SESSION_COOKIE,
-} from "@/lib/invitations";
+import { INVITATION_ACCEPT_PATH, INVITATION_COOKIE } from "@/lib/invitations";
 import { originFromHeaders } from "@/lib/routes";
 import { createClient } from "@/lib/supabase/server";
 
@@ -18,10 +13,6 @@ export async function POST(request: NextRequest) {
   if (switching) login.searchParams.set("next", INVITATION_ACCEPT_PATH);
   const response = NextResponse.redirect(login, 303);
   // A plain sign-out forgets a pending invitation link, so the next person on this browser does not inherit it.
-  if (!switching) {
-    response.cookies.delete(INVITATION_COOKIE);
-    response.cookies.delete(INVITATION_LINK_COOKIE);
-    response.cookies.delete({ name: INVITATION_LINK_SESSION_COOKIE, path: INVITATION_ACCEPT_PATH });
-  }
+  if (!switching) response.cookies.delete(INVITATION_COOKIE);
   return response;
 }

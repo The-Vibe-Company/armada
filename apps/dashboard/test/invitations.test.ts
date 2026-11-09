@@ -2,14 +2,11 @@ import { describe, expect, test } from "bun:test";
 import type { NextRequest } from "next/server";
 import { createInvitationControl } from "../src/lib/control.ts";
 import {
-  decodeEmailLink,
   deliveryLabel,
   deliveryOutcome,
   expiryLabel,
   INVITATION_COOKIE,
-  INVITATION_LINK_COOKIE,
   normalizeInviteEmail,
-  parseEmailLinkFragment,
   parseInvitation,
   parsePreview,
   pendingInvitations,
@@ -126,41 +123,14 @@ describe("invitation link", () => {
     expect(response.headers.get("set-cookie")).toBeNull();
   });
 
-  test("a token_hash sign-in is kept for the explicit continue, only alongside an invitation", async () => {
-    const withInvitation = await proxy(
+  test("a token_hash or any other link parameter is dropped unread; only the invitation is kept", async () => {
+    const response = await proxy(
       request(`/invitations/accept?token=${TOKEN}&token_hash=pkce_abc123456&type=magiclink`),
     );
-    expect(withInvitation.headers.get("location")).toBe("https://dashboard.test/invitations/accept");
-    const cookies = withInvitation.headers.getSetCookie().join("\n");
-    expect(cookies).toContain(`${INVITATION_LINK_COOKIE}=magiclink%3Apkce_abc123456`);
-    expect(cookies).toMatch(/armada_invitation_link=[^;]+;[^\n]*HttpOnly/i);
-    // A newer invitation link without one clears an earlier link's sign-in.
-    const newer = (await proxy(request(`/invitations/accept?token=${TOKEN}`))).headers.getSetCookie().join("\n");
-    expect(newer).toMatch(new RegExp(`${INVITATION_LINK_COOKIE}=;[^\\n]*Expires=Thu, 01 Jan 1970`, "i"));
-    const alone = await proxy(request("/invitations/accept?token_hash=pkce_abc123456&type=magiclink"));
-    expect(alone.headers.get("set-cookie")).toBeNull();
-    expect(decodeEmailLink("magiclink:pkce_abc123456")).toEqual({ type: "magiclink", tokenHash: "pkce_abc123456" });
-    expect(decodeEmailLink("recovery:pkce_abc123456")).toBeNull();
-  });
-
-  test("the email's session fragment is read strictly: a session, an error, or nothing", () => {
-    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig";
-    expect(parseEmailLinkFragment(`#access_token=${jwt}&refresh_token=r-1&type=magiclink`)).toEqual({
-      kind: "session",
-      accessToken: jwt,
-      refreshToken: "r-1",
-    });
-    expect(parseEmailLinkFragment("#error=access_denied&error_code=otp_expired")).toEqual({
-      kind: "error",
-      expired: true,
-    });
-    // Half a session, or a value that is not a token, is refused rather than tried.
-    expect(parseEmailLinkFragment(`#access_token=${jwt}`)).toEqual({ kind: "error", expired: false });
-    expect(parseEmailLinkFragment("#access_token=not-a-jwt&refresh_token=r")).toEqual({
-      kind: "error",
-      expired: false,
-    });
-    expect(parseEmailLinkFragment("#section-2")).toBeNull();
+    expect(response.headers.get("location")).toBe("https://dashboard.test/invitations/accept");
+    const cookies = response.headers.getSetCookie();
+    expect(cookies).toHaveLength(1);
+    expect(cookies[0]).toStartWith(`${INVITATION_COOKIE}=${TOKEN};`);
   });
 
   test("signing in returns to the invitation, never with a token in `next`", () => {

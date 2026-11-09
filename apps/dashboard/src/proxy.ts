@@ -3,12 +3,8 @@ import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 import { supabaseEnv } from "@/lib/env";
 import {
-  encodeEmailLink,
   INVITATION_ACCEPT_PATH,
   INVITATION_COOKIE,
-  INVITATION_LINK_COOKIE,
-  INVITATION_LINK_MAX_AGE,
-  INVITATION_LINK_SESSION_COOKIE,
   invitationCookieOptions,
   isInvitationToken,
 } from "@/lib/invitations";
@@ -30,8 +26,8 @@ function landing(request: NextRequest, carry?: NextResponse): NextResponse {
  * The emailed invitation link carries its token in the query. It moves into a short-lived HTTP-only cookie (path `/`,
  * see `invitationCookieOptions`) and the visitor lands on the same page without the query, so the token never reaches a login
  * `next`, a Referer, the history, analytics or the rendered page. A malformed token is dropped. Nothing is accepted
- * and nobody is signed in here. A URL fragment (GoTrue's default email session) survives this redirect for the page's
- * bridge; a `token_hash` moves into its own cookie.
+ * and nobody is signed in here: anything else the link carries (a `token_hash`, any other parameter) is dropped
+ * unread, and the page discards a URL fragment (see `DISCARD_LINK_CREDENTIALS_SCRIPT`).
  */
 function stashInvitation(request: NextRequest): NextResponse {
   const token = request.nextUrl.searchParams.get("token");
@@ -40,22 +36,8 @@ function stashInvitation(request: NextRequest): NextResponse {
   const response = NextResponse.redirect(target, 303);
   response.headers.set("Referrer-Policy", "no-referrer");
   response.headers.set("Cache-Control", "no-store");
-  if (!isInvitationToken(token)) return response;
-  const secure = request.nextUrl.protocol === "https:";
-  response.cookies.set(INVITATION_COOKIE, token, invitationCookieOptions(secure));
-  // A template that confirms server-side sends `token_hash`: kept for the explicit "continue", never verified here.
-  const link = encodeEmailLink(
-    request.nextUrl.searchParams.get("type"),
-    request.nextUrl.searchParams.get("token_hash"),
-  );
-  // A newer invitation link replaces any earlier one's sign-in: an old `token_hash` never outlives its invitation.
-  if (link)
-    response.cookies.set(INVITATION_LINK_COOKIE, link, {
-      ...invitationCookieOptions(secure),
-      maxAge: INVITATION_LINK_MAX_AGE,
-    });
-  else response.cookies.delete(INVITATION_LINK_COOKIE);
-  response.cookies.delete({ name: INVITATION_LINK_SESSION_COOKIE, path: INVITATION_ACCEPT_PATH });
+  if (isInvitationToken(token))
+    response.cookies.set(INVITATION_COOKIE, token, invitationCookieOptions(request.nextUrl.protocol === "https:"));
   return response;
 }
 
