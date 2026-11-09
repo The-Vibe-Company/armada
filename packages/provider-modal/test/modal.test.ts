@@ -4,6 +4,7 @@ import type { AgentEvent, Sql } from "@armada/core";
 import { createSqlVaultStore, GoldenBuildJobs } from "@armada/core/server";
 import type { Image, ModalClient, Sandbox } from "modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
 import {
   appendModalEvents,
@@ -923,6 +924,113 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       (await f.provider.events({ sandboxId: row.id, conversationId: "a", cursor: first.cursor ?? "0" })).events,
     ).toEqual(events.slice(2));
     expect((await f.provider.events({ sandboxId: row.id, conversationId: "b" })).events).toEqual(events.slice(1, 2));
+  });
+  test("native outbox drains large UTF-8 conversations through HTTP ingest and remains readable after stop", async () => {
+    const f = fixture();
+    const row = await f.provider.createGolden({});
+    const grant = {
+      token: "fixture-ingest-private-grant",
+      sandboxId: row.id,
+      generation: "1",
+      expiresAt: Date.now() + 60000,
+    };
+    const handler = createModalIngestHandler({ sql: db, verifyGrant: async () => ({ scope, claims: grant }) });
+    const journal = new Journal(":memory:", (s) => s);
+    const driver: Driver = {
+      start() {
+        throw Error("unused");
+      },
+      async close() {},
+    };
+    const requests: number[] = [];
+    const runner = new Runner(
+      journal,
+      grant,
+      { claude: driver, codex: driver },
+      {
+        async append(batch) {
+          const body = JSON.stringify(batch);
+          requests.push(Buffer.byteLength(body));
+          const response = await handler(new Request("https://example/ingest", { method: "POST", body }));
+          if (!response.ok) throw Error(`ingest_http_${response.status}`);
+          return (await response.json()) as { acknowledgedSequence: number };
+        },
+      },
+    );
+    const events: AgentEvent[] = ["claude", "codex"].flatMap((harness) => [
+      {
+        id: `${harness}-running`,
+        at: 1,
+        kind: "prompt",
+        promptId: harness,
+        conversationId: harness,
+        text: "Inspect output",
+        status: "running",
+      },
+      ...Array.from(
+        { length: 5 },
+        (_, i): AgentEvent => ({
+          id: `${harness}-${i}`,
+          at: i + 2,
+          kind: "message",
+          promptId: harness,
+          conversationId: harness,
+          messageId: `${harness}-native`,
+          textMode: "delta",
+          text: "😀".repeat(40000),
+          partial: true,
+          tools: [
+            {
+              id: `${harness}-tool-${i}`,
+              name: "shell",
+              input: { command: "echo ok" },
+              result: { output: "ok", isError: false },
+            },
+          ],
+        }),
+      ),
+      {
+        id: `${harness}-completed`,
+        at: 8,
+        kind: "prompt",
+        promptId: harness,
+        conversationId: harness,
+        text: "Inspect output",
+        status: "finished",
+      },
+    ]);
+    try {
+      for (const event of events) journal.append(event);
+      await runner.flushOutbox();
+      expect(journal.ack).toBe(events.length);
+      expect(requests.length).toBeGreaterThan(1);
+      expect(requests.every((bytes) => bytes <= 1048576)).toBe(true);
+      await runner.flushOutbox();
+      const requestCount = requests.length;
+      f.onRpc(async (_row, op) =>
+        op === "checkpoint"
+          ? { watermark: events.length, acknowledgedSequence: events.length, generation: "1" }
+          : undefined,
+      );
+      await f.provider.stop({ sandboxId: row.id });
+      const replay: AgentEvent[] = [];
+      let cursor: string | undefined;
+      for (;;) {
+        const page = await f.provider.events({ sandboxId: row.id, limit: 3, ...(cursor ? { cursor } : {}) });
+        replay.push(...page.events);
+        expect(page.cursor).not.toBe(cursor);
+        cursor = page.cursor;
+        if (!page.hasMore) break;
+      }
+      expect(replay).toEqual(events);
+      const tail = await f.provider.events({ sandboxId: row.id, ...(cursor ? { cursor } : {}) });
+      expect(tail.events).toEqual([]);
+      expect(tail.cursor).toBe(cursor);
+      expect(tail.hasMore).toBe(false);
+      expect(requests).toHaveLength(requestCount);
+    } finally {
+      journal.close();
+    }
   });
   test("events dedupe, acknowledge only contiguous commit and fence old generation", async () => {
     const f = fixture();

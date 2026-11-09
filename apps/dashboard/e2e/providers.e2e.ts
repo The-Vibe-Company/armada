@@ -216,6 +216,29 @@ test("an unavailable status is a retryable error: never unconfigured, never retr
   expect(await writes()).toHaveLength(0);
 });
 
+test("an edge 404 while no deployment serves is a temporary outage, and Check again restores the controls", async ({
+  page,
+}) => {
+  await post("/__test/provider-status-fail", {
+    fail: { status: 404, message: "", html: "<html><body>Application not found</body></html>" },
+  });
+  await signIn(page, "alice@example.com", "/goldens");
+  const alert = page.locator('[data-setup-state="unavailable"]');
+  await expect(alert).toContainText("The Armada server could not be reached just now. Check again in a moment.");
+  await expect(alert).not.toContainText("does not offer");
+  await expect(alert).not.toContainText("Application not found");
+  const card = page.locator('[data-golden="shared-golden"]');
+  await expect(card.locator("[data-launch-paused]")).toHaveText("Launch paused: provider status unavailable");
+  await expect(card.locator("[data-rebuild-paused]")).toHaveText("Rebuilding paused: provider status unavailable.");
+
+  await post("/__test/provider-status-fail", {});
+  await alert.getByRole("link", { name: "Check again" }).click();
+  await expect(alert).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Launch from shared-golden" })).toBeVisible();
+  await expect(card.locator("[data-launch-paused]")).toHaveCount(0);
+  expect(await writes()).toHaveLength(0);
+});
+
 test("a launch from a page rendered while Boat was connected is refused once Boat is disconnected", async ({
   page,
 }) => {
