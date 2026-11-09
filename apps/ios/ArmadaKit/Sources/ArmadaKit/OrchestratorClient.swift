@@ -80,21 +80,39 @@ extension ArmadaClient {
         guard let pending = pendingOperations.first(where: { $0.id == operationID }),
               pending.orgId == (try selectedOrganization()) else { throw ArmadaError.forbidden }
         if let receipt = pending.receipt, receipt.state == .succeeded || receipt.state == .failed { return receipt }
+        guard pending.state != .failed else { throw ArmadaError.http(400) }
         let capabilities = try await orchestratorCapabilities()
         guard capabilities.enabled else { throw ArmadaError.unavailable }
         // Recheck after suspension: signout/account switching cannot submit old work.
         guard pendingOperations.contains(where: { $0.id == operationID }), selectedOrgID == pending.orgId else { throw CancellationError() }
+        if let current = pendingOperations.first(where: { $0.id == operationID })?.receipt,
+           current.state == .succeeded || current.state == .failed { return current }
         try update(pending.updating(state: .uncertain)) // persist BEFORE external effects
         do {
             let receipt: OrchestratorOperation = try await authenticatedRequest(pending.route, method: "POST", body: pending.body, key: pending.key)
             guard receipt.version == 1, receipt.kind == pending.action,
                   pending.orchestratorId == nil || receipt.orchestratorId == pending.orchestratorId else { throw ArmadaError.invalidResponse }
             try update(pending.updating(state: receipt.state, receipt: receipt))
-            return receipt
+            return pendingOperations.first(where: { $0.id == operationID })?.receipt ?? receipt
+        } catch let error as ArmadaError where error == .http(400) {
+            // The actual handler's invalid_request response is pre-effect rejection.
+            // Preserve any concurrent terminal receipt; otherwise allow explicit discard.
+            if pending.state == .pending, pending.receipt == nil {
+                try update(pending.updating(state: .failed))
+            }
+            // A refused retry cannot establish the earlier unknown outcome.
+            throw error
         } catch {
             // Previously persisted uncertain bytes remain even if the response was lost.
             throw error
         }
+    }
+    /// Only a known terminal receipt or actual pre-effect HTTP400 may be discarded.
+    /// Unknown/pending/uncertain effects cannot be abandoned and reallocated here.
+    public func discardOrchestratorOperation(_ operationID: UUID) throws {
+        guard let operation = pendingOperations.first(where: { $0.id == operationID }),
+              operation.state == .succeeded || operation.state == .failed else { throw ArmadaError.conflict }
+        try saveOperations(pendingOperations.filter { $0.id != operationID })
     }
     private func enqueue(_ operation: PendingOrchestratorOperation) throws -> PendingOrchestratorOperation {
         guard !pendingOperations.contains(where: {
@@ -104,7 +122,8 @@ extension ArmadaClient {
         return operation
     }
     private func update(_ operation: PendingOrchestratorOperation) throws {
-        guard pendingOperations.contains(where: { $0.id == operation.id }) else { throw CancellationError() }
+        guard let prior = pendingOperations.first(where: { $0.id == operation.id }) else { throw CancellationError() }
+        if prior.state == .succeeded || prior.state == .failed { return }
         try saveOperations(pendingOperations.map { $0.id == operation.id ? operation : $0 })
     }
     private func selectedOrganization() throws -> String {

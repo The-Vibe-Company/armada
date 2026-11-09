@@ -155,7 +155,7 @@ private actor RefreshTransport: ArmadaTransport {
     #expect(await restored.selectedOrgID == "org-a")
 }
 
-@Test func uncertainMutationRestoresExactKeyRevisionAndBytes() async throws {
+@Test func uncertainCreateRetainsIdentityAcrossRejectedRetry() async throws {
     let configuration = OrchestratorCreate(orgId: "org-a", name: "Coordinator", goldenId: "golden-a",
         provider: .boat, harness: .codex, model: "model-a", modelAccountId: "account-a")
     let transport = ScriptedTransport([
@@ -163,6 +163,8 @@ private actor RefreshTransport: ArmadaTransport {
         .init(status: 200, body: #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#),
         .init(status: 200, body: #"{"version":1,"enabled":true}"#),
         .init(status: 503, body: #"{"error":{"code":"unavailable","message":"unavailable"}}"#),
+        .init(status: 200, body: #"{"version":1,"enabled":true}"#),
+        .init(status: 400, body: #"{"error":{"code":"invalid_request","message":"invalid_request"}}"#),
         .init(status: 200, body: #"{"version":1,"enabled":true}"#),
         .init(status: 202, body: #"{"version":1,"id":"operation-a","orchestratorId":"parent-a","kind":"create","state":"succeeded","revision":1,"errorCode":null}"#)
     ])
@@ -176,12 +178,17 @@ private actor RefreshTransport: ArmadaTransport {
     let restored = try ArmadaClient(transport: transport, storage: storage)
     try await restored.restore()
     #expect(await restored.pendingOperations.first?.state == .uncertain)
+    await #expect(throws: ArmadaError.http(400)) { _ = try await restored.submitOrchestratorOperation(command.id) }
+    await #expect(throws: ArmadaError.conflict) { try await restored.discardOrchestratorOperation(command.id) }
+    #expect(await restored.pendingOperations.first?.state == .uncertain)
     let receipt = try await restored.submitOrchestratorOperation(command.id)
     #expect(receipt.id == "operation-a")
     let posts = await transport.requests.filter { $0.url!.path == "/api/v1/orchestrators" }
-    #expect(posts.count == 2)
+    #expect(posts.count == 3)
     #expect(posts[0].httpBody == posts[1].httpBody)
+    #expect(posts[0].httpBody == posts[2].httpBody)
     #expect(posts[0].value(forHTTPHeaderField: "Idempotency-Key") == posts[1].value(forHTTPHeaderField: "Idempotency-Key"))
+    #expect(posts[0].value(forHTTPHeaderField: "Idempotency-Key") == posts[2].value(forHTTPHeaderField: "Idempotency-Key"))
     #expect(posts[0].value(forHTTPHeaderField: "Idempotency-Key") != nil)
 }
 
@@ -223,4 +230,78 @@ private actor RefreshTransport: ArmadaTransport {
     #expect(mode == "delta")
     let url = await transport.requests.last!.url!
     #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "cursor" })?.value == "opaque+/=?&prior")
+}
+
+@Test func preEffectRejectionAllowsExplicitRepairButAmbiguityCannotBeDiscarded() async throws {
+    let transport = ScriptedTransport([
+        .init(status: 200, body: login),
+        .init(status: 200, body: #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#),
+        .init(status: 200, body: #"{"version":1,"enabled":true}"#),
+        .init(status: 400, body: #"{"error":{"code":"invalid_request","message":"invalid_request"}}"#)
+    ])
+    let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    try await client.selectOrganization("org-a")
+    let bad = OrchestratorCreate(orgId: "org-a", name: "", goldenId: "golden-a", provider: .boat,
+        harness: .codex, model: "model-a", modelAccountId: "account-a")
+    let command = try await client.prepareOrchestratorCreate(bad)
+    await #expect(throws: ArmadaError.conflict) { try await client.discardOrchestratorOperation(command.id) }
+    await #expect(throws: ArmadaError.http(400)) { _ = try await client.submitOrchestratorOperation(command.id) }
+    #expect(await client.pendingOperations.first?.state == .failed)
+    try await client.discardOrchestratorOperation(command.id)
+    let repaired = OrchestratorCreate(orgId: "org-a", name: "Repaired", goldenId: "golden-a", provider: .boat,
+        harness: .codex, model: "model-a", modelAccountId: "account-a")
+    #expect(try await client.prepareOrchestratorCreate(repaired).id != command.id)
+}
+
+private actor SubmissionRaceTransport: ArmadaTransport {
+    private var capabilityCount = 0
+    private var releases: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var entered: [Int: CheckedContinuation<Void, Never>] = [:]
+    private(set) var mutationCount = 0
+    func waitForCapability(_ index: Int) async {
+        if releases[index] != nil { return }
+        await withCheckedContinuation { entered[index] = $0 }
+    }
+    func releaseCapability(_ index: Int) { releases.removeValue(forKey: index)?.resume() }
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let body: String
+        var status = 200
+        switch request.url!.lastPathComponent {
+        case "verify": body = login
+        case "list": body = #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#
+        case "capabilities":
+            capabilityCount += 1
+            let index = capabilityCount
+            await withCheckedContinuation { continuation in
+                releases[index] = continuation; entered.removeValue(forKey: index)?.resume()
+            }
+            body = #"{"version":1,"enabled":true}"#
+        default:
+            mutationCount += 1
+            if mutationCount == 1 {
+                status = 202
+                body = #"{"version":1,"id":"operation-a","orchestratorId":"parent-a","kind":"stop","state":"succeeded","revision":8,"errorCode":null}"#
+            } else { status = 503; body = #"{"error":{"code":"unavailable"}}"# }
+        }
+        return (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+    }
+}
+
+@Test func delayedSubmitCannotEraseKnownTerminalReceipt() async throws {
+    let transport = SubmissionRaceTransport()
+    let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    try await client.selectOrganization("org-a")
+    let command = try await client.prepareOrchestratorMutation(id: "parent-a", action: .stop, expectedRevision: 7)
+    let first = Task { try await client.submitOrchestratorOperation(command.id) }
+    await transport.waitForCapability(1)
+    let second = Task { try await client.submitOrchestratorOperation(command.id) }
+    await transport.waitForCapability(2)
+    await transport.releaseCapability(1)
+    #expect(try await first.value.state == .succeeded)
+    await transport.releaseCapability(2)
+    #expect(try await second.value.state == .succeeded)
+    #expect(await transport.mutationCount == 1)
+    #expect(await client.pendingOperations.first?.state == .succeeded)
 }

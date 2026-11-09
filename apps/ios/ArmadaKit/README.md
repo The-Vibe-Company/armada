@@ -37,6 +37,8 @@ Actual actor surface:
 - `prepareOrchestratorCreate(_:) -> PendingOrchestratorOperation` (local only).
 - `prepareOrchestratorMutation(id:action:expectedRevision:text:)` (local only).
 - `submitOrchestratorOperation(_ UUID) -> OrchestratorOperation`.
+- `discardOrchestratorOperation(_ UUID)` removes only terminal commands or known
+  pre-effect HTTP400 rejections; uncertain commands cannot be abandoned.
 - `pendingOperations` restores durable pending/uncertain commands on startup.
 
 All reads select the authorized `orgId`; cursors pass through URLQueryItem without
