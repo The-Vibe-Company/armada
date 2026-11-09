@@ -103,7 +103,12 @@ function seed(): State {
     ],
     sandboxes: [
       sandbox(id(30), "bx_alice_running", id(20), ALICE, "claude", "running", "2026-11-08T10:05:00.000Z"),
-      sandbox(id(31), "bx_alice_failed", id(20), ALICE, "codex", "failed", "2026-11-08T10:04:00.000Z"),
+      // On Modal: the list names the provider from this column, never from the ID (#645).
+      {
+        ...sandbox(id(31), "bx_alice_failed", id(20), ALICE, "codex", "failed", "2026-11-08T10:04:00.000Z"),
+        provider: "modal",
+        boat_id: null,
+      },
       {
         ...sandbox(id(32), "bx_bob_secret", id(22), BOB, "claude", "ready", "2026-11-08T10:03:00.000Z"),
         visibility: "private",
