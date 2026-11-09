@@ -3,7 +3,7 @@ import { readdirSync } from "node:fs";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
 import { generateDatabaseTypes } from "../../../scripts/db/generate.ts";
-import { HARNESSES, type SandboxState, type Visibility } from "../src/index.ts";
+import { encryptSecret, HARNESSES, type SandboxState, type Visibility } from "../src/index.ts";
 
 const PROVIDER_STATES = [
   "starting",
@@ -507,7 +507,7 @@ describe("database", () => {
       await expect(
         asUser(db, people.member, () =>
           db.query(
-            "insert into credentials (scope, owner_id, kind, value_enc) values ('org', $1, 'anthropic', decode('0a', 'hex'))",
+            "insert into credentials (scope, owner_id, kind, value_enc) values ('org', $1, 'modal', decode('0a', 'hex'))",
             [people.org],
           ),
         ),
@@ -515,7 +515,7 @@ describe("database", () => {
       const credential = await asUser(db, people.admin, async () => {
         const result = await db.query<{ id: string }>(
           `insert into credentials (scope, owner_id, kind, value_enc)
-           values ('org', $1, 'anthropic', decode('0a', 'hex'))
+           values ('org', $1, 'modal', decode('0a', 'hex'))
            returning id`,
           [people.org],
         );
@@ -527,7 +527,7 @@ describe("database", () => {
         await asUser(db, people.member, () =>
           text(db, "select kind::text as value from credentials where id = $1", [credential]),
         ),
-      ).toBe("anthropic");
+      ).toBe("modal");
       await asUser(db, people.member, () =>
         db.query("update credentials set value_enc = decode('ff', 'hex') where id = $1", [credential]),
       );
@@ -635,10 +635,75 @@ describe("database", () => {
     });
   });
 
+  test.each(["insert", "update"] as const)(
+    "authenticated model %s is denied while provider writes remain allowed",
+    async (operation) => {
+      await withDb(async (db) => {
+        const people = await fixture(db);
+        const key = Buffer.alloc(32, 21).toString("base64");
+        const original = await encryptSecret("synthetic-original", key);
+        const replacement = await encryptSecret("synthetic-replacement", key);
+        for (const { scope, owner, actor } of [
+          { scope: "user", owner: people.owner, actor: people.owner },
+          { scope: "org", owner: people.org, actor: people.admin },
+        ]) {
+          for (const kind of ["anthropic", "openai", "claude_oauth", "codex_auth"]) {
+            const [id] = await asRole(db, "service_role", () =>
+              ids(
+                db,
+                "insert into credentials(scope,owner_id,kind,value_enc) values($1::credential_scope,$2,$3::credential_kind,$4::bytea) returning id",
+                [scope, owner, kind, original],
+              ),
+            );
+            if (!id) throw Error("Service model insert failed.");
+            if (operation === "insert") {
+              await expect(
+                asUser(db, actor, () =>
+                  ids(
+                    db,
+                    "insert into credentials(scope,owner_id,kind,value_enc) values($1::credential_scope,$2,$3::credential_kind,$4::bytea) returning id",
+                    [scope, owner, kind, replacement],
+                  ),
+                ),
+              ).rejects.toThrow(/row-level security/);
+            } else {
+              expect(
+                await asUser(db, actor, () =>
+                  ids(db, "update credentials set value_enc=$2::bytea where id=$1 returning id", [id, replacement]),
+                ),
+              ).toEqual([]);
+            }
+            expect(await ciphertext(db, id)).toBe(Buffer.from(original).toString("hex"));
+          }
+          for (const kind of scope === "org" ? ["modal"] : ["boat", "modal"]) {
+            const insert = () =>
+              ids(
+                db,
+                "insert into credentials(scope,owner_id,kind,value_enc) values($1::credential_scope,$2,$3::credential_kind,$4::bytea) returning id",
+                [scope, owner, kind, original],
+              );
+            const [id] =
+              operation === "insert" ? await asUser(db, actor, insert) : await asRole(db, "service_role", insert);
+            if (!id) throw Error("Provider insert failed.");
+            if (operation === "update")
+              expect(
+                await asUser(db, actor, () =>
+                  ids(db, "update credentials set value_enc=$2::bytea where id=$1 returning id", [id, replacement]),
+                ),
+              ).toEqual([id]);
+            expect(await ciphertext(db, id)).toBe(
+              Buffer.from(operation === "insert" ? original : replacement).toString("hex"),
+            );
+          }
+        }
+      });
+    },
+  );
+
   test("only the owner sees a user credential or a token", async () => {
     await withDb(async (db) => {
       const people = await fixture(db);
-      const credential = await asUser(db, people.owner, async () => {
+      const credential = await asRole(db, "service_role", async () => {
         const result = await db.query<{ id: string }>(
           `insert into credentials (scope, owner_id, kind, value_enc)
            values ('user', $1, 'anthropic', decode('0d', 'hex'))

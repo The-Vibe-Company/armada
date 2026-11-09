@@ -289,6 +289,9 @@ describe("named model accounts", () => {
     await withVault(async ({ store, people, db }) => {
       const org = await createOrg(store, people.stan, "Accounts");
       await addMember(store, people.stan, { org: org.id, email: "ada@example.com", role: "member" });
+      // Canonical account operations, including explicit CAS, run as the real service role.
+      await db.exec("set role service_role");
+      expect((await db.query<{ role: string }>("select current_user as role")).rows[0]?.role).toBe("service_role");
       const create = (name: string, value: string) =>
         mutateCredentialAccount(store, KEY, people.stan, { action: "set", scope: "user", kind: "openai", name, value });
       const first = await create("Work", "work-key");

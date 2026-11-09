@@ -38,3 +38,9 @@ for delete to authenticated using (kind in ('boat','modal'));
 alter table public.modal_server_harnesses add column credential_id uuid, add column credential_version integer;
 alter table public.modal_server_harnesses add constraint modal_harness_credential_binding_chk
   check ((credential_id is null and credential_version is null) or (credential_id is not null and credential_version is not null and credential_version > 0));
+-- Model writes are exclusively the authorized service-role account API. Existing
+-- authenticated grants remain necessary for canonical Boat/Modal singleton writes.
+create policy credentials_model_insert_fence on public.credentials as restrictive
+for insert to authenticated with check (kind in ('boat','modal'));
+create policy credentials_model_update_fence on public.credentials as restrictive
+for update to authenticated using (kind in ('boat','modal')) with check (kind in ('boat','modal'));

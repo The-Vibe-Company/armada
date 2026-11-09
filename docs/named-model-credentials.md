@@ -45,12 +45,15 @@ not. Deleted rows remain for historical identity and cause pinned sends to fail
 explicitly. Native authentication/usage consumers should use this binding and
 must not resolve a current default. Legacy unbound sandboxes remain unbound.
 
-Deploy migration `20261110120200_named_model_credentials.sql` before the server.
+Follow [the202 maintenance cutover](named-model-credentials-cutover.md): remove
+old production writers before202, deploy the new backend before #618, and reopen
+named writes only after backend and frontend are both ready.
 Native login/quota collection and dashboard account controls are separate work.
 
-Until the dependent dashboard UI switches to the account control routes, direct
-user-JWT model-account DELETE is deliberately fenced (the row is retained).
-Use CLI/control removal. Provider singleton deletion remains available.
+Direct user-JWT model-account INSERT, UPDATE and DELETE are deliberately fenced;
+canonical model writes use the authorized service-role account API. Safe metadata
+reads remain available. Provider Boat/Modal writes keep their existing owner/admin
+rules and canonical singleton storage.
 
 The replacement CAS above is for explicit user replacement/reconnect, not routine
 OAuth refresh. Native auth may maintain separate encrypted state keyed by the
