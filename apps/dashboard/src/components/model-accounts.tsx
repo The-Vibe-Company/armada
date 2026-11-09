@@ -584,7 +584,7 @@ export function AddAccountDialog({
             <DialogTitle>Add a model account</DialogTitle>
             <DialogDescription>Add as many as you have. Each one is chosen by name when you launch.</DialogDescription>
           </DialogHeader>
-          <form key={generation} action={formAction} className="space-y-5">
+          <form key={generation} action={formAction} className="min-w-0 space-y-5">
             <input type="hidden" name="org" value={orgId} />
             <input type="hidden" name="kind" value={kind} />
             <input type="hidden" name="scope" value={scope} />
@@ -692,7 +692,7 @@ export function AddAccountDialog({
 function TerminalSignIn({ command, onDone }: { command: string; onDone: () => void }) {
   const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
   return (
-    <div className="space-y-3 rounded-md border p-3" data-terminal-login>
+    <div className="min-w-0 space-y-3 rounded-md border p-3" data-terminal-login>
       <p className="text-sm">
         <span className="font-medium">Sign in from your terminal.</span>{" "}
         <span className="text-muted-foreground">It opens the official sign-in, then saves the account here.</span>
