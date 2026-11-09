@@ -110,6 +110,8 @@ const modelCatalogText = Object.entries(MODEL_CATALOG)
 const modelInput = z.string().min(1).optional().describe(`The model, by id. ${modelCatalogText}.`);
 const effortInput = z.string().min(1).optional().describe("The reasoning effort; one the model accepts (see model).");
 const modelOutput = {
+  credentialId: z.string().nullable().optional(),
+  credentialVersion: z.number().int().nullable().optional(),
   model: z.string().nullable().describe("The model its turns run with. Null: launched before Armada recorded it."),
   reasoningEffort: z.string().nullable(),
 };
@@ -512,6 +514,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           .describe(
             "Configured directory or owner/repo from the golden. Prepares native agent cwd, including idle launches. Not confinement.",
           ),
+        credentialId: z.string().uuid().optional(),
         prompt: z.string().min(1).optional().describe("The first instruction. Leave out for an idle sandbox."),
         ttl_seconds: z
           .number()
@@ -577,6 +580,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           ...(args.model === undefined ? {} : { model: args.model }),
           ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
           ...(args.connections === undefined ? {} : { connections: args.connections }),
+          ...(args.credentialId ? { credentialId: args.credentialId } : {}),
           ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
           ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
           ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
@@ -592,6 +596,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         repositoryDir: result.sandbox.repositoryDir ?? null,
         model: result.sandbox.model,
         reasoningEffort: result.sandbox.reasoningEffort,
+        credentialId: result.sandbox.credentialId ?? null,
+        credentialVersion: result.sandbox.credentialVersion ?? null,
         status: result.sandbox.status,
         conversationIds: result.sandbox.conversationIds,
         promptId: result.promptId ?? null,
@@ -659,6 +665,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           repositoryDir: row.repositoryDir ?? null,
           model: row.model,
           reasoningEffort: row.reasoningEffort,
+          credentialId: row.credentialId ?? null,
+          credentialVersion: row.credentialVersion ?? null,
           status: row.status,
           statusReason: row.statusReason,
           orgId: row.orgId,
@@ -772,6 +780,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
       if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
+      if (found.credentialId)
+        await context.launchCredentials.resolve(
+          { userId: found.ownerId, orgId: found.orgId, role: "member" },
+          found.harness,
+          found.credentialId,
+          found.credentialVersion ?? undefined,
+        );
       const choice = turnModel(found, { model: args.model, reasoningEffort: args.reasoning_effort });
       const conversation = args.conversation_id ?? found.conversationIds.at(-1);
       const machine = await provider.get(found.providerSandboxId);

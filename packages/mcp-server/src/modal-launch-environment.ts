@@ -20,7 +20,7 @@ export interface ModalLaunchEnvironmentOptions {
   github?: GitHubLaunchOptions;
 }
 
-/** Private bootstrap policy. Persist identities/opt-in only; resolve transient credentials afresh. */
+/** Persist account identity/revision and GitHub opt-in; never resolve a different model account on restore. */
 export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
   return async (
     machine: Machine,
@@ -33,20 +33,46 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
     const initialHarness: Harness | undefined = claude ? "claude" : codex ? "codex" : undefined;
     if (env.GH_TOKEN && env.GITHUB_TOKEN && env.GH_TOKEN !== env.GITHUB_TOKEN)
       throw new VaultError("invalid", "Launch GitHub aliases disagree.");
+    const selectedId = machine.info.labels.credentialId;
+    const rawVersion = machine.info.labels.credentialVersion;
+    const selectedVersion = rawVersion === undefined ? undefined : Number(rawVersion);
+    if (
+      (selectedId === undefined) !== (selectedVersion === undefined) ||
+      (selectedVersion !== undefined && (!Number.isSafeInteger(selectedVersion) || selectedVersion < 1))
+    )
+      throw new VaultError("invalid", "Modal account binding is invalid.");
     if (initialHarness)
       await options.sql.query(
-        "insert into public.modal_server_harnesses(scope,machine_id,harness,github_enabled) values($1,$2,$3,$4) on conflict(scope,machine_id) do nothing",
-        [options.scopeKey, machine.info.id, initialHarness, Boolean(env.GH_TOKEN || env.GITHUB_TOKEN)],
+        "insert into public.modal_server_harnesses(scope,machine_id,harness,github_enabled,credential_id,credential_version) values($1,$2,$3,$4,$5::uuid,$6::integer) on conflict(scope,machine_id) do nothing",
+        [
+          options.scopeKey,
+          machine.info.id,
+          initialHarness,
+          Boolean(env.GH_TOKEN || env.GITHUB_TOKEN),
+          selectedId ?? null,
+          selectedVersion ?? null,
+        ],
       );
     const stored = (
-      await options.sql.query<{ harness: Harness; github_enabled: boolean }>(
-        "select harness,github_enabled from public.modal_server_harnesses where scope=$1 and machine_id=$2",
+      await options.sql.query<{
+        harness: Harness;
+        github_enabled: boolean;
+        credential_id: string | null;
+        credential_version: number | null;
+      }>(
+        "select harness,github_enabled,credential_id,credential_version from public.modal_server_harnesses where scope=$1 and machine_id=$2",
         [options.scopeKey, machine.info.id],
       )
     ).rows[0];
     if (!stored) throw new VaultError("unavailable", "Modal launch has no persisted harness identity.");
     if (initialHarness && stored.harness !== initialHarness)
       throw new VaultError("forbidden", "The launch harness identity cannot change.");
+    if (selectedId !== undefined && stored.credential_id !== selectedId)
+      throw new VaultError("forbidden", "Modal account identity cannot change.");
+    if (selectedVersion !== undefined && stored.credential_version !== selectedVersion)
+      throw new VaultError("forbidden", "Modal account revision cannot change.");
+    if (!stored.credential_id && !initialHarness)
+      throw new VaultError("unavailable", "This legacy Modal sandbox has no account binding. Relaunch it explicitly.");
     const userId = machine.launchUserId ?? options.callerUserId;
     const membership = await options.sql.query("select 1 from public.members where org_id=$1 and user_id=$2", [
       options.scope.orgId,
@@ -58,7 +84,18 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
       orgId: options.scope.orgId,
       userId,
       harness: stored.harness,
+      ...(stored.credential_id
+        ? { credentialId: stored.credential_id, credentialVersion: stored.credential_version ?? 0 }
+        : {}),
     });
+    if (!stored.credential_id) {
+      if (!credentials.binding) throw new VaultError("unavailable", "Modal account binding is unavailable.");
+      const pinned = await options.sql.query(
+        "update public.modal_server_harnesses set credential_id=$3::uuid,credential_version=$4 where scope=$1 and machine_id=$2 and (credential_id is null or (credential_id=$3::uuid and credential_version=$4)) returning machine_id",
+        [options.scopeKey, machine.info.id, credentials.binding.credentialId, credentials.binding.credentialVersion],
+      );
+      if (!pinned.rows.length) throw new VaultError("conflict", "Modal account binding changed during bootstrap.");
+    }
     const execEnv: ExecEnvironment = {
       HOME: "/home/user",
       PATH: "/usr/local/bin:/usr/bin:/bin",

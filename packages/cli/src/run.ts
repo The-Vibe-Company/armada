@@ -662,6 +662,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       body: JSON.stringify({
         ...(single(args, "--visibility") ? { visibility: single(args, "--visibility") } : {}),
         ...(single(args, "--connections") ? { connections: single(args, "--connections")!.split(",") } : {}),
+        credentialId: single(args, "--credential-id"),
         golden: name,
         ...(repo === undefined ? {} : { repo }),
         ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),

@@ -10,6 +10,7 @@ import {
   listCredentials,
   listMembers,
   listOrgs,
+  mutateCredentialAccount,
   parseCredentialKind,
   parseCredentialValue,
   removeCredential,
@@ -129,7 +130,7 @@ describe("credentials", () => {
       const org = (await listOrgs(store, people.stan))[0];
       expect(
         await resolveCredentials(store, KEY, { userId: people.stan, orgId: org?.id ?? "", harness: "claude" }),
-      ).toEqual({
+      ).toMatchObject({
         env: { CLAUDE_CODE_OAUTH_TOKEN: CLAUDE },
         files: [],
         sources: [{ kind: "claude_oauth", scope: "user" }],
@@ -257,6 +258,122 @@ describe("credentials", () => {
         harness: "claude",
       });
       expect(resolved.env).toEqual({ ANTHROPIC_API_KEY: "sk-ant-api03-two" });
+    });
+  });
+});
+
+describe("named model accounts", () => {
+  test("legacy kind-set requires an ID when another compatible kind has duplicate accounts", async () => {
+    await withVault(async ({ store, people }) => {
+      for (const kind of ["openai", "anthropic"] as const) {
+        for (let index = 0; index < 2; index++)
+          await mutateCredentialAccount(store, KEY, people.stan, {
+            action: "set",
+            scope: "user",
+            kind,
+            value: `account-${kind}-${index}`,
+          });
+      }
+      for (const [kind, value] of [
+        ["codex_auth", AUTH_JSON],
+        ["claude_oauth", CLAUDE],
+      ] as const) {
+        await expect(
+          setCredential(store, KEY, people.stan, { scope: "user", org: undefined, kind, value }),
+        ).rejects.toThrow(/Multiple accounts/);
+      }
+      expect((await listCredentials(store, people.stan, undefined)).user).toHaveLength(4);
+    });
+  });
+  test("ID mutations authorize owners/admins, preserve secret revisions and pin selection across default changes", async () => {
+    await withVault(async ({ store, people, db }) => {
+      const org = await createOrg(store, people.stan, "Accounts");
+      await addMember(store, people.stan, { org: org.id, email: "ada@example.com", role: "member" });
+      const create = (name: string, value: string) =>
+        mutateCredentialAccount(store, KEY, people.stan, { action: "set", scope: "user", kind: "openai", name, value });
+      const first = await create("Work", "work-key");
+      const second = await create("Personal", "personal-key");
+      expect(first.id).not.toBe(second.id);
+      const actor = { userId: people.stan, orgId: org.id, harness: "codex" as const };
+      await expect(resolveCredentials(store, KEY, actor)).rejects.toThrow(/Multiple compatible/);
+      await mutateCredentialAccount(store, KEY, people.stan, { action: "default", scope: "user", id: first.id! });
+      const pinned = (await resolveCredentials(store, KEY, actor)).binding!;
+      expect(pinned).toEqual({ credentialId: first.id!, credentialVersion: 1 });
+      await mutateCredentialAccount(store, KEY, people.stan, { action: "default", scope: "user", id: second.id! });
+      expect((await resolveCredentials(store, KEY, { ...actor, ...pinned })).env).toEqual({
+        OPENAI_API_KEY: "work-key",
+      });
+      const before = await db.query<{ value_enc: Uint8Array }>("select value_enc from credentials where id=$1", [
+        first.id,
+      ]);
+      const renamed = await mutateCredentialAccount(store, KEY, people.stan, {
+        action: "rename",
+        scope: "user",
+        id: first.id!,
+        name: "Renamed",
+      });
+      expect(renamed.version).toBe(1);
+      expect((await db.query("select value_enc from credentials where id=$1", [first.id])).rows).toEqual(before.rows);
+      await expect(
+        mutateCredentialAccount(store, KEY, people.ada, {
+          action: "rename",
+          scope: "user",
+          id: first.id!,
+          name: "Stolen",
+        }),
+      ).rejects.toThrow(/No such account/);
+      await expect(
+        resolveCredentials(store, KEY, { ...actor, harness: "claude", credentialId: first.id! }),
+      ).rejects.toThrow(/incompatible/);
+      await expect(
+        setCredential(store, KEY, people.stan, { scope: "user", org: undefined, kind: "openai", value: "overwrite" }),
+      ).rejects.toThrow(/Multiple accounts/);
+      await expect(
+        removeCredential(store, people.stan, { scope: "user", org: undefined, kind: "openai" }),
+      ).rejects.toThrow(/Multiple accounts/);
+      const shared = await mutateCredentialAccount(store, KEY, people.stan, {
+        action: "set",
+        scope: "org",
+        org: org.id,
+        kind: "openai",
+        name: "Shared",
+        value: "org-key",
+      });
+      await expect(
+        mutateCredentialAccount(store, KEY, people.ada, {
+          action: "default",
+          scope: "org",
+          org: org.id,
+          id: shared.id!,
+        }),
+      ).rejects.toThrow(/Only an org admin/);
+      const rotated = await mutateCredentialAccount(store, KEY, people.stan, {
+        action: "set",
+        scope: "org",
+        org: org.id,
+        id: shared.id!,
+        kind: "openai",
+        value: "org-key-new",
+        expectedVersion: 1,
+      });
+      expect(rotated.version).toBe(2);
+      await expect(
+        mutateCredentialAccount(store, KEY, people.stan, {
+          action: "set",
+          scope: "org",
+          org: org.id,
+          id: shared.id!,
+          kind: "openai",
+          value: "stale-key",
+          expectedVersion: 1,
+        }),
+      ).rejects.toThrow(/revision changed/);
+      const member = { ...actor, userId: people.ada, credentialId: shared.id! };
+      expect((await resolveCredentials(store, KEY, member)).env).toEqual({ OPENAI_API_KEY: "org-key-new" });
+      await mutateCredentialAccount(store, KEY, people.stan, { action: "remove", scope: "user", id: first.id! });
+      await expect(resolveCredentials(store, KEY, { ...actor, ...pinned })).rejects.toThrow(/revoked or changed/);
+      await db.query("update credentials set status='revoked' where id=$1", [second.id]);
+      await expect(resolveCredentials(store, KEY, actor)).rejects.toThrow(/revoked or changed/);
     });
   });
 });

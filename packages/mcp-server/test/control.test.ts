@@ -984,3 +984,32 @@ test("CLI removal uses authorized API and returns only the retained-artifact rec
     expect(unauthenticated?.status).toBe(401);
   });
 });
+
+test("CLI named-account operations preserve safe IDs and CAS through the authenticated API", async () => {
+  await withServer(async ({ cli }) => {
+    const admin = cli(STAN);
+    await admin.run(["org", "create", "Accounts"]);
+    expect((await admin.run(["creds", "set", "openai", "--name", "Work"], { stdin: "work-test-key" })).code).toBe(0);
+    expect(
+      (await admin.run(["creds", "set", "openai", "--name", "Personal"], { stdin: "personal-test-key" })).code,
+    ).toBe(0);
+    const listed = await admin.run(["creds", "list", "--json"]);
+    expect(listed.out).not.toContain("work-test-key");
+    expect(listed.out).not.toContain("valueEnc");
+    const accounts = JSON.parse(listed.out).user;
+    expect(accounts).toHaveLength(2);
+    const id = accounts.find((row: { name: string }) => row.name === "Work").id;
+    expect((await admin.run(["creds", "rename", id, "Renamed"])).code).toBe(0);
+    expect((await admin.run(["creds", "default", id])).code).toBe(0);
+    expect(
+      (await admin.run(["creds", "set", "openai", "--id", id, "--expected-version", "1"], { stdin: "new-test-key" }))
+        .code,
+    ).toBe(0);
+    expect(
+      (await admin.run(["creds", "set", "openai", "--id", id, "--expected-version", "1"], { stdin: "stale-test-key" }))
+        .code,
+    ).not.toBe(0);
+    expect((await admin.run(["creds", "remove", id])).code).toBe(0);
+    expect(JSON.parse((await admin.run(["creds", "list", "--json"])).out).user).toHaveLength(1);
+  });
+});

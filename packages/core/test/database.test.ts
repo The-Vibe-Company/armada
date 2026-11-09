@@ -160,7 +160,7 @@ describe("database", () => {
       expect(granted.rows.map((row) => row.grant)).toEqual([
         "credentials DELETE",
         "credentials INSERT(created_at,id,kind,owner_id,scope,value_enc)",
-        "credentials SELECT(created_at,id,kind,owner_id,scope)",
+        "credentials SELECT(created_at,expires_at,id,is_default,kind,name,owner_id,scope,status,updated_at,version)",
         "credentials UPDATE(value_enc)",
         "github_connections DELETE",
         "github_connections SELECT(created_at,github_id,installations,login,name,refresh_expires_at,revoked_at,updated_at,user_id)",
@@ -223,6 +223,10 @@ describe("database", () => {
           ciphertext.push(id);
         }
         if (!secretName.test(column.column_name)) continue;
+        if (id === "sandboxes.credential_id" || id === "sandboxes.credential_version") {
+          expect(column.data_type).toBe(id.endsWith("_id") ? "uuid" : "integer");
+          continue;
+        }
         if (column.column_name === "hash") {
           expect(column.data_type).toBe("text");
           continue;
@@ -652,6 +656,10 @@ describe("database", () => {
         await asUser(db, people.member, () => ids(db, "select id from credentials where id = $1", [credential])),
       ).toEqual([]);
 
+      expect(
+        await asUser(db, people.owner, () => ids(db, "delete from credentials where id=$1 returning id", [credential])),
+      ).toEqual([]);
+      expect(await text(db, "select kind::text as value from credentials where id=$1", [credential])).toBe("anthropic");
       const serviceToken = await asUser(db, people.owner, () =>
         insertToken(db, "service_tokens", people.owner, people.org, HASH),
       );

@@ -12,6 +12,12 @@ export type Database = {
           kind: Database["public"]["Enums"]["credential_kind"];
           value_enc: string;
           created_at: string;
+          name: string;
+          is_default: boolean;
+          status: string;
+          expires_at: string | null;
+          updated_at: string;
+          version: number;
         };
         Insert: {
           id?: string;
@@ -20,6 +26,12 @@ export type Database = {
           kind: Database["public"]["Enums"]["credential_kind"];
           value_enc: string;
           created_at?: string;
+          name?: string;
+          is_default?: boolean;
+          status?: string;
+          expires_at?: string | null;
+          updated_at?: string;
+          version?: number;
         };
         Update: {
           id?: string;
@@ -28,6 +40,12 @@ export type Database = {
           kind?: Database["public"]["Enums"]["credential_kind"];
           value_enc?: string;
           created_at?: string;
+          name?: string;
+          is_default?: boolean;
+          status?: string;
+          expires_at?: string | null;
+          updated_at?: string;
+          version?: number;
         };
         Relationships: [];
       };
@@ -1058,18 +1076,24 @@ export type Database = {
           machine_id: string;
           github_enabled: boolean;
           harness: string;
+          credential_id: string | null;
+          credential_version: number | null;
         };
         Insert: {
           scope: string;
           machine_id: string;
           github_enabled?: boolean;
           harness: string;
+          credential_id?: string | null;
+          credential_version?: number | null;
         };
         Update: {
           scope?: string;
           machine_id?: string;
           github_enabled?: boolean;
           harness?: string;
+          credential_id?: string | null;
+          credential_version?: number | null;
         };
         Relationships: [
           {
@@ -1266,6 +1290,8 @@ export type Database = {
           activity_until: string | null;
           reconcile_lease: string | null;
           reconcile_lease_until: string | null;
+          credential_id: string | null;
+          credential_version: number | null;
         };
         Insert: {
           id?: string;
@@ -1301,6 +1327,8 @@ export type Database = {
           activity_until?: string | null;
           reconcile_lease?: string | null;
           reconcile_lease_until?: string | null;
+          credential_id?: string | null;
+          credential_version?: number | null;
         };
         Update: {
           id?: string;
@@ -1336,6 +1364,8 @@ export type Database = {
           activity_until?: string | null;
           reconcile_lease?: string | null;
           reconcile_lease_until?: string | null;
+          credential_id?: string | null;
+          credential_version?: number | null;
         };
         Relationships: [
           {
