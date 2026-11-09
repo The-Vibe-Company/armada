@@ -3,8 +3,10 @@ import { RocketIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { CreatedAt } from "@/components/created-at";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { Empty, PageHeader } from "@/components/page-header";
+import { ProviderName } from "@/components/provider-mark";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/native-select";
@@ -143,6 +145,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
               <TableRow className="bg-muted/40 hover:bg-muted/40">
                 <TableHead>Sandbox</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead className="hidden sm:table-cell">Provider</TableHead>
                 <TableHead className="hidden sm:table-cell">Golden</TableHead>
                 <TableHead className="hidden md:table-cell">Harness</TableHead>
                 <TableHead className="hidden md:table-cell">Owner</TableHead>
@@ -160,13 +163,20 @@ export default async function SandboxesPage({ searchParams }: Props) {
                       <span className="truncate">{sandbox.provider_sandbox_id}</span>
                       <LinkPendingIcon />
                     </Link>
-                    <p className="truncate text-xs text-muted-foreground sm:hidden">
-                      {goldenName.get(sandbox.golden_id) ?? "Unknown golden"}, {HARNESS_LABELS[sandbox.harness]}
+                    <p className="flex items-center gap-1 text-xs text-muted-foreground sm:hidden">
+                      <ProviderName provider={sandbox.provider} className="shrink-0 gap-1" />
+                      <span className="truncate">
+                        <span aria-hidden="true">·</span> {goldenName.get(sandbox.golden_id) ?? "Unknown golden"},{" "}
+                        {HARNESS_LABELS[sandbox.harness]}
+                      </span>
                     </p>
                   </TableCell>
                   <TableCell>
                     <StatusBadge status={sandbox.status} />
                     <LifecycleHint view={lifecycleView(sandbox.status, readLifecycle(sandbox), now)} />
+                  </TableCell>
+                  <TableCell className="hidden sm:table-cell">
+                    <ProviderName provider={sandbox.provider} />
                   </TableCell>
                   <TableCell className="hidden sm:table-cell">
                     {goldenName.get(sandbox.golden_id) ?? "Unknown"}
@@ -176,7 +186,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
                     {displayUser(directory, sandbox.owner_id, viewer.id)}
                   </TableCell>
                   <TableCell className="hidden text-muted-foreground lg:table-cell">
-                    <time dateTime={sandbox.created_at}>{formatDate(sandbox.created_at)}</time>
+                    <CreatedAt iso={sandbox.created_at} now={now.getTime()} />
                   </TableCell>
                 </TableRow>
               ))}
@@ -227,8 +237,4 @@ function LifecycleHint({ view }: { view: LifecycleView }) {
 
 function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-function formatDate(iso: string): string {
-  return `${new Date(iso).toLocaleString("en", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" })} UTC`;
 }

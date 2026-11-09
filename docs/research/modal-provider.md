@@ -473,3 +473,13 @@ Official SDK source links below pin commit
 [bun-sqlite]: https://bun.sh/docs/runtime/sqlite
 [sqlite-wal]: https://www.sqlite.org/wal.html
 [pg-locking]: https://www.postgresql.org/docs/current/explicit-locking.html
+
+### Conformance namespace retirement (#668)
+
+The historical shared `armada-provider-conformance` App
+`ap-MQmau5HWSdX2t036SWIP7A` is now operator-verified stopped/Tasks0. Its previous
+deployed/Tasks0 state was an idle namespace, not evidence of hidden compute.
+Do not reuse that AppID. Future opt-in runs create newly owned per-run fixtures
+and retain creation, exact resource/image cleanup and stopped-state readback
+receipts; see [the tooling contract](../../packages/provider-modal/README.md).
+Registered production Apps and unrelated resources must remain untouched.

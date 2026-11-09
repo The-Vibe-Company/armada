@@ -414,7 +414,10 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
     await connectGitHub(db, userId);
     let failure = "";
     let generation = 0;
-    const artifacts = new Map<string, { source: string; content: number; status: "ready" | "failed" }>();
+    const artifacts = new Map<
+      string,
+      { source: string; content: number; status: "ready" | "failed"; fingerprint?: string }
+    >();
     const machines = new Map<string, { content: number; stopped: boolean }>();
     const deleted: string[] = [];
     let next = 0;
@@ -426,6 +429,7 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
     };
     const provider: Provider = {
       ...readyProvider(),
+      managementIdentity: async () => ({ scope: "org", ownerId: actor.orgId }),
       createGolden: async () => start(++generation),
       snapshot: async ({ name, sandboxId }) => {
         artifacts.set(name, {
@@ -439,8 +443,19 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
       },
       getSnapshot: async (name) => {
         const artifact = artifacts.get(name);
-        if (!artifact) throw new Error("absent artifact");
-        return { name, status: artifact.status, sourceSandboxId: artifact.source };
+        if (!artifact)
+          throw new ProviderError({
+            provider: "boat",
+            code: "not_found",
+            message: "absent artifact",
+            retryable: false,
+          });
+        return {
+          name,
+          status: artifact.status,
+          sourceSandboxId: artifact.source,
+          artifactId: artifact.fingerprint ?? "disk-" + name,
+        };
       },
       deleteSnapshot: async (name) => {
         deleted.push(name);
@@ -513,6 +528,7 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
       );
       expect([...artifacts.keys()]).toEqual([first.snapshot]);
       expect(deleted).not.toContain(first.snapshot);
+      expect((await db.query("select id from golden_snapshot_retirements")).rows).toEqual([]);
       expect([...machines.values()].every((machine) => machine.stopped)).toBe(true);
     }
     failure = "";
@@ -524,6 +540,9 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
     expect(after.providerSnapshotId).toBe(updated.snapshot);
     expect(after.config.init).toEqual(["echo new"]);
     expect(after.providerSandboxId).toBeNull();
+    expect((await db.query("select old_snapshot,new_snapshot from golden_snapshot_retirements")).rows).toEqual([
+      { old_snapshot: first.snapshot, new_snapshot: updated.snapshot },
+    ]);
     expect((await db.query("select golden_id,backend_id,org_id,owner_id from golden_backend_slots")).rows).toEqual(
       binding,
     );
@@ -570,6 +589,68 @@ test("rebuild retains last-good artifacts/config through scan, snapshot and SQL 
     expect(committed.providerSnapshotId).not.toBe(updated.snapshot);
     expect(artifacts.has(committed.providerSnapshotId!)).toBe(true);
     expect(artifacts.has(updated.snapshot)).toBe(true);
+    expect(
+      (
+        await db.query("select new_snapshot from golden_snapshot_retirements where old_snapshot=$1", [
+          current.providerSnapshotId,
+        ])
+      ).rows,
+    ).toEqual([{ new_snapshot: committed.providerSnapshotId }]);
+    failure = "";
+    const jobs = new GoldenBuildJobs({
+      sql: db,
+      encryptionKey: KEY,
+      service: {
+        github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
+        installationApp: null,
+        fetch: fakeGitHubFetch(),
+        ssh: async () => {},
+      },
+      provider: async () => provider,
+    });
+    const job = await jobs.admit(provider, actor, { ...input, existingGolden: committed }, crypto.randomUUID());
+    await jobs.runOne();
+    expect((await jobs.status(actor.userId, job.jobId)).state).toBe("succeeded");
+    const changed = (await store.findByName(actor.orgId, "web"))[0]!;
+    artifacts.get(changed.providerSnapshotId!)!.fingerprint = "changed-outside-managed-namespace";
+    const recovered = await service.create(provider, actor, { ...input, existingGolden: changed });
+    expect(recovered.snapshot).not.toBe(changed.providerSnapshotId);
+    expect(artifacts.has(changed.providerSnapshotId!)).toBe(true);
+    expect(deleted).not.toContain(changed.providerSnapshotId!);
+    expect(
+      (
+        await db.query<{ artifact_id: string }>(
+          "select artifact_id from golden_snapshot_publications where snapshot=$1",
+          [changed.providerSnapshotId],
+        )
+      ).rows[0]?.artifact_id,
+    ).toBe("disk-" + changed.providerSnapshotId);
+    const live = (await store.findByName(actor.orgId, "web"))[0]!;
+    const collision = crypto.randomUUID(),
+      label = `golden-r-${collision}`;
+    artifacts.set(label, { source: "foreign-source", content: 999, status: "ready" });
+    const uuid = spyOn(crypto, "randomUUID").mockReturnValue(collision);
+    try {
+      await expect(service.create(provider, actor, { ...input, existingGolden: live })).rejects.toThrow();
+      expect(artifacts.get(label)?.source).toBe("foreign-source");
+      expect(deleted).not.toContain(label);
+      artifacts.delete(label); // The persisted namespace claim still forbids reuse after upstream disappearance.
+      await expect(
+        db.query(
+          `insert into golden_snapshot_publications(id,golden_id,provider,backend_id,snapshot,target,manager_id)
+        select gen_random_uuid(),golden_id,provider,backend_id,snapshot,target,manager_id from golden_snapshot_publications where snapshot=$1`,
+          [label],
+        ),
+      ).rejects.toMatchObject({
+        code: "23505",
+        constraint: "golden_snapshot_publications_provider_backend_id_snapshot_key",
+      });
+      expect(artifacts.has(label)).toBe(false);
+      expect(deleted).not.toContain(label);
+      expect((await store.findByName(actor.orgId, "web"))[0]?.providerSnapshotId).toBe(live.providerSnapshotId);
+    } finally {
+      uuid.mockRestore();
+    }
   } finally {
     await db.close();
   }
@@ -652,7 +733,9 @@ function readyProvider(): Provider {
     capabilities: { claude: caps(), codex: caps() },
     createGolden: async () => sandbox(),
     snapshot: async ({ name }) => ({ name, status: "ready" }),
-    getSnapshot: async (name) => ({ name, status: "ready" }),
+    getSnapshot: async () => {
+      throw new ProviderError({ provider: "boat", code: "not_found", message: "absent snapshot", retryable: false });
+    },
     deleteSnapshot: async () => {},
     fork: async () => sandbox(),
     get: async () => sandbox(),
@@ -939,6 +1022,110 @@ test.each(["delayed", "timeout", "failed", "unknown"] as const)(
       expect(deleted).not.toContain(first.snapshot);
     } finally {
       await db.close();
+    }
+  },
+);
+
+test.skipIf(!process.env.ARMADA_TEST_POSTGRES_URL)(
+  "PostgreSQL concurrent rebuild publications commit exactly one replacement/outbox and cleanup failure cannot undo success",
+  async () => {
+    const a = new Bun.SQL(process.env.ARMADA_TEST_POSTGRES_URL!, { max: 2 });
+    const b = new Bun.SQL(process.env.ARMADA_TEST_POSTGRES_URL!, { max: 2 });
+    const sqlA = sqlOver(a),
+      sqlB = sqlOver(b);
+    try {
+      const { actor, userId } = await fixture(sqlA);
+      await connectGitHub(sqlA, userId);
+      const snapshots = new Map<string, { source: string }>(),
+        machines = new Map<string, boolean>();
+      const deleted: string[] = [];
+      let ordinal = 0,
+        refuse: string | undefined;
+      const provider: Provider = {
+        ...readyProvider(),
+        backendIdentity: async () => ({ id: "publication-" + actor.orgId }),
+        managementIdentity: async () => ({ scope: "org", ownerId: actor.orgId }),
+        createGolden: async () => {
+          const id = "builder-" + actor.orgId + "-" + ++ordinal;
+          machines.set(id, false);
+          return { id, name: id, state: "ready", providerState: "ready", labels: {} };
+        },
+        snapshot: async ({ name, sandboxId }) => {
+          snapshots.set(name, { source: sandboxId });
+          return { name, status: "ready", sourceSandboxId: sandboxId, artifactId: "artifact-" + name };
+        },
+        getSnapshot: async (name) => {
+          const row = snapshots.get(name);
+          if (!row)
+            throw new ProviderError({ provider: "boat", code: "not_found", message: "absent", retryable: false });
+          return { name, status: "ready", sourceSandboxId: row.source, artifactId: "artifact-" + name };
+        },
+        get: async (id) => ({
+          id,
+          name: id,
+          state: machines.get(id) ? "stopped" : "ready",
+          providerState: "ready",
+          labels: {},
+        }),
+        stop: async ({ sandboxId }) => {
+          machines.set(sandboxId, true);
+        },
+        deleteSnapshot: async (name) => {
+          deleted.push(name);
+          if (name === refuse)
+            throw new ProviderError({ provider: "boat", code: "forbidden", message: "refused", retryable: false });
+          snapshots.delete(name);
+        },
+      };
+      const service = (sql: Sql) =>
+        createGoldenCreateService({
+          sql,
+          github: { store: createSqlVaultStore(sql), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
+          installationApp: null,
+          fetch: fakeGitHubFetch(),
+          ssh: async () => {},
+        });
+      const input = { name: "web", visibility: "org" as const, repos: ["acme/web"] };
+      const first = await service(sqlA).create(provider, actor, input);
+      const before = (await createSqlGoldenStore(sqlA).findByName(actor.orgId, "web"))[0]!;
+      const results = await Promise.allSettled([
+        service(sqlA).create(provider, actor, { ...input, existingGolden: before }),
+        service(sqlB).create(provider, actor, { ...input, existingGolden: before }),
+      ]);
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      expect(results.filter((r) => r.status === "rejected")).toHaveLength(1);
+      const current = (await createSqlGoldenStore(sqlA).findByName(actor.orgId, "web"))[0]!;
+      expect(current.providerSnapshotId).not.toBe(first.snapshot);
+      expect(
+        (
+          await sqlA.query("select old_snapshot,new_snapshot from golden_snapshot_retirements where golden_id=$1", [
+            current.id,
+          ])
+        ).rows,
+      ).toEqual([{ old_snapshot: first.snapshot, new_snapshot: current.providerSnapshotId }]);
+      expect(
+        (await sqlA.query("select build_id from golden_backend_slots where golden_id=$1", [current.id])).rows,
+      ).toEqual([{ build_id: null }]);
+      expect(deleted).not.toContain(first.snapshot);
+      refuse = first.snapshot;
+      const { GoldenSnapshotRetirements } = await import("../src/golden-snapshot-retirement.ts");
+      const worker = new GoldenSnapshotRetirements({ sql: sqlA, encryptionKey: KEY, provider: async () => provider });
+      await worker.runOne();
+      expect((await createSqlGoldenStore(sqlA).findByName(actor.orgId, "web"))[0]?.providerSnapshotId).toBe(
+        current.providerSnapshotId,
+      );
+      expect(snapshots.has(first.snapshot)).toBe(true);
+      expect(snapshots.has(current.providerSnapshotId!)).toBe(true);
+      refuse = undefined;
+      await sqlA.query(
+        "update golden_snapshot_retirements set next_attempt_at=now()-interval '1 second' where golden_id=$1",
+        [current.id],
+      );
+      await worker.runOne();
+      expect(snapshots.has(first.snapshot)).toBe(false);
+      expect(snapshots.has(current.providerSnapshotId!)).toBe(true);
+    } finally {
+      await Promise.all([a.close(), b.close()]);
     }
   },
 );
