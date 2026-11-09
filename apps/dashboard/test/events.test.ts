@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentEvent } from "@armada/core";
-import { describeEvent, isActiveStatus, mergeEvents, parseEventPage } from "../src/lib/events.ts";
+import { isActiveStatus, mergeEvents, parseEventPage } from "../src/lib/events.ts";
 
 const message = (id: string, text: string): AgentEvent => ({
   id,
@@ -12,10 +12,14 @@ const message = (id: string, text: string): AgentEvent => ({
 });
 
 describe("events", () => {
-  test("a page is appended once, in arrival order, whatever the poll returns twice", () => {
-    const first = [message("a", "one"), message("b", "two")];
+  test("a page is appended once, in arrival order; an event read again keeps its place and takes the newer body", () => {
+    const first = [message("a", "one"), message("b", "tw")];
     const merged = mergeEvents(first, [message("b", "two"), message("c", "three")]);
-    expect(merged.map((event) => event.id)).toEqual(["a", "b", "c"]);
+    expect(merged.map((event) => [event.id, event.kind === "message" && event.text])).toEqual([
+      ["a", "one"],
+      ["b", "two"],
+      ["c", "three"],
+    ]);
     expect(mergeEvents(merged, [])).toEqual(merged);
   });
 
@@ -24,23 +28,20 @@ describe("events", () => {
     expect((["stopped", "failed", "deleted"] as const).some(isActiveStatus)).toBe(false);
   });
 
-  test("a failed prompt carries its reason to the line", () => {
-    const line = describeEvent({
-      id: "p",
-      at: 5,
-      kind: "prompt",
-      text: "Do it",
-      status: "failed",
-      reason: "usage_limit",
-    });
-    expect(line).toMatchObject({ label: "Prompt failed", tone: "danger", failure: "usage_limit", text: "Do it" });
-    expect(describeEvent(message("m", "hi"))).toMatchObject({ label: "Agent", tone: "neutral" });
-  });
-
   test("a page from the server is read leniently and unreadable events are dropped", () => {
     const page = parseEventPage({
       events: [
-        { id: "1", at: 10, kind: "message", text: "hello", tools: [{ id: "t", name: "Bash", input: {} }] },
+        {
+          id: "1",
+          at: 10,
+          kind: "message",
+          text: "hello",
+          model: "gpt-6.1-sol",
+          messageId: "m1",
+          textMode: "delta",
+          tools: [{ id: "t", name: "Bash", input: { command: "ls" }, result: { output: "a", isError: true } }],
+        },
+        { id: "5", at: 13, kind: "message", text: "x", textMode: "chunk", messageId: 7, tools: [] },
         { id: "2", at: 11, kind: "prompt", text: "go", status: "bogus" },
         { id: "3", at: "late", kind: "message" },
         "junk",
@@ -49,7 +50,15 @@ describe("events", () => {
       cursor: "4",
       hasMore: true,
     });
-    expect(page.events.map((event) => event.id)).toEqual(["1", "4"]);
+    expect(page.events.map((event) => event.id)).toEqual(["1", "5", "4"]);
+    expect(page.events[0]).toMatchObject({
+      model: "gpt-6.1-sol",
+      messageId: "m1",
+      textMode: "delta",
+      tools: [{ id: "t", name: "Bash", input: { command: "ls" }, result: { output: "a", isError: true } }],
+    });
+    expect(page.events[1]).not.toHaveProperty("textMode");
+    expect(page.events[1]).not.toHaveProperty("messageId");
     expect(page).toMatchObject({ cursor: "4", hasMore: true });
     expect(parseEventPage(null)).toEqual({ events: [], cursor: null, hasMore: false });
   });

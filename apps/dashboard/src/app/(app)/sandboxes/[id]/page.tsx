@@ -6,7 +6,7 @@ import { notFound } from "next/navigation";
 import { ConnectionStatusBadge, ScopeBadge } from "@/components/connections";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { SandboxActions } from "@/components/sandbox-actions";
-import { SandboxLogs } from "@/components/sandbox-logs";
+import { SandboxChat } from "@/components/sandbox-chat";
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -111,15 +111,7 @@ export default async function SandboxPage({ params }: Props) {
             </h1>
             <StatusBadge status={sandbox.status} />
           </div>
-          {configured && (
-            <SandboxActions
-              sandboxId={sandbox.id}
-              status={sandbox.status}
-              harness={sandbox.harness}
-              catalog={MODEL_CATALOG}
-              launchedModel={sandbox.model}
-            />
-          )}
+          {configured && <SandboxActions sandboxId={sandbox.id} status={sandbox.status} />}
         </div>
       </div>
 
@@ -133,7 +125,16 @@ export default async function SandboxPage({ params }: Props) {
 
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div className="min-w-0">
-          <SandboxLogs sandboxId={sandbox.id} initialStatus={sandbox.status} live={isActiveStatus(sandbox.status)} />
+          <SandboxChat
+            sandboxId={sandbox.id}
+            initialStatus={sandbox.status}
+            live={isActiveStatus(sandbox.status)}
+            harness={sandbox.harness}
+            catalog={MODEL_CATALOG}
+            launchedModel={sandbox.model}
+            conversations={sandbox.conversation_ids}
+            configured={configured}
+          />
         </div>
         <div className="space-y-6">
           <Card className="gap-4">

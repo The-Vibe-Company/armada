@@ -7,60 +7,31 @@ export function isActiveStatus(status: SandboxStatus): boolean {
   return ACTIVE.includes(status);
 }
 
-/** Appends a page to the events already shown, once each, in the order they arrived. */
-export function mergeEvents(shown: readonly AgentEvent[], incoming: readonly AgentEvent[]): AgentEvent[] {
-  const seen = new Set(shown.map((event) => event.id));
+/**
+ * Adds a page to the events already shown, in the order they first arrived. An event read again (same journal id)
+ * keeps its place and takes the newer body, as the `logs` tool promises.
+ */
+export function mergeEvents(shown: readonly ChatEvent[], incoming: readonly ChatEvent[]): ChatEvent[] {
+  const index = new Map(shown.map((event, position) => [event.id, position]));
   const merged = [...shown];
   for (const event of incoming) {
-    if (seen.has(event.id)) continue;
-    seen.add(event.id);
-    merged.push(event);
+    const position = index.get(event.id);
+    if (position === undefined) {
+      index.set(event.id, merged.length);
+      merged.push(event);
+    } else merged[position] = event;
   }
   return merged;
 }
 
-export type EventLine = {
-  id: string;
-  at: number;
-  label: string;
-  tone: "neutral" | "success" | "danger" | "info";
-  text: string;
-  /** The reason a turn failed, when the event says so. */
-  failure?: string;
-  tools: string[];
-};
+/** A message event: its `messageId` and `textMode` say how its text joins the other events of the same message. */
+export type MessageEvent = Extract<AgentEvent, { kind: "message" }>;
 
-export function describeEvent(event: AgentEvent): EventLine {
-  const base = { id: event.id, at: event.at };
-  switch (event.kind) {
-    case "prompt": {
-      const tone = event.status === "failed" ? "danger" : event.status === "finished" ? "success" : "info";
-      return {
-        ...base,
-        label: `Prompt ${event.status}`,
-        tone,
-        text: event.text,
-        ...(event.reason ? { failure: event.reason } : {}),
-        tools: [],
-      };
-    }
-    case "message":
-      return {
-        ...base,
-        label: event.partial ? "Agent (typing)" : "Agent",
-        tone: "neutral",
-        text: event.text,
-        tools: event.tools.map((tool) => tool.name),
-      };
-    case "steer":
-      return { ...base, label: "Steer", tone: "info", text: event.text, tools: [] };
-    case "other":
-      return { ...base, label: event.type, tone: "neutral", text: "", tools: [] };
-  }
-}
+/** The common event stream as the dashboard reads it. */
+export type ChatEvent = AgentEvent;
 
 /** The page the logs endpoint returns, from whatever the gateway sent. Events it cannot read are dropped. */
-export function parseEventPage(value: unknown): { events: AgentEvent[]; cursor: string | null; hasMore: boolean } {
+export function parseEventPage(value: unknown): { events: ChatEvent[]; cursor: string | null; hasMore: boolean } {
   const record = isRecord(value) ? value : {};
   const rawEvents = Array.isArray(record.events) ? record.events : [];
   const events = rawEvents.flatMap((raw) => {
@@ -78,7 +49,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeEvent(value: unknown): AgentEvent | null {
+function normalizeEvent(value: unknown): ChatEvent | null {
   if (!isRecord(value) || typeof value.id !== "string" || typeof value.at !== "number") return null;
   const base = {
     id: value.id,
@@ -100,20 +71,36 @@ function normalizeEvent(value: unknown): AgentEvent | null {
       };
     }
     case "message": {
-      const tools = Array.isArray(value.tools)
-        ? value.tools.flatMap((tool): ToolCall[] =>
-            isRecord(tool) && typeof tool.id === "string" && typeof tool.name === "string"
-              ? [{ id: tool.id, name: tool.name }]
-              : [],
-          )
-        : [];
-      return { ...base, kind: "message", text, partial: value.partial === true, tools };
+      const tools = Array.isArray(value.tools) ? value.tools.flatMap(normalizeTool) : [];
+      return {
+        ...base,
+        kind: "message",
+        text,
+        partial: value.partial === true,
+        ...(typeof value.model === "string" && value.model ? { model: value.model } : {}),
+        ...(typeof value.messageId === "string" && value.messageId ? { messageId: value.messageId } : {}),
+        ...(value.textMode === "delta" || value.textMode === "snapshot" ? { textMode: value.textMode } : {}),
+        tools,
+      };
     }
     case "steer":
-      return { ...base, kind: "steer", text };
+      return {
+        ...base,
+        kind: "steer",
+        text,
+        ...(typeof value.mode === "string" && value.mode ? { mode: value.mode } : {}),
+      };
     case "other":
       return { ...base, kind: "other", type: typeof value.type === "string" ? value.type : "event", data: value.data };
     default:
       return null;
   }
+}
+
+function normalizeTool(tool: unknown): ToolCall[] {
+  if (!isRecord(tool) || typeof tool.id !== "string" || typeof tool.name !== "string") return [];
+  const call: ToolCall = { id: tool.id, name: tool.name };
+  if (tool.input !== undefined) call.input = tool.input;
+  if (isRecord(tool.result)) call.result = { output: tool.result.output, isError: tool.result.isError === true };
+  return [call];
 }

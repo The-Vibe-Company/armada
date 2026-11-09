@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
+import { chosenConversation, INCOMPLETE_MODEL, modelChange, STEER_KEEPS_MODEL } from "@/lib/composer";
 import { launchSelection, type McpConnection } from "@/lib/connections";
 import { ControlError } from "@/lib/control";
 import { listSelectedConnections } from "@/lib/data/connections";
@@ -44,23 +45,69 @@ export async function stopSandbox(_previous: ActionResult | null, data: FormData
   return done("Stop requested. The machine is removed and the disk is kept.");
 }
 
+/** A new turn, in the conversation the person chose. The model and effort override applies to this turn only. */
 export async function sendToSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
   const id = formString(data, "sandbox");
   const prompt = formString(data, "prompt").trim();
   if (!isUuid(id)) return fail("That request is not valid.");
   if (!prompt) return fail("Write the message to send.");
+  if (modelChange(modelFields(data)) === "incomplete") return fail(INCOMPLETE_MODEL);
   const target = await gatewayFor(id);
   if (target.error) return target.error;
+  const conversation = chosenConversation(formString(data, "conversation"), target.sandbox.conversation_ids);
+  if (!conversation.ok) return fail(conversation.error);
   const override = sendOverride(target.sandbox.harness, modelFields(data), target.sandbox.model);
   if (!override.ok) return fail(override.error);
   try {
-    await target.gateway.send(id, prompt, override.args);
+    await target.gateway.send(id, prompt, override.args, conversation.id);
   } catch (error) {
     if (error instanceof GatewayError) return fail(error.message);
     throw error;
   }
   revalidatePath(`/sandboxes/${id}`);
-  return done("Sent. The reply appears in the logs.");
+  return done("Sent.");
+}
+
+/** A message into the turn running in the chosen conversation. It never changes the model: that is a new turn. */
+export async function steerSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  const id = formString(data, "sandbox");
+  const text = formString(data, "prompt").trim();
+  if (!isUuid(id)) return fail("That request is not valid.");
+  if (!text) return fail("Write the message to send.");
+  if (modelChange(modelFields(data)) !== "none") return fail(STEER_KEEPS_MODEL);
+  const target = await gatewayFor(id);
+  if (target.error) return target.error;
+  const conversation = chosenConversation(formString(data, "conversation"), target.sandbox.conversation_ids);
+  if (!conversation.ok) return fail(conversation.error);
+  let receipt: unknown;
+  try {
+    receipt = await target.gateway.steer(id, text, conversation.id);
+  } catch (error) {
+    if (error instanceof GatewayError) return fail(error.message);
+    throw error;
+  }
+  revalidatePath(`/sandboxes/${id}`);
+  const restarted =
+    typeof receipt === "object" && receipt !== null && "delivery" in receipt && receipt.delivery === "restart";
+  return done(restarted ? "Steered. The turn restarted with your message." : "Steered.");
+}
+
+/** Stops the turn running in the chosen conversation. The sandbox stays up for the next message. */
+export async function interruptSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  const id = formString(data, "sandbox");
+  if (!isUuid(id)) return fail("That request is not valid.");
+  const target = await gatewayFor(id);
+  if (target.error) return target.error;
+  const conversation = chosenConversation(formString(data, "conversation"), target.sandbox.conversation_ids);
+  if (!conversation.ok) return fail(conversation.error);
+  try {
+    await target.gateway.interrupt(id, conversation.id);
+  } catch (error) {
+    if (error instanceof GatewayError) return fail(error.message);
+    throw error;
+  }
+  revalidatePath(`/sandboxes/${id}`);
+  return done("Interrupt requested.");
 }
 
 export async function launchFromGolden(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
