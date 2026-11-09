@@ -160,6 +160,11 @@ test("only the owner chooses; no usable account points to Credentials; Boat and 
   await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
   await expect(section(page).getByText("Only its owner can choose the account.")).toBeVisible();
   await expect(section(page).getByRole("radio")).toHaveCount(0);
+  await page.getByRole("textbox", { name: "Message" }).fill("Pick this up");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(page.locator('form p[role="alert"]')).toHaveText(
+    "This sandbox needs an account before it can resume. Only its owner can choose it.",
+  );
 
   await legacy({ status: "stopped", owner_id: "00000000-0000-4000-8000-000000000001" });
   await post("accounts", { user: [CODEX] });

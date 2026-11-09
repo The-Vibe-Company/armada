@@ -692,11 +692,14 @@ function mcp(message: RpcMessage, userId: string | null): Response {
     state.failNextTool = null;
     return reply({ content: [{ type: "text", text: failure }], isError: true });
   }
-  if (name === "send" && target.provider === "modal" && target.credential_id === null) {
+  if (driving && target.provider === "modal" && target.credential_id === null) {
     // As #603's server answers a legacy unbound Modal sandbox: a typed refusal, never a silent default account.
     return reply({
       content: [
-        { type: "text", text: "This sandbox needs an account binding before it can resume." },
+        {
+          type: "text",
+          text: "This legacy Modal sandbox needs an explicit account binding. Stop it safely, then its owner can run 'armada bind-credential <sandbox-id> --credential-id <account-uuid>'.",
+        },
         { type: "text", text: "error code: credential_binding_required" },
       ],
       isError: true,
@@ -778,14 +781,27 @@ function bindCredential(body: Row, userId: string | null): Response {
     return refuse(failure.status, failure.code, failure.message);
   }
   const target = state.sandboxes.find((row) => row.id === body.id);
-  if (!target || target.owner_id !== userId) return refuse(403, "forbidden", "Only the owner can bind an account.");
-  if (target.credential_id !== null) return refuse(409, "conflict", "The sandbox is already bound.");
-  if (target.status !== "stopped") return refuse(409, "credential_binding_unsafe", "The sandbox is not stopped.");
+  if (!target || target.owner_id !== userId || target.provider !== "modal")
+    return refuse(404, "not_found", "Only the sandbox owner can recover its account binding.");
+  if (target.credential_id !== null)
+    return refuse(409, "conflict", "This sandbox is already bound; its account cannot change.");
+  if (target.status !== "stopped")
+    return refuse(
+      409,
+      "credential_binding_unsafe",
+      "Stop the sandbox and finish lifecycle reconciliation before binding.",
+    );
   const account = [...state.accounts.user, ...state.accounts.org].find((row) => row.id === body.credentialId);
-  if (!account) return refuse(400, "invalid_request", "That account cannot be used for this sandbox.");
+  if (!account) return refuse(400, "invalid", "That account cannot be used for this sandbox.");
   target.credential_id = account.id;
   target.credential_version = account.version;
-  return json({ id: target.id, credentialId: account.id, credentialVersion: account.version });
+  return json({
+    id: target.id,
+    credentialId: account.id,
+    credentialVersion: account.version,
+    harness: target.harness,
+    status: "bound",
+  });
 }
 
 /**
