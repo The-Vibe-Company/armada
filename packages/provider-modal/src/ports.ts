@@ -107,6 +107,7 @@ export interface SavedImage {
 /** Store instances are bound to the authenticated caller AND immutable Modal binding. No unscoped lookup. */
 export interface ModalStore {
   reserve(key: string, machine: Machine): Promise<Machine>;
+  findByRequestKey(key: string): Promise<Machine | null>;
   get(id: string): Promise<Machine>;
   watermark(id: string, generation: number): Promise<number>;
   list(): Promise<Machine[]>;
