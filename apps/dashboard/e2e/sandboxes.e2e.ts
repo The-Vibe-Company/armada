@@ -84,11 +84,7 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
   const repo = page.getByLabel("Working directory");
   await expect(repo).toHaveValue("");
   await expect(repo.locator("option")).toHaveText(["No repository (default directory)", "web", "api"]);
-  await expect(
-    page.getByText(
-      "A chosen repository is where the agent starts; with none, it starts in the default directory. All repositories remain available.",
-    ),
-  ).toBeVisible();
+  await expect(page.getByText("Where the agent starts. All repositories stay available.")).toBeVisible();
   await repo.selectOption("web");
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Launch from shared-golden" }).click();

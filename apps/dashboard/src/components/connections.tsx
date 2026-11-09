@@ -205,10 +205,7 @@ function AddFields({ orgName, isAdmin, result }: { orgName: string; isAdmin: boo
             hint={isAdmin ? "One shared account for org sandboxes." : "Only an org admin adds these."}
           />
         </div>
-        <p className="text-xs text-muted-foreground">
-          This cannot change later. To share a personal server with the org, an admin adds it again as an org
-          connection.
-        </p>
+        <p className="text-xs text-muted-foreground">Cannot be changed later.</p>
       </fieldset>
 
       <div className="space-y-2">
@@ -286,7 +283,7 @@ function RemoteFields({
           aria-describedby={`${id}-url-hint`}
         />
         <p id={`${id}-url-hint`} className="text-xs text-muted-foreground">
-          Query parameters such as project_ref are fine. Keys and tokens go in the authentication below.
+          Keys and tokens go in authentication, not the URL.
         </p>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -513,14 +510,13 @@ function StdioFields({
       <input type="hidden" name="kind" value="stdio" />
       <div className="space-y-2 rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground">
         <p>
-          <span className="font-medium text-foreground">Runs inside each sandbox</span> that you launch with it, as the
-          agent's user, with the sandbox's files. Armada never runs it on its own servers.
+          <span className="font-medium text-foreground">Runs in each sandbox launched with it</span>, never on Armada.
         </p>
         <p>
-          Pin an exact version so every sandbox runs the same code, for example{" "}
+          Pin an exact version, for example{" "}
           <code className="font-mono text-foreground">npx -y @modelcontextprotocol/server-filesystem@2026.1.14</code>.
-          Any other program must already be installed in the golden. A stdio server takes no authentication: Armada
-          passes no secret into it, and everyone who can use the connection sees its command.
+          Other programs must already be in the golden. No secret is passed in; everyone who can use it sees its
+          command.
         </p>
       </div>
       <div className="space-y-2">
@@ -685,7 +681,7 @@ export function ConnectionCard({
         <dt className="text-xs text-muted-foreground">Offers</dt>
         <dd>
           {!remote
-            ? "Starts inside each sandbox launched with it; the agent sees its tools there. Armada never runs it."
+            ? "Available in sandbox"
             : known.length === 0
               ? "Unknown until connected"
               : known.map(([label, value]) => `${value} ${value === 1 ? label.slice(0, -1) : label}`).join(" · ")}

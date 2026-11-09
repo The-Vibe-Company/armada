@@ -3,7 +3,7 @@ import { PageHeader } from "@/components/page-header";
 export default function Loading() {
   return (
     <>
-      <PageHeader title="Connections" description="Loading the organization's connections…" />
+      <PageHeader title="Connections" />
       <div role="status" aria-label="Loading connections" className="space-y-3">
         {[0, 1].map((key) => (
           <div key={key} className="space-y-3 rounded-lg border p-4">

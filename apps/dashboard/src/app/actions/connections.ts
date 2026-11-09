@@ -49,7 +49,7 @@ function refresh() {
 function outcome(prefix: string, connection: McpConnection): ActionResult {
   if (connection.transport === "stdio") {
     return connection.status === "connected"
-      ? done(`${prefix}${connection.name} is configured for launch. It starts inside each sandbox launched with it.`)
+      ? done(`${prefix}${connection.name} is configured for launch.`)
       : fail(
           `${prefix}${connection.name}: ${statusLabel(connection)}.${connection.lastError ? ` ${connection.lastError}` : ""}`,
         );

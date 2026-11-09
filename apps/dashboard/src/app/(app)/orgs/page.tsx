@@ -25,7 +25,7 @@ export default async function OrgsPage() {
 
   return (
     <>
-      <PageHeader title="Organizations" description="Orgs share goldens, sandboxes and keys between their members." />
+      <PageHeader title="Organizations" />
 
       {memberships.length === 0 ? (
         <Empty title="You are not in an org yet">Create one below, or ask an admin to add your email.</Empty>

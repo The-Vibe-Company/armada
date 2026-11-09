@@ -9,6 +9,10 @@ test("an org is created, and its admin adds and removes a member", async ({ page
 
   await page.getByLabel("Name").fill("Side Project");
   await page.getByRole("button", { name: "Create org" }).click();
+  // A new org starts at its provider setup (#576); its members page stays one link away.
+  await expect(page).toHaveURL(/\/orgs\/[0-9a-f-]{36}\/setup$/);
+  await expect(page.getByRole("heading", { name: "Sandbox provider for Side Project" })).toBeVisible();
+  await page.getByRole("link", { name: "Members" }).click();
   await expect(page.getByRole("heading", { name: "Side Project" })).toBeVisible();
   await expect(page.locator('[data-member="alice@example.com"]')).toBeVisible();
 

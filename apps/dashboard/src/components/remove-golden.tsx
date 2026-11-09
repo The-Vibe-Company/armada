@@ -47,9 +47,8 @@ export function RemoveGolden({
             <div className="space-y-2">
               <p>New sandboxes can no longer be launched from it, and it leaves this list.</p>
               <p>
-                Sandboxes already started from it stay, with their conversations and logs: you can still open, message
-                and stop them. The provider&apos;s snapshot is kept, and the golden still counts toward the
-                provider&apos;s golden limit: removing it does not free capacity.
+                Sandboxes already started from it stay, with their conversations and logs. Its snapshot is kept and it
+                still counts toward the golden limit.
               </p>
             </div>
           </AlertDialogDescription>
