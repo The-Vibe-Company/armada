@@ -2224,10 +2224,28 @@ test("private orchestrator transport requires exact active incarnation and ACK, 
   const install = f.provider.installOrchestratorEpoch;
   const scrub = f.provider.scrubOrchestratorEpoch;
   const quiesce = f.provider.quiesceOrchestrator;
-  if (!install || !scrub || !quiesce) throw Error("missing private native authority port");
+  const observe = f.provider.observeOrchestrator;
+  if (!install || !scrub || !quiesce || !observe) throw Error("missing private native authority port");
   await expect(install(request)).rejects.toMatchObject({ code: "unavailable" });
+  await expect(observe({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).rejects.toMatchObject(
+    { code: "unavailable" },
+  );
   f.onRpc(async (_row, op) =>
-    ["installOrchestratorEpoch", "scrubOrchestratorEpoch"].includes(op) ? { acknowledged: true } : undefined,
+    op === "observeOrchestrator"
+      ? {
+          physicalGeneration: binding.physicalGeneration,
+          state: "quiescent",
+          evidence: "a".repeat(64),
+          eventWatermark: 0,
+          acknowledgedSequence: 0,
+          nativeSessionId: null,
+        }
+      : ["installOrchestratorEpoch", "scrubOrchestratorEpoch"].includes(op)
+        ? { acknowledged: true }
+        : undefined,
+  );
+  expect((await observe({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).state).toBe(
+    "quiescent",
   );
   expect(await install(request)).toEqual({ acknowledged: true });
   await expect(install({ ...request, binding: { ...binding, physicalGeneration: "old" } })).rejects.toMatchObject({
@@ -2247,6 +2265,9 @@ test("private orchestrator transport requires exact active incarnation and ACK, 
     code: "conflict",
   });
   await expect(quiesce({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).rejects.toMatchObject(
+    { code: "conflict" },
+  );
+  await expect(observe({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).rejects.toMatchObject(
     { code: "conflict" },
   );
   expect(f.creates).toBe(created);

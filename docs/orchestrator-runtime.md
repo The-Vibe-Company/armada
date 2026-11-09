@@ -8,11 +8,12 @@ checks enables a real provider/harness.
 
 ## Actual foundation consumed
 
-The runtime consumer projection consumes committed #661 PR #673,
-`026babbf165a11148f5e274e20d7f2941b73e253` (producer base
-`648b8cfbbd0df1d527cacdb9e3098af934d2d650`). The exact dependency is checked
-out under `.git/662-pr673`; no producer files are copied into delivery ownership.
-The earlier uncommitted v1 archive is superseded as integration evidence.
+The runtime now integrates merged main, including #661 ready-admission fix
+`79472bf` / merge `d748be68`, and #653 sizing merge `ec3b89db`. Earlier
+`026babbf` running-only integration notes are superseded. Actual #603
+`eab3a12e28f7d846285f7c5ad19fcb5a739eefc2` and #604
+`77eed87ca9282e723f34e08c03b11f58dab0c259` are combined only under
+`.git/662-production-deps`; no unmerged producer files enter delivery ownership.
 
 - `reserveOrchestratorOperation(sql, input)` remains the receipt writer. The
   runtime holds the owner/member/parent lock around prior-receipt discovery and
@@ -31,11 +32,8 @@ The earlier uncommitted v1 archive is superseded as integration evidence.
 - Child `Authority.admit` and lifecycle/waits remain #661/#663-owned; this change
   does not dispatch delegated principals as owners.
 
-The committed producer requires sandbox status `running` during epoch installation,
-whereas `launchSandbox` without a prompt leaves `ready`. A producer correction
-allowing verified ready admission (with all current fences), or a verified
-no-text activation adapter, is required. Do not manufacture `running` state or
-send a synthetic prompt to work around this mismatch.
+Initial epoch installation and ACK now accept actual ready/running states in
+merged #661. No synthetic prompt or fake running state is needed.
 
 The producer delegation currently calls SQL `lifecycle_generation` its physical
 binding. That counter advances on normal activity admission/completion, whereas
@@ -226,3 +224,13 @@ together, even when no provider events are polled. No new owner-activity policy
 or callback implementation is invented; the v1 artifact alone lacks that hook.
 The composition interface requires this actual method as well as the v2 detail
 projection before constructing a service bundle.
+
+The production resolver uses actual SQL membership/golden identity, the v2
+provider registry and persisted source management authority, explicit #603
+credential ID/version, stored model/effort/cwd for later turns, and the real
+merged launcher sizing policy. Parent credential pinning proxies the ORIGINAL
+#604 lifecycle object, retaining prototype hooks/admission/hydration/release and
+its same-registry redaction/publication rather than copying only resolve.
+#604 `refreshNativeSecrets` is synchronous; `publishNativeAuth` is asynchronous.
+A native adapter/prerequisite verifier is mandatory per provider/harness; absence
+fails closed before allocation. Concrete native adapters/proof remain in progress.

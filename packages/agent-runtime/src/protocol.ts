@@ -85,6 +85,7 @@ export interface IngestClient {
 }
 export type RunnerRequest = { version: 1; requestId: string; sandboxId: string } & (
   | { op: "health" }
+  | { op: "observeOrchestrator"; conversationId?: string }
   | ConfigureMcpRequest
   | InstallOrchestratorEpochRequest
   | ScrubOrchestratorEpochRequest

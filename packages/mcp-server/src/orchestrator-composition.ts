@@ -1,5 +1,6 @@
 import type { OrchestratorDetail } from "@armada/core";
 import type { Sql } from "@armada/core/server";
+import { createOrchestratorBackendResolver } from "./orchestrator-backend-resolver.ts";
 import { OrchestratorRuntime, type OrchestratorRuntimeOptions } from "./orchestrator-runtime.ts";
 import type { OrchestratorRuntimeFoundation } from "./orchestrator-runtime-foundation.ts";
 import { OrchestratorRuntimeStore, type RuntimeLifecycleHooks } from "./orchestrator-runtime-store.ts";
@@ -46,4 +47,27 @@ export function createOrchestratorServices(input: {
   if (!runtime.lifecycleRuntime) throw Error("Trusted managed runtime is required for orchestrator composition.");
   const lifecycle = input.lifecycle.worker(input.sql, runtime.lifecycleRuntime);
   return { runtime, store, lifecycle };
+}
+
+/** Production account/golden/provider selection, with the ACTUAL lifecycle-aware
+ * resolver and native adapters supplied by server composition. No legacy allocator. */
+export function createProductionOrchestratorServices(input: {
+  selection: Parameters<typeof createOrchestratorBackendResolver>[0];
+  authority: OrchestratorRuntimeOptions["authority"];
+  reserveOperation: OrchestratorRuntimeFoundation["reserveOperation"];
+  skillRevision: string;
+  lifecycle: OrchestratorLifecyclePorts;
+}) {
+  const selection = createOrchestratorBackendResolver(input.selection);
+  return createOrchestratorServices({
+    sql: input.selection.sql,
+    reserveOperation: input.reserveOperation,
+    lifecycle: input.lifecycle,
+    options: {
+      authority: input.authority,
+      skillRevision: input.skillRevision,
+      resolveBackend: selection.resolveBackend,
+      managed: { resolveManaged: selection.resolveManaged },
+    },
+  });
 }

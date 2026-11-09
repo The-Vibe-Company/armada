@@ -1,4 +1,5 @@
 import type {
+  ModelChoice,
   Orchestrator,
   OrchestratorCreate,
   OrchestratorDetail,
@@ -25,6 +26,8 @@ class NativeContinuityLost extends Error {}
  * Each implementation needs operator-verified, version-bound native proof. */
 export interface OrchestratorRuntimeBackend {
   provider: Provider;
+  /** Persisted launch choice, never a new default selected on a later turn. */
+  selection?: ModelChoice;
   projectDir: string;
   /** Trusted server broker URL, never accepted from owner request or prompt text. */
   mcpUrl: string;
@@ -222,7 +225,7 @@ export class OrchestratorRuntime {
       if (current.state !== "ready" || !current.providerSandboxId) throw new OrchestratorRuntimeError("conflict");
       const machine = await backend.provider.get(current.providerSandboxId);
       if (machine.state !== "ready" && machine.state !== "running") throw new OrchestratorRuntimeError("conflict");
-      const configuration = current.configuration;
+      const configuration = { ...current.configuration, ...backend.selection };
       const receipt =
         input.action === "steer"
           ? await backend.provider.steer({

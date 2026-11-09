@@ -42,6 +42,15 @@ export interface Provider {
     binding: { epoch: string; physicalGeneration: string };
     url: string;
   }): Promise<{ acknowledged: boolean }>;
+  /** Read-only native work observation. Missing port is unavailable, never log-silence quiescence. */
+  observeOrchestrator?(request: { sandboxId: string; physicalGeneration: string; conversationId?: string }): Promise<{
+    physicalGeneration: string;
+    state: "active" | "quiescent" | "unknown";
+    evidence: string;
+    eventWatermark: number;
+    acknowledgedSequence: number;
+    nativeSessionId: string | null;
+  }>;
   /** Private active-incarnation interrupt; never activates stopped compute. */
   quiesceOrchestrator?(request: { sandboxId: string; physicalGeneration: string }): Promise<{ acknowledged: boolean }>;
   scrubOrchestratorEpoch?(request: {

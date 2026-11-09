@@ -102,13 +102,12 @@ export async function launchOrchestratorParent(input: {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  await launchSandbox(
-    routed,
-    {
-      ...input.stores,
-      sandboxes,
-      credentials: {
-        resolve: async (actor, harness) => {
+  // Preserve the actual604 lifecycle object and its registry/prototype methods;
+  // replace only account selection. Native admission/hydration/publication must not disappear.
+  const credentials = new Proxy(input.stores.credentials, {
+    get(target, key) {
+      if (key === "resolve") {
+        return async (actor: GoldenActor, harness: Harness) => {
           const credentials = await input.account.resolve(
             actor,
             harness,
@@ -123,9 +122,15 @@ export async function launchOrchestratorParent(input: {
           )
             throw new OrchestratorRuntimeError("unavailable");
           return credentials;
-        },
-      },
+        };
+      }
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
     },
+  });
+  await launchSandbox(
+    routed,
+    { ...input.stores, sandboxes, credentials },
     actor,
     {
       ...orchestratorParentLaunchRequest(identity.configuration, request),

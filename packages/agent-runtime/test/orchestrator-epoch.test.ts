@@ -74,7 +74,16 @@ test("private epoch ACK is generation/monotonic fenced; stale scrub preserves ne
     expect((await call(runner, "scrubOrchestratorEpoch", { tokenHash: hash(token1) })).status).toBe(200);
     const turn = await call(runner, "prompt", { input: { sandboxId: "parent", harness: "claude", text: "first" } });
     expect(turn.status).toBe(200);
-    const receipt = ((await turn.json()) as { result: { promptId: string } }).result;
+    const receipt = ((await turn.json()) as { result: { promptId: string; conversationId: string } }).result;
+    const observed = await call(runner, "observeOrchestrator", { conversationId: receipt.conversationId });
+    expect(observed.status).toBe(200);
+    const snapshot = (await observed.json()) as {
+      result: { state: string; nativeSessionId: string; evidence: string; physicalGeneration: string };
+    };
+    expect(snapshot.result.state).toBe("active");
+    expect(snapshot.result.nativeSessionId).toBe("native-fixture");
+    expect(snapshot.result.evidence).toMatch(/^[a-f0-9]{64}$/);
+    expect(snapshot.result.physicalGeneration).toBe(grant.generation);
     const connection = contexts[0]?.mcp?.servers.armada_orchestrator;
     expect(connection?.type === "http" && connection.headers?.Authorization).toBe(`Bearer ${token2}`);
     expect((await call(runner, "installOrchestratorEpoch", install("3"))).status).toBe(409);

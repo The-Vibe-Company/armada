@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult } from "@armada/core";
 import { validateHarnessCwd } from "./cwd.ts";
 import { HarnessError } from "./errors.ts";
@@ -147,7 +147,9 @@ export class Runner {
       } | null;
       if (old && r.op !== "checkpoint")
         return new Response(old.body, { headers: { "content-type": "application/json" } });
-      const mutating = !["events", "health", "getPrompt", "getExec", "checkpoint"].includes(r.op);
+      const mutating = !["events", "health", "getPrompt", "getExec", "checkpoint", "observeOrchestrator"].includes(
+        r.op,
+      );
       // Fence before side effects. A crash leaves an explicit unknown outcome, never a duplicate turn.
       if (mutating)
         this.journal.db
@@ -155,7 +157,7 @@ export class Runner {
           .run(r.requestId, JSON.stringify({ version: 1, requestId: r.requestId, error: "request_outcome_unknown" }));
       const result = await this.dispatch(r);
       const body = this.journal.redact(JSON.stringify({ version: 1, requestId: r.requestId, result }));
-      if (!["events", "health", "getPrompt", "getExec", "checkpoint"].includes(r.op))
+      if (!["events", "health", "getPrompt", "getExec", "checkpoint", "observeOrchestrator"].includes(r.op))
         this.journal.db.query("INSERT OR REPLACE INTO requests VALUES(?,?)").run(r.requestId, body);
       return new Response(body, { headers: { "content-type": "application/json" } });
     } catch (error) {
@@ -209,6 +211,54 @@ export class Runner {
   private async dispatch(
     r: Exclude<RunnerRequest, { op: "configureMcp" | "installOrchestratorEpoch" | "scrubOrchestratorEpoch" }>,
   ): Promise<unknown> {
+    if (r.op === "observeOrchestrator") {
+      if (
+        r.conversationId !== undefined &&
+        (typeof r.conversationId !== "string" || !r.conversationId || r.conversationId.length > 256)
+      )
+        throw Error("invalid_request");
+      const watermark = Number(
+        (this.journal.db.query("SELECT coalesce(max(seq),0) AS watermark FROM events").get() as { watermark: number })
+          .watermark,
+      );
+      let state: "active" | "quiescent" | "unknown" =
+        this.barrier || this.journal.checkpointPending(this.grant) ? "unknown" : "quiescent";
+      const processes: Array<{ pid: number; state: string }> = [];
+      for (const row of this.journal.db.query("SELECT pid,body FROM processes").all() as {
+        pid: number;
+        body: string;
+      }[]) {
+        const saved = JSON.parse(row.body) as { status: string; identity?: ProcessIdentity };
+        if (!["running", "running_after_restart", "unknown_after_restart"].includes(saved.status)) continue;
+        const status = groupState(row.pid, saved.identity);
+        processes.push({ pid: row.pid, state: status });
+        if (status === "unverifiable") state = "unknown";
+        else if (status === "live" && state !== "unknown") state = "active";
+      }
+      if ((this.active.size > 0 || this.commands.size > 0) && state !== "unknown") state = "active";
+      const acknowledgedSequence = this.journal.ack;
+      if (state === "quiescent" && acknowledgedSequence < watermark) state = "unknown";
+      const evidence = createHash("sha256")
+        .update(
+          JSON.stringify({
+            generation: this.grant.generation,
+            watermark,
+            acknowledgedSequence,
+            active: [...this.active.keys()].sort(),
+            commands: this.commands.size,
+            processes,
+          }),
+        )
+        .digest("hex");
+      return {
+        physicalGeneration: this.grant.generation,
+        state,
+        evidence,
+        eventWatermark: watermark,
+        acknowledgedSequence,
+        nativeSessionId: r.conversationId ? (this.journal.session(r.conversationId) ?? null) : null,
+      };
+    }
     if (r.op === "health") return { generation: this.grant.generation, ready: !this.barrier };
     if (r.op === "getPrompt") {
       const p = this.journal.get(r.promptId);
