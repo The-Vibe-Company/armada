@@ -119,7 +119,7 @@ ARMADA_TEST_POSTGRES_URL=<disposable-test-db> \
 
 The dependency-only composition fixture requires the actual #663 producer
 modules. The native-credential admission fixture now passes against merged #604
-and is checked explicitly during main integration; neither is native conformance.
+and is included in normal verification; neither is native conformance.
 The private Codex no-text handshake tests verify exact thread/model identity
 without `thread/start` or `turn/start`. Claude has no verified equivalent and
 must remain disabled until its real driver supplies one.

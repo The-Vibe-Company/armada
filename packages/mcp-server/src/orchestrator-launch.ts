@@ -138,6 +138,6 @@ export async function launchOrchestratorParent(input: {
       visibility: "private",
       ttlSeconds: PROVIDER_LIMITS[identity.configuration.provider].maxTtlSeconds,
     },
-    { newId: () => sandboxId },
+    { newId: () => sandboxId, privateParent: true },
   );
 }

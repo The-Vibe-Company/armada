@@ -4,3 +4,4 @@ import "./orchestrator-runtime.integration.ts";
 import "./orchestrator-backend-resolver.integration.ts";
 import "./orchestrator-managed-runtime.integration.ts";
 import "./orchestrator-modal-native.integration.ts";
+import "./orchestrator-native-credentials.integration.ts";
