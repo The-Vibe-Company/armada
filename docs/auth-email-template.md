@@ -4,69 +4,61 @@ Canonical subject: **Your Armada sign-in code and link**
 
 Canonical body: [supabase/templates/magic-link.html](../supabase/templates/magic-link.html).
 The local Supabase template mapping lives in [config.toml](../supabase/config.toml).
-The code is Supabase's one-time `{{ .Token }}`; the link remains the unmodified
-`{{ .ConfirmationURL }}`. This does not change verification, PKCE, redirect
-selection, token expiry, rate limits, or account-creation policy. It fixes the
-email content, not the authentication endpoints.
+The code is Supabase's one-time `{{ .Token }}`. Browser flows retain the
+unmodified `{{ .ConfirmationURL }}`; code-only API emails omit it. See the
+#710 operator procedure below for the coordinated URL/template prerequisites.
 
 References: [Supabase template variables and hosted configuration](https://supabase.com/docs/guides/auth/auth-email-templates),
 [local template configuration](https://supabase.com/docs/guides/local-development/customizing-email-templates).
 
-## Hosted deployment — root/operator only
+## Hosted deployment — operator only
 
-Workers must not access production management credentials or change production.
-Root owns deployment and the real-email/iOS postflight for issue #697.
-No application release or database migration applies an email template.
+Workers must not access production management credentials, change production or
+run `supabase config push` against this sparse repository config. An application
+release or database migration does not install hosted email templates.
 
-**Do not run `supabase config push` against this repository's sparse config.**
-Omitted auth fields may acquire CLI defaults; a template-only TOML fragment is
-not proof that a push changes only the template. CLI v2.118 config diff may be
-used privately for investigation, but is not the deployment procedure here.
-Do not add auth defaults, site URL, SMTP, redirect allowlists, expiry or rate-limit
-settings to make that diff clean.
+Use existing authenticated operator access, confirm the project reference below,
+and privately retain previous subjects/bodies and URL settings for rollback.
+Never export auth configuration, credentials, live messages, OTPs, links or sessions
+into GitHub or artifacts. Record only source commit/hash, UTC test times,
+template match booleans and sanitized per-flow results.
 
-1. Check out the exact reviewed PR head. Record its commit and the SHA-256 of
-   `supabase/templates/magic-link.html` and `supabase/config.toml`.
-2. Using existing authenticated operator access, open Supabase project
-   `dhfldqnfyimjjehkngmm` → Authentication → Email Templates → **Magic Link**.
-   Confirm the project reference before saving.
-3. Privately retain the existing Magic Link subject/body for rollback. Never
-   export the whole auth configuration or put credentials, live messages,
-   OTPs, sign-in URLs, sessions, or management responses into GitHub or artifacts.
-4. Change **only** the Magic Link subject to the canonical subject above and its
-   body to the exact contents of `supabase/templates/magic-link.html`. Save.
-   Do not edit Confirm signup, SMTP or any other template or auth setting.
-   At the Management API boundary these two owned fields are
-   `mailer_subjects_magic_link` and `mailer_templates_magic_link_content`;
-   no broad auth-config replacement is authorized.
-5. Reload the Magic Link editor and compare both saved fields with the reviewed
-   source, including the literal Token and ConfirmationURL placeholders. If the
-   editor normalizes line endings, compare with LF normalization only. Record
-   only subject/body match booleans and the source commit/hash, not response
-   payloads. If either differs, stop and correct it before requesting an email.
+## #710: code-only API emails (operator action required)
 
-## Private postflight (not replaced by fixture verification)
+The owner confirmed that typing a fresh code works, but opening its link first
+consumes it. Start/verify types, PKCE and code length are not the cause.
+Supabase reports wrong, expired and used codes together; clients must not pretend
+to know which occurred. See [Supabase's error contract](https://supabase.com/docs/guides/auth/debugging/error-codes).
 
-Use the existing public email/start flow from the actual iOS app to request a
-**fresh** email after deployment. Inspect it privately: it must include a numeric
-code and the sign-in link. Enter the code in that same iOS sign-in flow; confirm
-email/verify succeeds and the app reaches authenticated state. Do not click the
-same email's link first: code and link consume the same one-time credential.
+The API now sends a trusted, server-configured redirect:
+`ARMADA_PUBLIC_URL` origin + `/login?flow=code`. It retains the existing
+request validation and numeric verification contract, including build-1 iOS
+compatibility. The template omits the consuming link when RedirectTo equals
+SiteURL + that path. Dashboard and non-API browser/PKCE emails retain their link.
+The marker page is not a session callback and never receives a token.
 
-With separate fresh emails, verify the existing web magic-link/PKCE flow and CLI
-magic-link flow still complete, and the CLI code fallback works. Keep existing
-redirect configuration and browser/session continuity. Do not alter expiry or
-rate limits to speed up testing.
+Operator-only hosted changes for project `dhfldqnfyimjjehkngmm`:
+1. Authentication → URL Configuration → **Site URL**:
+   `https://armada.thevibecompany.co` (no trailing slash).
+2. **Redirect URLs**: add exact
+   `https://armada.thevibecompany.co/login?flow=code` and
+   `https://armada.thevibecompany.co/auth/callback`.
+   Preserve existing browser OAuth and CLI loopback allow-list entries; no new
+   loopback entry is needed for API email login.
+3. Email provider: **Email OTP Length = 6**, **Email OTP Expiration = 3600**
+   seconds; no change needed if already set. Existing clients accept 6–10 digits.
+4. Install the reviewed canonical subject/body in **Magic Link** AND
+   **Confirm signup** (new email users). Keep private backups of both; reload
+   and compare both. This supersedes the earlier Magic-Link-only restriction
+   for this ticket. Set server `ARMADA_PUBLIC_URL=https://armada.thevibecompany.co`.
+   Template, Site URL and allow-list must agree before requesting an email.
+   No migration, production config push, SMTP or rate-limit change is needed.
 
-Report only UTC test times, source commit/hash, template/subject readback match,
-code-present/link-present booleans, and per-flow success/failure. Never record
-screenshots of real messages, OTPs, links, session tokens or message payloads.
-A synthetic rendered preview proves layout only, not delivery or authentication.
-Issue acceptance remains pending until root confirms real email and iOS success.
-
-## Rollback
-
-If postflight fails, root restores **only** the privately retained previous Magic
-Link subject/body in the same editor, saves, reloads and verifies those two fields.
-Do not restore an entire auth configuration. Diagnose using sanitized outcomes;
-never ask a worker to fetch production messages or credentials.
+Postflight with separate fresh emails: current TestFlight and CLI emails must
+contain the numeric code and **no link**, and typed codes must sign in.
+A new-user email must also contain the code without a link. Dashboard emails must
+retain a working link and code; opening a link then entering that same code must
+show the safe used/expired/incorrect explanation in iOS/CLI. Request another email
+to recover. Never record live codes, message bodies, links or sessions.
+Rollback restores the two privately saved templates and previous URL settings,
+not an entire auth configuration.

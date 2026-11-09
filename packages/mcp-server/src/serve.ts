@@ -122,6 +122,7 @@ export async function startServer(
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
   const control: ConfiguredControlOptions = {
+    publicUrl: config.publicUrl,
     credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey),
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,

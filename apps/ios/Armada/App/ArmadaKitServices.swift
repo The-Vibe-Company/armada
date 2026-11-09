@@ -248,6 +248,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         if error is CancellationError { return .offline }
         guard let armada = error as? ArmadaError else { return .offline }
         switch armada {
+        case .emailCodeRefused: return .rejected(armada.localizedDescription)
         case .signedOut: return .signedOut
         case .forbidden, .http(404): return .noAccess
         case .http(405), .http(501):

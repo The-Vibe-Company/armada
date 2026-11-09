@@ -103,6 +103,8 @@ const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
+  /** Trusted dashboard origin, from ARMADA_PUBLIC_URL; never request Host headers. */
+  publicUrl?: string;
   credentialBindingRecovery?: CredentialBindingRecovery;
   modelUsage?: ModelUsageApi;
   invitations?: Invitations;
@@ -425,7 +427,8 @@ async function emailStartRoute(request: Request, options: ControlOptions): Promi
       supabaseUrl: options.supabase.supabaseUrl,
       anonKey: options.supabase.anonKey,
       email,
-      redirectTo: callback.toString(),
+      // API email clients consume the numeric code, not a browser callback.
+      redirectTo: new URL("/login?flow=code", options.publicUrl ?? "https://armada.thevibecompany.co").toString(),
       challenge,
     });
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
@@ -1324,6 +1327,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       (await modalIntegration()).modalProviderFor(tokens, binding, context),
   });
   return {
+    ...(env.ARMADA_PUBLIC_URL ? { publicUrl: env.ARMADA_PUBLIC_URL } : {}),
     credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey),
     invitations: invitationsFromEnv(sql, env),
     mcp: { registry },

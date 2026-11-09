@@ -118,7 +118,7 @@ struct SignInView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Check your email")
                 .font(.headline)
-            Text("Armada sent a sign-in code to \(address). Type the code here; the link in the email is for the CLI.")
+            Text("Armada sent a sign-in code to \(address). Type the code here; do not open a sign-in link before entering the code.")
                 .font(.subheadline)
                 .foregroundStyle(ArmadaTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)

@@ -20,6 +20,7 @@ function publicHandler(respond: (request: Request) => Promise<Response> | Respon
     return respond(request);
   };
   const options: ControlOptions = {
+    publicUrl: "https://armada.test",
     authStore: createMemoryAuthStore(),
     supabase: { supabaseUrl: "https://supabase.test", anonKey: "anon-secret", fetch: supabase },
     store: {} as VaultStore,
@@ -166,7 +167,9 @@ test("public email start validates input and valid start and verify use the prov
     }),
   );
   expect(start.status).toBe(200);
-  expect(calls[0]?.url).toBe("https://supabase.test/auth/v1/otp?redirect_to=http%3A%2F%2Flocalhost%3A43123%2Fcallback");
+  expect(calls[0]?.url).toBe(
+    "https://supabase.test/auth/v1/otp?redirect_to=https%3A%2F%2Farmada.test%2Flogin%3Fflow%3Dcode",
+  );
   expect(await calls[0]?.json()).toEqual({
     email: "person@example.test",
     create_user: true,
