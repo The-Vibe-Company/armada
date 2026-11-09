@@ -22,8 +22,9 @@ import { createClient } from "@/lib/supabase/server";
 const ORG_HOSTING_IN_SETTINGS = "Organization sandbox providers are managed in Settings.";
 
 /**
- * Stores a key, token or secret as ciphertext, in the viewer's own scope or (admins) the selected org's. It is
- * never read back: setting it again replaces it. Organization hosting keys are refused: see `ORG_HOSTING_IN_SETTINGS`.
+ * Stores one of the viewer's own hosting keys (Boat, Modal) as ciphertext. It is never read back: setting it again
+ * replaces it. An organization's hosting is its providers in Settings (`ORG_HOSTING_IN_SETTINGS`), and model
+ * credentials are named accounts on the server, so neither is written here.
  */
 export async function saveCredential(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
   const viewer = await requireViewer();

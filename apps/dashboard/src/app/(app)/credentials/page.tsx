@@ -184,14 +184,15 @@ function CredentialSection({
 }: {
   title: string;
   description: string;
-  scope: "user" | "org";
+  /** Only the viewer's own: an organization's hosting is its providers in Settings. */
+  scope: "user";
   owner: string;
   rows: CredentialRow[];
   canManage: boolean;
 }) {
   const byKind = new Map(rows.map((row) => [row.kind, row]));
   return (
-    <Card data-credentials={scope === "user" ? "user" : title}>
+    <Card data-credentials={scope}>
       <CardHeader>
         <CardTitle>{title}</CardTitle>
         <CardDescription>{description}</CardDescription>
