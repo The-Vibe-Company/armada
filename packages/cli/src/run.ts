@@ -137,6 +137,8 @@ Usage:
                                            Last-10 comparable-session resource evidence; collects one bounded sample.
                                            Missing/partial evidence abstains. Never resizes or changes defaults.
                                            Human launch guidance uses stderr only; --json launch never requests advice.
+  armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
+                                           Owner-only legacy Modal binding recovery; stop safely first; no restart
   armada detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
   armada golden retirement dry-run|reconcile <golden-id> [--limit 1-50] [--org UUID]
@@ -266,6 +268,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     "golden",
     "launch",
     "list",
+    "bind-credential",
     "detail",
     "status",
     "advice",
@@ -310,6 +313,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "launch":
       return launch(rest, io, deps);
     case "list":
+    case "bind-credential":
     case "detail":
     case "status":
     case "advice":
