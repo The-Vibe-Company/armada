@@ -1,6 +1,6 @@
 # Onboarding: launching agents on Armada (production)
 
-This guide takes a new user from nothing to a coding agent running on boat.dev through the production Armada server, from the `armada` CLI or from an MCP client (Claude Code, Codex, Cursor, an orchestrator).
+This guide takes a new user from nothing to a coding agent running on Boat or Modal through the production Armada server, from the `armada` CLI or from an MCP client (Claude Code, Codex, Cursor, an orchestrator).
 
 | What | Value |
 | --- | --- |
@@ -27,23 +27,19 @@ From a clone of this repository, `bun run armada <args>` runs the same CLI from 
 
 ## 2. Point the CLI at production
 
-The CLI discovers its public authentication settings from the Armada URL. No Supabase environment variables are needed:
-
-```sh
-armada login --url armada.thevibecompany.co
-```
-
-The production URL above is the default for `armada login`. For another deployment use `--url <url>` or `ARMADA_URL`. The URL must use HTTPS, except for localhost during development. Both the dashboard and the MCP server serve `/.well-known/armada.json`; the dashboard advertises its configured `ARMADA_MCP_URL` as the control API origin. Deploy this endpoint before using URL-based login. It exposes only the public Supabase URL, public anon key, enabled login providers and control API origin.
+The CLI talks only to the Armada API. It needs no Supabase, provider or database settings, and the production server, `https://armada.thevibecompany.co`, is its default. For another deployment pass its full URL to `armada login --url https://<your-armada>`, or set `ARMADA_URL`.
 
 ## 3. Sign in
 
-On an email-only deployment the CLI asks for your email. You can also provide it directly:
-
 ```sh
-armada login --url armada.thevibecompany.co --email you@example.com
+armada login                                # opens the browser; GitHub by default
+armada login --provider google              # or Google
+armada login --email you@example.com        # no browser: type the code from the email
 ```
 
-Supabase sends a sign-in email. Click its link or type the code at the prompt. Enabled social providers are available with `--provider github|google`. The session and public discovery settings are saved in `~/.config/armada/session.json` (`$XDG_CONFIG_HOME/armada` when set), with owner-only permissions. Subsequent commands reuse the saved control API address and refresh the session automatically without Supabase variables. `armada logout` deletes the session. Explicit `SUPABASE_URL` and `SUPABASE_ANON_KEY` remain supported for legacy local setups when neither `--url` nor `ARMADA_URL` is supplied.
+Browser login runs through Armada (PKCE, with a one-time callback on `127.0.0.1`). The CLI never talks to GitHub, Google or Supabase itself. With `--email`, Armada sends a sign-in email and the CLI asks for the code it contains. Without `--email`, the CLI never asks for an email address.
+
+The session (the Armada URL, an access token and a refresh token) is saved in `~/.config/armada/session.json` (`$XDG_CONFIG_HOME/armada` when set), readable only by you. Later commands reuse it and refresh it automatically. `armada logout` deletes it. For scripts and CI, set `ARMADA_TOKEN` to a service token (step 7) instead: it takes precedence over the saved session.
 
 This first sign-in creates your Armada account. You must do it before anyone can add you to an org.
 
@@ -69,12 +65,12 @@ Admins also manage roles (`armada org members role <email> admin|member --org <o
 A launch injects only the credentials of the chosen agent: yours first, else the org's. Values are read from stdin or a file, never from an argument, and are stored encrypted. They are never shown again.
 
 ```sh
-claude setup-token | armada creds set claude-oauth          # yours, for Claude Code
-armada creds set codex-auth --file ~/.codex/auth.json       # yours, for Codex
-armada creds list --org <org>                                # kinds and dates, never values
+printenv CLAUDE_CODE_OAUTH_TOKEN | armada creds set claude-oauth   # yours, for Claude Code (the token `claude setup-token` prints)
+armada creds set codex-auth --file ~/.codex/auth.json              # yours, for Codex
+armada creds list --org <org>                                       # kinds and dates, never values
 ```
 
-The org's boat.dev key (`armada creds set boat --org <org>`, admin only) pays for org goldens. Kinds: `claude-oauth`, `anthropic`, `openai`, `codex-auth`, `boat`.
+Agent kinds: `claude-oauth` or `anthropic` for Claude Code, `openai` or `codex-auth` for Codex. Sandboxes are paid for by the org's Boat or Modal connection: an admin sets it up with `armada org connect boat|modal` (see [Organization provider setup and recovery](#organization-provider-setup-and-recovery)). A member may also store a personal `boat` or `modal` credential for private goldens.
 
 ## 6. Launch from the CLI
 
@@ -84,12 +80,14 @@ armada launch <golden> --agent codex --repo owner/repo --ttl 2h --json       # n
 ```
 
 `armada launch` asks the server to resolve credentials and fork the golden. It prints the sandbox id
-(`--json` prints the full record). Optional `--repo owner/repo` selects one repository already
-recorded in the golden and sets the native agent's real initial cwd before its first prompt.
-It also prepares idle launches now for a later send. This is not a URL or path, and unlike
-`golden create --repo <url>[@branch]`, it may be supplied only once. Unknown or ambiguous
-selectors are rejected before allocation. Omit it to keep legacy launch behavior. MCP `launch`
-and `POST /api/v1/sandbox/launch` accept the same optional `repo` string.
+(`--json` prints the full record). Optional `--repo` selects one repository already recorded in the
+golden, by `owner/repo` or by its configured directory, and starts the native agent there: the
+agent's real initial working directory, set after the pulls and init and before its first prompt,
+also for an idle launch. It is a starting directory, not confinement: the agent can still reach the
+other repositories. It is not a URL, and unlike `golden create --repo <url>[@branch]` it is given
+only once. Unknown or ambiguous selectors are rejected before a machine is allocated. Without it,
+launch keeps its previous behavior. MCP `launch` and `POST /api/v1/sandbox/launch` accept the same
+optional `repo` string.
 
 ## 7. Connect an MCP client
 
@@ -145,7 +143,7 @@ bearer_token_env_var = "ARMADA_TOKEN"
 
 ## 8. Drive an agent through MCP
 
-The tools are `golden_list`, `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec` and `stop`. You see your org's goldens and sandboxes and your own private ones, never another member's private ones. Example arguments:
+The sandbox tools are `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec` and `stop`. Golden tools (`golden_list`, `golden_capabilities`, `golden_create`, `golden_update`, `golden_build_status`, `golden_snapshot`, `golden_adopt`) list, build and maintain goldens. You see your org's goldens and sandboxes and your own private ones, never another member's private ones. Example arguments:
 
 ```jsonc
 // golden_list: the goldens you can launch, with their orgId
@@ -181,8 +179,8 @@ A typical orchestrator loop is `launch` with a prompt, then `wait` until `settle
 
 ## Troubleshooting
 
-- `Set ARMADA_URL to the Armada server.` / `Set SUPABASE_URL.`: step 2 is missing from this shell.
-- `Run armada login.`: there is no saved session, or it can no longer be refreshed. Sign in again.
+- `Armada could not reach the server.`: check `--url` / `ARMADA_URL` (step 2) and the network.
+- `Run armada login again.`: there is no saved session, or it can no longer be refreshed. Sign in again (step 3), or set `ARMADA_TOKEN`.
 - `No Armada account has that email`: the person has not signed in yet (step 3).
 - A 401 on `/mcp`: the token is revoked, expired or mistyped. OAuth clients re-authorize by themselves.
 
