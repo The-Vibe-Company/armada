@@ -3,6 +3,8 @@ import {
   type Harness,
   isSandboxProvider,
   LaunchError,
+  MACHINE_SIZES,
+  type MachineSize,
   resolveModelChoice,
   type SandboxProviderId,
 } from "@armada/core";
@@ -27,6 +29,10 @@ export type LaunchArgs = {
   connections: string[];
   /** Repository context: a golden `repos[].dir` used as the native initial cwd. Absent: the default, none. */
   repo?: string;
+  /** An explicit machine size; absent, the server resolves the repository, then golden default (`@armada/core`). */
+  size?: MachineSize;
+  /** The golden has size defaults the server must resolve: the launch needs the versioned sized route. */
+  sizePolicy?: boolean;
   prompt?: string;
 };
 
@@ -48,6 +54,7 @@ export function launchArgs(
     harness: string;
     prompt: string;
     repo?: string;
+    size?: string;
   } & ModelFields,
 ): Parsed<Omit<LaunchArgs, "visibility" | "connections">> {
   const harness = HARNESSES.find((candidate) => candidate === fields.harness);
@@ -58,6 +65,9 @@ export function launchArgs(
   const provider = fields.provider;
   const repo = fields.repo?.trim() ?? "";
   if (repo && !REPO.test(repo)) return { ok: false, error: "Choose a repository recorded in the golden." };
+  const size = fields.size?.trim() ?? "";
+  if (size && !(MACHINE_SIZES as readonly string[]).includes(size))
+    return { ok: false, error: "Choose a machine size from the list." };
   const choice = checked(harness, chosenModel(fields), fields.reasoningEffort.trim() || undefined);
   if (!choice.ok) return choice;
   const prompt = fields.prompt.trim();
@@ -69,6 +79,7 @@ export function launchArgs(
       org: fields.org,
       harness,
       ...(repo ? { repo } : {}),
+      ...(size ? { size: size as MachineSize } : {}),
       model: choice.args.model,
       reasoning_effort: choice.args.reasoningEffort,
       ...(prompt ? { prompt } : {}),

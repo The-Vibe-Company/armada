@@ -1,6 +1,7 @@
 export { CLIENT_CONFIG_PATH, type ClientConfig } from "./client-config.ts";
 export * from "./connections.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
+export type { CredentialBinding } from "./credentials.ts";
 export {
   CODEX_AUTH_ENV,
   CODEX_AUTH_PATH,
@@ -97,6 +98,7 @@ export {
   type GoldenRecord,
   type GoldenStore,
   goldenForLaunch,
+  goldenForSettings,
   providerIdOf,
   type SnapshottedGolden,
   snapshotGolden,
@@ -124,6 +126,7 @@ export {
   splitRepoArg,
 } from "./golden-config.ts";
 export { createSqlGoldenStore, GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
+export * from "./invitations.ts";
 export {
   DEFAULT_LAUNCH_TTL_SECONDS,
   type GitHubLaunchInfo,
@@ -137,6 +140,7 @@ export {
 } from "./launch.ts";
 export { LaunchError, type LaunchErrorCode } from "./launch-error.ts";
 export { type LaunchWorkdir, resolveLaunchWorkdir, resolveLaunchWorkdirAt } from "./launch-workdir.ts";
+export * from "./machine-size.ts";
 export { MCP_CATALOG, type McpCatalogId } from "./mcp-catalog.ts";
 export {
   MCP_STDIO_EXECUTABLES,
@@ -219,6 +223,7 @@ export {
   type SandboxProviderId,
 } from "./sandbox-provider.ts";
 export {
+  type AccountMutation,
   addMember,
   type CredentialInfo,
   createOrg,
@@ -226,6 +231,7 @@ export {
   listMembers,
   listOrgs,
   type MemberInfo,
+  mutateCredentialAccount,
   type OrgCredentials,
   type OrgSummary,
   parseOrgName,

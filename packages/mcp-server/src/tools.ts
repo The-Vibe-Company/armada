@@ -1,3 +1,4 @@
+import { goldenForSettings, MACHINE_SIZES, parseMachineSizePolicy } from "@armada/core";
 import {
   assertGoldenMutation,
   connectGolden,
@@ -39,6 +40,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import type { Caller } from "./caller.ts";
 import { describeFailure } from "./caller.ts";
+import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
@@ -110,6 +112,8 @@ const modelCatalogText = Object.entries(MODEL_CATALOG)
 const modelInput = z.string().min(1).optional().describe(`The model, by id. ${modelCatalogText}.`);
 const effortInput = z.string().min(1).optional().describe("The reasoning effort; one the model accepts (see model).");
 const modelOutput = {
+  credentialId: z.string().nullable().optional(),
+  credentialVersion: z.number().int().nullable().optional(),
   model: z.string().nullable().describe("The model its turns run with. Null: launched before Armada recorded it."),
   reasoningEffort: z.string().nullable(),
 };
@@ -153,6 +157,7 @@ const sandbox = z.object({
     .nullable()
     .describe("Configured directory used to prepare native agent cwd; not confinement."),
   ...modelOutput,
+  machineSize: z.unknown().nullable(),
   status: z.enum(SANDBOX_STATUSES),
   statusReason: z.string().nullable(),
   orgId: z.string(),
@@ -184,6 +189,7 @@ const status = {
     .nullable()
     .describe("Configured directory used to prepare native agent cwd; not confinement."),
   ...modelOutput,
+  machineSize: z.unknown().nullable(),
   status: z.enum(SANDBOX_STATUSES),
   statusReason: z.string().nullable(),
   providerState: z.string().nullable(),
@@ -253,9 +259,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     if (!found) throw new ToolError("not_found", `No sandbox with id '${sandboxId}' that you can see.`);
     return found;
   };
-  const live = async (sandboxId: string) => {
+  const live = async (sandboxId: string, allowUnbound = false) => {
     const found = await visible(sandboxId);
     if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${sandboxId}' is deleted.`);
+    if (!allowUnbound && found.provider === "modal" && !found.credentialId)
+      throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
     return {
       sandbox: found,
       provider: await context.provider(found),
@@ -493,129 +501,180 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   );
 
   tool(
-    "launch",
+    "golden_size_policy",
     {
-      title: "Launch an agent",
+      title: "Golden machine size policy",
       description:
-        "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. " +
-        "With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready " +
-        "and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada " +
-        "credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in " +
-        "the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes.",
+        "Read or replace defaults for this provider golden only. Org writes require admin; private writes require owner. Does not rebuild snapshots or resize machines.",
       input: {
-        visibility: z.enum(["private", "org"]).optional(),
-        connections: z.array(z.string().uuid()).max(100).optional(),
-        golden: z.string().min(1).describe("The golden's name, as in golden_list."),
-        org: z
-          .string()
-          .optional()
-          .describe("The golden's orgId, as in golden_list. Needed only when the name is in several of your orgs."),
-        provider: z
-          .enum(SANDBOX_PROVIDERS)
-          .optional()
-          .describe("The golden's provider. Needed only when the name exists on several providers."),
-        harness: z.enum(HARNESSES).describe("claude (Claude Code) or codex."),
-        model: modelInput,
-        reasoning_effort: effortInput,
-        repo: z
-          .string()
-          .optional()
-          .describe(
-            "Configured directory or owner/repo from the golden. Prepares native agent cwd, including idle launches. Not confinement.",
-          ),
-        prompt: z.string().min(1).optional().describe("The first instruction. Leave out for an idle sandbox."),
-        ttl_seconds: z
-          .number()
-          .int()
-          .min(1)
-          .max(MAX_LAUNCH_TTL_SECONDS)
-          .optional()
-          .describe(
-            `Seconds before the machine stops by itself. Default ${DEFAULT_LAUNCH_TTL_SECONDS} (4 hours). At most ` +
-              `${providerLimitsText}; a longer TTL is refused.`,
-          ),
+        golden: z.string(),
+        org: z.string().optional(),
+        provider: z.enum(SANDBOX_PROVIDERS).optional(),
+        policy: z.unknown().optional(),
       },
       output: {
-        id: z.string(),
+        goldenId: z.string(),
         provider: providerOutput,
-        providerSandboxId: z.string(),
-        boatId: compat("providerSandboxId"),
-        golden: z.string(),
-        visibility: z.enum(["org", "private"]),
-        harness: z.enum(HARNESSES),
-        repositoryDir: z
-          .string()
-          .nullable()
-          .describe("Configured directory used to prepare native agent cwd; not confinement."),
-        ...modelOutput,
-        status: z.enum(SANDBOX_STATUSES),
-        conversationIds: z.array(z.string()),
-        promptId: z.string().nullable(),
-        ttlSeconds: z.number().int(),
-        expiresAt: z.string().nullable(),
-        github: z
-          .object({
-            status: z.enum(["connected", "not_connected", "revoked", "unavailable"]),
-            login: z.string().nullable(),
-            message: z.string().nullable(),
-          })
-          .describe(
-            "Whether git and gh in the sandbox act as the caller. Anything but connected means they are not signed in; message says how to fix it.",
-          ),
+        repositories: z.array(z.object({ url: z.string(), branch: z.string(), dir: z.string() })),
+        policy: z.unknown().nullable(),
       },
     },
     async (args) => {
-      // Refused before any lookup or allocation.
-      resolveModelChoice(args.harness, { model: args.model, reasoningEffort: args.reasoning_effort });
       const actor = await launchActor(args.golden, args.org);
-      const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
-      resolveRepositoryDir(chosen, args.repo);
-      const provider = await context.provider(chosen);
-      const result = await launchSandbox(
-        provider,
-        {
-          goldens: data.goldens,
-          sandboxes: data.sandboxes,
-          credentials: context.launchCredentials,
-          ...(context.connections ? { connections: context.connections } : {}),
-        },
-        actor,
-        {
-          golden: args.golden,
-          provider: chosen.provider,
-          harness: args.harness,
-          ...(args.repo === undefined ? {} : { repo: args.repo }),
-          ...(args.model === undefined ? {} : { model: args.model }),
-          ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
-          ...(args.connections === undefined ? {} : { connections: args.connections }),
-          ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
-          ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
-          ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
-        },
-        context.launch ?? {},
-      );
+      const golden = await goldenForSettings(data.goldens, actor, args.golden, args.provider);
+      if (args.policy !== undefined) {
+        const policy = parseMachineSizePolicy(
+          args.policy,
+          golden.config.repos.map((r) => r.dir),
+        );
+        if (!data.goldens.setSizePolicy) throw new GoldenError("conflict", "Policy writes are unavailable.");
+        await data.goldens.setSizePolicy(golden, actor, policy);
+        return { goldenId: golden.id, provider: golden.provider, repositories: golden.config.repos, policy };
+      }
       return {
-        id: result.sandbox.id,
-        ...sandboxIds(result.sandbox),
-        golden: result.golden.name,
-        visibility: result.sandbox.visibility ?? result.golden.visibility,
-        harness: result.sandbox.harness,
-        repositoryDir: result.sandbox.repositoryDir ?? null,
-        model: result.sandbox.model,
-        reasoningEffort: result.sandbox.reasoningEffort,
-        status: result.sandbox.status,
-        conversationIds: result.sandbox.conversationIds,
-        promptId: result.promptId ?? null,
-        ttlSeconds: result.ttlSeconds,
-        expiresAt: result.expiresAt ? result.expiresAt.toISOString() : null,
-        github: {
-          status: result.github.status,
-          login: result.github.login ?? null,
-          message: result.github.message ?? null,
-        },
+        goldenId: golden.id,
+        provider: golden.provider,
+        repositories: golden.config.repos,
+        policy: golden.sizePolicy ?? null,
       };
     },
   );
+
+  for (const launchTool of ["launch", "launch_sized_v1"] as const) {
+    tool(
+      launchTool,
+      {
+        title: "Launch an agent",
+        description:
+          "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. " +
+          "With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready " +
+          "and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada " +
+          "credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in " +
+          "the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes.",
+        input: {
+          ...(launchTool === "launch_sized_v1" ? { size_policy_version: z.literal(1) } : {}),
+          visibility: z.enum(["private", "org"]).optional(),
+          connections: z.array(z.string().uuid()).max(100).optional(),
+          golden: z.string().min(1).describe("The golden's name, as in golden_list."),
+          org: z
+            .string()
+            .optional()
+            .describe("The golden's orgId, as in golden_list. Needed only when the name is in several of your orgs."),
+          provider: z
+            .enum(SANDBOX_PROVIDERS)
+            .optional()
+            .describe("The golden's provider. Needed only when the name exists on several providers."),
+          harness: z.enum(HARNESSES).describe("claude (Claude Code) or codex."),
+          model: modelInput,
+          reasoning_effort: effortInput,
+          size: z.enum(MACHINE_SIZES).optional(),
+          repo: z
+            .string()
+            .optional()
+            .describe(
+              "Configured directory or owner/repo from the golden. Prepares native agent cwd, including idle launches. Not confinement.",
+            ),
+          credentialId: z.string().uuid().optional(),
+          prompt: z.string().min(1).optional().describe("The first instruction. Leave out for an idle sandbox."),
+          ttl_seconds: z
+            .number()
+            .int()
+            .min(1)
+            .max(MAX_LAUNCH_TTL_SECONDS)
+            .optional()
+            .describe(
+              `Seconds before the machine stops by itself. Default ${DEFAULT_LAUNCH_TTL_SECONDS} (4 hours). At most ` +
+                `${providerLimitsText}; a longer TTL is refused.`,
+            ),
+        },
+        output: {
+          id: z.string(),
+          provider: providerOutput,
+          providerSandboxId: z.string(),
+          boatId: compat("providerSandboxId"),
+          golden: z.string(),
+          visibility: z.enum(["org", "private"]),
+          harness: z.enum(HARNESSES),
+          repositoryDir: z
+            .string()
+            .nullable()
+            .describe("Configured directory used to prepare native agent cwd; not confinement."),
+          ...modelOutput,
+          machineSize: z.unknown().nullable(),
+          status: z.enum(SANDBOX_STATUSES),
+          conversationIds: z.array(z.string()),
+          promptId: z.string().nullable(),
+          ttlSeconds: z.number().int(),
+          expiresAt: z.string().nullable(),
+          github: z
+            .object({
+              status: z.enum(["connected", "not_connected", "revoked", "unavailable"]),
+              login: z.string().nullable(),
+              message: z.string().nullable(),
+            })
+            .describe(
+              "Whether git and gh in the sandbox act as the caller. Anything but connected means they are not signed in; message says how to fix it.",
+            ),
+        },
+      },
+      async (args) => {
+        // Refused before any lookup or allocation.
+        resolveModelChoice(args.harness, { model: args.model, reasoningEffort: args.reasoning_effort });
+        const actor = await launchActor(args.golden, args.org);
+        const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
+        resolveRepositoryDir(chosen, args.repo);
+        const provider = await context.provider(chosen);
+        const result = await launchSandbox(
+          provider,
+          {
+            goldens: data.goldens,
+            sandboxes: data.sandboxes,
+            credentials: context.launchCredentials,
+            ...(context.connections ? { connections: context.connections } : {}),
+          },
+          actor,
+          {
+            golden: args.golden,
+            ...(args.size === undefined ? {} : { size: args.size }),
+            provider: chosen.provider,
+            harness: args.harness,
+            ...(args.repo === undefined ? {} : { repo: args.repo }),
+            ...(args.model === undefined ? {} : { model: args.model }),
+            ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
+            ...(args.connections === undefined ? {} : { connections: args.connections }),
+            ...(args.credentialId ? { credentialId: args.credentialId } : {}),
+            ...(args.reasoning_effort === undefined ? {} : { reasoningEffort: args.reasoning_effort }),
+            ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
+            ...(args.ttl_seconds === undefined ? {} : { ttlSeconds: args.ttl_seconds }),
+          },
+          context.launch ?? {},
+        );
+        return {
+          id: result.sandbox.id,
+          ...sandboxIds(result.sandbox),
+          golden: result.golden.name,
+          visibility: result.sandbox.visibility ?? result.golden.visibility,
+          harness: result.sandbox.harness,
+          repositoryDir: result.sandbox.repositoryDir ?? null,
+          model: result.sandbox.model,
+          reasoningEffort: result.sandbox.reasoningEffort,
+          credentialId: result.sandbox.credentialId ?? null,
+          credentialVersion: result.sandbox.credentialVersion ?? null,
+          machineSize: result.sandbox.machineSize ?? null,
+          status: result.sandbox.status,
+          conversationIds: result.sandbox.conversationIds,
+          promptId: result.promptId ?? null,
+          ttlSeconds: result.ttlSeconds,
+          expiresAt: result.expiresAt ? result.expiresAt.toISOString() : null,
+          github: {
+            status: result.github.status,
+            login: result.github.login ?? null,
+            message: result.github.message ?? null,
+          },
+        };
+      },
+    );
+  }
 
   tool(
     "list",
@@ -670,6 +729,9 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           repositoryDir: row.repositoryDir ?? null,
           model: row.model,
           reasoningEffort: row.reasoningEffort,
+          credentialId: row.credentialId ?? null,
+          credentialVersion: row.credentialVersion ?? null,
+          machineSize: row.machineSize ?? null,
           status: row.status,
           statusReason: row.statusReason,
           orgId: row.orgId,
@@ -746,7 +808,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       readOnly: true,
     },
     async (args) => {
-      const { sandbox: found, provider } = await live(args.id);
+      const { sandbox: found, provider } = await live(args.id, true);
       const page = await readLogs(provider, found.providerSandboxId, {
         ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
         ...(args.conversation_id ? { conversation_id: args.conversation_id } : {}),
@@ -783,6 +845,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
       if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
+      if (found.credentialId)
+        await context.launchCredentials.resolve(
+          { userId: found.ownerId, orgId: found.orgId, role: "member" },
+          found.harness,
+          found.credentialId,
+          found.credentialVersion ?? undefined,
+        );
       const choice = turnModel(found, { model: args.model, reasoningEffort: args.reasoning_effort });
       const conversation = args.conversation_id ?? found.conversationIds.at(-1);
       const machine = await provider.get(found.providerSandboxId);
@@ -847,6 +916,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const { sandbox: found, provider } = await live(args.id);
       const delivery = provider.capabilities[found.harness].steer;
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
+      if (delivery === "restart" && found.credentialId)
+        await context.launchCredentials.resolve(
+          { userId: found.ownerId, orgId: found.orgId, role: "member" },
+          found.harness,
+          found.credentialId,
+          found.credentialVersion ?? undefined,
+        );
       const receipt = await provider.steer({
         sandboxId: found.providerSandboxId,
         text: args.text,
@@ -942,7 +1018,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       destructive: true,
     },
     async (args) => {
-      const { sandbox: found, provider } = await live(args.id);
+      const { sandbox: found, provider } = await live(args.id, true);
       return sandboxActivity(
         data.sandboxes,
         found,
@@ -1124,7 +1200,11 @@ function describe(error: unknown): { code: string; message: string } {
     }
     return { code: error.code, message: error.message };
   }
-  if (error instanceof VaultError) return { code: "missing_credential", message: error.message };
+  if (error instanceof VaultError)
+    return {
+      code: error.code.startsWith("credential_binding_") ? error.code : "missing_credential",
+      message: error.message,
+    };
   if (error instanceof EncryptionKeyError) return { code: "unavailable", message: error.message };
   if (error instanceof DataError) return { code: "unavailable", message: error.message };
   return { code: "internal", message: "Armada could not complete the call." };

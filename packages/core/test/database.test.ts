@@ -3,7 +3,7 @@ import { readdirSync } from "node:fs";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
 import { generateDatabaseTypes } from "../../../scripts/db/generate.ts";
-import { HARNESSES, type SandboxState, type Visibility } from "../src/index.ts";
+import { encryptSecret, HARNESSES, type SandboxState, type Visibility } from "../src/index.ts";
 
 const PROVIDER_STATES = [
   "starting",
@@ -62,6 +62,8 @@ describe("database", () => {
         "golden_backend_slots",
         "golden_build_jobs",
         "golden_operation_fences",
+        "golden_snapshot_publications",
+        "golden_snapshot_retirements",
         "goldens",
         "mcp_actor_epochs",
         "mcp_bindings",
@@ -83,6 +85,11 @@ describe("database", () => {
         "notify_subscriptions",
         "oauth_clients",
         "oauth_codes",
+        "orchestrator_children",
+        "orchestrator_delegations",
+        "orchestrator_operations",
+        "orchestrators",
+        "organization_invitations",
         "orgs",
         "sandboxes",
         "service_tokens",
@@ -160,7 +167,7 @@ describe("database", () => {
       expect(granted.rows.map((row) => row.grant)).toEqual([
         "credentials DELETE",
         "credentials INSERT(created_at,id,kind,owner_id,scope,value_enc)",
-        "credentials SELECT(created_at,id,kind,owner_id,scope)",
+        "credentials SELECT(created_at,expires_at,id,is_default,kind,name,owner_id,scope,status,updated_at,version)",
         "credentials UPDATE(value_enc)",
         "github_connections DELETE",
         "github_connections SELECT(created_at,github_id,installations,login,name,refresh_expires_at,revoked_at,updated_at,user_id)",
@@ -180,6 +187,9 @@ describe("database", () => {
         "notify_subscriptions INSERT(created_at,last_cursor,last_status,sandbox_id,secret_enc,url)",
         "notify_subscriptions SELECT(created_at,last_cursor,last_status,sandbox_id,url)",
         "notify_subscriptions UPDATE(last_cursor,last_status,secret_enc,url)",
+        "orchestrator_children SELECT",
+        "orchestrator_operations SELECT",
+        "orchestrators SELECT",
         "orgs DELETE",
         "orgs SELECT(created_at,id,name)",
         "orgs UPDATE(boat_api_key_enc,name)",
@@ -223,6 +233,15 @@ describe("database", () => {
           ciphertext.push(id);
         }
         if (!secretName.test(column.column_name)) continue;
+        if (
+          id === "sandboxes.credential_id" ||
+          id === "sandboxes.credential_version" ||
+          id === "modal_server_harnesses.credential_id" ||
+          id === "modal_server_harnesses.credential_version"
+        ) {
+          expect(column.data_type).toBe(id.endsWith("_id") ? "uuid" : "integer");
+          continue;
+        }
         if (column.column_name === "hash") {
           expect(column.data_type).toBe("text");
           continue;
@@ -241,6 +260,7 @@ describe("database", () => {
         "mcp_grants.value_enc",
         "mcp_pending_oauth.payload_enc",
         "notify_subscriptions.secret_enc",
+        "organization_invitations.token_enc",
         "orgs.boat_api_key_enc",
       ]);
 
@@ -498,7 +518,7 @@ describe("database", () => {
       await expect(
         asUser(db, people.member, () =>
           db.query(
-            "insert into credentials (scope, owner_id, kind, value_enc) values ('org', $1, 'anthropic', decode('0a', 'hex'))",
+            "insert into credentials (scope, owner_id, kind, value_enc) values ('org', $1, 'modal', decode('0a', 'hex'))",
             [people.org],
           ),
         ),
@@ -506,7 +526,7 @@ describe("database", () => {
       const credential = await asUser(db, people.admin, async () => {
         const result = await db.query<{ id: string }>(
           `insert into credentials (scope, owner_id, kind, value_enc)
-           values ('org', $1, 'anthropic', decode('0a', 'hex'))
+           values ('org', $1, 'modal', decode('0a', 'hex'))
            returning id`,
           [people.org],
         );
@@ -518,7 +538,7 @@ describe("database", () => {
         await asUser(db, people.member, () =>
           text(db, "select kind::text as value from credentials where id = $1", [credential]),
         ),
-      ).toBe("anthropic");
+      ).toBe("modal");
       await asUser(db, people.member, () =>
         db.query("update credentials set value_enc = decode('ff', 'hex') where id = $1", [credential]),
       );
@@ -626,10 +646,75 @@ describe("database", () => {
     });
   });
 
+  test.each(["insert", "update"] as const)(
+    "authenticated model %s is denied while provider writes remain allowed",
+    async (operation) => {
+      await withDb(async (db) => {
+        const people = await fixture(db);
+        const key = Buffer.alloc(32, 21).toString("base64");
+        const original = await encryptSecret("synthetic-original", key);
+        const replacement = await encryptSecret("synthetic-replacement", key);
+        for (const { scope, owner, actor } of [
+          { scope: "user", owner: people.owner, actor: people.owner },
+          { scope: "org", owner: people.org, actor: people.admin },
+        ]) {
+          for (const kind of ["anthropic", "openai", "claude_oauth", "codex_auth"]) {
+            const [id] = await asRole(db, "service_role", () =>
+              ids(
+                db,
+                "insert into credentials(scope,owner_id,kind,value_enc) values($1::credential_scope,$2,$3::credential_kind,$4::bytea) returning id",
+                [scope, owner, kind, original],
+              ),
+            );
+            if (!id) throw Error("Service model insert failed.");
+            if (operation === "insert") {
+              await expect(
+                asUser(db, actor, () =>
+                  ids(
+                    db,
+                    "insert into credentials(scope,owner_id,kind,value_enc) values($1::credential_scope,$2,$3::credential_kind,$4::bytea) returning id",
+                    [scope, owner, kind, replacement],
+                  ),
+                ),
+              ).rejects.toThrow(/row-level security/);
+            } else {
+              expect(
+                await asUser(db, actor, () =>
+                  ids(db, "update credentials set value_enc=$2::bytea where id=$1 returning id", [id, replacement]),
+                ),
+              ).toEqual([]);
+            }
+            expect(await ciphertext(db, id)).toBe(Buffer.from(original).toString("hex"));
+          }
+          for (const kind of scope === "org" ? ["modal"] : ["boat", "modal"]) {
+            const insert = () =>
+              ids(
+                db,
+                "insert into credentials(scope,owner_id,kind,value_enc) values($1::credential_scope,$2,$3::credential_kind,$4::bytea) returning id",
+                [scope, owner, kind, original],
+              );
+            const [id] =
+              operation === "insert" ? await asUser(db, actor, insert) : await asRole(db, "service_role", insert);
+            if (!id) throw Error("Provider insert failed.");
+            if (operation === "update")
+              expect(
+                await asUser(db, actor, () =>
+                  ids(db, "update credentials set value_enc=$2::bytea where id=$1 returning id", [id, replacement]),
+                ),
+              ).toEqual([id]);
+            expect(await ciphertext(db, id)).toBe(
+              Buffer.from(operation === "insert" ? original : replacement).toString("hex"),
+            );
+          }
+        }
+      });
+    },
+  );
+
   test("only the owner sees a user credential or a token", async () => {
     await withDb(async (db) => {
       const people = await fixture(db);
-      const credential = await asUser(db, people.owner, async () => {
+      const credential = await asRole(db, "service_role", async () => {
         const result = await db.query<{ id: string }>(
           `insert into credentials (scope, owner_id, kind, value_enc)
            values ('user', $1, 'anthropic', decode('0d', 'hex'))
@@ -652,6 +737,10 @@ describe("database", () => {
         await asUser(db, people.member, () => ids(db, "select id from credentials where id = $1", [credential])),
       ).toEqual([]);
 
+      expect(
+        await asUser(db, people.owner, () => ids(db, "delete from credentials where id=$1 returning id", [credential])),
+      ).toEqual([]);
+      expect(await text(db, "select kind::text as value from credentials where id=$1", [credential])).toBe("anthropic");
       const serviceToken = await asUser(db, people.owner, () =>
         insertToken(db, "service_tokens", people.owner, people.org, HASH),
       );

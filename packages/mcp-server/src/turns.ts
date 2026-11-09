@@ -1,3 +1,4 @@
+import type { MachineSizeEvidence } from "@armada/core";
 import {
   type AgentEvent,
   dedupeEvents,
@@ -24,12 +25,15 @@ export interface PromptReport {
 }
 
 export interface StatusReport {
+  credentialId?: string | null;
+  credentialVersion?: number | null;
   id: string;
   golden: string;
   visibility: SandboxView["visibility"];
   harness: SandboxView["harness"];
   /** Persisted native repository directory; not an access boundary. */
   repositoryDir: string | null;
+  machineSize: MachineSizeEvidence | null;
   /** What its turns run with. Null for a sandbox launched before the choice was recorded. */
   model: string | null;
   reasoningEffort: string | null;
@@ -133,8 +137,11 @@ function report(
     visibility: sandbox.visibility,
     harness: sandbox.harness,
     repositoryDir: sandbox.repositoryDir ?? null,
+    machineSize: sandbox.machineSize ?? null,
     model: sandbox.model,
     reasoningEffort: sandbox.reasoningEffort,
+    credentialId: sandbox.credentialId ?? null,
+    credentialVersion: sandbox.credentialVersion ?? null,
     status,
     statusReason: status === "failed" ? sandbox.statusReason : null,
     providerState: info?.providerState ?? null,
