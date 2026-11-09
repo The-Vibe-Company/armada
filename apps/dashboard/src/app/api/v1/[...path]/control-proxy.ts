@@ -20,6 +20,7 @@ const PRIVATE_POST_PATHS = new Set([
   "org/invitations/resend",
   "org/invitations/revoke",
   "org/invitations/accept",
+  "org/invitations/preview",
   "org/create",
   "org/list",
   "org/provider/status",

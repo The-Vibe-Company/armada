@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { OrganizationInvitation } from "@armada/core";
+import type { InvitationErrorReason, InvitationPreview, OrganizationInvitation } from "@armada/core";
 import { decryptSecret, encryptSecret, type Sql, VaultError } from "@armada/core/server";
 import type { Caller, SupabaseProject } from "./caller.ts";
 
@@ -24,6 +24,16 @@ const dto = (r: Row): OrganizationInvitation => ({
   delivery: r.delivery,
 });
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
+export class InvitationError extends VaultError {
+  constructor(
+    code: "invalid" | "forbidden" | "not_found" | "conflict",
+    message: string,
+    readonly reason: InvitationErrorReason,
+    readonly retryAfterSeconds?: number,
+  ) {
+    super(code, message);
+  }
+}
 export interface InvitationMail {
   send(email: string, token: string): Promise<void>;
 }
@@ -70,7 +80,7 @@ export class Invitations {
       !["create", "list", "resend", "revoke"].includes(action) ||
       ((action === "resend" || action === "revoke") && (typeof body.id !== "string" || !uuid.test(body.id)))
     )
-      throw new VaultError("invalid", "Valid organization and invitation IDs required.");
+      throw new InvitationError("invalid", "Valid organization and invitation IDs required.", "invalid");
     const result = await this.tx(async (sql) => {
       // Org row serializes invite/rate checks and acceptance; recheck live admin inside lock.
       await sql.query("select id from public.orgs where id=$1 for update", [org]);
@@ -94,14 +104,15 @@ export class Invitations {
           `update public.organization_invitations set status='revoked',token_enc=null where org_id=$1 and id=$2 and status='pending' returning ${columns}`,
           [org, body.id],
         );
-        if (!r.rows[0]) throw new VaultError("not_found", "Pending invitation not found.");
+        if (!r.rows[0]) throw new InvitationError("not_found", "Pending invitation not found.", "not_found");
         return { invitation: dto(r.rows[0]) };
       }
       const recent = await sql.query(
         "select 1 from public.organization_invitations where org_id=$1 and updated_at > $2 limit 1",
         [org, new Date(now.getTime() - 60_000)],
       );
-      if (recent.rows.length) throw new VaultError("conflict", "Invitation rate limit: retry after one minute.");
+      if (recent.rows.length)
+        throw new InvitationError("conflict", "Invitation rate limit: retry after one minute.", "rate_limited", 60);
       const token = randomBytes(32).toString("base64url");
       const encrypted = this.key && this.mail ? await encryptSecret(token, this.key) : null;
       const expires = new Date(now.getTime() + 7 * 86400_000);
@@ -124,7 +135,7 @@ export class Invitations {
             )
           ).rows.length
         )
-          throw new VaultError("conflict", "Already an organization member.");
+          throw new InvitationError("conflict", "Already an organization member.", "already_member");
         if (
           (
             await sql.query(
@@ -133,7 +144,11 @@ export class Invitations {
             )
           ).rows.length
         )
-          throw new VaultError("conflict", "Pending invitation already exists; resend or revoke it.");
+          throw new InvitationError(
+            "conflict",
+            "Pending invitation already exists; resend or revoke it.",
+            "pending_exists",
+          );
         rows = (
           await sql.query<Row>(
             `insert into public.organization_invitations(org_id,email,role,hash,token_enc,expires_at,delivery,updated_at) values($1,$2,$3,$4,$5,$6,$7,$8) returning ${columns}`,
@@ -148,7 +163,7 @@ export class Invitations {
           )
         ).rows;
       } else throw new VaultError("invalid", "Unknown invitation action.");
-      if (!rows[0]) throw new VaultError("not_found", "Pending invitation not found.");
+      if (!rows[0]) throw new InvitationError("not_found", "Pending invitation not found.", "not_found");
       return { invitation: dto(rows[0]) };
     });
     if ("invitation" in result && result.invitation.delivery === "pending") {
@@ -193,30 +208,87 @@ export class Invitations {
       [id, row.hash, state],
     );
   }
-  async accept(caller: Caller, token: unknown) {
-    if (caller.via !== "supabase") throw new VaultError("forbidden", "Personal verified login required.");
+  private recipientToken(caller: Caller, token: unknown): string {
+    if (caller.via !== "supabase")
+      throw new InvitationError("forbidden", "Personal verified login required.", "personal_login_required");
     if (typeof token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(token))
-      throw new VaultError("invalid", "Invalid invitation.");
+      throw new InvitationError("invalid", "Invalid invitation.", "invalid");
+    return token;
+  }
+  /** No writes, locks, delivery calls or token consumption. Identity gates all org context. */
+  async preview(caller: Caller, token: unknown): Promise<InvitationPreview> {
+    const value = this.recipientToken(caller, token);
+    return this.context(this.sql, caller, value);
+  }
+  private async context(sql: Sql, caller: Caller, token: string): Promise<InvitationPreview> {
+    const result = await sql.query<
+      Row & { org_name: string; user_email: string | null; confirmed: string | Date | null; already_member: boolean }
+    >(
+      `
+      select i.id,i.org_id,i.email,i.role,i.expires_at,i.status,o.name as org_name,
+        u.email as user_email,u.email_confirmed_at as confirmed,
+        exists(select 1 from public.members m where m.org_id=i.org_id and m.user_id=$2) as already_member
+      from public.organization_invitations i join public.orgs o on o.id=i.org_id
+      left join auth.users u on u.id=$2 where i.hash=$1`,
+      [hash(token), caller.userId],
+    );
+    const row = result.rows[0];
+    if (!row) return { state: "not_found", context: null };
+    if (row.user_email?.toLowerCase() !== row.email) return { state: "wrong_email", context: null };
+    if (!row.confirmed) return { state: "unverified_email", context: null };
+    const context = {
+      orgId: row.org_id,
+      orgName: row.org_name,
+      role: row.role,
+      expiresAt: new Date(row.expires_at).toISOString(),
+    };
+    const state =
+      row.status === "revoked"
+        ? "revoked"
+        : row.status === "accepted"
+          ? "used"
+          : new Date(row.expires_at).getTime() <= this.now().getTime()
+            ? "expired"
+            : row.already_member
+              ? "already_member"
+              : "ready";
+    return { state, context };
+  }
+  async accept(caller: Caller, token: unknown) {
+    const value = this.recipientToken(caller, token);
     return this.tx(async (sql) => {
-      const found = await sql.query<Row>(`select ${columns} from public.organization_invitations where hash=$1`, [
-        hash(token),
-      ]);
+      const found = await sql.query<{ org_id: string }>(
+        "select org_id from public.organization_invitations where hash=$1",
+        [hash(value)],
+      );
       const row = found.rows[0];
-      if (!row) throw new VaultError("not_found", "Invitation unavailable.");
+      if (!row) throw new InvitationError("not_found", "Invitation unavailable.", "not_found");
       await sql.query("select id from public.orgs where id=$1 for update", [row.org_id]);
-      const user = await sql.query(
-        "select 1 from auth.users where id=$1 and lower(email)=$2 and email_confirmed_at is not null for update",
-        [caller.userId, row.email],
-      );
-      if (!user.rows.length) throw new VaultError("forbidden", "Sign in with the invitation's verified email.");
+      await sql.query("select id from auth.users where id=$1 for update", [caller.userId]);
+      const preview = await this.context(sql, caller, value);
+      if (preview.state !== "ready" && preview.state !== "already_member") {
+        const identity = preview.state === "wrong_email" || preview.state === "unverified_email";
+        throw new InvitationError(
+          identity ? "forbidden" : preview.state === "not_found" ? "not_found" : "conflict",
+          identity ? "Sign in with the invitation's verified email." : "Invitation expired or already used.",
+          preview.state,
+        );
+      }
       const used = await sql.query(
-        "update public.organization_invitations set status='accepted',token_enc=null where id=$1 and hash=$2 and status='pending' and expires_at>$3 returning id",
-        [row.id, hash(token), this.now()],
+        "update public.organization_invitations set status='accepted',token_enc=null where hash=$1 and status='pending' and expires_at>$2 returning id",
+        [hash(value), this.now()],
       );
-      if (!used.rows.length) throw new VaultError("conflict", "Invitation expired or already used.");
+      if (!used.rows.length) {
+        const latest = await this.context(sql, caller, value);
+        throw new InvitationError(
+          "conflict",
+          "Invitation expired or already used.",
+          latest.state === "expired" ? "expired" : "used",
+        );
+      }
       await sql.query(
         "insert into public.members(org_id,user_id,role) values($1,$2,$3) on conflict(org_id,user_id) do nothing",
-        [row.org_id, caller.userId, row.role],
+        [row.org_id, caller.userId, preview.context.role],
       );
       return { orgId: row.org_id, accepted: true as const };
     });

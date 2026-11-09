@@ -44,6 +44,7 @@ test("invitation lifecycle persists honest delivery and explicit verified single
       },
       () => clock,
     );
+    let authenticatedId = admin;
     const options = {
       invitations: service,
       authStore: createSqlAuthStore(sql),
@@ -52,7 +53,7 @@ test("invitation lifecycle persists honest delivery and explicit verified single
       supabase: {
         supabaseUrl: "https://project.supabase.co",
         anonKey: "anon",
-        fetch: async () => Response.json({ id: admin }),
+        fetch: async () => Response.json({ id: authenticatedId }),
       },
     };
     const api = (action: string, body: unknown, method = "POST") =>
@@ -64,7 +65,28 @@ test("invitation lifecycle persists honest delivery and explicit verified single
         }),
         options,
       );
+    // Authoring gate: consent preview's observable contract belongs at authenticated API + real schema.
+    // Snapshot all invitation/member state and send count to detect accidental acceptance/delivery writes.
+    const preview = async (value: string, state: string, context: unknown = null) => {
+      const before = await db.query("select row_to_json(i) as row from organization_invitations i order by id");
+      const members = await db.query("select * from members order by org_id,user_id");
+      const count = sends;
+      const response = await api("preview", { token: value });
+      expect(response?.status).toBe(200);
+      expect(response?.headers.get("cache-control")).toBe("no-store");
+      expect(await response?.json()).toEqual({ state, context });
+      expect(await db.query("select row_to_json(i) as row from organization_invitations i order by id")).toEqual(
+        before,
+      );
+      expect(await db.query("select * from members order by org_id,user_id")).toEqual(members);
+      expect(sends).toBe(count);
+    };
     expect((await api("accept", {}, "GET"))?.status).toBe(405);
+    expect((await api("preview", {}, "GET"))?.status).toBe(405);
+    await preview("x".repeat(43), "not_found");
+    await expect(service.preview({ ...user, via: "service" }, "x".repeat(43))).rejects.toMatchObject({
+      reason: "personal_login_required",
+    });
     expect((await api("resend", { org, id: "broken" }))?.status).toBe(400);
     expect((await api("list", { org }))?.status).toBe(200);
     const created = await service.manage("create", actor, org, { email: "NEW@example.invalid", role: "member" });
@@ -73,8 +95,27 @@ test("invitation lifecycle persists honest delivery and explicit verified single
     });
     expect(JSON.stringify(created)).not.toContain(token);
     expect((await db.query("select 1 from members where user_id=$1", [recipient])).rows).toHaveLength(0);
+    await preview(token, "wrong_email");
+    authenticatedId = recipient;
+    await preview(token, "unverified_email");
+    expect(await (await api("accept", { token }))?.json()).toMatchObject({
+      error: { code: "forbidden", reason: "unverified_email" },
+    });
     await expect(service.accept(user, token)).rejects.toThrow("verified email");
     await db.query("update auth.users set email_confirmed_at=now() where id=$1", [recipient]);
+    const consent = {
+      orgId: org,
+      orgName: "Invites",
+      role: "member",
+      expiresAt: new Date(clock.getTime() + 7 * 86400_000).toISOString(),
+    };
+    await preview(token, "ready", consent);
+    authenticatedId = admin;
+    expect(await (await api("accept", { token }))?.json()).toMatchObject({ error: { reason: "wrong_email" } });
+    expect(
+      await (await api("resend", { org, id: "invitation" in created ? created.invitation.id : "" }))?.json(),
+    ).toMatchObject({ error: { code: "conflict", reason: "rate_limited", retryAfterSeconds: 60 } });
+    authenticatedId = recipient;
     reject = false;
     await service.retry();
     expect(sends).toBe(2);
@@ -86,6 +127,9 @@ test("invitation lifecycle persists honest delivery and explicit verified single
     clock = new Date(clock.getTime() + 61_000);
     const id = "invitation" in created ? created.invitation.id : "";
     await service.manage("resend", actor, org, { id });
+    await preview(first, "not_found");
+    consent.expiresAt = new Date(clock.getTime() + 7 * 86400_000).toISOString();
+    await preview(token, "ready", consent);
     await expect(service.accept(user, first)).rejects.toThrow("unavailable");
     await expect(service.manage("list", user, org, {})).rejects.toThrow("admin required");
     await expect(service.accept({ ...user, userId: admin }, token)).rejects.toThrow("verified email");
@@ -96,6 +140,8 @@ test("invitation lifecycle persists honest delivery and explicit verified single
       (await db.query<{ role: string }>("select role from members where org_id=$1 and user_id=$2", [org, recipient]))
         .rows[0]?.role,
     ).toBe("member");
+    await preview(token, "used", consent);
+    expect(await (await api("accept", { token }))?.json()).toMatchObject({ error: { reason: "used" } });
     // A separate pending invite races a legacy direct-admin writer; acceptance preserves admin.
     clock = new Date(clock.getTime() + 61_000);
     await service.manage("create", actor, org, { email: "preserve@example.invalid", role: "member" });
@@ -105,6 +151,11 @@ test("invitation lifecycle persists honest delivery and explicit verified single
     ]);
     await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [org, preserve]);
     const preserveToken = token;
+    authenticatedId = preserve;
+    await preview(preserveToken, "already_member", {
+      ...consent,
+      expiresAt: new Date(clock.getTime() + 7 * 86400_000).toISOString(),
+    });
     await service.accept({ ...user, userId: preserve }, preserveToken);
     expect(
       (await db.query<{ role: string }>("select role from members where org_id=$1 and user_id=$2", [org, preserve]))
@@ -119,12 +170,24 @@ test("invitation lifecycle persists honest delivery and explicit verified single
     const extraToken = token;
     if ("invitation" in extra) await service.manage("revoke", actor, org, { id: extra.invitation.id });
     await db.query("update auth.users set email='other@example.invalid' where id=$1", [recipient]);
+    authenticatedId = recipient;
+    await preview(extraToken, "revoked", {
+      ...consent,
+      role: "admin",
+      expiresAt: new Date(clock.getTime() + 7 * 86400_000).toISOString(),
+    });
+    expect(await (await api("accept", { token: extraToken }))?.json()).toMatchObject({ error: { reason: "revoked" } });
     await expect(service.accept(user, extraToken)).rejects.toThrow("already used");
     clock = new Date(clock.getTime() + 61_000);
     await service.manage("create", actor, org, { email: "expire@example.invalid", role: "member" });
     const expiredToken = token;
+    const expiry = new Date(clock.getTime() + 7 * 86400_000).toISOString();
     await db.query("update auth.users set email='expire@example.invalid' where id=$1", [recipient]);
     clock = new Date(clock.getTime() + 8 * 86400_000);
+    await preview(expiredToken, "expired", { ...consent, expiresAt: expiry });
+    expect(await (await api("accept", { token: expiredToken }))?.json()).toMatchObject({
+      error: { reason: "expired" },
+    });
     await expect(service.accept(user, expiredToken)).rejects.toThrow("expired");
     // Simulate crash after the fifth claimed send; recovery must terminate pending state.
     await db.query(

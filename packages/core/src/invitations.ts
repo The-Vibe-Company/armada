@@ -24,3 +24,44 @@ export interface InvitationResponses {
   "org/invitations/revoke": { invitation: OrganizationInvitation };
   "org/invitations/accept": { orgId: string; accepted: true };
 }
+
+/** Additive v1 recipient consent contract. Token is sent only in the POST body. */
+export type InvitationRecipientState =
+  | "ready"
+  | "not_found"
+  | "expired"
+  | "revoked"
+  | "used"
+  | "wrong_email"
+  | "unverified_email"
+  | "already_member";
+export interface InvitationConsentContext {
+  orgId: string;
+  orgName: string;
+  role: InvitationRole;
+  expiresAt: string;
+}
+export type InvitationPreview =
+  | { state: "ready" | "expired" | "revoked" | "used" | "already_member"; context: InvitationConsentContext }
+  | { state: "not_found" | "wrong_email" | "unverified_email"; context: null };
+export type InvitationErrorReason =
+  | Exclude<InvitationRecipientState, "ready">
+  | "invalid"
+  | "personal_login_required"
+  | "rate_limited"
+  | "pending_exists";
+/** Existing control error envelope, with additive machine-readable invitation fields. */
+export interface InvitationApiError {
+  error: {
+    code: "invalid" | "forbidden" | "not_found" | "conflict";
+    message: string;
+    reason: InvitationErrorReason;
+    retryAfterSeconds?: number;
+  };
+}
+export interface InvitationRequests {
+  "org/invitations/preview": { token: string };
+}
+export interface InvitationResponses {
+  "org/invitations/preview": InvitationPreview;
+}
