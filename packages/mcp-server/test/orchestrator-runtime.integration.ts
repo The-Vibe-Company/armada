@@ -352,3 +352,88 @@ test("owner request reconciliation survives failed account preflight and disting
     await db.close();
   }
 });
+
+test("live history advertises provider backlog when a full owner page exactly fills the mirror", async () => {
+  const { OrchestratorRuntime } = await import("../src/orchestrator-runtime.ts");
+  const { db, people: p } = await database();
+  const sql: Sql = {
+    query: (q, v) => db.query(q, v),
+    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  };
+  const store = new OrchestratorRuntimeStore(sql, reserveOrchestratorOperation);
+  try {
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
+    const configuration: OrchestratorCreate = {
+      version: 1,
+      orgId: p.org,
+      name: "page",
+      goldenId: golden.id,
+      provider: "boat",
+      harness: "claude",
+      model: "m",
+      modelAccountId: crypto.randomUUID(),
+    };
+    const created = await store.create({ ownerId: p.owner, configuration, key: "create", skillRevision: revision });
+    const sandbox = await foundation
+      .createSqlSandboxStore(sql)
+      .insert({
+        id: crypto.randomUUID(),
+        provider: "boat",
+        providerSandboxId: "page-native",
+        goldenId: golden.id,
+        orgId: p.org,
+        ownerId: p.owner,
+        harness: "claude",
+        model: "m",
+        reasoningEffort: "high",
+        status: "running",
+        visibility: "private",
+      });
+    await db.query("update orchestrators set sandbox_id=$2 where id=$1", [created.identity.id, sandbox.id]);
+    created.identity = await store.preparing(created);
+    await store.complete(created, { state: "succeeded", conversationId: "native" });
+    const cursor = (await store.events(p.owner, p.org, created.identity.id)).cursor!;
+    const events = Array.from({ length: 501 }, (_, i) => ({
+      id: String(i + 1),
+      at: i,
+      conversationId: "native",
+      kind: "message" as const,
+      text: `text-${i}`,
+      partial: false,
+      tools: [],
+    }));
+    const seen: (string | undefined)[] = [];
+    const service = new OrchestratorRuntime({
+      store,
+      skillRevision: revision,
+      authority: new foundation.OrchestratorAuthority(sql, async () => {}),
+      resolveBackend: async () => ({
+        provider: {
+          id: "boat",
+          events: async (input: { cursor?: string }) => {
+            seen.push(input.cursor);
+            return input.cursor
+              ? { events: events.slice(500), cursor: "501", hasMore: false }
+              : { events: events.slice(0, 500), cursor: "500", hasMore: true };
+          },
+        } as unknown as import("@armada/core").Provider,
+        projectDir: "/home/user",
+        mcpUrl: "https://armada.invalid/mcp",
+        consent: { scopes: [], goldenIds: [], credentialIds: [] },
+        assertNativeProof: async () => {},
+        revalidate: async () => {},
+        launch: async () => {},
+      }),
+    });
+    const caller = { userId: p.owner, orgs: [{ orgId: p.org, role: "member" as const }], via: "supabase" as const };
+    const first = await service.events(caller, p.org, created.identity.id, cursor, 500);
+    expect(first.events).toHaveLength(500);
+    expect(first.hasMore).toBe(true);
+    const second = await service.events(caller, p.org, created.identity.id, first.cursor!, 500);
+    expect(second.events).toHaveLength(1);
+    expect(second.hasMore).toBe(false);
+    expect(seen).toEqual([undefined, "500"]);
+  } finally {
+    await db.close();
+  }
+});

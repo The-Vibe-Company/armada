@@ -298,3 +298,31 @@ test.each(["native", "unknown", "lost"] as const)(
     }
   },
 );
+
+test("initial observation cannot publish an old native incarnation after a same-SQL-generation replacement", async () => {
+  const f = await fixture();
+  const { physicalGeneration: _unobserved, ...machine } = f.machine;
+  const runtime = createManagedOrchestratorRuntime({
+    sql: f.sql,
+    authority: f.authority,
+    resolveManaged: async () => ({
+      provider: { id: "boat" } as Provider,
+      mcpUrl: "https://armada.invalid/mcp",
+      observe: async (current) => {
+        await f.db.query("update sandboxes set orchestrator_native_generation='native-2' where id=$1", [
+          current.sandboxId,
+        ]);
+        return { ...current, physicalGeneration: "native-1", state: "quiescent", evidence: "native:old" };
+      },
+      checkpointAndStop: async () => {
+        throw Error("Observation cannot checkpoint");
+      },
+      readStopReceipt: async () => null,
+    }),
+  });
+  try {
+    await expect(runtime.observe(machine)).rejects.toThrow("conflict");
+  } finally {
+    await f.db.close();
+  }
+});

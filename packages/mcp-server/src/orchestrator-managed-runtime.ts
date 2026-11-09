@@ -284,7 +284,7 @@ export function createManagedOrchestratorRuntime(options: {
       const current = await bound(machine);
       const backend = await resolve(machine, current.selection);
       const observed = observation(machine, await readNative(() => backend.observe(machine, signal)));
-      const after = await bound(machine); // Membership is intentionally not required, but incarnation is.
+      const after = await bound({ ...machine, physicalGeneration: observed.physicalGeneration }); // Membership is intentionally not required, but incarnation is.
       if (after.revision !== current.revision || after.state !== current.state)
         throw new OrchestratorRuntimeError("conflict");
       return {

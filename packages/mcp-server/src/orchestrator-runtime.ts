@@ -104,6 +104,7 @@ export class OrchestratorRuntime {
     const identity = await this.options.store.read(this.owner(caller, orgId), orgId, id);
     // Validate owner-scoped reconnect cursor before any upstream read.
     await this.options.store.events(identity.ownerId, orgId, id, cursor, limit);
+    let upstreamHasMore = false;
     // Stopped history never contacts a provider or activates compute.
     if (identity.state === "ready" && identity.conversationId && identity.providerSandboxId) {
       const backend = await this.options.resolveBackend(identity.configuration, identity.ownerId, identity);
@@ -115,10 +116,12 @@ export class OrchestratorRuntime {
         limit: 500,
         ...(upstream ? { cursor: upstream } : {}),
       });
+      upstreamHasMore = page.hasMore;
       if (!(await this.options.store.appendEvents(identity, page, upstream)))
         throw new OrchestratorRuntimeError("conflict");
     }
-    return this.options.store.events(identity.ownerId, orgId, id, cursor, limit);
+    const retained = await this.options.store.events(identity.ownerId, orgId, id, cursor, limit);
+    return { ...retained, hasMore: retained.hasMore || upstreamHasMore };
   }
 
   async reconcile(
