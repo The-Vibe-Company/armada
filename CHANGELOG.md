@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.13.0](https://github.com/The-Vibe-Company/armada/compare/v2.12.0...v2.13.0) (2026-11-09)
+
+
+### Features
+
+* **cli:** control persistent orchestrators ([#699](https://github.com/The-Vibe-Company/armada/issues/699)) ([8e71861](https://github.com/The-Vibe-Company/armada/commit/8e718618b0ab7372583a6d22f993a1c45080abed))
+* **credentials:** add named model accounts and pinned launch bindings ([#612](https://github.com/The-Vibe-Company/armada/issues/612)) ([1eaaf07](https://github.com/The-Vibe-Company/armada/commit/1eaaf07d5fa9b6380587dec79e98453fc09a2ea0))
+* **dashboard:** invite teammates and accept organization invitations ([#648](https://github.com/The-Vibe-Company/armada/issues/648)) ([0f3bb22](https://github.com/The-Vibe-Company/armada/commit/0f3bb2232e27ba662df680e1ec695f032aafef28))
+* **dashboard:** select machine sizes with repository and golden defaults ([#667](https://github.com/The-Vibe-Company/armada/issues/667)) ([b4bd66f](https://github.com/The-Vibe-Company/armada/commit/b4bd66f286f69d949fbca879c2d40dd5b768b4c2))
+* **usage:** expose private native credits and quota telemetry ([#643](https://github.com/The-Vibe-Company/armada/issues/643)) ([4f2ee45](https://github.com/The-Vibe-Company/armada/commit/4f2ee45e729b4b4ab41c0b731a887a89263754b3))
+
+
+### Bug Fixes
+
+* **auth:** include one-time code in sign-in email ([#701](https://github.com/The-Vibe-Company/armada/issues/701)) ([d0fd39d](https://github.com/The-Vibe-Company/armada/commit/d0fd39d9a277fc6af57a837503b8ca47b6892f35))
+* **dashboard:** proxy authenticated machine sizing routes ([#679](https://github.com/The-Vibe-Company/armada/issues/679)) ([5c3b888](https://github.com/The-Vibe-Company/armada/commit/5c3b888590c5355b91a6bc53007c4a2cc28d9687))
+
 ## [2.12.0](https://github.com/The-Vibe-Company/armada/compare/v2.11.0...v2.12.0) (2026-11-09)
 
 

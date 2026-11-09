@@ -50,6 +50,10 @@ export interface ProcessBaseline {
 export interface Machine {
   info: SandboxInfo;
   generation: number;
+  /** Assigned only when reserving a NEW managed launch; legacy/unknown rows stay unknown. */
+  runtimePolicy?: "explicit-vm-v1";
+  /** Confirmed successful named create, bound to one physical incarnation. */
+  runtimeEvidence?: { version: 1; runtime: "vm"; physicalId: string; generation: number };
   launchUserId?: string;
   managementAuthority?: ModalManagementProvenance;
   sourceImage?: { scopeKey: string; name: string; imageId: string };
