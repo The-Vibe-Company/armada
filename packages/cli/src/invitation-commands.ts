@@ -1,11 +1,10 @@
-// Temporary producer binding; replace with @armada/core after #640 merges.
-
-import { VaultError } from "@armada/core";
-import type {
-  InvitationRequests,
-  InvitationResponses,
-  OrganizationInvitation,
-} from "../../../plans/ship-pr-dev/runs/invitations-coordination/invitations-contract-v1.ts";
+import {
+  type InvitationRequests,
+  type InvitationResponses,
+  type OrganizationInvitation,
+  type OrgSummary,
+  VaultError,
+} from "@armada/core";
 import { armadaApiUrl } from "./armada-api.ts";
 import { control } from "./control.ts";
 import { parseInvitationInput, readInvitationToken } from "./invitation-input.ts";
@@ -21,7 +20,8 @@ export async function invitationCommand(argv: readonly string[], io: VaultIo): P
     io.auth.out(input.json ? `${JSON.stringify(output)}\n` : `Accepted invitation for organization ${output.orgId}.\n`);
     return 0;
   }
-  const org = input.org ?? (await io.auth.preferences?.read(armadaApiUrl(io.auth.env.ARMADA_URL)));
+  const selected = input.org ?? (await io.auth.preferences?.read(armadaApiUrl(io.auth.env.ARMADA_URL)));
+  const org = selected ? await resolveOrganization(selected, io) : undefined;
   if (!org) throw new VaultError("invalid", "Select an organization with --org <name|UUID> or armada org use.");
   if (input.action === "list") {
     const result = await request(io, "org/invitations/list", { org });
@@ -72,4 +72,14 @@ function formatInvitation(value: OrganizationInvitation): string {
   const delivery =
     value.delivery === "sent" ? "sent (email provider accepted; inbox delivery unconfirmed)" : value.delivery;
   return `${value.id}  ${value.email}  ${value.role}  ${value.status}  email: ${delivery}  expires: ${value.expiresAt}`;
+}
+
+/** Invitation management takes an org UUID; names use the existing authenticated org listing. */
+async function resolveOrganization(ref: string, io: VaultIo): Promise<string> {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref)) return ref;
+  const { orgs } = await control<{ orgs: OrgSummary[] }>(io.auth, "org/list", {});
+  const matches = orgs.filter((org) => org.name.toLowerCase() === ref.toLowerCase());
+  if (matches.length !== 1 || !matches[0])
+    throw new VaultError("invalid", "Choose one of your organizations by UUID or exact unambiguous name.");
+  return matches[0].id;
 }

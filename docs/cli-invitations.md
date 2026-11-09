@@ -51,3 +51,8 @@ Resending invalidates the previous token; use the new email's token.
 `armada org members list|add|remove|role` remain direct administration commands.
 `members add` requires an existing account, grants membership immediately, and
 sends no invitation email. Use `org invitations create` for an invitation instead.
+
+Errors use local, recognized reason text rather than echoing server messages.
+They distinguish personal-login requirements, wrong/unverified email, expiration,
+revocation, reuse, existing membership, and an existing pending invitation. A
+rate-limit response may include a numeric retry delay; wait before retrying.
