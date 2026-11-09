@@ -222,10 +222,12 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
   }, [tick]);
 
   const chat = useMemo(() => projectChat(agentEventsOf(feed)), [feed]);
+  // Only a ready orchestrator runs a turn, whatever its last prompt event said before it stopped (as #666 for workers).
+  const turnRunning = chat.running && detail.orchestrator.state === "ready";
   useEffect(() => {
-    active.current = chat.running;
-  }, [chat.running]);
-  const controls = orchestratorControls(detail, chat.running);
+    active.current = turnRunning;
+  }, [turnRunning]);
+  const controls = orchestratorControls(detail, turnRunning);
   const { orchestrator } = detail;
   const live = connection.state === "ok" && orchestrator.state === "ready";
 
@@ -271,7 +273,7 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
         <div className="flex min-h-0 flex-1 flex-col [&_[role=log]]:max-h-none [&_[role=log]]:min-h-0 [&_[role=log]]:flex-1 [&>div]:flex [&>div]:min-h-0 [&>div]:flex-1 [&>div]:flex-col">
           <Transcript
             items={chat.items}
-            running={chat.running}
+            running={turnRunning}
             loaded={loaded}
             poll={{ error: null, configured: connection.state !== "stopped" }}
             hasMore={hasMore}
@@ -281,7 +283,7 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
 
         <Composer
           detail={detail}
-          running={chat.running}
+          running={turnRunning}
           can={controls.can}
           note={controls.composerNote}
           onDone={after}

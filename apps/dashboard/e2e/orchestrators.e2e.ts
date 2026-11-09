@@ -25,7 +25,31 @@ const calls = async () => (await testControl("state")).calls;
 const messages = (page: Page) => page.getByRole("log", { name: "Messages" });
 const composer = (page: Page) => page.getByRole("form", { name: "Message the orchestrator" });
 
-test.beforeEach(reset);
+/** The named accounts the create form offers, through the shared mock's own `creds/list` (#612). */
+async function seedAccounts(): Promise<void> {
+  const response = await fetch(`${MOCK}/__test/accounts`, {
+    method: "POST",
+    body: JSON.stringify({
+      user: [
+        {
+          id: "acct-claude",
+          name: "Alice Max",
+          kind: "claude_oauth",
+          status: "active",
+          isDefault: true,
+          createdAt: null,
+        },
+      ],
+      org: [{ id: "acct-codex", name: "Team Codex", kind: "openai", status: "active", createdAt: null }],
+    }),
+  });
+  expect(response.ok).toBe(true);
+}
+
+test.beforeEach(async () => {
+  await reset();
+  await seedAccounts();
+});
 
 test("the list shows only the viewer's orchestrators, compactly", async ({ page }) => {
   await signIn(page, "alice@example.com", "/orchestrators");
@@ -316,6 +340,7 @@ test("create offers the golden's sizes, follows its defaults, and sends a size o
     body: JSON.stringify({ sizePolicies: true }),
   });
   expect(response.ok).toBe(true);
+  await seedAccounts();
   await signIn(page, "alice@example.com", "/orchestrators");
   await page.getByRole("button", { name: "New orchestrator" }).click();
   const dialog = page.getByRole("dialog", { name: "New orchestrator" });
@@ -342,6 +367,7 @@ test("without a chosen size, create sends none and the details say the default i
     body: JSON.stringify({ sizePolicies: true }),
   });
   expect(response.ok).toBe(true);
+  await seedAccounts();
   await signIn(page, "alice@example.com", "/orchestrators");
   await page.getByRole("button", { name: "New orchestrator" }).click();
   const dialog = page.getByRole("dialog", { name: "New orchestrator" });
@@ -354,4 +380,16 @@ test("without a chosen size, create sends none and the details say the default i
   await expect(
     page.getByRole("complementary", { name: "Orchestrator details" }).getByText("Default (set at launch)"),
   ).toBeVisible();
+});
+
+test("a stopped orchestrator shows no working turn, whatever its last prompt event said", async ({ page }) => {
+  await testControl("running-prompt", { id: ALICE_ORCHESTRATOR });
+  await signIn(page, "alice@example.com", DETAIL);
+  await expect(messages(page).getByText("Keep going.")).toBeVisible();
+  await expect(page.getByTestId("agent-working")).toBeVisible();
+  await testControl("patch", { id: ALICE_ORCHESTRATOR, patch: { state: "stopped" } });
+  await page.reload();
+  await expect(messages(page).getByText("Keep going.")).toBeVisible();
+  await expect(page.getByTestId("agent-working")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Steer" })).toHaveCount(0);
 });

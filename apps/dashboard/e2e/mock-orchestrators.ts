@@ -193,6 +193,19 @@ export function orchestratorTestControl(action: string, body: Row): Response {
   } else if (action === "patch") {
     const row = state.orchestrators.find((item) => item.id === body.id);
     if (row) Object.assign(row, body.patch);
+  } else if (action === "running-prompt") {
+    push(state, String(body.id), {
+      kind: "agent",
+      event: {
+        id: `rp-${state.sequence}`,
+        at: Date.now(),
+        kind: "prompt",
+        promptId: "p-run",
+        conversationId: "conv-1",
+        text: "Keep going.",
+        status: "running",
+      },
+    });
   } else if (action === "agent-reply") {
     push(state, String(body.id), {
       kind: "agent",
@@ -208,31 +221,6 @@ export function orchestratorTestControl(action: string, body: Row): Response {
     });
   } else if (action !== "state") return json({ message: "not found" }, 404);
   return json({ calls: state.calls, orchestrators: state.orchestrators });
-}
-
-/** `creds/list` with named accounts (#603's additive fields): what the create form offers. */
-export function credsList(userId: string | null): Response {
-  if (!userId) return fail(401, "unauthorized", "Unauthorized.");
-  return json({
-    user: [
-      {
-        id: "acct-claude",
-        name: "Alice Max",
-        kind: "claude_oauth",
-        status: "active",
-        isDefault: true,
-        createdAt: at(0),
-      },
-    ],
-    orgs: [
-      {
-        id: ACME,
-        name: "Acme",
-        role: "admin",
-        credentials: [{ id: "acct-codex", name: "Team Codex", kind: "openai", createdAt: at(0) }],
-      },
-    ],
-  });
 }
 
 export function orchestratorRoute(request: Request, url: URL, body: Row, userId: string | null): Response {

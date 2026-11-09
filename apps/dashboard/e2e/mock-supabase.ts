@@ -9,7 +9,7 @@ import { type MachineSizePolicy, resolveMachineSize } from "@armada/core";
  * The real rules are tested against Postgres in packages/core/test.
  */
 
-import { credsList, orchestratorRoute, orchestratorTestControl } from "./mock-orchestrators";
+import { orchestratorRoute, orchestratorTestControl } from "./mock-orchestrators";
 
 type Row = Record<string, unknown>;
 type Fail = { status: number; code: string; message: string };
@@ -1960,7 +1960,6 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/__test/")) return control(url, body);
     if (url.pathname === "/api/v1/orchestrators" || url.pathname.startsWith("/api/v1/orchestrators/"))
       return orchestratorRoute(request, url, body, viewer(request));
-    if (url.pathname === "/api/v1/creds/list" && request.method === "POST") return credsList(viewer(request));
     if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
     if (url.pathname === "/api/v1/sandbox/launch" && request.method === "POST")
       return launchRoute(body, viewer(request));
