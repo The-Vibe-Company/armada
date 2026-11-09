@@ -49,6 +49,7 @@ function fixture(accessScope: Scope = scope, sql: Sql = db, beforePrompt?: Modal
   const log: string[] = [];
   let creates = 0;
   const requestedRuntimes: (string | undefined)[] = [];
+  const resourceRequests: Record<string, unknown>[] = [];
   let failSnapshot = false;
   let failCreate = false;
   let failBoot = false;
@@ -84,6 +85,7 @@ function fixture(accessScope: Scope = scope, sql: Sql = db, beforePrompt?: Modal
       ) => {
         creates++;
         requestedRuntimes.push(params.runtime);
+        resourceRequests.push({ ...params });
         expect(params.env).toEqual({});
         expect(params.secrets).toEqual([]);
         const id = `sb_${crypto.randomUUID()}`;
@@ -232,6 +234,7 @@ function fixture(accessScope: Scope = scope, sql: Sql = db, beforePrompt?: Modal
     log,
     bootstraps,
     requestedRuntimes,
+    resourceRequests,
     get provisioned() {
       return provisioned;
     },
@@ -497,6 +500,37 @@ test("durable golden recovery persists an interrupted Modal builder before exact
   await jobs.reconcileOne();
   expect(f.creates).toBe(1);
   expect(f.log.filter((x) => x === "terminate")).toHaveLength(1);
+});
+
+// Authoring gate: SDK-bound resource requests, no-allocation rejection and restoration
+// are provider-owned behavior; pure policy tests cannot detect dropped SDK options.
+test.each([
+  ["small", 1, 4096],
+  ["medium", 2, 8192],
+  ["large", 4, 16384],
+  ["xlarge", 8, 32768],
+] as const)("Modal %s pins physical-core and MiB requests and limits across resume", async (size, cpu, memoryMiB) => {
+  const f = fixture();
+  const builder = await f.provider.createGolden({});
+  const name = crypto.randomUUID();
+  await f.provider.snapshot({ sandboxId: builder.id, name });
+  const row = await f.provider.fork({ from: name, size });
+  const resources = { cpu, cpuLimit: cpu, memoryMiB, memoryLimitMiB: memoryMiB };
+  expect(f.resourceRequests[1]).toMatchObject(resources);
+  expect(f.resourceRequests[0]).not.toHaveProperty("cpu");
+  expect(f.resourceRequests[0]).not.toHaveProperty("memoryMiB");
+  await f.provider.stop({ sandboxId: row.id });
+  await f.provider.exec({ sandboxId: row.id, command: "true" });
+  expect(f.resourceRequests[2]).toMatchObject(resources);
+  expect((await f.store.get(row.id)).size).toBe(size);
+});
+
+test("invalid Modal size is refused without a physical create", async () => {
+  const f = fixture();
+  await expect(f.provider.fork({ from: "not-looked-up", size: "default" as never })).rejects.toMatchObject({
+    code: "invalid_request",
+  });
+  expect(f.creates).toBe(0);
 });
 
 async function runningFork(f: ReturnType<typeof fixture>) {

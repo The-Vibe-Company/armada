@@ -1,3 +1,4 @@
+import { goldenForSettings, MACHINE_SIZES, parseMachineSizePolicy } from "@armada/core";
 import {
   assertGoldenMutation,
   connectGolden,
@@ -153,6 +154,7 @@ const sandbox = z.object({
     .nullable()
     .describe("Configured directory used to prepare native agent cwd; not confinement."),
   ...modelOutput,
+  machineSize: z.unknown().nullable(),
   status: z.enum(SANDBOX_STATUSES),
   statusReason: z.string().nullable(),
   orgId: z.string(),
@@ -184,6 +186,7 @@ const status = {
     .nullable()
     .describe("Configured directory used to prepare native agent cwd; not confinement."),
   ...modelOutput,
+  machineSize: z.unknown().nullable(),
   status: z.enum(SANDBOX_STATUSES),
   statusReason: z.string().nullable(),
   providerState: z.string().nullable(),
@@ -493,6 +496,46 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   );
 
   tool(
+    "golden_size_policy",
+    {
+      title: "Golden machine size policy",
+      description:
+        "Read or replace defaults for this provider golden only. Org writes require admin; private writes require owner. Does not rebuild snapshots or resize machines.",
+      input: {
+        golden: z.string(),
+        org: z.string().optional(),
+        provider: z.enum(SANDBOX_PROVIDERS).optional(),
+        policy: z.unknown().optional(),
+      },
+      output: {
+        goldenId: z.string(),
+        provider: providerOutput,
+        repositories: z.array(z.object({ url: z.string(), branch: z.string(), dir: z.string() })),
+        policy: z.unknown().nullable(),
+      },
+    },
+    async (args) => {
+      const actor = await launchActor(args.golden, args.org);
+      const golden = await goldenForSettings(data.goldens, actor, args.golden, args.provider);
+      if (args.policy !== undefined) {
+        const policy = parseMachineSizePolicy(
+          args.policy,
+          golden.config.repos.map((r) => r.dir),
+        );
+        if (!data.goldens.setSizePolicy) throw new GoldenError("conflict", "Policy writes are unavailable.");
+        await data.goldens.setSizePolicy(golden, actor, policy);
+        return { goldenId: golden.id, provider: golden.provider, repositories: golden.config.repos, policy };
+      }
+      return {
+        goldenId: golden.id,
+        provider: golden.provider,
+        repositories: golden.config.repos,
+        policy: golden.sizePolicy ?? null,
+      };
+    },
+  );
+
+  tool(
     "launch",
     {
       title: "Launch an agent",
@@ -517,6 +560,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         harness: z.enum(HARNESSES).describe("claude (Claude Code) or codex."),
         model: modelInput,
         reasoning_effort: effortInput,
+        size: z.enum(MACHINE_SIZES).optional(),
         repo: z
           .string()
           .optional()
@@ -548,6 +592,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           .nullable()
           .describe("Configured directory used to prepare native agent cwd; not confinement."),
         ...modelOutput,
+        machineSize: z.unknown().nullable(),
         status: z.enum(SANDBOX_STATUSES),
         conversationIds: z.array(z.string()),
         promptId: z.string().nullable(),
@@ -582,6 +627,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         actor,
         {
           golden: args.golden,
+          ...(args.size === undefined ? {} : { size: args.size }),
           provider: chosen.provider,
           harness: args.harness,
           ...(args.repo === undefined ? {} : { repo: args.repo }),
@@ -603,6 +649,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         repositoryDir: result.sandbox.repositoryDir ?? null,
         model: result.sandbox.model,
         reasoningEffort: result.sandbox.reasoningEffort,
+        machineSize: result.sandbox.machineSize ?? null,
         status: result.sandbox.status,
         conversationIds: result.sandbox.conversationIds,
         promptId: result.promptId ?? null,
@@ -670,6 +717,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           repositoryDir: row.repositoryDir ?? null,
           model: row.model,
           reasoningEffort: row.reasoningEffort,
+          machineSize: row.machineSize ?? null,
           status: row.status,
           statusReason: row.statusReason,
           orgId: row.orgId,

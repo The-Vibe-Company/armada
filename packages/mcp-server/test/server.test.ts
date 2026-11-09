@@ -296,6 +296,7 @@ describe("tools", () => {
         "golden_adopt",
         "golden_list",
         "golden_snapshot",
+        "golden_size_policy",
         "golden_update",
         "interrupt",
         "launch",

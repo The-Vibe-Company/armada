@@ -14,6 +14,7 @@ import {
   supabaseAuthorizeUrl,
   verifyEmailCode,
 } from "@armada/auth";
+import { goldenForSettings, parseMachineSize, parseMachineSizePolicy } from "@armada/core";
 import {
   addMember,
   assertGoldenMutation,
@@ -653,6 +654,33 @@ async function dispatch(
         kind: parseCredentialKind(required(body, "kind")),
       });
       return { ok: true };
+    case "golden/size-policy": {
+      if (!options.data) throw new VaultError("unavailable", "Golden policies are not configured.");
+      const data = options.data(caller);
+      const name = required(body, "golden");
+      const actor = await launchActor(data, caller, name, optional(body, "org"));
+      const golden = await goldenForSettings(
+        data.goldens,
+        actor,
+        name,
+        optional(body, "provider") as "boat" | "modal" | undefined,
+      );
+      if (body.policy !== undefined) {
+        const policy = parseMachineSizePolicy(
+          body.policy,
+          golden.config.repos.map((r) => r.dir),
+        );
+        if (!data.goldens.setSizePolicy) throw new VaultError("unavailable", "Policy writes are unavailable.");
+        await data.goldens.setSizePolicy(golden, actor, policy);
+        return { goldenId: golden.id, provider: golden.provider, repositories: golden.config.repos, policy };
+      }
+      return {
+        goldenId: golden.id,
+        provider: golden.provider,
+        repositories: golden.config.repos,
+        policy: golden.sizePolicy ?? null,
+      };
+    }
     case "sandbox/launch":
       return launchRoute(options, caller, body);
     case "launch/resolve":
@@ -980,6 +1008,7 @@ async function launchRoute(options: ControlOptions, caller: Caller, body: Record
     actor,
     {
       golden: name,
+      ...(body.size === undefined ? {} : { size: parseMachineSize(body.size) }),
       provider: golden.provider,
       ...(repo === undefined ? {} : { repo }),
       ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),

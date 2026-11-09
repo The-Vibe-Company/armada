@@ -51,7 +51,8 @@ export function parseMachineSizePolicy(value: unknown, directories: readonly str
     throw new LaunchError("invalid_request", "Policy repositories must map configured directories to sizes.");
   const repositories: Record<string, MachineSize> = Object.create(null);
   for (const [dir, size] of Object.entries(p.repositories)) {
-    if (!directories.includes(dir)) throw new LaunchError("invalid_request", "Unknown configured repository directory.");
+    if (!directories.includes(dir))
+      throw new LaunchError("invalid_request", "Unknown configured repository directory.");
     repositories[dir] = parseMachineSize(size);
   }
   return { version: 1, golden, repositories };
@@ -59,18 +60,46 @@ export function parseMachineSizePolicy(value: unknown, directories: readonly str
 export function machineCapacity(provider: SandboxProviderId, size: MachineSize): MachineCapacity {
   const c = MACHINE_SIZE_CATALOG[parseMachineSize(size)];
   return {
-    provider, provenance: "requested-provider-resources", vcpus: c.vcpus, memoryMiB: c.memoryMiB,
+    provider,
+    provenance: "requested-provider-resources",
+    vcpus: c.vcpus,
+    memoryMiB: c.memoryMiB,
     cpuPhysicalCores: provider === "modal" ? c.vcpus / 2 : null,
     cpuLimitPhysicalCores: provider === "modal" ? c.vcpus / 2 : null,
     memoryLimitMiB: provider === "modal" ? c.memoryMiB : null,
     boatType: provider === "boat" ? c.boatType : null,
   };
 }
-export function resolveMachineSize(provider: SandboxProviderId, requested: unknown, repositoryDir: string | null, policy?: MachineSizePolicy | null): MachineSizeEvidence {
+export function resolveMachineSize(
+  provider: SandboxProviderId,
+  requested: unknown,
+  repositoryDir: string | null,
+  policy?: MachineSizePolicy | null,
+): MachineSizeEvidence {
   const override = requested === undefined ? null : parseMachineSize(requested);
-  const repository = repositoryDir === null ? null : policy?.repositories[repositoryDir] ?? null;
+  const repository = repositoryDir === null ? null : (policy?.repositories[repositoryDir] ?? null);
   const effective = override ?? repository ?? policy?.golden ?? null;
-  return { version: 1, requested: override, effective,
+  return {
+    version: 1,
+    requested: override,
+    effective,
     source: override ? "override" : repository ? "repository" : policy?.golden ? "golden" : "legacy",
-    repositoryDir, capacity: effective ? machineCapacity(provider, effective) : null };
+    repositoryDir,
+    capacity: effective ? machineCapacity(provider, effective) : null,
+  };
+}
+
+/** POST /api/v1/golden/size-policy; omission of policy reads, a full policy replaces defaults. */
+export interface MachineSizePolicyRequest {
+  golden: string;
+  org?: string;
+  provider?: SandboxProviderId;
+  policy?: MachineSizePolicy;
+}
+export interface MachineSizePolicyResult {
+  goldenId: string;
+  provider: SandboxProviderId;
+  /** Actual configured identity; selectors may use dir or owner/repo via the launch resolver. */
+  repositories: { url: string; branch: string; dir: string }[];
+  policy: MachineSizePolicy | null;
 }

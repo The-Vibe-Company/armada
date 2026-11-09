@@ -1,4 +1,5 @@
 import type { Harness } from "./contract.ts";
+import type { MachineSize } from "./machine-size.ts";
 import type { ProviderTarget } from "./sandbox-provider.ts";
 
 /**
@@ -174,6 +175,7 @@ export interface SnapshotRequest {
 }
 
 export interface ForkRequest {
+  size?: MachineSize;
   /** The snapshot to start from. */
   from: string;
   name?: string;
