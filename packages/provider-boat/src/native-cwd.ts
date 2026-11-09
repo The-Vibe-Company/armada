@@ -31,7 +31,14 @@ export async function installNativeCwdWrapper(
 /** Builds the VM wrapper command and always invokes the preserved image executable directly. */
 export function nativeCwdCommand(path: string, harness: NativeHarness, cwd?: string): string {
   const original = quote(`${path}.armada-original`);
-  if (harness === "claude") return `cd -- ${quote(cwd ?? ".")} && exec ${original} "$@"`;
+  if (harness === "claude")
+    return [
+      `selected=${quote(cwd ?? "")}`,
+      `if [ -z "$selected" ] && [ -f ${quote(`${path}.armada-cwd`)} ]; then selected=$(cat -- ${quote(`${path}.armada-cwd`)}); fi`,
+      'if [ -n "$selected" ]; then cd -- "$selected" || exit 1; fi',
+      `if [ -x "$HOME/.armada/github-native-proxy" ]; then exec "$HOME/.armada/github-native-proxy" ${original} "$@"; fi`,
+      `exec ${original} "$@"`,
+    ].join("; ");
   // Bash arrays preserve arbitrary runtime arguments without eval or shell re-parsing.
   const script = [
     `selected=${quote(cwd ?? "")}`,
@@ -102,7 +109,7 @@ function quote(value: string): string {
 
 /** Transparent stdio bridge: only private reload replies are consumed; peer traffic and stderr are preserved. */
 const codexCwdBridge = `
-import fcntl, json, os, signal, stat, subprocess, sys, threading, time, uuid
+import fcntl, json, os, signal, stat, subprocess, sys, threading, time, uuid, socket, http.client
 
 class ManagedMcpOverridesError(Exception):
     pass
@@ -131,6 +138,22 @@ def fresh_mcp(params):
     with open(config_path, "rb") as source:
         current = tomllib.load(source).get("mcp_servers", {})
     return {name:current.get(name, {"command":"/usr/bin/false", "enabled":False}) for name in names}
+
+def github_safe(line):
+    locator=os.path.join(os.path.expanduser("~"),".armada","github-socket")
+    if not os.path.lexists(locator): return line
+    info=os.lstat(locator)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode & 0o077 or info.st_size>4096: raise ValueError("GitHub redaction unavailable")
+    with open(locator) as source: target=source.read().strip()
+    if not target.startswith(os.path.join(os.path.expanduser("~"),".armada","github-")) or not target.endswith("/redact.sock"): raise ValueError("GitHub redaction unavailable")
+    class Private(http.client.HTTPConnection):
+        def connect(self):
+            self.sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);self.sock.settimeout(10);self.sock.connect(target)
+    connection=Private("private")
+    connection.request("POST","/redact",line,{"Content-Type":"application/octet-stream"})
+    response=connection.getresponse();result=response.read(262145)
+    if response.status!=200 or len(result)>262144: raise ValueError("GitHub redaction unavailable")
+    connection.close();return result
 
 cwd = sys.argv[1]
 args = sys.argv[2:]
@@ -206,7 +229,7 @@ def native_safe(value):
     return value
 native_registry()
 child = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                         stderr=subprocess.DEVNULL if managed else None, start_new_session=managed,
+                         stderr=subprocess.DEVNULL if managed else subprocess.PIPE, start_new_session=managed,
                          pass_fds=(writer_fd,) if managed else ())
 if managed:
     # The native group retains flock even if this bridge is SIGKILLed. Record its
@@ -255,6 +278,13 @@ def output(line):
             try: os.killpg(child.pid,signal.SIGKILL)
             except ProcessLookupError: pass
             return
+    try: line=github_safe(line)
+    except Exception:
+        if managed:
+            try: os.killpg(child.pid,signal.SIGKILL)
+            except ProcessLookupError: pass
+        else: child.terminate()
+        return
     with output_lock:
         sys.stdout.buffer.write(line)
         sys.stdout.buffer.flush()
@@ -273,6 +303,14 @@ def receive():
         output(line)
 receiver = threading.Thread(target=receive, daemon=True)
 receiver.start()
+def github_stderr():
+    if child.stderr is None: return
+    try:
+        for line in child.stderr:
+            sys.stderr.buffer.write(github_safe(line));sys.stderr.buffer.flush()
+    except Exception: child.terminate()
+github_errors=threading.Thread(target=github_stderr,daemon=True)
+github_errors.start()
 def reload_mcp():
     if len(pending_reload) >= 128:
         return False
@@ -380,6 +418,7 @@ if managed:
     while group_live():
         time.sleep(0.01)
 receiver.join(timeout=2)
+github_errors.join(timeout=2)
 if code < 0:
     if -code not in (signal.SIGKILL, signal.SIGSTOP):
         signal.signal(-code, signal.SIG_DFL)

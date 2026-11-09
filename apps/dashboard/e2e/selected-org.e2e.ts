@@ -81,8 +81,9 @@ for (const mobile of [false, true]) {
     await expect(page.locator('[data-golden="shared-golden"]')).toHaveCount(0);
     await page.goto("/credentials");
     await expect(page.locator('[data-credentials="user"]')).toBeVisible();
-    await expect(page.locator('[data-credentials="Zenith (org)"]')).toBeVisible();
-    await expect(page.locator('[data-credentials="Acme (org)"]')).toHaveCount(0);
+    // The org line names the selected org only; its model accounts and providers follow it.
+    await expect(page.locator("[data-org-hosting]")).toContainText("Boat and Modal for Zenith");
+    await expect(page.locator("[data-org-hosting]")).not.toContainText("Acme");
     await page.screenshot({ path: `test-results/organization-${mobile ? "mobile" : "desktop"}.png`, fullPage: true });
     await page.goto("/sandboxes?golden=00000000-0000-4000-8000-000000000023");
     await select.selectOption(ACME);

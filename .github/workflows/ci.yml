@@ -87,7 +87,7 @@ jobs:
           for migration in supabase/migrations/*.sql; do
             psql -v ON_ERROR_STOP=1 -f "$migration"
           done
-      - run: bun test packages/core/test/golden-adoption-postgres.test.ts packages/core/test/golden-build-jobs-postgres.test.ts packages/core/test/golden-snapshot-retirement.test.ts packages/core/test/golden-create.test.ts
+      - run: bun test packages/core/test/github-runtime-postgres.test.ts packages/core/test/golden-adoption-postgres.test.ts packages/core/test/golden-build-jobs-postgres.test.ts packages/core/test/golden-snapshot-retirement.test.ts packages/core/test/golden-create.test.ts
         env:
           ARMADA_TEST_POSTGRES_URL: postgres://postgres@127.0.0.1:5432/armada_adoption_test
 
@@ -102,7 +102,7 @@ jobs:
       - run: bun scripts/prepare-runtime.ts
       - run: bun scripts/golden-os-image.ts
       - run: docker build -t armada-golden-os dist/golden-os-fixture
-      - run: bun test packages/core/test/golden-os.test.ts
+      - run: bun test packages/core/test/golden-os.test.ts packages/mcp-server/test/github-boat-os.test.ts
         env:
           ARMADA_GOLDEN_OS_IMAGE: armada-golden-os
 

@@ -404,6 +404,10 @@ test("managed exec holds stop admission through secret publication while indepen
     const adminOutput = await call(adminClient, "exec", { id: claude.data.id, command: "inspect-static-native-token" });
     expect(adminOutput.isError).toBe(false);
     expect(adminOutput.data.stdout).toBe("***");
+
+    const ownerOutput = await call(ownerClient, "exec", { id: claude.data.id, command: "inspect-static-native-token" });
+    expect(ownerOutput.isError).toBe(false);
+    expect(ownerOutput.data.stdout).toBe("***");
     const first = await create("held-native-account");
     const second = await create("independent-native-account");
     const originalExec = server.boat.provider.exec;

@@ -66,6 +66,48 @@ describe("GitHub access at launch", () => {
     expect(world.rows.get(USER)).toMatchObject({ login: "octocat", name: "The Octocat" });
   });
 
+  test("never rebinds a stored connection to a different GitHub account", async () => {
+    const world = await setup({ refresh: REFRESH_1, githubId: 12345 });
+    world.github.refreshes.push({ access_token: ACCESS_1, refresh_token: REFRESH_2, expires_in: 28_800 });
+
+    const access = await resolveGitHubAccess(world.deps, USER);
+
+    expect(access).toMatchObject({ status: "unavailable" });
+    expect(world.rows.get(USER)?.githubId).toBe(12345);
+    expect(JSON.stringify(access)).not.toContain(ACCESS_1);
+    // Rotation was persisted before validation; a rejected identity must not replay the old refresh token.
+    expect(await decryptSecret(new Uint8Array(world.rows.get(USER)?.refreshTokenEnc ?? []), KEY)).toBe(REFRESH_2);
+  });
+
+  test("checks cache expiry after acquiring the owner refresh lock", async () => {
+    const world = await setup({ refresh: REFRESH_1 });
+    world.github.refreshes.push({ access_token: ACCESS_1, refresh_token: REFRESH_2, expires_in: 600 });
+    await resolveGitHubAccess(world.deps, USER);
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const held = world.store.withGitHubConnectionRefresh(USER, async () => {
+      enter();
+      await gate;
+    });
+    await entered;
+    let now = NOW;
+    world.deps.now = () => now;
+    const pending = resolveGitHubAccess(world.deps, USER);
+    now = new Date(NOW.getTime() + 601_000);
+    world.github.refreshes.push({ access_token: ACCESS_2, refresh_token: REFRESH_3, expires_in: 28_800 });
+    release();
+    await held;
+
+    expect(await pending).toMatchObject({ status: "connected", token: ACCESS_2 });
+    expect(world.github.refreshTokensSent).toEqual([REFRESH_1, REFRESH_2]);
+  });
+
   test("no connection is a skip with a clear message, and GitHub is never called", async () => {
     const world = await setup({});
     expect(await resolveGitHubAccess(world.deps, USER)).toEqual({
@@ -121,6 +163,25 @@ describe("GitHub access at launch", () => {
     expect(world.github.refreshTokensSent).toEqual([REFRESH_1, REFRESH_2]);
   });
 
+  test("an explicitly rejected cached access token renews once for concurrent callers without replaying the old refresh", async () => {
+    const world = await setup({ refresh: REFRESH_1 });
+    world.github.refreshes.push({ access_token: ACCESS_1, refresh_token: REFRESH_2, expires_in: 28_800 });
+    await resolveGitHubAccess(world.deps, USER);
+    world.github.invalidAccess.add(ACCESS_1);
+    world.github.refreshes.push({ access_token: ACCESS_2, refresh_token: REFRESH_3, expires_in: 28_800 });
+
+    const results = await Promise.all([resolveGitHubAccess(world.deps, USER), resolveGitHubAccess(world.deps, USER)]);
+
+    for (const result of results)
+      expect(result).toEqual({
+        status: "connected",
+        token: ACCESS_2,
+        identity: gitIdentity({ id: 583231, login: "octocat", name: "The Octocat" }),
+      });
+    expect(world.github.refreshTokensSent).toEqual([REFRESH_1, REFRESH_2]);
+    expect(world.rows.get(USER)?.revokedAt).toBeNull();
+  });
+
   test("a GitHub outage skips GitHub without revoking or rotating anything", async () => {
     const world = await setup({ refresh: REFRESH_1 });
     world.github.refreshes.push("down");
@@ -131,6 +192,14 @@ describe("GitHub access at launch", () => {
     expect(access).toMatchObject({ status: "unavailable" });
     expect(world.rows.get(USER)?.revokedAt).toBeNull();
     expect(world.rows.get(USER)?.refreshTokenEnc).toBe(before);
+  });
+
+  test("an uncertain refresh is never replayed with the same consumed refresh material", async () => {
+    const world = await setup({ refresh: REFRESH_1 });
+    world.github.refreshes.push("down", { access_token: ACCESS_2, refresh_token: REFRESH_3, expires_in: 28_800 });
+    expect(await resolveGitHubAccess(world.deps, USER)).toMatchObject({ status: "unavailable" });
+    expect(await resolveGitHubAccess(world.deps, USER)).toMatchObject({ status: "unavailable" });
+    expect(world.github.refreshTokensSent).toEqual([REFRESH_1]);
   });
 
   test("an App without expiring tokens, or without server credentials, is reported and not used", async () => {
@@ -337,7 +406,14 @@ async function setup(options: { refresh?: string; login?: string; githubId?: num
     });
   }
   let refreshTail = Promise.resolve();
+  const consumed = new Set<string>();
   const store: GitHubConnectionStore = {
+    async consumeGitHubRefresh(userId, expected) {
+      const key = `${userId}:${Buffer.from(expected).toString("hex")}`;
+      if (consumed.has(key)) return false;
+      consumed.add(key);
+      return true;
+    },
     async getGitHubConnection(userId) {
       return rows.get(userId) ?? null;
     },
@@ -378,6 +454,7 @@ async function setup(options: { refresh?: string; login?: string; githubId?: num
     refreshTokensSent: [] as string[],
     userAuthorizations: [] as string[],
     userStatus: 200,
+    invalidAccess: new Set<string>(),
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       if (url.href === "https://github.com/login/oauth/access_token") {
@@ -392,8 +469,11 @@ async function setup(options: { refresh?: string; login?: string; githubId?: num
       }
       if (url.href === "https://api.github.com/user") {
         github.userAuthorizations.push(new Headers(init?.headers).get("authorization") ?? "");
-        if (github.userStatus !== 200)
-          return Response.json({ message: "Bad credentials" }, { status: github.userStatus });
+        const rejected = github.invalidAccess.has(
+          (new Headers(init?.headers).get("authorization") ?? "").replace(/^Bearer /, ""),
+        );
+        if (github.userStatus !== 200 || rejected)
+          return Response.json({ message: "Bad credentials" }, { status: rejected ? 401 : github.userStatus });
         return Response.json({ id: 583231, login: "octocat", name: "The Octocat" });
       }
       throw new Error(`unexpected request to ${url.href}`);

@@ -16,6 +16,7 @@ export interface DistributionOptions {
     caCertificates: string;
     curl: string;
     unzip: string;
+    python3: string;
   };
   /** Self-contained bundled runtime main.js, built by #510; no workspace imports. */
   bundle: Uint8Array;
@@ -38,7 +39,7 @@ export function createRunnerDistribution(options: DistributionOptions): RunnerDi
     createHash("sha256").update(options.bundle).digest("hex") !== options.sha256
   )
     throw refusal("invalid_request", "Distribution requires an immutable base and verified runner artifact.");
-  for (const key of ["git", "gh", "opensshServer", "sudo", "caCertificates", "curl", "unzip"] as const) {
+  for (const key of ["git", "gh", "opensshServer", "sudo", "caCertificates", "curl", "unzip", "python3"] as const) {
     const value = options.apt[key];
     if (typeof value !== "string" || !/^[a-zA-Z0-9.+:~_-]+$/.test(value))
       throw refusal("invalid_request", "Missing or invalid exact apt version lock.");
@@ -57,7 +58,7 @@ export function createRunnerDistribution(options: DistributionOptions): RunnerDi
     capabilities: options.capabilities,
     async image(client: ModalClient) {
       const commands = [
-        `RUN apt-get update && apt-get install -y --no-install-recommends git=${options.apt.git} gh=${options.apt.gh} openssh-server=${options.apt.opensshServer} sudo=${options.apt.sudo} ca-certificates=${options.apt.caCertificates} curl=${options.apt.curl} unzip=${options.apt.unzip} && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*`,
+        `RUN apt-get update && apt-get install -y --no-install-recommends git=${options.apt.git} gh=${options.apt.gh} openssh-server=${options.apt.opensshServer} sudo=${options.apt.sudo} ca-certificates=${options.apt.caCertificates} curl=${options.apt.curl} unzip=${options.apt.unzip} python3=${options.apt.python3} && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*`,
         `RUN npm install -g bun@1.4.2 @anthropic-ai/claude-agent-sdk@0.3.319 @anthropic-ai/claude-code@2.1.319 @openai/codex@0.167.0 && install -d -m 755 /opt/armada/runtime-bun && install -m 555 /usr/local/lib/node_modules/bun/bin/bun.exe /opt/armada/runtime-bun/bun && test "$(/opt/armada/runtime-bun/bun --version)" = 1.4.2 && npm cache clean --force`,
         "RUN useradd --create-home --shell /bin/bash --password '*' user && mkdir -p /opt/armada /home/user/repos && chown -R user:user /home/user && printf '%s\\n' 'user ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/armada-build-user && chmod 440 /etc/sudoers.d/armada-build-user && visudo -cf /etc/sudoers.d/armada-build-user",
         ...artifactRuns,
