@@ -10,7 +10,6 @@ import { Button } from "@/components/ui/button";
 import { listGoldenHistory } from "@/lib/data/goldens";
 import { readFailure, viewerOrchestrators } from "@/lib/data/orchestrators";
 import { requireViewer } from "@/lib/data/viewer";
-import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { isOrchestratorId } from "@/lib/orchestrators";
 import { createClient } from "@/lib/supabase/server";
@@ -72,7 +71,6 @@ export default async function OrchestratorPage({ params }: Props) {
         initial={detail}
         facts={{
           golden: golden ? `${golden.name}${golden.removed_at ? " (removed)" : ""}` : "Unknown",
-          providerLabel: PROVIDER_LABELS[config.provider],
           harnessLabel: HARNESS_LABELS[config.harness],
         }}
       />

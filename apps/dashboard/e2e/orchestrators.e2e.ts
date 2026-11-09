@@ -64,6 +64,7 @@ test("create sends the v1 request with a named account and the server's defaults
   await expect(dialog.getByLabel("Model account")).toHaveValue("acct-codex");
   await dialog.getByLabel("Agent").selectOption("claude");
   await dialog.getByLabel("Name").fill("Docs sweep");
+  await dialog.getByLabel("Golden").selectOption({ label: "shared-golden · Boat" });
   await dialog.getByText("Advanced").click();
   await dialog.getByLabel("Working directory").selectOption("api");
   await dialog.getByRole("button", { name: "Create" }).click();

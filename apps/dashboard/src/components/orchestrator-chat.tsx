@@ -27,6 +27,7 @@ import {
 } from "react";
 import { type OrchestratorResult, orchestratorCommand } from "@/app/actions/orchestrators";
 import { OrchestratorStateBadge } from "@/components/orchestrator-badge";
+import { ProviderName } from "@/components/provider-mark";
 import { Transcript } from "@/components/sandbox-chat";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -44,6 +45,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { projectChat, STEER_RESTARTS_TURN } from "@/lib/chat";
+import { PROVIDER_LABELS } from "@/lib/golden-form";
 import type { OrchestratorFailure } from "@/lib/orchestrator-api";
 import {
   type Attempt,
@@ -77,7 +79,7 @@ type Connection =
   | { state: "reconnecting"; message: string }
   | { state: "stopped"; failure: OrchestratorFailure | "contract"; message: string };
 
-type Facts = { golden: string; providerLabel: string; harnessLabel: string };
+type Facts = { golden: string; harnessLabel: string };
 
 /**
  * An orchestrator as one persistent conversation: its messages and tool calls (the sandbox chat's own transcript),
@@ -575,7 +577,7 @@ function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: Orche
   const rows: [string, string][] = [
     ["Agent", facts.harnessLabel],
     ["Model", `${config.model}${config.reasoningEffort ? ` · ${config.reasoningEffort}` : ""}`],
-    ["Provider", facts.providerLabel],
+    ["Provider", PROVIDER_LABELS[config.provider]],
     ["Golden", facts.golden],
     ...(config.repo ? [["Working directory", config.repo] as [string, string]] : []),
     ["Last activity", relativeAge(orchestrator.lastActivityAt, now) ?? "Unknown"],
@@ -591,7 +593,7 @@ function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: Orche
           <div key={label} className="flex min-w-0 items-baseline justify-between gap-3 py-2">
             <dt className="shrink-0 text-muted-foreground">{label}</dt>
             <dd className="min-w-0 truncate text-right font-medium" title={value}>
-              {value}
+              {label === "Provider" ? <ProviderName provider={config.provider} /> : value}
             </dd>
           </div>
         ))}

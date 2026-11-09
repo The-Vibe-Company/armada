@@ -6,13 +6,13 @@ import { LinkPendingIcon } from "@/components/link-pending";
 import { OrchestratorStateBadge } from "@/components/orchestrator-badge";
 import { CreateOrchestrator } from "@/components/orchestrator-create";
 import { Empty, PageHeader } from "@/components/page-header";
+import { ProviderName } from "@/components/provider-mark";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { listGoldens } from "@/lib/data/goldens";
 import { listModelAccounts, readFailure, viewerOrchestrators } from "@/lib/data/orchestrators";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
-import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
 import type { OrchestratorApi } from "@/lib/orchestrator-api";
 import { type OrchestratorListView, timeUntil } from "@/lib/orchestrators";
@@ -130,8 +130,12 @@ export default async function OrchestratorsPage() {
                       <span className="truncate">{item.configuration.name}</span>
                       <LinkPendingIcon />
                     </Link>
-                    <p className="truncate text-xs text-muted-foreground sm:hidden">
-                      {HARNESS_LABELS[item.configuration.harness]} · {item.configuration.model}
+                    <p className="flex items-center gap-1 text-xs text-muted-foreground md:hidden">
+                      <ProviderName provider={item.configuration.provider} className="shrink-0 gap-1" />
+                      <span className="truncate">
+                        <span aria-hidden="true">·</span> {HARNESS_LABELS[item.configuration.harness]} ·{" "}
+                        {item.configuration.model}
+                      </span>
                     </p>
                   </TableCell>
                   <TableCell>
@@ -141,7 +145,9 @@ export default async function OrchestratorsPage() {
                     <span>{HARNESS_LABELS[item.configuration.harness]}</span>
                     <span className="block font-mono text-xs text-muted-foreground">{item.configuration.model}</span>
                   </TableCell>
-                  <TableCell className="hidden md:table-cell">{PROVIDER_LABELS[item.configuration.provider]}</TableCell>
+                  <TableCell className="hidden md:table-cell">
+                    <ProviderName provider={item.configuration.provider} />
+                  </TableCell>
                   <TableCell className="hidden text-muted-foreground lg:table-cell">
                     <CreatedAt iso={item.lastActivityAt} now={now} />
                   </TableCell>
