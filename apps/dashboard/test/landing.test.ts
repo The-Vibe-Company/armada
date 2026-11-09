@@ -4,17 +4,15 @@ import { dirname, join, relative, resolve } from "node:path";
 import { encryptSecret } from "@armada/core";
 import { run } from "../../../packages/cli/src/run.ts";
 import { landingTranscript } from "../scripts/landing-transcript.ts";
-import { COMMANDS, GITHUB_TOKEN_HOURS, INSTALL, SETUP } from "../src/components/landing/content.ts";
+import { GITHUB_TOKEN_HOURS, INSTALL, SETUP, STORY } from "../src/components/landing/content.ts";
 import { BREAK_AT, createSky, INTRO, LIME, step } from "../src/components/landing/flock.ts";
-import { tabStep } from "../src/components/landing/keyboard.ts";
-import { ASKED, HANDED_BACK, rowsAt, summary } from "../src/components/landing/replica-script.ts";
 import { TRANSCRIPT } from "../src/components/landing/transcript.ts";
 
-// The public landing, restored from armada-v1-final (#564) with its words
-// brought to Armada v2. What it says that the code decides is held here to that
-// code (the CLI's help and output, the token's lifetime, the cipher, the README);
-// and, as in v1: it reads no session or data, the method never holds the scroll,
-// the sky moves the same at any frame rate, and the v1 replay plays its beats.
+// The public landing, restored from armada-v1-final (#564), its story retold by
+// #587. What it says that the code decides is held here to that code (the CLI's
+// help and output, the token's lifetime, the cipher, the README); and: it reads
+// no session or data, it never holds the scroll, and the sky moves the same at
+// any frame rate.
 
 const ROOT = resolve(import.meta.dir, "..");
 const REPO = resolve(ROOT, "../..");
@@ -42,29 +40,42 @@ function reach(start: string, seen = new Set<string>()): Set<string> {
 const PAGE = join(ROOT, "src/app/landing/page.tsx");
 const modules = [...reach(PAGE)];
 
-/** The commands `armada --help` documents: `golden <sub>` for goldens, the first word otherwise. */
-async function helpCommands(): Promise<Set<string>> {
+/**
+ * `armada --help`, one usage block per line that starts `  armada `: the commands it documents (`golden <sub>`
+ * for goldens, the first word otherwise) and, for each, the text of its blocks, where its flags are.
+ */
+async function help(): Promise<Map<string, string>> {
   let text = "";
   expect(await run(["--help"], { out: (chunk) => (text += chunk), err: () => undefined })).toBe(0);
-  const names = new Set<string>();
-  for (const [, first = "", second = ""] of text.matchAll(/^ {2}armada ([a-z][a-z|-]*)(?: ([a-z][a-z|-]*))?/gm))
-    for (const word of first.split("|"))
-      for (const sub of word === "golden" ? second.split("|") : [""]) names.add(sub ? `golden ${sub}` : word);
-  return names;
+  const usage = new Map<string, string>();
+  for (const block of text.split(/\n(?= {2}armada )/)) {
+    const [, first = "", second = ""] = block.match(/^ {2}armada ([a-z][a-z|-]*)(?: ([a-z][a-z|-]*))?/) ?? [];
+    for (const word of first.split("|").filter(Boolean))
+      for (const sub of word === "golden" ? second.split("|") : [""]) {
+        const name = sub ? `golden ${sub}` : word;
+        usage.set(name, `${usage.get(name) ?? ""}${block}\n`);
+      }
+  }
+  return usage;
 }
 
 describe("what the landing says", () => {
-  test("lists exactly the commands armada --help documents, each once", async () => {
-    const help = await helpCommands();
-    expect(help.size).toBeGreaterThan(10);
-    const listed = COMMANDS.map((c) => c.name);
-    // Never a command the CLI no longer has; a new one (say `golden remove`) goes into content.ts's COMMANDS.
-    expect({
-      notInHelp: listed.filter((name) => !help.has(name)),
-      notOnLanding: [...help].filter((name) => !listed.includes(name)),
-    }).toEqual({ notInHelp: [], notOnLanding: [] });
-    expect(new Set(listed).size).toBe(COMMANDS.length);
-    for (const { command } of SETUP.slice(1)) expect(help.has(command.split(" ")[1] ?? "")).toBe(true);
+  test("shows only commands armada --help documents, each with flags its own usage lists", async () => {
+    const usage = await help();
+    expect(usage.size).toBeGreaterThan(10);
+    const shown = [...Object.values(STORY), ...SETUP.map((s) => s.command)].filter((c) => c.startsWith("armada "));
+    expect(shown.length).toBeGreaterThan(5);
+    const unknown = shown.flatMap((line) => {
+      const [, first = "", second = ""] = line.split(" ");
+      const command = first === "golden" ? `golden ${second}` : first;
+      const own = usage.get(command);
+      if (own === undefined) return [`${line}: no command ${command}`];
+      const flags = line.match(/(?<=\s)--[a-z][a-z-]*/g) ?? [];
+      return flags
+        .filter((flag) => !new RegExp(`${flag}(?![a-z-])`).test(own))
+        .map((flag) => `${line}: no flag ${flag}`);
+    });
+    expect(unknown).toEqual([]);
   });
 
   test("installs the README's package and gives the sandbox's GitHub token the lifetime the CLI states", () => {
@@ -89,8 +100,8 @@ describe("what the landing says", () => {
 describe("the landing page", () => {
   test("reads no cookie, session, database, provider or server, and fetches nothing", () => {
     const rel = modules.map((f) => relative(ROOT, f));
-    // The lazily loaded replica is part of what the page reaches.
-    expect(rel).toContain("src/components/landing/Replica.tsx");
+    // The story's chapters are part of what the page reaches.
+    expect(rel).toContain("src/components/landing/Figures.tsx");
     const offenders = modules
       .filter((f) =>
         /next\/headers|cookies\(\)|\bfetch\(|@\/lib\/(supabase|control|env|data|gateway|credentials)|@armada\/core\/server|@supabase\//.test(
@@ -102,60 +113,16 @@ describe("the landing page", () => {
   });
 });
 
-describe("the method (THE-1049)", () => {
-  test("never holds the scroll: no sticky stage, no block taller than the screen, no scroll or wheel listener", () => {
+describe("the scroll (THE-1049)", () => {
+  test("is never held: no sticky block, none taller than the screen, no scroll or wheel listener", () => {
     const own = modules.filter((f) => /\/(components|app)\/landing\//.test(f));
-    expect(own.map((f) => relative(ROOT, f))).toContain("src/components/landing/MethodSteps.tsx");
+    expect(own.map((f) => relative(ROOT, f))).toContain("src/components/landing/Story.tsx");
     const css = read(join(ROOT, "src/app/landing/landing.css"));
     expect(css).not.toMatch(/position:\s*sticky/);
     const tall = [...css.matchAll(/(\d+(?:\.\d+)?)[sdl]?vh\b/g)].filter(([, n]) => Number(n) > 100).map(([m]) => m);
     expect(tall).toEqual([]);
     const listens = /addEventListener\(\s*"(scroll|wheel|touchmove|mousewheel)"|\bon(Scroll|Wheel|TouchMove)\b/;
     expect(own.filter((f) => listens.test(read(f))).map((f) => relative(ROOT, f))).toEqual([]);
-  });
-
-  test("arrow keys wrap around the steps; Home and End go to the ends; any other key is the page's", () => {
-    for (const [key, at, expected] of [
-      ["ArrowRight", 0, 1],
-      ["ArrowDown", 3, 4],
-      ["ArrowRight", 4, 0],
-      ["ArrowLeft", 0, 4],
-      ["ArrowUp", 2, 1],
-      ["Home", 3, 0],
-      ["End", 1, 4],
-      ["Enter", 2, null],
-    ] as const)
-      expect(tabStep(key, at, 5)).toBe(expected);
-  });
-});
-
-describe("the replica of the overview (THE-931)", () => {
-  const beats = { delivered: 0.65, handedBack: 1.4 };
-  const groupOf = (stage: Parameters<typeof rowsAt>[0], id: string) => rowsAt(stage, beats).find((r) => r.id === id);
-
-  test("opens with WID-15 blocked on its question and WID-18 still in progress", () => {
-    expect(groupOf("opening", ASKED)?.group).toBe("blocked");
-    expect(groupOf("opening", HANDED_BACK)?.group).toBe("running");
-    expect(summary(rowsAt("opening", beats), "opening").headline).toBe(
-      "4 agents blocked, 3 waiting for your decision.",
-    );
-  });
-
-  test("ends on WID-18's merge waiting for the owner, after it was ready to merge, and WID-15 back at work", () => {
-    expect(groupOf("delivered", ASKED)).toMatchObject({ group: "running", at: beats.delivered });
-    expect(groupOf("handed-back", HANDED_BACK)).toMatchObject({ group: "ready", step: 4 });
-    expect(groupOf("to-validate", HANDED_BACK)).toMatchObject({
-      group: "you",
-      reason: "Merge to approve · #44 green",
-      step: 4,
-      at: beats.handedBack,
-    });
-    const end = summary(rowsAt("to-validate", beats), "to-validate");
-    expect(end.headline).toBe("3 agents blocked, 4 waiting for your decision.");
-    expect(end.subline).toBe(
-      "11 agents in flight across 3 projects · 3 moving on their own · 1 ready to merge · 5 merged today",
-    );
-    expect(end.validations).toBe(3);
   });
 });
 
