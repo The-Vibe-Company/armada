@@ -162,7 +162,8 @@ export function AcceptInvitation({ state, accept, now }: AcceptProps) {
             whether to join; nothing is joined before you do.
           </p>
           <p>
-            A sign-in link inside the invitation email is not used on this page, so you may be asked for a new code.
+            A sign-in link inside the invitation email is not used on this page, so you may be asked for a new code. If
+            one was just sent to you, the next can take a minute.
           </p>
           <Button asChild className="w-full sm:w-auto">
             <Link href={INVITATION_LOGIN_HREF}>Sign in to continue</Link>
