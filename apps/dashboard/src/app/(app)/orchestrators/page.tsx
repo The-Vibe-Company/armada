@@ -132,7 +132,8 @@ export default async function OrchestratorsPage() {
                     </Link>
                     <p className="flex items-center gap-1 text-xs text-muted-foreground md:hidden">
                       <ProviderName provider={item.configuration.provider} className="shrink-0 gap-1" />
-                      <span className="truncate">
+                      {/* From sm up the Agent column shows these. */}
+                      <span className="truncate sm:hidden">
                         <span aria-hidden="true">·</span> {HARNESS_LABELS[item.configuration.harness]} ·{" "}
                         {item.configuration.model}
                       </span>
