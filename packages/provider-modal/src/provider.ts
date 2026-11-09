@@ -446,6 +446,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           ...sandboxInfo(row),
           state: "failed",
           providerState: "exited",
+          physicalExitConfirmed: true,
           error: "Physical machine exited without a new verified checkpoint.",
         };
       return { ...sandboxInfo(row), providerState: row.phase };
