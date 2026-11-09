@@ -94,3 +94,17 @@ describe("API client origin and session safety", () => {
     await expect(client.request("/\\evil.example/steal")).rejects.toThrow("stay on the Armada origin");
   });
 });
+
+test("API calls leave the explicit signal as the only client-side deadline", async () => {
+  const controller = new AbortController();
+  let options: RequestInit | undefined;
+  const client = await createArmadaApiClient({
+    ...io({ ARMADA_TOKEN: token }),
+    fetch: async (_input, init) => {
+      options = init;
+      return Response.json({ ok: true });
+    },
+  });
+  await client.request("/api/v1/golden/create", { method: "POST", signal: controller.signal });
+  expect(options).toMatchObject({ signal: controller.signal, timeout: false });
+});

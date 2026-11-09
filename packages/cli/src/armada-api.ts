@@ -47,6 +47,9 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       try {
         response = await io.fetch(url, {
           ...init,
+          // Bun has an independent fetch idle deadline. The explicit AbortSignal
+          // owns this request's budget, including long synchronous golden builds.
+          ...{ timeout: false },
           headers: {
             ...headers(init.headers),
             authorization: `Bearer ${token}`,
@@ -64,6 +67,7 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
         try {
           response = await io.fetch(url, {
             ...init,
+            ...{ timeout: false },
             headers: { ...headers(init.headers), authorization: `Bearer ${token}`, accept: "application/json" },
             redirect: "error",
             signal: init.signal ?? AbortSignal.timeout(timeoutMs),
