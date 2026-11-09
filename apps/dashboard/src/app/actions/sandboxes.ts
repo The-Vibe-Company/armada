@@ -16,6 +16,7 @@ import { requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
 import { GatewayError } from "@/lib/gateway";
 import { launchSandbox } from "@/lib/launch";
+import { MACHINE_SIZE_LABELS } from "@/lib/machine-size";
 import { launchArgs, type ModelFields, sendOverride } from "@/lib/model-choice";
 import { goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
@@ -118,6 +119,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     harness: formString(data, "harness"),
     prompt: formString(data, "prompt"),
     repo: formString(data, "repo"),
+    size: formString(data, "size"),
     ...modelFields(data),
   });
   if (!parsed.ok) return fail(parsed.error);
@@ -165,8 +167,13 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
       { ...parsed.args, ...selection.value, ...(repository.repo === undefined ? {} : { repo: repository.repo }) },
     ));
   } catch (error) {
-    if (error instanceof ControlError) return fail(error.message);
-    throw error;
+    if (!(error instanceof ControlError)) throw error;
+    // A provider refusing an explicit size (plan, disk) is never retried with another: say what to change.
+    if (parsed.args.size && error.code === "start_failed")
+      return fail(
+        `${error.message} ${MACHINE_SIZE_LABELS[parsed.args.size]} was requested: choose another size or the default.`,
+      );
+    return fail(error.message);
   }
   revalidatePath("/sandboxes");
   redirect(`/sandboxes/${id}`);

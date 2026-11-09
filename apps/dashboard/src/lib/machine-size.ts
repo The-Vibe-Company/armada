@@ -1,9 +1,11 @@
 import {
+  LaunchError,
   MACHINE_SIZE_CATALOG,
   MACHINE_SIZES,
   type MachineSize,
   type MachineSizeEvidence,
   type MachineSizePolicy,
+  type MachineSizePolicyResult,
   machineCapacity,
   parseMachineSizePolicy,
   resolveMachineSize,
@@ -97,26 +99,87 @@ export function sizeCaveat(provider: SandboxProviderId, chosen: MachineSize | nu
   return "Boat refuses a size whose disk cannot hold the golden.";
 }
 
-/** A policy with no default, the starting point of an edit. */
-export function emptyPolicy(): MachineSizePolicy {
-  return { version: 1, golden: null, repositories: {} };
+/** A golden's stored size policy as the dashboard can use it. */
+export type GoldenSizing =
+  /** The server predates size policies (#653): no size is offered or sent. */
+  | { kind: "unsupported" }
+  | { kind: "ready"; policy: MachineSizePolicy | null }
+  /** Stored but not valid against the golden's directories: shown, never guessed around. */
+  | { kind: "unreadable"; reason: string };
+
+/**
+ * Reads the golden row's `size_policy` with the contract's parser against its configured directories. A row read
+ * before the column existed has no `size_policy` key at all, which is how the dashboard knows not to offer sizes.
+ */
+export function goldenSizing(golden: { size_policy?: unknown }, directories: readonly string[]): GoldenSizing {
+  if (!("size_policy" in golden) || golden.size_policy === undefined) return { kind: "unsupported" };
+  if (golden.size_policy === null) return { kind: "ready", policy: null };
+  try {
+    const policy = parseMachineSizePolicy(golden.size_policy, directories);
+    // The parser's null-prototype map cannot cross into a client component; a plain copy can.
+    return { kind: "ready", policy: { ...policy, repositories: { ...policy.repositories } } };
+  } catch (error) {
+    if (error instanceof LaunchError) return { kind: "unreadable", reason: error.message };
+    throw error;
+  }
+}
+
+/** One line for the golden card: which defaults are set, or that the provider decides. */
+export function policySummary(provider: SandboxProviderId, policy: MachineSizePolicy | null): string {
+  const parts = [
+    ...(policy?.golden ? [`Golden: ${MACHINE_SIZE_LABELS[policy.golden]}`] : []),
+    ...Object.entries(policy?.repositories ?? {}).map(([dir, size]) => `${dir}: ${MACHINE_SIZE_LABELS[size]}`),
+  ];
+  return parts.length > 0 ? parts.join(" · ") : `No defaults: ${PROVIDER_LABELS[provider]} decides`;
 }
 
 /**
- * The policy with one default changed (`null` removes it), validated by the contract's parser against the golden's
- * configured directories. Throws the contract's `LaunchError` for a directory the golden does not configure.
+ * Why the viewer may not change this golden's size defaults, or null when they may. The same rule the server's
+ * `golden/size-policy` applies: the owner of a private golden, an org admin for an org golden.
  */
-export function withDefault(
-  policy: MachineSizePolicy | null,
-  target: { golden: true } | { repositoryDir: string },
-  size: MachineSize | null,
+export function sizePolicyBlocker(
+  golden: { visibility: "private" | "org"; owner_id: string },
+  viewer: { id: string; isAdmin: boolean },
+): string | null {
+  if (golden.visibility === "private")
+    return golden.owner_id === viewer.id ? null : "Only its owner changes its size defaults.";
+  return viewer.isAdmin ? null : "Only an org admin changes an org golden's size defaults.";
+}
+
+/**
+ * The full policy from the defaults form: `golden` and one `size:<dir>` field per configured directory, empty for
+ * no default. Validated by the contract's parser, so an unknown size or directory is refused, never dropped.
+ */
+export function policyFromForm(
+  read: (field: string) => string,
   directories: readonly string[],
-): MachineSizePolicy {
-  const base = policy ?? emptyPolicy();
-  if ("golden" in target) return parseMachineSizePolicy({ ...base, golden: size }, directories);
-  const repositories = Object.fromEntries(
-    Object.entries(base.repositories).filter(([dir]) => dir !== target.repositoryDir),
+): { ok: true; policy: MachineSizePolicy } | { ok: false; error: string } {
+  const golden = read("golden_size").trim();
+  const repositories: Record<string, string> = {};
+  for (const dir of directories) {
+    const size = read(`size:${dir}`).trim();
+    if (size) repositories[dir] = size;
+  }
+  try {
+    return {
+      ok: true,
+      policy: parseMachineSizePolicy({ version: 1, golden: golden || null, repositories }, directories),
+    };
+  } catch (error) {
+    if (error instanceof LaunchError) return { ok: false, error: error.message };
+    throw error;
+  }
+}
+
+/** The answer of `POST /api/v1/golden/size-policy` (`MachineSizePolicyResult` in `@armada/core`). */
+export function isSizePolicyResult(value: unknown): value is MachineSizePolicyResult {
+  if (!value || typeof value !== "object") return false;
+  const result = value as Record<string, unknown>;
+  return (
+    typeof result.goldenId === "string" &&
+    (result.provider === "boat" || result.provider === "modal") &&
+    Array.isArray(result.repositories) &&
+    (result.policy === null ||
+      (typeof result.policy === "object" && (result.policy as { version?: unknown }).version === 1))
   );
-  if (size) repositories[target.repositoryDir] = size;
-  return parseMachineSizePolicy({ ...base, repositories }, directories);
 }

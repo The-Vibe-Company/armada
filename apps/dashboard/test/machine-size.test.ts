@@ -1,13 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { LaunchError, type MachineSizePolicy } from "@armada/core";
+import type { MachineSizePolicy } from "@armada/core";
 import {
   defaultOptionLabel,
   describeDefault,
+  goldenSizing,
+  isSizePolicyResult,
   launchDefault,
+  policyFromForm,
+  policySummary,
   sizeCaveat,
   sizeOptions,
+  sizePolicyBlocker,
   sizeSpec,
-  withDefault,
 } from "../src/lib/machine-size.ts";
 
 const policy: MachineSizePolicy = { version: 1, golden: "medium", repositories: { api: "large" } };
@@ -61,18 +65,52 @@ describe("machine sizes in the launch dialog", () => {
     expect(sizeCaveat("modal", "xlarge")).toMatch(/same label on Boat is a different machine/);
   });
 
-  test("editing a default changes only that default and is checked against the configured directories", () => {
-    expect(withDefault(policy, { repositoryDir: "web" }, "small", ["api", "web"])).toEqual({
-      version: 1,
-      golden: "medium",
-      repositories: { api: "large", web: "small" },
+  test("the defaults form submits a full policy, refusing an unknown size instead of dropping it", () => {
+    const form = (fields: Record<string, string>) => (name: string) => fields[name] ?? "";
+    expect(
+      policyFromForm(form({ golden_size: "medium", "size:api": "large", "size:web": "" }), ["api", "web"]),
+    ).toEqual({
+      ok: true,
+      policy: { version: 1, golden: "medium", repositories: { api: "large" } },
     });
-    expect(withDefault(policy, { repositoryDir: "api" }, null, ["api"]).repositories).toEqual({});
-    expect(withDefault(null, { golden: true }, "xlarge", [])).toEqual({
-      version: 1,
-      golden: "xlarge",
-      repositories: {},
+    expect(policyFromForm(form({}), ["api"])).toEqual({
+      ok: true,
+      policy: { version: 1, golden: null, repositories: {} },
     });
-    expect(() => withDefault(policy, { repositoryDir: "../etc" }, "small", ["api"])).toThrow(LaunchError);
+    expect(policyFromForm(form({ "size:api": "huge" }), ["api"])).toMatchObject({ ok: false });
+  });
+
+  test("a stored policy is offered only once the server has the column, and an invalid one is shown, not guessed", () => {
+    expect(goldenSizing({}, ["api"])).toEqual({ kind: "unsupported" });
+    expect(goldenSizing({ size_policy: null }, ["api"])).toEqual({ kind: "ready", policy: null });
+    expect(goldenSizing({ size_policy: policy }, ["api"])).toMatchObject({
+      kind: "ready",
+      policy: { golden: "medium" },
+    });
+    expect(goldenSizing({ size_policy: policy }, ["web"])).toEqual({
+      kind: "unreadable",
+      reason: "Unknown configured repository directory.",
+    });
+    expect(policySummary("boat", policy)).toBe("Golden: Medium · api: Large");
+    expect(policySummary("modal", null)).toBe("No defaults: Modal decides");
+  });
+
+  test("only the owner of a private golden or an org admin edits defaults, as the server checks", () => {
+    const viewer = { id: "u1", isAdmin: false };
+    expect(sizePolicyBlocker({ visibility: "private", owner_id: "u1" }, viewer)).toBeNull();
+    expect(sizePolicyBlocker({ visibility: "private", owner_id: "u2" }, { ...viewer, isAdmin: true })).toBe(
+      "Only its owner changes its size defaults.",
+    );
+    expect(sizePolicyBlocker({ visibility: "org", owner_id: "u1" }, viewer)).toBe(
+      "Only an org admin changes an org golden's size defaults.",
+    );
+    expect(sizePolicyBlocker({ visibility: "org", owner_id: "u2" }, { ...viewer, isAdmin: true })).toBeNull();
+  });
+
+  test("the size-policy answer is checked before it is trusted", () => {
+    const answer = { goldenId: "g", provider: "modal", repositories: [], policy: null };
+    expect(isSizePolicyResult(answer)).toBe(true);
+    expect(isSizePolicyResult({ ...answer, provider: "aws" })).toBe(false);
+    expect(isSizePolicyResult({ ...answer, policy: { version: 2 } })).toBe(false);
   });
 });

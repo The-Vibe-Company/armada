@@ -53,6 +53,10 @@ type State = {
     /** Status reads fail (a 503) while set; the jobs themselves are unaffected. */
     failStatus?: boolean;
   };
+  /** Every `golden/size-policy` body (#653), as the dashboard sent it. */
+  sizePolicyCalls: Row[];
+  /** A launch asking for this size is refused by the provider, as Boat refuses a plan-gated size. */
+  refuseSize: string | null;
   /** Every `golden/remove` body, as the dashboard sent it, and whether it carried a session. */
   goldenRemoveCalls: { body: Row; authorized: boolean }[];
   /** Every `golden/build/status` body, as the dashboard sent it. */
@@ -201,6 +205,8 @@ function seed(): State {
     ],
     controlCalls: [],
     providerCalls: [],
+    sizePolicyCalls: [],
+    refuseSize: null,
     providerStatusFail: null,
   };
   // The org golden records two repositories, so its launch form offers a working directory.
@@ -765,6 +771,10 @@ function launchRoute(body: Row, userId: string | null): Response {
   if (body.repo !== undefined && !dirs.includes(String(body.repo))) {
     return controlFail(400, "invalid", "That repository is not in the golden.");
   }
+  if (body.size !== undefined && !SIZES.includes(String(body.size)))
+    return controlFail(400, "invalid_request", "Size must be small, medium, large or xlarge.");
+  if (body.size !== undefined && body.size === state.refuseSize)
+    return controlFail(400, "start_failed", "Boat refused the machine size: your plan does not include it.");
   const ids = Array.isArray(body.connections) ? body.connections.map(String) : [];
   for (const cid of ids) {
     const connection = visibleConnections(String(body.org), userId).find((row) => row.id === cid);
@@ -1222,6 +1232,39 @@ function publishGoldenBuild(route: string, body: Row, userId: string): Row | nul
   return { name, visibility: target.visibility, snapshot };
 }
 
+const SIZES = ["small", "medium", "large", "xlarge"];
+
+/**
+ * `golden/size-policy {golden, org, provider, policy?}` (#653): reads, or with `policy` replaces, a visible golden's
+ * size defaults under the owner (private) or admin (org) rule; directories must be the golden's configured ones.
+ */
+function goldenSizePolicy(body: Row, request: Request): Response {
+  const userId = viewer(request);
+  state.sizePolicyCalls.push(body);
+  if (!userId) return controlFail(401, "unauthorized", "Sign in.");
+  const row = liveGoldens(userId).find(
+    (item) => item.name === body.golden && item.org_id === body.org && item.provider === (body.provider ?? "boat"),
+  );
+  if (!row || !("size_policy" in row)) return json({ error: "Not found." }, 404);
+  const repositories = ((row.config as { repos?: Row[] }).repos ?? []) as Row[];
+  if (body.policy !== undefined) {
+    const allowed = row.visibility === "private" ? row.owner_id === userId : isAdmin(row.org_id, userId);
+    if (!allowed) return controlFail(403, "forbidden", "You cannot change this golden's size policy.");
+    const policy = body.policy as { version?: unknown; golden?: unknown; repositories?: Record<string, unknown> };
+    const dirs = repositories.map((repo) => repo.dir);
+    if (
+      policy.version !== 1 ||
+      (policy.golden !== null && !SIZES.includes(String(policy.golden))) ||
+      Object.entries(policy.repositories ?? {}).some(
+        ([dir, size]) => !dirs.includes(dir) || !SIZES.includes(String(size)),
+      )
+    )
+      return controlFail(400, "invalid_request", "Unsupported size policy.");
+    row.size_policy = policy;
+  }
+  return json({ goldenId: row.id, provider: row.provider, repositories, policy: row.size_policy ?? null });
+}
+
 /**
  * `golden/remove {id, org?}` (#566): retires a visible golden by id under the owner/admin rule. The row stays as a
  * tombstone so its sandboxes and their history remain; provider artifacts are retained. Answers
@@ -1432,6 +1475,13 @@ function control(url: URL, body: Row): Response {
         }),
       );
     }
+    if (body.sizePolicies) {
+      // The server has #653's column: every golden reads `size_policy`; the Boat org golden has defaults.
+      for (const row of state.goldens) row.size_policy = null;
+      const shared = state.goldens.find((row) => row.name === "shared-golden" && row.provider === "boat");
+      if (shared) shared.size_policy = { version: 1, golden: "medium", repositories: { api: "large" } };
+      state.refuseSize = typeof body.refuseSize === "string" ? body.refuseSize : null;
+    }
     if (body.modalTwin) {
       // A Modal golden with the same name as the Boat `shared-golden`, recording another repository.
       state.goldens.push({
@@ -1442,6 +1492,7 @@ function control(url: URL, body: Row): Response {
           repos: [{ url: "https://github.com/acme/docs.git", branch: "main", dir: "docs" }],
           init: [],
         },
+        ...(body.sizePolicies ? { size_policy: null } : {}),
       });
     }
     if (body.novaOrg) {
@@ -1600,6 +1651,7 @@ function control(url: URL, body: Row): Response {
       goldenCalls: state.goldenCalls,
       goldenStatusCalls: state.goldenStatusCalls,
       goldenRemoveCalls: state.goldenRemoveCalls,
+      sizePolicyCalls: state.sizePolicyCalls,
       capabilityCalls: state.capabilityCalls,
       githubCliCalls: state.githubCliCalls,
       controlCalls: state.controlCalls,
@@ -1638,6 +1690,7 @@ const server = Bun.serve({
       if (route === "golden/create" || route === "golden/update") return goldenBuild(route, body, request);
       if (route === "golden/capabilities") return goldenCapabilities(body, request);
       if (route === "golden/remove") return goldenRemove(body, request);
+      if (route === "golden/size-policy") return goldenSizePolicy(body, request);
       if (route === "org/provider/status" || route === "org/provider/connect" || route === "org/provider/disconnect")
         return orgProvider(route, body, request);
       if (route === "golden/list")

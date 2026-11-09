@@ -72,3 +72,15 @@ describe("the launch repository", () => {
     });
   });
 });
+
+describe("the launch machine size", () => {
+  test("an explicit size is sent; none leaves the default to the server; an unknown one is refused", () => {
+    expect(launchArgs({ ...form, harness: "claude", size: "xlarge" })).toMatchObject({ args: { size: "xlarge" } });
+    const resolved = launchArgs({ ...form, harness: "claude", size: "" });
+    expect(resolved.ok && "size" in resolved.args).toBe(false);
+    expect(launchArgs({ ...form, harness: "claude", size: "huge" })).toEqual({
+      ok: false,
+      error: "Choose a machine size from the list.",
+    });
+  });
+});

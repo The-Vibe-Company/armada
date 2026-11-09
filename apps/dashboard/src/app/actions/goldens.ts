@@ -11,6 +11,8 @@ import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
 import { goldenRemoveBlocker, goldenRequest, goldenRowState, PROVIDER_LABELS, type RepoRow } from "@/lib/golden-form";
+import { isSizePolicyResult, policyFromForm, sizePolicyBlocker } from "@/lib/machine-size";
+import { goldenRepositoryDirs } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
 
 export async function setGoldenVisibility(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
@@ -196,4 +198,49 @@ function explainBuildError(error: ControlError, provider: SandboxProviderId): st
   if ((error.status === 502 || error.status === 504) && error.code === undefined)
     return "The Armada server did not answer in time. The build may still finish: refresh before trying again.";
   return error.message;
+}
+
+/**
+ * Replaces a golden's machine size defaults through the server's `golden/size-policy`, which checks the owner/admin
+ * rule again. The golden is targeted by name, org and provider from its stored row, so a same-name golden of the
+ * other provider keeps its own defaults. Saving never rebuilds the golden or touches a running sandbox: the next
+ * launch resolves the new defaults.
+ */
+export async function saveSizePolicy(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+  const viewer = await requireViewer();
+  const goldenId = formString(data, "golden");
+  const org = formString(data, "org");
+  if (!isUuid(goldenId) || !isUuid(org)) return fail("That request is not valid.");
+  if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
+  const serverUrl = mcpUrl();
+  if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
+  const supabase = await createClient();
+  const [goldens, memberships] = await Promise.all([listGoldens(supabase), listMemberships(supabase, viewer.id)]);
+  const target = goldens.find((row) => row.id === goldenId && row.org_id === org);
+  if (!target) return fail("That golden is not available in this scope.");
+  const isAdmin = memberships.some((item) => item.org.id === org && item.role === "admin");
+  const blocker = sizePolicyBlocker(target, { id: viewer.id, isAdmin });
+  if (blocker) return fail(blocker);
+  if (goldenRowState(target, goldens, { id: viewer.id, isAdmin }).duplicateName)
+    return fail(`Two visible ${PROVIDER_LABELS[target.provider]} goldens share this name; rename one first.`);
+  const form = policyFromForm((field) => formString(data, field), goldenRepositoryDirs(target.config));
+  if (!form.ok) return fail(form.error);
+  let result: unknown;
+  try {
+    result = await createControlClient({ serverUrl, token: viewer.token }).post("golden/size-policy", {
+      golden: target.name,
+      org,
+      provider: target.provider,
+      policy: form.policy,
+    });
+  } catch (error) {
+    if (!(error instanceof ControlError)) throw error;
+    if (error.status === 404 && error.code === undefined)
+      return fail("This Armada server does not offer machine size defaults yet.");
+    return fail(error.message);
+  }
+  if (!isSizePolicyResult(result) || result.goldenId !== target.id)
+    return fail("The Armada server sent an unexpected answer.");
+  revalidatePath("/goldens");
+  return done("Size defaults saved. They apply to the next launch; running sandboxes keep their size.");
 }

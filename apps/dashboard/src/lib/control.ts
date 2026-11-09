@@ -317,7 +317,8 @@ function failure(status: number, payload: Record<string, unknown> | null, featur
     return new ControlError(`This Armada server does not offer ${feature} yet.`, status);
   }
   if (status >= 500) return new ControlError(message ?? "The Armada server could not complete the request.", status);
-  return new ControlError(message ?? `The Armada server answered ${status}.`, status);
+  const code = error && "code" in error && typeof error.code === "string" ? error.code : undefined;
+  return new ControlError(message ?? `The Armada server answered ${status}.`, status, code);
 }
 
 /** A golden build job receipt or status (`golden/create`, `golden/update`, `golden/build/status`). */
