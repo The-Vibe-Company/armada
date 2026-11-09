@@ -97,7 +97,11 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
         : undefined;
     const publicId = machine.info.labels.sandbox;
     const native =
-      binding && publicId && options.modelAuth && stored.harness === "codex"
+      binding &&
+      publicId &&
+      options.modelAuth &&
+      stored.harness === "codex" &&
+      credentials.sources.some((source) => source.kind === "codex_auth")
         ? await options.modelAuth.bootstrap(
             { userId, orgId: options.scope.orgId, role: "member" },
             binding.credentialId,

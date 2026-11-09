@@ -4,6 +4,7 @@ import { type OrchestratorPair, orchestratorPairsFromEnv } from "./orchestrator-
 export interface ServerConfig {
   port: number;
   orchestratorPairs: readonly OrchestratorPair[];
+  orchestratorSkillRevision: string | undefined;
   supabaseUrl: string;
   anonKey: string;
   authSecret: string;
@@ -76,9 +77,14 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
   const publicUrl = new URL(resourceUrl(value("ARMADA_PUBLIC_URL"))).origin;
   const development = env.NODE_ENV === "development";
 
+  const orchestratorPairs = orchestratorPairsFromEnv(env.ARMADA_ORCHESTRATOR_PAIRS);
+  const orchestratorSkillRevision = env.ARMADA_ORCHESTRATOR_SKILL_REVISION?.trim() || undefined;
+  if (orchestratorPairs.includes("modal:codex") && !/^[a-f0-9]{40}$/.test(orchestratorSkillRevision ?? ""))
+    throw new Error("ARMADA_ORCHESTRATOR_SKILL_REVISION must be a reviewed public 40-character commit.");
   return {
     port,
-    orchestratorPairs: orchestratorPairsFromEnv(env.ARMADA_ORCHESTRATOR_PAIRS),
+    orchestratorPairs,
+    orchestratorSkillRevision,
     supabaseUrl: value("SUPABASE_URL").replace(/\/+$/, ""),
     anonKey: value("SUPABASE_ANON_KEY"),
     authSecret: value("ARMADA_AUTH_SECRET"),

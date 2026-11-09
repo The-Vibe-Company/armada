@@ -30,7 +30,7 @@ export function createOrchestratorServices(
     runtime: Parameters<typeof createLifecycleAwareOrchestratorRuntime>[1];
     childAuthority: ChildAuthority;
     childExecutor: OrchestratorChildExecutor;
-    lifecycleRuntime: OrchestratorLifecycleRuntime;
+    lifecycleRuntime?: OrchestratorLifecycleRuntime;
     evidence: WaitEvidenceSource;
   },
 ) {
@@ -55,7 +55,12 @@ export function createOrchestratorServices(
     store,
     children,
     waits,
-    lifecycleWorker: createOrchestratorLifecycle(sql, input.lifecycleRuntime),
+    lifecycleWorker: createOrchestratorLifecycle(sql, input.lifecycleRuntime ?? requiredManagedRuntime(runtime)),
     childWorker: children,
   };
+}
+
+function requiredManagedRuntime(runtime: OrchestratorRuntime): OrchestratorLifecycleRuntime {
+  if (!runtime.lifecycleRuntime) throw new Error("Managed orchestrator lifecycle runtime required.");
+  return runtime.lifecycleRuntime;
 }

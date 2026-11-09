@@ -20,6 +20,22 @@ describe("config", () => {
 
   test("orchestrator deployment intent defaults off and refuses unknown pairs without echoing input", () => {
     expect(configFromEnv(ENV).orchestratorPairs).toEqual([]);
+    for (const revision of [undefined, "main", "secret-invalid-revision"]) {
+      expect(() =>
+        configFromEnv({
+          ...ENV,
+          ARMADA_ORCHESTRATOR_PAIRS: "modal:codex",
+          ARMADA_ORCHESTRATOR_SKILL_REVISION: revision,
+        }),
+      ).toThrow("ARMADA_ORCHESTRATOR_SKILL_REVISION must be a reviewed public 40-character commit.");
+    }
+    expect(
+      configFromEnv({
+        ...ENV,
+        ARMADA_ORCHESTRATOR_PAIRS: "modal:codex",
+        ARMADA_ORCHESTRATOR_SKILL_REVISION: "a".repeat(40),
+      }).orchestratorSkillRevision,
+    ).toBe("a".repeat(40));
     for (const pairs of ["true", "boat:claud", "boat:claude,", "secret-invalid-pair"]) {
       try {
         configFromEnv({ ...ENV, ARMADA_ORCHESTRATOR_PAIRS: pairs });

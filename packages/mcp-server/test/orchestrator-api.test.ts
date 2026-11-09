@@ -72,6 +72,7 @@ test("requested production pairs stay unavailable and explain their independent 
     ARMADA_PUBLIC_URL: "https://armada.invalid",
     ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY,
     ARMADA_ORCHESTRATOR_PAIRS: " boat:claude,boat:codex,modal:codex,boat:codex ",
+    ARMADA_ORCHESTRATOR_SKILL_REVISION: "a".repeat(40),
   });
   const caller: Caller = { userId: "owner", orgs: [], via: "supabase" };
   const response = await orchestratorHttp(
@@ -86,6 +87,7 @@ test("requested production pairs stay unavailable and explain their independent 
     version: 1,
     enabled: false,
     reason: "native_conformance_required",
+    delegatedWaits: { enabled: false, reason: "admit_wait_not_supported" },
     pairs: [
       {
         provider: "boat",
@@ -101,13 +103,19 @@ test("requested production pairs stay unavailable and explain their independent 
         enabled: false,
         reason: "boat_native_checkpoint_restore_unavailable",
       },
-      { provider: "modal", harness: "claude", requested: false, enabled: false, reason: "server_setting_off" },
+      {
+        provider: "modal",
+        harness: "claude",
+        requested: false,
+        enabled: false,
+        reason: "native_resume_driver_unavailable",
+      },
       {
         provider: "modal",
         harness: "codex",
         requested: true,
         enabled: false,
-        reason: "modal_activation_not_supported",
+        reason: "production_runtime_unavailable",
       },
     ],
   };

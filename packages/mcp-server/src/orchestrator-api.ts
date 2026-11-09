@@ -13,7 +13,7 @@ export async function callOrchestrator(
   key?: string,
   requestedPairs?: readonly OrchestratorPair[],
 ): Promise<unknown> {
-  if (action === "capabilities") return orchestratorCapabilities(requestedPairs);
+  if (action === "capabilities") return orchestratorCapabilities(requestedPairs, service?.enabledPairs);
   if (!service) throw new OrchestratorRuntimeError("unavailable");
   if (typeof args.orgId !== "string") throw new OrchestratorRuntimeError("invalid_request");
   if (

@@ -9,6 +9,7 @@ import type {
   Provider,
 } from "@armada/core";
 import type { Caller } from "./caller.ts";
+import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import { bootstrapOrchestrator } from "./orchestrator-bootstrap.ts";
 import { createManagedOrchestratorRuntime } from "./orchestrator-managed-runtime.ts";
 import type { OrchestratorRuntimeFoundation, OrchestratorRuntimeTransport } from "./orchestrator-runtime-foundation.ts";
@@ -45,6 +46,7 @@ export interface OrchestratorRuntimeBackend {
 }
 
 export interface OrchestratorRuntimeOptions {
+  enabledPairs?: readonly OrchestratorPair[];
   store: OrchestratorRuntimeStore;
   authority: OrchestratorRuntimeFoundation["authority"];
   skillRevision: string;
@@ -66,6 +68,9 @@ export interface OrchestratorRuntimeOptions {
 
 /** One owner policy surface for HTTP and MCP. Construction alone never enables a provider. */
 export class OrchestratorRuntime {
+  get enabledPairs(): readonly OrchestratorPair[] {
+    return this.options.enabledPairs ?? [];
+  }
   readonly lifecycleRuntime: ReturnType<typeof createManagedOrchestratorRuntime> | undefined;
   constructor(private readonly options: OrchestratorRuntimeOptions) {
     this.lifecycleRuntime = options.managed

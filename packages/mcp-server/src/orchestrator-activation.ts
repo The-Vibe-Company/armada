@@ -12,28 +12,40 @@ export function orchestratorPairsFromEnv(value: string | undefined): readonly Or
   return [...new Set(pairs)] as OrchestratorPair[];
 }
 
-/** No production native adapter currently satisfies the checkpoint/restore contract.
- * Keep the legacy off response byte-compatible when no pair is requested. This is
- * a diagnostic policy, NOT a capability override or an activation implementation. */
-export function orchestratorCapabilities(requested: readonly OrchestratorPair[] = []) {
-  const off = { version: 1 as const, enabled: false, reason: "native_conformance_required" };
+/** Supported adapter admission is published only after actual service composition.
+ * An operator request alone never enables a provider/harness pair. */
+export function orchestratorCapabilities(
+  requested: readonly OrchestratorPair[] = [],
+  available: readonly OrchestratorPair[] = [],
+) {
+  const off = { version: 1 as const, enabled: false, reason: "native_conformance_required" as string | null };
   if (requested.length === 0) return off;
+  const pairs = PAIRS.map((pair) => {
+    const [provider, harness] = pair.split(":");
+    const selected = requested.includes(pair);
+    const enabled = selected && pair === "modal:codex" && available.includes(pair);
+    return {
+      provider,
+      harness,
+      requested: selected,
+      enabled,
+      reason: enabled
+        ? null
+        : provider === "boat"
+          ? "boat_native_checkpoint_restore_unavailable"
+          : harness === "claude"
+            ? "native_resume_driver_unavailable"
+            : !selected
+              ? "server_setting_off"
+              : "production_runtime_unavailable",
+    };
+  });
+  const enabled = pairs.some((pair) => pair.enabled);
   return {
     ...off,
-    pairs: PAIRS.map((pair) => {
-      const [provider, harness] = pair.split(":");
-      const selected = requested.includes(pair);
-      return {
-        provider,
-        harness,
-        requested: selected,
-        enabled: false,
-        reason: !selected
-          ? "server_setting_off"
-          : provider === "modal"
-            ? "modal_activation_not_supported"
-            : "boat_native_checkpoint_restore_unavailable",
-      };
-    }),
+    enabled,
+    reason: enabled ? null : off.reason,
+    pairs,
+    delegatedWaits: { enabled: false, reason: "admit_wait_not_supported" },
   };
 }

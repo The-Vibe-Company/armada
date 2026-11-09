@@ -2,33 +2,97 @@
 
 ## Release and deployment boundary
 
-Issue #717 remains **blocked**: no production provider/harness pair is enabled.
-`serve` still requires a trusted service factory for the real runtime/lifecycle/
-child bundle. This change adds deployment-intent diagnostics, not a native driver
-or production composition. Ordinary sandboxes and their authorization are unchanged.
+## Enable Modal × Codex (operator only, default off)
 
-### Server setting and capability diagnostics
-
-`ARMADA_ORCHESTRATOR_PAIRS` is an explicit, default-empty comma-separated list of
-`provider:harness` pairs. For the intended initial Boat rollout:
+Configure the server running this PR with:
 
 ```sh
-ARMADA_ORCHESTRATOR_PAIRS=boat:claude,boat:codex
+ARMADA_ORCHESTRATOR_PAIRS=modal:codex
+ARMADA_ORCHESTRATOR_SKILL_REVISION=0976883b70ee3ddedef5f965064bd75a248c5b6e
 ```
 
-**This does not enable either pair today.** Both remain `enabled: false` with
-`boat_native_checkpoint_restore_unavailable`. Requested Modal pairs report
-`modal_activation_not_supported`; unrequested pairs report `server_setting_off`.
-Unknown entries fail server configuration without echoing their value. With no
-setting, the existing `{version:1,enabled:false,reason:"native_conformance_required"}`
-response and unavailable mutations are unchanged. With a nonempty setting, HTTP
-and MCP capabilities additionally report all four pairs, their `requested` intent,
-`enabled: false`, and individual reasons. No request parameter can override this.
+The skill revision is an immutable, public, reviewed commit containing the four
+installer packages; the shown merged commit is suitable. Keep the existing server
+configuration: `ARMADA_DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`,
+`ARMADA_AUTH_SECRET`, `ARMADA_PUBLIC_URL` (externally reachable HTTPS), and
+`ARMADA_ENCRYPTION_KEY` (the existing 32-byte base64 key, **do not rotate it**).
+Use the built server with its pinned Linux-native Runner artifact; no new provider
+secret belongs in server arguments or this setting. Existing account202,
+model-auth203, foundation208, runtime215, native-binding216 and lifecycle217
+schema must already be deployed in order. This PR adds no migration.
 
-Rollback of this partial diagnostic change is to unset the setting and restart:
-no identities, history, credentials or native state are deleted. This is **not** a
-claim that removing a future admission flag alone revokes running private grants;
-a future live activation must define epoch revocation/drain during rollback.
+In the caller's organization, use an existing **Modal** golden with a saved
+snapshot and its immutable workspace/environment/App binding registered by
+Armada. The bound Modal org/user credential must still be present in the vault;
+use the normal provider setup and golden creation path, not a hand-written App ID
+or the historical stopped conformance App. The golden must contain `git` and an
+`armada` CLI on `PATH` supporting `skill install --project --yes --revision`;
+install a reviewed CLI build while preparing the golden, before snapshotting.
+Do not preinstall the four managed skill packages into the selected project:
+the first-create installer refuses conflicts rather than overwriting user files.
+The optional repo must exist in that golden. Select a current named **Codex**
+model account owned/authorized for the caller, a supported model and optional
+effort. Rotating native Codex accounts retain ordinary exclusive ownership: a
+parent-owned native account cannot also be claimed by a child. The composition
+consents only to the selected golden/account; child launch must fail before
+allocation when that account is busy, not bypass its lifecycle hooks. A shareable
+API-key account can launch children under its normal policy. Keep the caller's
+GitHub connection valid when the golden requires it.
+
+Restart the server through the normal deployment process, then authenticate as
+the owning member and check `armada orchestrator capabilities --json` against its
+origin. Only Modal × Codex may report `enabled: true`; the other three pairs must
+remain unavailable. This reports real configured adapter availability, **not** a
+claim that operator live conformance has already passed. Owner create/detail/
+send/steer/events/stop/resume use the shared `/api/v1` runtime across CLI,
+dashboard and iOS. Delegated waits stay denied and are not required for this flow.
+
+### Approved live postflight and rollback
+
+The coordinator—not the implementation session—runs postflight against production
+with the owner's account immediately after enabling. No separate nonproduction
+origin exists or is required by this approved procedure. Use a **new owned**
+Modal × Codex orchestrator, never an existing user's fixture or old Modal App.
+With `ARMADA_TOKEN` already exported on the operator host:
+
+```sh
+ARMADA_ORCHESTRATOR_SMOKE=create_real_compute \
+  bun scripts/orchestrator-smoke.ts https://approved-production-origin.example \
+  ORG MODAL_GOLDEN modal codex MODEL CODEX_ACCOUNT [REPO]
+```
+
+`ARMADA_BIN` optionally selects the installed CLI. The script sets `ARMADA_URL`
+from the explicit origin and checks the selected pair before allocation. It runs
+create → send a trivial prompt → cursor events until native completion → stop →
+no-text resume → stop, requiring stable sandbox/conversation and native continuity,
+and prints a JSON pass/fail receipt. Keep that receipt and the exact original
+idempotency keys after failure; **do not blindly rerun** an uncertain mutation.
+Compute may remain running. The script does not auto-delete. The coordinator owns
+cleanup/deletion of this new disposable provider resource after final stop;
+delete only the new fixture resource, not the shared App or golden. Logical
+identity and history are not deleted by rollback.
+
+The full native matrix below remains the operator's evidence checklist, including
+private grant ACK/scrub, generation fencing, long turns and log redaction. A short
+smoke alone is not proof of every native invariant. No production operation or
+live-conformance result is claimed by this PR's implementation session.
+
+For orderly rollback, stop the newly enabled orchestrators while the runtime is
+still available (so authority revocation/scrub and correlated checkpoint execute),
+then unset `ARMADA_ORCHESTRATOR_PAIRS` and restart. This disables admission and
+scoped tool serving while retaining identities, receipts and history. Turning off
+the setting is not proof that an abruptly disconnected guest memory was scrubbed;
+if a stop is uncertain, retain its receipt, do not snapshot or delete state as a
+substitute for reconciliation, and restore the same configuration to reconcile.
+
+### Unsupported pairs
+
+Boat × Claude and Boat × Codex remain unavailable because native checkpoint/restore
+ports are missing. Modal × Claude remains unavailable because the native no-text
+resume driver is missing (`native_resume_driver_unavailable`); Boat reasons are
+`boat_native_checkpoint_restore_unavailable`. Delegated waits report
+`admit_wait_not_supported`. Unknown pairs fail configuration without echoing values.
+No setting preserves the legacy disabled response and ordinary-worker behavior.
 
 ### Concrete Boat native blocker and required owner decision
 
@@ -68,27 +132,6 @@ native identity independently. The old blanket mismatch warning is stale; this
 is not proof of Boat-native continuation. Delegated wait mutations remain outside
 the actual four `worker:*` scopes: see the lifecycle document for the precise
 unsupported boundary.
-
-### Operator smoke (after real activation, not proof of native conformance)
-
-The coordinator owns `scripts/orchestrator-smoke.ts`. After future real activation,
-the operator supplies `ARMADA_TOKEN` in the host environment and runs:
-
-```sh
-ARMADA_ORCHESTRATOR_SMOKE=create_real_compute \
-  bun scripts/orchestrator-smoke.ts https://approved-origin.example \
-  ORG GOLDEN claude MODEL ACCOUNT [REPO]
-```
-
-Replace `claude` with `codex` for that pair. `ARMADA_BIN` optionally selects the
-installed CLI; the script sets `ARMADA_URL` to the explicit origin. It exercises
-create → send → cursor events until settled → stop → resume → stop and prints a
-pass/fail receipt. Current disabled capabilities must fail; do not bypass the
-guard. After failure, **do not blindly rerun**: retain receipt/idempotency keys,
-inspect the recorded operations, and reconcile because compute may still be
-running. The script does not auto-delete resources or prove native conformance.
-No production smoke was run here. Local tests and this operator smoke cannot
-replace the native conformance matrix below.
 
 ## Shared owner policy and durable state
 
@@ -173,7 +216,7 @@ already-owned compute cleanup.
 worker ports. It does not implement child admission, editable lifecycle policy or
 wait ownership itself. Existing fair server-worker lanes receive the supplied
 lifecycle worker; no second poller is introduced. Actual lifecycle/auth producer
-composition must be supplied before activation, not replaced by test fakes.
+composition is supplied by the production Modal × Codex path in `serve`, not test fakes.
 
 ## Local/CI evidence
 
@@ -201,10 +244,11 @@ identity without `thread/start` or `turn/start`. They do not cover Boat-owned
 sessions. Claude has no verified equivalent and must remain disabled until its
 real driver supplies one.
 
-## Live checks required before any activation
+## Operator live-conformance evidence checklist
 
-For **each** Boat/Modal × Claude/Codex combination to be enabled, use a newly
-owned nonproduction fixture, never the historical stopped Modal App:
+For the approved Modal × Codex rollout, the coordinator uses a newly owned
+production fixture after enabling, never the historical stopped Modal App. Any
+future pair needs its own native evidence:
 
 1. Install the reviewed pinned public skills before first prompt; record source
    revision/provenance and prove unrelated files survive/conflicts fail clearly.
@@ -222,7 +266,7 @@ owned nonproduction fixture, never the historical stopped Modal App:
 6. Exercise no-message stop, removed-owner cleanup, lost response/read-only receipt
    recovery, and current/retired-secret redaction with actual auth/lifecycle adapters.
 
-Deploy existing account/foundation schema, runtime215, then native-binding216 in
-migration order (plus independently owned lifecycle schema when composing #663).
-Keep feature disabled until that matrix entry's evidence is reviewed. Rollback
-means disable admission, revoke epochs and retain identity/history/native state.
+Existing account/foundation, runtime215, native-binding216 and lifecycle217
+schema must already be deployed in migration order; this PR adds no migration.
+Modal × Codex is opt-in under the approved operator postflight procedure above;
+other pairs remain disabled. Rollback retains identity/history/native state.
