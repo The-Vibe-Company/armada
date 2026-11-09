@@ -26,10 +26,18 @@ protocol OrchestratorService: Sendable {
     func unresolved(orgID: String, orchestratorID: String?) async -> UnresolvedOperation?
     /// Forgets a command only when its outcome is final; otherwise does nothing.
     func discard(handle: String) async
-    /// For a command the server already ACCEPTED (it has a receipt), resends exactly it to read its
-    /// current receipt and forgets it once final. Never sends a command without a receipt: an
-    /// unknown outcome is retried only by the person.
+    /// Explicitly forgets local tracking of an unknown outcome after the person accepts the risk.
+    /// Does not cancel a request or imply that the server did not apply it.
+    func discardUncertain(handle: String) async throws(ServiceFailure)
+    /// Reads owner detail to reconcile an exact known receipt without sending a mutation.
+    /// An unknown outcome without a receipt is retried only by the person.
     func settle(handle: String) async
+}
+
+extension OrchestratorService {
+    func discardUncertain(handle: String) async throws(ServiceFailure) {
+        throw .unavailable("Forgetting an unconfirmed request isn't available in this build.")
+    }
 }
 
 protocol SandboxService: Sendable {

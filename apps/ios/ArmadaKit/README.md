@@ -86,28 +86,33 @@ MCP tools list envelope, control sandbox/list POST handler. This method requires
 the coupled #680 deployment; old servers do not provide the same safe DTO.
 It never calls interior routes and does not infer authority from display IDs.
 
-## Rejection and forward-compatibility consumer contract
+## Recovery and retention
 
-`PendingOrchestratorOperation.canDiscard` reflects durable terminal knowledge
-or a local command with zero dispatches (including capability refusal);
-`rejectedBeforeAdmission` is true only for a saved local rejection without a
-server operation receipt. The UI must consult these properties, not infer them
-from an HTTP status. Cleanup permission also covers succeeded receipts and is
-NOT rejection evidence. Known terminal receipts win over concurrent transport
-failures; the app adapter retains them until explicit cleanup rather than
-restoring a draft from a stale failure. Only the actual owner API's structured HTTP400
-`error.code == "invalid_request"` maps to `ArmadaError.invalidRequest`. On the
-first dispatch with no other attempt, this becomes terminal/discardable. Bare
-HTTP400, generic409 and any rejection after an earlier ambiguous attempt remain
-uncertain with the same saved key/body/CAS. A later refused retry cannot erase
-unknown effects. The delivered generic409 contract has no safe stale-CAS
-never-admitted discriminator; producer coordination is required, not a new-key
-client workaround.
+Initial structured HTTP400 `invalid_request` is a definitive validation refusal
+and can be discarded. Generic409 remains uncertain: exact body/key/CAS survive
+reconnect, and no replacement command is automatically allocated.
 
-`OrchestratorEvent.Body.unknown(kind:payload:)` and
-`AgentEvent.Body.unknown(kind:payload:)` retain additive future variants as JSON.
-Consumers should render an unsupported-event placeholder or skip presentation,
-not interpret arbitrary payload as assistant text. The whole page, known
-neighbors, order, IDs and opaque cursor remain available. Known malformed event
-variants still fail validation; unknown-kind handling is not a blanket decoder
-fallback. No native continuity or conversation is synthesized.
+`reconcileOrchestratorOperation` uses existing owner detail operations when an
+exact receipt ID is known (matching ID, parent, action, revision and organization).
+It never POSTs. Missing/mismatched receipts and failed reads do not prove rejection.
+A lost response without a receipt ID cannot safely be matched by action/revision.
+The user can explicitly forget uncertain tracking after a warning via
+`discardUncertainOrchestratorOperation(_:acknowledgingPossibleEffects:)`.
+This does not cancel server work, prove non-admission or automatically resend;
+a new command may duplicate effects. The app offers confirmation on create,
+lifecycle and message recovery. Active submissions cannot be discarded.
+
+Durable storage retains at most 32 terminal commands, including on restore;
+unresolved commands are never automatically evicted. Concurrent submitters retain
+terminal receipt knowledge in memory only until their last caller exits, so
+pruning cannot turn a known outcome back into an unknown one.
+
+Unknown outer/nested event kinds retain JSON in the SDK without aborting the
+page or losing its opaque cursor. The app skips these variants rather than
+rendering arbitrary payloads as assistant text. Known malformed variants still
+fail decoding. No conversation or native continuity is synthesized.
+
+Follow-up producer improvement: authoritative exact-key admission/receipt
+correlation would permit safe automatic recovery of pre-admission CAS conflicts.
+It is not required for the explicit warned local-abandon workflow and no endpoint
+or discriminator is invented here.

@@ -49,7 +49,16 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
     func events(id: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage {
         do {
             let page = try await client.orchestratorEvents(id: id, cursor: cursor, limit: 100)
-            return OrchestratorEventPage(events: try page.events.map(Self.event), cursor: page.cursor, hasMore: page.hasMore)
+            let supported = page.events.filter { event in
+                switch event.body {
+                case .unknown: return false
+                case .agent(let agent):
+                    if case .unknown = agent.body { return false }
+                    return true
+                default: return true
+                }
+            }
+            return OrchestratorEventPage(events: try supported.map(Self.event), cursor: page.cursor, hasMore: page.hasMore)
         } catch {
             throw Self.readFailure(error)
         }
@@ -128,10 +137,12 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
                 // SDK validates the current organization even for cached results.
                 return Self.operation(try await client.submitOrchestratorOperation(id))
             }
-            // Preserve the OFF reason while reconciling any concurrently known
-            // terminal outcome, including failures during capability preflight.
-            try await requireEnabled()
+            if let receipt = try await client.reconcileOrchestratorOperation(id),
+               receipt.state == .succeeded || receipt.state == .failed {
+                return Self.operation(receipt)
+            }
             let receipt = try await client.submitOrchestratorOperation(id)
+            if receipt.state == .uncertain { throw ServiceFailure.uncertain }
             // Keep terminal knowledge available to concurrent same-handle callers.
             // It does not block preparing a new command; explicit cleanup is separate.
             return Self.operation(receipt)
@@ -146,6 +157,11 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
     }
 
     func unresolved(orgID: String, orchestratorID: String?) async -> UnresolvedOperation? {
+        if let operation = await client.pendingOperations.first(where: {
+            $0.orgId == orgID && $0.orchestratorId == orchestratorID && ($0.state == .pending || $0.state == .uncertain)
+        }) {
+            _ = try? await client.reconcileOrchestratorOperation(operation.id)
+        }
         let saved = await client.pendingOperations.first { operation in
             operation.orgId == orgID && operation.orchestratorId == orchestratorID
                 && (operation.state == .pending || operation.state == .uncertain)
@@ -164,11 +180,22 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         try? await client.discardOrchestratorOperation(id)
     }
 
+    func discardUncertain(handle: String) async throws(ServiceFailure) {
+        guard let id = UUID(uuidString: handle) else { throw .rejected("This request is no longer saved.") }
+        do {
+            // Try a final read first; disappearance/mismatch is never rejection evidence.
+            _ = try? await client.reconcileOrchestratorOperation(id)
+            if let saved = await client.pendingOperations.first(where: { $0.id == id }), saved.canDiscard {
+                try await client.discardOrchestratorOperation(id)
+            } else {
+                try await client.discardUncertainOrchestratorOperation(id, acknowledgingPossibleEffects: true)
+            }
+        } catch { throw Self.readFailure(error) }
+    }
+
     func settle(handle: String) async {
-        guard let id = UUID(uuidString: handle),
-              await client.pendingOperations.first(where: { $0.id == id })?.receipt != nil else { return }
-        // Same saved bytes and key: the server answers with the original operation's receipt.
-        _ = try? await submit(handle: handle)
+        guard let id = UUID(uuidString: handle) else { return }
+        _ = try? await client.reconcileOrchestratorOperation(id)
     }
 
     // MARK: Sandboxes

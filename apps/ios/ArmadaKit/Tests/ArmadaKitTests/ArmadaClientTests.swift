@@ -473,3 +473,113 @@ private actor SubmissionRaceTransport: ArmadaTransport {
     #expect(requests[0].httpBody == requests[1].httpBody)
     #expect(requests[0].value(forHTTPHeaderField: "Idempotency-Key") == requests[1].value(forHTTPHeaderField: "Idempotency-Key"))
 }
+
+// Owns durable cleanup behavior, not the private pruning algorithm: continued
+// commands must retain a bounded recent history without evicting unknown effects.
+@Test func terminalHistoryIsBoundedAcrossRestoreWithoutEvictingUncertainWork() async throws {
+    var replies: [ScriptedTransport.Reply] = [
+        .init(status: 200, body: login),
+        .init(status: 200, body: #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#),
+        .init(status: 200, body: #"{"version":1,"enabled":true}"#),
+        .init(status: 409, body: #"{"error":{"code":"conflict","message":"conflict"}}"#)
+    ]
+    for index in 0..<40 {
+        replies.append(.init(status: 200, body: #"{"version":1,"enabled":true}"#))
+        replies.append(.init(status: 200, body: """
+            {"version":1,"id":"receipt-\(index)","orchestratorId":"parent-b","kind":"message","state":"succeeded","revision":\(index + 1)}
+            """))
+    }
+    let transport = ScriptedTransport(replies)
+    let storage = MemoryStorage()
+    let client = try ArmadaClient(transport: transport, storage: storage)
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    try await client.selectOrganization("org-a")
+    let unknown = try await client.prepareOrchestratorMutation(id: "parent-a", action: .stop, expectedRevision: 7)
+    await #expect(throws: ArmadaError.conflict) { _ = try await client.submitOrchestratorOperation(unknown.id) }
+    for index in 0..<40 {
+        let command = try await client.prepareOrchestratorMutation(id: "parent-b", action: .message, expectedRevision: index, text: "message-\(index)")
+        _ = try await client.submitOrchestratorOperation(command.id)
+    }
+    let restored = try ArmadaClient(transport: transport, storage: storage)
+    try await restored.restore()
+    let saved = await restored.pendingOperations
+    #expect(saved.count == 33)
+    #expect(saved.first?.id == unknown.id)
+    #expect(saved.first?.state == .uncertain)
+    #expect(saved.first?.body == unknown.body)
+    #expect(saved.first?.key == unknown.key)
+    #expect(saved.compactMap { $0.receipt?.id } == (8..<40).map { "receipt-\($0)" })
+    // Pruned payloads are absent from the persisted Keychain blob, not just UI state.
+    let stored = String(data: try #require(storage.load()), encoding: .utf8)!
+    #expect(!stored.contains("receipt-0"))
+}
+
+@Test func explicitUncertainDiscardRequiresAcknowledgementAndUnlocksWithoutSigningOut() async throws {
+    let transport = ScriptedTransport([
+        .init(status: 200, body: login),
+        .init(status: 200, body: #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#),
+        .init(status: 200, body: #"{"version":1,"enabled":true}"#),
+        .init(status: 409, body: #"{"error":{"code":"conflict","message":"conflict"}}"#)
+    ])
+    let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    try await client.selectOrganization("org-a")
+    let command = try await client.prepareOrchestratorMutation(id: "parent-a", action: .stop, expectedRevision: 7)
+    await #expect(throws: ArmadaError.conflict) { _ = try await client.submitOrchestratorOperation(command.id) }
+    #expect(try await client.reconcileOrchestratorOperation(command.id) == nil)
+    #expect(await transport.requests.count == 4) // No guessed GET or rePOST when receipt ID was lost.
+    await #expect(throws: ArmadaError.conflict) {
+        try await client.discardUncertainOrchestratorOperation(command.id, acknowledgingPossibleEffects: false)
+    }
+    #expect(await client.pendingOperations.first?.key == command.key)
+    try await client.discardUncertainOrchestratorOperation(command.id, acknowledgingPossibleEffects: true)
+    #expect(await client.isSignedIn)
+    let replacement = try await client.prepareOrchestratorMutation(id: "parent-a", action: .stop, expectedRevision: 8)
+    #expect(replacement.key != command.key)
+    #expect(await transport.requests.count == 4) // Explicit local abandon never cancels or auto-resends.
+}
+
+// Actual owner detail/operation envelopes: only an exact receipt ID, parent,
+// action and revision can settle saved work; absence and unrelated operations do not.
+@Test func readOnlyReceiptReconciliationUsesExactCorrelationAndNoMutation() async throws {
+    let configuration = #"{"version":1,"orgId":"org-a","name":"Coordinator","goldenId":"golden-a","provider":"boat","harness":"codex","model":"model-a","modelAccountId":"account-a","idleSeconds":1800,"maxActiveChildren":4}"#
+    func detail(_ operation: String) -> String {
+        """
+        {"version":1,"orchestrator":{"version":1,"id":"parent-a","ownerId":"owner-a","configuration":\(configuration),"state":"ready","revision":8,"continuity":"native","createdAt":"2026-11-09T00:00:00Z","updatedAt":"2026-11-09T00:00:00Z","lastActivityAt":"2026-11-09T00:00:00Z","skillRevision":"v1"},"operations":[\(operation)],"waits":[],"childSandboxIds":[]}
+        """
+    }
+    func receipt(id: String = "receipt-a", parent: String = "parent-a", kind: String = "stop", revision: Int = 8, state: String = "succeeded") -> String {
+        """
+        {"version":1,"id":"\(id)","orchestratorId":"\(parent)","kind":"\(kind)","state":"\(state)","revision":\(revision)}
+        """
+    }
+    let transport = ScriptedTransport([
+        .init(status: 200, body: login),
+        .init(status: 200, body: #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#),
+        .init(status: 200, body: #"{"version":1,"enabled":true}"#),
+        .init(status: 202, body: receipt(state: "uncertain")),
+        .init(status: 200, body: detail("")),
+        .init(status: 200, body: detail(receipt(id: "unrelated"))),
+        .init(status: 200, body: detail(receipt(parent: "other-parent"))),
+        .init(status: 200, body: detail(receipt(kind: "resume"))),
+        .init(status: 200, body: detail(receipt(revision: 9))),
+        .init(status: 200, body: detail(receipt(state: "pending"))),
+        .init(status: 200, body: detail(receipt()))
+    ])
+    let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    try await client.selectOrganization("org-a")
+    let command = try await client.prepareOrchestratorMutation(id: "parent-a", action: .stop, expectedRevision: 7)
+    #expect(try await client.submitOrchestratorOperation(command.id).state == .uncertain)
+    for _ in 0..<5 {
+        #expect(try await client.reconcileOrchestratorOperation(command.id) == nil)
+        #expect(await client.pendingOperations.first?.state == .uncertain)
+    }
+    #expect(try await client.reconcileOrchestratorOperation(command.id)?.state == .pending)
+    #expect(await client.pendingOperations.first?.canDiscard == false)
+    #expect(try await client.reconcileOrchestratorOperation(command.id)?.state == .succeeded)
+    #expect(await client.pendingOperations.first?.canDiscard == true)
+    let requests = await transport.requests
+    #expect(requests.filter { $0.httpMethod == "POST" && $0.url?.path.contains("/stop") == true }.count == 1)
+    #expect(requests.suffix(7).allSatisfy { $0.httpMethod == "GET" && $0.url?.path == "/api/v1/orchestrators/parent-a" })
+}

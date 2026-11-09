@@ -86,12 +86,19 @@ extension ArmadaClient {
     public func submitOrchestratorOperation(_ operationID: UUID) async throws -> OrchestratorOperation {
         guard let pending = pendingOperations.first(where: { $0.id == operationID }),
               pending.orgId == (try selectedOrganization()) else { throw ArmadaError.forbidden }
-        if let receipt = pending.receipt, receipt.state == .succeeded || receipt.state == .failed { return receipt }
+        activeSubmissions[operationID, default: 0] += 1
+        defer {
+            let remaining = (activeSubmissions[operationID] ?? 1) - 1
+            activeSubmissions[operationID] = remaining == 0 ? nil : remaining
+            if remaining == 0 { activeTerminalReceipts[operationID] = nil }
+        }
+        if let receipt = terminalReceipt(operationID) { return receipt }
         guard pending.state != .failed else { throw ArmadaError.invalidRequest }
         let capabilities = try await orchestratorCapabilities()
         guard capabilities.enabled else { throw ArmadaError.unavailable }
         // Recheck after suspension: signout/account switching cannot submit old work.
-        guard pendingOperations.contains(where: { $0.id == operationID }), selectedOrgID == pending.orgId else { throw CancellationError() }
+        guard isSignedIn, selectedOrgID == pending.orgId else { throw CancellationError() }
+        if let receipt = terminalReceipt(operationID) { return receipt }
         guard let current = pendingOperations.first(where: { $0.id == operationID }) else { throw CancellationError() }
         if let receipt = current.receipt, receipt.state == .succeeded || receipt.state == .failed { return receipt }
         guard current.state != .failed else { throw ArmadaError.invalidRequest }
@@ -119,8 +126,38 @@ extension ArmadaClient {
             throw error
         }
     }
+    /// Read the existing owner detail surface only when an exact server receipt is known.
+    /// No-ID/lost-response commands cannot be correlated by action/revision alone.
+    public func reconcileOrchestratorOperation(_ operationID: UUID) async throws -> OrchestratorOperation? {
+        guard let pending = pendingOperations.first(where: { $0.id == operationID }),
+              pending.orgId == (try selectedOrganization()) else { throw ArmadaError.forbidden }
+        if let terminal = terminalReceipt(operationID) { return terminal }
+        guard let prior = pending.receipt else { return nil }
+        let detail = try await orchestratorDetail(id: prior.orchestratorId)
+        guard selectedOrgID == pending.orgId, isSignedIn else { throw CancellationError() }
+        guard detail.orchestrator.id == prior.orchestratorId,
+              detail.orchestrator.configuration.orgId == pending.orgId,
+              let receipt = detail.operations.first(where: { $0.id == prior.id }),
+              receipt.version == 1, receipt.kind == pending.action,
+              receipt.orchestratorId == prior.orchestratorId,
+              receipt.revision == prior.revision else { return nil }
+        try update(pending.updating(state: receipt.state, receipt: receipt))
+        return terminalReceipt(operationID) ?? receipt
+    }
+
+    /// Explicit user-authorized local abandonment only. Does not cancel the server
+    /// action or prove it never happened. A new command can duplicate its effects.
+    public func discardUncertainOrchestratorOperation(_ operationID: UUID, acknowledgingPossibleEffects: Bool) throws {
+        guard acknowledgingPossibleEffects,
+              let pending = pendingOperations.first(where: { $0.id == operationID }),
+              pending.orgId == (try selectedOrganization()),
+              activeSubmissions[operationID] == nil,
+              pending.state == .uncertain else { throw ArmadaError.conflict }
+        try saveOperations(pendingOperations.filter { $0.id != operationID })
+    }
+
     private func terminalReceipt(_ id: UUID) -> OrchestratorOperation? {
-        guard let receipt = pendingOperations.first(where: { $0.id == id })?.receipt,
+        guard let receipt = activeTerminalReceipts[id] ?? pendingOperations.first(where: { $0.id == id })?.receipt,
               receipt.state == .succeeded || receipt.state == .failed else { return nil }
         return receipt
     }
@@ -144,6 +181,10 @@ extension ArmadaClient {
         let monotonic = operation.updating(state: operation.state, receipt: operation.receipt,
             attempts: max(prior.dispatchCount, operation.dispatchCount))
         try saveOperations(pendingOperations.map { $0.id == operation.id ? monotonic : $0 })
+        if let receipt = monotonic.receipt, receipt.state == .succeeded || receipt.state == .failed,
+           activeSubmissions[operation.id] != nil {
+            activeTerminalReceipts[operation.id] = receipt
+        }
     }
     private func selectedOrganization() throws -> String {
         guard isSignedIn else { throw ArmadaError.signedOut }
