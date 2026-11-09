@@ -136,6 +136,15 @@ export function SandboxChat(props: Props) {
     }
   }, [read]);
 
+  // A server action such as Stop re-renders the page with the new status: show it in the same paint as the header,
+  // not at the next poll, and read again when it says the sandbox is active (polling stops on an inactive status).
+  useLayoutEffect(() => {
+    if (initialStatus === known.current) return;
+    known.current = initialStatus;
+    setStatus(initialStatus);
+    if (isActiveStatus(initialStatus)) void tick();
+  }, [initialStatus, tick]);
+
   useEffect(() => {
     mounted.current = true;
     void tick();
