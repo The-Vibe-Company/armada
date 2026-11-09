@@ -1,0 +1,29 @@
+{
+  "name": "Install the CLI",
+  "steps": [
+    {
+      "do": "open",
+      "path": "/"
+    },
+    {
+      "do": "click",
+      "target": {
+        "role": "link",
+        "name": "Install",
+        "within": {
+          "role": "navigation",
+          "name": "The story"
+        }
+      },
+      "lands": "/"
+    },
+    {
+      "do": "see",
+      "text": "npm install -g @the-vibe-company/armada"
+    },
+    {
+      "do": "see",
+      "text": "armada login"
+    }
+  ]
+}

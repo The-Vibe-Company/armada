@@ -48,6 +48,27 @@ test("the landing and the login page link the Armada icons, served to a signed-o
   }
 });
 
+test("on a phone, the story's index reaches every section the navigation hides", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  await page.goto("/landing");
+  const index = page.getByRole("navigation", { name: "The story" });
+  for (const [name, id] of [
+    ["Method", "method"],
+    ["Fleet", "fleet"],
+    ["CLI", "cli"],
+    ["Keys", "keys"],
+    ["Install", "install"],
+  ] as const) {
+    // The top navigation keeps only Sign in and Install on a phone (AEOM run-20261109-1256's journeys broke there).
+    const link = index.getByRole("link", { name, exact: true });
+    await expect(link).toBeVisible();
+    await link.click();
+    await expect(page.locator(`#${id}`)).toBeInViewport();
+  }
+  await context.close();
+});
+
 test("a signed-in member's / is the dashboard, not the landing", async ({ page }) => {
   await signIn(page, "alice@example.com", "/sandboxes");
   const front = await page.request.get("/", { maxRedirects: 0 });
