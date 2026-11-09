@@ -16,6 +16,10 @@ public struct Organization: Codable, Sendable, Identifiable {
     public let role: String
 }
 private struct Organizations: Decodable, Sendable { let orgs: [Organization] }
+private struct ArmadaFailureEnvelope: Decodable {
+    struct Detail: Decodable { let code: String }
+    let error: Detail
+}
 private struct StoredSession: Codable {
     let origin: String
     let session: ArmadaSession
@@ -193,9 +197,8 @@ public actor ArmadaClient {
         case 401: throw ArmadaError.signedOut
         case 403: throw ArmadaError.forbidden
         case 400:
-            struct Failure: Decodable { struct Detail: Decodable { let code: String }; let error: Detail }
             if route == "orchestrators" || route.hasPrefix("orchestrators/") {
-                if let failure = try? JSONDecoder().decode(Failure.self, from: data), failure.error.code == "invalid_request" {
+                if let failure = try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data), failure.error.code == "invalid_request" {
                     throw ArmadaError.invalidRequest
                 }
             }
