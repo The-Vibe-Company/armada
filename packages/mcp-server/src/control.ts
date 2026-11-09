@@ -79,6 +79,7 @@ import type { GitHubAccountApi } from "./github-account.ts";
 import { providerRegistry } from "./http.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { createModalIntegration } from "./modal-integration.ts";
+import { connectOrgProvider, orgProviderStatus, type ProviderValidator, validateOrgProvider } from "./org-provider.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { bunSql } from "./sql.ts";
@@ -89,6 +90,7 @@ const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
+  providerValidator?: ProviderValidator;
   githubAccount?: GitHubAccountApi;
   mcp?: { registry: McpRegistry; broker?: McpBrokerPort };
   connections?: LaunchStores["connections"];
@@ -578,6 +580,17 @@ async function dispatch(
   }
   const { store, encryptionKey } = options;
   const userId = caller.userId;
+  if (route === "org/provider/status") return orgProviderStatus(store, caller, optional(body, "org"));
+  if (route === "org/provider/connect")
+    return connectOrgProvider(
+      store,
+      encryptionKey,
+      caller,
+      optional(body, "org"),
+      required(body, "provider"),
+      required(body, "value"),
+      options.providerValidator ?? validateOrgProvider,
+    );
   const org = scopedOrg(caller, optional(body, "org"));
   switch (route) {
     case "org/create":

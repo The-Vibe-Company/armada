@@ -17,6 +17,8 @@ const PRIVATE_POST_PATHS = new Set([
   "token/revoke",
   "org/create",
   "org/list",
+  "org/provider/status",
+  "org/provider/connect",
   "members/list",
   "members/add",
   "members/role",

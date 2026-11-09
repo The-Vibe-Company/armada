@@ -49,7 +49,9 @@ test("org use persists a validated UUID per server and scopes commands while exp
       return Response.json(
         new URL(request.url).pathname === "/api/v1/org/list"
           ? { orgs: [{ id: org, name: "Team", role: "admin" }] }
-          : { sandboxes: [] },
+          : new URL(request.url).pathname.startsWith("/api/v1/org/provider/")
+            ? { org: { id: org, name: "Team", role: "admin" }, ready: false, providers: [] }
+            : { sandboxes: [] },
       );
     });
     const path = join(directory, "preferences.json");
@@ -59,6 +61,18 @@ test("org use persists a validated UUID per server and scopes commands while exp
     expect(await h.run(["list"])).toBe(0);
     expect(bodies.at(-1)).toEqual({ org });
     expect(await h.run(["list", "--org", "override"])).toBe(0);
+    expect(bodies.at(-1)).toEqual({ org: "override" });
+    expect(await h.run(["org", "setup"])).toBe(0);
+    expect(bodies.at(-1)).toEqual({ org });
+    expect(
+      await run(
+        ["org", "connect", "boat"],
+        { out: h.auth.out, err: h.auth.err },
+        { auth: h.auth, readStdin: async () => "selection-test-value" },
+      ),
+    ).toBe(0);
+    expect(bodies.at(-1)).toEqual({ org, provider: "boat", value: "selection-test-value" });
+    expect(await h.run(["org", "setup", "--org", "override"])).toBe(0);
     expect(bodies.at(-1)).toEqual({ org: "override" });
     expect(await h.auth.preferences.read("https://another.test")).toBeUndefined();
     expect(await h.run(["org", "use", "outsider"])).toBe(2);

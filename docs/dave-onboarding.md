@@ -185,3 +185,28 @@ A typical orchestrator loop is `launch` with a prompt, then `wait` until `settle
 - `Run armada login.`: there is no saved session, or it can no longer be refreshed. Sign in again.
 - `No Armada account has that email`: the person has not signed in yet (step 3).
 - A 401 on `/mcp`: the token is revoked, expired or mistyped. OAuth clients re-authorize by themselves.
+
+### Organization provider setup and recovery
+
+After `armada org create`, connect at least one organization provider before creating new work:
+
+```sh
+armada org setup --org <org-id>
+# Read a Boat API key or Modal JSON token pair from stdin, or use --file:
+armada org connect boat --org <org-id> --file <private-key-file>
+armada org connect modal --org <org-id> --file <private-token-file>
+```
+
+Modal input is JSON with `token_id` and `token_secret`. Never put secrets in command arguments.
+Only a current organization admin may connect; members may inspect setup status.
+Personal keys do not complete organization setup. Existing organization Boat keys (including
+legacy credential rows) and Modal token pairs count as configured, not perpetually verified.
+Connections perform a bounded, read-only authentication check before encrypted storage. A rejected
+credential or unavailable provider leaves the stored credential unchanged. No sandbox or App is created.
+
+The shared authenticated control API exposes `POST org/provider/status` (`{org}`) and
+`POST org/provider/connect` (`{org, provider, value}`). Both return only
+`{org:{id,name,role}, ready, providers:[{provider:"boat",configured},{provider:"modal",configured}]}`.
+Readiness is derived from current organization credentials, so interrupted onboarding resumes
+without cookies or query flags. Credential repair, account access and managed sandbox operations
+remain available even when a provider key is removed.

@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, memorySessionStore, sha256Hex } from "@armada/auth";
-import { createSqlVaultStore, encryptSecret, resolveBoatKey, resolveCredentials, type VaultStore } from "@armada/core";
+import {
+  createSqlVaultStore,
+  encryptSecret,
+  resolveBoatKey,
+  resolveCredentials,
+  VaultError,
+  type VaultStore,
+} from "@armada/core";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
@@ -16,6 +23,109 @@ const TOKEN_SECRET = "sk-ant-oat01-do-not-leak";
 const AUTH_JSON = '{"tokens":{"access_token":"codex-do-not-leak"}}';
 
 describe("armada org and armada creds against the control API", () => {
+  test("organization setup is org-only, live-authorized, validated and encrypted through CLI/API", async () => {
+    await withServer(async ({ db, options, cli }) => {
+      const admin = cli(STAN);
+      const member = cli(ADA);
+      await admin.run(["org", "create", "Setup"]);
+      const org = (await options.store.memberships(STAN))[0]!;
+      await options.store.addMember(org.id, ADA, "member");
+      let calls = 0;
+      options.providerValidator = async () => {
+        calls++;
+      };
+      await member.run(["creds", "set", "boat"], { stdin: "personal-test-value" });
+      const status = async () => JSON.parse((await member.run(["org", "setup", "--json"])).out);
+      expect(await status()).toEqual({
+        org: { ...org, role: "member" },
+        ready: false,
+        providers: [
+          { provider: "boat", configured: false },
+          { provider: "modal", configured: false },
+        ],
+      });
+      expect((await member.run(["org", "connect", "boat"], { stdin: "test-value" })).code).toBe(1);
+      expect(calls).toBe(0);
+      for (const code of ["invalid", "unavailable"] as const) {
+        options.providerValidator = async () => {
+          calls++;
+          throw new VaultError(code, "sensitive-provider-message");
+        };
+        const failed = await admin.run(["org", "connect", "boat"], { stdin: "test-value" });
+        expect(failed.code).toBe(1);
+        expect(failed.err).not.toContain("sensitive-provider-message");
+        expect((await status()).ready).toBe(false);
+      }
+      await options.store.setMemberRole(org.id, ADA, "admin");
+      options.providerValidator = async () => {
+        await options.store.setMemberRole(org.id, STAN, "member");
+      };
+      expect((await admin.run(["org", "connect", "boat"], { stdin: "test-value" })).code).toBe(1);
+      expect((await status()).ready).toBe(false);
+      await options.store.setMemberRole(org.id, STAN, "admin");
+      options.providerValidator = async () => {
+        calls++;
+      };
+      expect((await admin.run(["org", "connect", "boat", "extra-secret"], { stdin: "test-value" })).code).not.toBe(0);
+      expect((await admin.run(["org", "connect", "boat"], { stdin: "test-value" })).code).toBe(0);
+      expect((await status()).providers[0].configured).toBe(true);
+      expect(await resolveBoatKey(options.store, KEY, { userId: STAN, orgId: org.id, visibility: "org" })).toEqual({
+        key: "test-value",
+        scope: "org",
+      });
+      await options.store.setOrgBoatKey(org.id, null);
+      for (const kind of ["boat", "modal"] as const) {
+        await options.store.upsertCredential("org", org.id, kind, await encryptSecret("test-value", KEY));
+        expect((await status()).ready).toBe(true);
+        await options.store.deleteCredential("org", org.id, kind);
+      }
+      const pair = JSON.stringify({ token_id: "ak-test12345678", token_secret: "as-test12345678" });
+      expect((await admin.run(["org", "connect", "modal", "--file", "input"], { files: { input: pair } })).code).toBe(
+        0,
+      );
+      expect((await status()).providers[1].configured).toBe(true);
+      const service = generateToken("service");
+      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
+      await options.authStore.insertToken("service", {
+        userId: STAN,
+        orgId: org.id,
+        hash: await sha256Hex(service),
+        label: "test",
+        createdAt: new Date().toISOString(),
+      });
+      const other = await options.store.createOrg("Other", STAN);
+      const request = (body: unknown) =>
+        handleControlRequest(
+          new Request("https://armada.test/api/v1/org/provider/connect", {
+            method: "POST",
+            headers: { authorization: `Bearer ${service}` },
+            body: JSON.stringify(body),
+          }),
+          options,
+        );
+      const implicit = await handleControlRequest(
+        new Request("https://armada.test/api/v1/org/provider/status", {
+          method: "POST",
+          headers: { authorization: `Bearer ${service}` },
+          body: "{}",
+        }),
+        options,
+      );
+      expect(implicit?.status).toBe(200);
+      expect(await implicit?.json()).toMatchObject({ org: { id: org.id } });
+      const before = calls;
+      expect((await request({ org: org.id, provider: "boat", value: "x".repeat(16_385) }))?.status).toBe(400);
+      expect((await request({ org: other.id, provider: "boat", value: "test-value" }))?.status).toBe(404);
+      await options.store.removeMember(org.id, STAN);
+      expect((await request({ org: org.id, provider: "boat", value: "test-value" }))?.status).toBe(404);
+      expect(calls).toBe(before);
+      const stored = await db.query<{ value_enc: Uint8Array }>("select value_enc from credentials where owner_id=$1", [
+        org.id,
+      ]);
+      expect(JSON.stringify(stored.rows)).not.toContain("test12345678");
+    });
+  });
+
   test("an org is created, members and credentials are managed, and launch resolves them", async () => {
     await withServer(async ({ db, options, cli }) => {
       const stan = cli(STAN);
