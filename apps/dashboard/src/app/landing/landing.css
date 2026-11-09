@@ -1564,22 +1564,12 @@ html:has(> body .lp) {
     color: #fff;
   }
 }
-.dx-proof {
-  align-items: stretch;
-}
-.dx-proof-cmd .lp-copy {
-  height: 100%;
-  align-items: flex-start;
-}
 .dx-review .dx-steps {
   box-shadow: none;
 }
 @media (max-width: 860px) {
   .dx-review {
     padding: 24px 12px;
-  }
-  .dx-proof-cmd .lp-copy {
-    height: auto;
   }
 }
 
