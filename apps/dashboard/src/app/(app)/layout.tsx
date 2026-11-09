@@ -17,7 +17,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   const memberships = await listMemberships(await createClient(), viewer.id);
   const selected = await selectedOrganization();
   return (
-    <div className="flex min-h-dvh flex-col md:flex-row">
+    <div data-shell className="flex min-h-dvh flex-col md:flex-row">
       <aside className="border-b bg-muted/40 md:sticky md:top-0 md:flex md:h-dvh md:w-64 md:shrink-0 md:flex-col md:border-r md:border-b-0">
         <div className="flex items-center justify-between gap-2 px-4 pt-3 pb-2 md:px-5 md:pt-5 md:pb-4">
           <div className="flex items-center gap-2 text-[15px] font-semibold">
