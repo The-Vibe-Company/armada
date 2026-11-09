@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { IDS, MOCK, reset, signIn } from "./helpers";
+import { IDS, MOCK, openLaunch, reset, signIn } from "./helpers";
 
 const ACME = "00000000-0000-4000-8000-000000000010";
 const ZENITH = "00000000-0000-4000-8000-000000000011";
@@ -162,7 +162,7 @@ test("disabling a connection takes it out of launches until it is enabled again"
   });
 
   await page.goto("/goldens");
-  await page.getByRole("button", { name: "Launch from shared-golden" }).click();
+  await openLaunch(page, "shared-golden");
   await expect(page.getByRole("dialog").getByRole("checkbox", { name: "Acme Docs" })).toBeDisabled();
   await expect(page.getByRole("dialog").getByText("Disabled. Enable it on the Connections page first.")).toBeVisible();
 
@@ -312,7 +312,7 @@ test("a stdio server is imported, must pin its package and is configured for lau
   await expect(legacy.getByRole("status")).toContainText("Repo Files is configured for launch.");
 
   await page.goto("/goldens");
-  await page.getByRole("button", { name: "Launch from shared-golden" }).click();
+  await openLaunch(page, "shared-golden");
   await expect(page.getByRole("dialog").getByRole("checkbox", { name: "files", exact: true })).toBeEnabled();
   await expect(page.getByRole("dialog").getByText("Starts inside the sandbox").first()).toBeVisible();
 });
@@ -321,8 +321,7 @@ test("a launch picks personal and org connections alike, from any golden, with n
   page,
 }) => {
   await signIn(page, "alice@example.com", "/goldens");
-  await page.getByRole("button", { name: "Launch from shared-golden" }).click();
-  const dialog = page.getByRole("dialog");
+  const dialog = await openLaunch(page, "shared-golden");
   const linear = dialog.getByRole("checkbox", { name: "Alice Linear" });
   const docs = dialog.getByRole("checkbox", { name: "Acme Docs" });
   // Who may open the sandbox is its owner and the admins (#680): there is nothing to choose.
@@ -552,8 +551,7 @@ test("only a deliberate choice sends connections, even none; otherwise the serve
 }) => {
   await signIn(page, "alice@example.com", "/goldens");
   const open = async () => {
-    await page.getByRole("button", { name: "Launch from shared-golden" }).click();
-    return page.getByRole("dialog");
+    return openLaunch(page, "shared-golden");
   };
 
   // Deliberately unticking the default sends an explicit empty selection.
@@ -597,10 +595,7 @@ test("a default that is not connected holds the launch until it is reconnected o
   }
 
   await page.goto("/goldens");
-  const open = async () => {
-    await page.getByRole("button", { name: "Launch from shared-golden" }).click();
-    return page.getByRole("dialog");
-  };
+  const open = () => openLaunch(page, "shared-golden");
   let dialog = await open();
   const held = dialog.locator("[data-unready-defaults]");
   const docs = dialog.getByRole("checkbox", { name: "Acme Docs" });
@@ -625,7 +620,8 @@ test("a default that is not connected holds the launch until it is reconnected o
   // Continuing without it is the explicit choice; then the selection is exactly what is ticked.
   await held.getByRole("button", { name: "Continue without them" }).click();
   await expect(held).toHaveCount(0);
-  await expect(dialog.getByRole("checkbox", { name: "Alice Linear" })).toBeFocused();
+  // Launch is the next step, so focus moves there.
+  await expect(launch).toBeFocused();
   await expect(docs).toBeChecked();
   await launch.click();
   await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);

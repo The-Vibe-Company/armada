@@ -381,7 +381,7 @@ test("CLI sandbox-connections reads authorized persisted bindings without hidden
   }
 });
 
-test("CLI accepts deprecated launch visibility without changing sandbox source authority", async () => {
+test("CLI retires launch visibility without changing source golden authority", async () => {
   const f = await fixture();
   try {
     const boat = fakeBoat();
@@ -398,7 +398,9 @@ test("CLI accepts deprecated launch visibility without changing sandbox source a
     const launched = await f.cli(["launch", "first", "--agent", "codex", "--visibility", "private", "--json"]);
     expect(launched.code).toBe(0);
     const dto = JSON.parse(launched.out);
-    expect(dto).toMatchObject({ visibility: "org", golden: "first", provider: "boat" });
+    expect(dto).toMatchObject({ golden: "first", provider: "boat" });
+    expect(dto).not.toHaveProperty("visibility");
+    expect(launched.err).toContain("deprecated and ignored");
     expect(
       (
         await f.db.query<{ visibility: string; source_golden_visibility: string }>(
@@ -409,7 +411,8 @@ test("CLI accepts deprecated launch visibility without changing sandbox source a
     ).toEqual({ visibility: "org", source_golden_visibility: "org" });
     const text = await f.cli(["launch", "first", "--agent", "codex", "--visibility", "private"]);
     expect(text.code).toBe(0);
-    expect(text.out).toContain("(org)");
+    expect(text.out).toContain("enforced by the server");
+    expect(text.out).not.toContain("(private)");
     expect(text.out).not.toContain("first (org)");
   } finally {
     await f.close();
