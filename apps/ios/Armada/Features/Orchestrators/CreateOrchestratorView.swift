@@ -65,7 +65,7 @@ struct CreateOrchestratorView: View {
             if let status = list.createStatus {
                 Section {
                     switch status {
-                    case .sending:
+                    case .sending, .inProgress:
                         Label("Creating…", systemImage: "hourglass")
                     case .unconfirmed, .notSent:
                         VStack(alignment: .leading, spacing: 10) {

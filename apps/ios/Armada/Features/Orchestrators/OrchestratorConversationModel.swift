@@ -17,6 +17,8 @@ final class OrchestratorConversationModel {
 
     enum LifecycleStatus: Equatable {
         case sending(OperationKind)
+        /// Accepted by the server and still open there; nothing to retry.
+        case inProgress(OperationKind)
         case unconfirmed(OperationKind)
     }
 
@@ -31,6 +33,9 @@ final class OrchestratorConversationModel {
     /// Saved command handle per local bubble id.
     @ObservationIgnored private var handles: [String: String] = [:]
     @ObservationIgnored private var lifecycleHandle: String?
+    /// Commands the server definitively refused in this launch. ArmadaKit may still keep one saved;
+    /// it is never offered again as a retry that cannot succeed.
+    @ObservationIgnored private var refusedHandles = Set<String>()
     @ObservationIgnored private let service: any OrchestratorService
     @ObservationIgnored let orchestratorID: String
     @ObservationIgnored private let onSignedOut: @MainActor () -> Void
@@ -77,20 +82,37 @@ final class OrchestratorConversationModel {
         } catch {
             handleReadFailure(error)
         }
+        await settleFinishedCommand()
         await recoverOpenCommand()
     }
 
-    /// A command saved by an earlier launch (or lost with its bubble) still blocks new ones until it
-    /// resolves; show it with a retry of exactly that command.
+    /// An accepted command stays saved until its final receipt is read. Once detail no longer
+    /// lists its operation as open, read that receipt (same command, same key) so it is forgotten.
+    private func settleFinishedCommand() async {
+        guard let detail,
+              let open = await service.unresolved(orgID: detail.summary.orgID, orchestratorID: orchestratorID),
+              let receipt = open.receipt,
+              !detail.openOperations.contains(where: { $0.id == receipt.id }) else { return }
+        await service.settle(handle: open.handle)
+        if lifecycleHandle == open.handle, case .inProgress = lifecycle { finishLifecycle() }
+    }
+
+    /// A command saved by an earlier launch (or outliving its bubble) blocks new ones until it
+    /// resolves. Show it truthfully: in progress, refused, or unknown with a retry of exactly it.
     private func recoverOpenCommand() async {
         guard lifecycle == nil, lifecycleHandle == nil, let orgID = summary?.orgID,
               !pending.contains(where: { $0.status != .accepted }),
               let open = await service.unresolved(orgID: orgID, orchestratorID: orchestratorID),
               !handles.values.contains(open.handle) else { return }
+        if refusedHandles.contains(open.handle) {
+            notice = (
+                "Armada refused the last request, and it is still saved on this device, so another can't be sent yet. Signing out clears it.",
+                true
+            )
+            return
+        }
         lifecycleHandle = open.handle
-        // Accepted-but-open and unknown commands alike: retrying resends the same key, and the
-        // server answers with the original receipt.
-        lifecycle = .unconfirmed(open.kind)
+        lifecycle = open.receipt == nil ? .unconfirmed(open.kind) : .inProgress(open.kind)
     }
 
     /// Follows the event stream until the screen disappears.
@@ -112,8 +134,9 @@ final class OrchestratorConversationModel {
     /// Called whenever the stream changes: drops local bubbles the conversation now shows and
     /// refreshes detail when an event carries a newer revision.
     func streamChanged() async {
+        let before = pending.count
         reconcilePending()
-        if let summary, feed.latestRevision > summary.revision {
+        if let summary, feed.latestRevision > summary.revision || pending.count < before {
             await load()
         }
     }
@@ -173,13 +196,21 @@ final class OrchestratorConversationModel {
             case .uncertain, .offline:
                 setStatus(.unconfirmed, for: bubbleID)
             case .staleRevision:
+                refusedHandles.insert(handle)
                 removeBubble(bubbleID, restoreDraft: true)
                 notice = (ServiceFailure.staleRevision.message, false)
                 await load()
             case .noAccess:
+                refusedHandles.insert(handle)
                 phase = .noAccess
-            case .unavailable(let reason), .rejected(let reason):
+            case .rejected(let reason):
+                refusedHandles.insert(handle)
                 removeBubble(bubbleID, restoreDraft: true)
+                notice = (reason, true)
+            case .unavailable(let reason):
+                // Nothing was sent, but the command stays saved: keep it as itself, never as a
+                // new draft that could be sent twice.
+                setStatus(.unconfirmed, for: bubbleID)
                 notice = (reason, true)
             }
         }
@@ -234,14 +265,20 @@ final class OrchestratorConversationModel {
             case .uncertain, .offline:
                 lifecycle = .unconfirmed(kind)
             case .staleRevision:
+                refusedHandles.insert(handle)
                 finishLifecycle()
                 notice = ("This orchestrator changed elsewhere. Review its state, then try again.", false)
                 await load()
             case .noAccess:
+                refusedHandles.insert(handle)
                 finishLifecycle()
                 phase = .noAccess
-            case .unavailable(let reason), .rejected(let reason):
+            case .rejected(let reason):
+                refusedHandles.insert(handle)
                 finishLifecycle()
+                notice = (reason, true)
+            case .unavailable(let reason):
+                lifecycle = .unconfirmed(kind)
                 notice = (reason, true)
             }
         }

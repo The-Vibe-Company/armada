@@ -238,6 +238,8 @@ enum PreviewData {
 
         func discard(handle: String) async {}
 
+        func settle(handle: String) async {}
+
         func list(orgID: String, page: Int) async throws(ServiceFailure) -> SandboxPage {
             SandboxPage(items: empty ? [] : PreviewData.sandboxes, total: empty ? 0 : PreviewData.sandboxes.count, nextPage: nil)
         }

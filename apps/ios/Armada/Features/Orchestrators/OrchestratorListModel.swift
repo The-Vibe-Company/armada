@@ -16,6 +16,8 @@ final class OrchestratorListModel {
 
     enum CreateStatus: Equatable {
         case sending
+        /// Accepted by the server and still being created; another create waits for it.
+        case inProgress
         /// Sent, outcome unknown. Only a retry of the same saved command is offered.
         case unconfirmed
         /// Saved but not sent, because the capability is off. Retrying sends the same command.
@@ -32,6 +34,8 @@ final class OrchestratorListModel {
     private(set) var pendingCreateName: String?
 
     @ObservationIgnored private var pendingCreateHandle: String?
+    /// Creates the server refused in this launch; never offered again as a retry.
+    @ObservationIgnored private var refusedHandles = Set<String>()
     @ObservationIgnored private var cursor: String?
     @ObservationIgnored let service: any OrchestratorService
     @ObservationIgnored let orgID: String
@@ -119,6 +123,7 @@ final class OrchestratorListModel {
         do throws(ServiceFailure) {
             let operation = try await service.submit(handle: handle)
             if operation.state == .failed {
+                refusedHandles.insert(handle)
                 pendingCreateHandle = nil
                 createStatus = .refused(operation.errorCode.map { "Armada could not create it (\($0))." } ?? "Armada could not create it.")
                 return nil
@@ -137,7 +142,8 @@ final class OrchestratorListModel {
             case .unavailable(let reason):
                 createStatus = .notSent(reason)
             case .rejected, .noAccess, .staleRevision:
-                // The service has already forgotten a definitively refused command.
+                // The service asks ArmadaKit to forget a definitively refused command.
+                refusedHandles.insert(handle)
                 pendingCreateHandle = nil
                 createStatus = .refused(error.message)
             }
@@ -146,8 +152,27 @@ final class OrchestratorListModel {
     }
 
     private func recoverOpenCreate() async {
-        guard pendingCreateHandle == nil,
+        guard pendingCreateHandle == nil, createStatus != .sending,
               let open = await service.unresolved(orgID: orgID, orchestratorID: nil) else { return }
+        if refusedHandles.contains(open.handle) {
+            pendingCreateHandle = open.handle
+            createStatus = .refused(
+                "Armada refused this create, and it is still saved on this device, so another can't start yet. Signing out clears it."
+            )
+            return
+        }
+        if let receipt = open.receipt {
+            // Accepted: once the orchestrator is listed past creating, read its final receipt so
+            // the saved command is forgotten; until then it is in progress, not unknown.
+            if items.contains(where: { $0.id == receipt.orchestratorID && $0.state != .creating }) {
+                await service.settle(handle: open.handle)
+                if await service.unresolved(orgID: orgID, orchestratorID: nil)?.handle != open.handle { return }
+            }
+            pendingCreateHandle = open.handle
+            pendingCreateName = items.first { $0.id == receipt.orchestratorID }?.name
+            createStatus = .inProgress
+            return
+        }
         pendingCreateHandle = open.handle
         pendingCreateName = nil
         createStatus = .unconfirmed

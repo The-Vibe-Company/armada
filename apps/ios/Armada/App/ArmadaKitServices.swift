@@ -67,6 +67,9 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
 
     func prepareCreate(_ request: OrchestratorCreateRequest) async throws(ServiceFailure) -> String {
         try await requireOrganization(request.orgID)
+        // Never save a command the server would not accept now: a saved command can only be
+        // cleared once it has a final outcome.
+        try await requireEnabled()
         guard let provider = ArmadaKit.ArmadaProvider(rawValue: request.provider.rawValue),
               let harness = ArmadaKit.ArmadaHarness(rawValue: request.harness.rawValue) else {
             throw .rejected("This app version cannot create an orchestrator with that provider or agent.")
@@ -103,6 +106,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         case .stop: kitAction = .stop; text = nil
         case .resume: kitAction = .resume; text = nil
         }
+        try await requireEnabled()
         do {
             return try await client.prepareOrchestratorMutation(
                 id: orchestratorID,
@@ -118,6 +122,8 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
 
     func submit(handle: String) async throws(ServiceFailure) -> OperationSummary {
         guard let id = UUID(uuidString: handle) else { throw .rejected("That request is no longer saved on this device.") }
+        // Checked here too so that "capability off" is never confused with a lost connection.
+        try await requireEnabled()
         do {
             let receipt = try await client.submitOrchestratorOperation(id)
             if receipt.state == .succeeded || receipt.state == .failed {
@@ -138,7 +144,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
             UnresolvedOperation(
                 handle: $0.id.uuidString,
                 kind: OperationKind(rawValue: $0.action.rawValue),
-                accepted: $0.receipt != nil
+                receipt: $0.receipt.map(Self.operation)
             )
         }
     }
@@ -146,6 +152,13 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
     func discard(handle: String) async {
         guard let id = UUID(uuidString: handle) else { return }
         try? await client.discardOrchestratorOperation(id)
+    }
+
+    func settle(handle: String) async {
+        guard let id = UUID(uuidString: handle),
+              await client.pendingOperations.first(where: { $0.id == id })?.receipt != nil else { return }
+        // Same saved bytes and key: the server answers with the original operation's receipt.
+        _ = try? await submit(handle: handle)
     }
 
     // MARK: Sandboxes
@@ -179,6 +192,8 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         let capabilities: ArmadaKit.OrchestratorCapabilities
         do {
             capabilities = try await client.orchestratorCapabilities()
+        } catch ArmadaError.http(404), ArmadaError.http(405), ArmadaError.http(501) {
+            throw .unavailable("This Armada server doesn't offer orchestrators yet.")
         } catch {
             throw Self.readFailure(error)
         }
@@ -193,6 +208,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
 
     private static func readFailure(_ error: any Error) -> ServiceFailure {
         if let failure = error as? ServiceFailure { return failure }
+        if error is CancellationError { return .offline }
         guard let armada = error as? ArmadaError else { return .offline }
         switch armada {
         case .signedOut: return .signedOut
@@ -214,7 +230,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         switch armada {
         case .conflict:
             let open = await unresolved(orgID: orgID, orchestratorID: orchestratorID)
-            if open?.accepted == true {
+            if open?.receipt != nil {
                 return .rejected("Armada is still processing the previous request. Try again when it finishes.")
             }
             return .rejected("An earlier request is still unconfirmed. Retry it before sending another.")
@@ -224,15 +240,19 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         }
     }
 
-    /// After submit, ArmadaKit has already persisted the command as uncertain BEFORE sending, so a
-    /// lost response stays retryable under its key. A command still `pending` with no receipt was
-    /// never sent (for example, the capability is off).
+    /// ArmadaKit persists the command as uncertain BEFORE sending, so a lost response stays
+    /// retryable under its key. A command still `pending` with no receipt was never sent (Kit's own
+    /// capability read failed); retrying it as itself is safe, so that reads as a connection problem.
+    /// A definitive refusal is asked to be forgotten; ArmadaKit currently keeps a refused retry, and
+    /// the presentation then shows that dead end instead of offering a retry that cannot succeed.
     private func submitFailure(_ error: any Error, id: UUID) async -> ServiceFailure {
         if let armada = error as? ArmadaError {
             switch armada {
             case .signedOut: return .signedOut
             case .forbidden, .http(404): return .noAccess
-            case .conflict: return .staleRevision
+            case .conflict:
+                try? await client.discardOrchestratorOperation(id)
+                return .staleRevision
             case .http(400):
                 try? await client.discardOrchestratorOperation(id)
                 return .rejected("Armada refused this request.")
@@ -240,9 +260,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
             }
         }
         guard let saved = await client.pendingOperations.first(where: { $0.id == id }) else { return .signedOut }
-        if saved.state == .pending, saved.receipt == nil {
-            return .unavailable("Orchestrators aren't enabled on this Armada server yet, so nothing was sent.")
-        }
+        if saved.state == .pending, saved.receipt == nil { return .offline }
         return .uncertain
     }
 

@@ -139,6 +139,8 @@ struct OrchestratorConversationView: View {
             switch model.lifecycle {
             case .sending(let kind):
                 InlineBanner(text: Self.sendingText(kind), style: .info)
+            case .inProgress(let kind):
+                InlineBanner(text: "Armada is still processing the \(kind.label.lowercased()). New actions wait until it finishes.", style: .info)
             case .unconfirmed(let kind):
                 InlineBanner(
                     text: "\(kind.label) was not confirmed. Retrying sends the same request.",

@@ -54,6 +54,8 @@ final class ConversationFeed {
                 if page.hasMore, advanced { continue }
                 try? await Task.sleep(for: conversation.running ? .seconds(2) : .seconds(6))
             } catch {
+                // Leaving the screen cancels the read; that is not a lost connection.
+                guard !Task.isCancelled else { return }
                 switch error {
                 case .signedOut:
                     onSignedOut()

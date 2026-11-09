@@ -208,7 +208,7 @@ private struct PendingCreateRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                if status == .sending { ProgressView().controlSize(.small) }
+                if status == .sending || status == .inProgress { ProgressView().controlSize(.small) }
                 Text(title)
                     .font(.subheadline.weight(.semibold))
             }
@@ -227,7 +227,7 @@ private struct PendingCreateRow: View {
                     Text("Dismiss").frame(minHeight: 44)
                 }
                 .buttonStyle(.glass)
-            case .sending:
+            case .sending, .inProgress:
                 EmptyView()
             }
         }
@@ -236,7 +236,7 @@ private struct PendingCreateRow: View {
 
     private var title: String {
         switch status {
-        case .sending: "Creating \(name)…"
+        case .sending, .inProgress: "Creating \(name)…"
         case .unconfirmed: "\(name) is not confirmed"
         case .notSent: "\(name) was not sent"
         case .refused: "\(name) was not created"
@@ -247,6 +247,8 @@ private struct PendingCreateRow: View {
         switch status {
         case .sending:
             "Armada is recording the orchestrator before it starts its compute."
+        case .inProgress:
+            "Armada accepted this request and is still creating it. Another create waits until it finishes."
         case .unconfirmed:
             "Armada did not confirm this request. Retrying resends the same request, so it cannot start a second orchestrator."
         case .notSent(let reason):

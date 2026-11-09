@@ -26,6 +26,10 @@ protocol OrchestratorService: Sendable {
     func unresolved(orgID: String, orchestratorID: String?) async -> UnresolvedOperation?
     /// Forgets a command only when its outcome is final; otherwise does nothing.
     func discard(handle: String) async
+    /// For a command the server already ACCEPTED (it has a receipt), resends exactly it to read its
+    /// current receipt and forgets it once final. Never sends a command without a receipt: an
+    /// unknown outcome is retried only by the person.
+    func settle(handle: String) async
 }
 
 protocol SandboxService: Sendable {
@@ -39,8 +43,8 @@ protocol SandboxService: Sendable {
 struct UnresolvedOperation: Hashable, Sendable {
     let handle: String
     let kind: OperationKind
-    /// The server returned a receipt: the operation is in progress rather than unknown.
-    let accepted: Bool
+    /// The server's receipt when it accepted the command: in progress rather than unknown.
+    let receipt: OperationSummary?
 }
 
 /// Concise, safe failure categories. No raw response body or transport error reaches a view.
@@ -117,6 +121,8 @@ struct UnavailableServices: OrchestratorService, SandboxService {
     func unresolved(orgID: String, orchestratorID: String?) async -> UnresolvedOperation? { nil }
 
     func discard(handle: String) async {}
+
+    func settle(handle: String) async {}
 
     func list(orgID: String, page: Int) async throws(ServiceFailure) -> SandboxPage {
         throw .unavailable(reason)
