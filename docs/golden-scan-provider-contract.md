@@ -29,3 +29,16 @@ would remove dependence on a single long HTTP request; it is not implemented her
 No production request, rebuild, migration, publication or release workflow was
 run for this investigation. The candidate bundle is not proof that the
 270-second failure is fixed.
+
+## Tested CLI candidate mitigation
+
+Bun also documents a separate fetch idle timer, independent of AbortSignal:
+https://bun.com/reference/globals/BunFetchRequestInit/timeout
+
+The candidate sends timeout:false on authenticated API requests (including the
+401 replay), leaving the explicit AbortSignal in charge. A client-boundary test
+checks that the long-operation signal and this option survive together.
+This removes a documented competing timer on runtimes supporting the extension;
+it does not prove which timer caused the observed 270246ms failure. The default
+five-minute idle timer is not an exact match for that observation. The proxy and
+platform limits still apply, and direct-origin validation remains required.
