@@ -54,7 +54,7 @@ test("managed parent is hidden from generic service/JWT reads and cleanup; ident
   }
 });
 
-test("epoch admission rechecks scope, membership, generation, ACK, expiry and child ownership", async () => {
+test("epoch admission rechecks scope, membership, generation, ACK, expiry and child ownership from a promptless-ready parent", async () => {
   const { db, people: p } = await database();
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
@@ -64,7 +64,7 @@ test("epoch admission rechecks scope, membership, generation, ACK, expiry and ch
     const golden =
       (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]?.id ?? "missing-golden";
     const store = createSqlSandboxStore(sql);
-    const sandbox = async (id: string) =>
+    const sandbox = async (id: string, status: "ready" | "running" = "running") =>
       store.insert({
         id: crypto.randomUUID(),
         provider: "boat",
@@ -73,12 +73,12 @@ test("epoch admission rechecks scope, membership, generation, ACK, expiry and ch
         orgId: p.org,
         ownerId: p.owner,
         harness: "codex",
-        status: "running",
+        status,
         model: "m",
         reasoningEffort: "high",
         visibility: "private",
       });
-    const parent = await sandbox("parent");
+    const parent = await sandbox("parent", "ready");
     const child = await sandbox("child");
     const unrelated = await sandbox("unrelated");
     const id = crypto.randomUUID();

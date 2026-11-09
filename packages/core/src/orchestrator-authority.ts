@@ -152,7 +152,7 @@ export class OrchestratorAuthority {
       const result = await tx.query<{ authority_epoch: string; lifecycle_generation: string }>(
         `update public.orchestrators o set authority_epoch=authority_epoch+1
          from public.sandboxes s,public.members m where o.id=$1 and o.state='ready'
-         and s.id=o.sandbox_id and s.stop_requested_at is null and s.status='running'
+         and s.id=o.sandbox_id and s.stop_requested_at is null and s.status in ('ready','running')
          and m.org_id=o.org_id and m.user_id=o.owner_id
          returning o.authority_epoch,s.lifecycle_generation`,
         [orchestratorId],
@@ -190,7 +190,7 @@ export class OrchestratorAuthority {
         from public.orchestrators o,public.sandboxes s,public.members m
         where d.hash=$1 and o.id=d.orchestrator_id and o.state='ready'
         and o.authority_epoch=d.epoch and s.id=o.sandbox_id and s.lifecycle_generation=d.physical_generation
-        and s.stop_requested_at is null and s.status='running'
+        and s.stop_requested_at is null and s.status in ('ready','running')
         and m.org_id=o.org_id and m.user_id=o.owner_id and d.revoked_at is null and d.expires_at>now()
         returning d.id`,
         [secret.hash],
