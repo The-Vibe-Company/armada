@@ -14,7 +14,8 @@ export function Review() {
     <section id="install" className="dx-review" aria-labelledby="install-title">
       <div className="dx-review-words">
         <h2 id="install-title" className="dx-review-title">
-          Launch your first agent.
+          <span className="dx-label">Install</span>
+          <span className="dx-review-name">Launch your first agent.</span>
         </h2>
         <p className="dx-review-lead">
           Sign in, connect Boat or Modal to your org, store your agent's key and connect GitHub. Then build a golden and
