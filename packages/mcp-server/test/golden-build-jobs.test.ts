@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { createSqlVaultStore, type GoldenBuildStatus } from "@armada/core/server";
+import { createSqlGoldenStore, createSqlVaultStore, type GoldenBuildStatus } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { call, ENCRYPTION_KEY, harness, PUBLIC_URL, type TestServer } from "./support.ts";
@@ -103,11 +103,19 @@ test("MCP admission and rebuild failure retain last-good config/pointer and rele
     await s.builds.runOne();
     expect((await s.builds.status(s.people.admin, id)).state).toBe("succeeded");
     const before = (await s.db.query("select * from goldens where name='retained'")).rows[0];
-    // Model a connected/adopted last-good golden as well as its ready snapshot.
-    await s.db.query("update goldens set provider_sandbox_id='last-good-master' where id=$1", [
-      (before as { id: string }).id,
-    ]);
+    // Keep the CHECK enforced; neither store writes nor publication may need a repair trigger.
+    await s.db.exec("alter table goldens disable trigger goldens_provider_guard");
+    await createSqlGoldenStore(s.db).setSandbox((before as { id: string }).id, "last-good-master");
     const retained = (await s.db.query("select * from goldens where name='retained'")).rows[0];
+    expect(retained).toMatchObject({
+      boat_sandbox_id: "last-good-master",
+      provider_sandbox_id: "last-good-master",
+      boat_snapshot_id: (before as { provider_snapshot_id: string }).provider_snapshot_id,
+      provider_snapshot_id: (before as { provider_snapshot_id: string }).provider_snapshot_id,
+    });
+    await expect(
+      s.db.query("update goldens set provider_sandbox_id='desynced' where id=$1", [(before as { id: string }).id]),
+    ).rejects.toMatchObject({ code: "23514" });
     for (const failure of ["secret_scan", "pointer", "persist", "lease"]) {
       logs.mockClear();
       const phase = failure === "secret_scan" ? "secret_scan" : "persist";
@@ -167,6 +175,36 @@ test("MCP admission and rebuild failure retain last-good config/pointer and rele
       if (failure === "persist")
         await s.db.exec("drop trigger fail_job_success on golden_build_jobs; drop function fail_job_success();");
     }
+    await s.db.exec("drop trigger expire_job_lease on goldens; drop function expire_job_lease();");
+    const response = await s.http(token, "golden/update", {
+      name: "retained",
+      org: s.people.org,
+      idempotencyKey: crypto.randomUUID(),
+      config: { repos: [{ url: "https://github.com/acme/web.git", branch: "published" }], init: [] },
+    });
+    expect(response.status).toBe(202);
+    const publishedJob = (await response.json()) as GoldenBuildStatus;
+    await s.builds.runOne();
+    const published = await s.builds.status(s.people.admin, publishedJob.jobId);
+    expect(published).toMatchObject({ state: "succeeded", phase: "complete", errorCode: null });
+    expect(published.result!.snapshot).not.toBe((before as { provider_snapshot_id: string }).provider_snapshot_id);
+    expect(
+      (
+        await s.db.query(
+          "select boat_sandbox_id,provider_sandbox_id,boat_snapshot_id,provider_snapshot_id from goldens where name='retained'",
+        )
+      ).rows,
+    ).toEqual([
+      {
+        boat_sandbox_id: null,
+        provider_sandbox_id: null,
+        boat_snapshot_id: published.result!.snapshot,
+        provider_snapshot_id: published.result!.snapshot,
+      },
+    ]);
+    await expect(
+      s.db.query("update goldens set boat_snapshot_id='desynced' where id=$1", [(before as { id: string }).id]),
+    ).rejects.toMatchObject({ code: "23514" });
   } finally {
     logs.mockRestore();
     await s.close();

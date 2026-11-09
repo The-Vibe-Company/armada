@@ -153,7 +153,9 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         // Null master + ready snapshot is the durable restore-on-connect strategy. Never point
         // at the disposable builder, which the service always stops after this transaction.
         step = "snapshot_pointer";
-        await sql.query("update public.goldens set provider_sandbox_id=null where id=$1", [inserted.id]);
+        await sql.query("update public.goldens set provider_sandbox_id=null, boat_sandbox_id=null where id=$1", [
+          inserted.id,
+        ]);
         await transactionalStore.setSnapshot(inserted.id, snapshot);
         // This update is inside the same database transaction as the golden metadata. A failed
         // finalize rolls everything back; the service can safely release only the still-pending slot.
@@ -209,6 +211,12 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
             sqlState,
           }),
         );
+        if (error instanceof GoldenError) throw error;
+        if (sqlState !== "unavailable")
+          throw new GoldenError(
+            "build_failed",
+            `Golden publication failed (${sqlState}); publication outcome must be verified before retrying.`,
+          );
         throw error;
       }
     },

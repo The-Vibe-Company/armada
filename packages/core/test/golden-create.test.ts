@@ -169,6 +169,9 @@ describe("createGoldenCreateService, wired to a real database", () => {
         expect(diagnostics.filter((entry) => entry.event === "golden_persist_failed")).toEqual([
           { event: "golden_persist_failed", step: "slot_finalize", sqlState: expected },
         ]);
+        expect(diagnostics.find((entry) => entry.event === "golden_build_failed")?.code).toBe(
+          expected === "unavailable" ? "unknown" : "build_failed",
+        );
         for (const value of ["private-provider-output", "private-detail", "NAMEZ"])
           expect(JSON.stringify(diagnostics)).not.toContain(value);
       } finally {
