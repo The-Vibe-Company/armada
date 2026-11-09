@@ -78,10 +78,12 @@ regenerated after the producer schemas land.
 
 #662 must provide the actual correlated checkpoint/stop result and read-only
 receipt lookup, admitted prompt-ID observation, verified no-text rollover/native
-continuation, and trusted removed-owner backend resolution. Its current void
-`checkpointAndStop` is not native proof. Owner settings/wait dispatcher callbacks
-also need to be wired into the actual shared API; helpers are not a completed
-editable-idle/wait API. Actual epoch/private-generation correction and named
+continuation, and trusted removed-owner backend resolution. The published #662 candidate
+`ccadf4c76f97097cbfd2a541b99b4b67db2ada9f` now declares correlated
+`checkpointAndStop` and read-only `readStopReceipt` ports, but its managed adapter
+still omits the separate native `physicalGeneration` when projecting observations
+and receipts. A declared port alone is not native proof. Owner HTTP settings/wait
+routes are implemented below; owner MCP dispatcher callbacks remain #662-owned. Actual epoch/private-generation correction and named
 account/sizing producer integration remain prerequisites. New optional SDK
 private transport methods must not be mistaken for Boat support or hot reload.
 
@@ -279,3 +281,19 @@ HTTP errors, not arbitrary provider messages. Authentication failure, stale
 membership, other-owner/admin access and epoch-to-owner promotion deny. Replies
 and reads use `Cache-Control: no-store`. Owner MCP dispatcher additions remain
 #662-owned; these HTTP endpoints and the epoch gateway are separate principals.
+
+## Delivery takeover validation
+
+PR #705 targets main. Main `e5fc554fd778e021f6c84984e8cee8ac4837ec09`
+was already an ancestor at takeover; the normal merge required no commit.
+The focused branch intentionally does not vendor #662 runtime files or its 210
+migration. Until those land, standalone typecheck and runtime-importing tests
+fail on the missing modules; this is not an enabled or merge-ready delivery.
+
+Same-session independent review identified and repaired two own-code defects:
+blocked owner-operation failures now remain eligible for hard-deadline and
+removed-owner cleanup (never inferred idle), and owner detail retains the runtime's
+specific blocked reason instead of replacing it with stale lifecycle observation
+text. Real-schema regressions reproduced both failures before repair and passed
+in an isolated combination with the published #662 source. That combination is
+supplemental contract evidence, not final-main CI or provider-native conformance.
