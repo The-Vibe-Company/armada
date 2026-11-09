@@ -30,7 +30,7 @@ export const STORY = {
 
 /** The CLI path to a first agent, in order, after the sign-in prerequisites the page states. */
 export const SETUP: { command: string; note: string }[] = [
-  { command: INSTALL, note: "Node 18 or later" },
+  { command: INSTALL, note: "Node 18 or later. Next: armada login" },
   { command: "armada login", note: "Sign in through the browser, or by email" },
   { command: STORY.keys, note: "Your agent's key, from a file, never an argument" },
   {
