@@ -82,7 +82,8 @@ export const STATUS_INFO: Record<AccountStatus, { label: string; tone: "ok" | "w
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export const MAX_ACCOUNT_NAME = 80;
+/** #603 accepts 1 to 120 characters. */
+export const MAX_ACCOUNT_NAME = 120;
 
 type Row = Record<string, unknown>;
 

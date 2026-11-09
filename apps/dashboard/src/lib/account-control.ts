@@ -95,8 +95,8 @@ export function createAccountControl(options: ArmadaApiOptions) {
     },
     /** Creates an account, or with `id` rotates its secret; `expectedVersion` refuses a stale rotation. */
     set: (body: SetAccountRequest) => account(ACCOUNT_ROUTES.set, body),
-    rename: (target: AccountTarget & { name: string; expectedVersion: number }) =>
-      account(ACCOUNT_ROUTES.rename, target),
+    /** Only the name changes; #603 does not version names, so no `expectedVersion`. */
+    rename: (target: AccountTarget & { name: string }) => account(ACCOUNT_ROUTES.rename, target),
     makeDefault: (target: AccountTarget) => account(ACCOUNT_ROUTES.default, target),
     remove: (target: AccountTarget) => post(ACCOUNT_ROUTES.remove, target).then(() => undefined),
     /**

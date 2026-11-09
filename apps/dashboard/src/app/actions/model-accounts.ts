@@ -131,12 +131,11 @@ export async function renameAccount(_previous: ActionResult | null, data: FormDa
   const context = await scoped(data);
   if (!isScoped(context)) return context;
   const id = formString(data, "id");
-  const expectedVersion = version(data);
-  if (!isUuid(id) || expectedVersion === null) return fail("That request is not valid.");
+  if (!isUuid(id)) return fail("That request is not valid.");
   const name = checkAccountName(data.get("name"));
   if (!name.ok) return fail(name.error);
   try {
-    const saved = await context.control.rename({ ...target(context, id), name: name.value, expectedVersion });
+    const saved = await context.control.rename({ ...target(context, id), name: name.value });
     refresh();
     return done(`Renamed to ${saved.name}.`);
   } catch (error) {

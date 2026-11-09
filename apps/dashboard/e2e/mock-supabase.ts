@@ -782,7 +782,7 @@ function launchRoute(body: Row, userId: string | null): Response {
         row.id === body.credentialId &&
         ((row.scope === "user" && row.owner_id === userId) || (row.scope === "org" && row.owner_id === body.org)),
     );
-    if (!account || MODEL_KINDS[String(account.kind)] !== body.harness)
+    if (account?.status !== "active" || MODEL_KINDS[String(account.kind)] !== body.harness)
       return controlFail(400, "invalid", "That account cannot run this agent.");
   }
   const ids = Array.isArray(body.connections) ? body.connections.map(String) : [];
@@ -1398,7 +1398,9 @@ function accounts(route: string, body: Row, request: Request): Response {
   if (route === "creds/list") {
     const org = state.orgs.find((row) => row.id === body.org && isMember(row.id, userId));
     const rows = (scope: string, owner: unknown) =>
-      state.credentials.filter((row) => row.scope === scope && row.owner_id === owner && model(row)).map(accountDto);
+      state.credentials
+        .filter((row) => row.scope === scope && row.owner_id === owner && model(row) && row.status !== "deleted")
+        .map(accountDto);
     return json({
       user: rows("user", userId),
       orgs: org ? [{ id: org.id, name: org.name, credentials: rows("org", org.id) }] : [],
@@ -1418,10 +1420,13 @@ function accounts(route: string, body: Row, request: Request): Response {
   if (scope === "org" && !isAdmin(body.org, userId))
     return controlFail(403, "forbidden", "Only an org admin can do that.");
   const owner = scope === "org" ? body.org : userId;
-  const mine = (row: Row) => row.scope === scope && row.owner_id === owner && model(row);
+  const mine = (row: Row) => row.scope === scope && row.owner_id === owner && model(row) && row.status !== "deleted";
   const target = body.id === undefined ? undefined : state.credentials.find((row) => row.id === body.id && mine(row));
   if (body.id !== undefined && !target) return controlFail(404, "not_found", "No such account.");
-  const stale = body.expectedVersion !== undefined && target && body.expectedVersion !== target.version;
+  // As #603's store: only a rotation (`set` with an id) is versioned, and it must name the version it replaces.
+  if (route === "creds/accounts/set" && target && typeof body.expectedVersion !== "number")
+    return controlFail(400, "invalid", "expectedVersion is required to rotate an account.");
+  const stale = route === "creds/accounts/set" && target && body.expectedVersion !== target.version;
   if (stale) return controlFail(409, "conflict", "This account changed.");
   const now = new Date().toISOString();
   if (route === "creds/accounts/set") {
@@ -1465,8 +1470,10 @@ function accounts(route: string, body: Row, request: Request): Response {
     return json({ account: accountDto(target) });
   }
   if (route === "creds/accounts/remove") {
-    state.credentials = state.credentials.filter((row) => row !== target);
-    return json({ ok: true });
+    // A tombstone, never a deleted row: historical sandbox bindings keep their billing identity.
+    // It keeps `is_default`: a removed default blocks implicit resolution until another default is chosen.
+    Object.assign(target, { status: "deleted", updated_at: now });
+    return json({ account: accountDto(target) });
   }
   return json({ error: "Not found." }, 404);
 }

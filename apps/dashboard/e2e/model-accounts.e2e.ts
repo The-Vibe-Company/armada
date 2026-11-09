@@ -59,12 +59,12 @@ test("two accounts of one service: the deliberate default is preselected, and th
   await signIn(page, "alice@example.com", "/credentials");
   const claude = page.locator('[data-harness="claude"]');
   // The org's migrated Anthropic key is the only Claude Code account: launches use it until Alice adds hers.
-  await expect(claude.getByText("New launches use Anthropic API key, the org's only account.")).toBeVisible();
+  await expect(claude.getByText("Launch preselects Anthropic API key, the org's only account.")).toBeVisible();
 
   await addAccount(page, "Work", WORK_TOKEN, false);
-  await expect(claude.getByText("New launches use Work, your only account.")).toBeVisible();
+  await expect(claude.getByText("Launch preselects Work, your only account.")).toBeVisible();
   await addAccount(page, "Home", HOME_TOKEN, true);
-  await expect(claude.locator("[data-launch-uses]")).toHaveText("New launches use Home, your default.");
+  await expect(claude.locator("[data-launch-uses]")).toHaveText("Launch preselects Home, your default.");
   // A subscription's usage is not reported by this server: it says so, and never shows a number.
   const work = claude.locator('[data-account="Work"]');
   await expect(work.locator('[data-usage="unknown"]')).toContainText("Usage unknown");
@@ -117,13 +117,13 @@ test("rename and default keep the account's id; removing the default leaves the 
   await expect(side.getByRole("status")).toHaveText("Renamed to Side project.");
 
   await side.getByRole("button", { name: "Make default, Side project" }).click();
-  await expect(claude.locator("[data-launch-uses]")).toHaveText("New launches use Side project, your default.");
+  await expect(claude.locator("[data-launch-uses]")).toHaveText("Launch preselects Side project, your default.");
 
   await claude.locator('[data-account="Side project"]').getByRole("button", { name: "Remove Side project" }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Remove account" }).click();
   await expect(claude.locator('[data-account="Side project"]')).toHaveCount(0);
   // Work is now the only personal account: launches use it, and say why.
-  await expect(claude.locator("[data-launch-uses]")).toHaveText("New launches use Work, your only account.");
+  await expect(claude.locator("[data-launch-uses]")).toHaveText("Launch preselects Work, your only account.");
   const ids = ((await mock("/__test/accounts")).calls as { route: string; body: Row }[])
     .filter((call) => /^creds\/accounts\/(set|rename|default|remove)$/.test(call.route))
     .map((call) => [call.route, call.body.id]);

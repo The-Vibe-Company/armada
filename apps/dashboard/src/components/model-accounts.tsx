@@ -113,13 +113,13 @@ export function LaunchUses({
     if (resolved.state === "unusable")
       return (
         <p className="text-sm text-warning" data-launch-uses="unusable">
-          Launches would use {resolved.account.name}, {why}, but it is {accountProblem(resolved.account, now)}. Replace
-          its token or make another account the default.
+          Launch would preselect {resolved.account.name}, {why}, but it is {accountProblem(resolved.account, now)}.
+          Replace its token or make another account the default.
         </p>
       );
     return (
       <p className="text-sm text-muted-foreground" data-launch-uses={resolved.account.id}>
-        New launches use <span className="font-medium text-foreground">{resolved.account.name}</span>, {why}.
+        Launch preselects <span className="font-medium text-foreground">{resolved.account.name}</span>, {why}.
       </p>
     );
   }
@@ -466,7 +466,7 @@ function RemoveDialog({
           <AlertDialogDescription>
             New launches can no longer use it.
             {account.isDefault
-              ? " It is the default: launches will ask which account to use, or use the only one left."
+              ? " It is the default: until you choose another, launches without an explicit account fail rather than bill a different one."
               : ""}
           </AlertDialogDescription>
         </AlertDialogHeader>
