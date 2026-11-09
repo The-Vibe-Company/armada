@@ -123,16 +123,26 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         modal: golden.modal,
       };
       await options.sql.transaction(async (tx) => {
+        await options.job?.lock(tx);
         const current = (
-          await tx.query<{ provider_snapshot_id: string | null; provider_sandbox_id: string | null }>(
-            "select provider_snapshot_id,provider_sandbox_id from goldens where id=$1 for update",
+          await tx.query<{
+            provider_snapshot_id: string | null;
+            provider_sandbox_id: string | null;
+            org_id: string;
+            owner_id: string;
+            visibility: string;
+          }>(
+            "select provider_snapshot_id,provider_sandbox_id,org_id,owner_id,visibility from goldens where id=$1 for update",
             [golden.id],
           )
         ).rows[0];
         if (
           !current ||
           current.provider_snapshot_id !== golden.providerSnapshotId ||
-          current.provider_sandbox_id !== golden.providerSandboxId
+          current.provider_sandbox_id !== golden.providerSandboxId ||
+          current.org_id !== golden.orgId ||
+          current.owner_id !== golden.ownerId ||
+          current.visibility !== golden.visibility
         )
           throw new GoldenError("conflict", "Golden revision changed before snapshot save.");
         const member = (
@@ -147,6 +157,17 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
           (golden.visibility === "private" && golden.ownerId !== actor.userId)
         )
           throw new GoldenError("forbidden", "Snapshot authority changed.");
+        await options.job?.lock(tx);
+        if (
+          golden.provider === "boat" &&
+          !(
+            await tx.query(
+              "select 1 from golden_backend_slots where golden_id=$1 and provider='boat' and backend_id=$2",
+              [golden.id, backend],
+            )
+          ).rows.length
+        )
+          throw new GoldenError("conflict", "Revision backend binding changed.");
         await tx.query(
           `insert into public.golden_snapshot_publications(id,golden_id,provider,backend_id,snapshot,source_id,authority,target,manager_id,job_id,proven)
           values($1,$2,$3,$4,$5,$6,$7::text::jsonb,$8::text::jsonb,$9,$10,false)`,
@@ -292,18 +313,28 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
             throw new GoldenError("conflict", "Saved revision names cannot be reused.");
           const next = await recordGoldenPublication(sql, publication);
           if (existingGolden?.providerSnapshotId) {
-            const old = await recordGoldenPublication(
-              sql,
-              predecessor ?? {
-                ...publication,
-                id: crypto.randomUUID(),
-                snapshot: existingGolden.providerSnapshotId,
-                source_id: null,
-                artifact_id: null,
-                proven: false,
-                job_id: null,
-              },
-            );
+            // Old immutable provenance is evidence for the collector, not a reason to
+            // fail a valid replacement if an old upstream artifact has since changed.
+            const known = (
+              await sql.query<Awaited<ReturnType<typeof recordGoldenPublication>>>(
+                "select * from public.golden_snapshot_publications where provider=$1 and backend_id=$2 and snapshot=$3",
+                [provider, publication.backend_id, existingGolden.providerSnapshotId],
+              )
+            ).rows[0];
+            const old = known?.proven
+              ? known
+              : await recordGoldenPublication(
+                  sql,
+                  predecessor ?? {
+                    ...publication,
+                    id: crypto.randomUUID(),
+                    snapshot: existingGolden.providerSnapshotId,
+                    source_id: null,
+                    artifact_id: null,
+                    proven: false,
+                    job_id: null,
+                  },
+                );
             await enqueueGoldenRetirement(sql, old, next);
           }
         }

@@ -18,7 +18,7 @@ import { createSqlVaultStore } from "../src/vault-store.ts";
 
 const KEY = Buffer.alloc(32, 29).toString("base64");
 const absent = () => new ProviderError({ provider: "boat", code: "not_found", retryable: false, message: "absent" });
-async function fixture(sql: Sql) {
+async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibility: "org" | "private" = "org") {
   const user = crypto.randomUUID(),
     org = crypto.randomUUID();
   await sql.query("insert into auth.users(id) values($1)", [user]);
@@ -26,44 +26,66 @@ async function fixture(sql: Sql) {
   await sql.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [org, user]);
   const actor = { userId: user, orgId: org, role: "admin" as const };
   const store = createSqlGoldenStore(sql);
+  const modal = placement === "modal" ? { workspace: "test-workspace", environment: "main", appId: "ap_" + org } : null;
+  let authority: { scope: "org" | "user"; ownerId: string } = {
+    scope: visibility === "org" ? "org" : "user",
+    ownerId: visibility === "org" ? org : user,
+  };
   const golden = await store.insert({
     orgId: org,
     ownerId: user,
     name: "retire",
-    visibility: "org",
-    provider: "boat",
-    modal: null,
+    visibility,
+    provider: placement,
+    modal,
     config: { repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] },
   });
   await store.setSnapshot(golden.id, "old-" + golden.id);
   const old = "old-" + golden.id,
     next = "new-" + golden.id;
-  const target = { orgId: org, ownerId: user, visibility: "org" as const, provider: "boat" as const, modal: null };
+  const target = { orgId: org, ownerId: user, visibility, provider: placement, modal };
   const backend = "account-" + org;
-  const slots = sqlGoldenBackendSlots(sql);
-  const reservation = await slots.reserve({
-    provider: "boat",
-    backendId: backend,
-    capacity: 1,
-    orgId: org,
-    ownerId: user,
-  });
-  await slots.finalize(reservation, golden.id);
+  if (placement === "boat") {
+    const slots = sqlGoldenBackendSlots(sql);
+    const reservation = await slots.reserve({
+      provider: "boat",
+      backendId: backend,
+      capacity: 1,
+      orgId: org,
+      ownerId: user,
+    });
+    await slots.finalize(reservation, golden.id);
+  }
   const snapshots = new Map<string, SnapshotInfo>(
     [old, next].map((name) => [
       name,
-      { name, status: "ready", sourceSandboxId: "builder-" + name, artifactId: "disk-" + name },
+      {
+        name,
+        status: "ready",
+        sourceSandboxId: "builder-" + name,
+        artifactId: "disk-" + name,
+        ...(placement === "modal" ? { managementAuthority: { ...authority } } : {}),
+      },
     ]),
   );
   const deleted: string[] = [];
   let failure: unknown;
   let deleteGate: (() => Promise<void>) | undefined;
   let account = backend;
-  let authority: { scope: "org"; ownerId: string } = { scope: "org", ownerId: org };
   let sourceActive = false;
+  let vmActions = 0;
+  const forbiddenVMAction = async () => {
+    vmActions++;
+    throw Error("Retirement must not act on a VM");
+  };
   const provider: Provider = {
     ...fakeBoat().provider,
-    id: "boat",
+    createGolden: forbiddenVMAction,
+    stop: forbiddenVMAction,
+    delete: forbiddenVMAction,
+    exec: forbiddenVMAction,
+    prompt: forbiddenVMAction,
+    id: placement,
     harnesses: ["claude", "codex"],
     backendIdentity: async () => ({ id: account }),
     managementIdentity: async () => authority,
@@ -116,6 +138,7 @@ async function fixture(sql: Sql) {
     next,
     snapshots,
     deleted,
+    vmActions: () => vmActions,
     provider,
     retirement,
     publish,
@@ -138,6 +161,42 @@ async function fixture(sql: Sql) {
   };
 }
 const storeFor = createSqlGoldenStore;
+
+async function seedHistory(f: Awaited<ReturnType<typeof fixture>>, middle?: string) {
+  const insert = async (snapshot: string, existingGolden: unknown) =>
+    f.sql.query<{ id: string }>(
+      `insert into golden_build_jobs(id,reservation_id,org_id,owner_id,name,visibility,idempotency_key,request_hash,payload_enc,provider,golden_id,state,builder_id,snapshot,phase)
+    values(gen_random_uuid(),case when $8='boat' then gen_random_uuid() else null end,$1,$2,'retire',$9,$3,'hash',$4,$8::public.sandbox_provider,$5,'succeeded',$6,$7,'complete') returning id`,
+      [
+        f.actor.orgId,
+        f.actor.userId,
+        crypto.randomUUID(),
+        await encryptSecret(
+          JSON.stringify({
+            name: "retire",
+            repos: ["acme/web"],
+            config: null,
+            setup: null,
+            provider: f.target.provider,
+            visibility: f.target.visibility,
+            modal: f.target.modal,
+            existingGolden,
+          }),
+          KEY,
+        ),
+        f.golden.id,
+        "builder-" + snapshot,
+        snapshot,
+        f.target.provider,
+        f.target.visibility,
+      ],
+    );
+  await insert(f.old, null);
+  if (middle) await insert(middle, { ...f.golden, providerSnapshotId: f.old });
+  await insert(f.next, { ...f.golden, providerSnapshotId: middle ?? f.old });
+  await f.store.setSnapshot(f.golden.id, f.next);
+  return insert;
+}
 
 test("stale golden admission cannot fork a superseded revision", async () => {
   const db = await openDatabase();
@@ -272,6 +331,7 @@ test.each(["success", "absent", "refusal", "unknown"])(
         "retired",
       );
       expect(f.deleted.every((name) => name === f.old)).toBe(true);
+      expect(f.vmActions()).toBe(0);
       await f.due();
       await f.retirement.runOne();
       await expect(f.store.setSnapshot(f.golden.id, f.old)).rejects.toThrow("unavailable");
@@ -287,25 +347,7 @@ test("historical dry-run follows proven succeeded chains, mutates nothing, and n
     await applyMigrations(db);
     const f = await fixture(db);
     const current = { ...f.golden, providerSnapshotId: f.next };
-    const insert = async (snapshot: string, existingGolden: unknown) =>
-      db.query<{ id: string }>(
-        `insert into golden_build_jobs(id,reservation_id,org_id,owner_id,name,visibility,idempotency_key,request_hash,payload_enc,provider,golden_id,state,builder_id,snapshot,phase)
-      values(gen_random_uuid(),gen_random_uuid(),$1,$2,'retire','org',$3,'hash',$4,'boat',$5,'succeeded',$6,$7,'complete') returning id`,
-        [
-          f.actor.orgId,
-          f.actor.userId,
-          crypto.randomUUID(),
-          await encryptSecret(
-            JSON.stringify({ provider: "boat", visibility: "org", modal: null, existingGolden }),
-            KEY,
-          ),
-          f.golden.id,
-          "builder-" + snapshot,
-          snapshot,
-        ],
-      );
-    await insert(f.old, null);
-    await insert(f.next, { ...f.golden, providerSnapshotId: f.old });
+    const insert = await seedHistory(f);
     const unrelated = "unrelated-" + crypto.randomUUID(),
       unknown = "unknown-" + crypto.randomUUID();
     f.snapshots.set(unrelated, {
@@ -488,6 +530,207 @@ test("retirement rechecks live authorization after provider inspection before ad
     expect((await db.query("select state,reason,delete_started from golden_snapshot_retirements")).rows).toEqual([
       { state: "deferred", reason: "authority_or_reference_changed", delete_started: false },
     ]);
+  } finally {
+    await db.close();
+  }
+});
+
+test.each(["explicit", "missing", "changed"])(
+  "private Modal history uses explicit immutable authority (%s)",
+  async (mode) => {
+    const db = await openDatabase();
+    try {
+      await applyMigrations(db);
+      const f = await fixture(db, "modal", "private");
+      await seedHistory(f);
+      const admin = crypto.randomUUID();
+      await db.query("insert into auth.users(id) values($1)", [admin]);
+      await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [f.actor.orgId, admin]);
+      await db.query("update members set role='member' where org_id=$1 and user_id=$2", [
+        f.actor.orgId,
+        f.actor.userId,
+      ]);
+      if (mode === "missing") delete f.snapshots.get(f.old)!.managementAuthority;
+      if (mode === "changed") f.snapshots.get(f.old)!.managementAuthority = { scope: "user", ownerId: admin };
+      const dry = await f.retirement.forCaller(f.actor.userId, [f.actor.orgId], f.golden.id, 10);
+      if (mode === "explicit") {
+        expect(dry.results[0]).toMatchObject({
+          outcome: "eligible",
+          proof: { authority: { scope: "user", ownerId: f.actor.userId } },
+        });
+        const receipts = dry.results.flatMap((r) => (r.receipt ? [r.receipt] : []));
+        await f.retirement.forCaller(f.actor.userId, [f.actor.orgId], f.golden.id, 10, true, receipts);
+        await f.retirement.runOne();
+        expect(f.deleted).toEqual([f.old]);
+        expect(f.snapshots.has(f.next)).toBe(true);
+      } else {
+        expect(dry.results[0]?.outcome).toBe("deferred");
+        expect((await db.query("select id from golden_snapshot_retirements")).rows).toEqual([]);
+        expect(f.deleted).toEqual([]);
+      }
+      await expect(f.retirement.forCaller(admin, [f.actor.orgId], f.golden.id, 10)).rejects.toMatchObject({
+        code: "not_found",
+      });
+    } finally {
+      await db.close();
+    }
+  },
+);
+
+test.each(["resolve", "backend", "authority"])(
+  "operator reconciliation sanitizes prerequisite failure at %s",
+  async (stage) => {
+    const db = await openDatabase();
+    try {
+      await applyMigrations(db);
+      const f = await fixture(db);
+      const failure = () => {
+        throw new ProviderError({
+          provider: "boat",
+          code: "unavailable",
+          message: "sensitive-outbound-detail",
+          retryable: true,
+        });
+      };
+      const unavailable = new GoldenSnapshotRetirements({
+        sql: db,
+        encryptionKey: KEY,
+        provider: async () => {
+          if (stage === "resolve") return failure();
+          return {
+            ...f.provider,
+            backendIdentity: stage === "backend" ? async () => failure() : f.provider.backendIdentity!,
+            managementIdentity: stage === "authority" ? async () => failure() : f.provider.managementIdentity!,
+          };
+        },
+      });
+      const result = await unavailable.forCaller(f.actor.userId, [f.actor.orgId], f.golden.id, 10);
+      expect(result).toEqual({ results: [{ outcome: "deferred", reason: "authority_unavailable" }] });
+      expect(JSON.stringify(result)).not.toContain("sensitive-outbound-detail");
+      expect(f.deleted).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  },
+);
+
+test("known current-revision fence does not pin an unrelated old saved handle", async () => {
+  const db = await openDatabase();
+  let release: (() => Promise<void>) | undefined;
+  try {
+    await applyMigrations(db);
+    const f = await fixture(db);
+    await f.publish();
+    release = await beginGoldenOperation(db, f.golden.id, { snapshotId: f.next, sandboxId: null, kind: "launch" });
+    await f.retirement.runOne();
+    expect(f.deleted).toEqual([f.old]);
+    expect(f.snapshots.has(f.next)).toBe(true);
+  } finally {
+    await release?.();
+    await db.close();
+  }
+});
+
+test.each(["known-build", "unknown-build", "unknown-fence"])(
+  "retirement distinguishes precise current dependencies from legacy unknown %s",
+  async (mode) => {
+    const db = await openDatabase();
+    try {
+      await applyMigrations(db);
+      const f = await fixture(db);
+      await f.publish();
+      if (mode === "unknown-fence")
+        await db.query(
+          "insert into golden_operation_fences(golden_id,expected_snapshot_id,expected_sandbox_id) values($1,$2,null)",
+          [f.golden.id, f.next],
+        );
+      else {
+        const reservation = await sqlGoldenBackendSlots(db).reserveExisting({
+          provider: "boat",
+          backendId: f.backend,
+          capacity: 1,
+          goldenId: f.golden.id,
+        });
+        await db.query(
+          `insert into golden_build_jobs(id,reservation_id,org_id,owner_id,name,visibility,idempotency_key,request_hash,payload_enc,provider,golden_id,expected_snapshot_id,revision_known)
+        values(gen_random_uuid(),$1,$2,$3,'retire','org',$4,'hash',$5,'boat',$6,$7,$8)`,
+          [
+            reservation,
+            f.actor.orgId,
+            f.actor.userId,
+            crypto.randomUUID(),
+            await encryptSecret(
+              JSON.stringify({
+                existingGolden: { ...f.golden, providerSnapshotId: f.next },
+                provider: "boat",
+                visibility: "org",
+              }),
+              KEY,
+            ),
+            f.golden.id,
+            mode === "known-build" ? f.next : null,
+            mode === "known-build",
+          ],
+        );
+      }
+      await f.retirement.runOne();
+      if (mode === "known-build") {
+        expect(f.deleted).toEqual([f.old]);
+        expect(f.snapshots.has(f.next)).toBe(true);
+        expect((await db.query("select state from golden_build_jobs")).rows).toEqual([{ state: "queued" }]);
+        expect(
+          (await db.query<{ build_id: string | null }>("select build_id from golden_backend_slots")).rows[0]?.build_id,
+        ).not.toBeNull();
+      } else {
+        expect(f.deleted).toEqual([]);
+        expect(f.snapshots.has(f.old)).toBe(true);
+      }
+    } finally {
+      await db.close();
+    }
+  },
+);
+
+test("historical reconciliation uses immutable publication witnesses after an intermediate handle is retired", async () => {
+  const db = await openDatabase();
+  try {
+    await applyMigrations(db);
+    const f = await fixture(db);
+    const middle = "middle-" + crypto.randomUUID();
+    f.snapshots.set(middle, {
+      name: middle,
+      status: "ready",
+      sourceSandboxId: "builder-" + middle,
+      artifactId: "disk-" + middle,
+    });
+    await seedHistory(f, middle);
+    const first = await f.retirement.forCaller(f.actor.userId, [f.actor.orgId], f.golden.id, 1);
+    await f.retirement.forCaller(
+      f.actor.userId,
+      [f.actor.orgId],
+      f.golden.id,
+      1,
+      true,
+      first.results.flatMap((r) => (r.receipt ? [r.receipt] : [])),
+    );
+    await f.retirement.runOne();
+    expect(f.deleted).toEqual([middle]);
+    const rest = await f.retirement.forCaller(f.actor.userId, [f.actor.orgId], f.golden.id, 20);
+    expect(rest.results.find((r) => r.oldSnapshot === f.old)).toMatchObject({
+      outcome: "eligible",
+      proof: { replacement: { snapshot: middle, artifactId: "disk-" + middle } },
+    });
+    await f.retirement.forCaller(
+      f.actor.userId,
+      [f.actor.orgId],
+      f.golden.id,
+      20,
+      true,
+      rest.results.flatMap((r) => (r.receipt ? [r.receipt] : [])),
+    );
+    await f.retirement.runOne();
+    expect(f.deleted).toEqual([middle, f.old]);
+    expect(f.snapshots.has(f.next)).toBe(true);
   } finally {
     await db.close();
   }

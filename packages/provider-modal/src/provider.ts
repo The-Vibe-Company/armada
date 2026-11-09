@@ -87,6 +87,16 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     // App ID reached by an explicit token is authoritative; workspace label is never authentication.
     return app;
   }
+  async function snapshotBackend() {
+    try {
+      await bound();
+    } catch (error) {
+      const failure = modalError(error);
+      if (failure.code === "not_found")
+        throw refusal("provider_not_configured", "Snapshot backend authority cannot be verified.");
+      throw failure;
+    }
+  }
   function assertMachineSource(row: Machine) {
     assertAuthority(row);
     const origin = row.sourceImage?.scopeKey ?? scopeKey(options.scope);
@@ -781,11 +791,15 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       }
     },
     async getSnapshot(name) {
-      await bound();
+      await snapshotBackend();
       const image = await source.store.image(name);
       assertAuthority(image);
+      // Only canonical saved-image fields are provenance; cached optional info is not
+      // a substitute when an older/partial receipt lacks its artifact or authority.
+      const { artifactId: _artifact, managementAuthority: _authority, sourceSandboxId: _source, ...info } = image.info;
       return {
-        ...image.info,
+        ...info,
+        sourceSandboxId: image.sourceId,
         ...(image.imageId ? { artifactId: image.imageId } : {}),
         ...(image.managementAuthority
           ? {
@@ -803,7 +817,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           "forbidden",
           "Snapshot mutation requires the golden-source provider scope, not a private-fork adapter.",
         );
-      await bound();
+      await snapshotBackend();
       let image: SavedImage;
       try {
         image = await store.image(name);

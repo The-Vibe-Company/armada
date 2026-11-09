@@ -60,6 +60,10 @@ test("HTTP durable admission, idempotent acknowledgement recovery and MCP status
     expect(response.status).toBe(202);
     const job = (await response.json()) as GoldenBuildStatus;
     expect(job.state).toBe("queued");
+    expect(
+      (await s.db.query("select expected_snapshot_id,revision_known from golden_build_jobs where id=$1", [job.jobId]))
+        .rows,
+    ).toEqual([{ expected_snapshot_id: null, revision_known: true }]);
     expect(s.allocations()).toBe(0);
     expect((await s.db.query("select 1 from golden_build_jobs")).rows).toHaveLength(1);
     const replay = await s.http(token, "golden/create", body);

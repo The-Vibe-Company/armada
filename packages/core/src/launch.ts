@@ -149,6 +149,7 @@ export async function launchSandbox(
 
   const id = (options.newId ?? (() => crypto.randomUUID()))();
   const releaseOperation = await stores.goldens.beginOperation?.(golden.id, {
+    kind: "launch",
     snapshotId: golden.providerSnapshotId,
     sandboxId: golden.providerSandboxId,
   });

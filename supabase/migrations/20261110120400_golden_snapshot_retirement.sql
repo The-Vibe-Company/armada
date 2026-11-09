@@ -2,6 +2,9 @@
 alter table public.golden_operation_fences add column expected_snapshot_id text;
 alter table public.golden_operation_fences add column expected_sandbox_id text;
 alter table public.golden_build_jobs add column expected_snapshot_id text;
+alter table public.golden_build_jobs add column revision_known boolean not null default false;
+alter table public.golden_operation_fences add column revision_known boolean not null default false;
+alter table public.golden_operation_fences add column operation_kind text not null default 'unknown' check(operation_kind in ('unknown','launch','connect','snapshot'));
 
 create table public.golden_snapshot_publications (
  id uuid primary key default gen_random_uuid(), golden_id uuid not null references public.goldens(id),

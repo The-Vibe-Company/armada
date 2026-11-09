@@ -246,6 +246,7 @@ export type Database = {
           updated_at: string;
           provider: Database["public"]["Enums"]["sandbox_provider"];
           expected_snapshot_id: string | null;
+          revision_known: boolean;
         };
         Insert: {
           id: string;
@@ -270,6 +271,7 @@ export type Database = {
           updated_at?: string;
           provider?: Database["public"]["Enums"]["sandbox_provider"];
           expected_snapshot_id?: string | null;
+          revision_known?: boolean;
         };
         Update: {
           id?: string;
@@ -294,6 +296,7 @@ export type Database = {
           updated_at?: string;
           provider?: Database["public"]["Enums"]["sandbox_provider"];
           expected_snapshot_id?: string | null;
+          revision_known?: boolean;
         };
         Relationships: [
           {
@@ -328,6 +331,8 @@ export type Database = {
           receipt: Json | null;
           expected_snapshot_id: string | null;
           expected_sandbox_id: string | null;
+          revision_known: boolean;
+          operation_kind: string;
         };
         Insert: {
           id?: string;
@@ -337,6 +342,8 @@ export type Database = {
           receipt?: Json | null;
           expected_snapshot_id?: string | null;
           expected_sandbox_id?: string | null;
+          revision_known?: boolean;
+          operation_kind?: string;
         };
         Update: {
           id?: string;
@@ -346,6 +353,8 @@ export type Database = {
           receipt?: Json | null;
           expected_snapshot_id?: string | null;
           expected_sandbox_id?: string | null;
+          revision_known?: boolean;
+          operation_kind?: string;
         };
         Relationships: [
           {

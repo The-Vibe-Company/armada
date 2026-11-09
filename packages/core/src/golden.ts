@@ -55,7 +55,7 @@ export interface GoldenStore {
   /** Durable admission; a crashed operation remains fenced for explicit reconciliation. */
   beginOperation?(
     id: string,
-    expected: { snapshotId: string | null; sandboxId: string | null },
+    expected: { snapshotId: string | null; sandboxId: string | null; kind?: "launch" | "connect" | "snapshot" },
   ): Promise<GoldenOperation>;
   reconcileOperations?(golden: GoldenRecord, actor: GoldenActor): Promise<void>;
   /** Recheck live mutation authority, including after long provider operations/readback recovery. */
@@ -200,6 +200,7 @@ export async function connectGolden(
   await store.assertMutation?.(golden, actor);
   await store.reconcileOperations?.(golden, actor);
   const releaseOperation = await store.beginOperation?.(golden.id, {
+    kind: "connect",
     snapshotId: golden.providerSnapshotId,
     sandboxId: golden.providerSandboxId,
   });
@@ -373,6 +374,7 @@ export async function snapshotGolden(
   await store.assertMutation?.(golden, actor);
   await store.reconcileOperations?.(golden, actor);
   const releaseOperation = await store.beginOperation?.(golden.id, {
+    kind: "snapshot",
     snapshotId: golden.providerSnapshotId,
     sandboxId: golden.providerSandboxId,
   });

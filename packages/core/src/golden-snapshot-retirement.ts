@@ -136,7 +136,7 @@ export async function captureHistoricalPublication(
   snapshot: string,
 ): Promise<Proof | null> {
   try {
-    if (target.visibility !== "org") return null;
+    if (target.visibility !== "org" && target.provider !== "modal") return null;
     const rows = (
       await sql.query<{
         id: string;
@@ -144,8 +144,8 @@ export async function captureHistoricalPublication(
         owner_id: string;
         payload_enc: Uint8Array<ArrayBuffer>;
       }>(
-        "select id,builder_id,owner_id,payload_enc from public.golden_build_jobs where golden_id=$1 and org_id=$2 and visibility='org' and provider=$3 and state='succeeded' and snapshot=$4 limit 2",
-        [goldenId, target.orgId, target.provider, snapshot],
+        "select id,builder_id,owner_id,payload_enc from public.golden_build_jobs where golden_id=$1 and org_id=$2 and visibility=$5 and provider=$3 and state='succeeded' and snapshot=$4 limit 2",
+        [goldenId, target.orgId, target.provider, snapshot, target.visibility],
       )
     ).rows;
     if (rows.length !== 1 || !rows[0]?.builder_id) return null;
@@ -178,7 +178,11 @@ export async function captureHistoricalPublication(
       j.builder_id!,
       j.id,
     );
-    if (!proof.proven || proof.authority?.scope !== "org" || proof.authority.ownerId !== target.orgId) return null;
+    if (
+      !proof.proven ||
+      (target.visibility === "org" && (proof.authority?.scope !== "org" || proof.authority.ownerId !== target.orgId))
+    )
+      return null;
     if (
       target.provider === "boat" &&
       !(
@@ -349,26 +353,29 @@ export class GoldenSnapshotRetirements {
       (
         await sql.query(
           `select 1 from public.golden_operation_fences f join public.goldens g on g.id=f.golden_id
-      where f.golden_id=$1 or (g.provider::text=$2 and (f.expected_snapshot_id=$3 or f.expected_snapshot_id is null)) limit 1`,
-          [c.golden_id, c.provider, c.old_snapshot],
+           where g.provider=$1::public.sandbox_provider and (f.expected_snapshot_id=$2 or f.receipt->>'snapshotId'=$2 or not f.revision_known or f.operation_kind in ('unknown','snapshot')) limit 1`,
+          [c.provider, c.old_snapshot],
         )
       ).rows.length
     )
       return "operation_unresolved";
     if (
       (
-        await sql.query("select 1 from public.golden_backend_slots where golden_id=$1 and build_id is not null", [
-          c.golden_id,
-        ])
+        await sql.query(
+          `select 1 from public.golden_backend_slots s where s.golden_id=$1 and s.build_id is not null
+      and not exists(select 1 from public.golden_build_jobs j where j.reservation_id=s.build_id and j.golden_id=s.golden_id
+        and j.provider=$2::public.sandbox_provider and j.revision_known and j.state in ('queued','running','recovery_required')) limit 1`,
+          [c.golden_id, c.provider],
+        )
       ).rows.length
     )
       return "build_unresolved";
     if (
       (
         await sql.query(
-          `select 1 from public.golden_build_jobs where provider=$1 and state in ('queued','running','recovery_required')
-      and (golden_id=$2 or expected_snapshot_id=$3 or expected_snapshot_id is null) limit 1`,
-          [c.provider, c.golden_id, c.old_snapshot],
+          `select 1 from public.golden_build_jobs where provider=$1::public.sandbox_provider and state in ('queued','running','recovery_required')
+      and (expected_snapshot_id=$2 or snapshot=$2 or not revision_known) limit 1`,
+          [c.provider, c.old_snapshot],
         )
       ).rows.length
     )
@@ -496,14 +503,18 @@ export class GoldenSnapshotRetirements {
   async runOne(signal: AbortSignal = new AbortController().signal): Promise<boolean> {
     if (signal.aborted) return false;
     const sql = this.options.sql;
-    const pending = (
-      await sql.query<Candidate>(`select * from public.golden_snapshot_retirements where state<>'retired'
-      and next_attempt_at<=clock_timestamp() and (claim_until is null or claim_until<=clock_timestamp()) order by next_attempt_at,id limit 1`)
-    ).rows[0];
-    if (!pending) return false;
     const claim = randomUUID();
+    let processed = false;
     const row = await this.transaction(async (tx) => {
-      await tx.query("select id from public.goldens where id=$1 for update", [pending.golden_id]);
+      // Acquire the canonical golden first, without waiting behind an unrelated long
+      // publication. This preserves the publication lock order and bounded worker lane.
+      const pending = (
+        await tx.query<Candidate>(`select r.* from public.golden_snapshot_retirements r
+        join public.goldens g on g.id=r.golden_id where r.state<>'retired' and r.next_attempt_at<=clock_timestamp()
+        and (r.claim_until is null or r.claim_until<=clock_timestamp()) order by r.next_attempt_at,r.id
+        limit 1 for update of g skip locked`)
+      ).rows[0];
+      if (!pending) return null;
       const c = (
         await tx.query<Candidate>(
           `select * from public.golden_snapshot_retirements where id=$1 and state<>'retired'
@@ -512,6 +523,7 @@ export class GoldenSnapshotRetirements {
         )
       ).rows[0];
       if (!c) return null;
+      processed = true;
       const proof = (
         await tx.query<Proof>("select * from public.golden_snapshot_publications where id=$1", [c.publication_id])
       ).rows[0];
@@ -556,7 +568,7 @@ export class GoldenSnapshotRetirements {
       );
       return c;
     });
-    if (!row) return true;
+    if (!row) return processed;
     let started = row.delete_started;
     let deleting = false;
     const finish = async (state: string, reason: string, retryDelete = false) => {
@@ -677,12 +689,20 @@ export class GoldenSnapshotRetirements {
       visibility: golden.visibility,
       modal: golden.modal,
     };
-    const provider = await this.options.provider(actor, target);
-    const backend = (await provider.backendIdentity?.())?.id;
-    const authority = await provider.managementIdentity?.();
+    let provider: Provider, backend: string | undefined, authority: Proof["authority"];
+    try {
+      provider = await this.options.provider(actor, target);
+      backend = (await provider.backendIdentity?.())?.id;
+      authority = (await provider.managementIdentity?.()) ?? null;
+    } catch {
+      return { results: [{ outcome: "deferred", reason: "authority_unavailable" }] };
+    }
     if (!backend || !authority) return { results: [{ outcome: "deferred", reason: "authority_unavailable" }] };
     // Private legacy history cannot prove whether the original build selected a user key or org fallback.
-    if (golden.visibility !== "org" || authority.scope !== "org" || authority.ownerId !== golden.orgId)
+    if (
+      (golden.visibility === "org" && (authority.scope !== "org" || authority.ownerId !== golden.orgId)) ||
+      (golden.visibility === "private" && golden.provider !== "modal")
+    )
       return { results: [{ outcome: "deferred", reason: "historical_authority_unproven" }] };
     if (
       golden.provider === "boat" &&
@@ -776,6 +796,20 @@ export class GoldenSnapshotRetirements {
         reason: "predecessor_unproven",
       };
       try {
+        if (
+          (
+            await sql.query(
+              "select 1 from public.golden_snapshot_retirements where golden_id=$1 and provider=$2 and backend_id=$3 and old_snapshot=$4 and state='retired'",
+              [golden.id, golden.provider, backend, old],
+            )
+          ).rows.length
+        ) {
+          report.outcome = "protected";
+          report.reason = "retired_revision";
+          results.push(report);
+          anchor = old;
+          continue;
+        }
         const predecessor = await job(old);
         if (!predecessor) {
           results.push(report);
@@ -790,15 +824,37 @@ export class GoldenSnapshotRetirements {
           predecessor.j.builder_id,
           predecessor.j.id,
         );
-        const nextProof = await captureGoldenPublication(
-          provider,
-          { ...actor, userId: successor.j.owner_id },
-          target,
-          golden.id,
-          anchor,
-          successor.j.builder_id,
-          successor.j.id,
-        );
+        const witnessed = (
+          await sql.query<Proof>(
+            "select * from public.golden_snapshot_publications where golden_id=$1 and provider=$2 and backend_id=$3 and snapshot=$4 and proven",
+            [golden.id, golden.provider, backend, anchor],
+          )
+        ).rows[0];
+        if (
+          witnessed &&
+          (witnessed.job_id !== successor.j.id ||
+            witnessed.source_id !== successor.j.builder_id ||
+            !targetMatches(witnessed.target, target) ||
+            !identityMatches(witnessed.authority, authority))
+        ) {
+          report.reason = "history_conflict";
+          results.push(report);
+          anchor = old;
+          continue;
+        }
+        // A succeeded replacement is historical evidence, not a permanent live
+        // dependency. Its immutable ledger witness survives its own retirement.
+        const nextProof =
+          witnessed ??
+          (await captureGoldenPublication(
+            provider,
+            { ...actor, userId: successor.j.owner_id },
+            target,
+            golden.id,
+            anchor,
+            successor.j.builder_id,
+            successor.j.id,
+          ));
         const candidate: Candidate = {
           id: "",
           golden_id: golden.id,
@@ -890,7 +946,7 @@ export class GoldenSnapshotRetirements {
                   [actor.orgId, actor.userId],
                 )
               ).rows[0];
-              if (!member || member.role !== "admin")
+              if (!member || (golden.visibility === "org" ? member.role !== "admin" : actor.userId !== golden.ownerId))
                 throw new GoldenError("forbidden", "Retirement authority changed.");
               await assertSqlGoldenMutation(tx, golden, actor);
               if (await this.protection(tx, candidate))

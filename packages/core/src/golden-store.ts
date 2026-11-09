@@ -207,12 +207,12 @@ export async function assertSqlGoldenMutation(sql: Sql, golden: GoldenRecord, ac
 export async function beginGoldenOperation(
   sql: Sql,
   id: string,
-  expected: { snapshotId: string | null; sandboxId: string | null },
+  expected: { snapshotId: string | null; sandboxId: string | null; kind?: "launch" | "connect" | "snapshot" },
 ): Promise<GoldenOperation> {
   try {
     const result = await sql.query<{ id: string }>(
-      "insert into public.golden_operation_fences(golden_id,expected_snapshot_id,expected_sandbox_id) values ($1,$2,$3) returning id",
-      [id, expected.snapshotId, expected.sandboxId],
+      "insert into public.golden_operation_fences(golden_id,expected_snapshot_id,expected_sandbox_id,revision_known,operation_kind) values ($1,$2,$3,true,$4) returning id",
+      [id, expected.snapshotId, expected.sandboxId, expected.kind ?? "unknown"],
     );
     const fence = result.rows[0];
     if (!fence) throw new GoldenError("conflict", "Golden operation could not be admitted.");

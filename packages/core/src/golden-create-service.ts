@@ -181,8 +181,10 @@ export class GoldenCreateService {
       // `snapshot` only starts the save; it is asynchronous, so a brand-new snapshot is normally
       // "saving" here and must be polled, exactly like the original golden flow's own snapshot step.
       await enter("snapshot");
-      if (input.existingGolden)
-        await this.deps.claimRevision?.(provider, actor, input.existingGolden, requestedSnapshot, builder.id);
+      if (input.existingGolden && this.deps.claimRevision) {
+        await this.deps.claimRevision(provider, actor, input.existingGolden, requestedSnapshot, builder.id);
+        await this.deps.execution?.phase("snapshot");
+      }
       snapshotAttempted = true;
       uncertainSnapshot = providerId === "modal";
       const started = await provider.snapshot({ sandboxId: builder.id, name: requestedSnapshot });
