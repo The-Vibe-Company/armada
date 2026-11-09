@@ -595,7 +595,7 @@ function mcpFact(access: { unavailable: boolean; selected: number }): string {
   return access.selected === 0 ? "No MCP" : `${access.selected} MCP`;
 }
 
-/** The machine size a launch requests, as one summary fact; without one the provider decides. */
+/** The machine size a launch requests, as one summary fact named apart from effort; without one the provider decides. */
 function sizeFact(size: MachineSize | null): string {
-  return size ? MACHINE_SIZE_LABELS[size] : "Default size";
+  return `${size ? MACHINE_SIZE_LABELS[size] : "Default"} machine`;
 }

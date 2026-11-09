@@ -28,7 +28,7 @@ test("the launch shows the repository then golden default, keeps an override and
   const dialog = page.getByRole("dialog");
   // The size starts on its default, summarized on the collapsed Advanced area where it is overridden.
   const summary = dialog.locator("[data-launch-summary]");
-  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Medium · Org · No MCP");
+  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Medium machine · Org · No MCP");
   await dialog.locator("[data-launch-advanced] > summary").click();
   const size = dialog.getByLabel("Machine size");
   const hint = dialog.locator("[data-size-source]");
@@ -44,13 +44,13 @@ test("the launch shows the repository then golden default, keeps an override and
   await expect(hint).toHaveAttribute("data-size-source", "repository");
   await expect(hint).toContainText("Large, the default for api. 8 vCPU · 16 GiB · 111 GB disk.");
   await expect(size.locator("option").first()).toHaveText("Default · Large (repository)");
-  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Large · Org · No MCP");
+  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Large machine · Org · No MCP");
 
   await size.selectOption("small");
   await dialog.getByLabel("Project").selectOption("web");
   await expect(size).toHaveValue("small");
   await expect(hint).toContainText("Overrides the default (Medium, the golden's default).");
-  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Small · Org · No MCP");
+  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Small machine · Org · No MCP");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
     path: "test-results/machine-size-launch-mobile.png",
@@ -76,7 +76,7 @@ test("the launch shows the repository then golden default, keeps an override and
   await page.goto("/goldens");
   await page.getByRole("button", { name: "Launch from shared-golden on Modal" }).click();
   const modal = page.getByRole("dialog");
-  await expect(modal.locator("[data-launch-summary]")).toContainText("Default size");
+  await expect(modal.locator("[data-launch-summary]")).toContainText("Default machine");
   await expect(modal.getByLabel("Machine size").locator("option")).toHaveText([
     "Default (Modal decides)",
     "Small · 1 physical core · 4 GiB",
