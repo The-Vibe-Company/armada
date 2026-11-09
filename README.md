@@ -36,7 +36,7 @@ A golden holds your repositories, branches and setup, scanned for secrets and sn
 <td width="50%" valign="top">
 
 ### Choose the agent and the brain
-Claude Code or Codex, with an explicit model and reasoning effort. The choice is saved with the sandbox, so later turns keep it unless you change it. Armada never swaps in another model.
+Claude Code or Codex, with an explicit model and reasoning effort. The choice is saved with the sandbox, so later turns keep it; a single prompt can override it. Armada never swaps in another model.
 
 </td>
 </tr>
@@ -126,7 +126,7 @@ armada creds list
 armada github connect
 ```
 
-**5. Build a golden.** The server clones the repositories in a disposable sandbox, runs your optional `--setup` script, scans for leaked secrets and only then saves the snapshot. `--init` commands run at every launch, after the pull. Add `--provider modal` to build it for Modal, and `--private` to keep it to yourself.
+**5. Build a golden.** The server clones the repositories in a disposable sandbox, runs your optional `--setup` script, scans for leaked secrets and only then saves the snapshot. `--init` commands run at every launch, after the pull. Add `--provider modal` to build it for Modal. Only admins build organization goldens; members add `--private` to build one for themselves.
 
 ```sh
 armada golden create web --repo https://github.com/acme/web@main --init "bun install" --org acme
@@ -135,7 +135,7 @@ armada golden list
 
 A long build keeps running on the server: `armada golden build-status <job-id>` reports it.
 
-**6. Launch an agent.** With a prompt the agent starts at once; without one the sandbox waits, ready, for your first prompt.
+**6. Launch an agent.** With a prompt the agent starts at once; without one the sandbox waits, ready, for your first prompt. In a golden with several repositories, `--repo owner/repo` starts the agent in that one ([details](docs/dave-onboarding.md#6-launch-from-the-cli)).
 
 ```sh
 armada launch web --agent claude --model claude-opus-5-5 --reasoning-effort high --ttl 4h \
@@ -146,8 +146,8 @@ armada launch web --agent claude --model claude-opus-5-5 --reasoning-effort high
 
 ```sh
 armada logs <sandbox-id> --follow
-armada steer <sandbox-id> "Keep the public API unchanged"
-armada send <sandbox-id> "Now add a regression test" --reasoning-effort xhigh
+armada steer <sandbox-id> "Keep the public API unchanged"   # Codex restarts the turn with it
+armada send <sandbox-id> "Now add a regression test" --reasoning-effort xhigh   # this turn only
 armada stop <sandbox-id>                     # the machine goes; the disk and conversation stay
 armada send <sandbox-id> "Push the branch"   # resumes the stopped sandbox
 ```
@@ -156,12 +156,12 @@ armada send <sandbox-id> "Push the branch"   # resumes the stopped sandbox
 
 ## Bring your MCP servers
 
-Register an MCP server once, connect it (the browser opens when it asks for OAuth), then attach it to the sandboxes that need it. Only connected servers can be attached, and tokens never go on the command line.
+Register an MCP server once, connect it (the browser opens when it asks for OAuth), then attach it to the sandboxes that need it. Only connected servers can be attached, and tokens never go on the command line. A personal connection attaches to private sandboxes; an admin shares one with the whole organization with `--scope org`.
 
 ```sh
 armada mcp add Docs https://mcp.example.com/mcp      # personal; --scope org shares it with your org
 armada mcp connect <connection-id>
-armada launch web --agent codex --connections <connection-id> "Update the API reference"
+armada launch web --agent codex --visibility private --connections <connection-id> "Update the API reference"
 armada mcp sandbox-connections <sandbox-id>
 ```
 

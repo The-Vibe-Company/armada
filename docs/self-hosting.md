@@ -41,7 +41,7 @@ Optional:
 
 | Variable | Role |
 | --- | --- |
-| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_SLUG` | The GitHub App that gives sandboxes the launching person's GitHub identity. See [github-app.md](github-app.md). |
+| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_SLUG` | The GitHub App: golden creation clones over the person's connection, and sandboxes get their GitHub identity. The server starts without them, but goldens cannot be built. See [github-app.md](github-app.md). |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | A scoped installation token for golden checkouts. See [golden-create.md](golden-create.md#server-environment). |
 | `ARMADA_DASHBOARD_URL` | The dashboard origin, when it is not the production one. See [github-cli-relay.md](github-cli-relay.md). |
 | `ARMADA_AUTH_PROVIDERS` | Social login offered to CLI and MCP clients (`github,google`), only for providers enabled in Supabase. Empty: email only. |
@@ -50,15 +50,16 @@ Boat and Modal keys are not server environment: org admins connect them (`armada
 
 ## The dashboard
 
-`apps/dashboard` talks to Supabase as the signed-in user (their JWT from the session cookie) and never holds a service key. Writes row level security cannot express go through the functions in `supabase/migrations/*_dashboard_functions.sql`, which check `auth.uid()` themselves.
+`apps/dashboard` talks to Supabase as the signed-in user (their JWT from the session cookie) and never holds a Supabase service key; launches, golden builds, provider setup and the CLI's `/api/v1` and `/.well-known/armada.json` go through `armada-server`. Writes row level security cannot express go through the functions in `supabase/migrations/*_dashboard_functions.sql`, which check `auth.uid()` themselves.
 
 | Variable | Where | Role |
 | --- | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | build and runtime | The Supabase project. Required. |
 | `NEXT_PUBLIC_AUTH_PROVIDERS` | build and runtime | Social buttons to show, `github,google`. Empty: email sign-in only. |
-| `ARMADA_MCP_URL` | runtime | The `armada-server` origin. Without it the dashboard lists sandboxes but cannot read live logs, stop or message them. |
+| `ARMADA_MCP_URL` | runtime | The `armada-server` origin. Required in practice: without it the dashboard only lists what Supabase shows; it cannot launch, build goldens, set up providers, read live logs, stop or message sandboxes, and `/.well-known/armada.json` answers 503. |
 | `ARMADA_ENCRYPTION_KEY` | build and runtime | The same key as the server. Without it the dashboard refuses to save a credential. |
 | `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_SLUG`, `GITHUB_APP_ID` | runtime | Connect GitHub in Settings ([github-app.md](github-app.md)). |
+| `STATS_TOKEN`, `ARMADA_DATABASE_URL` | runtime | Optional, server only: the bearer and privileged Postgres connection of `GET /api/stats`. Never exposed to the browser. |
 
 Add `<origin>/auth/callback` (production and previews) to the Supabase project's redirect URLs, and allow `http://127.0.0.1:**` for CLI login callbacks. On Vercel, set the project root to `apps/dashboard` (its `vercel.json` sets the framework and the Bun install and build).
 
