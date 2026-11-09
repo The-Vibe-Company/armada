@@ -9,7 +9,13 @@ import {
   ProviderError,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
-import { type Scope, scopeKey } from "@armada/provider-modal";
+import {
+  createGenerationGrants,
+  createModalIngestHandler,
+  type Machine,
+  type Scope,
+  scopeKey,
+} from "@armada/provider-modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createHistoricalSandboxProviderResolver } from "../src/mcp-sandbox-provider.ts";
@@ -393,8 +399,11 @@ test("managed exec holds stop admission through secret publication while indepen
     const peerClient = await server.client(await server.token(server.people.member));
     server.boat.setExecOutput({ stdout: SECRETS.ownerClaude });
     const peerOutput = await call(peerClient, "exec", { id: claude.data.id, command: "inspect-static-native-token" });
-    expect(peerOutput.isError).toBe(false);
-    expect(peerOutput.data.stdout).toBe("***");
+    expect(peerOutput.isError).toBe(true); // Current sandbox access is owner/admin, not org-peer.
+    const adminClient = await server.client(await server.token(server.people.admin));
+    const adminOutput = await call(adminClient, "exec", { id: claude.data.id, command: "inspect-static-native-token" });
+    expect(adminOutput.isError).toBe(false);
+    expect(adminOutput.data.stdout).toBe("***");
     const first = await create("held-native-account");
     const second = await create("independent-native-account");
     const originalExec = server.boat.provider.exec;
@@ -676,3 +685,147 @@ test.each([
     await db.close();
   }
 });
+
+test.each(["active", "revoked", "replaced"])(
+  "removed-owner nativeAuth checkpoint ingestion requires the exact stop fence (%s)",
+  async (status) => {
+    const { db, people: p } = await database();
+    try {
+      const time = Date.now(),
+        sandboxId = crypto.randomUUID(),
+        orchestratorId = crypto.randomUUID(),
+        operationId = crypto.randomUUID();
+      const account = (
+        await db.query<{ id: string }>(
+          "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+          [p.owner, await encryptSecret(native(0), KEY)],
+        )
+      ).rows[0];
+      if (!account) throw Error("Missing account fixture.");
+      const auth = createModelAuthOwnership(db, KEY, undefined, () => time);
+      const actor: GoldenActor = { userId: p.owner, orgId: p.org, role: "member" };
+      await auth.claim(actor, account.id, 1, sandboxId);
+      const scope: Scope = {
+        orgId: p.org,
+        userId: p.owner,
+        visibility: "private",
+        binding: { workspace: "native", environment: "test", appId: "ap_checkpoint" },
+      };
+      const golden = await createSqlGoldenStore(db).insert({
+        orgId: p.org,
+        ownerId: p.owner,
+        name: "checkpoint",
+        provider: "modal",
+        modal: scope.binding,
+        visibility: "private",
+        config: { repos: [{ url: "https://github.com/acme/web", branch: "main", dir: "web" }], init: [] },
+      });
+      await createSqlSandboxStore(db).insert({
+        id: sandboxId,
+        provider: "modal",
+        providerSandboxId: "native-checkpoint",
+        goldenId: golden.id,
+        orgId: p.org,
+        ownerId: p.owner,
+        harness: "codex",
+        status: "ready",
+        visibility: "private",
+        model: "gpt-6.1-sol",
+        reasoningEffort: "high",
+        credentialId: account.id,
+        credentialVersion: 1,
+      });
+      await db.query("update sandboxes set orchestrator_native_generation='7' where id=$1", [sandboxId]);
+      await db.query(
+        "insert into orchestrators(id,org_id,owner_id,sandbox_id,state,revision) values($1,$2,$3,$4,'stopping',1)",
+        [orchestratorId, p.org, p.owner, sandboxId],
+      );
+      const machine = {
+        orchestratorId,
+        sandboxId,
+        providerSandboxId: "native-checkpoint",
+        generation: "1",
+        physicalGeneration: "7",
+        operationId,
+        state: "uncertain",
+        continuity: "unverified",
+      };
+      await db.query(
+        "insert into orchestrator_operations(id,orchestrator_id,actor_id,action,idempotency_key,request_digest,revision,runtime_result) values($1,$2,$3,'stop','checkpoint',$4,1,$5::jsonb)",
+        [operationId, orchestratorId, p.owner, "a".repeat(64), JSON.stringify(machine)],
+      );
+      await db.query(
+        "insert into modal_machines(scope,id,org_id,owner_id,visibility,request_key,record) values($1,'native-checkpoint',$2,$3,'private','checkpoint',$4::jsonb)",
+        [scopeKey(scope), p.org, p.owner, JSON.stringify({ generation: 7, launchUserId: p.owner })],
+      );
+      if (status === "revoked") await db.query("update credentials set status='revoked' where id=$1", [account.id]);
+      if (status === "replaced")
+        await db.query("update credentials set value_enc=$2 where id=$1", [
+          account.id,
+          await encryptSecret(native(9), KEY),
+        ]);
+      await db.query("delete from members where org_id=$1 and user_id=$2", [p.org, p.owner]);
+      const grants = createGenerationGrants(Buffer.alloc(32, 31), scope);
+      const grant = (generation = 7, expiresAt = time + 60000) =>
+        grants.issue({ info: { id: "native-checkpoint" }, generation, grantExpiresAt: expiresAt } as Machine).token;
+      const ingest = createModalIngestHandler({
+        sql: db,
+        verifyGrant: grants.verifyGrant,
+        publishNativeAuth: auth.publishFromModal,
+      });
+      const request = (token = grant(), bodyGeneration = "7") =>
+        ingest(
+          new Request("https://armada.invalid/api/internal/modal/events", {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-armada-runner-grant": token },
+            body: JSON.stringify({
+              sandboxId: "native-checkpoint",
+              generation: bodyGeneration,
+              events: [],
+              nativeAuth: { authJson: native(1), expectedRevision: 0 },
+            }),
+          }),
+        );
+      await expect(auth.state.read(actor, account.id, 1, sandboxId)).rejects.toMatchObject({ code: "not_found" });
+      const foreign = createGenerationGrants(Buffer.alloc(32, 31), { ...scope, userId: p.member }).issue({
+        info: { id: "native-checkpoint" },
+        generation: 7,
+        grantExpiresAt: time + 60000,
+      } as Machine).token;
+      expect((await request(foreign)).status).toBe(403);
+      await expect(
+        auth.publishFromModal(
+          scope,
+          { sandboxId: "native-checkpoint", generation: "7", expiresAt: time },
+          native(1),
+          0,
+        ),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      expect((await request(grant(8), "8")).status).toBe(403);
+      await db.query("update orchestrator_operations set state='succeeded' where id=$1", [operationId]);
+      expect((await request()).status).toBe(403);
+      await db.query("update orchestrator_operations set state='pending' where id=$1", [operationId]);
+      await db.query("update sandboxes set lifecycle_generation=2 where id=$1", [sandboxId]);
+      expect((await request()).status).toBe(403);
+      await db.query("update sandboxes set lifecycle_generation=1 where id=$1", [sandboxId]);
+      const response = await request();
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(
+        status === "active"
+          ? { authRevision: 1, committed: true }
+          : { authRevision: 0, committed: true, discarded: true },
+      );
+      expect((await request()).status).toBe(200); // ACK retry must never rotate again.
+      expect(
+        (
+          await db.query<{ auth_revision: number }>("select auth_revision from model_auth_state where account_id=$1", [
+            account.id,
+          ])
+        ).rows[0]?.auth_revision,
+      ).toBe(status === "active" ? 1 : 0);
+      await expect(auth.state.read(actor, account.id, 1, sandboxId)).rejects.toMatchObject({ code: "not_found" });
+    } finally {
+      await db.close();
+    }
+  },
+);
