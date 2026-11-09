@@ -26,10 +26,33 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
   let checkpoint: ModalOrchestratorCheckpoint | undefined;
   let restores = 0;
   let nativeReads = 0;
+  let fault: "none" | "launcher" | "fork" | "initialization" | "skills" | "epoch" = "none";
+  let throwLogger = false;
+  const lines: string[] = [];
+  const privateText = "synthetic-provider-credential-do-not-log";
   const provider: core.Provider &
     Pick<ModalProvider, "checkpointOrchestrator" | "readOrchestratorCheckpoint" | "restoreOrchestratorCheckpoint"> = {
     ...placement.provider,
     id: "modal",
+    get harnesses() {
+      return fault === "launcher" ? (["claude"] as const) : placement.provider.harnesses;
+    },
+    async fork(request) {
+      if (fault === "fork")
+        throw new core.ProviderError({
+          provider: "modal",
+          code: "unavailable",
+          message: privateText,
+          retryable: false,
+        });
+      return placement.provider.fork(request);
+    },
+    async exec(request) {
+      const result = await placement.provider.exec(request);
+      return fault === "initialization" || (fault === "skills" && request.command.startsWith("armada skill install"))
+        ? { ...result, exitCode: 127, stdout: privateText, stderr: privateText }
+        : result;
+    },
     async get(id, options) {
       nativeReads++;
       return {
@@ -39,6 +62,7 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       };
     },
     async installOrchestratorEpoch(request) {
+      if (fault === "epoch") throw Error(privateText);
       grant = request.token;
       return { acknowledged: true };
     },
@@ -98,6 +122,10 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
     encryptionKey: ENCRYPTION_KEY,
     scopedMcpUrl: orchestratorScopedMcpUrl("https://armada.invalid"),
     skillRevision: revision,
+    diagnosticLog: (line: string) => {
+      lines.push(line);
+      if (throwLogger) throw Error(privateText);
+    },
   };
   let bundle: ReturnType<typeof createProductionOrchestrators>;
   try {
@@ -291,6 +319,143 @@ test("production Modal Codex bundle owns create/message/checkpoint/resume and pr
       continuity: "native",
     });
     expect(nativeReads).toBe(readsBeforeHistory);
+    lines.length = 0;
+    expect(
+      (
+        await bundle.runtime.mutate(caller, {
+          orgId: p.org,
+          id,
+          action: "message",
+          key: "private-message-key",
+          expectedRevision: stoppedAgain.revision,
+          text: privateText,
+        })
+      ).state,
+    ).toBe("uncertain");
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({
+        action: "message",
+        outcome: "uncertain",
+        stage: "native_admission",
+        reason: "runtime_conflict",
+        orchestratorId: id,
+      }),
+    ]);
+    expect(lines.join("\n")).not.toContain(privateText);
+    expect(lines.join("\n")).not.toContain("private-message-key");
+    // Real SQL assembly, synthetic faults: diagnostics cannot change the original
+    // receipt, publication fence, retry behavior, or expose upstream diagnostics.
+    for (const scenario of [
+      "launcher",
+      "fork",
+      "registration",
+      "initialization",
+      "skills",
+      "epoch",
+      "completion",
+      "failure_publication",
+    ] as const) {
+      lines.length = 0;
+      fault = ["launcher", "fork", "initialization", "skills", "epoch"].includes(scenario)
+        ? (scenario as typeof fault)
+        : "none";
+      throwLogger = scenario === "fork";
+      if (scenario === "registration")
+        await db.exec(`create function diagnostic_registration_fault() returns trigger language plpgsql as $$ begin raise exception using errcode='23514',message='synthetic-private-sql'; end $$;
+        create trigger diagnostic_registration_fault before insert on sandboxes for each row execute function diagnostic_registration_fault()`);
+      if (scenario === "completion" || scenario === "failure_publication")
+        await db.exec(`create function diagnostic_publication_fault() returns trigger language plpgsql as $$ begin
+        if new.state='succeeded' or (new.state='uncertain' and ${scenario === "failure_publication" ? "true" : "false"}) then raise exception using errcode='40001',message='synthetic-private-sql'; end if; return new; end $$;
+        create trigger diagnostic_publication_fault before update on orchestrator_operations for each row execute function diagnostic_publication_fault()`);
+      const operation = bundle.runtime.create(
+        caller,
+        { ...config, name: `diagnostic-${scenario}` },
+        `diagnostic-${scenario}`,
+      );
+      if (scenario === "initialization")
+        await expect(operation).rejects.toMatchObject({ code: "conflict", admission: "unknown" });
+      else if (scenario === "failure_publication") await expect(operation).rejects.toMatchObject({ code: "40001" });
+      else expect((await operation).state).toBe("uncertain");
+      if (scenario === "registration")
+        await db.exec(
+          "drop trigger diagnostic_registration_fault on sandboxes; drop function diagnostic_registration_fault()",
+        );
+      if (scenario === "completion" || scenario === "failure_publication")
+        await db.exec(
+          "drop trigger diagnostic_publication_fault on orchestrator_operations; drop function diagnostic_publication_fault()",
+        );
+      const records = lines.map((line) => JSON.parse(line));
+      const expected = {
+        launcher: ["launcher_configuration", "launcher_invalid_request"],
+        fork: ["fork", "provider_unavailable"],
+        registration: ["registration", "sql_check"],
+        initialization: ["initialization", "launcher_init_failed"],
+        skills: ["skills", "skill_command_missing"],
+        epoch: ["epoch_install", "authority_denied"],
+        completion: ["completion", "sql_serialization"],
+        failure_publication: ["completion", "sql_serialization"],
+      }[scenario];
+      expect(records[0]).toMatchObject({
+        component: "owner",
+        action: "create",
+        outcome: "uncertain",
+        stage: expected[0],
+        reason: expected[1],
+      });
+      expect(records[0].operationId).toMatch(/^[a-f0-9-]{36}$/);
+      expect(records[0].orchestratorId).toMatch(/^[a-f0-9-]{36}$/);
+      if (scenario === "initialization" || scenario === "failure_publication")
+        expect(records[1]).toMatchObject({
+          outcome: "publication_failed",
+          stage: "failure_publication",
+          failureStage: expected[0],
+          failureReason: expected[1],
+        });
+      expect(lines.join("\n")).not.toContain(privateText);
+      expect(lines.join("\n")).not.toContain("synthetic-private-sql");
+      expect(lines.join("\n")).not.toContain("diagnostic-");
+      expect(lines.join("\n")).not.toContain("armada_epoch_");
+      if (scenario === "fork") {
+        lines.length = 0;
+        const forks = placement.forks.length;
+        const replay = await bundle.runtime.create(
+          caller,
+          { ...config, name: `diagnostic-${scenario}` },
+          `diagnostic-${scenario}`,
+        );
+        expect(replay.state).toBe("uncertain");
+        expect(placement.forks).toHaveLength(forks);
+        expect(lines.map((line) => JSON.parse(line))).toEqual([
+          {
+            event: "orchestrator_operation_failure",
+            component: "owner",
+            action: "create",
+            outcome: "uncertain",
+            stage: "request_lookup",
+            reason: "recorded_operation_uncertain",
+            operationId: replay.id,
+            orchestratorId: replay.orchestratorId,
+          },
+        ]);
+      }
+    }
+    fault = "none";
+    throwLogger = false;
+    lines.length = 0;
+    await sql.query("delete from members where org_id=$1 and user_id=$2", [p.org, p.owner]);
+    await expect(
+      bundle.runtime.create(caller, { ...config, name: "untrusted-name" }, "untrusted-key"),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      {
+        event: "orchestrator_operation_failure",
+        component: "owner",
+        action: "create",
+        outcome: "error",
+        stage: "request_lookup",
+        reason: "runtime_not_found",
+      },
+    ]);
   } finally {
     await bundle?.lifecycleWorker.drain();
     await bundle?.childWorker.drain();

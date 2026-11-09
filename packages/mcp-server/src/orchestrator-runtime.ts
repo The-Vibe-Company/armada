@@ -11,6 +11,7 @@ import type {
 import type { Caller } from "./caller.ts";
 import type { OrchestratorPair } from "./orchestrator-activation.ts";
 import { bootstrapOrchestrator } from "./orchestrator-bootstrap.ts";
+import { type OrchestratorDiagnosticLog, OrchestratorDiagnostics } from "./orchestrator-diagnostics.ts";
 import { createManagedOrchestratorRuntime } from "./orchestrator-managed-runtime.ts";
 import type { OrchestratorRuntimeFoundation, OrchestratorRuntimeTransport } from "./orchestrator-runtime-foundation.ts";
 import {
@@ -38,7 +39,7 @@ export interface OrchestratorRuntimeBackend {
   assertNativeProof(): Promise<void>;
   /** Reuses launchSandbox with private insertion/managed-parent binding in one SQL transaction.
    * Must pass the durable operation ID as provider fork idempotency/correlation key. */
-  launch(reservation: RuntimeReservation): Promise<void>;
+  launch(reservation: RuntimeReservation, diagnostics?: OrchestratorDiagnostics): Promise<void>;
   /** Provider-native, no synthetic prompt. Absent means resume is unavailable. */
   resumeWithoutText?: (identity: RuntimeIdentity, operationId: string) => Promise<void>;
   /** Fresh fence before any effect, including membership/account changes during preparation. */
@@ -46,6 +47,7 @@ export interface OrchestratorRuntimeBackend {
 }
 
 export interface OrchestratorRuntimeOptions {
+  diagnosticLog?: OrchestratorDiagnosticLog;
   enabledPairs?: readonly OrchestratorPair[];
   store: OrchestratorRuntimeStore;
   authority: OrchestratorRuntimeFoundation["authority"];
@@ -74,7 +76,11 @@ export class OrchestratorRuntime {
   readonly lifecycleRuntime: ReturnType<typeof createManagedOrchestratorRuntime> | undefined;
   constructor(private readonly options: OrchestratorRuntimeOptions) {
     this.lifecycleRuntime = options.managed
-      ? createManagedOrchestratorRuntime({ ...options.managed, authority: options.authority })
+      ? createManagedOrchestratorRuntime({
+          ...options.managed,
+          authority: options.authority,
+          ...(options.diagnosticLog ? { diagnosticLog: options.diagnosticLog } : {}),
+        })
       : undefined;
   }
 
@@ -141,54 +147,78 @@ export class OrchestratorRuntime {
       configuration?: OrchestratorCreate;
     },
   ) {
-    if (input.action === "create" && (!input.configuration || input.configuration.orgId !== input.orgId))
-      throw new OrchestratorRuntimeError("invalid_request");
-    const operation = await this.options.store.lookupRequest({
-      ownerId: this.owner(caller, input.orgId),
-      orgId: input.orgId,
-      action: input.action,
-      key: input.key,
-      ...(input.id ? { id: input.id } : {}),
-      ...(input.action === "create"
-        ? { configuration: input.configuration! }
-        : {
-            payload: {
-              expectedRevision: input.expectedRevision,
-              ...(input.text === undefined ? {} : { text: input.text }),
-            },
-          }),
-    });
-    return { version: 1, admission: operation ? "recorded" : "unknown", operation };
+    const diagnostics = new OrchestratorDiagnostics(this.options.diagnosticLog, input.action);
+    diagnostics.bind({ ...(input.id ? { orchestratorId: input.id } : {}) });
+    try {
+      if (input.action === "create" && (!input.configuration || input.configuration.orgId !== input.orgId))
+        throw new OrchestratorRuntimeError("invalid_request");
+      diagnostics.stage("request_lookup");
+      const operation = await this.options.store.lookupRequest({
+        ownerId: this.owner(caller, input.orgId),
+        orgId: input.orgId,
+        action: input.action,
+        key: input.key,
+        ...(input.id ? { id: input.id } : {}),
+        ...(input.action === "create"
+          ? { configuration: input.configuration! }
+          : {
+              payload: {
+                expectedRevision: input.expectedRevision,
+                ...(input.text === undefined ? {} : { text: input.text }),
+              },
+            }),
+      });
+      if (operation) this.recorded(operation, diagnostics);
+      return { version: 1, admission: operation ? "recorded" : "unknown", operation };
+    } catch (error) {
+      diagnostics.reportUnhandled(error);
+      throw error;
+    }
   }
 
   async create(caller: Caller, configuration: OrchestratorCreate, key: string): Promise<OrchestratorOperation> {
-    if (!this.lifecycleRuntime) throw new OrchestratorRuntimeError("unavailable");
-    const ownerId = this.owner(caller, configuration.orgId);
-    const prior = await this.options.store.lookupRequest({
-      ownerId,
-      orgId: configuration.orgId,
-      action: "create",
-      key,
-      configuration,
-    });
-    if (prior) return prior;
-    const backend = await this.options.resolveBackend(configuration, ownerId);
-    await backend.assertNativeProof();
-    const reservation = await this.options.store.create({
-      ownerId,
-      configuration,
-      key,
-      skillRevision: this.options.skillRevision,
-    });
-    if (!reservation.fresh) return reservation.operation;
-    return this.execute(reservation, async () => {
-      await backend.revalidate(reservation.identity);
-      await backend.launch(reservation);
-      const identity = await this.options.store.preparing(reservation);
-      reservation.identity = identity;
-      await this.prepare(backend, identity);
-      return { parentState: "ready" as const };
-    });
+    const diagnostics = new OrchestratorDiagnostics(this.options.diagnosticLog, "create");
+    try {
+      if (!this.lifecycleRuntime) throw new OrchestratorRuntimeError("unavailable");
+      const ownerId = this.owner(caller, configuration.orgId);
+      diagnostics.stage("request_lookup");
+      const prior = await this.options.store.lookupRequest({
+        ownerId,
+        orgId: configuration.orgId,
+        action: "create",
+        key,
+        configuration,
+      });
+      if (prior) return this.recorded(prior, diagnostics);
+      diagnostics.stage("backend_resolution");
+      const backend = await this.options.resolveBackend(configuration, ownerId);
+      diagnostics.stage("native_prerequisites");
+      await backend.assertNativeProof();
+      diagnostics.stage("reservation");
+      const reservation = await this.options.store.create({
+        ownerId,
+        configuration,
+        key,
+        skillRevision: this.options.skillRevision,
+      });
+      if (!reservation.fresh) return this.recorded(reservation.operation, diagnostics);
+      diagnostics.bind({ operationId: reservation.operation.id, orchestratorId: reservation.identity.id });
+      return this.execute(reservation, diagnostics, async () => {
+        diagnostics.stage("revalidation");
+        await backend.revalidate(reservation.identity);
+        diagnostics.stage("launcher_preflight");
+        await backend.launch(reservation, diagnostics);
+        diagnostics.stage("preparing");
+        const identity = await this.options.store.preparing(reservation);
+        reservation.identity = identity;
+        diagnostics.bind({ sandboxId: identity.sandboxId });
+        await this.prepare(backend, identity, diagnostics);
+        return { parentState: "ready" as const };
+      });
+    } catch (error) {
+      diagnostics.reportUnhandled(error);
+      throw error;
+    }
   }
 
   async mutate(
@@ -202,116 +232,170 @@ export class OrchestratorRuntime {
       text?: string;
     },
   ): Promise<OrchestratorOperation> {
-    if (input.action === "resume" && !this.lifecycleRuntime) throw new OrchestratorRuntimeError("unavailable");
-    const ownerId = this.owner(caller, input.orgId);
-    const identity = await this.options.store.read(ownerId, input.orgId, input.id);
-    if (
-      (input.action === "message" || input.action === "steer") &&
-      (!input.text?.trim() || input.text.length > 100_000)
-    )
-      throw new OrchestratorRuntimeError("invalid_request");
-    const prior = await this.options.store.lookupRequest({
-      ownerId,
-      orgId: input.orgId,
-      id: input.id,
-      action: input.action,
-      key: input.key,
-      payload: { expectedRevision: input.expectedRevision, ...(input.text === undefined ? {} : { text: input.text }) },
-    });
-    if (prior) return prior;
-    const backend =
-      input.action === "stop"
-        ? undefined
-        : await this.options.resolveBackend(identity.configuration, ownerId, identity);
-    if (backend) await backend.assertNativeProof();
-    if (input.action === "stop" && identity.state !== "stopped" && !this.lifecycleRuntime)
-      throw new OrchestratorRuntimeError("unavailable");
-    if (input.action === "resume" && !backend?.resumeWithoutText) throw new OrchestratorRuntimeError("unavailable");
-    const reservation = await this.options.store.reserve({
-      ownerId,
-      orgId: input.orgId,
-      id: input.id,
-      action: input.action,
-      key: input.key,
-      expectedRevision: input.expectedRevision,
-      payload: { expectedRevision: input.expectedRevision, ...(input.text === undefined ? {} : { text: input.text }) },
-    });
-    if (!reservation.fresh) return reservation.operation;
-    return this.execute(reservation, async () => {
-      const current = reservation.identity;
-      if (input.action === "stop") {
-        if (current.state === "stopped") return { parentState: "stopped" as const };
-        if (!this.lifecycleRuntime || !current.sandboxId || !current.providerSandboxId || current.generation === null)
-          throw new OrchestratorRuntimeError("unavailable");
-        const stopped = await this.lifecycleRuntime.stopOwner(
-          {
-            orchestratorId: current.id,
-            sandboxId: current.sandboxId,
-            providerSandboxId: current.providerSandboxId,
-            generation: String(current.generation),
-          },
-          reservation.operation.id,
-        );
-        if (
-          stopped.operationId !== reservation.operation.id ||
-          stopped.orchestratorId !== current.id ||
-          stopped.sandboxId !== current.sandboxId ||
-          stopped.providerSandboxId !== current.providerSandboxId ||
-          stopped.generation !== String(current.generation)
-        )
-          throw new OrchestratorRuntimeError("unavailable");
-        if (stopped.continuity === "lost") throw new NativeContinuityLost();
-        if (stopped.state !== "stopped" || (stopped.continuity !== "native" && current.conversationId !== null))
-          throw new OrchestratorRuntimeError("unavailable");
-        return {
-          parentState: "stopped" as const,
-          continuity: stopped.continuity === "native" ? ("native" as const) : ("unverified" as const),
-        };
-      }
-      if (!backend) throw new OrchestratorRuntimeError("unavailable");
-      await backend.revalidate(current);
-      if (input.action === "resume") {
-        if (current.state === "ready") return { parentState: "ready" as const };
-        if (current.state !== "stopped" || !current.conversationId || current.continuity !== "native")
-          throw new OrchestratorRuntimeError("conflict");
-        await this.options.authority.revoke(current.id);
-        await backend.resumeWithoutText?.(current, reservation.operation.id);
-        const restored = await this.options.store.preparing(reservation);
-        if (restored.conversationId !== current.conversationId) throw new OrchestratorRuntimeError("conflict");
-        reservation.identity = restored;
-        await this.configureAuthority(backend, restored);
-        return { parentState: "ready" as const };
-      }
-      if (current.state !== "ready" || !current.providerSandboxId) throw new OrchestratorRuntimeError("conflict");
-      const machine = await backend.provider.get(current.providerSandboxId);
-      if (machine.state !== "ready" && machine.state !== "running") throw new OrchestratorRuntimeError("conflict");
-      const configuration = { ...current.configuration, ...backend.selection };
-      const receipt =
-        input.action === "steer"
-          ? await backend.provider.steer({
-              sandboxId: current.providerSandboxId,
-              text: input.text ?? "",
-              ...(current.conversationId ? { conversationId: current.conversationId } : {}),
-            })
-          : await backend.provider.prompt({
-              sandboxId: current.providerSandboxId,
-              harness: configuration.harness,
-              text: input.text ?? "",
-              model: configuration.model,
-              ...(configuration.reasoningEffort ? { reasoningEffort: configuration.reasoningEffort } : {}),
-              ...(current.conversationId ? { conversationId: current.conversationId } : {}),
-            });
-      return { conversationId: receipt.conversationId };
-    });
+    const diagnostics = new OrchestratorDiagnostics(this.options.diagnosticLog, input.action);
+    diagnostics.bind({ orchestratorId: input.id });
+    try {
+      if (input.action === "resume" && !this.lifecycleRuntime) throw new OrchestratorRuntimeError("unavailable");
+      const ownerId = this.owner(caller, input.orgId);
+      diagnostics.stage("identity_read");
+      const identity = await this.options.store.read(ownerId, input.orgId, input.id);
+      diagnostics.bind({ sandboxId: identity.sandboxId });
+      if (
+        (input.action === "message" || input.action === "steer") &&
+        (!input.text?.trim() || input.text.length > 100_000)
+      )
+        throw new OrchestratorRuntimeError("invalid_request");
+      diagnostics.stage("request_lookup");
+      const prior = await this.options.store.lookupRequest({
+        ownerId,
+        orgId: input.orgId,
+        id: input.id,
+        action: input.action,
+        key: input.key,
+        payload: {
+          expectedRevision: input.expectedRevision,
+          ...(input.text === undefined ? {} : { text: input.text }),
+        },
+      });
+      if (prior) return this.recorded(prior, diagnostics);
+      diagnostics.stage("backend_resolution");
+      const backend =
+        input.action === "stop"
+          ? undefined
+          : await this.options.resolveBackend(identity.configuration, ownerId, identity);
+      diagnostics.stage("native_prerequisites");
+      if (backend) await backend.assertNativeProof();
+      if (input.action === "stop" && identity.state !== "stopped" && !this.lifecycleRuntime)
+        throw new OrchestratorRuntimeError("unavailable");
+      if (input.action === "resume" && !backend?.resumeWithoutText) throw new OrchestratorRuntimeError("unavailable");
+      diagnostics.stage("reservation");
+      const reservation = await this.options.store.reserve({
+        ownerId,
+        orgId: input.orgId,
+        id: input.id,
+        action: input.action,
+        key: input.key,
+        expectedRevision: input.expectedRevision,
+        payload: {
+          expectedRevision: input.expectedRevision,
+          ...(input.text === undefined ? {} : { text: input.text }),
+        },
+      });
+      if (!reservation.fresh) return this.recorded(reservation.operation, diagnostics);
+      diagnostics.bind({ operationId: reservation.operation.id, sandboxId: reservation.identity.sandboxId });
+      return this.execute(reservation, diagnostics, async () => {
+        const current = reservation.identity;
+        if (input.action === "stop") {
+          if (current.state === "stopped") return { parentState: "stopped" as const };
+          if (!this.lifecycleRuntime || !current.sandboxId || !current.providerSandboxId || current.generation === null)
+            throw new OrchestratorRuntimeError("unavailable");
+          diagnostics.stage("stop_dispatch");
+          const stopped = await this.lifecycleRuntime.stopOwner(
+            {
+              orchestratorId: current.id,
+              sandboxId: current.sandboxId,
+              providerSandboxId: current.providerSandboxId,
+              generation: String(current.generation),
+            },
+            reservation.operation.id,
+          );
+          diagnostics.stage("stop_validation");
+          if (
+            stopped.operationId !== reservation.operation.id ||
+            stopped.orchestratorId !== current.id ||
+            stopped.sandboxId !== current.sandboxId ||
+            stopped.providerSandboxId !== current.providerSandboxId ||
+            stopped.generation !== String(current.generation)
+          ) {
+            diagnostics.captureReason("stop_receipt_mismatch");
+            throw new OrchestratorRuntimeError("unavailable");
+          }
+          if (stopped.continuity === "lost") {
+            diagnostics.captureReason("native_continuity_lost");
+            throw new NativeContinuityLost();
+          }
+          if (stopped.state !== "stopped" || (stopped.continuity !== "native" && current.conversationId !== null)) {
+            diagnostics.captureReason("native_stop_unconfirmed");
+            throw new OrchestratorRuntimeError("unavailable");
+          }
+          return {
+            parentState: "stopped" as const,
+            continuity: stopped.continuity === "native" ? ("native" as const) : ("unverified" as const),
+          };
+        }
+        if (!backend) throw new OrchestratorRuntimeError("unavailable");
+        diagnostics.stage("revalidation");
+        await backend.revalidate(current);
+        if (input.action === "resume") {
+          if (current.state === "ready") return { parentState: "ready" as const };
+          if (current.state !== "stopped" || !current.conversationId || current.continuity !== "native")
+            throw new OrchestratorRuntimeError("conflict");
+          diagnostics.stage("authority_revoke");
+          await this.options.authority.revoke(current.id);
+          diagnostics.stage("native_resume");
+          await backend.resumeWithoutText?.(current, reservation.operation.id);
+          diagnostics.stage("preparing");
+          const restored = await this.options.store.preparing(reservation);
+          diagnostics.stage("resume_validation");
+          if (restored.conversationId !== current.conversationId) throw new OrchestratorRuntimeError("conflict");
+          reservation.identity = restored;
+          await this.configureAuthority(backend, restored, diagnostics);
+          return { parentState: "ready" as const };
+        }
+        diagnostics.stage("native_admission");
+        if (current.state !== "ready" || !current.providerSandboxId) throw new OrchestratorRuntimeError("conflict");
+        const machine = await backend.provider.get(current.providerSandboxId);
+        if (machine.state !== "ready" && machine.state !== "running") throw new OrchestratorRuntimeError("conflict");
+        const configuration = { ...current.configuration, ...backend.selection };
+        diagnostics.stage(input.action === "steer" ? "steer" : "message");
+        const receipt =
+          input.action === "steer"
+            ? await backend.provider.steer({
+                sandboxId: current.providerSandboxId,
+                text: input.text ?? "",
+                ...(current.conversationId ? { conversationId: current.conversationId } : {}),
+              })
+            : await backend.provider.prompt({
+                sandboxId: current.providerSandboxId,
+                harness: configuration.harness,
+                text: input.text ?? "",
+                model: configuration.model,
+                ...(configuration.reasoningEffort ? { reasoningEffort: configuration.reasoningEffort } : {}),
+                ...(current.conversationId ? { conversationId: current.conversationId } : {}),
+              });
+        return { conversationId: receipt.conversationId };
+      });
+    } catch (error) {
+      diagnostics.reportUnhandled(error);
+      throw error;
+    }
   }
 
-  private async prepare(backend: OrchestratorRuntimeBackend, identity: RuntimeIdentity): Promise<void> {
+  private recorded(operation: OrchestratorOperation, diagnostics: OrchestratorDiagnostics): OrchestratorOperation {
+    diagnostics.bind({ operationId: operation.id, orchestratorId: operation.orchestratorId });
+    diagnostics.stage("request_lookup");
+    if (operation.state === "uncertain" || operation.state === "failed")
+      diagnostics.report(
+        operation.state,
+        undefined,
+        operation.state === "uncertain" ? "recorded_operation_uncertain" : "recorded_operation_failed",
+      );
+    return operation;
+  }
+
+  private async prepare(
+    backend: OrchestratorRuntimeBackend,
+    identity: RuntimeIdentity,
+    diagnostics: OrchestratorDiagnostics,
+  ): Promise<void> {
     if (!identity.providerSandboxId) throw new OrchestratorRuntimeError("unavailable");
+    diagnostics.stage("skills");
     await bootstrapOrchestrator(backend.provider, {
+      diagnostics,
       sandboxId: identity.providerSandboxId,
       projectDir: backend.projectDir,
       skillRevision: identity.skillRevision,
-      configureAuthority: () => this.configureAuthority(backend, identity),
+      configureAuthority: () => this.configureAuthority(backend, identity, diagnostics),
     });
   }
 
@@ -331,13 +415,22 @@ export class OrchestratorRuntime {
     });
   }
 
-  private async configureAuthority(backend: OrchestratorRuntimeBackend, identity: RuntimeIdentity): Promise<void> {
+  private async configureAuthority(
+    backend: OrchestratorRuntimeBackend,
+    identity: RuntimeIdentity,
+    diagnostics: OrchestratorDiagnostics,
+  ): Promise<void> {
+    diagnostics.stage("epoch_revalidation");
     await backend.revalidate(identity);
-    await this.options.authority.installEpoch(identity.id, await this.transport(backend, identity), backend.consent);
+    diagnostics.stage("epoch_transport");
+    const transport = await this.transport(backend, identity);
+    diagnostics.stage("epoch_install");
+    await this.options.authority.installEpoch(identity.id, transport, backend.consent);
   }
 
   private async execute(
     reservation: RuntimeReservation,
+    diagnostics: OrchestratorDiagnostics,
     effect: () => Promise<{
       parentState?: "ready" | "stopped";
       conversationId?: string;
@@ -346,26 +439,40 @@ export class OrchestratorRuntime {
   ): Promise<OrchestratorOperation> {
     try {
       const result = await effect();
-      if (!(await this.options.store.complete(reservation, { state: "succeeded", ...result })))
+      diagnostics.stage("completion");
+      if (!(await this.options.store.complete(reservation, { state: "succeeded", ...result }))) {
+        diagnostics.captureReason("publication_fence_rejected");
         throw new OrchestratorRuntimeError("conflict");
+      }
       return { ...reservation.operation, state: "succeeded" };
     } catch (error) {
       const lost = error instanceof NativeContinuityLost;
       const state = lost ? ("failed" as const) : ("uncertain" as const);
       const errorCode = lost ? "native_continuity_lost" : "runtime_uncertain";
+      diagnostics.report(state, error);
+      diagnostics.stage("failure_publication");
       // Never retry ambiguous effects or leak raw provider/transport exceptions. Reconciliation
       // must inspect this exact receipt; a new request remains blocked by uncertain state.
-      const published = await this.options.store.complete(reservation, {
-        state,
-        parentState: "blocked",
-        errorCode,
-        ...(lost
-          ? { continuity: "lost" as const }
-          : ["stop", "resume"].includes(reservation.operation.kind)
-            ? { continuity: reservation.identity.continuity === "lost" ? ("lost" as const) : ("unverified" as const) }
-            : {}),
-      });
-      if (!published) throw new OrchestratorRuntimeError("conflict", "unknown", reservation.operation);
+      let published: boolean;
+      try {
+        published = await this.options.store.complete(reservation, {
+          state,
+          parentState: "blocked",
+          errorCode,
+          ...(lost
+            ? { continuity: "lost" as const }
+            : ["stop", "resume"].includes(reservation.operation.kind)
+              ? { continuity: reservation.identity.continuity === "lost" ? ("lost" as const) : ("unverified" as const) }
+              : {}),
+        });
+      } catch (publicationError) {
+        diagnostics.report("publication_failed", publicationError);
+        throw publicationError;
+      }
+      if (!published) {
+        diagnostics.report("publication_failed", undefined, "publication_fence_rejected");
+        throw new OrchestratorRuntimeError("conflict", "unknown", reservation.operation);
+      }
       return { ...reservation.operation, state, errorCode };
     }
   }

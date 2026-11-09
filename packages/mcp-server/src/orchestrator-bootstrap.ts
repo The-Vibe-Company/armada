@@ -1,4 +1,5 @@
 import type { Provider } from "@armada/core";
+import type { OrchestratorDiagnostics } from "./orchestrator-diagnostics.ts";
 
 /** Public provenance only; guest output and private authority are never returned or logged. */
 export interface OrchestratorSkillReceipt {
@@ -19,6 +20,7 @@ export async function bootstrapOrchestrator(
     projectDir: string;
     skillRevision: string;
     configureAuthority: () => Promise<void>;
+    diagnostics?: OrchestratorDiagnostics;
   },
 ): Promise<OrchestratorSkillReceipt> {
   const { sandboxId, projectDir, skillRevision: revision } = request;
@@ -27,6 +29,7 @@ export async function bootstrapOrchestrator(
     !projectDir.startsWith("/") ||
     [...projectDir].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
   ) {
+    request.diagnostics?.captureReason("skill_configuration_invalid");
     throw new Error("orchestrator_invalid_bootstrap");
   }
   const source = `https://github.com/The-Vibe-Company/armada/tree/${revision}/.agents/skills`;
@@ -38,13 +41,21 @@ export async function bootstrapOrchestrator(
       cwd: projectDir,
       timeoutSeconds: 300,
     });
+    if (result.detached) request.diagnostics?.captureReason("skill_execution_detached");
+    else if (result.timedOut) request.diagnostics?.captureReason("skill_install_timeout");
+    else if (result.truncated) request.diagnostics?.captureReason("skill_output_truncated");
+    else if (result.exitCode !== 0)
+      request.diagnostics?.captureReason(result.exitCode === 127 ? "skill_command_missing" : "skill_install_nonzero");
+    else if (!result.stdout.split(/\r?\n/).includes(`Source: ${source}`))
+      request.diagnostics?.captureReason("skill_provenance_missing");
     installed =
       !result.detached &&
       result.exitCode === 0 &&
       !result.timedOut &&
       !result.truncated &&
       result.stdout.split(/\r?\n/).includes(`Source: ${source}`);
-  } catch {
+  } catch (error) {
+    request.diagnostics?.capture(error);
     // Provider/guest diagnostics can include private environment or command output.
     throw new Error("orchestrator_skill_bootstrap_failed");
   }

@@ -179,7 +179,7 @@ export function createOrchestratorBackendResolver(input: {
             ]);
         }
       },
-      launch: (reservation) =>
+      launch: (reservation, diagnostics) =>
         launchOrchestratorParent({
           sql: input.sql,
           provider,
@@ -200,6 +200,7 @@ export function createOrchestratorBackendResolver(input: {
             ...(input.connections ? { connections: input.connections } : {}),
           },
           reservation,
+          ...(diagnostics ? { diagnostics } : {}),
           account: {
             credentialId: configuration.modelAccountId,
             credentialVersion: selected.version,
