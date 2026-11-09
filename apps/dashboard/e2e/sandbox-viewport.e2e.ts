@@ -62,6 +62,36 @@ for (const [label, size] of [
   });
 }
 
+test("on a phone height where it cannot all fit, the composer and its controls are never cut off", async ({ page }) => {
+  // A running turn (Steer and Interrupt show) and a technical event, as real sessions have, at an iPhone's height.
+  await fetch(`${MOCK}/__test/sandbox-events`, {
+    method: "POST",
+    body: JSON.stringify({
+      sandbox: IDS.running,
+      events: [
+        { id: "p", at: 1_762_596_300_000, kind: "prompt", text: "Fix the parser", status: "running", promptId: "p" },
+        ...history,
+        { id: "r", at: 1_762_596_400_000, kind: "other", type: "result", data: {} },
+      ],
+    }),
+  });
+  await page.setViewportSize({ width: 390, height: 664 });
+  await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
+  await expect(page.getByRole("log", { name: "Messages" }).getByText("Step 39:")).toBeAttached();
+  for (const open of [false, true]) {
+    if (open) await page.getByRole("button", { name: "Details" }).click();
+    expect((await overflow(page)).vertical).toBe(0);
+    for (const name of ["Message", "Steer", "Interrupt"]) {
+      const control =
+        name === "Message" ? page.getByRole("textbox", { name }) : page.getByRole("button", { name, exact: true });
+      await control.scrollIntoViewIfNeeded();
+      // In view after scrolling means no ancestor clips it.
+      await expect(control).toBeInViewport({ ratio: 1 });
+    }
+  }
+  await page.screenshot({ path: "test-results/sandbox-viewport-phone-664.png", animations: "disabled" });
+});
+
 test("a viewport too short to fit falls back to a scrolling page where nothing is cut off", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 400 });
   await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);

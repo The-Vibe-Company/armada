@@ -91,81 +91,93 @@
 /*
  * The sandbox conversation fits the viewport (#629). Only a page that marks itself with `data-fit-viewport` sizes
  * the signed-in shell to the dynamic viewport; every other page keeps normal document scrolling. Inside it, the
- * message history is the one thing that scrolls (`data-fit` marks the chain of boxes down to it), and the details
- * get their own bounded panel. A viewport too short for that (a small window, heavy zoom) keeps the scrolling page,
- * so nothing is ever cut off. Unlayered on purpose: it overrides the utilities those boxes carry for that page.
+ * message history is the one thing that gives way (`data-fit` marks the chain of boxes down to it): the conversation
+ * never shrinks below its header, composer and a few lines of history, and when even that does not fit, the page's
+ * `main` scrolls inside the shell, so nothing is ever cut off. Details get their own bounded panel. A viewport too short
+ * for any of it (a small window, heavy zoom), or a browser without `:has()`, keeps the plain scrolling page.
+ * Unlayered on purpose: it overrides the utilities those boxes carry, for that page only.
  */
-@media (min-width: 48rem) and (min-height: 30rem), (min-height: 36rem) {
-  [data-shell]:has([data-fit-viewport]) {
-    height: 100dvh;
-  }
-  [data-shell]:has([data-fit-viewport]) > main {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-  [data-fit-viewport],
-  [data-fit="column"],
-  [data-fit="chat"],
-  [data-fit="card"],
-  [data-fit="history"],
-  [data-fit="side"] {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-  [data-fit-viewport] {
-    flex: 1 1 0;
-  }
-  [data-fit-viewport] > *,
-  [data-fit="chat"] > *,
-  [data-fit="card"] > * {
-    flex-shrink: 0;
-  }
-  /* Small screens: the conversation keeps most of the height; open details share the rest and scroll. */
-  [data-fit-viewport] > [data-fit="body"] {
-    flex: 1 1 0;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-  }
-  [data-fit="body"] > [data-fit="column"] {
-    flex: 1 1 0;
-    min-height: 65%;
-  }
-  [data-fit="body"] > [data-fit="side"] {
-    flex: 0 1 auto;
-  }
-  [data-fit="chat"],
-  [data-fit="card"] {
-    flex: 1 1 0;
-  }
-  [data-fit="history"] {
-    flex: 1 1 0;
-    min-height: 4rem;
-  }
-  [data-fit="history-scroll"] {
-    flex: 1 1 0;
-    min-height: 0;
-    max-height: none;
-  }
-  [data-fit="technical-list"] {
-    max-height: 30dvh;
-    overflow-y: auto;
-  }
-  [data-fit="side-content"] {
-    min-height: 0;
-    overflow-y: auto;
-  }
-  /* Large screens: the conversation and the details side by side, each as tall as the page allows. */
-  @media (min-width: 64rem) {
-    [data-fit-viewport] > [data-fit="body"] {
-      display: grid;
-      grid-template-rows: minmax(0, 1fr);
+@supports selector(:has(*)) {
+  @media (min-width: 48rem) and (min-height: 30rem), (min-height: 36rem) {
+    [data-shell]:has([data-fit-viewport]) {
+      height: 100dvh;
     }
-    [data-fit="body"] > [data-fit="column"] {
+    [data-shell]:has([data-fit-viewport]) > main {
+      display: flex;
+      flex-direction: column;
       min-height: 0;
+      overflow-y: auto;
+    }
+    [data-fit-viewport],
+    [data-fit="column"],
+    [data-fit="chat"],
+    [data-fit="card"],
+    [data-fit="history"],
+    [data-fit="side"] {
+      display: flex;
+      flex-direction: column;
+    }
+    [data-fit-viewport] {
+      flex: 1 1 0;
+      min-height: 0;
+    }
+    [data-fit-viewport] > *,
+    [data-fit="chat"] > *,
+    [data-fit="card"] > * {
+      flex-shrink: 0;
+    }
+    /* Small screens: the conversation takes the height; open details share what is left and scroll. */
+    [data-fit-viewport] > [data-fit="body"] {
+      flex: 1 1 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+    }
+    [data-fit="body"] > [data-fit="column"],
+    [data-fit="chat"],
+    [data-fit="card"] {
+      flex: 1 1 0;
+    }
+    /* The card clips its rounded corners, which would let it shrink to nothing: its floor is its content, */
+    [data-fit="card"] {
+      min-height: min-content;
+    }
+    /* where the history counts for a few lines only, however long it is. */
+    [data-fit="history"] {
+      flex: 1 1 0;
+      min-height: 4rem;
+    }
+    [data-fit="history-scroll"] {
+      flex: 1 1 0;
+      min-height: 0;
+      max-height: none;
+      contain: size;
+    }
+    [data-fit="body"] > [data-fit="side"] {
+      flex: 0 1 auto;
+      min-height: 0;
+    }
+    [data-fit="side-content"] {
+      min-height: 5rem;
+      overflow-y: auto;
+    }
+    [data-fit="technical-list"] {
+      max-height: 30dvh;
+      overflow-y: auto;
+    }
+    /* Large screens: the conversation and the details side by side, the details scrolling on their own. */
+    @media (min-width: 64rem) {
+      [data-fit-viewport] > [data-fit="body"] {
+        display: grid;
+        grid-template-rows: minmax(0, 1fr);
+      }
+      [data-fit="body"] > [data-fit="side"] {
+        min-height: 0;
+      }
+      [data-fit="side-content"] {
+        min-height: 0;
+      }
     }
   }
 }
