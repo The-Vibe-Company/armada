@@ -218,6 +218,18 @@ export function goldenRowState(
   return { duplicateName, canRebuild: reason === null, reason };
 }
 
+/**
+ * Why the viewer may not remove this golden, or null when they may: the owner removes a private golden, an org
+ * admin an org golden. A hint for the page; the server's `golden/remove` applies the same rule and is the authority.
+ */
+export function goldenRemoveBlocker(
+  golden: Pick<Golden, "visibility" | "owner_id">,
+  viewer: { id: string; isAdmin: boolean },
+): string | null {
+  if (golden.visibility === "private") return golden.owner_id === viewer.id ? null : "Only its owner removes it.";
+  return viewer.isAdmin ? null : "Only an org admin removes an org golden.";
+}
+
 export type CapacityState =
   | { kind: "unavailable"; reason: string }
   | { kind: "unknown" }

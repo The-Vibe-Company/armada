@@ -1,5 +1,5 @@
 import { MODEL_CATALOG } from "@armada/core";
-import { ArrowLeftIcon } from "lucide-react";
+import { ArrowLeftIcon, ClockAlertIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -8,17 +8,21 @@ import { LinkPendingIcon } from "@/components/link-pending";
 import { SandboxActions } from "@/components/sandbox-actions";
 import { SandboxLogs } from "@/components/sandbox-logs";
 import { StatusBadge } from "@/components/status-badge";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { isUuid } from "@/lib/action";
 import { sandboxVisibility } from "@/lib/connections";
 import { listSandboxConnections, type SandboxConnections } from "@/lib/data/connections";
-import { listGoldens } from "@/lib/data/goldens";
+import { listGoldenHistory } from "@/lib/data/goldens";
 import { getSandbox } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
 import { isActiveStatus } from "@/lib/events";
+import { PROVIDER_LABELS } from "@/lib/golden-form";
+import { HARNESS_LABELS } from "@/lib/labels";
+import { lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
 
@@ -38,7 +42,7 @@ export default async function SandboxPage({ params }: Props) {
   );
   const [sandbox, goldens, memberships, directory] = await Promise.all([
     getSandbox(supabase, id),
-    listGoldens(supabase),
+    listGoldenHistory(supabase),
     pending,
     pending.then((items) =>
       memberDirectory(
@@ -54,12 +58,14 @@ export default async function SandboxPage({ params }: Props) {
   const applied = await listSandboxConnections(sandbox);
   const visibility = sandboxVisibility(sandbox);
   const repositoryDir = sandboxRepositoryDir(sandbox);
+  const lifecycle = readLifecycle(sandbox);
+  const life = lifecycleView(sandbox.status, lifecycle, new Date());
 
   const facts: [string, string][] = [
-    ["Golden", golden?.name ?? "Unknown"],
+    ["Golden", golden ? `${golden.name}${golden.removed_at ? " (removed)" : ""}` : "Unknown"],
     ["Org", org?.org.name ?? "Unknown"],
-    ["Provider", sandbox.provider],
-    ["Harness", sandbox.harness],
+    ["Provider", PROVIDER_LABELS[sandbox.provider] ?? sandbox.provider],
+    ["Harness", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Model", sandbox.model ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoning_effort ?? "Provider default"],
     ...(visibility
@@ -73,6 +79,16 @@ export default async function SandboxPage({ params }: Props) {
     ...(repositoryDir ? [["Repository context", repositoryDir] as [string, string]] : []),
     ["Owner", displayUser(directory, sandbox.owner_id, viewer.id)],
     ["Created", formatDate(sandbox.created_at)],
+    ...(life.lifetime ? [["Lifetime", life.lifetime] as [string, string]] : []),
+    ...(lifecycle.expiresAt
+      ? [
+          ["Deadline", `${formatDate(lifecycle.expiresAt)}${life.remaining ? `, ${life.remaining}` : ""}`] as [
+            string,
+            string,
+          ],
+        ]
+      : []),
+    ...(lifecycle.lastObservedAt ? [["Last checked", formatDate(lifecycle.lastObservedAt)] as [string, string]] : []),
     ["Stopped", sandbox.stopped_at ? formatDate(sandbox.stopped_at) : "Not stopped"],
     ["Conversations", String(sandbox.conversation_ids.length)],
   ];
@@ -80,7 +96,7 @@ export default async function SandboxPage({ params }: Props) {
   return (
     <>
       <div className="space-y-3">
-        <Button variant="ghost" size="sm" asChild className="-ml-3">
+        <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground">
           <Link href="/sandboxes">
             <LinkPendingIcon>
               <ArrowLeftIcon />
@@ -89,8 +105,10 @@ export default async function SandboxPage({ params }: Props) {
           </Link>
         </Button>
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="font-mono text-xl font-semibold tracking-tight">{sandbox.provider_sandbox_id}</h1>
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all">
+              {sandbox.provider_sandbox_id}
+            </h1>
             <StatusBadge status={sandbox.status} />
           </div>
           {configured && (
@@ -105,32 +123,48 @@ export default async function SandboxPage({ params }: Props) {
         </div>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Details</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
-            {facts.map(([label, value]) => (
-              <div key={label}>
-                <dt className="text-xs text-muted-foreground">{label}</dt>
-                <dd className="text-sm font-medium">{value}</dd>
-              </div>
-            ))}
-          </dl>
-        </CardContent>
-      </Card>
+      {life.notice && (
+        <Alert data-lifecycle-notice={life.notice.kind} className="border-warning/40">
+          <ClockAlertIcon className="text-warning" />
+          <AlertTitle>{life.notice.title}</AlertTitle>
+          <AlertDescription>{life.notice.text}</AlertDescription>
+        </Alert>
+      )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">MCP connections</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <AppliedConnections applied={applied} />
-        </CardContent>
-      </Card>
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <div className="min-w-0">
+          <SandboxLogs sandboxId={sandbox.id} initialStatus={sandbox.status} live={isActiveStatus(sandbox.status)} />
+        </div>
+        <div className="space-y-6">
+          <Card className="gap-4">
+            <CardHeader>
+              <CardTitle className="text-base">Details</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <dl className="divide-y text-sm">
+                {facts.map(([label, value]) => (
+                  <div
+                    key={label}
+                    className="flex min-w-0 items-baseline justify-between gap-4 py-2 first:pt-0 last:pb-0"
+                  >
+                    <dt className="shrink-0 text-muted-foreground">{label}</dt>
+                    <dd className="min-w-0 text-right font-medium break-words">{value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </CardContent>
+          </Card>
 
-      <SandboxLogs sandboxId={sandbox.id} initialStatus={sandbox.status} live={isActiveStatus(sandbox.status)} />
+          <Card className="gap-4">
+            <CardHeader>
+              <CardTitle className="text-base">MCP connections</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <AppliedConnections applied={applied} />
+            </CardContent>
+          </Card>
+        </div>
+      </div>
     </>
   );
 }

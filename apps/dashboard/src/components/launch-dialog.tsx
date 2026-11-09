@@ -22,9 +22,8 @@ import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import { launchBlocker, type McpConnection, type SandboxVisibility } from "@/lib/connections";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
+import { HARNESS_LABELS } from "@/lib/labels";
 import { cn } from "@/lib/utils";
-
-const HARNESS_LABELS: Record<Harness, string> = { claude: "Claude Code", codex: "Codex" };
 
 /** The selected org's connections for the launch dialog, or why they are not listed. */
 export type LaunchConnections = { connections: McpConnection[] } | { unavailable: string };
@@ -56,7 +55,7 @@ export function LaunchDialog({
   return (
     <Dialog>
       <DialogTrigger asChild>
-        <Button variant="outline" size="sm" aria-label={`Launch from ${golden} on ${PROVIDER_LABELS[provider]}`}>
+        <Button size="sm" aria-label={`Launch from ${golden} on ${PROVIDER_LABELS[provider]}`}>
           <RocketIcon /> Launch
         </Button>
       </DialogTrigger>

@@ -147,3 +147,39 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
     { name: "send", args: { id: expect.any(String), prompt: "Continue with model default", model: "gpt-6.1-terra" } },
   ]);
 });
+
+test("a sandbox's lifetime is a quiet fact, and a missed deadline is a notice, never a stopped status", async ({
+  page,
+}) => {
+  const lifecycle = (fields: Record<string, unknown>) =>
+    fetch(`${MOCK}/__test/sandbox-lifecycle`, { method: "POST", body: JSON.stringify({ id: IDS.running, fields }) });
+  await lifecycle({
+    expires_at: new Date(Date.now() + 2 * 3600_000).toISOString(),
+    effective_ttl_seconds: 8 * 3600,
+    requested_ttl_seconds: null,
+    last_observed_at: new Date().toISOString(),
+    lifecycle_error: null,
+  });
+  await signIn(page, "alice@example.com");
+  await expect(page.locator('[data-lifecycle="remaining"]')).toHaveText(/^1 h \d+ min left$/);
+  await page.getByRole("link", { name: "bx_alice_running" }).click();
+  const facts = page.locator("dl").first();
+  await expect(facts.getByText("8 h (default)")).toBeVisible();
+  await expect(facts.getByText("Last checked")).toBeVisible();
+  await expect(page.locator("[data-lifecycle-notice]")).toHaveCount(0);
+
+  await lifecycle({
+    expires_at: new Date(Date.now() - 600_000).toISOString(),
+    lifecycle_error: "The provider did not answer the stop request.",
+  });
+  await page.reload();
+  const notice = page.locator('[data-lifecycle-notice="retrying"]');
+  await expect(notice).toContainText("The provider did not answer the stop request.");
+  await expect(notice).toContainText("only once the provider confirms");
+  await expect(page.locator("h1 + [data-status]")).toHaveAttribute("data-status", "running");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: "test-results/sandbox-lifecycle-mobile.png", fullPage: true, animations: "disabled" });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/sandboxes");
+  await expect(page.locator('[data-lifecycle="retrying"]')).toHaveText("Stop retrying");
+});
