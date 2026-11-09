@@ -19,10 +19,15 @@ afterEach(() => {
   else process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = environment.anonKey;
 });
 
-function request(pathname: string): NextRequest {
+function request(pathname: string, method = "GET", cookies: { name: string; value: string }[] = []): NextRequest {
   const nextUrl = new URL(`https://dashboard.test${pathname}`);
   Object.assign(nextUrl, { clone: () => new URL(nextUrl) });
-  return { nextUrl, cookies: { getAll: () => [] } } as unknown as NextRequest;
+  return {
+    method,
+    nextUrl,
+    headers: new Headers(),
+    cookies: { getAll: () => cookies, set: () => undefined },
+  } as unknown as NextRequest;
 }
 
 test("API v1 bypasses the dashboard cookie guard", async () => {
@@ -35,4 +40,30 @@ test("the dashboard guard still protects non-API pages", async () => {
   const response = await proxy(request("/sandboxes"));
   expect(response.status).toBe(307);
   expect(response.headers.get("location")).toBe("https://dashboard.test/login?next=%2Fsandboxes");
+});
+
+test("the landing needs no session: the landing and a signed-out / pass before any Supabase setting is read", async () => {
+  delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+  delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  for (const path of ["/landing", "/landing/opengraph-image"]) {
+    const response = await proxy(request(path));
+    expect(response.headers.get("x-middleware-next")).toBe("1");
+  }
+  // No session cookie (a PKCE verifier is not a session): the landing, with no Supabase settings at all.
+  for (const cookies of [[], [{ name: "sb-project-auth-token-code-verifier", value: "v" }]]) {
+    const front = await proxy(request("/?msclkid=1&UTM_SOURCE=launch&ref=x", "GET", cookies));
+    expect(front.headers.get("x-middleware-rewrite")).toBe("https://dashboard.test/landing");
+    expect(front.headers.get("vary")).toBe("Cookie");
+  }
+  // A session cookie means a session lookup, which needs the settings.
+  await expect(proxy(request("/", "GET", [{ name: "sb-project-auth-token.0", value: "x" }]))).rejects.toThrow();
+});
+
+test("a stale session cookie on / is still the landing; a write to / still goes to the login page", async () => {
+  setSupabaseEnvironment();
+  const stale = await proxy(request("/?next=x", "GET", [{ name: "sb-project-auth-token", value: "not-a-session" }]));
+  expect(stale.headers.get("x-middleware-rewrite")).toBe("https://dashboard.test/landing");
+  const write = await proxy(request("/", "POST"));
+  expect(write.headers.get("x-middleware-rewrite")).toBeNull();
+  expect(write.status).toBe(307);
 });
