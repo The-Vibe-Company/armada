@@ -340,7 +340,7 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
         signal.throwIfAborted();
         await options.beforePrompt?.(provider, request.sandboxId);
       }
-      if (request.harness === "codex" && options.beforePrompt) {
+      if (options.beforePrompt && (request.harness === "codex" || provider.configureGitHub)) {
         await installNativeCwdWrapper(
           async (r) => {
             const result = await provider.exec(r);
@@ -348,7 +348,7 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
               throw invalidRequest("Native MCP bridge installation failed.");
           },
           request.sandboxId,
-          "codex",
+          request.harness,
         );
       }
       signal.throwIfAborted();

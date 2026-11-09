@@ -21,6 +21,7 @@ export function createMcpLifecycle(options: {
   encryptionKey: string | undefined;
   origin: string;
   registry: McpRegistry;
+  prepareGitHub?: (provider: Provider, sandboxId: string) => Promise<void>;
 }) {
   const { sql, registry } = options;
   const sign = async (value: string) => {
@@ -58,7 +59,10 @@ export function createMcpLifecycle(options: {
     const previous = await sql.query("select sandbox_id from public.mcp_bootstraps where sandbox_id=$1::uuid", [
       sandbox.id,
     ]);
-    if (!selected.length && !previous.rows.length) return;
+    if (!selected.length && !previous.rows.length) {
+      await options.prepareGitHub?.(provider, sandbox.id);
+      return;
+    }
     const physical = await provider.get(sandbox.providerSandboxId);
     if (physical.state !== "ready" && physical.state !== "running")
       throw Error("MCP configuration requires a running physical sandbox.");
@@ -241,6 +245,7 @@ export function createMcpLifecycle(options: {
       );
       if (!written.rows.length) throw Error("Physical generation changed during MCP configuration.");
     });
+    await options.prepareGitHub?.(provider, sandbox.id);
   }
   const launch = createSqlMcpLaunchPort(sql, registry);
   const connections: NonNullable<LaunchStores["connections"]> = {
@@ -283,6 +288,11 @@ export function createMcpLifecycle(options: {
         if (["ready", "running", "starting"].includes(physical.state))
           return { sandboxId: sandbox.id, shouldResume: false };
         if (physical.state !== "stopped") throw Error("Sandbox cannot be resumed from its current physical state.");
+        await tx.query(
+          `with fenced as (delete from public.github_runtime_capabilities where sandbox_id=$1::uuid returning sandbox_id)
+          update public.sandboxes s set mcp_generation=mcp_generation+1 from fenced f where s.id=f.sandbox_id`,
+          [sandbox.id],
+        );
         // Kernel boot IDs can survive real Boat archive/restore. Commit this fence BEFORE
         // sending resume; only the configured=true winner changes the generation.
         await tx.query(

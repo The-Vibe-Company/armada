@@ -924,6 +924,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           found.credentialId,
           found.credentialVersion ?? undefined,
         );
+      const member = caller.orgs.find((entry) => entry.orgId === found.orgId);
+      if (!member) throw new ToolError("forbidden", "No current organization membership.");
+      await context.connections?.prepare?.(provider, found, {
+        userId: caller.userId,
+        orgId: found.orgId,
+        role: member.role,
+      });
       const receipt = await provider.steer({
         sandboxId: found.providerSandboxId,
         text: args.text,
@@ -984,6 +991,13 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
+      const membership = caller.orgs.find((member) => member.orgId === found.orgId);
+      if (!membership) throw new ToolError("forbidden", "No current organization membership.");
+      await context.connections?.prepare?.(provider, found, {
+        userId: caller.userId,
+        orgId: found.orgId,
+        role: membership.role,
+      });
       const result = await provider.exec({
         sandboxId: found.providerSandboxId,
         command: args.command,

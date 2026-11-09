@@ -1942,6 +1942,37 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       f.provider.prepareNativeHarnessCwd({ sandboxId: builder.id, harness: "claude", cwd: "/home/user/repos/valid" }),
     ).rejects.toMatchObject({ code: "invalid_request" });
   });
+  test("GitHub private configuration binds an active native generation and never restores stopped machines or persists capabilities", async () => {
+    const f = fixture();
+    const row = await runningFork(f);
+    const machine = await f.store.get(row.id);
+    const configuration = {
+      version: 1 as const,
+      revision: "1",
+      generation: String(machine.generation),
+      url: "https://armada.example/api/internal/github/credentials",
+      capability: `armada_gh_${"a".repeat(64)}`,
+      expiresAt: machine.grantExpiresAt!,
+    };
+    f.onRpc(async (_machine, op, input) => {
+      if (op !== "configureGitHub") return;
+      expect(input).toEqual({ configuration });
+      return { acknowledged: true, token: "must-not-echo" };
+    });
+    expect(await f.provider.configureGitHub({ sandboxId: row.id, configuration })).toEqual({ acknowledged: true });
+    await expect(
+      f.provider.configureGitHub({ sandboxId: row.id, configuration: { ...configuration, generation: "wrong" } }),
+    ).rejects.toMatchObject({ code: "unauthorized" });
+    const persisted = JSON.stringify((await db.query("select record from public.modal_machines")).rows);
+    expect(persisted).not.toContain(configuration.capability);
+    expect(persisted).not.toContain(configuration.url);
+    await f.provider.stop({ sandboxId: row.id });
+    const allocations = f.creates;
+    await expect(f.provider.configureGitHub({ sandboxId: row.id, configuration })).rejects.toMatchObject({
+      code: "unauthorized",
+    });
+    expect(f.creates).toBe(allocations);
+  });
   test("configureMcp serializes transient authority with turn admission, returns only revision and never persists config", async () => {
     const f = fixture();
     const row = await runningFork(f);

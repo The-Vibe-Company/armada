@@ -24,6 +24,7 @@ import {
 } from "../../mcp-gateway/src/index.ts";
 import { AuthUnavailable, authenticateCaller, bearerToken, type SupabaseProject } from "./caller.ts";
 import { dashboardOrigin } from "./config.ts";
+import { createGitHubRuntime } from "./github-runtime.ts";
 import { SLACK_OAUTH_BINDING } from "./mcp-catalog-client.ts";
 import { createMcpOAuthStore, createMcpSecretBox } from "./mcp-integration.ts";
 import { createMcpLifecycle } from "./mcp-lifecycle.ts";
@@ -34,6 +35,7 @@ const sha = async (v: string) =>
 /** Production HTTP adapter. Upstream grants never cross the gateway/native boundary. */
 export function createMcpHttpIntegration(options: {
   sql: Sql;
+  github?: import("@armada/core/server").GitHubResolveDeps;
   encryptionKey: string | undefined;
   publicUrl: string;
   dashboardUrl?: string;
@@ -53,9 +55,19 @@ export function createMcpHttpIntegration(options: {
   const registry = createSqlMcpRegistry(sql, options.encryptionKey, {
     ...(options.catalogAuthentication ? { catalogAuthentication: options.catalogAuthentication } : {}),
   });
+  const githubRuntime =
+    options.github && options.providerForSandbox
+      ? createGitHubRuntime({
+          sql,
+          github: options.github,
+          origin: new URL(options.publicUrl).origin,
+          providerForSandbox: options.providerForSandbox,
+        })
+      : undefined;
   const lifecycle = createMcpLifecycle({
     sql,
     registry,
+    ...(githubRuntime ? { prepareGitHub: githubRuntime.prepare } : {}),
     encryptionKey: options.encryptionKey,
     origin: new URL(options.publicUrl).origin,
   });
@@ -622,6 +634,8 @@ export function createMcpHttpIntegration(options: {
       renewalDue.clear();
     },
     async route(request: Request): Promise<Response | null> {
+      const githubResponse = await githubRuntime?.route(request);
+      if (githubResponse) return githubResponse;
       const path = new URL(request.url).pathname;
       if (path === "/.well-known/armada-mcp-client.json") {
         // Bun sees HTTP behind TLS termination; keep the strict CIMD handler bound to

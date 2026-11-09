@@ -30,6 +30,7 @@ export class Runner {
   private execEnvironment: Readonly<Record<string, string>>;
   private credentialFreeBuilder: boolean;
   private commands = new Set<Promise<unknown>>();
+  private configureGitHub: RunnerExecutionOptions["configureGitHub"];
   constructor(
     readonly journal: Journal,
     readonly grant: Grant,
@@ -50,6 +51,7 @@ export class Runner {
     if (execution.credentialFreeBuilder !== undefined && typeof execution.credentialFreeBuilder !== "boolean")
       throw Error("invalid_exec_environment");
     this.credentialFreeBuilder = execution.credentialFreeBuilder ?? false;
+    this.configureGitHub = execution.configureGitHub;
     const execEnv = validateExecEnvironment(execution.execEnv, this.credentialFreeBuilder);
     journal.registerSecrets(execCredentialValues(execEnv));
     this.execEnvironment = Object.freeze({
@@ -99,6 +101,29 @@ export class Runner {
       if (!r || typeof r !== "object" || Array.isArray(r)) throw Error("invalid_request");
       if (r.version !== 1 || r.sandboxId !== this.grant.sandboxId || typeof r.requestId !== "string" || !r.requestId)
         throw Error("invalid_request");
+      if (r.op === "configureGitHub") {
+        // Private configuration is never persisted in request receipts or returned to callers.
+        if (
+          this.credentialFreeBuilder ||
+          this.barrier ||
+          this.journal.checkpointPending(this.grant) ||
+          !this.configureGitHub
+        )
+          throw Error("github_configuration_denied");
+        if (Object.keys(r).some((key) => !["version", "requestId", "sandboxId", "op", "configuration"].includes(key)))
+          throw Error("github_configuration_denied");
+        if (
+          r.configuration &&
+          (r.configuration.generation !== this.grant.generation || r.configuration.expiresAt > this.grant.expiresAt)
+        )
+          throw Error("github_configuration_denied");
+        try {
+          await this.configureGitHub(r.configuration);
+        } catch {
+          throw Error("github_configuration_denied");
+        }
+        return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
+      }
       if (r.op === "configureMcp") {
         if (r.requestId.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(r.requestId)) throw Error("invalid_request");
         if (Object.keys(r).some((k) => !["version", "requestId", "sandboxId", "op", "configuration"].includes(k)))
@@ -169,7 +194,7 @@ export class Runner {
     this.mcp = configuration;
     return { revision: configuration.revision };
   }
-  private async dispatch(r: Exclude<RunnerRequest, { op: "configureMcp" }>): Promise<unknown> {
+  private async dispatch(r: Exclude<RunnerRequest, { op: "configureMcp" | "configureGitHub" }>): Promise<unknown> {
     if (r.op === "health") return { generation: this.grant.generation, ready: !this.barrier };
     if (r.op === "getPrompt") {
       const p = this.journal.get(r.promptId);
@@ -232,6 +257,7 @@ export class Runner {
       await this.flushOutbox();
       const watermark = this.journal.events(0, Number.MAX_SAFE_INTEGER).at(-1)?.sequence ?? 0;
       if (this.journal.ack < watermark) throw Error("checkpoint_upstream_unacknowledged");
+      await this.configureGitHub?.(null);
       await this.stripTransientAuth?.();
       this.journal.checkpointFence(this.grant, "complete");
       this.journal.flush();
