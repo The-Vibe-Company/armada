@@ -1,6 +1,6 @@
 "use client";
 
-import { ORCHESTRATOR_DEFAULTS, type OrchestratorDetail } from "@armada/core";
+import type { OrchestratorDetail } from "@armada/core";
 import {
   AlertTriangleIcon,
   ChevronRightIcon,
@@ -573,7 +573,9 @@ function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: Orche
   const problems = troubledOperations(detail);
   const technical = feed.filter((event) => event.kind !== "agent");
   const idleStop = orchestrator.idleDeadline ? timeUntil(orchestrator.idleDeadline, now) : null;
-  const idle = formatDuration(config.idleSeconds ?? ORCHESTRATOR_DEFAULTS.idleSeconds);
+  // Only what the server reports: a live deadline, else the stored period. No client default stands in for either.
+  const live = idleStop && orchestrator.state === "ready" ? idleStop : null;
+  const idleFact = live ?? (config.idleSeconds === undefined ? null : `after ${formatDuration(config.idleSeconds)}`);
   const rows: [string, string][] = [
     ["Agent", facts.harnessLabel],
     ["Model", `${config.model}${config.reasoningEffort ? ` · ${config.reasoningEffort}` : ""}`],
@@ -585,7 +587,7 @@ function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: Orche
     ...(config.maxActiveChildren === undefined
       ? []
       : [["Workers at once", `at most ${config.maxActiveChildren}`] as [string, string]]),
-    ["Idle stop", idleStop && orchestrator.state === "ready" ? idleStop : `after ${idle}`],
+    ...(idleFact ? [["Idle stop", idleFact] as [string, string]] : []),
   ];
   return (
     <aside
