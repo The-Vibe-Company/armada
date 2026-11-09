@@ -383,7 +383,11 @@ describe("tools", () => {
     Object.assign(boat.provider, { maxGoldens: 7 });
     const result = await request.tool("golden_capabilities", { org: people.org, provider: "boat" });
     expect(result.result?.isError).not.toBe(true);
-    expect(result.result?.structuredContent).toEqual({ provider: "boat", maxGoldens: 7 });
+    expect(result.result?.structuredContent).toEqual({
+      provider: "boat",
+      maxGoldens: 7,
+      bindings: [{ goldenId: expect.any(String), relation: "unbound", busy: false }],
+    });
     Object.assign(boat.provider, { maxGoldens: undefined });
     expect((await request.tool("golden_capabilities", {})).result?.structuredContent).toEqual({
       provider: "boat",

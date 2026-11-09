@@ -200,19 +200,25 @@ test("a form the server would refuse is stopped before any request", async ({ pa
   expect((await mockState()).goldenCalls).toHaveLength(0);
 });
 
-test("legacy rows over the Boat limit are listed and kept, never chosen or merged", async ({ page }) => {
+test("live unbound rows require reconciliation without automatic rebuild guidance", async ({ page }) => {
+  await post("/__test/capabilities", {
+    bindings: [
+      { goldenId: "00000000-0000-4000-8000-000000000020", relation: "unbound", busy: false },
+      { goldenId: "00000000-0000-4000-8000-000000000021", relation: "other_backend", busy: false },
+    ],
+  });
   await signIn(page, "alice@example.com", "/goldens");
   const conflict = page.locator("[data-legacy-conflict]");
-  await expect(conflict).toContainText("2 Boat goldens predate the one-golden limit");
+  await expect(conflict).toContainText("2 Boat goldens need backend reconciliation");
   await expect(conflict).toContainText("does not choose, merge or delete");
   await expect(conflict.getByText("shared-golden")).toBeVisible();
   await expect(conflict.getByText("alice-private")).toBeVisible();
   // Both rows stay, each with its own actions.
   await expect(page.locator('[data-golden="shared-golden"]').getByText("Edit and rebuild")).toBeVisible();
   await expect(page.locator('[data-golden="alice-private"]').getByText("Edit and rebuild")).toBeVisible();
-  // Creating another is not the primary path.
-  await expect(page.getByRole("heading", { name: "Create another golden" })).toBeVisible();
-  await expect(createForm(page)).toBeHidden();
+  // Reconciliation is separate from current-backend usage, which is zero.
+  await expect(page.getByRole("heading", { name: "Create a golden" })).toBeVisible();
+  await expect(createForm(page)).toBeVisible();
 });
 
 test("an admin edits and rebuilds the existing golden from what it records", async ({ page }) => {
@@ -627,7 +633,7 @@ test("removing a golden asks first, retires only the golden, and keeps its sandb
   await expect(boat.locator("[data-capacity-line]")).toHaveText(
     "2 of 1 account slot used by goldens you can see, 1 held by removed golden.",
   );
-  await expect(page.locator("[data-legacy-conflict]")).toContainText("removed: still holds its slot");
+  await expect(page.locator("[data-legacy-conflict]")).toHaveCount(0);
   // One request, by id in the selected org, with the session; never a delete of anything else.
   expect((await mockState()).goldenRemoveCalls).toEqual([
     {
@@ -674,4 +680,26 @@ test("only the owner or an org admin is offered removal, and a forged removal is
   expect((await mockState()).goldenRemoveCalls).toEqual([]);
   await page.keyboard.press("Escape");
   await expect(page.locator('[data-golden="bob-private"]')).toBeVisible();
+});
+
+test("removed unbound history is not a slot or a reconciliation warning; old metadata has no usage", async ({
+  page,
+}) => {
+  await signIn(page, "alice@example.com", "/goldens");
+  await page.locator('[data-golden="shared-golden"]').getByRole("button", { name: "Remove golden" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Remove golden" }).click();
+  await expect(page.locator("[data-golden-removed]")).toBeVisible();
+  await post("/__test/capabilities", {
+    bindings: [
+      { goldenId: "00000000-0000-4000-8000-000000000020", relation: "unbound", busy: false },
+      { goldenId: "00000000-0000-4000-8000-000000000021", relation: "current_backend", busy: false },
+    ],
+  });
+  await page.reload();
+  await expect(page.locator('[data-capacity-provider="boat"]')).toContainText("1 of 1");
+  await expect(page.locator('[data-capacity-provider="boat"]')).toHaveAttribute("data-capacity-removed", "0");
+  await expect(page.locator("[data-legacy-conflict]")).toHaveCount(0);
+  await post("/__test/capabilities", { bindings: null });
+  await page.reload();
+  await expect(page.locator('[data-capacity-provider="boat"]')).toHaveAttribute("data-capacity", "unavailable");
 });

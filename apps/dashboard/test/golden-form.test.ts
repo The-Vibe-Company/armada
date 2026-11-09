@@ -145,19 +145,23 @@ describe("what the page offers", () => {
     expect(state).toMatchObject({ duplicateName: true, canRebuild: false });
   });
 
-  test("capacity compares one provider's visible rows with the limit the server read, and never invents one", () => {
+  test("capacity uses authoritative bindings, not historical rows; old servers have no usage", () => {
     const boat = { provider: "boat" as const };
-    const modal = { provider: "modal" as const };
-    const one = { ok: true, maxGoldens: 1 } as const;
-    expect(providerCapacity([], one, "boat")).toEqual({ kind: "available", capacity: 1, used: 0 });
-    expect(providerCapacity([boat, modal], one, "boat")).toEqual({ kind: "full", capacity: 1, used: 1 });
-    expect(providerCapacity([boat, boat], one, "boat")).toEqual({ kind: "legacy", capacity: 1, used: 2 });
-    // Modal goldens never count against the Boat limit, and Modal's unbounded null is "no limit", not zero.
-    expect(providerCapacity([modal, modal], one, "boat")).toEqual({ kind: "available", capacity: 1, used: 0 });
-    expect(providerCapacity([modal, modal], { ok: true, maxGoldens: null }, "modal")).toEqual({ kind: "unknown" });
-    expect(providerCapacity([boat, boat], { ok: false, reason: "No Boat credential." }, "boat")).toEqual({
+    const one = {
+      ok: true,
+      maxGoldens: 1,
+      bindings: [
+        { goldenId: "kept", relation: "current_backend", busy: false },
+        { goldenId: "prod-smoke", relation: "unbound", busy: false },
+        { goldenId: "elsewhere", relation: "other_backend", busy: true },
+      ],
+    } as const;
+    expect(providerCapacity([boat, boat, boat], one, "boat")).toEqual({ kind: "full", capacity: 1, used: 1 });
+    expect(providerCapacity([boat], { ok: true, maxGoldens: 1 }, "boat").kind).toBe("unavailable");
+    expect(providerCapacity([], { ok: true, maxGoldens: null }, "modal")).toEqual({ kind: "unknown" });
+    expect(providerCapacity([], { ok: false, reason: "failed" }, "boat")).toEqual({
       kind: "unavailable",
-      reason: "No Boat credential.",
+      reason: "failed",
     });
   });
 });

@@ -59,7 +59,11 @@ type State = {
   /** Per provider: the limit the server reads for the org, or why it cannot (such as not configured). */
   capabilities: Record<
     "boat" | "modal",
-    { maxGoldens: number | null; fail: { status: number; code?: string; message: string } | null }
+    {
+      maxGoldens: number | null;
+      bindings?: Row[] | null | undefined;
+      fail: { status: number; code?: string; message: string } | null;
+    }
   >;
   otpEmails: string[];
   /** The registry's connections. `authentication` is the write-only value; no response ever includes it. */
@@ -1141,7 +1145,28 @@ function goldenCapabilities(body: Row, request: Request): Response {
       failure.code ? { error: { code: failure.code, message: failure.message } } : { error: failure.message },
       failure.status,
     );
-  return json({ provider, maxGoldens: entry.maxGoldens }, 200, { "cache-control": "no-store" });
+  return json(
+    {
+      provider,
+      maxGoldens: entry.maxGoldens,
+      ...(entry.bindings === null
+        ? {}
+        : {
+            bindings:
+              entry.bindings ??
+              state.goldens
+                .filter(
+                  (g) =>
+                    g.org_id === body.org &&
+                    g.provider === provider &&
+                    (g.visibility === "org" || g.owner_id === userId),
+                )
+                .map((g) => ({ goldenId: g.id, relation: "current_backend", busy: false })),
+          }),
+    },
+    200,
+    { "cache-control": "no-store" },
+  );
 }
 
 /**
@@ -1358,6 +1383,7 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/capabilities") {
     const provider = body.provider === "modal" ? "modal" : "boat";
     state.capabilities[provider] = {
+      bindings: body.bindings as Row[] | null | undefined,
       maxGoldens: body.maxGoldens === null ? null : Number(body.maxGoldens ?? 1),
       fail: body.fail ? (body.fail as { status: number; code?: string; message: string }) : null,
     };
