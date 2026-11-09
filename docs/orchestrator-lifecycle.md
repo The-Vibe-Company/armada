@@ -181,3 +181,41 @@ owned reservation. A different resource, missing closure evidence, or a
 contradictory no-allocation claim keeps the outcome uncertain. This releases an
 explicit owner concurrency reservation only after confirmation, never by quota
 polling, absence, another allocation or stopping an unrelated resource.
+
+## Scoped epoch tool gateway (not the owner dispatcher)
+
+Production wiring now includes a dedicated gateway route in the paired service
+bundle, mounted before owner control routes. The trusted server factory provides
+`scopedMcpUrl`, constructed as
+`PUBLIC_ORIGIN/api/v1/orchestrator-tools/mcp`. Pass this exact value into actual
+#662 private bootstrap `backend.mcpUrl` and `createOrchestratorServices`.
+Construction rejects the generic owner `/mcp` path, and backend resolution
+rejects a different URL before any owner-side SDK action. #662 continues to own
+the private compare-install/ACK/scrub adapter; no grant enters URL, argv or files.
+
+The stateless MCP names `launch`, `read`, `message`, `stop` map to actual #661
+`worker:launch`, `worker:read`, `worker:message`, `worker:stop`. Each data/effect
+call goes through the actual scoped child service/`Authority.admit`, not a forged
+`Caller`, owner API dispatcher or generic sandbox API. Initialize/tool-list data
+are static protocol metadata, not proof of an authenticated principal. Neither
+owner sessions nor service tokens are accepted as epoch credentials here.
+
+Private REST POST `/api/v1/orchestrator-tools/{launch,read,message,stop}` shares
+the same strict argument validation. Mutations require the `Idempotency-Key`
+header; MCP mutations require the `idempotencyKey` argument. Payloads are read
+with a bounded stream. Unknown fields, methods, admin/credential/exec/general
+owner actions deny. Repeated MCP/REST mutations share the same durable receipts.
+
+Known proposed `wait_record`, `wait_renew`, `wait_complete` routes return
+`admit_wait_not_supported` and are not listed as MCP tools. They will require the
+reviewed actual `admitWait`/permission boundary described above; the owner-only
+wait service is never used as a delegated fallback. This code does not claim
+that the proposed `work:wait` scope exists today.
+
+Child launch executes the actual core launcher directly, preserving selected
+repository, optional actual `MachineSize` and idempotency selection. It does not
+proxy through legacy owner HTTP. If a remote HTTP executor is supplied, it must
+use actual `/api/v1/sandbox/launch-sized-v1` with `sizePolicyVersion: 1` whenever
+sizing/policy semantics matter, and must fail on 404 rather than retry legacy
+launch. No selected repository means no repository default. Actual #658 source
+`ea501bd2a7187fa788b96914c23aa1fe68b4d8b3` remains the sizing contract.

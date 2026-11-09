@@ -23,6 +23,7 @@ import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModelUsageApi } from "./model-usage.ts";
+import { orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
 import type { OrchestratorServiceBundle } from "./orchestrator-services.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { pruneResourceObservations } from "./resource-store.ts";
@@ -45,6 +46,7 @@ export async function startServer(
     orchestrators?: (context: {
       sql: Sql;
       providers: ProviderRegistry;
+      scopedMcpUrl: string;
     }) => OrchestratorServiceBundle | Promise<OrchestratorServiceBundle>;
     log?: (line: string) => void;
     /** Failures the server absorbs (an unavailable auth lookup, a tool that failed inside). Redacted. Defaults to stderr. */
@@ -129,7 +131,11 @@ export async function startServer(
     encryptionKey: config.encryptionKey,
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
-  const orchestrators = await options.orchestrators?.({ sql, providers });
+  const orchestrators = await options.orchestrators?.({
+    sql,
+    providers,
+    scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
+  });
   const control: ConfiguredControlOptions = {
     credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey),
     modelUsage: createModelUsageApi(sql),
@@ -192,7 +198,13 @@ export async function startServer(
     modalProviderFor: modal.modalProviderFor,
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
-    routes: [modal.route, mcp.route, (request) => handleControlRequest(request, control), ...(options.routes ?? [])],
+    routes: [
+      ...(orchestrators ? [orchestrators.scopedToolsRoute] : []),
+      modal.route,
+      mcp.route,
+      (request) => handleControlRequest(request, control),
+      ...(options.routes ?? []),
+    ],
     ...(options.logError ? { log: options.logError } : {}),
   });
   const server = Object.assign(Bun.serve({ port: config.port, hostname: "0.0.0.0", fetch: handler }), {

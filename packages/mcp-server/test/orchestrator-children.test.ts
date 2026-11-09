@@ -837,3 +837,221 @@ test("registered failed child with confirmed stopped compute releases explicit c
     await db.close();
   }
 });
+
+test("production scoped MCP/API gateway uses epoch child authority and never owner dispatch", async () => {
+  const { db, sql, p, id, parent, authority, token, selection } = await fixture();
+  const { ORCHESTRATOR_SCOPED_PATH, orchestratorScopedMcpUrl } = await import("../src/orchestrator-scoped-gateway.ts");
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+  const { createOrchestratorServices } = await import("../src/orchestrator-services.ts");
+  const boat = fakeBoat();
+  const clients: InstanceType<typeof Client>[] = [];
+  try {
+    let reads = 0;
+    const executor: OrchestratorChildExecutor = {
+      async launch(op, chosen) {
+        return launchOrchestratorChild({
+          sql,
+          provider: boat.provider,
+          operation: op,
+          selection: chosen,
+          stores: {
+            goldens: createSqlGoldenStore(sql),
+            sandboxes: createSqlSandboxStore(sql),
+            credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
+          },
+          namedCredentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
+        });
+      },
+      async read(sandboxId) {
+        reads++;
+        return (await sql.query("select id,status from sandboxes where id=$1", [sandboxId])).rows[0];
+      },
+      async message(op, text) {
+        const child = (
+          await sql.query<{ provider_sandbox_id: string; harness: "claude" | "codex" }>(
+            "select provider_sandbox_id,harness from sandboxes where id=$1",
+            [op.sandboxId],
+          )
+        ).rows[0];
+        if (!child) throw Error("missing owned child");
+        await boat.provider.prompt({ sandboxId: child.provider_sandbox_id, harness: child.harness, text });
+      },
+      async stop(op) {
+        const child = (
+          await sql.query<{ provider_sandbox_id: string }>("select provider_sandbox_id from sandboxes where id=$1", [
+            op.sandboxId,
+          ])
+        ).rows[0];
+        if (!child) throw Error("missing owned child");
+        await boat.provider.stop({ sandboxId: child.provider_sandbox_id });
+      },
+      async reconcile(op) {
+        return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
+      },
+    };
+    const serviceInput: Parameters<typeof createOrchestratorServices>[1] = {
+      scopedMcpUrl: orchestratorScopedMcpUrl("https://armada.example.com"),
+      runtime: {
+        authority,
+        reserveOperation: reserveOrchestratorOperation,
+        skillRevision: "78884de87066851b75e09cbda134606c0a8bc6d7",
+        async resolveBackend() {
+          throw Error("delegated token must never enter owner dispatcher");
+        },
+      },
+      childAuthority: authority,
+      childExecutor: executor,
+      evidence: {
+        async inspect() {
+          throw Error("owner wait fallback forbidden");
+        },
+      },
+      lifecycleRuntime: {
+        async observe(machine) {
+          return { ...machine, physicalGeneration: null, state: "unknown", evidence: "unused-worker" };
+        },
+        async stop() {
+          throw Error("no parent lifecycle action in scopedtool test");
+        },
+        async reconcileStop() {
+          throw Error("no parent lifecycle action");
+        },
+      },
+    };
+    const bundle = createOrchestratorServices(sql, serviceInput);
+    expect(() =>
+      createOrchestratorServices(sql, { ...serviceInput, scopedMcpUrl: "https://armada.example.com/mcp" }),
+    ).toThrow("Scoped gateway path");
+    const route = bundle.scopedToolsRoute;
+    const clientFor = async (secret: string) => {
+      const client = new Client({ name: "scoped-native-fixture", version: "1" });
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(`https://armada.example.com${ORCHESTRATOR_SCOPED_PATH}/mcp`), {
+          fetch: async (input, init) =>
+            (await route(new Request(String(input), init))) ?? new Response(null, { status: 404 }),
+          requestInit: { headers: { authorization: `Bearer ${secret}` } },
+        }),
+      );
+      clients.push(client);
+      return client;
+    };
+    const client = await clientFor(token);
+    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(["launch", "message", "read", "stop"]);
+    const launched = await client.callTool({
+      name: "launch",
+      arguments: { idempotencyKey: "mcp-child", selection: { ...selection, size: "small" } },
+    });
+    expect(launched.isError).not.toBe(true);
+    const receipt = (
+      launched.structuredContent as { result: { id: string; sandboxId: string; state: string } } | undefined
+    )?.result;
+    if (!receipt) throw new Error("Scoped launch receipt missing.");
+    expect(receipt.state).toBe("succeeded");
+    expect(boat.forks[0]?.size).toBe("small");
+    expect((await client.callTool({ name: "read", arguments: { sandboxId: receipt.sandboxId } })).isError).not.toBe(
+      true,
+    );
+    expect((await client.callTool({ name: "read", arguments: { sandboxId: parent.id } })).isError).toBe(true);
+    const unrelated = await createSqlSandboxStore(sql).insert({
+      id: crypto.randomUUID(),
+      provider: "boat",
+      providerSandboxId: "same-owner-unrelated-worker",
+      goldenId: selection.goldenId,
+      orgId: p.org,
+      ownerId: p.owner,
+      harness: "claude",
+      status: "running",
+      model: "m",
+      reasoningEffort: "medium",
+      visibility: "private",
+    });
+    expect((await client.callTool({ name: "read", arguments: { sandboxId: unrelated.id } })).isError).toBe(true);
+    expect(reads).toBe(1);
+    expect(
+      (
+        await client.callTool({
+          name: "message",
+          arguments: {
+            idempotencyKey: "mcp-child-message",
+            sandboxId: receipt.sandboxId,
+            text: "continue the same ticket",
+          },
+        })
+      ).isError,
+    ).not.toBe(true);
+    expect(boat.prompts).toHaveLength(1);
+    const api = async (method: string, payload: unknown, secret = token, key?: string) =>
+      (await route(
+        new Request(`https://armada.example.com${ORCHESTRATOR_SCOPED_PATH}/${method}`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${secret}`,
+            "content-type": "application/json",
+            ...(key ? { "idempotency-key": key } : {}),
+          },
+          body: JSON.stringify(payload),
+        }),
+      )) ?? new Response(null, { status: 404 });
+    expect((await api("launch", { selection: { ...selection, size: "small" } }, token, "mcp-child")).status).toBe(200);
+    expect(boat.forks).toHaveLength(1);
+    expect((await api("stop", { sandboxId: receipt.sandboxId }, token, "api-child-stop")).status).toBe(200);
+    expect((await api("stop", { sandboxId: receipt.sandboxId }, token, "api-child-stop")).status).toBe(200);
+    expect(boat.stops).toHaveLength(1);
+    for (const method of ["exec", "credentials", "admin", "owner", "token_create"])
+      expect((await api(method, {})).status).toBe(403);
+    expect((await api("wait_record", { kind: "child", reference: receipt.sandboxId })).status).toBe(503);
+    const denied = await api("read", { sandboxId: unrelated.id });
+    expect(denied.status).toBe(403);
+    expect((await denied.text()).includes(token)).toBe(false);
+    expect(
+      (
+        await route(
+          new Request(`https://armada.example.com${ORCHESTRATOR_SCOPED_PATH}/launch`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+            body: "x".repeat(129 * 1024),
+          }),
+        )
+      )?.status,
+    ).toBe(400);
+    expect((await api("read", { sandboxId: receipt.sandboxId }, "armada_owner_session_not_epoch")).status).toBe(401);
+    expect(
+      (
+        await api(
+          "launch",
+          { selection: { ...selection, method: "read", childId: receipt.sandboxId } },
+          token,
+          "injected",
+        )
+      ).status,
+    ).toBe(400);
+    let readonly = "";
+    await authority.installEpoch(
+      id,
+      {
+        async deliver(secret) {
+          readonly = secret;
+          return { acknowledged: true };
+        },
+        async scrub() {},
+      },
+      { scopes: ["worker:read"], goldenIds: [], credentialIds: [] },
+    );
+    const reader = await clientFor(readonly);
+    expect((await reader.callTool({ name: "read", arguments: { sandboxId: receipt.sandboxId } })).isError).not.toBe(
+      true,
+    );
+    expect(
+      (await reader.callTool({ name: "launch", arguments: { idempotencyKey: "read-scope-cannot-launch", selection } }))
+        .isError,
+    ).toBe(true);
+    expect((await client.callTool({ name: "read", arguments: { sandboxId: receipt.sandboxId } })).isError).toBe(true); // old epoch
+    await sql.query("delete from members where org_id=$1 and user_id=$2", [p.org, p.owner]);
+    expect((await reader.callTool({ name: "read", arguments: { sandboxId: receipt.sandboxId } })).isError).toBe(true);
+    expect(boat.forks).toHaveLength(1);
+  } finally {
+    for (const client of clients) await client.close();
+    await db.close();
+  }
+});
