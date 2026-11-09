@@ -660,7 +660,29 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         });
       });
     },
-    getPrompt: (r) => call(r.sandboxId, "getPrompt", r),
+    async getPrompt(r) {
+      const row = await store.get(r.sandboxId);
+      assertMachineSource(row);
+      // Observation must never use ready(): a stop racing this read must not activate a new generation.
+      if (row.phase === "active") return runner.call(row, "getPrompt", r);
+      let cursor: string | undefined;
+      let latest: import("@armada/core").AgentEvent | undefined;
+      for (;;) {
+        const page = await store.events({ sandboxId: r.sandboxId, limit: 1000, ...(cursor ? { cursor } : {}) });
+        for (const event of page.events) if (event.kind === "prompt" && event.promptId === r.promptId) latest = event;
+        if (!page.hasMore) break;
+        if (!page.cursor || page.cursor === cursor)
+          throw refusal("unavailable", "Prompt event cursor did not advance.");
+        cursor = page.cursor;
+      }
+      if (latest?.kind !== "prompt") throw refusal("not_found", "No durable prompt observation found.");
+      return {
+        promptId: r.promptId,
+        ...(latest.conversationId ? { conversationId: latest.conversationId } : {}),
+        status: latest.status,
+        done: !["queued", "running"].includes(latest.status),
+      };
+    },
     steer(r) {
       if (!r.conversationId) throw refusal("invalid_request", "Modal steering requires conversationId.");
       return admit(r.sandboxId, async (row, save) => {
