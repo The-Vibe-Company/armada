@@ -1,10 +1,11 @@
 "use client";
 
-import { type Harness, ORCHESTRATOR_DEFAULTS, type SandboxProviderId } from "@armada/core";
+import { type Harness, type MachineSizePolicy, ORCHESTRATOR_DEFAULTS, type SandboxProviderId } from "@armada/core";
 import { ChevronRightIcon, Loader2Icon, PlusIcon } from "lucide-react";
 import Link from "next/link";
 import { startTransition, useActionState, useEffect, useId, useRef, useState } from "react";
 import { createOrchestrator, type OrchestratorResult } from "@/app/actions/orchestrators";
+import { MachineSizeField } from "@/components/machine-size-field";
 import { type ModelCatalog, ModelFields } from "@/components/model-fields";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,7 +23,14 @@ import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { idleChoices, type ModelAccount } from "@/lib/orchestrators";
 
-export type CreateGolden = { id: string; name: string; provider: SandboxProviderId; repositories: string[] };
+export type CreateGolden = {
+  id: string;
+  name: string;
+  provider: SandboxProviderId;
+  repositories: string[];
+  /** The golden's size policy, `null` when none is set; absent when it cannot be read here: no size is offered then. */
+  sizing?: { policy: MachineSizePolicy | null };
+};
 
 /**
  * Creates an orchestrator: a name, the golden it runs from (which fixes the provider), the agent, its model and the
@@ -47,6 +55,10 @@ export function CreateOrchestrator({
   const [goldenId, setGoldenId] = useState(goldens[0]?.id ?? "");
   const [harness, setHarness] = useState<Harness>("claude");
   const golden = goldens.find((row) => row.id === goldenId);
+  // The working directory follows the golden; the size default follows the working directory.
+  const [picked, setPicked] = useState<{ golden: string; dir: string } | null>(null);
+  const initialDir = golden?.repositories.length === 1 ? (golden.repositories[0] ?? "") : "";
+  const repository = picked?.golden === goldenId ? picked.dir : initialDir;
   const usable = accounts.ok ? accounts.accounts.filter((account) => account.harness === harness) : [];
   const preferred = usable.find((account) => account.isDefault) ?? usable[0];
 
@@ -166,10 +178,10 @@ export function CreateOrchestrator({
                 <div className="space-y-2">
                   <Label htmlFor={`${id}-repo`}>Working directory</Label>
                   <NativeSelect
-                    key={goldenId}
                     id={`${id}-repo`}
                     name="repo"
-                    defaultValue={golden?.repositories.length === 1 ? golden.repositories[0] : ""}
+                    value={repository}
+                    onChange={(event) => setPicked({ golden: goldenId, dir: event.target.value })}
                     disabled={!golden || golden.repositories.length === 0}
                   >
                     <option value="">Default directory</option>
@@ -180,6 +192,15 @@ export function CreateOrchestrator({
                     ))}
                   </NativeSelect>
                 </div>
+                {golden?.sizing && (
+                  <MachineSizeField
+                    key={goldenId}
+                    idPrefix={id}
+                    provider={golden.provider}
+                    policy={golden.sizing.policy}
+                    repositoryDir={repository}
+                  />
+                )}
                 <div className="space-y-2">
                   <Label htmlFor={`${id}-idle`}>Stop after inactivity</Label>
                   <NativeSelect

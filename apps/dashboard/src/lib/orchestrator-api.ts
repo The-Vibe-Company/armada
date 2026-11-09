@@ -1,8 +1,9 @@
-import type { OrchestratorCreate, OrchestratorDetail, OrchestratorOperation } from "@armada/core";
+import type { OrchestratorDetail, OrchestratorOperation } from "@armada/core";
 import {
   type Command,
   isIdempotencyKey,
   isOrchestratorId,
+  type OrchestratorCreateRequest,
   type OrchestratorFeedPage,
   type OrchestratorListView,
   parseOperation,
@@ -142,7 +143,7 @@ export function createOrchestratorApi(options: OrchestratorApiOptions) {
       return parseOrchestratorEventPage(await call("GET", `${path(id, "/events")}?${query}`), id);
     },
     /** 202 with the create receipt, which names the new orchestrator's id. */
-    async create(request: OrchestratorCreate, key: string): Promise<OrchestratorOperation> {
+    async create(request: OrchestratorCreateRequest, key: string): Promise<OrchestratorOperation> {
       try {
         return receipt(await call("POST", ORCHESTRATORS_PATH, request, requireKey(key)));
       } catch (error) {

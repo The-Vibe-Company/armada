@@ -1,6 +1,6 @@
 "use client";
 
-import type { OrchestratorDetail } from "@armada/core";
+import type { MachineSize, OrchestratorDetail } from "@armada/core";
 import {
   AlertTriangleIcon,
   ChevronRightIcon,
@@ -46,6 +46,7 @@ import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { projectChat, STEER_RESTARTS_TURN } from "@/lib/chat";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
+import { MACHINE_SIZE_LABELS } from "@/lib/machine-size";
 import type { OrchestratorFailure } from "@/lib/orchestrator-api";
 import {
   type Attempt,
@@ -55,6 +56,7 @@ import {
   CONTINUITY_LABELS,
   type Command,
   childrenOf,
+  configuredSize,
   formatDuration,
   mergeFeed,
   type OrchestratorFeedEvent,
@@ -588,6 +590,10 @@ function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: Orche
     ["Model", `${config.model}${config.reasoningEffort ? ` · ${config.reasoningEffort}` : ""}`],
     ["Provider", PROVIDER_LABELS[config.provider]],
     ["Golden", facts.golden],
+    // Only a size the owner chose; otherwise the server resolved the repository's or golden's default, not shown here.
+    ...(configuredSize(config)
+      ? [["Machine size", MACHINE_SIZE_LABELS[configuredSize(config) as MachineSize]] as [string, string]]
+      : []),
     ...(config.repo ? [["Working directory", config.repo] as [string, string]] : []),
     ["Last activity", relativeAge(orchestrator.lastActivityAt, now) ?? "Unknown"],
     // Only a limit the owner chose explicitly: no provisional default is shown or implied.

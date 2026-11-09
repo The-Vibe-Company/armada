@@ -8,6 +8,7 @@ import { listGoldens } from "@/lib/data/goldens";
 import { listModelAccounts, viewerOrchestrators } from "@/lib/data/orchestrators";
 import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
+import { goldenSizing } from "@/lib/machine-size";
 import { OrchestratorApiError, type OrchestratorFailure } from "@/lib/orchestrator-api";
 import {
   type Command,
@@ -71,8 +72,15 @@ export async function createOrchestrator(
       account: formString(data, "account"),
       repo: formString(data, "repo"),
       idleSeconds: formString(data, "idle_seconds"),
+      size: formString(data, "size"),
     },
-    { provider: golden.provider, repositories: goldenRepositoryDirs(golden.config), accounts: accounts.accounts },
+    {
+      provider: golden.provider,
+      repositories: goldenRepositoryDirs(golden.config),
+      accounts: accounts.accounts,
+      // The same rule as the form: a size is accepted only where the golden's size policy reads.
+      sizes: goldenSizing(golden, goldenRepositoryDirs(golden.config)).kind === "ready",
+    },
   );
   if (!request.ok) return invalid(request.error);
   let orchestratorId: string;

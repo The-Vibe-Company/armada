@@ -309,3 +309,49 @@ test("while its events cannot be read, the orchestrator's state and controls sta
   await expect(page.getByRole("button", { name: "Resume" })).toBeVisible();
   await expect(messages(page).getByText("Launched two workers.")).toBeVisible();
 });
+
+test("create offers the golden's sizes, follows its defaults, and sends a size only when chosen", async ({ page }) => {
+  const response = await fetch(`${MOCK}/__test/reset`, {
+    method: "POST",
+    body: JSON.stringify({ sizePolicies: true }),
+  });
+  expect(response.ok).toBe(true);
+  await signIn(page, "alice@example.com", "/orchestrators");
+  await page.getByRole("button", { name: "New orchestrator" }).click();
+  const dialog = page.getByRole("dialog", { name: "New orchestrator" });
+  await dialog.getByLabel("Name").fill("Sized");
+  await dialog.getByLabel("Golden").selectOption({ label: "shared-golden · Boat" });
+  await dialog.getByText("Advanced").click();
+  const size = dialog.getByLabel("Machine size");
+  await expect(size.locator("option").first()).toHaveText(/Default · Medium \(golden\)/);
+  await dialog.getByLabel("Working directory").selectOption("api");
+  await expect(size.locator("option").first()).toHaveText(/Default · Large \(repository\)/);
+  await size.selectOption("xlarge");
+  await dialog.getByRole("button", { name: "Create" }).click();
+  await page.waitForURL(/\/orchestrators\/00000000-0000-4000-8000-000000000182$/);
+  const [create] = await calls();
+  expect(create?.body).toMatchObject({ repo: "api", size: "xlarge" });
+  const side = page.getByRole("complementary", { name: "Orchestrator details" });
+  await expect(side.getByText("Machine size")).toBeVisible();
+  await expect(side.getByText("Extra large")).toBeVisible();
+});
+
+test("without a chosen size, create sends none and the details show none", async ({ page }) => {
+  const response = await fetch(`${MOCK}/__test/reset`, {
+    method: "POST",
+    body: JSON.stringify({ sizePolicies: true }),
+  });
+  expect(response.ok).toBe(true);
+  await signIn(page, "alice@example.com", "/orchestrators");
+  await page.getByRole("button", { name: "New orchestrator" }).click();
+  const dialog = page.getByRole("dialog", { name: "New orchestrator" });
+  await dialog.getByLabel("Name").fill("Unsized");
+  await dialog.getByLabel("Golden").selectOption({ label: "shared-golden · Boat" });
+  await dialog.getByRole("button", { name: "Create" }).click();
+  await page.waitForURL(/\/orchestrators\/00000000-0000-4000-8000-000000000182$/);
+  const [create] = await calls();
+  expect(create?.body).not.toHaveProperty("size");
+  await expect(page.getByRole("complementary", { name: "Orchestrator details" }).getByText("Machine size")).toHaveCount(
+    0,
+  );
+});

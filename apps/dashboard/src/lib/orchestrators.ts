@@ -4,6 +4,8 @@ import {
   type Harness,
   isSandboxProvider,
   LaunchError,
+  MACHINE_SIZES,
+  type MachineSize,
   ORCHESTRATOR_CONTRACT_VERSION,
   ORCHESTRATOR_DEFAULTS,
   type Orchestrator,
@@ -50,7 +52,21 @@ function checkVersion(value: Record<string, unknown>): void {
     );
 }
 
-function parseConfiguration(value: unknown): OrchestratorCreate | null {
+/**
+ * `OrchestratorCreate` with the optional machine size of the #662 size contract (b6ca6e1:
+ * `OrchestratorCreate.size?: MachineSize`, validated against `MACHINE_SIZES`). Until that core lands this names the
+ * field here; afterwards the intersection is the core type itself. Absent, the server resolves the repository's, then
+ * the golden's default (#653), never a dashboard guess.
+ */
+export type OrchestratorCreateRequest = OrchestratorCreate & { size?: MachineSize };
+
+/** The size the owner chose explicitly, or null: the effective default is resolved by the server, not shown here. */
+export function configuredSize(configuration: OrchestratorCreate): MachineSize | null {
+  const size = (configuration as OrchestratorCreateRequest).size;
+  return size && MACHINE_SIZES.includes(size) ? size : null;
+}
+
+function parseConfiguration(value: unknown): OrchestratorCreateRequest | null {
   if (!isRecord(value)) return null;
   const {
     orgId,
@@ -64,11 +80,13 @@ function parseConfiguration(value: unknown): OrchestratorCreate | null {
     modelAccountId,
     idleSeconds,
     maxActiveChildren,
+    size,
   } = value;
   if (!str(orgId) || !str(name) || !str(goldenId) || !str(model) || !str(modelAccountId)) return null;
   if (!isSandboxProvider(provider) || !oneOf(HARNESSES, harness)) return null;
   if (repo !== undefined && !str(repo)) return null;
   if (reasoningEffort !== undefined && !str(reasoningEffort)) return null;
+  if (size !== undefined && !oneOf(MACHINE_SIZES, size)) return null;
   // Fields the contract does not define (such as the withdrawn daily start quota) are ignored, never shown.
   for (const limit of [idleSeconds, maxActiveChildren]) if (limit !== undefined && !count(limit)) return null;
   return {
@@ -84,6 +102,7 @@ function parseConfiguration(value: unknown): OrchestratorCreate | null {
     ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
     ...(idleSeconds === undefined ? {} : { idleSeconds: idleSeconds as number }),
     ...(maxActiveChildren === undefined ? {} : { maxActiveChildren: maxActiveChildren as number }),
+    ...(size === undefined ? {} : { size }),
   };
 }
 
@@ -484,6 +503,8 @@ export type CreateFields = {
   account: string;
   repo: string;
   idleSeconds: string;
+  /** Empty: the default applies and no size is sent. */
+  size: string;
 };
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -495,8 +516,14 @@ type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
  */
 export function orchestratorCreateRequest(
   fields: CreateFields,
-  offered: { provider: string; repositories: readonly string[]; accounts: readonly ModelAccount[] },
-): Parsed<OrchestratorCreate> {
+  offered: {
+    provider: string;
+    repositories: readonly string[];
+    accounts: readonly ModelAccount[];
+    /** The golden's size policy is readable here, so a size was offered. */
+    sizes: boolean;
+  },
+): Parsed<OrchestratorCreateRequest> {
   const name = fields.name.trim();
   if (name.length < 1 || name.length > 120) return { ok: false, error: "Give it a name of 1 to 120 characters." };
   const harness = HARNESSES.find((candidate) => candidate === fields.harness);
@@ -521,6 +548,9 @@ export function orchestratorCreateRequest(
     idle > ORCHESTRATOR_DEFAULTS.maxIdleSeconds
   )
     return { ok: false, error: "Choose an inactivity period between 15 minutes and 24 hours." };
+  const size = fields.size.trim();
+  if (size && (!offered.sizes || !oneOf(MACHINE_SIZES, size)))
+    return { ok: false, error: "Choose a machine size from the list." };
   let choice: { model: string; reasoningEffort: string };
   try {
     const model = (fields.model === "other" ? fields.otherModel : fields.model).trim() || undefined;
@@ -543,6 +573,7 @@ export function orchestratorCreateRequest(
       reasoningEffort: choice.reasoningEffort,
       modelAccountId: account.id,
       ...(idle === ORCHESTRATOR_DEFAULTS.idleSeconds ? {} : { idleSeconds: idle }),
+      ...(size ? { size: size as MachineSize } : {}),
     },
   };
 }

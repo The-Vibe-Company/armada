@@ -10,6 +10,7 @@ import {
   attemptFor,
   type CreateFields,
   childrenOf,
+  configuredSize,
   idleChoices,
   type ModelAccount,
   OrchestratorContractError,
@@ -182,11 +183,12 @@ function fields(overrides: Partial<CreateFields> = {}): CreateFields {
     account: "acct-1",
     repo: "",
     idleSeconds: String(ORCHESTRATOR_DEFAULTS.idleSeconds),
+    size: "",
     ...overrides,
   };
 }
 
-const OFFERED = { provider: "boat", repositories: ["web", "api"], accounts: ACCOUNTS };
+const OFFERED = { provider: "boat", repositories: ["web", "api"], accounts: ACCOUNTS, sizes: true };
 
 test("create builds the v1 request with the catalog's defaults and omits limits the person left alone", () => {
   const request = orchestratorCreateRequest(fields(), OFFERED);
@@ -474,4 +476,20 @@ test("an unverified conversation is flagged only once it is stopped, where it ex
   expect(orchestratorControls(detail({ continuity: "unverified" }), false).notice).toBeNull();
   const stopped = orchestratorControls(detail({ state: "stopped", continuity: "unverified" }), false);
   expect(stopped.notice?.title).toBe("Conversation not verified");
+});
+
+test("a machine size is sent only when chosen from the offered sizes; otherwise the server's default applies", () => {
+  const plain = orchestratorCreateRequest(fields(), OFFERED);
+  expect(plain.ok && "size" in plain.value).toBe(false);
+  const chosen = orchestratorCreateRequest(fields({ size: "large", repo: "api" }), OFFERED);
+  expect(chosen.ok && chosen.value).toMatchObject({ size: "large", repo: "api" });
+  expect(orchestratorCreateRequest(fields({ size: "huge" }), OFFERED).ok).toBe(false);
+  expect(orchestratorCreateRequest(fields({ size: "large" }), { ...OFFERED, sizes: false }).ok).toBe(false);
+});
+
+test("a configured size is read and kept; an unknown one makes the configuration unreadable", () => {
+  const sized = detail({ configuration: { ...orchestrator().configuration, size: "xlarge" } });
+  expect(configuredSize(sized.orchestrator.configuration)).toBe("xlarge");
+  expect(configuredSize(detail().orchestrator.configuration)).toBeNull();
+  expect(() => detail({ configuration: { ...orchestrator().configuration, size: "huge" } })).toThrow();
 });

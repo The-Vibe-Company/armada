@@ -14,6 +14,7 @@ import { listModelAccounts, readFailure, viewerOrchestrators } from "@/lib/data/
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { HARNESS_LABELS } from "@/lib/labels";
+import { goldenSizing } from "@/lib/machine-size";
 import type { OrchestratorApi } from "@/lib/orchestrator-api";
 import { type OrchestratorListView, timeUntil } from "@/lib/orchestrators";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
@@ -62,12 +63,18 @@ export default async function OrchestratorsPage() {
     : [[], null];
   const creatable = goldens
     .filter((golden) => golden.provider_snapshot_id)
-    .map((golden) => ({
-      id: golden.id,
-      name: golden.name,
-      provider: golden.provider,
-      repositories: goldenRepositoryDirs(golden.config),
-    }));
+    .map((golden) => {
+      const repositories = goldenRepositoryDirs(golden.config);
+      const sizing = goldenSizing(golden, repositories);
+      return {
+        id: golden.id,
+        name: golden.name,
+        provider: golden.provider,
+        repositories,
+        // A size is offered only where the golden's policy reads (#653); otherwise the server's default applies.
+        ...(sizing.kind === "ready" ? { sizing: { policy: sizing.policy } } : {}),
+      };
+    });
   const create =
     list && accounts && creatable.length > 0 ? (
       <CreateOrchestrator orgId={selected.org.id} goldens={creatable} accounts={accounts} catalog={MODEL_CATALOG} />
