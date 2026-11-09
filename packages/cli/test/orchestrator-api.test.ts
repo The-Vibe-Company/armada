@@ -191,3 +191,51 @@ test("bad version or nonadvancing drain cursor fails rather than silently loopin
     expect(h.requests).toHaveLength(1);
   }
 });
+
+test("create forwards only an explicit canonical size, leaving absent size and child limits to server policy", async () => {
+  const create = [
+    "create",
+    "coordinator",
+    "--org",
+    "org-1",
+    "--golden",
+    "golden-1",
+    "--provider",
+    "boat",
+    "--agent",
+    "claude",
+    "--model",
+    "model-1",
+    "--model-account",
+    "account-1",
+    "--repo",
+    "web",
+    "--idempotency-key",
+    "create-key",
+    "--json",
+  ];
+  for (const size of [undefined, "small", "medium", "large", "xlarge"]) {
+    const h = harness(() => Response.json({ ...receipt, kind: "create" }, { status: 202 }));
+    expect((await h.invoke([...create, ...(size ? ["--size", size] : [])])).code).toBe(0);
+    const body = await h.requests[0]?.json();
+    expect(body).toEqual({
+      version: 1,
+      orgId: "org-1",
+      name: "coordinator",
+      goldenId: "golden-1",
+      provider: "boat",
+      harness: "claude",
+      model: "model-1",
+      modelAccountId: "account-1",
+      repo: "web",
+      ...(size ? { size } : {}),
+    });
+  }
+  for (const size of ["default", "huge"]) {
+    const h = harness(() => {
+      throw new Error("must not transport invalid size");
+    });
+    expect((await h.invoke([...create, "--size", size])).code).toBe(2);
+    expect(h.requests).toHaveLength(0);
+  }
+});

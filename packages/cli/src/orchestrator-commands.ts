@@ -10,6 +10,7 @@ import {
   type OrchestratorList,
   type OrchestratorMessage,
   type OrchestratorOperation,
+  parseMachineSize,
 } from "@armada/core";
 import { type Args, parseArgs, single } from "./args.ts";
 import { createArmadaApiClient } from "./armada-api.ts";
@@ -18,13 +19,14 @@ import type { AuthIo } from "./auth-commands.ts";
 export const ORCHESTRATOR_HELP = `Usage: armada orchestrator <command> [options]
   create <name> --org <id> --golden <id> --provider boat|modal --agent claude|codex
          --model <id> --model-account <id> [--reasoning-effort <level>] [--repo <repository>]
-         [--idle-seconds <900..86400>] --idempotency-key <key>
+         [--size small|medium|large|xlarge] [--idle-seconds <900..86400>] --idempotency-key <key>
   list --org <id> [--cursor <cursor>] [--limit <1..100>]
   capabilities
   detail <id> --org <id>
   send|steer <id> <text> --org <id> --expected-revision <revision> --idempotency-key <key>
   stop|resume <id> --org <id> --expected-revision <revision> --idempotency-key <key>
   events <id> --org <id> [--cursor <cursor>] [--limit <1..500>] [--all|--follow]
+  Omit --size to use server repository > golden > legacy defaults.
   All commands accept --json. Events with --json emit one JSON page per line,
   including the server cursor for reconnect. Reuse the original key and identical
   arguments after an uncertain mutation; inspect detail/events for completion.
@@ -55,6 +57,7 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
     "--expected-revision",
     "--cursor",
     "--limit",
+    "--size",
   ]);
   const [action, ...positionals] = args.positionals;
   const common = {
@@ -79,6 +82,7 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
       "--reasoning-effort",
       "--repo",
       "--idle-seconds",
+      "--size",
       "--idempotency-key",
     );
     const provider = required(args, "--provider");
@@ -94,6 +98,8 @@ export function parseOrchestratorCommand(argv: readonly string[]): OrchestratorC
       harness,
       model: required(args, "--model"),
       modelAccountId: required(args, "--model-account"),
+      // Actual #662 b6ca6e1 additive size field; shared #653 validator, no local policy.
+      ...(single(args, "--size") === undefined ? {} : { size: parseMachineSize(single(args, "--size")) }),
     };
     const repo = single(args, "--repo");
     const effort = single(args, "--reasoning-effort");
