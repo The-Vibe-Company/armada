@@ -220,10 +220,14 @@ function useVisibleViewport(root: RefObject<HTMLElement | null>) {
     const release = () => {
       content.style.removeProperty("top");
       content.style.removeProperty("max-height");
+      content.style.removeProperty("transition-property");
       delete content.dataset.visibleViewport;
     };
     const fit = () => {
-      if (window.innerHeight - viewport.height < 1 && viewport.offsetTop < 1) return release();
+      // A pinch zoom also shrinks the visual viewport; only a keyboard does so at scale 1.
+      if (viewport.scale > 1 || (window.innerHeight - viewport.height < 1 && viewport.offsetTop < 1)) return release();
+      // No easing: the bounds apply now, so the focused field below is measured where it will stay.
+      content.style.transitionProperty = "none";
       content.style.top = `${viewport.offsetTop + viewport.height / 2}px`;
       content.style.maxHeight = `${Math.max(viewport.height - 16, 0)}px`;
       content.dataset.visibleViewport = "";

@@ -119,43 +119,52 @@ test("errors are never hidden: an invalid override opens Advanced, a refused lau
 
 /**
  * A phone keyboard, as browsers report it: the visual viewport shrinks while the layout viewport (and `dvh` on iOS)
- * keeps its height. Headless Chromium has no soft keyboard, so the test stands in a visualViewport it controls.
+ * keeps its height, and Safari may also scroll it (`offsetTop`). Headless Chromium has no soft keyboard, so the test
+ * stands in a visualViewport it controls.
  */
 async function emulateKeyboard(page: Page) {
   await page.addInitScript(() => {
     const fake = new EventTarget() as EventTarget & Record<string, number>;
     let covered = 0;
+    let top = 0;
     Object.defineProperties(fake, {
       height: { get: () => window.innerHeight - covered },
       width: { get: () => window.innerWidth },
-      offsetTop: { get: () => 0 },
+      offsetTop: { get: () => top },
       offsetLeft: { get: () => 0 },
-      pageTop: { get: () => window.scrollY },
+      pageTop: { get: () => window.scrollY + top },
       pageLeft: { get: () => window.scrollX },
       scale: { get: () => 1 },
     });
     Object.defineProperty(window, "visualViewport", { configurable: true, get: () => fake });
-    (window as unknown as { keyboard: (px: number) => void }).keyboard = (px) => {
+    (window as unknown as { keyboard: (px: number, offsetTop: number) => void }).keyboard = (px, offsetTop) => {
       covered = px;
       fake.dispatchEvent(new Event("resize"));
+      if (offsetTop === top) return;
+      top = offsetTop;
+      fake.dispatchEvent(new Event("scroll"));
     };
   });
-  return (px: number) =>
-    page.evaluate((value) => (window as unknown as { keyboard: (px: number) => void }).keyboard(value), px);
+  return (px: number, offsetTop = 0) =>
+    page.evaluate(
+      ([value, scrolled]) =>
+        (window as unknown as { keyboard: (px: number, offsetTop: number) => void }).keyboard(value, scrolled),
+      [px, offsetTop] as const,
+    );
 }
 
 /** What the person sees above the keyboard: everything the test names must be inside it. */
-async function expectAboveKeyboard(page: Page, keyboard: number, ...targets: ReturnType<Page["locator"]>[]) {
-  // The dialog eases into its new bounds: measure once it has settled.
-  await page
-    .getByRole("dialog")
-    .evaluate((node) => Promise.all(node.getAnimations().map((animation) => animation.finished)));
-  const visible = (page.viewportSize()?.height ?? 0) - keyboard;
+async function expectAboveKeyboard(
+  page: Page,
+  { keyboard, offsetTop = 0 }: { keyboard: number; offsetTop?: number },
+  ...targets: ReturnType<Page["locator"]>[]
+) {
+  const bottom = offsetTop + (page.viewportSize()?.height ?? 0) - keyboard;
   for (const target of targets) {
     const box = await target.boundingBox();
     if (!box) throw new Error("not rendered");
-    expect(box.y, `${target} starts on screen`).toBeGreaterThanOrEqual(0);
-    expect(box.y + box.height, `${target} ends above the keyboard`).toBeLessThanOrEqual(visible);
+    expect(box.y, `${target} starts in the visible part`).toBeGreaterThanOrEqual(offsetTop);
+    expect(box.y + box.height, `${target} ends above the keyboard`).toBeLessThanOrEqual(bottom);
   }
 }
 
@@ -168,24 +177,29 @@ test("on a phone the keyboard never covers Launch, the field being typed or an e
   const task = dialog.getByLabel("Task");
   const launch = dialog.getByRole("button", { name: "Launch", exact: true });
   await expect(task).toBeFocused();
-  const KEYBOARD = 300;
-  await keyboard(KEYBOARD);
+  await keyboard(300);
   await task.fill("Fix the flaky login test");
-  await expectAboveKeyboard(page, KEYBOARD, task, launch);
+  await expectAboveKeyboard(page, { keyboard: 300 }, task, launch);
   await page.screenshot({ path: "test-results/launch-keyboard-mobile.png", animations: "disabled" });
 
-  // A field lower in the form, reached with the keyboard still open, is scrolled into the fields' region.
+  // Safari scrolls the visible part to the field: the dialog follows it.
+  await keyboard(300, 120);
+  await expectAboveKeyboard(page, { keyboard: 300, offsetTop: 120 }, task, launch);
+  await keyboard(0);
+
+  // The usual order: a lower field is tapped first, then the keyboard opens over it.
   await dialog.locator("[data-launch-advanced] > summary").click();
-  await dialog.getByLabel("Model", { exact: true }).focus();
-  await keyboard(KEYBOARD + 1);
-  await expectAboveKeyboard(page, KEYBOARD + 1, dialog.getByLabel("Model", { exact: true }), launch);
+  const effort = dialog.getByLabel("Reasoning effort");
+  await effort.focus();
+  await keyboard(300);
+  await expectAboveKeyboard(page, { keyboard: 300 }, effort, launch);
 
   // A refused launch shows its reason next to Launch, above the keyboard, and keeps the task.
   await post("/__test/clear-legacy-boat", { org: ACME });
   await launch.click();
   const refusal = dialog.getByRole("alert");
   await expect(refusal).toBeFocused();
-  await expectAboveKeyboard(page, KEYBOARD + 1, refusal, launch);
+  await expectAboveKeyboard(page, { keyboard: 300 }, refusal, launch);
   await expect(task).toHaveValue("Fix the flaky login test");
   await page.screenshot({ path: "test-results/launch-keyboard-error-mobile.png", animations: "disabled" });
 
