@@ -237,21 +237,17 @@ export type CapacityState =
   | { kind: "full"; capacity: number; used: number }
   | { kind: "legacy"; capacity: number; used: number };
 
-/**
- * One provider's golden count this viewer can see against the limit the Armada server read for the selected org
- * and that provider. The count is of visible rows only (another member's private golden or another org's is not
- * seen), so this is guidance; the server reserves the backend slot and is the authority. A failed read (such as a
- * provider not configured for the org) is `unavailable` and a null limit `unknown`: neither invents a number.
- */
+/** Visible authoritative current-backend usage only; missing metadata never falls back to row counts. */
 export function providerCapacity(
-  goldens: readonly Pick<Golden, "provider">[],
+  _goldens: readonly Pick<Golden, "provider">[],
   read: GoldenCapabilities,
-  provider: SandboxProviderId,
+  _provider: SandboxProviderId,
 ): CapacityState {
   if (!read.ok) return { kind: "unavailable", reason: read.reason };
   const capacity = read.maxGoldens;
   if (capacity === null) return { kind: "unknown" };
-  const used = goldens.filter((golden) => golden.provider === provider).length;
+  if (!read.bindings) return { kind: "unavailable", reason: "This Armada server does not report golden usage yet." };
+  const used = read.bindings.filter((binding) => binding.relation === "current_backend").length;
   if (used > capacity) return { kind: "legacy", capacity, used };
   if (used === capacity) return { kind: "full", capacity, used };
   return { kind: "available", capacity, used };

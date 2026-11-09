@@ -24,8 +24,13 @@ type Props = {
   orgName: string;
   /** Org admins create org goldens; everyone else creates private ones. A hint: the server checks again. */
   isAdmin: boolean;
-  /** Create: each provider's capacity as the server read it for this org, or why it is not known. */
-  capacities?: Readonly<Record<SandboxProviderId, CapacityState>>;
+  /** Create: each offered provider's capacity as the server read it for this org, or why it is not known. */
+  capacities?: Readonly<Partial<Record<SandboxProviderId, CapacityState>>>;
+  /**
+   * Create: the providers the organization has connected, the only ones a new golden may be built on. One is used
+   * without a choice; two are offered; none leaves the form to follow a tracked build only.
+   */
+  providers?: readonly SandboxProviderId[];
   /** Update: the stored golden's id and provider. The provider of a golden never changes. */
   goldenId?: string;
   provider?: SandboxProviderId;
@@ -70,6 +75,7 @@ function ScopedGoldenForm({
   orgName,
   isAdmin,
   capacities,
+  providers = GOLDEN_PROVIDERS,
   goldenId,
   provider,
   name,
@@ -190,7 +196,9 @@ function ScopedGoldenForm({
     (defaults?.repos.length ? defaults.repos : [{ url: "", branch: "", dir: "" }]).map(keyed),
   );
   const [chosenVisibility, setChosenVisibility] = useState<"org" | "private">(isAdmin ? "org" : "private");
-  const [chosenProvider, setChosenProvider] = useState<SandboxProviderId>("boat");
+  const [choice, setChosenProvider] = useState<SandboxProviderId | null>(null);
+  // A provider disconnected since it was chosen is not kept: the first connected one is used instead.
+  const chosenProvider = choice !== null && providers.includes(choice) ? choice : (providers[0] ?? null);
   // Controlled, so a refused build keeps what was typed (React resets a form after its action).
   const [goldenName, setGoldenName] = useState("");
   const [init, setInit] = useState(defaults?.init ?? "");
@@ -230,8 +238,14 @@ function ScopedGoldenForm({
       <input type="hidden" name="mode" value={mode} />
       <input type="hidden" name="org" value={orgId} />
       <fieldset disabled={pending || jobActive} className="space-y-5 disabled:opacity-70">
-        {mode === "create" && (
-          <ProviderChoice idPrefix={id} value={chosenProvider} onChange={setChosenProvider} capacities={capacities} />
+        {mode === "create" && chosenProvider && (
+          <ProviderChoice
+            idPrefix={id}
+            value={chosenProvider}
+            onChange={setChosenProvider}
+            providers={providers}
+            capacities={capacities}
+          />
         )}
         {mode === "create" ? (
           <div className="grid gap-4 sm:grid-cols-2">
@@ -494,19 +508,36 @@ function ProviderChoice({
   idPrefix,
   value,
   onChange,
+  providers,
   capacities,
 }: {
   idPrefix: string;
   value: SandboxProviderId;
   onChange: (provider: SandboxProviderId) => void;
+  providers: readonly SandboxProviderId[];
   capacities: Props["capacities"];
 }) {
+  if (providers.length === 1) {
+    const capacity = capacities?.[value];
+    const hint = capacity ? CAPACITY_HINT[capacity.kind](capacity) : "";
+    const warn = capacity?.kind === "unavailable" || capacity?.kind === "full" || capacity?.kind === "legacy";
+    return (
+      <div className="space-y-1" data-provider-fixed={value}>
+        <input type="hidden" name="provider" value={value} />
+        <p className="text-sm">
+          <span className="font-medium">Provider:</span> {PROVIDER_LABELS[value]}
+        </p>
+        {hint && <p className={cn("text-xs", warn ? "text-warning" : "text-muted-foreground")}>{hint}</p>}
+        <p className="text-xs text-muted-foreground">A golden stays on its provider for good.</p>
+      </div>
+    );
+  }
   return (
     <fieldset className="space-y-2">
       <legend className="text-sm font-medium">Provider</legend>
       <input type="hidden" name="provider" value={value} />
       <div className="grid gap-2 sm:grid-cols-2">
-        {GOLDEN_PROVIDERS.map((option) => {
+        {providers.map((option) => {
           const capacity = capacities?.[option];
           const hint = capacity ? CAPACITY_HINT[capacity.kind](capacity) : "";
           const warn = capacity?.kind === "unavailable" || capacity?.kind === "full" || capacity?.kind === "legacy";

@@ -65,12 +65,17 @@ export function normalizeEvent(event: SandboxEvent): AgentEvent {
     }
     case "response": {
       const model = str(data.model);
+      const messageId = str(data.message_id) ?? str(data.messageId);
+      const mode = data.text_mode ?? data.textMode;
+      const textMode = mode === "delta" || mode === "snapshot" ? mode : undefined;
       return {
         ...base,
         kind: "message",
         text: typeof data.content === "string" ? data.content : "",
         partial: data.is_streaming === true,
         ...(model ? { model } : {}),
+        ...(messageId ? { messageId } : {}),
+        ...(textMode ? { textMode } : {}),
         tools: toolCalls(data.tools),
       };
     }

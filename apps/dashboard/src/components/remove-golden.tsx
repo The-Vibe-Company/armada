@@ -47,8 +47,8 @@ export function RemoveGolden({
             <div className="space-y-2">
               <p>New sandboxes can no longer be launched from it, and it leaves this list.</p>
               <p>
-                Sandboxes already started from it stay, with their conversations and logs. Its snapshot is kept and it
-                still counts toward the golden limit.
+                Sandboxes already started from it stay, with their conversations and logs. Its snapshot and state
+                artifacts are kept. Any existing backend reservation is retained.
               </p>
             </div>
           </AlertDialogDescription>

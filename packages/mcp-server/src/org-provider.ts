@@ -2,6 +2,7 @@ import {
   ProviderError,
   parseCredentialValue,
   parseModalTokenPair,
+  removeCredential,
   resolveOrg,
   setCredential,
   VaultError,
@@ -88,5 +89,27 @@ export async function connectOrgProvider(
   await authorizedOrg(store, caller, org.id);
   // Shared encrypted org policy rechecks the current admin role after validation.
   await setCredential(store, encryptionKey, caller.userId, { scope: "org", org: org.id, kind: provider, value });
+  return orgProviderStatus(store, caller, org.id);
+}
+
+/**
+ * Disconnects one of the organization's sandbox providers: its org credential is deleted under the shared admin policy,
+ * which reads the caller's role again. Goldens and sandboxes already on that provider are left as they are. Already
+ * disconnected is the requested end state, so the current status is answered rather than an error.
+ */
+export async function disconnectOrgProvider(
+  store: VaultStore,
+  caller: Caller,
+  ref: string | undefined,
+  provider: string,
+) {
+  const org = await authorizedOrg(store, caller, ref);
+  if (org.role !== "admin") throw new VaultError("forbidden", "Only an org admin can do that.");
+  if (provider !== "boat" && provider !== "modal") throw new VaultError("invalid", "Provider is boat or modal.");
+  try {
+    await removeCredential(store, caller.userId, { scope: "org", org: org.id, kind: provider });
+  } catch (error) {
+    if (!(error instanceof VaultError && error.code === "not_found")) throw error;
+  }
   return orgProviderStatus(store, caller, org.id);
 }

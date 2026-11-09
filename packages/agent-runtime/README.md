@@ -407,3 +407,44 @@ Native files without a manifest or verified owner are likewise refused using
 metadata-only traversal; auth files are not read to discover credentials.
 Known same-ID ownership can recover unsealed native files after an unclean
 restart. Clean scoped forks and ordinary same-ID retry fences remain intact.
+
+### Assistant message semantics (protocol v1, additive)
+
+Journal event `id` identifies a delivery, not an assistant message. New assistant
+text events optionally carry `messageId` and `textMode: "delta" | "snapshot"`.
+Within a sandbox/conversation/prompt, append deltas for that message and replace
+its text with snapshots; do not append a final snapshot to already streamed text.
+Deduplicate replay by journal event ID before applying deltas. Preserve grouping
+state across pagination. Separate native messages in one prompt remain separate.
+
+Claude uses the Messages API `message_start.message.id` and final
+`assistant.message.id`, not the SDK envelope UUID. The pinned Claude CLI emits completed content blocks
+as separate assistant frames sharing that ID; runtime snapshots accumulate those
+blocks (including across tool/thinking-only frames), rather than erasing prior
+text. Active stream identity is
+tracked separately per `parent_tool_use_id` for interleaved subagents. A delta
+without a preceding start remains unidentified rather than borrowing another
+message's identity. Codex uses `itemId` on agent-message deltas and `item.id`
+on completion, as emitted by the pinned native app-server. Interrupted messages
+can have deltas without a final snapshot; interruption must not synthesize one.
+Tool correlation remains `tools[].id` (Claude tool-use ID / Codex item ID);
+start, complete input and result updates describe the same tool invocation.
+
+Example (other required envelope fields omitted):
+```json
+[
+  {"id":"e1","messageId":"m1","textMode":"delta","text":"Hel","partial":true},
+  {"id":"e2","messageId":"m1","textMode":"snapshot","text":"Hello","partial":false},
+  {"id":"e3","messageId":"m2","textMode":"snapshot","text":"Next message","partial":false}
+]
+```
+
+Legacy fallback: events without both fields retain their existing independent
+event rendering. Do not guess correlation from text, `partial`, prompt identity,
+or journal ID, and never concatenate all text in a prompt into one answer.
+Boat forwards explicit `data.message_id` / `messageId` and
+`data.text_mode` / `textMode` when supplied, without inferring semantics from
+`is_streaming`. Its pinned SDK types leave response data unstructured; these
+optional fields are forward-compatible, not a guarantee from Boat.
+Runtime journal/outbox, Modal HTTP ingest, JSONB storage and event pagination
+preserve the optional fields without schema changes or a protocol version bump.

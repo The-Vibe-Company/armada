@@ -308,7 +308,17 @@ interface EventBase {
 /** The common event stream: the same for every harness and provider. */
 export type AgentEvent =
   | (EventBase & { kind: "prompt"; text: string; status: PromptStatus; reason?: string })
-  | (EventBase & { kind: "message"; text: string; partial: boolean; model?: string; tools: ToolCall[] })
+  | (EventBase & {
+      kind: "message";
+      text: string;
+      partial: boolean;
+      /** Native logical assistant message identity, not the journal event id. */
+      messageId?: string;
+      /** Append a delta; replace the message text with a snapshot. Absent on legacy events. */
+      textMode?: "delta" | "snapshot";
+      model?: string;
+      tools: ToolCall[];
+    })
   | (EventBase & { kind: "steer"; text: string; mode?: string })
   /** An event this version does not know: kept whole so no news is lost. */
   | (EventBase & { kind: "other"; type: string; data: unknown });

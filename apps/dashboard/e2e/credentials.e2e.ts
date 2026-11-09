@@ -3,8 +3,6 @@ import { MOCK, reset, signIn } from "./helpers";
 
 test.beforeEach(reset);
 
-const ACME = "00000000-0000-4000-8000-000000000010";
-
 const SECRET = "boat-personal-super-secret-key";
 
 test("a personal hosting key is stored encrypted and never shown again", async ({ page }) => {
@@ -39,56 +37,18 @@ test("a value with spaces is refused before anything is stored", async ({ page }
   await expect(mine.locator('p[role="alert"]')).toContainText("no spaces");
 });
 
-test("the org Boat key is the one launches use: shown, removed and saved through the server, never as a row", async ({
+test("an org's Boat and Modal are its sandbox providers in Settings: Credentials shows and offers neither", async ({
   page,
 }) => {
-  const state = async () =>
-    (await (await fetch(`${MOCK}/__test/state`, { method: "POST", body: "{}" })).json()) as {
-      orgBoatKeys: string[];
-      providerCalls: { route: string; body: Record<string, unknown> }[];
-    };
   await signIn(page, "alice@example.com", "/credentials");
-  const org = page.locator('[data-credentials="Acme (org)"]');
-  const boat = org.locator("li", { hasText: "boat.dev API key" });
-  // Acme's key predates the dashboard: it is the org's column, which a user JWT cannot read.
-  await expect(boat.getByRole("img", { name: "Value hidden" })).toBeVisible();
-
-  await boat.getByRole("button", { name: "Remove boat.dev API key" }).click();
-  await expect(boat.getByText("Not set")).toBeVisible();
-  expect((await state()).orgBoatKeys).not.toContain(ACME);
-
-  await org.getByLabel("Kind").selectOption("boat");
-  await org.getByLabel("Value", { exact: true }).fill("boat-org-key-123");
-  await org.getByRole("button", { name: "Save credential" }).click();
-  await expect(org.getByText("boat.dev API key saved.")).toBeVisible();
-  await expect(boat.getByRole("img", { name: "Value hidden" })).toBeVisible();
-  const after = await state();
-  expect(after.orgBoatKeys).toContain(ACME);
-  const writes = after.providerCalls.filter((call) => call.route !== "org/provider/status");
-  expect(writes.map((call) => [call.route, call.body.org])).toEqual([
-    ["creds/rm", ACME],
-    ["org/provider/connect", ACME],
-  ]);
-
-  // A status the server cannot give is not shown as either answer, and offers no removal.
-  await fetch(`${MOCK}/__test/provider-status-fail`, {
-    method: "POST",
-    body: JSON.stringify({ fail: { status: 503, message: "Unavailable." } }),
-  });
-  await page.reload();
-  await expect(boat.getByText("Unavailable")).toBeVisible();
-  await expect(boat.getByRole("button", { name: "Remove boat.dev API key" })).toHaveCount(0);
-  await fetch(`${MOCK}/__test/provider-status-fail`, { method: "POST", body: JSON.stringify({ fail: null }) });
-
-  await page.context().clearCookies();
-  await signIn(page, "bob@example.com", "/credentials");
-  const bobsOrg = page.locator('[data-credentials="Acme (org)"]');
-  await expect(bobsOrg.getByText("Only an admin changes them.")).toBeVisible();
-  // The org's Anthropic key is a named model account now, listed with the accounts, not as a hosting key.
-  await expect(bobsOrg.getByRole("img", { name: "Value hidden" })).toHaveCount(1);
-  await expect(bobsOrg.getByLabel("Value", { exact: true })).toHaveCount(0);
-  await expect(bobsOrg.getByRole("button", { name: /Remove/ })).toHaveCount(0);
-  expect(await page.content()).not.toContain("boat-org-key-123");
+  // No org hosting card: its model keys are named accounts above, its Boat and Modal are providers in Settings.
+  await expect(page.locator('[data-credentials="Acme (org)"]')).toHaveCount(0);
+  await expect(page.locator("[data-org-hosting]").getByRole("link", { name: "sandbox providers in Settings" })).toHaveAttribute(
+    "href",
+    "/settings",
+  );
+  // A person's own hosting keys stay here.
+  await expect(page.locator('[data-credentials="user"]').locator("li", { hasText: "boat.dev API key" })).toHaveCount(1);
 });
 
 const MODAL_ID = "ak-e2eModalTokenId1234";
@@ -147,21 +107,26 @@ test("a Modal token pair the server would refuse is reported without echoing it 
   expect(stored.some((item) => item.kind === "modal")).toBe(false);
 });
 
-test("a member cannot set the org's Modal token, even by forging the form", async ({ page }) => {
-  await signIn(page, "bob@example.com", "/credentials");
-  await expect(page.locator('[data-credentials="Acme (org)"] [data-modal-token]')).toHaveCount(0);
-  // Bob's own form, pointed at the org he only belongs to.
-  const modal = page.locator('[data-credentials="user"] [data-modal-token]');
-  await modal.locator('input[name="scope"]').evaluate((input) => {
-    (input as HTMLInputElement).value = "org";
+for (const email of ["alice@example.com", "bob@example.com"])
+  test(`an org Modal token forged into Credentials is refused for ${email.split("@")[0]}, never stored`, async ({
+    page,
+  }) => {
+    await signIn(page, email, "/credentials");
+    await expect(page.locator('[data-credentials="Acme (org)"] [data-modal-token]')).toHaveCount(0);
+    // Their own form, pointed at the org: hosting for an org is connected in Settings, checked by the server first.
+    const modal = page.locator('[data-credentials="user"] [data-modal-token]');
+    await modal.locator('input[name="scope"]').evaluate((input) => {
+      (input as HTMLInputElement).value = "org";
+    });
+    await modal.locator('input[name="owner"]').evaluate((input) => {
+      (input as HTMLInputElement).value = "00000000-0000-4000-8000-000000000010";
+    });
+    await modal.getByLabel("Token ID").fill(MODAL_ID);
+    await modal.getByLabel("Token secret").fill(MODAL_SECRET);
+    await modal.getByRole("button", { name: "Save Modal token" }).click();
+    await expect(modal.locator('p[role="alert"]')).toHaveText(
+      "Organization sandbox providers are managed in Settings.",
+    );
+    const stored = (await (await fetch(`${MOCK}/__test/credentials`)).json()) as { kind: string }[];
+    expect(stored.some((item) => item.kind === "modal")).toBe(false);
   });
-  await modal.locator('input[name="owner"]').evaluate((input) => {
-    (input as HTMLInputElement).value = "00000000-0000-4000-8000-000000000010";
-  });
-  await modal.getByLabel("Token ID").fill(MODAL_ID);
-  await modal.getByLabel("Token secret").fill(MODAL_SECRET);
-  await modal.getByRole("button", { name: "Save Modal token" }).click();
-  await expect(modal.locator('p[role="alert"]')).toHaveText("You are not allowed to do that.");
-  const stored = (await (await fetch(`${MOCK}/__test/credentials`)).json()) as { kind: string }[];
-  expect(stored.some((item) => item.kind === "modal")).toBe(false);
-});

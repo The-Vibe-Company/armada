@@ -148,7 +148,8 @@ test("the capacity is the number the server reads for the selected org, fetched 
       authorized: true,
       body: { org: "00000000-0000-4000-8000-000000000012", provider: expect.stringMatching(/^(boat|modal)$/) },
     });
-  expect(new Set(capabilityCalls.map((call) => call.body.provider))).toEqual(new Set(["boat", "modal"]));
+  // Nova has connected Boat only: Modal's capacity is not read.
+  expect(new Set(capabilityCalls.map((call) => call.body.provider))).toEqual(new Set(["boat"]));
   // Only the number reached the browser: no provider SDK, no token, no raw answer.
   const html = await page.content();
   expect(html).not.toMatch(/maxGoldens|boatdev|BOAT_API_KEY/);
@@ -200,19 +201,25 @@ test("a form the server would refuse is stopped before any request", async ({ pa
   expect((await mockState()).goldenCalls).toHaveLength(0);
 });
 
-test("legacy rows over the Boat limit are listed and kept, never chosen or merged", async ({ page }) => {
+test("live unbound rows require reconciliation without automatic rebuild guidance", async ({ page }) => {
+  await post("/__test/capabilities", {
+    bindings: [
+      { goldenId: "00000000-0000-4000-8000-000000000020", relation: "unbound" },
+      { goldenId: "00000000-0000-4000-8000-000000000021", relation: "other_backend" },
+    ],
+  });
   await signIn(page, "alice@example.com", "/goldens");
   const conflict = page.locator("[data-legacy-conflict]");
-  await expect(conflict).toContainText("2 Boat goldens predate the one-golden limit");
+  await expect(conflict).toContainText("2 Boat goldens need backend reconciliation");
   await expect(conflict).toContainText("does not choose, merge or delete");
   await expect(conflict.getByText("shared-golden")).toBeVisible();
   await expect(conflict.getByText("alice-private")).toBeVisible();
   // Both rows stay, each with its own actions.
   await expect(page.locator('[data-golden="shared-golden"]').getByText("Edit and rebuild")).toBeVisible();
   await expect(page.locator('[data-golden="alice-private"]').getByText("Edit and rebuild")).toBeVisible();
-  // Creating another is not the primary path.
-  await expect(page.getByRole("heading", { name: "Create another golden" })).toBeVisible();
-  await expect(createForm(page)).toBeHidden();
+  // Reconciliation is separate from current-backend usage, which is zero.
+  await expect(page.getByRole("heading", { name: "Create a golden" })).toBeVisible();
+  await expect(createForm(page)).toBeVisible();
 });
 
 test("an admin edits and rebuilds the existing golden from what it records", async ({ page }) => {
@@ -299,7 +306,7 @@ test("the main navigation groups Run, Build and Account and marks the current pa
 test("an admin builds a Modal golden: the request names Modal and Modal's unbounded capacity is no limit", async ({
   page,
 }) => {
-  await post("/__test/reset", { novaOrg: true });
+  await post("/__test/reset", { novaOrg: true, novaModal: true });
   await signIn(page, "carol@example.com", "/goldens");
   const modalCard = page.locator('[data-capacity-provider="modal"]');
   await expect(modalCard).toHaveAttribute("data-capacity", "unknown");
@@ -339,40 +346,35 @@ test("an admin builds a Modal golden: the request names Modal and Modal's unboun
   await page.screenshot({ path: "test-results/goldens-modal-desktop.png", fullPage: true });
 });
 
-test("Modal not configured for the org is shown unavailable, and a Modal build is refused, never sent as Boat", async ({
+test("with only Boat connected, Boat is used without a choice and a forged Modal build never reaches the server", async ({
   page,
 }) => {
   await post("/__test/reset", { novaOrg: true });
-  await post("/__test/capabilities", {
-    provider: "modal",
-    fail: { status: 503, code: "provider_not_configured", message: "Modal is not configured for this organization." },
-  });
   await signIn(page, "carol@example.com", "/goldens");
-  const modalCard = page.locator('[data-capacity-provider="modal"][data-capacity="unavailable"]');
-  await expect(modalCard.locator("[data-capacity-reason]")).toHaveText(
-    "Modal is not configured for this organization.",
-  );
-  // The Boat read is separate and still answers.
+  await expect(page.locator("[data-capacity-provider]")).toHaveCount(1);
   await expect(page.locator('[data-capacity-provider="boat"][data-capacity="available"]')).toContainText("0 of 1");
 
   const form = createForm(page);
-  await expect(form.locator('[data-provider-choice="modal"]')).toContainText(
-    "Unavailable: Modal is not configured for this organization.",
-  );
-  await form.getByRole("radio", { name: /Modal/ }).check();
+  await expect(form.locator('[data-provider-fixed="boat"]')).toContainText("Provider: Boat");
+  await expect(form.locator("[data-provider-choice]")).toHaveCount(0);
   await form.getByLabel("Name").fill("nova-docs");
   await form.getByRole("textbox", { name: "Repository 1", exact: true }).fill("acme/docs");
+  // A post naming Modal, which Nova has not connected, is refused by the action itself.
+  await form.locator('input[name="provider"]').evaluate((input) => {
+    (input as HTMLInputElement).value = "modal";
+  });
   await form.getByRole("button", { name: "Build golden" }).click();
-  await expect(form.getByRole("alert")).toContainText("Modal is not configured for this organization.");
-  const { goldenCalls } = await mockState();
-  expect(goldenCalls.map((call) => call.body.provider)).toEqual(["modal"]);
+  await expect(form.getByRole("alert")).toContainText(
+    "Modal is not connected for this organization. An admin connects it in Settings.",
+  );
+  expect((await mockState()).goldenCalls).toHaveLength(0);
   await expect(page.locator('[data-golden="nova-docs"]')).toHaveCount(0);
 });
 
 test("same-name goldens on Boat and Modal are listed apart, and rebuild and launch target their own provider", async ({
   page,
 }) => {
-  await post("/__test/reset", { modalTwin: true });
+  await post("/__test/reset", { modalTwin: true, acmeModal: true });
   await signIn(page, "alice@example.com", "/goldens");
   const boat = page.locator('[data-golden-group="boat"] [data-golden="shared-golden"]');
   const modal = page.locator('[data-golden-group="modal"] [data-golden="shared-golden"]');
@@ -488,7 +490,7 @@ test("a status read that fails pauses polling and keeps the job locked; checking
 test("a build is tracked by its own form: never by the twin on the other provider, the create form or another org", async ({
   page,
 }) => {
-  await post("/__test/reset", { modalTwin: true, multiOrg: true });
+  await post("/__test/reset", { modalTwin: true, multiOrg: true, acmeModal: true });
   await post("/__test/golden-gate", { hold: true });
   await signIn(page, "alice@example.com", "/goldens");
   const modal = page.locator('[data-golden-group="modal"] [data-golden="shared-golden"]');
@@ -541,7 +543,7 @@ test("an org switch that re-renders the page in place leaves the old org's creat
   page,
   context,
 }) => {
-  await post("/__test/reset", { multiOrg: true });
+  await post("/__test/reset", { multiOrg: true, acmeModal: true });
   await post("/__test/golden-gate", { hold: true });
   // Poll timers run on a controlled clock, advanced explicitly below instead of waiting.
   await page.clock.install();
@@ -627,7 +629,7 @@ test("removing a golden asks first, retires only the golden, and keeps its sandb
   await expect(boat.locator("[data-capacity-line]")).toHaveText(
     "2 of 1 account slot used by goldens you can see, 1 held by removed golden.",
   );
-  await expect(page.locator("[data-legacy-conflict]")).toContainText("removed: still holds its slot");
+  await expect(page.locator("[data-legacy-conflict]")).toHaveCount(0);
   // One request, by id in the selected org, with the session; never a delete of anything else.
   expect((await mockState()).goldenRemoveCalls).toEqual([
     {
@@ -674,4 +676,26 @@ test("only the owner or an org admin is offered removal, and a forged removal is
   expect((await mockState()).goldenRemoveCalls).toEqual([]);
   await page.keyboard.press("Escape");
   await expect(page.locator('[data-golden="bob-private"]')).toBeVisible();
+});
+
+test("removed unbound history is not a slot or a reconciliation warning; old metadata has no usage", async ({
+  page,
+}) => {
+  await signIn(page, "alice@example.com", "/goldens");
+  await page.locator('[data-golden="shared-golden"]').getByRole("button", { name: "Remove golden" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Remove golden" }).click();
+  await expect(page.locator("[data-golden-removed]")).toBeVisible();
+  await post("/__test/capabilities", {
+    bindings: [
+      { goldenId: "00000000-0000-4000-8000-000000000020", relation: "unbound" },
+      { goldenId: "00000000-0000-4000-8000-000000000021", relation: "current_backend" },
+    ],
+  });
+  await page.reload();
+  await expect(page.locator('[data-capacity-provider="boat"]')).toContainText("1 of 1");
+  await expect(page.locator('[data-capacity-provider="boat"]')).toHaveAttribute("data-capacity-removed", "0");
+  await expect(page.locator("[data-legacy-conflict]")).toHaveCount(0);
+  await post("/__test/capabilities", { bindings: null });
+  await page.reload();
+  await expect(page.locator('[data-capacity-provider="boat"]')).toHaveAttribute("data-capacity", "unavailable");
 });

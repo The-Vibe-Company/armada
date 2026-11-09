@@ -137,13 +137,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** What the dashboard asks of the server, by the tool names of the spec. */
+/**
+ * What the dashboard asks of the server, by the tool names of the spec. `send` opens a new turn, `steer` redirects
+ * the running one and `interrupt` stops it: the server applies the harness's capabilities, never the dashboard.
+ */
 export function sandboxGateway(gateway: Gateway) {
+  const conversation = (id?: string) => (id ? { conversation_id: id } : {});
   return {
     logs: (sandboxId: string, since?: string | null) =>
       gateway.call("logs", { id: sandboxId, ...(since ? { since_cursor: since } : {}) }),
     stop: (sandboxId: string) => gateway.call("stop", { id: sandboxId }),
-    send: (sandboxId: string, prompt: string, override: SendArgs = {}) =>
-      gateway.call("send", { id: sandboxId, prompt, ...override }),
+    send: (sandboxId: string, prompt: string, override: SendArgs = {}, conversationId?: string) =>
+      gateway.call("send", { id: sandboxId, prompt, ...conversation(conversationId), ...override }),
+    steer: (sandboxId: string, text: string, conversationId?: string) =>
+      gateway.call("steer", { id: sandboxId, text, ...conversation(conversationId) }),
+    interrupt: (sandboxId: string, conversationId?: string) =>
+      gateway.call("interrupt", { id: sandboxId, ...conversation(conversationId) }),
   };
 }
