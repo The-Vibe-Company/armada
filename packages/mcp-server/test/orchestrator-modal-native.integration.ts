@@ -18,6 +18,7 @@ test.each([false, true])(
     const store = new OrchestratorRuntimeStore(sql, core.reserveOrchestratorOperation);
     let checkpoint: ModalOrchestratorCheckpoint | null = null,
       stopped = false,
+      generation = "physical-1",
       restoreOperation: string | undefined;
     try {
       const golden = await core.createSqlGoldenStore(sql).insert({
