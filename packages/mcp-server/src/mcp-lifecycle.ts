@@ -271,7 +271,7 @@ export function createMcpLifecycle(options: {
         const sandbox = (
           await tx.query<{ id: string }>(
             `select id from public.sandboxes where provider=$1 and provider_sandbox_id=$2 and org_id=$3::uuid
-          and (visibility='org' or access_owner_id=$4::uuid) and status not in ('deleted','failed') and deleted_at is null for update`,
+          and (owner_id=$4::uuid or exists(select 1 from public.members a where a.org_id=sandboxes.org_id and a.user_id=$4::uuid and a.role='admin')) and not exists(select 1 from public.orchestrators o where o.sandbox_id=sandboxes.id) and status not in ('deleted','failed') and deleted_at is null for update`,
             [provider.id, providerSandboxId, caller.orgId, caller.userId],
           )
         ).rows[0];
@@ -298,11 +298,19 @@ export function createMcpLifecycle(options: {
     },
     async beforePrompt(provider: Provider, providerSandboxId: string, caller: { userId: string; orgId: string }) {
       const r = await sql.query<{ id: string; org_id: string; owner_id: string }>(
-        `select s.id,s.org_id,s.owner_id from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$3::uuid where s.provider=$1 and s.provider_sandbox_id=$2 and s.org_id=$4::uuid and (s.visibility='org' or s.access_owner_id=$3::uuid)`,
+        `select s.id,s.org_id,s.owner_id from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$3::uuid where s.provider=$1 and s.provider_sandbox_id=$2 and s.org_id=$4::uuid and (s.owner_id=$3::uuid or m.role='admin') and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
         [provider.id, providerSandboxId, caller.userId, caller.orgId],
       );
       const row = r.rows[0];
       if (!row) throw Error("No authorized Armada sandbox for this native turn.");
+      if (row.owner_id !== caller.userId) {
+        const personal = await sql.query(
+          `select 1 from public.mcp_bindings b join public.mcp_connections c on c.id=b.connection_id
+           where b.sandbox_id=$1::uuid and c.scope='personal' limit 1`,
+          [row.id],
+        );
+        if (personal.rows.length) throw Error("Only the sandbox owner can reconcile personal MCP grants.");
+      }
       await reconcile(provider, { id: row.id, orgId: row.org_id, ownerId: row.owner_id, providerSandboxId });
       return row.id;
     },

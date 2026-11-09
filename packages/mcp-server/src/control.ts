@@ -545,6 +545,10 @@ async function dispatch(
       return dispatchMcp(route.slice(4), caller.userId, body, options);
     }
     const org = scopedOrg(caller, optional(body, "org"));
+    if (route === "mcp/sandbox-connections") {
+      const sandbox = await options.data?.(caller).sandboxes.get(required(body, "id"));
+      if (!sandbox || sandbox.orgId !== org) throw new VaultError("not_found", "No such sandbox.");
+    }
     return dispatchMcp(route.slice(4), caller.userId, { ...body, org }, options);
   }
   if (route === "golden/capabilities") {

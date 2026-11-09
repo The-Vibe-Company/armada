@@ -7,6 +7,7 @@ import {
   createSqlMcpRegistry,
   type Sql,
 } from "@armada/core";
+import { createSqlData } from "../src/data.ts";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
 test("registry separates personal grants, fences leases on revoke, and refuses shared impersonation", async () => {
@@ -561,6 +562,7 @@ test("canonical control lifecycle toggles fence tokens and bindings reflect auth
           },
           encryptionKey: ENCRYPTION_KEY,
           store: createSqlVaultStore(db),
+          data: createSqlData(db),
           mcp: { registry },
         },
       );
@@ -581,8 +583,9 @@ test("canonical control lifecycle toggles fence tokens and bindings reflect auth
     expect((await call(p.owner, "sandbox-connections", { org: p.org, id: empty })).body.connections).toEqual([]);
     for (const actor of [p.member, p.admin])
       expect((await call(actor, "sandbox-connections", { org: p.org, id: sandbox })).status).toBe(404);
+    expect((await call(p.member, "sandbox-connections", { org: p.org, id: orgSandbox })).status).toBe(404);
     expect(
-      (await call(p.member, "sandbox-connections", { org: p.org, id: orgSandbox })).body.connections.map((c) => c.id),
+      (await call(p.admin, "sandbox-connections", { org: p.org, id: orgSandbox })).body.connections.map((c) => c.id),
     ).toEqual([shared.id]);
     expect((await call(p.member, "sandbox-connections", { org: p.otherOrg, id: orgSandbox })).status).toBe(404);
     expect((await call(p.member, "set-enabled", { org: p.org, id: shared.id, enabled: false })).status).toBe(403);

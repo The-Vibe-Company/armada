@@ -209,11 +209,17 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
     expect(await leases.validate(previousHash, "tools")).not.toBeNull();
     const initial = await generation();
     for (const caller of [
-      { userId: other, orgId: org },
+      { userId: crypto.randomUUID(), orgId: org },
       { userId: user, orgId: crypto.randomUUID() },
     ]) {
       await expect(replica().beforeResume(provider, record.providerSandboxId, caller)).rejects.toThrow("authorized");
     }
+    expect(
+      (await replica().beforeResume(provider, record.providerSandboxId, { userId: other, orgId: org })).sandboxId,
+    ).toBe(record.id);
+    await expect(
+      replica().beforePrompt(provider, record.providerSandboxId, { userId: other, orgId: org }),
+    ).rejects.toThrow("personal MCP grants");
     expect(await generation()).toBe(initial);
     // Platform autoarchive: deliberately NO Armada SQL status/stopped_at write.
     state = "archived";
@@ -309,6 +315,7 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
       status: "ready",
     });
     await replica().beforeResume(provider, empty.providerSandboxId, actor);
+    await replica().beforePrompt(provider, empty.providerSandboxId, { userId: other, orgId: org });
     expect(
       (
         await db.query<{ mcp_generation: number }>("select mcp_generation from public.sandboxes where id=$1", [
