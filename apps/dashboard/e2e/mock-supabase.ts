@@ -84,6 +84,8 @@ type State = {
   invitationCalls: { route: string; body: Row; authorized: boolean }[];
   /** Accounts whose email address is not verified yet. */
   unverifiedEmails: string[];
+  /** GoTrue calls that establish or check an identity (`/verify`, `/token`, `/user`), in order. */
+  authCalls: string[];
 };
 
 function seed(): State {
@@ -164,6 +166,7 @@ function seed(): State {
     nextDelivery: "sent",
     invitationCalls: [],
     unverifiedEmails: [],
+    authCalls: [],
     connections: [
       mcpConnection(id(60), "Acme Docs", ACME, "org", ALICE, {
         url: "https://docs.acme.test/mcp",
@@ -306,6 +309,11 @@ function sandbox(
 let state = seed();
 let sequence = 100;
 const sessions = new Map<string, string>();
+/** GoTrue's one-time email OTP hashes (`token_hash`), as an email template would carry them: hash -> user id. */
+const otpHashes = new Map<string, string>();
+
+/** When GoTrue says the address was confirmed: never for an account the test marked unverified. */
+const confirmedAt = (email: string) => (state.unverifiedEmails.includes(email) ? null : "2026-11-08T10:00:00.000Z");
 
 function b64url(value: object): string {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -331,6 +339,7 @@ function session(userId: string) {
       aud: "authenticated",
       role: "authenticated",
       email: user.email,
+      email_confirmed_at: confirmedAt(user.email),
       app_metadata: {},
       user_metadata: {},
       created_at: "2026-11-08T10:00:00.000Z",
@@ -630,9 +639,18 @@ function rpc(name: string, args: Row, userId: string): Response {
 
 function auth(request: Request, url: URL, body: Row): Response {
   const path = url.pathname.replace("/auth/v1", "");
+  if (path === "/verify" || path === "/token" || path === "/user") state.authCalls.push(path);
   if (path === "/otp") {
     state.otpEmails.push(String(body.email));
     return json({});
+  }
+  if (path === "/verify" && typeof body.token_hash === "string") {
+    // The server-side confirmation of a template that sends `token_hash`: single use, like GoTrue.
+    const owner = otpHashes.get(body.token_hash);
+    otpHashes.delete(body.token_hash);
+    return owner
+      ? json(session(owner))
+      : json({ code: 403, error_code: "otp_expired", msg: "Email link is invalid or has expired" }, 403);
   }
   if (path === "/verify") {
     const email = String(body.email ?? "").toLowerCase();
@@ -654,6 +672,7 @@ function auth(request: Request, url: URL, body: Row): Response {
       aud: "authenticated",
       role: "authenticated",
       email: user.email,
+      email_confirmed_at: confirmedAt(user.email),
       app_metadata: {},
       user_metadata: {},
       created_at: "2026-11-08T10:00:00.000Z",
@@ -1533,6 +1552,7 @@ function orgProvider(route: string, body: Row, request: Request): Response {
 function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     state = seed();
+    otpHashes.clear();
     pendingOAuth.clear();
     githubCliFlows.clear();
     failSandboxConnections = false;
@@ -1710,6 +1730,22 @@ function control(url: URL, body: Row): Response {
     failSandboxConnections = true;
     return json({ ok: true });
   }
+  /**
+   * What GoTrue's `/verify` hands the browser for an email OTP sent without a PKCE challenge (#640): a session for the
+   * address, which the redirect puts in the URL fragment. No email is sent; the test builds the incoming URL.
+   */
+  if (url.pathname === "/__test/email-link-session") {
+    const user = [...users.values()].find((candidate) => candidate.email === body.email);
+    return user ? json(session(user.id)) : json({ error: "unknown user" }, 404);
+  }
+  /** The `token_hash` an email template would put in the link instead, for the server-side confirmation. */
+  if (url.pathname === "/__test/email-link-hash") {
+    const user = [...users.values()].find((candidate) => candidate.email === body.email);
+    if (!user) return json({ error: "unknown user" }, 404);
+    const hash = `pkce_mock_${++sequence}_0123456789abcdef`;
+    otpHashes.set(hash, user.id);
+    return json({ token_hash: hash });
+  }
   if (url.pathname === "/__test/unverified-email") {
     state.unverifiedEmails.push(String(body.email));
     return json({ ok: true });
@@ -1759,6 +1795,7 @@ function control(url: URL, body: Row): Response {
       controlCalls: state.controlCalls,
       providerCalls: state.providerCalls,
       invitationCalls: state.invitationCalls,
+      authCalls: state.authCalls,
       invitations: state.invitations.map(invitationDto),
       members: state.members,
       connections: state.connections.map((row) => ({ ...row })),

@@ -119,7 +119,7 @@ export function InvitationList({ org, invitations, now, resend, revoke }: ListPr
   );
 }
 
-const LOGIN_HREF = `/login?next=${encodeURIComponent(INVITATION_ACCEPT_PATH)}`;
+export const INVITATION_LOGIN_HREF = `/login?next=${encodeURIComponent(INVITATION_ACCEPT_PATH)}`;
 const article = (role: string) => (role === "admin" ? "an admin" : "a member");
 
 /** Signs out and returns to this invitation's sign-in, keeping the link: "use another account". */
@@ -141,32 +141,51 @@ const SignedInAs = ({ email }: { email: string }) => (
 );
 
 /** The recipient's page. It only explains; joining is the explicit button of the `ready` preview. */
-export function AcceptInvitation({ state, accept, now }: { state: RecipientState; accept: Action; now: Date }) {
+type AcceptProps = { state: RecipientState; accept: Action; confirmLink: Action; now: Date };
+
+export function AcceptInvitation({ state, accept, confirmLink, now }: AcceptProps) {
   switch (state.kind) {
     case "missing":
       return (
-        <Shell title="Open your invitation link" alert>
+        <InvitationShell title="Open your invitation link" alert>
           <p>
             This browser has no invitation to accept. Open the link from the invitation email again, here. If it keeps
             failing, ask the admin who invited you to resend it.
           </p>
-        </Shell>
+        </InvitationShell>
       );
     case "sign_in":
       return (
-        <Shell title="You are invited to an organization on Armada">
+        <InvitationShell title="You are invited to an organization on Armada">
           <p>
-            Sign in or create your account with the email address the invitation was sent to. You then see the
-            organization and accept it here; nothing is joined before you do.
+            Armada sent a secure sign-in link with this invitation. Sign in with the address it was sent to, review the
+            organization, then choose whether to join. Nothing is joined before you do.
           </p>
           <Button asChild className="w-full sm:w-auto">
-            <Link href={LOGIN_HREF}>Sign in to continue</Link>
+            <Link href={INVITATION_LOGIN_HREF}>Sign in to continue</Link>
           </Button>
-        </Shell>
+        </InvitationShell>
+      );
+    case "link_sign_in":
+      return (
+        <InvitationShell title="Sign in to review your invitation">
+          <p>
+            This link includes a secure sign-in for the address the invitation was sent to. Continue to sign in with it,
+            then review the organization. Signing in does not join it.
+          </p>
+          <ActionForm action={confirmLink} className="flex flex-col gap-2">
+            <SubmitButton className="w-full sm:w-auto">Continue with this link</SubmitButton>
+          </ActionForm>
+          <p className="text-xs">
+            <Link href={INVITATION_LOGIN_HREF} className="underline underline-offset-4">
+              Sign in with your email address instead
+            </Link>
+          </p>
+        </InvitationShell>
       );
     case "unavailable":
       return (
-        <Shell title="This invitation could not be loaded" alert>
+        <InvitationShell title="This invitation could not be loaded" alert>
           <p role="alert">{state.message}</p>
           {state.signInAgain ? (
             <SwitchAccount label="Sign in again" primary />
@@ -175,7 +194,7 @@ export function AcceptInvitation({ state, accept, now }: { state: RecipientState
               <Link href={INVITATION_ACCEPT_PATH}>Try again</Link>
             </Button>
           )}
-        </Shell>
+        </InvitationShell>
       );
   }
   const { preview, signedInAs } = state;
@@ -183,7 +202,7 @@ export function AcceptInvitation({ state, accept, now }: { state: RecipientState
     case "ready": {
       const { orgName, role, expiresAt } = preview.context;
       return (
-        <Shell title={`Join ${orgName}`}>
+        <InvitationShell title={`Join ${orgName}`}>
           <p>
             You are invited as <strong className="text-foreground">{article(role)}</strong>.{" "}
             {/* The server just said it is live: a clock ahead of the server's never reads "Expired" here. */}
@@ -196,71 +215,79 @@ export function AcceptInvitation({ state, accept, now }: { state: RecipientState
             <SignedInAs email={signedInAs} />
             <SwitchAccount label="Use another account" />
           </div>
-        </Shell>
+        </InvitationShell>
       );
     }
     case "already_member":
       return (
-        <Shell title={`You are already in ${preview.context.orgName}`}>
+        <InvitationShell title={`You are already in ${preview.context.orgName}`}>
           <p>Nothing to accept: your account is a member of this organization.</p>
           <Button asChild className="w-full sm:w-auto">
             <Link href="/orgs">Open my organizations</Link>
           </Button>
-        </Shell>
+        </InvitationShell>
       );
     case "used":
       return (
-        <Shell title="This invitation was already accepted" alert>
+        <InvitationShell title="This invitation was already accepted" alert>
           <p>Each invitation link works once. If it was you, {preview.context.orgName} is in your organizations.</p>
           <Button asChild variant="outline" className="w-full sm:w-auto">
             <Link href="/orgs">Open my organizations</Link>
           </Button>
-        </Shell>
+        </InvitationShell>
       );
     case "expired":
       return (
-        <Shell title={`Your invitation to ${preview.context.orgName} has expired`} alert>
+        <InvitationShell title={`Your invitation to ${preview.context.orgName} has expired`} alert>
           <p>Ask an admin of {preview.context.orgName} to resend it. The new email has a fresh link.</p>
-        </Shell>
+        </InvitationShell>
       );
     case "revoked":
       return (
-        <Shell title={`Your invitation to ${preview.context.orgName} was revoked`} alert>
+        <InvitationShell title={`Your invitation to ${preview.context.orgName} was revoked`} alert>
           <p>An admin cancelled it. Ask them for a new invitation if you still need access.</p>
-        </Shell>
+        </InvitationShell>
       );
     case "not_found":
       return (
-        <Shell title="This invitation link is not valid" alert>
+        <InvitationShell title="This invitation link is not valid" alert>
           <p>
             It may have been replaced by a newer email. Open the latest invitation email, or ask an admin to resend it.
           </p>
-        </Shell>
+        </InvitationShell>
       );
     case "wrong_email":
       return (
-        <Shell title="Signed in with another account" alert>
+        <InvitationShell title="Signed in with another account" alert>
           <p>
             This invitation was sent to a different address than{" "}
             <strong className="break-all text-foreground">{signedInAs}</strong>. Sign in with the address that received
             the email.
           </p>
           <SwitchAccount label="Use another account" primary />
-        </Shell>
+        </InvitationShell>
       );
     case "unverified_email":
       return (
-        <Shell title="Verify your email first" alert>
+        <InvitationShell title="Verify your email first" alert>
           <p>
             Your address is not verified yet. Sign in again with the emailed link or code, then come back to accept.
           </p>
           <SwitchAccount label="Sign in again" primary />
-        </Shell>
+        </InvitationShell>
       );
   }
 }
 
-function Shell({ title, alert = false, children }: { title: string; alert?: boolean; children: ReactNode }) {
+export function InvitationShell({
+  title,
+  alert = false,
+  children,
+}: {
+  title: string;
+  alert?: boolean;
+  children: ReactNode;
+}) {
   return (
     <main className="flex min-h-dvh items-center justify-center p-4">
       <section className="w-full max-w-md space-y-4 rounded-lg border p-6" aria-labelledby="invitation-title">
