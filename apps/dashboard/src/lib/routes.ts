@@ -14,6 +14,30 @@ export function isPublicPath(pathname: string): boolean {
   );
 }
 
+/** The public landing (#564, from armada-v1-final): the proxy shows it on `/` to a viewer without a session. */
+export const LANDING_PATH = "/landing";
+
+type PageRequest = { method: string; nextUrl: { pathname: string } };
+const isRead = (request: PageRequest) => ["GET", "HEAD"].includes(request.method);
+
+/** A read of the landing or one of its files: they need no session, so no session is looked up. */
+export const isLanding = (request: PageRequest) =>
+  isRead(request) &&
+  (request.nextUrl.pathname === LANDING_PATH || request.nextUrl.pathname.startsWith(`${LANDING_PATH}/`));
+
+/**
+ * A read of `/`, whatever its query (a shared link's `?utm_source=`, `?msclkid=`…): where a viewer without a session
+ * sees the landing. No query turns `/` into an app page: a member's `/` only redirects to the sandboxes.
+ */
+export const isFront = (request: PageRequest) => isRead(request) && request.nextUrl.pathname === "/";
+
+/** Supabase's session cookie (`sb-<project>-auth-token`, or its `.0`, `.1`… chunks), not the PKCE code verifier. */
+const SESSION_COOKIE = /^sb-.+-auth-token(\.\d+)?$/;
+
+/** Whether a request carries a Supabase session cookie, valid or not: without one, nobody is signed in. */
+export const hasSessionCookie = (request: { cookies: { getAll(): { name: string }[] } }) =>
+  request.cookies.getAll().some((cookie) => SESSION_COOKIE.test(cookie.name));
+
 /**
  * Only same-site paths are valid redirect targets after login: a `next` pointing at another
  * origin (or protocol-relative) would turn the login into an open redirect.

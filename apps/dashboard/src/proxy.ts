@@ -2,13 +2,31 @@ import { CLIENT_CONFIG_PATH } from "@armada/core";
 import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 import { supabaseEnv } from "@/lib/env";
-import { isPublicPath } from "@/lib/routes";
+import { hasSessionCookie, isFront, isLanding, isPublicPath, LANDING_PATH } from "@/lib/routes";
 import type { Database } from "@/lib/supabase/types";
 
-/** Refreshes the session cookie on every request and sends signed-out visitors to the login page. */
+/** The landing on the visitor's own URL (`/`); `Vary: Cookie`, as a member's `/` is the dashboard. */
+function landing(request: NextRequest, carry?: NextResponse): NextResponse {
+  const target = request.nextUrl.clone();
+  target.pathname = LANDING_PATH;
+  target.search = "";
+  const rewritten = NextResponse.rewrite(target);
+  for (const cookie of carry?.cookies.getAll() ?? []) rewritten.cookies.set(cookie);
+  rewritten.headers.set("Vary", "Cookie");
+  return rewritten;
+}
+
+/**
+ * Refreshes the session cookie on every request, shows the landing on `/` to a signed-out visitor and sends
+ * one anywhere else to the login page.
+ */
 export async function proxy(request: NextRequest) {
   if (request.nextUrl.pathname === CLIENT_CONFIG_PATH || request.nextUrl.pathname.startsWith("/api/v1/"))
     return NextResponse.next();
+  // The landing reads no session and no data: it shows without a session lookup. A visitor with no
+  // session cookie is signed out, so their `/` is the landing without reading Supabase's settings either.
+  if (isLanding(request)) return NextResponse.next();
+  if (isFront(request) && !hasSessionCookie(request)) return landing(request);
   const { url, anonKey } = supabaseEnv();
   let response = NextResponse.next({ request });
 
@@ -33,6 +51,8 @@ export async function proxy(request: NextRequest) {
     return redirected;
   };
 
+  // A stale or invalid session cookie: signed out, with the cookies Supabase cleared.
+  if (!signedIn && isFront(request)) return landing(request, response);
   if (!signedIn && pathname.startsWith("/api/")) {
     return NextResponse.json({ error: "Sign in again." }, { status: 401 });
   }
