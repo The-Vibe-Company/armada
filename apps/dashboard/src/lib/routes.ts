@@ -1,4 +1,5 @@
 import { CLIENT_CONFIG_PATH } from "@armada/core";
+import { INVITATION_ACCEPT_PATH } from "./invitations.ts";
 
 /** Paths a signed-out visitor may open. Everything else needs a session. */
 export function isPublicPath(pathname: string): boolean {
@@ -10,7 +11,9 @@ export function isPublicPath(pathname: string): boolean {
     // The GitHub App can send the person here before this browser has an Armada session.
     pathname === "/github/callback" ||
     // Where the CLI's GitHub sign-in ends; the CLI user may have no dashboard session in this browser.
-    pathname === "/github/cli"
+    pathname === "/github/cli" ||
+    // An invitation link opens for a recipient who may have no account yet: it previews, it never joins.
+    pathname === INVITATION_ACCEPT_PATH
   );
 }
 
@@ -49,6 +52,8 @@ export function safeNextPath(next: string | null | undefined, fallback = "/sandb
   try {
     const url = new URL(next, "http://armada.invalid");
     if (url.origin !== "http://armada.invalid") return fallback;
+    // Back to an invitation after signing in, without its query: the token stays in its cookie, never in `next`.
+    if (url.pathname === INVITATION_ACCEPT_PATH) return INVITATION_ACCEPT_PATH;
     if (isPublicPath(url.pathname) || url.pathname === "/") return fallback;
     return `${url.pathname}${url.search}`;
   } catch {

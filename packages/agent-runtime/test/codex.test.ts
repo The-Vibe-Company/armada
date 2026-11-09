@@ -32,6 +32,20 @@ nativeTest("Codex waits for interrupt terminal then sends steer once on the same
     expect(await turn.done).toBe("finished");
     await steering;
     expect(sessions).toEqual(["persisted-thread"]);
+    // Account notifications have no threadId and must survive thread filtering.
+    expect(events.filter((e) => e.kind === "other" && e.type === "account/rateLimits/updated")).toEqual([
+      {
+        kind: "other",
+        type: "account/rateLimits/updated",
+        data: {
+          rateLimits: {
+            limitId: "codex",
+            primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1794268800 },
+            secondary: null,
+          },
+        },
+      },
+    ]);
     expect(events.filter((e) => e.kind === "message" && e.text === "redirect delivered once")).toHaveLength(1);
     expect(events.filter((e) => e.kind === "other" && e.type === "turn/completed")).toHaveLength(2);
   } finally {
@@ -155,6 +169,47 @@ nativeTest.each([true, false])(
       await next.partial;
       await next.turn.interrupt();
       expect(await next.turn.done).toBe("interrupted");
+    } finally {
+      await driver.close();
+    }
+  },
+);
+
+nativeTest.each(["reported", "unavailable"])(
+  "native account snapshot %s stays private and never blocks the coding turn",
+  async (mode) => {
+    const driver = new CodexDriver({
+      executable: `${import.meta.dir}/fixtures/app-server.ts`,
+      cwd: import.meta.dir,
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        CODEX_HOME: import.meta.dir,
+        ...(mode === "unavailable" ? { ARMADA_QUOTA_UNAVAILABLE: "1" } : {}),
+      },
+    });
+    const events: DriverEvent[] = [];
+    try {
+      const turn = driver.start({
+        request: { sandboxId: "s", harness: "codex", text: "redirect" },
+        signal: AbortSignal.timeout(3000),
+        session: () => {},
+        emit: (event) => {
+          events.push(event);
+        },
+      });
+      expect(await turn.done).toBe("finished");
+      const snapshot = events.find((event) => event.kind === "other" && event.type === "account/rateLimits/read");
+      if (mode === "reported")
+        expect(snapshot).toMatchObject({
+          data: {
+            rateLimits: { credits: { hasCredits: false, unlimited: false, balance: "0" } },
+            rateLimitsByLimitId: { review: { credits: { balance: "12.3400" } } },
+          },
+        });
+      else expect(snapshot).toBeUndefined();
+      expect(events.filter((event) => event.kind === "message").every((event) => !event.text.includes("12.3400"))).toBe(
+        true,
+      );
     } finally {
       await driver.close();
     }

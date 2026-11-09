@@ -55,14 +55,14 @@ export class CodexDriver implements Driver {
     let terminalResolve: ((value: TurnCompletedNotification) => void) | undefined;
     let terminalReject: ((error: Error) => void) | undefined;
     const lines = createInterface({ input: child.stdout });
-    const rpc = <T>(method: string, params: unknown): Promise<T> =>
+    const rpc = <T>(method: string, params: unknown, timeoutMs = 30000, fatal = true): Promise<T> =>
       new Promise((resolve, reject) => {
         const id = ++next;
         const timer = setTimeout(() => {
           pending.delete(id);
           reject(new HarnessError("harness_timeout"));
-          child.kill("SIGKILL");
-        }, 30000);
+          if (fatal) child.kill("SIGKILL");
+        }, timeoutMs);
         pending.set(id, { resolve: (x) => resolve(x as T), reject, timer });
         child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
       });
@@ -96,6 +96,11 @@ export class CodexDriver implements Driver {
           child.stdin.write(
             `${JSON.stringify({ id: m.id, error: { code: -32601, message: "Interactive requests are disabled" } })}\n`,
           );
+          return;
+        }
+        // Account limits have no thread ID and must stay outside the public message lane.
+        if (m.method === "account/rateLimits/updated") {
+          c.emit({ kind: "other", type: m.method, data: m.params });
           return;
         }
         if (m.params?.threadId !== threadId) return;
@@ -234,6 +239,14 @@ export class CodexDriver implements Driver {
       if (typeof result.thread?.id !== "string") throw new HarnessError("invalid_harness_protocol");
       threadId = result.thread.id;
       c.session(threadId);
+      if (!this.options.env.OPENAI_API_KEY && this.options.env.CODEX_HOME) {
+        // Existing native ChatGPT session only: this documented RPC never starts inference.
+        // Optional quota failure cannot turn a normal coding request into a harness failure.
+        try {
+          const limits = await rpc<unknown>("account/rateLimits/read", {}, 5000, false);
+          c.emit({ kind: "other", type: "account/rateLimits/read", data: limits });
+        } catch {}
+      }
     })();
     current = initialized.then(() => begin(c.request.text));
     const interrupt = async () => {

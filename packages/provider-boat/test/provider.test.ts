@@ -651,3 +651,18 @@ test.each([true, false])("native private state ACK precedes Boat stop API (%s)",
   else await expect(provider.stop({ sandboxId: ID })).rejects.toThrow("native state publication unknown");
   expect(order).toEqual(acknowledged ? ["private-state", "stop"] : ["private-state"]);
 });
+
+test("quota event cancellation reaches the actual SDK fetch without entering request data", async () => {
+  const controller = new AbortController();
+  let propagated = false;
+  const provider = createBoatProvider({
+    apiKey: KEY,
+    fetch: (async (_input, init) => {
+      controller.abort();
+      propagated = init?.signal?.aborted === true;
+      return Response.json({ events: [], hasMore: false });
+    }) as typeof fetch,
+  });
+  await expect(provider.events({ sandboxId: ID, signal: controller.signal })).rejects.toBeDefined();
+  expect(propagated).toBe(true);
+});
