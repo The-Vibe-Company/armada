@@ -40,7 +40,9 @@ export async function GET(request: Request, context: Context) {
     }
     return NextResponse.json({ detail, events, cursor, hasMore }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
-    const read = readFailure(error);
+    const failed = readFailure(error);
+    // A read refused with a conflict (#662: provider events appended concurrently) is retried like any transient read.
+    const read = failed.failure === "stale" ? { ...failed, failure: "uncertain" as const } : failed;
     // An `unavailable` answer is retried, unless the server now says orchestrators are off: then polling stops on that.
     if (read.failure === "uncertain") {
       const capabilities = await api.capabilities().catch(() => null);

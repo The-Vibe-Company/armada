@@ -259,6 +259,10 @@ test("a receipt whose effect was not confirmed says the orchestrator is held, ke
   await expect(composer(page).getByRole("alert")).toContainText("held until Armada reconciles it");
   await expect(box).toHaveValue("Merge #12.");
   await expect(page.locator("[data-orchestrator-state]")).toHaveText("Needs attention");
+  // While the receipt is unsettled the server refuses every command: none is offered, not even Stop.
+  await expect(box).toBeDisabled();
+  await expect(box).toHaveAttribute("placeholder", /Armada is settling the last message/);
+  await expect(page.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0);
   const [message] = (await calls()).filter((call) => call.route === "message");
   expect(message?.body).toEqual({
     orgId: "00000000-0000-4000-8000-000000000010",

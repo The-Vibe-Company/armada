@@ -441,3 +441,31 @@ test("a refused command keeps its key only while an operation of its kind is sti
   expect(unsettledAfterReread(attempt, { ok: false, failure: "uncertain" }, null)).toEqual(attempt);
   expect(unsettledAfterReread(attempt, { ok: true }, { operations: [op("message", "pending")] })).toBeNull();
 });
+
+test("no command is offered while an operation is unsettled, and only a verified conversation resumes", () => {
+  const unsettled = orchestratorControls(
+    detail(
+      { state: "blocked", blockedReason: "Reconciling." },
+      {
+        operations: [
+          {
+            version: 1,
+            id: "op",
+            orchestratorId: ID,
+            kind: "message",
+            state: "uncertain",
+            revision: 5,
+            errorCode: "runtime_uncertain",
+          },
+        ],
+      },
+    ),
+    false,
+  );
+  expect(unsettled.can).toEqual({ message: false, steer: false, stop: false, resume: false });
+  expect(unsettled.composerNote).toContain("settling the last message");
+  const unverified = orchestratorControls(detail({ state: "stopped", continuity: "unverified" }), false);
+  expect(unverified.can.resume).toBe(false);
+  expect(unverified.composerNote).toContain("could not verify");
+  expect(orchestratorControls(detail({ state: "stopped", continuity: "native" }), false).can.resume).toBe(true);
+});

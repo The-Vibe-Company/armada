@@ -145,8 +145,9 @@ function detail(row: Orchestrator): Row {
   const child = state.events.filter((event) => event.orchestratorId === row.id && event.kind === "child");
   return {
     version: 1,
-    orchestrator: row,
-    operations: [],
+    orchestrator: { ...row, unsettled: undefined },
+    // An unsettled receipt stays listed until reconciled, as the runtime's store keeps it (#662).
+    operations: (row.unsettled as Row[] | undefined) ?? [],
     waits:
       row.id === ORCHESTRATOR_IDS.alice && row.state === "ready"
         ? [
@@ -311,7 +312,11 @@ export function orchestratorRoute(request: Request, url: URL, body: Row, userId:
   if (state.uncertainNext) {
     state.uncertainNext = false;
     Object.assign(answer, { state: "uncertain", errorCode: "runtime_uncertain" });
-    Object.assign(row, { state: "blocked", blockedReason: "Armada is reconciling the last operation." });
+    Object.assign(row, {
+      state: "blocked",
+      blockedReason: "Armada is reconciling the last operation.",
+      unsettled: [{ ...answer }],
+    });
   }
   state.receipts.set(receiptKey, { digest, receipt: answer });
   return lost ? fail(lost.status, lost.code, lost.message) : json(answer, 202);

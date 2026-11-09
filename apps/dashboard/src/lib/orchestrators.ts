@@ -350,27 +350,36 @@ export type OrchestratorControls = {
  */
 export function orchestratorControls(detail: OrchestratorDetail, running: boolean): OrchestratorControls {
   const { orchestrator } = detail;
-  const pending = detail.operations.find((operation) => operation.state === "pending")?.kind ?? null;
+  // The server refuses every new command while any operation is pending or unsettled (#662): none is offered then.
+  const open = detail.operations.find((operation) => operation.state === "pending" || operation.state === "uncertain");
+  const pending = open?.kind ?? null;
   const lost = orchestrator.continuity === "lost";
-  const ready = orchestrator.state === "ready";
+  const ready = orchestrator.state === "ready" && !lost && !open;
   const can = {
-    message: ready && !lost && pending === null,
-    steer: ready && !lost && running && pending === null,
-    stop: (ready || orchestrator.state === "blocked") && pending !== "stop",
-    resume: orchestrator.state === "stopped" && !lost && pending === null,
+    message: ready,
+    steer: ready && running,
+    stop: (orchestrator.state === "ready" || orchestrator.state === "blocked") && !open,
+    // Resume continues the same native conversation, so only a verified one is resumable.
+    resume: orchestrator.state === "stopped" && orchestrator.continuity === "native" && !open,
   };
-  const composerNote = can.message
-    ? null
-    : lost
-      ? "This conversation cannot continue."
-      : pending
-        ? `Waiting for the ${pending} to finish.`
-        : orchestrator.state === "stopped"
-          ? "Stopped. Resume it to continue the same conversation."
-          : orchestrator.state === "blocked"
-            ? "It takes no message until the problem above is solved."
-            : `${STATE_LABELS[orchestrator.state]}…`;
-  return { can, pending, composerNote, notice: notice(orchestrator) };
+  return { can, pending, composerNote: composerNote(orchestrator, can, open), notice: notice(orchestrator) };
+}
+
+function composerNote(
+  orchestrator: Orchestrator,
+  can: OrchestratorControls["can"],
+  open: OrchestratorOperation | undefined,
+): string | null {
+  if (can.message) return null;
+  if (orchestrator.continuity === "lost") return "This conversation cannot continue.";
+  if (open?.state === "uncertain") return `Armada is settling the last ${open.kind}; nothing is repeated meanwhile.`;
+  if (open) return `Waiting for the ${open.kind} to finish.`;
+  if (orchestrator.state === "stopped")
+    return can.resume
+      ? "Stopped. Resume it to continue the same conversation."
+      : "Stopped. Armada cannot resume a conversation it could not verify.";
+  if (orchestrator.state === "blocked") return "It takes no message until the problem above is solved.";
+  return `${STATE_LABELS[orchestrator.state]}…`;
 }
 
 function notice(orchestrator: Orchestrator): OrchestratorControls["notice"] {
