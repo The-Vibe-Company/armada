@@ -247,3 +247,35 @@ nativeTest("Claude native /usage fallback does not become public assistant text 
     await driver.close();
   }
 });
+
+nativeTest(
+  "a native result acknowledgement ends private usage suppression before subsequent steered work",
+  async () => {
+    const driver = new ClaudeDriver({
+      executable: `${import.meta.dir}/fixtures/claude-process.ts`,
+      cwd: import.meta.dir,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+    });
+    let turn: Turn | undefined, steering: Promise<void> | undefined;
+    const events: DriverEvent[] = [];
+    try {
+      turn = driver.start({
+        request: { sandboxId: "s", harness: "claude", text: "/usage" },
+        signal: AbortSignal.timeout(3000),
+        session: () => {
+          if (turn && !steering) steering = turn.steer("after-usage");
+        },
+        emit: (event) => {
+          events.push(event);
+        },
+      });
+      expect(await turn.done).toBe("finished");
+      await steering;
+      expect(events.filter((event) => event.kind === "message").map((event) => event.text)).toEqual([
+        "work-after-usage",
+      ]);
+    } finally {
+      await driver.close();
+    }
+  },
+);

@@ -24,6 +24,7 @@ export class ClaudeDriver implements Driver {
     let latest = crypto.randomUUID();
     let steered = false;
     let privateUsage = false;
+    const privateInputs = new Set<string>();
     let terminalError: HarnessErrorCode | undefined;
     // Subagent streams can interleave with the top-level stream.
     const messages = new Map<string | null, string>();
@@ -31,8 +32,9 @@ export class ClaudeDriver implements Driver {
     const completedFrames = new Set<string>();
     const inputs: SDKUserMessage[] = [];
     const push = (text: string) => {
-      privateUsage ||= /^\/usage(?:\s|$)/.test(text.trim());
       latest = crypto.randomUUID();
+      if (/^\/usage(?:\s|$)/.test(text.trim())) privateInputs.add(latest);
+      privateUsage = privateInputs.size > 0;
       inputs.push({
         type: "user",
         uuid: latest,
@@ -208,6 +210,8 @@ export class ClaudeDriver implements Driver {
               data: privateUsage ? { subtype: event.subtype, is_error: event.is_error } : event,
             });
             const consumed = event.user_message_uuids ?? (event.user_message_uuid ? [event.user_message_uuid] : []);
+            for (const id of consumed) privateInputs.delete(id);
+            privateUsage = privateInputs.size > 0;
             if (!interrupted && steered && !consumed.length) throw new HarnessError("invalid_harness_protocol");
             if (!interrupted && consumed.length && !consumed.includes(latest)) continue;
             if (terminalError) throw new HarnessError(terminalError);

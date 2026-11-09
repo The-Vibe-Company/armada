@@ -133,6 +133,42 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       });
       return;
     }
+    if (m.message.content === "after-usage") {
+      send({
+        type: "assistant",
+        uuid: "work-after-usage",
+        session_id: "fixture-session",
+        parent_tool_use_id: null,
+        message: {
+          id: "work-after-usage",
+          type: "message",
+          role: "assistant",
+          model: "claude-opus-5-5",
+          content: [{ type: "text", text: "work-after-usage" }],
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      });
+      send({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        uuid: "work-result",
+        session_id: "fixture-session",
+        duration_ms: 1,
+        duration_api_ms: 1,
+        num_turns: 1,
+        result: "work-after-usage",
+        total_cost_usd: 0,
+        usage: { input_tokens: 1, output_tokens: 1 },
+        modelUsage: {},
+        permission_denials: [],
+        user_message_uuid: m.uuid,
+        user_message_uuids: [m.uuid],
+      });
+      return;
+    }
     if (m.message.content === "/usage") {
       send({
         type: "stream_event",
