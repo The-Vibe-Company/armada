@@ -139,7 +139,7 @@ def fresh_mcp(params):
         current = tomllib.load(source).get("mcp_servers", {})
     return {name:current.get(name, {"command":"/usr/bin/false", "enabled":False}) for name in names}
 
-def github_safe(line):
+def github_safe_once(line):
     locator=os.path.join(os.path.expanduser("~"),".armada","github-socket")
     if not os.path.lexists(locator): return line
     info=os.lstat(locator)
@@ -154,6 +154,19 @@ def github_safe(line):
     response=connection.getresponse();result=response.read(262145)
     if response.status!=200 or len(result)>262144: raise ValueError("GitHub redaction unavailable")
     connection.close();return result
+
+github_stopping=threading.Event()
+def github_safe(line):
+    warned=False
+    while True:
+        try: return github_safe_once(line)
+        except Exception:
+            if github_stopping.is_set(): return b''
+            if not warned:
+                sys.stderr.write("Managed GitHub output paused (redaction unavailable).\\n");sys.stderr.flush();warned=True
+            # Preserve protocol bytes and apply backpressure until redaction recovers.
+            # GitHub IPC failure must never terminate the native app-server.
+            time.sleep(0.1)
 
 cwd = sys.argv[1]
 args = sys.argv[2:]
@@ -326,6 +339,7 @@ def reload_mcp():
     return success
 last_mcp = None
 def forward_signal(sig, frame):
+    github_stopping.set()
     try:
         child.send_signal(sig)
     except ProcessLookupError:
@@ -417,8 +431,8 @@ if managed:
         return False
     while group_live():
         time.sleep(0.01)
-receiver.join(timeout=2)
-github_errors.join(timeout=2)
+receiver.join()
+github_errors.join()
 if code < 0:
     if -code not in (signal.SIGKILL, signal.SIGSTOP):
         signal.signal(-code, signal.SIG_DFL)
