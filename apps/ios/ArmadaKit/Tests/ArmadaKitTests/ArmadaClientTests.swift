@@ -290,7 +290,9 @@ private actor SubmissionRaceTransport: ArmadaTransport {
                 body = #"{"version":1,"id":"operation-a","orchestratorId":"parent-a","kind":"stop","state":"succeeded","revision":8,"errorCode":null}"#
             } else {
                 status = mutationCount == 1 ? 503 : 400
-                body = #"{"error":{"code":"unavailable"}}"#
+                body = mutationCount == 1
+                    ? #"{"error":{"code":"unavailable","message":"unavailable"}}"#
+                    : #"{"error":{"code":"invalid_request","message":"invalid_request"}}"#
             }
         }
         return (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
@@ -328,7 +330,7 @@ private actor SubmissionRaceTransport: ArmadaTransport {
     await transport.releaseCapability(1)
     await #expect(throws: ArmadaError.unavailable) { _ = try await first.value }
     await transport.releaseCapability(2)
-    await #expect(throws: ArmadaError.http(400)) { _ = try await second.value }
+    await #expect(throws: ArmadaError.invalidRequest) { _ = try await second.value }
     #expect(await client.pendingOperations.first?.state == .uncertain)
     await #expect(throws: ArmadaError.conflict) { try await client.discardOrchestratorOperation(command.id) }
 }
