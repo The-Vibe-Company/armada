@@ -2,6 +2,8 @@ import { resourceUrl } from "@armada/auth";
 
 export interface ServerConfig {
   port: number;
+  /** Managed GitHub wrappers/broker are opt-in while the runtime is under repair. */
+  githubRuntimeEnabled: boolean;
   supabaseUrl: string;
   anonKey: string;
   authSecret: string;
@@ -76,6 +78,7 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
 
   return {
     port,
+    githubRuntimeEnabled: env.ARMADA_GITHUB_RUNTIME_ENABLED === "true",
     supabaseUrl: value("SUPABASE_URL").replace(/\/+$/, ""),
     anonKey: value("SUPABASE_ANON_KEY"),
     authSecret: value("ARMADA_AUTH_SECRET"),

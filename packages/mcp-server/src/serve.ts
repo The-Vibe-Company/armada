@@ -82,6 +82,7 @@ export async function startServer(
   const githubApp = githubAppFromEnv(env);
   const data = createSqlData(sql);
   const mcp = createMcpHttpIntegration({
+    githubRuntimeEnabled: config.githubRuntimeEnabled,
     github: { store, app: githubApp, encryptionKey: config.encryptionKey },
     catalogAuthentication,
     sql,
@@ -122,8 +123,9 @@ export async function startServer(
         await mcp.beforeSnapshot(provider, id);
       },
     });
-    provider.configureGitHub = ({ sandboxId, configuration }) =>
-      configureBoatGitHub(provider, sandboxId, configuration);
+    if (config.githubRuntimeEnabled)
+      provider.configureGitHub = ({ sandboxId, configuration }) =>
+        configureBoatGitHub(provider, sandboxId, configuration);
     provider.configureMcp = ({ sandboxId, configuration }) => bootstrapBoatMcp(provider, sandboxId, configuration);
     return provider;
   };

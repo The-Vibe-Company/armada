@@ -36,6 +36,8 @@ const sha = async (v: string) =>
 /** Production HTTP adapter. Upstream grants never cross the gateway/native boundary. */
 export function createMcpHttpIntegration(options: {
   sql: Sql;
+  /** Trusted server opt-in, never a request parameter. Defaults off. */
+  githubRuntimeEnabled?: boolean;
   github?: import("@armada/core/server").GitHubResolveDeps;
   encryptionKey: string | undefined;
   publicUrl: string;
@@ -57,7 +59,7 @@ export function createMcpHttpIntegration(options: {
     ...(options.catalogAuthentication ? { catalogAuthentication: options.catalogAuthentication } : {}),
   });
   const githubRuntime =
-    options.github && options.providerForSandbox
+    options.githubRuntimeEnabled === true && options.github && options.providerForSandbox
       ? createGitHubRuntime({
           sql,
           github: options.github,

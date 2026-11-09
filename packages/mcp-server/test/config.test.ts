@@ -13,6 +13,12 @@ const ENV = {
 };
 
 describe("config", () => {
+  test("managed GitHub runtime requires the exact explicit opt-in", () => {
+    for (const value of [undefined, "", "false", "1", "TRUE", " true "])
+      expect(configFromEnv({ ...ENV, ARMADA_GITHUB_RUNTIME_ENABLED: value }).githubRuntimeEnabled).toBe(false);
+    expect(configFromEnv({ ...ENV, ARMADA_GITHUB_RUNTIME_ENABLED: "true" }).githubRuntimeEnabled).toBe(true);
+  });
+
   test("reads the environment, with PORT defaulting to 8080", () => {
     expect(configFromEnv(ENV)).toMatchObject({ port: 8080, supabaseUrl: "https://project.supabase.co" });
     expect(configFromEnv({ ...ENV, PORT: "3000" }).port).toBe(3000);

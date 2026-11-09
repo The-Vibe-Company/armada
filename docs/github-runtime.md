@@ -4,6 +4,31 @@ GitHub App **user** access tokens expire after eight hours. Refreshing one inval
 previous access token and previous refresh token. Installation tokens are different (one hour) and
 are not a substitute for the worker owner's identity. See [GitHub's user-token refresh contract](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens).
 
+## Server opt-in (default off)
+
+The trusted server environment setting `ARMADA_GITHUB_RUNTIME_ENABLED=true` enables
+this experimental runtime. Omit it (recommended), or use any value other than exact
+`true`, to disable it. Restart the server after changing the setting; use the same
+setting on every replica.
+
+When off, launch, send, steer and exec do not prepare the managed GitHub runtime.
+No GitHub wrapper, broker or credential socket is installed, and the internal
+GitHub credential-acquisition route is not mounted. Fresh sandboxes retain stock
+git/gh and the existing launch-time `GH_TOKEN`/git credential setup. This gate does
+not disable GitHub OAuth, golden checkout, MCP bindings or model authentication.
+The #703 implementation and migration `20261110121300_github_runtime.sql` remain.
+
+**Existing-worker limitation:** disabling the server setting does not undo files
+already installed inside a worker while it was enabled, stop its broker, or restore
+its binaries. Its managed credential acquisitions will fail once all replicas are
+off, so git/gh may still fail there. Do not treat this switch as an in-place repair:
+retire affected workers through the normal lifecycle and launch replacements from
+a clean golden that has never had managed wrappers installed. Do not snapshot an
+affected worker into a golden. No automatic command replay or guest mutation is
+performed by the off path. Root-cause repair and automated restoration are separate work.
+
+The sections below describe the opt-in path only.
+
 ## Credential-time renewal
 
 Launch/prompt preparation and authorized exec/steer prepare a GitHub-only broker in the **same VM**.
