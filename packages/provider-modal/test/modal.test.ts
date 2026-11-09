@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { Sql } from "@armada/core";
+import { createSqlVaultStore, GoldenBuildJobs } from "@armada/core/server";
 import type { Image, ModalClient, Sandbox } from "modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
@@ -149,7 +150,9 @@ function fixture(accessScope: Scope = scope, sql: Sql = db, beforePrompt?: Modal
         return state.sb;
       },
       fromId: async (id: string) => machines.get(id)?.sb,
-      fromName: async (_app: string, name: string) => {
+      fromName: async (_app: string, name: string, params: object) => {
+        expect(_app).toBe("pinned");
+        expect(params).toEqual({ environment: accessScope.binding.environment, includeTerminated: true });
         await onLookup?.();
         if (lookupError) throw lookupError;
         const sb = names.get(name);
@@ -241,6 +244,9 @@ function fixture(accessScope: Scope = scope, sql: Sql = db, beforePrompt?: Modal
     lookupError(error: Error | undefined) {
       lookupError = error;
     },
+    ownership(value?: Record<string, string>) {
+      ownershipOverride = value;
+    },
     wrongOwnership() {
       ownershipOverride = { armada_sandbox: "somebody-else" };
     },
@@ -261,6 +267,235 @@ function fixture(accessScope: Scope = scope, sql: Sql = db, beforePrompt?: Modal
     },
   };
 }
+test("durable golden recovery persists an interrupted Modal builder before exact owned cleanup, never replays create", async () => {
+  const f = fixture();
+  const key = Buffer.alloc(32, 61).toString("base64");
+  const actor = { userId: scope.userId, orgId: scope.orgId, role: "admin" as const };
+  let concurrentAfterPersist: (() => Promise<void>) | undefined;
+  const recoverySql: Sql = {
+    query: db.query.bind(db),
+    transaction: async (work) => {
+      const result = await db.transaction(work);
+      const run = concurrentAfterPersist;
+      if (run) {
+        const persisted = await db.query<{ builder_id: string | null }>(
+          "select builder_id from golden_build_jobs where id=$1",
+          [job.jobId],
+        );
+        if (persisted.rows[0]?.builder_id) {
+          concurrentAfterPersist = undefined;
+          await run();
+        }
+      }
+      return result;
+    },
+  };
+  const jobs = new GoldenBuildJobs({
+    sql: recoverySql,
+    encryptionKey: key,
+    service: {
+      github: { store: createSqlVaultStore(db), encryptionKey: key, app: null },
+      installationApp: null,
+      ssh: async () => {
+        throw Error("Build commands must not replay");
+      },
+    },
+    provider: async () => f.provider,
+  });
+  const job = await jobs.admit(
+    f.provider,
+    actor,
+    { name: "lost-builder", visibility: "private", repos: ["acme/web"], modal: scope.binding },
+    crypto.randomUUID(),
+  );
+  const fence = crypto.randomUUID();
+  await db.query(
+    "update golden_build_jobs set state='recovery_required',phase='builder',error_code='build_failed',fence=$2 where id=$1",
+    [job.jobId, fence],
+  );
+  f.failCreate(true);
+  await expect(
+    f.provider.createGolden({ idempotencyKey: job.jobId, labels: { armada: "golden-builder" } }),
+  ).rejects.toMatchObject({ code: "unknown" });
+  const reserved = await f.store.findByRequestKey(job.jobId);
+  if (!reserved) throw Error("Fixture reservation missing");
+  const target = {
+    provider: "modal" as const,
+    orgId: scope.orgId,
+    visibility: "private" as const,
+    modal: scope.binding,
+  };
+  const request = { requestKey: job.jobId, ownerId: scope.userId, target };
+  expect(await f.provider.findGoldenBuilder({ ...request, requestKey: crypto.randomUUID() })).toBeNull();
+  await expect(
+    f.provider.findGoldenBuilder({ ...request, ownerId: "00000000-0000-0000-0000-000000000004" }),
+  ).rejects.toMatchObject({ code: "forbidden" });
+  for (const modal of [
+    { ...scope.binding, appId: "ap_other" },
+    { ...scope.binding, environment: "other" },
+    { ...scope.binding, workspace: "other" },
+  ]) {
+    await expect(f.provider.findGoldenBuilder({ ...request, target: { ...target, modal } })).rejects.toMatchObject({
+      code: "forbidden",
+    });
+  }
+  const row = async () =>
+    (
+      await db.query<{ builder_id: string | null; state: string; fence: string }>(
+        "select builder_id,state,fence from golden_build_jobs where id=$1",
+        [job.jobId],
+      )
+    ).rows[0]!;
+  await expect(
+    f.provider.findGoldenBuilder({ ...request, target: { ...target, orgId: "00000000-0000-0000-0000-000000000099" } }),
+  ).rejects.toMatchObject({ code: "forbidden" });
+  await expect(
+    f.provider.findGoldenBuilder({ ...request, target: { ...target, visibility: "org" } }),
+  ).rejects.toMatchObject({ code: "forbidden" });
+  const originalRecord = structuredClone(reserved);
+  for (const corrupt of [
+    { ...originalRecord, golden: false },
+    { ...originalRecord, managementAuthority: undefined },
+    { ...originalRecord, managementAuthority: { credentialScope: "org", credentialOwnerId: scope.orgId } },
+    { ...originalRecord, launchUserId: "00000000-0000-0000-0000-000000000004" },
+  ]) {
+    await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+      reserved.info.id,
+      JSON.stringify(corrupt),
+    ]);
+    await expect(f.provider.findGoldenBuilder(request)).rejects.toMatchObject({ code: "forbidden" });
+  }
+  await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+    reserved.info.id,
+    JSON.stringify(originalRecord),
+  ]);
+  await db.query("update modal_machines set owner_id=$2 where id=$1", [
+    reserved.info.id,
+    "00000000-0000-0000-0000-000000000004",
+  ]);
+  expect(await f.provider.findGoldenBuilder(request)).toBeNull();
+  await db.query("update modal_machines set owner_id=$2 where id=$1", [reserved.info.id, scope.userId]);
+  const discover = f.provider.findGoldenBuilder;
+  f.provider.findGoldenBuilder = async (req) => {
+    const found = await discover(req);
+    await db.query("update golden_build_jobs set fence=$2 where id=$1", [job.jobId, crypto.randomUUID()]);
+    return found;
+  };
+  await jobs.reconcileOne();
+  expect((await row()).builder_id).toBeNull();
+  expect(f.log).not.toContain("terminate");
+  await db.query("update golden_build_jobs set fence=$2 where id=$1", [job.jobId, fence]);
+  f.provider.findGoldenBuilder = discover;
+  for (const phase of ["snapshot", "persist"]) {
+    await db.query("update golden_build_jobs set phase=$2 where id=$1", [job.jobId, phase]);
+    await jobs.reconcileOne();
+    expect((await row()).builder_id).toBeNull();
+    expect(f.log).not.toContain("terminate");
+  }
+  await db.query("update golden_build_jobs set phase='builder' where id=$1", [job.jobId]);
+  await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+    reserved.info.id,
+    JSON.stringify({ ...originalRecord, snapshotImages: [{ name: "retained-proof", imageId: "im_proof" }] }),
+  ]);
+  let concurrentTicks = 0;
+  let retainedDiscoveries = 0;
+  f.provider.findGoldenBuilder = async (req) => {
+    retainedDiscoveries++;
+    return discover(req);
+  };
+  concurrentAfterPersist = async () => {
+    concurrentTicks++;
+    await jobs.reconcileOne();
+  };
+  await jobs.reconcileOne();
+  await jobs.reconcileOne();
+  expect(concurrentTicks).toBe(1);
+  expect(retainedDiscoveries).toBe(3);
+  f.provider.findGoldenBuilder = discover;
+  expect(await row()).toMatchObject({ builder_id: reserved.info.id, state: "recovery_required" });
+  expect(f.log).not.toContain("terminate");
+  expect(f.log).not.toContain("delete-image");
+  await db.query(
+    "update modal_machines set record=$2::jsonb,lease_id=$3,lease_until=now()+interval '15 minutes' where id=$1",
+    [reserved.info.id, JSON.stringify(originalRecord), crypto.randomUUID()],
+  );
+  await jobs.reconcileOne();
+  expect((await row()).state).toBe("recovery_required");
+  expect(f.log).not.toContain("terminate");
+  await db.query("update modal_machines set lease_until=now()-interval '1 second' where id=$1", [reserved.info.id]);
+  f.provider.findGoldenBuilder = async (req) => {
+    const found = await discover(req);
+    await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+      reserved.info.id,
+      JSON.stringify({ ...originalRecord, recoveryImageId: "im_late_proof" }),
+    ]);
+    return found;
+  };
+  await jobs.reconcileOne();
+  expect((await row()).state).toBe("recovery_required");
+  expect(f.log).not.toContain("terminate");
+  expect(f.log).not.toContain("delete-image");
+  f.provider.findGoldenBuilder = discover;
+  await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+    reserved.info.id,
+    JSON.stringify(originalRecord),
+  ]);
+  f.onLookup(async () => {
+    expect(await row()).toMatchObject({ builder_id: reserved.info.id, state: "recovery_required", fence });
+  });
+  for (const name of ["NotFoundError", "TimeoutError"]) {
+    f.lookupError(Object.assign(new Error("synthetic SDK private payload"), { name }));
+    await jobs.reconcileOne();
+    expect(await row()).toMatchObject({ builder_id: reserved.info.id, state: "recovery_required" });
+    expect((await f.store.get(reserved.info.id)).phase).toBe("creating");
+    expect(f.log).not.toContain("terminate");
+  }
+  f.lookupError(undefined);
+  // A prior observation can have persisted a physical ID. That does not waive current tags.
+  const known = await f.client.sandboxes.fromName("pinned", reserved.physicalName, {
+    environment: "main",
+    includeTerminated: true,
+  });
+  await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+    reserved.info.id,
+    JSON.stringify({ ...originalRecord, physicalId: known.sandboxId }),
+  ]);
+  for (const tag of ["armada_sandbox", "armada_scope", "armada_generation"]) {
+    f.ownership({
+      armada_sandbox: reserved.info.id,
+      armada_scope: createHash("sha256")
+        .update(
+          JSON.stringify([
+            scope.orgId,
+            scope.visibility,
+            scope.userId,
+            scope.binding.workspace,
+            scope.binding.environment,
+            scope.binding.appId,
+          ]),
+        )
+        .digest("hex"),
+      armada_generation: "1",
+      [tag]: "wrong",
+    });
+    await jobs.reconcileOne();
+    expect((await row()).state).toBe("recovery_required");
+    expect(f.log).not.toContain("terminate");
+  }
+  f.ownership();
+  // A later named lookup succeeds: cleanup only, no SDK create retry or command execution.
+  await jobs.reconcileOne();
+  expect((await row()).state).toBe("failed");
+  expect((await f.store.get(reserved.info.id)).phase).toBe("deleted");
+  expect(f.creates).toBe(1);
+  expect(f.log.filter((x) => x === "terminate")).toHaveLength(1);
+  expect(f.log).not.toContain("root-exec");
+  expect(f.log).not.toContain("snapshot");
+  await jobs.reconcileOne();
+  expect(f.creates).toBe(1);
+  expect(f.log.filter((x) => x === "terminate")).toHaveLength(1);
+});
+
 async function runningFork(f: ReturnType<typeof fixture>) {
   const builder = await f.provider.createGolden({});
   const name = crypto.randomUUID();

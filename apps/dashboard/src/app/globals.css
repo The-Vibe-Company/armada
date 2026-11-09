@@ -87,3 +87,125 @@
     @apply bg-background text-foreground antialiased;
   }
 }
+
+/*
+ * The sandbox conversation fits the viewport (#629). Only a page that marks itself with `data-fit-viewport` sizes
+ * the signed-in shell to the dynamic viewport; every other page keeps normal document scrolling. Inside it, the
+ * message history is the one thing that gives way (`data-fit` marks the chain of boxes down to it): the conversation
+ * never shrinks below its header, composer and a few lines of history, and when even that does not fit, the page's
+ * `main` scrolls inside the shell, so nothing is ever cut off. Details get their own bounded panel. A viewport too short
+ * for any of it (a small window, heavy zoom), or a browser without `:has()`, keeps the plain scrolling page.
+ * Unlayered on purpose: it overrides the utilities those boxes carry, for that page only.
+ */
+@supports selector(:has(*)) {
+  @media (min-width: 48rem) and (min-height: 30rem), (min-height: 36rem) {
+    [data-shell]:has([data-fit-viewport]) {
+      height: 100dvh;
+    }
+    [data-shell]:has([data-fit-viewport]) > main {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow-y: auto;
+    }
+    [data-fit-viewport],
+    [data-fit="column"],
+    [data-fit="chat"],
+    [data-fit="card"],
+    [data-fit="history"],
+    [data-fit="side"] {
+      display: flex;
+      flex-direction: column;
+    }
+    [data-fit-viewport] {
+      flex: 1 1 0;
+      min-height: 0;
+    }
+    [data-fit-viewport] > *,
+    [data-fit="chat"] > *,
+    [data-fit="card"] > * {
+      flex-shrink: 0;
+    }
+    /* Small screens: the conversation takes the height; open details share what is left and scroll. */
+    [data-fit-viewport] > [data-fit="body"] {
+      flex: 1 1 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+    }
+    [data-fit="body"] > [data-fit="column"],
+    [data-fit="chat"],
+    [data-fit="card"] {
+      flex: 1 1 0;
+    }
+    /* The card clips its rounded corners, which would let it shrink to nothing: its floor is its content, */
+    [data-fit="card"] {
+      min-height: min-content;
+    }
+    /* where the history counts for a few lines only, however long it is. */
+    [data-fit="history"] {
+      flex: 1 1 0;
+      min-height: 4rem;
+    }
+    [data-fit="history-scroll"] {
+      flex: 1 1 0;
+      min-height: 0;
+      max-height: none;
+      contain: size;
+    }
+    [data-fit="body"] > [data-fit="side"] {
+      flex: none;
+    }
+    /* A phone gives the conversation the room the page's padding took. */
+    @media (max-width: 47.99rem) {
+      [data-shell]:has([data-fit-viewport]) > main {
+        padding-block: 0.75rem;
+      }
+    }
+    /*
+     * Open details on a small screen take the history's place: the history folds to nothing (keeping its scroll
+     * position), the header and composer stay where they were, and the details scroll in the space it left.
+     */
+    @media (max-width: 63.99rem) {
+      [data-fit="body"]:has(> [data-fit="side"] [aria-expanded="true"]) > [data-fit="column"] {
+        flex: none;
+      }
+      [data-fit="body"]:has(> [data-fit="side"] [aria-expanded="true"]) [data-fit="history"] {
+        flex: 0 0 0;
+        min-height: 0;
+        overflow: hidden;
+        visibility: hidden;
+      }
+      [data-fit="body"]:has(> [data-fit="side"] [aria-expanded="true"]) > [data-fit="side"] {
+        flex: 1 1 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      [data-fit="body"]:has(> [data-fit="side"] [aria-expanded="true"]) [data-fit="side-content"] {
+        flex: 1 1 0;
+        min-height: 0;
+        overflow-y: auto;
+      }
+    }
+    [data-fit="technical-list"] {
+      max-height: 30dvh;
+      overflow-y: auto;
+    }
+    /* Large screens: the conversation and the details side by side, the details scrolling on their own. */
+    @media (min-width: 64rem) {
+      [data-fit-viewport] > [data-fit="body"] {
+        display: grid;
+        grid-template-rows: minmax(0, 1fr);
+      }
+      [data-fit="body"] > [data-fit="side"] {
+        min-height: 0;
+      }
+      [data-fit="side-content"] {
+        min-height: 0;
+        overflow-y: auto;
+      }
+    }
+  }
+}

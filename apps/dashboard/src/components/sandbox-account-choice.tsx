@@ -70,7 +70,7 @@ export function SandboxAccountChoice({ sandboxId, status, owner, choices, harnes
     <section
       id="account"
       aria-labelledby="account-title"
-      className="space-y-4 rounded-xl border border-warning/40 bg-warning/5 px-4 py-4 sm:px-6"
+      className="shrink-0 space-y-4 rounded-xl border border-warning/40 bg-warning/5 px-4 py-4 sm:px-6"
     >
       <div className="space-y-1">
         <h2 id="account-title" className="flex items-center gap-2 text-base font-semibold">

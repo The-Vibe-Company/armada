@@ -13,6 +13,7 @@ import { createCredentialBindingRecovery } from "./credential-binding-recovery.t
 import { createSqlData } from "./data.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
+import { invitationsFromEnv, startInvitationWorker } from "./invitations.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
 import { bootstrapBoatMcp } from "./mcp-native.ts";
@@ -114,6 +115,7 @@ export async function startServer(
   });
   const control: ConfiguredControlOptions = {
     credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey),
+    invitations: invitationsFromEnv(sql, env),
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
@@ -177,17 +179,23 @@ export async function startServer(
   });
   const lifecycle = createSandboxLifecycle(sql, createMcpSandboxProviderResolver(sql, providers));
   const workers = startServerWorkers(goldenBuilds, lifecycle, options.logError);
+  const invitationWorker =
+    env.ARMADA_INVITATION_MAIL === "supabase" && control.invitations
+      ? startInvitationWorker(control.invitations)
+      : undefined;
+  const allWorkersDone = Promise.all([workers.done, invitationWorker?.done]).then(() => {});
   const stop = server.stop.bind(server);
   server.stop = (closeActiveConnections?: boolean) => {
     workers.stop();
+    invitationWorker?.stop();
     const closed = mcp.close();
     const stopped = stop(closeActiveConnections);
-    server.workerDone = Promise.all([workers.done, closed, stopped]).then(() => {});
+    server.workerDone = Promise.all([allWorkersDone, closed, stopped]).then(() => {});
     return stopped;
   };
   // Expose the tracked task for hosts that gracefully drain before process termination.
   Object.assign(server, { goldenWorker: workers.goldenWorker, lifecycleWorker: workers.lifecycleWorker });
-  server.workerDone = workers.done;
+  server.workerDone = allWorkersDone;
   (options.log ?? console.log)(`armada serve: listening on port ${server.port}, public URL ${config.publicUrl}`);
   return server;
 }

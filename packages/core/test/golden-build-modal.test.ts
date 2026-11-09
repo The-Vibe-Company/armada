@@ -37,12 +37,14 @@ async function fixture() {
   const contexts: ProviderTarget[] = [],
     allocatedWith: number[] = [],
     deleted: string[] = [];
+  const builders = new Map<string, string>();
   const provider = (revision: number): Provider =>
     ({
       id: "modal",
-      createGolden: async () => {
+      createGolden: async (request) => {
         allocations++;
         allocatedWith.push(revision);
+        if (request.idempotencyKey) builders.set(request.idempotencyKey, `modal-builder-${allocations}`);
         return {
           id: `modal-builder-${allocations}`,
           name: "builder",
@@ -58,6 +60,14 @@ async function fixture() {
       getSnapshot: async (name) => ({ name, status: "ready" }),
       deleteSnapshot: async () => {},
       exec: async () => ({ detached: false, exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
+      findGoldenBuilder: async ({ requestKey }) => {
+        const id = builders.get(requestKey);
+        return id ? { sandboxId: id, disposition: "disposable" } : null;
+      },
+      disposeGoldenBuilder: async ({ sandboxId }) => {
+        deleted.push(sandboxId);
+        return { status: "deleted" };
+      },
       delete: async ({ sandboxId }) => {
         deleted.push(sandboxId);
         return { status: "deleted" };
@@ -67,7 +77,16 @@ async function fixture() {
       },
     }) satisfies Pick<
       Provider,
-      "id" | "createGolden" | "snapshot" | "getSnapshot" | "deleteSnapshot" | "exec" | "delete" | "stop"
+      | "id"
+      | "createGolden"
+      | "findGoldenBuilder"
+      | "disposeGoldenBuilder"
+      | "snapshot"
+      | "getSnapshot"
+      | "deleteSnapshot"
+      | "exec"
+      | "delete"
+      | "stop"
     > as unknown as Provider;
   const fetchGitHub = (async (request: string | URL | Request) => {
     const url = String(request);
@@ -273,6 +292,44 @@ test("an unknown Modal snapshot preserves its original source and pinned context
     expect(await f.jobs.runOne()).toBe(false);
     expect(f.allocations()).toBe(1);
     expect((await f.db.query("select 1 from goldens")).rows).toEqual([]);
+  } finally {
+    await f.db.close();
+  }
+});
+
+test("an older retained recovery queue head does not starve an interrupted builder", async () => {
+  const f = await fixture();
+  try {
+    const retained = await f.jobs.admit(
+      f.provider,
+      f.actor,
+      { ...f.input, name: "retained-source" },
+      crypto.randomUUID(),
+    );
+    const recoverable = await f.jobs.admit(
+      f.provider,
+      f.actor,
+      { ...f.input, name: "recoverable-source" },
+      crypto.randomUUID(),
+    );
+    const builder = await f.provider.createGolden({ idempotencyKey: recoverable.jobId });
+    await f.db.query(
+      "update golden_build_jobs set state='recovery_required',error_code='build_failed',fence=$2,phase='snapshot',builder_id='retained-builder',updated_at='2000-01-01' where id=$1",
+      [retained.jobId, crypto.randomUUID()],
+    );
+    await f.db.query(
+      "update golden_build_jobs set state='recovery_required',error_code='build_failed',fence=$2,phase='builder',updated_at='2001-01-01' where id=$1",
+      [recoverable.jobId, crypto.randomUUID()],
+    );
+    await f.jobs.reconcileOne();
+    await f.jobs.reconcileOne();
+    expect(await f.jobs.status(f.actor.userId, retained.jobId)).toMatchObject({
+      state: "recovery_required",
+      phase: "snapshot",
+    });
+    expect(await f.jobs.status(f.actor.userId, recoverable.jobId)).toMatchObject({ state: "failed", phase: "builder" });
+    expect(f.deleted).toEqual([builder.id]);
+    expect(f.allocations()).toBe(1);
   } finally {
     await f.db.close();
   }
