@@ -37,8 +37,8 @@ export const SETUP_PROVIDER_INFO: Record<
   },
 };
 
-/** Where an organization's provider setup lives. */
-export const providerSetupPath = (org: string) => `/orgs/${org}/setup`;
+/** Where the active organization's sandbox providers are connected, replaced and disconnected. */
+export const PROVIDER_SETTINGS_PATH = "/settings";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -68,6 +68,11 @@ export function parseProviderStatus(value: unknown, org: string): ProviderStatus
 
 export function isConfigured(status: ProviderStatus, provider: SandboxProviderId): boolean {
   return status.providers.some((item) => item.provider === provider && item.configured);
+}
+
+/** The providers the organization itself has connected, in a stable order. New work starts only on one of these. */
+export function connectedProviders(status: ProviderStatus): SandboxProviderId[] {
+  return SETUP_PROVIDERS.filter((provider) => isConfigured(status, provider));
 }
 
 /**

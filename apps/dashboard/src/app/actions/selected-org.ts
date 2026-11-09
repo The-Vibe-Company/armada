@@ -6,7 +6,7 @@ import { redirect } from "next/navigation";
 import { type ActionResult, fail, formString } from "@/lib/action";
 import { SELECTED_ORG_COOKIE } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
-import { providerSetupPath } from "@/lib/provider-setup";
+import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
 export async function switchOrganization(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
@@ -25,7 +25,7 @@ export async function switchOrganization(_previous: ActionResult | null, data: F
   const section = formString(data, "section");
   const destination =
     section === "setup"
-      ? providerSetupPath(id)
+      ? PROVIDER_SETTINGS_PATH
       : section === "orgs"
         ? `/orgs/${id}`
         : section === "goldens"

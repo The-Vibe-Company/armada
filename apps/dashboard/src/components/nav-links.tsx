@@ -21,14 +21,14 @@ const GROUPS = [
     links: [
       { href: "/goldens", label: "Goldens", hint: "Repositories and snapshots", icon: CameraIcon },
       { href: "/connections", label: "Connections", hint: "MCP servers and tools", icon: PlugIcon },
-      { href: "/credentials", label: "Credentials", hint: "Agent and Boat keys", icon: KeyRoundIcon },
+      { href: "/credentials", label: "Credentials", hint: "Agent keys and personal hosting keys", icon: KeyRoundIcon },
     ],
   },
   {
     label: "Account",
     links: [
       { href: "/orgs", label: "Organizations", hint: "Members and roles", icon: UsersIcon },
-      { href: "/settings", label: "Settings", hint: "GitHub connection", icon: SettingsIcon },
+      { href: "/settings", label: "Settings", hint: "Sandbox providers and GitHub", icon: SettingsIcon },
     ],
   },
 ] as const;

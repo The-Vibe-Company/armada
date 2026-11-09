@@ -131,6 +131,68 @@ describe("armada org and armada creds against the control API", () => {
     });
   });
 
+  test("org provider disconnect is admin-only and live-checked; a rejected replacement keeps the stored key", async () => {
+    await withServer(async ({ options }) => {
+      const org = await options.store.createOrg("Providers", STAN);
+      await options.store.addMember(org.id, ADA, "member");
+      const post = async (who: string, route: string, body: Record<string, unknown>) => {
+        const session = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: who })).replace(/=+$/, "")}.sig`;
+        const response = await handleControlRequest(
+          new Request(`https://armada.test/api/v1/org/provider/${route}`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${session}` },
+            body: JSON.stringify({ org: org.id, ...body }),
+          }),
+          options,
+        );
+        return {
+          status: response?.status,
+          body: (await response?.json()) as {
+            ready: boolean;
+            org: { id: string; role: string };
+            providers: { provider: string; configured: boolean }[];
+          },
+        };
+      };
+      const configured = async () =>
+        Object.fromEntries(
+          (await post(STAN, "status", {})).body.providers.map((item) => [item.provider, item.configured]),
+        );
+      options.providerValidator = async () => {};
+      const pair = JSON.stringify({ token_id: "ak-test12345678", token_secret: "as-test12345678" });
+      expect((await post(STAN, "connect", { provider: "boat", value: "first-value" })).status).toBe(200);
+      expect((await post(STAN, "connect", { provider: "modal", value: pair })).status).toBe(200);
+
+      options.providerValidator = async () => {
+        throw new VaultError("invalid", "rejected");
+      };
+      expect((await post(STAN, "connect", { provider: "boat", value: "second-value" })).status).toBe(400);
+      expect(await resolveBoatKey(options.store, KEY, { userId: ADA, orgId: org.id, visibility: "org" })).toEqual({
+        key: "first-value",
+        scope: "org",
+      });
+
+      expect((await post(ADA, "disconnect", { provider: "boat" })).status).toBe(403);
+      expect((await post(STAN, "disconnect", { provider: "e2b" })).status).toBe(400);
+      expect(await configured()).toEqual({ boat: true, modal: true });
+
+      const one = await post(STAN, "disconnect", { provider: "boat" });
+      expect(one.status).toBe(200);
+      expect(one.body).toMatchObject({ org: { id: org.id, role: "admin" }, ready: true });
+      expect(await configured()).toEqual({ boat: false, modal: true });
+      // Already gone is the requested state, answered with the current status.
+      expect((await post(STAN, "disconnect", { provider: "boat" })).body.ready).toBe(true);
+
+      // The role is read again: a demoted admin cannot disconnect the last provider.
+      await options.store.setMemberRole(org.id, ADA, "admin");
+      await options.store.setMemberRole(org.id, STAN, "member");
+      expect((await post(STAN, "disconnect", { provider: "modal" })).status).toBe(403);
+      const last = await post(ADA, "disconnect", { provider: "modal" });
+      expect(last.body.ready).toBe(false);
+      expect(await configured()).toEqual({ boat: false, modal: false });
+    });
+  });
+
   test("an org is created, members and credentials are managed, and launch resolves them", async () => {
     await withServer(async ({ db, options, cli }) => {
       const stan = cli(STAN);

@@ -1,15 +1,19 @@
 import { githubAppFromEnv } from "@armada/core";
-import { GitPullRequestIcon } from "lucide-react";
+import { GitPullRequestIcon, RotateCwIcon, ServerIcon, TriangleAlertIcon } from "lucide-react";
 import type { Metadata } from "next";
+import Link from "next/link";
 import { disconnectGitHub } from "@/app/actions/github";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { PageHeader } from "@/components/page-header";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { ProviderConnection, type ProviderRowState } from "@/components/provider-connection";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getGitHubConnection } from "@/lib/data/github";
-import { requireViewer } from "@/lib/data/viewer";
+import { type ProviderSetup, readProviderSetup } from "@/lib/data/provider-setup";
+import { selectedOrganization } from "@/lib/data/selected-org";
+import { type Membership, requireViewer } from "@/lib/data/viewer";
 import {
   GITHUB_RESULT_MESSAGES,
   githubInstallationManageUrl,
@@ -17,6 +21,7 @@ import {
   isGitHubResult,
   storedGitHubInstallations,
 } from "@/lib/github";
+import { isConfigured, SETUP_PROVIDERS } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -25,7 +30,18 @@ export const dynamic = "force-dynamic";
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ github?: string }> }) {
   await requireViewer();
   const supabase = await createClient();
-  const [connection, params] = await Promise.all([getGitHubConnection(supabase), searchParams]);
+  const selected = await selectedOrganization();
+  const [connection, params, setup, admins] = await Promise.all([
+    getGitHubConnection(supabase),
+    searchParams,
+    selected ? readProviderSetup(selected.org.id) : null,
+    // A member is told whom to ask; an admin manages the providers here.
+    selected && selected.role !== "admin"
+      ? supabase
+          .rpc("org_members", { target_org: selected.org.id })
+          .then(({ data }) => (data ?? []).filter((member) => member.role === "admin").map((member) => member.email))
+      : [],
+  ]);
   const configured = githubAppFromEnv(process.env) !== null;
   const installUrl = githubInstallUrl(process.env.GITHUB_APP_SLUG);
   const result = isGitHubResult(params.github) ? GITHUB_RESULT_MESSAGES[params.github] : null;
@@ -40,6 +56,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           <AlertDescription>{result.text}</AlertDescription>
         </Alert>
       )}
+
+      <SandboxProviders selected={selected} setup={setup} admins={admins} />
 
       <Card data-settings="github">
         <CardHeader>
@@ -176,5 +194,114 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         </CardContent>
       </Card>
     </>
+  );
+}
+
+/**
+ * The active organization's sandbox providers (#598), as the server reports them on every visit. Admins connect,
+ * replace and disconnect each one; members see the status and whom to ask. Personal hosting keys stay in Credentials
+ * and never connect a provider for the organization.
+ */
+function SandboxProviders({
+  selected,
+  setup,
+  admins,
+}: {
+  selected: Membership | null;
+  setup: ProviderSetup | null;
+  admins: string[];
+}) {
+  const isAdmin = selected?.role === "admin";
+  return (
+    <Card data-settings="providers" aria-labelledby="sandbox-providers-title" id="sandbox-providers">
+      <CardHeader>
+        <CardTitle id="sandbox-providers-title" role="heading" aria-level={2} className="flex items-center gap-2">
+          <ServerIcon className="size-4" />
+          Sandbox providers
+        </CardTitle>
+        <CardDescription>
+          {selected ? (
+            <>
+              Where <span className="font-medium text-foreground">{selected.org.name}</span> builds goldens and runs
+              sandboxes. {isAdmin ? "You manage them as an admin." : "Only an admin changes them."}
+            </>
+          ) : (
+            "Providers belong to an organization."
+          )}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {!selected || !setup ? (
+          <p className="text-sm text-muted-foreground">
+            <Link className="font-medium text-foreground underline underline-offset-4" href="/orgs">
+              Create or join an organization
+            </Link>{" "}
+            to connect a provider.
+          </p>
+        ) : (
+          <>
+            {setup.state === "unavailable" && (
+              <Alert variant="destructive" data-setup-state="unavailable">
+                <TriangleAlertIcon />
+                <AlertTitle>Provider status unavailable</AlertTitle>
+                <AlertDescription>
+                  <p>{setup.message}</p>
+                  <Link
+                    className="inline-flex items-center gap-1 underline underline-offset-4"
+                    href="/settings"
+                    prefetch={false}
+                  >
+                    <RotateCwIcon className="size-3" aria-hidden />
+                    Check again
+                  </Link>
+                </AlertDescription>
+              </Alert>
+            )}
+            <ul className="divide-y rounded-lg border" data-setup-state={setup.state}>
+              {SETUP_PROVIDERS.map((provider) => {
+                const state: ProviderRowState =
+                  setup.state === "unavailable"
+                    ? "unavailable"
+                    : isConfigured(setup.status, provider)
+                      ? "connected"
+                      : "not-connected";
+                return (
+                  <ProviderConnection
+                    // A switched organization mounts a fresh row: no open form or message carries over.
+                    key={`${selected.org.id}.${provider}`}
+                    orgId={selected.org.id}
+                    orgName={selected.org.name}
+                    provider={provider}
+                    state={state}
+                    canManage={isAdmin}
+                  />
+                );
+              })}
+            </ul>
+            {!isAdmin && setup.state === "pending" && admins.length > 0 && (
+              <p className="text-sm text-muted-foreground" data-provider-admins>
+                Ask an admin to connect one:{" "}
+                {admins.map((email, index) => (
+                  <span key={email}>
+                    {index > 0 && ", "}
+                    <a className="text-foreground underline underline-offset-4" href={`mailto:${email}`}>
+                      {email}
+                    </a>
+                  </span>
+                ))}
+                .
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Personal Boat and Modal keys stay in{" "}
+              <Link className="underline underline-offset-4" href="/credentials">
+                Credentials
+              </Link>
+              ; they never connect a provider for the organization.
+            </p>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }

@@ -41,8 +41,6 @@ export async function buildGolden(_previous: ActionResult | null, data: FormData
   const org = formString(data, "org");
   if (!isUuid(org)) return fail("That request is not valid.");
   if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
-  const blocker = await newWorkBlocker(org);
-  if (blocker) return fail(blocker);
   const serverUrl = mcpUrl();
   if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
 
@@ -70,6 +68,9 @@ export async function buildGolden(_previous: ActionResult | null, data: FormData
   });
   if (!parsed.ok) return fail(parsed.error);
   const request = parsed.value;
+  // The exact provider this build runs on (a rebuild's is the stored golden's) must be connected for the org.
+  const blocker = await newWorkBlocker(org, request.body.provider);
+  if (blocker) return fail(blocker);
 
   // Saved in the page's URL before this request, so a lost answer can be recovered instead of resubmitted.
   const idempotencyKey = formString(data, "idempotencyKey");

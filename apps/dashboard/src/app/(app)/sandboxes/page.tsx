@@ -16,7 +16,7 @@ import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
-import { providerSetupPath } from "@/lib/provider-setup";
+import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { filtersToSearch, PAGE_SIZE, parseSandboxFilters, SANDBOX_STATUSES } from "@/lib/sandbox-filters";
 import { createClient } from "@/lib/supabase/server";
 
@@ -50,13 +50,13 @@ export default async function SandboxesPage({ searchParams }: Props) {
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const now = new Date();
   const filtered = Boolean(filters.status || filters.harness || filters.golden || filters.owner);
-  // An organization without a sandbox provider resumes its setup (#576); one with sandboxes to manage stays here.
+  // An organization without a sandbox provider goes to Settings to connect one; one with sandboxes to manage stays here.
   const setupPending = selected !== null && setup?.state === "pending";
-  if (setupPending && !filtered && total === 0) redirect(providerSetupPath(selected.org.id));
+  if (setupPending && !filtered && total === 0) redirect(PROVIDER_SETTINGS_PATH);
 
   const launchAction = setupPending ? (
     <Button asChild>
-      <Link href={providerSetupPath(selected.org.id)}>Set up a provider</Link>
+      <Link href={PROVIDER_SETTINGS_PATH}>Connect a provider</Link>
     </Button>
   ) : selected ? (
     <Button asChild>

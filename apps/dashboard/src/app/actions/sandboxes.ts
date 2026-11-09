@@ -76,7 +76,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
   if (!parsed.ok) return fail(parsed.error);
   if (!isUuid(parsed.args.org)) return fail("That request is not valid.");
   if (!(await isSelectedOrganization(parsed.args.org))) return fail("Switch to that organization first.");
-  const blocker = await newWorkBlocker(parsed.args.org);
+  const blocker = await newWorkBlocker(parsed.args.org, parsed.args.provider);
   if (blocker) return fail(blocker);
   const viewer = await requireViewer();
   const serverUrl = mcpUrl();
