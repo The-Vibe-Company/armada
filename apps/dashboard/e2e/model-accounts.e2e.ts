@@ -263,6 +263,38 @@ test("a sized launch keeps the chosen account: the size and the account are both
   expect((state.launches as Row[])[1]).not.toHaveProperty("size");
 });
 
+test("a refused launch keeps the chosen account: the retry bills who the person picked, not the default", async ({
+  page,
+}) => {
+  await mock("/__test/reset", { sizePolicies: true, refuseSize: "xlarge" });
+  const work = account(53, "Work", { is_default: true });
+  const home = account(54, "Home");
+  await mock("/__test/accounts", { seed: [work, home] });
+  await signIn(page, "alice@example.com", "/goldens");
+  await page
+    .getByRole("button", { name: /^Launch from shared-golden/ })
+    .first()
+    .click();
+  const dialog = page.getByRole("dialog");
+  const accountSelect = dialog.getByLabel("Account");
+  await accountSelect.selectOption({ label: "Home (Claude subscription)" });
+  await dialog.getByLabel("Machine size").selectOption("xlarge");
+  await dialog.getByRole("button", { name: "Launch", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("Requested size cannot be allocated.");
+  // The form resets after the refusal; the billing choice is still the one the person made.
+  await expect(accountSelect).toHaveValue(String(home.id));
+  await expect(accountSelect.locator("option:checked")).toHaveText("Home (Claude subscription)");
+
+  await dialog.getByLabel("Machine size").selectOption("large");
+  await dialog.getByRole("button", { name: "Launch", exact: true }).click();
+  await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}$/);
+  const state = await mock("/__test/state");
+  expect(state.launches).toEqual([
+    expect.objectContaining({ credentialId: home.id, size: "xlarge" }),
+    expect.objectContaining({ credentialId: home.id, size: "large" }),
+  ]);
+});
+
 test("a server older than named accounts is said plainly, and launches send no account", async ({ page }) => {
   await mock("/__test/accounts", { legacy: true });
   await signIn(page, "alice@example.com", "/credentials");

@@ -176,6 +176,22 @@ function AccountField({
   accounts: LaunchAccounts;
 }) {
   const label = HARNESS_LABELS[harness];
+  const select = useRef<HTMLSelectElement>(null);
+  // The person's billing choice, kept across the form reset React performs after every action, a refusal included:
+  // a retry after a refused size must bill the account the person picked, never fall back to the default unseen.
+  const choice = useRef<string | null>(null);
+  useEffect(() => {
+    const node = select.current;
+    const form = node?.closest("form");
+    if (!node || !form) return;
+    const keep = () => {
+      const value = choice.current;
+      // `reset` fires before the form resets its fields: re-apply the choice once the reset is done.
+      if (value !== null) setTimeout(() => (node.value = value));
+    };
+    form.addEventListener("reset", keep);
+    return () => form.removeEventListener("reset", keep);
+  }, []);
   if (accounts.state === "legacy") return null;
   if (accounts.state === "unavailable")
     return (
@@ -204,8 +220,12 @@ function AccountField({
       <Label htmlFor={`${idPrefix}-account`}>Account</Label>
       <NativeSelect
         id={`${idPrefix}-account`}
+        ref={select}
         name="credential"
         defaultValue={preset}
+        onChange={(event) => {
+          choice.current = event.target.value;
+        }}
         required
         aria-describedby={`${idPrefix}-account-hint`}
       >
