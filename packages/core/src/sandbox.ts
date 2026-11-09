@@ -152,7 +152,7 @@ export interface SandboxRow {
   requested_ttl_seconds?: number | null;
   last_observed_at?: string | Date | null;
   lifecycle_error?: string | null;
-  lifecycle_generation?: number;
+  lifecycle_generation?: number | string | bigint;
 }
 
 /** The longest failure reason kept; a longer one is cut. */
@@ -228,6 +228,7 @@ export function createSqlSandboxStore(sql: Sql): SandboxStore {
 export function mapSandboxRow(row: SandboxRow): SandboxRecord {
   if (row.harness !== "claude" && row.harness !== "codex") throw new Error("Sandbox row harness is invalid.");
   if (!isSandboxProvider(row.provider)) throw new Error("Sandbox row provider is invalid.");
+  const lifecycleGeneration = decodeLifecycleGeneration(row.lifecycle_generation);
   return {
     ...(row.expires_at
       ? {
@@ -236,7 +237,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
           requestedTtlSeconds: row.requested_ttl_seconds ?? null,
           lastObservedAt: row.last_observed_at ? iso(row.last_observed_at) : null,
           lifecycleError: row.lifecycle_error ?? null,
-          lifecycleGeneration: row.lifecycle_generation ?? 1,
+          lifecycleGeneration,
         }
       : {}),
     id: row.id,
@@ -272,4 +273,17 @@ export function statusReasonOf(patch: SandboxPatch): string | null | undefined {
 
 function iso(value: string | Date): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+/** PostgreSQL int8 is a string with Bun.SQL's default decoder, but a number with
+ * PGlite. Normalize once at the trusted row boundary, before any activity arithmetic. */
+function decodeLifecycleGeneration(value: SandboxRow["lifecycle_generation"]): number {
+  if (value === undefined) return 1; // Legacy in-memory records without lifecycle metadata.
+  if (typeof value === "string" && !/^[1-9][0-9]*$/.test(value))
+    throw new Error("Sandbox lifecycle generation is invalid.");
+  if (typeof value !== "number" && typeof value !== "string" && typeof value !== "bigint")
+    throw new Error("Sandbox lifecycle generation is invalid.");
+  const decoded = Number(value);
+  if (!Number.isSafeInteger(decoded) || decoded < 1) throw new Error("Sandbox lifecycle generation is invalid.");
+  return decoded;
 }
