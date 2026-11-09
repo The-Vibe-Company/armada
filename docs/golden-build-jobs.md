@@ -36,7 +36,9 @@ idle timer. Poll failures never resubmit builds. Resume with:
 armada-server owns a tracked, awaited worker loop independent of HTTP requests.
 Claims use FOR UPDATE SKIP LOCKED, a unique fence, renewable 60-second lease and
 fixed 60-minute job deadline. Heartbeats cannot resurrect expired leases. The job
-ID is the buildId in existing allowlisted phase/failure logs.
+ID is the buildId in existing allowlisted phase/failure logs and the stable Boat
+builder-creation idempotency key (verified through the installed SDK serialization).
+This key is correlation/deduplication protection, not permission to blindly replay work.
 
 Execution resolves current credentials, revalidates membership/role and verifies
 the admitted provider account. Every phase checks ownership. Publication locks

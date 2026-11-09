@@ -119,7 +119,12 @@ export class GoldenCreateService {
     };
     try {
       await enter("builder");
-      builder = await provider.createGolden({ name, ttlSeconds: 86400, labels: { armada: "golden-builder" } });
+      builder = await provider.createGolden({
+        name,
+        ttlSeconds: 86400,
+        labels: { armada: "golden-builder" },
+        ...(this.deps.execution ? { idempotencyKey: buildId } : {}),
+      });
       await this.deps.execution?.builder(builder.id);
       // A scoped installation token can cover only one installation. Multiple already-authorized
       // repos use the caller's cached user token, which is never revoked or rotated here.

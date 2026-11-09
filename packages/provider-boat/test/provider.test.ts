@@ -67,7 +67,9 @@ describe("golden and snapshots", () => {
       ];
       const boat = fakeBoat(...replies);
       let persisted = "";
+      const buildId = "f958d882-bf66-4774-8fea-d50ca844a06e";
       const service = new GoldenCreateService({
+        execution: { id: buildId, phase: async () => {}, builder: async () => {}, cleaned: () => {} },
         authorize: async () => ({
           repos: [{ owner: "acme", repo: "web", id: 1, installationId: 2 }],
           token: "unused-test-token",
@@ -102,6 +104,7 @@ describe("golden and snapshots", () => {
       if (outcome === "success") expect((await operation).snapshot).toBe(reference);
       else await expect(operation).rejects.toMatchObject({ code: "build_failed" });
       expect(persisted).toBe(reference);
+      expect(boat.requests[0]?.headers.get("idempotency-key")).toBe(buildId);
       expect(boat.requests[1]?.body).toMatchObject({
         sandboxId: ID,
         name: expect.stringMatching(/^golden-r-[a-f0-9-]+$/),
