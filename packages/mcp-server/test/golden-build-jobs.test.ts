@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { createSqlVaultStore, type GoldenBuildStatus } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -88,6 +88,7 @@ test("HTTP durable admission, idempotent acknowledgement recovery and MCP status
 
 test("MCP admission and rebuild failure retain last-good config/pointer and release only the build reservation", async () => {
   const s = await fixture();
+  const logs = spyOn(console, "error").mockImplementation(() => {});
   try {
     const token = await s.token(s.people.admin);
     const client = await s.client(token);
@@ -102,9 +103,19 @@ test("MCP admission and rebuild failure retain last-good config/pointer and rele
     await s.builds.runOne();
     expect((await s.builds.status(s.people.admin, id)).state).toBe("succeeded");
     const before = (await s.db.query("select * from goldens where name='retained'")).rows[0];
-    for (const failure of ["secret_scan", "persist", "lease"]) {
+    // Model a connected/adopted last-good golden as well as its ready snapshot.
+    await s.db.query("update goldens set provider_sandbox_id='last-good-master' where id=$1", [
+      (before as { id: string }).id,
+    ]);
+    const retained = (await s.db.query("select * from goldens where name='retained'")).rows[0];
+    for (const failure of ["secret_scan", "pointer", "persist", "lease"]) {
+      logs.mockClear();
       const phase = failure === "secret_scan" ? "secret_scan" : "persist";
       s.boat.setExecOutput({ exitCode: phase === "secret_scan" ? 97 : 0 });
+      if (failure === "pointer")
+        await s.db.exec(`create function fail_snapshot_pointer() returns trigger language plpgsql as $$
+        begin raise exception 'private-error-detail-not-for-logs' using errcode='23514'; end $$;
+        create trigger fail_snapshot_pointer before update of provider_snapshot_id on goldens for each row execute function fail_snapshot_pointer();`);
       if (failure === "persist")
         await s.db.exec(`create function fail_job_success() returns trigger language plpgsql as $$
         begin if new.state='succeeded' then raise exception 'injected job commit failure'; end if; return new; end $$;
@@ -128,7 +139,25 @@ test("MCP admission and rebuild failure retain last-good config/pointer and rele
         errorCode: "build_failed",
         result: null,
       });
-      expect((await s.db.query("select * from goldens where name='retained'")).rows[0]).toEqual(before);
+      expect((await s.db.query("select * from goldens where name='retained'")).rows[0]).toEqual(retained);
+      const diagnostics = logs.mock.calls.map(([line]) => JSON.parse(String(line)));
+      const publication = diagnostics.filter((entry) => entry.event === "golden_persist_failed");
+      if (failure === "pointer" || failure === "persist")
+        expect(publication).toEqual([
+          {
+            event: "golden_persist_failed",
+            buildId: job.jobId,
+            step: failure === "pointer" ? "snapshot_pointer" : "job_complete",
+            sqlState: failure === "pointer" ? "23514" : "P0001",
+          },
+        ]);
+      expect(JSON.stringify(diagnostics)).not.toContain("private-error-detail-not-for-logs");
+      expect(JSON.stringify(diagnostics)).not.toContain("injected job commit failure");
+      expect((await s.db.query("select snapshot from golden_build_jobs where id=$1", [job.jobId])).rows).toEqual([
+        { snapshot: null },
+      ]);
+      if (failure === "pointer")
+        await s.db.exec("drop trigger fail_snapshot_pointer on goldens; drop function fail_snapshot_pointer();");
       expect((await s.db.query("select golden_id,build_id from golden_backend_slots")).rows).toEqual([
         { golden_id: (before as { id: string }).id, build_id: null },
       ]);
@@ -139,6 +168,7 @@ test("MCP admission and rebuild failure retain last-good config/pointer and rele
         await s.db.exec("drop trigger fail_job_success on golden_build_jobs; drop function fail_job_success();");
     }
   } finally {
+    logs.mockRestore();
     await s.close();
   }
 });

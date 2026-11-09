@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import {
@@ -119,48 +119,64 @@ describe("createGoldenCreateService, wired to a real database", () => {
     }
   });
 
-  test("factory rolls back golden and retains no slot when atomic finalize fails", async () => {
-    const db = await openDatabase();
-    try {
-      await applyMigrations(db);
-      const { actor, userId } = await fixture(db);
-      await connectGitHub(db, userId);
-      const original = db.query.bind(db);
-      const originalTransaction = db.transaction?.bind(db);
-      // Failure injection through the transaction client used by the real factory SQL path.
-      db.transaction = (async (work) =>
-        originalTransaction!(async (tx) => {
-          const originalTx = tx.query.bind(tx);
-          tx.query = (async (text: string, params?: unknown[]) => {
-            if (text.includes("finalize_golden_backend_slot")) throw new Error("finalize exploded");
-            return originalTx(text, params);
-          }) as typeof tx.query;
-          return work(tx);
-        })) as typeof db.transaction;
-      const deleted: string[] = [];
-      const provider = {
-        ...readyProvider(),
-        deleteSnapshot: async (name: string) => {
-          deleted.push(name);
-        },
-      };
-      const service = createGoldenCreateService({
-        sql: db,
-        github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
-        installationApp: null,
-        fetch: fakeGitHubFetch(),
-        ssh: async () => {},
-      });
-      await expect(
-        service.create(provider, actor, { name: "bad-finalize", visibility: "org", repos: ["acme/web"] }),
-      ).rejects.toMatchObject({ code: "build_failed" });
-      expect((await original("select 1 from goldens")).rows).toHaveLength(0);
-      expect((await original("select 1 from golden_backend_slots")).rows).toHaveLength(0);
-      expect(deleted).toEqual(["golden-bx_1"]);
-    } finally {
-      await db.close();
-    }
-  });
+  test.each([
+    { code: "ERR_POSTGRES_SERVER_ERROR", errno: "P0002", expected: "P0002" },
+    { code: "23514", errno: undefined, expected: "23514" },
+    { code: "NAMEZ", errno: undefined, expected: "unavailable" },
+  ])(
+    "factory rolls back on finalize failure and redacts driver diagnostics ($expected)",
+    async ({ code, errno, expected }) => {
+      const db = await openDatabase();
+      const logs = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await applyMigrations(db);
+        const { actor, userId } = await fixture(db);
+        await connectGitHub(db, userId);
+        const original = db.query.bind(db);
+        const originalTransaction = db.transaction?.bind(db);
+        // Failure injection through the transaction client used by the real factory SQL path.
+        db.transaction = (async (work) =>
+          originalTransaction!(async (tx) => {
+            const originalTx = tx.query.bind(tx);
+            tx.query = (async (text: string, params?: unknown[]) => {
+              if (text.includes("finalize_golden_backend_slot"))
+                throw Object.assign(new Error("private-provider-output"), { code, errno, detail: "private-detail" });
+              return originalTx(text, params);
+            }) as typeof tx.query;
+            return work(tx);
+          })) as typeof db.transaction;
+        const deleted: string[] = [];
+        const provider = {
+          ...readyProvider(),
+          deleteSnapshot: async (name: string) => {
+            deleted.push(name);
+          },
+        };
+        const service = createGoldenCreateService({
+          sql: db,
+          github: { store: createSqlVaultStore(db), encryptionKey: KEY, app: APP, fetch: fakeGitHubFetch() },
+          installationApp: null,
+          fetch: fakeGitHubFetch(),
+          ssh: async () => {},
+        });
+        await expect(
+          service.create(provider, actor, { name: "bad-finalize", visibility: "org", repos: ["acme/web"] }),
+        ).rejects.toMatchObject({ code: "build_failed" });
+        expect((await original("select 1 from goldens")).rows).toHaveLength(0);
+        expect((await original("select 1 from golden_backend_slots")).rows).toHaveLength(0);
+        expect(deleted).toEqual(["golden-bx_1"]);
+        const diagnostics = logs.mock.calls.map(([line]) => JSON.parse(String(line)));
+        expect(diagnostics.filter((entry) => entry.event === "golden_persist_failed")).toEqual([
+          { event: "golden_persist_failed", step: "slot_finalize", sqlState: expected },
+        ]);
+        for (const value of ["private-provider-output", "private-detail", "NAMEZ"])
+          expect(JSON.stringify(diagnostics)).not.toContain(value);
+      } finally {
+        logs.mockRestore();
+        await db.close();
+      }
+    },
+  );
 
   test("with GITHUB_APP_PRIVATE_KEY configured, checkout uses a scoped installation token and revokes it", async () => {
     const db = await openDatabase();

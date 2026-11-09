@@ -114,8 +114,12 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         ),
         init,
       };
+      // Fixed labels only: database exceptions can include SQL parameters and credentials.
+      let step = "transaction";
       const persist = async (sql: Sql) => {
+        step = "lease_fence";
         await options.job?.lock(sql);
+        step = "golden_metadata";
         const transactionalStore = createSqlGoldenStore(sql);
         const inserted = existingGolden
           ? existingGolden
@@ -148,16 +152,65 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         }
         // Null master + ready snapshot is the durable restore-on-connect strategy. Never point
         // at the disposable builder, which the service always stops after this transaction.
+        step = "snapshot_pointer";
         await sql.query("update public.goldens set provider_sandbox_id=null where id=$1", [inserted.id]);
         await transactionalStore.setSnapshot(inserted.id, snapshot);
         // This update is inside the same database transaction as the golden metadata. A failed
         // finalize rolls everything back; the service can safely release only the still-pending slot.
+        step = "slot_finalize";
         if (reservationId) await sqlGoldenBackendSlots(sql).finalize(reservationId, inserted.id);
+        step = "job_complete";
         await options.job?.complete(sql, inserted.id, snapshot);
+        step = "commit";
         return inserted.id;
       };
       if (!options.sql.transaction) throw new GoldenError("conflict", "Atomic golden persistence is unavailable.");
-      return options.sql.transaction(persist);
+      try {
+        return await options.sql.transaction(persist);
+      } catch (error) {
+        const databaseError = error && typeof error === "object" ? (error as { code?: unknown; errno?: unknown }) : {};
+        // Bun wraps SQLSTATE in errno; pg/PGlite expose it in code. Never log message,
+        // detail, constraint, query, parameters, or the error object itself.
+        const state = databaseError.code === "ERR_POSTGRES_SERVER_ERROR" ? databaseError.errno : databaseError.code;
+        const knownStates = [
+          "08003",
+          "08006",
+          "22001",
+          "22003",
+          "22023",
+          "22P02",
+          "23502",
+          "23503",
+          "23505",
+          "23514",
+          "40001",
+          "40P01",
+          "42501",
+          "42703",
+          "42804",
+          "42883",
+          "42P01",
+          "42P08",
+          "53300",
+          "53400",
+          "55000",
+          "57014",
+          "57P01",
+          "P0001",
+          "P0002",
+          "XX000",
+        ];
+        const sqlState = typeof state === "string" && knownStates.includes(state) ? state : "unavailable";
+        console.error(
+          JSON.stringify({
+            event: "golden_persist_failed",
+            ...(options.job ? { buildId: options.job.id } : {}),
+            step,
+            sqlState,
+          }),
+        );
+        throw error;
+      }
     },
   };
   if (options.job)
