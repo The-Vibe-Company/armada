@@ -122,9 +122,14 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
 
     func submit(handle: String) async throws(ServiceFailure) -> OperationSummary {
         guard let id = UUID(uuidString: handle) else { throw .rejected("That request is no longer saved on this device.") }
-        // Checked here too so that "capability off" is never confused with a lost connection.
-        try await requireEnabled()
+        if let receipt = await client.pendingOperations.first(where: { $0.id == id })?.receipt,
+           receipt.state == .succeeded || receipt.state == .failed {
+            return Self.operation(receipt)
+        }
         do {
+            // Preserve the OFF reason while reconciling any concurrently known
+            // terminal outcome, including failures during capability preflight.
+            try await requireEnabled()
             let receipt = try await client.submitOrchestratorOperation(id)
             // Keep terminal knowledge available to concurrent same-handle callers.
             // It does not block preparing a new command; explicit cleanup is separate.
@@ -248,6 +253,12 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
     /// is safely discardable. Generic409 can follow effects; a refused retry does
     /// not resolve earlier ambiguity. Never advertise a new-key retry in that case.
     private func submitFailure(_ error: any Error, id: UUID) async -> ServiceFailure {
+        if let failure = error as? ServiceFailure {
+            switch failure {
+            case .signedOut, .noAccess, .unavailable: return failure
+            default: break
+            }
+        }
         if let armada = error as? ArmadaError, armada == .signedOut { return .signedOut }
         // Absence after concurrent cleanup is not proof of non-admission.
         guard let saved = await client.pendingOperations.first(where: { $0.id == id }) else { return .uncertain }
