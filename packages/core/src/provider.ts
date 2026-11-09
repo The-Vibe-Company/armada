@@ -31,6 +31,20 @@ export interface Provider {
     };
   }): Promise<void | { revision: string }>;
 
+  /** Private runner control, not exec/prompt/client-visible credential configuration.
+   * Optional until the backend provides native physical-incarnation fencing and ACK. */
+  installOrchestratorEpoch?(request: {
+    sandboxId: string;
+    token: string;
+    binding: { epoch: string; physicalGeneration: string };
+    url: string;
+  }): Promise<{ acknowledged: boolean }>;
+  scrubOrchestratorEpoch?(request: {
+    sandboxId: string;
+    physicalGeneration: string;
+    tokenHash?: string;
+  }): Promise<{ acknowledged: boolean }>;
+
   /**
    * Starts a blank sandbox to build a golden in. It is not frozen until `snapshot`.
    * The sandbox gets none of the account's secrets or model credentials (`noEnv`).

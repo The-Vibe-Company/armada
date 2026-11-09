@@ -655,6 +655,38 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         return { revision: configuration.revision };
       });
     },
+    async installOrchestratorEpoch({ sandboxId, token, binding, url }) {
+      return admit(sandboxId, async (row, save) => {
+        if (row.golden || row.phase !== "active" || binding.physicalGeneration !== String(row.generation))
+          throw refusal("conflict", "Orchestrator authority requires the bound active physical generation.");
+        const active = await healthyAdmission(row, save);
+        if (binding.physicalGeneration !== String(active.generation))
+          throw refusal("conflict", "Physical generation changed during authority admission.");
+        const result = await runner.call<{ acknowledged?: unknown }>(active, "installOrchestratorEpoch", {
+          token,
+          binding,
+          url,
+        });
+        if (result?.acknowledged !== true)
+          throw refusal("unavailable", "Private runner did not acknowledge authority delivery.");
+        return { acknowledged: true };
+      });
+    },
+    async scrubOrchestratorEpoch({ sandboxId, physicalGeneration, tokenHash }) {
+      return admit(sandboxId, async (row, save) => {
+        if (row.golden || row.phase !== "active" || physicalGeneration !== String(row.generation))
+          throw refusal("conflict", "Orchestrator scrub requires the bound active physical generation.");
+        const active = await healthyAdmission(row, save);
+        if (physicalGeneration !== String(active.generation))
+          throw refusal("conflict", "Physical generation changed during authority scrub.");
+        const result = await runner.call<{ acknowledged?: unknown }>(active, "scrubOrchestratorEpoch", {
+          ...(tokenHash === undefined ? {} : { tokenHash }),
+        });
+        if (result?.acknowledged !== true)
+          throw refusal("unavailable", "Private runner did not acknowledge authority scrub.");
+        return { acknowledged: true };
+      });
+    },
     async prompt(r) {
       // Capture only trusted incarnation state, never labels/request data or volatile callback refs.
       const incarnation = (row: Machine) =>

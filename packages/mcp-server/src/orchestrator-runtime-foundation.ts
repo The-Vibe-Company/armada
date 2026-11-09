@@ -1,9 +1,9 @@
 import type { OrchestratorOperation, OrchestratorScope } from "@armada/core";
 import type { Sql } from "@armada/core/server";
 
-/** Consumer projection of ACTUAL #661 candidate-v1, not a new token/receipt protocol.
+/** Consumer projection of committed #661 PR673/026babb, not a new token/receipt protocol.
  * Structural injection keeps foundation-unavailable deployments off without an eager
- * import of unmerged code. Integration conformance assigns the real producer here.
+ * import of unmerged code. Integration conformance assigns the exact committed producer here.
  * No fallback issuer, store, or implementation is provided. */
 export interface OrchestratorRuntimeTransport {
   deliver(token: string, binding: { epoch: string; physicalGeneration: string }): Promise<{ acknowledged: boolean }>;

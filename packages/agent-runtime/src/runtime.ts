@@ -7,6 +7,7 @@ import { execCredentialValues, validateExecEnvironment } from "./exec-env.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import type { Journal } from "./journal.ts";
 import { mcpDigest, mcpSecretValues, validateMcpConfiguration } from "./mcp.ts";
+import { NativeEpoch } from "./native-epoch.ts";
 import { groupState, type ProcessIdentity, processIdentity } from "./processes.ts";
 import {
   AUTH_HEADER,
@@ -27,6 +28,7 @@ export class Runner {
   >();
   private barrier = false;
   private mcp: McpConfiguration | undefined;
+  private nativeEpoch: NativeEpoch;
   private execEnvironment: Readonly<Record<string, string>>;
   private credentialFreeBuilder: boolean;
   private commands = new Set<Promise<unknown>>();
@@ -62,6 +64,16 @@ export class Runner {
     journal.assertRestoreSource(grant);
     this.barrier = journal.checkpointPending(grant);
     journal.bindIdentity(grant);
+    this.nativeEpoch = new NativeEpoch(
+      grant.generation,
+      journal,
+      checkpointIdentityKey(grant),
+      () => this.active.size === 0 && !this.barrier && !this.journal.checkpointPending(this.grant),
+      () => this.mcp,
+      (configuration) => {
+        this.configureMcp(configuration, true);
+      },
+    );
     if (mcp) this.configureMcp(mcp);
     for (const row of journal.db.query("SELECT pid,body FROM processes").all() as { pid: number; body: string }[]) {
       const state = JSON.parse(row.body);
@@ -99,6 +111,30 @@ export class Runner {
       if (!r || typeof r !== "object" || Array.isArray(r)) throw Error("invalid_request");
       if (r.version !== 1 || r.sandboxId !== this.grant.sandboxId || typeof r.requestId !== "string" || !r.requestId)
         throw Error("invalid_request");
+      if (r.op === "installOrchestratorEpoch" || r.op === "scrubOrchestratorEpoch") {
+        if (this.credentialFreeBuilder) throw Error("builder_credentials_forbidden");
+        const allowed =
+          r.op === "installOrchestratorEpoch"
+            ? ["version", "requestId", "sandboxId", "op", "token", "binding", "url"]
+            : ["version", "requestId", "sandboxId", "op", "tokenHash"];
+        if (
+          Object.keys(r).some((key) => !allowed.includes(key)) ||
+          (r.op === "installOrchestratorEpoch" &&
+            Object.keys(r.binding ?? {}).some((key) => !["epoch", "physicalGeneration"].includes(key)))
+        )
+          throw Error("invalid_request");
+        if (r.requestId.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(r.requestId)) throw Error("invalid_request");
+        let result: { acknowledged: boolean };
+        if (r.op === "installOrchestratorEpoch") result = this.nativeEpoch.install(r.token, r.binding, r.url);
+        else {
+          this.nativeEpoch.scrub(r.tokenHash);
+          result = { acknowledged: true };
+        }
+        // Never put this private request/body or bearer in the replay cache.
+        return new Response(this.journal.redact(JSON.stringify({ version: 1, requestId: r.requestId, result })), {
+          headers: { "content-type": "application/json" },
+        });
+      }
       if (r.op === "configureMcp") {
         if (r.requestId.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(r.requestId)) throw Error("invalid_request");
         if (Object.keys(r).some((k) => !["version", "requestId", "sandboxId", "op", "configuration"].includes(k)))
@@ -129,7 +165,8 @@ export class Runner {
       );
     }
   }
-  private configureMcp(value: unknown): ConfigureMcpResult {
+  private configureMcp(value: unknown, epochControl = false): ConfigureMcpResult {
+    if (this.nativeEpoch?.active && !epochControl) throw Error("orchestrator_authority_managed");
     if (Date.now() >= this.grant.expiresAt) throw Error("unauthorized");
     if (this.barrier || this.journal.checkpointPending(this.grant)) throw Error("checkpoint_in_progress");
     const configuration = validateMcpConfiguration(value),
@@ -169,7 +206,9 @@ export class Runner {
     this.mcp = configuration;
     return { revision: configuration.revision };
   }
-  private async dispatch(r: Exclude<RunnerRequest, { op: "configureMcp" }>): Promise<unknown> {
+  private async dispatch(
+    r: Exclude<RunnerRequest, { op: "configureMcp" | "installOrchestratorEpoch" | "scrubOrchestratorEpoch" }>,
+  ): Promise<unknown> {
     if (r.op === "health") return { generation: this.grant.generation, ready: !this.barrier };
     if (r.op === "getPrompt") {
       const p = this.journal.get(r.promptId);
@@ -206,6 +245,7 @@ export class Runner {
       return value;
     }
     if (r.op === "checkpoint") {
+      this.nativeEpoch.assertEmpty();
       this.barrier = true;
       this.journal.checkpointFence(this.grant, "preparing");
       for (const row of this.journal.db.query("SELECT pid,body FROM processes").all() as {

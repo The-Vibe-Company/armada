@@ -1,6 +1,8 @@
 import {
   createSqlSandboxStore,
   type GoldenActor,
+  type Harness,
+  type HarnessCredentials,
   type LaunchRequest,
   type LaunchStores,
   launchSandbox,
@@ -20,9 +22,32 @@ export async function launchOrchestratorParent(input: {
   actor: GoldenActor;
   request: LaunchRequest;
   reservation: RuntimeReservation;
+  /** Exact #612 resolver signature and binding, not a legacy default credential port. */
+  account: {
+    credentialId: string;
+    credentialVersion: number;
+    resolve(
+      actor: GoldenActor,
+      harness: Harness,
+      credentialId: string,
+      credentialVersion: number,
+    ): Promise<HarnessCredentials>;
+  };
 }): Promise<void> {
   const { sql, provider, actor, request, reservation } = input;
   const identity = reservation.identity;
+  if (
+    input.account.credentialId !== identity.configuration.modelAccountId ||
+    !Number.isSafeInteger(input.account.credentialVersion) ||
+    input.account.credentialVersion < 1
+  )
+    throw new OrchestratorRuntimeError("invalid_request");
+  // A missing producer migration cannot be discovered only after a billable fork.
+  try {
+    await sql.query(`select credential_id,credential_version from public.sandboxes limit 0`);
+  } catch {
+    throw new OrchestratorRuntimeError("unavailable");
+  }
   if (
     !sql.transaction ||
     actor.userId !== identity.ownerId ||
@@ -47,7 +72,17 @@ export async function launchOrchestratorParent(input: {
           [identity.id, actor.userId, actor.orgId, reservation.operation.revision],
         );
         if (!current.rows.length) throw new OrchestratorRuntimeError("conflict");
-        const saved = await createSqlSandboxStore(tx).insert(record);
+        const selectedRecord = {
+          ...record,
+          credentialId: input.account.credentialId,
+          credentialVersion: input.account.credentialVersion,
+        };
+        const saved = await createSqlSandboxStore(tx).insert(selectedRecord);
+        if (
+          Reflect.get(saved, "credentialId") !== input.account.credentialId ||
+          Reflect.get(saved, "credentialVersion") !== input.account.credentialVersion
+        )
+          throw new OrchestratorRuntimeError("unavailable");
         await tx.query(`update public.orchestrators set sandbox_id=$2 where id=$1`, [identity.id, saved.id]);
         return saved;
       });
@@ -68,10 +103,32 @@ export async function launchOrchestratorParent(input: {
   });
   await launchSandbox(
     routed,
-    { ...input.stores, sandboxes },
+    {
+      ...input.stores,
+      sandboxes,
+      credentials: {
+        resolve: async (actor, harness) => {
+          const credentials = await input.account.resolve(
+            actor,
+            harness,
+            input.account.credentialId,
+            input.account.credentialVersion,
+          );
+          const binding = Reflect.get(credentials, "binding");
+          if (
+            !binding ||
+            binding.credentialId !== input.account.credentialId ||
+            binding.credentialVersion !== input.account.credentialVersion
+          )
+            throw new OrchestratorRuntimeError("unavailable");
+          return credentials;
+        },
+      },
+    },
     actor,
     {
       ...request,
+      ...{ credentialId: input.account.credentialId },
       visibility: "private",
       ttlSeconds: PROVIDER_LIMITS[identity.configuration.provider].maxTtlSeconds,
     },

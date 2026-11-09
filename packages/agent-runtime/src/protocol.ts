@@ -16,6 +16,21 @@ export interface ConfigureMcpRequest {
 export interface ConfigureMcpResult {
   revision: string;
 }
+/** Trusted private control only; never a model tool or a public owner DTO. */
+export interface OrchestratorEpochBinding {
+  epoch: string;
+  physicalGeneration: string;
+}
+export interface InstallOrchestratorEpochRequest {
+  op: "installOrchestratorEpoch";
+  token: string;
+  binding: OrchestratorEpochBinding;
+  url: string;
+}
+export interface ScrubOrchestratorEpochRequest {
+  op: "scrubOrchestratorEpoch";
+  tokenHash?: string;
+}
 export interface Grant {
   token: string;
   sandboxId: string;
@@ -71,6 +86,8 @@ export interface IngestClient {
 export type RunnerRequest = { version: 1; requestId: string; sandboxId: string } & (
   | { op: "health" }
   | ConfigureMcpRequest
+  | InstallOrchestratorEpochRequest
+  | ScrubOrchestratorEpochRequest
   | { op: "prompt"; input: RuntimePromptRequest }
   | { op: "getPrompt"; promptId: string }
   | { op: "steer"; conversationId: string; text: string }

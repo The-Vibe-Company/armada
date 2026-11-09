@@ -16,13 +16,15 @@ import {
   type RuntimeIdentity,
   type RuntimeReservation,
 } from "./orchestrator-runtime-store.ts";
+import { createOrchestratorTransport } from "./orchestrator-transport.ts";
 
 /** Trusted server adapter: never populated from HTTP request fields or guest flags.
  * Each implementation needs operator-verified, version-bound native proof. */
 export interface OrchestratorRuntimeBackend {
   provider: Provider;
   projectDir: string;
-  transport: OrchestratorRuntimeTransport;
+  /** Trusted server broker URL, never accepted from owner request or prompt text. */
+  mcpUrl: string;
   assertNativeProof(): Promise<void>;
   /** Reuses launchSandbox with private insertion/managed-parent binding in one SQL transaction.
    * Must pass the durable operation ID as provider fork idempotency/correlation key. */
@@ -46,7 +48,11 @@ export interface OrchestratorRuntimeOptions {
     id: string,
   ) => Promise<Pick<OrchestratorDetail, "waits" | "delegation" | "childSandboxIds">>;
   /** Actual named-account/provider/golden/sizing authorization; no legacy account fallback. */
-  resolveBackend(configuration: OrchestratorCreate, ownerId: string): Promise<OrchestratorRuntimeBackend>;
+  resolveBackend(
+    configuration: OrchestratorCreate,
+    ownerId: string,
+    identity?: RuntimeIdentity,
+  ): Promise<OrchestratorRuntimeBackend>;
 }
 
 /** One owner policy surface for HTTP and MCP. Construction alone never enables a provider. */
@@ -86,7 +92,7 @@ export class OrchestratorRuntime {
     await this.options.store.events(identity.ownerId, orgId, id, cursor, limit);
     // Stopped history never contacts a provider or activates compute.
     if (identity.state === "ready" && identity.conversationId && identity.providerSandboxId) {
-      const backend = await this.options.resolveBackend(identity.configuration, identity.ownerId);
+      const backend = await this.options.resolveBackend(identity.configuration, identity.ownerId, identity);
       await backend.assertNativeProof();
       const upstream = await this.options.store.providerCursor(identity);
       const page = await backend.provider.events({
@@ -140,7 +146,7 @@ export class OrchestratorRuntime {
       (!input.text?.trim() || input.text.length > 100_000)
     )
       throw new OrchestratorRuntimeError("invalid_request");
-    const backend = await this.options.resolveBackend(identity.configuration, ownerId);
+    const backend = await this.options.resolveBackend(identity.configuration, ownerId, identity);
     await backend.assertNativeProof();
     if (input.action === "resume" && !backend.resumeWithoutText) throw new OrchestratorRuntimeError("unavailable");
     const reservation = await this.options.store.reserve({
@@ -159,7 +165,7 @@ export class OrchestratorRuntime {
       if (input.action === "stop") {
         if (current.state === "stopped") return { parentState: "stopped" as const };
         // Admission is already closed by the pending receipt. Revoke before any checkpoint I/O.
-        await this.options.authority.scrubBeforeCheckpoint(current.id, backend.transport);
+        await this.options.authority.scrubBeforeCheckpoint(current.id, await this.transport(backend, current));
         await backend.checkpointAndStop(current);
         return { parentState: "stopped" as const };
       }
@@ -208,9 +214,24 @@ export class OrchestratorRuntime {
     });
   }
 
+  private async transport(
+    backend: OrchestratorRuntimeBackend,
+    identity: RuntimeIdentity,
+  ): Promise<OrchestratorRuntimeTransport> {
+    if (!identity.providerSandboxId) throw new OrchestratorRuntimeError("unavailable");
+    const machine = await backend.provider.get(identity.providerSandboxId);
+    if (!machine.physicalGeneration) throw new OrchestratorRuntimeError("unavailable");
+    return createOrchestratorTransport({
+      provider: backend.provider,
+      providerSandboxId: identity.providerSandboxId,
+      physicalGeneration: machine.physicalGeneration,
+      mcpUrl: backend.mcpUrl,
+    });
+  }
+
   private async configureAuthority(backend: OrchestratorRuntimeBackend, identity: RuntimeIdentity): Promise<void> {
     await backend.revalidate(identity);
-    await this.options.authority.installEpoch(identity.id, backend.transport, {
+    await this.options.authority.installEpoch(identity.id, await this.transport(backend, identity), {
       scopes: ["worker:launch", "worker:read", "worker:message", "worker:stop"],
       goldenIds: [identity.configuration.goldenId],
       credentialIds: [identity.configuration.modelAccountId],

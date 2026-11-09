@@ -1880,3 +1880,40 @@ for (const hardExit of [false, true])
       expect(f.log).toContain("terminate");
     }
   });
+
+test("private orchestrator transport requires exact active incarnation and ACK, never restores stopped compute", async () => {
+  const f = fixture();
+  const golden = await f.provider.createGolden({});
+  const image = await f.provider.snapshot({ sandboxId: golden.id, name: `authority-${crypto.randomUUID()}` });
+  const parent = await f.provider.fork({ from: image.name });
+  const binding = { epoch: "1", physicalGeneration: (await f.provider.get(parent.id)).physicalGeneration ?? "missing" };
+  const request = {
+    sandboxId: parent.id,
+    token: `armada_epoch_${"a".repeat(64)}`,
+    binding,
+    url: "https://armada.invalid/private/mcp",
+  };
+  const install = f.provider.installOrchestratorEpoch;
+  const scrub = f.provider.scrubOrchestratorEpoch;
+  if (!install || !scrub) throw Error("missing private native authority port");
+  await expect(install(request)).rejects.toMatchObject({ code: "unavailable" });
+  f.onRpc(async (_row, op) =>
+    ["installOrchestratorEpoch", "scrubOrchestratorEpoch"].includes(op) ? { acknowledged: true } : undefined,
+  );
+  expect(await install(request)).toEqual({ acknowledged: true });
+  await expect(install({ ...request, binding: { ...binding, physicalGeneration: "old" } })).rejects.toMatchObject({
+    code: "conflict",
+  });
+  expect(await scrub({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).toEqual({
+    acknowledged: true,
+  });
+  await f.provider.stop({ sandboxId: parent.id });
+  const created = f.creates;
+  const calls = f.log.length;
+  await expect(install(request)).rejects.toMatchObject({ code: "conflict" });
+  await expect(scrub({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).rejects.toMatchObject({
+    code: "conflict",
+  });
+  expect(f.creates).toBe(created);
+  expect(f.log.length).toBe(calls);
+});
