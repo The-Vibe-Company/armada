@@ -3,6 +3,7 @@ import type { MachineSizePolicy } from "@armada/core";
 import {
   defaultOptionLabel,
   describeDefault,
+  describeEvidence,
   goldenSizing,
   isSizePolicyResult,
   launchDefault,
@@ -112,5 +113,27 @@ describe("machine sizes in the launch dialog", () => {
     expect(isSizePolicyResult(answer)).toBe(true);
     expect(isSizePolicyResult({ ...answer, provider: "aws" })).toBe(false);
     expect(isSizePolicyResult({ ...answer, policy: { version: 2 } })).toBe(false);
+  });
+
+  test("a sandbox's size is the recorded evidence, and an old row says it was not recorded", () => {
+    expect(describeEvidence("boat", {})).toBeNull();
+    expect(describeEvidence("boat", { machine_size: null })).toBe("Not recorded");
+    expect(
+      describeEvidence("modal", {
+        machine_size: {
+          version: 1,
+          requested: null,
+          effective: null,
+          source: "legacy",
+          repositoryDir: null,
+          capacity: null,
+        },
+      }),
+    ).toBe("Modal default, not recorded");
+    expect(
+      describeEvidence("boat", {
+        machine_size: { version: 1, requested: null, effective: "large", source: "repository", repositoryDir: "api" },
+      }),
+    ).toBe("Large (default for api) · 8 vCPU · 16 GiB · 111 GB disk");
   });
 });

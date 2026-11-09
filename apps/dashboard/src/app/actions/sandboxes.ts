@@ -15,8 +15,9 @@ import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
 import { GatewayError } from "@/lib/gateway";
+import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { launchSandbox } from "@/lib/launch";
-import { MACHINE_SIZE_LABELS } from "@/lib/machine-size";
+import { MACHINE_SIZE_LABELS, PROVIDER_REFUSALS } from "@/lib/machine-size";
 import { launchArgs, type ModelFields, sendOverride } from "@/lib/model-choice";
 import { goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
@@ -161,22 +162,23 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
   if (!repository.ok) return fail(repository.error);
 
   let id: string;
+  let sizeConfirmed: boolean;
   try {
-    ({ id } = await launchSandbox(
+    ({ id, sizeConfirmed } = await launchSandbox(
       { serverUrl, token: viewer.token },
       { ...parsed.args, ...selection.value, ...(repository.repo === undefined ? {} : { repo: repository.repo }) },
     ));
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    // A provider refusing an explicit size (plan, disk) is never retried with another: say what to change.
-    if (parsed.args.size && error.code === "start_failed")
+    // A provider refusing an explicit size (plan, disk) is never retried with another: say what can be changed.
+    if (parsed.args.size && error.code && PROVIDER_REFUSALS.has(error.code))
       return fail(
-        `${error.message} ${MACHINE_SIZE_LABELS[parsed.args.size]} was requested: choose another size or the default.`,
+        `${error.message} If ${PROVIDER_LABELS[parsed.args.provider]} refused ${MACHINE_SIZE_LABELS[parsed.args.size]}, choose another size or the default.`,
       );
     return fail(error.message);
   }
   revalidatePath("/sandboxes");
-  redirect(`/sandboxes/${id}`);
+  redirect(`/sandboxes/${id}${sizeConfirmed ? "" : "?size=unconfirmed"}`);
 }
 
 function modelFields(data: FormData): ModelFields {

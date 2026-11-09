@@ -99,6 +99,32 @@ export function sizeCaveat(provider: SandboxProviderId, chosen: MachineSize | nu
   return "Boat refuses a size whose disk cannot hold the golden.";
 }
 
+/**
+ * The server's codes for a provider refusing a fork before anything is allocated (`ProviderError` in the control
+ * API): a plan-gated or too-small size arrives as one of these, never as `start_failed`.
+ */
+export const PROVIDER_REFUSALS: ReadonlySet<string> = new Set(["forbidden", "invalid_request", "payment_required"]);
+
+/**
+ * A sandbox's recorded `machine_size` evidence in words, or null when the database has no such column. Rows from
+ * before #653 hold null: their size was never recorded, and none is inferred.
+ */
+export function describeEvidence(provider: SandboxProviderId, row: { machine_size?: unknown }): string | null {
+  if (!("machine_size" in row) || row.machine_size === undefined) return null;
+  const evidence = row.machine_size as Partial<MachineSizeEvidence> | null;
+  if (!evidence || evidence.version !== 1) return "Not recorded";
+  const size = evidence.effective;
+  if (!size || !(MACHINE_SIZES as readonly unknown[]).includes(size))
+    return `${PROVIDER_LABELS[provider]} default, not recorded`;
+  const source =
+    evidence.source === "override"
+      ? "chosen at launch"
+      : evidence.source === "repository"
+        ? `default for ${evidence.repositoryDir}`
+        : "golden default";
+  return `${MACHINE_SIZE_LABELS[size]} (${source}) · ${sizeSpec(provider, size)}`;
+}
+
 /** A golden's stored size policy as the dashboard can use it. */
 export type GoldenSizing =
   /** The server predates size policies (#653): no size is offered or sent. */

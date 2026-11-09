@@ -10,7 +10,10 @@ export const LAUNCH_PATH = "/api/v1/sandbox/launch";
  * context (`repo`, a golden `repos[].dir`), the optional machine size override (`size`, absent to use the
  * repository then golden default) and the optional first prompt. Answers the new sandbox's id.
  */
-export async function launchSandbox(options: ArmadaApiOptions, args: LaunchArgs): Promise<{ id: string }> {
+export async function launchSandbox(
+  options: ArmadaApiOptions,
+  args: LaunchArgs,
+): Promise<{ id: string; sizeConfirmed: boolean }> {
   const payload = await controlPost(
     options,
     LAUNCH_PATH,
@@ -32,5 +35,7 @@ export async function launchSandbox(options: ArmadaApiOptions, args: LaunchArgs)
   const sandbox = payload.sandbox;
   const id = typeof sandbox === "object" && sandbox !== null && "id" in sandbox ? sandbox.id : undefined;
   if (typeof id !== "string" || !id) throw new ControlError("The Armada server sent no sandbox id.");
-  return { id };
+  // A server before #653 ignores `size` and records no evidence: the requested size is then not confirmed.
+  const evidence = (sandbox as { machineSize?: { requested?: unknown } | null }).machineSize;
+  return { id, sizeConfirmed: args.size === undefined || evidence?.requested === args.size };
 }

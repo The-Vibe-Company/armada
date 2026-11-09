@@ -64,10 +64,10 @@ export function SizeDefaults({
             provider={provider}
             value={policy?.golden ?? ""}
           />
-          {directories.map((dir) => (
+          {directories.map((dir, index) => (
             <SizeSelect
-              key={`${dir}-${policy?.repositories[dir] ?? ""}`}
-              id={`${id}-${dir}`}
+              key={`repo:${dir}:${policy?.repositories[dir] ?? ""}`}
+              id={`${id}-repo-${index}`}
               name={`size:${dir}`}
               label={`When starting in ${dir}`}
               provider={provider}

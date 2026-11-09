@@ -235,7 +235,8 @@ export async function saveSizePolicy(_previous: ActionResult | null, data: FormD
     });
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    if (error.status === 404 && error.code === undefined)
+    // An older server answers an unknown route 404 `not_found` "Unknown route.".
+    if (error.status === 404 && (error.code === undefined || error.message === "Unknown route."))
       return fail("This Armada server does not offer machine size defaults yet.");
     return fail(error.message);
   }

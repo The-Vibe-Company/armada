@@ -1,3 +1,5 @@
+import { type MachineSizePolicy, resolveMachineSize } from "@armada/core";
+
 /**
  * A stand-in for Supabase Auth, PostgREST and the Armada MCP server, for the browser tests.
  * It models what the dashboard relies on: sessions by bearer token, the row level security
@@ -57,6 +59,8 @@ type State = {
   sizePolicyCalls: Row[];
   /** A launch asking for this size is refused by the provider, as Boat refuses a plan-gated size. */
   refuseSize: string | null;
+  /** The database has #653's columns but the server predates it: `size` is ignored and its route is unknown. */
+  olderServer: boolean;
   /** Every `golden/remove` body, as the dashboard sent it, and whether it carried a session. */
   goldenRemoveCalls: { body: Row; authorized: boolean }[];
   /** Every `golden/build/status` body, as the dashboard sent it. */
@@ -207,6 +211,7 @@ function seed(): State {
     providerCalls: [],
     sizePolicyCalls: [],
     refuseSize: null,
+    olderServer: false,
     providerStatusFail: null,
   };
   // The org golden records two repositories, so its launch form offers a working directory.
@@ -771,10 +776,12 @@ function launchRoute(body: Row, userId: string | null): Response {
   if (body.repo !== undefined && !dirs.includes(String(body.repo))) {
     return controlFail(400, "invalid", "That repository is not in the golden.");
   }
-  if (body.size !== undefined && !SIZES.includes(String(body.size)))
+  const sized = "size_policy" in source && !state.olderServer;
+  if (sized && body.size !== undefined && !SIZES.includes(String(body.size)))
     return controlFail(400, "invalid_request", "Size must be small, medium, large or xlarge.");
-  if (body.size !== undefined && body.size === state.refuseSize)
-    return controlFail(400, "start_failed", "Boat refused the machine size: your plan does not include it.");
+  // As the server maps Boat's `machine_class_plan_required` ProviderError: 403 forbidden, nothing allocated.
+  if (sized && body.size !== undefined && body.size === state.refuseSize)
+    return controlFail(403, "forbidden", "Requested size cannot be allocated.");
   const ids = Array.isArray(body.connections) ? body.connections.map(String) : [];
   for (const cid of ids) {
     const connection = visibleConnections(String(body.org), userId).find((row) => row.id === cid);
@@ -797,8 +804,19 @@ function launchRoute(body: Row, userId: string | null): Response {
   row.visibility = body.visibility;
   row.connections = ids;
   row.repository_dir = body.repo ?? null;
+  // The producer's own resolution, as the server records it; an older server records nothing.
+  const machineSize = sized
+    ? resolveMachineSize(
+        source.provider as "boat" | "modal",
+        body.size,
+        (body.repo as string | undefined) ?? null,
+        source.size_policy as MachineSizePolicy | null,
+      )
+    : null;
+  row.provider = source.provider;
+  if ("size_policy" in source) row.machine_size = machineSize;
   state.sandboxes.unshift(row);
-  return json({ sandbox: { id: row.id, boatId: row.boat_id, repositoryDir: row.repository_dir } });
+  return json({ sandbox: { id: row.id, boatId: row.boat_id, repositoryDir: row.repository_dir, machineSize } });
 }
 
 /* The registry's control API (issue #522): POST /api/v1/mcp/<operation>, user JWT as the bearer. */
@@ -1241,11 +1259,12 @@ const SIZES = ["small", "medium", "large", "xlarge"];
 function goldenSizePolicy(body: Row, request: Request): Response {
   const userId = viewer(request);
   state.sizePolicyCalls.push(body);
+  if (state.olderServer) return controlFail(404, "not_found", "Unknown route.");
   if (!userId) return controlFail(401, "unauthorized", "Sign in.");
   const row = liveGoldens(userId).find(
     (item) => item.name === body.golden && item.org_id === body.org && item.provider === (body.provider ?? "boat"),
   );
-  if (!row || !("size_policy" in row)) return json({ error: "Not found." }, 404);
+  if (!row) return controlFail(404, "not_found", "No golden named that.");
   const repositories = ((row.config as { repos?: Row[] }).repos ?? []) as Row[];
   if (body.policy !== undefined) {
     const allowed = row.visibility === "private" ? row.owner_id === userId : isAdmin(row.org_id, userId);
@@ -1481,6 +1500,7 @@ function control(url: URL, body: Row): Response {
       const shared = state.goldens.find((row) => row.name === "shared-golden" && row.provider === "boat");
       if (shared) shared.size_policy = { version: 1, golden: "medium", repositories: { api: "large" } };
       state.refuseSize = typeof body.refuseSize === "string" ? body.refuseSize : null;
+      state.olderServer = body.olderServer === true;
     }
     if (body.modalTwin) {
       // A Modal golden with the same name as the Boat `shared-golden`, recording another repository.

@@ -53,6 +53,10 @@ test("the launch shows the repository then golden default, keeps an override and
   await dialog.getByRole("button", { name: "Launch" }).click();
   await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}$/);
   expect((await mockState()).launches[0]).toMatchObject({ provider: "boat", repo: "web", size: "small" });
+  await expect(page.locator("dd", { hasText: "Small (chosen at launch)" })).toHaveText(
+    "Small (chosen at launch) · 2 vCPU · 4 GiB · 51 GB disk",
+  );
+  await expect(page.locator("[data-size-unconfirmed]")).toHaveCount(0);
 
   // Modal, no defaults: the provider decides, nothing is invented and no size is sent.
   await page.goto("/goldens");
@@ -73,6 +77,7 @@ test("the launch shows the repository then golden default, keeps an override and
   const launches = (await mockState()).launches;
   expect(launches[1]).toMatchObject({ provider: "modal" });
   expect(launches[1]).not.toHaveProperty("size");
+  await expect(page.locator("dd", { hasText: "Modal default" })).toHaveText("Modal default, not recorded");
 });
 
 test("an admin saves defaults for one provider's golden without rebuilding it, and the next launch uses them", async ({
@@ -124,7 +129,7 @@ test("a member sees an org golden's defaults read-only; the owner edits their pr
   await expect(page.locator('[data-golden="bob-private"] [data-size-defaults="editable"]')).toBeVisible();
 });
 
-test("a refused size says what to change, and an older server offers no size at all", async ({ page }) => {
+test("a refused size says what can be changed, and an unconfirmed size is never shown as applied", async ({ page }) => {
   await reset({ sizePolicies: true, refuseSize: "xlarge" });
   await signIn(page, "alice@example.com", "/goldens");
   await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
@@ -133,10 +138,29 @@ test("a refused size says what to change, and an older server offers no size at 
   await expect(dialog.locator("[data-size-source]")).toContainText("Extra large needs a Boat plan that includes it.");
   await dialog.getByRole("button", { name: "Launch" }).click();
   await expect(dialog.getByRole("alert")).toHaveText(
-    "Boat refused the machine size: your plan does not include it. Extra large was requested: choose another size or the default.",
+    "Requested size cannot be allocated. If Boat refused Extra large, choose another size or the default.",
   );
   expect((await mockState()).launches.at(-1)).toMatchObject({ size: "xlarge" });
 
+  // The database has the columns but the server predates #653: it ignores the size, and the dashboard says so.
+  await reset({ sizePolicies: true, olderServer: true });
+  await page.context().clearCookies();
+  await signIn(page, "alice@example.com", "/goldens");
+  await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
+  await page.getByRole("dialog").getByLabel("Machine size").selectOption("large");
+  await page.getByRole("dialog").getByRole("button", { name: "Launch" }).click();
+  await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}\?size=unconfirmed$/);
+  await expect(page.locator("[data-size-unconfirmed]")).toContainText("Machine size not confirmed");
+  await expect(page.locator("dd", { hasText: "Not recorded" })).toHaveText("Not recorded");
+
+  await page.goto("/goldens");
+  const card = page.locator('[data-golden="shared-golden"]');
+  await card.getByText("Machine size defaults").click();
+  await card.getByLabel("Golden default").selectOption("large");
+  await card.getByRole("button", { name: "Save size defaults" }).click();
+  await expect(card.getByRole("alert")).toHaveText("This Armada server does not offer machine size defaults yet.");
+
+  // Before the migration: no size anywhere.
   await reset({});
   await page.context().clearCookies();
   await signIn(page, "alice@example.com", "/goldens");
