@@ -14,7 +14,6 @@ import {
   supabaseAuthorizeUrl,
   verifyEmailCode,
 } from "@armada/auth";
-import { MCP_CATALOG } from "@armada/core";
 import {
   addMember,
   assertGoldenMutation,
@@ -74,11 +73,13 @@ import {
   type Visibility,
 } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
+import { GatewayError } from "../../mcp-gateway/src/network.ts";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
 import { createSqlData, type DataSource, type ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
 import { providerRegistry } from "./http.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
+import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { connectOrgProvider, orgProviderStatus, type ProviderValidator, validateOrgProvider } from "./org-provider.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
@@ -205,6 +206,11 @@ export async function handleControlRequest(request: Request, options: ControlOpt
       headers: { "cache-control": "no-store" },
     });
   } catch (error) {
+    if (error instanceof GatewayError) {
+      const status =
+        error.code === "denied" ? 403 : error.code === "busy" ? 409 : error.code === "upstream" ? 502 : 400;
+      return fail(status, error.code, error.action);
+    }
     if (error instanceof ToolApiError) return fail(error.status, error.code, error.message);
     if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
     if (error instanceof AuthUnavailable) return fail(503, "unavailable", "Authentication is temporarily unavailable.");
@@ -1163,7 +1169,14 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
   const authStore = createSqlAuthStore(sql);
   const supabaseUrl = need("SUPABASE_URL");
   const anonKey = need("SUPABASE_ANON_KEY");
-  const registry = createSqlMcpRegistry(sql, encryptionKey);
+  const registry = createSqlMcpRegistry(sql, encryptionKey, {
+    catalogAuthentication: catalogAuthenticationFromEnv(
+      env,
+      encryptionKey,
+      env.ARMADA_DASHBOARD_URL,
+      env.NODE_ENV === "development",
+    ),
+  });
   const providerFor = (apiKey: string) => createBoatProvider({ apiKey });
   let modal: ReturnType<typeof createModalIntegration> | undefined;
   const modalIntegration = () =>
@@ -1245,16 +1258,7 @@ async function dispatchMcp(action: string, userId: string, body: Record<string, 
   if (!orgs.some((o) => o.id === orgId)) throw new VaultError("forbidden", "Organization membership required.");
   if (!options.mcp) throw new VaultError("unavailable", "MCP registry is not configured on this server.");
   const { registry, broker } = options.mcp;
-  if (action === "catalog")
-    return {
-      services: MCP_CATALOG.map((service) => ({
-        ...service,
-        availability: service.id === "slack" ? "setup_required" : "available",
-        ...(service.id === "slack"
-          ? { setupMessage: "Registered confidential OAuth client required; not configured on this deployment." }
-          : {}),
-      })),
-    };
+  if (action === "catalog") return { services: await registry.catalog() };
   if (action === "metadata") {
     const id = required(body, "id");
     if (!UUID.test(id)) throw new VaultError("invalid", "id must be a connection UUID.");

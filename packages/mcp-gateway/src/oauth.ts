@@ -18,7 +18,17 @@ import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
 import { endpoint, GatewayError, publicFetch, restrictedFetch } from "./network.ts";
 
+export interface OAuthServiceBinding {
+  endpoint: string;
+  resource: string;
+  issuer: string;
+  authorizationEndpoint: string;
+  tokenEndpoint: string;
+  tokenFormat?: "slack-user";
+}
 export interface OAuthGrant {
+  /** Trusted registered-service policy, encrypted with the grant and pending state. */
+  binding?: OAuthServiceBinding;
   issuer: string;
   resource: string;
   metadata: OAuthServerMetadata;
@@ -155,6 +165,7 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
     metadata: OAuthServerMetadata,
     purpose: "token_endpoint" | "registration_endpoint" | "revocation_endpoint",
     client?: OAuthClientInformationMixed,
+    binding?: OAuthServiceBinding,
   ): FetchLike {
     if (metadata.issuer !== issuer || (client && client.issuer !== issuer))
       throw new GatewayError("unsafe_endpoint", "OAuth client and metadata must remain bound to the exact issuer.");
@@ -163,24 +174,38 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
       throw new GatewayError("unsupported", "Authorization server did not advertise the required endpoint.");
     const pinned = endpoint(advertised).href;
     const exactFetch = restrictedFetch(fetcher, (url) => url.href === pinned);
-    return (input, init) => {
+    return async (input, init) => {
       if (init?.method !== "POST")
         throw new GatewayError("unsafe_endpoint", "OAuth endpoint only accepts its purpose-specific POST.");
-      return exactFetch(input, init);
+      const response = await exactFetch(input, init);
+      if (binding?.tokenFormat !== "slack-user" || purpose !== "token_endpoint" || !response.ok) return response;
+      const payload = (await response.json()) as Record<string, unknown>;
+      if (payload.ok !== true || payload.token_type !== "user")
+        throw new GatewayError("needs_reconnect", "Slack did not issue a user token; reconnect.");
+      const scope = payload.scope ?? (payload.authed_user as { scope?: unknown } | undefined)?.scope;
+      return Response.json({
+        ...payload,
+        token_type: "Bearer",
+        ...(typeof scope === "string" ? { scope: scope.replace(/,/g, " ") } : {}),
+      });
     };
   }
   function completed(grant: Omit<OAuthGrant, "tokens" | "expiresAt">, tokens: OAuthTokens): OAuthGrant {
     if (
       tokens.token_type.toLowerCase() !== "bearer" ||
-      !tokens.expires_in ||
-      tokens.expires_in <= 0 ||
+      (tokens.expires_in === undefined ? grant.binding?.tokenFormat !== "slack-user" : tokens.expires_in <= 0) ||
       (tokens.issuer && tokens.issuer !== grant.issuer)
     )
       fail("unsupported", "Expected an issuer-bound expiring bearer token.");
     const scopes = tokens.scope?.split(/\s+/).filter(Boolean) ?? grant.scopes;
     if (grant.scopes.some((scope) => !scopes.includes(scope)))
       fail("needs_reconnect", "Upstream did not grant the required scopes.");
-    return { ...grant, tokens, scopes, expiresAt: now() + Number(tokens.expires_in) * 1000 };
+    return {
+      ...grant,
+      tokens,
+      scopes,
+      expiresAt: tokens.expires_in === undefined ? Number.MAX_SAFE_INTEGER : now() + tokens.expires_in * 1000,
+    };
   }
   const broker = {
     async connect(input: {
@@ -190,6 +215,8 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
       client?: OAuthClientInformationMixed;
       scope?: string;
       resourceMetadataUrl?: string;
+      /** Trusted server policy only; never accept this from a public request. */
+      binding?: OAuthServiceBinding;
     }): Promise<{ authorizationUrl: string }> {
       await options.authorize(input.actorId, input.connectionId);
       const generation = await store.generation(input.connectionId);
@@ -205,15 +232,39 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
         metadataUrl ? { resourceMetadataUrl: metadataUrl } : {},
         resourceFetch,
       );
-      if (prm.resource !== input.resource && prm.resource !== resource)
+      const binding = input.binding;
+      if (binding && (binding.endpoint !== resource || !input.client || input.client.issuer !== binding.issuer))
+        throw new GatewayError("unsafe_endpoint", "Registered service binding mismatch.");
+      if (binding ? prm.resource !== binding.resource : prm.resource !== input.resource && prm.resource !== resource)
         throw new GatewayError("unsafe_endpoint", "Protected resource identifier mismatch.");
       const issuer = prm.authorization_servers?.[0];
       if (!issuer) return fail("unsupported", "Configure an OAuth authorization server for this resource.");
+      if (binding && issuer !== binding.issuer)
+        throw new GatewayError("unsafe_endpoint", "Registered service issuer mismatch.");
       endpoint(issuer);
       const metadata = await discoverOAuthIssuer(issuer, fetcher);
       if (!metadata)
         return fail("unsupported", "Authorization server discovery is unavailable; configure a reviewed adapter.");
-      const scopes = (challenge.scope ?? input.scope)?.split(/\s+/).filter(Boolean) ?? prm.scopes_supported ?? [];
+      if (
+        binding &&
+        (metadata.authorization_endpoint !== binding.authorizationEndpoint ||
+          metadata.token_endpoint !== binding.tokenEndpoint ||
+          !metadata.token_endpoint_auth_methods_supported?.includes(
+            (input.client && "token_endpoint_auth_method" in input.client
+              ? input.client.token_endpoint_auth_method
+              : "") ?? "",
+          ))
+      )
+        throw new GatewayError(
+          "unsafe_endpoint",
+          "Registered service OAuth endpoints or client authentication changed.",
+        );
+      const scopes =
+        (binding ? input.scope : (challenge.scope ?? input.scope))?.split(/\s+/).filter(Boolean) ??
+        prm.scopes_supported ??
+        [];
+      if (binding && (!scopes.length || scopes.some((scope) => !metadata.scopes_supported?.includes(scope))))
+        throw new GatewayError("unsupported", "Registered service scopes are not supported.");
       let client = input.client;
       if (client && client.issuer !== issuer)
         throw new GatewayError("unsafe_endpoint", "Preregistered client must be bound to the exact issuer.");
@@ -247,7 +298,7 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
       });
       const previous = await store.readGrant(input.connectionId);
       const flow: PendingFlow = {
-        grant: { issuer, resource: prm.resource, metadata, client, scopes },
+        grant: { issuer, resource: prm.resource, metadata, client, scopes, ...(binding ? { binding } : {}) },
         verifier: started.codeVerifier,
         generation,
         version: previous?.version ?? null,
@@ -278,7 +329,7 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
         codeVerifier: flow.verifier,
         redirectUri: options.redirectUri,
         resource: grant.resource,
-        fetchFn: purposeFetch(grant.issuer, grant.metadata, "token_endpoint", grant.client),
+        fetchFn: purposeFetch(grant.issuer, grant.metadata, "token_endpoint", grant.client, grant.binding),
       });
       if (
         !(await store.saveGrant(
@@ -295,7 +346,8 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
       const saved = await store.readGrant(connectionId);
       if (!saved) return fail("needs_reconnect", "Connect this service before use.");
       let grant = JSON.parse(await vault.open(saved.sealed)) as OAuthGrant;
-      if (grant.resource !== resource) throw new GatewayError("denied", "Grant audience does not match this resource.");
+      if ((grant.binding?.endpoint ?? grant.resource) !== resource)
+        throw new GatewayError("denied", "Grant audience does not match this resource.");
       if (grant.expiresAt <= now() + 30_000) {
         if (!grant.tokens.refresh_token)
           return fail("needs_reconnect", "Provider did not issue a refresh token. Reconnect.");
@@ -309,7 +361,7 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
             clientInformation: grant.client,
             refreshToken: grant.tokens.refresh_token,
             resource: grant.resource,
-            fetchFn: purposeFetch(grant.issuer, grant.metadata, "token_endpoint", grant.client),
+            fetchFn: purposeFetch(grant.issuer, grant.metadata, "token_endpoint", grant.client, grant.binding),
           });
         } catch {
           return fail(

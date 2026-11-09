@@ -1,5 +1,4 @@
 import type { AuthStore } from "@armada/auth";
-import { MCP_CATALOG } from "@armada/core";
 import {
   createSqlMcpGrantPort,
   createSqlMcpInvalidationPort,
@@ -25,6 +24,7 @@ import {
 } from "../../mcp-gateway/src/index.ts";
 import { AuthUnavailable, authenticateCaller, bearerToken, type SupabaseProject } from "./caller.ts";
 import { dashboardOrigin } from "./config.ts";
+import { SLACK_OAUTH_BINDING } from "./mcp-catalog-client.ts";
 import { createMcpOAuthStore, createMcpSecretBox } from "./mcp-integration.ts";
 import { createMcpLifecycle } from "./mcp-lifecycle.ts";
 import { boundedOAuthFetch, probeRemoteMcp, withMcpDiscoveryBudget } from "./mcp-probe.ts";
@@ -43,13 +43,16 @@ export function createMcpHttpIntegration(options: {
   fetch?: typeof publicFetch;
   authStore: AuthStore;
   supabase: SupabaseProject;
+  catalogAuthentication?: (serviceId: import("@armada/core").McpCatalogId) => Promise<string | undefined>;
   /** Trusted persisted-identity resolver for renewing an ongoing physical VM turn. */
   providerForSandbox?: (sandboxId: string) => Promise<Provider>;
 }) {
   const { sql } = options;
   const networkFetch = options.fetch ?? publicFetch;
   const oauthFetch = boundedOAuthFetch(networkFetch);
-  const registry = createSqlMcpRegistry(sql, options.encryptionKey);
+  const registry = createSqlMcpRegistry(sql, options.encryptionKey, {
+    ...(options.catalogAuthentication ? { catalogAuthentication: options.catalogAuthentication } : {}),
+  });
   const lifecycle = createMcpLifecycle({
     sql,
     registry,
@@ -192,6 +195,159 @@ export function createMcpHttpIntegration(options: {
             : "MCP probe failed. Verify endpoint, authentication and transport; reconnect if needed.",
       };
     }
+  }
+  async function connectConnection(userId: string, org: string, id: string, signal?: AbortSignal) {
+    const dto = await registry.get(userId, org, id);
+    if (
+      dto.scope === "org" &&
+      !(
+        await sql.query("select 1 from public.members where org_id=$1::uuid and user_id=$2::uuid and role='admin'", [
+          org,
+          userId,
+        ])
+      ).rows.length
+    )
+      throw new GatewayError("denied", "Administrator permission required to connect a shared MCP grant.");
+    if (dto.status === "disabled") throw new GatewayError("denied", "Enable this connection before reconnecting.");
+    const c = await definition(id, true);
+    if (c.transport === "stdio") {
+      parsePinnedMcpStdio(dto.command ?? "", dto.args ?? []);
+      return { connection: dto.status === "connected" ? dto : await registry.configureStdio(userId, org, id) };
+    }
+    if (dto.status === "not_connected" && c.auth_type !== "oauth") {
+      const snapshot = await sql.query<{ revoked_at: Date | null }>(
+        "select revoked_at from public.mcp_grants where connection_id=$1::uuid",
+        [id],
+      );
+      if (snapshot.rows[0]?.revoked_at) {
+        const begun = await grants.begin(id);
+        if (!begun) throw new GatewayError("denied", "Connection changed; reconnect.");
+        c.generation = begun.generation;
+        c.value_enc = begun.value_enc;
+      }
+    }
+    let authorizationUrl: string | undefined;
+    let metadata: Awaited<ReturnType<typeof probe>> | undefined;
+    if (c.auth_type === "auto") {
+      const discovered = await withMcpDiscoveryBudget(networkFetch, signal, (fetch) =>
+        createRemoteAuthResolver({ fetch })({
+          url: c.url,
+          transport: c.transport as "http" | "sse",
+          ...(signal ? { signal } : {}),
+        }),
+      );
+      if (!(await grants.discovered(id, c.generation, discovered.authType)))
+        throw new GatewayError("denied", "Connection changed during discovery. Reconnect.");
+      c.auth_type = discovered.authType;
+    }
+    if (c.auth_type === "oauth") {
+      let client: Parameters<typeof broker.connect>[0]["client"];
+      const registered = dto.catalogId === "slack" ? await options.catalogAuthentication?.("slack") : undefined;
+      if (dto.catalogId === "slack" && !registered)
+        throw new VaultError("unavailable", "Slack registered client deployment setup required.");
+      if (registered || c.value_enc) {
+        const stored = JSON.parse(registered ?? (await decryptSecret(c.value_enc!, options.encryptionKey)));
+        const registration = stored.client ?? stored;
+        if (
+          registration.redirect_uris !== undefined &&
+          (!Array.isArray(registration.redirect_uris) ||
+            registration.redirect_uris.length !== 1 ||
+            registration.redirect_uris[0] !== redirectUri)
+        )
+          throw new GatewayError("denied", "Preregistered client must use the fixed dashboard callback.");
+        client = OAuthClientInformationFullSchema.parse({ ...registration, redirect_uris: [redirectUri] });
+        if (!client.issuer || !client.client_id)
+          throw new GatewayError("denied", "Preregistration requires an exact issuer and client ID.");
+      }
+      if (!(await grants.begin(id))) throw new GatewayError("denied", "Connection changed; reconnect.");
+      authorizationUrl = (
+        await withMcpDiscoveryBudget(networkFetch, signal, (fetch) =>
+          createOAuthBroker({
+            store,
+            vault,
+            redirectUri,
+            development: options.development === true,
+            clientMetadataUrl,
+            fetch,
+            authorize: async (user, id) => {
+              const c = await definition(id);
+              await registry.get(user, c.org_id, id);
+            },
+          }).connect({
+            actorId: userId,
+            connectionId: id,
+            resource: c.url,
+            ...(client ? { client } : {}),
+            ...(dto.catalogId === "slack"
+              ? {
+                  binding: SLACK_OAUTH_BINDING,
+                  ...(client && "scope" in client && client.scope ? { scope: client.scope } : {}),
+                }
+              : {}),
+          }),
+        )
+      ).authorizationUrl;
+    } else {
+      try {
+        metadata = await probe(id, userId, signal);
+      } catch (error) {
+        await sql.query(
+          `update public.mcp_grants g set status=$3 where connection_id=$1::uuid and generation=$2 and revoked_at is null and exists(select 1 from public.mcp_connections c where c.id=g.connection_id and not c.disabled)`,
+          [
+            id,
+            c.generation,
+            error instanceof GatewayError && error.code === "needs_reconnect" ? "needs_reconnect" : "unavailable",
+          ],
+        );
+        throw error;
+      }
+      const published = await sql.query(
+        `update public.mcp_grants set status='connected',version=version+1 where connection_id=$1::uuid and generation=$2 and revoked_at is null returning id`,
+        [id, c.generation],
+      );
+      if (!published.rows.length) throw new GatewayError("denied", "Connection changed during probe. Reconnect.");
+    }
+    return {
+      connection: {
+        ...(await registry.get(userId, org, id)),
+        ...(metadata ?? {}),
+      },
+      ...(authorizationUrl ? { authorizationUrl } : {}),
+    };
+  }
+  async function completeCallback(userId: string, state: string, code: string, issuer?: string, signal?: AbortSignal) {
+    let connectionId: string | undefined;
+    await withMcpDiscoveryBudget(oauthFetch, signal, async (fetch, signal) => {
+      const actorStore = createMcpOAuthStore(sql, options.encryptionKey, userId, signal);
+      const callbackBroker = createOAuthBroker({
+        store: {
+          ...actorStore,
+          takePending: async (...args) => {
+            const flow = await actorStore.takePending(...args);
+            connectionId = flow?.connectionId;
+            return flow;
+          },
+        },
+        vault,
+        redirectUri,
+        development: options.development === true,
+        clientMetadataUrl,
+        fetch,
+        authorize: async (user, id) => {
+          const c = await definition(id);
+          await registry.get(user, c.org_id, id);
+        },
+      });
+      await callbackBroker.callback({
+        actorId: userId,
+        state,
+        code,
+        ...(issuer ? { issuer } : {}),
+      });
+    });
+    if (!connectionId) throw new Error("No callback connection");
+    const c = await definition(connectionId);
+    return connectionStatus(userId, c.org_id, connectionId, signal);
   }
   const hashes = new WeakMap<GatewayLease, string>();
   const activeLeases = new Map<string, { lease: GatewayLease; hash: string; orgId: string }>();
@@ -413,6 +569,24 @@ export function createMcpHttpIntegration(options: {
   return {
     registry,
     broker,
+    controlBroker: {
+      async callback(actorId: string, state: string, code: string, issuer?: string) {
+        const connection = await completeCallback(actorId, state, code, issuer);
+        return { orgId: connection.orgId, connectionId: connection.id, status: connection.status };
+      },
+      async connect(input: { userId: string; orgId: string; connectionId: string }) {
+        const result = await connectConnection(input.userId, input.orgId, input.connectionId);
+        return {
+          status: result.connection.status,
+          ...("authorizationUrl" in result && result.authorizationUrl
+            ? { authorizationUrl: result.authorizationUrl }
+            : {}),
+        };
+      },
+      async status(input: { userId: string; orgId: string; connectionId: string }) {
+        return { status: (await connectionStatus(input.userId, input.orgId, input.connectionId)).status };
+      },
+    },
     connections: {
       ...lifecycle.connections,
       prepare: async (...args: Parameters<NonNullable<typeof lifecycle.connections.prepare>>) => {
@@ -504,43 +678,14 @@ export function createMcpHttpIntegration(options: {
             (body.issuer !== undefined && typeof body.issuer !== "string")
           )
             throw new Error("Invalid callback");
-          let connectionId: string | undefined;
-          await withMcpDiscoveryBudget(oauthFetch, request.signal, async (fetch, signal) => {
-            const actorStore = createMcpOAuthStore(sql, options.encryptionKey, actor.userId, signal);
-            const callbackBroker = createOAuthBroker({
-              store: {
-                ...actorStore,
-                takePending: async (...args) => {
-                  const flow = await actorStore.takePending(...args);
-                  connectionId = flow?.connectionId;
-                  return flow;
-                },
-              },
-              vault,
-              redirectUri,
-              development: options.development === true,
-              clientMetadataUrl,
-              fetch,
-              authorize: async (user, id) => {
-                const c = await definition(id);
-                await registry.get(user, c.org_id, id);
-              },
-            });
-            await callbackBroker.callback({
-              actorId: actor.userId,
-              state: body.state as string,
-              code: body.code as string,
-              ...(typeof body.issuer === "string" ? { issuer: body.issuer } : {}),
-            });
-          });
-          if (!connectionId) throw new Error("No callback connection");
-          const c = await definition(connectionId);
-          return Response.json(
-            {
-              connection: await connectionStatus(actor.userId, c.org_id, connectionId, request.signal),
-            },
-            { headers },
+          const connection = await completeCallback(
+            actor.userId,
+            body.state,
+            body.code,
+            typeof body.issuer === "string" ? body.issuer : undefined,
+            request.signal,
           );
+          return Response.json({ connection }, { headers });
         }
         if (body.org !== undefined && typeof body.org !== "string") throw new Error("Organization UUID required");
         const org =
@@ -552,21 +697,7 @@ export function createMcpHttpIntegration(options: {
         if (!org || !actor.orgs.some((o) => o.orgId === org))
           throw new GatewayError("denied", "This request is not scoped to that organization.");
         const id = String(body.id ?? body.connectionId ?? "");
-        if (action === "catalog")
-          return Response.json(
-            {
-              services: MCP_CATALOG.map((service) => ({
-                ...service,
-                availability: service.id === "slack" ? "setup_required" : "available",
-                ...(service.id === "slack"
-                  ? {
-                      setupMessage: "Registered confidential OAuth client required; not configured on this deployment.",
-                    }
-                  : {}),
-              })),
-            },
-            { headers },
-          );
+        if (action === "catalog") return Response.json({ services: await registry.catalog() }, { headers });
         if (action === "metadata")
           return Response.json({ connection: await registry.metadata(actor.userId, org, id, body) }, { headers });
         if (action === "list")
@@ -591,7 +722,7 @@ export function createMcpHttpIntegration(options: {
         }
         if (action === "sandbox-connections")
           return Response.json({ connections: await registry.sandboxConnections(actor.userId, org, id) }, { headers });
-        const dto = await registry.get(actor.userId, org, id);
+        await registry.get(actor.userId, org, id);
         if (action === "revoke" || action === "delete") {
           await registry.revoke(actor.userId, org, id, action === "delete");
           return Response.json({ ok: true }, { headers });
@@ -609,112 +740,7 @@ export function createMcpHttpIntegration(options: {
             { headers },
           );
         if (action === "connect" || action === "reconnect") {
-          if (dto.scope === "org" && !actor.orgs.some((o) => o.orgId === org && o.role === "admin"))
-            throw new Error("Administrator required");
-          if (dto.status === "disabled")
-            throw new GatewayError("denied", "Enable this connection before reconnecting.");
-          const c = await definition(id, true);
-          if (c.transport === "stdio") {
-            parsePinnedMcpStdio(dto.command ?? "", dto.args ?? []);
-            return Response.json(
-              { connection: dto.status === "connected" ? dto : await registry.configureStdio(actor.userId, org, id) },
-              { headers },
-            );
-          }
-          if (dto.status === "not_connected" && c.auth_type !== "oauth") {
-            const snapshot = await sql.query<{ revoked_at: Date | null }>(
-              "select revoked_at from public.mcp_grants where connection_id=$1::uuid",
-              [id],
-            );
-            if (snapshot.rows[0]?.revoked_at) {
-              const begun = await grants.begin(id);
-              if (!begun) throw new GatewayError("denied", "Connection changed; reconnect.");
-              c.generation = begun.generation;
-              c.value_enc = begun.value_enc;
-            }
-          }
-          let authorizationUrl: string | undefined;
-          let metadata: Awaited<ReturnType<typeof probe>> | undefined;
-          if (c.auth_type === "auto") {
-            const discovered = await withMcpDiscoveryBudget(networkFetch, request.signal, (fetch) =>
-              createRemoteAuthResolver({ fetch })({
-                url: c.url,
-                transport: c.transport as "http" | "sse",
-                signal: request.signal,
-              }),
-            );
-            if (!(await grants.discovered(id, c.generation, discovered.authType)))
-              throw new GatewayError("denied", "Connection changed during discovery. Reconnect.");
-            c.auth_type = discovered.authType;
-          }
-          if (c.auth_type === "oauth") {
-            let client: Parameters<typeof broker.connect>[0]["client"];
-            if (c.value_enc) {
-              const stored = JSON.parse(await decryptSecret(c.value_enc, options.encryptionKey));
-              const registration = stored.client ?? stored;
-              if (
-                registration.redirect_uris !== undefined &&
-                (!Array.isArray(registration.redirect_uris) ||
-                  registration.redirect_uris.length !== 1 ||
-                  registration.redirect_uris[0] !== redirectUri)
-              )
-                throw new GatewayError("denied", "Preregistered client must use the fixed dashboard callback.");
-              client = OAuthClientInformationFullSchema.parse({ ...registration, redirect_uris: [redirectUri] });
-              if (!client.issuer || !client.client_id)
-                throw new GatewayError("denied", "Preregistration requires an exact issuer and client ID.");
-            }
-            if (!(await grants.begin(id))) throw new GatewayError("denied", "Connection changed; reconnect.");
-            authorizationUrl = (
-              await withMcpDiscoveryBudget(networkFetch, request.signal, (fetch) =>
-                createOAuthBroker({
-                  store,
-                  vault,
-                  redirectUri,
-                  development: options.development === true,
-                  clientMetadataUrl,
-                  fetch,
-                  authorize: async (user, id) => {
-                    const c = await definition(id);
-                    await registry.get(user, c.org_id, id);
-                  },
-                }).connect({
-                  actorId: actor.userId,
-                  connectionId: id,
-                  resource: c.url,
-                  ...(client ? { client } : {}),
-                }),
-              )
-            ).authorizationUrl;
-          } else {
-            try {
-              metadata = await probe(id, actor.userId, request.signal);
-            } catch (error) {
-              await sql.query(
-                `update public.mcp_grants g set status=$3 where connection_id=$1::uuid and generation=$2 and revoked_at is null and exists(select 1 from public.mcp_connections c where c.id=g.connection_id and not c.disabled)`,
-                [
-                  id,
-                  c.generation,
-                  error instanceof GatewayError && error.code === "needs_reconnect" ? "needs_reconnect" : "unavailable",
-                ],
-              );
-              throw error;
-            }
-            const published = await sql.query(
-              `update public.mcp_grants set status='connected',version=version+1 where connection_id=$1::uuid and generation=$2 and revoked_at is null returning id`,
-              [id, c.generation],
-            );
-            if (!published.rows.length) throw new GatewayError("denied", "Connection changed during probe. Reconnect.");
-          }
-          return Response.json(
-            {
-              connection: {
-                ...(await registry.get(actor.userId, org, id)),
-                ...(metadata ?? {}),
-              },
-              ...(authorizationUrl ? { authorizationUrl } : {}),
-            },
-            { headers },
-          );
+          return Response.json(await connectConnection(actor.userId, org, id, request.signal), { headers });
         }
         return Response.json({ error: "not_found" }, { status: 404, headers });
       } catch (error) {
