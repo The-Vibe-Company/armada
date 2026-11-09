@@ -45,7 +45,7 @@ This first sign-in creates your Armada account. An admin can invite you before y
 
 ## 4. Join an org
 
-An org admin invites you by email, from the dashboard or with `armada org invitations create <email> [--role admin|member] --org <org>`, or adds an existing account directly from the CLI:
+An org admin invites you by email, from the dashboard or with `armada org invitations create <email> [--role admin|member] [--org <name|UUID>]`, or adds an existing account directly from the CLI:
 
 - **Dashboard**: an admin opens the org's page and fills in **Invite a teammate** (email and role). Armada emails you a link to the invitation. On that page you sign in from your browser with that address (or create your account), the usual way; a sign-in link inside the email itself is not used. You then review the organization and click **Accept and join**. Opening the link joins nothing: only the button does. The admin sees each pending invitation with its email state (*Sent* means the mail service accepted it, not that it reached your inbox) and can resend or revoke it.
 - **CLI**: an admin runs `armada org members add you@example.com --org <org> [--role member|admin]`. This adds an existing account at once, without an invitation, so you must have signed in at least once (step 3); otherwise it says "No Armada account has that email. The person signs in with 'armada login' first."
