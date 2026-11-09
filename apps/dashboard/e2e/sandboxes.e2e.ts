@@ -98,6 +98,7 @@ test("a page past the last one is empty, with a way back", async ({ page }) => {
   await signIn(page, "alice@example.com");
   await page.goto("/sandboxes?page=99");
   await expect(page.getByText("This page is past the last one")).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Pages" })).toHaveCount(0);
   await page.getByRole("link", { name: "Go to the first page" }).click();
   await expect(page.getByRole("link", { name: LABELS.running })).toBeVisible();
 });

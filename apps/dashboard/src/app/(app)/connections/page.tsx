@@ -113,7 +113,7 @@ export default async function ConnectionsPage({ searchParams }: Props) {
       <ConnectionSection
         title="Your connections"
         icon={<UserIcon />}
-        description="Only you, in your private sandboxes."
+        description="Only in the sandboxes you launch."
         connections={personal}
         services={services}
         canManage

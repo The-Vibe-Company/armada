@@ -796,7 +796,7 @@ function ScopeChoice({
           onChange={() => onScope("personal")}
           icon={<UserIcon />}
           title="Personal"
-          hint="Your account, your private sandboxes only."
+          hint="Your account, in the sandboxes you launch."
         />
         <ChoiceCard
           name={`${idPrefix}-scope`}
@@ -805,7 +805,7 @@ function ScopeChoice({
           disabled={!isAdmin}
           icon={<UsersIcon />}
           title={`Org (${orgName})`}
-          hint={isAdmin ? "One shared account for org sandboxes." : "Only an org admin adds these."}
+          hint={isAdmin ? "One shared account for every member's sandboxes." : "Only an org admin adds these."}
         />
       </div>
       <p className="text-xs text-muted-foreground">Cannot be changed later.</p>

@@ -186,7 +186,8 @@ export default async function SandboxesPage({ searchParams }: Props) {
         </div>
       )}
 
-      {pages > 1 && (
+      {/* Past the last page the empty state above already leads back; a pager there would count beyond the end. */}
+      {pages > 1 && filters.page <= pages && (
         <nav aria-label="Pages" className="flex items-center justify-between text-sm text-muted-foreground">
           <span>
             Page {filters.page} of {pages}, {total} sandboxes
