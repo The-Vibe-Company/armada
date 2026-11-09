@@ -56,7 +56,10 @@ export interface GoldenOperation {
 export interface GoldenStore {
   setSizePolicy?(golden: GoldenRecord, actor: GoldenActor, policy: MachineSizePolicy): Promise<void>;
   /** Durable admission; a crashed operation remains fenced for explicit reconciliation. */
-  beginOperation?(id: string): Promise<GoldenOperation>;
+  beginOperation?(
+    id: string,
+    expected: { snapshotId: string | null; sandboxId: string | null; kind?: "launch" | "connect" | "snapshot" },
+  ): Promise<GoldenOperation>;
   reconcileOperations?(golden: GoldenRecord, actor: GoldenActor): Promise<void>;
   /** Recheck live mutation authority, including after long provider operations/readback recovery. */
   assertMutation?(golden: GoldenRecord, actor: GoldenActor): Promise<void>;
@@ -199,7 +202,11 @@ export async function connectGolden(
   assertGoldenMutation(actor, golden);
   await store.assertMutation?.(golden, actor);
   await store.reconcileOperations?.(golden, actor);
-  const releaseOperation = await store.beginOperation?.(golden.id);
+  const releaseOperation = await store.beginOperation?.(golden.id, {
+    kind: "connect",
+    snapshotId: golden.providerSnapshotId,
+    sandboxId: golden.providerSandboxId,
+  });
   let uncertain = false;
   let failed = false;
   try {
@@ -369,7 +376,11 @@ export async function snapshotGolden(
   assertGoldenMutation(actor, golden);
   await store.assertMutation?.(golden, actor);
   await store.reconcileOperations?.(golden, actor);
-  const releaseOperation = await store.beginOperation?.(golden.id);
+  const releaseOperation = await store.beginOperation?.(golden.id, {
+    kind: "snapshot",
+    snapshotId: golden.providerSnapshotId,
+    sandboxId: golden.providerSandboxId,
+  });
   let uncertain = false;
   let failed = false;
   try {

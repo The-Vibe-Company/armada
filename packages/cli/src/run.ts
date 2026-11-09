@@ -136,6 +136,7 @@ Usage:
                                            Human launch guidance uses stderr only; --json launch never requests advice.
   armada detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
+  armada golden retirement dry-run|reconcile <golden-id> [--limit 1-50] [--org UUID]
   armada golden remove <golden-id> [--org UUID] [--json]
                                            Remove from launch selection; retain children and provider artifacts
   armada golden visibility <golden-id> --visibility private|org [--org UUID]
@@ -347,7 +348,7 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     return sizePolicyCommand(rest, authOf(io, deps), (path) =>
       path ? (deps.readFile ?? ((p) => Bun.file(p).text()))(path) : (deps.readStdin ?? (() => Bun.stdin.text()))(),
     );
-  const args = parseArgs(rest);
+  const args = parseArgs(rest, subcommand === "retirement" ? ["--limit"] : []);
   providerFlag(args);
   const limits = {
     ...(deps.sleep ? { sleep: deps.sleep } : {}),
@@ -391,6 +392,46 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
           ? `${JSON.stringify(capabilities)}\n`
           : `${capabilities.provider}: max goldens ${capabilities.maxGoldens === null ? "unbounded/unknown" : capabilities.maxGoldens}\n`,
       );
+      return 0;
+    }
+    case "retirement": {
+      const [action, id, ...extra] = args.positionals;
+      if (!["dry-run", "reconcile"].includes(action ?? "") || !id || extra.length)
+        throw new GoldenError("invalid_config", "Use golden retirement dry-run|reconcile GOLDEN_UUID.");
+      const client = await createArmadaApiClient({
+        env: authOf(io, deps).env,
+        fetch: deps.fetch ?? authOf(io, deps).fetch,
+        session: authOf(io, deps).session,
+      });
+      let receipts: string[] = [];
+      if (action === "reconcile") {
+        try {
+          const path = single(args, "--file");
+          const text = path
+            ? await (deps.readFile ?? ((p: string) => Bun.file(p).text()))(path)
+            : await (
+                deps.readStdin ??
+                (() => (process.stdin.isTTY ? Promise.reject(new Error("stdin required")) : Bun.stdin.text()))
+              )();
+          const review = JSON.parse(text) as { results?: { receipt?: unknown }[] };
+          receipts = (review.results ?? []).flatMap((r) => (typeof r.receipt === "string" ? [r.receipt] : []));
+          if (!receipts.length || receipts.length > 50 || receipts.some((r) => !/^[a-f0-9]{64}$/.test(r)))
+            throw Error("missing receipts");
+        } catch {
+          throw new GoldenError("invalid_config", "Supply reviewed dry-run JSON on stdin or --file.");
+        }
+      }
+      const result = await client.request(`/api/v1/golden/retirement/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id,
+          org: single(args, "--org"),
+          limit: Number(single(args, "--limit") ?? 20),
+          ...(action === "reconcile" ? { receipts } : {}),
+        }),
+      });
+      io.out(`${JSON.stringify(result)}\n`);
       return 0;
     }
     case "remove": {
