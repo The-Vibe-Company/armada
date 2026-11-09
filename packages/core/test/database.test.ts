@@ -84,6 +84,7 @@ describe("database", () => {
         "oauth_clients",
         "oauth_codes",
         "orgs",
+        "resource_observations",
         "sandboxes",
         "service_tokens",
       ]);

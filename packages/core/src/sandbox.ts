@@ -6,7 +6,15 @@ import { type Provider, ProviderError } from "./provider.ts";
 import { isSandboxProvider, type SandboxProviderId } from "./sandbox-provider.ts";
 
 /** An Armada sandbox: the metadata of one fork of a golden. The provider keeps the disk and the conversations. */
+export interface ResourceProject {
+  version: 1;
+  url: string;
+  branch: string;
+  dir: string;
+}
+
 export interface SandboxRecord {
+  resourceProject?: ResourceProject | null;
   machineSize?: MachineSizeEvidence | null;
   expiresAt?: string;
   effectiveTtlSeconds?: number;
@@ -76,6 +84,7 @@ export interface SandboxStore {
     harness: Harness;
     status: SandboxStatus;
     machineSize?: MachineSizeEvidence;
+    resourceProject?: ResourceProject;
     activityLeaseId?: string;
     requestedTtlSeconds?: number;
     effectiveTtlSeconds?: number;
@@ -134,6 +143,7 @@ export async function cleanupSandboxes(
 
 export interface SandboxRow {
   machine_size?: MachineSizeEvidence | null;
+  resource_project?: ResourceProject | null;
   id: string;
   provider: string;
   provider_sandbox_id: string;
@@ -163,15 +173,15 @@ export interface SandboxRow {
 export const MAX_STATUS_REASON_LENGTH = 2000;
 
 const COLUMNS = `id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-  conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation`;
+  conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation`;
 
 export function createSqlSandboxStore(sql: Sql): SandboxStore {
   return {
     async insert(input): Promise<SandboxRecord> {
       const result = await sql.query<SandboxRow>(
         `insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
-           reasoning_effort, provider, visibility, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, machine_size)
-         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, now() + $14::integer * interval '1 second', $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end, $16::text::jsonb)
+           reasoning_effort, provider, visibility, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, machine_size, resource_project)
+         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, now() + $14::integer * interval '1 second', $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end, $16::text::jsonb, $17::text::jsonb)
          returning ${COLUMNS}`,
         [
           input.id,
@@ -190,6 +200,7 @@ export function createSqlSandboxStore(sql: Sql): SandboxStore {
           input.effectiveTtlSeconds ?? 14400,
           input.activityLeaseId ?? null,
           JSON.stringify(input.machineSize ?? null),
+          JSON.stringify(input.resourceProject ?? null),
         ],
       );
       const row = result.rows[0];
@@ -261,6 +272,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
     statusReason: row.status_reason ?? null,
     repositoryDir: row.repository_dir ?? null,
     machineSize: row.machine_size ?? null,
+    resourceProject: row.resource_project ?? null,
     model: row.model ?? null,
     reasoningEffort: row.reasoning_effort ?? null,
   };

@@ -1240,6 +1240,47 @@ export type Database = {
         };
         Relationships: [];
       };
+      resource_observations: {
+        Row: {
+          id: number;
+          sandbox_id: string;
+          physical_id: string;
+          generation: string;
+          boot_id: string;
+          uptime_ms: number;
+          observed_at: string;
+          observation: Json;
+        };
+        Insert: {
+          id: number;
+          sandbox_id: string;
+          physical_id: string;
+          generation: string;
+          boot_id: string;
+          uptime_ms: number;
+          observed_at: string;
+          observation: Json;
+        };
+        Update: {
+          id?: number;
+          sandbox_id?: string;
+          physical_id?: string;
+          generation?: string;
+          boot_id?: string;
+          uptime_ms?: number;
+          observed_at?: string;
+          observation?: Json;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "resource_observations_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandboxes: {
         Row: {
           id: string;
@@ -1276,6 +1317,7 @@ export type Database = {
           reconcile_lease: string | null;
           reconcile_lease_until: string | null;
           machine_size: Json | null;
+          resource_project: Json | null;
         };
         Insert: {
           id?: string;
@@ -1312,6 +1354,7 @@ export type Database = {
           reconcile_lease?: string | null;
           reconcile_lease_until?: string | null;
           machine_size?: Json | null;
+          resource_project?: Json | null;
         };
         Update: {
           id?: string;
@@ -1348,6 +1391,7 @@ export type Database = {
           reconcile_lease?: string | null;
           reconcile_lease_until?: string | null;
           machine_size?: Json | null;
+          resource_project?: Json | null;
         };
         Relationships: [
           {
@@ -1477,6 +1521,7 @@ export type NotifySubscription = Database["public"]["Tables"]["notify_subscripti
 export type OAuthClient = Database["public"]["Tables"]["oauth_clients"]["Row"];
 export type OAuthCode = Database["public"]["Tables"]["oauth_codes"]["Row"];
 export type Org = Database["public"]["Tables"]["orgs"]["Row"];
+export type ResourceObservation = Database["public"]["Tables"]["resource_observations"]["Row"];
 export type Sandbox = Database["public"]["Tables"]["sandboxes"]["Row"];
 export type ServiceToken = Database["public"]["Tables"]["service_tokens"]["Row"];
 export type CredentialKind = Database["public"]["Enums"]["credential_kind"];

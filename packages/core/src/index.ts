@@ -192,7 +192,13 @@ export {
   type ToolCall,
 } from "./provider.ts";
 export { resolveRepositoryDir } from "./repository-context.ts";
-export { RESOURCE_ADVICE_VERSION, type ResourceAdvice, type ResourceAdviceScope } from "./resource-advice.ts";
+export {
+  RESOURCE_ADVICE_VERSION,
+  type ResourceAdvice,
+  type ResourceAdviceRequest,
+  type ResourceAdviceResponse,
+  type ResourceAdviceScope,
+} from "./resource-advice.ts";
 export {
   type ProviderResourceObservation,
   RESOURCE_OBSERVATION_VERSION,
@@ -208,6 +214,7 @@ export {
   DEFAULT_SANDBOX_RETENTION_DAYS,
   MAX_STATUS_REASON_LENGTH,
   mapSandboxRow,
+  type ResourceProject,
   type SandboxPatch,
   type SandboxRecord,
   type SandboxRow,

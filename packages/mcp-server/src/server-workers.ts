@@ -9,6 +9,7 @@ export function startServerWorkers(
     drain(): Promise<void>;
   },
   log: (line: string) => void = console.error,
+  maintenance?: () => Promise<void>,
 ) {
   const goldenWorker = startGoldenWorker(goldens, log);
   const shutdown = new AbortController();
@@ -38,7 +39,28 @@ export function startServerWorkers(
     // those operations tracked through shutdown; cancellation forbids subsequent actions.
     await lifecycle.drain();
   })();
-  const done = Promise.all([goldenWorker.done, lifecycleDone]).then(() => {});
+  const maintenanceDone = (async () => {
+    if (!maintenance) return;
+    while (!shutdown.signal.aborted) {
+      try {
+        await maintenance();
+      } catch {
+        log("armada: resource evidence retention unavailable; retrying.");
+      }
+      if (!shutdown.signal.aborted)
+        await new Promise<void>((resolve) => {
+          const finish = () => {
+            clearTimeout(timer);
+            shutdown.signal.removeEventListener("abort", finish);
+            resolve();
+          };
+          const timer = setTimeout(finish, 10 * 60_000);
+          timer.unref();
+          shutdown.signal.addEventListener("abort", finish, { once: true });
+        });
+    }
+  })();
+  const done = Promise.all([goldenWorker.done, lifecycleDone, maintenanceDone]).then(() => {});
   return {
     goldenWorker,
     lifecycleWorker: { done: lifecycleDone },

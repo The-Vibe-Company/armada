@@ -48,7 +48,43 @@ scheduler quota from a size label, vCPU count or physical-core request. Candidat
 eligibility must include plan and source-disk constraints. Unsupported evidence
 must cause abstention, not fabricated zeroes or a synthetic recommendation.
 
-The collection/persistence/API integration is not yet delivered by the published
-DTO and sampler foundation. CLI consumers must wait for the actual implemented
-API contract, keep optional telemetry failure separate from launch/status success,
-and never portray these partial samples as a completed sizing assessment.
+
+## Implemented API and storage
+
+`POST /api/v1/sandbox/advice` accepts `ResourceAdviceRequest` (`{id, org?}`)
+and returns `ResourceAdviceResponse` (`{advice: ResourceAdvice}`). The MCP
+`resource_advice` tool accepts `{id}` and returns the identical envelope. The
+selector is an authorized Armada sandbox ID. Requests collect at most one sample,
+with a ten-second cooldown; there is no background workload or model invocation.
+
+New launches pin URL, branch and configured directory from the actual launch
+config. Existing rows are not reconstructed. History selects at most ten sessions
+with the same owner, org, golden, project identity, provider, harness, model,
+effort and requested capacity. Observed guest CPU/memory capacity must also match
+the selected session before samples aggregate. Missing/invalid latest sessions
+are not replaced by older favorable ones. Cross-generation/boot intervals, counter
+resets and gaps outside 1–30 seconds are excluded. Fresh observations use a seven-day
+window. Storage is capped at 720 points per sandbox and 14 days; the server's
+independent maintenance lane deletes expired rows every ten minutes, including
+inactive sandboxes. Removed memberships/private visibility are checked on access.
+
+`sampled` explicitly reports all-activity interval CPU and observed memory gauges,
+not active-workload utilization or true peaks. `observations` remains null for
+unsupported active-workload evidence. Current guest sources cannot establish
+workload/CI-wait attribution, lifetime memory peaks, hypervisor throttling or
+candidate plan/disk eligibility. Therefore the implemented API **abstains from
+downsizing** (`recommendedSize: null`, `sufficient: 0`). No low-CPU example or
+synthetic test input is promoted to sufficient provider evidence. The pure
+headroom decision contract is covered for future sources that can satisfy those
+requirements, but unsupported inputs cannot reach a recommendation.
+
+## Deployment compatibility
+
+Apply additive migration 207 **after 206 and before deploying the server**. It
+adds an immutable nullable launch project and service-only bounded observations;
+it never backfills usage or changes existing compute. Regenerated database types
+come from the migrations. Deploy the server with its matching rebuilt runner
+artifact; the new read-only operation is additive to protocol v1. Existing rows
+and unknown runtimes stay unavailable. Rolling the server back leaves nullable
+columns/table intact and does not resize or stop VM launches already created.
+No production migrations or provider resources are modified by development.

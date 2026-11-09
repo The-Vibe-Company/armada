@@ -38,11 +38,13 @@ import {
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
+import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
 import type { Caller } from "./caller.ts";
 import { describeFailure } from "./caller.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
+import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { readStatus, type StatusReport, waitSettled } from "./turns.ts";
 
@@ -732,6 +734,45 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           lifecycleError: row.lifecycleError ?? null,
         })),
       };
+    },
+  );
+
+  tool(
+    "resource_advice",
+    {
+      title: "Resource sizing evidence",
+      description:
+        "Collects one bounded read-only VM observation and reports the last ten comparable repository sessions. Missing evidence causes abstention; never resizes or changes defaults.",
+      input: { id },
+      output: { advice: z.unknown() },
+    },
+    async (args) => {
+      const found = await visible(args.id);
+      const store = data.resourceObservations;
+      if (!store) throw new ToolError("unavailable", "Resource observation persistence is unavailable.");
+      const before = await store.history(found.id, context.now());
+      const latest = before.targetObservation;
+      if (
+        found.resourceProject &&
+        found.machineSize?.capacity &&
+        ["ready", "running"].includes(found.status) &&
+        (!latest || context.now().getTime() - Date.parse(latest.at) >= 10000)
+      ) {
+        let observation = null;
+        try {
+          observation = (await (await context.provider(found)).observeResources?.(found.providerSandboxId)) ?? null;
+        } catch {
+          /* Collection failure is unavailable; never ingest raw provider diagnostics. */
+        }
+        if (observation && validateProviderResourceObservation(observation)) {
+          try {
+            await store.append(found.id, observation, context.now());
+          } catch (error) {
+            if (!(error instanceof GoldenError && error.code === "conflict")) throw error;
+          }
+        }
+      }
+      return { advice: summarizeResourceHistory(await store.history(found.id, context.now()), context.now()) };
     },
   );
 

@@ -7,8 +7,8 @@ import type { ResourceAdvice } from "./resource-advice.ts";
  */
 export interface ResourceSessionEvidence {
   endedAtMs: number;
-  activeSeconds: number;
-  coverageFraction: number;
+  activeSeconds: number | null;
+  coverageFraction: number | null;
   validIntervals: number;
   cpuPeakFraction: number | null;
   cpuPressureFraction: number | null;
@@ -58,8 +58,10 @@ export function recommendResourceSize(input: {
   const valid = fresh.filter(
     (s) =>
       s.complete &&
+      s.activeSeconds !== null &&
       Number.isFinite(s.activeSeconds) &&
       s.activeSeconds >= 300 &&
+      s.coverageFraction !== null &&
       Number.isFinite(s.coverageFraction) &&
       s.coverageFraction >= 0.9 &&
       s.coverageFraction <= 1 &&
