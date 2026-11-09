@@ -48,7 +48,7 @@ import {
   PROVIDER_LABELS,
   providerCapacity,
 } from "@/lib/golden-form";
-import { isSetupProvider, providerSetupPath, SETUP_PROVIDER_INFO } from "@/lib/provider-setup";
+import { connectedProviders, PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
 
@@ -69,19 +69,14 @@ export default async function GoldensPage({ searchParams }: Props) {
   const removed =
     typeof removedParam === "string" && isUuid(removedParam) ? await findRemovedGolden(supabase, removedParam) : null;
   const selected = await selectedOrganization();
-  // New builds, rebuilds and launches need the organization's sandbox provider (#576). Existing goldens and builds the
-  // page already tracks stay manageable without it; an org with neither resumes its setup.
+  // New builds, rebuilds and launches run on a provider the organization has connected (#598): exactly that one, never
+  // another. Existing goldens and builds the page already tracks stay manageable without it; an org with neither is
+  // sent to Settings to connect one. Null: the status could not be read, a retryable error rather than "none".
   const setup = selected ? await readProviderSetup(selected.org.id) : null;
   const setupPending = selected !== null && setup?.state === "pending";
-  const canStart = setup?.state === "ready";
+  const connected = setup && setup.state !== "unavailable" ? connectedProviders(setup.status) : null;
+  const canStart = (connected?.length ?? 0) > 0;
   const tracked = (scope: string) => query[`build.${scope}`] !== undefined || query[`build-key.${scope}`] !== undefined;
-  // Shown only when the server's status confirms the provider the setup just connected.
-  const connected =
-    setup?.state === "ready" &&
-    isSetupProvider(query.connected) &&
-    setup.status.providers.some((item) => item.provider === query.connected && item.configured)
-      ? SETUP_PROVIDER_INFO[query.connected].label
-      : null;
   const pending = listMemberships(supabase, viewer.id).then((items) =>
     items.filter((item) => item.org.id === selected?.org.id),
   );
@@ -97,7 +92,7 @@ export default async function GoldensPage({ searchParams }: Props) {
       ),
     ),
     getGitHubConnection(supabase).catch(() => null),
-    selected ? allCapabilities(serverUrl, viewer.token, selected.org.id) : null,
+    selected ? allCapabilities(serverUrl, viewer.token, selected.org.id, connected ?? []) : null,
     listSelectedConnections(),
   ]);
   const connections: LaunchConnections =
@@ -109,15 +104,18 @@ export default async function GoldensPage({ searchParams }: Props) {
     goldens.filter((golden) => tracked(`rebuild.${golden.id}`)).map((golden) => golden.id),
   );
   if (setupPending && goldens.length === 0 && !createTracked && rebuildsTracked.size === 0)
-    redirect(providerSetupPath(selected.org.id));
+    redirect(PROVIDER_SETTINGS_PATH);
   const orgs = new Map(memberships.map((item) => [item.org.id, item]));
   const mine = goldens.filter((golden) => golden.visibility === "private");
   const shared = goldens.filter((golden) => golden.visibility === "org");
   // Usage comes only from caller-visible server bindings, never historical row counts.
   const capacities = capabilities
     ? (Object.fromEntries(
-        GOLDEN_PROVIDERS.map((provider) => [provider, providerCapacity(history, capabilities[provider], provider)]),
-      ) as Record<SandboxProviderId, CapacityState>)
+        Object.entries(capabilities).map(([provider, read]) => [
+          provider,
+          providerCapacity(history, read, provider as SandboxProviderId),
+        ]),
+      ) as Partial<Record<SandboxProviderId, CapacityState>>)
     : null;
   const counts = Object.fromEntries(
     GOLDEN_PROVIDERS.map((provider) => {
@@ -138,7 +136,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     viewerId: viewer.id,
     all: goldens,
     serverReady,
-    canStart,
+    connected,
     rebuildsTracked,
     connections,
   };
@@ -148,14 +146,19 @@ export default async function GoldensPage({ searchParams }: Props) {
     !canStart && selected && !createTracked ? null : selected && capacities ? (
       <section className="space-y-3" aria-labelledby="build-golden-title">
         <SectionHeader id="build-golden-title" title="Build a golden" />
-        <div className="grid gap-3 md:grid-cols-2">
-          {GOLDEN_PROVIDERS.map((provider) => (
-            <CapacityCard key={provider} provider={provider} state={capacities[provider]} counts={counts[provider]} />
-          ))}
-        </div>
+        {(connected ?? []).length > 0 && (
+          <div className="grid gap-3 md:grid-cols-2">
+            {(connected ?? []).map((provider) => {
+              const state = capacities[provider];
+              return state ? (
+                <CapacityCard key={provider} provider={provider} state={state} counts={counts[provider]} />
+              ) : null;
+            })}
+          </div>
+        )}
         <CreateCard
           org={selected}
-          canStart={canStart}
+          providers={connected ?? []}
           capacities={capacities}
           boatLive={counts.boat.live}
           serverReady={serverReady}
@@ -212,16 +215,10 @@ export default async function GoldensPage({ searchParams }: Props) {
           <AlertTitle>No sandbox provider for {selected.org.name}</AlertTitle>
           <AlertDescription>
             <p>New builds and launches are paused. Existing goldens stay manageable.</p>
-            <Link className="font-medium underline underline-offset-4" href={providerSetupPath(selected.org.id)}>
-              Set up a provider
+            <Link className="font-medium underline underline-offset-4" href={PROVIDER_SETTINGS_PATH}>
+              Connect a provider
             </Link>
           </AlertDescription>
-        </Alert>
-      )}
-      {connected && (
-        <Alert role="status" data-provider-connected className="border-success/40">
-          <CircleCheckIcon className="text-success" />
-          <AlertTitle>{connected} connected</AlertTitle>
         </Alert>
       )}
       {removed && (
@@ -257,14 +254,16 @@ export default async function GoldensPage({ searchParams }: Props) {
 }
 
 /**
- * The selected org's golden limit on each provider, from the Armada server's `golden/capabilities {org, provider}`.
- * One read per provider, in parallel, never retried; one provider's failure does not hide the other's answer.
+ * The selected org's golden limit on each connected provider, from the Armada server's `golden/capabilities {org,
+ * provider}`. A provider the org has not connected is not read. One read per provider, in parallel, never retried;
+ * one provider's failure does not hide the other's answer.
  */
 async function allCapabilities(
   serverUrl: string | null,
   token: string | null,
   org: string,
-): Promise<Record<SandboxProviderId, GoldenCapabilities>> {
+  providers: readonly SandboxProviderId[],
+): Promise<Partial<Record<SandboxProviderId, GoldenCapabilities>>> {
   const read = (provider: SandboxProviderId): Promise<GoldenCapabilities> =>
     !serverUrl || !token
       ? Promise.resolve({ ok: false, reason: "The Armada server is not configured for this dashboard." })
@@ -273,8 +272,9 @@ async function allCapabilities(
           org,
           provider,
         );
-  const [boat, modal] = await Promise.all([read("boat"), read("modal")]);
-  return { boat, modal };
+  return Object.fromEntries(
+    await Promise.all(providers.map(async (provider) => [provider, await read(provider)] as const)),
+  );
 }
 
 /** Visible goldens with a verified current-backend reservation. */
@@ -369,12 +369,12 @@ function CreateCard({
   boatLive,
   serverReady,
   githubConnected,
-  canStart,
+  providers,
 }: {
   org: Membership;
-  /** The org's sandbox provider is confirmed; otherwise the form only follows a tracked build. */
-  canStart: boolean;
-  capacities: Record<SandboxProviderId, CapacityState>;
+  /** The providers the org has connected, where a new golden may be built; none: the form only follows a tracked build. */
+  providers: SandboxProviderId[];
+  capacities: Partial<Record<SandboxProviderId, CapacityState>>;
   /** Live Boat goldens visible here; the Boat slot may instead be held by a removed one. */
   boatLive: number;
   serverReady: boolean;
@@ -382,8 +382,8 @@ function CreateCard({
 }) {
   // The form starts on Boat, whose account holds a limited number of goldens.
   const boat = capacities.boat;
-  const discouraged = boat.kind === "full" || boat.kind === "legacy";
-  const modalOpen = capacities.modal.kind !== "unavailable";
+  const discouraged = boat?.kind === "full" || boat?.kind === "legacy";
+  const modalOpen = capacities.modal !== undefined && capacities.modal.kind !== "unavailable";
   const body = (
     <div className="space-y-4">
       {!githubConnected && (
@@ -414,7 +414,8 @@ function CreateCard({
         orgName={org.org.name}
         isAdmin={org.role === "admin"}
         capacities={capacities}
-        canStart={canStart}
+        providers={providers}
+        canStart={providers.length > 0}
       />
     </div>
   );
@@ -446,8 +447,8 @@ type RowContext = {
   viewerId: string;
   all: Golden[];
   serverReady: boolean;
-  /** The organization's sandbox provider is confirmed: launches and rebuilds may start. */
-  canStart: boolean;
+  /** The providers the org has connected; a golden launches and rebuilds only on its own. Null: status unavailable. */
+  connected: SandboxProviderId[] | null;
   /** Goldens whose rebuild this page tracks in its URL: their form stays to follow the job, even without a provider. */
   rebuildsTracked: Set<string>;
   connections: LaunchConnections;
@@ -506,6 +507,8 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
   const state = goldenRowState(golden, context.all, { id: context.viewerId, isAdmin });
   const removeBlocker = goldenRemoveBlocker(golden, { id: context.viewerId, isAdmin });
   const titleId = `golden-${golden.id}`;
+  const label = PROVIDER_LABELS[golden.provider];
+  const canStart = context.connected?.includes(golden.provider) ?? false;
   return (
     <li
       data-golden={golden.name}
@@ -548,7 +551,7 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
           </dl>
         </div>
         <div className="flex flex-wrap items-start gap-2 lg:justify-end">
-          {golden.provider_snapshot_id && context.serverReady && context.canStart ? (
+          {golden.provider_snapshot_id && context.serverReady && canStart ? (
             <LaunchDialog
               golden={golden.name}
               provider={golden.provider}
@@ -559,12 +562,18 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
               connections={context.connections}
             />
           ) : (
-            <span className="text-xs text-muted-foreground">
-              {golden.provider_snapshot_id
-                ? context.serverReady
-                  ? "Launch needs a sandbox provider"
-                  : "Launch needs the Armada server"
-                : "Launch needs a snapshot: build it first"}
+            <span className="text-xs text-muted-foreground" data-launch-paused>
+              {!golden.provider_snapshot_id ? (
+                "Launch needs a snapshot: build it first"
+              ) : !context.serverReady ? (
+                "Launch needs the Armada server"
+              ) : context.connected === null ? (
+                "Launch paused: provider status unavailable"
+              ) : (
+                <Link className="underline underline-offset-4" href={PROVIDER_SETTINGS_PATH}>
+                  Connect {label} to launch
+                </Link>
+              )}
             </span>
           )}
           {!isOwner ? (
@@ -614,9 +623,13 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
       </div>
       <div className="flex flex-col gap-2 border-t px-4 py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
         <div className="min-w-0 flex-1">
-          {!context.serverReady || (!context.canStart && !context.rebuildsTracked.has(golden.id)) ? (
+          {!context.serverReady || (!canStart && !context.rebuildsTracked.has(golden.id)) ? (
             <p className="text-xs text-muted-foreground" data-rebuild-paused>
-              {context.serverReady ? "Rebuilding needs a sandbox provider." : "Rebuilding needs the Armada server."}
+              {!context.serverReady
+                ? "Rebuilding needs the Armada server."
+                : context.connected === null
+                  ? "Rebuilding paused: provider status unavailable."
+                  : `Rebuilding needs ${label} connected.`}
             </p>
           ) : state.canRebuild && membership ? (
             <details>
@@ -634,7 +647,7 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
                   name={golden.name}
                   visibility={golden.visibility}
                   defaults={editDefaults(golden)}
-                  canStart={context.canStart}
+                  canStart={canStart}
                 />
               </div>
             </details>

@@ -35,8 +35,10 @@ type State = {
   githubInstallations: Row[];
   events: Map<string, Row[]>;
   sent: string[];
-  /** The arguments of every launch and send, as the dashboard serialized them. */
+  /** The arguments of every send, steer and interrupt, as the dashboard serialized them. */
   toolCalls: { name: string; args: Row }[];
+  /** The next send, steer or interrupt fails with this message, once. */
+  failNextTool: string | null;
   /** Every CLI GitHub callback the dashboard relayed, with the credentials headers it carried (none expected). */
   githubCliCalls: { body: Row; authorization: string | null; cookie: string | null }[];
   /** Every `POST /api/v1/sandbox/launch` body, as the dashboard sent it. */
@@ -139,6 +141,7 @@ function seed(): State {
     events: new Map(),
     sent: [],
     toolCalls: [],
+    failNextTool: null,
     launches: [],
     goldenCalls: [],
     goldenRemoveCalls: [],
@@ -661,31 +664,70 @@ function mcp(message: RpcMessage, userId: string | null): Response {
 
   const args = (message.params?.arguments ?? {}) as Row;
   const name = String(message.params?.name);
-  if (name === "send") state.toolCalls.push({ name, args });
+  const driving = name === "send" || name === "steer" || name === "interrupt";
+  if (driving) state.toolCalls.push({ name, args });
   const target = state.sandboxes.find((row) => row.id === args.id);
   const visible = visibleRows("sandboxes", userId).some((row) => row === target);
   const text = (value: unknown, isError = false) =>
     reply({ content: [{ type: "text", text: JSON.stringify(value) }], isError });
   if (!target || !visible) return text("not found", true);
+  if (driving && state.failNextTool) {
+    const failure = state.failNextTool;
+    state.failNextTool = null;
+    return reply({ content: [{ type: "text", text: failure }], isError: true });
+  }
+  const events = state.events.get(String(target.id)) ?? [];
+  state.events.set(String(target.id), events);
+  const conversations = (target.conversation_ids ?? []) as string[];
 
   switch (message.params?.name) {
     case "logs": {
-      const events = state.events.get(String(target.id)) ?? [];
       const since = typeof args.since_cursor === "string" ? Number(args.since_cursor) : 0;
       return text({ events: events.slice(since), cursor: String(events.length), hasMore: false });
     }
     case "send": {
+      // As the server does: the named conversation, else the latest, else a new one; the sandbox is running after.
       state.sent.push(String(args.prompt));
-      const events = state.events.get(String(target.id)) ?? [];
+      const conversationId =
+        typeof args.conversation_id === "string"
+          ? args.conversation_id
+          : (conversations.at(-1) ?? `conv-${events.length}`);
+      if (!conversations.includes(conversationId)) target.conversation_ids = [...conversations, conversationId];
+      target.status = "running";
+      const promptId = `sent-${events.length}`;
       events.push({
-        id: `sent-${events.length}`,
+        id: promptId,
         at: Date.now(),
         kind: "prompt",
         text: String(args.prompt),
-        status: "queued",
+        status: "running",
+        conversationId,
+        promptId,
       });
-      state.events.set(String(target.id), events);
-      return text({ ok: true });
+      return text({ id: target.id, promptId, conversationId, status: "running" });
+    }
+    case "steer": {
+      const conversationId = typeof args.conversation_id === "string" ? args.conversation_id : conversations.at(-1);
+      events.push({
+        id: `steer-${events.length}`,
+        at: Date.now(),
+        kind: "steer",
+        text: String(args.text),
+        conversationId,
+      });
+      const delivery = target.harness === "codex" ? "restart" : "native";
+      return text({ id: target.id, promptId: "steered", conversationId, delivery, mode: null });
+    }
+    case "interrupt": {
+      const running = [...events]
+        .reverse()
+        .find(
+          (event) =>
+            event.kind === "prompt" && event.status === "running" && event.conversationId === args.conversation_id,
+        );
+      if (running)
+        events.push({ ...running, id: `interrupted-${events.length}`, at: Date.now(), status: "interrupted" });
+      return text({ id: target.id, interrupted: true });
     }
     case "stop":
       target.status = "stopped";
@@ -1223,10 +1265,11 @@ function orgCredential(cid: string, owner: string, kind: string): Row {
 }
 
 /**
- * `org/provider/status` and `org/provider/connect` (#576), as the Armada API serves them. Readiness is derived from the
+ * `org/provider/status`, `org/provider/connect` and `org/provider/disconnect`, as the Armada API serves them. Readiness is derived from the
  * stored state only: the org's Boat column or an org-scoped Modal credential. A personal key never counts. Connect is
  * admin-only, checks the value with the provider (here: a value containing "rejected" is refused) and stores
- * ciphertext, never the value; its answer is the same status.
+ * ciphertext, never the value, so a refused replacement keeps the stored one. Disconnect is admin-only and clears that
+ * provider alone. Each answers the same status.
  */
 function orgProvider(route: string, body: Row, request: Request): Response {
   const userId = viewer(request);
@@ -1272,6 +1315,16 @@ function orgProvider(route: string, body: Row, request: Request): Response {
     else if (existing) existing.value_enc = "\\x0304";
     else state.credentials.push(orgCredential(id(++sequence), String(org.id), provider));
   }
+  if (route === "org/provider/disconnect") {
+    if (!isAdmin(org.id, userId)) return controlFail(403, "forbidden", "Only an org admin can do that.");
+    const provider = body.provider;
+    if (provider !== "boat" && provider !== "modal") return controlFail(400, "invalid", "Provider is boat or modal.");
+    if (provider === "boat") org.boat_api_key_enc = null;
+    else
+      state.credentials = state.credentials.filter(
+        (row) => !(row.scope === "org" && row.owner_id === org.id && row.kind === provider),
+      );
+  }
   const configured = (provider: string) =>
     provider === "boat"
       ? Boolean(org.boat_api_key_enc)
@@ -1283,20 +1336,6 @@ function orgProvider(route: string, body: Row, request: Request): Response {
     200,
     { "cache-control": "no-store" },
   );
-}
-
-/** `creds/rm` for the org Boat key, as the Armada API serves it: admin-only, it clears the org's column. */
-function removeOrgCredential(body: Row, request: Request): Response {
-  const userId = viewer(request);
-  state.providerCalls.push({ route: "creds/rm", body, authorized: Boolean(userId) });
-  if (!userId) return controlFail(401, "unauthorized", "Sign in.");
-  const org = state.orgs.find((row) => row.id === body.org);
-  if (!org || !isMember(org.id, userId)) return controlFail(404, "not_found", "You are not a member of that org.");
-  if (body.scope !== "org" || body.kind !== "boat") return controlFail(400, "invalid", "Unsupported in this mock.");
-  if (!isAdmin(org.id, userId)) return controlFail(403, "forbidden", "Only an org admin can do that.");
-  if (!org.boat_api_key_enc) return controlFail(404, "not_found", "No such credential is stored.");
-  org.boat_api_key_enc = null;
-  return json({ ok: true }, 200, { "cache-control": "no-store" });
 }
 
 function control(url: URL, body: Row): Response {
@@ -1341,6 +1380,9 @@ function control(url: URL, body: Row): Response {
       });
       state.members.push({ org_id: id(12), user_id: id(3), role: "admin", created_at: "2026-11-08T10:00:00.000Z" });
     }
+    // Modal connected for the organization as well (#598): new work may then choose it.
+    if (body.acmeModal) state.credentials.push(orgCredential(id(45), ACME, "modal"));
+    if (body.novaModal) state.credentials.push(orgCredential(id(46), id(12), "modal"));
     if (body.orionOrg) {
       // An org that never finished its provider setup (#576): carol is its admin, bob a member, nothing configured.
       const now = "2026-11-08T10:00:00.000Z";
@@ -1454,6 +1496,14 @@ function control(url: URL, body: Row): Response {
     Object.assign(row, body.fields as Row);
     return json({ ok: true });
   }
+  if (url.pathname === "/__test/sandbox-events") {
+    state.events.set(String(body.sandbox), (body.events as Row[]) ?? []);
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/fail-next-tool") {
+    state.failNextTool = String(body.message);
+    return json({ ok: true });
+  }
   if (url.pathname === "/__test/fail-sandbox-connections") {
     failSandboxConnections = true;
     return json({ ok: true });
@@ -1506,8 +1556,8 @@ const server = Bun.serve({
       if (route === "golden/create" || route === "golden/update") return goldenBuild(route, body, request);
       if (route === "golden/capabilities") return goldenCapabilities(body, request);
       if (route === "golden/remove") return goldenRemove(body, request);
-      if (route === "org/provider/status" || route === "org/provider/connect") return orgProvider(route, body, request);
-      if (route === "creds/rm") return removeOrgCredential(body, request);
+      if (route === "org/provider/status" || route === "org/provider/connect" || route === "org/provider/disconnect")
+        return orgProvider(route, body, request);
       if (route === "golden/list")
         return request.headers.get("authorization") ? json({ goldens: [] }) : json({ error: "Unauthorized." }, 401);
       return json({ error: "Not found." }, 404);

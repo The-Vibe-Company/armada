@@ -14,7 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { isUuid } from "@/lib/action";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
-import { providerSetupPath } from "@/lib/provider-setup";
+import { PROVIDER_SETTINGS_PATH } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Organization" };
@@ -41,7 +41,7 @@ export default async function OrgPage({ params }: Props) {
     <>
       <PageHeader title={membership.org.name} description={isAdmin ? "Admin" : "Member"}>
         <Button variant="outline" asChild>
-          <Link href={providerSetupPath(id)}>Sandbox provider</Link>
+          <Link href={PROVIDER_SETTINGS_PATH}>Sandbox providers</Link>
         </Button>
         <Button variant="outline" asChild>
           <Link href="/credentials">Org credentials</Link>
