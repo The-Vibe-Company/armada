@@ -189,6 +189,13 @@ export {
   type ToolCall,
 } from "./provider.ts";
 export { resolveRepositoryDir } from "./repository-context.ts";
+export { RESOURCE_ADVICE_VERSION, type ResourceAdvice, type ResourceAdviceScope } from "./resource-advice.ts";
+export {
+  RESOURCE_OBSERVATION_VERSION,
+  type ResourceCounters,
+  type ResourceInterval,
+  resourceInterval,
+} from "./resource-observation.ts";
 export {
   type CleanupResult,
   cleanupSandboxes,
