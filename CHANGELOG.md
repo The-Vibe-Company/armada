@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.12.0](https://github.com/The-Vibe-Company/armada/compare/v2.11.0...v2.12.0) (2026-11-09)
+
+
+### Features
+
+* **auth:** add private orchestrator authority foundation ([#673](https://github.com/The-Vibe-Company/armada/issues/673)) ([d748be6](https://github.com/The-Vibe-Company/armada/commit/d748be683c7fb478bc738cda8954332fe72dd97b))
+* **cli:** manage organization invitations ([#669](https://github.com/The-Vibe-Company/armada/issues/669)) ([c1501ea](https://github.com/The-Vibe-Company/armada/commit/c1501ea6c60ccd575610b111637b28d787b6f383))
+* **dashboard:** identify sandbox providers with compact logos ([#657](https://github.com/The-Vibe-Company/armada/issues/657)) ([6db315f](https://github.com/The-Vibe-Company/armada/commit/6db315f652dc4ccfc8c53aa12e975e6ac1bf5075))
+* **dashboard:** show relative sandbox creation times in the viewer timezone ([#644](https://github.com/The-Vibe-Company/armada/issues/644)) ([78884de](https://github.com/The-Vibe-Company/armada/commit/78884de87066851b75e09cbda134606c0a8bc6d7))
+* **golden:** retire superseded saved snapshots safely ([#670](https://github.com/The-Vibe-Company/armada/issues/670)) ([5cec116](https://github.com/The-Vibe-Company/armada/commit/5cec1167ebea8e38592fa938fe509cf5c03988a4))
+* **orchestrators:** define durable coordinator contract and design ([#650](https://github.com/The-Vibe-Company/armada/issues/650)) ([d152e87](https://github.com/The-Vibe-Company/armada/commit/d152e87accb36b99086c5779f73dfee36a9dea0d))
+* **org:** add explicit email invitations and durable delivery ([#649](https://github.com/The-Vibe-Company/armada/issues/649)) ([8010a72](https://github.com/The-Vibe-Company/armada/commit/8010a72bd9227b577b4babbcd4b1a00a99243676))
+* **sizing:** add provider machine size policies and launch evidence ([#658](https://github.com/The-Vibe-Company/armada/issues/658)) ([ec3b89d](https://github.com/The-Vibe-Company/armada/commit/ec3b89db5a7cb819b2181c26a84a17e1e99e67c3))
+
+
+### Bug Fixes
+
+* **dashboard:** distinguish provider API outages from unsupported setup ([#660](https://github.com/The-Vibe-Company/armada/issues/660)) ([c9bf8a5](https://github.com/The-Vibe-Company/armada/commit/c9bf8a5a7add7d7a02ee829e901c90d7e70c2aae))
+* **dashboard:** fit the sandbox conversation and its composer to the viewport ([#636](https://github.com/The-Vibe-Company/armada/issues/636)) ([648b8cf](https://github.com/The-Vibe-Company/armada/commit/648b8cfbbd0df1d527cacdb9e3098af934d2d650))
+* **modal:** bound native event ingest batches by UTF-8 bytes ([#651](https://github.com/The-Vibe-Company/armada/issues/651)) ([19adc40](https://github.com/The-Vibe-Company/armada/commit/19adc40be502b1b145aa8f4e7c83c924cde90ea0))
+* **modal:** finalize owned conformance apps after cleanup ([#671](https://github.com/The-Vibe-Company/armada/issues/671)) ([90b0deb](https://github.com/The-Vibe-Company/armada/commit/90b0debde2ea3e454fd655e5a02a418d65283a23))
+* **modal:** preserve numeric durable event cursor order ([#675](https://github.com/The-Vibe-Company/armada/issues/675)) ([1fd430a](https://github.com/The-Vibe-Company/armada/commit/1fd430a500dcaccf95d9d27f0984918f0dab831e))
+
 ## [2.11.0](https://github.com/The-Vibe-Company/armada/compare/v2.10.0...v2.11.0) (2026-11-09)
 
 
