@@ -297,7 +297,18 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       description:
         "Reads the selected provider adapter's golden capacity without creating an App or resource. Null is unknown/unbounded, not a workspace quota.",
       input: { org: z.string().optional(), provider: z.enum(SANDBOX_PROVIDERS).optional() },
-      output: { provider: z.enum(SANDBOX_PROVIDERS), maxGoldens: z.number().int().positive().nullable() },
+      output: {
+        provider: z.enum(SANDBOX_PROVIDERS),
+        maxGoldens: z.number().int().positive().nullable(),
+        bindings: z
+          .array(
+            z.object({
+              goldenId: z.string().uuid(),
+              relation: z.enum(["current_backend", "other_backend", "unbound"]),
+            }),
+          )
+          .optional(),
+      },
       readOnly: true,
     },
     async (args) => {

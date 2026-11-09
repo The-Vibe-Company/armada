@@ -66,6 +66,21 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     turn++;
     if (params.threadId !== thread || params.approvalPolicy !== "never") throw Error("incorrect turn parameters");
     reply({ turn: { id: `turn-${turn}`, status: "inProgress" } });
+    if (params.input[0]?.type === "text" && params.input[0].text === "message-semantics") {
+      for (const id of ["answer-a", "answer-b"]) {
+        notify("item/agentMessage/delta", { threadId: thread, turnId: `turn-${turn}`, itemId: id, delta: "Hello" });
+        notify("item/completed", {
+          threadId: thread,
+          turnId: `turn-${turn}`,
+          item: { type: "agentMessage", id, text: "Hello world" },
+        });
+      }
+      notify("turn/completed", {
+        threadId: thread,
+        turn: { id: `turn-${turn}`, status: "completed", items: [], error: null },
+      });
+      return;
+    }
     notify("item/agentMessage/delta", { threadId: thread, turnId: `turn-${turn}`, itemId: "text", delta: "partial" });
     if (
       params.input[0]?.type === "text" &&

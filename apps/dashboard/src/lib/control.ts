@@ -132,7 +132,13 @@ export function isGoldenBuildResult(value: unknown): value is GoldenBuildResult 
  * org, an older server, an answer for another provider): the limit is then not known here, and the server still
  * checks it when it builds.
  */
-export type GoldenCapabilities = { ok: true; maxGoldens: number | null } | { ok: false; reason: string };
+export type GoldenBinding = {
+  goldenId: string;
+  relation: "current_backend" | "other_backend" | "unbound";
+};
+export type GoldenCapabilities =
+  | { ok: true; maxGoldens: number | null; bindings?: readonly GoldenBinding[] }
+  | { ok: false; reason: string };
 
 export async function readGoldenCapabilities(
   client: ControlClient,
@@ -153,8 +159,24 @@ export async function readGoldenCapabilities(
     result.provider === provider &&
     (result.maxGoldens === null ||
       (typeof result.maxGoldens === "number" && Number.isInteger(result.maxGoldens) && result.maxGoldens > 0))
-  )
-    return { ok: true, maxGoldens: result.maxGoldens };
+  ) {
+    if (
+      result.bindings !== undefined &&
+      (!Array.isArray(result.bindings) ||
+        !result.bindings.every(
+          (binding: unknown) =>
+            isRecord(binding) &&
+            typeof binding.goldenId === "string" &&
+            ["current_backend", "other_backend", "unbound"].includes(String(binding.relation)),
+        ))
+    )
+      return { ok: false, reason: "The Armada server sent unexpected binding metadata." };
+    return {
+      ok: true,
+      maxGoldens: result.maxGoldens,
+      ...(result.bindings === undefined ? {} : { bindings: result.bindings as GoldenBinding[] }),
+    };
+  }
   return { ok: false, reason: "The Armada server sent an unexpected answer." };
 }
 

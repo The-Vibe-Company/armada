@@ -632,7 +632,7 @@ describe("control API", () => {
       const result = await request(`Bearer ${service}`, { org: orgA, provider: "boat" });
       expect(result?.status).toBe(200);
       expect(result?.headers.get("cache-control")).toBe("no-store");
-      expect(await result?.json()).toEqual({ provider: "boat", maxGoldens: 9 });
+      expect(await result?.json()).toEqual({ provider: "boat", maxGoldens: 9, bindings: [] });
       maxGoldens = undefined;
       expect(await (await request(`Bearer ${service}`, {}))?.json()).toEqual({ provider: "boat", maxGoldens: null });
       expect(await (await request(session(STAN), { org: orgB, provider: "boat" }))?.json()).toEqual({

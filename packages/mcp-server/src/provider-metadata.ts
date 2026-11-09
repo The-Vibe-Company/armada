@@ -14,6 +14,7 @@ export interface GoldenProviderMetadata {
   provider: SandboxProviderId;
   /** Adapter capacity, not a live workspace quota or a claim of provider connectivity. */
   maxGoldens: number | null;
+  bindings?: { goldenId: string; relation: "current_backend" | "other_backend" | "unbound" }[];
 }
 export type ProviderMetadataFor = (
   selection: { orgId: string; provider: SandboxProviderId },
@@ -46,6 +47,24 @@ export function createProviderMetadata(options: {
     const credential = await resolveBoatKey(options.vault, options.encryptionKey, credentialScope);
     const adapter = options.providerFor(credential.key, caller);
     assertProviderOf(adapter, "boat");
-    return { provider: "boat", maxGoldens: adapter.maxGoldens ?? null };
+    const maxGoldens = adapter.maxGoldens ?? null;
+    if (maxGoldens === null) return { provider: "boat", maxGoldens };
+    const identity = await adapter.backendIdentity?.();
+    if (!identity?.id) throw new VaultError("forbidden", "Provider backend identity is unavailable.");
+    const bindings = await options.sql.query<{
+      goldenId: string;
+      relation: "current_backend" | "other_backend" | "unbound";
+    }>(
+      `select g.id as "goldenId",
+        case when s.golden_id is null then 'unbound'
+             when s.backend_id=$3 then 'current_backend' else 'other_backend' end as relation
+       from public.goldens g
+       left join public.golden_backend_slots s on s.golden_id=g.id and s.provider=g.provider::text
+       where g.org_id=$1 and g.provider=$4
+         and (g.visibility='org' or g.owner_id=$2)
+       order by g.id`,
+      [selection.orgId, caller.userId, identity.id, selection.provider],
+    );
+    return { provider: "boat", maxGoldens, bindings: bindings.rows };
   };
 }

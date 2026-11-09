@@ -5,6 +5,7 @@ import {
   createSqlMcpLaunchPort,
   createSqlMcpLeasePort,
   createSqlMcpRegistry,
+  type Sql,
 } from "@armada/core";
 import { database, ENCRYPTION_KEY } from "./support.ts";
 
@@ -63,6 +64,10 @@ test("registry separates personal grants, fences leases on revoke, and refuses s
     });
     expect(await leases.validate(hash, "tools")).not.toBeNull();
     expect(await leases.validate(hash, "resources")).toBeNull();
+    await registry.metadata(p.owner, p.org, c.id, { name: "Renamed live", defaultForLaunch: true });
+    expect(await leases.validate(hash, "tools")).not.toBeNull();
+    await registry.metadata(p.owner, p.org, c.id, { defaultForLaunch: false });
+    expect((await registry.sandboxConnections(p.owner, p.org, sandbox)).map((c) => c.id)).toEqual([c.id]);
     await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [sandbox]);
     await db.query("update sandboxes set status='ready',stopped_at=null where id=$1", [sandbox]);
     expect(await leases.validate(hash, "tools")).toBeNull();
@@ -168,6 +173,7 @@ test("control DTOs never echo authentication and report an unconfigured broker h
         },
       };
     };
+    expect((await call("metadata", { org: p.org, id: "not-a-uuid", name: "Invalid" })).status).toBe(400);
     const authentication = "write-only-test-bearer";
     const created = await call("create", {
       org: p.org,
@@ -280,6 +286,7 @@ test("pending OAuth take is actor-bound, single-use and fenced by reconnect, exp
     const pending = createSqlMcpPendingOAuthPort(db, ENCRYPTION_KEY);
     const c = await registry.save(p.owner, p.org, {
       name: "OAuth",
+      serviceId: "linear",
       scope: "personal",
       transport: "http",
       url: "https://mcp.example.com",
@@ -297,6 +304,22 @@ test("pending OAuth take is actor-bound, single-use and fenced by reconnect, exp
       stateHash: "c".repeat(64),
     };
     await pending.put(flow);
+    const parallel = await registry.save(p.owner, p.org, {
+      name: "Parallel",
+      scope: "personal",
+      transport: "http",
+      serviceId: "linear",
+    });
+    const parallelGrant = await grants.begin(parallel.id);
+    if (!parallelGrant) throw Error("Missing parallel grant");
+    await pending.put({
+      ...flow,
+      connectionId: parallel.id,
+      generation: parallelGrant.generation,
+      stateHash: "9".repeat(64),
+    });
+    await registry.metadata(p.owner, p.org, c.id, { name: "Rename during consent", defaultForLaunch: true });
+    expect(await pending.take(p.owner, "9".repeat(64))).toMatchObject({ connectionId: parallel.id });
     const stored = (await db.query<{ payload_enc: Uint8Array }>("select payload_enc from mcp_pending_oauth")).rows[0];
     expect(new TextDecoder().decode(stored?.payload_enc)).not.toContain("sealed-flow-material");
     expect(await pending.take(p.member, flow.stateHash)).toBeNull();
@@ -818,5 +841,82 @@ test("stdio is configured locally from a pinned definition, then explicitly reco
     );
   } finally {
     await db.close();
+  }
+});
+
+test("catalog instances have independent defaults and metadata does not replace authentication", async () => {
+  const { db, people: p } = await database();
+  try {
+    const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
+    const input = {
+      serviceId: "linear" as const,
+      name: "Work",
+      scope: "personal" as const,
+      transport: "http" as const,
+      url: "https://untrusted.example",
+    };
+    const first = await registry.save(p.owner, p.org, input);
+    const second = await registry.save(p.owner, p.org, { ...input, name: "Other" });
+    expect(first.id).not.toBe(second.id);
+    expect(first.url).toBe("https://mcp.linear.app/mcp");
+    expect(first.catalogId).toBe("linear");
+    const before = (await db.query("select * from mcp_grants where connection_id=$1", [first.id])).rows;
+    await registry.metadata(p.owner, p.org, first.id, { name: "Renamed", defaultForLaunch: true });
+    expect((await db.query("select * from mcp_grants where connection_id=$1", [first.id])).rows).toEqual(before);
+    const port = createSqlMcpLaunchPort(db, registry);
+    const actor = { userId: p.owner, orgId: p.org };
+    expect(await port.defaults(actor, "private")).toEqual([first.id]);
+    expect(await port.defaults(actor, "org")).toEqual([]);
+    await expect(port.validate(actor, [first.id], "private")).rejects.toThrow(/reconnect/);
+    await expect(registry.metadata(p.member, p.org, first.id, { name: "Stolen" })).rejects.toThrow();
+    const shared = await registry.save(p.admin, p.org, { ...input, scope: "org" });
+    await expect(registry.metadata(p.member, p.org, shared.id, { defaultForLaunch: true })).rejects.toThrow(
+      /administrator/,
+    );
+    await registry.setEnabled(p.owner, p.org, first.id, false);
+    expect(await port.defaults(actor, "private")).toEqual([]);
+    await expect(registry.save(p.owner, p.org, { ...input, serviceId: "slack" })).rejects.toThrow(/setup required/);
+  } finally {
+    await db.close();
+  }
+});
+
+test("metadata UPDATE refuses authority revoked after its pre-read", async () => {
+  for (const scope of ["personal", "org"] as const) {
+    const { db, people: p } = await database();
+    try {
+      const actor = scope === "personal" ? p.owner : p.admin;
+      const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
+      const connection = await registry.save(actor, p.org, {
+        name: "Unchanged",
+        scope,
+        transport: "http",
+        serviceId: "linear",
+      });
+      let revoked = false;
+      // Commit the authority change immediately before the real SQL mutation executes.
+      const boundary: Sql = {
+        async query<T>(statement: string, params?: unknown[]) {
+          if (!revoked && /^update public\.mcp_connections/i.test(statement.trim())) {
+            revoked = true;
+            if (scope === "personal")
+              await db.query("delete from members where user_id=$1 and org_id=$2", [actor, p.org]);
+            else await db.query("update members set role='member' where user_id=$1 and org_id=$2", [actor, p.org]);
+          }
+          return db.query<T>(statement, params);
+        },
+      };
+      const racing = createSqlMcpRegistry(boundary, ENCRYPTION_KEY);
+      const outcome = await racing
+        .metadata(actor, p.org, connection.id, { name: "Unauthorized", defaultForLaunch: true })
+        .catch((error) => error);
+      expect(revoked).toBe(true);
+      expect(
+        (await db.query("select name,default_for_launch from mcp_connections where id=$1", [connection.id])).rows,
+      ).toEqual([{ name: "Unchanged", default_for_launch: false }]);
+      expect(outcome).toBeInstanceOf(Error);
+    } finally {
+      await db.close();
+    }
   }
 });

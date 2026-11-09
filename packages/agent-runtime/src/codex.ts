@@ -102,12 +102,26 @@ export class CodexDriver implements Driver {
           return;
         }
         if (m.method === "item/agentMessage/delta")
-          c.emit({ kind: "message", text: m.params.delta, partial: true, tools: [] });
+          c.emit({
+            kind: "message",
+            text: m.params.delta,
+            partial: true,
+            tools: [],
+            messageId: m.params.itemId,
+            textMode: "delta",
+          });
         else if (m.method === "item/started" || m.method === "item/completed") {
           const item = m.params.item as ThreadItem;
           const complete = m.method === "item/completed";
           if (item.type === "agentMessage" && complete)
-            c.emit({ kind: "message", text: item.text, partial: false, tools: [] });
+            c.emit({
+              kind: "message",
+              text: item.text,
+              partial: false,
+              tools: [],
+              messageId: item.id,
+              textMode: "snapshot",
+            });
           else if (item.type === "commandExecution")
             c.emit({
               kind: "message",

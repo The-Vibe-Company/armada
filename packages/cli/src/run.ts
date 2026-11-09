@@ -99,7 +99,7 @@ Usage:
                                            Goldens you can see
   armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
                 [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
-                [--visibility private|org] [--connections <id,...>] [--org <org>]
+                [--visibility private|org] [--connections <id,...> | --no-connections] [--org <org>]
                                            Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
                                            and effort apply to every later turn too. --credential-id UUID selects a model account;
@@ -118,6 +118,8 @@ Usage:
   armada golden remove <golden-id> [--org UUID] [--json]
                                            Remove from launch selection; retain children and provider artifacts
   armada golden visibility <golden-id> --visibility private|org [--org UUID]
+  armada mcp catalog|rename ID NAME|default ID on|off [--org UUID]
+  armada mcp add NAME --service notion|linear [--scope personal|org] [--org UUID]
   armada mcp add NAME URL [--scope personal|org] [--org UUID]
                                            Public/OAuth URL shortcut; auto discovery, no secret argv
   armada mcp list|add|update|connect|status|reconnect|enable|disable|revoke|delete [id] [--org UUID] [--file JSON]
@@ -643,6 +645,8 @@ function decodeLaunchResult(result: LaunchWireResult): LaunchResult {
 
 async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const args = parseArgs(argv);
+  if (flag(args, "--no-connections") && single(args, "--connections") !== undefined)
+    throw new GoldenError("invalid_config", "Use --connections or --no-connections, not both.");
   const [name, prompt, ...extra] = args.positionals;
   if (name === undefined || extra.length > 0) {
     throw new GoldenError("invalid_config", "Give a golden name and at most one prompt.");
@@ -665,6 +669,7 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         ...(single(args, "--visibility") ? { visibility: single(args, "--visibility") } : {}),
+        ...(flag(args, "--no-connections") ? { connections: [] } : {}),
         ...(single(args, "--connections") ? { connections: single(args, "--connections")!.split(",") } : {}),
         credentialId: single(args, "--credential-id"),
         golden: name,
