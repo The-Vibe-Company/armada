@@ -570,3 +570,22 @@ export function attemptFor(
 export function unsettledAfter(attempt: Attempt, result: { ok: boolean; failure?: string }): Attempt | null {
   return !result.ok && result.failure === "uncertain" ? attempt : null;
 }
+
+/**
+ * What stays to be repeated after a command's answer and the re-read that follows it. Besides an unknown outcome, a
+ * refused one (conflict) is kept while an operation of the same kind is pending or unsettled: it may be this very
+ * request, applied before its answer could be recorded, and its key then returns that receipt instead of acting twice.
+ */
+export function unsettledAfterReread(
+  attempt: Attempt,
+  result: { ok: boolean; failure?: string },
+  reread: Pick<OrchestratorDetail, "operations"> | null,
+): Attempt | null {
+  const unsettled = unsettledAfter(attempt, result);
+  if (unsettled || result.ok || result.failure !== "stale" || !reread) return unsettled;
+  const open = reread.operations.some(
+    (operation) =>
+      operation.kind === attempt.command && (operation.state === "pending" || operation.state === "uncertain"),
+  );
+  return open ? attempt : null;
+}

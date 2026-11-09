@@ -104,6 +104,8 @@ function outcome(receipt: OrchestratorOperation, done: string): OrchestratorResu
 
 /** The runtime's own bound on a message or steer (#662 candidate). */
 const MAX_TEXT = 100_000;
+/** And on its encoded request body (#662 candidate: 128 KiB). */
+const MAX_BODY = 128 * 1024;
 
 const COMMANDS: readonly Command[] = ["message", "steer", "stop", "resume"];
 
@@ -131,6 +133,9 @@ export async function orchestratorCommand(
     return invalid("That request is not valid. Reload and try again.");
   if ((command === "message" || command === "steer") && !text) return invalid("Write the message to send.");
   if (text.length > MAX_TEXT) return invalid("A message is at most 100,000 characters.");
+  // The runtime also bounds the encoded request (quotes, backslashes and newlines grow when encoded).
+  if (JSON.stringify({ orgId: "", expectedRevision: revision, text }).length + 64 > MAX_BODY)
+    return invalid("This message is too long to send. Shorten it or split it in two.");
   const api = viewerOrchestrators(await requireViewer());
   if (!api) return invalid("The Armada server is not configured for this dashboard.");
   // The organization in scope, read on the server: the server checks the viewer's membership of it again.

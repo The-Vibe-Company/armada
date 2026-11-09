@@ -62,7 +62,7 @@ import {
   parseOrchestratorDetail,
   timeUntil,
   troubledOperations,
-  unsettledAfter,
+  unsettledAfterReread,
 } from "@/lib/orchestrators";
 import { relativeAge } from "@/lib/relative-time";
 import { cn } from "@/lib/utils";
@@ -363,23 +363,12 @@ function useCommand(detail: OrchestratorDetail, onDone: () => Promise<Orchestrat
           failure: "uncertain",
         };
       }
-      unsettled.current = unsettledAfter(attempt, outcome);
       setResult(outcome);
       then?.(outcome);
       // Read again whatever the answer, before taking the next command: a stale page shows what changed before the
       // person decides again, and an unknown outcome shows whether it was applied.
       const reread = await onDone().catch(() => null);
-      // A refused command (conflict) may still have taken effect when that kind of operation is pending or unsettled:
-      // its key is kept, so sending it again returns that receipt instead of acting twice.
-      if (
-        !outcome.ok &&
-        outcome.failure === "stale" &&
-        reread?.operations.some(
-          (operation) =>
-            operation.kind === command && (operation.state === "pending" || operation.state === "uncertain"),
-        )
-      )
-        unsettled.current = attempt;
+      unsettled.current = unsettledAfterReread(attempt, outcome, reread);
       setPending(null);
     });
   }

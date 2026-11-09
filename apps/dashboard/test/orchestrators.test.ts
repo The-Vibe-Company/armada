@@ -20,6 +20,7 @@ import {
   parseOrchestratorEventPage,
   parseOrchestratorList,
   unsettledAfter,
+  unsettledAfterReread,
 } from "../src/lib/orchestrators.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
@@ -418,4 +419,25 @@ test("a bare conflict on create is an unknown outcome: the same request may be s
     .catch((caught: unknown) => caught as OrchestratorApiError);
   expect(error.failure).toBe("uncertain");
   expect(error.retrySameKey).toBe(true);
+});
+
+test("a refused command keeps its key only while an operation of its kind is still open after the re-read", () => {
+  const attempt = attemptFor(null, "message", "Ship #12", 4, () => "k1");
+  const refused = { ok: false, failure: "stale" };
+  const op = (kind: "message" | "stop", state: "pending" | "uncertain" | "succeeded") => ({
+    version: 1 as const,
+    id: `op-${kind}`,
+    orchestratorId: ID,
+    kind,
+    state,
+    revision: 5,
+    errorCode: null,
+  });
+  expect(unsettledAfterReread(attempt, refused, { operations: [op("message", "uncertain")] })).toEqual(attempt);
+  expect(unsettledAfterReread(attempt, refused, { operations: [op("message", "pending")] })).toEqual(attempt);
+  expect(unsettledAfterReread(attempt, refused, { operations: [op("message", "succeeded")] })).toBeNull();
+  expect(unsettledAfterReread(attempt, refused, { operations: [op("stop", "pending")] })).toBeNull();
+  expect(unsettledAfterReread(attempt, refused, null)).toBeNull();
+  expect(unsettledAfterReread(attempt, { ok: false, failure: "uncertain" }, null)).toEqual(attempt);
+  expect(unsettledAfterReread(attempt, { ok: true }, { operations: [op("message", "pending")] })).toBeNull();
 });
