@@ -15,7 +15,7 @@ public struct Organization: Codable, Sendable, Identifiable {
     public let name: String
     public let role: String
 }
-private struct Organizations: Decodable { let orgs: [Organization] }
+private struct Organizations: Decodable, Sendable { let orgs: [Organization] }
 private struct StoredSession: Codable {
     let origin: String
     let session: ArmadaSession
@@ -32,6 +32,7 @@ public actor ArmadaClient {
     private var session: ArmadaSession?
     private var generation = 0
     private var refreshing: Task<ArmadaSession, Error>?
+    private var refreshID: UUID?
     public private(set) var selectedOrgID: String?
 
     public init(origin: URL = productionOrigin, transport: any ArmadaTransport = URLSessionTransport(),
@@ -42,6 +43,9 @@ public actor ArmadaClient {
         }
         self.origin = origin; self.transport = transport; self.storage = storage
     }
+
+    /// Safe UI state; bearer/session values never leave the authority owner.
+    public var isSignedIn: Bool { session != nil }
 
     public func restore() throws {
         guard session == nil, refreshing == nil else { return }
@@ -75,7 +79,7 @@ public actor ArmadaClient {
         let next: ArmadaSession = try await post("auth/email/verify", Verify(email: email, code: code), authenticated: false)
         guard generation == fence else { throw CancellationError() }
         try persist(next, org: nil)
-        refreshing?.cancel(); refreshing = nil; generation += 1
+        refreshing?.cancel(); refreshing = nil; refreshID = nil; generation += 1
         session = next; selectedOrgID = nil
     }
     public func organizations() async throws -> [Organization] {
@@ -93,7 +97,7 @@ public actor ArmadaClient {
     /// so the UI must not claim remote sign-out succeeded while offline.
     public func signOut() async throws {
         let token = session?.accessToken
-        generation += 1; refreshing?.cancel(); refreshing = nil; session = nil; selectedOrgID = nil
+        generation += 1; refreshing?.cancel(); refreshing = nil; refreshID = nil; session = nil; selectedOrgID = nil
         do { try storage.remove() } catch { throw ArmadaError.secureStorage }
         if let token { let _: OK = try await wire("account/logout", Empty(), token: token) }
     }
@@ -112,9 +116,10 @@ public actor ArmadaClient {
         let fence = generation
         if refreshing == nil {
             struct Refresh: Encodable, Sendable { let refreshToken: String }
+            refreshID = UUID()
             refreshing = Task { try await self.wire("auth/refresh", Refresh(refreshToken: current.refreshToken), token: nil) }
         }
-        guard let task = refreshing else { throw ArmadaError.signedOut }
+        guard let task = refreshing, let flightID = refreshID else { throw ArmadaError.signedOut }
         do {
             let next = try await task.value
             // Multiple waiters may observe the same task; only the first persists rotation.
@@ -122,11 +127,15 @@ public actor ArmadaClient {
                 guard let session, session.refreshToken == next.refreshToken else { throw CancellationError() }
                 return session.accessToken
             }
-            try persist(next, org: selectedOrgID); session = next; refreshing = nil; generation += 1
+            if refreshID == flightID {
+                try persist(next, org: selectedOrgID); session = next; refreshing = nil; refreshID = nil
+            } else if session?.refreshToken != next.refreshToken {
+                throw CancellationError()
+            }
             try Task.checkCancellation()
             return next.accessToken
         } catch {
-            if generation == fence { refreshing = nil }
+            if generation == fence, refreshID == flightID { refreshing = nil; refreshID = nil }
             throw error
         }
     }

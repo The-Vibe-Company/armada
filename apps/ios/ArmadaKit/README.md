@@ -35,3 +35,11 @@ Linux sandbox has no Swift toolchain or Apple Security/CryptoKit SDK: tests/buil
 are **not yet validated**. Mac integration must compile and run these actual
 sources before accepting this package. This is infrastructure, not rendered UI;
 there is no app target or simulator screenshot in this ticket.
+
+## Sandbox metadata source
+
+`SandboxMetadata`, `SandboxMetadataPage`, `sandboxMetadata(page:limit:)` consume
+#680 source `986a5270d8e4ed31cf7fff16ddca43570d838a6b`: core sandbox-access.ts,
+MCP tools list envelope, control sandbox/list POST handler. This method requires
+the coupled #680 deployment; old servers do not provide the same safe DTO.
+It never calls interior routes and does not infer authority from display IDs.
