@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { createSqlGoldenStore, createSqlVaultStore, type GoldenBuildStatus } from "@armada/core/server";
+import { createSqlGoldenStore, createSqlVaultStore, type GoldenBuildStatus, ProviderError } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { call, ENCRYPTION_KEY, harness, PUBLIC_URL, type TestServer } from "./support.ts";
@@ -12,8 +12,18 @@ async function fixture() {
     allocations++;
     return boat.provider.fork({ from: "blank" });
   };
-  boat.provider.snapshot = async ({ name, sandboxId }) => ({ name, status: "ready", sourceSandboxId: sandboxId });
-  boat.provider.getSnapshot = async (name) => ({ name, status: "ready" });
+  const snapshots = new Map<string, { name: string; status: "ready"; sourceSandboxId: string }>();
+  boat.provider.snapshot = async ({ name, sandboxId }) => {
+    const info = { name, status: "ready" as const, sourceSandboxId: sandboxId };
+    snapshots.set(name, info);
+    return info;
+  };
+  boat.provider.getSnapshot = async (name) => {
+    const info = snapshots.get(name);
+    if (!info)
+      throw new ProviderError({ provider: "boat", code: "not_found", message: "absent snapshot", retryable: false });
+    return info;
+  };
   const deleted: string[] = [];
   boat.provider.deleteSnapshot = async (name) => {
     deleted.push(name);
@@ -50,6 +60,10 @@ test("HTTP durable admission, idempotent acknowledgement recovery and MCP status
     expect(response.status).toBe(202);
     const job = (await response.json()) as GoldenBuildStatus;
     expect(job.state).toBe("queued");
+    expect(
+      (await s.db.query("select expected_snapshot_id,revision_known from golden_build_jobs where id=$1", [job.jobId]))
+        .rows,
+    ).toEqual([{ expected_snapshot_id: null, revision_known: true }]);
     expect(s.allocations()).toBe(0);
     expect((await s.db.query("select 1 from golden_build_jobs")).rows).toHaveLength(1);
     const replay = await s.http(token, "golden/create", body);
@@ -144,6 +158,15 @@ test("MCP admission and rebuild failure retain last-good config/pointer and rele
       });
       expect(admitted.status).toBe(202);
       const job = (await admitted.json()) as GoldenBuildStatus;
+      expect(
+        (await s.db.query("select expected_snapshot_id,revision_known from golden_build_jobs where id=$1", [job.jobId]))
+          .rows,
+      ).toEqual([
+        {
+          expected_snapshot_id: (before as { provider_snapshot_id: string }).provider_snapshot_id,
+          revision_known: true,
+        },
+      ]);
       await s.builds.runOne();
       expect(await s.builds.status(s.people.admin, job.jobId)).toMatchObject({
         state: "failed",
@@ -176,6 +199,7 @@ test("MCP admission and rebuild failure retain last-good config/pointer and rele
       expect((await s.builds.status(s.people.admin, job.jobId)).phase).toBe(phase);
       expect(s.boat.execs.at(-1)?.timeoutSeconds).toBe(600);
       expect(s.deleted).not.toContain((before as { provider_snapshot_id: string }).provider_snapshot_id);
+      expect((await s.db.query("select id from golden_snapshot_retirements")).rows).toEqual([]);
       if (failure === "persist")
         await s.db.exec("drop trigger fail_job_success on golden_build_jobs; drop function fail_job_success();");
     }
@@ -191,6 +215,20 @@ test("MCP admission and rebuild failure retain last-good config/pointer and rele
     await s.builds.runOne();
     const published = await s.builds.status(s.people.admin, publishedJob.jobId);
     expect(published).toMatchObject({ state: "succeeded", phase: "complete", errorCode: null });
+    expect(
+      (
+        await s.db.query(
+          "select r.old_snapshot,r.new_snapshot,j.state as job_state from golden_snapshot_retirements r join golden_build_jobs j on j.id=$1 where r.golden_id=j.golden_id",
+          [publishedJob.jobId],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        old_snapshot: (before as { provider_snapshot_id: string }).provider_snapshot_id,
+        new_snapshot: published.result!.snapshot,
+        job_state: "succeeded",
+      },
+    ]);
     expect(published.result!.snapshot).not.toBe((before as { provider_snapshot_id: string }).provider_snapshot_id);
     expect(
       (

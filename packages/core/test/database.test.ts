@@ -62,6 +62,8 @@ describe("database", () => {
         "golden_backend_slots",
         "golden_build_jobs",
         "golden_operation_fences",
+        "golden_snapshot_publications",
+        "golden_snapshot_retirements",
         "goldens",
         "mcp_actor_epochs",
         "mcp_bindings",
