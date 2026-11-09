@@ -2,7 +2,7 @@ import { CircleAlertIcon, CircleCheckIcon, InfoIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { AddConnectionDialog, ConnectionCard } from "@/components/connections";
-import { Empty, PageHeader } from "@/components/page-header";
+import { Empty, PageHeader, SectionHeader } from "@/components/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { type McpConnection, type OAuthReturn, oauthReturn, STATUS_INFO } from "@/lib/connections";
@@ -134,12 +134,9 @@ function ConnectionSection({
 }) {
   return (
     <section className="space-y-3" aria-label={title}>
-      <div>
-        <h2 className="text-lg font-medium">{title}</h2>
-        <p className="text-sm text-muted-foreground">{description}</p>
-      </div>
+      <SectionHeader title={title} description={description} />
       {connections.length === 0 ? (
-        <Empty title="No connections">{empty}</Empty>
+        <p className="rounded-lg border border-dashed px-4 py-3 text-sm text-muted-foreground">{empty}</p>
       ) : (
         <ul className="divide-y rounded-lg border">
           {connections.map((connection) => (

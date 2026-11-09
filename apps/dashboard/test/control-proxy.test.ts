@@ -73,6 +73,48 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
   expect(
     (await forwardControl(new Request("https://dashboard.test", { method: "POST" }), ["org", "list"])).status,
   ).toBe(401);
+
+  // `armada golden remove` (#566) goes through the public origin: same route, bearer and body as the dashboard's own call.
+  const removal = JSON.stringify({
+    id: "00000000-0000-4000-8000-000000000020",
+    org: "00000000-0000-4000-8000-000000000010",
+  });
+  const removed = await forwardControl(
+    new Request("https://dashboard.test/api/v1/golden/remove", {
+      method: "POST",
+      headers: { authorization: "Bearer masked", "content-type": "application/json" },
+      body: removal,
+    }),
+    ["golden", "remove"],
+    async (input, init) => {
+      seen.push(new Request(input, init));
+      return Response.json({
+        id: "00000000-0000-4000-8000-000000000020",
+        removedAt: "2026-11-09T00:00:00Z",
+        artifacts: "retained",
+      });
+    },
+  );
+  expect(removed.status).toBe(200);
+  expect(await removed.json()).toEqual({
+    id: "00000000-0000-4000-8000-000000000020",
+    removedAt: "2026-11-09T00:00:00Z",
+    artifacts: "retained",
+  });
+  expect(seen.at(-1)?.url).toBe("https://armada.test/api/v1/golden/remove");
+  expect(seen.at(-1)?.headers.get("authorization")).toBe("Bearer masked");
+  expect(await seen.at(-1)?.text()).toBe(removal);
+  const forwarded = seen.length;
+  const anonymous = await forwardControl(
+    new Request("https://dashboard.test/api/v1/golden/remove", { method: "POST", body: removal }),
+    ["golden", "remove"],
+    async (input, init) => {
+      seen.push(new Request(input, init));
+      return Response.json({ ok: true });
+    },
+  );
+  expect(anonymous.status).toBe(401);
+  expect(seen).toHaveLength(forwarded);
 });
 
 test("allows launch and logs routes only", async () => {
