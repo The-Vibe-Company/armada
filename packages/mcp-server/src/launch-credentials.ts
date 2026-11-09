@@ -95,7 +95,11 @@ export function launchCredentials(
       );
       if (managed && values.length === 0)
         throw new Error("Private native auth redaction is unavailable; no output may be returned.");
-      return values;
+      // Exec may be invoked by an org peer; actor is the stored sandbox owner.
+      return [
+        ...values,
+        ...(await exposedSecrets(reader, encryptionKey, { userId: actor.userId, orgId: actor.orgId })),
+      ];
     },
     async assertExec(actor, sandboxId) {
       if (ownership) await ownership.assertSandbox(actor, sandboxId, false, true);

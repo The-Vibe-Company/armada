@@ -143,7 +143,7 @@ export async function startServer(
   });
   const control: ConfiguredControlOptions = {
     modelAuth,
-    credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey),
+    credentialBindingRecovery: createCredentialBindingRecovery(sql, config.encryptionKey, modelAuth),
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,
     invitations: invitationsFromEnv(sql, env),

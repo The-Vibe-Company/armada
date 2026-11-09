@@ -1332,8 +1332,15 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     modalProviderFor: async (tokens, binding, context) =>
       (await modalIntegration()).modalProviderFor(tokens, binding, context),
   });
+  const modelAuth = createModelAuthOwnership(
+    sql,
+    encryptionKey,
+    undefined,
+    undefined,
+    createHistoricalSandboxProviderResolver(providers),
+  );
   return {
-    credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey),
+    credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey, modelAuth),
     invitations: invitationsFromEnv(sql, env),
     mcp: { registry },
     connections: createSqlMcpLaunchPort(sql, registry),
@@ -1342,13 +1349,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     encryptionKey,
     github: { app: githubApp },
     store,
-    modelAuth: createModelAuthOwnership(
-      sql,
-      encryptionKey,
-      undefined,
-      undefined,
-      createHistoricalSandboxProviderResolver(providers),
-    ),
+    modelAuth,
     providerFor,
     modelUsage: createModelUsageApi(sql),
     goldenAdoption: createGoldenAdoption(sql),

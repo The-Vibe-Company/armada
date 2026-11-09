@@ -130,3 +130,23 @@ Pinned runtime: Claude SDK 0.3.319 / Claude Code 2.1.319; Codex 0.167.0.
 - [Self-hosted VMs](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms)
 - MIT reference [yetone/magpie, 195d79939e215828c8b1cca73650b1d5c5cb8318](https://github.com/yetone/magpie/tree/195d79939e215828c8b1cca73650b1d5c5cb8318),
   internal/provider/logins.go: consulted, no source copied.
+
+
+## Pre-renewal rollout workspaces
+
+A Codex workspace without an explicit account binding, or a pinned subscription
+workspace created before native renewal enrollment, has no trustworthy durable registry for tokens it may already have rotated.
+Public logs/exec output and native bootstrap fail closed rather than returning
+unregistered secrets or reusing the original refresh token. Stopping that writer
+remains available. After confirming it is stopped, explicitly import a fresh
+account version and launch a new sandbox; old archived output stays unavailable.
+The server never silently adopts that home. Explicit recovery of an **unbound,
+stopped** Modal workspace enrolls a fresh selected native account atomically with
+both account pins; it cannot steal an account already owned by another sandbox.
+
+Native admission also refuses a copied refresh session under a second named
+account. For an upstream account with historical workspace bindings, stop the
+old writer and explicitly replace/version that **same** account row rather than
+importing a second name to bypass its ownership. Independent upstream accounts
+remain parallel. Identity admission is serialized and bounded; an oversized
+registry fails closed for maintenance instead of skipping checks.

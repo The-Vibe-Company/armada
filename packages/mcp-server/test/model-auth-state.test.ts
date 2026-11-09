@@ -14,7 +14,7 @@ import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createHistoricalSandboxProviderResolver } from "../src/mcp-sandbox-provider.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
-import { call, database, ENCRYPTION_KEY, fakeBoat, harness } from "./support.ts";
+import { call, database, ENCRYPTION_KEY, fakeBoat, harness, SECRETS } from "./support.ts";
 
 const OWNER = "11111111-1111-4111-8111-111111111111";
 const PEER = "22222222-2222-4222-8222-222222222222";
@@ -26,8 +26,8 @@ const KEY = Buffer.alloc(32, 8).toString("base64");
 const native = (revision: number, accountId = "native-account") =>
   JSON.stringify({
     tokens: {
-      access_token: `synthetic-access-${revision}`,
-      refresh_token: `synthetic-refresh-${revision}`,
+      access_token: `synthetic-access-${revision}${accountId === "native-account" ? "" : "-" + accountId}`,
+      refresh_token: `synthetic-refresh-${revision}${accountId === "native-account" ? "" : "-" + accountId}`,
       account_id: accountId,
     },
   });
@@ -82,6 +82,14 @@ test("real native state publication seals rotation without replacing binding, fe
     expect(await auth.managed(SANDBOX)).toBe(false);
     await auth.claim(actor, account.id, 1, SANDBOX);
     await expect(auth.claim(actor, account.id, 1, OTHER)).rejects.toMatchObject({ code: "conflict" });
+    const duplicate = (
+      await db.query<{ id: string }>(
+        "insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'codex_auth','Same native file',$2) returning id",
+        [OWNER, await encryptSecret(native(0), KEY)],
+      )
+    ).rows[0]!;
+    await expect(auth.claim(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({ code: "conflict" });
+
     await db.query(
       "insert into goldens(id,org_id,owner_id,name,visibility,config) values($1,$2,$3,'native','org',$4::jsonb)",
       [
@@ -190,6 +198,38 @@ test("real native state publication seals rotation without replacing binding, fe
     );
     await expect(publicProvider.events({ sandboxId: "native" })).rejects.toMatchObject({ code: "unavailable" });
     provider.get = async (id) => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
+    const claudeAccount = (
+      await db.query<{ id: string }>(
+        "insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'claude_oauth','Claude subscription',$2) returning id",
+        [OWNER, await encryptSecret("synthetic-claude-setup-token", KEY)],
+      )
+    ).rows[0]!;
+    await db.query(
+      "insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider_sandbox_id,boat_id,visibility,credential_id,credential_version) values($1,$2,$3,$4,'claude','ready','claude-native','claude-native','org',$5,1)",
+      [crypto.randomUUID(), ORG, OWNER, GOLDEN, claudeAccount.id],
+    );
+    // Org viewers must redact the launching owner's token, not their own vault.
+    expect(
+      await auth.redactEvents(provider, "claude-native", { userId: PEER, orgId: ORG }, [
+        {
+          id: "claude-output",
+          at: 1,
+          kind: "message",
+          partial: false,
+          tools: [],
+          text: "synthetic-claude-setup-token",
+        },
+      ]),
+    ).toMatchObject([{ text: "***" }]);
+    // A user-supplied upstream label cannot reserve another owner's identity;
+    // only an exact shared refresh secret is a cross-owner collision.
+    const peerAccount = (
+      await db.query<{ id: string }>(
+        "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+        [PEER, await encryptSecret(native(80), KEY)],
+      )
+    ).rows[0]!;
+    await auth.claim({ userId: PEER, orgId: ORG, role: "admin" }, peerAccount.id, 1, crypto.randomUUID());
     await db.query("delete from members where org_id=$1 and user_id=$2", [ORG, OWNER]);
     await expect(auth.state.read(actor, account.id, 1, SANDBOX)).rejects.toMatchObject({ code: "not_found" });
     await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [ORG, OWNER]);
@@ -347,6 +387,14 @@ test("managed exec holds stop admission through secret publication while indepen
       );
       return { id, physical: machine.id, accountId: account.id };
     };
+    const ownerClient = await server.client(await server.token(actor.userId));
+    const claude = await call(ownerClient, "launch", { golden: "shared", harness: "claude" });
+    expect(claude.isError).toBe(false);
+    const peerClient = await server.client(await server.token(server.people.member));
+    server.boat.setExecOutput({ stdout: SECRETS.ownerClaude });
+    const peerOutput = await call(peerClient, "exec", { id: claude.data.id, command: "inspect-static-native-token" });
+    expect(peerOutput.isError).toBe(false);
+    expect(peerOutput.data.stdout).toBe("***");
     const first = await create("held-native-account");
     const second = await create("independent-native-account");
     const originalExec = server.boat.provider.exec;
@@ -358,7 +406,7 @@ test("managed exec holds stop admission through secret publication while indepen
       return {
         detached: false,
         exitCode: 0,
-        stdout: "synthetic-refresh-1",
+        stdout: JSON.parse(native(1, "held-native-account")).tokens.refresh_token,
         stderr: "",
         timedOut: false,
         truncated: false,
@@ -548,8 +596,60 @@ test.each([
         );
         await ownership.assertSandbox(actor, legacy, false, true);
         if (!scenario.replace) {
-          await ownership.assertSandbox(actor, legacy, true);
-          expect(await ownership.bootstrap(actor, account.id, 1, legacy)).toBeUndefined();
+          await expect(ownership.assertSandbox(actor, legacy, true)).rejects.toMatchObject({
+            code: "credential_binding_required",
+          });
+          await expect(ownership.bootstrap(actor, account.id, 1, legacy)).rejects.toMatchObject({
+            code: "credential_binding_required",
+          });
+          if (scenario.name === "ready legacy collision") {
+            const caller = { userId: actor.userId, orgId: actor.orgId };
+            const duplicate = (
+              await db.query<{ id: string }>(
+                "insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'codex_auth','Duplicate legacy identity',$2) returning id",
+                [actor.userId, await encryptSecret(native(9), ENCRYPTION_KEY)],
+              )
+            ).rows[0]!;
+            await expect(ownership.claim(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({
+              code: "conflict",
+            });
+            // A rotated token is not in the original imported credential. No
+            // event/exec output may escape without a trustworthy registry.
+            await expect(
+              ownership.redactEvents(observationProvider, `legacy-${legacy}`, caller, [
+                { id: "legacy-output", at: 1, kind: "message", partial: false, tools: [], text: "synthetic-refresh-1" },
+              ]),
+            ).rejects.toMatchObject({ code: "credential_binding_required" });
+            await expect(
+              resolver.nativeSecrets!(actor, legacy, observationProvider, `legacy-${legacy}`, "before"),
+            ).rejects.toMatchObject({ code: "credential_binding_required" });
+            await ownership.beforeStop(observationProvider, `legacy-${legacy}`, caller);
+            await db.query("update sandboxes set credential_id=null,credential_version=null where id=$1", [legacy]);
+            await expect(
+              ownership.redactEvents(observationProvider, `legacy-${legacy}`, caller, []),
+            ).rejects.toMatchObject({ code: "credential_binding_required" });
+            await expect(ownership.assertSandbox(actor, legacy, false)).rejects.toMatchObject({
+              code: "credential_binding_required",
+            });
+            await ownership.beforeStop(observationProvider, `legacy-${legacy}`, caller);
+            await db.query("update sandboxes set credential_id=$2,credential_version=1 where id=$1", [
+              legacy,
+              account.id,
+            ]);
+            await db.query("update credentials set value_enc=$2 where id=$1", [
+              account.id,
+              await encryptSecret(native(70, "different-replacement"), ENCRYPTION_KEY),
+            ]);
+            await expect(ownership.claim(actor, duplicate.id, 1, crypto.randomUUID())).rejects.toMatchObject({
+              code: "conflict",
+            });
+            // Restoring the fixture advances version again; the old home remains
+            // unowned and is still fenced below, never implicitly adopted.
+            await db.query("update credentials set value_enc=$2 where id=$1", [
+              account.id,
+              await encryptSecret(native(0), ENCRYPTION_KEY),
+            ]);
+          }
         }
       } else {
         expect(
