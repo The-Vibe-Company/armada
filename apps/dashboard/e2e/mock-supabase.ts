@@ -100,10 +100,16 @@ function seed(): State {
       },
       golden(id(21), "alice-private", "private", ALICE, null),
       golden(id(22), "bob-private", "private", BOB, "snap-bob"),
+      { ...golden(id(26), "modal-golden", "org", ALICE, "snap-modal"), provider: "modal", boat_snapshot_id: null },
     ],
     sandboxes: [
       sandbox(id(30), "bx_alice_running", id(20), ALICE, "claude", "running", "2026-11-08T10:05:00.000Z"),
-      sandbox(id(31), "bx_alice_failed", id(20), ALICE, "codex", "failed", "2026-11-08T10:04:00.000Z"),
+      // On Modal, as its golden: the list names the provider from this column, never from the ID (#645).
+      {
+        ...sandbox(id(31), "bx_alice_failed", id(26), ALICE, "codex", "failed", "2026-11-08T10:04:00.000Z"),
+        provider: "modal",
+        boat_id: null,
+      },
       {
         ...sandbox(id(32), "bx_bob_secret", id(22), BOB, "claude", "ready", "2026-11-08T10:03:00.000Z"),
         visibility: "private",
