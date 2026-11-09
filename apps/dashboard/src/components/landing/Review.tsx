@@ -28,6 +28,8 @@ export function Review() {
             Read the setup guide
           </a>
         </div>
+      </div>
+      <div className="dx-review-cli">
         <h3 className="dx-review-sub">Or from your terminal</h3>
         <ol className="dx-steps">
           {SETUP.map((s, k) => (
