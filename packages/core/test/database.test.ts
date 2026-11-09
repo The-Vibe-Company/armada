@@ -223,7 +223,12 @@ describe("database", () => {
           ciphertext.push(id);
         }
         if (!secretName.test(column.column_name)) continue;
-        if (id === "sandboxes.credential_id" || id === "sandboxes.credential_version") {
+        if (
+          id === "sandboxes.credential_id" ||
+          id === "sandboxes.credential_version" ||
+          id === "modal_server_harnesses.credential_id" ||
+          id === "modal_server_harnesses.credential_version"
+        ) {
           expect(column.data_type).toBe(id.endsWith("_id") ? "uuid" : "integer");
           continue;
         }
