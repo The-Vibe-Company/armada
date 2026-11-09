@@ -113,9 +113,7 @@ export default async function GoldensPage({ searchParams }: Props) {
   const orgs = new Map(memberships.map((item) => [item.org.id, item]));
   const mine = goldens.filter((golden) => golden.visibility === "private");
   const shared = goldens.filter((golden) => golden.visibility === "org");
-  // Read on the server with the session; only the resulting number (or why it is missing) reaches the page. A removed
-  // golden keeps its provider slot (#566), so the count is of every golden this viewer can read, removed ones included;
-  // the lists, launch and actions below use the live goldens only.
+  // Usage comes only from caller-visible server bindings, never historical row counts.
   const capacities = capabilities
     ? (Object.fromEntries(
         GOLDEN_PROVIDERS.map((provider) => [provider, providerCapacity(history, capabilities[provider], provider)]),
@@ -123,7 +121,11 @@ export default async function GoldensPage({ searchParams }: Props) {
     : null;
   const counts = Object.fromEntries(
     GOLDEN_PROVIDERS.map((provider) => {
-      const rows = history.filter((golden) => golden.provider === provider);
+      const read = capabilities?.[provider];
+      const bound = new Set(
+        read?.ok ? read.bindings?.filter((b) => b.relation === "current_backend").map((b) => b.goldenId) : [],
+      );
+      const rows = history.filter((golden) => golden.provider === provider && bound.has(golden.id));
       const removed = rows.filter((golden) => golden.removed_at).length;
       return [provider, { live: rows.length - removed, removed }];
     }),
@@ -227,21 +229,23 @@ export default async function GoldensPage({ searchParams }: Props) {
           <CircleCheckIcon className="text-success" />
           <AlertTitle>Removed {removed.name}</AlertTitle>
           <AlertDescription>
-            Its sandboxes and logs stay. It still counts toward the provider&apos;s golden limit.
+            Its sandboxes, logs and state artifacts stay. Any existing backend reservation is retained.
           </AlertDescription>
         </Alert>
       )}
       {selected &&
         capacities &&
         GOLDEN_PROVIDERS.map((provider) => {
-          const state = capacities[provider];
-          return state.kind === "legacy" ? (
-            <LegacyConflict
-              key={provider}
-              provider={provider}
-              capacity={state.capacity}
-              goldens={history.filter((g) => g.provider === provider)}
-            />
+          const read = capabilities?.[provider];
+          const reconcile = history.filter(
+            (g) =>
+              !g.removed_at &&
+              g.provider === provider &&
+              read?.ok &&
+              read.bindings?.some((b) => b.goldenId === g.id && b.relation !== "current_backend"),
+          );
+          return reconcile.length > 0 ? (
+            <LegacyConflict key={provider} provider={provider} goldens={reconcile} />
           ) : null;
         })}
       {/* Keyed, so the first golden moving the build section below the lists keeps the create form's build state. */}
@@ -273,7 +277,7 @@ async function allCapabilities(
   return { boat, modal };
 }
 
-/** Visible goldens of one provider holding a slot: live ones, and removed ones, which keep theirs (#566). */
+/** Visible goldens with a verified current-backend reservation. */
 type SlotCounts = { live: number; removed: number };
 
 function CapacityCard({
@@ -333,35 +337,26 @@ function capacityLine(used: number, capacity: number, removed: number): string {
   return `${used} of ${capacity} account ${capacity === 1 ? "slot" : "slots"} used by goldens you can see${held}.`;
 }
 
-function LegacyConflict({
-  provider,
-  capacity,
-  goldens,
-}: {
-  provider: SandboxProviderId;
-  capacity: number;
-  goldens: GoldenRow[];
-}) {
+function LegacyConflict({ provider, goldens }: { provider: SandboxProviderId; goldens: GoldenRow[] }) {
   const label = PROVIDER_LABELS[provider];
   return (
     <Alert data-legacy-conflict={provider}>
       <TriangleAlertIcon />
       <AlertTitle>
-        {goldens.length} {label} goldens predate the {capacity === 1 ? "one" : String(capacity)}-golden limit
+        {goldens.length} {label} goldens need backend reconciliation
       </AlertTitle>
       <AlertDescription>
         <p>Armada keeps them all: it does not choose, merge or delete any.</p>
         <ul className="list-inside list-disc">
           {goldens.map((golden) => (
             <li key={golden.id}>
-              <span className="font-mono text-xs">{golden.name}</span> ({golden.visibility}
-              {golden.removed_at ? ", removed: still holds its slot" : ""})
+              <span className="font-mono text-xs">{golden.name}</span> ({golden.visibility})
             </li>
           ))}
         </ul>
         <p>
-          Rebuild the one to keep. The server may refuse builds while another row holds the {label} slot; its operators
-          resolve that.
+          These live goldens are unbound or bound to another backend. Ask an operator for deliberate canonical adoption
+          or reconciliation before building. Rebuilding does not automatically fix their binding.
         </p>
       </AlertDescription>
     </Alert>

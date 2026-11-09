@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.10.0](https://github.com/The-Vibe-Company/armada/compare/v2.9.1...v2.10.0) (2026-11-09)
+
+
+### Features
+
+* **landing:** retell the story below the hero ([#597](https://github.com/The-Vibe-Company/armada/issues/597)) ([501ee88](https://github.com/The-Vibe-Company/armada/commit/501ee885965bb2461e35e619f62feac1e3392299))
+
+
+### Bug Fixes
+
+* **dashboard:** switch organizations on selection and add favicons ([#596](https://github.com/The-Vibe-Company/armada/issues/596)) ([0d71df9](https://github.com/The-Vibe-Company/armada/commit/0d71df94511e88a9ae045d1f15e9cf0a165624ce))
+* **dashboard:** unify organization Boat credential management ([#594](https://github.com/The-Vibe-Company/armada/issues/594)) ([2e70e68](https://github.com/The-Vibe-Company/armada/commit/2e70e68cd44edee36842795bfc91ba461142f9ff))
+
 ## [2.9.1](https://github.com/The-Vibe-Company/armada/compare/v2.9.0...v2.9.1) (2026-11-09)
 
 

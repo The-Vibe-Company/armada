@@ -543,6 +543,8 @@ export type Database = {
           auth_type: string;
           disabled: boolean;
           created_at: string;
+          catalog_id: string | null;
+          default_for_launch: boolean;
         };
         Insert: {
           id?: string;
@@ -557,6 +559,8 @@ export type Database = {
           auth_type: string;
           disabled?: boolean;
           created_at?: string;
+          catalog_id?: string | null;
+          default_for_launch?: boolean;
         };
         Update: {
           id?: string;
@@ -571,6 +575,8 @@ export type Database = {
           auth_type?: string;
           disabled?: boolean;
           created_at?: string;
+          catalog_id?: string | null;
+          default_for_launch?: boolean;
         };
         Relationships: [
           {
