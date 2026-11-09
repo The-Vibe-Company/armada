@@ -23,6 +23,8 @@ export class ClaudeDriver implements Driver {
     let interrupted = false;
     let latest = crypto.randomUUID();
     let steered = false;
+    let privateUsage = false;
+    const privateInputs = new Set<string>();
     let terminalError: HarnessErrorCode | undefined;
     // Subagent streams can interleave with the top-level stream.
     const messages = new Map<string | null, string>();
@@ -31,6 +33,8 @@ export class ClaudeDriver implements Driver {
     const inputs: SDKUserMessage[] = [];
     const push = (text: string) => {
       latest = crypto.randomUUID();
+      if (/^\/usage(?:\s|$)/.test(text.trim())) privateInputs.add(latest);
+      privateUsage = privateInputs.size > 0;
       inputs.push({
         type: "user",
         uuid: latest,
@@ -121,6 +125,7 @@ export class ClaudeDriver implements Driver {
         for await (const event of q) {
           if ("session_id" in event) c.session(event.session_id);
           if (event.type === "stream_event") {
+            if (privateUsage) continue;
             const e = event.event;
             const parent = event.parent_tool_use_id ?? null;
             if (e.type === "message_start") messages.set(parent, e.message.id);
@@ -142,6 +147,13 @@ export class ClaudeDriver implements Driver {
                 ...(messageId ? { messageId, textMode: "delta" as const } : {}),
               });
           } else if (event.type === "assistant") {
+            // /usage is a local native command; preserve its experimental structured report
+            // without conflating session API cost with subscription allowance.
+            if (event.usage_report) {
+              c.emit({ kind: "other", type: "usage_report", data: event.usage_report });
+              // Rendered /usage text is equally account-private.
+              continue;
+            }
             if (event.error)
               terminalError =
                 event.error === "authentication_failed" || event.error === "cloud_credential_error"
@@ -149,6 +161,7 @@ export class ClaudeDriver implements Driver {
                   : event.error === "rate_limit"
                     ? "rate_limited"
                     : "harness_failed";
+            if (privateUsage) continue;
             const tools = event.message.content.flatMap((block) =>
               block.type === "tool_use" ? [{ id: block.id, name: block.name, input: block.input }] : [],
             );
@@ -173,6 +186,7 @@ export class ClaudeDriver implements Driver {
               tools,
             });
           } else if (event.type === "user") {
+            if (privateUsage) continue;
             const content = event.message.content;
             if (Array.isArray(content))
               for (const block of content)
@@ -190,8 +204,14 @@ export class ClaudeDriver implements Driver {
                     ],
                   });
           } else if (event.type === "result") {
-            c.emit({ kind: "other", type: "result", data: event });
+            c.emit({
+              kind: "other",
+              type: "result",
+              data: privateUsage ? { subtype: event.subtype, is_error: event.is_error } : event,
+            });
             const consumed = event.user_message_uuids ?? (event.user_message_uuid ? [event.user_message_uuid] : []);
+            for (const id of consumed) privateInputs.delete(id);
+            privateUsage = privateInputs.size > 0;
             if (!interrupted && steered && !consumed.length) throw new HarnessError("invalid_harness_protocol");
             if (!interrupted && consumed.length && !consumed.includes(latest)) continue;
             if (terminalError) throw new HarnessError(terminalError);
