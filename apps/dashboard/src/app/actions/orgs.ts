@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { type ActionResult, done, explainDbError, fail, formString, isUuid } from "@/lib/action";
 import { isSelectedOrganization, SELECTED_ORG_COOKIE } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
+import { providerSetupPath } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
 export async function createOrg(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
@@ -23,7 +24,8 @@ export async function createOrg(_previous: ActionResult | null, data: FormData):
     maxAge: 31536000,
   });
   revalidatePath("/", "layout");
-  redirect(`/orgs/${id}`);
+  // A new organization has no sandbox provider: its setup is the next step (#576).
+  redirect(providerSetupPath(id));
 }
 
 export async function addMember(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {

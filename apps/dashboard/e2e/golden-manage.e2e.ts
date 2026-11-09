@@ -138,7 +138,6 @@ test("the capacity is the number the server reads for the selected org, fetched 
   await post("/__test/capabilities", { maxGoldens: 3 });
   await signIn(page, "carol@example.com", "/goldens");
   const card = page.locator('[data-capacity-provider="boat"][data-capacity="available"]');
-  await expect(card).toContainText("holds 3 goldens");
   await expect(card).toContainText("0 of 3");
 
   const { capabilityCalls } = await mockState();
@@ -184,7 +183,7 @@ test("a capacity the server cannot read is shown as unavailable, with no invente
   await post("/__test/capabilities", { maxGoldens: null });
   await page.reload();
   const unknown = page.locator('[data-capacity-provider="boat"][data-capacity="unknown"]');
-  await expect(unknown).toContainText("reports no golden limit");
+  await expect(unknown).toContainText("No golden limit");
   await expect(unknown).not.toContainText(/\d+ of \d+/);
   await expect(page.locator("[data-legacy-conflict]")).toHaveCount(0);
   expect((await mockState()).goldenCalls).toHaveLength(0);
@@ -304,7 +303,7 @@ test("an admin builds a Modal golden: the request names Modal and Modal's unboun
   await signIn(page, "carol@example.com", "/goldens");
   const modalCard = page.locator('[data-capacity-provider="modal"]');
   await expect(modalCard).toHaveAttribute("data-capacity", "unknown");
-  await expect(modalCard).toContainText("reports no golden limit for this organization's Modal backend");
+  await expect(modalCard).toContainText("No golden limit on Modal.");
   await expect(modalCard).not.toContainText(/\d+ of \d+/);
 
   const form = createForm(page);
@@ -627,7 +626,9 @@ test("removing a golden asks first, retires only the golden, and keeps its sandb
   await expect(boat).toHaveAttribute("data-capacity", "legacy");
   await expect(boat).toHaveAttribute("data-capacity-removed", "1");
   await expect(boat).toContainText("2 of 1");
-  await expect(boat).toContainText("removing a golden does not free its slot");
+  await expect(boat.locator("[data-capacity-line]")).toHaveText(
+    "2 of 1 account slot used by goldens you can see, 1 held by removed golden.",
+  );
   await expect(page.locator("[data-legacy-conflict]")).toContainText("removed: still holds its slot");
   // One request, by id in the selected org, with the session; never a delete of anything else.
   expect((await mockState()).goldenRemoveCalls).toEqual([

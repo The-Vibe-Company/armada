@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { type ActionResult, done, explainDbError, fail, formString, isUuid } from "@/lib/action";
 import { ControlError, createControlClient, isGoldenBuildStatus, isGoldenRemoval } from "@/lib/control";
 import { listGoldens } from "@/lib/data/goldens";
+import { newWorkBlocker } from "@/lib/data/provider-setup";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
@@ -40,6 +41,8 @@ export async function buildGolden(_previous: ActionResult | null, data: FormData
   const org = formString(data, "org");
   if (!isUuid(org)) return fail("That request is not valid.");
   if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
+  const blocker = await newWorkBlocker(org);
+  if (blocker) return fail(blocker);
   const serverUrl = mcpUrl();
   if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
 

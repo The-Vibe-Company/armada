@@ -30,27 +30,18 @@ export default async function CredentialsPage() {
 
   return (
     <>
-      <PageHeader
-        title="Credentials"
-        description="Model credentials run the agents inside your sandboxes; hosting credentials (Boat, Modal) pay for and run the sandboxes and stay on the Armada server. Your own are used before your org's."
-      />
+      <PageHeader title="Credentials" description="Yours are used before your org's." />
       {!encryptionKey() && (
         <Alert variant="destructive">
           <AlertDescription>
-            Credential encryption is not configured (ARMADA_ENCRYPTION_KEY), so keys cannot be saved yet.
+            Credential encryption is not configured on this server: credentials cannot be saved.
           </AlertDescription>
         </Alert>
       )}
-      <Alert>
-        <AlertDescription>
-          Values are encrypted before they are stored and are never shown again. To change one, set it again. OpenCode
-          and z.ai keys come with OpenCode support.
-        </AlertDescription>
-      </Alert>
 
       <CredentialSection
         title="Your credentials"
-        description="Used for your launches. Nobody else can see that they exist."
+        description="Only you see these."
         scope="user"
         owner={viewer.id}
         rows={personal}
@@ -63,8 +54,8 @@ export default async function CredentialsPage() {
           title={`${org.name} (org)`}
           description={
             role === "admin"
-              ? "Defaults for every member of the org. You are an admin: you manage them."
-              : "Defaults for every member of the org. Only an admin changes them."
+              ? "Shared with every member. You manage them."
+              : "Shared with every member. Only an admin changes them."
           }
           scope="org"
           owner={org.id}
@@ -106,11 +97,7 @@ function CredentialSection({
               <li key={info.kind} className="flex flex-wrap items-center justify-between gap-3 p-3">
                 <div className="min-w-0">
                   <p className="text-sm font-medium">{info.label}</p>
-                  {info.env ? (
-                    <p className="font-mono text-xs text-muted-foreground">{info.env}</p>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">Hosting: stays on the Armada server</p>
-                  )}
+                  {info.use === "hosting" && <p className="text-xs text-muted-foreground">Hosting</p>}
                 </div>
                 {row ? (
                   <div className="flex items-center gap-3">
@@ -159,7 +146,7 @@ function CredentialSection({
                   autoComplete="off"
                   spellCheck={false}
                   required
-                  placeholder="Paste the key or token"
+                  placeholder="Paste the value"
                 />
               </div>
             </div>
@@ -173,13 +160,7 @@ function CredentialSection({
               <input type="hidden" name="scope" value={scope} />
               <input type="hidden" name="owner" value={owner} />
               <input type="hidden" name="kind" value="modal" />
-              <div>
-                <p className="text-sm font-medium">Modal token</p>
-                <p className="text-xs text-muted-foreground">
-                  From modal.com, Settings, API tokens. Both halves are stored together and never shown again; saving
-                  again replaces them.
-                </p>
-              </div>
+              <p className="text-sm font-medium">Modal token</p>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor={`modal-id-${owner}`}>Token ID</Label>

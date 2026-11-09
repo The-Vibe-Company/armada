@@ -239,7 +239,7 @@ test("a stdio server is imported, must pin its package and is configured for lau
   await signIn(page, "alice@example.com", "/connections");
   const dialog = await openAdd(page);
   await dialog.getByRole("radio", { name: /stdio command/ }).check();
-  await expect(dialog.getByText("Runs inside each sandbox")).toBeVisible();
+  await expect(dialog.getByText("Runs in each sandbox launched with it")).toBeVisible();
   const importBox = dialog.getByLabel("Import a JSON definition (optional)");
   await importBox.fill(JSON.stringify({ mcpServers: { files: { command: "npx", env: { TOKEN: "x" } } } }));
   await dialog.getByRole("button", { name: "Import" }).click();
@@ -258,16 +258,14 @@ test("a stdio server is imported, must pin its package and is configured for lau
     .getByLabel("Arguments, one per line")
     .fill("-y\n@modelcontextprotocol/server-filesystem@2026.1.14\n/workspace");
   await dialog.getByRole("button", { name: "Add connection" }).click();
-  await expect(dialog.getByRole("status").last()).toContainText(
-    "Added. files is configured for launch. It starts inside each sandbox launched with it.",
-  );
+  await expect(dialog.getByRole("status").last()).toContainText("Added. files is configured for launch.");
   await expect(dialog.getByLabel("Name")).toHaveValue("");
   await page.keyboard.press("Escape");
   const files = card(page, "files");
   await expect(files).toContainText("npx -y @modelcontextprotocol/server-filesystem@2026.1.14 /workspace");
   await expect(files).toContainText("stdio (in sandbox)");
   await expect(files.locator("[data-connection-status]")).toHaveText("Configured for launch");
-  await expect(files).toContainText("Armada never runs it.");
+  await expect(files).toContainText("Available in sandbox");
   await expect(files.getByRole("button", { name: /^Check/ })).toHaveCount(0);
   const created = (await mockState()).controlCalls.find((call) => call.operation === "create");
   expect(created?.body).toEqual({

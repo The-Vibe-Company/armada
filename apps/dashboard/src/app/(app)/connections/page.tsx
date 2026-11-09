@@ -1,4 +1,4 @@
-import { CircleAlertIcon, CircleCheckIcon, InfoIcon } from "lucide-react";
+import { CircleAlertIcon, CircleCheckIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { AddConnectionDialog, ConnectionCard } from "@/components/connections";
@@ -21,10 +21,7 @@ export default async function ConnectionsPage({ searchParams }: Props) {
   const returned = oauthReturn(await searchParams);
 
   const header = (
-    <PageHeader
-      title="Connections"
-      description="MCP servers connected once, then selected when you launch a sandbox. Claude Code and Codex both get them."
-    >
+    <PageHeader title="Connections">
       {selected && list.state === "ready" && (
         <AddConnectionDialog orgId={selected.org.id} orgName={selected.org.name} isAdmin={selected.role === "admin"} />
       )}
@@ -50,9 +47,7 @@ export default async function ConnectionsPage({ searchParams }: Props) {
         {header}
         <Alert variant="destructive">
           <CircleAlertIcon />
-          <AlertDescription>
-            The Armada server is not configured for this dashboard (ARMADA_MCP_URL), so connections cannot be managed.
-          </AlertDescription>
+          <AlertDescription>The Armada server is not configured: connections cannot be managed here.</AlertDescription>
         </Alert>
       </>
     );
@@ -84,36 +79,19 @@ export default async function ConnectionsPage({ searchParams }: Props) {
     <>
       {header}
       {notice}
-      <Alert role="note">
-        <InfoIcon />
-        <AlertDescription>
-          <p>
-            <span className="font-medium text-foreground">Personal</span> connections use your own account and only
-            reach your private sandboxes, including private launches from a shared golden.{" "}
-            <span className="font-medium text-foreground">Org</span> connections are added by an admin with an account
-            meant for sharing; they are the only ones an org-visible sandbox can use. Sharing never hands out your
-            personal sign-in.
-          </p>
-        </AlertDescription>
-      </Alert>
-
       <ConnectionSection
         title="Your connections"
-        description={`Personal, in ${selected.org.name}. Nobody else sees or uses them.`}
+        description="Only you. Private sandboxes only."
         connections={personal}
         canManage
-        empty="Add a server with your own account, then pick it when you launch a private sandbox."
+        empty="No personal connections."
       />
       <ConnectionSection
         title={`${selected.org.name} connections`}
-        description={
-          isAdmin
-            ? "Shared with every member's org sandboxes. You are an admin: you manage them."
-            : "Shared with every member's org sandboxes. Only an admin adds or changes them."
-        }
+        description={isAdmin ? "Every member. You manage them." : "Every member. Only an admin adds or changes them."}
         connections={shared}
         canManage={isAdmin}
-        empty={isAdmin ? "Add one with Org selected under Who uses it." : "No admin has shared a connection yet."}
+        empty="No org connections."
       />
     </>
   );

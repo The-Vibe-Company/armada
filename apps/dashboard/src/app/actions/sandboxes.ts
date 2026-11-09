@@ -8,6 +8,7 @@ import { ControlError } from "@/lib/control";
 import { listSelectedConnections } from "@/lib/data/connections";
 import { viewerGateway } from "@/lib/data/gateway";
 import { listGoldens } from "@/lib/data/goldens";
+import { newWorkBlocker } from "@/lib/data/provider-setup";
 import { getSandbox } from "@/lib/data/sandboxes";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
@@ -75,6 +76,8 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
   if (!parsed.ok) return fail(parsed.error);
   if (!isUuid(parsed.args.org)) return fail("That request is not valid.");
   if (!(await isSelectedOrganization(parsed.args.org))) return fail("Switch to that organization first.");
+  const blocker = await newWorkBlocker(parsed.args.org);
+  if (blocker) return fail(blocker);
   const viewer = await requireViewer();
   const serverUrl = mcpUrl();
   if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");

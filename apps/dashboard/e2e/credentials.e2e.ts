@@ -75,7 +75,7 @@ test("a Modal token is saved from its two fields as one encrypted pair, never sh
 
   const row = mine.locator("li", { hasText: "Modal token" });
   await expect(row.getByRole("img", { name: "Value hidden" })).toBeVisible();
-  await expect(row).toContainText("Hosting: stays on the Armada server");
+  await expect(row).toContainText("Hosting");
   await page.reload();
   const html = await page.content();
   expect(html).not.toContain(MODAL_ID);

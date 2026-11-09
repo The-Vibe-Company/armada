@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { Fragment } from "react";
 import { setGoldenVisibility } from "@/app/actions/goldens";
 import { ActionForm, SubmitButton } from "@/components/action-form";
@@ -21,7 +22,7 @@ import { Empty, PageHeader, SectionHeader } from "@/components/page-header";
 import { RemoveGolden } from "@/components/remove-golden";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { isUuid } from "@/lib/action";
 import {
   CAPABILITIES_TIMEOUT_MS,
@@ -32,6 +33,7 @@ import {
 import { listSelectedConnections } from "@/lib/data/connections";
 import { getGitHubConnection } from "@/lib/data/github";
 import { findRemovedGolden, type GoldenRow, listGoldenHistory, listGoldens } from "@/lib/data/goldens";
+import { readProviderSetup } from "@/lib/data/provider-setup";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, type Membership, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
@@ -46,6 +48,7 @@ import {
   PROVIDER_LABELS,
   providerCapacity,
 } from "@/lib/golden-form";
+import { isSetupProvider, providerSetupPath, SETUP_PROVIDER_INFO } from "@/lib/provider-setup";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
 
@@ -58,13 +61,27 @@ export const maxDuration = 800;
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
 export default async function GoldensPage({ searchParams }: Props) {
-  const removedParam = (await searchParams).removed;
+  const query = await searchParams;
+  const removedParam = query.removed;
   const viewer = await requireViewer();
   const supabase = await createClient();
   // The confirmation after a removal: only for a golden of this org the database records as removed, named from it.
   const removed =
     typeof removedParam === "string" && isUuid(removedParam) ? await findRemovedGolden(supabase, removedParam) : null;
   const selected = await selectedOrganization();
+  // New builds, rebuilds and launches need the organization's sandbox provider (#576). Existing goldens and builds the
+  // page already tracks stay manageable without it; an org with neither resumes its setup.
+  const setup = selected ? await readProviderSetup(selected.org.id) : null;
+  const setupPending = selected !== null && setup?.state === "pending";
+  const canStart = setup?.state === "ready";
+  const tracked = (scope: string) => query[`build.${scope}`] !== undefined || query[`build-key.${scope}`] !== undefined;
+  // Shown only when the server's status confirms the provider the setup just connected.
+  const connected =
+    setup?.state === "ready" &&
+    isSetupProvider(query.connected) &&
+    setup.status.providers.some((item) => item.provider === query.connected && item.configured)
+      ? SETUP_PROVIDER_INFO[query.connected].label
+      : null;
   const pending = listMemberships(supabase, viewer.id).then((items) =>
     items.filter((item) => item.org.id === selected?.org.id),
   );
@@ -87,6 +104,12 @@ export default async function GoldensPage({ searchParams }: Props) {
     listed.state === "ready"
       ? { connections: listed.connections }
       : { unavailable: listed.state === "error" ? listed.message : "The Armada server is not configured." };
+  const createTracked = selected !== null && tracked(`create.${selected.org.id}`);
+  const rebuildsTracked = new Set(
+    goldens.filter((golden) => tracked(`rebuild.${golden.id}`)).map((golden) => golden.id),
+  );
+  if (setupPending && goldens.length === 0 && !createTracked && rebuildsTracked.size === 0)
+    redirect(providerSetupPath(selected.org.id));
   const orgs = new Map(memberships.map((item) => [item.org.id, item]));
   const mine = goldens.filter((golden) => golden.visibility === "private");
   const shared = goldens.filter((golden) => golden.visibility === "org");
@@ -113,17 +136,16 @@ export default async function GoldensPage({ searchParams }: Props) {
     viewerId: viewer.id,
     all: goldens,
     serverReady,
+    canStart,
+    rebuildsTracked,
     connections,
   };
 
+  // Without a confirmed provider the create form is shown only to follow a build this page already tracks.
   const build =
-    selected && capacities ? (
+    !canStart && selected && !createTracked ? null : selected && capacities ? (
       <section className="space-y-3" aria-labelledby="build-golden-title">
-        <SectionHeader
-          id="build-golden-title"
-          title="Build a golden"
-          description={`Goldens are built on the Armada server for ${selected.org.name}, one provider at a time.`}
-        />
+        <SectionHeader id="build-golden-title" title="Build a golden" />
         <div className="grid gap-3 md:grid-cols-2">
           {GOLDEN_PROVIDERS.map((provider) => (
             <CapacityCard key={provider} provider={provider} state={capacities[provider]} counts={counts[provider]} />
@@ -131,6 +153,7 @@ export default async function GoldensPage({ searchParams }: Props) {
         </div>
         <CreateCard
           org={selected}
+          canStart={canStart}
           capacities={capacities}
           boatLive={counts.boat.live}
           serverReady={serverReady}
@@ -151,7 +174,7 @@ export default async function GoldensPage({ searchParams }: Props) {
         id="private-goldens"
         title="Private goldens"
         description="Only you see these."
-        empty="No private goldens. A golden you build as Only me appears here."
+        empty="No private goldens."
         goldens={mine}
         context={context}
       />
@@ -168,17 +191,43 @@ export default async function GoldensPage({ searchParams }: Props) {
 
   return (
     <>
-      <PageHeader
-        title="Goldens"
-        description="A golden is a saved snapshot of your repositories. Every sandbox starts from one: pick a golden and launch an agent on it."
-      />
+      <PageHeader title="Goldens" />
+      {setup?.state === "unavailable" && (
+        <Alert variant="destructive" data-setup-state="unavailable">
+          <TriangleAlertIcon />
+          <AlertTitle>Provider status unavailable</AlertTitle>
+          <AlertDescription>
+            <p>{setup.message}</p>
+            <Link className="underline underline-offset-4" href="/goldens" prefetch={false}>
+              Check again
+            </Link>
+          </AlertDescription>
+        </Alert>
+      )}
+      {setupPending && selected && (
+        <Alert data-setup-state="pending" className="border-warning/40">
+          <TriangleAlertIcon className="text-warning" />
+          <AlertTitle>No sandbox provider for {selected.org.name}</AlertTitle>
+          <AlertDescription>
+            <p>New builds and launches are paused. Existing goldens stay manageable.</p>
+            <Link className="font-medium underline underline-offset-4" href={providerSetupPath(selected.org.id)}>
+              Set up a provider
+            </Link>
+          </AlertDescription>
+        </Alert>
+      )}
+      {connected && (
+        <Alert role="status" data-provider-connected className="border-success/40">
+          <CircleCheckIcon className="text-success" />
+          <AlertTitle>{connected} connected</AlertTitle>
+        </Alert>
+      )}
       {removed && (
         <Alert role="status" data-golden-removed className="border-success/40">
           <CircleCheckIcon className="text-success" />
           <AlertTitle>Removed {removed.name}</AlertTitle>
           <AlertDescription>
-            New sandboxes can no longer start from it. The sandboxes it started, with their conversations and logs, are
-            still on the Sandboxes page. It still counts toward the provider&apos;s golden limit.
+            Its sandboxes and logs stay. It still counts toward the provider&apos;s golden limit.
           </AlertDescription>
         </Alert>
       )}
@@ -256,52 +305,32 @@ function CapacityCard({
           <span className="flex items-center gap-2">
             <ServerIcon className="size-4 text-muted-foreground" aria-hidden /> {label} golden capacity
           </span>
-          {counted && (
-            <span className={state.kind === "available" ? "text-success" : "text-warning"}>
-              {state.used} of {state.capacity}
-            </span>
-          )}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-1.5 px-4 text-sm">
         {counted && (
-          <p>
-            {state.kind === "available"
-              ? "You can build a golden."
-              : state.kind === "full"
-                ? counts.live > 0
-                  ? "Edit and rebuild the existing golden rather than creating another."
-                  : "The slot is held by a removed golden."
-                : "More rows than the limit: these predate it. See above."}{" "}
-            <span className="text-muted-foreground">
-              Counted from the goldens visible to you in this organization
-              {counts.removed > 0
-                ? `, including ${counts.removed === 1 ? "one removed golden" : `${counts.removed} removed goldens`}: removing a golden does not free its slot.`
-                : "."}
-            </span>
+          <p className={state.kind === "available" ? undefined : "text-warning"} data-capacity-line>
+            {capacityLine(state.used, state.capacity, counts.removed)}
           </p>
         )}
-        <p className="text-muted-foreground">
-          {state.kind === "unavailable"
-            ? `Capacity unavailable: the Armada server could not report this organization's ${label} golden limit. The server still checks it when it builds.`
-            : state.kind === "unknown"
-              ? `The Armada server reports no golden limit for this organization's ${label} backend.`
-              : `The Armada server reports that this organization's ${label} backend holds ${state.capacity === 1 ? "one golden" : `${state.capacity} goldens`}. The server checks that limit when it builds; this page only reflects it.`}
-        </p>
+        {state.kind === "unknown" && <p className="text-muted-foreground">No golden limit on {label}.</p>}
         {state.kind === "unavailable" && (
-          <p className="text-muted-foreground" data-capacity-reason>
-            {state.reason}
-          </p>
-        )}
-        {counted && (
-          <p className="text-xs text-muted-foreground">
-            Private goldens of other members and goldens of other organizations sharing the {label} account are not
-            counted here, so the server may still refuse a new build.
-          </p>
+          <>
+            <p className="text-muted-foreground">Capacity unavailable.</p>
+            <p className="text-muted-foreground" data-capacity-reason>
+              {state.reason}
+            </p>
+          </>
         )}
       </CardContent>
     </Card>
   );
+}
+
+/** Visible usage of the account's limit; private goldens of others and other orgs' goldens are not visible here. */
+function capacityLine(used: number, capacity: number, removed: number): string {
+  const held = removed === 0 ? "" : `, ${removed} held by removed ${removed === 1 ? "golden" : "goldens"}`;
+  return `${used} of ${capacity} account ${capacity === 1 ? "slot" : "slots"} used by goldens you can see${held}.`;
 }
 
 function LegacyConflict({
@@ -321,10 +350,7 @@ function LegacyConflict({
         {goldens.length} {label} goldens predate the {capacity === 1 ? "one" : String(capacity)}-golden limit
       </AlertTitle>
       <AlertDescription>
-        <p>
-          Armada keeps every one of these rows and their access rules. This dashboard does not choose, merge or delete
-          any of them, and it does not mark one as active.
-        </p>
+        <p>Armada keeps them all: it does not choose, merge or delete any.</p>
         <ul className="list-inside list-disc">
           {goldens.map((golden) => (
             <li key={golden.id}>
@@ -334,8 +360,8 @@ function LegacyConflict({
           ))}
         </ul>
         <p>
-          Rebuild the golden you want to keep. The server may refuse a rebuild or a new build while the {label}{" "}
-          account's slot is held by another row; resolving that needs the server's operators.
+          Rebuild the one to keep. The server may refuse builds while another row holds the {label} slot; its operators
+          resolve that.
         </p>
       </AlertDescription>
     </Alert>
@@ -348,8 +374,11 @@ function CreateCard({
   boatLive,
   serverReady,
   githubConnected,
+  canStart,
 }: {
   org: Membership;
+  /** The org's sandbox provider is confirmed; otherwise the form only follows a tracked build. */
+  canStart: boolean;
   capacities: Record<SandboxProviderId, CapacityState>;
   /** Live Boat goldens visible here; the Boat slot may instead be held by a removed one. */
   boatLive: number;
@@ -367,28 +396,21 @@ function CreateCard({
           <InfoIcon />
           <AlertTitle>GitHub is not connected</AlertTitle>
           <AlertDescription>
-            <p>
-              The server clones with your own GitHub connection.{" "}
-              <Link className="underline underline-offset-4" href="/settings">
-                Connect GitHub in Settings
-              </Link>{" "}
-              first, or the build is refused.
-            </p>
+            <Link className="underline underline-offset-4" href="/settings">
+              Connect GitHub in Settings
+            </Link>
           </AlertDescription>
         </Alert>
       )}
       {discouraged &&
         (boatLive > 0 ? (
           <p className="text-sm text-muted-foreground">
-            A Boat golden already exists here. Creating another Boat golden is likely to be refused by the server;
-            prefer <span className="font-medium text-foreground">Edit and rebuild</span> on the existing golden above
-            {modalOpen ? ", or choose Modal as the provider." : "."}
+            Boat is full: use <span className="font-medium text-foreground">Edit and rebuild</span> above
+            {modalOpen ? ", or choose Modal." : "."}
           </p>
         ) : (
           <p className="text-sm text-muted-foreground">
-            A removed Boat golden still holds this organization&apos;s Boat slot: removing a golden does not free it.
-            Creating another Boat golden is likely to be refused by the server
-            {modalOpen ? "; choose Modal as the provider instead." : "."}
+            A removed Boat golden holds the Boat slot{modalOpen ? ": choose Modal." : "."}
           </p>
         ))}
       <GoldenForm
@@ -397,6 +419,7 @@ function CreateCard({
         orgName={org.org.name}
         isAdmin={org.role === "admin"}
         capacities={capacities}
+        canStart={canStart}
       />
     </div>
   );
@@ -406,15 +429,11 @@ function CreateCard({
         <CardTitle id="create-golden-title" role="heading" aria-level={3}>
           {discouraged ? "Create another golden" : "Create a golden"}
         </CardTitle>
-        <CardDescription>
-          The Armada server clones each repository over your GitHub connection in a disposable builder, scans it for
-          leaked tokens and saves a snapshot. No token reaches this browser.
-        </CardDescription>
       </CardHeader>
       <CardContent>
         {!serverReady ? (
           <p className="text-sm text-muted-foreground">
-            The Armada server is not configured for this dashboard (ARMADA_MCP_URL), so goldens cannot be built here.
+            The Armada server is not configured: goldens cannot be built here.
           </p>
         ) : (
           <Disclosure summary="Show the create form" defaultOpen={!discouraged}>
@@ -432,6 +451,10 @@ type RowContext = {
   viewerId: string;
   all: Golden[];
   serverReady: boolean;
+  /** The organization's sandbox provider is confirmed: launches and rebuilds may start. */
+  canStart: boolean;
+  /** Goldens whose rebuild this page tracks in its URL: their form stays to follow the job, even without a provider. */
+  rebuildsTracked: Set<string>;
   connections: LaunchConnections;
 };
 
@@ -530,7 +553,7 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
           </dl>
         </div>
         <div className="flex flex-wrap items-start gap-2 lg:justify-end">
-          {golden.provider_snapshot_id && context.serverReady ? (
+          {golden.provider_snapshot_id && context.serverReady && context.canStart ? (
             <LaunchDialog
               golden={golden.name}
               provider={golden.provider}
@@ -543,7 +566,9 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
           ) : (
             <span className="text-xs text-muted-foreground">
               {golden.provider_snapshot_id
-                ? "Launch needs the Armada server"
+                ? context.serverReady
+                  ? "Launch needs a sandbox provider"
+                  : "Launch needs the Armada server"
                 : "Launch needs a snapshot: build it first"}
             </span>
           )}
@@ -594,8 +619,10 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
       </div>
       <div className="flex flex-col gap-2 border-t px-4 py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
         <div className="min-w-0 flex-1">
-          {!context.serverReady ? (
-            <p className="text-xs text-muted-foreground">Rebuilding needs the Armada server.</p>
+          {!context.serverReady || (!context.canStart && !context.rebuildsTracked.has(golden.id)) ? (
+            <p className="text-xs text-muted-foreground" data-rebuild-paused>
+              {context.serverReady ? "Rebuilding needs a sandbox provider." : "Rebuilding needs the Armada server."}
+            </p>
           ) : state.canRebuild && membership ? (
             <details>
               <summary className="cursor-pointer text-sm font-medium text-muted-foreground hover:text-foreground">
@@ -612,6 +639,7 @@ function GoldenCard({ golden, context }: { golden: Golden; context: RowContext }
                   name={golden.name}
                   visibility={golden.visibility}
                   defaults={editDefaults(golden)}
+                  canStart={context.canStart}
                 />
               </div>
             </details>

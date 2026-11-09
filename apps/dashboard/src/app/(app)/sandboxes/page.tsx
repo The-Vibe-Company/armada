@@ -2,6 +2,7 @@ import { HARNESSES } from "@armada/core";
 import { RocketIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { Empty, PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
@@ -9,11 +10,13 @@ import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { listGoldenHistory } from "@/lib/data/goldens";
+import { readProviderSetup } from "@/lib/data/provider-setup";
 import { listSandboxes } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
+import { providerSetupPath } from "@/lib/provider-setup";
 import { filtersToSearch, PAGE_SIZE, parseSandboxFilters, SANDBOX_STATUSES } from "@/lib/sandbox-filters";
 import { createClient } from "@/lib/supabase/server";
 
@@ -27,7 +30,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
   const filters = parseSandboxFilters(await searchParams);
   const supabase = await createClient();
   const selected = await selectedOrganization();
-  const [{ rows, total }, goldens, directory] = await Promise.all([
+  const [{ rows, total }, goldens, directory, setup] = await Promise.all([
     listSandboxes(supabase, filters, viewer.id),
     // Removed goldens included: a retained sandbox keeps naming (and filtering by) the golden it started from.
     listGoldenHistory(supabase),
@@ -39,6 +42,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
           memberships.map((item) => item.org.id),
         ),
       ),
+    selected ? readProviderSetup(selected.org.id) : null,
   ]);
   const goldenName = new Map(
     goldens.map((golden) => [golden.id, golden.removed_at ? `${golden.name} (removed)` : golden.name]),
@@ -46,8 +50,15 @@ export default async function SandboxesPage({ searchParams }: Props) {
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const now = new Date();
   const filtered = Boolean(filters.status || filters.harness || filters.golden || filters.owner);
+  // An organization without a sandbox provider resumes its setup (#576); one with sandboxes to manage stays here.
+  const setupPending = selected !== null && setup?.state === "pending";
+  if (setupPending && !filtered && total === 0) redirect(providerSetupPath(selected.org.id));
 
-  const launchAction = selected ? (
+  const launchAction = setupPending ? (
+    <Button asChild>
+      <Link href={providerSetupPath(selected.org.id)}>Set up a provider</Link>
+    </Button>
+  ) : selected ? (
     <Button asChild>
       <Link href="/goldens">
         <LinkPendingIcon>
@@ -60,16 +71,7 @@ export default async function SandboxesPage({ searchParams }: Props) {
 
   return (
     <>
-      <PageHeader
-        title="Sandboxes"
-        description={
-          selected
-            ? `The agents of ${selected.org.name} you can see. Open one to follow its logs, send it a message or stop it.`
-            : "The agents you can see. Sandboxes belong to an organization."
-        }
-      >
-        {launchAction}
-      </PageHeader>
+      <PageHeader title="Sandboxes">{launchAction}</PageHeader>
 
       <form
         key={filtersToSearch(filters)}

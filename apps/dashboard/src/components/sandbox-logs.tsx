@@ -127,9 +127,7 @@ export function SandboxLogs({ sandboxId, initialStatus, live }: Props) {
         )}
         {!poll.configured && (
           <Alert>
-            <AlertDescription>
-              Live logs need the Armada server. Set ARMADA_MCP_URL on the dashboard to read them here.
-            </AlertDescription>
+            <AlertDescription>Live logs need the Armada server, which is not configured here.</AlertDescription>
           </Alert>
         )}
 

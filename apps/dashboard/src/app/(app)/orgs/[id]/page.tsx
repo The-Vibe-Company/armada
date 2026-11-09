@@ -14,6 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { isUuid } from "@/lib/action";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
+import { providerSetupPath } from "@/lib/provider-setup";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Organization" };
@@ -38,7 +39,10 @@ export default async function OrgPage({ params }: Props) {
 
   return (
     <>
-      <PageHeader title={membership.org.name} description={`You are ${isAdmin ? "an admin" : "a member"} of this org.`}>
+      <PageHeader title={membership.org.name} description={isAdmin ? "Admin" : "Member"}>
+        <Button variant="outline" asChild>
+          <Link href={providerSetupPath(id)}>Sandbox provider</Link>
+        </Button>
         <Button variant="outline" asChild>
           <Link href="/credentials">Org credentials</Link>
         </Button>
@@ -106,9 +110,7 @@ export default async function OrgPage({ params }: Props) {
         <Card>
           <CardHeader>
             <CardTitle>Add a member</CardTitle>
-            <CardDescription>
-              By the email of their Armada account. They sign in once first (the sign-in page creates the account).
-            </CardDescription>
+            <CardDescription>They must have signed in to Armada once.</CardDescription>
           </CardHeader>
           <CardContent>
             <ActionForm action={addMember} resetOnSuccess className="flex flex-col gap-3 sm:max-w-md">

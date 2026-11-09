@@ -62,9 +62,7 @@ export function LaunchDialog({
       <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Launch from {golden}</DialogTitle>
-          <DialogDescription>
-            The model and reasoning effort apply to the first prompt and to every later message.
-          </DialogDescription>
+          <DialogDescription>Model and reasoning effort apply to every message.</DialogDescription>
         </DialogHeader>
         <ActionForm action={launchFromGolden} className="space-y-4">
           <input type="hidden" name="golden" value={golden} />
@@ -132,8 +130,8 @@ function RepositoryField({ idPrefix, repositories }: { idPrefix: string; reposit
       </NativeSelect>
       <p id={`${idPrefix}-repo-hint`} className="text-xs text-muted-foreground">
         {repositories.length === 0
-          ? "This golden records no repository, so the agent starts in the default directory."
-          : "A chosen repository is where the agent starts; with none, it starts in the default directory. All repositories remain available."}
+          ? "No repository recorded: the agent starts in the default directory."
+          : "Where the agent starts. All repositories stay available."}
       </p>
     </div>
   );
@@ -200,9 +198,7 @@ function AccessFields({
             onChange={() => choose("private")}
             icon={<LockIcon />}
             title="Private"
-            hint={
-              goldenVisibility === "org" ? "Only you, even though the golden is shared." : "Only you, like the golden."
-            }
+            hint="Only you."
           />
           <ChoiceCard
             name={`${idPrefix}-visibility`}
@@ -211,33 +207,31 @@ function AccessFields({
             disabled={goldenVisibility === "private"}
             icon={<GlobeIcon />}
             title="Org"
-            hint={
-              goldenVisibility === "private"
-                ? "Not for a private golden."
-                : "Every member can follow, message and stop it."
-            }
+            hint={goldenVisibility === "private" ? "Not for a private golden." : "Every member can open and stop it."}
           />
         </div>
       </fieldset>
 
-      <fieldset className="space-y-2" aria-describedby={`${idPrefix}-connections-hint`}>
+      <fieldset
+        className="space-y-2"
+        aria-describedby={visibility === "org" ? `${idPrefix}-connections-hint` : undefined}
+      >
         <legend className="text-sm font-medium">MCP connections</legend>
-        <p id={`${idPrefix}-connections-hint`} className="text-xs text-muted-foreground">
-          {visibility === "org"
-            ? "An org sandbox only gets connections an admin shared with the org. Choose Private to use your own."
-            : "The agent gets the tools, resources and prompts of the servers you pick."}
-        </p>
+        {visibility === "org" && (
+          <p id={`${idPrefix}-connections-hint`} className="text-xs text-muted-foreground">
+            Org connections only. Choose Private to use your own.
+          </p>
+        )}
         {"unavailable" in connections ? (
           <p role="alert" className="rounded-md border border-destructive/40 p-3 text-sm text-destructive">
             Connections could not be loaded: {connections.unavailable} You can still launch without them.
           </p>
         ) : list.length === 0 ? (
           <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
-            No connections yet.{" "}
+            No connections.{" "}
             <Link href="/connections" className="underline">
               Add one
-            </Link>{" "}
-            to give agents MCP servers.
+            </Link>
           </p>
         ) : (
           <div className="space-y-3">

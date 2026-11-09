@@ -34,7 +34,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
   return (
     <>
-      <PageHeader title="Settings" description="Your own settings. Nobody else can see them." />
+      <PageHeader title="Settings" />
       {result && (
         <Alert variant={result.ok ? "default" : "destructive"}>
           <AlertDescription>{result.text}</AlertDescription>
@@ -47,17 +47,13 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             <GitPullRequestIcon className="size-4" />
             GitHub
           </CardTitle>
-          <CardDescription>
-            Connect your GitHub account so git commit, git push and the gh CLI inside the sandboxes you launch act as
-            you: commits and pull requests are authored by you, not by a bot.
-          </CardDescription>
+          <CardDescription>Sandboxes commit, push and use gh as you.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {!configured && (
             <Alert variant="destructive">
               <AlertDescription>
-                The Armada GitHub App is not configured on this deployment (GITHUB_APP_CLIENT_ID and
-                GITHUB_APP_CLIENT_SECRET), so GitHub cannot be connected yet.
+                The GitHub App is not configured on this server: GitHub cannot be connected.
               </AlertDescription>
             </Alert>
           )}
@@ -70,8 +66,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
                   {connection.name ? ` (${connection.name})` : ""}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Commits use {connection.github_id}+{connection.login}@users.noreply.github.com. Connected{" "}
-                  {new Date(connection.created_at).toISOString().slice(0, 10)}.
+                  {connection.github_id}+{connection.login}@users.noreply.github.com, since{" "}
+                  {new Date(connection.created_at).toISOString().slice(0, 10)}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -94,9 +90,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
                 <p className="text-sm font-medium">
                   {revoked ? `GitHub access for @${connection?.login} was revoked or expired.` : "Not connected."}
                 </p>
-                <p className="text-xs text-muted-foreground">
-                  Until you connect, sandboxes you launch have no GitHub identity: git push and gh are not signed in.
-                </p>
+                <p className="text-xs text-muted-foreground">Sandboxes have no GitHub identity.</p>
               </div>
               {configured && (
                 <Button asChild>
@@ -109,8 +103,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           {connection && !revoked && installations.length === 0 && (
             <Alert variant="destructive" data-github-installations="missing">
               <AlertDescription>
-                The Armada GitHub App is not installed on an account you can access, so sandboxes cannot push to your
-                repositories.
+                The Armada GitHub App is not installed on an account you can access: sandboxes cannot push.
                 {installUrl ? (
                   <>
                     {" "}
@@ -159,7 +152,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           )}
 
           <p className="text-sm text-muted-foreground">
-            Armada can only act on repositories where the Armada GitHub App is installed and you have access.
+            Only repositories with the app installed.
             {installUrl && installations.length === 0 && !(connection && !revoked) ? (
               <>
                 {" "}
@@ -178,7 +171,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
                 .
               </>
             ) : null}{" "}
-            The token a sandbox receives lasts 8 hours; launch a new sandbox for a fresh one.
+            Sandbox GitHub tokens last 8 hours.
           </p>
         </CardContent>
       </Card>

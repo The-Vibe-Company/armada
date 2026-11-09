@@ -34,6 +34,11 @@ type Props = {
   /** Update: the golden's visibility, which a rebuild keeps. */
   visibility?: "org" | "private";
   defaults?: { repos: RepoRow[]; init: string };
+  /**
+   * The organization's sandbox provider is confirmed (#576). Without it the form still follows a tracked build, but
+   * it cannot submit a new one; the server refuses it as well.
+   */
+  canStart?: boolean;
 };
 
 type KeyedRow = RepoRow & { key: number };
@@ -70,6 +75,7 @@ function ScopedGoldenForm({
   name,
   visibility,
   defaults,
+  canStart = true,
 }: Props) {
   const id = useId();
   // Each form tracks its own build in the page URL: this org's create form, or the rebuild of this one golden.
@@ -204,7 +210,7 @@ function ScopedGoldenForm({
 
   function guard(event: FormEvent<HTMLFormElement>) {
     // The fieldset is disabled while pending; this also stops an Enter press racing the re-render.
-    if (pending) event.preventDefault();
+    if (pending || !canStart) event.preventDefault();
   }
 
   const verb = mode === "create" ? "Build golden" : "Rebuild golden";
@@ -288,8 +294,7 @@ function ScopedGoldenForm({
         <fieldset className="space-y-3">
           <legend className="text-sm font-medium">Repositories</legend>
           <p className="text-xs text-muted-foreground">
-            GitHub repositories you can access, as owner/repo or a github.com URL. Branch defaults to main; the
-            directory under /home/user defaults to the repository name.
+            owner/repo or a github.com URL. Defaults: branch main, directory /home/user/&lt;repo&gt;.
           </p>
           <ol className="space-y-3">
             {rows.map((row, index) => (
@@ -390,14 +395,14 @@ function ScopedGoldenForm({
               className="font-mono text-xs"
             />
             <p id={`${id}-setup-hint`} className="text-xs text-muted-foreground">
-              Runs in the builder after the init commands; the server appends it to the recorded init commands.
+              Runs after the init commands.
             </p>
           </div>
         </div>
       </fieldset>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <Button type="submit" disabled={!admissionKey || pending || jobActive}>
+        <Button type="submit" disabled={!admissionKey || pending || jobActive || !canStart}>
           {pending && <Loader2Icon className="animate-spin" />}
           {pending ? (mode === "create" ? "Building…" : "Rebuilding…") : verb}
         </Button>
@@ -553,8 +558,7 @@ function BuildStatus({ pending, state }: { pending: boolean; state: ActionResult
   if (pending)
     return (
       <p role="status" className="text-sm text-muted-foreground">
-        The Armada server is cloning, scanning and snapshotting in a disposable builder. This can take several minutes;
-        the job continues even if you close this page.
+        Building. This can take several minutes and continues if you close this page.
       </p>
     );
   if (!state) return null;
