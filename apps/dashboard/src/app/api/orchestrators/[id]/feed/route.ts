@@ -44,7 +44,16 @@ export async function GET(request: Request, context: Context) {
       }
     } catch (error) {
       const failed = readFailure(error);
-      if (failed.failure === "session" || failed.failure === "rejected") throw error;
+      // Only a transient failure is retried here; any other (session, not found, another contract version) ends as before.
+      if (failed.failure !== "uncertain" && failed.failure !== "stale") throw error;
+      if (failed.failure === "uncertain") {
+        const capabilities = await api.capabilities().catch(() => null);
+        if (capabilities && !capabilities.enabled)
+          return NextResponse.json(
+            { error: capabilities.message, failure: "unavailable" },
+            { status: 503, headers: { "cache-control": "no-store" } },
+          );
+      }
       // The orchestrator itself was read: its state and controls stay current while its events are retried.
       return NextResponse.json(
         { detail, events: [], cursor: start, hasMore: false, eventsError: failed.message },

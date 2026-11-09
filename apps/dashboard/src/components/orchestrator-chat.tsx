@@ -147,8 +147,6 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
         cursor: typeof body.cursor === "string" ? body.cursor : null,
         hasMore: body.hasMore === true,
       };
-      failures.current = 0;
-      setConnection({ state: "ok" });
       latest.current = next;
       setDetail(next);
       // The detail is current even when the events could not be read: say so, and read them again with backoff.
@@ -158,6 +156,9 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
         setLoaded(true);
         return Math.min(MAX_BACKOFF_MS, ACTIVE_MS * 2 ** failures.current);
       }
+      // Only a full read (detail and events) resets the backoff.
+      failures.current = 0;
+      setConnection({ state: "ok" });
       if (page.cursor) cursor.current = page.cursor;
       if (page.events.length > 0) setFeed((shown) => mergeFeed(shown, page.events));
       setHasMore(page.hasMore);
@@ -511,13 +512,7 @@ function Composer({
         }}
         onKeyDown={onKeyDown}
         disabled={!enabled}
-        placeholder={
-          !enabled
-            ? (note ?? "")
-            : running
-              ? "Steer the running turn, or send the next one"
-              : "What should it coordinate?"
-        }
+        placeholder={placeholder(enabled, running, note)}
         className="max-h-48 min-h-16 resize-y bg-background"
       />
       <div className="flex flex-wrap items-center gap-2">
@@ -744,4 +739,9 @@ function waitExpiry(expiresAt: string, deadline: string, now: number): string {
   if (!expires) return "Expired.";
   const ends = timeUntil(deadline, now);
   return `Expires ${expires} unless renewed with new evidence${ends ? `; at the latest ${ends}` : ""}.`;
+}
+
+function placeholder(enabled: boolean, running: boolean, note: string | null): string {
+  if (!enabled) return note ?? "";
+  return running ? "Steer the running turn, or send the next one" : "What should it coordinate?";
 }
