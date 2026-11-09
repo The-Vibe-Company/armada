@@ -1571,3 +1571,21 @@ html:has(> body .lp) {
     height: auto;
   }
 }
+
+/* The terminal is a night panel inside the paper: the hero's ink again. */
+.dx-review .lp-terminal {
+  --surface: #0c0d10;
+  --card: #14151a;
+  --text: #f2f1ee;
+  --text-2: #b6b6bd;
+  --text-3: #8e8e97;
+  --line-strong: rgba(255, 255, 255, 0.11);
+  --fill-2: rgba(255, 255, 255, 0.08);
+  --done: #b6f15a;
+  --done-dim: rgba(182, 241, 90, 0.13);
+  --frontier: #7ea6ff;
+  --critical: #ff6b5b;
+}
+.dx .lp-copy .lp-copy-note {
+  color: #a9a9b1;
+}
