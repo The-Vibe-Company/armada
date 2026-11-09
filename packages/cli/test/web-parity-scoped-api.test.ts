@@ -365,8 +365,11 @@ test("CLI sandbox-connections reads authorized persisted bindings without hidden
       path: "/api/v1/mcp/sandbox-connections",
       body: { org, sandboxId: sid(35) },
     });
-    expect((await f.cli(["mcp", "sandbox-connections", sid(34), "--json"])).code).toBe(1);
+    const adminRead = await f.cli(["mcp", "sandbox-connections", sid(34), "--json"]);
+    expect(adminRead.code).toBe(0);
+    expect(JSON.parse(adminRead.out).connections).toEqual([]);
     expect((await f.cli(["mcp", "sandbox-connections", sid(35), "--org", secondOrg, "--json"])).code).toBe(1);
+    await f.db.query("update members set role='member' where org_id=$1 and user_id=$2", [org, other]);
     await f.setActor(other);
     expect((await f.cli(["mcp", "sandbox-connections", sid(35), "--json"])).code).toBe(1);
     expect((await f.db.query("select sandbox_id from mcp_bindings")).rows).toHaveLength(1);

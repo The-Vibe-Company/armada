@@ -1,7 +1,9 @@
 import { decryptSecret, encryptSecret } from "./crypto.ts";
 import type { Sql } from "./golden-store.ts";
 import { MCP_CATALOG, type McpCatalogId } from "./mcp-catalog.ts";
+import { mcpLaunchSelection } from "./mcp-launch-selection.ts";
 import { McpStdioError, parsePinnedMcpStdio } from "./mcp-stdio.ts";
+import { canAccessSandboxInterior } from "./sandbox-access.ts";
 import { VaultError } from "./vault-error.ts";
 
 export interface McpConnectionDto {
@@ -280,12 +282,18 @@ export function createSqlMcpRegistry(
     },
     async sandboxConnections(user, org, sandboxId) {
       await member(user, org);
-      const visible = await sql.query<{ id: string }>(
-        `select id from public.sandboxes
-        where id=$1::uuid and org_id=$2::uuid and (visibility='org' or access_owner_id=$3::uuid)`,
+      const visible = await sql.query<{ id: string; owner_id: string; role: "admin" | "member" }>(
+        `select s.id,s.owner_id,m.role from public.sandboxes s
+        join public.members m on m.org_id=s.org_id and m.user_id=$3::uuid
+        where s.id=$1::uuid and s.org_id=$2::uuid`,
         [sandboxId, org, user],
       );
-      if (!visible.rows[0]) throw new VaultError("not_found", "No such sandbox.");
+      const sandbox = visible.rows[0];
+      if (
+        !sandbox ||
+        !canAccessSandboxInterior({ ownerId: sandbox.owner_id }, { userId: user, currentRole: sandbox.role })
+      )
+        throw new VaultError("not_found", "No such sandbox.");
       const result = await sql.query<Row>(
         `select ${columns} from public.mcp_bindings b
         join public.mcp_connections c on c.id=b.connection_id
@@ -499,7 +507,7 @@ export function createSqlMcpLeasePort(sql: Sql) {
         where b.sandbox_id=$1::uuid and b.connection_id=$2::uuid and not c.disabled and public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until)='connected'
         and g.revoked_at is null and s.status not in ('stopped','deleted','failed')
         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
-        and (c.scope='org' or (s.visibility='private' and c.owner_id=s.owner_id and s.access_owner_id=s.owner_id))
+        and c.org_id=s.org_id and g.connection_id=c.id and (c.scope='org' or c.owner_id=s.owner_id)
         returning id`,
         [input.sandboxId, input.connectionId, input.tokenHash, input.operations, input.expiresAt],
       );
@@ -518,7 +526,7 @@ export function createSqlMcpLeasePort(sql: Sql) {
         and l.generation=g.generation and l.sandbox_generation=s.mcp_generation
         and s.status not in ('stopped','deleted','failed')
         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
-        and (c.scope='org' or (s.visibility='private' and c.owner_id=s.owner_id and s.access_owner_id=s.owner_id))`,
+        and c.org_id=s.org_id and g.connection_id=c.id and (c.scope='org' or c.owner_id=s.owner_id)`,
             [tokenHash, operation],
           )
         ).rows[0] ?? null
@@ -531,18 +539,16 @@ export function createSqlMcpLeasePort(sql: Sql) {
 }
 export function createSqlMcpLaunchPort(sql: Sql, registry: McpRegistry) {
   return {
-    async defaults(actor: { userId: string; orgId: string }, visibility: "private" | "org") {
-      return (await registry.list(actor.userId, actor.orgId))
-        .filter((c) => c.defaultForLaunch && c.status !== "disabled" && (visibility === "private" || c.scope === "org"))
-        .map((c) => c.id);
+    async defaults(actor: { userId: string; orgId: string }, _visibility: "private" | "org") {
+      return mcpLaunchSelection(await registry.list(actor.userId, actor.orgId)).ids;
     },
-    async validate(actor: { userId: string; orgId: string }, ids: string[], visibility: "private" | "org") {
+    async validate(actor: { userId: string; orgId: string }, ids: string[], _visibility: "private" | "org") {
       for (const id of ids) {
         const c = await registry.get(actor.userId, actor.orgId, id);
-        if (c.status !== "connected" || (visibility === "org" && c.scope !== "org"))
+        if (c.status !== "connected")
           throw new VaultError(
             "forbidden",
-            "Personal grants require a private sandbox; reconnect every selected MCP connection before launching.",
+            "Please reconnect every selected MCP connection before launching, or explicitly select connections to continue without it.",
           );
       }
     },
