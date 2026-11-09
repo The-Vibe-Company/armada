@@ -21,6 +21,13 @@ export interface PreparedRepo extends AuthorizedRepo {
 }
 
 export interface GoldenCreateDeps {
+  /** Durable worker hooks; never supplied by a client. */
+  execution?: {
+    id: string;
+    cleaned(safe: boolean): void;
+    phase(phase: string): Promise<void>;
+    builder(id: string): Promise<void>;
+  };
   /** The caller's own cached OAuth access token (never an App token) and the repos it may build from. */
   authorize(
     actor: GoldenActor,
@@ -102,19 +109,21 @@ export class GoldenCreateService {
     let artifactSettled = false;
     let builder: Awaited<ReturnType<Provider["createGolden"]>> | undefined;
     let issued: { token: string; revoke(): Promise<void> } | undefined;
-    const buildId = crypto.randomUUID();
+    const buildId = this.deps.execution?.id ?? crypto.randomUUID();
     const startedAt = Date.now();
     let phase = "builder";
-    const enter = (next: string) => {
+    const enter = async (next: string) => {
+      await this.deps.execution?.phase(next);
       phase = next;
       console.info(JSON.stringify({ event: "golden_build_phase", buildId, phase, elapsedMs: Date.now() - startedAt }));
     };
     try {
-      enter("builder");
+      await enter("builder");
       builder = await provider.createGolden({ name, ttlSeconds: 86400, labels: { armada: "golden-builder" } });
+      await this.deps.execution?.builder(builder.id);
       // A scoped installation token can cover only one installation. Multiple already-authorized
       // repos use the caller's cached user token, which is never revoked or rotated here.
-      enter("checkout_credentials");
+      await enter("checkout_credentials");
       issued =
         this.deps.mint && installations.size === 1
           ? await this.deps.mint(
@@ -122,15 +131,15 @@ export class GoldenCreateService {
               repos.map((r) => r.id),
             )
           : { token: callerToken, revoke: () => Promise.resolve() };
-      enter("checkout_baseline");
+      await enter("checkout_baseline");
       await this.deps.ssh(provider, {
         sandboxId: builder.id,
         token: issued.token,
         script: goldenScript(prepared, [input.config?.init ?? [], input.setup ? [input.setup] : []].flat()),
       });
-      enter("secret_scan");
+      await enter("secret_scan");
       await this.deps.scan(provider, builder.id);
-      enter("snapshot");
+      await enter("snapshot");
       requestedSnapshot = input.existingGolden ? `golden-r-${crypto.randomUUID()}` : `golden-${builder.id}`;
       // `snapshot` only starts the save; it is asynchronous, so a brand-new snapshot is normally
       // "saving" here and must be polled, exactly like the original golden flow's own snapshot step.
@@ -154,7 +163,7 @@ export class GoldenCreateService {
       if (settled.status !== "ready") {
         throw new GoldenError("snapshot_failed", settled.error ?? `Snapshot '${snapshot}' failed.`);
       }
-      enter("persist");
+      await enter("persist");
       persistAttempted = true;
       {
         const goldenId = await this.deps.persist({
@@ -214,7 +223,16 @@ export class GoldenCreateService {
       }
       if (!persisted && reservation) await this.deps.release?.(reservation).catch(() => {});
       await issued?.revoke().catch(() => {});
-      if (builder) await provider.stop({ sandboxId: builder.id }).catch(() => {});
+      let stopped = false;
+      if (builder) {
+        try {
+          await provider.stop({ sandboxId: builder.id });
+          stopped = true;
+        } catch {
+          /* Retain uncertain job capacity. */
+        }
+      }
+      this.deps.execution?.cleaned(stopped || (!builder && phase === "authorization"));
     }
   }
 }

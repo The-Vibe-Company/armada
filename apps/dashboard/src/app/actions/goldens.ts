@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { type ActionResult, done, explainDbError, fail, formString, isUuid } from "@/lib/action";
-import { ControlError, createControlClient, isGoldenBuildResult } from "@/lib/control";
+import { ControlError, createControlClient, isGoldenBuildStatus } from "@/lib/control";
 import { listGoldens } from "@/lib/data/goldens";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
@@ -60,17 +60,49 @@ export async function buildGolden(_previous: ActionResult | null, data: FormData
   const client = createControlClient({ serverUrl, token: viewer.token });
   let result: unknown;
   try {
-    result = await client.post(request.mode === "create" ? "golden/create" : "golden/update", request.body);
+    result = await client.post(request.mode === "create" ? "golden/create" : "golden/update", {
+      ...request.body,
+      idempotencyKey: formString(data, "idempotencyKey"),
+    });
   } catch (error) {
     if (error instanceof ControlError) return fail(explainBuildError(error));
     throw error;
   }
-  if (!isGoldenBuildResult(result)) return fail("The Armada server sent an unexpected answer.");
-  revalidatePath("/goldens");
-  revalidatePath("/sandboxes");
-  return done(
-    `${request.mode === "create" ? "Built" : "Rebuilt"} golden '${result.name}' and saved snapshot ${result.snapshot}.`,
-  );
+  if (!isGoldenBuildStatus(result)) return fail("The Armada server sent an unexpected answer.");
+  if (result.state === "succeeded") {
+    revalidatePath("/goldens");
+    revalidatePath("/sandboxes");
+  }
+  return { ok: true, message: `Build admitted: ${result.jobId}.`, build: result };
+}
+
+/** One authenticated, bounded status read; never submits or retries a build. */
+export async function goldenBuildStatus(jobId: string) {
+  const viewer = await requireViewer();
+  if (!isUuid(jobId)) throw new Error("Invalid build id.");
+  const serverUrl = mcpUrl();
+  if (!serverUrl || !viewer.token) throw new Error("The Armada server is not configured.");
+  const result = await createControlClient({ serverUrl, token: viewer.token }).post("golden/build/status", { jobId });
+  if (!isGoldenBuildStatus(result)) throw new Error("Unexpected build status.");
+  if (result.state === "succeeded") {
+    revalidatePath("/goldens");
+    revalidatePath("/sandboxes");
+  }
+  return result;
+}
+
+/** Recover a lost admission response without submitting another build. */
+export async function recoverGoldenBuild(idempotencyKey: string, org: string) {
+  const viewer = await requireViewer();
+  if (!isUuid(org) || !(await isSelectedOrganization(org))) throw new Error("Select the build's organization.");
+  const serverUrl = mcpUrl();
+  if (!serverUrl || !viewer.token) throw new Error("The Armada server is not configured.");
+  const result = await createControlClient({ serverUrl, token: viewer.token }).post("golden/build/status", {
+    org,
+    idempotencyKey,
+  });
+  if (!isGoldenBuildStatus(result)) throw new Error("Unexpected build status.");
+  return result;
 }
 
 function repoRows(data: FormData): RepoRow[] {

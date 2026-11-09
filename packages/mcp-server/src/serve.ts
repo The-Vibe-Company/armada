@@ -1,8 +1,8 @@
 import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
 import {
   createGoldenAdoption,
-  createGoldenCreateService,
   createSqlVaultStore,
+  GoldenBuildJobs,
   githubAppFromEnv,
   githubInstallationAppFromEnv,
 } from "@armada/core/server";
@@ -10,6 +10,7 @@ import { createBoatProvider } from "@armada/provider-boat";
 import { configFromEnv } from "./config.ts";
 import { type ControlOptions, handleControlRequest } from "./control.ts";
 import { createSqlData } from "./data.ts";
+import { startGoldenWorker } from "./golden-worker.ts";
 import { createHandler, providerRegistry, type Route } from "./http.ts";
 import { bunSql } from "./sql.ts";
 
@@ -37,10 +38,19 @@ export async function startServer(
   const data = createSqlData(sql);
   const providerFor = (apiKey: string) => createBoatProvider({ apiKey });
   const goldenAdoption = createGoldenAdoption(sql);
-  const goldenCreate = createGoldenCreateService({
+
+  const goldenBuilds = new GoldenBuildJobs({
     sql,
-    github: { store, encryptionKey: config.encryptionKey, app: githubApp },
-    installationApp: githubInstallationAppFromEnv(env),
+    encryptionKey: config.encryptionKey,
+    service: {
+      github: { store, encryptionKey: config.encryptionKey, app: githubApp },
+      installationApp: githubInstallationAppFromEnv(env),
+    },
+    provider: async (actor, visibility) => {
+      const { resolveBoatKey } = await import("@armada/core/server");
+      const credential = await resolveBoatKey(store, config.encryptionKey, { ...actor, visibility });
+      return providerFor(credential.key);
+    },
   });
   const control: ControlOptions = {
     authStore,
@@ -51,7 +61,7 @@ export async function startServer(
     vault: store,
     github: { app: githubApp },
     providerFor,
-    goldenCreate,
+    goldenBuilds,
     goldenAdoption,
     providers: providerRegistry({ vault: store, encryptionKey: config.encryptionKey, providerFor }),
     logs: async (caller, sandboxId) => {
@@ -81,13 +91,21 @@ export async function startServer(
     vault: store,
     encryptionKey: config.encryptionKey,
     github: { store, app: githubApp },
-    goldenCreate,
+    goldenBuilds,
     goldenAdoption,
     providerFor,
     routes: [(request) => handleControlRequest(request, control), ...(options.routes ?? [])],
     ...(options.logError ? { log: options.logError } : {}),
   });
   const server = Bun.serve({ port: config.port, hostname: "0.0.0.0", fetch: handler });
+  const worker = startGoldenWorker(goldenBuilds);
+  const stop = server.stop.bind(server);
+  server.stop = (closeActiveConnections?: boolean) => {
+    worker.stop();
+    return stop(closeActiveConnections);
+  };
+  // Expose the tracked task for hosts that gracefully drain before process termination.
+  Object.assign(server, { goldenWorker: worker });
   (options.log ?? console.log)(`armada serve: listening on port ${server.port}, public URL ${config.publicUrl}`);
   return server;
 }

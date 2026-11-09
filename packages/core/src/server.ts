@@ -13,6 +13,7 @@ export {
   revokeInstallationToken,
 } from "./github-installation.ts";
 export * from "./golden-adoption.ts";
+export * from "./golden-build-jobs.ts";
 export { assertGoldenBackendBinding, createGoldenCreateService, type GoldenCreateOptions } from "./golden-create.ts";
 export {
   type AuthorizedRepo,

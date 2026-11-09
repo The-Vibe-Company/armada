@@ -59,6 +59,7 @@ describe("database", () => {
         "github_connections",
         "golden_adoption_receipts",
         "golden_backend_slots",
+        "golden_build_jobs",
         "goldens",
         "mcp_tokens",
         "members",
@@ -219,6 +220,7 @@ describe("database", () => {
         "credentials.value_enc",
         "github_connections.access_token_enc",
         "github_connections.refresh_token_enc",
+        "golden_build_jobs.payload_enc",
         "notify_subscriptions.secret_enc",
         "orgs.boat_api_key_enc",
       ]);

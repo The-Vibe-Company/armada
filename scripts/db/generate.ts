@@ -29,6 +29,7 @@ type Schema = {
 const ROW_ALIASES: Record<string, string> = {
   credentials: "Credential",
   github_connections: "GitHubConnection",
+  golden_build_jobs: "GoldenBuildJob",
   golden_backend_slots: "GoldenBackendSlot",
   golden_adoption_receipts: "GoldenAdoptionReceipt",
   goldens: "Golden",

@@ -30,7 +30,13 @@ test("golden create maps positional config to API with token-only auth", async (
         fetch: async (input, init) => {
           const r = input instanceof Request ? input : new Request(String(input), init);
           calls.push(r);
-          return Response.json({ name: "web", visibility: "private", snapshot: "golden-bx" });
+          return Response.json({
+            jobId: crypto.randomUUID(),
+            state: "succeeded",
+            phase: "complete",
+            errorCode: null,
+            result: { name: "web", visibility: "private", snapshot: "golden-bx" },
+          });
         },
         now: () => new Date(),
         open: () => undefined,
@@ -92,3 +98,71 @@ test("token-only golden create prints an actionable API conflict and exits nonze
   expect(output).toBe("");
   expect(requests).toBe(1);
 });
+
+for (const outcome of ["succeeded", "failed", "disconnected"] as const) {
+  test("golden polls its admitted job without replaying admission: " + outcome, async () => {
+    const requests: { path: string; body: Record<string, unknown>; init: RequestInit | undefined }[] = [];
+    const jobId = crypto.randomUUID();
+    let error = "";
+    let output = "";
+    let sleeps = 0;
+    const code = await run(
+      [
+        "golden",
+        "create",
+        "web",
+        "--repo",
+        "https://github.com/acme/web.git",
+        "--idempotency-key",
+        "stable-admission-key",
+      ],
+      {
+        out: (text) => {
+          output += text;
+        },
+        err: (text) => {
+          error += text;
+        },
+      },
+      {
+        sleep: async () => {
+          sleeps++;
+        },
+        auth: {
+          out: () => {},
+          err: () => {},
+          env: { ARMADA_TOKEN: token },
+          session: memorySessionStore(),
+          now: () => new Date(),
+          open: () => {},
+          fetch: async (input, init) => {
+            const path = new URL(String(input)).pathname;
+            requests.push({ path, body: JSON.parse(String(init?.body)), init });
+            if (path.endsWith("/create"))
+              return Response.json(
+                { jobId, state: "queued", phase: "queued", errorCode: null, result: null },
+                { status: 202 },
+              );
+            if (outcome === "disconnected") throw new Error("transport failed");
+            return Response.json({
+              jobId,
+              state: outcome,
+              phase: outcome === "failed" ? "secret_scan" : "complete",
+              errorCode: outcome === "failed" ? "build_failed" : null,
+              result: outcome === "succeeded" ? { name: "web", visibility: "org", snapshot: "new-snapshot" } : null,
+            });
+          },
+        },
+      },
+    );
+    expect(requests.map((r) => r.path)).toEqual(["/api/v1/golden/create", "/api/v1/golden/build/status"]);
+    expect(requests[0]?.body.idempotencyKey).toBe("stable-admission-key");
+    expect(requests[1]?.body).toEqual({ jobId });
+    expect(sleeps).toBe(1);
+    for (const r of requests) expect(r.init).toMatchObject({ timeout: false, signal: expect.any(AbortSignal) });
+    expect(output).toContain(jobId);
+    expect(code).toBe(outcome === "succeeded" ? 0 : 1);
+    if (outcome === "failed") expect(error).toContain("build_failed");
+    if (outcome === "disconnected") expect(error).toContain("do not resubmit");
+  });
+}

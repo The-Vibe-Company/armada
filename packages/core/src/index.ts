@@ -101,6 +101,7 @@ export {
   snapshotGolden,
   waitSnapshot,
 } from "./golden.ts";
+export type { GoldenBuildStatus } from "./golden-build-status.ts";
 export {
   assignDirs,
   configFromFlags,

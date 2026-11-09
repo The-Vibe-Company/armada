@@ -5,7 +5,7 @@ import {
   DEFAULT_LAUNCH_TTL_SECONDS,
   EncryptionKeyError,
   type GoldenAdoption,
-  type GoldenCreateService,
+  type GoldenBuildJobs,
   GoldenError,
   type GoldenRecord,
   goldenForLaunch,
@@ -57,7 +57,7 @@ export interface ToolContext {
   sleep(ms: number): Promise<void>;
   launch?: LaunchOptions;
   /** Secure, server-orchestrated multi-repo golden creation. Absent: `golden_create` refuses. */
-  goldenCreate?: GoldenCreateService;
+  goldenBuilds?: GoldenBuildJobs;
   goldenAdoption?: GoldenAdoption;
   /** Where the real cause of an internal or unavailable tool error goes, redacted. Defaults to stderr. */
   logError?: (line: string) => void;
@@ -81,6 +81,14 @@ export class ToolError extends Error {
 }
 
 export const serverInfo = { name: "armada" } as const;
+
+const buildOutput = {
+  jobId: z.string(),
+  state: z.enum(["queued", "running", "recovery_required", "succeeded", "failed"]),
+  phase: z.string(),
+  errorCode: z.literal("build_failed").nullable(),
+  result: z.object({ name: z.string(), visibility: z.enum(["org", "private"]), snapshot: z.string() }).nullable(),
+};
 
 const id = z.string().describe("Armada's sandbox id (a uuid, as returned by launch and list).");
 const conversationId = z.string().min(1).optional().describe("A conversation of the sandbox. Default: the latest.");
@@ -305,15 +313,42 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
   );
 
   tool(
+    "golden_build_status",
+    {
+      title: "Golden build status",
+      description: "Read a durable build job. Poll this bounded request; never resubmit a disconnected build.",
+      input: {
+        jobId: z.string().uuid().optional(),
+        idempotencyKey: z.string().min(16).max(128).optional(),
+        org: z.string().optional(),
+      },
+      readOnly: true,
+      output: buildOutput,
+    },
+    async ({ jobId, idempotencyKey, org }) => {
+      if (!context.goldenBuilds) throw new ToolError("unsupported", "Durable golden builds are not configured.");
+      if (!jobId && !idempotencyKey) throw new ToolError("invalid", "Pass jobId or idempotencyKey.");
+      return context.goldenBuilds.status(
+        caller.userId,
+        jobId ?? "",
+        idempotencyKey ? resolveCreateOrg(caller.orgs, org).orgId : undefined,
+        idempotencyKey,
+        caller.orgs.map((org) => org.orgId),
+      );
+    },
+  );
+
+  tool(
     "golden_create",
     {
       title: "Create a golden",
       description:
-        "Securely builds a golden from one or more GitHub repositories you can access, in a disposable sandbox " +
+        "Admits a durable build job; poll golden_build_status. Builds from one or more GitHub repositories you can access, in a disposable sandbox " +
         "with none of the boat.dev account's credentials: clones each over your own cached GitHub connection " +
         "(see `launch`'s `github`), optionally runs a setup script, scans the builder for leaked GitHub tokens, " +
         "and only saves the snapshot when that scan passes. All repos must share one GitHub App installation.",
       input: {
+        idempotencyKey: z.string().min(16).max(128),
         name: z.string().min(1).describe("The golden's name."),
         repos: z
           .array(z.string().min(1))
@@ -327,10 +362,10 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         private: z.boolean().optional().describe("Default false: visible to your whole org. True: only you."),
         setup: z.string().optional().describe("A shell script run in the builder after cloning, before the snapshot."),
       },
-      output: { name: z.string(), visibility: z.enum(["org", "private"]), snapshot: z.string() },
+      output: buildOutput,
     },
     async (args) => {
-      if (!context.goldenCreate) {
+      if (!context.goldenBuilds) {
         throw new ToolError("unsupported", "Secure golden creation is not configured on this server.");
       }
       const visibility: Visibility = args.private ? "private" : "org";
@@ -338,7 +373,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
       assertGoldenMutation(actor, { orgId: member.orgId, visibility, ownerId: caller.userId, name: args.name });
       const provider = await context.provider({ orgId: member.orgId, visibility, provider: "boat", modal: null });
-      const result = await context.goldenCreate.create(
+      return context.goldenBuilds.admit(
         provider,
         actor,
         {
@@ -347,9 +382,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           repos: args.repos,
           ...(args.setup ? { setup: args.setup } : {}),
         },
-        context.launch ?? {},
+        args.idempotencyKey,
       );
-      return { name: args.name, visibility, snapshot: result.snapshot };
     },
   );
 
@@ -358,17 +392,18 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     {
       title: "Rebuild a golden",
       description:
-        "Rebuilds an existing golden in place. Private goldens require their owner; org goldens require an org admin.",
+        "Admits a durable rebuild job; poll golden_build_status. Private goldens require their owner; org goldens require an org admin.",
       input: {
+        idempotencyKey: z.string().min(16).max(128),
         name: z.string().min(1),
         org: z.string().optional(),
         repos: z.array(z.string().min(1)).min(1).max(MAX_CREATE_REPOS),
         setup: z.string().optional(),
       },
-      output: { name: z.string(), visibility: z.enum(["org", "private"]), snapshot: z.string() },
+      output: buildOutput,
     },
     async (args) => {
-      if (!context.goldenCreate)
+      if (!context.goldenBuilds)
         throw new ToolError("unsupported", "Secure golden creation is not configured on this server.");
       const member = resolveCreateOrg(caller.orgs, args.org);
       const rows = await data.goldens.findByName(member.orgId, args.name);
@@ -377,7 +412,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
       assertGoldenMutation(actor, existingGolden);
       const provider = await context.provider(existingGolden);
-      const result = await context.goldenCreate.create(
+      return context.goldenBuilds.admit(
         provider,
         actor,
         {
@@ -387,9 +422,8 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
           ...(args.setup ? { setup: args.setup } : {}),
           existingGolden,
         },
-        context.launch ?? {},
+        args.idempotencyKey,
       );
-      return { name: existingGolden.name, visibility: existingGolden.visibility, snapshot: result.snapshot };
     },
   );
 

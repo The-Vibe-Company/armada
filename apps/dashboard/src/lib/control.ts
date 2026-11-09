@@ -1,3 +1,4 @@
+import type { GoldenBuildStatus } from "@armada/core";
 /**
  * The dashboard's server-side client of the Armada control API (`/api/v1/*`), for the operations only the
  * server can do (a golden build needs the encrypted Boat key and the caller's GitHub connection; the golden
@@ -25,12 +26,8 @@ type Options = {
   timeoutMs?: number;
 };
 
-/**
- * A golden build clones, scans and snapshots; it can take minutes. This is the same bound as the same-origin
- * proxy's, and it must stay below `maxDuration` of the route that runs the request (800 s, the `/goldens` page
- * whose server action calls it, and `/api/v1/*`), so the dashboard reports a timeout before the function is cut.
- */
-export const GOLDEN_BUILD_TIMEOUT_MS = 660_000;
+/** Admission and status are short requests; build execution belongs to the durable worker. */
+export const GOLDEN_BUILD_TIMEOUT_MS = 10_000;
 
 /** A capacity read is metadata: a page render does not wait on it for long. */
 export const CAPABILITIES_TIMEOUT_MS = 10_000;
@@ -145,4 +142,15 @@ export async function readGoldenCapabilities(client: ControlClient, org: string)
   )
     return { ok: true, maxGoldens: result.maxGoldens };
   return { ok: false, reason: "The Armada server sent an unexpected answer." };
+}
+
+export function isGoldenBuildStatus(value: unknown): value is GoldenBuildStatus {
+  return (
+    isRecord(value) &&
+    typeof value.jobId === "string" &&
+    typeof value.phase === "string" &&
+    ["queued", "running", "recovery_required", "succeeded", "failed"].includes(String(value.state)) &&
+    (value.errorCode === null || value.errorCode === "build_failed") &&
+    (value.result === null || isGoldenBuildResult(value.result))
+  );
 }

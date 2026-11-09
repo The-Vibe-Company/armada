@@ -1,22 +1,11 @@
 import { expect, test } from "bun:test";
 import { createSqlVaultStore } from "@armada/core";
-import { GoldenCreateService } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { call, ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";
 
 test("HTTP and MCP reject golden mutations before resolving a provider or invoking the builder", async () => {
-  let builds = 0;
-  const service = new GoldenCreateService({
-    authorize: async () => {
-      builds++;
-      throw new Error("unexpected authorization");
-    },
-    ssh: async () => {},
-    scan: async () => {},
-    persist: async () => {},
-  });
-  const server = await harness({ goldenCreate: service });
+  const server = await harness();
   try {
     const { db, people, boat } = server;
     await db.query("update goldens set provider_sandbox_id = 'master-' || id::text");
@@ -38,7 +27,7 @@ test("HTTP and MCP reject golden mutations before resolving a provider or invoki
       encryptionKey: ENCRYPTION_KEY,
       data: createSqlData(db),
       providerFor: boat.providerFor,
-      goldenCreate: service,
+      goldenBuilds: server.builds,
     };
     for (const [user, name, org] of [
       [people.member, "shared", people.org], // visible but not mutable
@@ -55,6 +44,7 @@ test("HTTP and MCP reject golden mutations before resolving a provider or invoki
             headers: { authorization: `Bearer ${token}` },
             body: JSON.stringify({
               name,
+              idempotencyKey: crypto.randomUUID(),
               org,
               repos: ["acme/web"],
               config: { repos: [{ url: "https://github.com/acme/web.git" }], init: [] },
@@ -64,7 +54,12 @@ test("HTTP and MCP reject golden mutations before resolving a provider or invoki
         );
         expect([403, 404]).toContain(response?.status ?? 0);
         if (operation !== "connect") {
-          const result = await call(client, `golden_${operation}`, { name, org, repos: ["acme/web"] });
+          const result = await call(client, `golden_${operation}`, {
+            name,
+            org,
+            repos: ["acme/web"],
+            idempotencyKey: crypto.randomUUID(),
+          });
           expect(result.isError).toBe(true);
         }
       }
@@ -72,7 +67,7 @@ test("HTTP and MCP reject golden mutations before resolving a provider or invoki
     expect(boat.keys.length).toBe(0);
     expect(boat.execs).toEqual([]);
     expect(boat.forks).toEqual([]);
-    expect(builds).toBe(0);
+    expect((await db.query("select 1 from golden_build_jobs")).rows).toEqual([]);
     expect(
       (
         await db.query(

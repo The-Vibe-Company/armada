@@ -19,14 +19,13 @@ import {
   assertGoldenMutation,
   connectGolden,
   createGoldenAdoption,
-  createGoldenCreateService,
   createOrg,
   createSqlVaultStore,
   ENCRYPTION_KEY_ENV,
   EncryptionKeyError,
   type GitHubApp,
   type GoldenActor,
-  type GoldenCreateService,
+  GoldenBuildJobs,
   GoldenError,
   type GoldenErrorCode,
   type GoldenRecord,
@@ -94,7 +93,7 @@ export interface ControlOptions {
   /** Resolves a visible Armada sandbox to its provider. The Boat key stays on the server. */
   logs?: (caller: Caller, sandboxId: string) => Promise<{ provider: Provider; providerSandboxId: string }>;
   /** Secure, server-orchestrated multi-repo golden creation (`armada golden create --name`). Absent: the route refuses. */
-  goldenCreate?: GoldenCreateService;
+  goldenBuilds?: GoldenBuildJobs;
   goldenAdoption?: import("@armada/core/server").GoldenAdoption;
   /** A provider for one boat.dev key, for `golden/create`. The key is used in this process only. */
   providers?: ProviderRegistry;
@@ -150,7 +149,10 @@ export async function handleControlRequest(request: Request, options: ControlOpt
     const body = await readBody(request);
     const result = await dispatch(route, caller, body, options);
     if (result === undefined) return fail(404, "not_found", "Unknown route.");
-    return Response.json(result, { headers: { "cache-control": "no-store" } });
+    return Response.json(result, {
+      status: (route === "golden/create" || route === "golden/update") && "jobId" in (result as object) ? 202 : 200,
+      headers: { "cache-control": "no-store" },
+    });
   } catch (error) {
     if (error instanceof Unauthorized) return fail(401, "unauthorized", error.message);
     if (error instanceof AuthUnavailable) return fail(503, "unavailable", "Authentication is temporarily unavailable.");
@@ -521,6 +523,15 @@ async function dispatch(
           ? caller
           : { ...caller, orgs: caller.orgs.filter((o) => o.orgId === scopedOrg(caller, optional(body, "org"))) },
       );
+    case "golden/build/status":
+      if (!options.goldenBuilds) throw new VaultError("unavailable", "Durable golden builds are not configured.");
+      return options.goldenBuilds.status(
+        caller.userId,
+        optional(body, "jobId") ?? "",
+        optional(body, "idempotencyKey") ? scopedOrg(caller, optional(body, "org")) : undefined,
+        optional(body, "idempotencyKey"),
+        caller.orgs.map((org) => org.orgId),
+      );
     case "golden/create":
       return createGoldenRoute(options, caller, body);
     case "golden/update":
@@ -582,12 +593,8 @@ function goldenJson(row: import("@armada/core/server").GoldenRecord): GoldenJson
  * disposable, no-env builder, over the caller's own cached GitHub connection, and persists it only
  * once a fail-closed secret scan and the snapshot both succeed. The caller needs no boat.dev key.
  */
-async function createGoldenRoute(
-  options: ControlOptions,
-  caller: Caller,
-  body: Record<string, unknown>,
-): Promise<{ name: string; visibility: Visibility; snapshot: string }> {
-  if (!options.goldenCreate || !options.providerFor) {
+async function createGoldenRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>) {
+  if (!options.goldenBuilds || !options.providerFor) {
     throw new VaultError("unavailable", "Secure golden creation is not configured on this server.");
   }
   const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
@@ -609,23 +616,23 @@ async function createGoldenRoute(
     orgId: org.id,
     visibility,
   });
-  const result = await options.goldenCreate.create(options.providerFor(boat.key), actor, {
-    name,
-    visibility,
-    repos,
-    ...(config === undefined ? {} : { config }),
-    ...(setup !== undefined ? { setup } : {}),
-  });
-  return { name, visibility, snapshot: result.snapshot };
+  return options.goldenBuilds.admit(
+    options.providerFor(boat.key),
+    actor,
+    {
+      name,
+      visibility,
+      repos,
+      ...(config === undefined ? {} : { config }),
+      ...(setup !== undefined ? { setup } : {}),
+    },
+    required(body, "idempotencyKey"),
+  );
 }
 
 /** Rebuild an existing visible golden in place. The row, owner and visibility come from storage, never the body. */
-async function updateGoldenRoute(
-  options: ControlOptions,
-  caller: Caller,
-  body: Record<string, unknown>,
-): Promise<{ name: string; visibility: Visibility; snapshot: string }> {
-  if (!options.goldenCreate || !options.providerFor || !options.data)
+async function updateGoldenRoute(options: ControlOptions, caller: Caller, body: Record<string, unknown>) {
+  if (!options.goldenBuilds || !options.providerFor || !options.data)
     throw new VaultError("unavailable", "Secure golden creation is not configured on this server.");
   const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
   const name = required(body, "name");
@@ -647,15 +654,19 @@ async function updateGoldenRoute(
     orgId: org.id,
     visibility: existingGolden.visibility,
   });
-  const result = await options.goldenCreate.create(options.providerFor(boat.key), actor, {
-    name: existingGolden.name,
-    visibility: existingGolden.visibility,
-    repos: [],
-    config,
-    ...(optional(body, "setup") === undefined ? {} : { setup: optional(body, "setup")! }),
-    existingGolden,
-  });
-  return { name: existingGolden.name, visibility: existingGolden.visibility, snapshot: result.snapshot };
+  return options.goldenBuilds.admit(
+    options.providerFor(boat.key),
+    actor,
+    {
+      name: existingGolden.name,
+      visibility: existingGolden.visibility,
+      repos: [],
+      config,
+      ...(optional(body, "setup") === undefined ? {} : { setup: optional(body, "setup")! }),
+      existingGolden,
+    },
+    required(body, "idempotencyKey"),
+  );
 }
 
 async function snapshotGoldenRoute(
@@ -1006,10 +1017,14 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     store,
     providerFor: (apiKey) => createBoatProvider({ apiKey }),
     goldenAdoption: createGoldenAdoption(sql),
-    goldenCreate: createGoldenCreateService({
+    goldenBuilds: new GoldenBuildJobs({
       sql,
-      github: { store, encryptionKey, app: githubApp },
-      installationApp: githubInstallationAppFromEnv(env),
+      encryptionKey,
+      service: { github: { store, encryptionKey, app: githubApp }, installationApp: githubInstallationAppFromEnv(env) },
+      provider: async (actor, visibility) => {
+        const credential = await resolveBoatKey(store, encryptionKey, { ...actor, visibility });
+        return createBoatProvider({ apiKey: credential.key });
+      },
     }),
   };
 }

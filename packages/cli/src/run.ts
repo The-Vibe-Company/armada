@@ -2,6 +2,7 @@ import { AuthError, assertProvider } from "@armada/auth";
 import {
   configFromFlags,
   type GoldenActor,
+  type GoldenBuildStatus,
   type GoldenConfig,
   GoldenError,
   type GoldenRecord,
@@ -23,7 +24,6 @@ import {
   VaultError,
   type VaultStore,
   VERSION,
-  type Visibility,
 } from "@armada/core";
 import { flag, parseArgs, single, values } from "./args.ts";
 import { createArmadaApiClient } from "./armada-api.ts";
@@ -73,15 +73,21 @@ Usage:
   armada --version                         Print the version
   armada --help                            Show this help
   armada golden create <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
-                               [--setup <local-file>] [--private] [--org <org>]
+                               [--setup <local-file>] [--private] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>]
                                            Server-orchestrated: builds, scans and snapshots the golden on the
                                            server over your own GitHub connection. No BOAT_API_KEY needed.
                                            --setup reads a local script and sends its content to run after
                                            cloning, before the scan.
   armada golden update <name> (--repo <url>[@branch] ... | --config <file>) [--init <cmd> ...]
-                               [--setup <local-file>] [--org <org>]
+                               [--setup <local-file>] [--org <org>] [--idempotency-key <key>] [--timeout <seconds>]
                                            Rebuild the existing golden in place. One boat golden may contain
                                            many repositories; visibility and ownership stay unchanged.
+                                           Create/update admit a durable job, then poll for up to --timeout
+                                           seconds (default 60, max 600; 0 returns after admission).
+                                           Disconnecting never resubmits or cancels the job.
+  armada golden build-status <job-id>      Read the authenticated durable build status
+  armada golden build-status --idempotency-key <key> --org <org>
+                                           Recover an uncertain admission using the saved key.
   armada golden connect <name>             Open the master sandbox to place .env files
   armada golden snapshot <name>            Freeze the master sandbox
   armada golden list [--json]              Goldens you can see
@@ -241,6 +247,26 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
       io.out(`${JSON.stringify(result)}\n`);
       return 0;
     }
+    case "build-status": {
+      const auth = authOf(io, deps);
+      const client = await createArmadaApiClient({
+        env: auth.env,
+        fetch: deps.fetch ?? auth.fetch,
+        session: auth.session,
+      });
+      const job = await client.request<GoldenBuildStatus>("/api/v1/golden/build/status", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jobId: args.positionals[0],
+          idempotencyKey: single(args, "--idempotency-key"),
+          org: single(args, "--org"),
+        }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      io.out(JSON.stringify(job) + "\n");
+      return job.state === "failed" || job.state === "recovery_required" ? 1 : 0;
+    }
     case "create":
       return create(args.positionals, args, io, deps, limits);
     case "update":
@@ -257,6 +283,54 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
   }
 }
 
+async function admitGoldenBuild(
+  client: import("./armada-api.ts").ArmadaApiClient,
+  args: ReturnType<typeof parseArgs>,
+  io: Io,
+  deps: Deps,
+  path: string,
+  init: RequestInit,
+): Promise<NonNullable<GoldenBuildStatus["result"]> | undefined> {
+  const key = single(args, "--idempotency-key") ?? crypto.randomUUID();
+  const seconds = Number(single(args, "--timeout") ?? "60");
+  if (!Number.isInteger(seconds) || seconds < 0 || seconds > 600)
+    throw new GoldenError("invalid_config", "Build --timeout must be 0–600 seconds (local polling only).");
+  io.err(`Build admission key: ${key}. Recover with golden build-status --idempotency-key ${key} --org <org>.\n`);
+  const job = await client.request<GoldenBuildStatus>(path, {
+    ...init,
+    body: JSON.stringify({ ...JSON.parse(String(init.body)), idempotencyKey: key }),
+  });
+  io.out(`Build job: ${job.jobId}\n`);
+  const deadline = AbortSignal.timeout(Math.max(1, seconds * 1000));
+  let current = job;
+  try {
+    for (let attempt = 0; attempt < Math.ceil(seconds / 2); attempt++) {
+      if (current.state === "succeeded") return current.result ?? undefined;
+      if (current.state === "failed" || current.state === "recovery_required")
+        throw new GoldenError("build_failed", `Build ${job.jobId}: ${current.state} (build_failed).`);
+      deadline.throwIfAborted();
+      await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(2000);
+      current = await client.request<GoldenBuildStatus>("/api/v1/golden/build/status", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jobId: job.jobId }),
+        signal: AbortSignal.any([deadline, AbortSignal.timeout(10_000)]),
+      });
+    }
+  } catch (error) {
+    if (error instanceof GoldenError) throw error;
+    throw new GoldenError(
+      "build_failed",
+      `Polling stopped; build ${job.jobId} may still be running. Use golden build-status ${job.jobId}; do not resubmit.`,
+    );
+  }
+  if (current.state === "succeeded") return current.result ?? undefined;
+  if (current.state === "failed" || current.state === "recovery_required")
+    throw new GoldenError("build_failed", `Build ${job.jobId}: ${current.state} (build_failed).`);
+  io.out(`Build is ${current.state}. Resume with armada golden build-status ${job.jobId}.\n`);
+  return undefined;
+}
+
 async function update(positionals: string[], args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Promise<number> {
   const name = oneName(positionals);
   const config = await readConfig(args, deps);
@@ -271,21 +345,19 @@ async function update(positionals: string[], args: ReturnType<typeof parseArgs>,
   }
   const auth = authOf(io, deps);
   const client = await createArmadaApiClient({ env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session });
-  const result = await client.request<{ name: string; visibility: Visibility; snapshot: string }>(
-    "/api/v1/golden/update",
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        name,
-        ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
-        config,
-        ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-        ...(setup === undefined ? {} : { setup }),
-      }),
-      signal: AbortSignal.timeout(10 * 60_000),
-    },
-  );
+  const result = await admitGoldenBuild(client, args, io, deps, "/api/v1/golden/update", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      name,
+      ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
+      config,
+      ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+      ...(setup === undefined ? {} : { setup }),
+    }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!result) return 0;
   io.out(
     `Updated golden ${result.name} (${result.visibility}).\nSaved snapshot: ${result.snapshot}\nRepos: ${config.repos.map((repo) => repo.dir).join(", ")}.\n`,
   );
@@ -319,22 +391,20 @@ async function create(
   }
   const auth = authOf(io, deps);
   const client = await createArmadaApiClient({ env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session });
-  const result = await client.request<{ name: string; visibility: Visibility; snapshot: string }>(
-    "/api/v1/golden/create",
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        name,
-        ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
-        config,
-        ...(flag(args, "--private") ? { private: true } : {}),
-        ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-        ...(setup === undefined ? {} : { setup }),
-      }),
-      signal: AbortSignal.timeout(10 * 60_000),
-    },
-  );
+  const result = await admitGoldenBuild(client, args, io, deps, "/api/v1/golden/create", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      name,
+      ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
+      config,
+      ...(flag(args, "--private") ? { private: true } : {}),
+      ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+      ...(setup === undefined ? {} : { setup }),
+    }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!result) return 0;
   io.out(
     `Created golden ${result.name} (${result.visibility}).\nSaved snapshot: ${result.snapshot}\nRepos: ${config.repos.map((repo) => repo.dir).join(", ")}.\n`,
   );

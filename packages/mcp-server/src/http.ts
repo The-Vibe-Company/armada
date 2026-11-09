@@ -4,7 +4,6 @@ import {
   type ClientConfig,
   type CredentialReader,
   createProviderRegistry,
-  type GoldenCreateService,
   type LaunchOptions,
   type ModalBinding,
   type ModalTokenPair,
@@ -50,7 +49,7 @@ export interface HandlerOptions {
   /** Each caller's GitHub connection, refreshed at launch so git and gh in the sandbox act as them. */
   github?: GitHubLaunchOptions;
   /** Secure, server-orchestrated multi-repo golden creation (`golden_create`). Absent: the tool refuses. */
-  goldenCreate?: GoldenCreateService;
+  goldenBuilds?: import("@armada/core/server").GoldenBuildJobs;
   goldenAdoption?: import("@armada/core/server").GoldenAdoption;
   /** A provider for one boat.dev key. The key is used in this process only. */
   providerFor(apiKey: string): Provider;
@@ -133,7 +132,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         logError: log,
         ...(options.launch ? { launch: options.launch } : {}),
         ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
-        ...(options.goldenCreate ? { goldenCreate: options.goldenCreate } : {}),
+        ...(options.goldenBuilds ? { goldenBuilds: options.goldenBuilds } : {}),
       },
       VERSION,
     );

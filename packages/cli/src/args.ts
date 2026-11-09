@@ -2,6 +2,7 @@ import { GoldenError } from "@armada/core";
 
 const BOOLEAN = new Set(["--private", "--json", "--all", "--follow"]);
 const VALUE = new Set([
+  "--idempotency-key",
   "--connections",
   "--visibility",
   "--conversation",

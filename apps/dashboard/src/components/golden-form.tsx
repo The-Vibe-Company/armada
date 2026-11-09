@@ -1,8 +1,9 @@
 "use client";
 
+import type { GoldenBuildStatus } from "@armada/core";
 import { CheckCircle2Icon, CircleAlertIcon, Loader2Icon, PlusIcon, Trash2Icon } from "lucide-react";
-import { type FormEvent, useActionState, useId, useRef, useState } from "react";
-import { buildGolden } from "@/app/actions/goldens";
+import { type FormEvent, useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
+import { buildGolden, goldenBuildStatus, recoverGoldenBuild } from "@/app/actions/goldens";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -36,8 +37,60 @@ const BUILD_OUTCOME_UNKNOWN =
  */
 export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, defaults }: Props) {
   const id = useId();
+  const [admissionKey, setAdmissionKey] = useState("");
+  const [observed, setObserved] = useState<GoldenBuildStatus | null>(null);
+  const [pollError, setPollError] = useState("");
+  const refreshStatus = useCallback(async (jobId: string) => {
+    try {
+      setObserved(await goldenBuildStatus(jobId));
+      setPollError("");
+    } catch {
+      setPollError("Status unavailable. The build may still run; check this job again, do not resubmit.");
+    }
+  }, []);
+  const jobId = observed?.jobId;
+  const jobState = observed?.state;
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setAdmissionKey(params.get("build-key") ?? crypto.randomUUID());
+    const jobId = new URLSearchParams(window.location.search).get("build");
+    if (jobId) void refreshStatus(jobId);
+    else if (params.get("build-key"))
+      void recoverGoldenBuild(params.get("build-key")!, orgId)
+        .then(setObserved)
+        .catch(() =>
+          setPollError("No visible admission receipt yet. Recover using the saved key; do not blindly resubmit."),
+        );
+  }, [refreshStatus, orgId]);
+  useEffect(() => {
+    if (!jobId || !jobState || !["queued", "running"].includes(jobState)) return;
+    let active = true;
+    const deadline = Date.now() + 120_000;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const next = await goldenBuildStatus(jobId);
+        if (active) {
+          setObserved(next);
+          setPollError("");
+          if (Date.now() < deadline && ["queued", "running"].includes(next.state)) timer = setTimeout(poll, 2000);
+        }
+      } catch {
+        if (active) setPollError("Polling paused. Check this job again; do not resubmit.");
+      }
+    };
+    timer = setTimeout(poll, 2000);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [jobId, jobState]);
+
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(async (previous, data) => {
     let result: ActionResult;
+    const admissionUrl = new URL(window.location.href);
+    admissionUrl.searchParams.set("build-key", admissionKey);
+    window.history.replaceState(null, "", admissionUrl);
     try {
       result = await buildGolden(previous, data);
     } catch {
@@ -45,17 +98,16 @@ export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, de
       // still be building. Say so, and send nothing again.
       return { ok: false, error: BUILD_OUTCOME_UNKNOWN };
     }
-    // A new golden was built: clear the create form. A rebuild keeps showing what the golden now records.
-    if (mode === "create" && result.ok) {
-      setGoldenName("");
-      setRows([keyed({ url: "", branch: "", dir: "" })]);
-      setInit("");
-      setSetup("");
+    if (result.ok && result.build) {
+      setObserved(result.build);
+      const url = new URL(window.location.href);
+      url.searchParams.set("build", result.build.jobId);
+      window.history.replaceState(null, "", url);
     }
     return result;
   }, null);
   const nextKey = useRef(0);
-  const keyed = (row: RepoRow): KeyedRow => ({ ...row, key: nextKey.current++ });
+  const keyed = useCallback((row: RepoRow): KeyedRow => ({ ...row, key: nextKey.current++ }), []);
   const [rows, setRows] = useState<KeyedRow[]>(() =>
     (defaults?.repos.length ? defaults.repos : [{ url: "", branch: "", dir: "" }]).map(keyed),
   );
@@ -64,6 +116,15 @@ export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, de
   const [goldenName, setGoldenName] = useState("");
   const [init, setInit] = useState(defaults?.init ?? "");
   const [setup, setSetup] = useState("");
+
+  useEffect(() => {
+    if (mode === "create" && observed?.state === "succeeded") {
+      setGoldenName("");
+      setRows([keyed({ url: "", branch: "", dir: "" })]);
+      setInit("");
+      setSetup("");
+    }
+  }, [observed?.state, mode, keyed]);
 
   const update = (key: number, field: keyof RepoRow, value: string) =>
     setRows((current) => current.map((row) => (row.key === key ? { ...row, [field]: value } : row)));
@@ -83,6 +144,7 @@ export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, de
       className="space-y-5"
       data-golden-form={mode}
     >
+      <input type="hidden" name="idempotencyKey" value={admissionKey} />
       <input type="hidden" name="mode" value={mode} />
       <input type="hidden" name="org" value={orgId} />
       <fieldset disabled={pending} className="space-y-5 disabled:opacity-70">
@@ -254,11 +316,80 @@ export function GoldenForm({ mode, orgId, orgName, isAdmin, name, visibility, de
       </fieldset>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <Button type="submit" disabled={pending}>
+        <Button
+          type="submit"
+          disabled={
+            !admissionKey ||
+            pending ||
+            (observed !== null && ["queued", "running", "recovery_required"].includes(observed.state))
+          }
+        >
           {pending && <Loader2Icon className="animate-spin" />}
           {pending ? (mode === "create" ? "Building…" : "Rebuilding…") : verb}
         </Button>
-        <BuildStatus pending={pending} state={state} />
+        <BuildStatus
+          pending={pending}
+          state={
+            observed
+              ? observed.state === "failed" || observed.state === "recovery_required"
+                ? {
+                    ok: false,
+                    error: `Build ${observed.jobId}: ${observed.state} (build_failed). Last-good golden retained.`,
+                  }
+                : {
+                    ok: true,
+                    message:
+                      observed.state === "succeeded" && observed.result
+                        ? `${mode === "create" ? "Built" : "Rebuilt"} golden '${observed.result.name}' and saved snapshot ${observed.result.snapshot}.`
+                        : `Build ${observed.jobId}: ${observed.state} (${observed.phase})`,
+                  }
+              : state
+          }
+        />
+        {observed && (
+          <Button type="button" variant="outline" onClick={() => void refreshStatus(observed.jobId)}>
+            Check build status
+          </Button>
+        )}
+        {observed && ["succeeded", "failed"].includes(observed.state) && (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              setObserved(null);
+              const key = crypto.randomUUID();
+              setAdmissionKey(key);
+              const url = new URL(window.location.href);
+              url.searchParams.delete("build");
+              url.searchParams.set("build-key", key);
+              window.history.replaceState(null, "", url);
+            }}
+          >
+            New build request
+          </Button>
+        )}
+        {!observed && (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={async () => {
+              try {
+                setObserved(await recoverGoldenBuild(admissionKey, orgId));
+                setPollError("");
+              } catch {
+                setPollError(
+                  "No visible admission receipt yet. Keep this key and check again; do not blindly resubmit.",
+                );
+              }
+            }}
+          >
+            Recover admission by key
+          </Button>
+        )}
+        {pollError && <p role="alert">{pollError}</p>}
+        <p className="text-xs text-muted-foreground">
+          Admission key: {admissionKey}. Keep it to recover an uncertain admission; never blindly resubmit.
+        </p>
       </div>
     </form>
   );
@@ -269,7 +400,7 @@ function BuildStatus({ pending, state }: { pending: boolean; state: ActionResult
     return (
       <p role="status" className="text-sm text-muted-foreground">
         The Armada server is cloning, scanning and snapshotting in a disposable builder. This can take several minutes;
-        keep this page open.
+        the job continues even if you close this page.
       </p>
     );
   if (!state) return null;
