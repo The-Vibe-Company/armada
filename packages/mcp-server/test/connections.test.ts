@@ -647,7 +647,7 @@ test("canonical control lifecycle toggles fence tokens and bindings reflect auth
     ).toBe("not_connected");
     expect(await grants.acquire(shared.id, crypto.randomUUID())).toBeNull();
     await db.query("delete from members where org_id=$1 and user_id=$2", [p.org, p.owner]);
-    expect((await call(p.owner, "sandbox-connections", { org: p.org, id: sandbox })).status).toBe(403);
+    expect((await call(p.owner, "sandbox-connections", { org: p.org, id: sandbox })).status).toBe(404);
   } finally {
     await db.close();
   }
