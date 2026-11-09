@@ -19,6 +19,7 @@ const PRIVATE_POST_PATHS = new Set([
   "org/list",
   "org/provider/status",
   "org/provider/connect",
+  "org/provider/disconnect",
   "members/list",
   "members/add",
   "members/role",

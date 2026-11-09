@@ -1,11 +1,9 @@
 "use client";
 
-import type { Harness, SandboxStatus } from "@armada/core";
+import type { SandboxStatus } from "@armada/core";
 import { SquareIcon } from "lucide-react";
 import { useActionState } from "react";
-import { sendToSandbox, stopSandbox } from "@/app/actions/sandboxes";
-import { ActionForm, SubmitButton } from "@/components/action-form";
-import { type ModelCatalog, ModelFields } from "@/components/model-fields";
+import { stopSandbox } from "@/app/actions/sandboxes";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -18,64 +16,12 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { Textarea } from "@/components/ui/textarea";
 
 const CAN_STOP: readonly SandboxStatus[] = ["starting", "ready", "running"];
-const CAN_SEND: readonly SandboxStatus[] = ["ready", "running"];
 
-export function SandboxActions({
-  sandboxId,
-  status,
-  harness,
-  catalog,
-  launchedModel,
-}: {
-  sandboxId: string;
-  status: SandboxStatus;
-  harness: Harness;
-  catalog: ModelCatalog;
-  launchedModel: string | null;
-}) {
-  return (
-    <div className="flex gap-2">
-      {CAN_SEND.includes(status) && (
-        <Dialog>
-          <DialogTrigger asChild>
-            <Button variant="outline">Send a message</Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Send a message</DialogTitle>
-              <DialogDescription>
-                It goes to the agent as a new prompt, or steers the turn in progress.
-              </DialogDescription>
-            </DialogHeader>
-            <ActionForm action={sendToSandbox} resetOnSuccess className="space-y-3">
-              <input type="hidden" name="sandbox" value={sandboxId} />
-              <Textarea name="prompt" rows={5} required placeholder="What should the agent do?" aria-label="Message" />
-              <ModelFields
-                idPrefix={`send-${sandboxId}`}
-                harness={harness}
-                catalog={catalog}
-                keepLabel="As launched"
-                launchedModel={launchedModel}
-              />
-              <SubmitButton>Send</SubmitButton>
-            </ActionForm>
-          </DialogContent>
-        </Dialog>
-      )}
-      {CAN_STOP.includes(status) && <StopButton sandboxId={sandboxId} />}
-    </div>
-  );
+/** Messages go through the conversation's composer; the header keeps the machine's own action. */
+export function SandboxActions({ sandboxId, status }: { sandboxId: string; status: SandboxStatus }) {
+  return CAN_STOP.includes(status) ? <StopButton sandboxId={sandboxId} /> : null;
 }
 
 function StopButton({ sandboxId }: { sandboxId: string }) {

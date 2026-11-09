@@ -186,9 +186,13 @@ test("organization provider setup crosses the public-origin proxy over real HTTP
   });
   process.env.ARMADA_MCP_URL = upstream.url.toString();
   try {
-    for (const action of ["status", "connect"]) {
+    for (const action of ["status", "connect", "disconnect"]) {
       const body = JSON.stringify(
-        action === "status" ? { org: "org-id" } : { org: "org-id", provider: "boat", value: "synthetic-input" },
+        action === "status"
+          ? { org: "org-id" }
+          : action === "disconnect"
+            ? { org: "org-id", provider: "boat" }
+            : { org: "org-id", provider: "boat", value: "synthetic-input" },
       );
       const response = await fetch(new URL(`/api/v1/org/provider/${action}`, publicOrigin.url), {
         method: "POST",
