@@ -1,5 +1,5 @@
 import { cache } from "react";
-import type { McpConnection } from "@/lib/connections";
+import type { McpCatalogService, McpConnection } from "@/lib/connections";
 import { ControlError, createMcpControl } from "@/lib/control";
 import { mcpUrl } from "@/lib/env";
 import { selectedOrganization } from "./selected-org";
@@ -32,6 +32,22 @@ export const listSelectedConnections = cache(async (): Promise<ConnectionList> =
     throw error;
   }
 });
+
+export type ServiceCatalog =
+  | { state: "ready"; services: McpCatalogService[] }
+  | { state: "unavailable"; message: string };
+
+/** The curated services the Armada server offers the selected org. A failed read leaves custom servers usable. */
+export async function listSelectedCatalog(orgId: string): Promise<ServiceCatalog> {
+  const control = await viewerControl();
+  if (!control) return { state: "unavailable", message: "The Armada server is not configured." };
+  try {
+    return { state: "ready", services: await control.catalog(orgId) };
+  } catch (error) {
+    if (error instanceof ControlError) return { state: "unavailable", message: error.message };
+    throw error;
+  }
+}
 
 export type SandboxConnections =
   | { state: "ready"; connections: McpConnection[] }
