@@ -585,29 +585,60 @@ test("a launch starts with the usable defaults and sends exactly what is ticked,
 
 test("a default that is not connected holds the launch until it is reconnected or left out", async ({ page }) => {
   await signIn(page, "alice@example.com", "/connections");
-  const sentry = card(page, "Acme Sentry");
-  await sentry.getByRole("switch", { name: "Include Acme Sentry by default" }).click();
-  await expect(sentry.getByRole("switch", { name: "Include Acme Sentry by default" })).toHaveAttribute(
-    "aria-checked",
-    "true",
-  );
+  // One connected and one disconnected org default, and a personal default that is not configured.
+  for (const name of ["Acme Docs", "Acme Sentry", "Repo Files"]) {
+    const toggle = card(page, name).getByRole("switch", { name: `Include ${name} by default` });
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-checked", "true");
+  }
 
   await page.goto("/goldens");
-  await page.getByRole("button", { name: "Launch from shared-golden" }).click();
-  const dialog = page.getByRole("dialog");
+  const open = async () => {
+    await page.getByRole("button", { name: "Launch from shared-golden" }).click();
+    return page.getByRole("dialog");
+  };
+  let dialog = await open();
   const held = dialog.locator("[data-unready-defaults]");
+  const docs = dialog.getByRole("checkbox", { name: "Acme Docs" });
+  const launch = dialog.getByRole("button", { name: "Launch", exact: true });
+  await expect(docs).toBeChecked();
   await expect(held).toContainText("Acme Sentry is a default but is not connected.");
   await expect(held.getByRole("link", { name: "Reconnect" })).toHaveAttribute("href", "/connections");
-  await expect(dialog.getByRole("button", { name: "Launch", exact: true })).toBeDisabled();
+  await expect(launch).toBeDisabled();
+  // Changing other connections is not a decision about the missing default: the launch stays held.
+  await docs.uncheck();
+  await docs.check();
+  await expect(held).toBeVisible();
+  await expect(launch).toBeDisabled();
   await page.setViewportSize({ width: 390, height: 844 });
   await held.scrollIntoViewIfNeeded();
   await page.screenshot({ path: "test-results/launch-unready-default-mobile.png", animations: "disabled" });
   await page.setViewportSize({ width: 1280, height: 720 });
 
+  // Continuing without it is the explicit choice; then the selection is exactly what is ticked.
   await held.getByRole("button", { name: "Continue without it" }).click();
   await expect(held).toHaveCount(0);
-  await expect(dialog.getByRole("checkbox", { name: "Acme Docs" })).toBeFocused();
+  await expect(docs).toBeFocused();
+  await expect(docs).toBeChecked();
+  // Waiving covers only what was shown: Private brings in the personal default, which holds the launch again.
+  await dialog.getByRole("radio", { name: /^Private/ }).check();
+  await expect(held).toContainText("Repo Files is a default but is not connected.");
+  await expect(launch).toBeDisabled();
+  await dialog.getByRole("radio", { name: /^Org/ }).check();
+  await expect(held).toHaveCount(0);
+  await launch.click();
+  await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
+
+  // A deliberate empty selection launches with none.
+  await page.goto("/goldens");
+  dialog = await open();
+  await dialog.locator("[data-unready-defaults]").getByRole("button", { name: "Continue without it" }).click();
+  await dialog.getByRole("checkbox", { name: "Acme Docs" }).uncheck();
   await dialog.getByRole("button", { name: "Launch", exact: true }).click();
   await expect(page).toHaveURL(/\/sandboxes\/[0-9a-f-]{36}$/);
-  expect((await mockState()).launches.map((launch) => [launch.visibility, launch.connections])).toEqual([["org", []]]);
+
+  expect((await mockState()).launches.map((launch) => [launch.visibility, launch.connections])).toEqual([
+    ["org", [ACME_DOCS]],
+    ["org", []],
+  ]);
 });

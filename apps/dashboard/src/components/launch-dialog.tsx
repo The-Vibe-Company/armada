@@ -149,8 +149,10 @@ function RepositoryField({ idPrefix, repositories }: { idPrefix: string; reposit
 /**
  * Visibility and connections. The selection starts with the connections marked include-by-default that this
  * sandbox can use, and follows the visibility until the person changes it; from then on it is exactly what they
- * ticked, and an empty selection launches with none. A personal connection carries its owner's identity, so it can
- * only go into a private sandbox: it is not selectable while Org is chosen, and choosing Org drops it.
+ * ticked, and an empty selection launches with none. A requested default that is not connected is never dropped
+ * silently: it holds the launch until it is reconnected or the person chooses to continue without it, as the server
+ * does for a launch that names no connections. A personal connection carries its owner's identity, so it can only
+ * go into a private sandbox: it is not selectable while Org is chosen, and choosing Org drops it.
  */
 function AccessFields({
   idPrefix,
@@ -166,17 +168,22 @@ function AccessFields({
   const [visibility, setVisibility] = useState<SandboxVisibility>(goldenVisibility);
   // Null until the person changes the selection: the defaults for the current visibility apply until then.
   const [picked, setPicked] = useState<string[] | null>(null);
+  // A requested default that is not connected holds the launch until the person reconnects it or explicitly goes
+  // on without it. Ticking other connections does not count: it would drop the default without saying so.
+  // By id, so a default that only becomes eligible later (switching to Private) is held again, not waived unseen.
+  const [waived, setWaived] = useState<readonly string[]>([]);
   const [notice, setNotice] = useState("");
   const group = useRef<HTMLDivElement>(null);
   const list = "connections" in connections ? connections.connections : [];
   const chosen = picked ?? launchDefaults(list, visibility);
   const setChosen = (next: string[]) => setPicked(next);
-  const unready = picked === null ? unreadyDefaults(list, visibility) : [];
+  const unready = unreadyDefaults(list, visibility).filter((connection) => !waived.includes(connection.id));
   useEffect(() => onHeld(unready.length > 0), [unready.length, onHeld]);
 
-  /** Goes on with the usable defaults; the notice and its button leave, so focus moves to the connection list. */
+  /** Goes on without the unready defaults; the notice and its button leave, so focus moves to the connection list. */
   function continueWithout() {
-    setPicked(launchDefaults(list, visibility));
+    setWaived([...waived, ...unready.map((connection) => connection.id)]);
+    setPicked(chosen);
     group.current?.querySelector<HTMLInputElement>('input[name="connections"]:not(:disabled)')?.focus();
   }
 
@@ -186,6 +193,7 @@ function AccessFields({
     const reset = () => {
       setVisibility(goldenVisibility);
       setPicked(null);
+      setWaived([]);
       setNotice("");
     };
     form?.addEventListener("reset", reset);
