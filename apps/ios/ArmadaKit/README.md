@@ -73,10 +73,11 @@ prerequisites, not implied by client tests.
 
 From repository root: `swift test --package-path apps/ios/ArmadaKit`.
 Package targets iOS 17+ / macOS 14+, Swift tools 6.0, no external dependencies.
-Linux sandbox has no Swift toolchain or Apple Security/CryptoKit SDK: tests/build
-are **not yet validated**. Mac integration must compile and run these actual
-sources before accepting this package. This is infrastructure, not rendered UI;
-there is no app target or simulator screenshot in this ticket.
+Linux sandboxes without Swift or the Apple Security/CryptoKit SDK cannot execute
+this package. The Apple Quality workflow runs these actual package tests and
+`apps/ios/scripts/verify.sh` compiles both generated app variants for the iOS
+simulator on macOS. It does not boot a simulator, exercise rendered interactions,
+sign or deploy the application.
 
 ## Sandbox metadata source
 
