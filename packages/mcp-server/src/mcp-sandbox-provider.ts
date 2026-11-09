@@ -37,3 +37,50 @@ export function createMcpSandboxProviderResolver(sql: Sql, providers: ProviderRe
     );
   };
 }
+
+/** Admission-only read of an older binding's immutable management target. Public
+ * sandbox terminal labels are NOT proof: callers must observe this provider.
+ * No prompt, exec, resume, stop or snapshot is performed by this resolver. */
+export function createHistoricalSandboxProviderResolver(providers: ProviderRegistry) {
+  return async (sql: Sql, id: string): Promise<{ provider: Provider; providerSandboxId: string }> => {
+    const row = (
+      await sql.query<{
+        provider: SandboxProviderId;
+        provider_sandbox_id: string | null;
+        org_id: string;
+        owner_id: string;
+        visibility: Visibility;
+        source_golden_visibility: Visibility;
+        modal_workspace: string | null;
+        modal_environment: string | null;
+        modal_app_id: string | null;
+      }>(
+        `select s.provider::text as provider,s.provider_sandbox_id,s.org_id,s.owner_id,
+       coalesce(s.visibility,g.visibility)::text as visibility,
+       coalesce(s.source_golden_visibility,g.visibility)::text as source_golden_visibility,
+       g.modal_workspace,g.modal_environment,g.modal_app_id
+       from public.sandboxes s join public.goldens g on g.id=s.golden_id
+       join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
+       where s.id=$1::uuid`,
+        [id],
+      )
+    ).rows[0];
+    if (!row?.provider_sandbox_id) throw Error("Historical native binding cannot be observed.");
+    const modal =
+      row.provider === "modal" && row.modal_workspace && row.modal_environment && row.modal_app_id
+        ? { workspace: row.modal_workspace, environment: row.modal_environment, appId: row.modal_app_id }
+        : null;
+    const provider = await providers.resolve(
+      {
+        provider: row.provider,
+        orgId: row.org_id,
+        visibility: row.visibility,
+        sourceGoldenVisibility: row.source_golden_visibility,
+        modal,
+      },
+      { userId: row.owner_id },
+    );
+    if (provider.id !== row.provider) throw Error("Historical native provider binding changed.");
+    return { provider, providerSandboxId: row.provider_sandbox_id };
+  };
+}

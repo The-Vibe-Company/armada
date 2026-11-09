@@ -6,6 +6,12 @@ import { appendModalEvents } from "./store.ts";
  * scope server-side, never from request JSON. The token is only an expiring sandbox/generation grant. */
 export function createModalIngestHandler(options: {
   sql: Sql;
+  publishNativeAuth?(
+    scope: Scope,
+    claims: IngestGrantClaims,
+    authJson: string,
+    expectedRevision: number,
+  ): Promise<{ authRevision: number; committed: boolean }>;
   verifyGrant(token: string): Promise<{ claims: IngestGrantClaims; scope: Scope }>;
 }): (request: Request) => Promise<Response> {
   return async (request) => {
@@ -32,9 +38,29 @@ export function createModalIngestHandler(options: {
         sandboxId: string;
         generation: string;
         events: Omit<IngestPayload, "sandboxId" | "generation">[];
+        nativeAuth?: { authJson: string; expectedRevision: number };
       };
       if (body.sandboxId !== claims.sandboxId || body.generation !== claims.generation)
         return new Response(null, { status: 403 });
+      if (body.nativeAuth !== undefined) {
+        if (
+          !options.publishNativeAuth ||
+          !Array.isArray(body.events) ||
+          body.events.length ||
+          typeof body.nativeAuth.authJson !== "string" ||
+          Buffer.byteLength(body.nativeAuth.authJson) > 65536 ||
+          !Number.isSafeInteger(body.nativeAuth.expectedRevision) ||
+          body.nativeAuth.expectedRevision < 0
+        )
+          return new Response(null, { status: 400 });
+        const receipt = await options.publishNativeAuth(
+          scope,
+          claims,
+          body.nativeAuth.authJson,
+          body.nativeAuth.expectedRevision,
+        );
+        return Response.json(receipt, { headers: { "cache-control": "no-store" } });
+      }
       if (
         !Array.isArray(body.events) ||
         body.events.length > 1000 ||

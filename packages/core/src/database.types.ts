@@ -1314,6 +1314,70 @@ export type Database = {
         };
         Relationships: [];
       };
+      model_auth_ownership: {
+        Row: {
+          account_id: string;
+          account_version: number;
+          sandbox_id: string;
+          assigned_at: string;
+        };
+        Insert: {
+          account_id: string;
+          account_version: number;
+          sandbox_id: string;
+          assigned_at?: string;
+        };
+        Update: {
+          account_id?: string;
+          account_version?: number;
+          sandbox_id?: string;
+          assigned_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "model_auth_ownership_account_id_fkey";
+            columns: ["account_id"];
+            isOneToOne: true;
+            referencedRelation: "credentials";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      model_auth_state: {
+        Row: {
+          account_id: string;
+          account_version: number;
+          auth_revision: number;
+          state_enc: string;
+          source_generation: string;
+          updated_at: string;
+        };
+        Insert: {
+          account_id: string;
+          account_version: number;
+          auth_revision?: number;
+          state_enc: string;
+          source_generation: string;
+          updated_at?: string;
+        };
+        Update: {
+          account_id?: string;
+          account_version?: number;
+          auth_revision?: number;
+          state_enc?: string;
+          source_generation?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "model_auth_state_account_id_fkey";
+            columns: ["account_id"];
+            isOneToOne: false;
+            referencedRelation: "credentials";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       notify_subscriptions: {
         Row: {
           sandbox_id: string;
@@ -1998,6 +2062,8 @@ export type ModalMachineRow = Database["public"]["Tables"]["modal_machines"]["Ro
 export type ModalServerAppRow = Database["public"]["Tables"]["modal_server_apps"]["Row"];
 export type ModalServerHarnessRow = Database["public"]["Tables"]["modal_server_harnesses"]["Row"];
 export type ModalServerScopeRow = Database["public"]["Tables"]["modal_server_scopes"]["Row"];
+export type ModelAuthOwnershipRow = Database["public"]["Tables"]["model_auth_ownership"]["Row"];
+export type ModelAuthStateRow = Database["public"]["Tables"]["model_auth_state"]["Row"];
 export type NotifySubscription = Database["public"]["Tables"]["notify_subscriptions"]["Row"];
 export type OAuthClient = Database["public"]["Tables"]["oauth_clients"]["Row"];
 export type OAuthCode = Database["public"]["Tables"]["oauth_codes"]["Row"];

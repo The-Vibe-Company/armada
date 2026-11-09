@@ -1,13 +1,14 @@
 import Foundation
 
 public enum ArmadaError: Error, Sendable, Equatable, LocalizedError {
-    case signedOut, forbidden, conflict, unavailable, invalidResponse, secureStorage, invalidOrigin
+    case signedOut, forbidden, conflict, unavailable, invalidResponse, secureStorage, invalidOrigin, invalidRequest
     case http(Int)
     public var errorDescription: String? {
         switch self {
         case .signedOut: "Sign in to Armada again."
         case .forbidden: "You do not have access to this resource."
-        case .conflict: "This resource changed. Refresh before continuing."
+        case .conflict: "Armada could not confirm this operation. Refresh its status before retrying."
+        case .invalidRequest: "Armada refused this request."
         case .unavailable: "Armada is temporarily unavailable."
         case .invalidResponse: "Armada returned an unsupported response."
         case .secureStorage: "Secure storage is unavailable."

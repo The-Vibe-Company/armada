@@ -27,6 +27,8 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  model_auth_ownership: "ModelAuthOwnershipRow",
+  model_auth_state: "ModelAuthStateRow",
   modal_events: "ModalEventRow",
   modal_images: "ModalImageRow",
   modal_machines: "ModalMachineRow",
