@@ -96,6 +96,13 @@ test("existing native children use new GitHub material and register it before gh
       return result;
     }
     const first = await phase();
+    if (!first.includes("password=***") || !first.includes("preserved")) {
+      child.stdin.end();
+      await child.exited;
+      let diagnostic = await new Response(child.stderr).text();
+      for (const secret of [current, next, "inherited-stale"]) diagnostic = diagnostic.replaceAll(secret, "***");
+      throw Error(diagnostic);
+    }
     expect(registered.has(current)).toBe(true);
     expect(first).toContain("password=***");
     expect(first).toContain("preserved");
