@@ -268,6 +268,11 @@ export const USAGE_STATUSES = ["fresh", "stale", "unavailable", "error"] as cons
 /** A report the server sent but this dashboard cannot read (a newer shape): never a server status. */
 export type UsageReadStatus = (typeof USAGE_STATUSES)[number] | "unreadable";
 export type UsageStatus = (typeof USAGE_STATUSES)[number];
+/**
+ * One allowance window, from #624's `Window {kind, usedPercent, resetsAt, group?, model?, surface?, ...}`. `id` is
+ * unique within a report (kind with its model, surface and group); `usedPercent` null is a reading the provider
+ * reported as unavailable, never zero.
+ */
 export type UsageWindow = { id: string; label: string; usedPercent: number | null; resetsAt: string | null };
 export interface AccountUsage {
   accountId: string;
@@ -276,6 +281,8 @@ export interface AccountUsage {
   observedAt: string | null;
   windows: UsageWindow[];
   extraUsage: { used: number; limit: number | null; currency: string } | null;
+  /** Windows in the report this dashboard could not read; the readable ones are still shown. */
+  hiddenWindows: number;
 }
 
 export function parseUsage(value: unknown): AccountUsage | null {
@@ -284,18 +291,14 @@ export function parseUsage(value: unknown): AccountUsage | null {
   if (typeof value.version !== "number" || !Number.isInteger(value.version)) return null;
   const observedAt = isoOrNull(value.observedAt);
   if (observedAt === undefined) return null;
+  const rows: unknown[] = Array.isArray(value.windows) ? value.windows : [];
   const windows: UsageWindow[] = [];
-  for (const row of Array.isArray(value.windows) ? value.windows : []) {
-    const id = isRow(row) ? text(row.id, 60) : undefined;
-    const label = isRow(row) ? text(row.label, 60) : undefined;
-    const resetsAt = isRow(row) ? isoOrNull(row.resetsAt) : undefined;
-    // A window this dashboard cannot read makes the whole report unreadable: shown as a failed read, never as an
-    // account that "does not report" its allowance.
-    if (!isRow(row) || !id || !label || resetsAt === undefined) return null;
-    const used = row.usedPercent;
-    const usedPercent = typeof used === "number" && Number.isFinite(used) ? Math.min(100, Math.max(0, used)) : null;
-    windows.push({ id, label, usedPercent, resetsAt });
+  for (const row of rows) {
+    const window = parseWindow(row);
+    if (window && !windows.some((item) => item.id === window.id)) windows.push(window);
   }
+  // Only a report none of whose windows can be read is unrecognized; readable siblings are kept otherwise.
+  if (rows.length > 0 && windows.length === 0) return null;
   return {
     accountId: value.accountId,
     version: value.version,
@@ -303,7 +306,32 @@ export function parseUsage(value: unknown): AccountUsage | null {
     observedAt,
     windows,
     extraUsage: extraUsage(value.extraUsage),
+    hiddenWindows: rows.length - windows.length,
   };
+}
+
+/** A `Window` this dashboard can read, or null. `usedPercent` is a number or an explicit null; anything else is not. */
+function parseWindow(row: unknown): UsageWindow | null {
+  if (!isRow(row)) return null;
+  const kind = text(row.kind, 60);
+  const resetsAt = isoOrNull(row.resetsAt);
+  const used = row.usedPercent;
+  if (!kind || resetsAt === undefined) return null;
+  if (used !== null && !(typeof used === "number" && Number.isFinite(used))) return null;
+  const model = text(row.model, 60);
+  const qualifiers = [model, text(row.surface, 40)].filter(Boolean);
+  return {
+    id: [kind, model, text(row.surface, 40), text(row.group, 40)].filter(Boolean).join("/"),
+    label: `${humanize(kind)}${qualifiers.length ? ` (${qualifiers.join(", ")})` : ""}`,
+    usedPercent: used === null ? null : Math.min(100, Math.max(0, used)),
+    resetsAt,
+  };
+}
+
+/** "five_hour" -> "Five hour": the provider's own kind, readable, with no name the contract does not define. */
+function humanize(kind: string): string {
+  const words = kind.replace(/[_-]+/g, " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /**
@@ -330,7 +358,15 @@ function extraUsage(extra: unknown): AccountUsage["extraUsage"] {
 
 /** The report for an account the server answered but in a shape this dashboard cannot read. */
 export function unreadableUsage(accountId: string): AccountUsage {
-  return { accountId, version: 0, status: "unreadable", observedAt: null, windows: [], extraUsage: null };
+  return {
+    accountId,
+    version: 0,
+    status: "unreadable",
+    observedAt: null,
+    windows: [],
+    extraUsage: null,
+    hiddenWindows: 0,
+  };
 }
 
 /**
@@ -339,7 +375,13 @@ export function unreadableUsage(accountId: string): AccountUsage {
  * as zero. `null` usage means this server does not report usage (or was not asked).
  */
 export type UsageView =
-  | { kind: "fresh" | "stale"; windows: UsageWindow[]; observedAt: string; extra: AccountUsage["extraUsage"] }
+  | {
+      kind: "fresh" | "stale";
+      windows: UsageWindow[];
+      observedAt: string;
+      extra: AccountUsage["extraUsage"];
+      hiddenWindows: number;
+    }
   | { kind: "unknown" | "unavailable" | "error" | "unreadable"; reason: string };
 
 export function usageView(usage: AccountUsage | null, account: Pick<ModelAccount, "version">): UsageView {
@@ -355,6 +397,7 @@ export function usageView(usage: AccountUsage | null, account: Pick<ModelAccount
     windows: usage.windows,
     observedAt: usage.observedAt,
     extra: usage.extraUsage,
+    hiddenWindows: usage.hiddenWindows,
   };
 }
 

@@ -178,7 +178,7 @@ export function UsagePanel({
               <div className="flex items-baseline justify-between gap-2 text-xs">
                 <span className="font-medium">{window.label}</span>
                 <span className={cn("tabular-nums", view.kind === "stale" && "text-muted-foreground")}>
-                  {left === null ? "Unknown" : `${left}% left`}
+                  {left === null ? "Unavailable" : `${left}% left`}
                 </span>
               </div>
               <div aria-hidden className="h-1.5 overflow-hidden rounded-full bg-muted">
@@ -199,7 +199,7 @@ export function UsagePanel({
                 )}
               </div>
               <p className="text-xs text-muted-foreground">
-                {window.usedPercent === null ? "Use not reported" : `${Math.round(window.usedPercent)}% used`}
+                {window.usedPercent === null ? "Reading unavailable" : `${Math.round(window.usedPercent)}% used`}
                 {window.resetsAt ? (
                   <>
                     , resets <time dateTime={window.resetsAt}>{relativeTime(window.resetsAt, now)}</time>
@@ -210,6 +210,12 @@ export function UsagePanel({
           );
         })}
       </ul>
+      {view.hiddenWindows > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {view.hiddenWindows === 1 ? "1 window" : `${view.hiddenWindows} windows`} in a form this dashboard cannot read
+          yet.
+        </p>
+      )}
       {view.extra && (
         <p className="text-xs text-muted-foreground">
           Extra usage: {formatMoney(view.extra.used, view.extra.currency)}

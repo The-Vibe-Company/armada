@@ -117,8 +117,9 @@ describe("usage", () => {
       version: 1,
       status: "fresh",
       observedAt: "2026-11-09T11:58:00.000Z",
-      windows: [{ id: "5h", label: "5-hour", usedPercent: 40, resetsAt: "2026-11-09T14:00:00.000Z" }],
+      windows: [{ id: "five_hour", label: "Five hour", usedPercent: 40, resetsAt: "2026-11-09T14:00:00.000Z" }],
       extraUsage: null,
+      hiddenWindows: 0,
       ...fields,
     }) as AccountUsage;
 
@@ -154,12 +155,27 @@ describe("usage", () => {
     expect(extra({ enabled: true, currency: null, usedMinor: 450, limitMinor: 2000 })).toBeNull();
   });
 
-  test("a window this dashboard cannot read fails the whole report instead of reading as no allowance", () => {
+  test("#624 windows: a null reading is kept as unavailable, unreadable siblings are counted, never all dropped", () => {
     const report = { accountId: uuid(1), version: 1, status: "fresh", observedAt: "2026-11-09T11:58:00.000Z" };
-    expect(
-      parseUsage({ ...report, windows: [{ id: "5h", label: "5-hour window", usedPercent: 40, resetsAt: null }] }),
-    ).not.toBeNull();
-    expect(parseUsage({ ...report, windows: [{ kind: "five_hour", utilization: 0.4 }] })).toBeNull();
+    const parsed = parseUsage({
+      ...report,
+      windows: [
+        { kind: "five_hour", usedPercent: 40, resetsAt: "2026-11-09T14:00:00.000Z", severity: "normal" },
+        { kind: "seven_day", usedPercent: 12, resetsAt: null, model: "opus" },
+        { kind: "seven_day", usedPercent: null, resetsAt: null, model: "sonnet" },
+        { kind: "monthly", utilization: 0.4 },
+      ],
+    });
+    expect(parsed?.windows.map((window) => [window.label, window.usedPercent])).toEqual([
+      ["Five hour", 40],
+      ["Seven day (opus)", 12],
+      ["Seven day (sonnet)", null],
+    ]);
+    expect(parsed?.hiddenWindows).toBe(1);
+    const view = parsed && usageView(parsed, { version: 1 });
+    expect(view?.kind).toBe("fresh");
+    // Only a report none of whose windows can be read is an unrecognized format.
+    expect(parseUsage({ ...report, windows: [{ kind: "monthly", utilization: 0.4 }] })).toBeNull();
   });
 
   test("a server that does not offer usage is null; a failure for the account itself is an error", async () => {
@@ -176,7 +192,7 @@ describe("usage", () => {
       token: "session",
       fetch: (async () =>
         Response.json({
-          usage: { accountId: uuid(1), version: 1, status: "fresh", observedAt: null, windows: [{ kind: "5h" }] },
+          usage: { accountId: uuid(1), version: 1, status: "fresh", observedAt: null, windows: [{ utilization: 0.4 }] },
         })) as unknown as typeof fetch,
     });
     expect(usageView(await unreadable.usage(uuid(1)), { version: 1 }).kind).toBe("unreadable");

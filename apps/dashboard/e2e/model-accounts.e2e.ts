@@ -184,9 +184,8 @@ test("a server older than named accounts is said plainly, and launches send no a
 test("usage reads as reported: current windows, last-known after a token change, unavailable, failed, unknown", async ({
   page,
 }) => {
-  const window = (used: number) => ({
-    id: "5h",
-    label: "5-hour window",
+  const window = (used: number | null) => ({
+    kind: "five_hour",
     usedPercent: used,
     resetsAt: "2099-01-01T00:00:00.000Z",
   });
@@ -208,6 +207,7 @@ test("usage reads as reported: current windows, last-known after a token change,
     ],
     usage: {
       [String(account(1, "").id)]: report(1, {
+        windows: [window(35), { kind: "seven_day", usedPercent: null, resetsAt: null }, { surface: "unknown" }],
         extraUsage: { enabled: true, currency: "USD", usedMinor: 450, limitMinor: 2000 },
       }),
       [String(account(2, "").id)]: report(2, {}),
@@ -220,6 +220,10 @@ test("usage reads as reported: current windows, last-known after a token change,
 
   await expect(card("Fresh").locator('[data-usage="fresh"]')).toContainText("65% left");
   await expect(card("Fresh")).toContainText("35% used, resets in");
+  // A null reading is the provider saying "unavailable" for that window; an unrecognized sibling is counted, not shown.
+  await expect(card("Fresh")).toContainText("Seven dayUnavailable");
+  await expect(card("Fresh")).toContainText("Reading unavailable");
+  await expect(card("Fresh")).toContainText("1 window in a form this dashboard cannot read yet.");
   await expect(card("Fresh")).toContainText("Extra usage: $4.50 of $20.00");
   // Reported under the token before it was replaced: still shown, but as last known.
   await expect(card("Rotated").locator('[data-usage="stale"]')).toContainText("Last known");
