@@ -836,9 +836,8 @@ html:has(> body .lp) {
   --critical: #a3301d;
   border-radius: 16px;
   background: var(--surface);
-  box-shadow:
-    inset 0 0 0 1px var(--dx-edge),
-    0 40px 120px -60px rgba(0, 0, 0, 0.9);
+  /* Its edge only: a blurred drop shadow here would reach up into the hero and change its last rows. */
+  box-shadow: inset 0 0 0 1px var(--dx-edge);
   overflow: clip;
 }
 
@@ -1039,10 +1038,15 @@ html:has(> body .lp) {
   backdrop-filter: none;
 }
 .dx .lp-copy-command {
+  overflow: visible;
   white-space: normal;
+  overflow-wrap: break-word;
 }
-.lp-copy-word {
-  white-space: nowrap;
+/* A command's word stays whole, and breaks inside only when it is wider than the chip (a UUID, a URL on a phone). */
+.dx .lp-copy-word {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .dx .lp-copy-icon {
   align-self: flex-start;

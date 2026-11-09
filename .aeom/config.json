@@ -35,6 +35,18 @@
     "supabase/**",
     "scripts/**",
     "bun.lock",
-    "package.json"
+    "package.json",
+    "apps/dashboard/src/components/landing/Copy.tsx",
+    "apps/dashboard/e2e/**",
+    "apps/dashboard/test/**",
+    "apps/dashboard/playwright.config.ts",
+    "apps/dashboard/vercel.json",
+    "README.md",
+    "AGENTS.md",
+    "docs/**",
+    ".github/**",
+    ".agents/**",
+    "Dockerfile",
+    "railway.json"
   ]
 }

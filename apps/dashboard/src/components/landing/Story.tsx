@@ -71,7 +71,7 @@ const HUNKS: Hunk[] = [
     id: "resume",
     label: "Resume",
     title: "Stop the machine. Keep the thread.",
-    before: "Close the lid and [the turn is lost].",
+    before: "Close the lid and [the agent stops with it].",
     after: [
       "[Stop] removes the machine and keeps the disk and the conversation.",
       "The [next send] resumes where it left off, connections prepared again.",

@@ -23,7 +23,11 @@ if ! curl -fs "http://127.0.0.1:$MOCK_PORT/health" >/dev/null 2>&1; then
   nohup bun e2e/mock-supabase.ts >"${TMPDIR:-/tmp}/aeom-mock-$MOCK_PORT.log" 2>&1 </dev/null &
   for _ in $(seq 50); do curl -fs "http://127.0.0.1:$MOCK_PORT/health" >/dev/null 2>&1 && break; sleep 0.2; done
 fi
-if [ ! -f .next/BUILD_ID ] || [ -n "$(find src public next.config.* package.json -newer .next/BUILD_ID -print -quit 2>/dev/null)" ]; then
+# Rebuild when a source of the dashboard or of a workspace package changed, or when the values inlined at build time did.
+STAMP="NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_AUTH_PROVIDERS=$NEXT_PUBLIC_AUTH_PROVIDERS"
+if [ ! -f .next/BUILD_ID ] || [ "$(cat .next/aeom-build-env 2>/dev/null)" != "$STAMP" ] ||
+  [ -n "$(find src public next.config.* package.json "$ROOT/packages" -newer .next/BUILD_ID -not -path '*/node_modules/*' -print -quit 2>/dev/null)" ]; then
   bunx next build >&2
+  printf '%s' "$STAMP" > .next/aeom-build-env
 fi
 exec bunx next start -p "$PORT" -H 127.0.0.1

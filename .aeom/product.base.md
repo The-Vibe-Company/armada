@@ -32,30 +32,25 @@ On the landing: read what Armada does, see how a golden, a launch, a sandbox and
 ### Try Armada in the browser
 Why: a developer convinced by the page wants to start without installing anything. (seen: /)
 1. Open `/`.
-2. Read down to the last section of the page.
-3. Click "Sign in to try Armada".
-4. Land on `/login`.
+2. Click "Sign in to try Armada" in the story's index under the hero.
+3. Land on `/login`.
 
 ### Install the CLI
 Why: a developer who works in the terminal wants the install command and the first commands to type. (seen: /) (seen: README.md)
 1. Open `/`.
-2. Click "Install" in the navigation.
+2. Click "Install" in the story's index under the hero.
 3. See `npm install -g @the-vibe-company/armada` and `armada login` on the page.
 
 ### See how a task gets its own sandbox
 Why: a developer wants to understand what a golden is and what a launch gives each agent before trusting it with their code. (seen: /)
 1. Open `/`.
-2. Click "Method" in the navigation.
+2. Click "Method" in the story's index under the hero.
 3. See how a golden is built.
-4. Click "Fleet" in the navigation.
+4. Click "Fleet" in the story's index under the hero.
 5. See that each launch gets a sandbox of its own, with Claude Code or Codex.
-
-On a phone the navigation hides "Method", "Fleet", "CLI" and "Keys", so this journey breaks at step 2 at 390 px. (seen: / at 390 px)
 
 ### Check where my keys go
 Why: a developer wants to know what happens to their model and provider credentials before storing them. (seen: /)
 1. Open `/`.
-2. Click "Keys" in the navigation.
+2. Click "Keys" in the story's index under the hero.
 3. See that keys are sealed with AES-256-GCM and that a golden holds none.
-
-On a phone the navigation hides "Keys", so this journey breaks at step 2 at 390 px. (seen: / at 390 px)
