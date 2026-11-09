@@ -7,6 +7,7 @@ import { ConnectionStatusBadge, ScopeBadge } from "@/components/connections";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { SandboxActions } from "@/components/sandbox-actions";
 import { SandboxChat } from "@/components/sandbox-chat";
+import { SandboxDetailsPanel } from "@/components/sandbox-details-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -94,7 +95,7 @@ export default async function SandboxPage({ params }: Props) {
   ];
 
   return (
-    <>
+    <div data-fit-viewport className="space-y-4 md:space-y-6">
       <div className="space-y-3">
         <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground">
           <Link href="/sandboxes">
@@ -123,8 +124,8 @@ export default async function SandboxPage({ params }: Props) {
         </Alert>
       )}
 
-      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <div className="min-w-0">
+      <div data-fit="body" className="grid items-start gap-4 md:gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <div data-fit="column" className="min-w-0">
           <SandboxChat
             sandboxId={sandbox.id}
             initialStatus={sandbox.status}
@@ -136,7 +137,7 @@ export default async function SandboxPage({ params }: Props) {
             configured={configured}
           />
         </div>
-        <div className="space-y-6">
+        <SandboxDetailsPanel>
           <Card className="gap-4">
             <CardHeader>
               <CardTitle className="text-base">Details</CardTitle>
@@ -164,9 +165,9 @@ export default async function SandboxPage({ params }: Props) {
               <AppliedConnections applied={applied} />
             </CardContent>
           </Card>
-        </div>
+        </SandboxDetailsPanel>
       </div>
-    </>
+    </div>
   );
 }
 

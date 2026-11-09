@@ -153,8 +153,8 @@ export function SandboxChat(props: Props) {
   const reason = failure?.kind === "outcome" ? failure.reason : undefined;
 
   return (
-    <div className="space-y-4">
-      <Card className="gap-0 overflow-hidden py-0">
+    <div data-fit="chat" className="space-y-4">
+      <Card data-fit="card" className="gap-0 overflow-hidden py-0">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 sm:px-6">
           <div className="flex min-w-0 items-center gap-3">
             <h2 className="text-base leading-none font-semibold">Conversation</h2>
@@ -325,7 +325,7 @@ function Transcript({
         : "";
 
   return (
-    <div className="relative">
+    <div data-fit="history" className="relative">
       <p role="status" className="sr-only">
         {announcement}
       </p>
@@ -337,6 +337,7 @@ function Transcript({
         aria-live="off"
         // biome-ignore lint/a11y/noNoninteractiveTabindex: the history scrolls on its own; the keyboard must reach it.
         tabIndex={0}
+        data-fit="history-scroll"
         className="max-h-[min(68vh,46rem)] min-h-40 overflow-y-auto overscroll-contain px-4 py-5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:ring-inset sm:px-6"
       >
         {items.length === 0 ? (
@@ -684,7 +685,7 @@ function Composer({
       noValidate
       onSubmit={onSubmit}
       onChange={readOverride}
-      className="space-y-3 border-t bg-muted/30 px-4 py-3 sm:px-6"
+      className="space-y-3 border-t bg-muted/30 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6"
       aria-label="Message the agent"
     >
       <input type="hidden" name="sandbox" value={sandboxId} />
@@ -791,7 +792,7 @@ function TechnicalEvents({ events }: { events: ChatEvent[] }) {
     >
       <summary className="cursor-pointer font-medium">Technical events ({events.length})</summary>
       {open && (
-        <ol className="mt-3 space-y-2" aria-label="Technical events">
+        <ol data-fit="technical-list" className="mt-3 space-y-2" aria-label="Technical events">
           {events.map((event) => (
             <li key={event.id} className="rounded-md border bg-muted/30 px-3 py-2">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
