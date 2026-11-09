@@ -91,10 +91,11 @@ extension ArmadaClient {
         if let receipt = current.receipt, receipt.state == .succeeded || receipt.state == .failed { return receipt }
         guard current.state != .failed else { throw ArmadaError.http(400) }
         let attempt = current.dispatchCount + 1
-        try update(current.updating(state: .uncertain, attempts: attempt)) // persist BEFORE external effects
+        try update(current.updating(state: .uncertain, receipt: current.receipt, attempts: attempt)) // persist BEFORE external effects
         do {
             let receipt: OrchestratorOperation = try await authenticatedRequest(pending.route, method: "POST", body: pending.body, key: pending.key)
             guard receipt.version == 1, receipt.kind == pending.action,
+                  current.receipt == nil || current.receipt?.id == receipt.id,
                   pending.orchestratorId == nil || receipt.orchestratorId == pending.orchestratorId else { throw ArmadaError.invalidResponse }
             try update(pending.updating(state: receipt.state, receipt: receipt))
             return pendingOperations.first(where: { $0.id == operationID })?.receipt ?? receipt
