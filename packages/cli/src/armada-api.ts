@@ -78,6 +78,27 @@ export async function createArmadaApiClient(io: ArmadaApiIo, options: ArmadaApiO
       }
       const payload: unknown = await response.json().catch(() => null);
       if (response.ok) return normalizeProviderDto(path, payload) as T;
+      // Invitation tokens can be present in a rejected body. Never trust server error text here.
+      if (path.startsWith("/api/v1/org/invitations/")) {
+        const messages: Record<number, string> = {
+          400: "Invalid invitation request. Check the email, role or invitation token.",
+          401: "Log in personally with the invitation recipient's verified email to accept; otherwise update your Armada login.",
+          403: "Invitation request forbidden. Management requires an org admin; acceptance requires a personal login with the matching verified email.",
+          404: "Invitation or organization not found or not visible.",
+          409: "Invitation conflict or rate limit. Check membership, expiry, revocation and resend state before retrying.",
+          503: "Invitation service unavailable. Check invitation status before retrying; email may not have been sent.",
+        };
+        throw new AuthError(
+          messages[response.status] ?? `Invitation request failed (${response.status}).`,
+          response.status === 401
+            ? "unauthorized"
+            : response.status === 400
+              ? "usage"
+              : response.status === 403 || response.status === 404 || response.status === 409
+                ? "conflict"
+                : "unavailable",
+        );
+      }
       if (response.status === 401) throw new AuthError("Run armada login or update ARMADA_TOKEN.", "unauthorized");
       if (response.status === 403) throw new AuthError(apiMessage(payload, "Armada refused this request."), "conflict");
       throw new AuthError(apiMessage(payload, `Armada server request failed (${response.status}).`), "unavailable");
