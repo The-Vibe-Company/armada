@@ -2,7 +2,7 @@
 What the front holds to from now on: its direction, its tokens and its kit, each where it lives in the code, and its own rules.
 
 ## Direction
-split-diff: the side-by-side diff a developer reads in review, its gutters, hunk headers and folded unchanged lines. It serves what changes when a developer hands work to Armada, read hunk by hunk like a change before approving it. Structure: two synchronised columns with a gutter, every chapter a hunk, folded bars between, unified on a phone.
+night-continuity: the story continues the accepted hero (#628). Below the hero, every chapter stands on the hero's own near-black surface, with its text, hairlines, radii and faint glow, in Geist and Geist Mono, and lime as the one accent. The art direction of the hero is a hard constraint: the story takes nothing from another palette, theme or metaphor. Structure: one chapter per thing you do with Armada, heavy type beside a diagram drawn in one outline weight, then the chapter's command.
 
 ## Tokens
 - `--side: #0b0c0d` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
@@ -53,49 +53,22 @@ split-diff: the side-by-side diff a developer reads in review, its gutters, hunk
 - `--frontier-dim: rgba(126, 166, 255, 0.14)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
 - `--critical: #ff6b5b` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
 - `--track: rgba(255, 255, 255, 0.07)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp`
-- `--dx-del: #f7e3dc` in `apps/dashboard/src/app/landing/landing.css`, under `.dx`
-- `--dx-del-gutter: #f0cfc4` in `apps/dashboard/src/app/landing/landing.css`, under `.dx`
-- `--dx-del-word: #f2bfb0` in `apps/dashboard/src/app/landing/landing.css`, under `.dx`
-- `--dx-del-ink: #a3301d` in `apps/dashboard/src/app/landing/landing.css`, under `.dx`
-- `--dx-add: #e2f0ea` in `apps/dashboard/src/app/landing/landing.css`, under `.dx`
-- `--dx-add-gutter: #cde5db` in `apps/dashboard/src/app/landing/landing.css`, under `.dx`
-- `--dx-add-word: #b5dccb` in `apps/dashboard/src/app/landing/landing.css`, under `.dx`
-- `--dx-hunk: #e4e9f7` in `apps/dashboard/src/app/landing/landing.css`, under `.dx`
-- `--dx-hunk-line: #c3cdea` in `apps/dashboard/src/app/landing/landing.css`, under `.dx`
-- `--dx-hunk-ink: #2a449f` in `apps/dashboard/src/app/landing/landing.css`, under `.dx`
-- `--dx-gutter: 56px` in `apps/dashboard/src/app/landing/landing.css`, under `.dx`
-- `--dx-sign: 24px` in `apps/dashboard/src/app/landing/landing.css`, under `.dx`
-- `--dx-edge: var(--line-strong)` in `apps/dashboard/src/app/landing/landing.css`, under `.dx`
-- `--surface: #f6f3ec` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-file`
-- `--card: #ebe6da` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-file`
-- `--text: #16171b` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-file`
-- `--text-2: #464851` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-file`
-- `--text-3: #5b5d66` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-file`
-- `--line-strong: rgba(22, 23, 27, 0.15)` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-file`
-- `--fill-2: rgba(22, 23, 27, 0.07)` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-file`
-- `--done: #0b6b5c` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-file`
-- `--done-dim: #cde5db` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-file`
-- `--frontier: #2a449f` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-file`
-- `--frontier-dim: #dbe2f5` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-file`
-- `--critical: #a3301d` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-file`
-- `--dg-rail: rgba(22, 23, 27, 0.4)` in `apps/dashboard/src/app/landing/landing.css`, under `.dg`
-- `--dx-gutter: 40px` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-steps .dx-ln`
-- `--dx-sign: 20px` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-steps .dx-ln`
-- `--dx-gutter: 36px` in `apps/dashboard/src/app/landing/landing.css`, under `@media (max-width: 860px) .dx`
-- `--dx-sign: 18px` in `apps/dashboard/src/app/landing/landing.css`, under `@media (max-width: 860px) .dx`
-- `--dx-gutter: 28px` in `apps/dashboard/src/app/landing/landing.css`, under `@media (max-width: 860px) .dx-steps .dx-ln`
-- `--dx-sign: 16px` in `apps/dashboard/src/app/landing/landing.css`, under `@media (max-width: 860px) .dx-steps .dx-ln`
-- `--surface: #0c0d10` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-review .lp-terminal`
-- `--card: #14151a` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-review .lp-terminal`
-- `--text: #f2f1ee` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-review .lp-terminal`
-- `--text-2: #b6b6bd` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-review .lp-terminal`
-- `--text-3: #8e8e97` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-review .lp-terminal`
-- `--line-strong: rgba(255, 255, 255, 0.11)` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-review .lp-terminal`
-- `--fill-2: rgba(255, 255, 255, 0.08)` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-review .lp-terminal`
-- `--done: #b6f15a` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-review .lp-terminal`
-- `--done-dim: rgba(182, 241, 90, 0.13)` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-review .lp-terminal`
-- `--frontier: #7ea6ff` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-review .lp-terminal`
-- `--critical: #ff6b5b` in `apps/dashboard/src/app/landing/landing.css`, under `.dx-review .lp-terminal`
+- `--ch-ink: #060709` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-paper: var(--text)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-lime: var(--done)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-sky: #bb87fc` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-orange: #d97757` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-amber: #10a37f` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-night: #060709` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-card: #0f1013` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-accent: var(--done)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-bg: var(--bg)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-fg: var(--text)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-fg-2: var(--text-2)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-line: rgba(255, 255, 255, 0.16)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-chip: var(--ch-accent)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-chip-fg: var(--ch-ink)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
+- `--ch-chip-dim: rgba(6, 7, 9, 0.6)` in `apps/dashboard/src/app/landing/landing.css`, under `.lp-ch`
 
 ## Components
 - `.lp` in `apps/dashboard/src/app/landing/landing.css`
@@ -146,11 +119,10 @@ split-diff: the side-by-side diff a developer reads in review, its gutters, hunk
 - `.lp-caret` in `apps/dashboard/src/app/landing/landing.css`
 - `.lp-terminal` in `apps/dashboard/src/app/landing/landing.css`
 - `.lp-terminal-bar` in `apps/dashboard/src/app/landing/landing.css`
-- `.lp-terminal-sign` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-terminal-dots` in `apps/dashboard/src/app/landing/landing.css`
 - `.lp-terminal-title` in `apps/dashboard/src/app/landing/landing.css`
 - `.lp-terminal-body` in `apps/dashboard/src/app/landing/landing.css`
 - `.lp-terminal-run` in `apps/dashboard/src/app/landing/landing.css`
-- `.lp-terminal-gcmd` in `apps/dashboard/src/app/landing/landing.css`
 - `.lp-terminal-command` in `apps/dashboard/src/app/landing/landing.css`
 - `.lp-terminal-prompt` in `apps/dashboard/src/app/landing/landing.css`
 - `.lp-terminal-line` in `apps/dashboard/src/app/landing/landing.css`
@@ -159,89 +131,71 @@ split-diff: the side-by-side diff a developer reads in review, its gutters, hunk
 - `.is-amber` in `apps/dashboard/src/app/landing/landing.css`
 - `.is-orange` in `apps/dashboard/src/app/landing/landing.css`
 - `.is-blue` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-file` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-head` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-head-side` in `apps/dashboard/src/app/landing/landing.css`
-- `.is-old` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-head-mk` in `apps/dashboard/src/app/landing/landing.css`
-- `.is-new` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-hunk` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-hh` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-range` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-title` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-rows` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-side` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-fill` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-ln` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-no` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-mk` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-tx` in `apps/dashboard/src/app/landing/landing.css`
-- `.is-block` in `apps/dashboard/src/app/landing/landing.css`
-- `.is-del` in `apps/dashboard/src/app/landing/landing.css`
-- `.is-add` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-w` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-fold` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-fold-icon` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-fold-tag` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-ch` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-ch-inner` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-ch-words` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-flip` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-ch-title` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-wide` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-ch-body` in `apps/dashboard/src/app/landing/landing.css`
 - `.lp-copy-word` in `apps/dashboard/src/app/landing/landing.css`
-- `.dg` in `apps/dashboard/src/app/landing/landing.css`
-- `.dg-cap` in `apps/dashboard/src/app/landing/landing.css`
-- `.dg-rail` in `apps/dashboard/src/app/landing/landing.css`
-- `.dg-n` in `apps/dashboard/src/app/landing/landing.css`
-- `.dg-dot` in `apps/dashboard/src/app/landing/landing.css`
-- `.is-paper` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-index` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-index-inner` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-index-links` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-ch-figure` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-card` in `apps/dashboard/src/app/landing/landing.css`
 - `.is-sky` in `apps/dashboard/src/app/landing/landing.css`
-- `.is-hollow` in `apps/dashboard/src/app/landing/landing.css`
-- `.is-ship` in `apps/dashboard/src/app/landing/landing.css`
-- `.is-ship-lime` in `apps/dashboard/src/app/landing/landing.css`
-- `.is-out` in `apps/dashboard/src/app/landing/landing.css`
-- `.is-in` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-night` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-ink` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-ghost` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-wire` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-thick` in `apps/dashboard/src/app/landing/landing.css`
 - `.is-cut` in `apps/dashboard/src/app/landing/landing.css`
-- `.is-edge` in `apps/dashboard/src/app/landing/landing.css`
-- `.dg-edge` in `apps/dashboard/src/app/landing/landing.css`
-- `.dg-name` in `apps/dashboard/src/app/landing/landing.css`
-- `.dg-note` in `apps/dashboard/src/app/landing/landing.css`
-- `.dg-tag` in `apps/dashboard/src/app/landing/landing.css`
-- `.is-live` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-line` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-prong` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-plug` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-dot` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-prompt` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-shackle` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-node` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-hollow` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-ship` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-paper` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-ink` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-check` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-pill` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-key` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-stop` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-stop-x` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-t` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-big` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-s` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-mono` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-fig-xs` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-on-ink` in `apps/dashboard/src/app/landing/landing.css`
+- `.is-running` in `apps/dashboard/src/app/landing/landing.css`
 - `.is-ready` in `apps/dashboard/src/app/landing/landing.css`
-- `.is-no` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-review` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-review-words` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-review-title` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-review-lead` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-review-actions` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-review-cli` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-review-sub` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-steps` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-review-terminal` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-try-actions` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-try-primary` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-try-link` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-try-sub` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-try-steps` in `apps/dashboard/src/app/landing/landing.css`
+- `.lp-try-terminal` in `apps/dashboard/src/app/landing/landing.css`
 - `.lp-dim` in `apps/dashboard/src/app/landing/landing.css`
 - `.lp-footer` in `apps/dashboard/src/app/landing/landing.css`
 - `.lp-footer-inner` in `apps/dashboard/src/app/landing/landing.css`
 - `.lp-footer-nav` in `apps/dashboard/src/app/landing/landing.css`
 - `.lp-footer-link` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-index` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-label` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-review-name` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-before` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-proof` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-proof-figure` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-proof-cmd` in `apps/dashboard/src/app/landing/landing.css`
-- `.dx-approve` in `apps/dashboard/src/app/landing/landing.css`
-- `.lp-terminal-ghost` in `apps/dashboard/src/app/landing/landing.css`
-- `.lp-terminal-live` in `apps/dashboard/src/app/landing/landing.css`
 - `apps/dashboard/src/components/landing/Story.tsx`
-- `apps/dashboard/src/components/landing/Review.tsx`
-- `apps/dashboard/src/components/landing/Line.tsx`
 - `apps/dashboard/src/components/landing/Figures.tsx`
 - `apps/dashboard/src/components/landing/Terminal.tsx`
 
 ## Rules
-- The hero, its navigation and its night sky stay exactly as they are; the story begins under them.
-- Each chapter is one hunk: its nav word as a label, an @@ range and a headline, today's line on the left, Armada's lines on the right, then its figure and its command.
-- The left side says only what follows from Armada's facts; the right side says only what Armada ships.
-- Teal, the colour of an added line, marks the one main action: Sign in to try Armada.
-- Every command on the page is one `armada --help` documents, with flags from that command's own usage.
-- The story's index under the hero names the chapters with the navigation's words, so a phone reaches every section.
-- On a phone the diff becomes one column, the old line above the new ones, marked with − and +.
-- A diagram draws the product as a commit graph: a dot per step, a lane per sandbox, a chip per model, effort or status.
+- The hero, its navigation and its night sky stay exactly as they are: same DOM, computed styles and pixels at desktop and phone widths. The story begins under them.
+- Every chapter uses the hero's surface (`--bg`), text (`--text`, `--text-2`), hairlines (`--line`) and glow; no chapter has a background colour of its own, and no light, pastel or paper panel stands in the story.
+- Lime (`--done`) is the one accent: a chapter's command, the main action Sign in to try Armada, and the diagrams' focal card. Blue, orange, violet and green appear only as the small ships of the hero flock's harness colours.
+- A failing `one-direction` principle (the story not continuing the hero's direction) is a blocking finding, never an accepted exception.
+- Diagram cards are night cards: the hero's surface with a light outline and light text, as the fleet chapter draws them.
+- The story's index under the hero names the chapters with the navigation's words and holds the main action, so every width, and a phone above all, reaches each chapter.
+- Every command on the page is one `armada --help` documents, with flags from that command's own usage, shown whole and wrapping on a phone.

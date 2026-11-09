@@ -1,4 +1,5 @@
 import type { Harness } from "./contract.ts";
+import type { ProviderTarget } from "./sandbox-provider.ts";
 
 /**
  * The contract between Armada and a placement: the machines agents run on.
@@ -38,6 +39,22 @@ export interface Provider {
    * Callers inject credentials later, per sandbox, through `fork`'s `env`.
    */
   createGolden(request: CreateGoldenRequest): Promise<SandboxInfo>;
+  /** Read-only durable reservation discovery after an interrupted golden create. Never creates,
+   * replays commands, releases capacity or treats absence as proof. The provider must verify the
+   * exact request key, owner, immutable target and recorded management authority. */
+  findGoldenBuilder?(request: {
+    requestKey: string;
+    ownerId: string;
+    target: ProviderTarget;
+  }): Promise<{ sandboxId: string; disposition: "disposable" | "retained" } | null>;
+  /** Recovery-only disposal, rechecking exact reservation/provenance/retention under the
+   * provider lifecycle lease. Never invokes create, build commands or snapshot cleanup. */
+  disposeGoldenBuilder?(request: {
+    requestKey: string;
+    ownerId: string;
+    target: ProviderTarget;
+    sandboxId: string;
+  }): Promise<DeleteReceipt>;
   /** Authorized credential-free golden restoration, never a normal agent fork. Source is derived
    * exclusively from the bound snapshot; optional prior ID must match that image's own source. */
   restoreGoldenMaster?(request: { snapshotId: string; sandboxId?: string }): Promise<SandboxInfo>;

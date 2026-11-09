@@ -44,6 +44,18 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     return revive(row.record);
   }
   return {
+    async findByRequestKey(requestKey) {
+      await authorize();
+      const result = await sql.query<{ id: string; record: Machine }>(
+        "select id,record from public.modal_machines where scope=$1 and request_key=$2 and org_id=$3 and owner_id=$4 and visibility=$5::public.visibility",
+        [key, requestKey, scope.orgId, scope.userId, scope.visibility],
+      );
+      const row = result.rows[0];
+      if (!row) return null;
+      if (row.record.info.id !== row.id)
+        throw refusal("forbidden", "Stored builder identity does not match its reservation.");
+      return revive(row.record);
+    },
     async reserve(requestKey, machine) {
       await authorize();
       await sql.query(

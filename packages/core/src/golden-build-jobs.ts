@@ -313,31 +313,103 @@ export class GoldenBuildJobs {
   async reconcileOne(): Promise<void> {
     const row = (
       await this.options.sql.query<Job>(
-        "select * from public.golden_build_jobs where state='recovery_required' and builder_id is not null order by updated_at limit 1",
+        "select * from public.golden_build_jobs where state='recovery_required' and (builder_id is not null or (provider='modal' and phase='builder')) order by updated_at limit 1",
       )
     ).rows[0];
-    if (!row?.builder_id) return;
+    if (!row) return;
+    // Fairness bookkeeping only: retained, unauthorized or temporarily unavailable heads
+    // must not starve other abandoned jobs. Never change their fence/state/capacity/proof.
+    const attempted = await this.options.sql.query(
+      "update public.golden_build_jobs set updated_at=clock_timestamp() where id=$1 and state='recovery_required' and fence is not distinct from $2::uuid returning id",
+      [row.id, row.fence],
+    );
+    if (!attempted.rows.length || !row.fence) return;
+    // Never dispose a source whose snapshot/publication outcome may still depend on it.
+    if (row.provider === "modal" && (row.phase === "snapshot" || row.phase === "persist")) return;
     try {
       const actor = await this.transaction((sql) => this.actor(sql, row));
-      const provider = await this.resolve(row, actor, await this.context(row));
-      // Modal delete is disposal; stop could create another snapshot and must not replay an unknown save.
+      const input = await this.context(row);
+      if (
+        input.name !== row.name ||
+        input.visibility !== row.visibility ||
+        (input.existingGolden?.id ?? null) !== row.golden_id
+      )
+        return;
+      const provider = await this.resolve(row, actor, input);
+      if (row.provider === "modal" && (!provider.findGoldenBuilder || !provider.disposeGoldenBuilder)) return;
+      let builderId = row.builder_id;
+      let retained = false;
+      if (row.provider === "modal" && provider.findGoldenBuilder) {
+        const found = await provider.findGoldenBuilder({
+          requestKey: row.id,
+          ownerId: row.owner_id,
+          target: buildTarget(row.provider, row.org_id, input),
+        });
+        if (!found || !found.sandboxId || (builderId !== null && builderId !== found.sandboxId)) return;
+        builderId = found.sandboxId;
+        retained = found.disposition !== "disposable";
+      } else if (!builderId) return;
+      const owned = await this.transaction(async (sql) => {
+        const current = (
+          await sql.query<Job>("select * from public.golden_build_jobs where id=$1 for update", [row.id])
+        ).rows[0];
+        if (
+          !current ||
+          current.state !== "recovery_required" ||
+          current.fence !== row.fence ||
+          current.phase !== row.phase ||
+          current.request_hash !== row.request_hash ||
+          current.provider !== row.provider ||
+          current.owner_id !== row.owner_id ||
+          current.org_id !== row.org_id ||
+          current.visibility !== row.visibility ||
+          !Buffer.from(current.payload_enc).equals(Buffer.from(row.payload_enc)) ||
+          (current.builder_id !== null && current.builder_id !== builderId)
+        )
+          return false;
+        await this.actor(sql, current);
+        // Commit the logical identity under the existing fence BEFORE any provider action.
+        const saved = await sql.query(
+          "update public.golden_build_jobs set builder_id=$3,updated_at=now() where id=$1 and fence=$2 and state='recovery_required' returning id",
+          [row.id, row.fence, builderId],
+        );
+        return saved.rows.length === 1;
+      });
+      if (
+        !owned ||
+        retained ||
+        (row.provider === "modal" && provider.findGoldenBuilder && !provider.disposeGoldenBuilder)
+      )
+        return;
+      // Modal disposal already performs exact named ownership reconciliation under its lease.
       if (row.provider === "modal") {
-        // A snapshot/publish attempt may still depend on this source. The retention owner must
-        // reconcile its artifact before disposal; never resolve ambiguity by deleting the source.
-        if (row.phase === "snapshot" || row.phase === "persist") return;
-        const receipt = await provider.delete({ sandboxId: row.builder_id });
+        const dispose = provider.disposeGoldenBuilder;
+        if (!dispose) return;
+        const receipt = await dispose({
+          requestKey: row.id,
+          ownerId: row.owner_id,
+          target: buildTarget(row.provider, row.org_id, input),
+          sandboxId: builderId,
+        });
         if (receipt.status !== "deleted") return;
-      } else await provider.stop({ sandboxId: row.builder_id });
+      } else await provider.stop({ sandboxId: builderId });
       await this.transaction(async (sql) => {
         const current = (
           await sql.query<Job>("select * from public.golden_build_jobs where id=$1 for update", [row.id])
         ).rows[0];
-        if (current?.state !== "recovery_required" || current.fence !== row.fence) return;
+        if (
+          current?.state !== "recovery_required" ||
+          current.fence !== row.fence ||
+          current.builder_id !== builderId ||
+          current.phase !== row.phase
+        )
+          return;
+        await this.actor(sql, current);
         if (row.reservation_id) await sqlGoldenBackendSlots(sql).release(row.reservation_id);
         await sql.query("update public.golden_build_jobs set state='failed',updated_at=now() where id=$1", [row.id]);
       });
     } catch {
-      /* Unknown outcomes retain capacity and artifacts, never replay the build. */
+      /* Unknown outcomes retain capacity, source and proof. No exception/payload/SDK logging. */
     }
   }
   /** One bounded worker tick; callers own scheduling and graceful shutdown. Never reclaims expired work. */

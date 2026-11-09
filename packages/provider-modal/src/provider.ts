@@ -39,6 +39,8 @@ export interface ModalProviderOptions extends ModalConnection {
   beforePrompt?(provider: ModalProvider, sandboxId: string): Promise<void>;
 }
 export interface ModalProvider extends Provider {
+  findGoldenBuilder: NonNullable<Provider["findGoldenBuilder"]>;
+  disposeGoldenBuilder: NonNullable<Provider["disposeGoldenBuilder"]>;
   prepareNativeHarnessCwd(request: { sandboxId: string; harness: "claude" | "codex"; cwd: string }): Promise<void>;
   configureMcp(request: { sandboxId: string; configuration: McpConfiguration }): Promise<{ revision: string }>;
   restoreGoldenMaster(request: { sandboxId?: string; snapshotId: string }): Promise<SandboxInfo>;
@@ -431,6 +433,43 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   async function collectImages() {
     await collectFrom(source.store);
+  }
+  function assertRecoveryTarget({ ownerId, target }: Parameters<NonNullable<Provider["findGoldenBuilder"]>>[0]) {
+    if (
+      target.provider !== "modal" ||
+      target.orgId !== options.scope.orgId ||
+      ownerId !== options.scope.userId ||
+      target.visibility !== options.scope.visibility ||
+      target.modal?.workspace !== options.scope.binding.workspace ||
+      target.modal.environment !== options.scope.binding.environment ||
+      target.modal.appId !== options.scope.binding.appId
+    )
+      throw refusal("forbidden", "Golden builder target does not match this provider connection.");
+  }
+  function assertRecoveryBuilder(row: Machine, ownerId: string) {
+    // No legacy/user-first authority fallback for adoption of an unknown create.
+    if (
+      !row.golden ||
+      row.launchUserId !== ownerId ||
+      !row.managementAuthority ||
+      row.managementAuthority.credentialScope !== managementAuthority.credentialScope ||
+      row.managementAuthority.credentialOwnerId !== managementAuthority.credentialOwnerId ||
+      row.info.labels.armada !== "golden-builder" ||
+      row.sourceImage
+    )
+      throw refusal("forbidden", "Golden builder reservation authority does not match.");
+    assertMachineSource(row);
+  }
+  async function retainBuilder(row: Machine): Promise<boolean> {
+    return (
+      row.generation !== 1 ||
+      !!row.goldenRestore ||
+      ["checkpoint", "snapshot", "stopped", "terminate"].includes(row.phase) ||
+      !!row.recoveryImageId ||
+      !!row.retainedRecoveryIds?.length ||
+      !!row.snapshotImages?.length ||
+      (await store.images(row.info.id)).length > 0
+    );
   }
   const provider: ModalProvider = {
     id: "modal",
@@ -873,6 +912,48 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
         throw error;
       }
+    },
+    async findGoldenBuilder(request) {
+      assertRecoveryTarget(request);
+      const row = await store.findByRequestKey(request.requestKey);
+      if (!row) return null;
+      assertRecoveryBuilder(row, request.ownerId);
+      return { sandboxId: row.info.id, disposition: (await retainBuilder(row)) ? "retained" : "disposable" };
+    },
+    async disposeGoldenBuilder(request) {
+      assertRecoveryTarget(request);
+      const found = await store.findByRequestKey(request.requestKey);
+      if (!found || found.info.id !== request.sandboxId)
+        throw refusal("conflict", "Builder reservation changed; source retained.");
+      await bound();
+      await store.lease(request.sandboxId, async (row, save) => {
+        assertRecoveryBuilder(row, request.ownerId);
+        if (await retainBuilder(row))
+          throw refusal("conflict", "Builder has retained snapshot or recovery proof; source retained.");
+        if (row.phase === "deleted") return;
+        if (row.physicalId || row.phase !== "reserved") {
+          const reconciled = await namedOwned(row);
+          if (row.physicalId && row.physicalId !== reconciled.sandboxId)
+            throw refusal("conflict", "Named builder differs from recorded physical identity; source retained.");
+          // Recheck after remote observation, before any destructive operation.
+          if (await retainBuilder(row)) throw refusal("conflict", "Builder retention changed; source retained.");
+          row.physicalId = reconciled.sandboxId;
+          await save(row);
+        }
+        if (await retainBuilder(row)) throw refusal("conflict", "Builder retention changed; source retained.");
+        row.phase = "deleting";
+        await save(row);
+        if (row.physicalId) {
+          const sb = await physical(row);
+          await sb.terminate({ wait: true });
+          if ((await sb.poll()) === null)
+            throw refusal("unavailable", "Builder termination remains uncertain; reservation retained.");
+        }
+        // Recovery never collects any image: artifact retention has an independent owner.
+        row.phase = "deleted";
+        await save(row);
+      });
+      return { status: "deleted" };
     },
     async delete({ sandboxId }) {
       await bound();

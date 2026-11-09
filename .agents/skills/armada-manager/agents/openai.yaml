@@ -1,0 +1,4 @@
+interface:
+  display_name: "Armada Manager"
+  short_description: "Coordinate Armada work in parallel through delivery"
+  default_prompt: "Use $armada-manager to coordinate the authorized Armada work through review, green checks and delivery."
