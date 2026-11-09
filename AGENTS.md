@@ -27,6 +27,7 @@ Armada v1 (the fleet orchestrator) is archived at the tag `armada-v1-final`. Its
 - `bun run armada <args>`: the CLI from source.
 - `bun run dashboard`, `bun run dashboard:build`, `bun run e2e`: the dashboard (dev, production build, browser tests). `bun run verify` typechecks it and runs its unit tests, not the e2e.
 - `bun run db:types`: regenerate `packages/core/src/database.types.ts` after a migration change.
+- `scripts/aeom/install.sh`: install All Eyes On Me at its pinned commit to redesign or review the public landing (`.aeom/`, `docs/aeom.md`).
 
 ## Rules
 
