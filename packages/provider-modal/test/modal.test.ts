@@ -451,6 +451,74 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(resumed.generation).toBe(2);
     expect(resumed.physicalId).not.toBe(stopped.physicalId);
   });
+  test("stopped prompt reads preserve durable outcomes without restoring compute", async () => {
+    const f = fixture();
+    const row = await runningFork(f);
+    const statuses = ["queued", "running", "finished", "failed", "interrupted"] as const;
+    await appendModalEvents(
+      db,
+      scope,
+      row.id,
+      "1",
+      statuses.map((status, i) => ({
+        sequence: i + 1,
+        event: {
+          id: `event-${i}`,
+          at: i,
+          kind: "prompt" as const,
+          text: "task",
+          promptId: `prompt-${i}`,
+          conversationId: "conversation",
+          status,
+        },
+      })),
+    );
+    f.onRpc(async (_row, op) =>
+      op === "checkpoint" ? { watermark: 5, acknowledgedSequence: 5, generation: "1" } : undefined,
+    );
+    await f.provider.stop({ sandboxId: row.id });
+    const creates = f.creates;
+    for (const [i, status] of statuses.entries()) {
+      expect(await f.provider.getPrompt({ sandboxId: row.id, promptId: `prompt-${i}` })).toEqual({
+        promptId: `prompt-${i}`,
+        conversationId: "conversation",
+        status,
+        done: !["queued", "running"].includes(status),
+      });
+    }
+    await expect(f.provider.getPrompt({ sandboxId: row.id, promptId: "missing" })).rejects.toMatchObject({
+      code: "not_found",
+    });
+    expect(f.creates).toBe(creates);
+    expect((await f.store.get(row.id)).phase).toBe("stopped");
+    expect((await f.store.get(row.id)).generation).toBe(1);
+    await f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "resume deliberately" });
+    expect((await f.store.get(row.id)).generation).toBe(2);
+  });
+  test("a prompt observation delayed across stop never enters activation", async () => {
+    const f = fixture();
+    const row = await runningFork(f);
+    const entered = deferred();
+    const release = deferred();
+    const get = f.store.get;
+    let pause = true;
+    f.store.get = async (id) => {
+      if (pause) {
+        pause = false;
+        entered.resolve();
+        await release.promise;
+      }
+      return get(id);
+    };
+    const read = f.provider.getPrompt({ sandboxId: row.id, promptId: "missing" });
+    await entered.promise;
+    await f.provider.stop({ sandboxId: row.id });
+    const creates = f.creates;
+    release.resolve();
+    await expect(read).rejects.toMatchObject({ code: "not_found" });
+    expect(f.creates).toBe(creates);
+    expect((await get(row.id)).phase).toBe("stopped");
+  });
   test("snapshot deletion leaves already reserved forks usable", async () => {
     const f = fixture();
     const builder = await f.provider.createGolden({});
