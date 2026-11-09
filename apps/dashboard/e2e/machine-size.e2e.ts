@@ -154,6 +154,7 @@ test("a refused size says what can be changed, and an older server allocates not
   await signIn(page, "alice@example.com", "/goldens");
   await page.getByRole("button", { name: "Launch from shared-golden on Boat" }).click();
   const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Task").fill("Profile the slow build");
   await dialog.locator("[data-launch-advanced] > summary").click();
   await dialog.getByLabel("Machine size").selectOption("xlarge");
   await expect(dialog.locator("[data-size-source]")).toContainText("Extra large needs a Boat plan that includes it.");
@@ -162,6 +163,23 @@ test("a refused size says what can be changed, and an older server allocates not
     "Requested size cannot be allocated. If Boat refused Extra large, choose another size or the default.",
   );
   expect((await mockState()).launches.at(-1)).toMatchObject({ size: "xlarge" });
+  // The refusal keeps every choice as it was: no select falls back to its first option (effort Low) or the default
+  // size, and launching again sends exactly what is shown.
+  await expect(dialog.getByLabel("Task")).toHaveValue("Profile the slow build");
+  await expect(dialog.getByLabel("Model", { exact: true })).toHaveValue("claude-opus-5-5");
+  await expect(dialog.getByLabel("Reasoning effort")).toHaveValue("medium");
+  await expect(dialog.getByLabel("Machine size")).toHaveValue("xlarge");
+  await expect(dialog.locator("[data-launch-summary]")).toHaveText(
+    "Claude Opus 5.5 · Medium · Extra large machine · Org · No MCP",
+  );
+  await page.setViewportSize({ width: 390, height: 664 });
+  await page.screenshot({ path: "test-results/launch-refused-size-kept-mobile.png", animations: "disabled" });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await dialog.getByRole("button", { name: "Launch" }).click();
+  await expect.poll(async () => (await mockState()).launches.length).toBe(2);
+  const [first, again] = (await mockState()).launches;
+  expect(again).toEqual(first);
+  expect(again).toMatchObject({ reasoningEffort: "medium", size: "xlarge", prompt: "Profile the slow build" });
 
   // The database has the columns but this replica predates #653: the sized route is unknown there, so the launch
   // fails before allocation and is never retried on the legacy route, whether a size was chosen or a default kept.
