@@ -131,6 +131,16 @@ final class OrchestratorConversationModel {
         }
     }
 
+    /// While an accepted command is still open, re-read detail now and then so it settles even if
+    /// it finishes without a new conversation item. Ends when the state changes or the screen goes.
+    func pollWhileInProgress() async {
+        while case .inProgress = lifecycle, !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            await load()
+        }
+    }
+
     /// Called whenever the stream changes: drops local bubbles the conversation now shows and
     /// refreshes detail when an event carries a newer revision.
     func streamChanged() async {
@@ -328,6 +338,8 @@ final class OrchestratorConversationModel {
     }
 
     private func handleReadFailure(_ error: ServiceFailure) {
+        // Leaving the screen cancels the read; that is not a failure to show.
+        if Task.isCancelled { return }
         switch error {
         case .signedOut:
             onSignedOut()

@@ -125,6 +125,9 @@ struct OrchestratorConversationView: View {
         .task(id: model.orchestratorID) {
             await model.follow()
         }
+        .task(id: model.lifecycle) {
+            await model.pollWhileInProgress()
+        }
         .onChange(of: model.feed.conversation.items) { _, _ in
             Task { await model.streamChanged() }
         }

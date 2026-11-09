@@ -60,6 +60,7 @@ final class SandboxListModel {
     }
 
     private func handle(_ error: ServiceFailure) {
+        if Task.isCancelled { return }
         switch error {
         case .signedOut:
             onSignedOut()

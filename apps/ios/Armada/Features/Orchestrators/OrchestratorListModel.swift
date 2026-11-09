@@ -179,6 +179,7 @@ final class OrchestratorListModel {
     }
 
     private func handleReadFailure(_ error: ServiceFailure) {
+        if Task.isCancelled { return }
         switch error {
         case .signedOut:
             onSignedOut()
