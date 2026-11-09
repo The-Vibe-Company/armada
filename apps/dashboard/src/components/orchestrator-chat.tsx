@@ -100,10 +100,14 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
   const mounted = useRef(true);
   const failures = useRef(0);
   const active = useRef(true);
+  /** Reads are numbered: an answer older than one already shown is dropped, never put back over newer state. */
+  const issued = useRef(0);
+  const shown = useRef(0);
 
   const read = useCallback(async (): Promise<number | null> => {
     const url = new URL(`/api/orchestrators/${encodeURIComponent(id)}/feed`, window.location.origin);
     if (cursor.current) url.searchParams.set("cursor", cursor.current);
+    const number = ++issued.current;
     let body: Record<string, unknown>;
     let status: number;
     try {
@@ -114,14 +118,13 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
       body = { failure: "uncertain", error: "The dashboard lost contact with the server." };
       status = 0;
     }
+    if (number < shown.current) return ACTIVE_MS;
+    shown.current = number;
     if (status !== 200) {
+      let failure: OrchestratorFailure = "uncertain";
+      if (typeof body.failure === "string") failure = body.failure as OrchestratorFailure;
       // The dashboard's own session check answers 401 without a `failure`: that is an expired session too.
-      const failure =
-        typeof body.failure === "string"
-          ? (body.failure as OrchestratorFailure)
-          : status === 401
-            ? "session"
-            : "uncertain";
+      else if (status === 401) failure = "session";
       const message = typeof body.error === "string" ? body.error : "The orchestrator could not be read.";
       if (failure === "uncertain") {
         failures.current += 1;
@@ -152,7 +155,8 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
         ["creating", "stopping", "resuming"].includes(next.orchestrator.state) ||
         next.operations.some((operation) => operation.state === "pending") ||
         active.current;
-      return page.hasMore ? 0 : busy ? ACTIVE_MS : QUIET_MS;
+      if (page.hasMore) return 0;
+      return busy ? ACTIVE_MS : QUIET_MS;
     } catch (error) {
       setConnection({
         state: "stopped",
@@ -214,7 +218,9 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
   const after = useCallback(async () => {
     router.refresh();
     await read();
-  }, [router, read]);
+    // And the loop goes on (or starts again, after a stop such as an expired session the person has since renewed).
+    void tick();
+  }, [router, read, tick]);
 
   return (
     <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_18rem] lg:gap-6">

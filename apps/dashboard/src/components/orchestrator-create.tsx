@@ -227,7 +227,8 @@ export function CreateOrchestrator({
           </div>
           {uncertain && (
             <p className="text-xs text-muted-foreground">
-              Trying again cannot create it twice. Before changing it, check the list: it may already exist.
+              Trying again sends “{String(sent.current?.get("name") ?? "")}” exactly as before and cannot create it
+              twice. Before changing it, check the list: it may already exist.
             </p>
           )}
         </form>
