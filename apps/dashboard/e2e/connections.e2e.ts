@@ -325,7 +325,7 @@ test("a launch picks personal and org connections alike, from any golden, with n
   const linear = dialog.getByRole("checkbox", { name: "Alice Linear" });
   const docs = dialog.getByRole("checkbox", { name: "Acme Docs" });
   // Who may open the sandbox is its owner and the admins (#680): there is nothing to choose.
-  await expect(dialog.getByRole("radio")).toHaveCount(0);
+  await expect(dialog.getByRole("radio", { name: /^(Org|Private)/ })).toHaveCount(0);
   await expect(dialog.getByText("Who sees the sandbox")).toHaveCount(0);
   // Untouched, the selection is the #681 defaults: the personal default goes even into a sandbox of a shared golden.
   await expect(linear).toBeChecked();

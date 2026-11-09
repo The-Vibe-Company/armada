@@ -437,10 +437,10 @@ test("a launch from a golden sends the chosen model and effort, and a send can o
   await page.getByLabel("Project").selectOption("api");
   // Switching the agent selects that agent's own defaults, and the summary follows.
   const summary = page.locator("[data-launch-summary]");
-  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · Org · No MCP");
+  await expect(summary).toHaveText("Claude Opus 5.5 · Medium · 1 MCP");
   await page.getByRole("radio", { name: "Codex" }).check();
   await expect(page.getByLabel("Model")).toHaveValue("gpt-6.1-sol");
-  await expect(summary).toHaveText("GPT-6.1 Sol · Medium · Org · No MCP");
+  await expect(summary).toHaveText("GPT-6.1 Sol · Medium · 1 MCP");
   await page.getByLabel("Model").selectOption("gpt-6-luna");
   await expect(page.getByLabel("Reasoning effort").locator("option[value=ultra]")).toHaveCount(0);
   await page.getByLabel("Reasoning effort").selectOption("high");
