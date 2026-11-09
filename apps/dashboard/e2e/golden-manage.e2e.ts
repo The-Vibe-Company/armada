@@ -270,8 +270,9 @@ test("the launch form starts the agent in a recorded repository, sent as repo", 
   await signIn(page, "alice@example.com", "/goldens");
   await page.getByRole("button", { name: "Launch from shared-golden" }).click();
   const dialog = page.getByRole("dialog");
-  const select = dialog.getByLabel("Working directory");
-  await expect(select.locator("option")).toHaveText(["No repository (default directory)", "web", "api"]);
+  // A golden with several repositories asks for the project next to the agent, without opening Advanced.
+  const select = dialog.getByLabel("Project");
+  await expect(select.locator("option")).toHaveText(["Default directory", "web", "api"]);
   await select.selectOption("api");
   await dialog.getByRole("button", { name: "Launch" }).click();
   await page.waitForURL(/\/sandboxes\/[0-9a-f-]{36}$/);
@@ -410,10 +411,9 @@ test("same-name goldens on Boat and Modal are listed apart, and rebuild and laun
 
   await page.getByRole("button", { name: "Launch from shared-golden on Modal" }).click();
   const dialog = page.getByRole("dialog");
-  await expect(dialog.getByLabel("Working directory").locator("option")).toHaveText([
-    "No repository (default directory)",
-    "docs",
-  ]);
+  // A single repository is the default project; choosing another directory stays in Advanced.
+  await expect(dialog.getByLabel("Project")).toHaveValue("docs");
+  await expect(dialog.getByLabel("Project").locator("option")).toHaveText(["Default directory", "docs"]);
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await page.setViewportSize({ width: 390, height: 844 });
