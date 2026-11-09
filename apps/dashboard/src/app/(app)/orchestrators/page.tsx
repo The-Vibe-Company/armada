@@ -14,7 +14,8 @@ import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
-import type { OrchestratorListView } from "@/lib/orchestrators";
+import type { OrchestratorApi } from "@/lib/orchestrator-api";
+import { type OrchestratorListView, timeUntil } from "@/lib/orchestrators";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
 
@@ -44,7 +45,7 @@ export default async function OrchestratorsPage() {
   if (!api) problem = { failure: "unavailable", message: "The Armada server is not configured for this dashboard." };
   else
     try {
-      list = await api.list(selected.org.id);
+      list = await readAll(api, selected.org.id);
     } catch (error) {
       problem = readFailure(error);
     }
@@ -115,6 +116,7 @@ export default async function OrchestratorsPage() {
                 <TableHead className="hidden sm:table-cell">Agent</TableHead>
                 <TableHead className="hidden md:table-cell">Provider</TableHead>
                 <TableHead className="hidden lg:table-cell">Last activity</TableHead>
+                <TableHead className="hidden xl:table-cell">Idle stop</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -143,6 +145,9 @@ export default async function OrchestratorsPage() {
                   <TableCell className="hidden text-muted-foreground lg:table-cell">
                     <CreatedAt iso={item.lastActivityAt} now={now} />
                   </TableCell>
+                  <TableCell className="hidden text-muted-foreground xl:table-cell">
+                    {(item.state === "ready" && item.idleDeadline && timeUntil(item.idleDeadline, now)) || "—"}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -151,4 +156,21 @@ export default async function OrchestratorsPage() {
       )}
     </>
   );
+}
+
+/** Pages to read before showing the list: a hundred orchestrators each, far more than one person keeps. */
+const MAX_PAGES = 10;
+
+/** Every page of the viewer's list, following the server's cursor; never a silently truncated first page. */
+async function readAll(api: OrchestratorApi, orgId: string): Promise<OrchestratorListView> {
+  const all: OrchestratorListView = { items: [], cursor: null, unreadable: 0 };
+  let cursor: string | null = null;
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const read = await api.list(orgId, cursor);
+    all.items.push(...read.items);
+    all.unreadable += read.unreadable;
+    if (!read.cursor || read.cursor === cursor) return all;
+    cursor = read.cursor;
+  }
+  return { ...all, cursor };
 }

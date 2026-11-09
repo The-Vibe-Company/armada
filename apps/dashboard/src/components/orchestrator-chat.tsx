@@ -96,6 +96,7 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
   const cursor = useRef<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const reading = useRef(false);
+  const again = useRef(false);
   const mounted = useRef(true);
   const failures = useRef(0);
   const active = useRef(true);
@@ -114,7 +115,13 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
       status = 0;
     }
     if (status !== 200) {
-      const failure = typeof body.failure === "string" ? (body.failure as OrchestratorFailure) : "uncertain";
+      // The dashboard's own session check answers 401 without a `failure`: that is an expired session too.
+      const failure =
+        typeof body.failure === "string"
+          ? (body.failure as OrchestratorFailure)
+          : status === 401
+            ? "session"
+            : "uncertain";
       const message = typeof body.error === "string" ? body.error : "The orchestrator could not be read.";
       if (failure === "uncertain") {
         failures.current += 1;
@@ -158,17 +165,25 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
 
   /** Reads now, then again after the delay the answer asks for. One loop at a time; paused while the tab is hidden. */
   const tick = useCallback(async () => {
-    if (reading.current) return;
+    // A read asked for during another (after a command) runs right after it, never dropped: its answer may predate
+    // the command.
+    if (reading.current) {
+      again.current = true;
+      return;
+    }
     reading.current = true;
+    again.current = false;
     clearTimeout(timer.current);
+    let delay: number | null = null;
     try {
-      const delay = await read();
-      if (!mounted.current || delay === null) return;
-      if (document.visibilityState === "hidden" && delay > 0) return;
-      timer.current = setTimeout(() => void tick(), delay);
+      delay = await read();
     } finally {
       reading.current = false;
     }
+    if (!mounted.current || delay === null) return;
+    if (again.current) delay = 0;
+    if (document.visibilityState === "hidden" && delay > 0) return;
+    timer.current = setTimeout(() => void tick(), delay);
   }, [read]);
 
   useEffect(() => {
@@ -188,15 +203,18 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
   }, [tick]);
 
   const chat = useMemo(() => projectChat(agentEventsOf(feed)), [feed]);
-  active.current = chat.running;
+  useEffect(() => {
+    active.current = chat.running;
+  }, [chat.running]);
   const controls = orchestratorControls(detail, chat.running);
   const { orchestrator } = detail;
   const live = connection.state === "ok" && orchestrator.state === "ready";
 
-  const after = useCallback(() => {
+  /** After a command: read now, outside the polling loop, so the next command carries what this one changed. */
+  const after = useCallback(async () => {
     router.refresh();
-    void tick();
-  }, [router, tick]);
+    await read();
+  }, [router, read]);
 
   return (
     <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_18rem] lg:gap-6">
@@ -215,7 +233,7 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
               {CONTINUITY_LABELS[orchestrator.continuity]}
             </span>
           </div>
-          <div className="flex items-center gap-2 text-sm">
+          <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
             {live && (
               <span className="flex items-center gap-1 text-success" data-testid="live-indicator">
                 <RadioIcon className="size-4 motion-safe:animate-pulse" /> Live
@@ -233,7 +251,7 @@ export function OrchestratorChat({ initial, facts }: { initial: OrchestratorDeta
             items={chat.items}
             running={chat.running}
             loaded={loaded}
-            poll={{ error: null, configured: true }}
+            poll={{ error: null, configured: connection.state !== "stopped" }}
             hasMore={hasMore}
             onMore={() => void tick()}
           />
@@ -303,7 +321,7 @@ function Notices({
   return <div className="shrink-0 space-y-2 border-b px-4 py-3 sm:px-6">{items}</div>;
 }
 
-function useCommand(detail: OrchestratorDetail, onDone: () => void) {
+function useCommand(detail: OrchestratorDetail, onDone: () => Promise<void>) {
   const [result, setResult] = useState<OrchestratorResult | null>(null);
   const [pending, setPending] = useState<Command | null>(null);
   const [, startTransition] = useTransition();
@@ -334,16 +352,21 @@ function useCommand(detail: OrchestratorDetail, onDone: () => void) {
         };
       }
       unsettled.current = unsettledAfter(attempt, outcome);
-      setPending(null);
       setResult(outcome);
       then?.(outcome);
-      // Read again whatever the answer: a stale page shows what changed before the person decides again, and an
-      // unknown outcome shows whether it was applied.
-      onDone();
+      // Read again whatever the answer, before taking the next command: a stale page shows what changed before the
+      // person decides again, and an unknown outcome shows whether it was applied.
+      await onDone().catch(() => undefined);
+      setPending(null);
     });
   }
 
-  return { result, pending, run };
+  /** Editing the draft starts a new request: the unknown one is no longer what the person would send. */
+  const forget = () => {
+    unsettled.current = null;
+  };
+
+  return { result, pending, run, forget };
 }
 
 function Lifecycle({
@@ -355,7 +378,7 @@ function Lifecycle({
   detail: OrchestratorDetail;
   can: ReturnType<typeof orchestratorControls>["can"];
   pending: ReturnType<typeof orchestratorControls>["pending"];
-  onDone: () => void;
+  onDone: () => Promise<void>;
 }) {
   const command = useCommand(detail, onDone);
   const busy = command.pending !== null;
@@ -397,7 +420,7 @@ function Lifecycle({
         </AlertDialog>
       )}
       {command.result && !command.result.ok && (
-        <p role="alert" className="w-full text-right text-xs text-destructive">
+        <p role="alert" className="basis-full text-right text-xs text-destructive">
           {command.result.error}
         </p>
       )}
@@ -417,7 +440,7 @@ function Composer({
   running: boolean;
   can: ReturnType<typeof orchestratorControls>["can"];
   note: string | null;
-  onDone: () => void;
+  onDone: () => Promise<void>;
 }) {
   const fieldId = useId();
   const [draft, setDraft] = useState("");
@@ -462,7 +485,10 @@ function Composer({
         id={`${fieldId}-message`}
         rows={2}
         value={draft}
-        onChange={(event) => setDraft(event.target.value)}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          command.forget();
+        }}
         onKeyDown={onKeyDown}
         disabled={!enabled}
         placeholder={

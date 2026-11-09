@@ -265,14 +265,9 @@ export function orchestratorRoute(request: Request, url: URL, body: Row, userId:
     return seen.digest === digest
       ? json(seen.receipt, 202)
       : fail(409, "idempotency_conflict", "That key was used for another request.");
-  if (state.failNext) {
-    const failure = state.failNext;
-    state.failNext = null;
-    // The server applied it, then the answer was lost: a retry with the same key must return this receipt.
-    if (failure.status === 503 && row && route === "message") apply(row, route, body);
-    if (failure.status === 503 && row) state.receipts.set(receiptKey, { digest, receipt: receipt(row, route) });
-    return fail(failure.status, failure.code, failure.message);
-  }
+  const lost = state.failNext;
+  state.failNext = null;
+  if (lost && lost.status !== 503) return fail(lost.status, lost.code, lost.message);
   if (route === "create") {
     const created = orchestrator(id(180 + state.orchestrators.length), userId, String(body.name), {
       configuration: { ...body },
@@ -284,7 +279,8 @@ export function orchestratorRoute(request: Request, url: URL, body: Row, userId:
     state.orchestrators.push(created);
     const answer = receipt(created, "create");
     state.receipts.set(receiptKey, { digest, receipt: answer });
-    return json(answer, 202);
+    // Applied, then the answer was lost: a retry with the same key must return this receipt.
+    return lost ? fail(lost.status, lost.code, lost.message) : json(answer, 202);
   }
   if (!row || !["message", "steer", "stop", "resume"].includes(route)) return fail(404, "not_found", "Unknown route.");
   if (body.expectedRevision !== row.revision)
@@ -292,7 +288,7 @@ export function orchestratorRoute(request: Request, url: URL, body: Row, userId:
   apply(row, route, body);
   const answer = receipt(row, route);
   state.receipts.set(receiptKey, { digest, receipt: answer });
-  return json(answer, 202);
+  return lost ? fail(lost.status, lost.code, lost.message) : json(answer, 202);
 }
 
 function receipt(row: Orchestrator, kind: string): Row {

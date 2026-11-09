@@ -8,7 +8,13 @@ import { listModelAccounts, viewerOrchestrators } from "@/lib/data/orchestrators
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 import { OrchestratorApiError, type OrchestratorFailure } from "@/lib/orchestrator-api";
-import { type Command, isIdempotencyKey, isOrchestratorId, orchestratorCreateRequest } from "@/lib/orchestrators";
+import {
+  type Command,
+  isIdempotencyKey,
+  isOrchestratorId,
+  OrchestratorContractError,
+  orchestratorCreateRequest,
+} from "@/lib/orchestrators";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
 import { createClient } from "@/lib/supabase/server";
 
@@ -24,6 +30,13 @@ const invalid = (error: string): OrchestratorResult => ({ ok: false, error, fail
 
 function failed(error: unknown): OrchestratorResult {
   if (error instanceof OrchestratorApiError) return { ok: false, error: error.message, failure: error.failure };
+  // The server accepted the request (2xx) but its receipt is in another contract version: say so, never crash.
+  if (error instanceof OrchestratorContractError)
+    return {
+      ok: false,
+      error: `Accepted, but ${error.message.charAt(0).toLowerCase()}${error.message.slice(1)}`,
+      failure: "uncertain",
+    };
   throw error;
 }
 

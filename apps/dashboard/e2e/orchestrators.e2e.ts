@@ -118,10 +118,9 @@ test("a stale revision is refused, refreshed and kept as a draft; the next send 
   await expect(composer(page).getByRole("alert")).toContainText("changed since you last saw it");
   await expect(box).toHaveValue("Merge order: #12 first.");
 
-  await expect(async () => {
-    await composer(page).getByRole("button", { name: "Send" }).click();
-    await expect(box).toHaveValue("", { timeout: 1000 });
-  }).toPass();
+  // The refusal re-reads the orchestrator at once: the next send carries the new revision without retries.
+  await composer(page).getByRole("button", { name: "Send" }).click();
+  await expect(box).toHaveValue("");
   const sent = (await calls()).filter((call) => call.route === "message");
   expect(sent.at(-1)?.body.expectedRevision).toBe(4);
   expect(new Set(sent.map((call) => call.key)).size).toBe(sent.length);
@@ -208,4 +207,31 @@ test("a lost conversation is explained and never offered as resumable", async ({
   await expect(page.getByText("Create a new orchestrator to start over.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Resume" })).toHaveCount(0);
   await expect(composer(page).getByLabel("Message")).toBeDisabled();
+});
+
+test("an unknown create outcome locks the form and tries the same request again, creating one", async ({ page }) => {
+  await signIn(page, "alice@example.com", "/orchestrators");
+  await testControl("fail-next", { status: 503, code: "uncertain", message: "The answer was lost." });
+  await page.getByRole("button", { name: "New orchestrator" }).click();
+  const dialog = page.getByRole("dialog", { name: "New orchestrator" });
+  await dialog.getByLabel("Name").fill("Night shift");
+  await dialog.getByRole("button", { name: "Create" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("The answer was lost.");
+  await expect(dialog.getByLabel("Name")).toBeDisabled();
+  await dialog.getByRole("button", { name: "Try again" }).click();
+  await page.waitForURL(/\/orchestrators\/00000000-0000-4000-8000-000000000182$/);
+  const creates = (await calls()).filter((call) => call.route === "create");
+  expect(creates).toHaveLength(2);
+  expect(creates[1]?.key).toBe(creates[0]?.key ?? "");
+  const state = (await testControl("state")) as unknown as { orchestrators: { configuration: { name: string } }[] };
+  expect(state.orchestrators.filter((row) => row.configuration.name === "Night shift")).toHaveLength(1);
+});
+
+test("an expired dashboard session stops reading and asks to sign in again", async ({ page }) => {
+  await signIn(page, "alice@example.com", DETAIL);
+  await expect(messages(page).getByText("Launched two workers.")).toBeVisible();
+  await page.context().clearCookies();
+  // At rest the page reads every 10 seconds.
+  await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("Reconnecting…")).toHaveCount(0);
 });
