@@ -153,7 +153,8 @@ const sandboxListMetadata = z.object({
   ownerId: z.string(),
   provider: providerOutput,
   harness: z.enum(HARNESSES),
-  ...modelOutput,
+  model: modelOutput.model,
+  reasoningEffort: modelOutput.reasoningEffort,
   status: z.enum(SANDBOX_STATUSES),
   createdAt: z.string(),
   stoppedAt: z.string().nullable(),
@@ -816,7 +817,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
       if (found.credentialId)
         await context.launchCredentials.resolve(
-          { userId: found.ownerId, orgId: found.orgId, role: "member" },
+          { userId: caller.userId, orgId: found.orgId, role: "member" },
           found.harness,
           found.credentialId,
           found.credentialVersion ?? undefined,
@@ -887,7 +888,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
       if (delivery === "restart" && found.credentialId)
         await context.launchCredentials.resolve(
-          { userId: found.ownerId, orgId: found.orgId, role: "member" },
+          { userId: caller.userId, orgId: found.orgId, role: "member" },
           found.harness,
           found.credentialId,
           found.credentialVersion ?? undefined,
