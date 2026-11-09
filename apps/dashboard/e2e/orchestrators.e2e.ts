@@ -85,6 +85,7 @@ test("create sends the v1 request with a named account and the server's defaults
   });
   expect(create?.body).not.toHaveProperty("idleSeconds");
   expect(create?.body).not.toHaveProperty("maxChildStartsPerDay");
+  expect(create?.body).not.toHaveProperty("maxActiveChildren");
 });
 
 test("the chat shows the conversation, workers and waits, and sends with the fence", async ({ page }) => {

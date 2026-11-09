@@ -201,6 +201,8 @@ test("create builds the v1 request with the catalog's defaults and omits limits 
   const custom = orchestratorCreateRequest(fields({ repo: "api", idleSeconds: "900" }), OFFERED);
   expect(custom.ok && custom.value).toMatchObject({ repo: "api", idleSeconds: 900 });
   expect(custom.ok && "maxChildStartsPerDay" in custom.value).toBe(false);
+  // No concurrency cap is implied: the provisional default is never filled in or sent.
+  expect(custom.ok && "maxActiveChildren" in custom.value).toBe(false);
 });
 
 test("create refuses an account of the other harness, an unknown repository and an idle period out of bounds", () => {
@@ -337,4 +339,10 @@ test("a configuration carrying the withdrawn daily start quota is still read, an
   const read = detail({ configuration: { ...orchestrator().configuration, maxChildStartsPerDay: 10 } });
   expect(read.orchestrator.configuration).not.toHaveProperty("maxChildStartsPerDay");
   expect(read.orchestrator.configuration.idleSeconds).toBe(7200);
+});
+
+test("a worker limit is read only when the owner set one; its absence never becomes the provisional default", () => {
+  expect(detail().orchestrator.configuration).not.toHaveProperty("maxActiveChildren");
+  const chosen = detail({ configuration: { ...orchestrator().configuration, maxActiveChildren: 2 } });
+  expect(chosen.orchestrator.configuration.maxActiveChildren).toBe(2);
 });

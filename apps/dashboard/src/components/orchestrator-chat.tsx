@@ -581,6 +581,10 @@ function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: Orche
     ["Golden", facts.golden],
     ...(config.repo ? [["Working directory", config.repo] as [string, string]] : []),
     ["Last activity", relativeAge(orchestrator.lastActivityAt, now) ?? "Unknown"],
+    // Only a limit the owner chose explicitly: no provisional default is shown or implied.
+    ...(config.maxActiveChildren === undefined
+      ? []
+      : [["Workers at once", `at most ${config.maxActiveChildren}`] as [string, string]]),
     ["Idle stop", idleStop && orchestrator.state === "ready" ? idleStop : `after ${idle}`],
   ];
   return (
