@@ -41,6 +41,7 @@ import type { ActionResult } from "@/lib/action";
 import {
   type AccountKind,
   type AccountUsage,
+  type AuthCapabilities,
   accountProblem,
   formatMoney,
   KIND_INFO,
@@ -285,7 +286,7 @@ export function AccountRow({
                 action={makeDefaultAccount}
                 fields={<TargetFields account={account} orgId={orgId} />}
                 onResult={setResult}
-                label={`Make ${account.name} the default`}
+                label={`Make default, ${account.name}`}
               >
                 Make default
               </InlineAction>
@@ -411,7 +412,7 @@ function ReplaceDialog({
         <Button
           variant={reconnect ? "default" : "ghost"}
           size="sm"
-          aria-label={`Replace the ${info.valueLabel} of ${account.name}`}
+          aria-label={`${reconnect ? "Reconnect" : `Replace ${info.billing === "api" ? "key" : "token"}`}, ${account.name}`}
         >
           {reconnect ? "Reconnect" : `Replace ${info.billing === "api" ? "key" : "token"}`}
         </Button>
@@ -527,11 +528,14 @@ export function AddAccountDialog({
   orgId,
   orgName,
   isAdmin,
+  capabilities,
   initialKind = "claude_oauth",
 }: {
   orgId: string;
   orgName: string;
   isAdmin: boolean;
+  /** What this deployment offers for connecting accounts; null offers paste only. */
+  capabilities: AuthCapabilities | null;
   initialKind?: AccountKind;
 }) {
   const [open, setOpen] = useState(false);
@@ -544,7 +548,7 @@ export function AddAccountDialog({
   const id = useId();
   const info = KIND_INFO[kind];
   // Only a personal account signs in from the terminal; an org account is pasted by its admin.
-  const terminal = scope === "user" ? terminalLogin(kind, name) : null;
+  const terminal = scope === "user" ? terminalLogin(capabilities, kind, name) : null;
   const defaultBox = (
     <label className="flex items-center gap-2 text-sm">
       <input type="checkbox" name="default" className="size-4 accent-primary" />

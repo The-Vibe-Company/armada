@@ -7,7 +7,7 @@ import type { Harness } from "@armada/core";
 
 export const ACCOUNT_KINDS = ["claude_oauth", "anthropic", "openai", "codex_auth"] as const;
 /** #603's account statuses; any other value reads as `unknown` rather than as working. */
-export const ACCOUNT_STATUSES = ["active", "deleted", "unknown"] as const;
+export const ACCOUNT_STATUSES = ["active", "revoked", "deleted", "unknown"] as const;
 export const ACCOUNT_SCOPES = ["user", "org"] as const;
 
 export type AccountKind = (typeof ACCOUNT_KINDS)[number];
@@ -76,6 +76,7 @@ export const KIND_INFO: Record<AccountKind, KindInfo> = {
 
 export const STATUS_INFO: Record<AccountStatus, { label: string; tone: "ok" | "warn" | "error" | "muted" }> = {
   active: { label: "Active", tone: "ok" },
+  revoked: { label: "Revoked", tone: "error" },
   deleted: { label: "Removed", tone: "error" },
   unknown: { label: "Status unknown", tone: "warn" },
 };
@@ -131,12 +132,34 @@ export function shellQuote(value: string): string {
 }
 
 /**
- * The terminal sign-in for a kind, when the Armada CLI offers one (#604): `armada creds login codex` runs Codex's
- * own device login on the person's machine and stores the result as a named account. No secret is in the command.
+ * How accounts can be connected, as the server reports it (#604 `creds/accounts/auth-capabilities`): whether a
+ * hosted browser sign-in exists, and the Armada CLI command that signs a kind in on the person's machine. Only what
+ * the server reports is offered; a server that reports nothing offers paste only.
  */
-export function terminalLogin(kind: AccountKind, name: string): string | null {
-  if (kind !== "codex_auth") return null;
-  return `armada creds login codex --name ${shellQuote(name.trim() || "Work")}`;
+export type AuthCapabilities = { hostedOAuth: boolean; terminal: Partial<Record<AccountKind, string>> };
+
+/** An `armada creds login ...` command, without any `--name`: the dashboard adds the quoted name itself. */
+const CLI_LOGIN = /^armada creds login [a-z][a-z0-9-]*$/;
+
+export function parseAuthCapabilities(value: unknown): AuthCapabilities | null {
+  if (!isRow(value)) return null;
+  const terminal: AuthCapabilities["terminal"] = {};
+  const entries = Array.isArray(value.nativeCLI)
+    ? value.nativeCLI.map((row) => (isRow(row) ? [row.kind, row.command] : [null, null]))
+    : isRow(value.nativeCLI)
+      ? Object.entries(value.nativeCLI)
+      : [];
+  for (const [kind, command] of entries) {
+    const base = typeof command === "string" ? command.trim().replace(/\s+--name(\s.*)?$/, "") : "";
+    if (oneOf(ACCOUNT_KINDS, kind) && CLI_LOGIN.test(base)) terminal[kind] = base;
+  }
+  return { hostedOAuth: value.hostedOAuth === true, terminal };
+}
+
+/** The command a person runs to sign a kind in from their terminal, or null when the server offers none. */
+export function terminalLogin(capabilities: AuthCapabilities | null, kind: AccountKind, name: string): string | null {
+  const base = capabilities?.terminal[kind];
+  return base ? `${base} --name ${shellQuote(name.trim() || "Work")}` : null;
 }
 
 /** A name for an account: trimmed, one line, short enough to read in a select. */

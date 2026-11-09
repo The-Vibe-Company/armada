@@ -16,7 +16,12 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { CREDENTIAL_KINDS, SINGLE_VALUE_KINDS } from "@/lib/credentials";
 import { type CredentialRow, listCredentials } from "@/lib/data/credentials";
-import { type AccountList, listSelectedAccounts, readAccountUsage } from "@/lib/data/model-accounts";
+import {
+  type AccountList,
+  listSelectedAccounts,
+  readAccountUsage,
+  readAuthCapabilities,
+} from "@/lib/data/model-accounts";
 import { readProviderSetup } from "@/lib/data/provider-setup";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
@@ -32,10 +37,11 @@ export default async function CredentialsPage() {
   const viewer = await requireViewer();
   const supabase = await createClient();
   const selected = await selectedOrganization();
-  const [memberships, credentials, accounts] = await Promise.all([
+  const [memberships, credentials, accounts, capabilities] = await Promise.all([
     listMemberships(supabase, viewer.id).then((items) => items.filter((item) => item.org.id === selected?.org.id)),
     listCredentials(supabase),
     listSelectedAccounts(),
+    selected ? readAuthCapabilities(selected.org.id) : null,
   ]);
   const personal = credentials.filter((item) => item.scope === "user" && item.owner_id === viewer.id);
   // An org Boat key is its org's column, which only the server can see (null: the server could not be asked).
@@ -53,7 +59,12 @@ export default async function CredentialsPage() {
     <>
       <PageHeader title="Credentials" description="The accounts your agents run on, and your own hosting keys.">
         {selected && accounts.state === "ready" && (
-          <AddAccountDialog orgId={selected.org.id} orgName={selected.org.name} isAdmin={selected.role === "admin"} />
+          <AddAccountDialog
+            orgId={selected.org.id}
+            orgName={selected.org.name}
+            isAdmin={selected.role === "admin"}
+            capabilities={capabilities}
+          />
         )}
       </PageHeader>
 

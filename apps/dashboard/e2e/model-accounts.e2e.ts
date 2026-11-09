@@ -116,7 +116,7 @@ test("rename and default keep the account's id; removing the default leaves the 
   const side = claude.locator('[data-account="Side project"]');
   await expect(side.getByRole("status")).toHaveText("Renamed to Side project.");
 
-  await side.getByRole("button", { name: "Make Side project the default" }).click();
+  await side.getByRole("button", { name: "Make default, Side project" }).click();
   await expect(claude.locator("[data-launch-uses]")).toHaveText("New launches use Side project, your default.");
 
   await claude.locator('[data-account="Side project"]').getByRole("button", { name: "Remove Side project" }).click();
@@ -125,7 +125,7 @@ test("rename and default keep the account's id; removing the default leaves the 
   // Work is now the only personal account: launches use it, and say why.
   await expect(claude.locator("[data-launch-uses]")).toHaveText("New launches use Work, your only account.");
   const ids = ((await mock("/__test/accounts")).calls as { route: string; body: Row }[])
-    .filter((call) => !["creds/list", "creds/accounts/usage"].includes(call.route))
+    .filter((call) => /^creds\/accounts\/(set|rename|default|remove)$/.test(call.route))
     .map((call) => [call.route, call.body.id]);
   const sideId = "00000000-0000-4000-8000-000000000702";
   expect(ids).toEqual([
@@ -139,7 +139,7 @@ test("several accounts and no default: the launch asks who is billed and the ser
   page,
 }) => {
   await mock("/__test/accounts", {
-    seed: [account(1, "Work"), account(2, "Home"), account(3, "Old", { status: "expired" })],
+    seed: [account(1, "Work"), account(2, "Home"), account(3, "Old", { status: "revoked" })],
   });
   await signIn(page, "alice@example.com", "/goldens");
   const dialog = await openLaunch(page);
@@ -149,6 +149,7 @@ test("several accounts and no default: the launch asks who is billed and the ser
     "No default for this agent: choose who is billed.",
   );
   await expect(select.locator("option", { hasText: "Old" })).toBeDisabled();
+  await expect(select.locator("option", { hasText: "Old" })).toHaveText("Old (Claude subscription, revoked)");
 
   // A forged blank choice reaches the action, which refuses it rather than letting the server pick.
   await select.evaluate((element) => element.removeAttribute("required"));
@@ -243,4 +244,15 @@ test("a ChatGPT subscription signs in from the terminal; pasting auth.json stays
   // An org account is an admin's paste: no terminal command for it.
   await dialog.getByRole("radio", { name: /Acme/ }).check();
   await expect(dialog.locator("[data-terminal-login]")).toHaveCount(0);
+
+  // A server that does not report a terminal sign-in offers paste only, never a command it did not name.
+  await mock("/__test/accounts", { authCapabilities: null });
+  await page.reload();
+  await page.getByRole("button", { name: "Add account" }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("radio", { name: /ChatGPT subscription/ })
+    .check();
+  await expect(page.getByRole("dialog").locator("[data-terminal-login]")).toHaveCount(0);
+  await expect(page.getByRole("dialog").getByLabel("auth.json")).toBeVisible();
 });

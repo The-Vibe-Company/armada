@@ -70,6 +70,8 @@ type State = {
   legacyAccounts: boolean;
   /** `creds/accounts/usage` per account id: a report, or a failure. An account with none: the route is unknown. */
   usage: Record<string, Row | { fail: number }>;
+  /** `creds/accounts/auth-capabilities` (#604): what this deployment offers, or null for a server without the route. */
+  authCapabilities: Row | null;
   /** Every control API call, with its operation and body, for the tests to check what the dashboard sent. */
   controlCalls: { operation: string; body: Row }[];
   /** Every `org/provider/*` call (#576): its route, the body as sent and whether it carried a session. */
@@ -152,6 +154,7 @@ function seed(): State {
     accountCalls: [],
     legacyAccounts: false,
     usage: {},
+    authCapabilities: { hostedOAuth: false, nativeCLI: [{ kind: "codex_auth", command: "armada creds login codex" }] },
     goldenCalls: [],
     goldenRemoveCalls: [],
     goldenStatusCalls: [],
@@ -1323,6 +1326,9 @@ function accounts(route: string, body: Row, request: Request): Response {
       orgs: org ? [{ id: org.id, name: org.name, credentials: rows("org", org.id) }] : [],
     });
   }
+  if (route === "creds/accounts/auth-capabilities") {
+    return state.authCapabilities ? json(state.authCapabilities) : json({ error: { message: "Unknown route." } }, 404);
+  }
   if (route === "creds/accounts/usage") {
     const report = state.usage[String(body.id)];
     if (!report) return json({ error: { code: undefined, message: "Unknown route." } }, 404);
@@ -1517,6 +1523,7 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/accounts") {
     if (body.legacy !== undefined) state.legacyAccounts = body.legacy === true;
     Object.assign(state.usage, (body.usage as Record<string, Row> | undefined) ?? {});
+    if (body.authCapabilities !== undefined) state.authCapabilities = body.authCapabilities as Row | null;
     for (const row of (body.seed as Row[] | undefined) ?? []) state.credentials.push(row);
     return json({ calls: state.accountCalls });
   }

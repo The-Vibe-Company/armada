@@ -3,8 +3,10 @@ import {
   ACCOUNT_KINDS,
   type AccountScope,
   type AccountUsage,
+  type AuthCapabilities,
   type ModelAccount,
   parseAccount,
+  parseAuthCapabilities,
   parseUsage,
 } from "./model-accounts.ts";
 
@@ -25,6 +27,8 @@ export const ACCOUNT_ROUTES = {
   remove: "creds/accounts/remove",
   /** #604's proposed read, relayed by root and not yet final: `{id, sandboxId?}` to `{accountId, version, ...}`. */
   usage: "creds/accounts/usage",
+  /** #604: how accounts can be connected on this deployment. Its absence means paste only. */
+  authCapabilities: "creds/accounts/auth-capabilities",
 } as const;
 
 /** One account, as the routes address it: its scope, the org for an org account, and its id. */
@@ -95,6 +99,19 @@ export function createAccountControl(options: ArmadaApiOptions) {
       account(ACCOUNT_ROUTES.rename, target),
     makeDefault: (target: AccountTarget) => account(ACCOUNT_ROUTES.default, target),
     remove: (target: AccountTarget) => post(ACCOUNT_ROUTES.remove, target).then(() => undefined),
+    /**
+     * How accounts can be connected here, or null when the server does not say (an unknown route, or an answer
+     * that does not match): the dashboard then offers paste only, never a command the server did not report.
+     */
+    async authCapabilities(org: string): Promise<AuthCapabilities | null> {
+      try {
+        const payload = await controlPost(options, `/api/v1/${ACCOUNT_ROUTES.authCapabilities}`, { org }, FEATURE);
+        return parseAuthCapabilities(payload.capabilities ?? payload);
+      } catch (error) {
+        if (error instanceof ControlError) return null;
+        throw error;
+      }
+    },
     /**
      * One account's usage. `null` is a server that does not report usage (the route is unknown to it); any other
      * failure is thrown, and the caller shows it as a failed read rather than as an empty allowance.

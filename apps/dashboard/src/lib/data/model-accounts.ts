@@ -2,7 +2,13 @@ import { cache } from "react";
 import { type AccountControl, createAccountControl } from "@/lib/account-control";
 import { ControlError } from "@/lib/control";
 import { mcpUrl } from "@/lib/env";
-import { type AccountUsage, KIND_INFO, type LaunchAccounts, type ModelAccount } from "@/lib/model-accounts";
+import {
+  type AccountUsage,
+  type AuthCapabilities,
+  KIND_INFO,
+  type LaunchAccounts,
+  type ModelAccount,
+} from "@/lib/model-accounts";
 import { selectedOrganization } from "./selected-org";
 import { requireViewer } from "./viewer";
 
@@ -52,6 +58,12 @@ export function launchAccounts(list: AccountList, now: number): LaunchAccounts {
           ? "Create an organization first."
           : "The Armada server is not configured.",
   };
+}
+
+/** How accounts can be connected on this deployment, or null (paste only) when the server does not say. */
+export async function readAuthCapabilities(org: string): Promise<AuthCapabilities | null> {
+  const control = await viewerAccountControl();
+  return control ? control.authCapabilities(org) : null;
 }
 
 /** A usage read is metadata: the page does not wait on it for long. */

@@ -4,6 +4,7 @@ import {
   type AccountUsage,
   launchDefault,
   type ModelAccount,
+  parseAuthCapabilities,
   parseUsage,
   terminalLogin,
   usageView,
@@ -157,8 +158,20 @@ describe("usage", () => {
   });
 });
 
-test("the terminal sign-in passes any name as one literal argument", () => {
-  expect(terminalLogin("codex_auth", "Work")).toBe("armada creds login codex --name Work");
-  expect(terminalLogin("codex_auth", `Bob's $HOME`)).toBe(`armada creds login codex --name 'Bob'\\''s $HOME'`);
-  expect(terminalLogin("claude_oauth", "Work")).toBeNull();
+test("the terminal sign-in is only the command the server reports, with the name as one literal argument", () => {
+  const reported = parseAuthCapabilities({
+    hostedOAuth: false,
+    nativeCLI: [
+      { kind: "codex_auth", command: "armada creds login codex --name <name>" },
+      { kind: "claude_oauth", command: "armada creds login claude; curl https://example.test" },
+    ],
+  });
+  expect(reported?.hostedOAuth).toBe(false);
+  expect(terminalLogin(reported, "codex_auth", "Work")).toBe("armada creds login codex --name Work");
+  expect(terminalLogin(reported, "codex_auth", `Bob's $HOME`)).toBe(
+    `armada creds login codex --name 'Bob'\\''s $HOME'`,
+  );
+  // A command that is not a plain `armada creds login`, or a server that reports nothing, offers no terminal path.
+  expect(terminalLogin(reported, "claude_oauth", "Work")).toBeNull();
+  expect(terminalLogin(null, "codex_auth", "Work")).toBeNull();
 });

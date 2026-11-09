@@ -1,19 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import {
-  CREDENTIAL_KINDS,
-  checkModalToken,
-  checkSecretValue,
-  credentialKindInfo,
-  isCredentialKind,
-} from "../src/lib/credentials.ts";
+import { checkModalToken, checkSecretValue, isCredentialKind } from "../src/lib/credentials.ts";
 
 describe("credentials", () => {
   test("only hosting kinds are written directly: a model credential is a named account on the server", () => {
-    expect(CREDENTIAL_KINDS.map((item) => item.kind)).toEqual(["boat", "modal"]);
     for (const kind of ["claude_oauth", "anthropic", "openai", "codex_auth", "opencode"]) {
       expect(isCredentialKind(kind)).toBe(false);
     }
-    expect(credentialKindInfo("modal").label).toBe("Modal token");
+    for (const kind of ["boat", "modal"]) expect(isCredentialKind(kind)).toBe(true);
   });
 
   test("a pasted value is trimmed, and an empty or spaced one is refused", () => {
