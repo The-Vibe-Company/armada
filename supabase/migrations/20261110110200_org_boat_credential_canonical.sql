@@ -9,9 +9,8 @@
 --   * the column is empty: the row's ciphertext becomes the column's value.
 -- Then no org-scoped 'boat' row may exist again, whatever the role writing it.
 
--- No session may add an org Boat row between the move and the constraint.
-lock table public.credentials in share row exclusive mode;
-
+-- One statement moves and deletes from the same snapshot; a row written after it makes the constraint
+-- below fail, rolling this file back rather than dropping a key.
 with moved as (
   delete from public.credentials
   where scope = 'org' and kind = 'boat'
