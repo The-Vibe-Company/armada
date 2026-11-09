@@ -149,6 +149,19 @@ export function createOrchestratorApi(options: OrchestratorApiOptions) {
       } catch (error) {
         // Create has no revision to be stale against: a bare conflict may follow a launch whose outcome could not be
         // recorded. It is treated as unknown, so the same request (same key) is sent again, never a second create.
+        // A server before #662's size contract refuses the field as invalid: say what to change.
+        if (
+          error instanceof OrchestratorApiError &&
+          request.size !== undefined &&
+          error.status === 400 &&
+          error.code === "invalid_request"
+        )
+          throw new OrchestratorApiError(
+            "This Armada server does not accept a machine size for orchestrators yet. Choose Default and try again.",
+            "rejected",
+            error.status,
+            error.code,
+          );
         if (error instanceof OrchestratorApiError && error.failure === "stale")
           throw new OrchestratorApiError(
             "Armada could not confirm whether it was created. Trying again cannot create it twice.",

@@ -591,9 +591,10 @@ function Side({ detail, feed, facts }: { detail: OrchestratorDetail; feed: Orche
     ["Provider", PROVIDER_LABELS[config.provider]],
     ["Golden", facts.golden],
     // Only a size the owner chose; otherwise the server resolved the repository's or golden's default, not shown here.
-    ...(configuredSize(config)
-      ? [["Machine size", MACHINE_SIZE_LABELS[configuredSize(config) as MachineSize]] as [string, string]]
-      : []),
+    [
+      "Machine size",
+      configuredSize(config) ? MACHINE_SIZE_LABELS[configuredSize(config) as MachineSize] : "Default (set at launch)",
+    ],
     ...(config.repo ? [["Working directory", config.repo] as [string, string]] : []),
     ["Last activity", relativeAge(orchestrator.lastActivityAt, now) ?? "Unknown"],
     // Only a limit the owner chose explicitly: no provisional default is shown or implied.

@@ -493,3 +493,26 @@ test("a configured size is read and kept; an unknown one makes the configuration
   expect(configuredSize(detail().orchestrator.configuration)).toBeNull();
   expect(() => detail({ configuration: { ...orchestrator().configuration, size: "huge" } })).toThrow();
 });
+
+test("a sized create refused as invalid says the server does not take a size yet", async () => {
+  const error = await client(() =>
+    Response.json({ error: { code: "invalid_request", message: "invalid_request" } }, { status: 400 }),
+  )
+    .create(
+      {
+        version: 1,
+        orgId: ORG,
+        name: "R",
+        goldenId: "g",
+        provider: "boat",
+        harness: "claude",
+        model: "m",
+        modelAccountId: "a",
+        size: "large",
+      },
+      "key-1",
+    )
+    .catch((caught: unknown) => caught as OrchestratorApiError);
+  expect(error.failure).toBe("rejected");
+  expect(error.message).toContain("Choose Default");
+});

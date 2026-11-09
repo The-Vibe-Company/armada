@@ -336,7 +336,7 @@ test("create offers the golden's sizes, follows its defaults, and sends a size o
   await expect(side.getByText("Extra large")).toBeVisible();
 });
 
-test("without a chosen size, create sends none and the details show none", async ({ page }) => {
+test("without a chosen size, create sends none and the details say the default is set at launch", async ({ page }) => {
   const response = await fetch(`${MOCK}/__test/reset`, {
     method: "POST",
     body: JSON.stringify({ sizePolicies: true }),
@@ -351,7 +351,7 @@ test("without a chosen size, create sends none and the details show none", async
   await page.waitForURL(/\/orchestrators\/00000000-0000-4000-8000-000000000182$/);
   const [create] = await calls();
   expect(create?.body).not.toHaveProperty("size");
-  await expect(page.getByRole("complementary", { name: "Orchestrator details" }).getByText("Machine size")).toHaveCount(
-    0,
-  );
+  await expect(
+    page.getByRole("complementary", { name: "Orchestrator details" }).getByText("Default (set at launch)"),
+  ).toBeVisible();
 });
