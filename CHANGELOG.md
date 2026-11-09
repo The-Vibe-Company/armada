@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.8.0](https://github.com/The-Vibe-Company/armada/compare/v2.7.0...v2.8.0) (2026-11-09)
+
+
+### Features
+
+* **dashboard:** simplify navigation and sandbox management ([#570](https://github.com/The-Vibe-Company/armada/issues/570)) ([fecb5e4](https://github.com/The-Vibe-Company/armada/commit/fecb5e41d73a804809c7ed6ec184d58d197015ee))
+* **landing:** restore the original public landing for Armada v2 ([#574](https://github.com/The-Vibe-Company/armada/issues/574)) ([d775ca5](https://github.com/The-Vibe-Company/armada/commit/d775ca505efa201880ebf1b63dcaa17ee6fed7f5))
+
+
+### Bug Fixes
+
+* **sandbox:** decode PostgreSQL lifecycle generations safely ([#573](https://github.com/The-Vibe-Company/armada/issues/573)) ([76b7fab](https://github.com/The-Vibe-Company/armada/commit/76b7fabae2a54cad27d35e60a4ea9a011b7bbf20))
+* **sandbox:** reconcile provider state and enforce saved lifetimes ([#569](https://github.com/The-Vibe-Company/armada/issues/569)) ([55ed877](https://github.com/The-Vibe-Company/armada/commit/55ed877d21b381668d6db93f6e071d6f868147b2))
+
 ## [2.7.0](https://github.com/The-Vibe-Company/armada/compare/v2.6.0...v2.7.0) (2026-11-09)
 
 
