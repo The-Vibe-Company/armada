@@ -86,3 +86,38 @@ test("checkpoint preserves sanitized native sessions but discards whole transien
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// The native transcript survives a runner crash; its former memory-only bearer
+// registry does not. Restore must still scrub the published private token format.
+test("same-generation native restore redacts retired authority text without its old in-memory registry", async () => {
+  const root = await mkdtemp(join(tmpdir(), "armada-retired-authority-"));
+  const identity = { sandboxId: "private-native", generation: "1" };
+  const bearer = `armada_epoch_${"c".repeat(64)}`;
+  let journal = new Journal(join(root, "journal.sqlite"), createRedactor([bearer]));
+  try {
+    journal.bindIdentity(identity);
+    const directory = join(root, "codex/sessions/continuity");
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await writeFile(
+      join(directory, "thread.jsonl"),
+      `${JSON.stringify({
+        type: "assistant",
+        payload: {
+          id: "preserved-thread",
+          content: `Remember this ordinary tool response: ${bearer}`,
+        },
+      })}\n`,
+    );
+    journal.close();
+    journal = new Journal(join(root, "journal.sqlite"), createRedactor([]));
+    await new HarnessState(root, journal.redact).restore(identity, journal.assertRestoreSource(identity));
+    const restored = await readFile(join(directory, "thread.jsonl"), "utf8");
+    expect(restored).not.toContain(bearer);
+    expect(JSON.parse(restored)).toMatchObject({
+      payload: { id: "preserved-thread", content: expect.stringContaining("[REDACTED]") },
+    });
+  } finally {
+    journal.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
