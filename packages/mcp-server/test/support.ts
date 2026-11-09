@@ -377,11 +377,13 @@ export async function harness(
     routes?: readonly Route[];
     buildSsh?: GoldenCreateOptions["ssh"];
     goldenAdoption?: HandlerOptions["goldenAdoption"];
+    orchestrators?: HandlerOptions["orchestrators"];
     /** The store `/mcp` authenticates against. Default: the in-memory one the helpers fill. */
     authStore?: (db: PGlite) => AuthStore;
     log?: (line: string) => void;
     /** The Modal adapter, when a test configures one. Default: none, as on a server before #513. */
     modalProviderFor?: HandlerOptions["modalProviderFor"];
+    modelAuth?: (db: PGlite) => NonNullable<HandlerOptions["modelAuth"]>;
   } = {},
 ): Promise<TestServer> {
   const { db, people } = await database();
@@ -446,7 +448,9 @@ export async function harness(
     encryptionKey: ENCRYPTION_KEY,
     github: { store: createSqlVaultStore(sqlFor(db)), app: GITHUB_APP, fetch: fakeGit.fetch },
     providerFor: boat.providerFor,
+    ...(options.modelAuth ? { modelAuth: options.modelAuth(db) } : {}),
     ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
+    ...(options.orchestrators ? { orchestrators: options.orchestrators } : {}),
     ...(options.modalProviderFor ? { modalProviderFor: options.modalProviderFor } : {}),
     ...(options.routes ? { routes: options.routes } : {}),
     log: options.log ?? (() => {}),

@@ -214,6 +214,13 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
     ]) {
       await expect(replica().beforeResume(provider, record.providerSandboxId, caller)).rejects.toThrow("authorized");
     }
+    await expect(
+      replica().beforePrompt(provider, record.providerSandboxId, { userId: other, orgId: org }),
+    ).rejects.toThrow("authorized");
+    await expect(
+      integration.connections.prepare?.(provider, record, { userId: other, orgId: org, role: "admin" }),
+    ).rejects.toThrow("authorized");
+    expect(writes).toBe(1);
     expect(await generation()).toBe(initial);
     // Platform autoarchive: deliberately NO Armada SQL status/stopped_at write.
     state = "archived";

@@ -56,6 +56,8 @@ test("a task-only launch sends the configured defaults through the launch API", 
       provider: "boat",
       org: expect.any(String),
       harness: "claude",
+      // The org's only Claude Code account, preselected in view and sent explicitly (#605).
+      credentialId: "00000000-0000-4000-8000-000000000040",
       model: "claude-opus-5-5",
       reasoningEffort: "medium",
       visibility: "org",

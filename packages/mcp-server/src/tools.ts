@@ -45,6 +45,9 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ScopedData } from "./data.ts";
 import { redactForLog } from "./log.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
+import { callOrchestrator } from "./orchestrator-api.ts";
+import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
+import { OrchestratorRuntimeError } from "./orchestrator-runtime-store.ts";
 import type { GoldenProviderMetadata } from "./provider-metadata.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
@@ -52,6 +55,7 @@ import { readStatus, type StatusReport, waitSettled } from "./turns.ts";
 
 /** Everything a tool call may use, for one authenticated request. */
 export interface ToolContext {
+  orchestrators?: OrchestratorRuntime;
   caller: Caller;
   data: ScopedData;
   /** The launch's credentials: the caller's own for the harness, else the golden's org's. Decrypted in this process. */
@@ -147,32 +151,25 @@ const golden = z.object({
   }),
 });
 
-const sandbox = z.object({
+const sandboxListMetadata = z.object({
+  providerSandboxId: z.string().nullable(),
+  boatId: z.string().nullable(),
   id: z.string(),
-  provider: providerOutput,
-  providerSandboxId: z.string(),
-  boatId: compat("providerSandboxId"),
-  golden: z.string(),
-  visibility: z.enum(["org", "private"]),
-  harness: z.enum(HARNESSES),
-  repositoryDir: z
-    .string()
-    .nullable()
-    .describe("Configured directory used to prepare native agent cwd; not confinement."),
-  ...modelOutput,
-  machineSize: z.unknown().nullable(),
-  status: z.enum(SANDBOX_STATUSES),
-  statusReason: z.string().nullable(),
   orgId: z.string(),
   ownerId: z.string(),
-  conversationIds: z.array(z.string()),
+  provider: providerOutput,
+  harness: z.enum(HARNESSES),
+  model: modelOutput.model,
+  reasoningEffort: modelOutput.reasoningEffort,
+  status: z.enum(SANDBOX_STATUSES),
   createdAt: z.string(),
   stoppedAt: z.string().nullable(),
   expiresAt: z.string().nullable(),
   effectiveTtlSeconds: z.number().nullable(),
-  requestedTtlSeconds: z.number().nullable(),
-  lastObservedAt: z.string().nullable(),
-  lifecycleError: z.string().nullable(),
+  machineSize: z.enum(["small", "medium", "large", "xlarge"]).nullable(),
+  displayLabel: z.string(),
+  canOpen: z.boolean(),
+  canManage: z.boolean(),
 });
 
 const prompt = z.object({
@@ -256,6 +253,58 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       }) as never,
     );
   };
+
+  for (const action of [
+    "capabilities",
+    "create",
+    "list",
+    "detail",
+    "events",
+    "message",
+    "steer",
+    "stop",
+    "resume",
+    "reconcile",
+  ]) {
+    server.registerTool(
+      `orchestrator_${action}`,
+      {
+        description: "Owner-private persistent orchestrator operation. Unverified native backends remain disabled.",
+        inputSchema: { args: z.record(z.string(), z.unknown()), idempotencyKey: z.string().optional() },
+        outputSchema: z.object({ version: z.literal(1) }).passthrough(),
+      },
+      async ({ args, idempotencyKey }) => {
+        try {
+          const result = await callOrchestrator(context.orchestrators, context.caller, action, args, idempotencyKey);
+          return {
+            structuredContent: result as Record<string, unknown>,
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
+          };
+        } catch (error) {
+          const code = error instanceof OrchestratorRuntimeError ? error.code : "unavailable";
+          return {
+            isError: true,
+            content: [
+              { type: "text" as const, text: code },
+              { type: "text" as const, text: `error code: ${code}` },
+              ...(error instanceof OrchestratorRuntimeError && error.admission
+                ? [
+                    {
+                      type: "text" as const,
+                      text: JSON.stringify({
+                        code,
+                        admission: error.admission,
+                        ...(error.operation ? { operation: error.operation } : {}),
+                      }),
+                    },
+                  ]
+                : []),
+            ],
+          };
+        }
+      },
+    );
+  }
 
   const visible = async (sandboxId: string): Promise<SandboxView> => {
     const found = await data.sandboxes.get(sandboxId);
@@ -684,7 +733,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     {
       title: "List sandboxes",
       description:
-        "Sandboxes you can see, newest first: those of your org's goldens, and of your own private goldens. " +
+        "Allowlisted metadata of sandboxes in your current organizations, newest first. Interior is owner/admin only. " +
         "Deleted ones are left out unless asked for. Statuses are as recorded; call status for a fresh read.",
       input: {
         harness: z.enum(HARNESSES).optional(),
@@ -695,7 +744,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         limit: z.number().int().min(1).max(200).optional().describe("At most this many. Default 25."),
       },
       output: {
-        sandboxes: z.array(sandbox),
+        sandboxes: z.array(sandboxListMetadata),
         total: z.number().int(),
         page: z.number().int(),
         limit: z.number().int(),
@@ -723,31 +772,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
         limit,
         hasMore,
         nextPage: hasMore && page < 1_000_000 ? page + 1 : null,
-        sandboxes: rows.map((row) => ({
-          id: row.id,
-          ...sandboxIds(row),
-          golden: row.golden,
-          visibility: row.visibility,
-          harness: row.harness,
-          repositoryDir: row.repositoryDir ?? null,
-          model: row.model,
-          reasoningEffort: row.reasoningEffort,
-          credentialId: row.credentialId ?? null,
-          credentialVersion: row.credentialVersion ?? null,
-          machineSize: row.machineSize ?? null,
-          status: row.status,
-          statusReason: row.statusReason,
-          orgId: row.orgId,
-          ownerId: row.ownerId,
-          conversationIds: row.conversationIds,
-          createdAt: row.createdAt,
-          stoppedAt: row.stoppedAt,
-          expiresAt: row.expiresAt ?? null,
-          effectiveTtlSeconds: row.effectiveTtlSeconds ?? null,
-          requestedTtlSeconds: row.requestedTtlSeconds ?? null,
-          lastObservedAt: row.lastObservedAt ?? null,
-          lifecycleError: row.lifecycleError ?? null,
-        })),
+        sandboxes: rows,
       };
     },
   );
@@ -891,7 +916,7 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
       if (found.credentialId)
         await context.launchCredentials.resolve(
-          { userId: found.ownerId, orgId: found.orgId, role: "member" },
+          { userId: caller.userId, orgId: found.orgId, role: "member" },
           found.harness,
           found.credentialId,
           found.credentialVersion ?? undefined,
@@ -899,6 +924,11 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       const choice = turnModel(found, { model: args.model, reasoningEffort: args.reasoning_effort });
       const conversation = args.conversation_id ?? found.conversationIds.at(-1);
       const machine = await provider.get(found.providerSandboxId);
+      await context.launchCredentials.assertTurn?.(
+        { userId: found.ownerId, orgId: found.orgId, role: "member" },
+        found.id,
+        machine.state === "stopped",
+      );
       return sandboxActivity(
         data.sandboxes,
         found,
@@ -962,11 +992,18 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
       if (delivery === "restart" && found.credentialId)
         await context.launchCredentials.resolve(
-          { userId: found.ownerId, orgId: found.orgId, role: "member" },
+          { userId: caller.userId, orgId: found.orgId, role: "member" },
           found.harness,
           found.credentialId,
           found.credentialVersion ?? undefined,
         );
+      const member = caller.orgs.find((entry) => entry.orgId === found.orgId);
+      if (!member) throw new ToolError("forbidden", "No current organization membership.");
+      await context.connections?.prepare?.(provider, found, {
+        userId: caller.userId,
+        orgId: found.orgId,
+        role: member.role,
+      });
       const receipt = await provider.steer({
         sandboxId: found.providerSandboxId,
         text: args.text,
@@ -1027,26 +1064,71 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
-      const result = await provider.exec({
-        sandboxId: found.providerSandboxId,
-        command: args.command,
-        cwd: args.cwd ?? "/home/user",
-        timeoutSeconds: args.timeout_seconds ?? 120,
-      });
-      if (result.detached) throw new ToolError("unknown", "The command started in the background.");
-      const secrets = await context.exposedSecrets(found.orgId);
-      const clip = (text: string) => {
-        const safe = redact(text, secrets);
-        return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
+      const managedNative = await context.launchCredentials.assertExec?.(
+        { userId: found.ownerId, orgId: found.orgId, role: "member" },
+        found.id,
+      );
+      const execute = async () => {
+        const membership = caller.orgs.find((member) => member.orgId === found.orgId);
+        if (!membership) throw new ToolError("forbidden", "No current organization membership.");
+        await context.connections?.prepare?.(provider, found, {
+          userId: caller.userId,
+          orgId: found.orgId,
+          role: membership.role,
+        });
+        const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
+        const nativeBefore =
+          (await context.launchCredentials.nativeSecrets?.(
+            nativeActor,
+            found.id,
+            provider,
+            found.providerSandboxId,
+            "before",
+          )) ?? [];
+        const result = await provider.exec({
+          sandboxId: found.providerSandboxId,
+          command: args.command,
+          cwd: args.cwd ?? "/home/user",
+          timeoutSeconds: args.timeout_seconds ?? 120,
+        });
+        if (result.detached) throw new ToolError("unknown", "The command started in the background.");
+        const nativeAfter =
+          (await context.launchCredentials.nativeSecrets?.(
+            nativeActor,
+            found.id,
+            provider,
+            found.providerSandboxId,
+            "after",
+          )) ?? [];
+        const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
+        const clip = (text: string) => {
+          const safe = redact(text, secrets);
+          return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
+        };
+        return {
+          id: found.id,
+          exitCode: result.exitCode,
+          stdout: clip(result.stdout),
+          stderr: clip(result.stderr),
+          timedOut: result.timedOut,
+          truncated: result.truncated || result.stdout.length > OUTPUT_LIMIT || result.stderr.length > OUTPUT_LIMIT,
+        };
       };
-      return {
-        id: found.id,
-        exitCode: result.exitCode,
-        stdout: clip(result.stdout),
-        stderr: clip(result.stderr),
-        timedOut: result.timedOut,
-        truncated: result.truncated || result.stdout.length > OUTPUT_LIMIT || result.stderr.length > OUTPUT_LIMIT,
-      };
+      if (!managedNative) return execute();
+      // Stop and native-file mutation must not interleave: a stop receipt sampled
+      // before this command cannot authenticate output produced after auto-resume.
+      return sandboxActivity(
+        data.sandboxes,
+        found,
+        {},
+        async (signal) => {
+          signal.throwIfAborted();
+          const result = await execute();
+          signal.throwIfAborted();
+          return { result, patch: {} };
+        },
+        { deadlineMs: ((args.timeout_seconds ?? 120) + 60) * 1000 },
+      );
     },
   );
 

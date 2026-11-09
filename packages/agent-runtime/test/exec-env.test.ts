@@ -11,6 +11,7 @@ import {
   type RunnerExecutionOptions,
   validateExecEnvironment,
 } from "../src/index.ts";
+import { readNativeCodexAuth } from "../src/native-auth.ts";
 
 const gitCredential = "runtime-git-fixture-private-material";
 const grant = {
@@ -167,3 +168,39 @@ test("exec bootstrap rejects model/provider/unknown variables and credential-fre
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test.skipIf(process.platform !== "linux")(
+  "exec close redacts newly rotated native auth before response and durable persistence",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "armada-rotated-auth-"));
+    await mkdir(join(root, "codex"), { mode: 0o700 });
+    const journal = new Journal(join(root, "journal.sqlite"), (text) => text);
+    const runner = new Runner(journal, grant, { claude: unused, codex: unused }, undefined, undefined, undefined, {
+      execEnv: { HOME: root },
+      refreshNativeSecrets: () => {
+        readNativeCodexAuth(root, (values) => journal.registerSecrets(values));
+      },
+    });
+    try {
+      const state =
+        '{"tokens":{"access_token":"synthetic-new-access","refresh_token":"synthetic-new-refresh","account_id":"native"}}';
+      const response = await call(runner, "exec", {
+        input: {
+          sandboxId: "s",
+          cwd: root,
+          command: `umask 077; printf '%s' '${state}' > codex/auth.json; node -p 'JSON.parse(require("fs").readFileSync("codex/auth.json","utf8")).tokens.refresh_token'`,
+        },
+      });
+      const body = await response.text();
+      expect(response.status).toBe(200);
+      expect(body).not.toContain("synthetic-new-refresh");
+      expect(body).not.toContain("synthetic-new-access");
+      expect(JSON.stringify(journal.db.query("select body from processes").all())).not.toContain(
+        "synthetic-new-refresh",
+      );
+    } finally {
+      journal.db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

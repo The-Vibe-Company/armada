@@ -94,7 +94,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         secondary: null,
       },
     });
-    reply({ thread: { id: thread } });
+    reply({
+      thread: { id: process.env.ARMADA_NATIVE_RESUME_MISMATCH === "thread" ? "replacement-native" : thread },
+      model: process.env.ARMADA_NATIVE_RESUME_MISMATCH === "model" ? "replacement-model" : m.params.model,
+    });
   } else if (m.method === "turn/start") {
     const params = m.params as TurnStartParams;
     turn++;

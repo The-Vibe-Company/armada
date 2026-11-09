@@ -128,6 +128,59 @@ nativeTest(
   },
 );
 
+// The real JSONL child records every request: a fabricated native proof or accidental
+// first turn cannot hide behind a fake Driver or an echoed journal identifier.
+nativeTest(
+  "Codex no-text verification resumes the stored thread without creating a thread or starting a turn",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "armada-codex-resume-"));
+    const driver = new CodexDriver({
+      executable: `${import.meta.dir}/fixtures/app-server.ts`,
+      cwd: root,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_CWD_PROOF: "1" },
+    });
+    try {
+      const native = await driver.resumeSession({
+        request: { sandboxId: "s", harness: "codex", model: "gpt-6.1-sol" },
+        sessionId: "persisted-native",
+        signal: new AbortController().signal,
+      });
+      expect(native).toEqual({ sessionId: "persisted-native" });
+      const records = JSON.parse(await readFile(join(root, "native-cwd-proof.json"), "utf8")) as {
+        method: string;
+        text: string | null;
+      }[];
+      expect(records.map((r) => r.method)).toEqual(["initialize", "initialized", "thread/resume"]);
+      expect(records.every((r) => r.text === null)).toBe(true);
+    } finally {
+      await driver.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+nativeTest.each(["thread", "model"])(
+  "Codex no-text verification rejects a mismatched native %s response",
+  async (mismatch) => {
+    const driver = new CodexDriver({
+      executable: `${import.meta.dir}/fixtures/app-server.ts`,
+      cwd: import.meta.dir,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_NATIVE_RESUME_MISMATCH: mismatch },
+    });
+    try {
+      await expect(
+        driver.resumeSession({
+          request: { sandboxId: "s", harness: "codex", model: "gpt-6.1-sol" },
+          sessionId: "persisted-native",
+          signal: new AbortController().signal,
+        }),
+      ).rejects.toThrow(mismatch === "thread" ? "native_session_identity_changed" : "native_session_model_changed");
+    } finally {
+      await driver.close();
+    }
+  },
+);
+
 nativeTest.each(["reported", "unavailable"])(
   "native account snapshot %s stays private and never blocks the coding turn",
   async (mode) => {
@@ -163,6 +216,53 @@ nativeTest.each(["reported", "unavailable"])(
       expect(events.filter((event) => event.kind === "message").every((event) => !event.text.includes("12.3400"))).toBe(
         true,
       );
+    } finally {
+      await driver.close();
+    }
+  },
+);
+
+nativeTest.each([true, false])(
+  "native renewable writer admission is exclusive only when managed (%s)",
+  async (exclusiveAuth) => {
+    const driver = new CodexDriver({
+      executable: `${import.meta.dir}/fixtures/app-server.ts`,
+      cwd: import.meta.dir,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      exclusiveAuth,
+    });
+    const turns: Turn[] = [];
+    const start = () => {
+      let ready!: () => void;
+      const partial = new Promise<void>((resolve) => {
+        ready = resolve;
+      });
+      const turn = driver.start({
+        request: { sandboxId: "s", harness: "codex", text: "initial" },
+        signal: new AbortController().signal,
+        session() {},
+        emit(event) {
+          if (event.kind === "message") ready();
+        },
+      });
+      turns.push(turn);
+      return { turn, partial };
+    };
+    try {
+      const first = start();
+      await first.partial;
+      if (exclusiveAuth) expect(start).toThrow("native_auth_writer_busy");
+      else await start().partial;
+      await Promise.all(
+        turns.map(async (turn) => {
+          await turn.interrupt();
+          await turn.done;
+        }),
+      );
+      const next = start();
+      await next.partial;
+      await next.turn.interrupt();
+      expect(await next.turn.done).toBe("interrupted");
     } finally {
       await driver.close();
     }

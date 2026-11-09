@@ -303,6 +303,16 @@ describe("tools", () => {
         "launch_sized_v1",
         "list",
         "logs",
+        "orchestrator_capabilities",
+        "orchestrator_create",
+        "orchestrator_list",
+        "orchestrator_detail",
+        "orchestrator_events",
+        "orchestrator_message",
+        "orchestrator_steer",
+        "orchestrator_stop",
+        "orchestrator_resume",
+        "orchestrator_reconcile",
         "resource_advice",
         "send",
         "status",
@@ -502,7 +512,7 @@ describe("tools", () => {
     expect(ran.data.stdout).toBe("GH_TOKEN=*** MCP=***");
   });
 
-  test("launch returns the independent private visibility of a fork from a shared golden", async () => {
+  test("launch accepts deprecated visibility without changing sandbox access", async () => {
     const { token, client, people, db } = await start();
     const launched = await call(await client(await token(people.member)), "launch", {
       golden: "shared",
@@ -510,14 +520,14 @@ describe("tools", () => {
       visibility: "private",
     });
     expect(launched.isError).toBe(false);
-    expect(launched.data.visibility).toBe("private");
+    expect(launched.data.visibility).toBe("org");
     expect(
       (
         await db.query<{ visibility: string }>("select visibility from public.sandboxes where id=$1", [
           launched.data.id,
         ])
       ).rows[0]?.visibility,
-    ).toBe("private");
+    ).toBe("org");
   });
 
   test("launch of a private golden uses its owner's own credential and personal boat key", async () => {
@@ -548,18 +558,31 @@ describe("tools", () => {
     expect(refused.isError).toBe(true);
   });
 
-  test("list and status hide another member's private sandbox", async () => {
-    const { token, client, people } = await start();
+  test("list exposes safe org metadata while member interior operations make no provider calls", async () => {
+    const { token, client, people, boat } = await start();
     const owner = await client(await token(people.owner));
     const mine = await call(owner, "launch", { golden: "mine", harness: "claude" });
-    const shared = await call(owner, "launch", { golden: "shared", harness: "codex" });
-    const ids = async (userId: string) =>
-      ((await call(await client(await token(userId)), "list")).data.sandboxes as { id: string }[]).map((row) => row.id);
-    expect(await ids(people.owner)).toEqual([String(shared.data.id), String(mine.data.id)]);
-    expect(await ids(people.admin)).toEqual([String(shared.data.id)]);
-    const hidden = await call(await client(await token(people.admin)), "status", { id: mine.data.id });
-    expect(hidden.isError).toBe(true);
-    expect(hidden.text).toContain("No sandbox");
+    const member = await client(await token(people.member));
+    const listed = await call(member, "list");
+    expect(listed.data.sandboxes).toMatchObject([{ id: mine.data.id, canOpen: false, canManage: false }]);
+    const before = { keys: boat.keys.length, execs: boat.execs.length, stops: boat.stops.length };
+    for (const [name, args] of Object.entries({
+      status: {},
+      logs: {},
+      wait: { timeout_seconds: 0 },
+      exec: { command: "pwd" },
+      send: { prompt: "hello" },
+      steer: { text: "hello" },
+      interrupt: {},
+      stop: {},
+    })) {
+      const denied = await call(member, name, { id: mine.data.id, ...args });
+      expect(denied.isError).toBe(true);
+      expect(denied.text).toContain("No sandbox");
+    }
+    expect({ keys: boat.keys.length, execs: boat.execs.length, stops: boat.stops.length }).toEqual(before);
+    const admin = await client(await token(people.admin));
+    expect((await call(admin, "list")).data.sandboxes).toMatchObject([{ canOpen: true, canManage: true }]);
   });
 
   test("status reads getPrompt: a finished turn with a usage limit is failed, with its reason, and recorded", async () => {
@@ -588,7 +611,7 @@ describe("tools", () => {
     );
     expect(row.rows[0]).toEqual({ status: "failed", status_reason: "Claude usage limit reached" });
     const listed = await call(mcp, "list");
-    expect(listed.data.sandboxes).toMatchObject([{ status: "failed", statusReason: "Claude usage limit reached" }]);
+    expect(listed.data.sandboxes).toMatchObject([{ status: "failed" }]);
 
     await call(mcp, "send", { id: launched.data.id, prompt: "try again" });
     const cleared = await db.query<{ status_reason: string | null }>(
@@ -709,6 +732,21 @@ describe("tools", () => {
       (await db.query("select credential_id,credential_version from sandboxes where id=$1", [launched.data.id]))
         .rows[0],
     ).toEqual({ credential_id: first.id, credential_version: 1 });
+    const admin = await client(await token(people.admin));
+    const beforeAdmin = { prompts: boat.prompts.length, steers: boat.steers.length };
+    expect(
+      (await call(admin, "send", { id: launched.data.id, prompt: "Cannot use owner's personal account" })).isError,
+    ).toBe(true);
+    expect(
+      (await call(admin, "steer", { id: launched.data.id, text: "Cannot restart with owner's account" })).isError,
+    ).toBe(true);
+    expect({ prompts: boat.prompts.length, steers: boat.steers.length }).toEqual(beforeAdmin);
+    const listed = await call(admin, "list");
+    expect(
+      (listed.data.sandboxes as Record<string, unknown>[]).every(
+        (row) => !("credentialId" in row) && !("credentialVersion" in row),
+      ),
+    ).toBe(true);
     await mutateCredentialAccount(store, ENCRYPTION_KEY, people.member, {
       action: "default",
       scope: "user",
@@ -743,7 +781,7 @@ describe("tools", () => {
     expect(sent.data).toMatchObject({ promptId: "prompt_2", conversationId: "conv_1" });
     expect(boat.prompts[1]).toMatchObject({ conversationId: "conv_1", text: "Now add tests", harness: "claude" });
     const listed = await call(mcp, "list");
-    expect(listed.data.sandboxes).toMatchObject([{ status: "running", conversationIds: ["conv_1"] }]);
+    expect(listed.data.sandboxes).toMatchObject([{ status: "running" }]);
   });
 
   test("launch validates repo selectors before fork and forwards a recorded repo to native preparation", async () => {
@@ -864,4 +902,20 @@ describe("tools", () => {
     expect((await call(other, "list")).data.sandboxes).toEqual([]);
     expect((await call(other, "stop", { id: launched.data.id })).isError).toBe(true);
   });
+});
+
+test("authenticated MCP forwards the configured shared orchestrator runtime rather than a disabled copy", async () => {
+  const seen: string[] = [];
+  const runtime = {
+    list: async (caller: { userId: string }, orgId: string) => {
+      seen.push(caller.userId, orgId);
+      return { version: 1, items: [], cursor: null };
+    },
+  } as unknown as import("../src/orchestrator-runtime.ts").OrchestratorRuntime;
+  const s = await start({ orchestrators: runtime });
+  const mcp = await s.client(await s.token(s.people.owner));
+  const result = await mcp.callTool({ name: "orchestrator_list", arguments: { args: { orgId: s.people.org } } });
+  expect(result.isError).not.toBe(true);
+  expect(result.structuredContent).toEqual({ version: 1, items: [], cursor: null });
+  expect(seen).toEqual([s.people.owner, s.people.org]);
 });

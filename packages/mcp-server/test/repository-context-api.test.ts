@@ -176,7 +176,7 @@ test("CLI/shared launch prepares persisted native repo cwd before idle/first pro
       reasoningEffort: "high",
     });
     expect((await call(client, "list")).data.sandboxes).toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: launched.id, repositoryDir: "api" })]),
+      expect.arrayContaining([expect.objectContaining({ id: launched.id, canOpen: true })]),
     );
     // MCP first-prompt launch uses the identical persisted field and native preparation.
     const immediate = await call(client, "launch", {

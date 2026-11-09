@@ -43,6 +43,9 @@ const digest = (token: string) => createHash("sha256").update(token).digest("hex
 /** Private transport must not use prompt/exec argv, logs, events, golden or checkpoint files.
  * ACK proves initial session delivery, NOT live native config reload. */
 export interface OrchestratorAuthorityTransport {
+  /** Trusted provider incarnation and SQL snapshot observed before private delivery. */
+  readonly physicalGeneration: string;
+  readonly lifecycleGeneration: string;
   /** Atomically compare-install by physical generation then epoch. Reject a
    * delayed older write even after a newer session ACK; never last-write-wins. */
   deliver(token: string, binding: { epoch: string; physicalGeneration: string }): Promise<{ acknowledged: boolean }>;
@@ -87,7 +90,7 @@ export class OrchestratorAuthority {
         join public.sandboxes s on s.id=o.sandbox_id
         where d.hash=$1 and d.revoked_at is null and d.acknowledged_at is not null
         and d.expires_at>now() and d.epoch=o.authority_epoch and o.state='ready'
-        and s.lifecycle_generation=d.physical_generation and s.status not in ('stopped','deleted','failed')
+        and d.native_generation=s.orchestrator_native_generation and s.status not in ('stopped','deleted','failed')
         and s.stop_requested_at is null and $2=any(d.scopes)
         for update of o,d,s,m`,
         [digest(token), scope],
@@ -146,9 +149,24 @@ export class OrchestratorAuthority {
     transport: OrchestratorAuthorityTransport,
     consent: { scopes: OrchestratorScope[]; goldenIds: string[]; credentialIds: string[] },
   ): Promise<void> {
-    if (!this.sql.transaction) return deny();
+    if (!this.sql.transaction || !transport.physicalGeneration || !/^[1-9][0-9]*$/.test(transport.lifecycleGeneration))
+      return deny();
     const secret = newOrchestratorEpochSecret();
     const installed = await this.sql.transaction(async (tx) => {
+      const parent = (
+        await tx.query<{ sandbox_id: string }>(
+          `select o.sandbox_id from public.orchestrators o join public.sandboxes s on s.id=o.sandbox_id
+         join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
+         where o.id=$1 and o.state='ready' and s.lifecycle_generation=$2
+         and s.stop_requested_at is null and s.status in ('ready','running') for update of o,s,m`,
+          [orchestratorId, transport.lifecycleGeneration],
+        )
+      ).rows[0];
+      if (!parent) return deny();
+      await tx.query(`update public.sandboxes set orchestrator_native_generation=$2 where id=$1`, [
+        parent.sandbox_id,
+        transport.physicalGeneration,
+      ]);
       const result = await tx.query<{ authority_epoch: string; lifecycle_generation: string }>(
         `update public.orchestrators o set authority_epoch=authority_epoch+1
          from public.sandboxes s,public.members m where o.id=$1 and o.state='ready'
@@ -161,8 +179,8 @@ export class OrchestratorAuthority {
       if (!row) return deny();
       await tx.query(
         `insert into public.orchestrator_delegations
-        (orchestrator_id,hash,epoch,physical_generation,scopes,golden_ids,account_ids,expires_at)
-        values($1,$2,$3,$4,$5::text[],$6::uuid[],$7::uuid[],now()+interval '24 hours')`,
+        (orchestrator_id,hash,epoch,physical_generation,scopes,golden_ids,account_ids,expires_at,native_generation)
+        values($1,$2,$3,$4,$5::text[],$6::uuid[],$7::uuid[],now()+interval '24 hours',$8)`,
         [
           orchestratorId,
           secret.hash,
@@ -171,6 +189,7 @@ export class OrchestratorAuthority {
           consent.scopes,
           consent.goldenIds,
           consent.credentialIds,
+          transport.physicalGeneration,
         ],
       );
       return row;
@@ -180,7 +199,7 @@ export class OrchestratorAuthority {
         !(
           await transport.deliver(secret.token, {
             epoch: String(installed.authority_epoch),
-            physicalGeneration: String(installed.lifecycle_generation),
+            physicalGeneration: transport.physicalGeneration,
           })
         ).acknowledged
       )
@@ -190,10 +209,11 @@ export class OrchestratorAuthority {
         from public.orchestrators o,public.sandboxes s,public.members m
         where d.hash=$1 and o.id=d.orchestrator_id and o.state='ready'
         and o.authority_epoch=d.epoch and s.id=o.sandbox_id and s.lifecycle_generation=d.physical_generation
+        and d.native_generation=s.orchestrator_native_generation and d.native_generation=$2
         and s.stop_requested_at is null and s.status in ('ready','running')
         and m.org_id=o.org_id and m.user_id=o.owner_id and d.revoked_at is null and d.expires_at>now()
         returning d.id`,
-        [secret.hash],
+        [secret.hash, transport.physicalGeneration],
       );
       if (!ack.rows.length) return deny();
     } catch {

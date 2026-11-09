@@ -27,6 +27,11 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
+  orchestrator_runtime: "OrchestratorRuntimeRow",
+  orchestrator_runtime_create_keys: "OrchestratorRuntimeCreateKeyRow",
+  orchestrator_runtime_events: "OrchestratorRuntimeEventRow",
+  model_auth_ownership: "ModelAuthOwnershipRow",
+  model_auth_state: "ModelAuthStateRow",
   modal_events: "ModalEventRow",
   modal_images: "ModalImageRow",
   modal_machines: "ModalMachineRow",
@@ -40,6 +45,9 @@ const ROW_ALIASES: Record<string, string> = {
   credentials: "Credential",
   github_authorizations: "GitHubAuthorization",
   github_connections: "GitHubConnection",
+  github_refresh_fences: "GitHubRefreshFence",
+  github_runtime_capabilities: "GitHubRuntimeCapability",
+  github_runtime_issued: "GitHubRuntimeIssued",
   golden_build_jobs: "GoldenBuildJob",
   golden_backend_slots: "GoldenBackendSlot",
   golden_adoption_receipts: "GoldenAdoptionReceipt",
@@ -322,6 +330,8 @@ ${table.columns.map((column) => field(column.name, column.tsType, true, column.n
   ].join("\n");
 
   return `// Generated from supabase/migrations by \`bun run db:types\`. Do not edit.
+import type { SandboxListMetadata } from "./sandbox-access.ts";
+
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 
 export type Database = {
@@ -333,7 +343,8 @@ ${tables}
       [_ in never]: never;
     };
     Functions: {
-      [_ in never]: never;
+      sandbox_list_metadata: { Args: Record<string, never>; Returns: SandboxListMetadata[] };
+      can_open_sandbox: { Args: { target_org: string; target_owner: string }; Returns: boolean };
     };
     Enums: {
 ${enums}

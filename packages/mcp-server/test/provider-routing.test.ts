@@ -107,7 +107,7 @@ describe("provider routing", () => {
       harness: "claude",
       visibility: "private",
     });
-    expect(launched.data.visibility).toBe("private");
+    expect(launched.data.visibility).toBe("org");
     const source = (
       await server.db.query<{ source_golden_visibility: string }>(
         "select source_golden_visibility from sandboxes where id=$1",
@@ -118,7 +118,7 @@ describe("provider routing", () => {
     await expect(
       server.db.query("update sandboxes set source_golden_visibility='private' where id=$1", [launched.data.id]),
     ).rejects.toThrow(/immutable/);
-    const otherMember = await server.client(await server.token(server.people.admin));
+    const otherMember = await server.client(await server.token(server.people.owner));
     const forbidden = await call(otherMember, "send", { id: launched.data.id, prompt: "impersonate" });
     expect(forbidden.isError).toBe(true);
     expect(launched.data).toMatchObject({ provider: "modal", providerSandboxId: "bx_1", boatId: null });

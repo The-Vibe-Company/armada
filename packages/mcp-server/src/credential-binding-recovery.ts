@@ -1,6 +1,7 @@
 import { createSqlVaultStore, type Harness, resolveCredentials, type Sql, VaultError } from "@armada/core/server";
 import type { Machine } from "@armada/provider-modal";
 import type { Caller } from "./caller.ts";
+import { createModelAuthOwnership, type ModelAuthOwnership } from "./model-auth.ts";
 
 export interface CredentialBindingRecoveryInput {
   id: string;
@@ -23,6 +24,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function createCredentialBindingRecovery(
   sql: Sql,
   encryptionKey: string | undefined,
+  modelAuth: ModelAuthOwnership = createModelAuthOwnership(sql, encryptionKey),
 ): CredentialBindingRecovery {
   return async (caller, input) => {
     if (!UUID.test(input.id) || !UUID.test(input.credentialId))
@@ -119,11 +121,21 @@ export function createCredentialBindingRecovery(
       const binding = resolved.binding;
       if (!binding) throw new VaultError("unavailable", "The selected account has no stable revision.");
       const credential = await tx.query(
-        "select id from public.credentials where id=$1 and version=$2 and status='active' and (expires_at is null or expires_at>now()) for share",
+        "select id from public.credentials where id=$1 and version=$2 and status='active' and (expires_at is null or expires_at>now()) for update",
         [binding.credentialId, binding.credentialVersion],
       );
       if (!credential.rows.length)
         throw new VaultError("conflict", "The selected account changed during recovery. Choose it again.");
+      // Explicit recovery enrolls fresh native state atomically with both pins.
+      // Never resume with a raw refresh token outside the ownership/publication gate.
+      if (resolved.sources.some((source) => source.kind === "codex_auth"))
+        await modelAuth.claim(
+          { userId: caller.userId, orgId: sandbox.org_id, role: "member" },
+          binding.credentialId,
+          binding.credentialVersion,
+          sandbox.id,
+          tx,
+        );
       const publicPin = await tx.query(
         "update public.sandboxes set credential_id=$2,credential_version=$3 where id=$1 and credential_id is null and credential_version is null returning id",
         [sandbox.id, binding.credentialId, binding.credentialVersion],
@@ -137,6 +149,7 @@ export function createCredentialBindingRecovery(
       machine.launchUserId ??= caller.userId;
       machine.info.labels = {
         ...machine.info.labels,
+        sandbox: sandbox.id,
         credentialId: binding.credentialId,
         credentialVersion: String(binding.credentialVersion),
       };
