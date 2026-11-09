@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.0](https://github.com/The-Vibe-Company/armada/compare/v2.5.0...v2.6.0) (2026-11-09)
+
+
+### Features
+
+* **platform:** add Modal sandboxes, MCP connections and CLI parity ([#561](https://github.com/The-Vibe-Company/armada/issues/561)) ([3effe60](https://github.com/The-Vibe-Company/armada/commit/3effe601c52d044ab4a37bdbe11c87c219f0231a)), closes [#508](https://github.com/The-Vibe-Company/armada/issues/508) [#510](https://github.com/The-Vibe-Company/armada/issues/510) [#511](https://github.com/The-Vibe-Company/armada/issues/511) [#512](https://github.com/The-Vibe-Company/armada/issues/512) [#513](https://github.com/The-Vibe-Company/armada/issues/513) [#514](https://github.com/The-Vibe-Company/armada/issues/514) [#519](https://github.com/The-Vibe-Company/armada/issues/519) [#520](https://github.com/The-Vibe-Company/armada/issues/520) [#521](https://github.com/The-Vibe-Company/armada/issues/521) [#522](https://github.com/The-Vibe-Company/armada/issues/522) [#523](https://github.com/The-Vibe-Company/armada/issues/523) [#529](https://github.com/The-Vibe-Company/armada/issues/529) [#556](https://github.com/The-Vibe-Company/armada/issues/556) [#557](https://github.com/The-Vibe-Company/armada/issues/557)
+
 ## [2.5.0](https://github.com/The-Vibe-Company/armada/compare/v2.4.0...v2.5.0) (2026-11-09)
 
 
