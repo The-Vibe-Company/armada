@@ -269,7 +269,10 @@ export function createMcpLifecycle(options: {
         if (c.transport === "stdio") parsePinnedMcpStdio(c.command ?? "", c.args ?? []);
       }
     },
-    prepare: async (provider, sandbox, _actor: GoldenActor) => reconcile(provider, sandbox),
+    prepare: async (provider, sandbox, actor: GoldenActor) => {
+      await authorizePersonalBindings(sql, sandbox.id, actor.userId);
+      await reconcile(provider, sandbox);
+    },
   };
   return {
     connections,
