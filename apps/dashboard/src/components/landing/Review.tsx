@@ -22,7 +22,7 @@ export function Review() {
           launch.
         </p>
         <div className="dx-review-actions">
-          <Link href="/login" className="lp-button is-lime is-lg">
+          <Link href="/login" className="lp-button is-lg dx-approve">
             Sign in to try Armada
           </Link>
           <a href={SETUP_GUIDE} className="lp-button is-ghost is-lg">
