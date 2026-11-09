@@ -149,6 +149,29 @@ test("a token_hash link shows whose account it is before signing in, and joins n
   expect(await joined()).toBe(false);
 });
 
+test("a checked token_hash link never replaces an account signed in since, and can be declined", async ({ page }) => {
+  await mock("seed-invitation", { email: "carol@example.com", token: INVITATION });
+  const { token_hash } = await mock("email-link-hash", { email: "carol@example.com" });
+  await page.goto(`/invitations/accept?token=${INVITATION}&token_hash=${token_hash}&type=magiclink`);
+  await page.getByRole("button", { name: "Check this link" }).click();
+  await expect(page.getByRole("heading", { name: "Continue as carol@example.com?" })).toBeVisible();
+
+  // Bob signs in from another tab; the first tab's stale "continue" must not replace him.
+  const other = await page.context().newPage();
+  await signIn(other, "bob@example.com");
+  await page.getByRole("button", { name: "Continue as carol@example.com" }).click();
+  await expect(alert(page)).toContainText("now signed in as bob@example.com");
+  await other.goto("/sandboxes");
+  await expect(other.getByText("Signed in as bob@example.com")).toBeVisible();
+
+  await other.context().clearCookies();
+  const again = await mock("email-link-hash", { email: "carol@example.com" });
+  await page.goto(`/invitations/accept?token=${INVITATION}&token_hash=${again.token_hash}&type=magiclink`);
+  await page.getByRole("button", { name: "Check this link" }).click();
+  await page.getByRole("button", { name: "Not now" }).click();
+  await expect(page.getByRole("heading", { name: "You are invited to an organization on Armada" })).toBeVisible();
+});
+
 test("a newer invitation link drops an earlier link's sign-in", async ({ page }) => {
   await mock("seed-invitation", { email: "carol@example.com", token: INVITATION });
   const { token_hash } = await mock("email-link-hash", { email: "carol@example.com" });

@@ -82,6 +82,9 @@ export async function verifyEmailLink(_previous: ActionResult | null, _data: For
 export async function adoptVerifiedLink(_previous: ActionResult | null, _data: FormData): Promise<ActionResult> {
   const pending = await pendingLinkSession();
   if (!pending) return fail(LINK_EXPIRED);
+  // Shown to a signed-out viewer only: if another account signed in since (another tab), it is not replaced here.
+  const viewer = await readViewer();
+  if (viewer) return fail(`This browser is now signed in as ${viewer.email || "another account"}. Reload the page.`);
   const result = await adopt(pending.accessToken, pending.refreshToken);
   if (result.ok) (await cookies()).delete({ name: INVITATION_LINK_SESSION_COOKIE, path: INVITATION_ACCEPT_PATH });
   return result;
@@ -89,6 +92,12 @@ export async function adoptVerifiedLink(_previous: ActionResult | null, _data: F
 
 /** "Not now": forget the verified link's session without signing in. */
 export async function discardVerifiedLink(_previous: ActionResult | null, _data: FormData): Promise<ActionResult> {
+  const pending = await pendingLinkSession();
   (await cookies()).delete({ name: INVITATION_LINK_SESSION_COOKIE, path: INVITATION_ACCEPT_PATH });
+  // The session GoTrue minted is ended there too, not only forgotten here.
+  if (pending)
+    await authClient()
+      .auth.admin.signOut(pending.accessToken, "local")
+      .catch(() => undefined);
   return done("Not signed in.");
 }
