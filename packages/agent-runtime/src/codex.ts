@@ -16,14 +16,23 @@ import type { Driver, DriverContext, Turn } from "./protocol.ts";
 /** One app-server per conversation isolates credentials, process failure and notifications. */
 export class CodexDriver implements Driver {
   private children = new ChildOwner();
+  private nativeWriter = false;
   constructor(
-    private options: { executable: string; cwd: string; env: Record<string, string>; refreshSecrets?: () => void },
+    private options: {
+      executable: string;
+      cwd: string;
+      env: Record<string, string>;
+      refreshSecrets?: () => void;
+      exclusiveAuth?: boolean;
+    },
   ) {}
   start(c: DriverContext): Turn {
     const cwd = validateHarnessCwd(c.request.cwd ?? this.options.cwd);
     const effort = c.request.reasoningEffort ?? "medium";
     if (!["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort))
       throw Error("invalid_effort");
+    if (this.options.exclusiveAuth && this.nativeWriter) throw Error("native_auth_writer_busy");
+    if (this.options.exclusiveAuth) this.nativeWriter = true;
     const child = this.children.spawn(
       this.options.executable,
       ["-c", 'cli_auth_credentials_store="file"', "-c", 'mcp_oauth_credentials_store="file"', "app-server"],
@@ -276,6 +285,7 @@ export class CodexDriver implements Driver {
         closed = true;
         lines.close();
         await this.children.release(child);
+        this.nativeWriter = false;
         c.signal.removeEventListener("abort", abort);
       }
     })();

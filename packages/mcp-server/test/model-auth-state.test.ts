@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
-import { encryptSecret, type GoldenActor } from "@armada/core/server";
+import { createSqlVaultStore, encryptSecret, type GoldenActor } from "@armada/core/server";
+import { createBoatProvider } from "@armada/provider-boat";
 import { type Scope, scopeKey } from "@armada/provider-modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { launchCredentials } from "../src/launch-credentials.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
-import { fakeBoat } from "./support.ts";
+import { call, ENCRYPTION_KEY, fakeBoat, harness } from "./support.ts";
 
 const OWNER = "11111111-1111-4111-8111-111111111111";
 const PEER = "22222222-2222-4222-8222-222222222222";
@@ -48,7 +50,10 @@ test("real native state publication seals rotation without replacing binding, fe
       return authJson;
     });
     const actor: GoldenActor = { userId: OWNER, orgId: ORG, role: "admin" };
-    await auth.claim(actor, account.id, 1, SANDBOX); // Before public sandbox INSERT/fork.
+    const resolver = launchCredentials(createSqlVaultStore(db), KEY, undefined, auth);
+    const credentials = await resolver.resolve(actor, "codex", account.id, 1);
+    expect(credentials).toMatchObject({ binding: { credentialId: account.id, credentialVersion: 1 } });
+    await resolver.admit!(actor, credentials, SANDBOX); // Actual resolver-to-ownership pipeline before allocation.
     await auth.releaseUnallocated(account.id, 1, SANDBOX);
     expect(await auth.managed(SANDBOX)).toBe(false);
     await auth.claim(actor, account.id, 1, SANDBOX);
@@ -105,6 +110,62 @@ test("real native state publication seals rotation without replacing binding, fe
     await expect(auth.state.read({ ...actor, userId: PEER }, account.id, 1, SANDBOX)).rejects.toMatchObject({
       code: "not_found",
     });
+    let eventRevision = 2;
+    const publicProvider = createBoatProvider({
+      apiKey: "synthetic-boat-key",
+      fetch: (async () =>
+        Response.json({
+          events: [
+            {
+              id: "native-output",
+              timestamp: 7,
+              type: "response",
+              data: {
+                content: `synthetic-refresh-${eventRevision}`,
+                tools: [
+                  {
+                    use: { id: "t", name: "read", input: { old: "synthetic-refresh-1" } },
+                    result: { content: [{ text: "synthetic-access-2" }] },
+                  },
+                ],
+              },
+            },
+          ],
+          pageInfo: { hasMore: false },
+        })) as unknown as typeof fetch,
+      sanitizeEvents: (_provider, id, events) => auth.redactEvents(provider, id, actor, events),
+    });
+    const safeEvents = await publicProvider.events({ sandboxId: "native" });
+    expect(JSON.stringify(safeEvents)).not.toContain("synthetic-refresh-");
+    expect(JSON.stringify(safeEvents)).not.toContain("synthetic-access-");
+    expect(safeEvents.events[0]).toMatchObject({ id: "native-output", kind: "message", text: "***" });
+    // The activity lease is an independent storage contract shared with stop:
+    // event bodies cannot escape while a native-file-mutating command is in flight.
+    await db.query(
+      "update sandboxes set activity_lease_id=$2::uuid,activity_until=now()+interval '2 minutes' where id=$1",
+      [SANDBOX, OTHER],
+    );
+    await expect(publicProvider.events({ sandboxId: "native" })).rejects.toMatchObject({ code: "unavailable" });
+    await db.query("update sandboxes set activity_lease_id=null,activity_until=null where id=$1", [SANDBOX]);
+    // Auto-archive after a rotation may leave only a stale encrypted sample.
+    // It is not a durable quiescence receipt and must not release unseen output.
+    eventRevision = 3;
+    provider.get = async (id) => ({ id, name: id, state: "stopped", providerState: "archived", labels: {} });
+    await expect(publicProvider.events({ sandboxId: "native" })).rejects.toMatchObject({ code: "unavailable" });
+    eventRevision = 2;
+    provider.get = async (id) => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
+    // Storage policy accepts only the server's quiesced-capture purpose. The
+    // real SSH lock/process receipt is independently exercised by native-cwd.
+    await auth.capture(provider, "native", actor, true);
+    provider.get = async (id) => ({ id, name: id, state: "stopped", providerState: "archived", labels: {} });
+    expect(JSON.stringify(await publicProvider.events({ sandboxId: "native" }))).not.toContain("synthetic-refresh-");
+    // Pre-exec may resume for inspection using the known registry, but invalidates
+    // that old stop proof before any command could mutate the native file.
+    expect(await resolver.nativeSecrets!(actor, SANDBOX, provider, "native", "before")).toContain(
+      "synthetic-refresh-2",
+    );
+    await expect(publicProvider.events({ sandboxId: "native" })).rejects.toMatchObject({ code: "unavailable" });
+    provider.get = async (id) => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
     await db.query("delete from members where org_id=$1 and user_id=$2", [ORG, OWNER]);
     await expect(auth.state.read(actor, account.id, 1, SANDBOX)).rejects.toMatchObject({ code: "not_found" });
     await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [ORG, OWNER]);
@@ -121,6 +182,17 @@ test("real native state publication seals rotation without replacing binding, fe
     await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [SANDBOX]);
     await auth.claim(actor, account.id, 2, OTHER);
     expect(await auth.state.read(actor, account.id, 2, OTHER)).toMatchObject({ authJson: native(9), revision: 0 });
+    // Explicit replacement fences model billing, not safe shell inspection of
+    // the prior workspace. Its rotated leaves remain redaction-only.
+    await auth.assertSandbox(actor, SANDBOX, false, true);
+    await expect(auth.assertSandbox(actor, SANDBOX, true)).rejects.toMatchObject({ code: "not_found" });
+    expect(await auth.capture(provider, "native", actor)).toContain("synthetic-refresh-3");
+    await expect(auth.state.read(actor, account.id, 1, SANDBOX)).rejects.toMatchObject({ code: "not_found" });
+    expect(await auth.state.read(actor, account.id, 2, OTHER)).toMatchObject({ authJson: native(9), revision: 0 });
+    provider.get = async (id) => ({ id, name: id, state: "stopped", providerState: "archived", labels: {} });
+    // Retired tokens still protect historical provider events, without resuming
+    // old compute or authorizing that old binding to hydrate a new writer.
+    await expect(publicProvider.events({ sandboxId: "native" })).rejects.toMatchObject({ code: "unavailable" });
   } finally {
     await db.close();
   }
@@ -198,5 +270,108 @@ test("Modal private publication binds current app, native generation and account
     expect((await db.query("select auth_revision from model_auth_state")).rows).toEqual([{ auth_revision: 2 }]);
   } finally {
     await db.close();
+  }
+});
+
+// Actual MCP exec/controller + shared SQL lease. SSH is a private transport peer;
+// encryption, publication, lifecycle admission and redaction remain real owners.
+test("managed exec holds stop admission through secret publication while independent accounts stay parallel", async () => {
+  let ownership!: ReturnType<typeof createModelAuthOwnership>;
+  const nativeBySandbox = new Map<string, string>();
+  const server = await harness({
+    modelAuth: (db) => {
+      ownership = createModelAuthOwnership(db, ENCRYPTION_KEY, async (_provider, id) => {
+        const value = nativeBySandbox.get(id);
+        if (!value) throw Error("Missing private transport fixture");
+        return value;
+      });
+      return ownership;
+    },
+  });
+  let release!: () => void, started!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const admitted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let pending: ReturnType<typeof call> | undefined;
+  try {
+    const actor: GoldenActor = { userId: server.people.owner, orgId: server.people.org, role: "member" };
+    const create = async (identity: string) => {
+      const id = crypto.randomUUID();
+      const account = (
+        await server.db.query<{ id: string }>(
+          "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+          [actor.userId, await encryptSecret(native(0, identity), ENCRYPTION_KEY)],
+        )
+      ).rows[0]!;
+      await ownership.claim(actor, account.id, 1, id);
+      const machine = await server.boat.provider.fork({
+        from: "fixture-snapshot",
+        noEnv: true,
+        env: {},
+        labels: {},
+        ttlSeconds: 3600,
+      });
+      nativeBySandbox.set(machine.id, native(0, identity));
+      await server.db.query(
+        `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider_sandbox_id,boat_id,visibility,credential_id,credential_version)
+         select $1,$2,$3,g.id,'codex','ready',$4,$4,'org',$5,1 from goldens g where g.org_id=$2 and g.name='shared'`,
+        [id, actor.orgId, actor.userId, machine.id, account.id],
+      );
+      return { id, physical: machine.id, accountId: account.id };
+    };
+    const first = await create("held-native-account");
+    const second = await create("independent-native-account");
+    const originalExec = server.boat.provider.exec;
+    server.boat.provider.exec = async (request) => {
+      if (request.command !== "held-native-inspection") return originalExec(request);
+      started();
+      await gate;
+      nativeBySandbox.set(first.physical, native(1, "held-native-account"));
+      return {
+        detached: false,
+        exitCode: 0,
+        stdout: "synthetic-refresh-1",
+        stderr: "",
+        timedOut: false,
+        truncated: false,
+      };
+    };
+    const client = await server.client(await server.token(actor.userId));
+    pending = call(client, "exec", { id: first.id, command: "held-native-inspection" });
+    await admitted;
+    expect(
+      (
+        await server.db.query<{ active: boolean }>(
+          "select activity_lease_id is not null as active from sandboxes where id=$1",
+          [first.id],
+        )
+      ).rows[0]?.active,
+    ).toBe(true);
+    const stopped = await call(client, "stop", { id: first.id });
+    expect(stopped.isError).toBe(true);
+    expect(server.boat.stops).toHaveLength(0);
+    server.boat.setExecOutput({ stdout: "independent-account-ok" });
+    expect((await call(client, "exec", { id: second.id, command: "independent-inspection" })).data.stdout).toBe(
+      "independent-account-ok",
+    );
+    release();
+    const response = await pending;
+    expect(response.isError).toBe(false);
+    expect(response.data.stdout).toBe("***");
+    expect(await ownership.state.read(actor, first.accountId, 1, first.id)).toMatchObject({
+      authJson: native(1, "held-native-account"),
+      revision: 1,
+    });
+    expect(
+      (await server.db.query<{ version: number }>("select version from credentials where id=$1", [first.accountId]))
+        .rows[0]?.version,
+    ).toBe(1);
+  } finally {
+    release();
+    await pending?.catch(() => {});
+    await server.close();
   }
 });

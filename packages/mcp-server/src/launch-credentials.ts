@@ -81,26 +81,41 @@ export function launchCredentials(
       if (ownership && binding)
         await ownership.releaseUnallocated(binding.credentialId, binding.credentialVersion, sandboxId);
     },
-    async nativeSecrets(actor, sandboxId, provider, providerSandboxId) {
+    async nativeSecrets(actor, sandboxId, provider, providerSandboxId, phase = "after") {
       if (!ownership) return [];
       await ownership.assertSandbox(actor, sandboxId, false, true);
       const managed = await ownership.managed(sandboxId);
-      const values = await ownership.capture(provider, providerSandboxId, { userId: actor.userId, orgId: actor.orgId });
+      if (phase === "before") await ownership.state.invalidateRedaction(actor, sandboxId);
+      const values = await ownership.capture(
+        provider,
+        providerSandboxId,
+        { userId: actor.userId, orgId: actor.orgId },
+        false,
+        phase === "before",
+      );
       if (managed && values.length === 0)
         throw new Error("Private native auth redaction is unavailable; no output may be returned.");
       return values;
     },
     async assertExec(actor, sandboxId) {
       if (ownership) await ownership.assertSandbox(actor, sandboxId, false, true);
+      return ownership ? ownership.managed(sandboxId) : false;
     },
     async assertTurn(actor, sandboxId, resuming) {
       if (ownership) await ownership.assertSandbox(actor, sandboxId, resuming);
     },
-    async resolve(actor: GoldenActor, harness: Harness): Promise<HarnessCredentials> {
+    async resolve(
+      actor: GoldenActor,
+      harness: Harness,
+      credentialId?: string,
+      credentialVersion?: number,
+    ): Promise<HarnessCredentials> {
       const resolved = await resolveCredentials(reader, encryptionKey, {
         userId: actor.userId,
         orgId: actor.orgId,
         harness,
+        ...(credentialId !== undefined ? { credentialId } : {}),
+        ...(credentialVersion !== undefined ? { credentialVersion } : {}),
       });
       const access = github ? await resolveGitHubAccess({ ...github, encryptionKey }, actor.userId) : undefined;
       return toHarnessCredentials(resolved, access);

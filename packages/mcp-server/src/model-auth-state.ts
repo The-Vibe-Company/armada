@@ -47,6 +47,35 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
     return row.value_enc;
   }
   return {
+    /** Redaction may outlive authorization to hydrate or refresh the account. */
+    async redactionState(actor: GoldenActor, accountId: string, version: number, sandboxId: string) {
+      const result = await sql.query<{ state_enc: Uint8Array; source_generation: string }>(
+        `select state.state_enc,state.source_generation from public.model_auth_state state
+         join public.sandboxes s on s.credential_id=state.account_id and s.credential_version=state.account_version
+         join public.members m on m.org_id=s.org_id and m.user_id=$4::uuid
+         where state.account_id=$1::uuid and state.account_version=$2 and s.id=$3::uuid
+         and s.owner_id=$4::uuid and s.org_id=$5::uuid and s.deleted_at is null`,
+        [accountId, version, sandboxId, actor.userId, actor.orgId],
+      );
+      return result.rows[0]
+        ? {
+            secrets: (JSON.parse(await decryptSecret(new Uint8Array(result.rows[0].state_enc), key)) as NativeState)
+              .secrets,
+            sourceGeneration: result.rows[0].source_generation,
+          }
+        : undefined;
+    },
+    /** Shell execution can change auth even when it automatically resumes a VM. */
+    async invalidateRedaction(actor: GoldenActor, sandboxId: string) {
+      await sql.query(
+        `update public.model_auth_state state set source_generation='redaction:unacknowledged-exec'
+         from public.sandboxes s, public.members m
+         where s.id=$1::uuid and s.owner_id=$2::uuid and s.org_id=$3::uuid and s.deleted_at is null
+         and m.org_id=s.org_id and m.user_id=s.owner_id
+         and state.account_id=s.credential_id and state.account_version=s.credential_version`,
+        [sandboxId, actor.userId, actor.orgId],
+      );
+    },
     /** Caller already holds the authorized account/ownership locks before provider hydration. */
     async initialize(tx: Sql, accountId: string, version: number, raw: string) {
       const initial = nativeState(raw);
@@ -70,19 +99,19 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
       if (!sql.transaction) throw new VaultError("unavailable", "Private redaction state requires transactions.");
       return sql.transaction(async (tx) => {
         const allowed = await tx.query(
-          `select c.id from public.credentials c join public.model_auth_ownership o on o.account_id=c.id
-           join public.sandboxes s on s.id=o.sandbox_id and s.credential_id=c.id and s.credential_version=o.account_version
+          `select c.id from public.credentials c
+           join public.sandboxes s on s.credential_id=c.id
            join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
-           where c.id=$1::uuid and o.account_version=$2 and o.sandbox_id=$3::uuid and s.owner_id=$4::uuid and s.org_id=$5::uuid
+           where c.id=$1::uuid and s.credential_version=$2 and s.id=$3::uuid and s.owner_id=$4::uuid and s.org_id=$5::uuid
            and ((c.scope='user' and c.owner_id=$4::uuid) or (c.scope='org' and c.owner_id=$5::uuid))
            and (c.version<>$2 or c.status<>'active' or c.expires_at<=now())
-           for update of c,o,s for share of m`,
+           for update of c,s for share of m`,
           [input.accountId, input.version, input.sandboxId, input.actor.userId, input.actor.orgId],
         );
         if (!allowed.rows.length) throw new VaultError("not_found", "Retired native state is not authorized.");
         await input.verifySource(tx);
-        const result = await tx.query<{ state_enc: Uint8Array; auth_revision: number }>(
-          "select state_enc,auth_revision from public.model_auth_state where account_id=$1::uuid and account_version=$2 for update",
+        const result = await tx.query<{ state_enc: Uint8Array; auth_revision: number; source_generation: string }>(
+          "select state_enc,auth_revision,source_generation from public.model_auth_state where account_id=$1::uuid and account_version=$2 for update",
           [input.accountId, input.version],
         );
         const row = result.rows[0];
@@ -90,7 +119,13 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
         const previous = JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), key)) as NativeState;
         if (JSON.parse(previous.authJson).tokens.account_id !== JSON.parse(observed.authJson).tokens.account_id)
           throw new VaultError("conflict", "Retired native identity changed.");
-        if (previous.retired && previous.authJson === observed.authJson) return previous.secrets;
+        if (previous.retired && previous.authJson === observed.authJson) {
+          await tx.query(
+            "update public.model_auth_state set source_generation=$3,updated_at=now() where account_id=$1::uuid and account_version=$2",
+            [input.accountId, input.version, input.generation],
+          );
+          return previous.secrets;
+        }
         const retired: NativeState = {
           authJson: observed.authJson,
           secrets: [...new Set([...previous.secrets, ...observed.secrets])],
@@ -110,8 +145,8 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
       if (!sql.transaction) throw new VaultError("unavailable", "Private native state requires transactions.");
       return sql.transaction(async (tx) => {
         await owner(tx, actor, accountId, version, sandboxId);
-        const result = await tx.query<{ state_enc: Uint8Array; auth_revision: number }>(
-          "select state_enc,auth_revision from public.model_auth_state where account_id=$1::uuid and account_version=$2",
+        const result = await tx.query<{ state_enc: Uint8Array; auth_revision: number; source_generation: string }>(
+          "select state_enc,auth_revision,source_generation from public.model_auth_state where account_id=$1::uuid and account_version=$2",
           [accountId, version],
         );
         const row = result.rows[0];
@@ -119,7 +154,7 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
         const state = JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), key)) as NativeState;
         nativeState(state.authJson);
         if (state.retired) throw new VaultError("conflict", "Native binding requires explicit reconnect.");
-        return { ...state, revision: row.auth_revision };
+        return { ...state, revision: row.auth_revision, sourceGeneration: row.source_generation };
       });
     },
     async publish(input: {
@@ -143,8 +178,8 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
         if (JSON.parse(originalAuth.authJson).tokens.account_id !== JSON.parse(next.authJson).tokens.account_id)
           throw new VaultError("conflict", "Native identity changed; reconnect the account explicitly.");
         await input.verifySource(tx);
-        const result = await tx.query<{ state_enc: Uint8Array; auth_revision: number }>(
-          "select state_enc,auth_revision from public.model_auth_state where account_id=$1::uuid and account_version=$2 for update",
+        const result = await tx.query<{ state_enc: Uint8Array; auth_revision: number; source_generation: string }>(
+          "select state_enc,auth_revision,source_generation from public.model_auth_state where account_id=$1::uuid and account_version=$2 for update",
           [input.accountId, input.version],
         );
         const row = result.rows[0];

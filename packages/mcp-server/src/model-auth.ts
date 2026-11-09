@@ -1,5 +1,12 @@
 import type { GoldenActor, Provider, Sql } from "@armada/core/server";
-import { decryptSecret, ProviderError, sshPrivateAuthState, VaultError } from "@armada/core/server";
+import {
+  decryptSecret,
+  ProviderError,
+  redact,
+  sshNativeAuthAdmission,
+  sshPrivateAuthState,
+  VaultError,
+} from "@armada/core/server";
 
 import type { IngestGrantClaims, Scope } from "@armada/provider-modal";
 import { scopeKey } from "@armada/provider-modal";
@@ -43,8 +50,15 @@ export function createModelAuthOwnership(
     state,
     async managed(sandboxId: string): Promise<boolean> {
       return (
-        (await sql.query("select 1 from public.model_auth_ownership where sandbox_id=$1::uuid limit 1", [sandboxId]))
-          .rows.length > 0
+        (
+          await sql.query(
+            `select 1 from public.model_auth_ownership where sandbox_id=$1::uuid
+          union all select 1 from public.sandboxes s join public.model_auth_state state
+          on state.account_id=s.credential_id and state.account_version=s.credential_version
+          where s.id=$1::uuid limit 1`,
+            [sandboxId],
+          )
+        ).rows.length > 0
       );
     },
     async releaseUnallocated(id: string, version: number, sandboxId: string): Promise<void> {
@@ -70,12 +84,14 @@ export function createModelAuthOwnership(
       if (!enrolled.rows.length) return undefined; // Legacy state is not silently rebound or replaced.
       await this.assertOwned(actor, id, version, sandboxId);
       const saved = await state.read(actor, id, version, sandboxId);
-      return { authJson: saved?.authJson, revision: saved?.revision ?? 0 };
+      return { authJson: saved?.authJson, revision: saved?.revision ?? 0, secrets: saved?.secrets ?? [] };
     },
     async capture(
       provider: Provider,
       providerId: string,
       caller: { userId: string; orgId: string },
+      quiesced = false,
+      allowStoppedSample = false,
     ): Promise<string[]> {
       const result = await sql.query<{
         id: string;
@@ -101,6 +117,17 @@ export function createModelAuthOwnership(
       const row = result.rows[0];
       if (!row || row.kind !== "codex_auth" || !row.credential_id || row.credential_version === null) return [];
       const actor: GoldenActor = { userId: row.owner_id, orgId: row.org_id, role: "member" };
+      const stoppedSecrets = (saved: { secrets: string[]; sourceGeneration: string } | undefined) => {
+        if (provider.id === "boat" && !allowStoppedSample && !saved?.sourceGeneration.startsWith("boat:quiesced:"))
+          throw new ProviderError({
+            provider: "boat",
+            code: "unavailable",
+            retryable: true,
+            message:
+              "Native state synchronization is pending. Resume the sandbox to reconcile its private auth before reading archived output.",
+          });
+        return saved?.secrets ?? [];
+      };
       // Explicit replacement/revocation invalidates publication, not the ability to stop old compute.
       if (
         row.current_status !== "active" ||
@@ -112,19 +139,21 @@ export function createModelAuthOwnership(
           "select 1 from public.model_auth_ownership where account_id=$1::uuid and account_version=$2 and sandbox_id=$3::uuid",
           [row.credential_id, row.credential_version, row.id],
         );
-        if (!known.rows.length) return [];
+        const retained = await state.redactionState(actor, row.credential_id, row.credential_version, row.id);
+        if (!known.rows.length && !retained) return [];
         const info = await provider.get(providerId);
-        if (info.state === "stopped") return []; // Never resume stopped compute just to redact.
+        if (info.state === "stopped") return stoppedSecrets(retained);
+
         const generation =
           provider.id === "modal" ? await modalGeneration(sql, providerId, actor) : String(row.lifecycle_generation);
-        const raw = await captureNative(provider, providerId);
+        const raw = await captureNative(provider, providerId, {}, quiesced);
         return state.retire({
           actor,
           accountId: row.credential_id,
           version: row.credential_version,
           sandboxId: row.id,
           authJson: raw,
-          generation: `${provider.id}:${generation}`,
+          generation: `${provider.id}:${quiesced ? "quiesced:" : ""}${generation}`,
           verifySource: async (tx) => {
             const current = await tx.query<{ lifecycle_generation: number }>(
               "select lifecycle_generation from public.sandboxes where id=$1::uuid and deleted_at is null for update",
@@ -142,19 +171,19 @@ export function createModelAuthOwnership(
       if (!binding) return []; // Unmanaged legacy workspaces retain their existing behavior.
       const info = await provider.get(providerId);
       if (info.state === "stopped")
-        return (await state.read(actor, row.credential_id, row.credential_version, row.id))?.secrets ?? [];
+        return stoppedSecrets(await state.read(actor, row.credential_id, row.credential_version, row.id));
       for (let attempt = 0; attempt < 3; attempt++) {
         const saved = await state.read(actor, row.credential_id, row.credential_version, row.id);
         const generation =
           provider.id === "modal" ? await modalGeneration(sql, providerId, actor) : String(row.lifecycle_generation);
-        const authJson = await captureNative(provider, providerId);
+        const authJson = await captureNative(provider, providerId, {}, quiesced);
         try {
           await state.publish({
             actor,
             accountId: row.credential_id,
             version: row.credential_version,
             sandboxId: row.id,
-            generation: `${provider.id}:${generation}`,
+            generation: `${provider.id}:${quiesced ? "quiesced:" : ""}${generation}`,
             expectedRevision: saved?.revision ?? 0,
             authJson,
             verifySource: async (tx) => {
@@ -177,9 +206,51 @@ export function createModelAuthOwnership(
       }
       throw new VaultError("conflict", "Native auth publication is not acknowledged.");
     },
+    async redactEvents(
+      provider: Provider,
+      providerId: string,
+      caller: { userId: string; orgId: string },
+      events: Awaited<ReturnType<Provider["events"]>>["events"],
+    ) {
+      const pendingCommand = async () => {
+        const pending = await sql.query(
+          `select 1 from public.sandboxes s join public.model_auth_state state
+           on state.account_id=s.credential_id and state.account_version=s.credential_version
+           where s.provider=$1::public.sandbox_provider and s.provider_sandbox_id=$2 and s.org_id=$3::uuid
+           and s.activity_lease_id is not null and s.activity_until>now()`,
+          [provider.id, providerId, caller.orgId],
+        );
+        if (pending.rows.length)
+          throw new ProviderError({
+            provider: provider.id,
+            code: "unavailable",
+            retryable: true,
+            message: "Native output synchronization is pending. Retry after the current operation finishes.",
+          });
+      };
+      await pendingCommand();
+      const secrets = await this.capture(provider, providerId, caller);
+      await pendingCommand();
+      const safe = (value: unknown): unknown => {
+        if (typeof value === "string") return redact(value, secrets);
+        if (Array.isArray(value)) return value.map(safe);
+        if (value && typeof value === "object")
+          return Object.fromEntries(Object.entries(value).map(([key, item]) => [redact(key, secrets), safe(item)]));
+        return value;
+      };
+      return events.map((event) => safe(event) as typeof event);
+    },
+    async beforeStop(provider: Provider, providerId: string, caller: { userId: string; orgId: string }) {
+      if ((await provider.get(providerId)).state === "stopped") return;
+      const secrets = await this.capture(provider, providerId, caller);
+      if (provider.id !== "boat" || secrets.length === 0) return;
+      await sshNativeAuthAdmission(provider, providerId, false);
+      await this.capture(provider, providerId, caller, true);
+    },
     async beforePrompt(provider: Provider, providerId: string, caller: { userId: string; orgId: string }) {
       await this.beforeResume(provider, providerId, caller);
-      await this.capture(provider, providerId, caller);
+      const secrets = await this.capture(provider, providerId, caller);
+      if (provider.id === "boat" && secrets.length > 0) await sshNativeAuthAdmission(provider, providerId, true);
     },
     async publishFromModal(scope: Scope, claims: IngestGrantClaims, authJson: string, expectedRevision: number) {
       const result = await sql.query<{
@@ -321,8 +392,10 @@ export function createModelAuthOwnership(
       if (known.rows.length) {
         if (_userExec) {
           const current = await sql.query(
-            `select 1 from public.model_auth_ownership o join public.members m on m.org_id=$4::uuid and m.user_id=$5::uuid
-             where o.account_id=$1::uuid and o.account_version=$2 and o.sandbox_id=$3::uuid`,
+            `select 1 from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
+             join public.model_auth_state state on state.account_id=s.credential_id and state.account_version=s.credential_version
+             where s.credential_id=$1::uuid and s.credential_version=$2 and s.id=$3::uuid
+             and s.org_id=$4::uuid and s.owner_id=$5::uuid and s.deleted_at is null`,
             [row.credential_id, row.credential_version, sandboxId, actor.orgId, actor.userId],
           );
           if (!current.rows.length)

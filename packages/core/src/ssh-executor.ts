@@ -63,6 +63,11 @@ export async function sshHydrateAuthState(
       " fd=fs.openSync(tmp,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600);",
       " fs.writeFileSync(fd,text);fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;",
       " fs.chownSync(tmp,home.uid,home.gid);fs.renameSync(tmp,target);tmp=undefined;",
+      ...(provider.id === "boat"
+        ? [
+            " const marker=path.join(path.dirname(target),'.armada-managed-native'); const mf=fs.openSync(marker,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_NOFOLLOW,0o600); try{fs.writeFileSync(mf,'active');fs.ftruncateSync(mf,6);fs.fsyncSync(mf);fs.fchownSync(mf,home.uid,home.gid);}finally{fs.closeSync(mf);}",
+          ]
+        : []),
       " const dir=fs.openSync(path.dirname(target),fs.constants.O_RDONLY|fs.constants.O_DIRECTORY);try{fs.fsyncSync(dir);}finally{fs.closeSync(dir);}",
       "}catch{process.exitCode=1;}finally{",
       " if(fd!==undefined)fs.closeSync(fd);if(tmp)try{fs.unlinkSync(tmp);}catch{}",
@@ -78,11 +83,79 @@ export async function sshHydrateAuthState(
   }
 }
 
+/** Boat native bridge admission; pause lets it close its private writer before capture. */
+export async function sshNativeAuthAdmission(
+  provider: Pick<Provider, "id" | "sshKey">,
+  sandboxId: string,
+  active: boolean,
+  deps: SshExecDeps = {},
+) {
+  if (provider.id !== "boat") throw Error("Native admission requires Boat.");
+  const script = `set +x
+node <<'ARMADA_NATIVE_ADMISSION'
+const fs=require('node:fs');
+try {
+ const base='/home/user/.codex', owner=fs.lstatSync('/home/user').uid;
+ const dir=fs.lstatSync(base);
+ if(dir.isSymbolicLink()||!dir.isDirectory()||dir.uid!==owner)throw Error();
+ const marker=base+'/.armada-managed-native';
+ const st=fs.lstatSync(marker);
+ if(st.isSymbolicLink()||!st.isFile()||st.uid!==owner||(st.mode&0o077)||st.nlink!==1)throw Error();
+ const lock=base+'/.armada-native-writer.lock';
+ try{const st=fs.lstatSync(lock);if(st.isSymbolicLink()||!st.isFile()||st.uid!==owner||(st.mode&0o077)||st.nlink!==1)throw Error();}catch(e){if(e.code!=='ENOENT')throw e;}
+ const fd=fs.openSync(marker,fs.constants.O_WRONLY|fs.constants.O_NOFOLLOW);
+ try{fs.writeFileSync(fd,${JSON.stringify(active ? "active" : "paused")});fs.ftruncateSync(fd,6);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+ if(${JSON.stringify(!active)}){
+  const record=base+'/.armada-native-writer.json';
+  let saved;
+  try{
+   const st=fs.lstatSync(record);
+   if(st.isSymbolicLink()||!st.isFile()||st.uid!==owner||(st.mode&0o077)||st.nlink!==1||st.size>4096)throw Error();
+   saved=JSON.parse(fs.readFileSync(record,'utf8'));
+  }catch(e){if(e.code!=='ENOENT')throw e;}
+  if(saved && saved.boot===fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim()){
+   if(!Number.isSafeInteger(saved.pid)||saved.pid<=1||typeof saved.start!=='string')throw Error();
+   const lockStat=fs.statSync(lock); let members=0, held=false;
+   for(const name of fs.readdirSync('/proc')){
+    if(!/^[0-9]+$/.test(name))continue;
+    try{
+     const entry='/proc/'+name;
+     const raw=fs.readFileSync(entry+'/stat','utf8'), fields=raw.slice(raw.lastIndexOf(')')+2).split(' ');
+     if(Number(fields[2])!==saved.pid||['Z','X'].includes(fields[0]))continue;
+     if(fs.statSync(entry).uid!==owner||(Number(name)===saved.pid&&fields[19]!==saved.start))throw Error();
+     members++;
+     for(const descriptor of fs.readdirSync(entry+'/fd')){try{
+      const st=fs.statSync(entry+'/fd/'+descriptor);
+      if(st.dev===lockStat.dev&&st.ino===lockStat.ino)held=true;
+     }catch(e){if(!['ENOENT','ESRCH'].includes(e.code))throw e;}}
+    }catch(e){if(!['ENOENT','ESRCH'].includes(e.code))throw e;}
+   }
+   if(members){if(!held)throw Error();process.kill(-saved.pid,'SIGKILL');}
+  }
+ }
+}catch{process.exitCode=1;}finally{
+ const pub=process.env.ARMADA_SSH_PUBLIC_KEY;
+ if(pub)for(const home of ['/home/user','/root']){try{
+ const file=home+'/.ssh/authorized_keys',st=fs.lstatSync(file);
+ if(st.isSymbolicLink()||!st.isFile())continue;
+ fs.writeFileSync(file,fs.readFileSync(file,'utf8').split('\\n').filter(line=>line.trim()!==pub.trim()).join('\\n'),{mode:0o600});
+ }catch{}}
+}
+ARMADA_NATIVE_ADMISSION
+`;
+  try {
+    await sshExchange(provider, { sandboxId, token: "", script }, deps, false, 30000);
+  } catch {
+    throw Error("Private native admission failed.");
+  }
+}
+
 /** Private server-only capture. No caller-selected path, command, or public exec journal. */
 export async function sshPrivateAuthState(
   provider: Provider,
   sandboxId: string,
   deps: SshExecDeps = {},
+  quiesced = false,
 ): Promise<string> {
   const path =
     provider.id === "boat"
@@ -92,7 +165,8 @@ export async function sshPrivateAuthState(
         : undefined;
   if (!path) throw Error("Private native auth transport is unavailable.");
   const script = `set +x
-node <<'ARMADA_PRIVATE_AUTH'
+umask 077
+${quiesced ? "flock -x -w 30 /home/user/.codex/.armada-native-writer.lock " : ""}node <<'ARMADA_PRIVATE_AUTH'
 const fs = require('node:fs');
 const path = ${JSON.stringify(path)};
 let fd;
@@ -104,7 +178,7 @@ try {
   }
   fd=fs.openSync(path,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
   const stat=fs.fstatSync(fd);
-  if(!stat.isFile() || stat.size>65536 || (stat.mode&0o077)) throw Error('unsafe');
+  if(!stat.isFile() || stat.uid!==fs.lstatSync('/home/user').uid || stat.nlink!==1 || stat.size>65536 || (stat.mode&0o077)) throw Error('unsafe');
   const bytes=Buffer.alloc(65537);
   const length=fs.readSync(fd,bytes,0,bytes.length,0);
   if(length>65536) throw Error('oversized');
@@ -135,7 +209,7 @@ ARMADA_PRIVATE_AUTH
 }
 
 async function sshExchange(
-  provider: Provider,
+  provider: Pick<Provider, "sshKey">,
   input: { sandboxId: string; token: string; script: string },
   deps: SshExecDeps,
   capture: boolean,

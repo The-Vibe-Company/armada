@@ -42,6 +42,7 @@ export interface ExecEnvironment {
 export interface RunnerExecutionOptions {
   /** Private process-local callback, never accepted over runner HTTP. */
   refreshNativeSecrets?: () => void;
+  exclusiveNativeAuth?: boolean;
   publishNativeAuth?: () => Promise<void>;
   execEnv?: ExecEnvironment;
   credentialFreeBuilder?: boolean;

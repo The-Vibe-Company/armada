@@ -100,7 +100,8 @@ const present = await Bun.file(join(dist, "manifest.json")).exists();
     port = reserve.port ?? 0;
     await reserve.stop(true);
     let process: ReturnType<typeof Bun.spawn> | undefined;
-    async function start() {
+    let orphan: ReturnType<typeof Bun.spawn> | undefined;
+    async function start(expectBootFailure = false) {
       const grant = grants.issue(row);
       process = Bun.spawn(["setsid", Bun.which("bun") ?? "bun", join(root, "main.js")], {
         stdin: "pipe",
@@ -135,6 +136,10 @@ const present = await Bun.file(join(dist, "manifest.json")).exists();
         }),
       );
       input.end();
+      if (expectBootFailure) {
+        expect(await process.exited).not.toBe(0);
+        throw Error("expected_boot_failure");
+      }
       const transport = createRunnerTransport(async () => ({
         url: `http://127.0.0.1:${port}`,
         connectToken: "proxy-fixture",
@@ -195,9 +200,33 @@ case "$credentials" in *"password=$GH_TOKEN"*) printf helper-ok;; *) exit 1;; es
         },
       });
       expect(rotated).toMatchObject({ exitCode: 0, stdout: "[REDACTED]" });
+      // Simulate a detached native writer surviving its crashed parent. Readiness
+      // comes from its pipe, not a clock sleep; startup must quiesce its group.
+      orphan = Bun.spawn(
+        ["setsid", Bun.which("bun")!, "-e", "process.stdout.write('ready');setInterval(()=>{},1000)"],
+        {
+          stdout: "pipe",
+          stderr: "ignore",
+          env: { PATH: "/usr/local/bin:/usr/bin:/bin", CODEX_HOME: join(root, "codex") },
+        },
+      );
+      await (orphan.stdout as ReadableStream<Uint8Array>).getReader().read();
+      // An unclean same-generation restart must reconcile the unpublished rotation
+      // before restore destroys the native home or bootstrap replays an old seed.
+      process?.kill();
+      await process?.exited;
+      await expect(start(true)).rejects.toThrow("expected_boot_failure");
+      await orphan.exited;
+      expect(orphan.exitCode).not.toBe(0);
+      expect(await Bun.file(join(root, "codex/auth.json")).text()).toBe(JSON.stringify(rotatedNative));
+      acknowledgeNative = true;
+      transport = await start();
+      expect(await Bun.file(join(root, "codex/auth.json")).text()).toBe(JSON.stringify(rotatedNative));
+      expect(publishedNative).toBe(JSON.stringify(rotatedNative));
+      acknowledgeNative = false;
       await expect(transport.call(row, "checkpoint", {})).rejects.toBeDefined();
       expect(await Bun.file(join(root, "codex/auth.json")).exists()).toBe(true);
-      expect(publishedNative).toBeUndefined();
+      expect(publishedNative).toBe(JSON.stringify(rotatedNative));
       acknowledgeNative = true;
       const checkpoint = await transport.call<{ generation: string; watermark: number; acknowledgedSequence: number }>(
         row,
@@ -207,6 +236,13 @@ case "$credentials" in *"password=$GH_TOKEN"*) printf helper-ok;; *) exit 1;; es
       expect(checkpoint).toMatchObject({ generation: "1", watermark: 0, acknowledgedSequence: 0 });
       expect(publishedNative).toBe(JSON.stringify(rotatedNative));
       expect(await Bun.file(join(root, "codex/auth.json")).exists()).toBe(false);
+      // A lost successful checkpoint response is retried after auth was scrubbed,
+      // including after a restart of the same fenced generation.
+      expect(await transport.call<typeof checkpoint>(row, "checkpoint", {})).toEqual(checkpoint);
+      process?.kill();
+      await process?.exited;
+      transport = await start();
+      expect(await transport.call<typeof checkpoint>(row, "checkpoint", {})).toEqual(checkpoint);
       await expect(
         transport.call(row, "exec", { input: { sandboxId: row.info.id, command: "echo forbidden" } }),
       ).rejects.toMatchObject({ code: "sandbox_not_ready" });
@@ -228,6 +264,8 @@ case "$credentials" in *"password=$GH_TOKEN"*) printf helper-ok;; *) exit 1;; es
       });
       expect(resumed.stdout).toBe("restored");
     } finally {
+      orphan?.kill();
+      await orphan?.exited;
       process?.kill();
       await process?.exited;
       await privateIngest.stop(true);

@@ -912,37 +912,64 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     },
     async (args) => {
       const { sandbox: found, provider } = await live(args.id);
-      await context.launchCredentials.assertExec?.(
+      const managedNative = await context.launchCredentials.assertExec?.(
         { userId: found.ownerId, orgId: found.orgId, role: "member" },
         found.id,
       );
-      const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
-      const nativeBefore =
-        (await context.launchCredentials.nativeSecrets?.(nativeActor, found.id, provider, found.providerSandboxId)) ??
-        [];
-      const result = await provider.exec({
-        sandboxId: found.providerSandboxId,
-        command: args.command,
-        cwd: args.cwd ?? "/home/user",
-        timeoutSeconds: args.timeout_seconds ?? 120,
-      });
-      if (result.detached) throw new ToolError("unknown", "The command started in the background.");
-      const nativeAfter =
-        (await context.launchCredentials.nativeSecrets?.(nativeActor, found.id, provider, found.providerSandboxId)) ??
-        [];
-      const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
-      const clip = (text: string) => {
-        const safe = redact(text, secrets);
-        return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
+      const execute = async () => {
+        const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
+        const nativeBefore =
+          (await context.launchCredentials.nativeSecrets?.(
+            nativeActor,
+            found.id,
+            provider,
+            found.providerSandboxId,
+            "before",
+          )) ?? [];
+        const result = await provider.exec({
+          sandboxId: found.providerSandboxId,
+          command: args.command,
+          cwd: args.cwd ?? "/home/user",
+          timeoutSeconds: args.timeout_seconds ?? 120,
+        });
+        if (result.detached) throw new ToolError("unknown", "The command started in the background.");
+        const nativeAfter =
+          (await context.launchCredentials.nativeSecrets?.(
+            nativeActor,
+            found.id,
+            provider,
+            found.providerSandboxId,
+            "after",
+          )) ?? [];
+        const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
+        const clip = (text: string) => {
+          const safe = redact(text, secrets);
+          return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
+        };
+        return {
+          id: found.id,
+          exitCode: result.exitCode,
+          stdout: clip(result.stdout),
+          stderr: clip(result.stderr),
+          timedOut: result.timedOut,
+          truncated: result.truncated || result.stdout.length > OUTPUT_LIMIT || result.stderr.length > OUTPUT_LIMIT,
+        };
       };
-      return {
-        id: found.id,
-        exitCode: result.exitCode,
-        stdout: clip(result.stdout),
-        stderr: clip(result.stderr),
-        timedOut: result.timedOut,
-        truncated: result.truncated || result.stdout.length > OUTPUT_LIMIT || result.stderr.length > OUTPUT_LIMIT,
-      };
+      if (!managedNative) return execute();
+      // Stop and native-file mutation must not interleave: a stop receipt sampled
+      // before this command cannot authenticate output produced after auto-resume.
+      return sandboxActivity(
+        data.sandboxes,
+        found,
+        {},
+        async (signal) => {
+          signal.throwIfAborted();
+          const result = await execute();
+          signal.throwIfAborted();
+          return { result, patch: {} };
+        },
+        { deadlineMs: ((args.timeout_seconds ?? 120) + 60) * 1000 },
+      );
     },
   );
 

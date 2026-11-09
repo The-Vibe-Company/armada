@@ -19,6 +19,7 @@ export interface HarnessEnvironment {
   codexEnv: Record<string, string>;
   codexAuthJson?: string;
   nativeAuthRevision?: number;
+  nativeAuthSecrets?: string[];
   mcp?: McpConfiguration;
   /** Fresh exec-only credentials/options. Explicit {} disables launch-env fallback on restore/init. */
   execEnv?: ExecEnvironment;
@@ -137,7 +138,7 @@ async function composeModalProvider(options: ComposedModalOptions) {
           ? { codexAuthJson: harness.codexAuthJson }
           : {}),
         ...("nativeAuthRevision" in harness && harness.nativeAuthRevision !== undefined
-          ? { nativeAuthRevision: harness.nativeAuthRevision }
+          ? { nativeAuthRevision: harness.nativeAuthRevision, nativeAuthSecrets: harness.nativeAuthSecrets }
           : {}),
         ...("mcp" in harness && harness.mcp !== undefined ? { mcp: harness.mcp } : {}),
         credentialFreeBuilder: row.golden,

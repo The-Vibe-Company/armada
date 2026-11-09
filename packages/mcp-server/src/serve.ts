@@ -68,8 +68,12 @@ export async function startServer(
   const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) => {
     const provider = createBoatProvider({
       apiKey,
+      sanitizeEvents: async (provider, id, events) => {
+        if (!caller) throw Error("Native events require trusted Armada caller scope.");
+        return modelAuth.redactEvents(provider, id, caller, events);
+      },
       beforeStop: async (provider, id) => {
-        if (caller) await modelAuth.capture(provider, id, caller);
+        if (caller) await modelAuth.beforeStop(provider, id, caller);
       },
       afterPrompt: async (provider, id) => {
         if (caller) await modelAuth.capture(provider, id, caller);

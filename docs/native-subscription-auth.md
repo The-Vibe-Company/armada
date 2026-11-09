@@ -4,7 +4,8 @@
 
 #604 owns local native consent/import, private refresh-state transport, exclusive
 ownership, encrypted auth revisions, hydration and redaction. Per-account quota
-telemetry and event privacy filtering are separately owned by #624.
+telemetry is separately owned by #624. Native credential redaction of provider
+events and nested tool output belongs to #604.
 
 Requires #603's named account IDs, binding versions and sandbox pins. Apply
 20261110120200_named_model_credentials.sql, then
@@ -55,7 +56,16 @@ import is supported, not a fake hosted Connect button.
 - One refresh-bearing account binding has one durable sandbox owner, claimed
   before provider allocation/hydration. Scheduling expiry never reassigns a live
   refresh token. Additional owners fail explicitly with credential_busy.
-  API keys and model-only Claude tokens do not enter this gate.
+  API keys and model-only Claude tokens do not enter this gate; distinct named
+  renewable accounts remain independent and can run in parallel. Managed Modal
+  native conversations serialize through publication, not just native child exit.
+  Managed Boat app-server bridges use a private OS flock retained by the native
+  group even if the bridge crashes. Boot/start identity plus the inherited lock
+  descriptor authorize private orphan-group cleanup. Pre-stop admission
+  pauses new writers, closes the isolated native process group, and requires
+  private capture under that same lock before the stop can continue. A sync
+  failure preserves compute/auth; normal shell exec remains available. The next
+  authorized prompt reopens admission after reconciling retained disk state.
 - The model_auth_state table uses canonical AES-256-GCM encryptSecret/decryptSecret
   with ARMADA_ENCRYPTION_KEY. An independent auth_revision CAS tracks native
   rotation; routine refresh never mutates the explicit replacement version.
@@ -67,6 +77,11 @@ import is supported, not a fake hosted Connect button.
   App/workspace/environment, generation, membership and exact account pin.
   An unknown/failed ACK prevents checkpoint completion and leaves auth intact.
   Hydration uses the latest sealed state of that same account/version/owner.
+  Before same-generation crash recovery, detached native children using the exact
+  managed home are quiesced and surviving state is published before destructive
+  restore. A failed boot-time ACK leaves that source intact. A checkpoint-only,
+  generation-scoped durable receipt permits retry after auth scrubbing; ordinary
+  turn publication cannot satisfy a missing checkpoint source.
 - Known explicit replacement/revocation can acknowledge discard, without
   publishing or reviving the old credential, so stopping old compute preserves
   sanitized conversation history.
@@ -76,7 +91,19 @@ import is supported, not a fake hosted Connect button.
 - Auth leaves are registered before public exec, at command close before result
   persistence, and after Codex RPC output before event emission. Server exec
   redaction also samples private state before/after commands. Retired state is
-  usable only for redaction, never for auth hydration.
+  usable only for redaction, never for auth hydration. Boat's provider event
+  boundary filters nested messages/tool results, including retained old tokens
+  after explicit replacement and stop; it does not resume stopped compute.
+  Archived output requires a durable quiesced-capture purpose, not an old live
+  sample. Managed exec shares stop's lifecycle admission and invalidates the old
+  receipt before a command can auto-resume/mutate auth; it samples again before
+  releasing output. Unknown auto-archive races return a retryable state-sync
+  error, rather than forwarding unsynchronized bytes. Shell inspection itself
+  remains admitted for running workspaces, including retired bindings; model
+  billing remains fenced. A stopped retired Modal workspace still requires
+  explicit binding recovery before restore; it is never seeded from a new default.
+  Boat's managed bridge also samples/registers current and superseded token
+  leaves before native RPC forwarding and filters output before provider journals.
 - Confirmed pre-allocation refusals release their unexposed initial lease.
   Ambiguous outcomes retain ownership. An explicit new credential version can
   transfer ownership only after the former native writer is stopped.

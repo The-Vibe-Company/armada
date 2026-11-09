@@ -97,7 +97,7 @@ export function modalLaunchEnvironment(options: ModalLaunchEnvironmentOptions) {
     // Only the selected harness receives it; exec remains free of every model/provider credential.
     const githubEnv = execEnv.GH_TOKEN ? { GH_TOKEN: execEnv.GH_TOKEN, GITHUB_TOKEN: execEnv.GH_TOKEN } : {};
     return {
-      ...(native ? { nativeAuthRevision: native.revision } : {}),
+      ...(native ? { nativeAuthRevision: native.revision, nativeAuthSecrets: native.secrets } : {}),
       claudeEnv:
         stored.harness === "claude"
           ? { HOME: "/home/user", PATH: execEnv.PATH!, ...credentials.env, ...githubEnv }

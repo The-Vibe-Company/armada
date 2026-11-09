@@ -23,12 +23,13 @@ import {
 export class Runner {
   private active = new Map<
     string,
-    { turn: Turn; done: Promise<void>; controller: AbortController; prompt: StoredPrompt }
+    { turn: Turn; done: Promise<void>; controller: AbortController; prompt: StoredPrompt; terminal: boolean }
   >();
   private barrier = false;
   private mcp: McpConfiguration | undefined;
   private execEnvironment: Readonly<Record<string, string>>;
   private credentialFreeBuilder: boolean;
+  private exclusiveNativeAuth = false;
   private publishNativeAuth: (() => Promise<void>) | undefined;
   private refreshNativeSecrets: (() => void) | undefined;
   private commands = new Set<Promise<unknown>>();
@@ -54,6 +55,7 @@ export class Runner {
     this.credentialFreeBuilder = execution.credentialFreeBuilder ?? false;
     this.refreshNativeSecrets = execution.refreshNativeSecrets;
     this.publishNativeAuth = execution.publishNativeAuth;
+    this.exclusiveNativeAuth = execution.exclusiveNativeAuth ?? false;
     const execEnv = validateExecEnvironment(execution.execEnv, this.credentialFreeBuilder);
     journal.registerSecrets(execCredentialValues(execEnv));
     this.execEnvironment = Object.freeze({
@@ -227,7 +229,7 @@ export class Runner {
       }
       await Promise.all(
         [...this.active.values()].map(async (a) => {
-          await a.turn.interrupt();
+          if (!a.terminal) await a.turn.interrupt();
           await a.done;
         }),
       );
@@ -254,6 +256,12 @@ export class Runner {
     }
     if (r.op === "prompt") {
       if (this.credentialFreeBuilder) throw Error("builder_model_prompts_forbidden");
+      if (
+        this.exclusiveNativeAuth &&
+        r.input.harness === "codex" &&
+        [...this.active.values()].some((value) => value.prompt.request.harness === "codex")
+      )
+        throw Error("native_auth_writer_busy");
       if (r.input.conversationId) {
         const existing = this.journal.prompts().find((p) => p.conversationId === r.input.conversationId);
         if (existing && existing.request.harness !== r.input.harness) throw Error("conversation_harness_mismatch");
@@ -279,7 +287,7 @@ export class Runner {
     if (r.op === "interrupt") {
       await Promise.all(
         targets.map(async (a) => {
-          await a.turn.interrupt();
+          if (!a.terminal) await a.turn.interrupt();
           await a.done;
         }),
       );
@@ -321,13 +329,16 @@ export class Runner {
             promptId: p.promptId,
           }),
       });
+      const active = { turn, controller, prompt: p, done: Promise.resolve(), terminal: false };
       const done = turn.done
         .then(
           async (status) => {
+            active.terminal = true;
             await this.publishNativeAuth?.();
             this.journal.transition(p, status);
           },
           async (error: unknown) => {
+            active.terminal = true;
             await this.publishNativeAuth?.();
             this.journal.transition(p, "failed", error instanceof HarnessError ? error.code : "harness_failed");
           },
@@ -337,7 +348,8 @@ export class Runner {
           this.active.delete(p.conversationId);
           void this.flushOutbox().catch(() => {});
         });
-      this.active.set(p.conversationId, { turn, controller, prompt: p, done });
+      active.done = done;
+      this.active.set(p.conversationId, active);
     } catch {
       this.journal.transition(p, "failed", "harness_start_failed");
     }

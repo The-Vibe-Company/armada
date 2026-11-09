@@ -56,7 +56,12 @@ export interface LaunchRequest {
 
 /** Resolves what the sandbox receives. `armada launch` builds it from `resolveCredentials`. */
 export interface LaunchCredentialResolver {
-  resolve(actor: GoldenActor, harness: Harness): Promise<HarnessCredentials>;
+  resolve(
+    actor: GoldenActor,
+    harness: Harness,
+    credentialId?: string,
+    credentialVersion?: number,
+  ): Promise<HarnessCredentials>;
   /** Server-owned native credential admission, before provider allocation/hydration. */
   admit?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<void>;
   hydrateNative?(
@@ -69,12 +74,14 @@ export interface LaunchCredentialResolver {
   releaseUnallocated?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string): Promise<void>;
   /** Validate the pinned native owner without rehydrating imported auth state. */
   assertTurn?(actor: GoldenActor, sandboxId: string, resuming: boolean): Promise<void>;
-  assertExec?(actor: GoldenActor, sandboxId: string): Promise<void>;
+  /** Returns true when native output needs the shared lifecycle admission lease. */
+  assertExec?(actor: GoldenActor, sandboxId: string): Promise<boolean | void>;
   nativeSecrets?(
     actor: GoldenActor,
     sandboxId: string,
     provider: Provider,
     providerSandboxId: string,
+    phase?: "before" | "after",
   ): Promise<string[]>;
 }
 

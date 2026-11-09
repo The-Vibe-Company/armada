@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Script } from "node:vm";
-import { shellQuote, sshPrivateAuthState, sshStdinCheckout } from "../src/server.ts";
+import { shellQuote, sshNativeAuthAdmission, sshPrivateAuthState, sshStdinCheckout } from "../src/server.ts";
 
 const provider: any = { sshKey: async () => ({ sshEndpoint: "ssh.test:2222", hostKey: "ssh-ed25519 AAAAPINNED" }) };
 describe("SSH stdin checkout", () =>
@@ -255,6 +255,15 @@ test.each(["boat", "modal"] as const)(
     expect(JSON.stringify(calls.map((call) => call.args))).not.toContain("synthetic-private");
     expect(JSON.stringify(writes)).not.toContain("synthetic-private");
     expect(removed).toBe(true);
+    if (id === "boat") {
+      await sshNativeAuthAdmission(selected, "native", false, deps);
+      const admission = calls
+        .at(-1)
+        ?.stdin?.split("node <<'ARMADA_NATIVE_ADMISSION'\n")[1]
+        ?.split("\nARMADA_NATIVE_ADMISSION")[0];
+      expect(admission).toBeDefined();
+      expect(() => new Script(admission!)).not.toThrow();
+    }
     overflow = true;
     await expect(sshPrivateAuthState(selected, "native", deps)).rejects.toThrow("Private native auth exchange failed.");
   },

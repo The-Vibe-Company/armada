@@ -37,6 +37,7 @@ export {
   type SshExecDeps,
   shellQuote,
   sshHydrateAuthState,
+  sshNativeAuthAdmission,
   sshPrivateAuthState,
   sshStdinCheckout,
 } from "./ssh-executor.ts";

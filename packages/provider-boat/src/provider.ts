@@ -112,6 +112,9 @@ function snapshotInfo(snapshot: SavedSnapshot): SnapshotInfo {
 }
 
 export interface BoatProviderOptions {
+  /** Server-owned output boundary; rejection releases no provider event bodies. */
+  sanitizeEvents?: (provider: Provider, sandboxId: string, events: EventPage["events"]) => Promise<EventPage["events"]>;
+
   /** The boat API key. It stays in this object: no error or event carries it. */
   apiKey: string;
   /** Recheck/fence stopped authority before resume; false skips a stale observed resume. */
@@ -454,7 +457,9 @@ export function createBoatProvider(options: BoatProviderOptions): Provider {
       const last = raw.at(-1);
       const cursor = (last && eventCursor(last)) ?? response.pageInfo?.nextCursor ?? request.cursor;
       return {
-        events: raw.map(normalizeEvent),
+        events: options.sanitizeEvents
+          ? await options.sanitizeEvents(provider, request.sandboxId, raw.map(normalizeEvent))
+          : raw.map(normalizeEvent),
         ...(cursor ? { cursor } : {}),
         hasMore: response.pageInfo?.hasMore === true,
       };
