@@ -3,6 +3,7 @@ import { accountsFromList, createAccountControl } from "../src/lib/account-contr
 import {
   type AccountUsage,
   checkAccountChoice,
+  checkDefaultChoice,
   launchDefault,
   type ModelAccount,
   parseAuthCapabilities,
@@ -108,6 +109,32 @@ describe("the account a launch request bills, as the server action checks it", (
     ["no Armada server", { state: "not-configured" } as const, "claude", "", { ok: false }],
   ] as const)("%s", (_name, list, harness, requested, expected) => {
     expect(checkAccountChoice(list, harness, requested, NOW)).toMatchObject(expected);
+  });
+});
+
+describe("an account that may become the default", () => {
+  // The server resolves an implicit launch to the default with no fallback, so a default that cannot run would
+  // refuse every launch that names no account.
+  const accounts = [
+    account(1, { name: "Work" }),
+    account(2, { name: "Old", status: "revoked" }),
+    account(3, { name: "Lapsed", expiresAt: "2026-11-09T11:00:00.000Z" }),
+  ];
+  test.each([
+    ["a usable account", 1, { ok: true }],
+    [
+      "a revoked account",
+      2,
+      { ok: false, error: "Old cannot run now (revoked). Reconnect it before making it the default." },
+    ],
+    [
+      "an expired account",
+      3,
+      { ok: false, error: "Lapsed cannot run now (expired). Reconnect it before making it the default." },
+    ],
+    ["an account no longer listed", 9, { ok: false, error: "That account no longer exists. Reload the page." }],
+  ] as const)("%s", (_name, n, expected) => {
+    expect(checkDefaultChoice(accounts, uuid(n), NOW)).toEqual(expected);
   });
 });
 

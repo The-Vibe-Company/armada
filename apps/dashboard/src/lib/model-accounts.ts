@@ -220,6 +220,26 @@ export function isUsable(account: ModelAccount, now: number): boolean {
 }
 
 /**
+ * Whether an account may become the default. The server resolves an implicit launch to the default with no fallback
+ * (#603), so a default that cannot run would refuse every launch that names no account: reconnect it first.
+ */
+export function checkDefaultChoice(
+  accounts: readonly ModelAccount[],
+  id: string,
+  now: number,
+): { ok: true } | { ok: false; error: string } {
+  const account = accounts.find((candidate) => candidate.id === id);
+  if (!account) return { ok: false, error: "That account no longer exists. Reload the page." };
+  const problem = accountProblem(account, now);
+  if (problem !== null)
+    return {
+      ok: false,
+      error: `${account.name} cannot run now (${problem}). Reconnect it before making it the default.`,
+    };
+  return { ok: true };
+}
+
+/**
  * The account the launch dialog preselects for a harness, in the order the server resolves it (#603): the
  * personal default, the only personal account, the org default, the only org account. Several candidates and no
  * default is `ambiguous`: the person chooses, so no billing account is ever picked for them.

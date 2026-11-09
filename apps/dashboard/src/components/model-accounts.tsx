@@ -355,7 +355,8 @@ export function AccountRow({
         </div>
         {canManage && (
           <div className="flex flex-wrap items-center gap-1">
-            {!account.isDefault && (
+            {/* A default that cannot run would refuse launches that name no account: Reconnect leads instead. */}
+            {!account.isDefault && problem === null && (
               <InlineAction
                 action={makeDefaultAccount}
                 fields={<TargetFields account={account} orgId={orgId} />}

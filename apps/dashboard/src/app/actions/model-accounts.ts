@@ -7,7 +7,14 @@ import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action"
 import { ControlError } from "@/lib/control";
 import { viewerAccountControl } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
-import { ACCOUNT_KINDS, type AccountKind, type AccountScope, checkAccountName, KIND_INFO } from "@/lib/model-accounts";
+import {
+  ACCOUNT_KINDS,
+  type AccountKind,
+  type AccountScope,
+  checkAccountName,
+  checkDefaultChoice,
+  KIND_INFO,
+} from "@/lib/model-accounts";
 
 type Scoped = { control: AccountControl; scope: AccountScope; org: string };
 
@@ -149,6 +156,10 @@ export async function makeDefaultAccount(_previous: ActionResult | null, data: F
   const id = formString(data, "id");
   if (!isUuid(id)) return fail("That request is not valid.");
   try {
+    // A default that cannot run would refuse every launch that names no account, so it is checked first.
+    const { accounts } = await context.control.list(context.org);
+    const allowed = checkDefaultChoice(accounts, id, Date.now());
+    if (!allowed.ok) return fail(allowed.error);
     const saved = await context.control.makeDefault(target(context, id));
     refresh();
     return done(`${saved.name} is now the default for ${KIND_INFO[saved.kind].harnessLabel}.`);

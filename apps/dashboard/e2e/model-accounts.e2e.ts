@@ -390,6 +390,9 @@ test("usage reads as reported: current windows, last-known after a token change,
   await expect(card("Spend only")).not.toContainText("Usage unavailable");
   // A revoked account has nothing to read: no usage block, and its usage is never requested.
   await expect(card("Revoked").locator("[data-usage]")).toHaveCount(0);
+  // It cannot become the default either: Reconnect leads instead.
+  await expect(card("Revoked").getByRole("button", { name: "Make default, Revoked" })).toHaveCount(0);
+  await expect(card("Revoked").getByRole("button", { name: "Reconnect, Revoked" })).toBeVisible();
   const asked = ((await mock("/__test/accounts")).calls as { route: string; body: Row }[])
     .filter((call) => call.route === "creds/accounts/usage")
     .map((call) => call.body.id);
