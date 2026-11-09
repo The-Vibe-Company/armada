@@ -76,6 +76,7 @@ import {
 import { createBoatProvider } from "@armada/provider-boat";
 import { GatewayError } from "../../mcp-gateway/src/network.ts";
 import { AuthUnavailable, authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
+import { type CredentialBindingRecovery, createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlData, type DataSource, type ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
 import { providerRegistry } from "./http.ts";
@@ -99,6 +100,7 @@ const MAX_BODY_BYTES = 128 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface ControlOptions {
+  credentialBindingRecovery?: CredentialBindingRecovery;
   providerValidator?: ProviderValidator;
   githubAccount?: GitHubAccountApi;
   mcp?: { registry: McpRegistry; broker?: McpBrokerPort };
@@ -137,6 +139,8 @@ export interface ControlOptions {
     verifier: string,
   ) => Promise<{ accessToken: string; refreshToken: string; expiresAt: string }>;
 }
+
+export type ConfiguredControlOptions = ControlOptions & { credentialBindingRecovery: CredentialBindingRecovery };
 
 const STATUS: Record<VaultErrorCode, number> = {
   credential_binding_required: 409,
@@ -674,6 +678,14 @@ async function dispatch(
         kind: parseCredentialKind(required(body, "kind")),
       });
       return { ok: true };
+    case "sandbox/bind-credential":
+      if (!options.credentialBindingRecovery)
+        throw new VaultError("unavailable", "Binding recovery is not configured.");
+      return options.credentialBindingRecovery(caller, {
+        id: required(body, "id"),
+        credentialId: required(body, "credentialId"),
+        ...(org ? { org } : {}),
+      });
     case "sandbox/launch":
       return launchRoute(options, caller, body);
     case "launch/resolve":
@@ -1183,7 +1195,7 @@ function fail(status: number, code: string, message: string): Response {
  * `ARMADA_DATABASE_URL` (a privileged Postgres connection string, the Supabase `postgres` role)
  * and `ARMADA_ENCRYPTION_KEY`.
  */
-export function controlOptionsFromEnv(env: Record<string, string | undefined>): ControlOptions {
+export function controlOptionsFromEnv(env: Record<string, string | undefined>): ConfiguredControlOptions {
   const need = (name: string): string => {
     const value = env[name];
     if (!value) throw new Error(`Set ${name}.`);
@@ -1226,6 +1238,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       (await modalIntegration()).modalProviderFor(tokens, binding, context),
   });
   return {
+    credentialBindingRecovery: createCredentialBindingRecovery(sql, encryptionKey),
     mcp: { registry },
     connections: createSqlMcpLaunchPort(sql, registry),
     authStore,
