@@ -55,10 +55,19 @@ The actual capability response is `enabled:false` with
 `native_conformance_required`; mutations refuse to send while disabled. A missing
 route is an HTTP error, never permission to fall back to ordinary allocation.
 No settings/wait mutations or private delegated/native RPC routes are exposed:
-those public routes are unwired in the delivered snapshot. Size is intentionally
-absent from `OrchestratorCreate` until #662 publishes canonical optional size
-validation and parent mapping. Operator native proof and deployment remain
-external prerequisites, not implied by client tests.
+those public routes are unwired in the delivered snapshot.
+
+Size contract update: actual #662 commit
+`b6ca6e184fb28ec51ede5151505fda68f599954c`, verified all five source hashes in
+SIZE-CONTRACT.json. `OrchestratorCreate.size: MachineSize?` and its initializer's
+optional `size:` accept only `small`, `medium`, `large`, `xlarge`. nil omits the
+field (never a "default" sentinel); an omitted repository also stays omitted.
+The actual producer validates, digests, persists and maps these public selectors
+to the real launcher. Server policy remains override > explicitly selected repo >
+golden > legacy. The client does not copy resolver math, invent backend defaults,
+or fall back to another allocator. This is bounded source proof, not backend
+review/full-runtime proof. Operator native proof and deployment remain external
+prerequisites, not implied by client tests.
 
 ## Mac validation checkpoint
 

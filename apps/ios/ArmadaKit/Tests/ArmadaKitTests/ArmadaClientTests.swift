@@ -157,7 +157,7 @@ private actor RefreshTransport: ArmadaTransport {
 
 @Test func uncertainCreateRetainsIdentityAcrossRejectedRetry() async throws {
     let configuration = OrchestratorCreate(orgId: "org-a", name: "Coordinator", goldenId: "golden-a",
-        provider: .boat, harness: .codex, model: "model-a", modelAccountId: "account-a")
+        provider: .boat, harness: .codex, model: "model-a", modelAccountId: "account-a", size: .large)
     let transport = ScriptedTransport([
         .init(status: 200, body: login),
         .init(status: 200, body: #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#),
@@ -185,6 +185,8 @@ private actor RefreshTransport: ArmadaTransport {
     #expect(receipt.id == "operation-a")
     let posts = await transport.requests.filter { $0.url!.path == "/api/v1/orchestrators" }
     #expect(posts.count == 3)
+    let submitted = try JSONSerialization.jsonObject(with: posts[0].httpBody!) as! [String: Any]
+    #expect(submitted["size"] as? String == "large")
     #expect(posts[0].httpBody == posts[1].httpBody)
     #expect(posts[0].httpBody == posts[2].httpBody)
     #expect(posts[0].value(forHTTPHeaderField: "Idempotency-Key") == posts[1].value(forHTTPHeaderField: "Idempotency-Key"))
@@ -327,4 +329,23 @@ private actor SubmissionRaceTransport: ArmadaTransport {
     await #expect(throws: ArmadaError.http(400)) { _ = try await second.value }
     #expect(await client.pendingOperations.first?.state == .uncertain)
     await #expect(throws: ArmadaError.conflict) { try await client.discardOrchestratorOperation(command.id) }
+}
+
+@Test func canonicalSizeWireValuesAndOmissionMatchPublishedCreateContract() throws {
+    // Independent backend wire contract: no native shape or "default" sentinel.
+    for raw in ["small", "medium", "large", "xlarge"] {
+        let size = try JSONDecoder().decode(MachineSize.self, from: JSONEncoder().encode(raw))
+        let configuration = OrchestratorCreate(orgId: "org-a", name: "Coordinator", goldenId: "golden-a",
+            provider: .boat, harness: .codex, model: "model-a", modelAccountId: "account-a", size: size)
+        let submitted = try JSONSerialization.jsonObject(with: JSONEncoder().encode(configuration)) as! [String: Any]
+        #expect(submitted["size"] as? String == raw)
+    }
+    let inherited = OrchestratorCreate(orgId: "org-a", name: "Coordinator", goldenId: "golden-a",
+        provider: .boat, harness: .codex, model: "model-a", modelAccountId: "account-a")
+    let submitted = try JSONSerialization.jsonObject(with: JSONEncoder().encode(inherited)) as! [String: Any]
+    #expect(submitted["size"] == nil)
+    #expect(submitted["repo"] == nil)
+    #expect(throws: (any Error).self) {
+        _ = try JSONDecoder().decode(MachineSize.self, from: Data(#""default""#.utf8))
+    }
 }

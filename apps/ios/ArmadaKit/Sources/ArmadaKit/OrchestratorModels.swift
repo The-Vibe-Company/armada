@@ -7,8 +7,12 @@ public enum OrchestratorOperationState: String, Codable, Sendable { case pending
 public enum ArmadaProvider: String, Codable, Sendable { case boat, modal }
 public enum ArmadaHarness: String, Codable, Sendable { case claude, codex }
 
-/// Exact delivered #661/#662 create contract. Size is intentionally absent until
-/// its canonical producer validation/parent mapping is published.
+/// Canonical public wire values from merged #653 machine-size.ts. Resolution
+/// stays on the server: override > explicitly selected repository > golden > legacy.
+public enum MachineSize: String, Codable, Sendable, CaseIterable { case small, medium, large, xlarge }
+
+/// Exact #661/#662 create contract including optional size from b6ca6e184f.
+/// nil omits the override; it does not submit a fabricated "default" size.
 public struct OrchestratorCreate: Codable, Sendable {
     public let version: Int
     public let orgId: String
@@ -17,6 +21,7 @@ public struct OrchestratorCreate: Codable, Sendable {
     public let provider: ArmadaProvider
     public let harness: ArmadaHarness
     public let repo: String?
+    public let size: MachineSize?
     public let model: String
     public let reasoningEffort: String?
     public let modelAccountId: String
@@ -24,10 +29,10 @@ public struct OrchestratorCreate: Codable, Sendable {
     public let maxActiveChildren: Int?
     public init(orgId: String, name: String, goldenId: String, provider: ArmadaProvider,
                 harness: ArmadaHarness, model: String, modelAccountId: String, repo: String? = nil,
-                reasoningEffort: String? = nil, idleSeconds: Int? = nil, maxActiveChildren: Int? = nil) {
+                reasoningEffort: String? = nil, idleSeconds: Int? = nil, maxActiveChildren: Int? = nil, size: MachineSize? = nil) {
         self.version = 1; self.orgId = orgId; self.name = name; self.goldenId = goldenId
         self.provider = provider; self.harness = harness; self.model = model; self.modelAccountId = modelAccountId
-        self.repo = repo; self.reasoningEffort = reasoningEffort; self.idleSeconds = idleSeconds
+        self.repo = repo; self.size = size; self.reasoningEffort = reasoningEffort; self.idleSeconds = idleSeconds
         self.maxActiveChildren = maxActiveChildren
     }
 }
