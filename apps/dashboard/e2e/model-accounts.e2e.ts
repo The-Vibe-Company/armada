@@ -1,4 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
+import producer from "../test/fixtures/model-usage-v3.json" with { type: "json" };
 import { MOCK, reset, signIn } from "./helpers";
 
 test.beforeEach(reset);
@@ -257,6 +258,68 @@ test("usage reads as reported: current windows, last-known after a token change,
     .filter((call) => call.route === "creds/accounts/usage")
     .map((call) => call.body.id);
   expect(asked).not.toContain(account(7, "").id);
+});
+
+test("native credits render as the producer sent them: every meter, exact balances, retained read times", async ({
+  page,
+}) => {
+  // The producer's own v3 responses (test/fixtures/model-usage-v3.json), each addressed to its seeded account.
+  const cases = [
+    [21, "Meters", "meters"],
+    [22, "Zero credits", "creditOnlyZero"],
+    [23, "Exact decimal", "creditOnlyDecimal"],
+    [24, "Unlimited", "creditOnlyUnlimited"],
+    [25, "Sparse", "sparseStale"],
+  ] as const;
+  const seeded = cases.map(([n, name]) => account(n, name, { kind: "codex_auth" }));
+  await mock("/__test/accounts", {
+    seed: seeded,
+    usage: Object.fromEntries(
+      cases.map(([n, , key], index) => [
+        String(account(n, "").id),
+        { ...producer[key].usage, accountId: seeded[index]?.id },
+      ]),
+    ),
+  });
+  await signIn(page, "alice@example.com", "/credentials");
+  const card = (name: string) => page.locator(`[data-account="${name}"]`);
+  const credits = (name: string) => card(name).locator("[data-credits] li");
+
+  // Windows keep their meter and reported length; the codex meter's own differing reading is named, not merged.
+  const meters = card("Meters").locator('[data-usage="fresh"]');
+  await expect(meters.locator('[data-window="primary"]')).toContainText("Primary · 5 h75% left");
+  await expect(meters.locator('[data-window="secondary"]')).toContainText("Secondary · 7 days50% left");
+  await expect(meters.locator('[data-window="meter:codex:primary"]')).toContainText("codex · Primary (meter view)");
+  await expect(credits("Meters")).toHaveText([
+    "codex0 credits",
+    "codex (meter view)1.200 credits",
+    "Review12.3400 credits",
+    "extraUnlimited",
+  ]);
+  // A balance is a count of credits, never money, and balances are not added up.
+  await expect(card("Meters")).not.toContainText("$");
+  await expect(card("Meters")).not.toContainText("13.");
+
+  // Credit-only readings are readings: zero is the provider's zero, digits are kept past a number's precision.
+  for (const [name, text] of [
+    ["Zero credits", "codex0 credits"],
+    ["Exact decimal", "codex9007199254740993.0012300 credits"],
+    ["Unlimited", "codexUnlimited"],
+  ] as const) {
+    await expect(card(name).locator('[data-usage="fresh"]')).toBeVisible();
+    await expect(credits(name)).toHaveText([text]);
+    await expect(card(name)).not.toContainText("Usage unavailable");
+    await expect(card(name)).not.toContainText("%");
+  }
+
+  // A sparse update: the report is last known, and parts it did not resend keep the time they were read.
+  const sparse = card("Sparse").locator('[data-usage="stale"]');
+  await expect(sparse).toContainText("Last known");
+  await expect(
+    sparse.locator('[data-window="review:primary"] [data-read-at="2026-11-09T12:00:16.000Z"]'),
+  ).toBeVisible();
+  await expect(sparse.locator('[data-window="primary"] [data-read-at]')).toHaveCount(0);
+  await expect(sparse.locator('[data-credits] [data-read-at="2026-11-09T12:00:16.000Z"]')).toHaveCount(2);
 });
 
 test("a ChatGPT subscription signs in from the terminal; pasting auth.json stays behind a disclosure", async ({

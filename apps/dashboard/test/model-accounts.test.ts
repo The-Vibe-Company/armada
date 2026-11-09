@@ -9,6 +9,7 @@ import {
   terminalLogin,
   usageView,
 } from "../src/lib/model-accounts.ts";
+import producer from "./fixtures/model-usage-v3.json";
 
 const NOW = Date.parse("2026-11-09T12:00:00.000Z");
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -119,7 +120,9 @@ describe("usage", () => {
       observedAt: "2026-11-09T11:58:00.000Z",
       windows: [{ id: "five_hour", label: "Five hour", usedPercent: 40, resetsAt: "2026-11-09T14:00:00.000Z" }],
       extraUsage: null,
+      credits: [],
       hiddenWindows: 0,
+      hiddenCredits: 0,
       ...fields,
     }) as AccountUsage;
 
@@ -231,6 +234,80 @@ describe("usage", () => {
     });
     expect(usageView(await unreadable.usage(uuid(1)), { version: 1 }).kind).toBe("unreadable");
     await expect(answer(404, "No such account.").usage(uuid(1))).rejects.toThrow("No such account.");
+  });
+});
+
+describe("#624 v3 native credits and meters, as the producer reports them", () => {
+  type Case = Exclude<keyof typeof producer, "$comment">;
+  /** The producer's own response for a case and the view of it, read under the same account version. */
+  const read = (name: Case) => {
+    const usage = parseUsage(producer[name].usage);
+    const view = usageView(usage, { version: 1 });
+    if (!("credits" in view)) throw new Error(`${name} reads as ${view.kind}`);
+    return view;
+  };
+
+  test.each([
+    ["creditOnlyZero", { hasCredits: false, unlimited: false, balance: "0" }],
+    ["creditOnlyDecimal", { hasCredits: true, unlimited: false, balance: "9007199254740993.0012300" }],
+    ["creditOnlyUnlimited", { hasCredits: false, unlimited: true, balance: null }],
+  ] as const)("a %s reading is a reading on its own, kept exactly as the provider sent it", (name, credits) => {
+    const view = read(name);
+    expect(view.kind).toBe("fresh");
+    // One meter, once: the summary and its identical map view are the same reading. The string is never a number.
+    expect(view.credits).toEqual([
+      { key: "summary", sourceId: "codex", label: "codex", ...credits, observedAt: "2026-11-09T12:00:16.000Z" },
+    ]);
+    expect(view.windows).toEqual([]);
+    expect(view.extra).toBeNull();
+  });
+
+  test("every meter is shown once; a meter's own view that differs from the summary is shown and named as such", () => {
+    const view = read("meters");
+    expect(
+      view.windows.map((window) => [window.label, window.sourceId, window.usedPercent, window.durationMins]),
+    ).toEqual([
+      ["Primary", "codex", 25, 300],
+      ["Secondary", "codex", 50, 10080],
+      ["Review · primary", "review", 42, null],
+      ["Review · secondary", "review", 7, null],
+      ["codex · Primary (meter view)", "codex", 26, 300],
+    ]);
+    expect(new Set(view.windows.map((window) => window.id)).size).toBe(view.windows.length);
+    // Balances per meter, never added up: the summary's "0" and the codex map's "1.200" are both actual readings.
+    expect(view.credits.map((meter) => [meter.label, meter.sourceId, meter.balance, meter.unlimited])).toEqual([
+      ["codex", "codex", "0", false],
+      ["codex (meter view)", "codex", "1.200", false],
+      ["Review", "review", "12.3400", false],
+      ["extra", "extra", null, true],
+    ]);
+  });
+
+  test("a sparse update keeps older parts with their own read time, and the report reads as last known", () => {
+    const view = read("sparseStale");
+    expect(view.kind).toBe("stale");
+    expect(view.observedAt).toBe("2026-11-09T12:01:33.000Z");
+    expect(view.windows.map((window) => [window.sourceId, window.usedPercent, window.observedAt])).toEqual([
+      ["codex", 31, "2026-11-09T12:01:33.000Z"],
+      ["review", 42, "2026-11-09T12:00:16.000Z"],
+    ]);
+    // The retained balances keep the time they were read, not the time of the update that left them out.
+    expect(view.credits.map((meter) => [meter.sourceId, meter.balance, meter.observedAt])).toEqual([
+      ["codex", "0.000", "2026-11-09T12:00:16.000Z"],
+      ["review", "12.3400", "2026-11-09T12:00:16.000Z"],
+    ]);
+  });
+
+  test("malformed credits are left out rather than read as zero, and a shape it cannot read is counted", () => {
+    expect(usageView(parseUsage(producer.malformedCredits.usage), { version: 1 }).kind).toBe("unavailable");
+    const { usage } = producer.creditOnlyZero;
+    const numeric = parseUsage({
+      ...usage,
+      credits: { hasCredits: true, unlimited: false, balance: 12.5 },
+      buckets: [],
+    });
+    expect(numeric?.credits).toEqual([]);
+    expect(numeric?.hiddenCredits).toBe(1);
   });
 });
 

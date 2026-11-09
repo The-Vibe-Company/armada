@@ -89,7 +89,9 @@ export async function readAccountUsage(
     observedAt: null,
     windows: [],
     extraUsage: null,
+    credits: [],
     hiddenWindows: 0,
+    hiddenCredits: 0,
   });
   const entries = await Promise.all(
     asked.map(async (account) => {

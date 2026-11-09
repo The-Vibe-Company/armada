@@ -269,11 +269,34 @@ export const USAGE_STATUSES = ["fresh", "stale", "unavailable", "error"] as cons
 export type UsageReadStatus = (typeof USAGE_STATUSES)[number] | "unreadable";
 export type UsageStatus = (typeof USAGE_STATUSES)[number];
 /**
- * One allowance window, from #624's `Window {kind, usedPercent, resetsAt, group?, model?, surface?, ...}`. `id` is
- * unique within a report (kind with its model, surface and group); `usedPercent` null is a reading the provider
- * reported as unavailable, never zero.
+ * One allowance window, from #624's `Window {id, label, kind, usedPercent, resetsAt, sourceId?, observedAt?,
+ * windowDurationMins?, ...}`. `id` is unique within a report; `usedPercent` null is a reading the provider reported
+ * as unavailable, never zero. `sourceId` is the native meter the window belongs to (null when the source did not
+ * identify itself) and `observedAt` when that window was last read: a sparse update keeps an older window with its
+ * original time.
  */
-export type UsageWindow = { id: string; label: string; usedPercent: number | null; resetsAt: string | null };
+export type UsageWindow = {
+  id: string;
+  label: string;
+  usedPercent: number | null;
+  resetsAt: string | null;
+  sourceId: string | null;
+  observedAt: string | null;
+  /** The window's length as the provider reports it, in minutes. */
+  durationMins: number | null;
+};
+/**
+ * A native credit snapshot (#624 v3 `{hasCredits, unlimited, balance}`). `balance` is the provider's exact decimal
+ * string: it is never turned into a number, summed or given a currency.
+ */
+export type CreditBalance = { hasCredits: boolean; unlimited: boolean; balance: string | null };
+/** One meter's credits: which native meter reported it, under what name, and when. */
+export type CreditMeter = CreditBalance & {
+  key: string;
+  sourceId: string | null;
+  label: string;
+  observedAt: string | null;
+};
 export interface AccountUsage {
   accountId: string;
   version: number;
@@ -281,9 +304,33 @@ export interface AccountUsage {
   observedAt: string | null;
   windows: UsageWindow[];
   extraUsage: { used: number; limit: number | null; currency: string } | null;
+  /** Every distinct credit reading, one per meter view; balances are never added up. */
+  credits: CreditMeter[];
   /** Windows in the report this dashboard could not read; the readable ones are still shown. */
   hiddenWindows: number;
+  /** Credit snapshots in the report this dashboard could not read. */
+  hiddenCredits: number;
 }
+
+/** A native meter id: the key of the provider's meter map, or null for a source that did not name itself. */
+function sourceIdOf(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 && value.length <= 512 ? value : null;
+}
+
+/** #624's credit snapshot: undefined when absent, null when present but not in the published shape. */
+function parseCredits(value: unknown): CreditBalance | null | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRow(value) || typeof value.hasCredits !== "boolean" || typeof value.unlimited !== "boolean") return null;
+  const balance = value.balance;
+  const exact = balance === null || (typeof balance === "string" && /^[+-]?\d{1,240}(?:\.\d{1,240})?$/.test(balance));
+  return exact ? { hasCredits: value.hasCredits, unlimited: value.unlimited, balance: balance as string | null } : null;
+}
+
+const sameCredits = (a: CreditBalance, b: CreditBalance) =>
+  a.hasCredits === b.hasCredits && a.unlimited === b.unlimited && a.balance === b.balance;
+
+const sameReading = (a: UsageWindow, b: UsageWindow) =>
+  a.usedPercent === b.usedPercent && a.resetsAt === b.resetsAt && a.observedAt === b.observedAt;
 
 export function parseUsage(value: unknown): AccountUsage | null {
   if (!isRow(value) || typeof value.accountId !== "string" || !UUID.test(value.accountId)) return null;
@@ -293,17 +340,82 @@ export function parseUsage(value: unknown): AccountUsage | null {
   if (observedAt === undefined) return null;
   const rows: unknown[] = Array.isArray(value.windows) ? value.windows : [];
   const windows: UsageWindow[] = [];
+  const kinds = new Map<UsageWindow, string>();
   const seen = new Map<string, number>();
-  for (const row of rows) {
-    const window = parseWindow(row);
-    if (!window) continue;
+  const add = (window: UsageWindow, kind: string) => {
     // Every readable window is shown; a repeated identity only gets a distinct key, never dropped or miscounted.
     const count = (seen.get(window.id) ?? 0) + 1;
     seen.set(window.id, count);
-    windows.push(count > 1 ? { ...window, id: `${window.id}#${count}` } : window);
+    const keyed = count > 1 ? { ...window, id: `${window.id}#${count}` } : window;
+    windows.push(keyed);
+    kinds.set(keyed, kind);
+  };
+  let hiddenWindows = 0;
+  for (const row of rows) {
+    const parsed = parseWindow(row);
+    if (parsed) add(parsed.window, parsed.kind);
+    else hiddenWindows++;
   }
   // Only a report none of whose windows can be read is unrecognized; readable siblings are kept otherwise.
   if (rows.length > 0 && windows.length === 0) return null;
+
+  // #624 v3: `buckets` holds every native meter view; the flat windows above already show them, merged with the
+  // summary (`compatibility`) view. A meter's own reading is added only where it differs from what is shown.
+  const buckets = (Array.isArray(value.buckets) ? value.buckets : []).slice(0, 64).filter(isRow);
+  const bucketLabel = (bucket: Row) => text(bucket.label, 120) ?? sourceIdOf(bucket.sourceId) ?? "Account";
+  for (const bucket of buckets) {
+    const sourceId = sourceIdOf(bucket.sourceId);
+    for (const row of Array.isArray(bucket.windows) ? bucket.windows : []) {
+      const parsed = parseWindow(row);
+      if (!parsed) continue;
+      const shown = windows.find((window) => window.sourceId === sourceId && kinds.get(window) === parsed.kind);
+      if (shown && sameReading(shown, parsed.window)) continue;
+      const label = `${bucketLabel(bucket)} · ${humanize(parsed.kind)}${shown ? " (meter view)" : ""}`;
+      add({ ...parsed.window, id: `meter:${sourceId ?? ""}:${parsed.kind}`, label: label.slice(0, 140) }, parsed.kind);
+    }
+  }
+
+  const credits: CreditMeter[] = [];
+  let hiddenCredits = 0;
+  // The top-level snapshot is the summary view of one meter (`creditsSourceId`); each bucket is its own meter.
+  const summary = parseCredits(value.credits);
+  const summarySource = sourceIdOf(value.creditsSourceId);
+  if (summary === null) hiddenCredits++;
+  if (summary) {
+    const compatibility = isRow(value.compatibility) ? value.compatibility : null;
+    const named =
+      (compatibility && sourceIdOf(compatibility.sourceId) === summarySource ? compatibility : undefined) ??
+      buckets.find((bucket) => sourceIdOf(bucket.sourceId) === summarySource);
+    credits.push({
+      key: "summary",
+      sourceId: summarySource,
+      label: named ? bucketLabel(named) : (summarySource ?? "Account"),
+      ...summary,
+      observedAt: isoOrNull(value.creditsObservedAt) ?? null,
+    });
+  }
+  const keys = new Map<string, number>();
+  for (const bucket of buckets) {
+    const reading = parseCredits(bucket.credits);
+    if (reading === null) hiddenCredits++;
+    if (!reading) continue;
+    const sourceId = sourceIdOf(bucket.sourceId);
+    const bucketObserved = isoOrNull(bucket.creditsObservedAt) ?? null;
+    const sameMeter = summary && summarySource === sourceId;
+    // The summary already shows this exact reading of this meter: one meter, one line.
+    if (sameMeter && sameCredits(summary, reading) && credits[0]?.observedAt === bucketObserved) continue;
+    const base = `meter:${sourceId ?? ""}`;
+    const count = (keys.get(base) ?? 0) + 1;
+    keys.set(base, count);
+    credits.push({
+      key: count > 1 ? `${base}#${count}` : base,
+      sourceId,
+      label: `${bucketLabel(bucket)}${sameMeter ? " (meter view)" : ""}`,
+      ...reading,
+      observedAt: bucketObserved,
+    });
+  }
+
   return {
     accountId: value.accountId,
     version: value.version,
@@ -311,12 +423,14 @@ export function parseUsage(value: unknown): AccountUsage | null {
     observedAt,
     windows,
     extraUsage: extraUsage(value.extraUsage),
-    hiddenWindows: rows.length - windows.length,
+    credits,
+    hiddenWindows,
+    hiddenCredits,
   };
 }
 
 /** A `Window` this dashboard can read, or null. `usedPercent` is a number or an explicit null; anything else is not. */
-function parseWindow(row: unknown): UsageWindow | null {
+function parseWindow(row: unknown): { window: UsageWindow; kind: string } | null {
   if (!isRow(row)) return null;
   const kind = text(row.kind, 60);
   const resetsAt = isoOrNull(row.resetsAt);
@@ -325,12 +439,24 @@ function parseWindow(row: unknown): UsageWindow | null {
   if (used !== null && !(typeof used === "number" && Number.isFinite(used))) return null;
   const model = text(row.model, 60);
   const qualifiers = [model, text(row.surface, 40), text(row.group, 40)].filter(Boolean);
-  // #624 v1 sends a stable `id` and a source-derived `label`; an older report is identified by its kind.
+  const label = text(row.label, 60);
+  const duration = row.windowDurationMins;
   return {
-    id: text(row.id, 60) ?? [kind, ...qualifiers].join("/"),
-    label: text(row.label, 60) ?? `${humanize(kind)}${qualifiers.length ? ` (${qualifiers.join(", ")})` : ""}`,
-    usedPercent: used === null ? null : Math.min(100, Math.max(0, used)),
-    resetsAt,
+    kind,
+    window: {
+      // #624 v1 sends a stable `id` and a source-derived `label`; an older report is identified by its kind.
+      id: text(row.id, 60) ?? [kind, ...qualifiers].join("/"),
+      // A label that is only the native kind ("primary") reads as the kind does elsewhere.
+      label:
+        label && label !== kind
+          ? label
+          : `${humanize(kind)}${qualifiers.length && !label ? ` (${qualifiers.join(", ")})` : ""}`,
+      usedPercent: used === null ? null : Math.min(100, Math.max(0, used)),
+      resetsAt,
+      sourceId: sourceIdOf(row.sourceId),
+      observedAt: isoOrNull(row.observedAt) ?? null,
+      durationMins: typeof duration === "number" && Number.isSafeInteger(duration) && duration > 0 ? duration : null,
+    },
   };
 }
 
@@ -338,6 +464,20 @@ function parseWindow(row: unknown): UsageWindow | null {
 function humanize(kind: string): string {
   const words = kind.replace(/[_-]+/g, " ").trim();
   return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** A window's reported length: "5 h", "7 days", "90 min". */
+export function formatDuration(minutes: number): string {
+  if (minutes % 1440 === 0) return minutes === 1440 ? "1 day" : `${minutes / 1440} days`;
+  if (minutes % 60 === 0) return `${minutes / 60} h`;
+  return minutes > 60 ? `${Math.floor(minutes / 60)} h ${minutes % 60} min` : `${minutes} min`;
+}
+
+/** A credit reading in words: the exact balance the provider sent, "Unlimited", or what is missing. */
+export function creditText(credits: CreditBalance): string {
+  if (credits.unlimited) return "Unlimited";
+  if (credits.balance !== null) return `${credits.balance.replace(/^\+/, "")} credits`;
+  return credits.hasCredits ? "Balance not reported" : "No credits";
 }
 
 /**
@@ -375,12 +515,14 @@ export function unreadableUsage(accountId: string): AccountUsage {
     observedAt: null,
     windows: [],
     extraUsage: null,
+    credits: [],
     hiddenWindows: 0,
+    hiddenCredits: 0,
   };
 }
 
 /**
- * How an account's usage reads. Numbers are shown only for a report with windows: as current when fresh and
+ * How an account's usage reads. Numbers are shown only for a report with windows, spend or credits: as current when fresh and
  * observed under the account's current secret, otherwise as last known. Everything else is said in words, never
  * as zero. `null` usage means this server does not report usage (or was not asked).
  */
@@ -390,7 +532,9 @@ export type UsageView =
       windows: UsageWindow[];
       observedAt: string;
       extra: AccountUsage["extraUsage"];
+      credits: CreditMeter[];
       hiddenWindows: number;
+      hiddenCredits: number;
     }
   | { kind: "unknown" | "unavailable" | "error" | "unreadable"; reason: string };
 
@@ -399,8 +543,9 @@ export function usageView(usage: AccountUsage | null, account: Pick<ModelAccount
   if (usage.status === "unreadable")
     return { kind: "unreadable", reason: "This server reports usage in a form this dashboard cannot read yet." };
   if (usage.status === "error") return { kind: "error", reason: "The last read failed. Reload the page to try again." };
-  // Reported spend alone is shown without windows: no window or zero allowance is invented for it.
-  if (usage.status === "unavailable" || !usage.observedAt || (usage.windows.length === 0 && !usage.extraUsage))
+  // Reported spend or credits alone are shown without windows: no window or zero allowance is invented for them.
+  const reading = usage.windows.length > 0 || usage.extraUsage !== null || usage.credits.length > 0;
+  if (usage.status === "unavailable" || !usage.observedAt || !reading)
     return { kind: "unavailable", reason: "No allowance reading is available for this account yet." };
   const stale = usage.status === "stale" || usage.version !== account.version;
   return {
@@ -408,7 +553,9 @@ export function usageView(usage: AccountUsage | null, account: Pick<ModelAccount
     windows: usage.windows,
     observedAt: usage.observedAt,
     extra: usage.extraUsage,
+    credits: usage.credits,
     hiddenWindows: usage.hiddenWindows,
+    hiddenCredits: usage.hiddenCredits,
   };
 }
 

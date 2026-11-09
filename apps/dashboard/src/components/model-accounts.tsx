@@ -43,6 +43,8 @@ import {
   type AccountUsage,
   type AuthCapabilities,
   accountProblem,
+  creditText,
+  formatDuration,
   formatMoney,
   KIND_INFO,
   kindNote,
@@ -139,6 +141,20 @@ export function LaunchUses({
 /* ---------------------------------------------------------------- usage */
 
 /**
+ * When one part of a report was read, when that differs from the report itself: a sparse update keeps an older
+ * window or balance with its own time, and it is never shown as read with the rest.
+ */
+function ReadAt({ at, report, now, lead }: { at: string | null; report: string; now: number; lead?: boolean }) {
+  if (at === null || at === report) return null;
+  return (
+    <span data-read-at={at}>
+      {lead ? "Read " : ", read "}
+      <time dateTime={at}>{relativeTime(at, now)}</time>
+    </span>
+  );
+}
+
+/**
  * An account's allowance windows. Each window says what share is left, what was used, and when it resets. A
  * stale report keeps its numbers but says how old they are; nothing reported is said in words, never as zero.
  */
@@ -175,10 +191,18 @@ export function UsagePanel({
           {view.windows.map((window) => {
             const left = window.usedPercent === null ? null : Math.round(100 - window.usedPercent);
             return (
-              <li key={window.id} className="space-y-1">
+              <li key={window.id} className="min-w-0 space-y-1" data-window={window.id}>
                 <div className="flex items-baseline justify-between gap-2 text-xs">
-                  <span className="font-medium">{window.label}</span>
-                  <span className={cn("tabular-nums", view.kind === "stale" && "text-muted-foreground")}>
+                  <span className="min-w-0 truncate font-medium" title={window.label}>
+                    {window.label}
+                    {window.durationMins !== null && (
+                      <span className="font-normal text-muted-foreground">
+                        {" "}
+                        · {formatDuration(window.durationMins)}
+                      </span>
+                    )}
+                  </span>
+                  <span className={cn("shrink-0 tabular-nums", view.kind === "stale" && "text-muted-foreground")}>
                     {left === null ? "Unavailable" : `${left}% left`}
                   </span>
                 </div>
@@ -207,16 +231,52 @@ export function UsagePanel({
                       , resets <time dateTime={window.resetsAt}>{relativeTime(window.resetsAt, now)}</time>
                     </>
                   ) : null}
+                  <ReadAt at={window.observedAt} report={view.observedAt} now={now} />
                 </p>
               </li>
             );
           })}
         </ul>
       )}
+      {view.credits.length > 0 && (
+        <div className="space-y-1" data-credits>
+          <p className="text-xs font-medium">Credits</p>
+          <ul className="grid gap-x-3 gap-y-1 sm:grid-cols-2">
+            {view.credits.map((meter) => (
+              <li key={meter.key} className="min-w-0 text-xs" data-credit-source={meter.sourceId ?? ""}>
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="min-w-0 truncate text-muted-foreground" title={meter.label}>
+                    {meter.label}
+                  </span>
+                  <span
+                    className={cn(
+                      "min-w-0 break-all text-right tabular-nums",
+                      view.kind === "stale" && "text-muted-foreground",
+                    )}
+                  >
+                    {creditText(meter)}
+                  </span>
+                </div>
+                {meter.observedAt !== view.observedAt && meter.observedAt !== null && (
+                  <p className="text-muted-foreground">
+                    <ReadAt at={meter.observedAt} report={view.observedAt} now={now} lead />
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {view.hiddenWindows > 0 && (
         <p className="text-xs text-muted-foreground">
           {view.hiddenWindows === 1 ? "1 window" : `${view.hiddenWindows} windows`} in a form this dashboard cannot read
           yet.
+        </p>
+      )}
+      {view.hiddenCredits > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {view.hiddenCredits === 1 ? "1 credit balance" : `${view.hiddenCredits} credit balances`} in a form this
+          dashboard cannot read yet.
         </p>
       )}
       {view.extra && (
