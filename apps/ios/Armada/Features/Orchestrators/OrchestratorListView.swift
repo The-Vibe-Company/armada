@@ -218,13 +218,15 @@ private struct PendingCreateRow: View {
                 .fixedSize(horizontal: false, vertical: true)
             switch status {
             case .unconfirmed:
-                Button("Retry the Same Request", action: retry)
-                    .buttonStyle(.glassProminent)
-                    .frame(minHeight: 44)
+                Button(action: retry) {
+                    Text("Retry the Same Request").frame(minHeight: 44)
+                }
+                .buttonStyle(.glassProminent)
             case .refused:
-                Button("Dismiss", action: dismiss)
-                    .buttonStyle(.glass)
-                    .frame(minHeight: 44)
+                Button(action: dismiss) {
+                    Text("Dismiss").frame(minHeight: 44)
+                }
+                .buttonStyle(.glass)
             case .sending:
                 EmptyView()
             }

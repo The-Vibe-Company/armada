@@ -162,14 +162,16 @@ struct ConversationTranscript: View {
                         .multilineTextAlignment(.trailing)
                     HStack(spacing: 8) {
                         if let onDismissPending {
-                            Button("Dismiss") { onDismissPending(bubble) }
-                                .buttonStyle(.glass)
-                                .frame(minHeight: 44)
+                            Button { onDismissPending(bubble) } label: {
+                                Text("Dismiss").frame(minHeight: 44)
+                            }
+                            .buttonStyle(.glass)
                         }
                         if let onRetryPending {
-                            Button("Retry") { onRetryPending(bubble) }
-                                .buttonStyle(.glassProminent)
-                                .frame(minHeight: 44)
+                            Button { onRetryPending(bubble) } label: {
+                                Text("Retry").frame(minHeight: 44)
+                            }
+                            .buttonStyle(.glassProminent)
                         }
                     }
                 }

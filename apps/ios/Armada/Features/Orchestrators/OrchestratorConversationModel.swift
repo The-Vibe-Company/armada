@@ -35,9 +35,6 @@ final class OrchestratorConversationModel {
 
     @ObservationIgnored private var mutations: [String: PendingMutation<ActionRequest>] = [:]
     @ObservationIgnored private var lifecycleMutation: PendingMutation<ActionRequest>?
-    /// The revision each accepted message's receipt reserved, to retire its bubble once the stream
-    /// has moved past it even if the shown text differs.
-    @ObservationIgnored private var acceptedRevisions: [String: Int] = [:]
     @ObservationIgnored private let service: any OrchestratorService
     @ObservationIgnored let orchestratorID: String
     @ObservationIgnored private let onSignedOut: @MainActor () -> Void
@@ -150,7 +147,6 @@ final class OrchestratorConversationModel {
                 notice = (Self.failedMessage(receipt), true)
             } else {
                 setStatus(.accepted, for: mutation.idempotencyKey)
-                acceptedRevisions[mutation.idempotencyKey] = receipt.revision
             }
             await load()
         } catch {
@@ -246,37 +242,25 @@ final class OrchestratorConversationModel {
         guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
         let bubble = pending.remove(at: index)
         mutations[id] = nil
-        acceptedRevisions[id] = nil
         if restoreDraft {
             draft = draft.isEmpty ? bubble.text : bubble.text + "\n" + draft
         }
     }
 
+    /// Retires an accepted bubble once the conversation shows its own prompt or steer text.
     private func reconcilePending() {
         let shown = feed.conversation.items
-        let latestRevision = feed.latestRevision
         pending.removeAll { bubble in
             guard bubble.status == .accepted else { return false }
-            let recent = shown.filter { $0.at >= bubble.sentAt.addingTimeInterval(-60) }
-            let sameText = recent.contains { item in
+            let delivered = shown.contains { item in
+                guard item.at >= bubble.sentAt.addingTimeInterval(-60) else { return false }
                 switch item.kind {
                 case .user(let text, _, _): return bubble.intent == .message && text == bubble.text
                 case .steer(let text, _): return bubble.intent == .steer && text == bubble.text
                 default: return false
                 }
             }
-            let streamPassed = (acceptedRevisions[bubble.id]).map { latestRevision > $0 } == true
-                && recent.contains { item in
-                    switch item.kind {
-                    case .user, .steer: return true
-                    default: return false
-                    }
-                }
-            let delivered = sameText || streamPassed
-            if delivered {
-                mutations[bubble.id] = nil
-                acceptedRevisions[bubble.id] = nil
-            }
+            if delivered { mutations[bubble.id] = nil }
             return delivered
         }
     }
