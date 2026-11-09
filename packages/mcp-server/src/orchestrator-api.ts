@@ -14,8 +14,29 @@ export async function callOrchestrator(
   if (action === "capabilities") return { version: 1, enabled: false, reason: "native_conformance_required" };
   if (!service) throw new OrchestratorRuntimeError("unavailable");
   if (typeof args.orgId !== "string") throw new OrchestratorRuntimeError("invalid_request");
-  if (["create", "message", "steer", "stop", "resume"].includes(action) && (!key || !/^[ -~]{1,128}$/.test(key)))
+  if (
+    ["create", "message", "steer", "stop", "resume", "reconcile"].includes(action) &&
+    (!key || !/^[ -~]{1,128}$/.test(key))
+  )
     throw new OrchestratorRuntimeError("invalid_request");
+  if (action === "reconcile") {
+    const allowed = ["orgId", "id", "action", "expectedRevision", "text", "configuration"];
+    if (
+      Object.keys(args).some((key) => !allowed.includes(key)) ||
+      !["create", "message", "steer", "stop", "resume"].includes(String(args.action)) ||
+      (args.action === "create"
+        ? !args.configuration ||
+          typeof args.configuration !== "object" ||
+          Array.isArray(args.configuration) ||
+          (args.configuration as Record<string, unknown>).orgId !== args.orgId
+        : typeof args.id !== "string" ||
+          !Number.isSafeInteger(args.expectedRevision) ||
+          Number(args.expectedRevision) < 0) ||
+      (args.text !== undefined && typeof args.text !== "string")
+    )
+      throw new OrchestratorRuntimeError("invalid_request");
+    return service.reconcile(caller, { ...args, key } as Parameters<OrchestratorRuntime["reconcile"]>[1]);
+  }
   const fields: Record<string, string[]> = {
     list: ["orgId", "cursor", "limit"],
     detail: ["orgId", "id"],
@@ -120,14 +141,16 @@ export async function orchestratorHttp(
         ? "list"
         : "create"
       : parts.length === 1
-        ? parts[0] === "capabilities"
-          ? "capabilities"
+        ? ["capabilities", "reconcile"].includes(parts[0] ?? "")
+          ? parts[0]!
           : "detail"
         : (parts[1] ?? "");
   try {
     if (
       (read && !["list", "detail", "events", "capabilities"].includes(action)) ||
-      (!read && (request.method !== "POST" || !["create", "message", "steer", "stop", "resume"].includes(action))) ||
+      (!read &&
+        (request.method !== "POST" ||
+          !["create", "message", "steer", "stop", "resume", "reconcile"].includes(action))) ||
       parts.length > 2
     )
       throw new OrchestratorRuntimeError("invalid_request");
@@ -141,7 +164,7 @@ export async function orchestratorHttp(
       args = parsed as Record<string, unknown>;
     } else args = Object.fromEntries(url.searchParams);
     if (args.limit !== undefined) args.limit = Number(args.limit);
-    if (parts[0] && parts[0] !== "capabilities") args.id = parts[0];
+    if (parts[0] && !["capabilities", "reconcile"].includes(parts[0])) args.id = parts[0];
     const result = await callOrchestrator(
       service,
       caller,
@@ -158,7 +181,18 @@ export async function orchestratorHttp(
           ? "invalid_request"
           : "unavailable";
     return Response.json(
-      { error: { code, message: code } },
+      {
+        error: {
+          code,
+          message: code,
+          ...(error instanceof OrchestratorRuntimeError && error.admission
+            ? {
+                admission: error.admission,
+                ...(error.operation ? { operation: error.operation } : {}),
+              }
+            : {}),
+        },
+      },
       {
         status: code === "not_found" ? 404 : code === "conflict" ? 409 : code === "invalid_request" ? 400 : 503,
         headers: { "cache-control": "no-store" },

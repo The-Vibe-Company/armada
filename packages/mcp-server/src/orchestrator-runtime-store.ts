@@ -11,7 +11,11 @@ import type { Sql } from "@armada/core/server";
 import type { OrchestratorRuntimeFoundation } from "./orchestrator-runtime-foundation.ts";
 
 export class OrchestratorRuntimeError extends Error {
-  constructor(readonly code: "not_found" | "conflict" | "unavailable" | "invalid_request") {
+  constructor(
+    readonly code: "not_found" | "conflict" | "unavailable" | "invalid_request",
+    readonly admission?: "not_admitted" | "unknown",
+    readonly operation?: OrchestratorOperation,
+  ) {
     super(code);
   }
 }
@@ -216,7 +220,7 @@ export class OrchestratorRuntimeStore {
         [ownerId, configuration.orgId, key],
       );
       const old = prior.rows[0];
-      if (old && old.request_digest !== digest) throw new OrchestratorRuntimeError("conflict");
+      if (old && old.request_digest !== digest) throw new OrchestratorRuntimeError("conflict", "not_admitted");
       const id = old?.orchestrator_id ?? crypto.randomUUID();
       if (!old) {
         await tx.query(`insert into public.orchestrators(id,org_id,owner_id) values($1,$2,$3)`, [
@@ -465,6 +469,81 @@ export class OrchestratorRuntimeStore {
     });
   }
 
+  /** Read-only correlation of an exact owner request. Absence is UNKNOWN, never
+   * proof that an in-flight transaction did not admit it. No provider/account lookup. */
+  async lookupRequest(input: {
+    ownerId: string;
+    orgId: string;
+    key: string;
+    action: OrchestratorOperation["kind"];
+    id?: string;
+    payload?: unknown;
+    configuration?: OrchestratorCreate;
+  }): Promise<OrchestratorOperation | null> {
+    let id = input.id;
+    let digest: string;
+    if (input.action === "create") {
+      const member = await this.sql.query(`select user_id from public.members where user_id=$1 and org_id=$2`, [
+        input.ownerId,
+        input.orgId,
+      ]);
+      if (!member.rows.length) throw new OrchestratorRuntimeError("not_found");
+      const prior = (
+        await this.sql.query<{ orchestrator_id: string }>(
+          `select orchestrator_id from public.orchestrator_runtime_create_keys where owner_id=$1 and org_id=$2 and idempotency_key=$3`,
+          [input.ownerId, input.orgId, input.key],
+        )
+      ).rows[0];
+      if (!prior) return null;
+      id = prior.orchestrator_id;
+      const identity = await this.read(input.ownerId, input.orgId, id);
+      digest = orchestratorRequestDigest({
+        actorId: input.ownerId,
+        orgId: input.orgId,
+        action: "create",
+        target: "create",
+        payload: { configuration: input.configuration, skillRevision: identity.skillRevision },
+      });
+    } else {
+      if (!id) throw new OrchestratorRuntimeError("invalid_request");
+      await this.read(input.ownerId, input.orgId, id);
+      digest = orchestratorRequestDigest({
+        actorId: input.ownerId,
+        orgId: input.orgId,
+        action: input.action,
+        target: id,
+        payload: input.payload,
+      });
+    }
+    const row = (
+      await this.sql.query<{
+        id: string;
+        action: OrchestratorOperation["kind"];
+        state: OrchestratorOperation["state"];
+        revision: number | string;
+        request_digest: string;
+        error_code: string | null;
+      }>(
+        `select p.id,p.action,p.state,p.revision,p.request_digest,p.error_code from public.orchestrator_operations p
+      join public.orchestrators o on o.id=p.orchestrator_id
+      join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
+      where o.id=$1 and o.owner_id=$2 and o.org_id=$3 and p.actor_id=$2 and p.action=$4 and p.idempotency_key=$5`,
+        [id, input.ownerId, input.orgId, input.action, input.key],
+      )
+    ).rows[0];
+    if (!row) return null;
+    if (row.request_digest !== digest) throw new OrchestratorRuntimeError("conflict", "not_admitted");
+    return {
+      version: 1,
+      id: row.id,
+      orchestratorId: id!,
+      kind: row.action,
+      state: row.state,
+      revision: Number(row.revision),
+      errorCode: row.error_code,
+    };
+  }
+
   async reserve(input: {
     ownerId: string;
     orgId: string;
@@ -496,7 +575,7 @@ export class OrchestratorRuntimeStore {
       );
       const existing = prior.rows[0];
       if (existing) {
-        if (existing.request_digest !== digest) throw new OrchestratorRuntimeError("conflict");
+        if (existing.request_digest !== digest) throw new OrchestratorRuntimeError("conflict", "not_admitted");
         return {
           identity,
           fresh: false,
@@ -516,7 +595,7 @@ export class OrchestratorRuntimeStore {
         [input.id],
       );
       if (busy.rows.length || identity.revision !== input.expectedRevision)
-        throw new OrchestratorRuntimeError("conflict");
+        throw new OrchestratorRuntimeError("conflict", "not_admitted");
       // Foundation owns reservation; reuse the surrounding locked transaction, no nested COMMIT.
       const receipt = await this.reserveOrchestratorOperation(
         { ...tx, query: tx.query.bind(tx), transaction: async (work) => work(tx) },

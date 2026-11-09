@@ -9,12 +9,15 @@ export function createOrchestratorTransport(input: {
   provider: Provider;
   providerSandboxId: string;
   physicalGeneration: string;
+  lifecycleGeneration: string;
   mcpUrl: string;
 }): OrchestratorRuntimeTransport {
   const install = input.provider.installOrchestratorEpoch?.bind(input.provider);
   const scrub = input.provider.scrubOrchestratorEpoch?.bind(input.provider);
   if (!install || !scrub || !input.physicalGeneration) throw new OrchestratorRuntimeError("unavailable");
   return {
+    physicalGeneration: input.physicalGeneration,
+    lifecycleGeneration: input.lifecycleGeneration,
     async deliver(token, binding) {
       if (binding.physicalGeneration !== input.physicalGeneration) throw new OrchestratorRuntimeError("conflict");
       try {

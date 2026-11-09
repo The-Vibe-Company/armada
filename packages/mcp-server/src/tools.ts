@@ -261,7 +261,18 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
     );
   };
 
-  for (const action of ["capabilities", "create", "list", "detail", "events", "message", "steer", "stop", "resume"]) {
+  for (const action of [
+    "capabilities",
+    "create",
+    "list",
+    "detail",
+    "events",
+    "message",
+    "steer",
+    "stop",
+    "resume",
+    "reconcile",
+  ]) {
     server.registerTool(
       `orchestrator_${action}`,
       {
@@ -283,6 +294,18 @@ export function createArmadaServer(context: ToolContext, version: string): McpSe
             content: [
               { type: "text" as const, text: code },
               { type: "text" as const, text: `error code: ${code}` },
+              ...(error instanceof OrchestratorRuntimeError && error.admission
+                ? [
+                    {
+                      type: "text" as const,
+                      text: JSON.stringify({
+                        code,
+                        admission: error.admission,
+                        ...(error.operation ? { operation: error.operation } : {}),
+                      }),
+                    },
+                  ]
+                : []),
             ],
           };
         }

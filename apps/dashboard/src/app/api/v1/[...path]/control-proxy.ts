@@ -86,6 +86,7 @@ const ORCHESTRATOR_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 function orchestratorPath(method: ControlVerb, path: readonly string[]): boolean {
   if (path[0] !== "orchestrators") return false;
   if (path.length === 1) return true;
+  if (method === "POST" && path.length === 2 && path[1] === "reconcile") return true;
   if (method === "GET" && path.length === 2 && path[1] === "capabilities") return true;
   if (!path[1] || !ORCHESTRATOR_ID.test(path[1])) return false;
   return method === "GET"

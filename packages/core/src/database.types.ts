@@ -1476,6 +1476,7 @@ export type Database = {
           expires_at: string;
           acknowledged_at: string | null;
           revoked_at: string | null;
+          native_generation: string | null;
         };
         Insert: {
           id?: string;
@@ -1490,6 +1491,7 @@ export type Database = {
           expires_at: string;
           acknowledged_at?: string | null;
           revoked_at?: string | null;
+          native_generation?: string | null;
         };
         Update: {
           id?: string;
@@ -1504,6 +1506,7 @@ export type Database = {
           expires_at?: string;
           acknowledged_at?: string | null;
           revoked_at?: string | null;
+          native_generation?: string | null;
         };
         Relationships: [
           {
@@ -1927,6 +1930,7 @@ export type Database = {
           resource_sampling_claim_id: string | null;
           resource_sampling_after: string | null;
           resource_sampling_generation: number | null;
+          orchestrator_native_generation: string | null;
         };
         Insert: {
           id?: string;
@@ -1969,6 +1973,7 @@ export type Database = {
           resource_sampling_claim_id?: string | null;
           resource_sampling_after?: string | null;
           resource_sampling_generation?: number | null;
+          orchestrator_native_generation?: string | null;
         };
         Update: {
           id?: string;
@@ -2011,6 +2016,7 @@ export type Database = {
           resource_sampling_claim_id?: string | null;
           resource_sampling_after?: string | null;
           resource_sampling_generation?: number | null;
+          orchestrator_native_generation?: string | null;
         };
         Relationships: [
           {

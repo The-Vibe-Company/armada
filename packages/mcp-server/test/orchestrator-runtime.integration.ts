@@ -197,3 +197,158 @@ test("generation replacement cannot publish native history or an old operation r
     await db.close();
   }
 });
+
+test("owner request reconciliation survives failed account preflight and distinguishes pre-admission from post-effect conflicts", async () => {
+  const { OrchestratorRuntime } = await import("../src/orchestrator-runtime.ts");
+  const { orchestratorHttp } = await import("../src/orchestrator-api.ts");
+  const { db, people: p } = await database();
+  const sql: Sql = {
+    query: (q, v) => db.query(q, v),
+    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  };
+  const store = new OrchestratorRuntimeStore(sql, reserveOrchestratorOperation);
+  const caller = { userId: p.owner, orgs: [{ orgId: p.org, role: "member" as const }], via: "supabase" as const };
+  let preflight = 0,
+    effects = 0;
+  try {
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
+    const configuration: OrchestratorCreate = {
+      version: 1,
+      orgId: p.org,
+      name: "reconcile",
+      goldenId: golden.id,
+      provider: "boat",
+      harness: "claude",
+      model: "m",
+      modelAccountId: crypto.randomUUID(),
+    };
+    const created = await store.create({ ownerId: p.owner, configuration, key: "create", skillRevision: revision });
+    const sandbox = await foundation.createSqlSandboxStore(sql).insert({
+      provider: "boat",
+      providerSandboxId: "reconcile-native",
+      id: crypto.randomUUID(),
+      goldenId: golden.id,
+      orgId: p.org,
+      ownerId: p.owner,
+      harness: "claude",
+      status: "running",
+      visibility: "private",
+      model: "m",
+      reasoningEffort: "high",
+    });
+    await db.query("update orchestrators set sandbox_id=$2 where id=$1", [created.identity.id, sandbox.id]);
+    created.identity = await store.preparing(created);
+    await store.complete(created, { state: "succeeded", conversationId: "native" });
+    const pending = await store.reserve({
+      ownerId: p.owner,
+      orgId: p.org,
+      id: created.identity.id,
+      action: "message",
+      key: "lost",
+      expectedRevision: 1,
+      payload: { expectedRevision: 1, text: "hello" },
+    });
+    const service = new OrchestratorRuntime({
+      store,
+      skillRevision: revision,
+      authority: new foundation.OrchestratorAuthority(sql, async () => {}),
+      resolveBackend: async () => {
+        preflight++;
+        throw Error("Account removed; no preflight for receipt reads");
+      },
+    });
+    const request = (body: Record<string, unknown>, key = "lost", path = "reconcile", who = caller) =>
+      orchestratorHttp(
+        new Request(`https://armada.invalid/api/v1/orchestrators/${path}`, {
+          method: "POST",
+          headers: { "idempotency-key": key },
+          body: JSON.stringify(body),
+        }),
+        who,
+        service,
+      );
+    const original = { orgId: p.org, id: created.identity.id, action: "message", expectedRevision: 1, text: "hello" };
+    expect(await (await request(original)).json()).toMatchObject({
+      admission: "recorded",
+      operation: { id: pending.operation.id, state: "pending" },
+    });
+    expect(await service.mutate(caller, { ...original, action: "message", key: "lost" })).toMatchObject({
+      id: pending.operation.id,
+      state: "pending",
+    });
+    expect(preflight).toBe(0);
+    expect(await (await request(original, "missing")).json()).toEqual({
+      version: 1,
+      admission: "unknown",
+      operation: null,
+    });
+    expect((await request({ ...original, text: "different" })).status).toBe(409);
+    const foreign = { ...caller, userId: p.admin };
+    expect((await request(original, "lost", "reconcile", foreign)).status).toBe(404);
+    expect(await (await request({ orgId: p.org, action: "create", configuration }, "create")).json()).toMatchObject({
+      admission: "recorded",
+      operation: { id: created.operation.id },
+    });
+    await store.complete(pending, { state: "succeeded" });
+    expect(await (await request(original)).json()).toMatchObject({
+      admission: "recorded",
+      operation: { state: "succeeded" },
+    });
+    const backend = new OrchestratorRuntime({
+      store,
+      skillRevision: revision,
+      authority: new foundation.OrchestratorAuthority(sql, async () => {}),
+      resolveBackend: async () => ({
+        provider: {
+          id: "boat",
+          get: async () => ({ state: "ready" }),
+          prompt: async () => {
+            effects++;
+            await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [
+              sandbox.id,
+            ]);
+            return { conversationId: "native" };
+          },
+        } as unknown as import("@armada/core").Provider,
+        projectDir: "/home/user",
+        mcpUrl: "https://armada.invalid/mcp",
+        consent: { scopes: [], goldenIds: [], credentialIds: [] },
+        assertNativeProof: async () => {},
+        revalidate: async () => {},
+        launch: async () => {},
+      }),
+    });
+    const mutate = (expectedRevision: number, key: string) =>
+      orchestratorHttp(
+        new Request(`https://armada.invalid/api/v1/orchestrators/${created.identity.id}/message`, {
+          method: "POST",
+          headers: { "idempotency-key": key },
+          body: JSON.stringify({ orgId: p.org, expectedRevision, text: "continue" }),
+        }),
+        caller,
+        backend,
+      );
+    expect(await (await mutate(0, "stale")).json()).toMatchObject({
+      error: { code: "conflict", admission: "not_admitted" },
+    });
+    expect(effects).toBe(0);
+    const lost = (await (await mutate(2, "effect")).json()) as { error: { operation: { id: string } } };
+    expect(lost).toMatchObject({ error: { code: "conflict", admission: "unknown", operation: { state: "pending" } } });
+    expect(effects).toBe(1);
+    expect(
+      await backend.reconcile(caller, {
+        orgId: p.org,
+        id: created.identity.id,
+        action: "message",
+        key: "effect",
+        expectedRevision: 2,
+        text: "continue",
+      }),
+    ).toMatchObject({ admission: "recorded", operation: { id: lost.error.operation.id, state: "pending" } });
+    expect(effects).toBe(1);
+    await db.query("delete from members where org_id=$1 and user_id=$2", [p.org, p.owner]);
+    expect((await request(original)).status).toBe(404);
+  } finally {
+    await db.close();
+  }
+});

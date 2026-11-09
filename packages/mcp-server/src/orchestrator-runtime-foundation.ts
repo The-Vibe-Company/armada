@@ -6,6 +6,8 @@ import type { Sql } from "@armada/core/server";
  * import of unmerged code. Integration conformance assigns the exact committed producer here.
  * No fallback issuer, store, or implementation is provided. */
 export interface OrchestratorRuntimeTransport {
+  readonly physicalGeneration: string;
+  readonly lifecycleGeneration: string;
   deliver(token: string, binding: { epoch: string; physicalGeneration: string }): Promise<{ acknowledged: boolean }>;
   scrub(tokenHash?: string): Promise<void>;
 }

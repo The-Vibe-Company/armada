@@ -121,9 +121,47 @@ export class OrchestratorRuntime {
     return this.options.store.events(identity.ownerId, orgId, id, cursor, limit);
   }
 
+  async reconcile(
+    caller: Caller,
+    input: {
+      orgId: string;
+      action: OrchestratorOperation["kind"];
+      key: string;
+      id?: string;
+      expectedRevision?: number;
+      text?: string;
+      configuration?: OrchestratorCreate;
+    },
+  ) {
+    const operation = await this.options.store.lookupRequest({
+      ownerId: this.owner(caller, input.orgId),
+      orgId: input.orgId,
+      action: input.action,
+      key: input.key,
+      ...(input.id ? { id: input.id } : {}),
+      ...(input.action === "create"
+        ? { configuration: input.configuration }
+        : {
+            payload: {
+              expectedRevision: input.expectedRevision,
+              ...(input.text === undefined ? {} : { text: input.text }),
+            },
+          }),
+    });
+    return { version: 1, admission: operation ? "recorded" : "unknown", operation };
+  }
+
   async create(caller: Caller, configuration: OrchestratorCreate, key: string): Promise<OrchestratorOperation> {
     if (!this.lifecycleRuntime) throw new OrchestratorRuntimeError("unavailable");
     const ownerId = this.owner(caller, configuration.orgId);
+    const prior = await this.options.store.lookupRequest({
+      ownerId,
+      orgId: configuration.orgId,
+      action: "create",
+      key,
+      configuration,
+    });
+    if (prior) return prior;
     const backend = await this.options.resolveBackend(configuration, ownerId);
     await backend.assertNativeProof();
     const reservation = await this.options.store.create({
@@ -162,6 +200,15 @@ export class OrchestratorRuntime {
       (!input.text?.trim() || input.text.length > 100_000)
     )
       throw new OrchestratorRuntimeError("invalid_request");
+    const prior = await this.options.store.lookupRequest({
+      ownerId,
+      orgId: input.orgId,
+      id: input.id,
+      action: input.action,
+      key: input.key,
+      payload: { expectedRevision: input.expectedRevision, ...(input.text === undefined ? {} : { text: input.text }) },
+    });
+    if (prior) return prior;
     const backend =
       input.action === "stop"
         ? undefined
@@ -204,9 +251,12 @@ export class OrchestratorRuntime {
         )
           throw new OrchestratorRuntimeError("unavailable");
         if (stopped.continuity === "lost") throw new NativeContinuityLost();
-        if (stopped.state !== "stopped" || stopped.continuity !== "native")
+        if (stopped.state !== "stopped" || (stopped.continuity !== "native" && current.conversationId !== null))
           throw new OrchestratorRuntimeError("unavailable");
-        return { parentState: "stopped" as const, continuity: "native" as const };
+        return {
+          parentState: "stopped" as const,
+          continuity: stopped.continuity === "native" ? ("native" as const) : ("unverified" as const),
+        };
       }
       if (!backend) throw new OrchestratorRuntimeError("unavailable");
       await backend.revalidate(current);
@@ -266,6 +316,7 @@ export class OrchestratorRuntime {
       provider: backend.provider,
       providerSandboxId: identity.providerSandboxId,
       physicalGeneration: machine.physicalGeneration,
+      lifecycleGeneration: String(identity.generation),
       mcpUrl: backend.mcpUrl,
     });
   }
@@ -280,7 +331,7 @@ export class OrchestratorRuntime {
     effect: () => Promise<{
       parentState?: "ready" | "stopped";
       conversationId?: string;
-      continuity?: "native";
+      continuity?: "native" | "unverified";
     }>,
   ): Promise<OrchestratorOperation> {
     try {
@@ -304,7 +355,7 @@ export class OrchestratorRuntime {
             ? { continuity: reservation.identity.continuity === "lost" ? ("lost" as const) : ("unverified" as const) }
             : {}),
       });
-      if (!published) throw new OrchestratorRuntimeError("conflict");
+      if (!published) throw new OrchestratorRuntimeError("conflict", "unknown", reservation.operation);
       return { ...reservation.operation, state, errorCode };
     }
   }
