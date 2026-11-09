@@ -1057,3 +1057,179 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
     await db.close();
   }
 });
+
+test("production owner lifecycle routes authenticate settings/waits without promoting delegated epochs", async () => {
+  const { db, sql, p, id, authority, token } = await fixture("ready");
+  const { createMemoryAuthStore, generateToken, sha256Hex } = await import("@armada/auth");
+  const { createOrchestratorServices } = await import("../src/orchestrator-services.ts");
+  const { orchestratorScopedMcpUrl } = await import("../src/orchestrator-scoped-gateway.ts");
+  try {
+    const auth = createMemoryAuthStore();
+    const ownerToken = generateToken("service"),
+      adminToken = generateToken("service");
+    for (const [userId, secret, role] of [
+      [p.owner, ownerToken, "member"],
+      [p.admin, adminToken, "admin"],
+    ] as const) {
+      auth.addMembership(userId, { orgId: p.org, name: "fixture", role });
+      await auth.insertToken("service", {
+        userId,
+        orgId: p.org,
+        hash: await sha256Hex(secret),
+        label: "fixture",
+        createdAt: new Date().toISOString(),
+      });
+    }
+    let completed = false,
+      evidenceReads = 0;
+    const bundle = createOrchestratorServices(sql, {
+      scopedMcpUrl: orchestratorScopedMcpUrl("https://armada.example.com"),
+      runtime: {
+        authority,
+        reserveOperation: reserveOrchestratorOperation,
+        skillRevision: "79472bf3f68f83ab53692a6655c484c9f9431a23",
+        async resolveBackend() {
+          throw Error("settings/history must not activate provider");
+        },
+      },
+      childAuthority: authority,
+      childExecutor: {
+        async launch() {
+          throw Error("unexpected allocation");
+        },
+        async read() {
+          throw Error("unexpected child read");
+        },
+        async message() {
+          throw Error("unexpected");
+        },
+        async stop() {
+          throw Error("unexpected");
+        },
+        async reconcile(op) {
+          return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
+        },
+      },
+      lifecycleRuntime: {
+        async observe(machine) {
+          return { ...machine, physicalGeneration: null, state: "unknown", evidence: "unused" };
+        },
+        async stop() {
+          throw Error("unexpected parent stop");
+        },
+        async reconcileStop() {
+          throw Error("unexpected");
+        },
+      },
+      evidence: {
+        async inspect(input) {
+          evidenceReads++;
+          const clock = (await sql.query<{ now: Date }>("select clock_timestamp() as now")).rows[0];
+          if (!clock) throw Error("clock");
+          return {
+            ...input,
+            identity: `approved-ci-event-${evidenceReads}`,
+            at: new Date(clock.now),
+            state: input.reference === "ci:approved-run" ? (completed ? "complete" : "active") : "unknown",
+          };
+        },
+      },
+    });
+    const route = bundle.ownerLifecycleRoute({
+      authStore: auth,
+      supabase: {
+        supabaseUrl: "https://supabase.example.com",
+        anonKey: "test-anon",
+        async fetch() {
+          throw Error("service token route must not use browser OAuth");
+        },
+      },
+    });
+    const request = async (path: string, secret = ownerToken, payload?: unknown, key?: string) =>
+      (await route(
+        new Request(
+          `https://armada.example.com/api/v1/orchestrators/${id}/${path}${payload === undefined ? `?orgId=${p.org}` : ""}`,
+          {
+            method: payload === undefined ? "GET" : "POST",
+            headers: {
+              authorization: `Bearer ${secret}`,
+              "content-type": "application/json",
+              ...(key ? { "idempotency-key": key } : {}),
+            },
+            ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
+          },
+        ),
+      )) ?? new Response(null, { status: 404 });
+    expect((await request("settings", token)).status).toBe(401);
+    expect((await request("settings", adminToken)).status).toBe(404);
+    const policy = { orgId: p.org, expectedRevision: 0, idleSeconds: 900, maxActiveChildren: null };
+    expect((await request("settings", ownerToken, policy, "settings-key")).status).toBe(200);
+    expect((await request("settings", ownerToken, policy, "settings-key")).status).toBe(200);
+    expect(await (await request("settings")).json()).toMatchObject({
+      version: 1,
+      revision: 1,
+      idleSeconds: 900,
+      maxActiveChildren: null,
+    });
+    expect((await request("settings", ownerToken, { ...policy, idleSeconds: 901 }, "settings-key")).status).toBe(409);
+    expect(
+      (await request("settings", ownerToken, { ...policy, expectedRevision: 1, ownerId: p.owner }, "owner-smuggle"))
+        .status,
+    ).toBe(400);
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const waitInput = {
+      orgId: p.org,
+      expectedRevision: 1,
+      kind: "ci",
+      reference: "ci:approved-run",
+      reason: "CI verified by registered source",
+      expiresAt,
+    };
+    const created = await request("waits", ownerToken, waitInput, "wait-register");
+    expect(created.status).toBe(201);
+    const lease = (await created.json()) as { id: string; released: boolean };
+    expect(lease.released).toBe(false);
+    expect((await request("waits", token, waitInput, "guest-wait")).status).toBe(401);
+    expect(evidenceReads).toBe(1);
+    expect(await (await request("waits")).json()).toMatchObject({
+      version: 1,
+      waits: [{ id: lease.id, reference: "ci:approved-run" }],
+    });
+    const renewalInput = { orgId: p.org, expectedRevision: 2, expiresAt };
+    const renewed = await request(`waits/${lease.id}/renew`, ownerToken, renewalInput, "wait-renew");
+    expect(renewed.status).toBe(201);
+    const renewedReceipt = await renewed.json();
+    expect(
+      (
+        await request(
+          "waits",
+          ownerToken,
+          { ...waitInput, expectedRevision: 3, reason: "New verified CI reason" },
+          "wait-reason",
+        )
+      ).status,
+    ).toBe(201);
+    const readsBeforeRetry = evidenceReads;
+    const replay = await request(`waits/${lease.id}/renew`, ownerToken, renewalInput, "wait-renew");
+    expect(replay.status).toBe(201);
+    expect(await replay.json()).toEqual(renewedReceipt);
+    expect(evidenceReads).toBe(readsBeforeRetry);
+    expect(
+      (await request(`waits/${lease.id}/renew`, ownerToken, { ...renewalInput, expectedRevision: 3 }, "wait-renew"))
+        .status,
+    ).toBe(409);
+    const releaseInput = { orgId: p.org, expectedRevision: 4 };
+    expect((await request(`waits/${lease.id}/release`, ownerToken, releaseInput, "wait-release")).status).toBe(409);
+    completed = true;
+    expect((await request(`waits/${lease.id}/release`, ownerToken, releaseInput, "wait-release")).status).toBe(200);
+    expect((await request(`waits/${lease.id}/release`, ownerToken, releaseInput, "wait-release")).status).toBe(200);
+    expect(await (await request("waits")).json()).toMatchObject({ version: 1, waits: [] });
+    expect(
+      (await sql.query<{ revision: number }>("select revision from orchestrators where id=$1", [id])).rows[0]?.revision,
+    ).toBe(5);
+    await sql.query("delete from members where org_id=$1 and user_id=$2", [p.org, p.owner]);
+    expect((await request("settings")).status).toBe(404); // SQL membership recheck, even if auth cache fixture still lists it.
+  } finally {
+    await db.close();
+  }
+});

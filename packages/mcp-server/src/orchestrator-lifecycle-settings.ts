@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Sql } from "@armada/core/server";
-import { lifecycleNow } from "./orchestrator-lifecycle-contract.ts";
+import { lifecycleNow, OrchestratorLifecycleError } from "./orchestrator-lifecycle-contract.ts";
 
 /** Trusted authenticated owner API composition. No public caller-chosen owner identity.
  * NULL child limit is intentionally unlimited; no synthetic quota/start defaults. */
@@ -27,7 +27,7 @@ export async function configureOrchestratorLifecycle(
     (input.maxActiveChildren !== null &&
       (!Number.isSafeInteger(input.maxActiveChildren) || input.maxActiveChildren < 1))
   )
-    throw new Error("Invalid lifecycle policy.");
+    throw new OrchestratorLifecycleError("invalid_request", "Invalid lifecycle policy.");
   const now = await lifecycleNow(sql, clock);
   const digest = createHash("sha256")
     .update(JSON.stringify([input.expectedRevision, input.idleSeconds, input.maxActiveChildren]))
@@ -40,7 +40,7 @@ export async function configureOrchestratorLifecycle(
         [input.orchestratorId, input.ownerId],
       )
     ).rows[0];
-    if (!parent) throw new Error("Stale or unavailable orchestrator.");
+    if (!parent) throw new OrchestratorLifecycleError("not_found", "Stale or unavailable orchestrator.");
     const prior = (
       await tx.query<{ request_digest: string }>(
         `select request_digest from public.orchestrator_lifecycle_mutations
@@ -49,10 +49,11 @@ export async function configureOrchestratorLifecycle(
       )
     ).rows[0];
     if (prior) {
-      if (prior.request_digest !== digest) throw new Error("Idempotency conflict.");
+      if (prior.request_digest !== digest) throw new OrchestratorLifecycleError("conflict", "Idempotency conflict.");
       return;
     }
-    if (Number(parent.revision) !== input.expectedRevision) throw new Error("Stale orchestrator revision.");
+    if (Number(parent.revision) !== input.expectedRevision)
+      throw new OrchestratorLifecycleError("conflict", "Stale orchestrator revision.");
     if (
       (
         await tx.query(
@@ -61,7 +62,7 @@ export async function configureOrchestratorLifecycle(
         )
       ).rows.length
     )
-      throw new Error("Orchestrator owner operation is busy.");
+      throw new OrchestratorLifecycleError("conflict", "Orchestrator owner operation is busy.");
     await tx.query(
       `insert into public.orchestrator_lifecycle(orchestrator_id,idle_seconds,max_active_children,last_activity_at,reconcile_after)
       values($1,$2,$3,$4,$4) on conflict(orchestrator_id) do update set idle_seconds=$2,max_active_children=$3,reconcile_after=$4`,

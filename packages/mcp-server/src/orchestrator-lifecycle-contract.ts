@@ -83,3 +83,13 @@ export async function lifecycleNow(sql: Sql, clock?: () => Date): Promise<Date> 
   if (!row) throw new Error("Lifecycle clock unavailable.");
   return new Date(row.now);
 }
+
+/** Safe owned service errors: public routes emit only code, never arbitrary provider/error text. */
+export class OrchestratorLifecycleError extends Error {
+  constructor(
+    readonly code: "invalid_request" | "conflict" | "not_found" | "unavailable",
+    message: string,
+  ) {
+    super(message);
+  }
+}

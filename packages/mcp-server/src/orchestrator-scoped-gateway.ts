@@ -6,6 +6,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { Route } from "./http.ts";
 import type { createOrchestratorChildren } from "./orchestrator-children.ts";
+import { InvalidOrchestratorBody, readOrchestratorBody } from "./orchestrator-http-body.ts";
 
 /** Trusted662 bootstrap URL: never point an epoch grant at the generic owner /mcp. */
 export const ORCHESTRATOR_SCOPED_PATH = "/api/v1/orchestrator-tools";
@@ -54,30 +55,6 @@ class WaitAuthorityUnavailable extends Error {}
 const fail = (status: number, code: string) =>
   Response.json({ error: { code, message: code } }, { status, headers: { "cache-control": "no-store" } });
 
-/** Bounded streaming parse, including unauthenticated-looking epoch syntax. Never logs headers/body. */
-async function body(request: Request): Promise<string> {
-  const reader = request.body?.getReader();
-  if (!reader) throw new InvalidScopedRequest();
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let bytes = 0;
-  let value = "";
-  try {
-    while (true) {
-      const part = await reader.read();
-      if (part.done) break;
-      bytes += part.value.byteLength;
-      if (bytes > 128 * 1024) {
-        await reader.cancel();
-        throw new InvalidScopedRequest();
-      }
-      value += decoder.decode(part.value, { stream: true });
-    }
-    return value + decoder.decode();
-  } finally {
-    reader.releaseLock();
-  }
-}
-
 /** Separate principal surface. Metadata/init are static and convey NO authenticated identity;
  * every data/effect call reaches the real Authority boundary through children. No Caller exists. */
 export function createOrchestratorScopedGateway(children: ReturnType<typeof createOrchestratorChildren>): Route {
@@ -123,7 +100,7 @@ export function createOrchestratorScopedGateway(children: ReturnType<typeof crea
     if (request.method !== "POST") return fail(405, "use_post");
     const token = match[1];
     try {
-      const raw = await body(request);
+      const raw = await readOrchestratorBody(request);
       const decoded: unknown = JSON.parse(raw);
       if (suffix !== "mcp") {
         if (waitMethods.has(suffix)) return fail(503, "admit_wait_not_supported");
@@ -177,7 +154,12 @@ export function createOrchestratorScopedGateway(children: ReturnType<typeof crea
     } catch (error) {
       if (error instanceof OrchestratorAuthorityDenied) return fail(403, "scoped_authority_denied");
       if (error instanceof WaitAuthorityUnavailable) return fail(503, "admit_wait_not_supported");
-      if (error instanceof InvalidScopedRequest || error instanceof SyntaxError || error instanceof z.ZodError)
+      if (
+        error instanceof InvalidScopedRequest ||
+        error instanceof InvalidOrchestratorBody ||
+        error instanceof SyntaxError ||
+        error instanceof z.ZodError
+      )
         return fail(400, "invalid_scoped_request");
       return fail(503, "scoped_operation_unavailable");
     }

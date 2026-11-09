@@ -245,3 +245,37 @@ physical-generation binding, and the remaining 203/runtime/auth integrations
 remain activation blockers. Any new actual conformance still requires a newly
 owned operator fixture. The implementer does not reuse the old App or enable
 production operations from this receipt.
+
+## Owner lifecycle HTTP contracts
+
+The paired bundle now also mounts an owner lifecycle route before the generic
+#662 owner dispatcher. It uses actual `authenticateCaller` bearer verification
+plus the actual runtime store's fresh private-owner/current-membership SQL.
+Epoch grants are rejected before this path; it is not delegated-wait support.
+No request-supplied owner, role, generation or parent authority is accepted.
+Reads never resolve a provider or activate compute.
+
+- GET `/api/v1/orchestrators/:id/settings?orgId=...` returns version, parent ID,
+  revision, effective idle seconds, nullable explicit child cap and idle deadline.
+- POST the same path requires `Idempotency-Key` and strict JSON `{orgId,
+  expectedRevision,idleSeconds,maxActiveChildren}`. Bounds remain 900–86400;
+  `null` removes an explicit child cap. Same-key altered payload conflicts.
+- GET `/:id/waits?orgId=...` returns the actual unreleased lease projection,
+  including expired unresolved waits rather than manufacturing empty work.
+- POST `/:id/waits` requires the key and strict `{orgId,expectedRevision,kind,
+  reference,reason,expiresAt}`. The server derives current SQL generation and
+  requires fresh correlated registered evidence; lease expiry/cap remains bounded.
+- POST `/:id/waits/:waitId/renew` requires `{orgId,expectedRevision,expiresAt}`
+  and actual active evidence. POST `.../release` requires `{orgId,expectedRevision}`
+  and actual completed evidence. Client release intent is not completion proof.
+  Lease kind/reference/reason come from the owned stored lease, not substituted IDs.
+  Renewal/release receipts bind the immutable lease ID, action and wire request;
+  changing a displayed reason later cannot invalidate an identical retry. Changed
+  request fields still conflict, and replay retains fresh owner/member checks.
+
+Mutations serialize under the existing parent fence and reject pending owner
+operations. Known invalid/conflict/not-found/unavailable outcomes have safe typed
+HTTP errors, not arbitrary provider messages. Authentication failure, stale
+membership, other-owner/admin access and epoch-to-owner promotion deny. Replies
+and reads use `Cache-Control: no-store`. Owner MCP dispatcher additions remain
+#662-owned; these HTTP endpoints and the epoch gateway are separate principals.

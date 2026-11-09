@@ -4,6 +4,10 @@ import { createOrchestratorChildren, type OrchestratorChildExecutor } from "./or
 import { createOrchestratorLifecycle } from "./orchestrator-lifecycle.ts";
 import type { ChildAuthority, OrchestratorLifecycleRuntime } from "./orchestrator-lifecycle-contract.ts";
 import { createLifecycleAwareOrchestratorRuntime } from "./orchestrator-lifecycle-integration.ts";
+import {
+  createOrchestratorOwnerLifecycleRoute,
+  type OwnerLifecycleAuthentication,
+} from "./orchestrator-owner-lifecycle.ts";
 import type { OrchestratorRuntime } from "./orchestrator-runtime.ts";
 import { createOrchestratorScopedGateway, orchestratorScopedMcpUrl } from "./orchestrator-scoped-gateway.ts";
 import { createOrchestratorWaits, type WaitEvidenceSource } from "./orchestrator-waits.ts";
@@ -15,6 +19,7 @@ import type { ServerLifecycleLane } from "./server-workers.ts";
 export interface OrchestratorServiceBundle {
   runtime: OrchestratorRuntime;
   scopedToolsRoute: Route;
+  ownerLifecycleRoute: (auth: OwnerLifecycleAuthentication) => Route;
   lifecycleWorker: ServerLifecycleLane;
   childWorker: ServerLifecycleLane;
 }
@@ -41,12 +46,15 @@ export function createOrchestratorServices(
     },
   });
   const children = createOrchestratorChildren(sql, input.childAuthority, input.childExecutor);
+  const waits = createOrchestratorWaits(sql, input.evidence);
   return {
     runtime,
+    ownerLifecycleRoute: (auth: OwnerLifecycleAuthentication) =>
+      createOrchestratorOwnerLifecycleRoute(sql, store, waits, auth),
     scopedToolsRoute: createOrchestratorScopedGateway(children),
     store,
     children,
-    waits: createOrchestratorWaits(sql, input.evidence),
+    waits,
     lifecycleWorker: createOrchestratorLifecycle(sql, input.lifecycleRuntime),
     childWorker: children,
   };

@@ -199,7 +199,15 @@ export async function startServer(
     modalTokensFor: modal.modalTokensFor,
     goldenTarget: modal.goldenTarget,
     routes: [
-      ...(orchestrators ? [orchestrators.scopedToolsRoute] : []),
+      ...(orchestrators
+        ? [
+            orchestrators.scopedToolsRoute,
+            orchestrators.ownerLifecycleRoute({
+              authStore,
+              supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+            }),
+          ]
+        : []),
       modal.route,
       mcp.route,
       (request) => handleControlRequest(request, control),

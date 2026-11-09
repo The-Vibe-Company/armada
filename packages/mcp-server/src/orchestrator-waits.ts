@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Sql } from "@armada/core/server";
-import { lifecycleNow } from "./orchestrator-lifecycle-contract.ts";
+import { lifecycleNow, OrchestratorLifecycleError } from "./orchestrator-lifecycle-contract.ts";
 
 export interface WaitEvidence {
   orchestratorId: string;
@@ -36,6 +36,8 @@ export function createOrchestratorWaits(sql: Sql, source: WaitEvidenceSource, cl
       reference: string;
       reason: string;
       expiresAt?: string;
+      /** Trusted owner route intent. Bind replay to immutable wire fields, not mutable lease reason. */
+      leaseAction?: { id: string; action: "renew" | "release" };
     }): Promise<{ id: string; expiresAt: string; deadline: string; released: boolean }> {
       if (
         !sql.transaction ||
@@ -49,10 +51,18 @@ export function createOrchestratorWaits(sql: Sql, source: WaitEvidenceSource, cl
         !input.reason.trim() ||
         input.reason.length > 512
       )
-        throw new Error("Invalid wait request.");
+        throw new OrchestratorLifecycleError("invalid_request", "Invalid wait request.");
+      const action = input.leaseAction ? `wait:${input.leaseAction.action}` : `wait:${input.kind}`;
+      const target = input.leaseAction?.id ?? input.reference;
+      const requiredEvidenceState =
+        input.leaseAction?.action === "release" ? "complete" : input.leaseAction ? "active" : undefined;
       const digest = createHash("sha256")
         .update(
-          JSON.stringify([input.expectedRevision, input.kind, input.reference, input.reason, input.expiresAt ?? null]),
+          JSON.stringify(
+            input.leaseAction
+              ? [input.leaseAction.id, input.leaseAction.action, input.expectedRevision, input.expiresAt ?? null]
+              : [input.expectedRevision, input.kind, input.reference, input.reason, input.expiresAt ?? null],
+          ),
         )
         .digest("hex");
       const priorResult = async (tx: Sql) => {
@@ -65,10 +75,11 @@ export function createOrchestratorWaits(sql: Sql, source: WaitEvidenceSource, cl
            join public.orchestrators o on o.id=w.orchestrator_id
            join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
            where w.orchestrator_id=$1 and w.actor_id=$2 and o.owner_id=$2 and w.action=$3 and w.target=$4 and w.idempotency_key=$5`,
-            [input.orchestratorId, input.ownerId, `wait:${input.kind}`, input.reference, input.key],
+            [input.orchestratorId, input.ownerId, action, target, input.key],
           )
         ).rows[0];
-        if (prior && prior.request_digest !== digest) throw new Error("Idempotency conflict.");
+        if (prior && prior.request_digest !== digest)
+          throw new OrchestratorLifecycleError("conflict", "Idempotency conflict.");
         return prior?.result;
       };
       const prior = await priorResult(sql);
@@ -87,7 +98,9 @@ export function createOrchestratorWaits(sql: Sql, source: WaitEvidenceSource, cl
         evidence.at > now ||
         now.getTime() - evidence.at.getTime() > 60_000
       )
-        throw new Error("Wait evidence unavailable or stale.");
+        throw new OrchestratorLifecycleError("unavailable", "Wait evidence unavailable or stale.");
+      if (requiredEvidenceState && evidence.state !== requiredEvidenceState)
+        throw new OrchestratorLifecycleError("conflict", "Wait source has not confirmed the requested state.");
       return sql.transaction(async (tx) => {
         const parent = (
           await tx.query<{ revision: string; lifecycle_generation: string }>(
@@ -107,7 +120,7 @@ export function createOrchestratorWaits(sql: Sql, source: WaitEvidenceSource, cl
           String(parent.lifecycle_generation) !== input.generation ||
           Number(parent.revision) !== input.expectedRevision
         )
-          throw new Error("Stale or unavailable orchestrator.");
+          throw new OrchestratorLifecycleError("conflict", "Stale or unavailable orchestrator.");
         if (
           (
             await tx.query(
@@ -116,7 +129,7 @@ export function createOrchestratorWaits(sql: Sql, source: WaitEvidenceSource, cl
             )
           ).rows.length
         )
-          throw new Error("Orchestrator owner operation is busy.");
+          throw new OrchestratorLifecycleError("conflict", "Orchestrator owner operation is busy.");
         const prior = (
           await tx.query<{
             id: string;
@@ -130,6 +143,8 @@ export function createOrchestratorWaits(sql: Sql, source: WaitEvidenceSource, cl
             [input.orchestratorId, input.kind, input.reference],
           )
         ).rows[0];
+        if (input.leaseAction && prior?.id !== input.leaseAction.id)
+          throw new OrchestratorLifecycleError("not_found", "Wait lease unavailable.");
         if (
           prior &&
           (prior.released_at ||
@@ -137,12 +152,15 @@ export function createOrchestratorWaits(sql: Sql, source: WaitEvidenceSource, cl
             prior.evidence === evidence.identity ||
             new Date(prior.evidence_at) >= evidence.at)
         )
-          throw new Error("Wait cannot renew without new evidence inside its original deadline.");
+          throw new OrchestratorLifecycleError(
+            "conflict",
+            "Wait cannot renew without new evidence inside its original deadline.",
+          );
         const deadline = prior ? new Date(prior.deadline) : new Date(now.getTime() + 86_400_000);
         const ceiling = Math.min(evidence.at.getTime() + 900_000, deadline.getTime());
         const requested = input.expiresAt === undefined ? ceiling : Date.parse(input.expiresAt);
         if (evidence.state !== "complete" && (requested <= now.getTime() || requested > ceiling))
-          throw new Error("Wait expiry is outside its evidenced bound.");
+          throw new OrchestratorLifecycleError("invalid_request", "Wait expiry is outside its evidenced bound.");
         const expires = new Date(evidence.state === "complete" ? ceiling : requested);
         const row = (
           await tx.query<{ id: string }>(
@@ -168,7 +186,7 @@ export function createOrchestratorWaits(sql: Sql, source: WaitEvidenceSource, cl
             ],
           )
         ).rows[0];
-        if (!row) throw new Error("Wait persistence unavailable.");
+        if (!row) throw new OrchestratorLifecycleError("unavailable", "Wait persistence unavailable.");
         await tx.query(`update public.orchestrators set revision=revision+1 where id=$1`, [input.orchestratorId]);
         await tx.query(
           `insert into public.orchestrator_lifecycle(orchestrator_id,last_activity_at,reason)
@@ -185,15 +203,7 @@ export function createOrchestratorWaits(sql: Sql, source: WaitEvidenceSource, cl
         await tx.query(
           `insert into public.orchestrator_lifecycle_mutations
           (orchestrator_id,actor_id,action,target,idempotency_key,request_digest,result) values($1,$2,$3,$4,$5,$6,$7::jsonb)`,
-          [
-            input.orchestratorId,
-            input.ownerId,
-            `wait:${input.kind}`,
-            input.reference,
-            input.key,
-            digest,
-            JSON.stringify(result),
-          ],
+          [input.orchestratorId, input.ownerId, action, target, input.key, digest, JSON.stringify(result)],
         );
         return result;
       });
