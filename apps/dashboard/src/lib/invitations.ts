@@ -227,7 +227,8 @@ export function refusalMessage(
 /**
  * The invitation link (`/invitations/accept?token=…`) as the email sends it. The token is moved into a short-lived,
  * HTTP-only cookie on the first request, and the address bar loses it: it never travels in a login `next`, a Referer,
- * the history or a page. Only the explicit accept reads it, server-side, and a successful one deletes it. The cookie's
+ * the history or a page. Only the server reads it: the acceptance page sends it in the body of the preview, and the
+ * explicit accept sends it the same way. A successful accept, or a plain sign-out, deletes it. The cookie's
  * path is `/`: signing in with a code is a server action on `/login` that renders the invitation page within that
  * same request, so a cookie scoped to the invitation path would not be there.
  */
@@ -253,7 +254,8 @@ export const invitationCookieOptions = (secure: boolean) => ({
  * The invitation email's own sign-in is never used. #649 sends its link through a GoTrue email OTP that this browser did
  * not start (no PKCE challenge), so its credentials (a session in the URL fragment, or a `token_hash`) could belong to
  * anyone who forwarded the link. They are discarded unread: the proxy drops the query (keeping only the invitation
- * token, in its cookie), and this script, inlined first in the page, removes the fragment from the address bar and
- * history before any other script runs. The recipient then signs in from this browser, as on the login page.
+ * token, in its cookie), and this script, inlined in the page, removes the fragment from the address bar and history
+ * as early as the page allows; nothing reads the fragment in any case. The recipient then signs in from this
+ * browser, as on the login page.
  */
 export const DISCARD_LINK_CREDENTIALS_SCRIPT = `(function(){if(location.hash)history.replaceState(history.state,"",location.pathname)})()`;

@@ -851,22 +851,17 @@ function invitations(route: string, body: Row, request: Request): Response {
   if (route === "preview" || route === "accept") {
     const row = state.invitations.find((item) => item.token === body.token);
     const email = users.get(userId)?.email;
-    // The server's order: the address must match before anything about the org is said.
-    const reason = !row
-      ? "not_found"
-      : row.email !== email
-        ? "wrong_email"
-        : state.unverifiedEmails.includes(String(email))
-          ? "unverified_email"
-          : row.status === "revoked"
-            ? "revoked"
-            : row.status === "accepted"
-              ? "used"
-              : Date.parse(String(row.expiresAt)) <= Date.now()
-                ? "expired"
-                : isMember(row.orgId, userId)
-                  ? "already_member"
-                  : null;
+    // The server's order: the address must match before anything about the org is said. The first failing check wins.
+    const checks: [boolean, string][] = [
+      [!row, "not_found"],
+      [row?.email !== email, "wrong_email"],
+      [state.unverifiedEmails.includes(String(email)), "unverified_email"],
+      [row?.status === "revoked", "revoked"],
+      [row?.status === "accepted", "used"],
+      [Date.parse(String(row?.expiresAt)) <= Date.now(), "expired"],
+      [Boolean(row) && isMember(row?.orgId, userId), "already_member"],
+    ];
+    const reason = checks.find(([failed]) => failed)?.[1] ?? null;
     if (route === "preview") {
       const named = row && reason !== "not_found" && reason !== "wrong_email" && reason !== "unverified_email";
       const org = named ? state.orgs.find((item) => item.id === row.orgId) : null;
@@ -876,13 +871,13 @@ function invitations(route: string, body: Row, request: Request): Response {
       });
     }
     if (reason || !row) {
-      const status =
-        reason === "wrong_email" || reason === "unverified_email"
-          ? 403
-          : reason === "used" || reason === "already_member"
-            ? 409
-            : 404;
-      const code = status === 403 ? "forbidden" : status === 409 ? "conflict" : "not_found";
+      const refusal: Record<string, [number, string]> = {
+        wrong_email: [403, "forbidden"],
+        unverified_email: [403, "forbidden"],
+        used: [409, "conflict"],
+        already_member: [409, "conflict"],
+      };
+      const [status, code] = refusal[String(reason)] ?? [404, "not_found"];
       return json({ error: { code, message: "The invitation cannot be accepted.", reason } }, status);
     }
     row.status = "accepted";
