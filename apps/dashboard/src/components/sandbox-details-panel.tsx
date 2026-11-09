@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * The sandbox's details beside its conversation. On a large screen they are a column of their own; on a smaller one
- * they fold behind one button under the conversation, so the conversation keeps the screen.
+ * they fold behind one button under the conversation and, open, take the history's place while the composer stays.
  */
 export function SandboxDetailsPanel({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
@@ -17,7 +17,7 @@ export function SandboxDetailsPanel({ children }: { children: ReactNode }) {
   function toggle() {
     const next = !open;
     setOpen(next);
-    // On a small screen the details open below the conversation: bring them into view with their button.
+    // On a small screen the details take the history's place; where the page cannot fit (a fallback), bring them into view.
     if (next && window.matchMedia("(max-width: 63.98rem)").matches) {
       const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       requestAnimationFrame(() =>
@@ -31,6 +31,7 @@ export function SandboxDetailsPanel({ children }: { children: ReactNode }) {
       <Button
         type="button"
         variant="outline"
+        size="sm"
         className="w-full justify-between lg:hidden"
         aria-expanded={open}
         aria-controls={id}

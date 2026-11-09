@@ -157,10 +157,37 @@
     [data-fit="body"] > [data-fit="side"] {
       flex: none;
     }
-    /* Open details on a small screen never squeeze the conversation: they follow it, and the page area scrolls. */
-    [data-fit="body"]:has(> [data-fit="side"] [aria-expanded="true"]) > [data-fit="column"] {
-      flex: none;
-      height: 100%;
+    /* A phone gives the conversation the room the page's padding took. */
+    @media (max-width: 47.99rem) {
+      [data-shell]:has([data-fit-viewport]) > main {
+        padding-block: 0.75rem;
+      }
+    }
+    /*
+     * Open details on a small screen take the history's place: the history folds to nothing (keeping its scroll
+     * position), the header and composer stay where they were, and the details scroll in the space it left.
+     */
+    @media (max-width: 63.99rem) {
+      [data-fit="body"]:has(> [data-fit="side"] [aria-expanded="true"]) > [data-fit="column"] {
+        flex: none;
+      }
+      [data-fit="body"]:has(> [data-fit="side"] [aria-expanded="true"]) [data-fit="history"] {
+        flex: 0 0 0;
+        min-height: 0;
+        overflow: hidden;
+        visibility: hidden;
+      }
+      [data-fit="body"]:has(> [data-fit="side"] [aria-expanded="true"]) > [data-fit="side"] {
+        flex: 1 1 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      [data-fit="body"]:has(> [data-fit="side"] [aria-expanded="true"]) [data-fit="side-content"] {
+        flex: 1 1 0;
+        min-height: 0;
+        overflow-y: auto;
+      }
     }
     [data-fit="technical-list"] {
       max-height: 30dvh;
@@ -172,9 +199,7 @@
         display: grid;
         grid-template-rows: minmax(0, 1fr);
       }
-      [data-fit="body"] > [data-fit="side"],
-      [data-fit="body"]:has(> [data-fit="side"] [aria-expanded="true"]) > [data-fit="column"] {
-        height: auto;
+      [data-fit="body"] > [data-fit="side"] {
         min-height: 0;
       }
       [data-fit="side-content"] {

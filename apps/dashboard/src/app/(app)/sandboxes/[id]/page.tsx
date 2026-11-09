@@ -95,9 +95,10 @@ export default async function SandboxPage({ params }: Props) {
   ];
 
   return (
-    <div data-fit-viewport className="space-y-4 md:space-y-6">
+    <div data-fit-viewport className="space-y-3 md:space-y-6">
       <div className="space-y-3">
-        <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground">
+        {/* On a phone the navigation above already leads back to the sandboxes; the conversation needs the room. */}
+        <Button variant="ghost" size="sm" asChild className="-ml-3 text-muted-foreground max-md:hidden">
           <Link href="/sandboxes">
             <LinkPendingIcon>
               <ArrowLeftIcon />
@@ -124,7 +125,7 @@ export default async function SandboxPage({ params }: Props) {
         </Alert>
       )}
 
-      <div data-fit="body" className="grid items-start gap-4 md:gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+      <div data-fit="body" className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div data-fit="column" className="min-w-0">
           <SandboxChat
             sandboxId={sandbox.id}

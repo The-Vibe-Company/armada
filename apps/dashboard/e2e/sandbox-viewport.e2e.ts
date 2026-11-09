@@ -1,4 +1,4 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import { IDS, MOCK, reset, signIn } from "./helpers";
 
 /** A long conversation: enough history that an unbounded page would scroll the document. */
@@ -71,7 +71,7 @@ for (const [label, size] of [
   });
 }
 
-test("the history stays on its newest message when its height changes, and open details never squeeze it", async ({
+test("the history stays on its newest message when its height changes, and comes back as it was after the details", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -86,10 +86,15 @@ test("the history stays on its newest message when its height changes, and open 
   await expect(page.getByLabel("Reasoning effort")).toBeVisible();
   await expect.poll(atLatest).toBe(true);
   await page.getByRole("button", { name: "Model", exact: true }).click();
-  await page.getByRole("button", { name: "Details" }).click();
-  await expect(page.getByRole("region", { name: "Details" }).getByText("Golden", { exact: true })).toBeVisible();
-  expect(await messages.evaluate((element) => element.clientHeight)).toBeGreaterThanOrEqual(before);
   await expect.poll(atLatest).toBe(true);
+  // Open details take the history's place on a phone; closed again, the history is back as it was, on its latest.
+  const toggle = page.getByRole("button", { name: "Details" });
+  await toggle.click();
+  await expect(page.getByRole("region", { name: "Details" }).getByText("Golden", { exact: true })).toBeVisible();
+  await toggle.click();
+  await expect.poll(() => messages.evaluate((element) => element.clientHeight)).toBe(before);
+  await expect.poll(atLatest).toBe(true);
+  await expect(messages.getByText("Step 39:")).toBeInViewport({ ratio: 1 });
   expect((await overflow(page)).vertical).toBe(0);
 });
 
@@ -121,8 +126,23 @@ test("a history that grows back to its bottom follows new messages again", async
   await expect(messages.getByText("All tests pass now.")).toBeInViewport({ timeout: 10_000 });
 });
 
-test("on a phone height where it cannot all fit, the composer and its controls are never cut off", async ({ page }) => {
-  // A running turn (Steer and Interrupt show) and a technical event, as real sessions have, at an iPhone's height.
+/** The element a tap at the centre of `locator` would reach is the control itself (nothing covers or clips it). */
+async function hitTestable(locator: Locator) {
+  return locator.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const x = box.left + box.width / 2;
+    const y = box.top + box.height / 2;
+    const fullyInside =
+      box.top >= 0 && box.left >= 0 && box.bottom <= window.innerHeight && box.right <= window.innerWidth;
+    const hit = document.elementFromPoint(x, y);
+    return fullyInside && hit !== null && (hit === element || element.contains(hit));
+  });
+}
+
+test("on a common phone height, a running turn's composer and its controls are in view without scrolling the page", async ({
+  page,
+}) => {
+  // A running turn (Steer and Interrupt show) and a technical event, as real sessions have, at an iPhone's Safari height.
   await fetch(`${MOCK}/__test/sandbox-events`, {
     method: "POST",
     body: JSON.stringify({
@@ -136,19 +156,38 @@ test("on a phone height where it cannot all fit, the composer and its controls a
   });
   await page.setViewportSize({ width: 390, height: 664 });
   await signIn(page, "alice@example.com", `/sandboxes/${IDS.running}`);
-  await expect(page.getByRole("log", { name: "Messages" }).getByText("Step 39:")).toBeAttached();
+  const messages = page.getByRole("log", { name: "Messages" });
+  await expect(messages.getByText("Step 39:")).toBeAttached();
+  await expect(page.getByText("Technical events (1)")).toBeAttached();
+  const box = page.getByRole("textbox", { name: "Message" });
+  await box.fill("Keep the old behaviour for empty input");
+  const scrolled = () =>
+    page.evaluate(() => ({ document: window.scrollY, main: document.querySelector("main")?.scrollTop ?? 0 }));
   for (const open of [false, true]) {
     if (open) await page.getByRole("button", { name: "Details" }).click();
-    expect((await overflow(page)).vertical).toBe(0);
-    for (const name of ["Message", "Steer", "Interrupt"]) {
-      const control =
-        name === "Message" ? page.getByRole("textbox", { name }) : page.getByRole("button", { name, exact: true });
-      await control.scrollIntoViewIfNeeded();
-      // In view after scrolling means no ancestor clips it.
-      await expect(control).toBeInViewport({ ratio: 1 });
+    await page.screenshot({
+      path: `test-results/sandbox-viewport-phone-664${open ? "-details" : ""}.png`,
+      animations: "disabled",
+    });
+    expect(await overflow(page)).toEqual({ vertical: 0, horizontal: 0 });
+    expect(await scrolled()).toEqual({ document: 0, main: 0 });
+    for (const control of [
+      box,
+      page.getByRole("button", { name: "Steer", exact: true }),
+      page.getByRole("button", { name: "Send as new turn" }),
+      page.getByRole("button", { name: "Interrupt" }),
+    ]) {
+      expect(await hitTestable(control)).toBe(true);
     }
+    await expect(box).toHaveValue("Keep the old behaviour for empty input");
   }
-  await page.screenshot({ path: "test-results/sandbox-viewport-phone-664.png", animations: "disabled" });
+  // Open details are readable in their own bounded panel, still without moving the page.
+  const details = page.getByRole("region", { name: "Details" });
+  const connections = details.getByText("Launched without MCP connections you can see.");
+  await connections.scrollIntoViewIfNeeded();
+  await expect(connections).toBeInViewport();
+  expect(await scrolled()).toEqual({ document: 0, main: 0 });
+  expect(await hitTestable(page.getByRole("button", { name: "Steer", exact: true }))).toBe(true);
 });
 
 test("a viewport too short to fit falls back to a scrolling page where nothing is cut off", async ({ page }) => {

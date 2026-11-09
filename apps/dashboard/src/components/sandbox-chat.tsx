@@ -162,7 +162,7 @@ export function SandboxChat(props: Props) {
   const reason = failure?.kind === "outcome" ? failure.reason : undefined;
 
   return (
-    <div data-fit="chat" className="space-y-4">
+    <div data-fit="chat" className="space-y-2 sm:space-y-4">
       <Card data-fit="card" className="gap-0 overflow-hidden py-0">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 sm:px-6">
           <div className="flex min-w-0 items-center gap-3">
@@ -729,12 +729,12 @@ function Composer({
       <Textarea
         id={`${fieldId}-message`}
         name="prompt"
-        rows={3}
+        rows={2}
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={onKeyDown}
         placeholder={running ? "Steer the running turn, or send the next one" : "What should the agent do next?"}
-        className="max-h-60 min-h-20 resize-y bg-background"
+        className="max-h-60 min-h-14 resize-y bg-background sm:min-h-20"
       />
       <div id={`${fieldId}-model`} hidden={!showModel}>
         <ModelFields
@@ -756,7 +756,8 @@ function Composer({
           className={cn("text-muted-foreground", override && "text-foreground")}
         >
           <SlidersHorizontalIcon />
-          {override ? "Model changed" : "Model"}
+          {/* Icon only on a phone, where the controls must fit one row; the name stays for assistive tech. */}
+          <span className="max-sm:sr-only">{override ? "Model changed" : "Model"}</span>
         </Button>
         {result && (
           <p
@@ -776,11 +777,12 @@ function Composer({
               onClick={() => run("interrupt")}
             >
               {pending === "interrupt" ? <Loader2Icon className="animate-spin" /> : <SquareIcon />}
-              Interrupt
+              <span className="max-sm:sr-only">Interrupt</span>
             </Button>
           )}
           {running && (
             <Button
+              aria-label={restarts ? "Steer (restarts turn)" : "Steer"}
               type="button"
               variant={primary === "steer" ? "default" : "outline"}
               size="sm"
@@ -795,10 +797,18 @@ function Composer({
               onClick={() => run("steer")}
             >
               {pending === "steer" && <Loader2Icon className="animate-spin" />}
-              {restarts ? "Steer (restarts turn)" : "Steer"}
+              {restarts ? (
+                <>
+                  <span className="max-sm:hidden">Steer (restarts turn)</span>
+                  <span className="sm:hidden">Steer</span>
+                </>
+              ) : (
+                "Steer"
+              )}
             </Button>
           )}
           <Button
+            aria-label={running ? "Send as new turn" : undefined}
             type="button"
             size="sm"
             variant={primary === "send" ? "default" : "outline"}
@@ -806,7 +816,14 @@ function Composer({
             onClick={() => run("send")}
           >
             {pending === "send" && <Loader2Icon className="animate-spin" />}
-            {running ? "Send as new turn" : "Send"}
+            {running ? (
+              <>
+                <span className="max-sm:hidden">Send as new turn</span>
+                <span className="sm:hidden">New turn</span>
+              </>
+            ) : (
+              "Send"
+            )}
           </Button>
         </div>
       </div>
@@ -819,7 +836,7 @@ function TechnicalEvents({ events }: { events: ChatEvent[] }) {
   if (events.length === 0) return null;
   return (
     <details
-      className="rounded-lg border px-4 py-3 text-sm sm:px-6"
+      className="rounded-lg border px-4 py-2 text-sm sm:px-6 sm:py-3"
       open={open}
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
