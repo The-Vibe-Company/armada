@@ -73,10 +73,11 @@ prerequisites, not implied by client tests.
 
 From repository root: `swift test --package-path apps/ios/ArmadaKit`.
 Package targets iOS 17+ / macOS 14+, Swift tools 6.0, no external dependencies.
-Linux sandbox has no Swift toolchain or Apple Security/CryptoKit SDK: tests/build
-are **not yet validated**. Mac integration must compile and run these actual
-sources before accepting this package. This is infrastructure, not rendered UI;
-there is no app target or simulator screenshot in this ticket.
+Linux sandboxes without Swift or the Apple Security/CryptoKit SDK cannot execute
+this package. The Apple Quality workflow runs these actual package tests and
+`apps/ios/scripts/verify.sh` compiles both generated app variants for the iOS
+simulator on macOS. It does not boot a simulator, exercise rendered interactions,
+sign or deploy the application.
 
 ## Sandbox metadata source
 
@@ -85,3 +86,34 @@ there is no app target or simulator screenshot in this ticket.
 MCP tools list envelope, control sandbox/list POST handler. This method requires
 the coupled #680 deployment; old servers do not provide the same safe DTO.
 It never calls interior routes and does not infer authority from display IDs.
+
+## Recovery and retention
+
+Initial structured HTTP400 `invalid_request` is a definitive validation refusal
+and can be discarded. Generic409 remains uncertain: exact body/key/CAS survive
+reconnect, and no replacement command is automatically allocated.
+
+`reconcileOrchestratorOperation` uses existing owner detail operations when an
+exact receipt ID is known (matching ID, parent, action, revision and organization).
+It never POSTs. Missing/mismatched receipts and failed reads do not prove rejection.
+A lost response without a receipt ID cannot safely be matched by action/revision.
+The user can explicitly forget uncertain tracking after a warning via
+`discardUncertainOrchestratorOperation(_:acknowledgingPossibleEffects:)`.
+This does not cancel server work, prove non-admission or automatically resend;
+a new command may duplicate effects. The app offers confirmation on create,
+lifecycle and message recovery. Active submissions cannot be discarded.
+
+Durable storage retains at most 32 terminal commands, including on restore;
+unresolved commands are never automatically evicted. Concurrent submitters retain
+terminal receipt knowledge in memory only until their last caller exits, so
+pruning cannot turn a known outcome back into an unknown one.
+
+Unknown outer/nested event kinds retain JSON in the SDK without aborting the
+page or losing its opaque cursor. The app skips these variants rather than
+rendering arbitrary payloads as assistant text. Known malformed variants still
+fail decoding. No conversation or native continuity is synthesized.
+
+Follow-up producer improvement: authoritative exact-key admission/receipt
+correlation would permit safe automatic recovery of pre-admission CAS conflicts.
+It is not required for the explicit warned local-abandon workflow and no endpoint
+or discriminator is invented here.

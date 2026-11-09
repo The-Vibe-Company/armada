@@ -137,6 +137,7 @@ public struct AgentEvent: Decodable, Sendable, Identifiable {
         case message(text: String, partial: Bool, messageId: String?, textMode: String?, model: String?, tools: [AgentToolCall])
         case steer(text: String, mode: String?)
         case other(type: String, data: JSONValue)
+        case unknown(kind: String, payload: JSONValue)
     }
     public let id: String
     public let at: Double
@@ -149,12 +150,13 @@ public struct AgentEvent: Decodable, Sendable, Identifiable {
         id = try c.decode(String.self, forKey: .id); at = try c.decode(Double.self, forKey: .at)
         conversationId = try c.decodeIfPresent(String.self, forKey: .conversationId)
         promptId = try c.decodeIfPresent(String.self, forKey: .promptId)
-        switch try c.decode(String.self, forKey: .kind) {
+        let kind = try c.decode(String.self, forKey: .kind)
+        switch kind {
         case "prompt": body = .prompt(text: try c.decode(String.self, forKey: .text), status: try c.decode(String.self, forKey: .status), reason: try c.decodeIfPresent(String.self, forKey: .reason))
         case "message": body = .message(text: try c.decode(String.self, forKey: .text), partial: try c.decode(Bool.self, forKey: .partial), messageId: try c.decodeIfPresent(String.self, forKey: .messageId), textMode: try c.decodeIfPresent(String.self, forKey: .textMode), model: try c.decodeIfPresent(String.self, forKey: .model), tools: try c.decode([AgentToolCall].self, forKey: .tools))
         case "steer": body = .steer(text: try c.decode(String.self, forKey: .text), mode: try c.decodeIfPresent(String.self, forKey: .mode))
         case "other": body = .other(type: try c.decode(String.self, forKey: .type), data: try c.decode(JSONValue.self, forKey: .data))
-        default: throw ArmadaError.invalidResponse
+        default: body = .unknown(kind: kind, payload: try JSONValue(from: decoder))
         }
     }
 }
@@ -165,6 +167,7 @@ public struct OrchestratorEvent: Decodable, Sendable, Identifiable {
         case operation(OrchestratorOperation)
         case wait(OrchestratorWaitLease, status: String)
         case child(sandboxId: String, operationId: String)
+        case unknown(kind: String, payload: JSONValue)
     }
     public let id: String
     public let orchestratorId: String
@@ -176,13 +179,14 @@ public struct OrchestratorEvent: Decodable, Sendable, Identifiable {
         let c = try decoder.container(keyedBy: K.self)
         id = try c.decode(String.self, forKey: .id); orchestratorId = try c.decode(String.self, forKey: .orchestratorId)
         at = try c.decode(String.self, forKey: .at); revision = try c.decode(Int.self, forKey: .revision)
-        switch try c.decode(String.self, forKey: .kind) {
+        let kind = try c.decode(String.self, forKey: .kind)
+        switch kind {
         case "agent": body = .agent(try c.decode(AgentEvent.self, forKey: .event))
         case "state": body = .state(try c.decode(OrchestratorState.self, forKey: .state), try c.decode(OrchestratorContinuity.self, forKey: .continuity))
         case "operation": body = .operation(try c.decode(OrchestratorOperation.self, forKey: .operation))
         case "wait": body = .wait(try c.decode(OrchestratorWaitLease.self, forKey: .lease), status: try c.decode(String.self, forKey: .status))
         case "child": body = .child(sandboxId: try c.decode(String.self, forKey: .sandboxId), operationId: try c.decode(String.self, forKey: .operationId))
-        default: throw ArmadaError.invalidResponse
+        default: body = .unknown(kind: kind, payload: try JSONValue(from: decoder))
         }
     }
 }

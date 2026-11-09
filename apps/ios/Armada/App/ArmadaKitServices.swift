@@ -49,7 +49,16 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
     func events(id: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage {
         do {
             let page = try await client.orchestratorEvents(id: id, cursor: cursor, limit: 100)
-            return OrchestratorEventPage(events: try page.events.map(Self.event), cursor: page.cursor, hasMore: page.hasMore)
+            let supported = page.events.filter { event in
+                switch event.body {
+                case .unknown: return false
+                case .agent(let agent):
+                    if case .unknown = agent.body { return false }
+                    return true
+                default: return true
+                }
+            }
+            return OrchestratorEventPage(events: try supported.map(Self.event), cursor: page.cursor, hasMore: page.hasMore)
         } catch {
             throw Self.readFailure(error)
         }
@@ -122,20 +131,37 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
 
     func submit(handle: String) async throws(ServiceFailure) -> OperationSummary {
         guard let id = UUID(uuidString: handle) else { throw .rejected("That request is no longer saved on this device.") }
-        // Checked here too so that "capability off" is never confused with a lost connection.
-        try await requireEnabled()
         do {
-            let receipt = try await client.submitOrchestratorOperation(id)
-            if receipt.state == .succeeded || receipt.state == .failed {
-                try? await client.discardOrchestratorOperation(id)
+            if let receipt = await client.pendingOperations.first(where: { $0.id == id })?.receipt,
+               receipt.state == .succeeded || receipt.state == .failed {
+                // SDK validates the current organization even for cached results.
+                return Self.operation(try await client.submitOrchestratorOperation(id))
             }
+            if let receipt = try await client.reconcileOrchestratorOperation(id),
+               receipt.state == .succeeded || receipt.state == .failed {
+                return Self.operation(receipt)
+            }
+            let receipt = try await client.submitOrchestratorOperation(id)
+            if receipt.state == .uncertain { throw ServiceFailure.uncertain }
+            // Keep terminal knowledge available to concurrent same-handle callers.
+            // It does not block preparing a new command; explicit cleanup is separate.
             return Self.operation(receipt)
         } catch {
+            if let receipt = await client.pendingOperations.first(where: { $0.id == id })?.receipt,
+               receipt.state == .succeeded || receipt.state == .failed {
+                do { return Self.operation(try await client.submitOrchestratorOperation(id)) }
+                catch { throw await submitFailure(error, id: id) }
+            }
             throw await submitFailure(error, id: id)
         }
     }
 
     func unresolved(orgID: String, orchestratorID: String?) async -> UnresolvedOperation? {
+        if let operation = await client.pendingOperations.first(where: {
+            $0.orgId == orgID && $0.orchestratorId == orchestratorID && ($0.state == .pending || $0.state == .uncertain)
+        }) {
+            _ = try? await client.reconcileOrchestratorOperation(operation.id)
+        }
         let saved = await client.pendingOperations.first { operation in
             operation.orgId == orgID && operation.orchestratorId == orchestratorID
                 && (operation.state == .pending || operation.state == .uncertain)
@@ -154,11 +180,22 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         try? await client.discardOrchestratorOperation(id)
     }
 
+    func discardUncertain(handle: String) async throws(ServiceFailure) {
+        guard let id = UUID(uuidString: handle) else { throw .rejected("This request is no longer saved.") }
+        do {
+            // Try a final read first; disappearance/mismatch is never rejection evidence.
+            _ = try? await client.reconcileOrchestratorOperation(id)
+            if let saved = await client.pendingOperations.first(where: { $0.id == id }), saved.canDiscard {
+                try await client.discardOrchestratorOperation(id)
+            } else {
+                try await client.discardUncertainOrchestratorOperation(id, acknowledgingPossibleEffects: true)
+            }
+        } catch { throw Self.readFailure(error) }
+    }
+
     func settle(handle: String) async {
-        guard let id = UUID(uuidString: handle),
-              await client.pendingOperations.first(where: { $0.id == id })?.receipt != nil else { return }
-        // Same saved bytes and key: the server answers with the original operation's receipt.
-        _ = try? await submit(handle: handle)
+        guard let id = UUID(uuidString: handle) else { return }
+        _ = try? await client.reconcileOrchestratorOperation(id)
     }
 
     // MARK: Sandboxes
@@ -217,6 +254,7 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
             return .unavailable("This Armada server doesn't offer this yet.")
         case .unavailable, .http(429): return .offline
         case .conflict: return .staleRevision
+        case .invalidRequest: return .rejected("Armada refused this request.")
         case .invalidResponse: return .rejected("Armada returned a response this app version doesn't understand.")
         case .secureStorage: return .rejected("This device's secure storage is unavailable.")
         case .invalidOrigin, .http: return .rejected("The request could not be completed.")
@@ -240,26 +278,32 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         }
     }
 
-    /// ArmadaKit persists the command as uncertain BEFORE sending, so a lost response stays
-    /// retryable under its key. A command still `pending` with no receipt was never sent (Kit's own
-    /// capability read failed); retrying it as itself is safe, so that reads as a connection problem.
-    /// A definitive refusal is asked to be forgotten; ArmadaKit currently keeps a refused retry, and
-    /// the presentation then shows that dead end instead of offering a retry that cannot succeed.
+    /// The current durable journal, not an HTTP status, decides whether a request
+    /// is safely discardable. Generic409 can follow effects; a refused retry does
+    /// not resolve earlier ambiguity. Never advertise a new-key retry in that case.
     private func submitFailure(_ error: any Error, id: UUID) async -> ServiceFailure {
-        if let armada = error as? ArmadaError {
-            switch armada {
-            case .signedOut: return .signedOut
-            case .forbidden, .http(404): return .noAccess
-            case .conflict:
-                try? await client.discardOrchestratorOperation(id)
-                return .staleRevision
-            case .http(400):
-                try? await client.discardOrchestratorOperation(id)
-                return .rejected("Armada refused this request.")
+        if let failure = error as? ServiceFailure {
+            switch failure {
+            case .signedOut, .noAccess, .unavailable: return failure
             default: break
             }
         }
-        guard let saved = await client.pendingOperations.first(where: { $0.id == id }) else { return .signedOut }
+        if let armada = error as? ArmadaError, armada == .signedOut { return .signedOut }
+        // Absence after concurrent cleanup is not proof of non-admission.
+        guard let saved = await client.pendingOperations.first(where: { $0.id == id }) else { return .uncertain }
+        if let armada = error as? ArmadaError {
+            switch armada {
+            case .forbidden, .http(404): return .noAccess
+            case .conflict, .invalidRequest, .http(400):
+                let neverDispatched = saved.state == .pending && saved.receipt == nil && saved.canDiscard
+                // Permission to clean up a succeeded receipt is NOT rejection evidence.
+                guard saved.rejectedBeforeAdmission || neverDispatched else { return .uncertain }
+                do { try await client.discardOrchestratorOperation(id) }
+                catch { return .uncertain }
+                return armada == .conflict ? .staleRevision : .rejected("Armada refused this request.")
+            default: break
+            }
+        }
         if saved.state == .pending, saved.receipt == nil { return .offline }
         return .uncertain
     }
@@ -326,8 +370,18 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
         case .operation(let operation): body = .operation(Self.operation(operation))
         case .wait(let lease, let status): body = .wait(try Self.lease(lease), status: status)
         case .child(let sandboxID, let operationID): body = .child(sandboxID: sandboxID, operationID: operationID)
+        case .unknown(let kind, let payload): body = .unknown(kind: technicalEvent(kind: kind, payload: payload))
         }
         return OrchestratorEvent(id: value.id, at: try date(value.at), revision: value.revision, body: body)
+    }
+
+    /// The existing presentation keeps technical entries as text. Retain the
+    /// complete JSON there; .unknown/.other are never projected as chat messages.
+    private static func technicalEvent(kind: String, payload: ArmadaKit.JSONValue) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let encoded = (try? encoder.encode(payload)).flatMap { String(data: $0, encoding: .utf8) }
+        return "\(kind)\n\(encoded ?? String(reflecting: payload))"
     }
 
     private static func agentEvent(_ value: ArmadaKit.AgentEvent) -> AgentEvent {
@@ -355,6 +409,8 @@ struct ArmadaKitServices: OrchestratorService, SandboxService {
             body = .steer(text: text, mode: mode)
         case .other(let type, _):
             body = .other(type: type)
+        case .unknown(let kind, let payload):
+            body = .other(type: technicalEvent(kind: kind, payload: payload))
         }
         // AgentEvent.at is milliseconds since the epoch.
         return AgentEvent(

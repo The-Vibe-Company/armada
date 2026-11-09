@@ -16,6 +16,10 @@ public struct Organization: Codable, Sendable, Identifiable {
     public let role: String
 }
 private struct Organizations: Decodable, Sendable { let orgs: [Organization] }
+private struct ArmadaFailureEnvelope: Decodable {
+    struct Detail: Decodable { let code: String }
+    let error: Detail
+}
 private struct StoredSession: Codable {
     let origin: String
     let session: ArmadaSession
@@ -32,6 +36,9 @@ public actor ArmadaClient {
     private let storage: any SessionStorage
     private var session: ArmadaSession?
     private var generation = 0
+    // Only concurrent submissions need receipts older than the durable retention window.
+    var activeSubmissions: [UUID: Int] = [:]
+    var activeTerminalReceipts: [UUID: OrchestratorOperation] = [:]
     private var refreshing: Task<ArmadaSession, Error>?
     private var refreshID: UUID?
     public private(set) var pendingOperations: [PendingOrchestratorOperation] = []
@@ -55,7 +62,9 @@ public actor ArmadaClient {
             guard let data = try storage.load() else { return }
             let stored = try JSONDecoder().decode(StoredSession.self, from: data)
             guard stored.origin == origin.absoluteString else { return }
-            session = stored.session; selectedOrgID = stored.selectedOrgID; pendingOperations = stored.operations ?? []; generation += 1
+            let operations = Self.boundedOperations(stored.operations ?? [])
+            try persist(stored.session, org: stored.selectedOrgID, operations: operations)
+            session = stored.session; selectedOrgID = stored.selectedOrgID; pendingOperations = operations; generation += 1
         } catch { throw ArmadaError.secureStorage }
     }
 
@@ -82,7 +91,7 @@ public actor ArmadaClient {
         guard generation == fence else { throw CancellationError() }
         try persist(next, org: nil, operations: [])
         refreshing?.cancel(); refreshing = nil; refreshID = nil; generation += 1
-        session = next; selectedOrgID = nil; pendingOperations = []
+        session = next; selectedOrgID = nil; pendingOperations = []; activeTerminalReceipts = [:]
     }
     public func organizations() async throws -> [Organization] {
         let result: Organizations = try await post("org/list", Empty())
@@ -99,7 +108,7 @@ public actor ArmadaClient {
     /// so the UI must not claim remote sign-out succeeded while offline.
     public func signOut() async throws {
         let token = session?.accessToken
-        generation += 1; refreshing?.cancel(); refreshing = nil; refreshID = nil; session = nil; selectedOrgID = nil; pendingOperations = []
+        generation += 1; refreshing?.cancel(); refreshing = nil; refreshID = nil; session = nil; selectedOrgID = nil; pendingOperations = []; activeTerminalReceipts = [:]
         do { try storage.remove() } catch { throw ArmadaError.secureStorage }
         if let token { let _: OK = try await wire("account/logout", Empty(), token: token) }
     }
@@ -167,8 +176,14 @@ public actor ArmadaClient {
     }
     func saveOperations(_ operations: [PendingOrchestratorOperation]) throws {
         guard let session else { throw ArmadaError.signedOut }
-        try persist(session, org: selectedOrgID, operations: operations)
-        pendingOperations = operations
+        let bounded = Self.boundedOperations(operations)
+        try persist(session, org: selectedOrgID, operations: bounded)
+        pendingOperations = bounded
+    }
+    /// Keep the latest 32 terminal records; unresolved commands are never evicted.
+    static func boundedOperations(_ operations: [PendingOrchestratorOperation]) -> [PendingOrchestratorOperation] {
+        let retained = Set(operations.filter { $0.state == .succeeded || $0.state == .failed }.suffix(32).map(\.id))
+        return operations.filter { $0.state == .pending || $0.state == .uncertain || retained.contains($0.id) }
     }
     private func request<Response: Decodable & Sendable>(
         _ route: String, method: String, query: [URLQueryItem] = [], body: Data?, token: String?, key: String? = nil
@@ -192,6 +207,13 @@ public actor ArmadaClient {
         case 200..<300: break
         case 401: throw ArmadaError.signedOut
         case 403: throw ArmadaError.forbidden
+        case 400:
+            if route == "orchestrators" || route.hasPrefix("orchestrators/") {
+                if let failure = try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data), failure.error.code == "invalid_request" {
+                    throw ArmadaError.invalidRequest
+                }
+            }
+            throw ArmadaError.http(400)
         case 409: throw ArmadaError.conflict
         case 500...599: throw ArmadaError.unavailable
         default: throw ArmadaError.http(response.statusCode)

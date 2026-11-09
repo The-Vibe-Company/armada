@@ -26,6 +26,7 @@ final class OrchestratorConversationModel {
     private(set) var detail: OrchestratorDetail?
     private(set) var pending: [PendingBubble] = []
     private(set) var lifecycle: LifecycleStatus?
+    private(set) var isDiscardingCommand = false
     private(set) var notice: (text: String, isError: Bool)?
     var draft = ""
     let feed = ConversationFeed()
@@ -54,6 +55,7 @@ final class OrchestratorConversationModel {
         if summary.continuity == .lost {
             return "The saved conversation was lost. Start a new orchestrator to continue."
         }
+        if isDiscardingCommand { return "Forgetting local request tracking…" }
         if lifecycle != nil { return "Waiting for Armada to confirm the last action." }
         switch summary.state {
         case .ready: return nil
@@ -66,10 +68,10 @@ final class OrchestratorConversationModel {
         }
     }
 
-    var canStop: Bool { summary?.state.canStop == true && lifecycle == nil }
+    var canStop: Bool { summary?.state.canStop == true && lifecycle == nil && !isDiscardingCommand }
 
     var canResume: Bool {
-        guard let summary, lifecycle == nil else { return false }
+        guard let summary, lifecycle == nil, !isDiscardingCommand else { return false }
         return summary.state.canResume && summary.continuity != .lost
     }
 
@@ -89,12 +91,29 @@ final class OrchestratorConversationModel {
     /// An accepted command stays saved until its final receipt is read. Once detail no longer
     /// lists its operation as open, read that receipt (same command, same key) so it is forgotten.
     private func settleFinishedCommand() async {
-        guard let detail,
-              let open = await service.unresolved(orgID: detail.summary.orgID, orchestratorID: orchestratorID),
-              let receipt = open.receipt,
+        guard let detail else { return }
+        let trackedHandle = lifecycleHandle
+        guard let open = await service.unresolved(orgID: detail.summary.orgID, orchestratorID: orchestratorID) else {
+            // Reading unresolved commands can reconcile a terminal receipt and remove its handle.
+            // A send in flight still owns its local state until its submit returns.
+            if let trackedHandle, lifecycleHandle == trackedHandle {
+                if case .sending = lifecycle { return }
+                finishLifecycle()
+            }
+            return
+        }
+        if lifecycleHandle == open.handle {
+            if case .sending = lifecycle { return }
+            lifecycle = open.receipt == nil || open.receipt?.state == .uncertain
+                ? .unconfirmed(open.kind) : .inProgress(open.kind)
+        }
+        guard let receipt = open.receipt, receipt.state != .uncertain,
               !detail.openOperations.contains(where: { $0.id == receipt.id }) else { return }
         await service.settle(handle: open.handle)
-        if lifecycleHandle == open.handle, case .inProgress = lifecycle { finishLifecycle() }
+        if lifecycleHandle == open.handle, case .inProgress = lifecycle,
+           await service.unresolved(orgID: detail.summary.orgID, orchestratorID: orchestratorID)?.handle != open.handle {
+            finishLifecycle()
+        }
     }
 
     /// A command saved by an earlier launch (or outliving its bubble) blocks new ones until it
@@ -105,14 +124,16 @@ final class OrchestratorConversationModel {
               let open = await service.unresolved(orgID: orgID, orchestratorID: orchestratorID),
               !handles.values.contains(open.handle) else { return }
         if refusedHandles.contains(open.handle) {
+            await service.discard(handle: open.handle)
+            guard await service.unresolved(orgID: orgID, orchestratorID: orchestratorID)?.handle == open.handle else { return }
             notice = (
-                "Armada refused the last request, and it is still saved on this device, so another can't be sent yet. Signing out clears it.",
+                "Armada refused the last request, and it is still saved on this device, so another can't be sent yet. Refresh to retry local cleanup.",
                 true
             )
             return
         }
         lifecycleHandle = open.handle
-        lifecycle = open.receipt == nil ? .unconfirmed(open.kind) : .inProgress(open.kind)
+        lifecycle = open.receipt == nil || open.receipt?.state == .uncertain ? .unconfirmed(open.kind) : .inProgress(open.kind)
     }
 
     /// Follows the event stream until the screen disappears.
@@ -176,16 +197,42 @@ final class OrchestratorConversationModel {
     }
 
     func retry(_ bubble: PendingBubble) {
-        guard handles[bubble.id] != nil, bubble.status == .unconfirmed else { return }
+        guard !isDiscardingCommand, handles[bubble.id] != nil, bubble.status == .unconfirmed else { return }
         setStatus(.sending, for: bubble.id)
         Task { await submit(bubble.id) }
     }
 
-    /// Hides an unconfirmed bubble. Its text is NOT returned to the draft: the server may still have
-    /// accepted it under its key, and resending it as a new message could deliver it twice. If it
-    /// was accepted, the conversation shows it.
-    func dismiss(_ bubble: PendingBubble) {
-        removeBubble(bubble.id, restoreDraft: false)
+    var hasUnconfirmedCommand: Bool {
+        if case .unconfirmed = lifecycle { return true }
+        return pending.contains { $0.status == .unconfirmed }
+    }
+
+    /// Called only after an explicit warning: this forgets tracking, not the server action.
+    /// Never restores message text to the draft or automatically resends it as a new intent.
+    func discardUnconfirmed(bubbleID: String? = nil) async {
+        guard !isDiscardingCommand else { return }
+        let bubble = bubbleID.flatMap { id in pending.first { $0.id == id && $0.status == .unconfirmed } }
+            ?? (bubbleID == nil ? pending.first { $0.status == .unconfirmed } : nil)
+        let handle: String
+        if let bubble, let saved = handles[bubble.id] {
+            handle = saved
+        } else if bubbleID == nil, case .unconfirmed = lifecycle, let saved = lifecycleHandle {
+            handle = saved
+        } else {
+            return
+        }
+        isDiscardingCommand = true
+        defer { isDiscardingCommand = false }
+        do throws(ServiceFailure) {
+            try await service.discardUncertain(handle: handle)
+            if let bubble { removeBubble(bubble.id, restoreDraft: false) }
+            if lifecycleHandle == handle { finishLifecycle() }
+            notice = ("Local request tracking was forgotten. The action may still have happened; check the latest state before sending a new request.", false)
+            await load()
+        } catch {
+            if error == .signedOut { onSignedOut() }
+            notice = (error.message, true)
+        }
     }
 
     private func submit(_ bubbleID: String) async {
@@ -239,7 +286,7 @@ final class OrchestratorConversationModel {
     }
 
     func retryLifecycle() {
-        guard let lifecycleHandle, case .unconfirmed(let kind) = lifecycle else { return }
+        guard !isDiscardingCommand, let lifecycleHandle, case .unconfirmed(let kind) = lifecycle else { return }
         lifecycle = .sending(kind)
         Task { await submitLifecycle(lifecycleHandle, kind: kind) }
     }

@@ -10,6 +10,8 @@ struct OrchestratorConversationView: View {
     @State private var model: OrchestratorConversationModel?
     @State private var showingDetails = false
     @State private var confirmingStop = false
+    @State private var confirmingDiscard = false
+    @State private var discardBubbleID: String?
 
     var body: some View {
         Group {
@@ -65,7 +67,10 @@ struct OrchestratorConversationView: View {
                 ? "Tell \(model.summary?.name ?? "the orchestrator") what to coordinate. It launches one dedicated worker per ticket."
                 : "Reading the conversation from Armada.",
             onRetryPending: { model.retry($0) },
-            onDismissPending: { model.dismiss($0) }
+            onDismissPending: {
+                discardBubbleID = $0.id
+                confirmingDiscard = true
+            }
         )
         .safeAreaInset(edge: .top, spacing: 0) {
             banners(model)
@@ -96,6 +101,14 @@ struct OrchestratorConversationView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("Details", systemImage: "info.circle") { showingDetails = true }
+                    if model.hasUnconfirmedCommand {
+                        Button("Forget Local Tracking…", systemImage: "trash", role: .destructive) {
+                            discardBubbleID = nil
+                            confirmingDiscard = true
+                        }
+                        .disabled(model.isDiscardingCommand)
+                        .accessibilityIdentifier("conversation.discardUnconfirmed")
+                    }
                     if model.canResume {
                         Button("Resume", systemImage: "play.fill") { model.resume() }
                     }
@@ -116,6 +129,14 @@ struct OrchestratorConversationView: View {
             Button("Stop", role: .destructive) { model.stop() }
         } message: {
             Text(stopMessage(model))
+        }
+        .confirmationDialog("Forget this unconfirmed request?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
+            Button("Forget Local Tracking", role: .destructive) {
+                let bubbleID = discardBubbleID
+                Task { await model.discardUnconfirmed(bubbleID: bubbleID) }
+            }
+        } message: {
+            Text("The action may already have happened. This only forgets local tracking; it does not cancel the request. Trying a new request may duplicate its effects. Message text will not be restored to the draft.")
         }
         .sheet(isPresented: $showingDetails) {
             if let detail = model.detail {
@@ -151,6 +172,13 @@ struct OrchestratorConversationView: View {
                     actionTitle: "Retry",
                     action: { model.retryLifecycle() }
                 )
+                .disabled(model.isDiscardingCommand)
+                Button("Forget Local Tracking…", role: .destructive) {
+                    discardBubbleID = nil
+                    confirmingDiscard = true
+                }
+                .disabled(model.isDiscardingCommand)
+                .accessibilityIdentifier("conversation.discardUnconfirmedLifecycle")
             case nil:
                 EmptyView()
             }
