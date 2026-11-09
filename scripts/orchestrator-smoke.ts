@@ -1,6 +1,6 @@
 /** Operator-only CLI smoke; never invoked by verify or CI. Allocates real compute.
  * ARMADA_TOKEN stays in the subprocess environment, never argv or the receipt.
- * Usage: bun scripts/orchestrator-smoke.ts https://origin org golden claude|codex model account [repo]
+ * Usage: bun scripts/orchestrator-smoke.ts https://origin org golden modal codex model account [repo]
  */
 import type {
   OrchestratorDetail,
@@ -19,19 +19,20 @@ function fail(code: string): never {
 }
 
 async function main() {
-  const [address = "", org = "", golden = "", harness = "", model = "", account = "", repo, ...extra] =
+  const [address = "", org = "", golden = "", provider = "", harness = "", model = "", account = "", repo, ...extra] =
     Bun.argv.slice(2);
   if (
     !address ||
     !org ||
     !golden ||
+    provider !== "modal" ||
     !harness ||
     !model ||
     !account ||
-    !["claude", "codex"].includes(harness ?? "") ||
+    harness !== "codex" ||
     extra.length
   )
-    fail("usage_origin_org_golden_harness_model_account_optional_repo");
+    fail("usage_origin_org_golden_modal_codex_model_account_optional_repo");
   const origin = new URL(address);
   if (
     origin.protocol !== "https:" ||
@@ -102,8 +103,16 @@ async function main() {
     return receipt;
   }
   step = "capabilities";
-  const capabilities = await cli<{ version: 1; enabled: boolean }>(["capabilities"]);
-  if (!capabilities.enabled) fail("runtime_disabled");
+  const capabilities = await cli<{
+    version: 1;
+    enabled: boolean;
+    pairs?: { provider: string; harness: string; enabled: boolean }[];
+  }>(["capabilities"]);
+  if (
+    !capabilities.enabled ||
+    !capabilities.pairs?.some((pair) => pair.provider === provider && pair.harness === harness && pair.enabled)
+  )
+    fail("selected_pair_disabled");
   step = "create";
   const key = `${runId}-create`;
   const record = { step, id: "", key };
@@ -116,7 +125,7 @@ async function main() {
     "--golden",
     golden,
     "--provider",
-    "boat",
+    provider,
     "--agent",
     harness,
     "--model",
