@@ -59,7 +59,7 @@ Unqualified network/503/conflict failures never imply non-admission.
 
 ## Two independent generation fences
 
-Migration214 adds `sandboxes.orchestrator_native_generation` and
+Migration216 adds `sandboxes.orchestrator_native_generation` and
 `orchestrator_delegations.native_generation`. Provider-native identities (Boat
 kernel boot UUID / Modal incarnation) are not SQL lifecycle counters.
 
@@ -117,8 +117,9 @@ ARMADA_TEST_POSTGRES_URL=<disposable-test-db> \
   bun test ./packages/mcp-server/test/orchestrator-runtime-postgres.integration.ts
 ```
 
-The dependency-only composition/native-credential fixtures require the actual
-#663/#604 producer modules; they are not passed off as native conformance here.
+The dependency-only composition fixture requires the actual #663 producer
+modules. The native-credential admission fixture now passes against merged #604
+and is checked explicitly during main integration; neither is native conformance.
 The private Codex no-text handshake tests verify exact thread/model identity
 without `thread/start` or `turn/start`. Claude has no verified equivalent and
 must remain disabled until its real driver supplies one.
