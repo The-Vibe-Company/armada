@@ -1,4 +1,5 @@
 import type { Visibility } from "./contract.ts";
+import type { GoldenOperation } from "./golden.ts";
 import { assertGoldenMutation, type GoldenActor, type GoldenRecord, type GoldenStore } from "./golden.ts";
 import { type GoldenConfig, GoldenError, parseGoldenConfig } from "./golden-config.ts";
 import { isSandboxProvider, type ModalBinding } from "./sandbox-provider.ts";
@@ -41,10 +42,12 @@ const COLUMNS = `id, org_id, name, visibility::text as visibility, owner_id, pro
  */
 export function createSqlGoldenStore(sql: Sql): GoldenStore {
   return {
+    reconcileOperations: (golden, actor) => reconcileGoldenOperations(sql, golden, actor),
+    beginOperation: (id) => beginGoldenOperation(sql, id),
     assertMutation: (golden, actor) => assertSqlGoldenMutation(sql, golden, actor),
     async list(orgId: string): Promise<GoldenRecord[]> {
       const result = await sql.query<GoldenRow>(
-        `select ${COLUMNS} from public.goldens where org_id = $1 order by name asc, provider asc, visibility asc`,
+        `select ${COLUMNS} from public.goldens where removed_at is null and org_id = $1 order by name asc, provider asc, visibility asc`,
         [orgId],
       );
       return result.rows.map(mapGoldenRow);
@@ -52,7 +55,7 @@ export function createSqlGoldenStore(sql: Sql): GoldenStore {
 
     async findByName(orgId: string, name: string): Promise<GoldenRecord[]> {
       const result = await sql.query<GoldenRow>(
-        `select ${COLUMNS} from public.goldens where org_id = $1 and name = $2 order by provider asc, visibility asc`,
+        `select ${COLUMNS} from public.goldens where removed_at is null and org_id = $1 and name = $2 order by provider asc, visibility asc`,
         [orgId, name],
       );
       return result.rows.map(mapGoldenRow);
@@ -198,4 +201,43 @@ export async function assertSqlGoldenMutation(sql: Sql, golden: GoldenRecord, ac
   const member = result.rows[0];
   if (!member) throw new GoldenError("forbidden", "Current golden mutation authority was revoked or changed.");
   assertGoldenMutation({ ...actor, role: member.role }, golden);
+}
+
+/** Admission and removal serialize on the golden row. Never expires on a wall-clock lease. */
+export async function beginGoldenOperation(sql: Sql, id: string): Promise<GoldenOperation> {
+  try {
+    const result = await sql.query<{ id: string }>(
+      "insert into public.golden_operation_fences(golden_id) values ($1) returning id",
+      [id],
+    );
+    const fence = result.rows[0];
+    if (!fence) throw new GoldenError("conflict", "Golden operation could not be admitted.");
+    const release: GoldenOperation = async () => {
+      await sql.query("delete from public.golden_operation_fences where id=$1", [fence.id]);
+    };
+    release.retain = async (receipt) => {
+      await sql.query("update public.golden_operation_fences set receipt=$2::text::jsonb where id=$1", [
+        fence.id,
+        JSON.stringify(receipt),
+      ]);
+    };
+    return release;
+  } catch {
+    throw new GoldenError("conflict", "Golden operation could not be admitted.");
+  }
+}
+
+/** Only a matching canonical readback resolves publication uncertainty; never a lease expiry. */
+export async function reconcileGoldenOperations(sql: Sql, golden: GoldenRecord, actor: GoldenActor): Promise<void> {
+  await assertSqlGoldenMutation(sql, golden, actor);
+  await sql.query(
+    `delete from public.golden_operation_fences f using public.goldens g
+     where f.golden_id=g.id and g.id=$1 and g.org_id=$2 and g.removed_at is null
+       and f.receipt->>'kind' in ('connect','snapshot')
+       and f.receipt->>'snapshotId'=g.provider_snapshot_id
+       and (f.receipt->>'sandboxId') is not distinct from g.provider_sandbox_id
+       and exists(select 1 from public.members m where m.org_id=g.org_id and m.user_id=$3
+         and ((g.visibility='private' and g.owner_id=$3) or (g.visibility='org' and m.role='admin')))`,
+    [golden.id, actor.orgId, actor.userId],
+  );
 }

@@ -21,7 +21,7 @@ import {
 import { GOLDEN_ROOT, GoldenError, initCommand, pullCommand, type ShellCommand } from "./golden-config.ts";
 import { LaunchError } from "./launch-error.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
-import type { Provider } from "./provider.ts";
+import { isNonMutatingProviderRefusal, type Provider } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
 import { assertProviderOf, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
@@ -144,101 +144,128 @@ export async function launchSandbox(
   const secrets = connected ? [...credentials.secrets, connected.token] : credentials.secrets;
 
   const id = (options.newId ?? (() => crypto.randomUUID()))();
-  const forked = await provider.fork({
-    from: snapshot,
-    noEnv: true,
-    env,
-    ttlSeconds,
-    labels: {
-      armada: "sandbox",
-      sandbox: id,
-      org: actor.orgId,
-      owner: actor.userId,
-      golden: golden.name,
-      visibility,
-      harness,
-    },
-  });
-
-  let record: SandboxRecord;
+  const releaseOperation = await stores.goldens.beginOperation?.(golden.id);
+  let childRecorded = false;
+  let noAllocation = false;
+  let failed = false;
   try {
-    record = await stores.sandboxes.insert({
-      id,
-      provider: golden.provider,
-      providerSandboxId: forked.id,
-      goldenId: golden.id,
-      orgId: golden.orgId,
-      ownerId: actor.userId,
-      harness,
-      status: "starting",
-      repositoryDir,
-      model: choice.model,
-      reasoningEffort: choice.reasoningEffort,
-      visibility,
-    });
-  } catch (error) {
-    await quietly(() => provider.delete({ sandboxId: forked.id }));
-    throw error;
-  }
+    const forked = await provider
+      .fork({
+        from: snapshot,
+        noEnv: true,
+        env,
+        ttlSeconds,
+        labels: {
+          armada: "sandbox",
+          sandbox: id,
+          org: actor.orgId,
+          owner: actor.userId,
+          golden: golden.name,
+          visibility,
+          harness,
+        },
+      })
+      .catch((error) => {
+        noAllocation = isNonMutatingProviderRefusal(error);
+        throw error;
+      });
 
-  try {
-    if ((record.visibility ?? golden.visibility) !== visibility) {
-      await provider.delete({ sandboxId: forked.id });
-      throw new LaunchError(
-        "start_failed",
-        "The sandbox store did not persist the requested independent visibility; no agent was started.",
-      );
+    let record: SandboxRecord;
+    try {
+      record = await stores.sandboxes.insert({
+        id,
+        provider: golden.provider,
+        providerSandboxId: forked.id,
+        goldenId: golden.id,
+        orgId: golden.orgId,
+        ownerId: actor.userId,
+        harness,
+        status: "starting",
+        repositoryDir,
+        model: choice.model,
+        reasoningEffort: choice.reasoningEffort,
+        visibility,
+      });
+      childRecorded = true;
+    } catch (error) {
+      await quietly(() => provider.delete({ sandboxId: forked.id }));
+      throw error;
     }
-    await stores.connections?.bind(record.id, connectionIds);
-    const ready = await waitReady(provider, forked.id, options);
-    if (credentials.codexAuthJson) await writeCodexAuth(provider, ready.id, secrets);
-    const launchGithub: GitHubLaunchInfo =
-      github.status === "connected"
-        ? await setupGitHub(provider, ready.id, github.identity, secrets)
-        : { status: github.status, message: github.message };
-    await setup(provider, ready.id, golden, secrets);
-    if (repositoryDir !== null && prepareNativeCwd)
-      await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
-    await stores.connections?.prepare?.(provider, record, actor);
-    if (prompt === undefined) {
-      await stores.sandboxes.update(record.id, { status: "ready" });
+
+    try {
+      if ((record.visibility ?? golden.visibility) !== visibility) {
+        await provider.delete({ sandboxId: forked.id });
+        throw new LaunchError(
+          "start_failed",
+          "The sandbox store did not persist the requested independent visibility; no agent was started.",
+        );
+      }
+      await stores.connections?.bind(record.id, connectionIds);
+      const ready = await waitReady(provider, forked.id, options);
+      if (credentials.codexAuthJson) await writeCodexAuth(provider, ready.id, secrets);
+      const launchGithub: GitHubLaunchInfo =
+        github.status === "connected"
+          ? await setupGitHub(provider, ready.id, github.identity, secrets)
+          : { status: github.status, message: github.message };
+      await setup(provider, ready.id, golden, secrets);
+      if (repositoryDir !== null && prepareNativeCwd)
+        await prepareNativeCwd({ sandboxId: ready.id, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` });
+      await stores.connections?.prepare?.(provider, record, actor);
+      if (prompt === undefined) {
+        await stores.sandboxes.update(record.id, { status: "ready" });
+        return finish(
+          record,
+          golden,
+          launchGithub,
+          ttlSeconds,
+          ready.expiresAt ?? forked.expiresAt,
+          "ready",
+          [],
+          undefined,
+        );
+      }
+      const receipt = await provider
+        .prompt({ sandboxId: ready.id, harness, text: prompt, ...choice })
+        .catch((error: unknown) => {
+          throw new LaunchError(
+            "prompt_failed",
+            `The agent could not be started: ${redact(messageOf(error), secrets)}`,
+            {
+              cause: error,
+            },
+          );
+        });
+      await stores.sandboxes.update(record.id, { status: "running", conversationIds: [receipt.conversationId] });
       return finish(
         record,
         golden,
         launchGithub,
         ttlSeconds,
         ready.expiresAt ?? forked.expiresAt,
-        "ready",
-        [],
-        undefined,
+        "running",
+        [receipt.conversationId],
+        {
+          conversationId: receipt.conversationId,
+          promptId: receipt.promptId,
+        },
       );
+    } catch (error) {
+      const failure = withSandbox(error, record.id, secrets);
+      await quietly(() => stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message }));
+      await quietly(() => provider.stop({ sandboxId: forked.id }));
+      throw failure;
     }
-    const receipt = await provider
-      .prompt({ sandboxId: ready.id, harness, text: prompt, ...choice })
-      .catch((error: unknown) => {
-        throw new LaunchError("prompt_failed", `The agent could not be started: ${redact(messageOf(error), secrets)}`, {
-          cause: error,
-        });
-      });
-    await stores.sandboxes.update(record.id, { status: "running", conversationIds: [receipt.conversationId] });
-    return finish(
-      record,
-      golden,
-      launchGithub,
-      ttlSeconds,
-      ready.expiresAt ?? forked.expiresAt,
-      "running",
-      [receipt.conversationId],
-      {
-        conversationId: receipt.conversationId,
-        promptId: receipt.promptId,
-      },
-    );
   } catch (error) {
-    const failure = withSandbox(error, record.id, secrets);
-    await quietly(() => stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message }));
-    await quietly(() => provider.stop({ sandboxId: forked.id }));
-    throw failure;
+    failed = true;
+    throw error;
+  } finally {
+    // An unrecorded physical outcome remains owned by this durable fence.
+    if (childRecorded || noAllocation) {
+      await releaseOperation?.().catch((error) => {
+        // Preserve an original provider/publication failure if release also loses transport.
+        if (!failed) throw error;
+      });
+    }
   }
 }
 

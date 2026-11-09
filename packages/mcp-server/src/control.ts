@@ -636,6 +636,12 @@ async function dispatch(
         required(body, "id"),
         body,
       );
+    case "golden/remove": {
+      const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
+      const data = options.data?.(scopedCaller);
+      if (!data?.removeGolden) throw new VaultError("unavailable", "Golden removal is not configured.");
+      return data.removeGolden(required(body, "id"));
+    }
     case "golden/visibility": {
       const visibility = required(body, "visibility");
       if (visibility !== "org" && visibility !== "private")

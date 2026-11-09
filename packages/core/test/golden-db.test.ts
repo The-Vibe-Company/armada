@@ -11,6 +11,7 @@ import {
   type SandboxInfo,
   snapshotGolden,
 } from "../src/index.ts";
+import { serviceGoldenOperations } from "./support/service-golden-operations.ts";
 
 const WEB = "https://github.com/example/web.git";
 const API = "https://github.com/example/api.git";
@@ -21,7 +22,7 @@ describe("golden database", () => {
     try {
       await applyMigrations(db);
       const people = await fixture(db);
-      const store = createSqlGoldenStore(db);
+      const store = { ...createSqlGoldenStore(db), ...serviceGoldenOperations(db) };
       const boat = readyProvider();
 
       await asUser(db, people.admin, () =>

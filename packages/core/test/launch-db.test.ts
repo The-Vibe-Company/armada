@@ -11,6 +11,7 @@ import {
   type Provider,
   type SandboxInfo,
 } from "../src/index.ts";
+import { serviceGoldenOperations } from "./support/service-golden-operations.ts";
 
 const TOKEN = "sk-ant-oat01-database-test-token";
 
@@ -20,7 +21,7 @@ describe("launch database", () => {
     try {
       await applyMigrations(db);
       const people = await fixture(db);
-      const goldens = createSqlGoldenStore(db);
+      const goldens = { ...createSqlGoldenStore(db), ...serviceGoldenOperations(db) };
       const sandboxes = createSqlSandboxStore(db);
       const boat = fakeBoat();
       const credentials = {

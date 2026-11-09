@@ -370,3 +370,20 @@ export interface PrepareNativeHarnessCwdRequest {
   harness: Harness;
   cwd: string;
 }
+
+/** Explicit non-mutating provider refusals, not transport failures or ambiguous conflicts. */
+export function isNonMutatingProviderRefusal(error: unknown): boolean {
+  return (
+    error instanceof ProviderError &&
+    !error.details?.resourceReceipt &&
+    !error.details?.keepSource &&
+    [
+      "unauthorized",
+      "forbidden",
+      "not_found",
+      "invalid_request",
+      "payment_required",
+      "provider_not_configured",
+    ].includes(error.code)
+  );
+}

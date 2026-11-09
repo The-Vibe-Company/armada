@@ -12,7 +12,13 @@ import {
   initCommand,
   parseGoldenName,
 } from "./golden-config.ts";
-import { type Provider, ProviderError, type SandboxInfo, type SnapshotInfo } from "./provider.ts";
+import {
+  isNonMutatingProviderRefusal,
+  type Provider,
+  ProviderError,
+  type SandboxInfo,
+  type SnapshotInfo,
+} from "./provider.ts";
 import { isSandboxProvider, type ModalBinding, SANDBOX_PROVIDERS, type SandboxProviderId } from "./sandbox-provider.ts";
 
 export interface GoldenActor {
@@ -40,7 +46,15 @@ export interface GoldenRecord {
   createdAt: string;
 }
 
+export interface GoldenOperation {
+  (): Promise<void>;
+  retain?(receipt: { kind: "connect" | "snapshot"; sandboxId: string | null; snapshotId: string }): Promise<void>;
+}
+
 export interface GoldenStore {
+  /** Durable admission; a crashed operation remains fenced for explicit reconciliation. */
+  beginOperation?(id: string): Promise<GoldenOperation>;
+  reconcileOperations?(golden: GoldenRecord, actor: GoldenActor): Promise<void>;
   /** Recheck live mutation authority, including after long provider operations/readback recovery. */
   assertMutation?(golden: GoldenRecord, actor: GoldenActor): Promise<void>;
   /** Server-side account binding guard. No adoption of legacy rows. */
@@ -180,96 +194,84 @@ export async function connectGolden(
 ): Promise<{ golden: GoldenRecord; sandbox: SandboxInfo }> {
   const golden = await oneVisible(store, actor.orgId, parseGoldenName(name), providerIdOf(provider));
   assertGoldenMutation(actor, golden);
-  if (golden.provider === "modal" && !store.assertMutation)
-    throw new GoldenError("forbidden", "Current Modal mutation authority cannot be verified.");
   await store.assertMutation?.(golden, actor);
-  await store.assertBackendBinding?.(golden, provider);
-  let current: SandboxInfo | undefined;
-  if (golden.providerSandboxId) {
-    try {
-      current = await provider.get(golden.providerSandboxId);
-    } catch (error) {
-      if (!(error instanceof ProviderError) || error.code !== "not_found") throw error;
-    }
-  }
-  if (current && current.state !== "stopped") {
-    const sandbox = await waitReady(provider, current.id, limits);
-    await store.assertMutation?.(golden, actor);
-    return { golden, sandbox };
-  }
-  if (!golden.providerSnapshotId) {
-    throw new GoldenError("conflict", `Golden '${golden.name}' has no saved snapshot to restore.`);
-  }
-  if (!store.replaceSandbox) throw new GoldenError("conflict", "Golden restore persistence is not configured.");
-  if (golden.provider === "modal" && !provider.restoreGoldenMaster)
-    throw new GoldenError(
-      "conflict",
-      "This Modal adapter requires the authorized golden restore port. No worker fork was created.",
-    );
-  const restored =
-    golden.provider === "modal"
-      ? await provider.restoreGoldenMaster!({
-          snapshotId: golden.providerSnapshotId,
-          ...(golden.providerSandboxId ? { sandboxId: golden.providerSandboxId } : {}),
-        })
-      : await provider.fork({ from: golden.providerSnapshotId, noEnv: true });
-  let outcome: "unpublished" | "unknown" | "published" = "unpublished";
+  await store.reconcileOperations?.(golden, actor);
+  const releaseOperation = await store.beginOperation?.(golden.id);
+  let uncertain = false;
+  let failed = false;
   try {
-    const sandbox = await waitReady(provider, restored.id, limits);
+    if (golden.provider === "modal" && !store.assertMutation)
+      throw new GoldenError("forbidden", "Current Modal mutation authority cannot be verified.");
     await store.assertMutation?.(golden, actor);
-    // Once sent, a failed response does not establish whether the database committed the CAS.
-    outcome = "unknown";
-    let published: boolean;
-    try {
-      published = await store.replaceSandbox(
-        golden.id,
-        golden.providerSandboxId,
-        golden.providerSnapshotId,
-        restored.id,
-      );
-    } catch {
-      let canonical: GoldenRecord | undefined;
+    await store.assertBackendBinding?.(golden, provider);
+    let current: SandboxInfo | undefined;
+    if (golden.providerSandboxId) {
       try {
-        canonical = (await store.findByName(actor.orgId, golden.name)).find(
-          (row) =>
-            row.id === golden.id &&
-            row.provider === golden.provider &&
-            row.providerSandboxId === restored.id &&
-            (golden.provider !== "modal" || row.providerSnapshotId === golden.providerSnapshotId),
-        );
-      } catch {
-        // Loss of read access or database availability is not evidence that publication failed.
+        current = await provider.get(golden.providerSandboxId);
+      } catch (error) {
+        if (!(error instanceof ProviderError) || error.code !== "not_found") throw error;
       }
-      if (canonical) {
-        assertGoldenMutation(actor, canonical);
-        if (!store.assertMutation) throw new GoldenError("forbidden", "Current mutation authority cannot be verified.");
-        await store.assertMutation(canonical, actor);
-        outcome = "published";
-        return { golden: canonical, sandbox };
-      }
-      // Even a nonmatching read may race an in-flight commit. Only an acknowledged false CAS
-      // is a known loser. Retain a potential winner rather than deleting a canonical master.
+    }
+    if (current && current.state !== "stopped") {
+      const sandbox = await waitReady(provider, current.id, limits);
+      await store.assertMutation?.(golden, actor);
+      return { golden, sandbox };
+    }
+    if (!golden.providerSnapshotId) {
+      throw new GoldenError("conflict", `Golden '${golden.name}' has no saved snapshot to restore.`);
+    }
+    if (!store.replaceSandbox) throw new GoldenError("conflict", "Golden restore persistence is not configured.");
+    if (golden.provider === "modal" && !provider.restoreGoldenMaster)
       throw new GoldenError(
         "conflict",
-        `Could not confirm golden restore publication. Retained sandbox ${restored.id}; retry golden connect '${golden.name}' to reconcile before removing any retained sandbox.`,
+        "This Modal adapter requires the authorized golden restore port. No worker fork was created.",
       );
-    }
-    outcome = published ? "published" : "unpublished";
-    if (!published) {
-      if (golden.provider === "modal") {
-        // The dedicated restore port is idempotent and may return the same source to concurrent
-        // callers. A false CAS is not ownership proof that this shared master is disposable.
+    const restoreSnapshot = golden.providerSnapshotId;
+    uncertain = true;
+    const restored = await (async () => {
+      try {
+        return golden.provider === "modal"
+          ? await provider.restoreGoldenMaster!({
+              snapshotId: restoreSnapshot,
+              ...(golden.providerSandboxId ? { sandboxId: golden.providerSandboxId } : {}),
+            })
+          : await provider.fork({ from: restoreSnapshot, noEnv: true });
+      } catch (error) {
+        if (isNonMutatingProviderRefusal(error)) uncertain = false;
+        throw error;
+      }
+    })();
+    await releaseOperation?.retain?.({
+      kind: "connect",
+      sandboxId: restored.id,
+      snapshotId: golden.providerSnapshotId,
+    });
+    let outcome: "unpublished" | "unknown" | "published" = "unpublished";
+    try {
+      const sandbox = await waitReady(provider, restored.id, limits);
+      await store.assertMutation?.(golden, actor);
+      // Once sent, a failed response does not establish whether the database committed the CAS.
+      outcome = "unknown";
+      let published: boolean;
+      try {
+        published = await store.replaceSandbox(
+          golden.id,
+          golden.providerSandboxId,
+          golden.providerSnapshotId,
+          restored.id,
+        );
+      } catch {
         let canonical: GoldenRecord | undefined;
         try {
           canonical = (await store.findByName(actor.orgId, golden.name)).find(
             (row) =>
               row.id === golden.id &&
-              row.provider === "modal" &&
+              row.provider === golden.provider &&
               row.providerSandboxId === restored.id &&
-              row.providerSnapshotId === golden.providerSnapshotId,
+              (golden.provider !== "modal" || row.providerSnapshotId === golden.providerSnapshotId),
           );
         } catch {
-          /* Retain the shared source when lookup is unavailable. */
+          // Loss of read access or database availability is not evidence that publication failed.
         }
         if (canonical) {
           assertGoldenMutation(actor, canonical);
@@ -277,20 +279,75 @@ export async function connectGolden(
             throw new GoldenError("forbidden", "Current mutation authority cannot be verified.");
           await store.assertMutation(canonical, actor);
           outcome = "published";
+          uncertain = false;
           return { golden: canonical, sandbox };
         }
+        // Even a nonmatching read may race an in-flight commit. Only an acknowledged false CAS
+        // is a known loser. Retain a potential winner rather than deleting a canonical master.
         throw new GoldenError(
           "conflict",
-          `Golden changed during restore. Retained shared Modal master ${restored.id}; retry connect to reconcile before removing any source.`,
+          `Could not confirm golden restore publication. Retained sandbox ${restored.id}; retry golden connect '${golden.name}' to reconcile before removing any retained sandbox.`,
         );
       }
-      throw new GoldenError("conflict", "The golden changed while restoring it; retry connect.");
+      outcome = published ? "published" : "unpublished";
+      uncertain = false;
+      if (!published) {
+        if (golden.provider === "modal") {
+          // The dedicated restore port is idempotent and may return the same source to concurrent
+          // callers. A false CAS is not ownership proof that this shared master is disposable.
+          let canonical: GoldenRecord | undefined;
+          try {
+            canonical = (await store.findByName(actor.orgId, golden.name)).find(
+              (row) =>
+                row.id === golden.id &&
+                row.provider === "modal" &&
+                row.providerSandboxId === restored.id &&
+                row.providerSnapshotId === golden.providerSnapshotId,
+            );
+          } catch {
+            /* Retain the shared source when lookup is unavailable. */
+          }
+          if (canonical) {
+            assertGoldenMutation(actor, canonical);
+            if (!store.assertMutation)
+              throw new GoldenError("forbidden", "Current mutation authority cannot be verified.");
+            await store.assertMutation(canonical, actor);
+            outcome = "published";
+            uncertain = false;
+            return { golden: canonical, sandbox };
+          }
+          throw new GoldenError(
+            "conflict",
+            `Golden changed during restore. Retained shared Modal master ${restored.id}; retry connect to reconcile before removing any source.`,
+          );
+        }
+        throw new GoldenError("conflict", "The golden changed while restoring it; retry connect.");
+      }
+      return { golden: { ...golden, providerSandboxId: restored.id }, sandbox };
+    } finally {
+      // Only fresh Boat forks are disposable. Modal restores reuse a shared image-owned source.
+      // Never delete that source on a losing/failed CAS or readiness ambiguity.
+      if (outcome === "unpublished" && golden.provider === "boat") {
+        // Publication lost, but cleanup is not yet known: either transport below may fail.
+        uncertain = true;
+        // A successful delete call is not a terminal physical observation.
+        await provider.delete({ sandboxId: restored.id });
+        const terminal = await provider.get(restored.id).catch((error) => {
+          if (error instanceof ProviderError && error.code === "not_found") return null;
+          throw error;
+        });
+        uncertain = terminal !== null;
+      }
     }
-    return { golden: { ...golden, providerSandboxId: restored.id }, sandbox };
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
-    // Only fresh Boat forks are disposable. Modal restores reuse a shared image-owned source.
-    // Never delete that source on a losing/failed CAS or readiness ambiguity.
-    if (outcome === "unpublished" && golden.provider === "boat") await provider.delete({ sandboxId: restored.id });
+    if (!uncertain)
+      await releaseOperation?.().catch((error) => {
+        // Preserve an original provider/publication failure if release also loses transport.
+        if (!failed) throw error;
+      });
   }
 }
 
@@ -307,116 +364,144 @@ export async function snapshotGolden(
 ): Promise<SnapshottedGolden> {
   let golden = await oneVisible(store, actor.orgId, parseGoldenName(name), providerIdOf(provider));
   assertGoldenMutation(actor, golden);
-  await store.assertBackendBinding?.(golden, provider);
-  const modal = golden.provider === "modal";
-  if (modal) {
-    if (!store.compareAndSetSnapshot)
-      throw new GoldenError("conflict", "Modal snapshot publication requires a compare-and-swap store.");
-    golden = (await connectGolden(provider, store, actor, name, limits)).golden;
-  }
-  const master = golden.providerSandboxId;
-  if (!master) throw new GoldenError("conflict", `Golden '${golden.name}' has no sandbox yet. Create it first.`);
-  const requested = modal
-    ? `golden-${golden.id}-${crypto.randomUUID()}`
-    : boatSnapshotName({
-        orgId: golden.orgId,
-        ownerId: golden.ownerId,
-        visibility: golden.visibility,
-        name: golden.name,
-      });
-  let actual = requested;
-  const retained = (error: unknown): ProviderError =>
-    new ProviderError({
-      provider: "modal",
-      code: error instanceof ProviderError ? error.code : "conflict",
-      retryable: false,
-      message: `Modal snapshot attempt '${actual}' could not be completed or confirmed. Source ${master} and any attempt artifact are retained; reconcile before retrying or removing either.`,
-      details: {
-        ...(error instanceof ProviderError && error.details?.resourceReceipt
-          ? { resourceReceipt: error.details.resourceReceipt }
-          : {}),
-        keepSource: true,
-        sourceSandboxId: master,
-        snapshotId: actual,
-      },
-    });
-  let info: Awaited<ReturnType<Provider["snapshot"]>> | undefined;
+  await store.assertMutation?.(golden, actor);
+  await store.reconcileOperations?.(golden, actor);
+  const releaseOperation = await store.beginOperation?.(golden.id);
+  let uncertain = false;
+  let failed = false;
   try {
-    info = await provider.snapshot({ sandboxId: master, name: requested });
-    if (modal) actual = info.name;
-  } catch (error) {
-    if (modal) throw retained(error);
-    if (!saveInProgress(error)) throw error;
-  }
-  if (modal) {
-    if (!actual || actual === golden.providerSnapshotId)
-      throw new GoldenError("snapshot_failed", "Provider returned an unsafe snapshot reference. Last-good retained.");
-    if (info?.sourceSandboxId !== undefined && info.sourceSandboxId !== master)
-      throw new GoldenError(
-        "snapshot_failed",
-        "Snapshot source does not match the authorized master. Last-good retained.",
-      );
-    if (info?.sourceSandboxId === undefined) {
+    await store.assertBackendBinding?.(golden, provider);
+    const modal = golden.provider === "modal";
+    if (modal) {
+      if (!store.compareAndSetSnapshot)
+        throw new GoldenError("conflict", "Modal snapshot publication requires a compare-and-swap store.");
+      golden = (await connectGolden(provider, store, actor, name, limits)).golden;
+    }
+    const master = golden.providerSandboxId;
+    if (!master) throw new GoldenError("conflict", `Golden '${golden.name}' has no sandbox yet. Create it first.`);
+    const requested = modal
+      ? `golden-${golden.id}-${crypto.randomUUID()}`
+      : boatSnapshotName({
+          orgId: golden.orgId,
+          ownerId: golden.ownerId,
+          visibility: golden.visibility,
+          name: golden.name,
+        });
+    let actual = requested;
+    const retained = (error: unknown): ProviderError =>
+      new ProviderError({
+        provider: "modal",
+        code: error instanceof ProviderError ? error.code : "conflict",
+        retryable: false,
+        message: `Modal snapshot attempt '${actual}' could not be completed or confirmed. Source ${master} and any attempt artifact are retained; reconcile before retrying or removing either.`,
+        details: {
+          ...(error instanceof ProviderError && error.details?.resourceReceipt
+            ? { resourceReceipt: error.details.resourceReceipt }
+            : {}),
+          keepSource: true,
+          sourceSandboxId: master,
+          snapshotId: actual,
+        },
+      });
+    let info: Awaited<ReturnType<Provider["snapshot"]>> | undefined;
+    try {
+      uncertain = true;
+      info = await provider.snapshot({ sandboxId: master, name: requested });
+      if (modal) actual = info.name;
+    } catch (error) {
+      if (isNonMutatingProviderRefusal(error)) uncertain = false;
+      if (modal) throw retained(error);
+      if (!saveInProgress(error)) throw error;
+    }
+    if (modal) {
+      if (!actual || actual === golden.providerSnapshotId)
+        throw new GoldenError("snapshot_failed", "Provider returned an unsafe snapshot reference. Last-good retained.");
+      if (info?.sourceSandboxId !== undefined && info.sourceSandboxId !== master)
+        throw new GoldenError(
+          "snapshot_failed",
+          "Snapshot source does not match the authorized master. Last-good retained.",
+        );
+      if (info?.sourceSandboxId === undefined) {
+        try {
+          info = await provider.getSnapshot(actual);
+        } catch (error) {
+          throw retained(error);
+        }
+      }
+      if (info?.name !== actual || info.sourceSandboxId !== master)
+        throw new GoldenError("snapshot_failed", "Snapshot source could not be verified. Last-good retained.");
+    }
+    if (!info || info.status === "saving") {
       try {
-        info = await provider.getSnapshot(actual);
+        info = await waitSnapshot(provider, actual, limits);
+      } catch (error) {
+        if (modal) throw retained(error);
+        throw error;
+      }
+    }
+    if (info.status !== "ready") {
+      uncertain = false;
+      throw new GoldenError("snapshot_failed", info.error ?? `Snapshot of '${golden.name}' failed.`);
+    }
+    if (modal && (info.name !== actual || info.sourceSandboxId !== master))
+      throw new GoldenError("snapshot_failed", "Ready snapshot source could not be verified. Last-good retained.");
+    if (modal) actual = info.name;
+    await releaseOperation?.retain?.({ kind: "snapshot", sandboxId: modal ? null : master, snapshotId: actual });
+    if (modal) {
+      try {
+        await provider.stop({ sandboxId: master });
       } catch (error) {
         throw retained(error);
       }
-    }
-    if (info?.name !== actual || info.sourceSandboxId !== master)
-      throw new GoldenError("snapshot_failed", "Snapshot source could not be verified. Last-good retained.");
-  }
-  if (!info || info.status === "saving") {
-    try {
-      info = await waitSnapshot(provider, actual, limits);
-    } catch (error) {
-      if (modal) throw retained(error);
-      throw error;
-    }
-  }
-  if (info.status !== "ready")
-    throw new GoldenError("snapshot_failed", info.error ?? `Snapshot of '${golden.name}' failed.`);
-  if (modal && (info.name !== actual || info.sourceSandboxId !== master))
-    throw new GoldenError("snapshot_failed", "Ready snapshot source could not be verified. Last-good retained.");
-  if (modal) actual = info.name;
-  if (modal) {
-    try {
-      await provider.stop({ sandboxId: master });
-    } catch (error) {
-      throw retained(error);
-    }
-    let published: boolean;
-    try {
-      published = await store.compareAndSetSnapshot!(golden.id, golden.providerSnapshotId, actual, master);
-    } catch {
-      // A matching read can confirm a winner; a missing/nonmatching read cannot prove rollback.
-      let committed: GoldenRecord | undefined;
+      let published: boolean;
       try {
-        committed = (await store.findByName(actor.orgId, golden.name)).find(
-          (row) =>
-            row.id === golden.id &&
-            row.provider === "modal" &&
-            row.providerSnapshotId === actual &&
-            row.providerSandboxId === null,
-        );
+        published = await store.compareAndSetSnapshot!(golden.id, golden.providerSnapshotId, actual, master);
       } catch {
-        /* Unknown outcome: retain everything. */
+        // A matching read can confirm a winner; a missing/nonmatching read cannot prove rollback.
+        let committed: GoldenRecord | undefined;
+        try {
+          committed = (await store.findByName(actor.orgId, golden.name)).find(
+            (row) =>
+              row.id === golden.id &&
+              row.provider === "modal" &&
+              row.providerSnapshotId === actual &&
+              row.providerSandboxId === null,
+          );
+        } catch {
+          /* Unknown outcome: retain everything. */
+        }
+        if (committed) {
+          await store.assertMutation?.(committed, actor);
+          uncertain = false;
+          return { golden: committed, snapshotName: actual };
+        }
+        throw retained(new GoldenError("conflict", "Snapshot publication outcome is unknown."));
       }
-      if (committed) return { golden: committed, snapshotName: actual };
-      throw retained(new GoldenError("conflict", "Snapshot publication outcome is unknown."));
+      uncertain = false;
+      if (!published)
+        throw new GoldenError(
+          "conflict",
+          `Golden changed while saving '${actual}'. Source ${master} and immutable Image retained for reconciliation.`,
+        );
+      return { golden: { ...golden, providerSnapshotId: actual, providerSandboxId: null }, snapshotName: actual };
     }
-    if (!published)
-      throw new GoldenError(
-        "conflict",
-        `Golden changed while saving '${actual}'. Source ${master} and immutable Image retained for reconciliation.`,
-      );
-    return { golden: { ...golden, providerSnapshotId: actual, providerSandboxId: null }, snapshotName: actual };
+    if (store.recordSnapshot) {
+      const published = await store.recordSnapshot(golden.id, master, actual);
+      uncertain = false;
+      if (!published) throw new GoldenError("conflict", "The golden changed while snapshotting; retry snapshot.");
+    } else await store.setSnapshot(golden.id, actual);
+    uncertain = false;
+    return { golden: { ...golden, providerSnapshotId: actual }, snapshotName: actual };
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
+    if (!uncertain)
+      await releaseOperation?.().catch((error) => {
+        // Preserve an original provider/publication failure if release also loses transport.
+        if (!failed) throw error;
+      });
   }
-  if (store.recordSnapshot) {
-    if (!(await store.recordSnapshot(golden.id, master, actual)))
-      throw new GoldenError("conflict", "The golden changed while snapshotting; retry snapshot.");
-  } else await store.setSnapshot(golden.id, actual);
-  return { golden: { ...golden, providerSnapshotId: actual }, snapshotName: actual };
 }
 
 /**

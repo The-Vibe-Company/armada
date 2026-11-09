@@ -316,6 +316,45 @@ export type Database = {
           },
         ];
       };
+      golden_operation_fences: {
+        Row: {
+          id: string;
+          golden_id: string;
+          owner_id: string | null;
+          created_at: string;
+          receipt: Json | null;
+        };
+        Insert: {
+          id?: string;
+          golden_id: string;
+          owner_id?: string | null;
+          created_at?: string;
+          receipt?: Json | null;
+        };
+        Update: {
+          id?: string;
+          golden_id?: string;
+          owner_id?: string | null;
+          created_at?: string;
+          receipt?: Json | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "golden_operation_fences_golden_id_fkey";
+            columns: ["golden_id"];
+            isOneToOne: false;
+            referencedRelation: "goldens";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "golden_operation_fences_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       goldens: {
         Row: {
           id: string;
@@ -333,6 +372,7 @@ export type Database = {
           modal_workspace: string | null;
           modal_environment: string | null;
           modal_app_id: string | null;
+          removed_at: string | null;
         };
         Insert: {
           id?: string;
@@ -350,6 +390,7 @@ export type Database = {
           modal_workspace?: string | null;
           modal_environment?: string | null;
           modal_app_id?: string | null;
+          removed_at?: string | null;
         };
         Update: {
           id?: string;
@@ -367,6 +408,7 @@ export type Database = {
           modal_workspace?: string | null;
           modal_environment?: string | null;
           modal_app_id?: string | null;
+          removed_at?: string | null;
         };
         Relationships: [
           {
@@ -1364,6 +1406,7 @@ export type GitHubConnection = Database["public"]["Tables"]["github_connections"
 export type GoldenAdoptionReceipt = Database["public"]["Tables"]["golden_adoption_receipts"]["Row"];
 export type GoldenBackendSlot = Database["public"]["Tables"]["golden_backend_slots"]["Row"];
 export type GoldenBuildJob = Database["public"]["Tables"]["golden_build_jobs"]["Row"];
+export type GoldenOperationFence = Database["public"]["Tables"]["golden_operation_fences"]["Row"];
 export type Golden = Database["public"]["Tables"]["goldens"]["Row"];
 export type McpActorEpoch = Database["public"]["Tables"]["mcp_actor_epochs"]["Row"];
 export type McpBinding = Database["public"]["Tables"]["mcp_bindings"]["Row"];
