@@ -1,11 +1,20 @@
 import { expect, test } from "bun:test";
-import { createSqlVaultStore, encryptSecret, type GoldenActor } from "@armada/core/server";
+import {
+  createSqlGoldenStore,
+  createSqlSandboxStore,
+  createSqlVaultStore,
+  encryptSecret,
+  type GoldenActor,
+  launchSandbox,
+  ProviderError,
+} from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { type Scope, scopeKey } from "@armada/provider-modal";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
+import { createHistoricalSandboxProviderResolver } from "../src/mcp-sandbox-provider.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
-import { call, ENCRYPTION_KEY, fakeBoat, harness } from "./support.ts";
+import { call, database, ENCRYPTION_KEY, fakeBoat, harness } from "./support.ts";
 
 const OWNER = "11111111-1111-4111-8111-111111111111";
 const PEER = "22222222-2222-4222-8222-222222222222";
@@ -44,11 +53,26 @@ test("real native state publication seals rotation without replacing binding, fe
     let authJson = native(1),
       reads = 0;
     let onRead: (() => Promise<void>) | undefined;
-    const auth = createModelAuthOwnership(db, KEY, async () => {
-      reads++;
-      await onRead?.();
-      return authJson;
+    let physicalStopped = false;
+    const observationProvider = fakeBoat().provider;
+    observationProvider.get = async (id) => ({
+      id,
+      name: id,
+      state: physicalStopped ? "stopped" : "running",
+      providerState: "fixture",
+      labels: {},
     });
+    const auth = createModelAuthOwnership(
+      db,
+      KEY,
+      async () => {
+        reads++;
+        await onRead?.();
+        return authJson;
+      },
+      undefined,
+      createHistoricalSandboxProviderResolver({ resolve: async () => observationProvider }),
+    );
     const actor: GoldenActor = { userId: OWNER, orgId: ORG, role: "admin" };
     const resolver = launchCredentials(createSqlVaultStore(db), KEY, undefined, auth);
     const credentials = await resolver.resolve(actor, "codex", account.id, 1);
@@ -180,6 +204,7 @@ test("real native state publication seals rotation without replacing binding, fe
     await expect(auth.state.read(actor, account.id, 1, SANDBOX)).rejects.toMatchObject({ code: "not_found" });
     await expect(auth.claim(actor, account.id, 2, OTHER)).rejects.toMatchObject({ code: "conflict" });
     await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [SANDBOX]);
+    physicalStopped = true; // independent provider observation, not the SQL label
     await auth.claim(actor, account.id, 2, OTHER);
     expect(await auth.state.read(actor, account.id, 2, OTHER)).toMatchObject({ authJson: native(9), revision: 0 });
     // Explicit replacement fences model billing, not safe shell inspection of
@@ -373,5 +398,181 @@ test("managed exec holds stop admission through secret publication while indepen
     release();
     await pending?.catch(() => {});
     await server.close();
+  }
+});
+
+// Rollout boundary: a612-bound native home may predate203 and already contain a
+// rotated token. Empty ownership is not proof that its credential is unused.
+test.each([
+  { name: "ready legacy collision", status: "ready", replace: false },
+  { name: "running legacy collision", status: "running", replace: false },
+  { name: "stopped stale same-version legacy", status: "stopped", replace: false },
+  { name: "same logical legacy ID is not adoption", status: "ready", replace: false, sameId: true },
+  { name: "fresh import does not silently adopt a stopped legacy ID", status: "stopped", replace: true, sameId: true },
+  { name: "fresh replacement still fences running old writer", status: "running", replace: true },
+  { name: "fresh replacement after confirmed idle stop", status: "stopped", replace: true, allowed: true },
+  {
+    name: "authenticated forged stopped receipt cannot hide a live writer",
+    status: "running",
+    replace: true,
+    forged: true,
+  },
+  { name: "missing trusted observation is not quiescence", status: "stopped", replace: true, missingObserver: true },
+  { name: "expired activity lease is not quiescence", status: "stopped", replace: true, leased: true },
+  {
+    name: "managed stopped owner cannot hide another legacy writer",
+    status: "stopped",
+    replace: true,
+    enrolled: true,
+    otherLive: true,
+  },
+])("first native enrollment: $name", async (scenario) => {
+  const { db, people } = await database();
+  try {
+    const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
+    let captures = 0,
+      observations = 0;
+    const observationProvider = fakeBoat().provider;
+    observationProvider.get = async (id) => {
+      observations++;
+      return {
+        id,
+        name: id,
+        state: scenario.status === "stopped" ? "stopped" : "running",
+        providerState: "private-provider-observation",
+        labels: {},
+      };
+    };
+    const observe = createHistoricalSandboxProviderResolver({
+      resolve: async (target, caller) => {
+        expect(target.provider).toBe("boat");
+        expect(target.orgId).toBe(actor.orgId);
+        expect(caller.userId).toBe(actor.userId);
+        return observationProvider;
+      },
+    });
+    const ownership = createModelAuthOwnership(
+      db,
+      ENCRYPTION_KEY,
+      async () => {
+        captures++;
+        return native(1);
+      },
+      undefined,
+      scenario.missingObserver ? undefined : observe,
+    );
+    const account = (
+      await db.query<{ id: string }>(
+        "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+        [actor.userId, await encryptSecret(native(0), ENCRYPTION_KEY)],
+      )
+    ).rows[0]!;
+    const legacy = crypto.randomUUID();
+    if (scenario.enrolled) await ownership.claim(actor, account.id, 1, legacy);
+    const insertLegacy = async (id: string, status: string) =>
+      db.query(
+        `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider_sandbox_id,boat_id,visibility,credential_id,credential_version,stopped_at)
+       select $1,$2,$3,g.id,'codex',$4::public.sandbox_status,$5,$5,'org',$6,1,
+       case when $4='stopped' then now() else null end
+       from goldens g where g.org_id=$2 and g.name='shared'`,
+        [id, actor.orgId, actor.userId, status, `legacy-${id}`, account.id],
+      );
+    await insertLegacy(legacy, scenario.status);
+    if (scenario.forged) {
+      await db.exec("begin");
+      try {
+        await db.query("select set_config('request.jwt.claim.sub',$1,true)", [actor.userId]);
+        await db.exec("set local role authenticated");
+        await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [legacy]);
+        await db.exec("commit");
+      } catch (error) {
+        await db.exec("rollback");
+        throw error;
+      }
+    }
+    if (scenario.otherLive) await insertLegacy(crypto.randomUUID(), "running");
+    if (scenario.leased)
+      await db.query("update sandboxes set activity_lease_id=$2,activity_until=now()-interval '1 hour' where id=$1", [
+        legacy,
+        crypto.randomUUID(),
+      ]);
+    if (scenario.replace)
+      await db.query("update credentials set value_enc=$2 where id=$1", [
+        account.id,
+        await encryptSecret(native(9), ENCRYPTION_KEY),
+      ]);
+    const currentVersion = scenario.replace ? 2 : 1;
+    const resolver = launchCredentials(createSqlVaultStore(db), ENCRYPTION_KEY, undefined, ownership);
+    const provider = fakeBoat().provider;
+    let forks = 0,
+      target = "";
+    provider.fork = async (request) => {
+      forks++;
+      target = request.labels!.sandbox!;
+      expect(await ownership.state.read(actor, account.id, currentVersion, target)).toMatchObject({
+        authJson: native(scenario.replace ? 9 : 0),
+        revision: 0,
+      });
+      throw new ProviderError({
+        provider: "boat",
+        code: "invalid_request",
+        message: "fixture admission probe: no allocation",
+        retryable: false,
+      });
+    };
+    const launch = launchSandbox(
+      provider,
+      { goldens: createSqlGoldenStore(db), sandboxes: createSqlSandboxStore(db), credentials: resolver },
+      actor,
+      { golden: "shared", harness: "codex", credentialId: account.id },
+      scenario.sameId ? { newId: () => legacy } : {},
+    );
+    if (scenario.allowed) {
+      await expect(launch).rejects.toMatchObject({ code: "invalid_request" });
+      expect(forks).toBe(1);
+      expect(await ownership.managed(target)).toBe(false); // confirmed no-allocation cleanup
+      const freshOwner = crypto.randomUUID();
+      await ownership.claim(actor, account.id, 2, freshOwner);
+      // The old workspace remains unmanaged; a different generation's lease is
+      // not permission to rebind it or disable its ordinary shell inspection.
+      await ownership.assertSandbox(actor, legacy, false, true);
+    } else {
+      await expect(launch).rejects.toMatchObject({ code: "conflict" });
+      expect(forks).toBe(0);
+      if (!scenario.enrolled) {
+        expect(
+          (await db.query("select 1 from model_auth_ownership where account_id=$1", [account.id])).rows,
+        ).toHaveLength(0);
+        expect((await db.query("select 1 from model_auth_state where account_id=$1", [account.id])).rows).toHaveLength(
+          0,
+        );
+        await ownership.assertSandbox(actor, legacy, false, true);
+        if (!scenario.replace) {
+          await ownership.assertSandbox(actor, legacy, true);
+          expect(await ownership.bootstrap(actor, account.id, 1, legacy)).toBeUndefined();
+        }
+      } else {
+        expect(
+          (
+            await db.query<{ account_version: number }>(
+              "select account_version from model_auth_ownership where account_id=$1",
+              [account.id],
+            )
+          ).rows[0]?.account_version,
+        ).toBe(1);
+      }
+    }
+    if (scenario.allowed || scenario.forged) expect(observations).toBeGreaterThan(0);
+    expect(captures).toBe(0); // no hidden capture/resume/adoption of the old home
+    expect(
+      (
+        await db.query<{ credential_id: string; credential_version: number }>(
+          "select credential_id,credential_version from sandboxes where id=$1",
+          [legacy],
+        )
+      ).rows[0],
+    ).toEqual({ credential_id: account.id, credential_version: 1 });
+  } finally {
+    await db.close();
   }
 });

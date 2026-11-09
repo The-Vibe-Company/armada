@@ -22,6 +22,7 @@ export function createModelAuthOwnership(
   encryptionKey?: string,
   captureNative: typeof sshPrivateAuthState = sshPrivateAuthState,
   now: () => number = Date.now,
+  historicalProvider?: (tx: Sql, sandboxId: string) => Promise<{ provider: Provider; providerSandboxId: string }>,
 ) {
   const state = createNativeStateStore(sql, encryptionKey);
   async function modalGeneration(tx: Sql, providerId: string, actor: GoldenActor, lock = false): Promise<string> {
@@ -338,6 +339,85 @@ export function createModelAuthOwnership(
       if (!sql.transaction) throw new VaultError("unavailable", "Native credential ownership requires transactions.");
       await sql.transaction(async (tx) => {
         const source = await authorize(tx, actor, id, version);
+        const previous = (
+          await tx.query<{ sandbox_id: string; account_version: number }>(
+            "select sandbox_id,account_version from public.model_auth_ownership where account_id=$1::uuid for update",
+            [id],
+          )
+        ).rows[0];
+        const sameOwner = previous?.sandbox_id === sandboxId && Number(previous.account_version) === version;
+        // A612-bound home can predate203 and already hold a rotated token. Never
+        // infer unused credentials from an empty ownership table or a stopped label.
+        // The credential lock serializes new admissions; also lock every historical
+        // binding before deciding whether an explicit fresh version may be seeded.
+        const bindings = await tx.query<{
+          id: string;
+          credential_version: number | null;
+          status: string;
+          stopped_at: unknown;
+          deleted_at: unknown;
+          activity_lease_id: string | null;
+          stop_requested_at: unknown;
+        }>(
+          `select id,credential_version,status::text,stopped_at,deleted_at,activity_lease_id,stop_requested_at
+           from public.sandboxes where credential_id=$1::uuid
+           and not ($4::boolean and id=$3::uuid and credential_version is not distinct from $2)
+           order by id for update`,
+          [id, version, sandboxId, sameOwner],
+        );
+        for (const binding of bindings.rows) {
+          if (binding.id === sandboxId)
+            throw new VaultError("conflict", "credential_busy: launch cannot adopt an existing unmanaged workspace.");
+          if (binding.credential_version === null || Number(binding.credential_version) >= version)
+            throw new VaultError(
+              "conflict",
+              "credential_busy: native version was already used; reconcile its authoritative state or explicitly import a fresh version.",
+            );
+          const terminal =
+            (binding.status === "stopped" && binding.stopped_at !== null) ||
+            (binding.status === "deleted" && binding.deleted_at !== null);
+          if (!terminal || binding.activity_lease_id !== null || binding.stop_requested_at !== null)
+            throw new VaultError("conflict", "credential_busy: an earlier native writer has not been quiesced.");
+          // authenticated can edit status/timestamps. A fresh import is not
+          // permission to trust those labels while an old native writer lives.
+          if (!historicalProvider)
+            throw new VaultError(
+              "conflict",
+              "credential_busy: historical native quiescence requires a trusted provider observation.",
+            );
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const controller = new AbortController();
+          try {
+            const proof = (async () => {
+              const target = await historicalProvider(tx, binding.id);
+              const observed = await target.provider.get(target.providerSandboxId, { signal: controller.signal });
+              return (
+                observed.id === target.providerSandboxId &&
+                (observed.state === "stopped" || observed.physicalExitConfirmed === true)
+              );
+            })();
+            const quiescent = await Promise.race([
+              proof,
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(() => {
+                  controller.abort();
+                  reject(new VaultError("unavailable", "Historical native observation timed out."));
+                }, 10_000);
+                timer.unref();
+              }),
+            ]);
+            if (!quiescent)
+              throw new VaultError(
+                "conflict",
+                "credential_busy: the provider has not confirmed the earlier native writer stopped.",
+              );
+          } catch (error) {
+            if (error instanceof VaultError) throw error;
+            throw new VaultError("unavailable", "Historical native quiescence could not be verified.");
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
+        }
         await tx.query(
           `insert into public.model_auth_ownership(account_id,account_version,sandbox_id)
            values($1::uuid,$2,$3::uuid) on conflict(account_id) do nothing`,
@@ -386,9 +466,10 @@ export function createModelAuthOwnership(
       const row = result.rows[0];
       if (!row) throw new VaultError("not_found", "No native sandbox binding.");
       if (!row.credential_id || row.credential_version === null || row.kind !== "codex_auth") return;
-      const known = await sql.query("select 1 from public.model_auth_ownership where account_id=$1::uuid", [
-        row.credential_id,
-      ]);
+      const known = await sql.query(
+        "select 1 from public.model_auth_ownership where account_id=$1::uuid and (not $3::boolean or account_version=$2)",
+        [row.credential_id, row.credential_version, _userExec],
+      );
       if (known.rows.length) {
         if (_userExec) {
           const current = await sql.query(

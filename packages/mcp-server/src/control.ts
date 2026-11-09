@@ -83,6 +83,7 @@ import { providerRegistry } from "./http.ts";
 import { InvitationError, type Invitations, invitationsFromEnv } from "./invitations.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
+import { createHistoricalSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModelAuthOwnership, type ModelAuthOwnership, modelAuthCapabilities } from "./model-auth.ts";
 import { createModelUsageApi, isPrivateModelEvent, type ModelUsageApi } from "./model-usage.ts";
@@ -1326,7 +1327,13 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     encryptionKey,
     github: { app: githubApp },
     store,
-    modelAuth: createModelAuthOwnership(sql, encryptionKey),
+    modelAuth: createModelAuthOwnership(
+      sql,
+      encryptionKey,
+      undefined,
+      undefined,
+      createHistoricalSandboxProviderResolver(providers),
+    ),
     providerFor,
     modelUsage: createModelUsageApi(sql),
     goldenAdoption: createGoldenAdoption(sql),

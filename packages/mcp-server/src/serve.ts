@@ -17,7 +17,7 @@ import { invitationsFromEnv, startInvitationWorker } from "./invitations.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
 import { bootstrapBoatMcp } from "./mcp-native.ts";
-import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
+import { createHistoricalSandboxProviderResolver, createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
@@ -51,7 +51,9 @@ export async function startServer(
   );
   await catalogAuthentication("slack"); // Reject invalid deployment ciphertext before serving.
   const sql = bunSql(config.databaseUrl);
-  const modelAuth = createModelAuthOwnership(sql, config.encryptionKey);
+  const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, (tx, id) =>
+    createHistoricalSandboxProviderResolver(providers)(tx, id),
+  );
   const store = createSqlVaultStore(sql);
   const authStore = createSqlAuthStore(sql);
   const githubApp = githubAppFromEnv(env);
