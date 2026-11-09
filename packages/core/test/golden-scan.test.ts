@@ -360,42 +360,85 @@ test("credential cleanup fails closed on an unexpected directory instead of recu
   }
 });
 
-test("real scan rejection logs only bounded location metadata, never values, names or arbitrary provider output", async () => {
+test.each([
+  { directory: ".npm", location: "package_cache" },
+  { directory: ".config/tool", location: "tool_config" },
+  { directory: ".local/state/tool", location: "application_state" },
+])(
+  "real scan rejection logs only bounded metadata ($location), never values, names or arbitrary provider output",
+  async ({ directory, location }) => {
+    const { base, roots } = sandbox();
+    const token = "ghu_" + "L".repeat(36);
+    const marker = "private-filename-not-for-logs";
+    const buildId = crypto.randomUUID();
+    const log = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mkdirSync(join(roots.home, directory), { recursive: true });
+      writeFileSync(join(roots.home, directory, marker), token);
+      const executor = {
+        exec: async (request: ExecRequest) => {
+          const result = spawnSync("bash", ["-c", withIsolatedRoots(request.command, roots)], { encoding: "utf8" });
+          // Simulate an untrusted provider adding unsafe extra diagnostics. Only the fixed protocol is accepted.
+          return {
+            detached: false,
+            exitCode: result.status,
+            stdout: result.stdout + "\n" + token + "\nARMADA_SCAN_MATCH file_content " + marker + " 1\n",
+            stderr: token,
+          };
+        },
+      } as unknown as Provider;
+      await expect(scanGoldenSandbox(executor, "bx_1", { buildId })).rejects.toMatchObject({ code: "setup_failed" });
+      expect(log).toHaveBeenCalledTimes(1);
+      const output = String(log.mock.calls[0]?.[0]);
+      expect(JSON.parse(output)).toEqual({
+        event: "golden_scan_rejected",
+        buildId,
+        surface: "file_content",
+        locationClass: location,
+        count: 1,
+        countUnit: "matching_files",
+        scope: "first_rejected_scan_step",
+      });
+      for (const forbidden of [token, marker, roots.home]) expect(output).not.toContain(forbidden);
+    } finally {
+      log.mockRestore();
+      rmSync(base, { recursive: true, force: true });
+    }
+  },
+);
+
+test("disposable history cleanup preserves startup/config files and still rejects unmanaged root-home injection", async () => {
+  const script = await capturedScript();
   const { base, roots } = sandbox();
-  const token = "ghu_" + "L".repeat(36);
-  const marker = "private-filename-not-for-logs";
-  const buildId = crypto.randomUUID();
-  const log = spyOn(console, "error").mockImplementation(() => {});
+  const token = "ghp_" + "M".repeat(36);
+  const histories = [
+    ".bash_history",
+    ".zsh_history",
+    ".python_history",
+    ".node_repl_history",
+    ".local/share/fish/fish_history",
+  ];
   try {
-    mkdirSync(join(roots.home, ".npm"));
-    writeFileSync(join(roots.home, ".npm", marker), token);
-    const executor = {
-      exec: async (request: ExecRequest) => {
-        const result = spawnSync("bash", ["-c", withIsolatedRoots(request.command, roots)], { encoding: "utf8" });
-        // Simulate an untrusted provider adding unsafe extra diagnostics. Only the fixed protocol is accepted.
-        return {
-          detached: false,
-          exitCode: result.status,
-          stdout: result.stdout + "\n" + token + "\nARMADA_SCAN_MATCH file_content " + marker + " 1\n",
-          stderr: token,
-        };
-      },
-    } as unknown as Provider;
-    await expect(scanGoldenSandbox(executor, "bx_1", { buildId })).rejects.toMatchObject({ code: "setup_failed" });
-    expect(log).toHaveBeenCalledTimes(1);
-    const output = String(log.mock.calls[0]?.[0]);
-    expect(JSON.parse(output)).toEqual({
-      event: "golden_scan_rejected",
-      buildId,
-      surface: "file_content",
-      locationClass: "package_cache",
-      count: 1,
-      countUnit: "matching_files",
-      scope: "first_rejected_scan_step",
-    });
-    for (const forbidden of [token, marker, roots.home]) expect(output).not.toContain(forbidden);
+    for (const home of [roots.home, roots.root]) {
+      mkdirSync(join(home, ".local/share/fish"), { recursive: true });
+      for (const file of histories) writeFileSync(join(home, file), token);
+      writeFileSync(join(home, ".bashrc"), "export SAFE_FIXTURE=ghs_test_secret\n");
+      writeFileSync(join(home, ".gitconfig"), "[user]\nname = fixture\n");
+    }
+    expect(runAgainst(script, roots).status).toBe(97);
+    expect(cleanCredentials(base, roots)).toBe(0);
+    for (const home of [roots.home, roots.root]) {
+      for (const file of histories) expect(existsSync(join(home, file))).toBe(false);
+      expect(readFileSync(join(home, ".bashrc"), "utf8")).toContain("ghs_test_secret");
+      expect(existsSync(join(home, ".gitconfig"))).toBe(true);
+    }
+    expect(runAgainst(script, roots).status).toBe(0);
+    writeFileSync(join(roots.root, "unmanaged.dat"), token);
+    expect(runAgainst(script, roots).status).toBe(97);
+    writeFileSync(join(roots.root, "unmanaged.dat"), "safe");
+    writeFileSync(join(roots.root, ".gitconfig"), "[credential]\nhelper = " + token + "\n");
+    expect(runAgainst(script, roots).status).toBe(97);
   } finally {
-    log.mockRestore();
     rmSync(base, { recursive: true, force: true });
   }
 });

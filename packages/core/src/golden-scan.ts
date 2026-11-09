@@ -52,8 +52,13 @@ export async function scanGoldenSandbox(
     "    */.git/objects/*) location=git_storage ;;",
     "    */.git/*) location=git_metadata ;;",
     "    */.git-credentials|*/.config/git/credentials|*/.netrc|*/.config/gh/hosts.yml|*/.npmrc) location=credential_file ;;",
+    "    */.bash_history|*/.zsh_history|*/.python_history|*/.node_repl_history|*/.local/share/fish/fish_history) location=shell_history ;;",
+    "    */.gitconfig|*/.config/git/config) location=git_global_config ;;",
+    "    */.bashrc|*/.profile|*/.bash_profile|*/.bash_login|*/.zshrc|*/.zprofile) location=shell_startup ;;",
     "    */.npm/*|*/.cache/*|*/.bun/install/cache/*) location=package_cache ;;",
     "    */.env|*/.env.*|*/environ|*/environment) location=environment_file ;;",
+    "    */.config/*) location=tool_config ;;",
+    "    */.local/share/*|*/.local/state/*) location=application_state ;;",
     "    /home/user/*) location=user_home ;;",
     "    /root/*) location=root_home ;;",
     "    /tmp/*) location=temporary ;;",
@@ -67,7 +72,7 @@ export async function scanGoldenSandbox(
     '    scan_location "$path"',
     "    counts[$location]=$(( ${counts[$location]:-0} + 1 ))",
     "  done",
-    "  for location in git_config git_storage git_metadata credential_file package_cache environment_file user_home root_home temporary other; do",
+    "  for location in git_config git_storage git_metadata credential_file package_cache environment_file shell_history git_global_config shell_startup tool_config application_state user_home root_home temporary other; do",
     "    count=${counts[$location]:-0}",
     '    if [ "$count" -gt 0 ]; then printf "ARMADA_SCAN_MATCH %s %s %s\n" "$surface" "$location" "$count"; fi',
     "  done",
@@ -165,7 +170,7 @@ function reportScanMatches(stdout: string, buildId?: string): void {
   let reported = false;
   for (const line of stdout.slice(0, 8192).split("\n").slice(0, 64)) {
     const match =
-      /^ARMADA_SCAN_MATCH (file_content|path_name|git_object) (git_config|git_storage|git_metadata|credential_file|package_cache|environment_file|user_home|root_home|temporary|other) ([1-9][0-9]{0,8})$/.exec(
+      /^ARMADA_SCAN_MATCH (file_content|path_name|git_object) (git_config|git_storage|git_metadata|credential_file|package_cache|environment_file|shell_history|git_global_config|shell_startup|tool_config|application_state|user_home|root_home|temporary|other) ([1-9][0-9]{0,8})$/.exec(
         line,
       );
     if (!match) continue;
