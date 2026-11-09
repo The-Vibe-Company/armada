@@ -311,13 +311,15 @@ async function readMcpJson(response: Response): Promise<Record<string, unknown> 
 function failure(status: number, payload: Record<string, unknown> | null, feature: string): ControlError {
   const error = payload && typeof payload.error === "object" && payload.error !== null ? payload.error : null;
   const message = error && "message" in error && typeof error.message === "string" ? error.message.slice(0, 300) : null;
+  const code = error && "code" in error && typeof error.code === "string" ? error.code : undefined;
   if (status === 401) return new ControlError("The Armada server refused this session. Sign in again.", status);
-  if (status === 403) return new ControlError(message ?? "You are not allowed to do that.", status);
+  if (status === 403) return new ControlError(message ?? "You are not allowed to do that.", status, code);
   if ((status === 404 || status === 405) && (!message || message === "Unknown route.")) {
     return new ControlError(`This Armada server does not offer ${feature} yet.`, status);
   }
-  if (status >= 500) return new ControlError(message ?? "The Armada server could not complete the request.", status);
-  return new ControlError(message ?? `The Armada server answered ${status}.`, status);
+  if (status >= 500)
+    return new ControlError(message ?? "The Armada server could not complete the request.", status, code);
+  return new ControlError(message ?? `The Armada server answered ${status}.`, status, code);
 }
 
 /** A golden build job receipt or status (`golden/create`, `golden/update`, `golden/build/status`). */
