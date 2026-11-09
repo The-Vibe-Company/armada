@@ -58,7 +58,6 @@ export function NavLinks({ className }: { className?: string }) {
                 key={href}
                 href={href}
                 title={hint}
-                aria-label={label}
                 aria-current={active ? "page" : undefined}
                 className={cn(
                   "flex min-w-0 flex-col items-center gap-1 rounded-md px-1 py-2 text-xs font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none has-[[data-pending]]:bg-accent has-[[data-pending]]:text-accent-foreground md:flex-row md:gap-2.5 md:px-2 md:py-1.5 md:text-sm",
@@ -71,7 +70,11 @@ export function NavLinks({ className }: { className?: string }) {
                   <Icon />
                 </LinkPendingIcon>
                 {/* A phone's four columns take a shorter word where the full one would be cut. */}
-                <span className="truncate md:hidden">{short}</span>
+                <span className="truncate md:hidden">
+                  {short}
+                  {/* The visible word starts the accessible name (label in name), the full one follows. */}
+                  {short !== label && <span className="sr-only"> ({label})</span>}
+                </span>
                 <span className="hidden truncate md:inline">{label}</span>
               </Link>
             );
