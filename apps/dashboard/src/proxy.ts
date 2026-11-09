@@ -2,6 +2,12 @@ import { CLIENT_CONFIG_PATH } from "@armada/core";
 import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 import { supabaseEnv } from "@/lib/env";
+import {
+  INVITATION_ACCEPT_PATH,
+  INVITATION_COOKIE,
+  invitationCookieOptions,
+  isInvitationToken,
+} from "@/lib/invitations";
 import { hasSessionCookie, isFront, isLanding, isPublicPath, LANDING_PATH } from "@/lib/routes";
 import type { Database } from "@/lib/supabase/types";
 
@@ -17,12 +23,33 @@ function landing(request: NextRequest, carry?: NextResponse): NextResponse {
 }
 
 /**
+ * The emailed invitation link carries its token in the query. It moves into a short-lived HTTP-only cookie (path `/`,
+ * see `invitationCookieOptions`) and the visitor lands on the same page without the query, so the token never reaches a login
+ * `next`, a Referer, the history, analytics or the rendered page. A malformed token is dropped. Nothing is accepted
+ * and nobody is signed in here: anything else the link carries (a `token_hash`, any other parameter) is dropped
+ * unread, and the page discards a URL fragment (see `DISCARD_LINK_CREDENTIALS_SCRIPT`).
+ */
+function stashInvitation(request: NextRequest): NextResponse {
+  const token = request.nextUrl.searchParams.get("token");
+  const target = request.nextUrl.clone();
+  target.search = "";
+  const response = NextResponse.redirect(target, 303);
+  response.headers.set("Referrer-Policy", "no-referrer");
+  response.headers.set("Cache-Control", "no-store");
+  if (isInvitationToken(token))
+    response.cookies.set(INVITATION_COOKIE, token, invitationCookieOptions(request.nextUrl.protocol === "https:"));
+  return response;
+}
+
+/**
  * Refreshes the session cookie on every request, shows the landing on `/` to a signed-out visitor and sends
  * one anywhere else to the login page.
  */
 export async function proxy(request: NextRequest) {
   if (request.nextUrl.pathname === CLIENT_CONFIG_PATH || request.nextUrl.pathname.startsWith("/api/v1/"))
     return NextResponse.next();
+  if (request.nextUrl.pathname === INVITATION_ACCEPT_PATH && request.nextUrl.search !== "")
+    return stashInvitation(request);
   // Stats authenticates its own bearer; only this exact read endpoint bypasses the session gate.
   if (request.nextUrl.pathname === "/api/stats" && ["GET", "HEAD"].includes(request.method)) return NextResponse.next();
   // The landing reads no session and no data: it shows without a session lookup. A visitor with no
