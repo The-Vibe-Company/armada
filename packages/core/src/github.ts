@@ -339,7 +339,7 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
           connection,
           await decryptSecret(new Uint8Array(connection.accessTokenEnc), deps.encryptionKey),
           request,
-          deps,
+          store,
           userId,
         );
       } catch (error) {
@@ -380,7 +380,7 @@ export async function resolveGitHubAccess(deps: GitHubResolveDeps, userId: strin
     };
     if (!(await store.rotateGitHubToken(userId, connection.refreshTokenEnc, next)))
       throw new Error("GitHub connection changed while its refresh lock was held.");
-    return connectedFromToken(connection, tokens.accessToken, request, deps, userId);
+    return connectedFromToken(connection, tokens.accessToken, request, store, userId);
   });
 }
 
@@ -388,7 +388,7 @@ async function connectedFromToken(
   connection: StoredGitHubConnection,
   accessToken: string,
   request: TokenRequestOptions,
-  deps: GitHubResolveDeps,
+  store: GitHubConnectionStore,
   userId: string,
 ): Promise<GitHubAccess> {
   let user: GitHubUser;
@@ -399,7 +399,7 @@ async function connectedFromToken(
     return { status: "unavailable", message: `${error.message} GitHub was not set up in this sandbox.` };
   }
   if (user.id !== connection.githubId || user.login !== connection.login || user.name !== connection.name)
-    await deps.store.updateGitHubProfile(userId, user).catch(() => {});
+    await store.updateGitHubProfile(userId, user).catch(() => {});
   return { status: "connected", token: accessToken, identity: gitIdentity(user) };
 }
 

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, openDatabase } from "../../../scripts/db/apply.ts";
+import { decryptSecret, encryptSecret } from "../src/crypto.ts";
+import { resolveGitHubAccess } from "../src/github.ts";
 import {
   addMember,
   createOrg,
@@ -370,6 +372,79 @@ interface People {
 }
 
 describe("GitHub connections", () => {
+  test("reconnecting B discards cached A and the next launch resolves B", async () => {
+    await withVault(async ({ store, db, people }) => {
+      await db.query(
+        `insert into github_connections (user_id, github_id, login, refresh_token_enc, access_token_enc, access_expires_at)
+         values ($1, 1, 'account-a', $2, $3, '2099-01-01')`,
+        [people.stan, await encryptSecret("refresh-a", KEY), await encryptSecret("access-a", KEY)],
+      );
+      await db.query("select set_config('request.jwt.claim.sub', $1, false)", [people.stan]);
+      await db.query("select save_github_connection(2, 'account-b', null, $1::bytea, null)", [
+        await encryptSecret("refresh-b", KEY),
+      ]);
+      const saved = await store.getGitHubConnection(people.stan);
+      expect(saved?.accessTokenEnc).toBeNull();
+      expect(saved?.accessExpiresAt).toBeNull();
+      const result = await resolveGitHubAccess(
+        {
+          store,
+          encryptionKey: KEY,
+          app: { clientId: "app", clientSecret: "secret" },
+          fetch: (async (url, init) => {
+            if (String(url).includes("access_token")) {
+              expect(JSON.parse(String(init?.body)).refresh_token).toBe("refresh-b");
+              return Response.json({ access_token: "access-b", refresh_token: "rotated-b", expires_in: 28800 });
+            }
+            expect(new Headers(init?.headers).get("authorization")).toBe("Bearer access-b");
+            return Response.json({ id: 2, login: "account-b", name: null });
+          }) as typeof fetch,
+        },
+        people.stan,
+      );
+      expect(result).toMatchObject({ status: "connected", token: "access-b", identity: { id: 2 } });
+      expect((await store.getGitHubConnection(people.stan))?.githubId).toBe(2);
+    });
+  });
+
+  test("a failed best-effort profile write does not roll back consumed token rotation", async () => {
+    await withVault(async ({ store, db, people }) => {
+      await db.query(
+        "insert into github_connections (user_id, github_id, login, refresh_token_enc) values ($1, 1, 'before', $2)",
+        [people.stan, await encryptSecret("refresh-before", KEY)],
+      );
+      await db.exec(`
+        create function refuse_profile() returns trigger language plpgsql as $$
+        begin
+          if new.login <> old.login then raise exception 'profile unavailable'; end if;
+          return new;
+        end; $$;
+        create trigger refuse_profile before update on github_connections
+          for each row execute function refuse_profile();
+      `);
+      const result = await resolveGitHubAccess(
+        {
+          store,
+          encryptionKey: KEY,
+          app: { clientId: "app", clientSecret: "secret" },
+          fetch: (async (url) =>
+            Response.json(
+              String(url).includes("access_token")
+                ? { access_token: "access-after", refresh_token: "refresh-after", expires_in: 28800 }
+                : { id: 1, login: "renamed", name: null },
+            )) as typeof fetch,
+        },
+        people.stan,
+      );
+      expect(result.status).toBe("connected");
+      const saved = await store.getGitHubConnection(people.stan);
+      expect(saved?.login).toBe("before");
+      expect(saved?.accessTokenEnc).not.toBeNull();
+      if (!saved) throw new Error("Connection disappeared");
+      expect(await decryptSecret(new Uint8Array(saved.refreshTokenEnc), KEY)).toBe("refresh-after");
+    });
+  });
+
   test("a rotated refresh token replaces the one it was read with, once", async () => {
     await withVault(async ({ store, db, people }) => {
       await db.query(
