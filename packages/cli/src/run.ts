@@ -17,10 +17,12 @@ import {
   ProviderError,
   ProviderRoutingError,
   parseGoldenConfig,
+  parseMachineSize,
   resolveModelChoice,
   SANDBOX_PROVIDERS,
   type SandboxProviderId,
   type SandboxStore,
+  SIZED_LAUNCH_ROUTE_V1,
   VaultError,
   type VaultStore,
   VERSION,
@@ -38,6 +40,8 @@ import {
   tokenRevoke,
 } from "./auth-commands.ts";
 import { operation } from "./operations.ts";
+import { printOptionalResourceAdvice } from "./resource-advice.ts";
+import { sizePolicyCommand } from "./size-policy-command.ts";
 import { skillCommand } from "./skill-install.ts";
 import { credsCommand, orgCommand, type VaultIo } from "./vault-commands.ts";
 
@@ -98,16 +102,27 @@ Usage:
                                            Scan and freeze the master sandbox
   armada golden capabilities [--provider boat|modal] [--org UUID] [--json]
                                            Server-authoritative golden capacity; null means unbounded/unknown
+  armada golden size-policy <name> [--provider boat|modal] [--org <org>] [--file <JSON|->] [--json]
+                                           Inspect defaults, or replace the entire policy from a file/stdin.
+                                           Version 1: {"version":1,"golden":null,"repositories":{}}
+                                           Repository keys are configured directories. null golden and an empty map
+                                           clear defaults. Scoped to this provider golden, future launches only.
   armada golden list [--provider boat|modal] [--json]
                                            Goldens you can see
   armada launch <golden> --agent claude|codex ["prompt"] [--model <id>] [--reasoning-effort <level>]
-                [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
+                [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--size small|medium|large|xlarge | --sized] [--ttl 4h] [--json]
                 [--visibility private|org] [--connections <id,...> | --no-connections] [--org <org>]
                                            Fork a golden into a sandbox. With a prompt the agent starts at once;
                                            without one the sandbox waits, ready, for the first prompt. The model
                                            and effort apply to every later turn too. --repo owner/repo selects a recorded
                                            golden repository as the native agent's real initial cwd (also when idle);
-                                           omit it to keep legacy launch behavior. Defaults:
+                                           omit it to keep legacy launch behavior. Size resolves on the server:
+                                           --size > selected repository default > golden default > legacy.
+                                           --size or --repo requires the versioned sizing server; --sized requires
+                                           default-policy resolution without overriding size. No downgrade/retry
+                                           to legacy launch on unsupported servers. Bare legacy launches keep their route.
+                                           Size labels do not promise equal performance/billing across providers.
+                                           Defaults:
                                            ${modelDefaults()}
                                            --repo prepares native agent cwd in the selected repository, including when idle; not confinement.
   armada list [--status STATUS] [--agent|--harness claude|codex] [--golden UUID] [--owner UUID|me]
@@ -115,6 +130,10 @@ Usage:
                                            Default page size 25; --json keeps {sandboxes:[...]}; --page-info adds exact totals
   armada mcp sandbox-connections <sandbox-uuid> [--org UUID] [--json]
                                            Read actual bound connection metadata, never mutate bindings
+  armada advice <sandbox-id> [--org UUID] [--json]
+                                           Last-10 comparable-session resource evidence; collects one bounded sample.
+                                           Missing/partial evidence abstains. Never resizes or changes defaults.
+                                           Human launch guidance uses stderr only; --json launch never requests advice.
   armada detail|status|stop|wait|interrupt <sandbox-id> [--org UUID] [--json]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
   armada golden remove <golden-id> [--org UUID] [--json]
@@ -208,6 +227,11 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
 async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const [command, ...original] = argv;
   if (command === "skill") return skillCommand(original, io);
+  // Command discovery must work before login or organization selection.
+  if (command === "launch" && original.length === 1 && ["--help", "-h"].includes(original[0] ?? "")) {
+    io.out(HELP);
+    return 0;
+  }
   let rest = original;
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
@@ -217,6 +241,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     "list",
     "detail",
     "status",
+    "advice",
     "send",
     "steer",
     "interrupt",
@@ -260,6 +285,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "list":
     case "detail":
     case "status":
+    case "advice":
     case "send":
     case "steer":
     case "interrupt":
@@ -307,6 +333,10 @@ async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     io.out(HELP);
     return subcommand === undefined ? 2 : 0;
   }
+  if (subcommand === "size-policy")
+    return sizePolicyCommand(rest, authOf(io, deps), (path) =>
+      path ? (deps.readFile ?? ((p) => Bun.file(p).text()))(path) : (deps.readStdin ?? (() => Bun.stdin.text()))(),
+    );
   const args = parseArgs(rest);
   providerFlag(args);
   const limits = {
@@ -644,7 +674,9 @@ function decodeLaunchResult(result: LaunchWireResult): LaunchResult {
 }
 
 async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const args = parseArgs(argv);
+  const args = parseArgs(argv, ["--size"], ["--sized"]);
+  const rawSize = single(args, "--size");
+  const size = rawSize === undefined ? undefined : parseMachineSize(rawSize);
   if (flag(args, "--no-connections") && single(args, "--connections") !== undefined)
     throw new GoldenError("invalid_config", "Use --connections or --no-connections, not both.");
   const [name, prompt, ...extra] = args.positionals;
@@ -663,8 +695,9 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     session: auth.session,
     ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
   });
+  const sized = size !== undefined || repo !== undefined || flag(args, "--sized");
   const result = decodeLaunchResult(
-    await client.request<LaunchWireResult>("/api/v1/sandbox/launch", {
+    await client.request<LaunchWireResult>(sized ? SIZED_LAUNCH_ROUTE_V1 : "/api/v1/sandbox/launch", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -672,6 +705,8 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
         ...(flag(args, "--no-connections") ? { connections: [] } : {}),
         ...(single(args, "--connections") ? { connections: single(args, "--connections")!.split(",") } : {}),
         golden: name,
+        ...(sized ? { sizePolicyVersion: 1 } : {}),
+        ...(size === undefined ? {} : { size }),
         ...(repo === undefined ? {} : { repo }),
         ...(providerFlag(args) ? { provider: providerFlag(args) } : {}),
         harness,
@@ -687,6 +722,22 @@ async function launch(argv: readonly string[], io: Io, deps: Deps): Promise<numb
     }),
   );
   io.out(flag(args, "--json") ? `${JSON.stringify(jsonLaunch(result), null, 2)}\n` : launchText(result));
+  if (
+    size !== undefined &&
+    (result.sandbox.machineSize?.requested !== size ||
+      result.sandbox.machineSize?.effective !== size ||
+      result.sandbox.machineSize?.source !== "override")
+  ) {
+    const message =
+      "The sandbox was created, but the server did not confirm the requested size. Do not retry launch; inspect this sandbox and check server rollout compatibility.";
+    io.err(
+      flag(args, "--json")
+        ? `${JSON.stringify({ warning: { code: "size_unconfirmed", message } })}\n`
+        : `Warning: ${message}\n`,
+    );
+  }
+  if (!flag(args, "--json"))
+    await printOptionalResourceAdvice(client, result.sandbox.id, single(args, "--org"), io.err);
   return 0;
 }
 
@@ -766,6 +817,11 @@ function launchText(result: LaunchResult): string {
     `Sandbox: ${sandbox.id}`,
     `${sandbox.provider === "boat" ? "Boat" : "Modal"} sandbox: ${sandbox.providerSandboxId}`,
     `Status: ${sandbox.status}`,
+    ...(sandbox.machineSize
+      ? [
+          `Size: ${sandbox.machineSize.effective ?? "unknown (legacy)"} (requested ${sandbox.machineSize.requested ?? "none"}; source ${sandbox.machineSize.source}).`,
+        ]
+      : ["Size: unknown (server supplied no size evidence)."]),
     ...(sandbox.repositoryDir
       ? [`Repository context: ${sandbox.repositoryDir} (native agent cwd; not an isolation boundary).`]
       : []),
@@ -807,6 +863,7 @@ function jsonLaunch(result: LaunchResult) {
     promptId: result.promptId ?? null,
     ttlSeconds: result.ttlSeconds,
     expiresAt: result.expiresAt ? new Date(result.expiresAt).toISOString() : null,
+    machineSize: sandbox.machineSize ?? null,
     github: {
       status: result.github.status,
       login: result.github.login ?? null,

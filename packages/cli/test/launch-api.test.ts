@@ -36,8 +36,19 @@ const response = {
 };
 
 describe("launch through the Armada API", () => {
-  for (const repo of [undefined, "ACME/web"]) {
+  for (const repo of [undefined, "ACME/web", "defaults-only"]) {
     test(`works with ARMADA_TOKEN and a clean HOME (repo: ${repo ?? "omitted"})`, async () => {
+      const machineSize =
+        repo === undefined
+          ? null
+          : {
+              version: 1,
+              requested: "large",
+              effective: "large",
+              source: "override",
+              repositoryDir: "web",
+              capacity: null,
+            };
       const calls: Request[] = [];
       let out = "";
       const code = await run(
@@ -52,7 +63,7 @@ describe("launch through the Armada API", () => {
           "--org",
           "org",
           "--json",
-          ...(repo === undefined ? [] : ["--repo", repo]),
+          ...(repo === undefined ? [] : repo === "defaults-only" ? ["--sized"] : ["--repo", repo, "--size", "large"]),
         ],
         { out: (text) => (out += text), err: () => undefined },
         {
@@ -63,7 +74,14 @@ describe("launch through the Armada API", () => {
             fetch: async (input, init) => {
               const request = input instanceof Request ? input : new Request(String(input), init);
               calls.push(request);
-              return Response.json(response);
+              return Response.json({
+                ...response,
+                sandbox: {
+                  ...response.sandbox,
+                  machineSize,
+                  ...(repo === undefined ? {} : { provider: "boat", providerSandboxId: "bx_server" }),
+                },
+              });
             },
             now: () => new Date(),
             open: () => undefined,
@@ -73,6 +91,7 @@ describe("launch through the Armada API", () => {
       );
       expect(code).toBe(0);
       expect(JSON.parse(out)).toMatchObject({
+        machineSize,
         golden: "web",
         harness: "codex",
         promptId: "prompt",
@@ -82,11 +101,19 @@ describe("launch through the Armada API", () => {
         id: "11111111-1111-4111-8111-111111111111",
         expiresAt: "2026-11-08T16:00:00.000Z",
       });
-      expect(calls[0]?.url).toBe("https://armada.thevibecompany.co/api/v1/sandbox/launch");
-      expect(calls[0]?.headers.get("authorization")).toBe(`Bearer ${token}`);
-      expect(await calls[0]?.json()).toEqual({
+      expect(calls).toHaveLength(1);
+      const launchRequest = calls.at(-1);
+      expect(launchRequest?.url).toBe(
+        `https://armada.thevibecompany.co/api/v1/sandbox/${repo === undefined ? "launch" : "launch-sized-v1"}`,
+      );
+      expect(launchRequest?.headers.get("authorization")).toBe(`Bearer ${token}`);
+      expect(await launchRequest?.json()).toEqual({
         golden: "web",
-        ...(repo === undefined ? {} : { repo }),
+        ...(repo === undefined
+          ? {}
+          : repo === "defaults-only"
+            ? { sizePolicyVersion: 1 }
+            : { repo, size: "large", sizePolicyVersion: 1 }),
         model: "gpt-6.1-sol",
         reasoningEffort: "medium",
         harness: "codex",
@@ -116,6 +143,99 @@ describe("launch through the Armada API", () => {
     );
     expect(code).toBe(0);
     expect(out).toContain("Sandbox: 11111111-1111-4111-8111-111111111111");
+    expect(out).toContain("Size: unknown (server supplied no size evidence).");
     expect(out).toContain("Stops by itself at 2026-11-08T16:00:00.000Z (TTL 1800s).");
+  });
+  test("invalid or repeated launch size fails before requesting allocation", async () => {
+    for (const flags of [["--size", "huge"], ["--size"], ["--size", "small", "--size", "large"]]) {
+      let calls = 0;
+      let out = "";
+      const code = await run(
+        ["launch", "web", "--agent", "codex", ...flags],
+        { out: (text) => (out += text), err: () => undefined },
+        {
+          auth: {
+            out: () => undefined,
+            err: () => undefined,
+            env: { ARMADA_TOKEN: token },
+            session: memorySessionStore(),
+            now: () => new Date(),
+            open: () => undefined,
+            fetch: async () => {
+              calls++;
+              throw new Error("unexpected request");
+            },
+          },
+        },
+      );
+      expect(code).toBe(2);
+      expect(calls).toBe(0);
+      expect(out).toBe("");
+    }
+  });
+  test("explicit override refuses older servers before allocation instead of silently ignoring size", async () => {
+    const calls: Request[] = [];
+    let out = "";
+    const code = await run(
+      ["launch", "web", "--agent", "codex", "--size", "large"],
+      {
+        out: (text) => {
+          out += text;
+        },
+        err: () => undefined,
+      },
+      {
+        auth: {
+          out: () => undefined,
+          err: () => undefined,
+          env: { ARMADA_TOKEN: token },
+          session: memorySessionStore(),
+          now: () => new Date(),
+          open: () => undefined,
+          fetch: async (input, init) => {
+            calls.push(new Request(String(input), init));
+            return Response.json({ error: { message: "Unknown API route." } }, { status: 404 });
+          },
+        },
+      },
+    );
+    expect(code).toBe(1);
+    expect(out).toBe("");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toEndWith("/api/v1/sandbox/launch-sized-v1");
+  });
+  test("mixed-version launch retains created sandbox JSON and warns when override evidence is missing", async () => {
+    let out = "";
+    let err = "";
+    let calls = 0;
+    const code = await run(
+      ["launch", "web", "--agent", "codex", "--size", "large", "--json"],
+      {
+        out: (text) => {
+          out += text;
+        },
+        err: (text) => {
+          err += text;
+        },
+      },
+      {
+        auth: {
+          out: () => undefined,
+          err: () => undefined,
+          env: { ARMADA_TOKEN: token },
+          session: memorySessionStore(),
+          now: () => new Date(),
+          open: () => undefined,
+          fetch: async () => {
+            calls++;
+            return Response.json(response);
+          },
+        },
+      },
+    );
+    expect(code).toBe(0);
+    expect(calls).toBe(1);
+    expect(JSON.parse(out)).toMatchObject({ id: response.sandbox.id, machineSize: null });
+    expect(JSON.parse(err).warning.code).toBe("size_unconfirmed");
   });
 });

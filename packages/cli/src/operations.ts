@@ -3,6 +3,7 @@ import { flag, parseArgs, single } from "./args.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { authorizeConnection, type ConnectionStatus, validateConnectionStatus } from "./connection-authorization.ts";
 import { control } from "./control.ts";
+import { resourceAdviceText } from "./resource-advice.ts";
 
 /** API-only command boundary: server-side schemas and policy remain authoritative. */
 export async function operation(
@@ -203,7 +204,10 @@ export async function operation(
     seconds === undefined ? undefined : AbortSignal.timeout((seconds + 15) * 1_000),
   );
 
-  if (command === "list" && !flag(args, "--page-info")) {
+  if (command === "advice" && !flag(args, "--json")) {
+    const { advice } = result as import("@armada/core").ResourceAdviceResponse;
+    auth.out(`${resourceAdviceText(advice) ?? `No resource recommendation (${advice.reason}); defaults unchanged.`}\n`);
+  } else if (command === "list" && !flag(args, "--page-info")) {
     const page = result as { sandboxes?: unknown };
     if (!Array.isArray(page?.sandboxes))
       throw new GoldenError("invalid_config", "Armada returned an invalid sandbox page.");
