@@ -185,6 +185,13 @@ public actor ArmadaClient {
         let retained = Set(operations.filter { $0.state == .succeeded || $0.state == .failed }.suffix(32).map(\.id))
         return operations.filter { $0.state == .pending || $0.state == .uncertain || retained.contains($0.id) }
     }
+    /// Sandbox route codes that refuse before anything reaches the agent. The server answers 400 for
+    /// any other code too, including `unknown` after a provider already accepted a prompt, so a bare
+    /// 400 never proves that a prompt was not delivered.
+    static let sandboxRefusalCodes: Set<String> = [
+        "invalid", "invalid_request", "sandbox_not_ready", "unsupported", "payment_required", "rate_limited",
+        "missing_credential", "unauthorized",
+    ]
     private func request<Response: Decodable & Sendable>(
         _ route: String, method: String, query: [URLQueryItem] = [], body: Data?, token: String?, key: String? = nil
     ) async throws -> Response {
@@ -210,10 +217,11 @@ public actor ArmadaClient {
             throw ArmadaError.signedOut
         case 403: throw ArmadaError.forbidden
         case 400:
+            let code = (try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data))?.error.code
             if route == "orchestrators" || route.hasPrefix("orchestrators/") {
-                if let failure = try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data), failure.error.code == "invalid_request" {
-                    throw ArmadaError.invalidRequest
-                }
+                if code == "invalid_request" { throw ArmadaError.invalidRequest }
+            } else if route.hasPrefix("sandbox/"), let code, Self.sandboxRefusalCodes.contains(code) {
+                throw ArmadaError.invalidRequest
             }
             throw ArmadaError.http(400)
         case 409: throw ArmadaError.conflict

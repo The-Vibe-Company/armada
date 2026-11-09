@@ -39,13 +39,38 @@ struct SandboxPage: Sendable {
     let nextPage: Int?
 }
 
-/// The interior a permitted owner or current admin may open. Built only from a server response to
-/// an authorized interior request, never from list metadata.
-struct SandboxInterior: Sendable {
-    let summary: SandboxSummary
-    let events: [OrchestratorEvent]
-    /// Opaque cursor to continue the event stream.
-    let cursor: String?
-    /// The server accepts a message for this sandbox now.
-    let acceptsMessages: Bool
+/// Interior state of a sandbox the server let this person open (owner or current admin), read from
+/// `sandbox/detail`. Built only from an authorized interior response, never from list metadata.
+struct SandboxState: Hashable, Sendable {
+    enum Admission: Hashable, Sendable {
+        /// A new prompt can be sent now (a stopped sandbox resumes on it).
+        case open
+        case turnRunning
+        case starting
+        case stopping
+        case failed
+        case deleted
+        case unknownStatus
+    }
+
+    let status: SandboxStatus
+    /// Safe server-written reason, for example why the sandbox failed.
+    let statusReason: String?
+    /// The latest turn, if any.
+    let turn: SandboxTurnState?
+    let admission: Admission
+    let canStop: Bool
+    let isWorking: Bool
+}
+
+struct SandboxTurnState: Hashable, Sendable {
+    let promptID: String
+    let status: PromptStatus
+    let reason: String?
+}
+
+/// The server's acceptance of a prompt: the turn it opened.
+struct SandboxPromptAcceptance: Hashable, Sendable {
+    let promptID: String
+    let status: PromptStatus
 }

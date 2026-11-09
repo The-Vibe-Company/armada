@@ -156,7 +156,9 @@ struct ConversationTranscript: View {
             )
             if bubble.status == .unconfirmed {
                 VStack(alignment: .trailing, spacing: 6) {
-                    Text("Armada did not confirm delivery. Retry sends the same request again; Dismiss only hides it here, and it still appears if Armada received it.")
+                    Text(onRetryPending == nil
+                        ? "Armada did not confirm delivery. It appears above if Armada received it; Dismiss only hides it here."
+                        : "Armada did not confirm delivery. Retry sends the same request again; Dismiss only hides it here, and it still appears if Armada received it.")
                         .font(.caption)
                         .foregroundStyle(ArmadaTheme.dangerText)
                         .multilineTextAlignment(.trailing)

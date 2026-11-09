@@ -244,14 +244,35 @@ enum PreviewData {
             SandboxPage(items: empty ? [] : PreviewData.sandboxes, total: empty ? 0 : PreviewData.sandboxes.count, nextPage: nil)
         }
 
-        func interior(id: String, orgID: String, cursor: String?) async throws(ServiceFailure) -> SandboxInterior {
+        func sandboxState(id: String, orgID: String) async throws(ServiceFailure) -> SandboxState {
             guard let summary = PreviewData.sandboxes.first(where: { $0.id == id }), summary.canOpen else { throw .noAccess }
-            return SandboxInterior(
-                summary: summary,
+            let working = summary.status == .running
+            return SandboxState(
+                status: summary.status,
+                statusReason: nil,
+                turn: SandboxTurnState(promptID: "pr_preview", status: working ? .running : .finished, reason: nil),
+                admission: working ? .turnRunning : .open,
+                canStop: working || summary.status == .ready,
+                isWorking: working
+            )
+        }
+
+        func sandboxEvents(id: String, orgID: String, cursor: String?) async throws(ServiceFailure) -> OrchestratorEventPage {
+            guard PreviewData.sandboxes.contains(where: { $0.id == id && $0.canOpen }) else { throw .noAccess }
+            return OrchestratorEventPage(
                 events: cursor == nil ? Array(PreviewData.events(for: PreviewData.leadID).prefix(3)) : [],
                 cursor: "end",
-                acceptsMessages: false
+                hasMore: false
             )
+        }
+
+        func sendPrompt(sandboxID: String, orgID: String, text: String) async throws(ServiceFailure) -> SandboxPromptAcceptance {
+            // Shows the unconfirmed path in previews: an outcome is never invented as success.
+            throw .uncertain
+        }
+
+        func stopSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxStatus {
+            .stopping
         }
     }
 }

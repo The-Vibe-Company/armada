@@ -1,8 +1,10 @@
+import enum ArmadaKit.EventStream
 import Foundation
 import Observation
 
 /// Follows one durable event stream by its opaque cursor and keeps the projected conversation.
-/// Reads are poll-safe and idempotent: an event id is applied once, the cursor only moves forward,
+/// Reads are poll-safe and idempotent: an event read again replaces its earlier body in place (a
+/// sandbox prompt that finished, a message that grew), the cursor only moves forward,
 /// and a lost connection resumes from the last cursor with backoff. An unavailable capability or a
 /// refused access stops the feed explicitly instead of retrying forever.
 @MainActor
@@ -25,7 +27,6 @@ final class ConversationFeed {
     private(set) var latestRevision = 0
 
     @ObservationIgnored private var events: [OrchestratorEvent] = []
-    @ObservationIgnored private var seen = Set<String>()
     @ObservationIgnored private var cursor: String?
     @ObservationIgnored private var cache: [String: CachedMarkdownDocument] = [:]
 
@@ -34,6 +35,19 @@ final class ConversationFeed {
         self.cursor = cursor
         await ingest(initial)
         hasLoaded = true
+    }
+
+    /// Reads what is new now (pull to refresh), page by page from the current cursor. Safe beside
+    /// `follow`: events are applied once by id, so overlapping reads change nothing.
+    func refresh(_ fetch: Fetch) async throws(ServiceFailure) {
+        while !Task.isCancelled {
+            let previous = cursor
+            let page = try await fetch(cursor)
+            if let next = page.cursor { cursor = next }
+            await ingest(page.events)
+            hasLoaded = true
+            guard page.hasMore, cursor != previous else { return }
+        }
     }
 
     /// Runs until the calling task is cancelled (the screen disappears) or the stream stops.
@@ -73,10 +87,9 @@ final class ConversationFeed {
     }
 
     private func ingest(_ incoming: [OrchestratorEvent]) async {
-        let fresh = incoming.filter { seen.insert($0.id).inserted }
-        guard !fresh.isEmpty || !hasLoaded else { return }
-        events.append(contentsOf: fresh)
-        latestRevision = max(latestRevision, fresh.map(\.revision).max() ?? 0)
+        let changed = EventStream.merge(incoming, into: &events)
+        guard changed || !hasLoaded else { return }
+        latestRevision = max(latestRevision, incoming.map(\.revision).max() ?? 0)
         conversation = ConversationProjection.project(events)
         let sources = conversation.items.compactMap { item -> MarkdownDocumentSource? in
             guard case .assistant(let text, _, _) = item.kind else { return nil }
