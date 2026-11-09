@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { IDS, MOCK, reset, signIn } from "./helpers";
+import { IDS, MOCK, openLaunch, reset, signIn } from "./helpers";
 
 const ACME = "00000000-0000-4000-8000-000000000010";
 const ZENITH = "00000000-0000-4000-8000-000000000011";
@@ -162,7 +162,7 @@ test("disabling a connection takes it out of launches until it is enabled again"
   });
 
   await page.goto("/goldens");
-  await page.getByRole("button", { name: "Launch from shared-golden" }).click();
+  await openLaunch(page, "shared-golden");
   await expect(page.getByRole("dialog").getByRole("checkbox", { name: "Acme Docs" })).toBeDisabled();
   await expect(page.getByRole("dialog").getByText("Disabled. Enable it on the Connections page first.")).toBeVisible();
 
@@ -312,7 +312,7 @@ test("a stdio server is imported, must pin its package and is configured for lau
   await expect(legacy.getByRole("status")).toContainText("Repo Files is configured for launch.");
 
   await page.goto("/goldens");
-  await page.getByRole("button", { name: "Launch from shared-golden" }).click();
+  await openLaunch(page, "shared-golden");
   await page
     .getByRole("dialog")
     .getByRole("radio", { name: /^Private/ })
@@ -323,8 +323,7 @@ test("a stdio server is imported, must pin its package and is configured for lau
 
 test("a launch picks connections; personal ones need a private sandbox even from a shared golden", async ({ page }) => {
   await signIn(page, "alice@example.com", "/goldens");
-  await page.getByRole("button", { name: "Launch from shared-golden" }).click();
-  const dialog = page.getByRole("dialog");
+  const dialog = await openLaunch(page, "shared-golden");
   const linear = dialog.getByRole("checkbox", { name: "Alice Linear" });
   const docs = dialog.getByRole("checkbox", { name: "Acme Docs" });
   await expect(dialog.getByRole("radio", { name: /^Org/ })).toBeChecked();
@@ -557,8 +556,7 @@ test("rename and include-by-default change metadata only, and an unreachable ser
 test("a launch starts with the usable defaults and sends exactly what is ticked, even nothing", async ({ page }) => {
   await signIn(page, "alice@example.com", "/goldens");
   const open = async () => {
-    await page.getByRole("button", { name: "Launch from shared-golden" }).click();
-    const dialog = page.getByRole("dialog");
+    const dialog = await openLaunch(page, "shared-golden");
     // The org golden starts as an org sandbox, where a personal default does not apply.
     await expect(dialog.getByRole("checkbox", { name: "Alice Linear" })).not.toBeChecked();
     await dialog.getByRole("radio", { name: /^Private/ }).check();
@@ -593,10 +591,7 @@ test("a default that is not connected holds the launch until it is reconnected o
   }
 
   await page.goto("/goldens");
-  const open = async () => {
-    await page.getByRole("button", { name: "Launch from shared-golden" }).click();
-    return page.getByRole("dialog");
-  };
+  const open = () => openLaunch(page, "shared-golden");
   let dialog = await open();
   const held = dialog.locator("[data-unready-defaults]");
   const docs = dialog.getByRole("checkbox", { name: "Acme Docs" });
@@ -618,7 +613,8 @@ test("a default that is not connected holds the launch until it is reconnected o
   // Continuing without it is the explicit choice; then the selection is exactly what is ticked.
   await held.getByRole("button", { name: "Continue without it" }).click();
   await expect(held).toHaveCount(0);
-  await expect(docs).toBeFocused();
+  // Launch is the next step, so focus moves there.
+  await expect(launch).toBeFocused();
   await expect(docs).toBeChecked();
   // Waiving covers only what was shown: Private brings in the personal default, which holds the launch again.
   await dialog.getByRole("radio", { name: /^Private/ }).check();
