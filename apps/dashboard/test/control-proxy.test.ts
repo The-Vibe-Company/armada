@@ -55,20 +55,56 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
     ["sandbox", "list"],
     ["sandbox", "wait"],
     ["sandbox", "exec"],
+    ["mcp", "catalog"],
+    ["mcp", "metadata"],
+    ["creds", "accounts", "set"],
+    ["creds", "accounts", "rename"],
+    ["creds", "accounts", "default"],
+    ["creds", "accounts", "remove"],
+    ["creds", "accounts", "usage"],
+    ["creds", "accounts", "auth-capabilities"],
+    ["sandbox", "bind-credential"],
+    ["org", "provider", "disconnect"],
     ["mcp", "set-enabled"],
     ["mcp", "sandbox-connections"],
   ]) {
+    const payload = JSON.stringify({
+      org: "org-id",
+      id: "instance-id",
+      credentialId: "account-id",
+      name: "Work",
+      defaultForLaunch: false,
+      expectedVersion: 2,
+    });
     const response = await forwardControl(
-      new Request("https://dashboard.test", { method: "POST", headers: { authorization: "Bearer masked" } }),
+      new Request("https://dashboard.test", {
+        method: "POST",
+        headers: { authorization: "Bearer masked", "content-type": "application/json" },
+        body: payload,
+      }),
+      path,
+      async (input, init) => {
+        seen.push(new Request(input, init));
+        return Response.json({ error: { code: "conflict", message: "Revision changed." } }, { status: 409 });
+      },
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: { code: "conflict", message: "Revision changed." } });
+    expect(seen.at(-1)?.headers.get("authorization")).toBe("Bearer masked");
+    expect(seen.at(-1)?.url).toBe(`https://armada.test/api/v1/${path.join("/")}`);
+    expect(seen.at(-1)?.headers.get("content-type")).toBe("application/json");
+    expect(await seen.at(-1)?.text()).toBe(payload);
+    const count = seen.length;
+    const anonymous = await forwardControl(
+      new Request("https://dashboard.test", { method: "POST", body: payload }),
       path,
       async (input, init) => {
         seen.push(new Request(input, init));
         return Response.json({ ok: true });
       },
     );
-    expect(response.status).toBe(200);
-    expect(seen.at(-1)?.headers.get("authorization")).toBe("Bearer masked");
-    expect(seen.at(-1)?.url).toBe(`https://armada.test/api/v1/${path.join("/")}`);
+    expect(anonymous.status).toBe(401);
+    expect(seen).toHaveLength(count);
   }
   expect(
     (await forwardControl(new Request("https://dashboard.test", { method: "POST" }), ["org", "list"])).status,
@@ -117,7 +153,7 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
   expect(seen).toHaveLength(forwarded);
 });
 
-test("allows launch and logs routes only", async () => {
+test("keeps unknown and runner secret callbacks outside the closed public allowlist", async () => {
   process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
   const fetchImpl = async () => Response.json({ ok: true });
   for (const path of [
@@ -134,15 +170,27 @@ test("allows launch and logs routes only", async () => {
       ).status,
     ).toBe(200);
   }
-  expect(
-    (
-      await forwardControl(
-        new Request("https://dashboard.test", { method: "POST", headers: { authorization: "Bearer masked" } }),
-        ["..", "evil"],
-        fetchImpl,
-      )
-    ).status,
-  ).toBe(404);
+  let forwarded = 0;
+  for (const path of [
+    ["..", "evil"],
+    ["mcp", "unknown"],
+    ["creds", "accounts", "unknown"],
+    ["creds", "accounts", "auth-state"],
+    ["creds", "accounts", "auth-state", "callback"],
+    ["internal", "runner", "auth-state"],
+    ["sandbox", "auth-state"],
+  ]) {
+    const blocked = await forwardControl(
+      new Request("https://dashboard.test", { method: "POST", headers: { authorization: "Bearer masked" } }),
+      path,
+      async () => {
+        forwarded++;
+        return Response.json({ ok: true });
+      },
+    );
+    expect(blocked.status).toBe(404);
+  }
+  expect(forwarded).toBe(0);
 });
 
 test("rejects missing configuration and authorization", async () => {

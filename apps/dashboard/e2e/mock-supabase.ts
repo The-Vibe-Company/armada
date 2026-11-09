@@ -162,7 +162,9 @@ function seed(): State {
         promptCount: 2,
       }),
       mcpConnection(id(61), "Alice Linear", ACME, "personal", ALICE, {
-        url: "https://mcp.linear.test/mcp",
+        url: "https://mcp.linear.app/mcp",
+        catalogId: "linear",
+        defaultForLaunch: true,
         authType: "oauth",
         status: "connected",
         accountLabel: "alice@linear.test",
@@ -183,6 +185,12 @@ function seed(): State {
         authType: "none",
         // Saved before the registry configured stdio definitions on save.
         status: "not_connected",
+      }),
+      mcpConnection(id(66), "Acme Search", ACME, "org", ALICE, {
+        url: "https://search.acme.test/mcp",
+        authType: "none",
+        status: "unavailable",
+        lastError: "The server did not answer.",
       }),
       mcpConnection(id(63), "Acme Sentry", ACME, "org", ALICE, {
         url: "https://sentry.test/mcp",
@@ -237,7 +245,7 @@ function mcpConnection(
   owner: string,
   fields: Row,
 ): Row {
-  return { id: cid, name, orgId, scope, owner, transport: "http", ...fields };
+  return { id: cid, name, orgId, scope, owner, transport: "http", defaultForLaunch: false, ...fields };
 }
 
 function golden(gid: string, name: string, visibility: string, owner: string, snapshot: string | null): Row {
@@ -864,6 +872,37 @@ function definitionFields(body: Row): Row {
   };
 }
 
+/**
+ * The curated services, as `POST mcp/catalog` reports them for this deployment (issue #601, `MCP_CATALOG` in
+ * `@armada/core`). Slack's MCP server needs a registered confidential client, which this deployment has not.
+ */
+const CATALOG = [
+  {
+    id: "notion",
+    label: "Notion",
+    url: "https://mcp.notion.com/mcp",
+    docsUrl: "https://developers.notion.com/guides/mcp/overview",
+    availability: "available",
+  },
+  {
+    id: "linear",
+    label: "Linear",
+    url: "https://mcp.linear.app/mcp",
+    docsUrl: "https://linear.app/docs/mcp",
+    availability: "available",
+  },
+  {
+    id: "slack",
+    label: "Slack",
+    url: "https://mcp.slack.com/mcp",
+    docsUrl: "https://docs.slack.dev/ai/slack-mcp-server/",
+    availability: "setup_required",
+    setupMessage: "Registered confidential OAuth client required; not configured on this deployment.",
+  },
+];
+let failCatalog = false;
+let failConnect = false;
+
 function mcpControl(operation: string, body: Row, userId: string | null): Response {
   if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
   state.controlCalls.push({ operation, body });
@@ -871,6 +910,10 @@ function mcpControl(operation: string, body: Row, userId: string | null): Respon
   const org = String(body.org ?? "");
   if (!isMember(org, userId)) return controlFail(403, "forbidden", "You are not a member of that organization.");
   if (operation === "list") return json({ connections: visibleConnections(org, userId).map(connectionDto) });
+  if (operation === "catalog") {
+    if (failCatalog) return controlFail(404, "not_found", "Unknown route.");
+    return json({ services: CATALOG });
+  }
   if (operation === "sandbox-connections") {
     if (failSandboxConnections) return controlFail(503, "unavailable", "The registry is unavailable.");
     const sandboxRow = visibleRows("sandboxes", userId).find((item) => item.id === body.id && item.org_id === org);
@@ -885,6 +928,22 @@ function mcpControl(operation: string, body: Row, userId: string | null): Respon
     }
     if (visibleConnections(org, userId).some((row) => row.name === body.name && row.scope === body.scope)) {
       return controlFail(409, "conflict", "A connection with that name already exists.");
+    }
+    if (body.serviceId !== undefined) {
+      // The server resolves the service to its canonical URL and sign-in; the client sends nothing else.
+      const service = CATALOG.find((item) => item.id === body.serviceId);
+      if (!service) return controlFail(400, "invalid", "Unknown service.");
+      if (service.availability !== "available") return controlFail(400, "setup_required", "That service needs setup.");
+      const extra = Object.keys(body).filter((key) => !["org", "scope", "name", "serviceId"].includes(key));
+      if (extra.length) return controlFail(400, "invalid", `Unexpected ${extra.join(", ")}.`);
+      const row: Row = mcpConnection(crypto.randomUUID(), String(body.name), org, body.scope as "org", userId, {
+        url: service.url,
+        catalogId: service.id,
+        authType: "oauth",
+        status: "not_connected",
+      });
+      state.connections.push(row);
+      return json({ connection: connectionDto(row) });
     }
     const invalid = invalidDefinition(body);
     if (invalid) return controlFail(400, "invalid", invalid);
@@ -917,11 +976,24 @@ function mcpControl(operation: string, body: Row, userId: string | null): Respon
       return json({ connection: connectionDto(row) });
     }
     case "connect": {
+      if (failConnect) return controlFail(503, "unavailable", "The authorization server did not answer.");
       const authorizationUrl = probe(row);
       const pending = authorizationUrl ? new URL(authorizationUrl).searchParams.get("state") : null;
       const entry = pending ? pendingOAuth.get(pending) : undefined;
       if (entry) entry.user = userId;
       return json({ connection: connectionDto(row), ...(authorizationUrl ? { authorizationUrl } : {}) });
+    }
+    case "metadata": {
+      // Metadata only: the stored authorization, the status and running sandboxes' access are left as they are.
+      if (body.name !== undefined && (typeof body.name !== "string" || !body.name.trim())) {
+        return controlFail(400, "invalid", "name must be a non-empty string.");
+      }
+      if (body.defaultForLaunch !== undefined && typeof body.defaultForLaunch !== "boolean") {
+        return controlFail(400, "invalid", "defaultForLaunch must be true or false.");
+      }
+      if (typeof body.name === "string") row.name = body.name;
+      if (typeof body.defaultForLaunch === "boolean") row.defaultForLaunch = body.defaultForLaunch;
+      return json({ connection: connectionDto(row) });
     }
     case "set-enabled": {
       if (typeof body.enabled !== "boolean") return controlFail(400, "invalid", "enabled must be true or false.");
@@ -1344,6 +1416,8 @@ function control(url: URL, body: Row): Response {
     pendingOAuth.clear();
     githubCliFlows.clear();
     failSandboxConnections = false;
+    failCatalog = false;
+    failConnect = false;
     if (body.multiOrg) {
       const now = "2026-11-08T10:00:00.000Z";
       state.orgs.push({ id: id(11), name: "Zenith", created_at: now, boat_api_key_enc: "\\x0102" });
@@ -1494,6 +1568,14 @@ function control(url: URL, body: Row): Response {
     const row = state.sandboxes.find((item) => item.id === body.id);
     if (!row) return json({ message: "no sandbox" }, 404);
     Object.assign(row, body.fields as Row);
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/fail-connect") {
+    failConnect = true;
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/fail-catalog") {
+    failCatalog = true;
     return json({ ok: true });
   }
   if (url.pathname === "/__test/sandbox-events") {

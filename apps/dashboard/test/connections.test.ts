@@ -5,6 +5,8 @@ import {
   checkServerUrl,
   checkStdio,
   completeUpdate,
+  connectAction,
+  launchDefaults,
   launchSelection,
   type McpConnection,
   oauthCallbackInput,
@@ -12,6 +14,7 @@ import {
   parseStdioImport,
   sandboxVisibility,
   statusLabel,
+  unreadyDefaults,
 } from "../src/lib/connections.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
@@ -23,6 +26,7 @@ const connection = (n: number, overrides: Partial<McpConnection> = {}): McpConne
   transport: "http",
   authType: "none",
   status: "connected",
+  defaultForLaunch: false,
   ...overrides,
 });
 
@@ -49,6 +53,41 @@ describe("launch selection", () => {
       if (!result.ok) expect(result.error).toContain(expected);
     }
   });
+});
+
+describe("launch defaults", () => {
+  const personal = connection(53, { scope: "personal", defaultForLaunch: true });
+  const shared = connection(54, { defaultForLaunch: true });
+  const optIn = connection(55);
+  const expired = connection(56, { defaultForLaunch: true, status: "needs_reconnect" });
+  const disabled = connection(57, { defaultForLaunch: true, status: "disabled" });
+  const available = [personal, shared, optIn, expired, disabled];
+
+  test.each([
+    ["a private sandbox starts with every usable default", "private", [personal.id, shared.id]],
+    ["an org sandbox never gets a personal default", "org", [shared.id]],
+  ] as const)("%s", (_name, visibility, expected) => {
+    expect(launchDefaults(available, visibility)).toEqual([...expected]);
+  });
+
+  test("a default that is enabled but not connected is reported, never silently dropped", () => {
+    const personalExpired = connection(59, { scope: "personal", defaultForLaunch: true, status: "unavailable" });
+    const all = [...available, personalExpired];
+    expect(unreadyDefaults(all, "private").map((item) => item.id)).toEqual([expired.id, personalExpired.id]);
+    // An org sandbox never takes a personal default, so a broken one does not concern it.
+    expect(unreadyDefaults(all, "org").map((item) => item.id)).toEqual([expired.id]);
+  });
+});
+
+test.each([
+  [{ status: "not_connected" }, "Connect"],
+  [{ status: "needs_reconnect" }, "Reconnect"],
+  [{ status: "unavailable" }, "Retry"],
+  [{ status: "connected" }, null],
+  [{ status: "disabled" }, null],
+  [{ status: "not_connected", transport: "stdio" }, "Configure"],
+] as const)("a connection %j offers %p", (state, expected) => {
+  expect(connectAction(connection(58, { authType: "oauth", ...state }))).toBe(expected);
 });
 
 describe("stdio definitions", () => {
